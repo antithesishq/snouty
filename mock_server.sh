@@ -27,5 +27,8 @@ echo "Starting mock server on localhost:$PORT..."
 echo "Press Ctrl+C to stop"
 
 while true; do
-    ncat -l -p $PORT -c handler
+    if ! ncat -l -p $PORT -c handler; then
+        echo "ncat command failed" >&2
+        exit 1
+    fi
 done

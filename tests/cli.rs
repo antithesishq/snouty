@@ -94,7 +94,7 @@ fn run_with_cli_args() {
         .stderr(predicate::str::contains(
             r#""antithesis.description": "test run""#,
         ))
-        .stdout(predicate::str::contains(r#""status": "ok""#));
+        .stderr(predicate::str::contains(r#""status": "ok""#));
 }
 
 #[test]

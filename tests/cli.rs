@@ -346,3 +346,33 @@ fn run_fails_without_credentials() {
         .failure()
         .stderr(predicate::str::contains("missing environment variable"));
 }
+
+#[test]
+fn run_fails_without_parameters() {
+    let mock_url = start_mock_server(r#"{}"#, 200);
+
+    snouty_with_mock(&mock_url)
+        .args(["run", "-w", "basic_test"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("no parameters provided"));
+}
+
+#[test]
+fn debug_reports_api_errors() {
+    let mock_url = start_mock_server(r#"{"error": "unauthorized"}"#, 401);
+
+    snouty_with_mock(&mock_url)
+        .args([
+            "debug",
+            "--antithesis.debugging.input_hash",
+            "abc123",
+            "--antithesis.debugging.session_id",
+            "sess-456",
+            "--antithesis.debugging.vtime",
+            "1234567890",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("API error: 401"));
+}

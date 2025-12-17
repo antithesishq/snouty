@@ -47,11 +47,6 @@ impl Params {
         validate_against_def(&self.inner, "debuggingParams")
     }
 
-    /// Get the inner map.
-    pub fn into_inner(self) -> Map<String, Value> {
-        self.inner
-    }
-
     /// Get a reference to the inner map.
     pub fn as_map(&self) -> &Map<String, Value> {
         &self.inner
@@ -151,11 +146,6 @@ fn validate_against_def(params: &Map<String, Value>, def_name: &str) -> Result<(
 
     debug!("validation passed");
     Ok(())
-}
-
-/// Get the raw schema as a JSON value.
-pub fn schema() -> Value {
-    serde_json::from_str(SCHEMA).expect("valid schema")
 }
 
 #[cfg(test)]
@@ -281,5 +271,25 @@ mod tests {
         let args = ["notaflag", "value"];
         let result = Params::from_args(args);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn empty_key_after_dashes_error() {
+        let args = ["--", "value"];
+        let result = Params::from_args(args);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("empty key"));
+    }
+
+    #[test]
+    fn integration_key_without_field_is_flat() {
+        // When integration key has no field (no second dot after provider),
+        // it should be treated as a flat key
+        let args = ["--antithesis.integrations.github", "some_value"];
+        let params = Params::from_args(args).unwrap();
+        assert_eq!(
+            params.as_map().get("antithesis.integrations.github").unwrap(),
+            "some_value"
+        );
     }
 }

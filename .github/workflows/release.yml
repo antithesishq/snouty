@@ -26,8 +26,6 @@ jobs:
         with:
           components: clippy, rustfmt
 
-      - uses: Swatinem/rust-cache@v2
-
       - name: Install binstall
         run: curl -L --proto '=https' --tlsv1.2 -sSf https://raw.githubusercontent.com/cargo-bins/cargo-binstall/main/install-from-binstall-release.sh | bash
 
@@ -36,6 +34,8 @@ jobs:
 
       - name: Cargo fmt
         run: cargo fmt --check
+
+      - uses: Swatinem/rust-cache@v2
 
       - name: Build
         run: cargo build

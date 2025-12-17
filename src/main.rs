@@ -28,6 +28,7 @@ enum Commands {
 
 Example:
   snouty run -w basic_test \
+    --antithesis.test_name "my-test" \
     --antithesis.description "nightly test run" \
     --antithesis.config_image config:latest \
     --antithesis.images app:latest \

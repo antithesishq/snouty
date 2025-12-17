@@ -64,6 +64,10 @@
         "antithesis.source": {
           "type": "string",
           "description": "Identifier separating property history in reports; typically a source control descriptor"
+        },
+        "antithesis.test_name": {
+          "type": "string",
+          "description": "Name of the test to run; defaults to the config image name if not specified"
         }
       }
     },

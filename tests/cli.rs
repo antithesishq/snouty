@@ -78,21 +78,42 @@ fn help_shows_subcommands() {
 fn run_with_cli_args() {
     let mock_url = start_mock_server(r#"{"status": "ok"}"#, 200);
 
+    // Test all fields recommended in the README
     snouty_with_mock(&mock_url)
         .args([
             "run",
             "-w",
             "basic_test",
+            "--antithesis.test_name",
+            "my-test",
+            "--antithesis.description",
+            "nightly test run",
+            "--antithesis.config_image",
+            "config:latest",
+            "--antithesis.images",
+            "app:latest",
             "--antithesis.duration",
             "30",
-            "--antithesis.description",
-            "test run",
+            "--antithesis.report.recipients",
+            "team@example.com",
         ])
         .assert()
         .success()
+        .stderr(predicate::str::contains(
+            r#""antithesis.test_name": "my-test""#,
+        ))
+        .stderr(predicate::str::contains(
+            r#""antithesis.description": "nightly test run""#,
+        ))
+        .stderr(predicate::str::contains(
+            r#""antithesis.config_image": "config:latest""#,
+        ))
+        .stderr(predicate::str::contains(
+            r#""antithesis.images": "app:latest""#,
+        ))
         .stderr(predicate::str::contains(r#""antithesis.duration": "30""#))
         .stderr(predicate::str::contains(
-            r#""antithesis.description": "test run""#,
+            r#""antithesis.report.recipients": "[REDACTED]""#,
         ))
         .stderr(predicate::str::contains(r#""status": "ok""#));
 }

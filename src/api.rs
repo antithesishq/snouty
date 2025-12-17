@@ -1,5 +1,6 @@
 use std::env;
 
+use log::debug;
 use reqwest::{Client, RequestBuilder};
 
 use crate::error::{Error, Result};
@@ -28,6 +29,7 @@ impl Config {
     }
 
     pub fn from_env() -> Result<Self> {
+        debug!("loading config from environment");
         Ok(Self {
             username: required_env("ANTITHESIS_USERNAME")?,
             password: required_env("ANTITHESIS_PASSWORD")?,
@@ -46,22 +48,31 @@ pub struct AntithesisApi {
 impl AntithesisApi {
     pub fn new(config: Config) -> Result<Self> {
         let base_url = format!("https://{}.antithesis.com/api/v1", config.tenant);
+        debug!("using default base URL: {}", base_url);
         Self::with_base_url(config, base_url)
     }
 
     pub fn from_env() -> Result<Self> {
         let config = Config::from_env()?;
-        Self::new(config)
+        // Allow base URL override for testing
+        if let Ok(base_url) = env::var("ANTITHESIS_BASE_URL") {
+            debug!("using ANTITHESIS_BASE_URL override: {}", base_url);
+            Self::with_base_url(config, base_url)
+        } else {
+            Self::new(config)
+        }
     }
 
     pub fn with_base_url(config: Config, base_url: impl Into<String>) -> Result<Self> {
+        let base_url = base_url.into().trim_end_matches('/').to_string();
+        debug!("initializing API client for {}", base_url);
         let client = Client::builder()
             .timeout(std::time::Duration::from_secs(30))
             .build()?;
 
         Ok(Self {
             client,
-            base_url: base_url.into().trim_end_matches('/').to_string(),
+            base_url,
             username: config.username,
             password: config.password,
         })
@@ -72,14 +83,18 @@ impl AntithesisApi {
     }
 
     pub fn get(&self, path: &str) -> RequestBuilder {
+        let url = format!("{}{}", self.base_url, path);
+        debug!("GET {}", url);
         self.client
-            .get(format!("{}{}", self.base_url, path))
+            .get(url)
             .basic_auth(&self.username, Some(&self.password))
     }
 
     pub fn post(&self, path: &str) -> RequestBuilder {
+        let url = format!("{}{}", self.base_url, path);
+        debug!("POST {}", url);
         self.client
-            .post(format!("{}{}", self.base_url, path))
+            .post(url)
             .basic_auth(&self.username, Some(&self.password))
     }
 }

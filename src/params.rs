@@ -1,4 +1,5 @@
 use jsonschema::Validator;
+use log::debug;
 use serde_json::{Map, Value};
 
 use crate::error::{Error, Result};
@@ -32,6 +33,7 @@ impl Params {
             .as_object()
             .ok_or_else(|| Error::InvalidArgs("expected JSON object".to_string()))?
             .clone();
+        debug!("parsed {} params from JSON", inner.len());
         Ok(Self { inner })
     }
 
@@ -140,9 +142,14 @@ fn validate_against_def(params: &Map<String, Value>, def_name: &str) -> Result<(
         .collect();
 
     if !errors.is_empty() {
+        debug!("validation failed with {} errors", errors.len());
+        for err in &errors {
+            debug!("  - {}", err);
+        }
         return Err(Error::ValidationFailed(errors));
     }
 
+    debug!("validation passed");
     Ok(())
 }
 
@@ -157,7 +164,12 @@ mod tests {
 
     #[test]
     fn parse_simple_args() {
-        let args = ["--antithesis.duration", "30", "--antithesis.description", "test run"];
+        let args = [
+            "--antithesis.duration",
+            "30",
+            "--antithesis.description",
+            "test run",
+        ];
         let params = Params::from_args(args).unwrap();
 
         assert_eq!(params.as_map().get("antithesis.duration").unwrap(), "30");

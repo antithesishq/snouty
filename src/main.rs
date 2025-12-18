@@ -3,7 +3,9 @@ pub mod error;
 pub mod moment;
 pub mod params;
 
-use std::io::{self, Read};
+use std::io::{self, ErrorKind, Read};
+use std::os::unix::process::CommandExt;
+use std::process::Command;
 
 use chrono::{Duration, Local};
 use clap::{Parser, Subcommand};
@@ -69,6 +71,8 @@ Using Moment.from (copy from triage report):
     },
     /// Print version information
     Version,
+    /// Check for and install updates
+    Update,
 }
 
 fn read_stdin() -> Result<String> {
@@ -120,6 +124,7 @@ async fn main() {
             println!("snouty {}", env!("CARGO_PKG_VERSION"));
             Ok(())
         }
+        Commands::Update => cmd_update(),
     };
 
     if let Err(e) = result {
@@ -210,4 +215,21 @@ async fn cmd_debug(args: Vec<String>, use_stdin: bool) -> Result<()> {
             message: body,
         })
     }
+}
+
+fn cmd_update() -> Result<()> {
+    // attempt to run snouty-update
+    let err = Command::new("snouty-update").exec();
+    if err.kind() != ErrorKind::NotFound {
+        log::error!("failed to run snouty-update: {}\n", err);
+    }
+
+    // Updater not found, show manual update instructions
+    eprintln!(
+        "You are running snouty {}.\n\n\
+         To check for updates, visit:\n\
+         https://github.com/orbitinghail/snouty/releases",
+        env!("CARGO_PKG_VERSION")
+    );
+    Ok(())
 }

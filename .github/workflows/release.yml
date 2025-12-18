@@ -36,24 +36,23 @@ jobs:
         run: cargo fmt --check
 
       - uses: Swatinem/rust-cache@v2
-
-      - name: Build
-        run: cargo build
+        with:
+          key: release
 
       - name: Test
         run: cargo nextest run
+
+      - name: Build
+        run: cargo build --release
+
+      - name: Verify release (dry run)
+        run: cargo release ${{ inputs.version }}
 
       - name: Clippy
         run: cargo clippy -- -D warnings
 
       - name: Spell Check Repo
         uses: crate-ci/typos@2d0ce569feab1f8752f1dde43cc2f2aa53236e06 # v1.40.0
-
-      - name: Remove typos binary
-        run: rm ./typos
-
-      - name: Verify release (dry run)
-        run: cargo release ${{ inputs.version }}
 
   build:
     needs: checks
@@ -130,6 +129,10 @@ jobs:
 
       - name: Install cargo-release
         run: cargo binstall cargo-release -y
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release
 
       - name: Run cargo release
         run: cargo release ${{ inputs.version }} --execute --no-confirm

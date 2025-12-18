@@ -55,7 +55,8 @@ Using CLI arguments:
   snouty debug \
     --antithesis.debugging.session_id f89d5c11f5e3bf5e4bb3641809800cee-44-22 \
     --antithesis.debugging.input_hash 6057726200491963783 \
-    --antithesis.debugging.vtime 329.8037810830865
+    --antithesis.debugging.vtime 329.8037810830865 \
+    --antithesis.report.recipients "team@example.com"
 
 Using Moment.from (copy from triage report):
   echo 'Moment.from({ session_id: "...", input_hash: "...", vtime: ... })' | snouty debug --stdin"#)]

@@ -4,7 +4,6 @@ pub mod moment;
 pub mod params;
 
 use std::io::{self, ErrorKind, Read};
-use std::os::unix::process::CommandExt;
 use std::process::Command;
 
 use chrono::{Duration, Local};
@@ -218,10 +217,21 @@ async fn cmd_debug(args: Vec<String>, use_stdin: bool) -> Result<()> {
 }
 
 fn cmd_update() -> Result<()> {
-    // attempt to run snouty-update
-    let err = Command::new("snouty-update").exec();
-    if err.kind() != ErrorKind::NotFound {
-        log::error!("failed to run snouty-update: {}\n", err);
+    // Attempt to spawn snouty-update and wait for it to finish
+    match Command::new("snouty-update").status() {
+        Ok(status) if status.success() => {
+            std::process::exit(0);
+        }
+        Ok(status) => {
+            log::error!("snouty-update failed with exit code {}\n", status);
+        }
+        Err(err) => {
+            if err.kind() == ErrorKind::NotFound {
+                log::warn!("snouty-update command not found\n");
+            } else {
+                log::error!("failed to run snouty-update: {}\n", err);
+            }
+        }
     }
 
     // Updater not found, show manual update instructions

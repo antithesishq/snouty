@@ -215,6 +215,30 @@ mod tests {
     }
 
     #[test]
+    fn validate_images_semicolon_delimited() {
+        let args = ["--antithesis.images", "app:latest;db:latest"];
+        let params = Params::from_args(args).unwrap();
+        assert!(params.validate_test_params().is_ok());
+    }
+
+    #[test]
+    fn validate_images_semicolon_delimited_with_registries() {
+        let args = [
+            "--antithesis.images",
+            "us-central1-docker.pkg.dev/myproject/repo/app:v1.2.3; registry.example.com:5000/team/service@sha256:abc123def456",
+        ];
+        let params = Params::from_args(args).unwrap();
+        assert!(params.validate_test_params().is_ok());
+    }
+
+    #[test]
+    fn validate_images_rejects_comma_delimited() {
+        let args = ["--antithesis.images", "app:latest,db:latest"];
+        let params = Params::from_args(args).unwrap();
+        assert!(params.validate_test_params().is_err());
+    }
+
+    #[test]
     fn validate_test_params_with_custom_props() {
         let args = [
             "--antithesis.duration",

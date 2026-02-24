@@ -53,6 +53,7 @@
         },
         "antithesis.images": {
           "type": "string",
+          "pattern": "^[^,]+$",
           "description": "Semicolon-delimited list of image versions, format: [REGISTRY/]NAME(:TAG|@DIGEST)"
         },
         "antithesis.is_ephemeral": {

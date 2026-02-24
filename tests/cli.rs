@@ -398,6 +398,27 @@ fn debug_reports_api_errors() {
         .stderr(predicate::str::contains("API error: 401"));
 }
 
+// === Completions tests ===
+
+#[test]
+fn completions_bash_outputs_script() {
+    snouty()
+        .args(["completions", "bash"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("complete"))
+        .stdout(predicate::str::contains("snouty"));
+}
+
+#[test]
+fn completions_unsupported_shell_fails() {
+    snouty()
+        .args(["completions", "nushell"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("unsupported shell: nushell"));
+}
+
 // === Tests for merging stdin and CLI args ===
 
 #[test]

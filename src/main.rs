@@ -1,4 +1,5 @@
 pub mod api;
+pub mod cli;
 pub mod error;
 pub mod moment;
 pub mod params;
@@ -7,74 +8,13 @@ use std::io::{self, ErrorKind, Read};
 use std::process::Command;
 
 use chrono::{Duration, Local};
-use clap::{Parser, Subcommand};
+use clap::Parser;
 use log::{debug, info};
 
 use crate::api::AntithesisApi;
+use crate::cli::{Cli, Commands};
 use crate::error::{Error, Result};
 use crate::params::Params;
-
-#[derive(Parser)]
-#[command(name = "snouty")]
-#[command(about = "CLI for the Antithesis API", long_about = None)]
-struct Cli {
-    #[command(subcommand)]
-    command: Commands,
-}
-
-#[derive(Subcommand)]
-enum Commands {
-    /// Launch a test run
-    #[command(long_about = r#"Launch a test run
-
-Example:
-  snouty run -w basic_test \
-    --antithesis.test_name "my-test" \
-    --antithesis.description "nightly test run" \
-    --antithesis.config_image config:latest \
-    --antithesis.images app:latest \
-    --antithesis.duration 30 \
-    --antithesis.report.recipients "team@example.com""#)]
-    Run {
-        /// Webhook endpoint name (e.g., basic_test, basic_k8s_test)
-        #[arg(short, long)]
-        webhook: String,
-
-        /// Read parameters from stdin (JSON or Moment.from format)
-        #[arg(long)]
-        stdin: bool,
-
-        /// Parameters as `--key value` pairs
-        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
-        args: Vec<String>,
-    },
-    /// Launch a debugging session
-    #[command(long_about = r#"Launch a debugging session
-
-Using CLI arguments:
-  snouty debug \
-    --antithesis.debugging.session_id f89d5c11f5e3bf5e4bb3641809800cee-44-22 \
-    --antithesis.debugging.input_hash 6057726200491963783 \
-    --antithesis.debugging.vtime 329.8037810830865 \
-    --antithesis.report.recipients "team@example.com"
-
-Using Moment.from (copy from triage report):
-  echo 'Moment.from({ session_id: "...", input_hash: "...", vtime: ... })' | \
-    snouty debug --stdin --antithesis.report.recipients "team@example.com""#)]
-    Debug {
-        /// Read parameters from stdin (JSON or Moment.from format)
-        #[arg(long)]
-        stdin: bool,
-
-        /// Parameters as `--key value` pairs
-        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
-        args: Vec<String>,
-    },
-    /// Print version information
-    Version,
-    /// Check for and install updates
-    Update,
-}
 
 fn read_stdin() -> Result<String> {
     let mut buf = String::new();
@@ -139,6 +79,7 @@ async fn main() {
             info!("starting debug session");
             cmd_debug(args, stdin).await
         }
+        Commands::Completions { shell } => cmd_completions(shell),
         Commands::Version => {
             println!("snouty {}", env!("CARGO_PKG_VERSION"));
             Ok(())
@@ -234,6 +175,23 @@ async fn cmd_debug(args: Vec<String>, use_stdin: bool) -> Result<()> {
             message: body,
         })
     }
+}
+
+fn cmd_completions(shell: String) -> Result<()> {
+    let output = match shell.as_str() {
+        "bash" => include_str!(concat!(env!("OUT_DIR"), "/snouty.bash")),
+        "zsh" => include_str!(concat!(env!("OUT_DIR"), "/_snouty")),
+        "fish" => include_str!(concat!(env!("OUT_DIR"), "/snouty.fish")),
+        "powershell" => include_str!(concat!(env!("OUT_DIR"), "/_snouty.ps1")),
+        "elvish" => include_str!(concat!(env!("OUT_DIR"), "/snouty.elv")),
+        _ => {
+            return Err(Error::InvalidArgs(format!(
+                "unsupported shell: {shell}\nsupported: bash, zsh, fish, powershell, elvish"
+            )));
+        }
+    };
+    print!("{output}");
+    Ok(())
 }
 
 fn cmd_update() -> Result<()> {

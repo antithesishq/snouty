@@ -60,4 +60,9 @@ Do NOT push. Show the user:
 - The tag: `git show vX.Y.Z --no-patch`
 - The diff: `git diff HEAD~1`
 
-Tell the user to run `git push && git push --tags` once satisfied.
+Tell the user to run the following once satisfied:
+
+```
+git push && git push --tags
+cargo publish
+```

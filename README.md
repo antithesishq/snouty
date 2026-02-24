@@ -90,3 +90,40 @@ Snouty can handle passing in a `Moment.from` via stdin:
 echo 'Moment.from({ session_id: "...", input_hash: "...", vtime: ... })' | \
   snouty debug --stdin --antithesis.report.recipients "team@example.com"
 ```
+
+## Shell Completions
+
+Snouty supports tab completions for bash, zsh, fish, powershell, and elvish.
+
+### Bash
+
+```sh
+# Add to ~/.bashrc
+eval "$(snouty completions bash)"
+```
+
+### Zsh
+
+```sh
+# Add to ~/.zshrc
+eval "$(snouty completions zsh)"
+```
+
+### Fish
+
+```sh
+snouty completions fish > ~/.config/fish/completions/snouty.fish
+```
+
+### PowerShell
+
+```powershell
+# Add to your PowerShell profile
+snouty completions powershell | Out-String | Invoke-Expression
+```
+
+### Elvish
+
+```sh
+snouty completions elvish > ~/.config/elvish/lib/snouty.elv
+```

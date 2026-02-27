@@ -216,7 +216,7 @@ fn cmd_update() -> Result<()> {
     eprintln!(
         "You are running snouty {}.\n\n\
          To check for updates, visit:\n\
-         https://github.com/orbitinghail/snouty/releases",
+         https://github.com/antithesishq/snouty/releases",
         env!("CARGO_PKG_VERSION")
     );
     Ok(())

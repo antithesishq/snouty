@@ -1,22 +1,22 @@
 # snouty
 
-A unofficial CLI for the [Antithesis](https://antithesis.com) API. See the [webhook documentation](https://antithesis.com/docs/webhook/) for details on available endpoints and parameters.
+A CLI for the [Antithesis](https://antithesis.com) API. See the [webhook documentation](https://antithesis.com/docs/webhook/) for details on available endpoints and parameters.
 
 > [!NOTE]
-> This CLI is unofficial and unsupported by Antithesis. It's released open-source for the benefit of Antithesis users. If you encounter problems with the CLI please file issues here. If you encounter issues with the Antithesis API then please reach out to support.
+> Snouty is new and experimental. Stuff is going to change in the early days. Even so, we hope you'll try it out!
 
 ## Install snouty
 
 ### Install prebuilt binaries via shell script
 
 ```sh
-curl --proto '=https' --tlsv1.2 -LsSf https://github.com/orbitinghail/snouty/releases/latest/download/snouty-installer.sh | sh
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/antithesishq/snouty/releases/latest/download/snouty-installer.sh | sh
 ```
 
 ### Install prebuilt binaries via powershell script
 
 ```sh
-powershell -ExecutionPolicy Bypass -c "irm https://github.com/orbitinghail/snouty/releases/latest/download/snouty-installer.ps1 | iex"
+powershell -ExecutionPolicy Bypass -c "irm https://github.com/antithesishq/snouty/releases/latest/download/snouty-installer.ps1 | iex"
 ```
 
 ### Install prebuilt binaries via cargo binstall
@@ -35,10 +35,10 @@ cargo install snouty
 
 | File                                                                                                                                               | Platform            | Checksum                                                                                                                   |
 | -------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------- | -------------------------------------------------------------------------------------------------------------------------- |
-| [snouty-aarch64-apple-darwin.tar.xz](https://github.com/orbitinghail/snouty/releases/latest/download/snouty-aarch64-apple-darwin.tar.xz)           | Apple Silicon macOS | [checksum](https://github.com/orbitinghail/snouty/releases/latest/download/snouty-aarch64-apple-darwin.tar.xz.sha256)      |
-| [snouty-x86_64-pc-windows-msvc.zip](https://github.com/orbitinghail/snouty/releases/latest/download/snouty-x86_64-pc-windows-msvc.zip)             | x64 Windows         | [checksum](https://github.com/orbitinghail/snouty/releases/latest/download/snouty-x86_64-pc-windows-msvc.zip.sha256)       |
-| [snouty-aarch64-unknown-linux-gnu.tar.xz](https://github.com/orbitinghail/snouty/releases/latest/download/snouty-aarch64-unknown-linux-gnu.tar.xz) | ARM64 Linux         | [checksum](https://github.com/orbitinghail/snouty/releases/latest/download/snouty-aarch64-unknown-linux-gnu.tar.xz.sha256) |
-| [snouty-x86_64-unknown-linux-gnu.tar.xz](https://github.com/orbitinghail/snouty/releases/latest/download/snouty-x86_64-unknown-linux-gnu.tar.xz)   | x64 Linux           | [checksum](https://github.com/orbitinghail/snouty/releases/latest/download/snouty-x86_64-unknown-linux-gnu.tar.xz.sha256)  |
+| [snouty-aarch64-apple-darwin.tar.xz](https://github.com/antithesishq/snouty/releases/latest/download/snouty-aarch64-apple-darwin.tar.xz)           | Apple Silicon macOS | [checksum](https://github.com/antithesishq/snouty/releases/latest/download/snouty-aarch64-apple-darwin.tar.xz.sha256)      |
+| [snouty-x86_64-pc-windows-msvc.zip](https://github.com/antithesishq/snouty/releases/latest/download/snouty-x86_64-pc-windows-msvc.zip)             | x64 Windows         | [checksum](https://github.com/antithesishq/snouty/releases/latest/download/snouty-x86_64-pc-windows-msvc.zip.sha256)       |
+| [snouty-aarch64-unknown-linux-gnu.tar.xz](https://github.com/antithesishq/snouty/releases/latest/download/snouty-aarch64-unknown-linux-gnu.tar.xz) | ARM64 Linux         | [checksum](https://github.com/antithesishq/snouty/releases/latest/download/snouty-aarch64-unknown-linux-gnu.tar.xz.sha256) |
+| [snouty-x86_64-unknown-linux-gnu.tar.xz](https://github.com/antithesishq/snouty/releases/latest/download/snouty-x86_64-unknown-linux-gnu.tar.xz)   | x64 Linux           | [checksum](https://github.com/antithesishq/snouty/releases/latest/download/snouty-x86_64-unknown-linux-gnu.tar.xz.sha256)  |
 
 ## Configuration
 
@@ -127,3 +127,7 @@ snouty completions powershell | Out-String | Invoke-Expression
 ```sh
 snouty completions elvish > ~/.config/elvish/lib/snouty.elv
 ```
+
+# Credits
+
+This project was originally developed by [orbitinghail](https://orbitinghail.dev) for use by [Graft](https://github.com/orbitinghail/graft). It was donated to Antithesis for the benefit of everyone on Feb 27, 2026.

@@ -3,12 +3,12 @@ use std::env;
 use log::debug;
 use reqwest::{Client, RequestBuilder};
 
-use anyhow::{Result, anyhow};
+use color_eyre::eyre::{Result, eyre};
 
 fn required_env(name: &'static str) -> Result<String> {
     env::var(name).map_err(|e| match e {
-        env::VarError::NotPresent => anyhow!("missing environment variable: {name}"),
-        _ => anyhow!(e).context(format!("invalid environment variable {name}")),
+        env::VarError::NotPresent => eyre!("missing environment variable: {name}"),
+        _ => eyre!(e).wrap_err(format!("invalid environment variable {name}")),
     })
 }
 

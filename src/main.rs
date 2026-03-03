@@ -13,13 +13,13 @@ use log::{debug, info};
 use crate::api::AntithesisApi;
 use crate::cli::{Cli, Commands};
 use crate::params::Params;
-use anyhow::{Result, anyhow, bail};
+use color_eyre::eyre::{Context, Result, bail};
 
 fn read_stdin() -> Result<String> {
     let mut buf = String::new();
     io::stdin()
         .read_to_string(&mut buf)
-        .map_err(|e| anyhow!(e).context("invalid arguments: failed to read stdin"))?;
+        .wrap_err("invalid arguments: failed to read stdin")?;
     let buf = buf.trim().to_string();
     Ok(buf)
 }
@@ -33,8 +33,8 @@ fn get_params(args: Vec<String>, use_stdin: bool, support_moment: bool) -> Resul
             Some(moment::parse(&input)?)
         } else {
             debug!("parsing input as JSON");
-            let value: serde_json::Value = json5::from_str(&input)
-                .map_err(|e| anyhow!(e).context("invalid arguments: invalid JSON"))?;
+            let value: serde_json::Value =
+                json5::from_str(&input).wrap_err("invalid arguments: invalid JSON")?;
             Some(Params::from_json(&value)?)
         }
     } else {
@@ -61,7 +61,8 @@ fn get_params(args: Vec<String>, use_stdin: bool, support_moment: bool) -> Resul
 }
 
 #[tokio::main(flavor = "current_thread")]
-async fn main() {
+async fn main() -> Result<()> {
+    color_eyre::install().unwrap();
     env_logger::init();
     let cli = Cli::parse();
 
@@ -86,10 +87,7 @@ async fn main() {
         Commands::Update => cmd_update(),
     };
 
-    if let Err(e) = result {
-        eprintln!("error: {}", e);
-        std::process::exit(1);
-    }
+    result
 }
 
 async fn cmd_run(webhook: String, args: Vec<String>, use_stdin: bool) -> Result<()> {

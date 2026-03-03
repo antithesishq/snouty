@@ -2,7 +2,7 @@ use jsonschema::Validator;
 use log::debug;
 use serde_json::{Map, Value};
 
-use anyhow::{Result, anyhow, bail};
+use color_eyre::eyre::{OptionExt, Result, bail, eyre};
 
 const SCHEMA: &str = include_str!("params_schema.json");
 
@@ -31,7 +31,7 @@ impl Params {
     pub fn from_json(value: &Value) -> Result<Self> {
         let inner = value
             .as_object()
-            .ok_or_else(|| anyhow!("invalid arguments: expected JSON object"))?
+            .ok_or_eyre("invalid arguments: expected JSON object")?
             .clone();
         debug!("parsed {} params from JSON", inner.len());
         Ok(Self { inner })
@@ -104,7 +104,7 @@ where
 
             let value = iter
                 .next()
-                .ok_or_else(|| anyhow!("invalid arguments: missing value for --{}", key))?;
+                .ok_or_else(|| eyre!("invalid arguments: missing value for --{}", key))?;
 
             map.insert(key.to_string(), Value::String(value.as_ref().to_string()));
         } else {

@@ -1,4 +1,4 @@
-use clap::{Args, Parser, Subcommand};
+use clap::{Args, Parser, Subcommand, ValueEnum};
 
 #[derive(Parser)]
 #[command(name = "snouty")]
@@ -73,6 +73,63 @@ Using Moment.from (copy from triage report):
 
     /// Check for and install updates
     Update,
+    /// Search Antithesis documentation
+    Docs {
+        /// Don't check for documentation updates
+        #[arg(long)]
+        offline: bool,
+
+        #[command(subcommand)]
+        command: DocsCommands,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum DocsCommands {
+    /// Search the documentation
+    #[command(long_about = r#"Search the documentation
+
+Uses full-text search across the Antithesis documentation database.
+The database is automatically updated before each search unless --offline is passed to the docs command.
+
+Examples:
+  snouty docs search fault injection
+  snouty docs search "config image"
+  snouty docs --offline search sdk setup"#)]
+    Search {
+        /// Output format
+        #[arg(long, default_value = "plain")]
+        format: OutputFormat,
+
+        /// Maximum number of results to return
+        #[arg(long, default_value = "10")]
+        limit: usize,
+
+        /// Search query
+        query: Vec<String>,
+    },
+    /// Print the path to the cached SQLite database
+    #[command(long_about = r#"Print the path to the cached SQLite database
+
+Useful for directly querying the documentation database with external tools."#)]
+    Sqlite,
+    /// Show full contents of a documentation page
+    #[command(long_about = r#"Show full contents of a documentation page
+
+Displays the full markdown content of a page by its path.
+If the exact path is not found, suggests similar pages."#)]
+    Show {
+        /// Page path (e.g. "getting_started/overview")
+        path: String,
+    },
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+pub enum OutputFormat {
+    /// Plain text output (colorized automatically when outputting to a TTY; suppress with NO_COLOR)
+    Plain,
+    /// JSON output
+    Json,
 }
 
 #[derive(Args)]

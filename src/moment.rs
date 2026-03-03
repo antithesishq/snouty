@@ -3,7 +3,7 @@
 use log::debug;
 use serde_json::{Map, Value};
 
-use crate::error::{Error, Result};
+use anyhow::{anyhow, bail, Result};
 use crate::params::Params;
 
 /// Parse a Moment.from format string into Params.
@@ -16,20 +16,18 @@ pub fn parse(input: &str) -> Result<Params> {
     let input = input.trim();
 
     if !input.starts_with("Moment.from(") || !input.ends_with(")") {
-        return Err(Error::InvalidArgs(
-            "expected Moment.from({ ... }) format".to_string(),
-        ));
+        bail!("invalid arguments: expected Moment.from({{ ... }}) format");
     }
 
     let inner = &input[12..input.len() - 1];
     debug!("parsing Moment.from inner: {}", inner);
 
     let value: Value = json5::from_str(inner)
-        .map_err(|e| Error::InvalidArgs(format!("invalid Moment.from format: {}", e)))?;
+        .map_err(|e| anyhow!(e).context("invalid arguments: invalid Moment.from format"))?;
 
     let obj = value
         .as_object()
-        .ok_or_else(|| Error::InvalidArgs("Moment.from must contain an object".to_string()))?;
+        .ok_or_else(|| anyhow!("invalid arguments: Moment.from must contain an object"))?;
 
     // Convert keys to antithesis.debugging.* format
     let mut map = Map::new();

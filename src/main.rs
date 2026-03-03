@@ -12,8 +12,8 @@ use log::{debug, info};
 
 use crate::api::AntithesisApi;
 use crate::cli::{Cli, Commands};
-use anyhow::{anyhow, bail, Result};
 use crate::params::Params;
+use anyhow::{Result, anyhow, bail};
 
 fn read_stdin() -> Result<String> {
     let mut buf = String::new();
@@ -178,7 +178,9 @@ fn cmd_completions(shell: String) -> Result<()> {
         "powershell" => include_str!(concat!(env!("OUT_DIR"), "/_snouty.ps1")),
         "elvish" => include_str!(concat!(env!("OUT_DIR"), "/snouty.elv")),
         _ => {
-            bail!("invalid arguments: unsupported shell: {shell}\nsupported: bash, zsh, fish, powershell, elvish");
+            bail!(
+                "invalid arguments: unsupported shell: {shell}\nsupported: bash, zsh, fish, powershell, elvish"
+            );
         }
     };
     print!("{output}");

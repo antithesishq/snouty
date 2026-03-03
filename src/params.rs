@@ -2,7 +2,7 @@ use jsonschema::Validator;
 use log::debug;
 use serde_json::{Map, Value};
 
-use anyhow::{anyhow, bail, Result};
+use anyhow::{Result, anyhow, bail};
 
 const SCHEMA: &str = include_str!("params_schema.json");
 

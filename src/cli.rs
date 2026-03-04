@@ -14,17 +14,30 @@ pub enum Commands {
     #[command(long_about = r#"Launch a test run
 
 Example:
-  snouty run -w basic_test \
+  snouty run --webhook basic_test --config ./config \
     --antithesis.test_name "my-test" \
     --antithesis.description "nightly test run" \
-    --antithesis.config_image config:latest \
-    --antithesis.images app:latest \
     --antithesis.duration 30 \
-    --antithesis.report.recipients "team@example.com""#)]
+    --antithesis.report.recipients "team@example.com"
+
+The -c/--config flag points at a local directory containing docker-compose.yaml.
+Snouty builds a config image from that directory and pushes it to the registry
+specified by the ANTITHESIS_REPOSITORY environment variable.
+
+Alternatively, pass a pre-built config image directly:
+  snouty run --webhook basic_test \
+    --antithesis.config_image us-central1-docker.pkg.dev/proj/repo/config:latest \
+    --antithesis.duration 30"#)]
     Run {
         /// Webhook endpoint name (e.g., basic_test, basic_k8s_test)
         #[arg(short, long)]
         webhook: String,
+
+        /// Path to a local config directory containing docker-compose.yaml.
+        /// Builds and pushes a config image automatically, setting antithesis.config_image.
+        /// Requires ANTITHESIS_REPOSITORY environment variable.
+        #[arg(short, long)]
+        config: Option<std::path::PathBuf>,
 
         /// Read parameters from stdin (JSON or Moment.from format)
         #[arg(long)]

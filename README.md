@@ -48,6 +48,7 @@ Set the following environment variables:
 export ANTITHESIS_USERNAME="your-username"
 export ANTITHESIS_PASSWORD="your-password"
 export ANTITHESIS_TENANT="your-tenant"
+export ANTITHESIS_REPOSITORY="us-central1-docker.pkg.dev/your-project/your-repo"
 ```
 
 ## Usage
@@ -56,12 +57,12 @@ The `-w`/`--webhook` flag specifies which webhook to call. Common values are `ba
 
 ### Launch a test run
 
+The `-c`/`--config` flag points at a local directory containing your `docker-compose.yml`. Snouty builds a config image from that directory and pushes it to `ANTITHESIS_REPOSITORY` automatically.
+
 ```
-snouty run -w basic_test \
+snouty run --webhook basic_test --config ./config \
   --antithesis.test_name "my-test" \
   --antithesis.description "nightly test run" \
-  --antithesis.config_image config:latest \
-  --antithesis.images app:latest \
   --antithesis.duration 30 \
   --antithesis.report.recipients "team@example.com"
 ```
@@ -69,7 +70,7 @@ snouty run -w basic_test \
 Parameters can also be passed via stdin as JSON:
 
 ```sh
-echo '{"antithesis.description": "test", ...}' | snouty run -w basic_test --stdin
+echo '{"antithesis.description": "test", ...}' | snouty run --webhook basic_test --stdin
 ```
 
 ### Launch a debugging session

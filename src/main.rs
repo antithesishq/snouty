@@ -2,8 +2,10 @@ pub mod api;
 pub mod cli;
 pub mod moment;
 pub mod params;
+pub mod podman;
 
 use std::io::{self, ErrorKind, Read};
+use std::path::PathBuf;
 use std::process::Command;
 
 use chrono::{Duration, Local};
@@ -69,11 +71,12 @@ async fn main() -> Result<()> {
     let result = match cli.command {
         Commands::Run {
             webhook,
+            config,
             stdin,
             args,
         } => {
             info!("running test with webhook: {}", webhook);
-            cmd_run(webhook, args, stdin).await
+            cmd_run(webhook, args, stdin, config).await
         }
         Commands::Debug { stdin, args } => {
             info!("starting debug session");
@@ -90,8 +93,31 @@ async fn main() -> Result<()> {
     result
 }
 
-async fn cmd_run(webhook: String, args: Vec<String>, use_stdin: bool) -> Result<()> {
-    let params = get_params(args, use_stdin, false)?;
+async fn cmd_run(
+    webhook: String,
+    args: Vec<String>,
+    use_stdin: bool,
+    config: Option<PathBuf>,
+) -> Result<()> {
+    let mut params = get_params(args, use_stdin, false)?;
+
+    if let Some(config_dir) = config {
+        if params.contains_key("antithesis.config_image") {
+            bail!(
+                "invalid arguments: cannot use --config/-c together with --antithesis.config_image"
+            );
+        }
+
+        let registry = std::env::var("ANTITHESIS_REPOSITORY")
+            .wrap_err("missing environment variable: ANTITHESIS_REPOSITORY")?;
+
+        let image_ref = podman::build_and_push_config_image(&config_dir, &registry)?;
+        params.insert(
+            "antithesis.config_image".to_string(),
+            serde_json::Value::String(image_ref),
+        );
+    }
+
     params.validate_test_params()?;
 
     // Print params to stderr for user visibility (with sensitive values redacted)

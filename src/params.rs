@@ -47,6 +47,16 @@ impl Params {
         validate_against_def(&self.inner, "debuggingParams")
     }
 
+    /// Insert a key-value pair into the params.
+    pub fn insert(&mut self, key: String, value: Value) {
+        self.inner.insert(key, value);
+    }
+
+    /// Check if a key exists in the params.
+    pub fn contains_key(&self, key: &str) -> bool {
+        self.inner.contains_key(key)
+    }
+
     /// Get a reference to the inner map.
     pub fn as_map(&self) -> &Map<String, Value> {
         &self.inner

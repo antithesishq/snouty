@@ -5,7 +5,6 @@ pub mod params;
 pub mod podman;
 
 use std::io::{self, ErrorKind, Read};
-use std::path::PathBuf;
 use std::process::Command;
 
 use chrono::{Duration, Local};
@@ -13,7 +12,7 @@ use clap::Parser;
 use log::{debug, info};
 
 use crate::api::AntithesisApi;
-use crate::cli::{Cli, Commands};
+use crate::cli::{ApiCommands, Cli, Commands, RunArgs};
 use crate::params::Params;
 use color_eyre::eyre::{Context, Result, bail};
 
@@ -68,15 +67,18 @@ async fn main() -> Result<()> {
     env_logger::init();
     let cli = Cli::parse();
 
-    let result = match cli.command {
-        Commands::Run {
+    match cli.command {
+        Commands::Run(args) => {
+            info!("running test with webhook: {}", args.webhook);
+            cmd_run(args).await
+        }
+        Commands::Api(ApiCommands::Webhook {
             webhook,
-            config,
             stdin,
             args,
-        } => {
-            info!("running test with webhook: {}", webhook);
-            cmd_run(webhook, args, stdin, config).await
+        }) => {
+            info!("running api webhook with webhook: {}", webhook);
+            cmd_api_webhook(webhook, args, stdin).await
         }
         Commands::Debug { stdin, args } => {
             info!("starting debug session");
@@ -88,38 +90,97 @@ async fn main() -> Result<()> {
             Ok(())
         }
         Commands::Update => cmd_update(),
-    };
-
-    result
+    }
 }
 
-async fn cmd_run(
-    webhook: String,
-    args: Vec<String>,
-    use_stdin: bool,
-    config: Option<PathBuf>,
-) -> Result<()> {
-    let mut params = get_params(args, use_stdin, false)?;
+async fn cmd_run(args: RunArgs) -> Result<()> {
+    let mut params = Params::new();
 
-    if let Some(config_dir) = config {
-        if params.contains_key("antithesis.config_image") {
-            bail!(
-                "invalid arguments: cannot use --config/-c together with --antithesis.config_image"
-            );
-        }
+    // Insert typed flags into params (skip None/false)
+    if let Some(test_name) = args.test_name {
+        params.insert("antithesis.test_name", test_name);
+    }
+    if let Some(description) = args.description {
+        params.insert("antithesis.description", description);
+    }
+    if let Some(duration) = args.duration {
+        params.insert("antithesis.duration", duration.to_string());
+    }
+    if args.ephemeral {
+        params.insert("antithesis.is_ephemeral", "true");
+    }
+    if let Some(source) = args.source {
+        params.insert("antithesis.source", source);
+    }
+    if let Some(recipients) = args.recipients {
+        params.insert("antithesis.report.recipients", recipients);
+    }
 
+    // Process config_image and config flags
+    assert!(
+        !(args.config_image.is_some() && args.config.is_some()),
+        "config and config_image are mutually exclusive"
+    );
+
+    // TODO: enable config directory support for k8s manifests
+    if args.webhook == "basic_k8s_test" && args.config.is_some() {
+        bail!(
+            "The 'basic_k8s_test' webhook does not support the --config flag. Please use --config-image with a pre-built config image instead."
+        );
+    }
+
+    if let Some(config_image) = args.config_image {
+        params.insert("antithesis.config_image", config_image);
+    }
+
+    let config_image_ref = if let Some(config_dir) = args.config {
         let registry = std::env::var("ANTITHESIS_REPOSITORY")
             .wrap_err("missing environment variable: ANTITHESIS_REPOSITORY")?;
+        let image_ref = podman::generate_image_ref(&registry);
+        params.insert("antithesis.config_image", &image_ref);
+        Some((config_dir, image_ref))
+    } else {
+        None
+    };
 
-        let image_ref = podman::build_and_push_config_image(&config_dir, &registry)?;
-        params.insert(
-            "antithesis.config_image".to_string(),
-            serde_json::Value::String(image_ref),
-        );
+    // Parse --param key=value pairs
+    if !args.params.is_empty() {
+        let extra = Params::from_key_value_pairs(&args.params)?;
+
+        // Check for conflicts with typed flags already set in params
+        for key in extra.as_map().keys() {
+            if params.contains_key(key) {
+                bail!(
+                    "invalid arguments: '{}' cannot be set via --param (use the dedicated flag instead)",
+                    key
+                );
+            }
+        }
+
+        params.merge(extra);
+    }
+
+    if params.is_empty() {
+        bail!("invalid arguments: no parameters provided");
     }
 
     params.validate_test_params()?;
 
+    // Build and push config image (after validation passes)
+    if let Some((config_dir, image_ref)) = config_image_ref {
+        podman::build_and_push_config_image(&config_dir, &image_ref)?;
+    }
+
+    launch_webhook(&args.webhook, params).await
+}
+
+async fn cmd_api_webhook(webhook: String, args: Vec<String>, use_stdin: bool) -> Result<()> {
+    let params = get_params(args, use_stdin, false)?;
+    params.validate_test_params()?;
+    launch_webhook(&webhook, params).await
+}
+
+async fn launch_webhook(webhook: &str, params: Params) -> Result<()> {
     // Print params to stderr for user visibility (with sensitive values redacted)
     eprintln!(
         "\nRequesting Antithesis test run with params:\n{}",

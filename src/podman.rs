@@ -3,28 +3,28 @@ use std::path::Path;
 use std::process::Command;
 
 use chrono::Utc;
-use color_eyre::eyre::{Context, Result, bail};
+use color_eyre::{
+    Section, SectionExt,
+    eyre::{Context, Result, bail, eyre},
+};
 
-/// Build and push a config image from a local directory.
+/// Build and push a config image from a local directory using a pre-generated image reference.
 ///
 /// The directory must contain a `docker-compose.yaml` file.
-/// Returns the full image reference that was pushed.
-pub fn build_and_push_config_image(config_dir: &Path, registry: &str) -> Result<String> {
+pub fn build_and_push_config_image(config_dir: &Path, image_ref: &str) -> Result<()> {
     validate_config_dir(config_dir)?;
 
     let runtime = find_container_runtime()?;
     validate_compose_file(&runtime, config_dir)?;
 
-    let image_ref = generate_image_ref(registry);
-
     eprintln!("Building config image: {}", image_ref);
-    container_build(&runtime, config_dir, &image_ref)?;
+    container_build(&runtime, config_dir, image_ref)?;
 
     eprintln!("Pushing config image: {}", image_ref);
-    container_push(&runtime, &image_ref)?;
+    container_push(&runtime, image_ref)?;
 
     eprintln!("Config image pushed successfully");
-    Ok(image_ref)
+    Ok(())
 }
 
 /// Check that the directory exists and contains a docker-compose file.
@@ -63,14 +63,17 @@ fn validate_compose_file(runtime: &str, config_dir: &Path) -> Result<()> {
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!("docker-compose file validation failed:\n{}", stderr.trim());
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        return Err(eyre!("docker-compose file validation failed"))
+            .with_section(move || stdout.trim().to_string().header("Stdout:"))
+            .with_section(move || stderr.trim().to_string().header("Stderr:"));
     }
 
     Ok(())
 }
 
 /// Generate a unique image reference with a timestamp + random suffix tag.
-fn generate_image_ref(registry: &str) -> String {
+pub fn generate_image_ref(registry: &str) -> String {
     let ts = Utc::now().format("%Y%m%d-%H%M%S");
     let mut buf = [0u8; 2];
     getrandom::fill(&mut buf).expect("failed to get random bytes");
@@ -96,10 +99,10 @@ fn find_container_runtime() -> Result<String> {
     // Fall back to docker
     match Command::new("docker").arg("--version").output() {
         Ok(output) if output.status.success() => {
-            eprintln!("podman not found, falling back to docker");
+            log::error!("podman not found, falling back to docker");
             Ok("docker".to_string())
         }
-        Ok(_) => bail!("neither podman nor docker is available"),
+        Ok(_) => bail!("'docker --version' failed; unable to find working container runtime"),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             bail!("neither podman nor docker is installed")
         }
@@ -130,7 +133,10 @@ fn container_build(runtime: &str, config_dir: &Path, image_ref: &str) -> Result<
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!("'{runtime} build' failed:\n{}", stderr.trim());
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        return Err(eyre!("'{runtime} build' failed"))
+            .with_section(move || stdout.trim().to_string().header("Stdout:"))
+            .with_section(move || stderr.trim().to_string().header("Stderr:"));
     }
 
     Ok(())
@@ -145,7 +151,10 @@ fn container_push(runtime: &str, image_ref: &str) -> Result<()> {
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!("'{runtime} push' failed:\n{}", stderr.trim());
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        return Err(eyre!("'{runtime} push' failed"))
+            .with_section(move || stdout.trim().to_string().header("Stdout:"))
+            .with_section(move || stderr.trim().to_string().header("Stderr:"));
     }
 
     Ok(())

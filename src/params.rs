@@ -2,7 +2,7 @@ use jsonschema::Validator;
 use log::debug;
 use serde_json::{Map, Value};
 
-use crate::error::{Error, Result};
+use color_eyre::eyre::{OptionExt, Result, bail, eyre};
 
 const SCHEMA: &str = include_str!("params_schema.json");
 
@@ -31,7 +31,7 @@ impl Params {
     pub fn from_json(value: &Value) -> Result<Self> {
         let inner = value
             .as_object()
-            .ok_or_else(|| Error::InvalidArgs("expected JSON object".to_string()))?
+            .ok_or_eyre("invalid arguments: expected JSON object")?
             .clone();
         debug!("parsed {} params from JSON", inner.len());
         Ok(Self { inner })
@@ -99,16 +99,16 @@ where
 
         if let Some(key) = arg.strip_prefix("--") {
             if key.is_empty() {
-                return Err(Error::InvalidArgs("empty key after --".to_string()));
+                bail!("invalid arguments: empty key after --");
             }
 
             let value = iter
                 .next()
-                .ok_or_else(|| Error::InvalidArgs(format!("missing value for --{}", key)))?;
+                .ok_or_else(|| eyre!("invalid arguments: missing value for --{}", key))?;
 
             map.insert(key.to_string(), Value::String(value.as_ref().to_string()));
         } else {
-            return Err(Error::InvalidArgs(format!("unexpected argument: {}", arg)));
+            bail!("invalid arguments: unexpected argument: {}", arg);
         }
     }
 
@@ -137,7 +137,7 @@ fn validate_against_def(params: &Map<String, Value>, def_name: &str) -> Result<(
         for err in &errors {
             debug!("  - {}", err);
         }
-        return Err(Error::ValidationFailed(errors));
+        bail!("validation failed:\n  {}", errors.join("\n  "));
     }
 
     debug!("validation passed");

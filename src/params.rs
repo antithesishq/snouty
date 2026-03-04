@@ -7,12 +7,17 @@ use color_eyre::eyre::{OptionExt, Result, bail, eyre};
 const SCHEMA: &str = include_str!("params_schema.json");
 
 /// Params parsed from CLI arguments and validated against the JSON schema.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct Params {
     inner: Map<String, Value>,
 }
 
 impl Params {
+    /// Create empty params for incremental building.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
     /// Parse params from CLI arguments.
     ///
     /// Arguments should be in the format: `--key value`
@@ -22,6 +27,29 @@ impl Params {
         S: AsRef<str>,
     {
         let inner = parse_args(args)?;
+        Ok(Self { inner })
+    }
+
+    /// Parse params from `key=value` pairs.
+    ///
+    /// Values may contain `=` (only the first `=` is used as the delimiter).
+    /// Errors on missing `=` or empty key.
+    pub fn from_key_value_pairs<I, S>(pairs: I) -> Result<Self>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        let mut inner = Map::new();
+        for pair in pairs {
+            let pair = pair.as_ref();
+            let (key, value) = pair
+                .split_once('=')
+                .ok_or_else(|| eyre!("invalid parameter: expected key=value, got: {}", pair))?;
+            if key.is_empty() {
+                bail!("invalid parameter: empty key in: {}", pair);
+            }
+            inner.insert(key.to_string(), Value::String(value.to_string()));
+        }
         Ok(Self { inner })
     }
 
@@ -47,9 +75,14 @@ impl Params {
         validate_against_def(&self.inner, "debuggingParams")
     }
 
+    /// Check if the params are empty.
+    pub fn is_empty(&self) -> bool {
+        self.inner.is_empty()
+    }
+
     /// Insert a key-value pair into the params.
-    pub fn insert(&mut self, key: String, value: Value) {
-        self.inner.insert(key, value);
+    pub fn insert(&mut self, key: impl Into<String>, value: impl Into<String>) {
+        self.inner.insert(key.into(), Value::String(value.into()));
     }
 
     /// Check if a key exists in the params.
@@ -351,6 +384,49 @@ mod tests {
             base.as_map().get("antithesis.report.recipients").unwrap(),
             "team@example.com"
         );
+    }
+
+    #[test]
+    fn new_creates_empty_params() {
+        let params = Params::new();
+        assert!(params.is_empty());
+        assert_eq!(params.as_map().len(), 0);
+    }
+
+    #[test]
+    fn from_key_value_pairs_valid() {
+        let pairs = ["antithesis.duration=30", "my.key=hello"];
+        let params = Params::from_key_value_pairs(pairs).unwrap();
+        assert_eq!(params.as_map().get("antithesis.duration").unwrap(), "30");
+        assert_eq!(params.as_map().get("my.key").unwrap(), "hello");
+    }
+
+    #[test]
+    fn from_key_value_pairs_value_containing_equals() {
+        let pairs = ["key=value=with=equals"];
+        let params = Params::from_key_value_pairs(pairs).unwrap();
+        assert_eq!(params.as_map().get("key").unwrap(), "value=with=equals");
+    }
+
+    #[test]
+    fn from_key_value_pairs_missing_equals() {
+        let pairs = ["noequals"];
+        let result = Params::from_key_value_pairs(pairs);
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("expected key=value")
+        );
+    }
+
+    #[test]
+    fn from_key_value_pairs_empty_key() {
+        let pairs = ["=value"];
+        let result = Params::from_key_value_pairs(pairs);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("empty key"));
     }
 
     #[test]

@@ -57,12 +57,40 @@ The `-w`/`--webhook` flag specifies which webhook to call. Common values are `ba
 
 ### Launch a test run
 
-The `-c`/`--config` flag points at a local directory containing your `docker-compose.yml`. Snouty builds a config image from that directory and pushes it to `ANTITHESIS_REPOSITORY` automatically.
+The `-c`/`--config` flag points at a local directory containing your `docker-compose.yaml`. Snouty builds a config image from that directory and pushes it to `ANTITHESIS_REPOSITORY` automatically.
 
-```
+```sh
 snouty run --webhook basic_test --config ./config \
+  --test-name "my-test" \
+  --description "nightly test run" \
+  --duration 30 \
+  --recipients "team@example.com"
+```
+
+Alternatively, pass a pre-built config image directly:
+
+```sh
+snouty run --webhook basic_test \
+  --config-image us-central1-docker.pkg.dev/proj/repo/config:latest \
+  --duration 30
+```
+
+Extra parameters (e.g. integration tokens, custom properties) can be passed with `--param`:
+
+```sh
+snouty run -w basic_test --duration 30 \
+  --param antithesis.integrations.github.token=TOKEN \
+  --param my.custom.property=value
+```
+
+### Raw API access
+
+The `api webhook` subcommand provides raw access to the webhook API using `--key value` pairs. This is useful for CI pipelines or advanced use cases.
+
+```sh
+snouty api webhook -w basic_test \
+  --antithesis.config_image us-central1-docker.pkg.dev/proj/repo/config:latest \
   --antithesis.test_name "my-test" \
-  --antithesis.description "nightly test run" \
   --antithesis.duration 30 \
   --antithesis.report.recipients "team@example.com"
 ```
@@ -70,7 +98,7 @@ snouty run --webhook basic_test --config ./config \
 Parameters can also be passed via stdin as JSON:
 
 ```sh
-echo '{"antithesis.description": "test", ...}' | snouty run --webhook basic_test --stdin
+echo '{"antithesis.duration": "30"}' | snouty api webhook -w basic_test --stdin
 ```
 
 ### Launch a debugging session

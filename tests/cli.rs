@@ -73,16 +73,363 @@ fn help_shows_subcommands() {
         .stdout(predicate::str::contains("version"));
 }
 
-// === Tests for run command ===
+#[test]
+fn help_shows_api_subcommand() {
+    snouty()
+        .arg("--help")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("api"));
+}
 
 #[test]
-fn run_with_cli_args() {
+fn api_help_shows_webhook() {
+    snouty()
+        .args(["api", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("webhook"));
+}
+
+// === Tests for `run` command (typed flags) ===
+
+#[test]
+fn run_with_typed_flags() {
     let mock_url = start_mock_server(r#"{"status": "ok"}"#, 200);
 
-    // Test all fields recommended in the README
     snouty_with_mock(&mock_url)
         .args([
             "run",
+            "-w",
+            "basic_test",
+            "--test-name",
+            "my-test",
+            "--description",
+            "nightly test run",
+            "--config-image",
+            "config:latest",
+            "--duration",
+            "30",
+            "--recipients",
+            "team@example.com",
+            "--source",
+            "ci-pipeline",
+        ])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains(
+            r#""antithesis.test_name": "my-test""#,
+        ))
+        .stderr(predicate::str::contains(
+            r#""antithesis.description": "nightly test run""#,
+        ))
+        .stderr(predicate::str::contains(
+            r#""antithesis.config_image": "config:latest""#,
+        ))
+        .stderr(predicate::str::contains(r#""antithesis.duration": "30""#))
+        .stderr(predicate::str::contains(
+            r#""antithesis.report.recipients": "[REDACTED]""#,
+        ))
+        .stderr(predicate::str::contains(
+            r#""antithesis.source": "ci-pipeline""#,
+        ));
+}
+
+#[test]
+fn run_with_ephemeral_flag() {
+    let mock_url = start_mock_server(r#"{"status": "ok"}"#, 200);
+
+    snouty_with_mock(&mock_url)
+        .args(["run", "-w", "basic_test", "--duration", "30", "--ephemeral"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains(
+            r#""antithesis.is_ephemeral": "true""#,
+        ));
+}
+
+#[test]
+fn run_without_ephemeral_omits_key() {
+    let mock_url = start_mock_server(r#"{"status": "ok"}"#, 200);
+
+    snouty_with_mock(&mock_url)
+        .args(["run", "-w", "basic_test", "--duration", "30"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("is_ephemeral").not());
+}
+
+#[test]
+fn run_with_param_flag() {
+    let mock_url = start_mock_server(r#"{"ok": true}"#, 200);
+
+    snouty_with_mock(&mock_url)
+        .args([
+            "run",
+            "-w",
+            "basic_test",
+            "--duration",
+            "30",
+            "--param",
+            "my.custom.prop=value",
+            "--param",
+            "antithesis.integrations.github.callback_url=https://example.com/cb",
+        ])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains(r#""my.custom.prop": "value""#))
+        .stderr(predicate::str::contains(
+            r#""antithesis.integrations.github.callback_url": "https://example.com/cb""#,
+        ));
+}
+
+#[test]
+fn run_param_cannot_override_typed_flag() {
+    let mock_url = start_mock_server(r#"{"ok": true}"#, 200);
+
+    snouty_with_mock(&mock_url)
+        .args([
+            "run",
+            "-w",
+            "basic_test",
+            "--duration",
+            "30",
+            "--param",
+            "antithesis.duration=60",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("cannot be set via --param"));
+}
+
+#[test]
+fn run_duration_rejects_non_numeric() {
+    snouty()
+        .args(["run", "-w", "basic_test", "--duration", "abc"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("invalid value"));
+}
+
+#[test]
+fn run_no_stdin_flag() {
+    // --stdin should not be accepted on `run`
+    snouty()
+        .args(["run", "-w", "basic_test", "--stdin", "--duration", "30"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("unexpected argument"));
+}
+
+#[test]
+fn run_no_trailing_raw_args() {
+    // Old-style --antithesis.duration 30 should not be accepted on `run`
+    snouty()
+        .args(["run", "-w", "basic_test", "--antithesis.duration", "30"])
+        .assert()
+        .failure();
+}
+
+#[test]
+fn run_fails_without_webhook() {
+    snouty()
+        .args(["run", "--duration", "30"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("--webhook"));
+}
+
+#[test]
+fn run_fails_without_parameters() {
+    let mock_url = start_mock_server(r#"{}"#, 200);
+
+    snouty_with_mock(&mock_url)
+        .args(["run", "-w", "basic_test"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("no parameters provided"));
+}
+
+#[test]
+fn run_reports_api_errors() {
+    let mock_url = start_mock_server(r#"{"error": "bad request"}"#, 400);
+
+    snouty_with_mock(&mock_url)
+        .args(["run", "-w", "basic_test", "--duration", "30"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("API error: 400"));
+}
+
+#[test]
+fn run_fails_without_credentials() {
+    snouty()
+        .env_remove("ANTITHESIS_USERNAME")
+        .env_remove("ANTITHESIS_PASSWORD")
+        .env_remove("ANTITHESIS_TENANT")
+        .env_remove("ANTITHESIS_BASE_URL")
+        .args(["run", "-w", "basic_test", "--duration", "30"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("missing environment variable"));
+}
+
+// === Config directory tests (on `run` with typed flags) ===
+
+#[test]
+fn run_config_rejects_nonexistent_dir() {
+    snouty()
+        .env("ANTITHESIS_REPOSITORY", "registry.example.com/repo")
+        .args([
+            "run",
+            "-w",
+            "basic_test",
+            "-c",
+            "/nonexistent/path",
+            "--duration",
+            "30",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("not a directory"));
+}
+
+#[test]
+fn run_config_rejects_dir_without_compose() {
+    let dir = TempDir::new().unwrap();
+
+    snouty()
+        .env("ANTITHESIS_REPOSITORY", "registry.example.com/repo")
+        .args([
+            "run",
+            "-w",
+            "basic_test",
+            "-c",
+            dir.path().to_str().unwrap(),
+            "--duration",
+            "30",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("docker-compose"));
+}
+
+#[test]
+fn run_config_rejects_yml_extension() {
+    let dir = TempDir::new().unwrap();
+    std::fs::write(dir.path().join("docker-compose.yml"), "version: '3'\n").unwrap();
+
+    snouty()
+        .env("ANTITHESIS_REPOSITORY", "registry.example.com/repo")
+        .args([
+            "run",
+            "-w",
+            "basic_test",
+            "-c",
+            dir.path().to_str().unwrap(),
+            "--duration",
+            "30",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("requires docker-compose.yaml"));
+}
+
+#[test]
+fn run_config_conflicts_with_config_image_param() {
+    // clap conflicts_with should reject --config + --config-image
+    let dir = TempDir::new().unwrap();
+    std::fs::write(dir.path().join("docker-compose.yaml"), "version: '3'\n").unwrap();
+
+    snouty()
+        .env("ANTITHESIS_REPOSITORY", "registry.example.com/repo")
+        .args([
+            "run",
+            "-w",
+            "basic_test",
+            "-c",
+            dir.path().to_str().unwrap(),
+            "--config-image",
+            "some-image:latest",
+            "--duration",
+            "30",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("--config"));
+}
+
+#[test]
+fn run_config_requires_registry_env() {
+    let dir = TempDir::new().unwrap();
+    std::fs::write(dir.path().join("docker-compose.yaml"), "version: '3'\n").unwrap();
+
+    snouty()
+        .env_remove("ANTITHESIS_REPOSITORY")
+        .args([
+            "run",
+            "-w",
+            "basic_test",
+            "-c",
+            dir.path().to_str().unwrap(),
+            "--duration",
+            "30",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("ANTITHESIS_REPOSITORY"));
+}
+
+#[test]
+fn run_config_long_flag_accepted() {
+    snouty()
+        .env("ANTITHESIS_REPOSITORY", "registry.example.com/repo")
+        .args([
+            "run",
+            "-w",
+            "basic_test",
+            "--config",
+            "/nonexistent/path",
+            "--duration",
+            "30",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("not a directory"));
+}
+
+#[test]
+fn run_config_conflicts_with_param_config_image() {
+    // --config/-c + --param antithesis.config_image=X should error
+    let dir = TempDir::new().unwrap();
+    std::fs::write(dir.path().join("docker-compose.yaml"), "version: '3'\n").unwrap();
+
+    snouty()
+        .env("ANTITHESIS_REPOSITORY", "registry.example.com/repo")
+        .args([
+            "run",
+            "-w",
+            "basic_test",
+            "-c",
+            dir.path().to_str().unwrap(),
+            "--param",
+            "antithesis.config_image=some-image:latest",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("cannot be set via --param"));
+}
+
+// === Tests for `api webhook` command (raw args) ===
+
+#[test]
+fn api_webhook_with_cli_args() {
+    let mock_url = start_mock_server(r#"{"status": "ok"}"#, 200);
+
+    snouty_with_mock(&mock_url)
+        .args([
+            "api",
+            "webhook",
             "-w",
             "basic_test",
             "--antithesis.test_name",
@@ -115,16 +462,15 @@ fn run_with_cli_args() {
         .stderr(predicate::str::contains(r#""antithesis.duration": "30""#))
         .stderr(predicate::str::contains(
             r#""antithesis.report.recipients": "[REDACTED]""#,
-        ))
-        .stderr(predicate::str::contains(r#""status": "ok""#));
+        ));
 }
 
 #[test]
-fn run_with_stdin_json() {
+fn api_webhook_with_stdin_json() {
     let mock_url = start_mock_server(r#"{"launched": true}"#, 200);
 
     snouty_with_mock(&mock_url)
-        .args(["run", "-w", "basic_test", "--stdin"])
+        .args(["api", "webhook", "-w", "basic_test", "--stdin"])
         .write_stdin(r#"{"antithesis.duration": "60", "antithesis.is_ephemeral": "true"}"#)
         .assert()
         .success()
@@ -135,12 +481,13 @@ fn run_with_stdin_json() {
 }
 
 #[test]
-fn run_with_custom_properties() {
+fn api_webhook_with_custom_properties() {
     let mock_url = start_mock_server(r#"{"ok": true}"#, 200);
 
     snouty_with_mock(&mock_url)
         .args([
-            "run",
+            "api",
+            "webhook",
             "-w",
             "basic_test",
             "--antithesis.duration",
@@ -154,12 +501,18 @@ fn run_with_custom_properties() {
 }
 
 #[test]
-fn run_stdin_flag_required_for_stdin_input() {
+fn api_webhook_stdin_flag_required_for_stdin_input() {
     let mock_url = start_mock_server(r#"{"ok": true}"#, 200);
 
-    // Without --stdin flag, stdin is not read even if provided
     snouty_with_mock(&mock_url)
-        .args(["run", "-w", "basic_test", "--antithesis.duration", "30"])
+        .args([
+            "api",
+            "webhook",
+            "-w",
+            "basic_test",
+            "--antithesis.duration",
+            "30",
+        ])
         .write_stdin(r#"{"antithesis.duration": "SHOULD_BE_IGNORED"}"#)
         .assert()
         .success()
@@ -168,12 +521,13 @@ fn run_stdin_flag_required_for_stdin_input() {
 }
 
 #[test]
-fn run_with_k8s_webhook() {
+fn api_webhook_with_k8s_webhook() {
     let mock_url = start_mock_server(r#"{"status": "ok"}"#, 200);
 
     snouty_with_mock(&mock_url)
         .args([
-            "run",
+            "api",
+            "webhook",
             "--webhook",
             "basic_k8s_test",
             "--antithesis.duration",
@@ -184,12 +538,13 @@ fn run_with_k8s_webhook() {
 }
 
 #[test]
-fn run_with_custom_webhook() {
+fn api_webhook_with_custom_webhook() {
     let mock_url = start_mock_server(r#"{"status": "ok"}"#, 200);
 
     snouty_with_mock(&mock_url)
         .args([
-            "run",
+            "api",
+            "webhook",
             "-w",
             "my_custom_webhook",
             "--antithesis.duration",
@@ -199,7 +554,174 @@ fn run_with_custom_webhook() {
         .success();
 }
 
-// === Tests for debug command ===
+#[test]
+fn api_webhook_fails_on_invalid_json_stdin() {
+    let mock_url = start_mock_server(r#"{}"#, 200);
+
+    snouty_with_mock(&mock_url)
+        .args(["api", "webhook", "-w", "basic_test", "--stdin"])
+        .write_stdin("not valid json")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("invalid JSON"));
+}
+
+#[test]
+fn api_webhook_fails_on_missing_value() {
+    let mock_url = start_mock_server(r#"{}"#, 200);
+
+    snouty_with_mock(&mock_url)
+        .args([
+            "api",
+            "webhook",
+            "-w",
+            "basic_test",
+            "--antithesis.duration",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("missing value"));
+}
+
+#[test]
+fn api_webhook_fails_on_unexpected_arg() {
+    let mock_url = start_mock_server(r#"{}"#, 200);
+
+    snouty_with_mock(&mock_url)
+        .args(["api", "webhook", "-w", "basic_test", "notaflag"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("unexpected argument"));
+}
+
+#[test]
+fn api_webhook_fails_without_webhook() {
+    let mock_url = start_mock_server(r#"{}"#, 200);
+
+    snouty_with_mock(&mock_url)
+        .args(["api", "webhook", "--antithesis.duration", "30"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("--webhook"));
+}
+
+#[test]
+fn api_webhook_reports_api_errors() {
+    let mock_url = start_mock_server(r#"{"error": "bad request"}"#, 400);
+
+    snouty_with_mock(&mock_url)
+        .args([
+            "api",
+            "webhook",
+            "-w",
+            "basic_test",
+            "--antithesis.duration",
+            "30",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("API error: 400"));
+}
+
+#[test]
+fn api_webhook_fails_without_credentials() {
+    snouty()
+        .env_remove("ANTITHESIS_USERNAME")
+        .env_remove("ANTITHESIS_PASSWORD")
+        .env_remove("ANTITHESIS_TENANT")
+        .env_remove("ANTITHESIS_BASE_URL")
+        .args([
+            "api",
+            "webhook",
+            "-w",
+            "basic_test",
+            "--antithesis.duration",
+            "30",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("missing environment variable"));
+}
+
+#[test]
+fn api_webhook_fails_without_parameters() {
+    let mock_url = start_mock_server(r#"{}"#, 200);
+
+    snouty_with_mock(&mock_url)
+        .args(["api", "webhook", "-w", "basic_test"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("no parameters provided"));
+}
+
+#[test]
+fn api_webhook_merges_stdin_json_with_cli_args() {
+    let mock_url = start_mock_server(r#"{"ok": true}"#, 200);
+
+    snouty_with_mock(&mock_url)
+        .args([
+            "api",
+            "webhook",
+            "-w",
+            "basic_test",
+            "--stdin",
+            "--antithesis.report.recipients",
+            "team@example.com",
+        ])
+        .write_stdin(r#"{"antithesis.duration": "60", "antithesis.description": "from stdin"}"#)
+        .assert()
+        .success()
+        .stderr(predicate::str::contains(r#""antithesis.duration": "60""#))
+        .stderr(predicate::str::contains(
+            r#""antithesis.description": "from stdin""#,
+        ))
+        .stderr(predicate::str::contains(
+            r#""antithesis.report.recipients": "[REDACTED]""#,
+        ));
+}
+
+#[test]
+fn api_webhook_cli_args_override_stdin_json() {
+    let mock_url = start_mock_server(r#"{"ok": true}"#, 200);
+
+    snouty_with_mock(&mock_url)
+        .args([
+            "api",
+            "webhook",
+            "-w",
+            "basic_test",
+            "--stdin",
+            "--antithesis.duration",
+            "120",
+        ])
+        .write_stdin(r#"{"antithesis.duration": "60", "antithesis.description": "from stdin"}"#)
+        .assert()
+        .success()
+        .stderr(predicate::str::contains(r#""antithesis.duration": "120""#))
+        .stderr(predicate::str::contains(
+            r#""antithesis.description": "from stdin""#,
+        ));
+}
+
+#[test]
+fn api_webhook_no_config_flag() {
+    // -c/--config should not be accepted on `api webhook`
+    snouty()
+        .args([
+            "api",
+            "webhook",
+            "-w",
+            "basic_test",
+            "-c",
+            "/some/path",
+            "--antithesis.duration",
+            "30",
+        ])
+        .assert()
+        .failure();
+}
+
+// === Tests for debug command (unchanged) ===
 
 #[test]
 fn debug_with_cli_args() {
@@ -296,109 +818,6 @@ fn debug_rejects_custom_properties() {
         .stderr(predicate::str::contains("validation failed"));
 }
 
-// === Input error tests ===
-
-#[test]
-fn run_fails_on_invalid_json_stdin() {
-    let mock_url = start_mock_server(r#"{}"#, 200);
-
-    snouty_with_mock(&mock_url)
-        .args(["run", "-w", "basic_test", "--stdin"])
-        .write_stdin("not valid json")
-        .assert()
-        .failure()
-        .stderr(predicate::str::contains("invalid JSON"));
-}
-
-#[test]
-fn run_fails_on_missing_value() {
-    let mock_url = start_mock_server(r#"{}"#, 200);
-
-    snouty_with_mock(&mock_url)
-        .args(["run", "-w", "basic_test", "--antithesis.duration"])
-        .assert()
-        .failure()
-        .stderr(predicate::str::contains("missing value"));
-}
-
-#[test]
-fn run_fails_on_unexpected_arg() {
-    let mock_url = start_mock_server(r#"{}"#, 200);
-
-    snouty_with_mock(&mock_url)
-        .args(["run", "-w", "basic_test", "notaflag"])
-        .assert()
-        .failure()
-        .stderr(predicate::str::contains("unexpected argument"));
-}
-
-#[test]
-fn run_fails_without_webhook() {
-    let mock_url = start_mock_server(r#"{}"#, 200);
-
-    snouty_with_mock(&mock_url)
-        .args(["run", "--antithesis.duration", "30"])
-        .assert()
-        .failure()
-        .stderr(predicate::str::contains("--webhook"));
-}
-
-// === API error tests ===
-
-#[test]
-fn run_reports_api_errors() {
-    let mock_url = start_mock_server(r#"{"error": "bad request"}"#, 400);
-
-    snouty_with_mock(&mock_url)
-        .args(["run", "-w", "basic_test", "--antithesis.duration", "30"])
-        .assert()
-        .failure()
-        .stderr(predicate::str::contains("API error: 400"));
-}
-
-#[test]
-fn run_fails_without_credentials() {
-    snouty()
-        .env_remove("ANTITHESIS_USERNAME")
-        .env_remove("ANTITHESIS_PASSWORD")
-        .env_remove("ANTITHESIS_TENANT")
-        .env_remove("ANTITHESIS_BASE_URL")
-        .args(["run", "-w", "basic_test", "--antithesis.duration", "30"])
-        .assert()
-        .failure()
-        .stderr(predicate::str::contains("missing environment variable"));
-}
-
-#[test]
-fn run_fails_without_parameters() {
-    let mock_url = start_mock_server(r#"{}"#, 200);
-
-    snouty_with_mock(&mock_url)
-        .args(["run", "-w", "basic_test"])
-        .assert()
-        .failure()
-        .stderr(predicate::str::contains("no parameters provided"));
-}
-
-#[test]
-fn debug_reports_api_errors() {
-    let mock_url = start_mock_server(r#"{"error": "unauthorized"}"#, 401);
-
-    snouty_with_mock(&mock_url)
-        .args([
-            "debug",
-            "--antithesis.debugging.input_hash",
-            "abc123",
-            "--antithesis.debugging.session_id",
-            "sess-456",
-            "--antithesis.debugging.vtime",
-            "1234567890",
-        ])
-        .assert()
-        .failure()
-        .stderr(predicate::str::contains("API error: 401"));
-}
-
 // === Completions tests ===
 
 #[test]
@@ -420,58 +839,7 @@ fn completions_unsupported_shell_fails() {
         .stderr(predicate::str::contains("unsupported shell: nushell"));
 }
 
-// === Tests for merging stdin and CLI args ===
-
-#[test]
-fn run_merges_stdin_json_with_cli_args() {
-    let mock_url = start_mock_server(r#"{"ok": true}"#, 200);
-
-    snouty_with_mock(&mock_url)
-        .args([
-            "run",
-            "-w",
-            "basic_test",
-            "--stdin",
-            "--antithesis.report.recipients",
-            "team@example.com",
-        ])
-        .write_stdin(r#"{"antithesis.duration": "60", "antithesis.description": "from stdin"}"#)
-        .assert()
-        .success()
-        // Values from stdin should be present
-        .stderr(predicate::str::contains(r#""antithesis.duration": "60""#))
-        .stderr(predicate::str::contains(
-            r#""antithesis.description": "from stdin""#,
-        ))
-        // CLI arg should be merged in
-        .stderr(predicate::str::contains(
-            r#""antithesis.report.recipients": "[REDACTED]""#,
-        ));
-}
-
-#[test]
-fn run_cli_args_override_stdin_json() {
-    let mock_url = start_mock_server(r#"{"ok": true}"#, 200);
-
-    snouty_with_mock(&mock_url)
-        .args([
-            "run",
-            "-w",
-            "basic_test",
-            "--stdin",
-            "--antithesis.duration",
-            "120",
-        ])
-        .write_stdin(r#"{"antithesis.duration": "60", "antithesis.description": "from stdin"}"#)
-        .assert()
-        .success()
-        // CLI arg should override stdin value
-        .stderr(predicate::str::contains(r#""antithesis.duration": "120""#))
-        // Stdin-only value should still be present
-        .stderr(predicate::str::contains(
-            r#""antithesis.description": "from stdin""#,
-        ));
-}
+// === Tests for merging stdin and CLI args (debug) ===
 
 #[test]
 fn debug_merges_moment_with_cli_args() {
@@ -488,7 +856,6 @@ fn debug_merges_moment_with_cli_args() {
         .write_stdin(moment_input)
         .assert()
         .success()
-        // Moment params should be present
         .stderr(predicate::str::contains(
             r#""antithesis.debugging.session_id": "f89d5c11f5e3bf5e4bb3641809800cee-44-22""#,
         ))
@@ -498,133 +865,26 @@ fn debug_merges_moment_with_cli_args() {
         .stderr(predicate::str::contains(
             r#""antithesis.debugging.vtime": "329.8037810830865""#,
         ))
-        // CLI arg should be merged in
         .stderr(predicate::str::contains(
             r#""antithesis.report.recipients": "[REDACTED]""#,
         ));
 }
 
-// === Config directory tests ===
-
 #[test]
-fn run_config_rejects_nonexistent_dir() {
-    snouty()
-        .env("ANTITHESIS_REPOSITORY", "registry.example.com/repo")
+fn debug_reports_api_errors() {
+    let mock_url = start_mock_server(r#"{"error": "unauthorized"}"#, 401);
+
+    snouty_with_mock(&mock_url)
         .args([
-            "run",
-            "-w",
-            "basic_test",
-            "-c",
-            "/nonexistent/path",
-            "--antithesis.duration",
-            "30",
+            "debug",
+            "--antithesis.debugging.input_hash",
+            "abc123",
+            "--antithesis.debugging.session_id",
+            "sess-456",
+            "--antithesis.debugging.vtime",
+            "1234567890",
         ])
         .assert()
         .failure()
-        .stderr(predicate::str::contains("not a directory"));
-}
-
-#[test]
-fn run_config_rejects_dir_without_compose() {
-    let dir = TempDir::new().unwrap();
-
-    snouty()
-        .env("ANTITHESIS_REPOSITORY", "registry.example.com/repo")
-        .args([
-            "run",
-            "-w",
-            "basic_test",
-            "-c",
-            dir.path().to_str().unwrap(),
-            "--antithesis.duration",
-            "30",
-        ])
-        .assert()
-        .failure()
-        .stderr(predicate::str::contains("docker-compose"));
-}
-
-#[test]
-fn run_config_rejects_yml_extension() {
-    let dir = TempDir::new().unwrap();
-    std::fs::write(dir.path().join("docker-compose.yml"), "version: '3'\n").unwrap();
-
-    snouty()
-        .env("ANTITHESIS_REPOSITORY", "registry.example.com/repo")
-        .args([
-            "run",
-            "-w",
-            "basic_test",
-            "-c",
-            dir.path().to_str().unwrap(),
-            "--antithesis.duration",
-            "30",
-        ])
-        .assert()
-        .failure()
-        .stderr(predicate::str::contains("requires docker-compose.yaml"));
-}
-
-#[test]
-fn run_config_conflicts_with_config_image_param() {
-    let dir = TempDir::new().unwrap();
-    std::fs::write(dir.path().join("docker-compose.yaml"), "version: '3'\n").unwrap();
-
-    snouty()
-        .env("ANTITHESIS_REPOSITORY", "registry.example.com/repo")
-        .args([
-            "run",
-            "-w",
-            "basic_test",
-            "-c",
-            dir.path().to_str().unwrap(),
-            "--antithesis.config_image",
-            "some-image:latest",
-            "--antithesis.duration",
-            "30",
-        ])
-        .assert()
-        .failure()
-        .stderr(predicate::str::contains(
-            "cannot use --config/-c together with --antithesis.config_image",
-        ));
-}
-
-#[test]
-fn run_config_requires_registry_env() {
-    let dir = TempDir::new().unwrap();
-    std::fs::write(dir.path().join("docker-compose.yaml"), "version: '3'\n").unwrap();
-
-    snouty()
-        .env_remove("ANTITHESIS_REPOSITORY")
-        .args([
-            "run",
-            "-w",
-            "basic_test",
-            "-c",
-            dir.path().to_str().unwrap(),
-            "--antithesis.duration",
-            "30",
-        ])
-        .assert()
-        .failure()
-        .stderr(predicate::str::contains("ANTITHESIS_REPOSITORY"));
-}
-
-#[test]
-fn run_config_long_flag_accepted() {
-    snouty()
-        .env("ANTITHESIS_REPOSITORY", "registry.example.com/repo")
-        .args([
-            "run",
-            "-w",
-            "basic_test",
-            "--config",
-            "/nonexistent/path",
-            "--antithesis.duration",
-            "30",
-        ])
-        .assert()
-        .failure()
-        .stderr(predicate::str::contains("not a directory"));
+        .stderr(predicate::str::contains("API error: 401"));
 }

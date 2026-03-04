@@ -4,6 +4,7 @@ use predicates::prelude::*;
 use std::io::Write;
 use std::net::TcpListener;
 use std::thread;
+use tempfile::TempDir;
 
 fn snouty() -> Command {
     let mut cmd = cargo_bin_cmd!("snouty");
@@ -501,4 +502,129 @@ fn debug_merges_moment_with_cli_args() {
         .stderr(predicate::str::contains(
             r#""antithesis.report.recipients": "[REDACTED]""#,
         ));
+}
+
+// === Config directory tests ===
+
+#[test]
+fn run_config_rejects_nonexistent_dir() {
+    snouty()
+        .env("ANTITHESIS_REPOSITORY", "registry.example.com/repo")
+        .args([
+            "run",
+            "-w",
+            "basic_test",
+            "-c",
+            "/nonexistent/path",
+            "--antithesis.duration",
+            "30",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("not a directory"));
+}
+
+#[test]
+fn run_config_rejects_dir_without_compose() {
+    let dir = TempDir::new().unwrap();
+
+    snouty()
+        .env("ANTITHESIS_REPOSITORY", "registry.example.com/repo")
+        .args([
+            "run",
+            "-w",
+            "basic_test",
+            "-c",
+            dir.path().to_str().unwrap(),
+            "--antithesis.duration",
+            "30",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("docker-compose"));
+}
+
+#[test]
+fn run_config_rejects_yml_extension() {
+    let dir = TempDir::new().unwrap();
+    std::fs::write(dir.path().join("docker-compose.yml"), "version: '3'\n").unwrap();
+
+    snouty()
+        .env("ANTITHESIS_REPOSITORY", "registry.example.com/repo")
+        .args([
+            "run",
+            "-w",
+            "basic_test",
+            "-c",
+            dir.path().to_str().unwrap(),
+            "--antithesis.duration",
+            "30",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("requires docker-compose.yaml"));
+}
+
+#[test]
+fn run_config_conflicts_with_config_image_param() {
+    let dir = TempDir::new().unwrap();
+    std::fs::write(dir.path().join("docker-compose.yaml"), "version: '3'\n").unwrap();
+
+    snouty()
+        .env("ANTITHESIS_REPOSITORY", "registry.example.com/repo")
+        .args([
+            "run",
+            "-w",
+            "basic_test",
+            "-c",
+            dir.path().to_str().unwrap(),
+            "--antithesis.config_image",
+            "some-image:latest",
+            "--antithesis.duration",
+            "30",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "cannot use --config/-c together with --antithesis.config_image",
+        ));
+}
+
+#[test]
+fn run_config_requires_registry_env() {
+    let dir = TempDir::new().unwrap();
+    std::fs::write(dir.path().join("docker-compose.yaml"), "version: '3'\n").unwrap();
+
+    snouty()
+        .env_remove("ANTITHESIS_REPOSITORY")
+        .args([
+            "run",
+            "-w",
+            "basic_test",
+            "-c",
+            dir.path().to_str().unwrap(),
+            "--antithesis.duration",
+            "30",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("ANTITHESIS_REPOSITORY"));
+}
+
+#[test]
+fn run_config_long_flag_accepted() {
+    snouty()
+        .env("ANTITHESIS_REPOSITORY", "registry.example.com/repo")
+        .args([
+            "run",
+            "-w",
+            "basic_test",
+            "--config",
+            "/nonexistent/path",
+            "--antithesis.duration",
+            "30",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("not a directory"));
 }

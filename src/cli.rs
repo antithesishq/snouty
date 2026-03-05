@@ -26,7 +26,7 @@ Example:
         #[arg(short, long)]
         webhook: String,
 
-        /// Read parameters from stdin (JSON or Moment.from format)
+        /// Read parameters from stdin (JSON or JSON5)
         #[arg(long)]
         stdin: bool,
 
@@ -48,7 +48,7 @@ Using Moment.from (copy from triage report):
   echo 'Moment.from({ session_id: "...", input_hash: "...", vtime: ... })' | \
     snouty debug --stdin --antithesis.report.recipients "team@example.com""#)]
     Debug {
-        /// Read parameters from stdin (JSON or Moment.from format)
+        /// Read parameters from stdin (JSON, JSON5, or Moment.from format)
         #[arg(long)]
         stdin: bool,
 

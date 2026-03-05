@@ -8,7 +8,7 @@ As a developer, I want to search and read Antithesis documentation from the
 command line so that I can quickly find relevant docs without leaving my
 terminal.
 
-## Behavior
+## Shared Behavior
 
 1. The command is exposed as `snouty docs` with `search`, `show`, and `sqlite`
    subcommands.
@@ -18,7 +18,9 @@ terminal.
    `https://antithesis.com/docs/sqlite.db` by default. `ANTITHESIS_DOCS_URL`
    overrides the base URL and `ANTITHESIS_DOCS_DB_PATH` overrides the local
    database path. When `ANTITHESIS_DOCS_DB_PATH` is set, Snouty treats docs
-   access as offline and does not attempt to update the database first. The downloaded database is marked readonly via filesystem permissions to prevent unintentional modifications.
+   access as offline and does not attempt to update the database first. The
+   downloaded database is marked readonly via filesystem permissions to prevent
+   unintentional modifications.
 4. Documentation update requests send a `User-Agent` header in the form
    `snouty/<version> (<os>; <arch>; rust<rust-version>)` where os and arch
    reflect the system which compiled Snouty.
@@ -31,29 +33,38 @@ terminal.
    missing then `search`, `show`, and `sqlite` fail with guidance tailored to
    the reason updates were skipped: remove `--offline`, or point
    `ANTITHESIS_DOCS_DB_PATH` at an existing file.
-8. `snouty docs search` requires at least one query term. Multiple positional
+
+## `snouty docs search`
+
+1. `snouty docs search` requires at least one query term. Multiple positional
    terms are joined with spaces into a single full-text search query.
-9. `snouty docs search` supports `--format plain|json` and `--limit <n>`, with
+2. `snouty docs search` supports `--format plain|json` and `--limit <n>`, with
    defaults of `plain` and `10`.
-10. `snouty docs search` uses full-text search over the documentation database
-    and ranks title matches above body-only matches when the query is simple
-    enough to support title boosting. For simple conversational queries,
-    filler words such as `what` and `is` do not outweigh the content-bearing
-    terms when ranking search results.
-11. When `search` finds matches in plain format, it prints one result at a time
-    with the page path, the page title, and a wrapped snippet containing the
-    matched terms.
-12. When `search` finds matches in JSON format, it prints a JSON array. Each
-    result object includes `path`, `title`, and `snippet`.
-13. When `search` finds no matches, it exits successfully and prints a "No
-    results found" message to stderr.
-14. `snouty docs show <path>` prints the full page as markdown, prefixed by a
-    level-1 heading containing the page title.
-15. `show` normalizes the requested path by trimming leading and trailing `/`
-    characters and removing an optional leading `docs/` prefix before looking up
-    the page.
-16. If `show` cannot find an exact page, it fails with the normalized `docs/...`
-    path in the error message and includes up to 10 similar page-path
-    suggestions when available.
-17. `snouty docs sqlite` prints the path to the cached SQLite database for
-    direct usage by consumers.
+3. `snouty docs search` uses full-text search over the documentation database
+   and ranks title matches above body-only matches when the query is simple
+   enough to support title boosting. For simple conversational queries, filler
+   words such as `what` and `is` do not outweigh the content-bearing terms when
+   ranking search results.
+4. When `search` finds matches in plain format, it prints one result at a time
+   with the page path, the page title, and a wrapped snippet containing the
+   matched terms.
+5. When `search` finds matches in JSON format, it prints a JSON array. Each
+   result object includes `path`, `title`, and `snippet`.
+6. When `search` finds no matches, it exits successfully and prints a "No
+   results found" message to stderr.
+
+## `snouty docs show`
+
+1. `snouty docs show <path>` prints the full page as markdown, prefixed by a
+   level-1 heading containing the page title.
+2. `show` normalizes the requested path by trimming leading and trailing `/`
+   characters and removing an optional leading `docs/` prefix before looking up
+   the page.
+3. If `show` cannot find an exact page, it fails with the normalized `docs/...`
+   path in the error message and includes up to 10 similar page-path
+   suggestions when available.
+
+## `snouty docs sqlite`
+
+1. `snouty docs sqlite` prints the path to the cached SQLite database for
+   direct usage by consumers.

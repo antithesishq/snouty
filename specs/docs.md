@@ -20,7 +20,8 @@ terminal.
    database path. When `ANTITHESIS_DOCS_DB_PATH` is set, Snouty treats docs
    access as offline and does not attempt to update the database first. The downloaded database is marked readonly via filesystem permissions to prevent unintentional modifications.
 4. Documentation update requests send a `User-Agent` header in the form
-   `snouty/<version> (<os>; <arch>; rust<rust-version>)` where os and arch represent the running system rather than the build system.
+   `snouty/<version> (<os>; <arch>; rust<rust-version>)` where os and arch
+   reflect the system which compiled Snouty.
 5. Cached documentation is stored at `docs.db` under Snouty's cache directory,
    along with an ETag file used to avoid re-downloading an unchanged database.
 6. If a docs update fails and a cached database already exists, the command

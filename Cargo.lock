@@ -1903,6 +1903,7 @@ dependencies = [
  "log",
  "predicates",
  "pulldown-cmark",
+ "regex",
  "reqwest",
  "rusqlite",
  "serde",

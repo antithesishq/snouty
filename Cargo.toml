@@ -24,6 +24,7 @@ console = "0.15"
 dirs = "6"
 tempfile = "3"
 pulldown-cmark = "0.13"
+regex = "1"
 
 [build-dependencies]
 clap = { version = "4", features = ["derive"] }

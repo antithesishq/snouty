@@ -1,4 +1,5 @@
 use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd, TextMergeStream};
+use regex::RegexBuilder;
 
 pub const MATCH_START: &str = "«‹";
 pub const MATCH_END: &str = "›»";
@@ -7,6 +8,8 @@ pub fn strip_markers(s: &str) -> String {
     s.replace(MATCH_START, "").replace(MATCH_END, "")
 }
 
+// Treat inline markdown as part of the surrounding text so snippet extraction
+// doesn't insert artificial spacing around emphasis, links, or code spans.
 fn is_inline(tag: &Tag) -> bool {
     matches!(
         tag,
@@ -20,6 +23,8 @@ fn is_inline(tag: &Tag) -> bool {
     )
 }
 
+// Mirror `is_inline` for end tags so block-level transitions can still add
+// separator spaces when we flatten markdown into plain text.
 fn is_inline_end(tag: &TagEnd) -> bool {
     matches!(
         tag,
@@ -39,7 +44,8 @@ fn parse_query_terms(query: &str) -> Vec<String> {
     let mut terms = Vec::new();
     let mut skip_next = false;
 
-    // Handle NEAR(...) and quoted phrases by extracting inner tokens
+    // Snippets only need highlightable terms, not full FTS semantics, so this
+    // strips the small amount of query syntax that can appear in user input.
     let normalized = query.replace("NEAR(", " ").replace([')', '"'], " ");
 
     for token in normalized.split_whitespace() {
@@ -98,6 +104,8 @@ fn flatten_markdown(content: &str) -> String {
 
     for event in parser {
         match event {
+            // Block boundaries get a separating space so adjacent paragraphs,
+            // headings, and list items don't run together in the snippet text.
             Event::Start(ref tag) if !is_inline(tag) => {
                 depth += 1;
                 if depth == 1 && !result.is_empty() && !result.ends_with(' ') {
@@ -133,20 +141,36 @@ struct Hit {
     term_idx: usize,
 }
 
+fn is_word_char(c: char) -> bool {
+    c.is_alphanumeric() || c == '_' || c == '-'
+}
+
+fn build_term_regex(term: &str) -> regex::Regex {
+    // Regex handles Unicode-aware case-insensitive matching for us and returns
+    // offsets in the original string, which keeps hit extraction simple.
+    RegexBuilder::new(&regex::escape(term))
+        .case_insensitive(true)
+        .unicode(true)
+        .build()
+        .expect("query term regex should always compile")
+}
+
 fn find_hits(text: &str, terms: &[String]) -> Vec<Hit> {
-    let lower = text.to_lowercase();
     let mut hits = Vec::new();
 
     for (term_idx, term) in terms.iter().enumerate() {
-        let mut search_from = 0;
-        while let Some(pos) = lower[search_from..].find(term.as_str()) {
-            let start = search_from + pos;
-            let end = start + term.len();
+        let re = build_term_regex(term);
+        for matched in re.find_iter(text) {
+            let start = matched.start();
+            let end = matched.end();
 
-            // Word boundary: byte before start (if any) and byte at end (if any)
-            // must not be alphanumeric
-            let start_ok = start == 0 || !text.as_bytes()[start - 1].is_ascii_alphanumeric();
-            let end_ok = end >= text.len() || !text.as_bytes()[end].is_ascii_alphanumeric();
+            // Regex finds the term anywhere; we still enforce word-ish
+            // boundaries so `rust` does not match inside `rusty`.
+            let start_ok = text[..start]
+                .chars()
+                .next_back()
+                .is_none_or(|c| !is_word_char(c));
+            let end_ok = text[end..].chars().next().is_none_or(|c| !is_word_char(c));
 
             if start_ok && end_ok {
                 hits.push(Hit {
@@ -155,8 +179,6 @@ fn find_hits(text: &str, terms: &[String]) -> Vec<Hit> {
                     term_idx,
                 });
             }
-
-            search_from = start + 1;
         }
     }
 
@@ -169,6 +191,8 @@ fn find_hits(text: &str, terms: &[String]) -> Vec<Hit> {
 const PROXIMITY_WINDOW: usize = 60;
 
 fn proximity_score(hit: &Hit, hits: &[Hit]) -> usize {
+    // Prefer clusters of distinct query terms so multi-word searches surface a
+    // meaningful passage instead of the first isolated match.
     let mut seen = std::collections::HashSet::new();
     for other in hits {
         if other.term_idx == hit.term_idx {
@@ -192,7 +216,7 @@ fn pick_best_hit(hits: &[Hit], multi_term: bool) -> Option<usize> {
     }
 
     if !multi_term {
-        return Some(0); // first hit for single-term
+        return Some(0); // single-term snippets can just center on the first hit
     }
 
     let mut best_idx = 0;
@@ -234,7 +258,7 @@ fn adjust_start_to_word_boundary(text: &str, pos: usize) -> usize {
     if pos == 0 || pos >= text.len() || text.as_bytes()[pos] == b' ' {
         return pos;
     }
-    // Find next space forward from pos
+    // Avoid opening a snippet in the middle of a word.
     if let Some(next_space) = text[pos..].find(' ') {
         pos + next_space + 1
     } else {
@@ -250,7 +274,7 @@ fn adjust_end_to_word_boundary(text: &str, pos: usize) -> usize {
     if pos == 0 || text.as_bytes()[pos] == b' ' {
         return pos;
     }
-    // Find previous space backward from pos
+    // Avoid ending a snippet in the middle of a word.
     if let Some(prev_space) = text[..pos].rfind(' ') {
         prev_space
     } else {
@@ -263,6 +287,8 @@ fn extract_window(text: &str, center: usize, max_visible: usize) -> (usize, usiz
     let raw_start = center.saturating_sub(half);
     let raw_end = (raw_start + max_visible).min(text.len());
 
+    // Start from a rough centered window, then nudge both sides to readable
+    // boundaries so the snippet looks intentional instead of mechanically cut.
     let start = adjust_start_to_word_boundary(text, raw_start);
     let end = adjust_end_to_word_boundary(text, raw_end);
 
@@ -272,7 +298,8 @@ fn extract_window(text: &str, center: usize, max_visible: usize) -> (usize, usiz
 // --- Step 7: Highlight ---
 
 fn highlight_hits(text: &str, hits: &[Hit], multi_term: bool) -> String {
-    // Filter hits based on proximity for multi-term queries
+    // For multi-term searches, only highlight hits that participate in a local
+    // cluster; isolated terms add noise to the excerpt.
     let kept: Vec<&Hit> = if multi_term {
         hits.iter()
             .filter(|h| proximity_score(h, hits) > 0)
@@ -281,7 +308,7 @@ fn highlight_hits(text: &str, hits: &[Hit], multi_term: bool) -> String {
         hits.iter().collect()
     };
 
-    // Build result string with markers inserted
+    // Insert lightweight markers first; styling happens later in `docs.rs`.
     let mut result = String::new();
     let mut pos = 0;
 
@@ -308,6 +335,11 @@ pub fn extract_snippet(
     max_visible: usize,
     title_boosted: bool,
 ) -> String {
+    // The snippet pipeline is:
+    // 1. flatten markdown to readable plain text
+    // 2. find term hits
+    // 3. choose the best excerpt window
+    // 4. mark highlighted ranges for later styling/output
     let terms = parse_query_terms(query);
     if terms.is_empty() {
         return String::new();
@@ -323,7 +355,8 @@ pub fn extract_snippet(
 
     let best = pick_best_hit(&hits, multi_term);
 
-    // Decide fragment strategy
+    // Title boosts can rank a page highly even when the body lacks a strong
+    // local cluster, so in that case we prefer the opening text over a weak hit.
     let use_opening = match best {
         None => true,
         Some(best_idx) => {
@@ -350,7 +383,8 @@ pub fn extract_snippet(
 
     let window_text = &plain[win_start..win_end];
 
-    // Find hits within the window
+    // Recompute hits inside the final window so highlight offsets line up with
+    // the text we actually emit.
     let window_hits = find_hits(window_text, &terms);
 
     let highlighted = highlight_hits(window_text, &window_hits, multi_term);
@@ -445,6 +479,18 @@ mod tests {
         let hits = find_hits(text, &["rust".to_string()]);
         assert_eq!(hits.len(), 1);
         assert_eq!(&text[hits[0].start..hits[0].end], "rust");
+    }
+
+    #[test]
+    fn test_find_hits_unicode_word_boundary() {
+        let text = "cafeine is not a cafe and café is coffee";
+        let hits = find_hits(text, &["café".to_string(), "cafe".to_string()]);
+        let matches: Vec<&str> = hits.iter().map(|hit| &text[hit.start..hit.end]).collect();
+        assert!(matches.contains(&"café"));
+        assert_eq!(
+            matches.iter().filter(|matched| **matched == "cafe").count(),
+            1
+        );
     }
 
     #[test]

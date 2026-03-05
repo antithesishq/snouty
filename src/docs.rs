@@ -277,6 +277,55 @@ fn print_json(results: &[(String, String, String)]) -> Result<()> {
     Ok(())
 }
 
+fn for_each_marked_segment(mut text: &str, mut f: impl FnMut(&str, bool)) {
+    while let Some(start) = text.find(MATCH_START) {
+        let (plain, rest) = text.split_at(start);
+        if !plain.is_empty() {
+            f(plain, false);
+        }
+
+        let rest = &rest[MATCH_START.len()..];
+        if let Some(end) = rest.find(MATCH_END) {
+            let (matched, remainder) = rest.split_at(end);
+            if !matched.is_empty() {
+                f(matched, true);
+            }
+            text = &remainder[MATCH_END.len()..];
+        } else {
+            if !rest.is_empty() {
+                f(rest, false);
+            }
+            return;
+        }
+    }
+
+    if !text.is_empty() {
+        f(text, false);
+    }
+}
+
+fn visible_len(text: &str) -> usize {
+    let mut len = 0;
+    for_each_marked_segment(text, |segment, _| len += segment.chars().count());
+    len
+}
+
+fn render_marked(text: &str, bold_plain: bool) -> String {
+    let mut rendered = String::new();
+
+    for_each_marked_segment(text, |segment, highlighted| {
+        if highlighted {
+            rendered.push_str(&console::style(segment).yellow().bold().to_string());
+        } else if bold_plain {
+            rendered.push_str(&console::style(segment).bold().to_string());
+        } else {
+            rendered.push_str(segment);
+        }
+    });
+
+    rendered
+}
+
 /// Word-wrap text that may contain MATCH_START/MATCH_END markers,
 /// counting only visible characters toward the width.
 fn wrap_snippet(snippet: &str, width: usize) -> String {
@@ -284,8 +333,8 @@ fn wrap_snippet(snippet: &str, width: usize) -> String {
     let mut col = 0;
 
     for word in snippet.split_whitespace() {
-        let visible_len = word.replace(MATCH_START, "").replace(MATCH_END, "").len();
-        if col > 0 && col + 1 + visible_len > width {
+        let word_len = visible_len(word);
+        if col > 0 && col + 1 + word_len > width {
             result.push('\n');
             col = 0;
         }
@@ -294,50 +343,18 @@ fn wrap_snippet(snippet: &str, width: usize) -> String {
             col += 1;
         }
         result.push_str(word);
-        col += visible_len;
+        col += word_len;
     }
 
     result
 }
 
 fn style_line(line: &str) -> String {
-    let mut styled = String::new();
-    let mut rest = line;
-    while let Some(start) = rest.find(MATCH_START) {
-        styled.push_str(&rest[..start]);
-        rest = &rest[start + MATCH_START.len()..];
-        if let Some(end) = rest.find(MATCH_END) {
-            let matched = &rest[..end];
-            styled.push_str(&format!("{}", console::style(matched).yellow().bold()));
-            rest = &rest[end + MATCH_END.len()..];
-        }
-    }
-    styled.push_str(rest);
-    styled
+    render_marked(line, false)
 }
 
 fn style_title(title: &str) -> String {
-    if !title.contains(MATCH_START) {
-        return format!("{}", console::style(title).bold());
-    }
-    let mut styled = String::new();
-    let mut rest = title;
-    while let Some(start) = rest.find(MATCH_START) {
-        let plain = &rest[..start];
-        if !plain.is_empty() {
-            styled.push_str(&format!("{}", console::style(plain).bold()));
-        }
-        rest = &rest[start + MATCH_START.len()..];
-        if let Some(end) = rest.find(MATCH_END) {
-            let matched = &rest[..end];
-            styled.push_str(&format!("{}", console::style(matched).yellow().bold()));
-            rest = &rest[end + MATCH_END.len()..];
-        }
-    }
-    if !rest.is_empty() {
-        styled.push_str(&format!("{}", console::style(rest).bold()));
-    }
-    styled
+    render_marked(title, true)
 }
 
 fn print_results(results: &[(String, String, String)]) {

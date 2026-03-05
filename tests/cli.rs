@@ -12,6 +12,7 @@ use tempfile::TempDir;
 struct MockDocsServerState {
     current_etag: String,
     if_none_match_headers: Vec<Option<String>>,
+    include_etag: bool,
     user_agent: Option<String>,
 }
 
@@ -26,11 +27,20 @@ impl MockDocsServer {
     }
 
     fn start_with_etag(initial_etag: &str) -> Self {
+        Self::start_with_config(initial_etag, true)
+    }
+
+    fn start_without_etag() -> Self {
+        Self::start_with_config("test-etag", false)
+    }
+
+    fn start_with_config(initial_etag: &str, include_etag: bool) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
         let state = Arc::new(Mutex::new(MockDocsServerState {
             current_etag: initial_etag.to_string(),
             if_none_match_headers: Vec::new(),
+            include_etag,
             user_agent: None,
         }));
         let observed_state = Arc::clone(&state);
@@ -58,13 +68,14 @@ impl MockDocsServer {
                     }
                 });
 
-                let (etag, not_modified) = {
+                let (etag, include_etag, not_modified) = {
                     let mut state = observed_state.lock().unwrap();
                     state.user_agent = user_agent;
                     state.if_none_match_headers.push(if_none_match.clone());
                     let etag = state.current_etag.clone();
+                    let include_etag = state.include_etag;
                     let not_modified = if_none_match.as_deref() == Some(etag.as_str());
-                    (etag, not_modified)
+                    (etag, include_etag, not_modified)
                 };
 
                 if not_modified {
@@ -74,11 +85,18 @@ impl MockDocsServer {
                     continue;
                 }
 
-                let response = format!(
-                    "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: {}\r\nETag: {}\r\n\r\n",
-                    db.len(),
-                    etag
-                );
+                let response = if include_etag {
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: {}\r\nETag: {}\r\n\r\n",
+                        db.len(),
+                        etag
+                    )
+                } else {
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: {}\r\n\r\n",
+                        db.len()
+                    )
+                };
                 stream.write_all(response.as_bytes()).unwrap();
                 stream.write_all(db).unwrap();
             }
@@ -161,6 +179,29 @@ fn expected_docs_user_agent() -> String {
         std::env::consts::ARCH,
         env!("SNOUTY_RUSTC_VERSION")
     )
+}
+
+fn cached_docs_db_path(cache_dir: &TempDir) -> std::path::PathBuf {
+    cache_dir.path().join("snouty").join("docs.db")
+}
+
+fn docs_search_json(query_args: &[&str]) -> Vec<serde_json::Value> {
+    let mut args = vec!["docs", "--offline", "search", "--format", "json"];
+    args.extend_from_slice(query_args);
+
+    let output = snouty_docs()
+        .args(&args)
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    serde_json::from_slice::<serde_json::Value>(&output)
+        .unwrap()
+        .as_array()
+        .unwrap()
+        .clone()
 }
 
 fn snouty_with_mock(mock_url: &str) -> Command {
@@ -1112,6 +1153,31 @@ fn docs_update_sets_custom_user_agent() {
 }
 
 #[test]
+fn docs_update_failure_with_cached_db_warns_and_uses_cache() {
+    let cache_dir = TempDir::new().unwrap();
+    let mock_server = MockDocsServer::start();
+
+    snouty()
+        .env("XDG_CACHE_HOME", cache_dir.path())
+        .env("ANTITHESIS_DOCS_URL", mock_server.url())
+        .args(["docs", "search", "docker"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("/docs/guides/docker_basics/"));
+
+    snouty()
+        .env("XDG_CACHE_HOME", cache_dir.path())
+        .env("ANTITHESIS_DOCS_URL", "http://127.0.0.1:1")
+        .args(["docs", "search", "docker"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("/docs/guides/docker_basics/"))
+        .stderr(predicate::str::contains(
+            "Warning: failed to update docs, falling back to cached docs",
+        ));
+}
+
+#[test]
 fn docs_auto_update_reuses_cached_db_until_etag_changes() {
     let cache_dir = TempDir::new().unwrap();
     let mock_server = MockDocsServer::start_with_etag("test-etag-1");
@@ -1156,32 +1222,53 @@ fn docs_auto_update_reuses_cached_db_until_etag_changes() {
 }
 
 #[test]
-fn docs_search_json_format() {
-    let output = snouty_docs()
-        .args(["docs", "--offline", "search", "--format", "json", "sdk"])
-        .assert()
-        .success()
-        .get_output()
-        .stdout
-        .clone();
+fn docs_downloaded_db_is_read_only() {
+    let cache_dir = TempDir::new().unwrap();
+    let mock_server = MockDocsServer::start();
 
-    let stdout = String::from_utf8(output).unwrap();
-    let parsed: serde_json::Value =
-        serde_json::from_str(stdout.trim()).expect("stdout should be valid JSON");
-    assert!(parsed.is_array());
-    let arr = parsed.as_array().unwrap();
-    assert!(!arr.is_empty());
-    let first = &arr[0];
+    snouty()
+        .env("XDG_CACHE_HOME", cache_dir.path())
+        .env("ANTITHESIS_DOCS_URL", mock_server.url())
+        .args(["docs", "search", "docker"])
+        .assert()
+        .success();
+
+    let metadata = std::fs::metadata(cached_docs_db_path(&cache_dir)).unwrap();
+    assert!(metadata.permissions().readonly());
+}
+
+#[test]
+fn docs_update_requires_etag_header() {
+    let cache_dir = TempDir::new().unwrap();
+    let mock_server = MockDocsServer::start_without_etag();
+
+    snouty()
+        .env("XDG_CACHE_HOME", cache_dir.path())
+        .env("ANTITHESIS_DOCS_URL", mock_server.url())
+        .args(["docs", "search", "docker"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "server did not include an ETag header in the response",
+        ));
+}
+
+#[test]
+fn docs_search_json_format() {
+    let results = docs_search_json(&["sdk"]);
+    assert!(!results.is_empty());
+
+    let sdk_entry = results
+        .iter()
+        .find(|entry| entry.get("path").and_then(|v| v.as_str()) == Some("/docs/sdk/python_sdk/"));
+    let sdk_entry = sdk_entry.expect("expected sdk result in JSON output");
+
     assert_eq!(
-        first.get("path").and_then(|v| v.as_str()),
-        Some("/docs/sdk/python_sdk/")
-    );
-    assert_eq!(
-        first.get("title").and_then(|v| v.as_str()),
+        sdk_entry.get("title").and_then(|v| v.as_str()),
         Some("Python SDK")
     );
     assert!(
-        first
+        sdk_entry
             .get("snippet")
             .and_then(|v| v.as_str())
             .is_some_and(|snippet| snippet.contains("sdk-related result"))
@@ -1190,7 +1277,10 @@ fn docs_search_json_format() {
 
 #[test]
 fn docs_search_respects_limit() {
-    let output = snouty_docs()
+    let full_results = docs_search_json(&["test"]);
+    assert!(full_results.len() > 2);
+
+    let limited_output = snouty_docs()
         .args([
             "docs",
             "--offline",
@@ -1206,10 +1296,14 @@ fn docs_search_respects_limit() {
         .get_output()
         .stdout
         .clone();
+    let limited_results = serde_json::from_slice::<serde_json::Value>(&limited_output)
+        .unwrap()
+        .as_array()
+        .unwrap()
+        .clone();
 
-    let stdout = String::from_utf8(output).unwrap();
-    let parsed: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
-    assert!(parsed.as_array().unwrap().len() <= 2);
+    assert_eq!(limited_results.len(), 2);
+    assert_eq!(limited_results, full_results[..2]);
 }
 
 #[test]
@@ -1237,32 +1331,6 @@ fn docs_search_missing_db_with_offline_tells_user_to_remove_offline() {
     snouty()
         .env("XDG_CACHE_HOME", cache_dir.path())
         .args(["docs", "--offline", "search", "docker"])
-        .assert()
-        .failure()
-        .stderr(predicate::str::contains(
-            "Documentation database not found. Remove --offline to download it.",
-        ));
-}
-
-#[test]
-fn docs_search_missing_db_with_env_path_tells_user_to_fix_path() {
-    snouty()
-        .env("ANTITHESIS_DOCS_DB_PATH", "/tmp/does-not-exist-docs.db")
-        .args(["docs", "search", "docker"])
-        .assert()
-        .failure()
-        .stderr(predicate::str::contains(
-            "Documentation database not found at /tmp/does-not-exist-docs.db. Point ANTITHESIS_DOCS_DB_PATH at an existing file.",
-        ));
-}
-
-#[test]
-fn docs_sqlite_missing_db_with_offline_tells_user_to_remove_offline() {
-    let cache_dir = TempDir::new().unwrap();
-
-    snouty()
-        .env("XDG_CACHE_HOME", cache_dir.path())
-        .args(["docs", "--offline", "sqlite"])
         .assert()
         .failure()
         .stderr(predicate::str::contains(
@@ -1316,7 +1384,9 @@ fn docs_show_missing_page_suggests() {
         .args(["docs", "--offline", "show", "nonexistent_page"])
         .assert()
         .failure()
-        .stderr(predicate::str::contains("page not found"));
+        .stderr(predicate::str::contains(
+            "page not found: docs/nonexistent_page",
+        ));
 }
 
 #[test]
@@ -1325,7 +1395,8 @@ fn docs_show_partial_match_suggests() {
         .args(["docs", "--offline", "show", "sdk"])
         .assert()
         .failure()
-        .stderr(predicate::str::contains("Did you mean"));
+        .stderr(predicate::str::contains("Did you mean"))
+        .stderr(predicate::str::contains("/docs/sdk/python_sdk/"));
 }
 
 #[test]

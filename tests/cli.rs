@@ -1,14 +1,128 @@
 use assert_cmd::Command;
 use assert_cmd::cargo::cargo_bin_cmd;
 use predicates::prelude::*;
+use std::io::Read;
 use std::io::Write;
 use std::net::TcpListener;
+use std::sync::{Arc, Mutex};
 use std::thread;
 use tempfile::TempDir;
+
+#[derive(Debug, Default)]
+struct MockDocsServerState {
+    current_etag: String,
+    if_none_match_headers: Vec<Option<String>>,
+    user_agent: Option<String>,
+}
+
+struct MockDocsServer {
+    url: String,
+    state: Arc<Mutex<MockDocsServerState>>,
+}
+
+impl MockDocsServer {
+    fn start() -> Self {
+        Self::start_with_etag("test-etag")
+    }
+
+    fn start_with_etag(initial_etag: &str) -> Self {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let state = Arc::new(Mutex::new(MockDocsServerState {
+            current_etag: initial_etag.to_string(),
+            if_none_match_headers: Vec::new(),
+            user_agent: None,
+        }));
+        let observed_state = Arc::clone(&state);
+        let db = include_bytes!("fixtures/docs.db");
+
+        thread::spawn(move || {
+            for mut stream in listener.incoming().flatten() {
+                let mut buf = [0u8; 8192];
+                let bytes_read = stream.read(&mut buf).unwrap();
+                let request = String::from_utf8_lossy(&buf[..bytes_read]);
+                let user_agent = request.lines().find_map(|line| {
+                    let (name, value) = line.split_once(':')?;
+                    if name.eq_ignore_ascii_case("user-agent") {
+                        Some(value.trim().to_owned())
+                    } else {
+                        None
+                    }
+                });
+                let if_none_match = request.lines().find_map(|line| {
+                    let (name, value) = line.split_once(':')?;
+                    if name.eq_ignore_ascii_case("if-none-match") {
+                        Some(value.trim().to_owned())
+                    } else {
+                        None
+                    }
+                });
+
+                let (etag, not_modified) = {
+                    let mut state = observed_state.lock().unwrap();
+                    state.user_agent = user_agent;
+                    state.if_none_match_headers.push(if_none_match.clone());
+                    let etag = state.current_etag.clone();
+                    let not_modified = if_none_match.as_deref() == Some(etag.as_str());
+                    (etag, not_modified)
+                };
+
+                if not_modified {
+                    stream
+                        .write_all(b"HTTP/1.1 304 Not Modified\r\nContent-Length: 0\r\n\r\n")
+                        .unwrap();
+                    continue;
+                }
+
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: {}\r\nETag: {}\r\n\r\n",
+                    db.len(),
+                    etag
+                );
+                stream.write_all(response.as_bytes()).unwrap();
+                stream.write_all(db).unwrap();
+            }
+        });
+
+        Self {
+            url: format!("http://{}", addr),
+            state,
+        }
+    }
+
+    fn url(&self) -> &str {
+        &self.url
+    }
+
+    fn user_agent(&self) -> Option<String> {
+        self.state.lock().unwrap().user_agent.clone()
+    }
+
+    fn if_none_match_headers(&self) -> Vec<Option<String>> {
+        self.state.lock().unwrap().if_none_match_headers.clone()
+    }
+
+    fn set_etag(&self, etag: &str) {
+        self.state.lock().unwrap().current_etag = etag.to_string();
+    }
+}
 
 fn snouty() -> Command {
     let mut cmd = cargo_bin_cmd!("snouty");
     cmd.env("RUST_LOG", "debug");
+    // Clear all ANTITHESIS_* inputs the CLI reads so tests don't depend on
+    // env leaked in from the caller or CI runner.
+    for env_var in [
+        "ANTITHESIS_USERNAME",
+        "ANTITHESIS_PASSWORD",
+        "ANTITHESIS_TENANT",
+        "ANTITHESIS_BASE_URL",
+        "ANTITHESIS_REPOSITORY",
+        "ANTITHESIS_DOCS_URL",
+        "ANTITHESIS_DOCS_DB_PATH",
+    ] {
+        cmd.env_remove(env_var);
+    }
     cmd
 }
 
@@ -37,6 +151,16 @@ fn start_mock_server(response_body: &'static str, status: u16) -> String {
     });
 
     url
+}
+
+fn expected_docs_user_agent() -> String {
+    format!(
+        "snouty/{} ({}; {}; rust{})",
+        env!("CARGO_PKG_VERSION"),
+        std::env::consts::OS,
+        std::env::consts::ARCH,
+        env!("SNOUTY_RUSTC_VERSION")
+    )
 }
 
 fn snouty_with_mock(mock_url: &str) -> Command {
@@ -261,10 +385,6 @@ fn run_reports_api_errors() {
 #[test]
 fn run_fails_without_credentials() {
     snouty()
-        .env_remove("ANTITHESIS_USERNAME")
-        .env_remove("ANTITHESIS_PASSWORD")
-        .env_remove("ANTITHESIS_TENANT")
-        .env_remove("ANTITHESIS_BASE_URL")
         .args(["run", "-w", "basic_test", "--duration", "30"])
         .assert()
         .failure()
@@ -362,7 +482,6 @@ fn run_config_requires_registry_env() {
     std::fs::write(dir.path().join("docker-compose.yaml"), "version: '3'\n").unwrap();
 
     snouty()
-        .env_remove("ANTITHESIS_REPOSITORY")
         .args([
             "run",
             "-w",
@@ -623,10 +742,6 @@ fn api_webhook_reports_api_errors() {
 #[test]
 fn api_webhook_fails_without_credentials() {
     snouty()
-        .env_remove("ANTITHESIS_USERNAME")
-        .env_remove("ANTITHESIS_PASSWORD")
-        .env_remove("ANTITHESIS_TENANT")
-        .env_remove("ANTITHESIS_BASE_URL")
         .args([
             "api",
             "webhook",
@@ -978,6 +1093,69 @@ fn docs_env_db_path_implies_offline() {
 }
 
 #[test]
+fn docs_update_sets_custom_user_agent() {
+    let cache_dir = TempDir::new().unwrap();
+    let mock_server = MockDocsServer::start();
+
+    snouty()
+        .env("XDG_CACHE_HOME", cache_dir.path())
+        .env("ANTITHESIS_DOCS_URL", mock_server.url())
+        .args(["docs", "search", "docker"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("/docs/guides/docker_basics/"));
+
+    assert_eq!(
+        mock_server.user_agent().as_deref(),
+        Some(expected_docs_user_agent().as_str()),
+    );
+}
+
+#[test]
+fn docs_auto_update_reuses_cached_db_until_etag_changes() {
+    let cache_dir = TempDir::new().unwrap();
+    let mock_server = MockDocsServer::start_with_etag("test-etag-1");
+
+    snouty()
+        .env("XDG_CACHE_HOME", cache_dir.path())
+        .env("ANTITHESIS_DOCS_URL", mock_server.url())
+        .args(["docs", "search", "docker"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("/docs/guides/docker_basics/"));
+
+    snouty()
+        .env("XDG_CACHE_HOME", cache_dir.path())
+        .env("ANTITHESIS_DOCS_URL", mock_server.url())
+        .args(["docs", "search", "docker"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("/docs/guides/docker_basics/"));
+
+    mock_server.set_etag("test-etag-2");
+
+    snouty()
+        .env("XDG_CACHE_HOME", cache_dir.path())
+        .env("ANTITHESIS_DOCS_URL", mock_server.url())
+        .args(["docs", "search", "docker"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("/docs/guides/docker_basics/"));
+
+    assert_eq!(
+        mock_server.if_none_match_headers(),
+        vec![
+            None,
+            Some("test-etag-1".to_string()),
+            Some("test-etag-1".to_string())
+        ]
+    );
+
+    let etag_path = cache_dir.path().join("snouty").join("docs.db.etag");
+    assert_eq!(std::fs::read_to_string(etag_path).unwrap(), "test-etag-2");
+}
+
+#[test]
 fn docs_search_json_format() {
     let output = snouty_docs()
         .args(["docs", "--offline", "search", "--format", "json", "sdk"])
@@ -1050,6 +1228,58 @@ fn docs_search_no_results() {
         .assert()
         .success()
         .stderr(predicate::str::contains("No results found"));
+}
+
+#[test]
+fn docs_search_missing_db_with_offline_tells_user_to_remove_offline() {
+    let cache_dir = TempDir::new().unwrap();
+
+    snouty()
+        .env("XDG_CACHE_HOME", cache_dir.path())
+        .args(["docs", "--offline", "search", "docker"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "Documentation database not found. Remove --offline to download it.",
+        ));
+}
+
+#[test]
+fn docs_search_missing_db_with_env_path_tells_user_to_fix_path() {
+    snouty()
+        .env("ANTITHESIS_DOCS_DB_PATH", "/tmp/does-not-exist-docs.db")
+        .args(["docs", "search", "docker"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "Documentation database not found at /tmp/does-not-exist-docs.db. Point ANTITHESIS_DOCS_DB_PATH at an existing file.",
+        ));
+}
+
+#[test]
+fn docs_sqlite_missing_db_with_offline_tells_user_to_remove_offline() {
+    let cache_dir = TempDir::new().unwrap();
+
+    snouty()
+        .env("XDG_CACHE_HOME", cache_dir.path())
+        .args(["docs", "--offline", "sqlite"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "Documentation database not found. Remove --offline to download it.",
+        ));
+}
+
+#[test]
+fn docs_sqlite_missing_db_with_env_path_tells_user_to_fix_path() {
+    snouty()
+        .env("ANTITHESIS_DOCS_DB_PATH", "/tmp/does-not-exist-docs.db")
+        .args(["docs", "sqlite"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "Documentation database not found at /tmp/does-not-exist-docs.db. Point ANTITHESIS_DOCS_DB_PATH at an existing file.",
+        ));
 }
 
 #[test]

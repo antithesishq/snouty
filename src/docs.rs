@@ -20,6 +20,16 @@ fn docs_url() -> String {
     base
 }
 
+fn docs_user_agent() -> String {
+    format!(
+        "snouty/{} ({}; {}; rust{})",
+        env!("CARGO_PKG_VERSION"),
+        std::env::consts::OS,
+        std::env::consts::ARCH,
+        env!("SNOUTY_RUSTC_VERSION")
+    )
+}
+
 fn cache_dir() -> Result<PathBuf> {
     let dir = dirs::cache_dir()
         .ok_or_eyre("could not determine cache directory")?
@@ -47,6 +57,8 @@ pub async fn cmd_docs(command: DocsCommands, offline: bool) -> Result<()> {
     if !(offline || env_db_path_is_set()) {
         update_with_fallback().await?;
     }
+
+    ensure_docs_db_available(offline)?;
 
     match command {
         DocsCommands::Search {
@@ -76,6 +88,26 @@ async fn update_with_fallback() -> Result<()> {
     Ok(())
 }
 
+fn ensure_docs_db_available(offline: bool) -> Result<()> {
+    let db = db_path()?;
+    if db.exists() {
+        return Ok(());
+    }
+
+    if env_db_path_is_set() {
+        bail!(
+            "Documentation database not found at {}. Point ANTITHESIS_DOCS_DB_PATH at an existing file.",
+            db.display()
+        );
+    }
+
+    if offline {
+        bail!("Documentation database not found. Remove --offline to download it.");
+    }
+
+    bail!("Documentation database not found at {}.", db.display());
+}
+
 async fn download_and_cache_db() -> Result<()> {
     if let Some((bytes, etag)) = fetch_db_if_changed().await? {
         atomic_write_db(&bytes)?;
@@ -87,7 +119,9 @@ async fn download_and_cache_db() -> Result<()> {
 /// fetch_db_if_changed returns Ok(None) if the server indicates the database
 /// has not changed (304 Not Modified).
 async fn fetch_db_if_changed() -> Result<Option<(Vec<u8>, String)>> {
-    let client = reqwest::Client::new();
+    let client = reqwest::Client::builder()
+        .user_agent(docs_user_agent())
+        .build()?;
     let mut request = client.get(format!("{}/sqlite.db", docs_url()));
 
     if let Ok(etag) = fs::read_to_string(etag_path()?) {
@@ -323,9 +357,6 @@ fn print_results(results: &[(String, String, String)]) {
 
 fn open_db() -> Result<Connection> {
     let db = db_path()?;
-    if !db.exists() {
-        bail!("documentation database not found; run `snouty docs search` to download it");
-    }
     Ok(Connection::open_with_flags(
         &db,
         OpenFlags::SQLITE_OPEN_READ_ONLY,
@@ -372,13 +403,6 @@ fn show(path: &str) -> Result<()> {
 }
 
 fn sqlite_path() -> Result<()> {
-    let db = db_path()?;
-    if !db.exists() {
-        eprintln!(
-            "Documentation database not found. Run any docs command without --offline to download it."
-        );
-        return Ok(());
-    }
-    println!("{}", db.display());
+    println!("{}", db_path()?.display());
     Ok(())
 }

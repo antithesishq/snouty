@@ -8,6 +8,8 @@ on:
 jobs:
   check-commits:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     outputs:
       has_new_commits: ${{ steps.check.outputs.has_new_commits }}
     steps:

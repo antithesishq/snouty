@@ -73,6 +73,7 @@ Using Moment.from (copy from triage report):
 
     /// Check for and install updates
     Update,
+
     /// Search Antithesis documentation
     Docs {
         /// Don't check for documentation updates

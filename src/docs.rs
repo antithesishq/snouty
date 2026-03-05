@@ -29,7 +29,14 @@ fn cache_dir() -> Result<PathBuf> {
 }
 
 fn db_path() -> Result<PathBuf> {
+    if let Ok(p) = std::env::var("ANTITHESIS_DOCS_DB_PATH") {
+        return Ok(PathBuf::from(p));
+    }
     Ok(cache_dir()?.join("docs.db"))
+}
+
+fn env_db_path_is_set() -> bool {
+    std::env::var_os("ANTITHESIS_DOCS_DB_PATH").is_some()
 }
 
 fn etag_path() -> Result<PathBuf> {
@@ -37,7 +44,7 @@ fn etag_path() -> Result<PathBuf> {
 }
 
 pub async fn cmd_docs(command: DocsCommands, offline: bool) -> Result<()> {
-    if !offline {
+    if !(offline || env_db_path_is_set()) {
         update_with_fallback().await?;
     }
 

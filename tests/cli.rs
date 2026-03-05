@@ -20,22 +20,19 @@ fn start_mock_server(response_body: &'static str, status: u16) -> String {
     let url = format!("http://{}", addr);
 
     thread::spawn(move || {
-        for stream in listener.incoming() {
-            if let Ok(mut stream) = stream {
-                // Read request (we don't care about the content for these tests)
-                let mut buf = [0u8; 4096];
-                let _ = std::io::Read::read(&mut stream, &mut buf);
+        if let Some(mut stream) = listener.incoming().flatten().next() {
+            // Read request (we don't care about the content for these tests)
+            let mut buf = [0u8; 4096];
+            let _ = std::io::Read::read(&mut stream, &mut buf);
 
-                // Send response
-                let response = format!(
-                    "HTTP/1.1 {} OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
-                    status,
-                    response_body.len(),
-                    response_body
-                );
-                let _ = stream.write_all(response.as_bytes());
-                break; // Only handle one request
-            }
+            // Send response
+            let response = format!(
+                "HTTP/1.1 {} OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                status,
+                response_body.len(),
+                response_body
+            );
+            let _ = stream.write_all(response.as_bytes());
         }
     });
 
@@ -941,6 +938,185 @@ fn debug_merges_moment_with_cli_args() {
         .stderr(predicate::str::contains(
             r#""antithesis.report.recipients": "[REDACTED]""#,
         ));
+}
+
+// === Tests for `docs` commands ===
+
+fn fixture_db() -> String {
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/docs.db")
+        .to_str()
+        .unwrap()
+        .to_string()
+}
+
+fn snouty_docs() -> Command {
+    let mut cmd = snouty();
+    cmd.env("ANTITHESIS_DOCS_DB_PATH", fixture_db());
+    cmd
+}
+
+#[test]
+fn docs_search_returns_results() {
+    snouty_docs()
+        .args(["docs", "--offline", "search", "docker"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("/docs/guides/docker_basics/"))
+        .stdout(predicate::str::contains("Docker basics"));
+}
+
+#[test]
+fn docs_env_db_path_implies_offline() {
+    snouty_docs()
+        .env("ANTITHESIS_DOCS_URL", "http://127.0.0.1:1")
+        .args(["docs", "search", "docker"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("/docs/guides/docker_basics/"))
+        .stderr(predicate::str::contains("failed to update docs").not());
+}
+
+#[test]
+fn docs_search_json_format() {
+    let output = snouty_docs()
+        .args(["docs", "--offline", "search", "--format", "json", "sdk"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let stdout = String::from_utf8(output).unwrap();
+    let parsed: serde_json::Value =
+        serde_json::from_str(stdout.trim()).expect("stdout should be valid JSON");
+    assert!(parsed.is_array());
+    let arr = parsed.as_array().unwrap();
+    assert!(!arr.is_empty());
+    let first = &arr[0];
+    assert_eq!(
+        first.get("path").and_then(|v| v.as_str()),
+        Some("/docs/sdk/python_sdk/")
+    );
+    assert_eq!(
+        first.get("title").and_then(|v| v.as_str()),
+        Some("Python SDK")
+    );
+    assert!(
+        first
+            .get("snippet")
+            .and_then(|v| v.as_str())
+            .is_some_and(|snippet| snippet.contains("sdk-related result"))
+    );
+}
+
+#[test]
+fn docs_search_respects_limit() {
+    let output = snouty_docs()
+        .args([
+            "docs",
+            "--offline",
+            "search",
+            "--format",
+            "json",
+            "--limit",
+            "2",
+            "test",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let stdout = String::from_utf8(output).unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
+    assert!(parsed.as_array().unwrap().len() <= 2);
+}
+
+#[test]
+fn docs_search_no_query_fails() {
+    snouty_docs()
+        .args(["docs", "--offline", "search"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("search query required"));
+}
+
+#[test]
+fn docs_search_no_results() {
+    snouty_docs()
+        .args(["docs", "--offline", "search", "xyznonexistent999"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("No results found"));
+}
+
+#[test]
+fn docs_show_existing_page() {
+    snouty_docs()
+        .args(["docs", "--offline", "show", "getting_started"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("# Setup guide"))
+        .stdout(predicate::str::contains("Docker Compose"));
+}
+
+#[test]
+fn docs_show_strips_leading_slash() {
+    snouty_docs()
+        .args(["docs", "--offline", "show", "/getting_started/"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("# Setup guide"));
+}
+
+#[test]
+fn docs_show_strips_docs_prefix() {
+    snouty_docs()
+        .args(["docs", "--offline", "show", "docs/getting_started"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("# Setup guide"));
+}
+
+#[test]
+fn docs_show_missing_page_suggests() {
+    snouty_docs()
+        .args(["docs", "--offline", "show", "nonexistent_page"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("page not found"));
+}
+
+#[test]
+fn docs_show_partial_match_suggests() {
+    snouty_docs()
+        .args(["docs", "--offline", "show", "sdk"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("Did you mean"));
+}
+
+#[test]
+fn docs_sqlite_prints_path() {
+    snouty_docs()
+        .args(["docs", "--offline", "sqlite"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(fixture_db()));
+}
+
+#[test]
+fn docs_search_multi_word_query() {
+    snouty_docs()
+        .args(["docs", "--offline", "search", "fault", "injection"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "/docs/environment/fault_injection/",
+        ))
+        .stdout(predicate::str::contains("Fault injection"));
 }
 
 #[test]

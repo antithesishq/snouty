@@ -40,10 +40,7 @@ fn parse_query_terms(query: &str) -> Vec<String> {
     let mut skip_next = false;
 
     // Handle NEAR(...) and quoted phrases by extracting inner tokens
-    let normalized = query
-        .replace("NEAR(", " ")
-        .replace(')', " ")
-        .replace('"', " ");
+    let normalized = query.replace("NEAR(", " ").replace([')', '"'], " ");
 
     for token in normalized.split_whitespace() {
         if skip_next {
@@ -109,9 +106,7 @@ fn flatten_markdown(content: &str) -> String {
             }
             Event::End(ref tag) if !is_inline_end(tag) => {
                 depth = depth.saturating_sub(1);
-                if depth == 0 && !result.is_empty() && !result.ends_with(' ') {
-                    result.push(' ');
-                } else if depth > 0 && !result.is_empty() && !result.ends_with(' ') {
+                if !result.is_empty() && !result.ends_with(' ') {
                     result.push(' ');
                 }
             }
@@ -181,10 +176,8 @@ fn proximity_score(hit: &Hit, hits: &[Hit]) -> usize {
         }
         let distance = if other.start >= hit.end {
             other.start - hit.end
-        } else if hit.start >= other.end {
-            hit.start - other.end
         } else {
-            0 // overlapping
+            hit.start.saturating_sub(other.end)
         };
         if distance <= PROXIMITY_WINDOW {
             seen.insert(other.term_idx);
@@ -218,8 +211,27 @@ fn pick_best_hit(hits: &[Hit], multi_term: bool) -> Option<usize> {
 
 // --- Step 5-6: Extract window ---
 
+/// Snap a byte position forward to a char boundary.
+fn snap_forward(text: &str, pos: usize) -> usize {
+    let mut p = pos;
+    while p < text.len() && !text.is_char_boundary(p) {
+        p += 1;
+    }
+    p
+}
+
+/// Snap a byte position backward to a char boundary.
+fn snap_backward(text: &str, pos: usize) -> usize {
+    let mut p = pos;
+    while p > 0 && !text.is_char_boundary(p) {
+        p -= 1;
+    }
+    p
+}
+
 fn adjust_start_to_word_boundary(text: &str, pos: usize) -> usize {
-    if pos == 0 || text.as_bytes().get(pos).map_or(true, |b| *b == b' ') {
+    let pos = snap_forward(text, pos);
+    if pos == 0 || pos >= text.len() || text.as_bytes()[pos] == b' ' {
         return pos;
     }
     // Find next space forward from pos
@@ -231,10 +243,11 @@ fn adjust_start_to_word_boundary(text: &str, pos: usize) -> usize {
 }
 
 fn adjust_end_to_word_boundary(text: &str, pos: usize) -> usize {
+    let pos = snap_backward(text, pos);
     if pos >= text.len() {
         return text.len();
     }
-    if text.as_bytes().get(pos).map_or(true, |b| *b == b' ') {
+    if pos == 0 || text.as_bytes()[pos] == b' ' {
         return pos;
     }
     // Find previous space backward from pos

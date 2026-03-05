@@ -171,16 +171,33 @@ async fn cmd_run(args: RunArgs) -> Result<()> {
         podman::build_and_push_config_image(&config_dir, &image_ref)?;
     }
 
-    launch_webhook(&args.webhook, params).await
+    let duration_mins: i64 = params
+        .as_map()
+        .get("antithesis.duration")
+        .and_then(|v| v.as_str())
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0);
+
+    launch_webhook(&args.webhook, params).await?;
+
+    let eta = Local::now() + Duration::minutes(duration_mins + 10);
+    eprintln!(
+        "\nExpect a report email from Antithesis around {}",
+        eta.format("%b %-d at %-I:%M %p")
+    );
+
+    Ok(())
 }
 
 async fn cmd_api_webhook(webhook: String, args: Vec<String>, use_stdin: bool) -> Result<()> {
     let params = get_params(args, use_stdin, false)?;
     params.validate_test_params()?;
-    launch_webhook(&webhook, params).await
+    let body = launch_webhook(&webhook, params).await?;
+    println!("{}", body);
+    Ok(())
 }
 
-async fn launch_webhook(webhook: &str, params: Params) -> Result<()> {
+async fn launch_webhook(webhook: &str, params: Params) -> Result<String> {
     // Print params to stderr for user visibility (with sensitive values redacted)
     eprintln!(
         "\nRequesting Antithesis test run with params:\n{}",
@@ -199,20 +216,7 @@ async fn launch_webhook(webhook: &str, params: Params) -> Result<()> {
     debug!("response status: {}, body:\n{}", status, body);
 
     if status.is_success() {
-        // Estimate when the report email will arrive
-        let duration_mins: i64 = params
-            .as_map()
-            .get("antithesis.duration")
-            .and_then(|v| v.as_str())
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(0);
-        let eta = Local::now() + Duration::minutes(duration_mins + 10);
-        eprintln!(
-            "\nExpect a report email from Antithesis around {}",
-            eta.format("%b %-d at %-I:%M %p")
-        );
-
-        Ok(())
+        Ok(body)
     } else {
         bail!("API error: {} - {}", status.as_u16(), body)
     }

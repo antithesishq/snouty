@@ -704,6 +704,79 @@ fn api_webhook_cli_args_override_stdin_json() {
 }
 
 #[test]
+fn api_webhook_success_outputs_valid_json() {
+    let mock_url = start_mock_server(r#"{"session_id": "abc123", "status": "launched"}"#, 200);
+
+    let output = snouty_with_mock(&mock_url)
+        .args([
+            "api",
+            "webhook",
+            "-w",
+            "basic_test",
+            "--antithesis.duration",
+            "30",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let stdout = String::from_utf8(output).unwrap();
+    let parsed: serde_json::Value =
+        serde_json::from_str(stdout.trim()).expect("stdout should be valid JSON");
+    assert!(parsed.is_object());
+}
+
+#[test]
+fn api_webhook_error_outputs_string_on_stderr() {
+    let mock_url = start_mock_server(r#"{"error": "something went wrong"}"#, 500);
+
+    snouty_with_mock(&mock_url)
+        .args([
+            "api",
+            "webhook",
+            "-w",
+            "basic_test",
+            "--antithesis.duration",
+            "30",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("API error: 500"))
+        .stdout(predicate::str::is_empty());
+}
+
+#[test]
+fn api_webhook_success_does_not_print_email_eta() {
+    let mock_url = start_mock_server(r#"{"ok": true}"#, 200);
+
+    snouty_with_mock(&mock_url)
+        .args([
+            "api",
+            "webhook",
+            "-w",
+            "basic_test",
+            "--antithesis.duration",
+            "30",
+        ])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("Expect a report email").not());
+}
+
+#[test]
+fn run_prints_email_eta() {
+    let mock_url = start_mock_server(r#"{"ok": true}"#, 200);
+
+    snouty_with_mock(&mock_url)
+        .args(["run", "-w", "basic_test", "--duration", "30"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("Expect a report email"));
+}
+
+#[test]
 fn api_webhook_no_config_flag() {
     // -c/--config should not be accepted on `api webhook`
     snouty()

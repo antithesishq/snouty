@@ -55,7 +55,7 @@ jobs:
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           claude_args: |
-            --model claude-opus-4-6
+            --model opus
             --allowed-tools Read,Glob,Grep,'Bash(cargo:*)','Bash(gh issue create:*)'
 
           prompt: |

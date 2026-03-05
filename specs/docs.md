@@ -37,7 +37,9 @@ terminal.
    defaults of `plain` and `10`.
 10. `snouty docs search` uses full-text search over the documentation database
     and ranks title matches above body-only matches when the query is simple
-    enough to support title boosting.
+    enough to support title boosting. For simple conversational queries,
+    filler words such as `what` and `is` do not outweigh the content-bearing
+    terms when ranking search results.
 11. When `search` finds matches in plain format, it prints one result at a time
     with the page path, the page title, and a wrapped snippet containing the
     matched terms.

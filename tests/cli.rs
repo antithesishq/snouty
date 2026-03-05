@@ -1421,6 +1421,14 @@ fn docs_search_multi_word_query() {
 }
 
 #[test]
+fn docs_search_conversational_query_prefers_content_terms() {
+    let results = docs_search_json(&["what", "is", "antithesis"]);
+
+    let first_path = results[0].get("path").and_then(|v| v.as_str());
+    assert_ne!(first_path, Some("/docs/faq/what_is_a_poc/"));
+}
+
+#[test]
 fn debug_reports_api_errors() {
     let mock_url = start_mock_server(r#"{"error": "unauthorized"}"#, 401);
 

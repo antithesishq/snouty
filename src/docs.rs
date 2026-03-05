@@ -10,6 +10,9 @@ mod snippet;
 use crate::cli::{DocsCommands, OutputFormat};
 
 const DEFAULT_DOCS_URL: &str = "https://antithesis.com/docs";
+const SEARCH_STOPWORDS: &[&str] = &[
+    "a", "an", "and", "are", "does", "how", "in", "is", "of", "or", "the", "to", "what",
+];
 
 fn docs_url() -> String {
     let mut base =
@@ -171,10 +174,9 @@ fn atomic_write_db(bytes: &[u8]) -> Result<()> {
 
 use snippet::{MATCH_END, MATCH_START};
 
-/// Build an FTS5 query that matches all terms against the title column.
-/// Only operates on simple queries (alphanumeric terms and spaces).
+/// Split a query into simple terms if it uses plain alphanumeric tokens only.
 /// Returns None for anything containing FTS5 operators or special syntax.
-fn title_match_query(query: &str) -> Option<String> {
+fn simple_query_terms(query: &str) -> Option<Vec<&str>> {
     let terms: Vec<&str> = query.split_whitespace().collect();
     let is_simple = terms.iter().all(|t| {
         t.chars()
@@ -184,6 +186,32 @@ fn title_match_query(query: &str) -> Option<String> {
     if !is_simple {
         return None;
     }
+
+    Some(terms)
+}
+
+/// Normalize simple natural-language queries by dropping filler words so
+/// ranking and title boosts focus on the content-bearing terms.
+fn normalized_query(query: &str) -> String {
+    let Some(terms) = simple_query_terms(query) else {
+        return query.to_string();
+    };
+
+    let filtered: Vec<&str> = terms
+        .iter()
+        .copied()
+        .filter(|term| !SEARCH_STOPWORDS.contains(&term.to_ascii_lowercase().as_str()))
+        .collect();
+    let selected = if filtered.is_empty() { terms } else { filtered };
+
+    selected.join(" ")
+}
+
+/// Build an FTS5 query that matches all terms against the title column.
+/// Only operates on simple queries (alphanumeric terms and spaces).
+/// Returns None for anything containing FTS5 operators or special syntax.
+fn title_match_query(query: &str) -> Option<String> {
+    let terms = simple_query_terms(query)?;
 
     Some(
         terms
@@ -196,8 +224,9 @@ fn title_match_query(query: &str) -> Option<String> {
 
 fn search(query: &str, format: OutputFormat, limit: usize) -> Result<()> {
     let conn = open_db()?;
+    let normalized_query = normalized_query(query);
 
-    let title_query = title_match_query(query);
+    let title_query = title_match_query(&normalized_query);
 
     let order_by = if title_query.is_some() {
         "rank * CASE WHEN pages_fts.rowid IN (
@@ -227,24 +256,30 @@ fn search(query: &str, format: OutputFormat, limit: usize) -> Result<()> {
     // When there's no title query, ?2 is unused but still must be bound
     let title_param = title_query.as_deref().unwrap_or("");
 
+    let fetch_limit = limit.saturating_mul(5).max(limit);
+
     let results: Vec<(String, String, String, bool)> = stmt
-        .query_map(rusqlite::params![query, title_param, limit], |row| {
-            Ok((
-                row.get::<_, String>(0)?, // path
-                row.get::<_, String>(1)?, // title
-                row.get::<_, String>(2)?, // content
-                row.get::<_, bool>(3)?,   // title_boosted
-            ))
-        })?
+        .query_map(
+            rusqlite::params![normalized_query, title_param, fetch_limit],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?, // path
+                    row.get::<_, String>(1)?, // title
+                    row.get::<_, String>(2)?, // content
+                    row.get::<_, bool>(3)?,   // title_boosted
+                ))
+            },
+        )?
         .collect::<std::result::Result<Vec<_>, _>>()?;
 
     let results: Vec<_> = results
         .into_iter()
+        .take(limit)
         .map(|(path, title, content, title_boosted)| {
             (
                 path,
                 title,
-                snippet::extract_snippet(&content, query, 300, title_boosted),
+                snippet::extract_snippet(&content, &normalized_query, 300, title_boosted),
             )
         })
         .collect();

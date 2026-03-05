@@ -1559,6 +1559,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "ptree"
+version = "0.5.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "289cfd20ebec0e7ff2572e370dd7a1c9973ba666d3c38c5e747de0a4ada21f17"
+dependencies = [
+ "serde",
+]
+
+[[package]]
 name = "pulldown-cmark"
 version = "0.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1902,6 +1911,7 @@ dependencies = [
  "jsonschema",
  "log",
  "predicates",
+ "ptree",
  "pulldown-cmark",
  "regex",
  "reqwest",

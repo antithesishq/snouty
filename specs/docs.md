@@ -10,7 +10,7 @@ terminal.
 
 ## Shared Behavior
 
-1. The command is exposed as `snouty docs` with `search`, `show`, and `sqlite`
+1. The command is exposed as `snouty docs` with `search`, `show`, `tree`, and `sqlite`
    subcommands.
 2. Unless `--offline` is passed to `snouty docs`, the command checks for an
    updated documentation database before running the requested subcommand.
@@ -63,6 +63,35 @@ terminal.
 3. If `show` cannot find an exact page, it fails with the normalized `docs/...`
    path in the error message and includes up to 10 similar page-path
    suggestions when available.
+
+## `snouty docs tree`
+
+1. `snouty docs tree [filter]` reads all stored documentation page paths and
+   prints a directory-like tree derived from those paths.
+2. The command renders the tree with high-quality Unicode tree-drawing
+   characters via a dedicated tree-rendering library rather than ad hoc ASCII
+   formatting.
+3. The printed tree omits the synthetic `docs` root. Top-level documentation
+   sections appear as the root nodes in the output.
+4. `snouty docs tree` supports `--depth <n>`. When `--depth` is omitted, the
+   command prints the full tree. When provided, it limits output to nodes at
+   depth `n` or shallower, where top-level sections are depth 1.
+5. `snouty docs tree [filter]` accepts an optional positional filter string.
+   When present, the command includes any page whose normalized path or page
+   title contains the filter string using case-insensitive substring matching,
+   and includes the ancestor nodes required to place matching pages in the
+   tree.
+6. Tree output is page-path based: it does not inspect markdown headings or
+   infer an intra-page outline.
+7. Leaf nodes show both the page path segment and the page title. Internal
+   nodes that correspond to real pages also show both the segment and the page
+   title. Internal nodes that correspond only to path groupings are shown
+   without synthesized titles.
+8. When a path segment is both a page and a parent of other pages, the node is
+   rendered once using the path segment and page title, with child pages nested
+   beneath it.
+9. If the filter matches no pages, the command exits successfully and prints a
+   "No results found" message to stderr.
 
 ## `snouty docs sqlite`
 

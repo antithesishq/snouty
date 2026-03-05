@@ -1400,6 +1400,70 @@ fn docs_show_partial_match_suggests() {
 }
 
 #[test]
+fn docs_tree_omits_docs_root_and_shows_titles() {
+    snouty_docs()
+        .args(["docs", "--offline", "tree"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("docs\n").not())
+        .stdout(predicate::str::contains("guides\n"))
+        .stdout(predicate::str::contains("docker_basics - Docker basics\n"))
+        .stdout(predicate::str::contains(
+            "multiverse_debugging - Multiverse debugging\n",
+        ))
+        .stdout(predicate::str::contains("overview - Overview\n"))
+        .stdout(predicate::str::contains("python_sdk - Python SDK\n"))
+        .stdout(predicate::str::contains("┗"))
+        .stdout(predicate::str::contains("━"));
+}
+
+#[test]
+fn docs_tree_depth_limits_output() {
+    snouty_docs()
+        .args(["docs", "--offline", "tree", "--depth", "1"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("guides\n"))
+        .stdout(predicate::str::contains(
+            "multiverse_debugging - Multiverse debugging\n",
+        ))
+        .stdout(predicate::str::contains("docker_basics - Docker basics").not())
+        .stdout(predicate::str::contains("overview - Overview").not());
+}
+
+#[test]
+fn docs_tree_filter_matches_paths_and_preserves_ancestors() {
+    snouty_docs()
+        .args(["docs", "--offline", "tree", "overview"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "multiverse_debugging - Multiverse debugging\n",
+        ))
+        .stdout(predicate::str::contains("overview - Overview\n"))
+        .stdout(predicate::str::contains("guides").not());
+}
+
+#[test]
+fn docs_tree_filter_matches_titles_case_insensitively() {
+    snouty_docs()
+        .args(["docs", "--offline", "tree", "setup GUIDE"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("getting_started - Setup guide\n"))
+        .stdout(predicate::str::contains("docker_basics").not());
+}
+
+#[test]
+fn docs_tree_no_results_prints_message() {
+    snouty_docs()
+        .args(["docs", "--offline", "tree", "no-such-doc-page"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("No results found"));
+}
+
+#[test]
 fn docs_sqlite_prints_path() {
     snouty_docs()
         .args(["docs", "--offline", "sqlite"])

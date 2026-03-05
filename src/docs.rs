@@ -1,7 +1,11 @@
+use std::collections::BTreeMap;
 use std::fs;
+use std::io::Write as _;
 use std::path::PathBuf;
 
 use color_eyre::eyre::{OptionExt, Result, bail};
+use ptree::print_config::UTF_CHARS_BOLD;
+use ptree::{PrintConfig, write_tree_with};
 use rusqlite::{Connection, OpenFlags};
 use tempfile::NamedTempFile;
 
@@ -75,6 +79,7 @@ pub async fn cmd_docs(command: DocsCommands, offline: bool) -> Result<()> {
             search(&query.join(" "), format, limit)
         }
         DocsCommands::Sqlite => sqlite_path(),
+        DocsCommands::Tree { depth, filter } => tree(depth.map(|d| d.get()), filter.as_deref()),
         DocsCommands::Show { path } => show(&path),
     }
 }
@@ -457,4 +462,153 @@ fn show(path: &str) -> Result<()> {
 fn sqlite_path() -> Result<()> {
     println!("{}", db_path()?.display());
     Ok(())
+}
+
+#[derive(Default)]
+struct TreeNode {
+    page_title: Option<String>,
+    children: BTreeMap<String, TreeNode>,
+}
+
+impl TreeNode {
+    /// Insert a documentation page into the path-derived tree, creating any
+    /// missing intermediate grouping nodes along the way.
+    fn insert_page(&mut self, path: &str, title: String) {
+        let mut node = self;
+        for segment in normalized_path(path)
+            .split('/')
+            .filter(|segment| !segment.is_empty())
+        {
+            node = node.children.entry(segment.to_string()).or_default();
+        }
+        node.page_title = Some(title);
+    }
+}
+
+/// Load documentation pages from SQLite, optionally filter the tree, and print
+/// a Unicode-rendered view of the remaining paths.
+fn tree(depth: Option<usize>, filter: Option<&str>) -> Result<()> {
+    let conn = open_db()?;
+    let mut stmt = conn.prepare("SELECT path, title FROM pages ORDER BY path")?;
+    let mut root = TreeNode::default();
+    for page in stmt.query_map([], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+    })? {
+        let (path, title) = page?;
+        root.insert_page(&path, title);
+    }
+
+    let filter = filter.map(str::to_ascii_lowercase);
+    if let Some(filter) = &filter {
+        root = filter_tree(root, "", filter).unwrap_or_default();
+    }
+
+    if root.children.is_empty() {
+        if let Some(label) = filter.as_deref() {
+            eprintln!("No results found for '{label}'");
+        } else {
+            eprintln!("No documentation pages found");
+        }
+        return Ok(());
+    }
+
+    print!("{}", render_forest(&root, depth)?);
+    Ok(())
+}
+
+/// Render each top-level node as its own tree so the synthetic `docs` root is
+/// omitted from the user-facing output.
+fn render_forest(root: &TreeNode, max_depth: Option<usize>) -> Result<String> {
+    if root.children.is_empty() {
+        return Ok(String::new());
+    }
+
+    let config = PrintConfig {
+        indent: 4,
+        characters: UTF_CHARS_BOLD.into(),
+        ..PrintConfig::default()
+    };
+    let mut rendered = Vec::new();
+    let child_count = root.children.len();
+
+    for (index, (name, child)) in root.children.iter().enumerate() {
+        let tree = render_tree(name, child, 1, max_depth);
+        write_tree_with(&tree, &mut rendered, &config)?;
+        if index + 1 != child_count {
+            rendered.write_all(b"\n")?;
+        }
+    }
+
+    Ok(String::from_utf8(rendered)?)
+}
+
+/// Convert a `TreeNode` into a printable tree item, stopping recursion once
+/// the requested depth limit is reached.
+fn render_tree(
+    name: &str,
+    node: &TreeNode,
+    current_depth: usize,
+    max_depth: Option<usize>,
+) -> ptree::item::StringItem {
+    let mut children = Vec::new();
+    if max_depth.is_none_or(|limit| current_depth < limit) {
+        for (child_name, child) in &node.children {
+            children.push(render_tree(child_name, child, current_depth + 1, max_depth));
+        }
+    }
+
+    ptree::item::StringItem {
+        text: node_label(name, node),
+        children,
+    }
+}
+
+/// Render a node label as `segment - title` when the segment is a real page;
+/// otherwise keep the plain grouping name.
+fn node_label(name: &str, node: &TreeNode) -> String {
+    node.page_title
+        .as_deref()
+        .map_or_else(|| name.to_string(), |title| page_label(name, title))
+}
+
+/// Format the display text for a page node.
+fn page_label(name: &str, title: &str) -> String {
+    format!("{name} - {title}")
+}
+
+/// Prune the tree to pages whose normalized path or title contains the filter,
+/// preserving ancestor nodes needed to show matching descendants.
+fn filter_tree(node: TreeNode, path_prefix: &str, filter: &str) -> Option<TreeNode> {
+    let mut kept_children = BTreeMap::new();
+    for (name, child) in node.children {
+        let child_path = if path_prefix.is_empty() {
+            name.clone()
+        } else {
+            format!("{path_prefix}/{name}")
+        };
+        if let Some(filtered_child) = filter_tree(child, &child_path, filter) {
+            kept_children.insert(name, filtered_child);
+        }
+    }
+
+    let page_matches = node.page_title.as_ref().is_some_and(|title| {
+        path_prefix.to_ascii_lowercase().contains(filter)
+            || title.to_ascii_lowercase().contains(filter)
+    });
+
+    if page_matches || !kept_children.is_empty() {
+        Some(TreeNode {
+            page_title: node.page_title,
+            children: kept_children,
+        })
+    } else {
+        None
+    }
+}
+
+/// Normalize documentation paths so tree construction consistently works with
+/// stored `docs/...` paths and user-facing relative paths.
+fn normalized_path(path: &str) -> String {
+    let trimmed = path.trim_matches('/');
+    trimmed.strip_prefix("docs/").unwrap_or(trimmed).to_string()
 }

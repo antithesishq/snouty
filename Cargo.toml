@@ -25,6 +25,7 @@ dirs = "6"
 tempfile = "3"
 pulldown-cmark = "0.13"
 regex = "1"
+ptree = { version = "0.5.2", default-features = false }
 
 [build-dependencies]
 clap = { version = "4", features = ["derive"] }

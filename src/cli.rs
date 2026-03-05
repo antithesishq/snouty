@@ -114,6 +114,25 @@ Examples:
 
 Useful for directly querying the documentation database with external tools."#)]
     Sqlite,
+
+    /// Print a tree of documentation paths
+    #[command(long_about = r#"Print a tree of documentation paths
+
+Builds a directory-like tree from all page paths stored in the documentation database.
+
+Examples:
+  snouty docs tree
+  snouty docs tree --depth 2
+  snouty docs tree sdk"#)]
+    Tree {
+        /// Limit output to nodes at this depth or shallower
+        #[arg(long)]
+        depth: Option<std::num::NonZeroUsize>,
+
+        /// Optional case-insensitive filter applied to page paths and titles
+        filter: Option<String>,
+    },
+
     /// Show full contents of a documentation page
     #[command(long_about = r#"Show full contents of a documentation page
 

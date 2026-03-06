@@ -1,4 +1,4 @@
-use clap::{Args, Parser, Subcommand, ValueEnum};
+use clap::{Args, Parser, Subcommand};
 
 #[derive(Parser)]
 #[command(name = "snouty")]
@@ -98,12 +98,16 @@ Examples:
   snouty docs search "config image"
   snouty docs --offline search sdk setup"#)]
     Search {
-        /// Output format
-        #[arg(long, default_value = "plain")]
-        format: OutputFormat,
+        /// Print search results as JSON
+        #[arg(short = 'j', long)]
+        json: bool,
+
+        /// Print only matching page paths, one per line
+        #[arg(short = 'l', long)]
+        list: bool,
 
         /// Maximum number of results to return
-        #[arg(long, default_value = "10")]
+        #[arg(short = 'n', long, default_value = "10")]
         limit: usize,
 
         /// Search query
@@ -142,14 +146,6 @@ If the exact path is not found, suggests similar pages."#)]
         /// Page path (e.g. "getting_started/overview")
         path: String,
     },
-}
-
-#[derive(Clone, Copy, Debug, ValueEnum)]
-pub enum OutputFormat {
-    /// Plain text output (colorized automatically when outputting to a TTY; suppress with NO_COLOR)
-    Plain,
-    /// JSON output
-    Json,
 }
 
 #[derive(Args)]

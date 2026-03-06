@@ -11,7 +11,7 @@ use tempfile::NamedTempFile;
 
 mod snippet;
 
-use crate::cli::{DocsCommands, OutputFormat};
+use crate::cli::DocsCommands;
 
 const DEFAULT_DOCS_URL: &str = "https://antithesis.com/docs";
 const SEARCH_STOPWORDS: &[&str] = &[
@@ -70,13 +70,14 @@ pub async fn cmd_docs(command: DocsCommands, offline: bool) -> Result<()> {
     match command {
         DocsCommands::Search {
             query,
-            format,
+            json,
+            list,
             limit,
         } => {
             if query.is_empty() {
                 bail!("search query required");
             }
-            search(&query.join(" "), format, limit)
+            search(&query.join(" "), json, list, limit)
         }
         DocsCommands::Sqlite => sqlite_path(),
         DocsCommands::Tree { depth, filter } => tree(depth.map(|d| d.get()), filter.as_deref()),
@@ -227,7 +228,7 @@ fn title_match_query(query: &str) -> Option<String> {
     )
 }
 
-fn search(query: &str, format: OutputFormat, limit: usize) -> Result<()> {
+fn search(query: &str, json: bool, list: bool, limit: usize) -> Result<()> {
     let conn = open_db()?;
     let normalized_query = normalized_query(query);
 
@@ -289,16 +290,42 @@ fn search(query: &str, format: OutputFormat, limit: usize) -> Result<()> {
         })
         .collect();
 
-    if results.is_empty() {
+    if json {
+        if results.is_empty() {
+            print_empty_json_array()?;
+        } else if list {
+            print_path_json(&results)?;
+        } else {
+            print_json(&results)?;
+        }
+    } else if results.is_empty() {
         eprintln!("No results found for '{}'", query);
-        return Ok(());
+    } else if list {
+        print_paths(&results);
+    } else {
+        print_results(&results);
     }
 
-    match format {
-        OutputFormat::Json => print_json(&results)?,
-        OutputFormat::Plain => print_results(&results),
-    }
+    Ok(())
+}
 
+fn print_paths(results: &[(String, String, String)]) {
+    for (path, _, _) in results {
+        println!("{path}");
+    }
+}
+
+fn print_empty_json_array() -> Result<()> {
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&Vec::<serde_json::Value>::new())?
+    );
+    Ok(())
+}
+
+fn print_path_json(results: &[(String, String, String)]) -> Result<()> {
+    let items: Vec<&str> = results.iter().map(|(path, _, _)| path.as_str()).collect();
+    println!("{}", serde_json::to_string_pretty(&items)?);
     Ok(())
 }
 

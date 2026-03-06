@@ -38,8 +38,8 @@ terminal.
 
 1. `snouty docs search` requires at least one query term. Multiple positional
    terms are joined with spaces into a single full-text search query.
-2. `snouty docs search` supports `--format plain|json` and `--limit <n>`, with
-   defaults of `plain` and `10`.
+2. `snouty docs search` supports `--json`/`-j`, `--limit`/`-n <n>`, and `--list`/`-l`,
+   with default plain-text output and a default limit of `10`.
 3. `snouty docs search` uses full-text search over the documentation database
    and ranks title matches above body-only matches when the query is simple
    enough to support title boosting. For simple conversational queries, filler
@@ -48,10 +48,17 @@ terminal.
 4. When `search` finds matches in plain format, it prints one result at a time
    with the page path, the page title, and a wrapped snippet containing the
    matched terms.
-5. When `search` finds matches in JSON format, it prints a JSON array. Each
-   result object includes `path`, `title`, and `snippet`.
-6. When `search` finds no matches, it exits successfully and prints a "No
-   results found" message to stderr.
+5. When `search` runs with `--json`/`-j`, stdout is always JSON. If `--json` is
+   present, any non-JSON stdout is a bug.
+6. In JSON mode, `search` prints a JSON array. Each result object includes
+   `path`, `title`, and `snippet`, unless another option narrows the JSON value
+   to a different JSON shape.
+7. When `search` runs with `--list`/`-l` and `--json`/`-j` is not present, it
+   returns only the matching page paths.
+8. When `search` finds no matches and `--json`/`-j` is present, it exits
+   successfully and prints an empty JSON array to stdout.
+9. When `search` finds no matches and `--json`/`-j` is not present, it exits
+   successfully and prints a "No results found" message to stderr.
 
 ## `snouty docs show`
 

@@ -186,7 +186,7 @@ fn cached_docs_db_path(cache_dir: &TempDir) -> std::path::PathBuf {
 }
 
 fn docs_search_json(query_args: &[&str]) -> Vec<serde_json::Value> {
-    let mut args = vec!["docs", "--offline", "search", "--format", "json"];
+    let mut args = vec!["docs", "--offline", "search", "--json"];
     args.extend_from_slice(query_args);
 
     let output = snouty_docs()
@@ -1254,7 +1254,7 @@ fn docs_update_requires_etag_header() {
 }
 
 #[test]
-fn docs_search_json_format() {
+fn docs_search_json_flag() {
     let results = docs_search_json(&["sdk"]);
     assert!(!results.is_empty());
 
@@ -1281,16 +1281,7 @@ fn docs_search_respects_limit() {
     assert!(full_results.len() > 2);
 
     let limited_output = snouty_docs()
-        .args([
-            "docs",
-            "--offline",
-            "search",
-            "--format",
-            "json",
-            "--limit",
-            "2",
-            "test",
-        ])
+        .args(["docs", "--offline", "search", "--json", "-n", "2", "test"])
         .assert()
         .success()
         .get_output()
@@ -1304,6 +1295,52 @@ fn docs_search_respects_limit() {
 
     assert_eq!(limited_results.len(), 2);
     assert_eq!(limited_results, full_results[..2]);
+}
+
+#[test]
+fn docs_search_format_flag_is_rejected() {
+    snouty_docs()
+        .args(["docs", "--offline", "search", "--format", "json", "sdk"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("unexpected argument '--format'"));
+}
+
+#[test]
+fn docs_search_list_outputs_only_paths() {
+    snouty_docs()
+        .args(["docs", "--offline", "search", "--list", "-n", "2", "test"])
+        .assert()
+        .success()
+        .stdout(concat!(
+            "/docs/reference/test_patterns/\n",
+            "/docs/environment/fault_injection/\n",
+        ))
+        .stderr(predicate::str::is_empty());
+}
+
+#[test]
+fn docs_search_list_json_outputs_path_array() {
+    snouty_docs()
+        .args([
+            "docs",
+            "--offline",
+            "search",
+            "--list",
+            "--json",
+            "-n",
+            "2",
+            "test",
+        ])
+        .assert()
+        .success()
+        .stdout(concat!(
+            "[\n",
+            "  \"/docs/reference/test_patterns/\",\n",
+            "  \"/docs/environment/fault_injection/\"\n",
+            "]\n",
+        ))
+        .stderr(predicate::str::is_empty());
 }
 
 #[test]
@@ -1322,6 +1359,33 @@ fn docs_search_no_results() {
         .assert()
         .success()
         .stderr(predicate::str::contains("No results found"));
+}
+
+#[test]
+fn docs_search_json_no_results_returns_empty_array() {
+    snouty_docs()
+        .args(["docs", "--offline", "search", "--json", "xyznonexistent999"])
+        .assert()
+        .success()
+        .stdout("[]\n")
+        .stderr(predicate::str::is_empty());
+}
+
+#[test]
+fn docs_search_list_json_no_results_returns_empty_array() {
+    snouty_docs()
+        .args([
+            "docs",
+            "--offline",
+            "search",
+            "--list",
+            "--json",
+            "xyznonexistent999",
+        ])
+        .assert()
+        .success()
+        .stdout("[]\n")
+        .stderr(predicate::str::is_empty());
 }
 
 #[test]

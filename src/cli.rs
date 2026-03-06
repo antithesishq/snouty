@@ -73,6 +73,80 @@ Using Moment.from (copy from triage report):
 
     /// Check for and install updates
     Update,
+
+    /// Search Antithesis documentation
+    Docs {
+        /// Don't check for documentation updates
+        #[arg(long)]
+        offline: bool,
+
+        #[command(subcommand)]
+        command: DocsCommands,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum DocsCommands {
+    /// Search the documentation
+    #[command(long_about = r#"Search the documentation
+
+Uses full-text search across the Antithesis documentation database.
+The database is automatically updated before each search unless --offline is passed to the docs command.
+
+Examples:
+  snouty docs search fault injection
+  snouty docs search "config image"
+  snouty docs --offline search sdk setup"#)]
+    Search {
+        /// Print search results as JSON
+        #[arg(short = 'j', long)]
+        json: bool,
+
+        /// Print only matching page paths, one per line
+        #[arg(short = 'l', long)]
+        list: bool,
+
+        /// Maximum number of results to return
+        #[arg(short = 'n', long, default_value = "10")]
+        limit: usize,
+
+        /// Search query
+        query: Vec<String>,
+    },
+    /// Print the path to the cached SQLite database
+    #[command(long_about = r#"Print the path to the cached SQLite database
+
+Useful for directly querying the documentation database with external tools."#)]
+    Sqlite,
+
+    /// Print a tree of documentation paths
+    #[command(long_about = r#"Print a tree of documentation paths
+
+Builds a directory-like tree from all page paths stored in the documentation database.
+
+Examples:
+  snouty docs tree
+  snouty docs tree --depth 2
+  snouty docs tree -d 2
+  snouty docs tree sdk"#)]
+    Tree {
+        /// Limit output to nodes at this depth or shallower
+        #[arg(short = 'd', long)]
+        depth: Option<std::num::NonZeroUsize>,
+
+        /// Optional case-insensitive filter applied to page paths and titles
+        filter: Option<String>,
+    },
+
+    /// Show full contents of a documentation page
+    #[command(long_about = r#"Show full contents of a documentation page
+
+Displays the full markdown content of a page by its path.
+If the exact path is not found, suggests similar pages."#)]
+    Show {
+        /// Page path (e.g. "getting_started/overview")
+        path: String,
+    },
 }
 
 #[derive(Args)]

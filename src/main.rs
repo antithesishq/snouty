@@ -1,5 +1,6 @@
 pub mod api;
 pub mod cli;
+pub mod docs;
 pub mod moment;
 pub mod params;
 pub mod podman;
@@ -90,6 +91,7 @@ async fn main() -> Result<()> {
             Ok(())
         }
         Commands::Update => cmd_update(),
+        Commands::Docs { offline, command } => docs::cmd_docs(command, offline).await,
     }
 }
 

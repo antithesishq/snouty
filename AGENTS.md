@@ -41,3 +41,11 @@ If `cargo nextest` is available, always prefer to use `cargo nextest run` for te
 3. test, check, and format code before finishing
 
 Golden rule: always leave the project in a better state than when you started.
+
+## Rust coding conventions
+
+- All code must be simple and idiomatic
+- Avoid taking a ref & cloning a value when you can just take the value
+- Avoid unnecessary heap allocations
+- Use `eyre` for errors
+- Use `log` for debug logging

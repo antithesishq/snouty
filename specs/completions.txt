@@ -1,0 +1,30 @@
+# snouty completions
+#
+# Generate shell completion scripts.
+
+# 1. Bash completions produce a valid completion script.
+snouty completions bash
+stdout '.*complete.*'
+stdout '.*snouty.*'
+
+# 2. Zsh completions produce a valid completion script.
+snouty completions zsh
+stdout '.*compdef.*'
+stdout '.*snouty.*'
+
+# 3. Fish completions produce a valid completion script.
+snouty completions fish
+stdout '.*complete.*'
+stdout '.*snouty.*'
+
+# 4. PowerShell completions produce a valid completion script.
+snouty completions powershell
+stdout '.*snouty.*'
+
+# 5. Elvish completions produce a valid completion script.
+snouty completions elvish
+stdout '.*snouty.*'
+
+# 6. Unsupported shells are rejected.
+! snouty completions nushell
+stderr 'unsupported shell: nushell.*'

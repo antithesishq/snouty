@@ -361,7 +361,7 @@ fn run_param_cannot_override_typed_flag() {
         ])
         .assert()
         .failure()
-        .stderr(predicate::str::contains("cannot be set via --param"));
+        .stderr(predicate::str::contains("cannot be overridden via --param"));
 }
 
 #[test]
@@ -574,7 +574,7 @@ fn run_config_conflicts_with_param_config_image() {
         ])
         .assert()
         .failure()
-        .stderr(predicate::str::contains("cannot be set via --param"));
+        .stderr(predicate::str::contains("cannot be overridden via --param"));
 }
 
 // === Tests for `api webhook` command (raw args) ===

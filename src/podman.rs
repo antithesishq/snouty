@@ -1,6 +1,7 @@
 use std::io::Write;
 use std::path::Path;
 use std::process::Command;
+use std::sync::OnceLock;
 
 use chrono::Utc;
 use color_eyre::{
@@ -12,8 +13,6 @@ use color_eyre::{
 ///
 /// The directory must contain a `docker-compose.yaml` file.
 pub fn build_and_push_config_image(config_dir: &Path, image_ref: &str) -> Result<()> {
-    validate_config_dir(config_dir)?;
-
     let runtime = find_container_runtime()?;
     validate_compose_file(&runtime, config_dir)?;
 
@@ -21,14 +20,13 @@ pub fn build_and_push_config_image(config_dir: &Path, image_ref: &str) -> Result
     container_build(&runtime, config_dir, image_ref)?;
 
     eprintln!("Pushing config image: {}", image_ref);
-    container_push(&runtime, image_ref)?;
-
-    eprintln!("Config image pushed successfully");
+    image_push(&runtime, image_ref)?;
+    eprintln!("Config image pushed successfully: {image_ref}");
     Ok(())
 }
 
 /// Check that the directory exists and contains a docker-compose file.
-fn validate_config_dir(config_dir: &Path) -> Result<()> {
+pub fn validate_config_dir(config_dir: &Path) -> Result<()> {
     if !config_dir.is_dir() {
         bail!(
             "config directory error: '{}' is not a directory",
@@ -86,28 +84,40 @@ pub fn generate_image_ref(registry: &str) -> String {
     )
 }
 
-/// Find a container runtime, preferring podman over docker.
-fn find_container_runtime() -> Result<String> {
-    // Try podman first
-    match Command::new("podman").arg("--version").output() {
-        Ok(output) if output.status.success() => return Ok("podman".to_string()),
-        Ok(_) => {} // podman found but failed, try docker
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {} // not installed
-        Err(e) => bail!("failed to check podman: {e}"),
-    }
+static CONTAINER_RUNTIME: OnceLock<Result<String, String>> = OnceLock::new();
 
-    // Fall back to docker
-    match Command::new("docker").arg("--version").output() {
-        Ok(output) if output.status.success() => {
-            log::error!("podman not found, falling back to docker");
-            Ok("docker".to_string())
-        }
-        Ok(_) => bail!("'docker --version' failed; unable to find working container runtime"),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            bail!("neither podman nor docker is installed")
-        }
-        Err(e) => bail!("failed to check docker: {e}"),
-    }
+/// Find a container runtime, preferring podman over docker.
+/// The result is cached so detection only runs once.
+fn find_container_runtime() -> Result<&'static str> {
+    CONTAINER_RUNTIME
+        .get_or_init(|| {
+            // Try podman first
+            match Command::new("podman").arg("--version").output() {
+                Ok(output) if output.status.success() => return Ok("podman".to_string()),
+                Ok(_) => {} // podman found but failed, try docker
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {} // not installed
+                Err(e) => return Err(format!("failed to check podman: {e}")),
+            }
+
+            // Fall back to docker
+            match Command::new("docker").arg("--version").output() {
+                Ok(output) if output.status.success() => {
+                    log::error!("podman not found, falling back to docker");
+                    Ok("docker".to_string())
+                }
+                Ok(_) => Err(
+                    "'docker --version' failed; unable to find working container runtime"
+                        .to_string(),
+                ),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                    Err("neither podman nor docker is installed".to_string())
+                }
+                Err(e) => Err(format!("failed to check docker: {e}")),
+            }
+        })
+        .as_ref()
+        .map(|s| s.as_str())
+        .map_err(|e| eyre!("{e}"))
 }
 
 /// Build a scratch image containing the config directory contents.
@@ -143,7 +153,7 @@ fn container_build(runtime: &str, config_dir: &Path, image_ref: &str) -> Result<
 }
 
 /// Push the image to the registry.
-fn container_push(runtime: &str, image_ref: &str) -> Result<()> {
+fn image_push(runtime: &str, image_ref: &str) -> Result<()> {
     let output = Command::new(runtime)
         .args(["push", image_ref])
         .output()
@@ -155,6 +165,74 @@ fn container_push(runtime: &str, image_ref: &str) -> Result<()> {
         return Err(eyre!("'{runtime} push' failed"))
             .with_section(move || stdout.trim().to_string().header("Stdout:"))
             .with_section(move || stderr.trim().to_string().header("Stderr:"));
+    }
+
+    Ok(())
+}
+
+/// Extract image references from the docker-compose.yaml in the given config directory.
+/// Uses `{runtime} compose config` to resolve env variable substitutions.
+fn extract_image_refs(runtime: &str, config_dir: &Path) -> Result<Vec<String>> {
+    let output = Command::new(runtime)
+        .args(["compose", "config"])
+        .current_dir(config_dir)
+        .output()
+        .wrap_err(format!("failed to run '{runtime} compose config'"))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        return Err(eyre!("'{runtime} compose config' failed"))
+            .with_section(move || stdout.trim().to_string().header("Stdout:"))
+            .with_section(move || stderr.trim().to_string().header("Stderr:"));
+    }
+
+    let contents = String::from_utf8_lossy(&output.stdout);
+    parse_compose_images(&contents)
+}
+
+/// Parse image references from resolved compose config YAML.
+fn parse_compose_images(yaml: &str) -> Result<Vec<String>> {
+    let doc: serde_yaml::Value =
+        serde_yaml::from_str(yaml).wrap_err("failed to parse docker-compose.yaml")?;
+
+    let mut images = Vec::new();
+    if let Some(services) = doc.get("services").and_then(|s| s.as_mapping()) {
+        for (_name, service) in services {
+            if let Some(image) = service.get("image").and_then(|i| i.as_str()) {
+                let image = image.to_string();
+                if !images.contains(&image) {
+                    images.push(image);
+                }
+            }
+        }
+    }
+
+    Ok(images)
+}
+
+/// Filter images to only those that should be pushed: images whose name
+/// starts with the given registry prefix. Bare images (no `/`) are skipped.
+fn filter_pushable_images<'a>(images: &'a [String], registry: &str) -> Vec<&'a str> {
+    let registry = registry.trim_end_matches('/');
+    let prefix = format!("{registry}/");
+    images
+        .iter()
+        .filter(|img| img.starts_with(&prefix))
+        .map(|s| s.as_str())
+        .collect()
+}
+
+/// Push compose images that match the registry before building the config image.
+pub fn push_compose_images(config_dir: &Path, registry: &str) -> Result<()> {
+    let runtime = find_container_runtime()?;
+    let images = extract_image_refs(runtime, config_dir)?;
+    let pushable = filter_pushable_images(&images, registry);
+
+    for image in pushable {
+        eprintln!("Pushing image: {image}");
+        image_push(runtime, image)?;
+        eprintln!("Image pushed: {image}");
     }
 
     Ok(())
@@ -194,5 +272,110 @@ mod tests {
             image_ref.starts_with("registry.example.com/repo/snouty-config:"),
             "got: {image_ref}"
         );
+    }
+
+    #[test]
+    fn parse_compose_images_basic() {
+        let yaml = "\
+services:
+  app:
+    image: us-central1-docker.pkg.dev/proj/repo/app:v1
+  sidecar:
+    image: us-central1-docker.pkg.dev/proj/repo/sidecar:latest
+  builder:
+    build:
+      context: ./builder
+";
+        let refs = parse_compose_images(yaml).unwrap();
+        assert_eq!(
+            refs,
+            vec![
+                "us-central1-docker.pkg.dev/proj/repo/app:v1",
+                "us-central1-docker.pkg.dev/proj/repo/sidecar:latest",
+            ]
+        );
+    }
+
+    #[test]
+    fn parse_compose_images_deduplicates() {
+        let yaml = "\
+services:
+  a:
+    image: myimage:latest
+  b:
+    image: myimage:latest
+";
+        let refs = parse_compose_images(yaml).unwrap();
+        assert_eq!(refs, vec!["myimage:latest"]);
+    }
+
+    #[test]
+    fn parse_compose_images_no_services() {
+        let yaml = "version: '3'\n";
+        let refs = parse_compose_images(yaml).unwrap();
+        assert!(refs.is_empty());
+    }
+
+    #[test]
+    fn extract_image_refs_resolves_env() {
+        // Skip if no container runtime is available.
+        if find_container_runtime().is_err() {
+            eprintln!("skipping: no container runtime available");
+            return;
+        }
+        let runtime = find_container_runtime().unwrap();
+
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join(".env"),
+            "REPOSITORY=us-central1-docker.pkg.dev/proj/repo\nIMAGES_TAG=v2\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("docker-compose.yaml"),
+            "\
+services:
+  app:
+    image: ${REPOSITORY}/app:${IMAGES_TAG}
+  sidecar:
+    image: docker.io/library/nginx:latest
+",
+        )
+        .unwrap();
+
+        let refs = extract_image_refs(runtime, dir.path()).unwrap();
+        assert_eq!(
+            refs,
+            vec![
+                "us-central1-docker.pkg.dev/proj/repo/app:v2",
+                "docker.io/library/nginx:latest",
+            ]
+        );
+    }
+
+    #[test]
+    fn filter_pushable_images_matching_registry() {
+        let images = vec![
+            "us-central1-docker.pkg.dev/proj/repo/app:v1".to_string(),
+            "ghcr.io/other/image:latest".to_string(),
+            "myorg/foo:bar".to_string(),
+            "app:latest".to_string(),
+        ];
+        let result = filter_pushable_images(&images, "us-central1-docker.pkg.dev/proj/repo");
+        assert_eq!(result, vec!["us-central1-docker.pkg.dev/proj/repo/app:v1"]);
+    }
+
+    #[test]
+    fn filter_pushable_images_trailing_slash() {
+        let images = vec!["us-central1-docker.pkg.dev/proj/repo/app:v1".to_string()];
+        let result = filter_pushable_images(&images, "us-central1-docker.pkg.dev/proj/repo/");
+        assert_eq!(result, vec!["us-central1-docker.pkg.dev/proj/repo/app:v1"]);
+    }
+
+    #[test]
+    fn filter_pushable_images_empty() {
+        let images: Vec<String> = vec![];
+        let result = filter_pushable_images(&images, "registry.example.com/repo");
+        assert!(result.is_empty());
     }
 }

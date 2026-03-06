@@ -154,8 +154,20 @@ fn container_build(runtime: &str, config_dir: &Path, image_ref: &str) -> Result<
 
 /// Push the image to the registry.
 fn image_push(runtime: &str, image_ref: &str) -> Result<()> {
+    let mut args = vec!["push"];
+
+    // Podman requires --tls-verify=false for plain HTTP registries.
+    // Docker treats localhost as insecure automatically.
+    if runtime == "podman"
+        && (image_ref.starts_with("localhost") || image_ref.starts_with("127.0.0.1"))
+    {
+        args.push("--tls-verify=false");
+    }
+
+    args.push(image_ref);
+
     let output = Command::new(runtime)
-        .args(["push", image_ref])
+        .args(&args)
         .output()
         .wrap_err(format!("failed to run '{runtime} push'"))?;
 
@@ -241,6 +253,114 @@ pub fn push_compose_images(config_dir: &Path, registry: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use wiremock::matchers::{method, path_regex};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    /// Start a minimal mock OCI registry that accepts image pushes.
+    ///
+    /// Handles the OCI Distribution Spec endpoints needed for `podman push`:
+    /// - `GET  /v2/`                        → 200 (API version check)
+    /// - `HEAD /v2/<name>/blobs/<digest>`    → 404 (blob not found)
+    /// - `HEAD /v2/<name>/manifests/<ref>`   → 404 (manifest not found)
+    /// - `POST /v2/<name>/blobs/uploads/`    → 202 (initiate upload)
+    /// - `PATCH  /v2/_uploads/<uuid>`        → 202 (chunked upload)
+    /// - `PUT    /v2/_uploads/<uuid>?digest=…` → 201 (complete upload)
+    /// - `PUT  /v2/<name>/manifests/<ref>`   → 201 (push manifest)
+    ///
+    /// Use `registry.uri().replace("http://", "")` as the registry
+    /// host:port in image references.
+    async fn mock_oci_registry() -> MockServer {
+        let server = MockServer::start().await;
+        let upload_url = format!("{}/v2/_uploads/test-uuid", server.uri());
+
+        // V2 API version check
+        Mock::given(method("GET"))
+            .and(path_regex("^/v2/?$"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("Docker-Distribution-API-Version", "registry/2.0"),
+            )
+            .mount(&server)
+            .await;
+
+        // Blob existence check → not found
+        Mock::given(method("HEAD"))
+            .and(path_regex("^/v2/.+/blobs/"))
+            .respond_with(ResponseTemplate::new(404))
+            .mount(&server)
+            .await;
+
+        // Manifest existence check → not found
+        Mock::given(method("HEAD"))
+            .and(path_regex("^/v2/.+/manifests/"))
+            .respond_with(ResponseTemplate::new(404))
+            .mount(&server)
+            .await;
+
+        // Initiate blob upload
+        Mock::given(method("POST"))
+            .and(path_regex("^/v2/.+/blobs/uploads"))
+            .respond_with(
+                ResponseTemplate::new(202)
+                    .insert_header("Location", &upload_url)
+                    .insert_header("Docker-Upload-UUID", "test-uuid")
+                    .insert_header("Range", "0-0"),
+            )
+            .mount(&server)
+            .await;
+
+        // Chunked blob upload
+        Mock::given(method("PATCH"))
+            .and(path_regex("^/v2/_uploads/"))
+            .respond_with(
+                ResponseTemplate::new(202)
+                    .insert_header("Location", &upload_url)
+                    .insert_header("Range", "0-999999"),
+            )
+            .mount(&server)
+            .await;
+
+        // Complete blob upload
+        Mock::given(method("PUT"))
+            .and(path_regex("^/v2/_uploads/"))
+            .respond_with(ResponseTemplate::new(201))
+            .mount(&server)
+            .await;
+
+        // Push manifest
+        Mock::given(method("PUT"))
+            .and(path_regex("^/v2/.+/manifests/"))
+            .respond_with(ResponseTemplate::new(201))
+            .mount(&server)
+            .await;
+
+        server
+    }
+
+    #[tokio::test]
+    async fn build_and_push_to_mock_registry() {
+        if find_container_runtime().is_err() {
+            eprintln!("skipping: no container runtime available");
+            return;
+        }
+
+        let registry = mock_oci_registry().await;
+        let addr = registry.uri().replace("http://", "");
+
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("docker-compose.yaml"),
+            "services:\n  app:\n    image: test:latest\n",
+        )
+        .unwrap();
+
+        let image_ref = format!("{addr}/test/snouty-config:test");
+        build_and_push_config_image(dir.path(), &image_ref).unwrap_or_else(|e| panic!("{e:?}"));
+
+        // Clean up the local image.
+        let runtime = find_container_runtime().unwrap();
+        let _ = Command::new(runtime).args(["rmi", &image_ref]).output();
+    }
 
     #[test]
     fn validate_config_dir_nonexistent() {

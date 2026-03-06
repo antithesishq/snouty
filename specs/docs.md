@@ -80,9 +80,10 @@ terminal.
    formatting.
 3. The printed tree omits the synthetic `docs` root. Top-level documentation
    sections appear as the root nodes in the output.
-4. `snouty docs tree` supports `--depth <n>`. When `--depth` is omitted, the
-   command prints the full tree. When provided, it limits output to nodes at
-   depth `n` or shallower, where top-level sections are depth 1.
+4. `snouty docs tree` supports `--depth <n>` and `-d <n>`. When the depth flag
+   is omitted, the command prints the full tree. When provided, it limits
+   output to nodes at depth `n` or shallower, where top-level sections are
+   depth 1.
 5. `snouty docs tree [filter]` accepts an optional positional filter string.
    When present, the command includes any page whose normalized path or page
    title contains the filter string using case-insensitive substring matching,

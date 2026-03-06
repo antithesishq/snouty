@@ -1496,6 +1496,20 @@ fn docs_tree_depth_limits_output() {
 }
 
 #[test]
+fn docs_tree_depth_short_flag_limits_output() {
+    snouty_docs()
+        .args(["docs", "--offline", "tree", "-d", "1"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("guides\n"))
+        .stdout(predicate::str::contains(
+            "multiverse_debugging - Multiverse debugging\n",
+        ))
+        .stdout(predicate::str::contains("docker_basics - Docker basics").not())
+        .stdout(predicate::str::contains("overview - Overview").not());
+}
+
+#[test]
 fn docs_tree_filter_matches_paths_and_preserves_ancestors() {
     snouty_docs()
         .args(["docs", "--offline", "tree", "overview"])

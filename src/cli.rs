@@ -127,10 +127,11 @@ Builds a directory-like tree from all page paths stored in the documentation dat
 Examples:
   snouty docs tree
   snouty docs tree --depth 2
+  snouty docs tree -d 2
   snouty docs tree sdk"#)]
     Tree {
         /// Limit output to nodes at this depth or shallower
-        #[arg(long)]
+        #[arg(short = 'd', long)]
         depth: Option<std::num::NonZeroUsize>,
 
         /// Optional case-insensitive filter applied to page paths and titles

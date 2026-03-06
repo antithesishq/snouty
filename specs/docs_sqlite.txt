@@ -1,0 +1,9 @@
+# snouty docs sqlite
+#
+# Requirements:
+#  1. `snouty docs sqlite` prints the path to the cached SQLite database
+#     for direct usage by consumers.
+
+setup-docs-db
+snouty docs --offline sqlite
+stdout 'docs\.db'

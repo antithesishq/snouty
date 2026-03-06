@@ -1,0 +1,60 @@
+# snouty docs — shared behavior
+#
+# Search and inspect cached Antithesis documentation from the command line.
+#
+# As a developer, I want to search and read Antithesis documentation from the
+# command line so that I can quickly find relevant docs without leaving my
+# terminal.
+#
+# Not tested here (kept in Rust — require HTTP header inspection or
+# stateful mock server):
+#   - Unless --offline is passed, the command checks for an updated
+#     documentation database before running the requested subcommand.
+#   - Documentation update requests send a User-Agent header in the form
+#     snouty/<version> (<os>; <arch>; rust<rust-version>).
+#   - Cached documentation is stored at docs.db under Snouty's cache
+#     directory, along with an ETag file used to avoid re-downloading an
+#     unchanged database.
+#   - If a docs update fails and a cached database already exists, the
+#     command prints a warning to stderr and continues with the cached
+#     database. If no database exists yet, the command fails.
+
+# 1. When --offline is passed and no database exists (no ANTITHESIS_DOCS_DB_PATH
+#    set), the command tells the user to remove --offline.
+env HOME=$WORK/empty-home
+! snouty docs --offline search docker
+stderr 'Documentation database not found. Remove --offline to download it.'
+
+# 2. The command is exposed as `snouty docs` with search, show, tree, and
+#    sqlite subcommands.
+setup-docs-db
+snouty docs --offline search docker
+stdout 'docker.*'
+
+snouty docs --offline show getting_started
+stdout '# Setup guide.*'
+
+snouty docs --offline tree
+stdout 'guides.*'
+
+snouty docs --offline sqlite
+stdout 'docs\.db'
+
+# 3. ANTITHESIS_DOCS_URL overrides the base URL and ANTITHESIS_DOCS_DB_PATH
+#    overrides the local database path. When ANTITHESIS_DOCS_DB_PATH is set,
+#    Snouty treats docs access as offline and does not attempt to update the
+#    database first. The downloaded database is marked readonly via
+#    filesystem permissions.
+env ANTITHESIS_DOCS_URL=http://127.0.0.1:1
+snouty docs search docker
+stdout '/docs/guides/docker_basics/.*'
+! stderr 'failed to update docs.*'
+
+# 4. After any automatic update attempt, if the documentation database is
+#    still missing then search, show, and sqlite fail with guidance tailored
+#    to the reason updates were skipped: point ANTITHESIS_DOCS_DB_PATH at an
+#    existing file.
+env ANTITHESIS_DOCS_DB_PATH=/tmp/does-not-exist-docs.db
+! snouty docs sqlite
+stderr 'Documentation database not found at /tmp/does-not-exist-docs.db'
+stderr 'ANTITHESIS_DOCS_DB_PATH.*'

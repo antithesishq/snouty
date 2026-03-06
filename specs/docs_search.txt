@@ -1,0 +1,67 @@
+# snouty docs search
+#
+# Not tested here (kept in Rust):
+#   - Result ordering / title boosting.
+#   - JSON structure validation (path, title, snippet fields).
+
+# 1. Requires at least one query term. Multiple positional terms are joined
+#    with spaces into a single full-text search query.
+setup-docs-db
+! snouty docs --offline search
+stderr 'search query required.*'
+
+# 1b. Multiple positional terms joined into single query.
+snouty docs --offline search fault injection
+stdout '/docs/environment/fault_injection/.*'
+stdout 'Fault injection.*'
+
+# 2. When search finds matches in plain format, it prints one result at a
+#    time with the page path, the page title, and a wrapped snippet
+#    containing the matched terms.
+snouty docs --offline search docker
+stdout '/docs/guides/docker_basics/.*'
+stdout 'Docker basics.*'
+
+# 3. When search runs with --json/-j, stdout is always JSON. If --json is
+#    present, any non-JSON stdout is a bug.
+snouty docs --offline search --json sdk
+stdout '"path".*'
+stdout '"title".*'
+stdout '"snippet".*'
+
+# 4. Supports --limit/-n <n> with a default limit of 10.
+snouty docs --offline search --json -n 2 test
+stdout '"path".*'
+
+# 5. When search runs with --list/-l and --json/-j is not present, it
+#    returns only the matching page paths.
+snouty docs --offline search --list -n 2 test
+stdout '/docs/reference/test_patterns/.*'
+stdout '/docs/environment/fault_injection/.*'
+! stderr .+
+
+# 5b. --list --json outputs a JSON array of paths.
+snouty docs --offline search --list --json -n 2 test
+stdout '/docs/reference/test_patterns/.*'
+stdout '/docs/environment/fault_injection/.*'
+! stderr .+
+
+# 6. When search finds no matches and --json/-j is not present, it exits
+#    successfully and prints a "No results found" message to stderr.
+snouty docs --offline search xyznonexistent999
+stderr 'No results found.*'
+
+# 7. When search finds no matches and --json/-j is present, it exits
+#    successfully and prints an empty JSON array to stdout.
+snouty docs --offline search --json xyznonexistent999
+stdout '\[\]'
+! stderr .+
+
+# 7b. --list --json with no results also produces an empty array.
+snouty docs --offline search --list --json xyznonexistent999
+stdout '\[\]'
+! stderr .+
+
+# 8. --format flag is rejected (not a valid flag).
+! snouty docs --offline search --format json sdk
+stderr 'unexpected argument.*'

@@ -1,0 +1,9 @@
+# snouty update
+#
+# Check for updates and print manual update instructions when the
+# snouty-update helper binary is not available.
+
+# 1. Without snouty-update in PATH, prints version and release URL.
+snouty update
+stderr 'snouty \d+\.\d+\.\d+'
+stderr 'https://github.com/antithesishq/snouty/releases'

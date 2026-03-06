@@ -1,8 +1,8 @@
 name: Spec Maintenance
 
 on:
-  schedule:
-    - cron: "0 3 * * *" # 3am UTC (7/8pm PT, 3/4am London)
+  # schedule:
+  #   # - cron: "0 3 * * *" # 3am UTC (7/8pm PT, 3/4am London)
   workflow_dispatch: # allow manual triggers
 
 jobs:

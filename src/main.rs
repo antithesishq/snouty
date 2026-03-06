@@ -136,11 +136,14 @@ async fn cmd_run(args: RunArgs) -> Result<()> {
     }
 
     let config_image_ref = if let Some(config_dir) = args.config {
+        podman::validate_config_dir(&config_dir)?;
+
         let registry = std::env::var("ANTITHESIS_REPOSITORY")
             .wrap_err("missing environment variable: ANTITHESIS_REPOSITORY")?;
+
         let image_ref = podman::generate_image_ref(&registry);
         params.insert("antithesis.config_image", &image_ref);
-        Some((config_dir, image_ref))
+        Some((config_dir, registry, image_ref))
     } else {
         None
     };
@@ -153,13 +156,19 @@ async fn cmd_run(args: RunArgs) -> Result<()> {
         for key in extra.as_map().keys() {
             if params.contains_key(key) {
                 bail!(
-                    "invalid arguments: '{}' cannot be set via --param (use the dedicated flag instead)",
+                    "invalid arguments: '{}' cannot be overridden via --param (use the dedicated flag instead)",
                     key
                 );
             }
         }
 
         params.merge(extra);
+    }
+
+    if params.contains_key("antithesis.images") {
+        bail!(
+            "invalid argument: do not specify antithesis.images as --param, use api webhook instead"
+        );
     }
 
     if params.is_empty() {
@@ -169,8 +178,9 @@ async fn cmd_run(args: RunArgs) -> Result<()> {
     params.validate_test_params()?;
 
     // Build and push config image (after validation passes)
-    if let Some((config_dir, image_ref)) = config_image_ref {
-        podman::build_and_push_config_image(&config_dir, &image_ref)?;
+    if let Some((config_dir, registry, config_image)) = config_image_ref {
+        podman::push_compose_images(&config_dir, &registry)?;
+        podman::build_and_push_config_image(&config_dir, &config_image)?;
     }
 
     let duration_mins: i64 = params
@@ -193,13 +203,14 @@ async fn cmd_run(args: RunArgs) -> Result<()> {
 
 async fn cmd_api_webhook(webhook: String, args: Vec<String>, use_stdin: bool) -> Result<()> {
     let params = get_params(args, use_stdin, false)?;
-    params.validate_test_params()?;
     let body = launch_webhook(&webhook, params).await?;
     println!("{}", body);
     Ok(())
 }
 
 async fn launch_webhook(webhook: &str, params: Params) -> Result<String> {
+    params.validate_test_params()?;
+
     // Print params to stderr for user visibility (with sensitive values redacted)
     eprintln!(
         "\nRequesting Antithesis test run with params:\n{}",

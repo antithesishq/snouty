@@ -14,13 +14,13 @@ use color_eyre::{
 /// The directory must contain a `docker-compose.yaml` file.
 pub fn build_and_push_config_image(config_dir: &Path, image_ref: &str) -> Result<()> {
     let runtime = find_container_runtime()?;
-    validate_compose_file(&runtime, config_dir)?;
+    validate_compose_file(runtime, config_dir)?;
 
     eprintln!("Building config image: {}", image_ref);
-    container_build(&runtime, config_dir, image_ref)?;
+    container_build(runtime, config_dir, image_ref)?;
 
     eprintln!("Pushing config image: {}", image_ref);
-    image_push(&runtime, image_ref)?;
+    image_push(runtime, image_ref)?;
     eprintln!("Config image pushed successfully: {image_ref}");
     Ok(())
 }

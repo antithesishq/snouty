@@ -3,7 +3,7 @@ pub mod cli;
 pub mod docs;
 pub mod moment;
 pub mod params;
-pub mod podman;
+pub mod container;
 
 use std::io::{self, ErrorKind, Read};
 use std::process::Command;
@@ -136,12 +136,12 @@ async fn cmd_run(args: RunArgs) -> Result<()> {
     }
 
     let config_image_ref = if let Some(config_dir) = args.config {
-        podman::validate_config_dir(&config_dir)?;
+        container::validate_config_dir(&config_dir)?;
 
         let registry = std::env::var("ANTITHESIS_REPOSITORY")
             .wrap_err("missing environment variable: ANTITHESIS_REPOSITORY")?;
 
-        let image_ref = podman::generate_image_ref(&registry);
+        let image_ref = container::generate_image_ref(&registry);
         params.insert("antithesis.config_image", &image_ref);
         Some((config_dir, registry, image_ref))
     } else {
@@ -179,8 +179,9 @@ async fn cmd_run(args: RunArgs) -> Result<()> {
 
     // Build and push config image (after validation passes)
     if let Some((config_dir, registry, config_image)) = config_image_ref {
-        podman::push_compose_images(&config_dir, &registry)?;
-        podman::build_and_push_config_image(&config_dir, &config_image)?;
+        let rt = container::runtime()?;
+        rt.push_compose_images(&config_dir, &registry)?;
+        rt.build_and_push_config_image(&config_dir, &config_image)?;
     }
 
     let duration_mins: i64 = params

@@ -9,20 +9,56 @@ use color_eyre::{
     eyre::{Context, Result, bail, eyre},
 };
 
-/// Build and push a config image from a local directory using a pre-generated image reference.
-///
-/// The directory must contain a `docker-compose.yaml` file.
-pub fn build_and_push_config_image(config_dir: &Path, image_ref: &str) -> Result<()> {
-    let runtime = find_container_runtime()?;
-    validate_compose_file(runtime, config_dir)?;
+/// Trait representing a container runtime (podman or docker).
+pub trait ContainerRuntime: Send + Sync {
+    /// The CLI command name (e.g. "podman" or "docker").
+    fn name(&self) -> &str;
 
-    eprintln!("Building config image: {}", image_ref);
-    container_build(runtime, config_dir, image_ref)?;
+    /// Build and push a config image from a local directory.
+    /// The directory must contain a `docker-compose.yaml` file.
+    fn build_and_push_config_image(&self, config_dir: &Path, image_ref: &str) -> Result<()> {
+        let runtime = self.name();
+        validate_compose_file(runtime, config_dir)?;
 
-    eprintln!("Pushing config image: {}", image_ref);
-    image_push(runtime, image_ref)?;
-    eprintln!("Config image pushed successfully: {image_ref}");
-    Ok(())
+        eprintln!("Building config image: {}", image_ref);
+        container_build(runtime, config_dir, image_ref)?;
+
+        eprintln!("Pushing config image: {}", image_ref);
+        image_push(runtime, image_ref)?;
+        eprintln!("Config image pushed successfully: {image_ref}");
+        Ok(())
+    }
+
+    /// Push compose images that match the registry.
+    fn push_compose_images(&self, config_dir: &Path, registry: &str) -> Result<()> {
+        let runtime = self.name();
+        let images = extract_image_refs(runtime, config_dir)?;
+        let pushable = filter_pushable_images(&images, registry);
+
+        for image in pushable {
+            eprintln!("Pushing image: {image}");
+            image_push(runtime, image)?;
+            eprintln!("Image pushed: {image}");
+        }
+
+        Ok(())
+    }
+}
+
+pub struct PodmanRuntime;
+
+impl ContainerRuntime for PodmanRuntime {
+    fn name(&self) -> &str {
+        "podman"
+    }
+}
+
+pub struct DockerRuntime;
+
+impl ContainerRuntime for DockerRuntime {
+    fn name(&self) -> &str {
+        "docker"
+    }
 }
 
 /// Check that the directory exists and contains a docker-compose file.
@@ -84,16 +120,19 @@ pub fn generate_image_ref(registry: &str) -> String {
     )
 }
 
-static CONTAINER_RUNTIME: OnceLock<Result<String, String>> = OnceLock::new();
-
-/// Find a container runtime, preferring podman over docker.
+/// Return the auto-detected global container runtime, preferring podman over docker.
+///
 /// The result is cached so detection only runs once.
-fn find_container_runtime() -> Result<&'static str> {
-    CONTAINER_RUNTIME
+pub fn runtime() -> Result<&'static dyn ContainerRuntime> {
+    static INSTANCE: OnceLock<Result<Box<dyn ContainerRuntime>, String>> = OnceLock::new();
+
+    INSTANCE
         .get_or_init(|| {
             // Try podman first
             match Command::new("podman").arg("--version").output() {
-                Ok(output) if output.status.success() => return Ok("podman".to_string()),
+                Ok(output) if output.status.success() => {
+                    return Ok(Box::new(PodmanRuntime));
+                }
                 Ok(_) => {} // podman found but failed, try docker
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {} // not installed
                 Err(e) => return Err(format!("failed to check podman: {e}")),
@@ -103,7 +142,7 @@ fn find_container_runtime() -> Result<&'static str> {
             match Command::new("docker").arg("--version").output() {
                 Ok(output) if output.status.success() => {
                     log::error!("podman not found, falling back to docker");
-                    Ok("docker".to_string())
+                    Ok(Box::new(DockerRuntime))
                 }
                 Ok(_) => Err(
                     "'docker --version' failed; unable to find working container runtime"
@@ -116,7 +155,7 @@ fn find_container_runtime() -> Result<&'static str> {
             }
         })
         .as_ref()
-        .map(|s| s.as_str())
+        .map(|b| b.as_ref())
         .map_err(|e| eyre!("{e}"))
 }
 
@@ -235,21 +274,6 @@ fn filter_pushable_images<'a>(images: &'a [String], registry: &str) -> Vec<&'a s
         .collect()
 }
 
-/// Push compose images that match the registry before building the config image.
-pub fn push_compose_images(config_dir: &Path, registry: &str) -> Result<()> {
-    let runtime = find_container_runtime()?;
-    let images = extract_image_refs(runtime, config_dir)?;
-    let pushable = filter_pushable_images(&images, registry);
-
-    for image in pushable {
-        eprintln!("Pushing image: {image}");
-        image_push(runtime, image)?;
-        eprintln!("Image pushed: {image}");
-    }
-
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -339,10 +363,13 @@ mod tests {
 
     #[tokio::test]
     async fn build_and_push_to_mock_registry() {
-        if find_container_runtime().is_err() {
-            eprintln!("skipping: no container runtime available");
-            return;
-        }
+        let rt = match runtime() {
+            Ok(rt) => rt,
+            Err(_) => {
+                eprintln!("skipping: no container runtime available");
+                return;
+            }
+        };
 
         let registry = mock_oci_registry().await;
         let addr = registry.uri().replace("http://", "");
@@ -355,11 +382,11 @@ mod tests {
         .unwrap();
 
         let image_ref = format!("{addr}/test/snouty-config:test");
-        build_and_push_config_image(dir.path(), &image_ref).unwrap_or_else(|e| panic!("{e:?}"));
+        rt.build_and_push_config_image(dir.path(), &image_ref)
+            .unwrap_or_else(|e| panic!("{e:?}"));
 
         // Clean up the local image.
-        let runtime = find_container_runtime().unwrap();
-        let _ = Command::new(runtime).args(["rmi", &image_ref]).output();
+        let _ = Command::new(rt.name()).args(["rmi", &image_ref]).output();
     }
 
     #[test]
@@ -438,12 +465,13 @@ services:
 
     #[test]
     fn extract_image_refs_resolves_env() {
-        // Skip if no container runtime is available.
-        if find_container_runtime().is_err() {
-            eprintln!("skipping: no container runtime available");
-            return;
-        }
-        let runtime = find_container_runtime().unwrap();
+        let rt = match runtime() {
+            Ok(rt) => rt,
+            Err(_) => {
+                eprintln!("skipping: no container runtime available");
+                return;
+            }
+        };
 
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(
@@ -463,7 +491,7 @@ services:
         )
         .unwrap();
 
-        let refs = extract_image_refs(runtime, dir.path()).unwrap();
+        let refs = extract_image_refs(rt.name(), dir.path()).unwrap();
         assert_eq!(
             refs,
             vec![

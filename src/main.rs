@@ -180,8 +180,14 @@ async fn cmd_run(args: RunArgs) -> Result<()> {
     // Build and push config image (after validation passes)
     if let Some((config_dir, registry, config_image)) = config_image_ref {
         let rt = container::runtime()?;
-        rt.push_compose_images(&config_dir, &registry)?;
-        rt.build_and_push_config_image(&config_dir, &config_image)?;
+
+        let pinned_images = rt.push_compose_images(&config_dir, &registry)?;
+        if !pinned_images.is_empty() {
+            params.insert("antithesis.images", pinned_images.join(";"));
+        }
+
+        let pinned_config = rt.build_and_push_config_image(&config_dir, &config_image)?;
+        params.insert("antithesis.config_image", pinned_config);
     }
 
     let duration_mins: i64 = params

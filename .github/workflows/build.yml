@@ -46,6 +46,11 @@ jobs:
 
       - uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5 # v2
 
+      - name: Install podman
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq podman
+
       - name: Install Nextest
         run: curl -LsSf https://get.nexte.st/latest/linux | tar zxf - -C /usr/local/bin
 

@@ -1,10 +1,3 @@
-pub mod api;
-pub mod cli;
-pub mod container;
-pub mod docs;
-pub mod moment;
-pub mod params;
-
 use std::io::{self, ErrorKind, Read};
 use std::process::Command;
 
@@ -12,10 +5,13 @@ use chrono::{Duration, Local};
 use clap::Parser;
 use log::{debug, info};
 
-use crate::api::AntithesisApi;
-use crate::cli::{ApiCommands, Cli, Commands, RunArgs};
-use crate::params::Params;
 use color_eyre::eyre::{Context, Result, bail};
+use snouty::api::AntithesisApi;
+use snouty::cli::{ApiCommands, Cli, Commands, RunArgs};
+use snouty::container;
+use snouty::docs;
+use snouty::moment;
+use snouty::params::Params;
 
 fn read_stdin() -> Result<String> {
     let mut buf = String::new();

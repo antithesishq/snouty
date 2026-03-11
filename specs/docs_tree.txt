@@ -1,0 +1,55 @@
+# snouty docs tree
+
+# 1. `snouty docs tree [filter]` reads all stored documentation page paths
+#    and prints a directory-like tree derived from those paths. The printed
+#    tree omits the synthetic docs root — top-level documentation sections
+#    appear as root nodes. The tree uses Unicode tree-drawing characters.
+#    Leaf nodes and real-page internal nodes show both the path segment and
+#    the page title. Grouping-only internal nodes have no title. When a
+#    segment is both a page and a parent, it renders once with children
+#    nested beneath it.
+setup-docs-db
+snouty docs --offline tree
+! stdout '(?m)^docs$'
+stdout 'guides.*'
+stdout 'docker_basics - Docker basics.*'
+stdout 'multiverse_debugging - Multiverse debugging.*'
+stdout 'overview - Overview.*'
+stdout 'python_sdk - Python SDK.*'
+stdout '┗.*'
+stdout '━.*'
+
+# 2. Supports --depth <n> and -d <n>. When the depth flag is omitted, the
+#    command prints the full tree. When provided, it limits output to nodes
+#    at depth n or shallower, where top-level sections are depth 1.
+snouty docs --offline tree --depth 1
+stdout 'guides.*'
+stdout 'multiverse_debugging - Multiverse debugging.*'
+! stdout 'docker_basics - Docker basics.*'
+! stdout 'overview - Overview.*'
+
+# 2b. -d short flag.
+snouty docs --offline tree -d 1
+stdout 'guides.*'
+stdout 'multiverse_debugging - Multiverse debugging.*'
+! stdout 'docker_basics - Docker basics.*'
+! stdout 'overview - Overview.*'
+
+# 3. Accepts an optional positional filter string. When present, the command
+#    includes any page whose normalized path or page title contains the
+#    filter string using case-insensitive substring matching, and includes
+#    the ancestor nodes required to place matching pages in the tree.
+snouty docs --offline tree overview
+stdout 'multiverse_debugging - Multiverse debugging.*'
+stdout 'overview - Overview.*'
+! stdout 'guides.*'
+
+# 3b. Filter matches titles case-insensitively.
+snouty docs --offline tree 'setup GUIDE'
+stdout 'getting_started - Setup guide.*'
+! stdout 'docker_basics.*'
+
+# 4. If the filter matches no pages, the command exits successfully and
+#    prints a "No results found" message to stderr.
+snouty docs --offline tree no-such-doc-page
+stderr 'No results found.*'

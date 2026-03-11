@@ -122,8 +122,10 @@ fn cmd_build_image(
     args: &[String],
 ) -> testscript_rs::Result<()> {
     // Usage: build-image <name:tag> <dir>
-    // Builds a scratch image from <dir> (relative to work_dir), tagged as
+    // Builds a container image from <dir> (relative to work_dir), tagged as
     // {registry}/<name:tag> so it matches compose references.
+    // If <dir> contains a Dockerfile it is used; otherwise a scratch image
+    // containing the directory contents is built.
     // Registry and engine come from the ENGINE_CTX thread-local.
     if args.len() < 2 {
         return Err(err("build-image requires <name:tag> <dir>".to_string()));

@@ -8,6 +8,7 @@ use color_eyre::{
     Section, SectionExt,
     eyre::{Context, Result, bail, eyre},
 };
+use tokio::process::Child;
 
 /// Trait representing a container runtime (podman or docker).
 pub trait ContainerRuntime: Send + Sync {
@@ -21,22 +22,38 @@ pub trait ContainerRuntime: Send + Sync {
     /// (e.g. `example.com/foo/image@sha256:...`).
     fn image_push(&self, image_ref: &str) -> Result<String>;
 
-    /// Build a scratch image containing the directory contents.
+    /// Build a container image from a directory.
+    ///
+    /// If the directory contains a `Dockerfile`, it is used as-is.
+    /// Otherwise a scratch image containing the directory contents is built
+    /// via an implicit `FROM scratch\nCOPY . /\n` Dockerfile.
     fn build_image(&self, config_dir: &Path, image_ref: &str) -> Result<()> {
         let runtime = self.name();
-        let mut child = Command::new(runtime)
-            .args(["build", "-t", image_ref, "-f", "-", "."])
+        let has_dockerfile = config_dir.join("Dockerfile").exists();
+
+        let mut cmd = Command::new(runtime);
+        cmd.args(["build", "-t", image_ref]);
+        if !has_dockerfile {
+            cmd.args(["-f", "-"]);
+        }
+        cmd.arg(".")
             .current_dir(config_dir)
-            .stdin(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped());
+        if !has_dockerfile {
+            cmd.stdin(std::process::Stdio::piped());
+        }
+
+        let mut child = cmd
             .spawn()
             .wrap_err(format!("failed to start '{runtime} build'"))?;
 
-        if let Some(mut stdin) = child.stdin.take() {
-            stdin
-                .write_all(b"FROM scratch\nCOPY . /\n")
-                .wrap_err("failed to write Dockerfile to stdin")?;
+        if !has_dockerfile {
+            if let Some(mut stdin) = child.stdin.take() {
+                stdin
+                    .write_all(b"FROM scratch\nCOPY . /\n")
+                    .wrap_err("failed to write Dockerfile to stdin")?;
+            }
         }
 
         let output = child
@@ -70,11 +87,33 @@ pub trait ContainerRuntime: Send + Sync {
         Ok(pinned)
     }
 
+    /// Run `compose config` to resolve the compose file with env substitutions,
+    /// returning the resolved YAML as a string.
+    fn compose_config(&self, config_dir: &Path) -> Result<String> {
+        let runtime = self.name();
+        let output = Command::new(runtime)
+            .args(["compose", "-f", "docker-compose.yaml", "config"])
+            .current_dir(config_dir)
+            .output()
+            .wrap_err(format!("failed to run '{runtime} compose config'"))?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            return Err(eyre!("'{runtime} compose config' failed"))
+                .with_section(move || stdout.trim().to_string().header("Stdout:"))
+                .with_section(move || stderr.trim().to_string().header("Stderr:"));
+        }
+
+        Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+    }
+
     /// Push compose images that match the registry.
     /// Returns the pinned image reference for each pushed image.
     fn push_compose_images(&self, config_dir: &Path, registry: &str) -> Result<Vec<String>> {
-        let runtime = self.name();
-        let images = extract_image_refs(runtime, config_dir)?;
+        let yaml = self.compose_config(config_dir)?;
+        let entries = parse_compose_config(&yaml)?;
+        let images: Vec<String> = entries.into_iter().map(|(_, img)| img).collect();
         let pushable = filter_pushable_images(&images, registry);
 
         let mut pinned = Vec::new();
@@ -199,7 +238,7 @@ pub fn validate_config_dir(config_dir: &Path) -> Result<()> {
 /// Run `{runtime} compose config` to validate the compose file.
 fn validate_compose_file(runtime: &str, config_dir: &Path) -> Result<()> {
     let output = Command::new(runtime)
-        .args(["compose", "config", "--quiet"])
+        .args(["compose", "-f", "docker-compose.yaml", "config", "--quiet"])
         .current_dir(config_dir)
         .output()
         .wrap_err(format!("failed to run '{runtime} compose config'"))?;
@@ -361,45 +400,24 @@ fn parse_docker_push_digest(stdout: &str) -> Result<String> {
     })
 }
 
-/// Extract image references from the docker-compose.yaml in the given config directory.
-/// Uses `{runtime} compose config` to resolve env variable substitutions.
-fn extract_image_refs(runtime: &str, config_dir: &Path) -> Result<Vec<String>> {
-    let output = Command::new(runtime)
-        .args(["compose", "config"])
-        .current_dir(config_dir)
-        .output()
-        .wrap_err(format!("failed to run '{runtime} compose config'"))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        return Err(eyre!("'{runtime} compose config' failed"))
-            .with_section(move || stdout.trim().to_string().header("Stdout:"))
-            .with_section(move || stderr.trim().to_string().header("Stderr:"));
-    }
-
-    let contents = String::from_utf8_lossy(&output.stdout);
-    parse_compose_images(&contents)
-}
-
-/// Parse image references from resolved compose config YAML.
-fn parse_compose_images(yaml: &str) -> Result<Vec<String>> {
+/// Parse services from resolved compose config YAML.
+/// Returns `(service_name, image)` pairs. Services without an `image` key are omitted.
+pub fn parse_compose_config(yaml: &str) -> Result<Vec<(String, String)>> {
     let doc: serde_yaml::Value =
         serde_yaml::from_str(yaml).wrap_err("failed to parse docker-compose.yaml")?;
 
-    let mut images = Vec::new();
+    let mut entries = Vec::new();
     if let Some(services) = doc.get("services").and_then(|s| s.as_mapping()) {
-        for (_name, service) in services {
-            if let Some(image) = service.get("image").and_then(|i| i.as_str()) {
-                let image = image.to_string();
-                if !images.contains(&image) {
-                    images.push(image);
-                }
+        for (name, service) in services {
+            if let (Some(name), Some(image)) =
+                (name.as_str(), service.get("image").and_then(|i| i.as_str()))
+            {
+                entries.push((name.to_string(), image.to_string()));
             }
         }
     }
 
-    Ok(images)
+    Ok(entries)
 }
 
 /// Filter images to only those that should be pushed: images whose name
@@ -407,11 +425,89 @@ fn parse_compose_images(yaml: &str) -> Result<Vec<String>> {
 fn filter_pushable_images<'a>(images: &'a [String], registry: &str) -> Vec<&'a str> {
     let registry = registry.trim_end_matches('/');
     let prefix = format!("{registry}/");
+    let mut seen = std::collections::HashSet::new();
     images
         .iter()
-        .filter(|img| img.starts_with(&prefix))
+        .filter(|img| img.starts_with(&prefix) && seen.insert(img.as_str()))
         .map(|s| s.as_str())
         .collect()
+}
+
+/// Start `{runtime} compose up` and return the child process plus an async
+/// readable handle for its output.
+///
+/// On Unix a PTY is used so that podman produces proper output; on other
+/// platforms stdout is piped directly.
+#[cfg(unix)]
+pub fn compose_up(
+    runtime: &str,
+    config_dir: &Path,
+    extra_config: &[&Path],
+    args: &[&str],
+) -> Result<(Child, impl tokio::io::AsyncRead + Unpin + use<>)> {
+    let (pty, pts) = pty_process::open().wrap_err("failed to open PTY")?;
+
+    let cmd = pty_process::Command::new(runtime);
+    let cmd = cmd.current_dir(config_dir);
+    let cmd = cmd.args(["compose", "-f", "docker-compose.yaml"]);
+    let cmd = extra_config
+        .iter()
+        .fold(cmd, |cmd, f| cmd.args(["-f", &f.display().to_string()]));
+    let cmd = cmd.arg("up");
+    let cmd = cmd.args(args);
+
+    let child = cmd
+        .spawn(pts)
+        .wrap_err_with(|| format!("failed to start '{runtime} compose up'"))?;
+
+    Ok((child, pty))
+}
+
+/// Start `{runtime} compose up` and return the child process plus an async
+/// readable handle for its output.
+///
+/// On non-Unix platforms stdout is piped directly (no PTY).
+#[cfg(not(unix))]
+pub fn compose_up(
+    runtime: &str,
+    config_dir: &Path,
+    extra_config: &[&Path],
+    args: &[&str],
+) -> Result<(Child, impl tokio::io::AsyncRead + Unpin + use<>)> {
+    let mut cmd = tokio::process::Command::new(runtime);
+    cmd.current_dir(config_dir);
+    cmd.args(["compose", "-f", "docker-compose.yaml"]);
+    for f in extra_config {
+        cmd.args(["-f", &f.display().to_string()]);
+    }
+    cmd.arg("up");
+    cmd.args(args);
+    cmd.stdout(std::process::Stdio::piped());
+    cmd.stderr(std::process::Stdio::inherit());
+
+    let mut child = cmd
+        .spawn()
+        .wrap_err_with(|| format!("failed to start '{runtime} compose up'"))?;
+
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| color_eyre::eyre::eyre!("failed to capture stdout from compose up"))?;
+
+    Ok((child, stdout))
+}
+
+/// Run `{runtime} compose down` for cleanup. Best-effort, ignores errors.
+pub async fn compose_down(runtime: &str, config_dir: &Path, extra_files: &[&Path]) {
+    let mut cmd = tokio::process::Command::new(runtime);
+    cmd.current_dir(config_dir);
+    cmd.args(["compose", "-f", "docker-compose.yaml"]);
+    for f in extra_files {
+        cmd.args(["-f", &f.display().to_string()]);
+    }
+    // Forcibly kill containers after one second.
+    cmd.args(["down", "--timeout", "1"]);
+    let _ = cmd.output().await;
 }
 
 #[cfg(test)]
@@ -451,7 +547,7 @@ mod tests {
     }
 
     #[test]
-    fn parse_compose_images_basic() {
+    fn parse_compose_config_basic() {
         let yaml = "\
 services:
   app:
@@ -462,38 +558,31 @@ services:
     build:
       context: ./builder
 ";
-        let refs = parse_compose_images(yaml).unwrap();
+        let entries = parse_compose_config(yaml).unwrap();
         assert_eq!(
-            refs,
+            entries,
             vec![
-                "us-central1-docker.pkg.dev/proj/repo/app:v1",
-                "us-central1-docker.pkg.dev/proj/repo/sidecar:latest",
+                (
+                    "app".to_string(),
+                    "us-central1-docker.pkg.dev/proj/repo/app:v1".to_string()
+                ),
+                (
+                    "sidecar".to_string(),
+                    "us-central1-docker.pkg.dev/proj/repo/sidecar:latest".to_string()
+                ),
             ]
         );
     }
 
     #[test]
-    fn parse_compose_images_deduplicates() {
-        let yaml = "\
-services:
-  a:
-    image: myimage:latest
-  b:
-    image: myimage:latest
-";
-        let refs = parse_compose_images(yaml).unwrap();
-        assert_eq!(refs, vec!["myimage:latest"]);
-    }
-
-    #[test]
-    fn parse_compose_images_no_services() {
+    fn parse_compose_config_no_services() {
         let yaml = "version: '3'\n";
-        let refs = parse_compose_images(yaml).unwrap();
-        assert!(refs.is_empty());
+        let entries = parse_compose_config(yaml).unwrap();
+        assert!(entries.is_empty());
     }
 
     #[test]
-    fn extract_image_refs_resolves_env() {
+    fn compose_config_resolves_env() {
         let runtimes = available_engines();
         if runtimes.is_empty() {
             eprintln!("skipping: no container runtime available");
@@ -520,9 +609,11 @@ services:
             )
             .unwrap();
 
-            let refs = extract_image_refs(rt.name(), dir.path()).unwrap();
+            let yaml = rt.compose_config(dir.path()).unwrap();
+            let entries = parse_compose_config(&yaml).unwrap();
+            let images: Vec<&str> = entries.iter().map(|(_, img)| img.as_str()).collect();
             assert_eq!(
-                refs,
+                images,
                 vec![
                     "us-central1-docker.pkg.dev/proj/repo/app:v2",
                     "docker.io/library/nginx:latest",
@@ -531,6 +622,23 @@ services:
                 rt.name()
             );
         }
+    }
+
+    #[test]
+    fn filter_pushable_images_deduplicates_non_consecutive() {
+        let images = vec![
+            "registry.example.com/repo/app:v1".to_string(),
+            "registry.example.com/repo/sidecar:latest".to_string(),
+            "registry.example.com/repo/app:v1".to_string(),
+        ];
+        let result = filter_pushable_images(&images, "registry.example.com/repo");
+        assert_eq!(
+            result,
+            vec![
+                "registry.example.com/repo/app:v1",
+                "registry.example.com/repo/sidecar:latest",
+            ]
+        );
     }
 
     #[test]

@@ -1,0 +1,15 @@
+# snouty validate — positive test with container runtime
+#
+# Ensure that validate succeeds when a service emits the setup-complete event.
+
+build-image setup-emitter:latest setup_emitter
+snouty validate config --timeout 30
+stderr 'Setup validation successful.*'
+
+-- setup_emitter/Dockerfile --
+FROM busybox
+CMD sh -c 'echo "{\"antithesis_setup\":{\"status\":\"complete\"}}" >> "$ANTITHESIS_SDK_LOCAL_OUTPUT" && sleep 3600'
+-- config/docker-compose.yaml --
+services:
+  emitter:
+    image: ${ANTITHESIS_REPOSITORY}/setup-emitter:latest

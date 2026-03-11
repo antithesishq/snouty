@@ -217,10 +217,10 @@ pub fn runtime() -> Result<&'static dyn ContainerRuntime> {
             match Command::new("docker").arg("--version").output() {
                 Ok(output) if output.status.success() => {
                     if is_podman_in_disguise("docker") {
-                        log::error!("podman not found as 'podman', but 'docker' is podman");
+                        log::warn!("podman not found as 'podman', but 'docker' is podman");
                         return Ok(Box::new(PodmanRuntime));
                     }
-                    log::error!("podman not found, falling back to docker");
+                    log::warn!("podman not found, falling back to docker");
                     Ok(Box::new(DockerRuntime))
                 }
                 Ok(_) => Err(

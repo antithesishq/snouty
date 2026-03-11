@@ -4,3 +4,4 @@ pub mod container;
 pub mod docs;
 pub mod moment;
 pub mod params;
+pub mod validate;

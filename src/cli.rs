@@ -68,6 +68,17 @@ Using Moment.from (copy from triage report):
         shell: String,
     },
 
+    /// Validate local Antithesis setup
+    #[command(long_about = r#"Validate local Antithesis setup
+
+Runs docker-compose locally and watches for the setup-complete event to confirm
+instrumentation is working.
+
+Example:
+  snouty validate ./config
+  snouty validate ./config --timeout 60"#)]
+    Validate(ValidateArgs),
+
     /// Print version information
     Version,
 
@@ -147,6 +158,16 @@ If the exact path is not found, suggests similar pages."#)]
         /// Page path (e.g. "getting_started/overview")
         path: String,
     },
+}
+
+#[derive(Args)]
+pub struct ValidateArgs {
+    /// Path to config directory containing docker-compose.yaml
+    pub config: std::path::PathBuf,
+
+    /// Timeout in seconds
+    #[arg(long, default_value = "60")]
+    pub timeout: u64,
 }
 
 #[derive(Args)]

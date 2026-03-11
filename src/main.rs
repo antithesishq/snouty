@@ -12,6 +12,7 @@ use snouty::container;
 use snouty::docs;
 use snouty::moment;
 use snouty::params::Params;
+use snouty::validate;
 
 fn read_stdin() -> Result<String> {
     let mut buf = String::new();
@@ -81,6 +82,7 @@ async fn main() -> Result<()> {
             info!("starting debug session");
             cmd_debug(args, stdin).await
         }
+        Commands::Validate(args) => validate::cmd_validate(args).await,
         Commands::Completions { shell } => cmd_completions(shell),
         Commands::Version => {
             println!("snouty {}", env!("CARGO_PKG_VERSION"));

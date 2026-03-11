@@ -50,6 +50,7 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq podman
+          systemctl --user start podman.socket
 
       - name: Install Nextest
         run: curl -LsSf https://get.nexte.st/latest/linux | tar zxf - -C /usr/local/bin
@@ -81,6 +82,9 @@ jobs:
         with:
           token: ${{secrets.GITHUB_TOKEN}}
           persist-credentials: false
+
+      - name: Start podman socket
+        run: systemctl --user start podman.socket
 
       - name: Test
         run: nix-shell --run "cargo nextest run"

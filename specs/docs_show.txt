@@ -1,0 +1,29 @@
+# snouty docs show
+
+# 1. `snouty docs show <path>` prints the full page as markdown, prefixed
+#    by a level-1 heading containing the page title.
+setup-docs-db
+snouty docs --offline show getting_started
+stdout '# Setup guide.*'
+stdout 'Docker Compose.*'
+
+# 2. show normalizes the requested path by trimming leading and trailing /
+#    characters and removing an optional leading docs/ prefix before looking
+#    up the page.
+snouty docs --offline show /getting_started/
+stdout '# Setup guide.*'
+
+# 2b. Strips docs/ prefix.
+snouty docs --offline show docs/getting_started
+stdout '# Setup guide.*'
+
+# 3. If show cannot find an exact page, it fails with the normalized
+#    docs/... path in the error message and includes up to 10 similar
+#    page-path suggestions when available.
+! snouty docs --offline show nonexistent_page
+stderr 'page not found.*nonexistent_page'
+
+# 3b. Partial match suggests similar pages.
+! snouty docs --offline show sdk
+stderr 'Did you mean.*'
+stderr '/docs/sdk/python_sdk/.*'

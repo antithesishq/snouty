@@ -14,9 +14,45 @@ pub trait ContainerRuntime: Send + Sync {
     /// The CLI command name (e.g. "podman" or "docker").
     fn name(&self) -> &str;
 
+    /// Clone into a boxed trait object.
+    fn clone_box(&self) -> Box<dyn ContainerRuntime>;
+
     /// Push the image to the registry, returning the pinned image reference
     /// (e.g. `example.com/foo/image@sha256:...`).
     fn image_push(&self, image_ref: &str) -> Result<String>;
+
+    /// Build a scratch image containing the directory contents.
+    fn build_image(&self, config_dir: &Path, image_ref: &str) -> Result<()> {
+        let runtime = self.name();
+        let mut child = Command::new(runtime)
+            .args(["build", "-t", image_ref, "-f", "-", "."])
+            .current_dir(config_dir)
+            .stdin(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .wrap_err(format!("failed to start '{runtime} build'"))?;
+
+        if let Some(mut stdin) = child.stdin.take() {
+            stdin
+                .write_all(b"FROM scratch\nCOPY . /\n")
+                .wrap_err("failed to write Dockerfile to stdin")?;
+        }
+
+        let output = child
+            .wait_with_output()
+            .wrap_err(format!("failed to wait for '{runtime} build'"))?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            return Err(eyre!("'{runtime} build' failed"))
+                .with_section(move || stdout.trim().to_string().header("Stdout:"))
+                .with_section(move || stderr.trim().to_string().header("Stderr:"));
+        }
+
+        Ok(())
+    }
 
     /// Build and push a config image from a local directory.
     /// The directory must contain a `docker-compose.yaml` file.
@@ -26,7 +62,7 @@ pub trait ContainerRuntime: Send + Sync {
         validate_compose_file(runtime, config_dir)?;
 
         eprintln!("Building config image: {}", image_ref);
-        container_build(runtime, config_dir, image_ref)?;
+        self.build_image(config_dir, image_ref)?;
 
         eprintln!("Pushing config image: {}", image_ref);
         let pinned = self.image_push(image_ref)?;
@@ -53,11 +89,16 @@ pub trait ContainerRuntime: Send + Sync {
     }
 }
 
+#[derive(Clone)]
 pub struct PodmanRuntime;
 
 impl ContainerRuntime for PodmanRuntime {
     fn name(&self) -> &str {
         "podman"
+    }
+
+    fn clone_box(&self) -> Box<dyn ContainerRuntime> {
+        Box::new(self.clone())
     }
 
     fn image_push(&self, image_ref: &str) -> Result<String> {
@@ -96,9 +137,14 @@ impl ContainerRuntime for PodmanRuntime {
     }
 }
 
+#[derive(Clone)]
 pub struct DockerRuntime;
 
 impl ContainerRuntime for DockerRuntime {
+    fn clone_box(&self) -> Box<dyn ContainerRuntime> {
+        Box::new(self.clone())
+    }
+
     fn name(&self) -> &str {
         "docker"
     }
@@ -198,11 +244,23 @@ fn is_podman_in_disguise(cmd: &str) -> bool {
 /// Return the auto-detected global container runtime, preferring podman over docker.
 ///
 /// The result is cached so detection only runs once.
+///
+/// Set `SNOUTY_CONTAINER_ENGINE=podman` or `=docker` to force a specific runtime.
 pub fn runtime() -> Result<&'static dyn ContainerRuntime> {
     static INSTANCE: OnceLock<Result<Box<dyn ContainerRuntime>, String>> = OnceLock::new();
 
     INSTANCE
         .get_or_init(|| {
+            if let Ok(engine) = std::env::var("SNOUTY_CONTAINER_ENGINE") {
+                return match engine.as_str() {
+                    "podman" => Ok(Box::new(PodmanRuntime)),
+                    "docker" => Ok(Box::new(DockerRuntime)),
+                    other => Err(format!(
+                        "SNOUTY_CONTAINER_ENGINE={other}: expected 'podman' or 'docker'"
+                    )),
+                };
+            }
+
             // Try podman first
             match Command::new("podman").arg("--version").output() {
                 Ok(output) if output.status.success() => {
@@ -238,36 +296,26 @@ pub fn runtime() -> Result<&'static dyn ContainerRuntime> {
         .map_err(|e| eyre!("{e}"))
 }
 
-/// Build a scratch image containing the config directory contents.
-fn container_build(runtime: &str, config_dir: &Path, image_ref: &str) -> Result<()> {
-    let mut child = Command::new(runtime)
-        .args(["build", "-t", image_ref, "-f", "-", "."])
-        .current_dir(config_dir)
-        .stdin(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .spawn()
-        .wrap_err(format!("failed to start '{runtime} build'"))?;
-
-    if let Some(mut stdin) = child.stdin.take() {
-        stdin
-            .write_all(b"FROM scratch\nCOPY . /\n")
-            .wrap_err("failed to write Dockerfile to stdin")?;
+/// Return all container runtimes available on this machine.
+/// Skips `docker` if it is actually podman in disguise.
+pub fn available_engines() -> Vec<Box<dyn ContainerRuntime>> {
+    let mut engines: Vec<Box<dyn ContainerRuntime>> = Vec::new();
+    if Command::new("podman")
+        .arg("--version")
+        .output()
+        .is_ok_and(|o| o.status.success())
+    {
+        engines.push(Box::new(PodmanRuntime));
     }
-
-    let output = child
-        .wait_with_output()
-        .wrap_err(format!("failed to wait for '{runtime} build'"))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        return Err(eyre!("'{runtime} build' failed"))
-            .with_section(move || stdout.trim().to_string().header("Stdout:"))
-            .with_section(move || stderr.trim().to_string().header("Stderr:"));
+    if Command::new("docker")
+        .arg("--version")
+        .output()
+        .is_ok_and(|o| o.status.success())
+        && !is_podman_in_disguise("docker")
+    {
+        engines.push(Box::new(DockerRuntime));
     }
-
-    Ok(())
+    engines
 }
 
 /// Build a pinned image reference (`name@digest`) from a tagged ref and a digest.
@@ -369,149 +417,6 @@ fn filter_pushable_images<'a>(images: &'a [String], registry: &str) -> Vec<&'a s
 #[cfg(test)]
 mod tests {
     use super::*;
-    use wiremock::matchers::{method, path_regex};
-    use wiremock::{Mock, MockServer, ResponseTemplate};
-
-    /// Return all container runtimes that are available on this machine.
-    /// Skips `docker` if it is actually podman in disguise.
-    fn available_runtimes() -> Vec<Box<dyn ContainerRuntime>> {
-        let mut runtimes: Vec<Box<dyn ContainerRuntime>> = Vec::new();
-        if Command::new("podman")
-            .arg("--version")
-            .output()
-            .is_ok_and(|o| o.status.success())
-        {
-            runtimes.push(Box::new(PodmanRuntime));
-        }
-        if Command::new("docker")
-            .arg("--version")
-            .output()
-            .is_ok_and(|o| o.status.success())
-            && !is_podman_in_disguise("docker")
-        {
-            runtimes.push(Box::new(DockerRuntime));
-        }
-        runtimes
-    }
-
-    /// Start a minimal mock OCI registry that accepts image pushes.
-    ///
-    /// Handles the OCI Distribution Spec endpoints needed for `podman push`:
-    /// - `GET  /v2/`                        → 200 (API version check)
-    /// - `HEAD /v2/<name>/blobs/<digest>`    → 404 (blob not found)
-    /// - `HEAD /v2/<name>/manifests/<ref>`   → 404 (manifest not found)
-    /// - `POST /v2/<name>/blobs/uploads/`    → 202 (initiate upload)
-    /// - `PATCH  /v2/_uploads/<uuid>`        → 202 (chunked upload)
-    /// - `PUT    /v2/_uploads/<uuid>?digest=…` → 201 (complete upload)
-    /// - `PUT  /v2/<name>/manifests/<ref>`   → 201 (push manifest)
-    ///
-    /// Use `registry.uri().replace("http://", "")` as the registry
-    /// host:port in image references.
-    async fn mock_oci_registry() -> MockServer {
-        let server = MockServer::start().await;
-        let upload_url = format!("{}/v2/_uploads/test-uuid", server.uri());
-
-        // V2 API version check
-        Mock::given(method("GET"))
-            .and(path_regex("^/v2/?$"))
-            .respond_with(
-                ResponseTemplate::new(200)
-                    .insert_header("Docker-Distribution-API-Version", "registry/2.0"),
-            )
-            .mount(&server)
-            .await;
-
-        // Blob existence check → pretend all blobs exist.
-        // This satisfies both podman and docker: they skip uploading
-        // and go straight to the manifest push.
-        Mock::given(method("HEAD"))
-            .and(path_regex("^/v2/.+/blobs/"))
-            .respond_with(
-                ResponseTemplate::new(200)
-                    .insert_header("Content-Length", "0")
-                    .insert_header("Docker-Content-Digest", "sha256:dummy"),
-            )
-            .mount(&server)
-            .await;
-
-        // Manifest existence check → not found
-        Mock::given(method("HEAD"))
-            .and(path_regex("^/v2/.+/manifests/"))
-            .respond_with(ResponseTemplate::new(404))
-            .mount(&server)
-            .await;
-
-        // Initiate blob upload
-        Mock::given(method("POST"))
-            .and(path_regex("^/v2/.+/blobs/uploads"))
-            .respond_with(
-                ResponseTemplate::new(202)
-                    .insert_header("Location", &upload_url)
-                    .insert_header("Docker-Upload-UUID", "test-uuid")
-                    .insert_header("Range", "0-0"),
-            )
-            .mount(&server)
-            .await;
-
-        // Chunked blob upload
-        Mock::given(method("PATCH"))
-            .and(path_regex("^/v2/_uploads/"))
-            .respond_with(
-                ResponseTemplate::new(202)
-                    .insert_header("Location", &upload_url)
-                    .insert_header("Range", "0-999999"),
-            )
-            .mount(&server)
-            .await;
-
-        // Complete blob upload
-        Mock::given(method("PUT"))
-            .and(path_regex("^/v2/_uploads/"))
-            .respond_with(ResponseTemplate::new(201))
-            .mount(&server)
-            .await;
-
-        // Push manifest
-        Mock::given(method("PUT"))
-            .and(path_regex("^/v2/.+/manifests/"))
-            .respond_with(ResponseTemplate::new(201).insert_header(
-                "Docker-Content-Digest",
-                "sha256:0000000000000000000000000000000000000000000000000000000000000000",
-            ))
-            .mount(&server)
-            .await;
-
-        server
-    }
-
-    #[tokio::test]
-    async fn build_and_push_to_mock_registry() {
-        let runtimes = available_runtimes();
-        if runtimes.is_empty() {
-            eprintln!("skipping: no container runtime available");
-            return;
-        }
-
-        for rt in &runtimes {
-            eprintln!("testing with runtime: {}", rt.name());
-            let registry = mock_oci_registry().await;
-            let addr = registry.uri().replace("http://", "");
-
-            let dir = tempfile::tempdir().unwrap();
-            std::fs::write(
-                dir.path().join("docker-compose.yaml"),
-                "services:\n  app:\n    image: test:latest\n",
-            )
-            .unwrap();
-
-            let image_ref = format!("{addr}/test/snouty-config:test");
-            rt.build_and_push_config_image(dir.path(), &image_ref)
-                .unwrap_or_else(|e| panic!("{}: {e:?}", rt.name()));
-
-            // Clean up the local image.
-            let _ = Command::new(rt.name()).args(["rmi", &image_ref]).output();
-        }
-    }
 
     #[test]
     fn validate_config_dir_nonexistent() {
@@ -589,7 +494,7 @@ services:
 
     #[test]
     fn extract_image_refs_resolves_env() {
-        let runtimes = available_runtimes();
+        let runtimes = available_engines();
         if runtimes.is_empty() {
             eprintln!("skipping: no container runtime available");
             return;

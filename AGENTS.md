@@ -14,11 +14,13 @@ CLI tool for the Antithesis API. Written in Rust.
 This project uses spec driven development. The `./specs` folder contains specs
 for all features in the project.
 
+Any new subcommands or flags must have a spec accompanying them. Having to change
+an existing spec is a good sign of backwards incompatible breakage, which will
+be subject to extra review.
+
 ## Tests
 
-New commands and options must be accompanied by [expect style
-tests](tests/cli.rs). Having to change an existing test is a good sign of
-backwards incompatible breakage, which will be subject to extra review.
+Internal functions must be accompanied by unit tests.
 
 ## Checks and lints
 

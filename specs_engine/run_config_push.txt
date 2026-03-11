@@ -1,0 +1,49 @@
+# snouty run --config — image push and pinning
+#
+# When --config is used, snouty pushes compose images matching
+# ANTITHESIS_REPOSITORY and builds+pushes a config image.
+# Both get pinned references (name@sha256:digest) in the webhook params.
+
+# 1. Compose images matching the registry are pushed and pinned.
+mock-server 200 '{"status": "ok"}'
+build-image myapp:latest images/myapp
+build-image sidecar:v1 images/sidecar
+snouty run -w basic_test -c push_config --duration 30
+stderr '"antithesis.config_image":.*@sha256:'
+stderr '"antithesis.images":.*myapp@sha256:'
+stderr '"antithesis.images":.*sidecar@sha256:'
+
+# 2. No compose images match the registry — only config image is pinned.
+mock-server 200 '{"status": "ok"}'
+snouty run -w basic_test -c external_config --duration 30
+stderr '"antithesis.config_image":.*@sha256:'
+! stderr '"antithesis.images"'
+
+# 3. Mixed: only matching images appear in antithesis.images.
+mock-server 200 '{"status": "ok"}'
+build-image myapp:latest images/myapp
+snouty run -w basic_test -c mixed_config --duration 30
+stderr '"antithesis.images":.*myapp@sha256:'
+! stderr 'nginx.*@sha256:'
+stderr '"antithesis.config_image":.*@sha256:'
+
+-- images/myapp/content --
+placeholder
+-- images/sidecar/content --
+placeholder
+-- push_config/docker-compose.yaml --
+services:
+  app:
+    image: ${ANTITHESIS_REPOSITORY}/myapp:latest
+  sidecar:
+    image: ${ANTITHESIS_REPOSITORY}/sidecar:v1
+-- external_config/docker-compose.yaml --
+services:
+  app:
+    image: docker.io/library/nginx:latest
+-- mixed_config/docker-compose.yaml --
+services:
+  app:
+    image: ${ANTITHESIS_REPOSITORY}/myapp:latest
+  nginx:
+    image: docker.io/library/nginx:latest

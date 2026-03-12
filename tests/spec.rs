@@ -24,13 +24,14 @@ thread_local! {
 
 // --- Shared command handlers (function pointers for testscript CommandFn) ---
 
-fn cmd_snouty(
-    env: &mut testscript_rs::TestEnvironment,
-    args: &[String],
-) -> testscript_rs::Result<()> {
-    // env_clear() so tests don't depend on the parent environment.
-    // testscript-rs's built-in execute_command uses Command::envs
-    // (additive), which leaks the parent env.
+/// System env vars forwarded to child processes (container tools, coverage).
+const FORWARDED_ENV_VARS: &[&str] = &["PATH", "HOME", "LLVM_PROFILE_FILE"];
+
+/// Build a `Command` for the snouty binary with a clean environment.
+///
+/// Clears the parent env, forwards [`FORWARDED_ENV_VARS`], and applies
+/// the test environment's `env_vars`.
+fn snouty_cmd(env: &testscript_rs::TestEnvironment, args: &[String]) -> std::process::Command {
     let bin = env!("CARGO_BIN_EXE_snouty");
     let mut cmd = std::process::Command::new(bin);
     cmd.args(args)
@@ -38,8 +39,7 @@ fn cmd_snouty(
         .env_clear()
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    // Forward system env vars needed by container tools and coverage.
-    for var in ["PATH", "HOME", "LLVM_PROFILE_FILE"] {
+    for var in FORWARDED_ENV_VARS {
         if let Ok(v) = std::env::var(var) {
             cmd.env(var, v);
         }
@@ -47,6 +47,14 @@ fn cmd_snouty(
     for (k, v) in &env.env_vars {
         cmd.env(k, v);
     }
+    cmd
+}
+
+fn cmd_snouty(
+    env: &mut testscript_rs::TestEnvironment,
+    args: &[String],
+) -> testscript_rs::Result<()> {
+    let mut cmd = snouty_cmd(env, args);
     if env.next_stdin.is_some() {
         cmd.stdin(Stdio::piped());
     }
@@ -152,6 +160,25 @@ fn spec_tests() {
         })
         .command("snouty", cmd_snouty)
         .command("mock-server", cmd_mock_server)
+        .command("set-env", |env, args| {
+            // Usage: set-env KEY value...
+            // Interpolates ${VAR} references in value using env.env_vars.
+            if args.len() < 2 {
+                return Err(err("set-env requires KEY and value".to_string()));
+            }
+            let key = &args[0];
+            let raw_value = args[1..].join(" ");
+            let value = env.substitute_env_vars(&raw_value);
+            env.set_env_var(key, &value);
+            Ok(())
+        })
+        .command("snouty-bg", |env, args| {
+            let child = snouty_cmd(env, args)
+                .spawn()
+                .map_err(|e| err(format!("spawn snouty-bg: {e}")))?;
+            env.background_processes.insert("snouty".to_string(), child);
+            Ok(())
+        })
         .command("setup-docs-db", |env, args| {
             // Usage: setup-docs-db
             // Copies the fixture docs.db into the workdir and sets ANTITHESIS_DOCS_DB_PATH.

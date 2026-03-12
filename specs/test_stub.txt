@@ -1,0 +1,167 @@
+# test-stub — local execution of test scripts
+
+# 1. Happy path: all script types run in order.
+set-env SNOUTY_TEST_TEMPLATES_PATH ${WORK}/scripts
+chmod 0755 scripts/suite/first_setup
+chmod 0755 scripts/suite/parallel_driver_load
+chmod 0755 scripts/suite/anytime_check
+chmod 0755 scripts/suite/eventually_verify
+chmod 0755 scripts/suite/finally_cleanup
+snouty test-stub
+stderr 'Found 1 first, 1 driver, 1 anytime, 1 eventually, 1 finally.*'
+stderr 'Running \[suite/first_setup\]'
+stderr 'Running \[suite/parallel_driver_load\]'
+stderr 'Running \[suite/anytime_check\]'
+stderr 'Running \[suite/eventually_verify\]'
+stderr 'Running \[suite/finally_cleanup\]'
+stdout 'first_setup ran.*'
+stdout 'parallel_driver_load ran.*'
+stdout 'anytime_check ran.*'
+stdout 'eventually_verify ran.*'
+stdout 'finally_cleanup ran.*'
+
+# 2. No drivers or anytime scripts — exits with error.
+set-env SNOUTY_TEST_TEMPLATES_PATH ${WORK}/nodrivers
+chmod 0755 nodrivers/suite/first_setup
+! snouty test-stub
+stderr 'no driver or anytime scripts found.*'
+
+# 3. Failing script — all scripts still run, exits with error.
+set-env SNOUTY_TEST_TEMPLATES_PATH ${WORK}/failing
+chmod 0755 failing/suite/first_setup
+chmod 0755 failing/suite/parallel_driver_bad
+chmod 0755 failing/suite/finally_cleanup
+! snouty test-stub
+stderr 'Running \[suite/first_setup\]'
+stderr 'Running \[suite/parallel_driver_bad\]'
+stderr 'FAIL \[suite/parallel_driver_bad\]'
+stderr 'Running \[suite/finally_cleanup\]'
+stderr 'one or more scripts failed.*'
+stdout 'first_setup ran.*'
+stdout 'this script fails.*'
+stdout 'finally_cleanup ran.*'
+
+# 4. --entrypoint writes SDK lifecycle event.
+set-env SNOUTY_TEST_TEMPLATES_PATH ${WORK}/scripts
+chmod 0755 scripts/suite/first_setup
+chmod 0755 scripts/suite/parallel_driver_load
+chmod 0755 scripts/suite/anytime_check
+chmod 0755 scripts/suite/eventually_verify
+chmod 0755 scripts/suite/finally_cleanup
+set-env ANTITHESIS_SDK_LOCAL_OUTPUT ${WORK}/sdk.jsonl
+snouty-bg test-stub --entrypoint
+exec sleep 1
+kill snouty
+grep 'antithesis_setup.*complete' sdk.jsonl
+
+# 5. Non-executable script fails the run.
+set-env SNOUTY_TEST_TEMPLATES_PATH ${WORK}/noexec
+chmod 0755 noexec/suite/parallel_driver_load
+! snouty test-stub
+stderr 'Permission denied.*'
+
+# 6. Unknown prefix file bails with list.
+set-env SNOUTY_TEST_TEMPLATES_PATH ${WORK}/unknown
+chmod 0755 unknown/suite/first_ok
+! snouty test-stub
+stderr 'unrecognized command names.*'
+stderr 'suite/readme.txt'
+
+# 7. helper_ file is silently ignored.
+set-env SNOUTY_TEST_TEMPLATES_PATH ${WORK}/withhelper
+chmod 0755 withhelper/suite/first_setup
+chmod 0755 withhelper/suite/parallel_driver_load
+snouty test-stub
+stderr 'Found 1 first, 1 driver, 0 anytime, 0 eventually, 0 finally.*'
+
+# 8. first_ script calling setup_complete is detected.
+set-env SNOUTY_TEST_TEMPLATES_PATH ${WORK}/setupbad
+chmod 0755 setupbad/suite/first_setup_complete
+chmod 0755 setupbad/suite/parallel_driver_load
+! snouty test-stub
+stderr 'first_ scripts must not call setup_complete.*'
+
+# 9. ANTITHESIS_OUTPUT_DIR set — scripts are not executed.
+set-env SNOUTY_TEST_TEMPLATES_PATH ${WORK}/scripts
+chmod 0755 scripts/suite/first_setup
+chmod 0755 scripts/suite/parallel_driver_load
+chmod 0755 scripts/suite/anytime_check
+chmod 0755 scripts/suite/eventually_verify
+chmod 0755 scripts/suite/finally_cleanup
+set-env ANTITHESIS_OUTPUT_DIR ${WORK}/output
+snouty test-stub
+stderr 'skipping local script execution.*'
+! stdout 'first_setup ran'
+! stdout 'parallel_driver_load ran'
+
+-- scripts/suite/first_setup --
+#!/bin/sh
+echo "first_setup ran"
+
+-- scripts/suite/parallel_driver_load --
+#!/bin/sh
+echo "parallel_driver_load ran"
+
+-- scripts/suite/anytime_check --
+#!/bin/sh
+echo "anytime_check ran"
+
+-- scripts/suite/eventually_verify --
+#!/bin/sh
+echo "eventually_verify ran"
+
+-- scripts/suite/finally_cleanup --
+#!/bin/sh
+echo "finally_cleanup ran"
+
+-- nodrivers/suite/first_setup --
+#!/bin/sh
+echo "first_setup ran"
+
+-- failing/suite/first_setup --
+#!/bin/sh
+echo "first_setup ran"
+
+-- failing/suite/parallel_driver_bad --
+#!/bin/sh
+echo "this script fails"
+exit 1
+
+-- failing/suite/finally_cleanup --
+#!/bin/sh
+echo "finally_cleanup ran"
+
+-- noexec/suite/first_noexec --
+#!/bin/sh
+echo "should not run"
+
+-- noexec/suite/parallel_driver_load --
+#!/bin/sh
+echo "driver ran"
+
+-- unknown/suite/first_ok --
+#!/bin/sh
+echo "first_ok ran"
+
+-- unknown/suite/readme.txt --
+This is not a script.
+
+-- withhelper/suite/first_setup --
+#!/bin/sh
+echo "first_setup ran"
+
+-- withhelper/suite/parallel_driver_load --
+#!/bin/sh
+echo "driver ran"
+
+-- withhelper/suite/helper_utils --
+#!/bin/sh
+echo "helper"
+
+-- setupbad/suite/first_setup_complete --
+#!/bin/sh
+echo '{"antithesis_setup":{"status":"complete"}}' >> "$ANTITHESIS_OUTPUT_DIR/sdk.jsonl"
+
+-- setupbad/suite/parallel_driver_load --
+#!/bin/sh
+echo "driver ran"

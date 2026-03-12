@@ -74,6 +74,28 @@ Using Moment.from (copy from triage report):
     /// Check for and install updates
     Update,
 
+    /// Run test scripts from /opt/antithesis/test/v1
+    #[command(
+        name = "test-stub",
+        long_about = r#"Run test scripts from /opt/antithesis/test/v1
+
+A simplified, single-process test runner for locally exercising Antithesis
+Test Composer scripts. It is NOT a replacement for the test composer;
+the following simplifications apply:
+
+  - All scripts run once, in a random order.
+  - Scripts are executed sequentially, there is no concurrency.
+
+Every script runs regardless of earlier failures. The exit code is nonzero
+if any script fails.
+
+When ANTITHESIS_OUTPUT_DIR is set, no scripts are executed (the real test
+composer handles orchestration).
+
+Requires at least one driver or anytime script."#
+    )]
+    TestStub(TestStubArgs),
+
     /// Search Antithesis documentation
     Docs {
         /// Don't check for documentation updates
@@ -147,6 +169,13 @@ If the exact path is not found, suggests similar pages."#)]
         /// Page path (e.g. "getting_started/overview")
         path: String,
     },
+}
+
+#[derive(Args)]
+pub struct TestStubArgs {
+    /// Emit setup_complete lifecycle event and wait indefinitely
+    #[arg(long)]
+    pub entrypoint: bool,
 }
 
 #[derive(Args)]

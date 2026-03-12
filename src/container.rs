@@ -1,5 +1,5 @@
 use std::io::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::OnceLock;
 
@@ -24,7 +24,7 @@ pub trait ContainerRuntime: Send + Sync {
     /// Build a scratch image containing the directory contents.
     fn build_image(&self, config_dir: &Path, image_ref: &str) -> Result<()> {
         let runtime = self.name();
-        let mut child = Command::new(runtime)
+        let mut child = runtime_command(runtime)
             .args(["build", "-t", image_ref, "-f", "-", "."])
             .current_dir(config_dir)
             .stdin(std::process::Stdio::piped())
@@ -90,11 +90,19 @@ pub trait ContainerRuntime: Send + Sync {
 }
 
 #[derive(Clone)]
-pub struct PodmanRuntime;
+pub struct PodmanRuntime {
+    cmd: String,
+}
+
+impl PodmanRuntime {
+    pub(crate) fn new(cmd: impl Into<String>) -> Self {
+        Self { cmd: cmd.into() }
+    }
+}
 
 impl ContainerRuntime for PodmanRuntime {
     fn name(&self) -> &str {
-        "podman"
+        &self.cmd
     }
 
     fn clone_box(&self) -> Box<dyn ContainerRuntime> {
@@ -116,15 +124,15 @@ impl ContainerRuntime for PodmanRuntime {
 
         args.push(image_ref);
 
-        let output = Command::new("podman")
+        let output = runtime_command(&self.cmd)
             .args(&args)
             .output()
-            .wrap_err("failed to run 'podman push'")?;
+            .wrap_err(format!("failed to run '{} push'", self.cmd))?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
             let stdout = String::from_utf8_lossy(&output.stdout);
-            return Err(eyre!("'podman push' failed"))
+            return Err(eyre!("'{} push' failed", self.cmd))
                 .with_section(move || stdout.trim().to_string().header("Stdout:"))
                 .with_section(move || stderr.trim().to_string().header("Stderr:"));
         }
@@ -138,7 +146,15 @@ impl ContainerRuntime for PodmanRuntime {
 }
 
 #[derive(Clone)]
-pub struct DockerRuntime;
+pub struct DockerRuntime {
+    cmd: String,
+}
+
+impl DockerRuntime {
+    pub(crate) fn new(cmd: impl Into<String>) -> Self {
+        Self { cmd: cmd.into() }
+    }
+}
 
 impl ContainerRuntime for DockerRuntime {
     fn clone_box(&self) -> Box<dyn ContainerRuntime> {
@@ -146,19 +162,19 @@ impl ContainerRuntime for DockerRuntime {
     }
 
     fn name(&self) -> &str {
-        "docker"
+        &self.cmd
     }
 
     fn image_push(&self, image_ref: &str) -> Result<String> {
-        let output = Command::new("docker")
+        let output = runtime_command(&self.cmd)
             .args(["push", image_ref])
             .output()
-            .wrap_err("failed to run 'docker push'")?;
+            .wrap_err(format!("failed to run '{} push'", self.cmd))?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
             let stdout = String::from_utf8_lossy(&output.stdout);
-            return Err(eyre!("'docker push' failed"))
+            return Err(eyre!("'{} push' failed", self.cmd))
                 .with_section(move || stdout.trim().to_string().header("Stdout:"))
                 .with_section(move || stderr.trim().to_string().header("Stderr:"));
         }
@@ -198,7 +214,9 @@ pub fn validate_config_dir(config_dir: &Path) -> Result<()> {
 
 /// Run `{runtime} compose config` to validate the compose file.
 fn validate_compose_file(runtime: &str, config_dir: &Path) -> Result<()> {
-    let output = Command::new(runtime)
+    let output = runtime_command(runtime)
+        // Keep compose validation independent of directory naming quirks.
+        .env("COMPOSE_PROJECT_NAME", "snouty")
         .args(["compose", "config", "--quiet"])
         .current_dir(config_dir)
         .output()
@@ -232,8 +250,8 @@ pub fn generate_image_ref(registry: &str) -> String {
 /// Check whether a binary is genuinely docker or podman-in-disguise.
 /// `docker version` (the subcommand) prints "Podman Engine" in the Client field
 /// when docker is actually podman, while `docker --version` does not.
-fn is_podman_in_disguise(cmd: &str) -> bool {
-    Command::new(cmd)
+pub(crate) fn is_podman_in_disguise(cmd: &str) -> bool {
+    runtime_command(cmd)
         .arg("version")
         .output()
         .ok()
@@ -253,8 +271,8 @@ pub fn runtime() -> Result<&'static dyn ContainerRuntime> {
         .get_or_init(|| {
             if let Ok(engine) = std::env::var("SNOUTY_CONTAINER_ENGINE") {
                 return match engine.as_str() {
-                    "podman" => Ok(Box::new(PodmanRuntime)),
-                    "docker" => Ok(Box::new(DockerRuntime)),
+                    "podman" => Ok(Box::new(PodmanRuntime::new("podman"))),
+                    "docker" => Ok(Box::new(DockerRuntime::new("docker"))),
                     other => Err(format!(
                         "SNOUTY_CONTAINER_ENGINE={other}: expected 'podman' or 'docker'"
                     )),
@@ -262,9 +280,9 @@ pub fn runtime() -> Result<&'static dyn ContainerRuntime> {
             }
 
             // Try podman first
-            match Command::new("podman").arg("--version").output() {
+            match runtime_command("podman").arg("--version").output() {
                 Ok(output) if output.status.success() => {
-                    return Ok(Box::new(PodmanRuntime));
+                    return Ok(Box::new(PodmanRuntime::new("podman")));
                 }
                 Ok(_) => {} // podman found but failed, try docker
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {} // not installed
@@ -272,14 +290,14 @@ pub fn runtime() -> Result<&'static dyn ContainerRuntime> {
             }
 
             // Fall back to docker
-            match Command::new("docker").arg("--version").output() {
+            match runtime_command("docker").arg("--version").output() {
                 Ok(output) if output.status.success() => {
                     if is_podman_in_disguise("docker") {
                         log::warn!("podman not found as 'podman', but 'docker' is podman");
-                        return Ok(Box::new(PodmanRuntime));
+                        return Ok(Box::new(PodmanRuntime::new("docker")));
                     }
                     log::warn!("podman not found, falling back to docker");
-                    Ok(Box::new(DockerRuntime))
+                    Ok(Box::new(DockerRuntime::new("docker")))
                 }
                 Ok(_) => Err(
                     "'docker --version' failed; unable to find working container runtime"
@@ -305,7 +323,7 @@ pub fn available_engines() -> Vec<Box<dyn ContainerRuntime>> {
         .output()
         .is_ok_and(|o| o.status.success())
     {
-        engines.push(Box::new(PodmanRuntime));
+        engines.push(Box::new(PodmanRuntime::new("podman")));
     }
     if Command::new("docker")
         .arg("--version")
@@ -313,7 +331,7 @@ pub fn available_engines() -> Vec<Box<dyn ContainerRuntime>> {
         .is_ok_and(|o| o.status.success())
         && !is_podman_in_disguise("docker")
     {
-        engines.push(Box::new(DockerRuntime));
+        engines.push(Box::new(DockerRuntime::new("docker")));
     }
     engines
 }
@@ -321,6 +339,10 @@ pub fn available_engines() -> Vec<Box<dyn ContainerRuntime>> {
 /// Build a pinned image reference (`name@digest`) from a tagged ref and a digest.
 /// Strips the tag (`:tag`) if present, keeping the repository name.
 fn pinned_image_ref(image_ref: &str, digest: &str) -> String {
+    if let Some(at) = image_ref.rfind('@') {
+        return format!("{}@{}", &image_ref[..at], digest);
+    }
+
     // A colon is a tag separator only if it appears after the last `/`.
     // Any colon before or without a `/` is a host:port separator.
     let name = match image_ref.rfind('/') {
@@ -364,7 +386,9 @@ fn parse_docker_push_digest(stdout: &str) -> Result<String> {
 /// Extract image references from the docker-compose.yaml in the given config directory.
 /// Uses `{runtime} compose config` to resolve env variable substitutions.
 fn extract_image_refs(runtime: &str, config_dir: &Path) -> Result<Vec<String>> {
-    let output = Command::new(runtime)
+    let output = runtime_command(runtime)
+        // Keep image extraction independent of directory naming quirks.
+        .env("COMPOSE_PROJECT_NAME", "snouty")
         .args(["compose", "config"])
         .current_dir(config_dir)
         .output()
@@ -414,9 +438,94 @@ fn filter_pushable_images<'a>(images: &'a [String], registry: &str) -> Vec<&'a s
         .collect()
 }
 
+fn runtime_command(cmd: &str) -> Command {
+    Command::new(resolve_runtime_command(cmd))
+}
+
+#[cfg(not(windows))]
+fn resolve_runtime_command(cmd: &str) -> PathBuf {
+    PathBuf::from(cmd)
+}
+
+#[cfg(windows)]
+fn resolve_runtime_command(cmd: &str) -> PathBuf {
+    let path = Path::new(cmd);
+    if path.components().count() > 1 || path.extension().is_some() {
+        return path.to_path_buf();
+    }
+
+    find_on_path(path).unwrap_or_else(|| path.to_path_buf())
+}
+
+#[cfg(windows)]
+fn find_on_path(cmd: &Path) -> Option<PathBuf> {
+    let path = std::env::var_os("PATH")?;
+    let pathext = std::env::var_os("PATHEXT")
+        .unwrap_or_else(|| ".COM;.EXE;.BAT;.CMD".into())
+        .to_string_lossy()
+        .split(';')
+        .filter(|ext| !ext.is_empty())
+        .map(|ext| ext.to_ascii_lowercase())
+        .collect::<Vec<_>>();
+
+    for dir in std::env::split_paths(&path) {
+        let candidate = dir.join(cmd);
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+
+        for ext in &pathext {
+            let candidate = dir.join(format!("{}{}", cmd.display(), ext));
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+        }
+    }
+
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testutils::{
+        OCIRegistry, has_compose, require_runtimes, require_runtimes_with_compose, skip_or_fail,
+    };
+
+    #[tokio::test]
+    async fn build_and_push_to_mock_registry() {
+        let runtimes = require_runtimes();
+        if runtimes.is_empty() {
+            return;
+        }
+
+        for rt in &runtimes {
+            eprintln!("testing with runtime: {}", rt.name());
+            if !has_compose(rt.name()) {
+                skip_or_fail(&format!("{}: no compose support", rt.name()));
+                continue;
+            }
+            let registry = match OCIRegistry::start(rt.as_ref()) {
+                Some(r) => r,
+                None => continue,
+            };
+            let addr = registry.host_port();
+
+            let dir = tempfile::tempdir().unwrap();
+            std::fs::write(
+                dir.path().join("docker-compose.yaml"),
+                "services:\n  app:\n    image: test:latest\n",
+            )
+            .unwrap();
+
+            let image_ref = format!("{addr}/test/snouty-config:test");
+            rt.build_and_push_config_image(dir.path(), &image_ref)
+                .unwrap_or_else(|e| panic!("{}: {e:?}", rt.name()));
+
+            // Clean up the local image.
+            let _ = Command::new(rt.name()).args(["rmi", &image_ref]).output();
+        }
+    }
 
     #[test]
     fn validate_config_dir_nonexistent() {
@@ -494,9 +603,8 @@ services:
 
     #[test]
     fn extract_image_refs_resolves_env() {
-        let runtimes = available_engines();
+        let runtimes = require_runtimes_with_compose();
         if runtimes.is_empty() {
-            eprintln!("skipping: no container runtime available");
             return;
         }
 
@@ -642,6 +750,14 @@ tag2: digest: sha256:bbb222 size: 200
         assert_eq!(
             pinned_image_ref("myregistry:5000/org/repo/image", "sha256:abc123"),
             "myregistry:5000/org/repo/image@sha256:abc123"
+        );
+    }
+
+    #[test]
+    fn pinned_image_ref_replaces_existing_digest() {
+        assert_eq!(
+            pinned_image_ref("registry.example.com/team/service@sha256:old", "sha256:new"),
+            "registry.example.com/team/service@sha256:new"
         );
     }
 }

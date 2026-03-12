@@ -1,4 +1,6 @@
 name: Zulip Notification Bot
+env:
+  NO_COLOR: "1"
 
 on:
   push:

@@ -38,9 +38,12 @@ fn docs_user_agent() -> String {
 }
 
 fn cache_dir() -> Result<PathBuf> {
-    let dir = dirs::cache_dir()
-        .ok_or_eyre("could not determine cache directory")?
-        .join("snouty");
+    let dir = if let Some(dir) = std::env::var_os("SNOUTY_TEST_CACHE_DIR") {
+        PathBuf::from(dir)
+    } else {
+        dirs::cache_dir().ok_or_eyre("could not determine cache directory")?
+    }
+    .join("snouty");
     fs::create_dir_all(&dir)?;
     Ok(dir)
 }
@@ -168,13 +171,27 @@ fn atomic_write_db(bytes: &[u8]) -> Result<()> {
     let mut tmp = NamedTempFile::new_in(&cache)?;
     std::io::Write::write_all(&mut tmp, bytes)?;
 
-    // Make the file read-only to prevent accidental modifications
-    let metadata = tmp.as_file().metadata()?;
+    let db_path = db_path()?;
+
+    #[cfg(windows)]
+    if db_path.exists() {
+        let metadata = fs::metadata(&db_path)?;
+        let mut perms = metadata.permissions();
+        if perms.readonly() {
+            perms.set_readonly(false);
+            fs::set_permissions(&db_path, perms)?;
+        }
+        fs::remove_file(&db_path)?;
+    }
+
+    tmp.persist(&db_path).map_err(|e| e.error)?;
+
+    // Mark the final file read-only after the atomic rename so Windows
+    // observes the permission change on the persisted path.
+    let metadata = fs::metadata(&db_path)?;
     let mut perms = metadata.permissions();
     perms.set_readonly(true);
-    tmp.as_file().set_permissions(perms)?;
-
-    tmp.persist(db_path()?).map_err(|e| e.error)?;
+    fs::set_permissions(&db_path, perms)?;
     Ok(())
 }
 

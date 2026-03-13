@@ -43,7 +43,7 @@ pub struct OCIRegistry {
 
 impl OCIRegistry {
     /// Try to start a local OCI registry container.  Returns `None` when the
-    /// container cannot be launched (e.g. Linux-only image on a Windows host).
+    /// container cannot be launched.
     pub fn start(runtime: &dyn ContainerRuntime) -> Option<Self> {
         if !runtime_supports_linux_registry_image(runtime.name()) {
             eprintln!(
@@ -105,7 +105,7 @@ impl OCIRegistry {
     }
 
     /// Returns `true` when the registry is ready, `false` when it exited or
-    /// timed out (e.g. Linux image on a Windows Docker host).
+    /// timed out.
     fn wait_until_ready(&mut self) -> bool {
         for _ in 0..200 {
             if registry_v2_ping(self.port) {
@@ -264,29 +264,7 @@ pub fn filtered_path_without_binary(binary: &str) -> Option<String> {
 }
 
 fn directory_contains_binary(dir: &Path, binary: &str) -> bool {
-    let candidate = dir.join(binary);
-    if candidate.is_file() {
-        return true;
-    }
-
-    #[cfg(windows)]
-    {
-        let pathext = std::env::var_os("PATHEXT")
-            .unwrap_or_else(|| ".COM;.EXE;.BAT;.CMD".into())
-            .to_string_lossy()
-            .split(';')
-            .filter(|ext| !ext.is_empty())
-            .map(|ext| ext.to_ascii_lowercase())
-            .collect::<Vec<_>>();
-
-        for ext in pathext {
-            if dir.join(format!("{binary}{ext}")).is_file() {
-                return true;
-            }
-        }
-    }
-
-    false
+    dir.join(binary).is_file()
 }
 
 #[cfg(test)]
@@ -307,11 +285,6 @@ mod tests {
     #[test]
     fn docker_info_with_linux_os_type_supports_registry() {
         assert!(docker_info_supports_linux_registry("linux\n"));
-    }
-
-    #[test]
-    fn docker_info_with_windows_os_type_rejects_registry() {
-        assert!(!docker_info_supports_linux_registry("windows\r\n"));
     }
 
     #[cfg(unix)]
@@ -379,13 +352,5 @@ mod tests {
             log.lines().any(|line| line == "pull registry:2"),
             "expected registry pull command in log, got: {log}"
         );
-    }
-
-    #[cfg(windows)]
-    #[test]
-    fn directory_contains_windows_binary_extension() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("snouty-update.exe"), "").unwrap();
-        assert!(directory_contains_binary(dir.path(), "snouty-update"));
     }
 }

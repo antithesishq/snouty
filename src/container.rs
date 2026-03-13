@@ -1,5 +1,5 @@
 use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Command;
 use std::sync::OnceLock;
 
@@ -24,7 +24,7 @@ pub trait ContainerRuntime: Send + Sync {
     /// Build a scratch image containing the directory contents.
     fn build_image(&self, config_dir: &Path, image_ref: &str) -> Result<()> {
         let runtime = self.name();
-        let mut child = runtime_command(runtime)
+        let mut child = Command::new(runtime)
             .args(["build", "-t", image_ref, "-f", "-", "."])
             .current_dir(config_dir)
             .stdin(std::process::Stdio::piped())
@@ -124,7 +124,7 @@ impl ContainerRuntime for PodmanRuntime {
 
         args.push(image_ref);
 
-        let output = runtime_command(&self.cmd)
+        let output = Command::new(&self.cmd)
             .args(&args)
             .output()
             .wrap_err(format!("failed to run '{} push'", self.cmd))?;
@@ -166,7 +166,7 @@ impl ContainerRuntime for DockerRuntime {
     }
 
     fn image_push(&self, image_ref: &str) -> Result<String> {
-        let output = runtime_command(&self.cmd)
+        let output = Command::new(&self.cmd)
             .args(["push", image_ref])
             .output()
             .wrap_err(format!("failed to run '{} push'", self.cmd))?;
@@ -214,7 +214,7 @@ pub fn validate_config_dir(config_dir: &Path) -> Result<()> {
 
 /// Run `{runtime} compose config` to validate the compose file.
 fn validate_compose_file(runtime: &str, config_dir: &Path) -> Result<()> {
-    let output = runtime_command(runtime)
+    let output = Command::new(runtime)
         // Keep compose validation independent of directory naming quirks.
         .env("COMPOSE_PROJECT_NAME", "snouty")
         .args(["compose", "config", "--quiet"])
@@ -251,7 +251,7 @@ pub fn generate_image_ref(registry: &str) -> String {
 /// `docker version` (the subcommand) prints "Podman Engine" in the Client field
 /// when docker is actually podman, while `docker --version` does not.
 pub(crate) fn is_podman_in_disguise(cmd: &str) -> bool {
-    runtime_command(cmd)
+    Command::new(cmd)
         .arg("version")
         .output()
         .ok()
@@ -280,7 +280,7 @@ pub fn runtime() -> Result<&'static dyn ContainerRuntime> {
             }
 
             // Try podman first
-            match runtime_command("podman").arg("--version").output() {
+            match Command::new("podman").arg("--version").output() {
                 Ok(output) if output.status.success() => {
                     return Ok(Box::new(PodmanRuntime::new("podman")));
                 }
@@ -290,7 +290,7 @@ pub fn runtime() -> Result<&'static dyn ContainerRuntime> {
             }
 
             // Fall back to docker
-            match runtime_command("docker").arg("--version").output() {
+            match Command::new("docker").arg("--version").output() {
                 Ok(output) if output.status.success() => {
                     if is_podman_in_disguise("docker") {
                         log::warn!("podman not found as 'podman', but 'docker' is podman");
@@ -386,7 +386,7 @@ fn parse_docker_push_digest(stdout: &str) -> Result<String> {
 /// Extract image references from the docker-compose.yaml in the given config directory.
 /// Uses `{runtime} compose config` to resolve env variable substitutions.
 fn extract_image_refs(runtime: &str, config_dir: &Path) -> Result<Vec<String>> {
-    let output = runtime_command(runtime)
+    let output = Command::new(runtime)
         // Keep image extraction independent of directory naming quirks.
         .env("COMPOSE_PROJECT_NAME", "snouty")
         .args(["compose", "config"])
@@ -436,53 +436,6 @@ fn filter_pushable_images<'a>(images: &'a [String], registry: &str) -> Vec<&'a s
         .filter(|img| img.starts_with(&prefix))
         .map(|s| s.as_str())
         .collect()
-}
-
-fn runtime_command(cmd: &str) -> Command {
-    Command::new(resolve_runtime_command(cmd))
-}
-
-#[cfg(not(windows))]
-fn resolve_runtime_command(cmd: &str) -> PathBuf {
-    PathBuf::from(cmd)
-}
-
-#[cfg(windows)]
-fn resolve_runtime_command(cmd: &str) -> PathBuf {
-    let path = Path::new(cmd);
-    if path.components().count() > 1 || path.extension().is_some() {
-        return path.to_path_buf();
-    }
-
-    find_on_path(path).unwrap_or_else(|| path.to_path_buf())
-}
-
-#[cfg(windows)]
-fn find_on_path(cmd: &Path) -> Option<PathBuf> {
-    let path = std::env::var_os("PATH")?;
-    let pathext = std::env::var_os("PATHEXT")
-        .unwrap_or_else(|| ".COM;.EXE;.BAT;.CMD".into())
-        .to_string_lossy()
-        .split(';')
-        .filter(|ext| !ext.is_empty())
-        .map(|ext| ext.to_ascii_lowercase())
-        .collect::<Vec<_>>();
-
-    for dir in std::env::split_paths(&path) {
-        let candidate = dir.join(cmd);
-        if candidate.is_file() {
-            return Some(candidate);
-        }
-
-        for ext in &pathext {
-            let candidate = dir.join(format!("{}{}", cmd.display(), ext));
-            if candidate.is_file() {
-                return Some(candidate);
-            }
-        }
-    }
-
-    None
 }
 
 #[cfg(test)]

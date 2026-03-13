@@ -31,8 +31,7 @@ which will be subject to extra review.
 
 ## Dependencies & distribution
 
-This tool supports amd64 and arm64 processors, and common operating systems like
-Linux, macOS and to an extent Windows. Keep third party dependencies minimal, it
+This tool supports amd64 and arm64 processors on Linux and macOS. Keep third party dependencies minimal, it
 is fine to turn a transitive dependency into a direct dependency if necessary.
 Try to keep the implementation OS agnostic, if that is not possible return an
 error from the respective command.

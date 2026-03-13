@@ -173,21 +173,8 @@ fn atomic_write_db(bytes: &[u8]) -> Result<()> {
 
     let db_path = db_path()?;
 
-    #[cfg(windows)]
-    if db_path.exists() {
-        let metadata = fs::metadata(&db_path)?;
-        let mut perms = metadata.permissions();
-        if perms.readonly() {
-            perms.set_readonly(false);
-            fs::set_permissions(&db_path, perms)?;
-        }
-        fs::remove_file(&db_path)?;
-    }
-
     tmp.persist(&db_path).map_err(|e| e.error)?;
 
-    // Mark the final file read-only after the atomic rename so Windows
-    // observes the permission change on the persisted path.
     let metadata = fs::metadata(&db_path)?;
     let mut perms = metadata.permissions();
     perms.set_readonly(true);

@@ -228,32 +228,13 @@ impl ContainerRuntimeShim {
 }
 
 /// Install a shell shim into `dir` so it is found on PATH as `name`.
-///
-/// On Unix the script is written directly as an executable file.
-/// On Windows a tiny `.cmd` wrapper delegates to bash (available via Git
-/// for Windows on all GitHub Actions runners).
 fn install_shim(dir: &Path, name: &str, content: &str) {
-    #[cfg(not(windows))]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let path = dir.join(name);
-        fs::write(&path, content).unwrap();
-        let mut perms = fs::metadata(&path).unwrap().permissions();
-        perms.set_mode(0o755);
-        fs::set_permissions(&path, perms).unwrap();
-    }
-
-    #[cfg(windows)]
-    {
-        let sh_name = format!("{name}.sh");
-        fs::write(dir.join(&sh_name), content).unwrap();
-        let cmd_path = dir.join(format!("{name}.cmd"));
-        fs::write(
-            cmd_path,
-            format!("@echo off\r\nbash \"%~dp0{sh_name}\" %*\r\nexit /b %ERRORLEVEL%\r\n"),
-        )
-        .unwrap();
-    }
+    use std::os::unix::fs::PermissionsExt;
+    let path = dir.join(name);
+    fs::write(&path, content).unwrap();
+    let mut perms = fs::metadata(&path).unwrap().permissions();
+    perms.set_mode(0o755);
+    fs::set_permissions(&path, perms).unwrap();
 }
 
 pub(crate) fn expected_docs_user_agent() -> String {

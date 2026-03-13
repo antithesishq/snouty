@@ -19,13 +19,7 @@ fn main() {
     fs::create_dir_all(&outdir).unwrap();
 
     let mut command = Cli::command();
-    for shell in [
-        Shell::Bash,
-        Shell::Fish,
-        Shell::Zsh,
-        Shell::PowerShell,
-        Shell::Elvish,
-    ] {
+    for shell in [Shell::Bash, Shell::Fish, Shell::Zsh, Shell::Elvish] {
         generate_to(shell, &mut command, "snouty", &outdir).unwrap();
     }
 }

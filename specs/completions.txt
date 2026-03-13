@@ -17,14 +17,10 @@ snouty completions fish
 stdout '.*complete.*'
 stdout '.*snouty.*'
 
-# 4. PowerShell completions produce a valid completion script.
-snouty completions powershell
-stdout '.*snouty.*'
-
-# 5. Elvish completions produce a valid completion script.
+# 4. Elvish completions produce a valid completion script.
 snouty completions elvish
 stdout '.*snouty.*'
 
-# 6. Unsupported shells are rejected.
+# 5. Unsupported shells are rejected.
 ! snouty completions nushell
 stderr 'unsupported shell: nushell.*'

@@ -64,7 +64,7 @@ Using Moment.from (copy from triage report):
 
     /// Output shell completions
     Completions {
-        /// Shell to generate completions for (bash, zsh, fish, powershell, elvish)
+        /// Shell to generate completions for (bash, zsh, fish, elvish)
         shell: String,
     },
 

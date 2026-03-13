@@ -72,8 +72,6 @@ jobs:
             runtime: docker
           - os: ubuntu-latest
             runtime: podman
-          - os: windows-latest
-            runtime: docker
           - os: macos-15-intel
             runtime: podman
     env:
@@ -106,19 +104,6 @@ jobs:
           podman machine init
           podman machine start
 
-      - name: Start Docker On Windows
-        if: matrix.runtime == 'docker' && startsWith(matrix.os, 'windows')
-        shell: powershell
-        run: |
-          $service = Get-Service docker -ErrorAction SilentlyContinue
-          if ($null -eq $service) {
-            throw "Docker service 'docker' is not installed on this runner."
-          }
-          if ($service.Status -ne 'Running') {
-            Start-Service docker
-          }
-          Get-Service docker
-
       - name: Runtime Info
         shell: bash
         run: |
@@ -129,12 +114,7 @@ jobs:
           fi
 
       - name: Test
-        if: ${{ !startsWith(matrix.os, 'windows') }}
         run: cargo nextest run
-
-      - name: Test (Windows)
-        if: ${{ startsWith(matrix.os, 'windows') }}
-        run: cargo nextest run -- --skip build_and_push_to_mock_registry --skip engine_spec_tests
   build-nix:
     runs-on: ubuntu-latest
     needs: skip-check

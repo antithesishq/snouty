@@ -38,8 +38,7 @@ fn cmd_snouty(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     // Forward system env vars needed by container tools, networking, and coverage.
-    // SYSTEMROOT is required on Windows for Winsock (networking) to initialise.
-    for var in ["PATH", "HOME", "SYSTEMROOT", "LLVM_PROFILE_FILE"] {
+    for var in ["PATH", "HOME", "LLVM_PROFILE_FILE"] {
         if let Ok(v) = std::env::var(var) {
             cmd.env(var, v);
         }

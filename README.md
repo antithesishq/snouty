@@ -13,12 +13,6 @@ A CLI for the [Antithesis](https://antithesis.com) API. See the [webhook documen
 curl --proto '=https' --tlsv1.2 -LsSf https://github.com/antithesishq/snouty/releases/latest/download/snouty-installer.sh | sh
 ```
 
-### Install prebuilt binaries via powershell script
-
-```sh
-powershell -ExecutionPolicy Bypass -c "irm https://github.com/antithesishq/snouty/releases/latest/download/snouty-installer.ps1 | iex"
-```
-
 ### Install prebuilt binaries via cargo binstall
 
 ```sh
@@ -36,7 +30,6 @@ cargo install snouty
 | File                                                                                                                                               | Platform            | Checksum                                                                                                                   |
 | -------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------- | -------------------------------------------------------------------------------------------------------------------------- |
 | [snouty-aarch64-apple-darwin.tar.xz](https://github.com/antithesishq/snouty/releases/latest/download/snouty-aarch64-apple-darwin.tar.xz)           | Apple Silicon macOS | [checksum](https://github.com/antithesishq/snouty/releases/latest/download/snouty-aarch64-apple-darwin.tar.xz.sha256)      |
-| [snouty-x86_64-pc-windows-msvc.zip](https://github.com/antithesishq/snouty/releases/latest/download/snouty-x86_64-pc-windows-msvc.zip)             | x64 Windows         | [checksum](https://github.com/antithesishq/snouty/releases/latest/download/snouty-x86_64-pc-windows-msvc.zip.sha256)       |
 | [snouty-aarch64-unknown-linux-gnu.tar.xz](https://github.com/antithesishq/snouty/releases/latest/download/snouty-aarch64-unknown-linux-gnu.tar.xz) | ARM64 Linux         | [checksum](https://github.com/antithesishq/snouty/releases/latest/download/snouty-aarch64-unknown-linux-gnu.tar.xz.sha256) |
 | [snouty-x86_64-unknown-linux-gnu.tar.xz](https://github.com/antithesishq/snouty/releases/latest/download/snouty-x86_64-unknown-linux-gnu.tar.xz)   | x64 Linux           | [checksum](https://github.com/antithesishq/snouty/releases/latest/download/snouty-x86_64-unknown-linux-gnu.tar.xz.sha256)  |
 
@@ -122,7 +115,7 @@ echo 'Moment.from({ session_id: "...", input_hash: "...", vtime: ... })' | \
 
 ## Shell Completions
 
-Snouty supports tab completions for bash, zsh, fish, powershell, and elvish.
+Snouty supports tab completions for bash, zsh, fish, and elvish.
 
 ### Bash
 
@@ -142,13 +135,6 @@ eval "$(snouty completions zsh)"
 
 ```sh
 snouty completions fish > ~/.config/fish/completions/snouty.fish
-```
-
-### PowerShell
-
-```powershell
-# Add to your PowerShell profile
-snouty completions powershell | Out-String | Invoke-Expression
 ```
 
 ### Elvish

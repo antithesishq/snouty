@@ -280,11 +280,10 @@ fn cmd_completions(shell: String) -> Result<()> {
         "bash" => include_str!(concat!(env!("OUT_DIR"), "/snouty.bash")),
         "zsh" => include_str!(concat!(env!("OUT_DIR"), "/_snouty")),
         "fish" => include_str!(concat!(env!("OUT_DIR"), "/snouty.fish")),
-        "powershell" => include_str!(concat!(env!("OUT_DIR"), "/_snouty.ps1")),
         "elvish" => include_str!(concat!(env!("OUT_DIR"), "/snouty.elv")),
         _ => {
             bail!(
-                "invalid arguments: unsupported shell: {shell}\nsupported: bash, zsh, fish, powershell, elvish"
+                "invalid arguments: unsupported shell: {shell}\nsupported: bash, zsh, fish, elvish"
             );
         }
     };

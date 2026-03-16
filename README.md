@@ -52,6 +52,20 @@ export ANTITHESIS_REPOSITORY="us-central1-docker.pkg.dev/your-project/your-repo"
 
 The `-w`/`--webhook` flag specifies which webhook to call. Common values are `basic_test` (Docker environment) or `basic_k8s_test` (Kubernetes environment), unless you have a custom webhook registered with Antithesis.
 
+### Validate your local setup
+
+The `validate` command starts your `docker-compose.yaml` locally, watches for the `setup-complete` event, and then discovers and runs any [Test Composer](https://antithesis.com/docs/test_templates/) scripts found inside the running containers.
+
+```sh
+snouty validate ./config
+```
+
+Use `--timeout` to adjust how long to wait for `setup-complete` (default 60s):
+
+```sh
+snouty validate ./config --timeout 120
+```
+
 ### Launch a test run
 
 The `-c`/`--config` flag points at a local directory containing your `docker-compose.yaml`. Snouty builds a config image from that directory and pushes it to `ANTITHESIS_REPOSITORY` automatically.

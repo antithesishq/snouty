@@ -33,6 +33,10 @@ cargo install snouty
 | [snouty-aarch64-unknown-linux-gnu.tar.xz](https://github.com/antithesishq/snouty/releases/latest/download/snouty-aarch64-unknown-linux-gnu.tar.xz) | ARM64 Linux         | [checksum](https://github.com/antithesishq/snouty/releases/latest/download/snouty-aarch64-unknown-linux-gnu.tar.xz.sha256) |
 | [snouty-x86_64-unknown-linux-gnu.tar.xz](https://github.com/antithesishq/snouty/releases/latest/download/snouty-x86_64-unknown-linux-gnu.tar.xz)   | x64 Linux           | [checksum](https://github.com/antithesishq/snouty/releases/latest/download/snouty-x86_64-unknown-linux-gnu.tar.xz.sha256)  |
 
+## Requirements
+
+Commands that work with `docker-compose.yaml` files (e.g. `run --config`, `validate`) require Docker or Podman. When using Podman, [`podman-compose`](https://github.com/containers/podman-compose) **1.1.0 or later** must be installed.
+
 ## Configuration
 
 Set the following environment variables:

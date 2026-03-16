@@ -15,6 +15,7 @@ fn err(msg: String) -> testscript_rs::Error {
 struct EngineContext {
     registry: String,
     engine: Box<dyn snouty::container::ContainerRuntime>,
+    built_images: Vec<String>,
 }
 
 thread_local! {
@@ -23,13 +24,14 @@ thread_local! {
 
 // --- Shared command handlers (function pointers for testscript CommandFn) ---
 
-fn cmd_snouty(
-    env: &mut testscript_rs::TestEnvironment,
-    args: &[String],
-) -> testscript_rs::Result<()> {
-    // env_clear() so tests don't depend on the parent environment.
-    // testscript-rs's built-in execute_command uses Command::envs
-    // (additive), which leaks the parent env.
+/// System env vars forwarded to child processes (container tools, coverage).
+const FORWARDED_ENV_VARS: &[&str] = &["PATH", "HOME", "LLVM_PROFILE_FILE"];
+
+/// Build a `Command` for the snouty binary with a clean environment.
+///
+/// Clears the parent env, forwards [`FORWARDED_ENV_VARS`], and applies
+/// the test environment's `env_vars`.
+fn snouty_cmd(env: &testscript_rs::TestEnvironment, args: &[String]) -> std::process::Command {
     let bin = env!("CARGO_BIN_EXE_snouty");
     let mut cmd = std::process::Command::new(bin);
     cmd.args(args)
@@ -37,8 +39,7 @@ fn cmd_snouty(
         .env_clear()
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    // Forward system env vars needed by container tools, networking, and coverage.
-    for var in ["PATH", "HOME", "LLVM_PROFILE_FILE"] {
+    for var in FORWARDED_ENV_VARS {
         if let Ok(v) = std::env::var(var) {
             cmd.env(var, v);
         }
@@ -46,6 +47,16 @@ fn cmd_snouty(
     for (k, v) in &env.env_vars {
         cmd.env(k, v);
     }
+    cmd
+}
+
+fn cmd_snouty(
+    env: &mut testscript_rs::TestEnvironment,
+    args: &[String],
+) -> testscript_rs::Result<()> {
+    let start = std::time::Instant::now();
+    let label = args.join(" ");
+    let mut cmd = snouty_cmd(env, args);
     if env.next_stdin.is_some() {
         cmd.stdin(Stdio::piped());
     }
@@ -62,6 +73,7 @@ fn cmd_snouty(
     let output = child
         .wait_with_output()
         .map_err(|e| err(format!("wait snouty: {e}")))?;
+    eprintln!("[{:.1}s] snouty {label}", start.elapsed().as_secs_f64());
     let success = output.status.success();
     let stderr_str = String::from_utf8_lossy(&output.stderr).into_owned();
     let stdout_str = String::from_utf8_lossy(&output.stdout).into_owned();
@@ -121,21 +133,30 @@ fn cmd_build_image(
     args: &[String],
 ) -> testscript_rs::Result<()> {
     // Usage: build-image <name:tag> <dir>
-    // Builds a scratch image from <dir> (relative to work_dir), tagged as
+    // Builds a container image from <dir> (relative to work_dir), tagged as
     // {registry}/<name:tag> so it matches compose references.
+    // If <dir> contains a Dockerfile it is used; otherwise a scratch image
+    // containing the directory contents is built.
     // Registry and engine come from the ENGINE_CTX thread-local.
     if args.len() < 2 {
         return Err(err("build-image requires <name:tag> <dir>".to_string()));
     }
-    ENGINE_CTX.with_borrow(|ctx| {
+    let start = std::time::Instant::now();
+    let label = args.join(" ");
+    ENGINE_CTX.with_borrow_mut(|ctx| {
         let ctx = ctx
-            .as_ref()
+            .as_mut()
             .ok_or_else(|| err("ENGINE_CTX not set".to_string()))?;
         let image_ref = format!("{}/{}", ctx.registry, args[0]);
         let dir = env.work_dir.join(&args[1]);
         ctx.engine
             .build_image(&dir, &image_ref)
             .map_err(|e| err(format!("build-image: {e}")))?;
+        eprintln!(
+            "[{:.1}s] build-image {label}",
+            start.elapsed().as_secs_f64()
+        );
+        ctx.built_images.push(image_ref);
         Ok(())
     })
 }
@@ -154,6 +175,25 @@ fn spec_tests() {
         })
         .command("snouty", cmd_snouty)
         .command("mock-server", cmd_mock_server)
+        .command("set-env", |env, args| {
+            // Usage: set-env KEY value...
+            // Interpolates ${VAR} references in value using env.env_vars.
+            if args.len() < 2 {
+                return Err(err("set-env requires KEY and value".to_string()));
+            }
+            let key = &args[0];
+            let raw_value = args[1..].join(" ");
+            let value = env.substitute_env_vars(&raw_value);
+            env.set_env_var(key, &value);
+            Ok(())
+        })
+        .command("snouty-bg", |env, args| {
+            let child = snouty_cmd(env, args)
+                .spawn()
+                .map_err(|e| err(format!("spawn snouty-bg: {e}")))?;
+            env.background_processes.insert("snouty".to_string(), child);
+            Ok(())
+        })
         .command("setup-docs-db", |env, args| {
             // Usage: setup-docs-db
             // Copies the fixture docs.db into the workdir and sets ANTITHESIS_DOCS_DB_PATH.
@@ -197,6 +237,7 @@ fn engine_spec_tests() {
         ENGINE_CTX.set(Some(EngineContext {
             registry: registry_addr.clone(),
             engine: engine.clone_box(),
+            built_images: Vec::new(),
         }));
 
         let name = engine_name.clone();
@@ -213,6 +254,17 @@ fn engine_spec_tests() {
             .command("mock-server", cmd_mock_server)
             .command("build-image", cmd_build_image)
             .execute();
+
+        // Best-effort cleanup of built images.
+        ENGINE_CTX.with_borrow(|ctx| {
+            if let Some(ctx) = ctx.as_ref() {
+                for image in &ctx.built_images {
+                    let _ = std::process::Command::new(engine.name())
+                        .args(["rmi", "-f", image])
+                        .output();
+                }
+            }
+        });
 
         if let Err(e) = result {
             panic!("\n{engine_name}: {e}");

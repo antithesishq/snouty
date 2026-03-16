@@ -1,0 +1,158 @@
+# snouty validate — positive tests with container runtime
+
+# 1. Setup-complete only (no test scripts) — validate succeeds.
+build-image setup-emitter:latest setup_emitter
+snouty validate config_no_scripts --timeout 15
+stderr 'Setup-complete event detected.*'
+stderr 'No test scripts in service.*'
+stderr 'Setup validation successful.*'
+
+# 2. All script types run in correct phases, helper_ ignored.
+build-image all-types:latest all_types
+snouty validate config_all_types --timeout 15
+stderr 'Setup-complete event detected.*'
+stderr 'Found 1 first, 1 driver, 1 anytime, 1 eventually, 1 finally scripts.*'
+stderr 'Running \[suite/first_setup\] in service runner.*'
+stderr 'Running \[suite/parallel_driver_load\] in service runner.*'
+stderr 'Running \[suite/anytime_check\] in service runner.*'
+stderr 'Running \[suite/eventually_verify\] in service runner.*'
+stderr 'Running \[suite/finally_cleanup\] in service runner.*'
+stderr 'Setup validation successful.*'
+
+# 3. Failing script — remaining scripts still run, validate fails.
+build-image fail-with-finally:latest fail_with_finally
+! snouty validate config_fail_finally --timeout 15
+stderr 'Running \[suite/first_setup\] in service runner.*'
+stderr 'FAIL \[suite/parallel_driver_bad\] in service runner.*'
+stderr 'Running \[suite/finally_cleanup\] in service runner.*'
+stderr 'one or more test scripts failed.*'
+
+# 4. No driver or anytime scripts — validate errors.
+build-image nodrivers:latest nodrivers
+! snouty validate config_nodrivers --timeout 15
+stderr 'no driver or anytime scripts.*'
+
+# 5. Unknown prefix file — validate errors.
+build-image unknown-prefix:latest unknown_prefix
+! snouty validate config_unknown --timeout 15
+stderr 'unrecognized command names.*'
+stderr 'suite/readme.txt.*'
+
+# 6. Non-executable script — compose exec fails, validate reports failure.
+build-image noexec:latest noexec
+! snouty validate config_noexec --timeout 15
+stderr 'FAIL.*'
+
+-- setup_emitter/Dockerfile --
+FROM busybox
+CMD sh -c 'echo "{\"antithesis_setup\":{\"status\":\"complete\"}}" >> "$ANTITHESIS_SDK_LOCAL_OUTPUT" && sleep 3600'
+-- config_no_scripts/docker-compose.yaml --
+services:
+  emitter:
+    image: ${ANTITHESIS_REPOSITORY}/setup-emitter:latest
+
+-- all_types/suite/first_setup --
+#!/bin/sh
+echo "first_setup ran"
+
+-- all_types/suite/parallel_driver_load --
+#!/bin/sh
+echo "parallel_driver_load ran"
+
+-- all_types/suite/anytime_check --
+#!/bin/sh
+echo "anytime_check ran"
+
+-- all_types/suite/eventually_verify --
+#!/bin/sh
+echo "eventually_verify ran"
+
+-- all_types/suite/finally_cleanup --
+#!/bin/sh
+echo "finally_cleanup ran"
+
+-- all_types/suite/helper_utils --
+#!/bin/sh
+echo "helper should not run"
+
+-- all_types/Dockerfile --
+FROM busybox
+COPY suite/ /opt/antithesis/test/v1/suite/
+RUN chmod +x /opt/antithesis/test/v1/suite/*
+CMD sh -c 'echo "{\"antithesis_setup\":{\"status\":\"complete\"}}" >> "$ANTITHESIS_SDK_LOCAL_OUTPUT" && sleep 3600'
+-- config_all_types/docker-compose.yaml --
+services:
+  runner:
+    image: ${ANTITHESIS_REPOSITORY}/all-types:latest
+
+-- fail_with_finally/suite/first_setup --
+#!/bin/sh
+echo "first_setup ran"
+
+-- fail_with_finally/suite/parallel_driver_bad --
+#!/bin/sh
+echo "this script fails"
+exit 1
+
+-- fail_with_finally/suite/finally_cleanup --
+#!/bin/sh
+echo "finally_cleanup ran"
+
+-- fail_with_finally/Dockerfile --
+FROM busybox
+COPY suite/ /opt/antithesis/test/v1/suite/
+RUN chmod +x /opt/antithesis/test/v1/suite/*
+CMD sh -c 'echo "{\"antithesis_setup\":{\"status\":\"complete\"}}" >> "$ANTITHESIS_SDK_LOCAL_OUTPUT" && sleep 3600'
+-- config_fail_finally/docker-compose.yaml --
+services:
+  runner:
+    image: ${ANTITHESIS_REPOSITORY}/fail-with-finally:latest
+
+-- nodrivers/suite/first_setup --
+#!/bin/sh
+echo "first_setup ran"
+
+-- nodrivers/Dockerfile --
+FROM busybox
+COPY suite/ /opt/antithesis/test/v1/suite/
+RUN chmod +x /opt/antithesis/test/v1/suite/*
+CMD sh -c 'echo "{\"antithesis_setup\":{\"status\":\"complete\"}}" >> "$ANTITHESIS_SDK_LOCAL_OUTPUT" && sleep 3600'
+-- config_nodrivers/docker-compose.yaml --
+services:
+  runner:
+    image: ${ANTITHESIS_REPOSITORY}/nodrivers:latest
+
+-- unknown_prefix/suite/first_ok --
+#!/bin/sh
+echo "first_ok ran"
+
+-- unknown_prefix/suite/readme.txt --
+This is not a script.
+
+-- unknown_prefix/Dockerfile --
+FROM busybox
+COPY suite/ /opt/antithesis/test/v1/suite/
+RUN chmod +x /opt/antithesis/test/v1/suite/first_ok
+CMD sh -c 'echo "{\"antithesis_setup\":{\"status\":\"complete\"}}" >> "$ANTITHESIS_SDK_LOCAL_OUTPUT" && sleep 3600'
+-- config_unknown/docker-compose.yaml --
+services:
+  runner:
+    image: ${ANTITHESIS_REPOSITORY}/unknown-prefix:latest
+
+-- noexec/suite/first_noexec --
+#!/bin/sh
+echo "should not run"
+
+-- noexec/suite/parallel_driver_load --
+#!/bin/sh
+echo "driver ran"
+
+-- noexec/Dockerfile --
+FROM busybox
+COPY suite/ /opt/antithesis/test/v1/suite/
+RUN chmod +x /opt/antithesis/test/v1/suite/parallel_driver_load
+CMD sh -c 'echo "{\"antithesis_setup\":{\"status\":\"complete\"}}" >> "$ANTITHESIS_SDK_LOCAL_OUTPUT" && sleep 3600'
+-- config_noexec/docker-compose.yaml --
+services:
+  runner:
+    image: ${ANTITHESIS_REPOSITORY}/noexec:latest

@@ -1,5 +1,5 @@
 use std::io::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::OnceLock;
 
@@ -8,6 +8,74 @@ use color_eyre::{
     Section, SectionExt,
     eyre::{Context, Result, bail, eyre},
 };
+use tokio::process::Child;
+
+/// Bundles a compose config directory with optional overlay files (e.g. overrides).
+///
+/// Used by compose session operations (`compose_up`, `compose_ps`, `compose_exec`,
+/// `compose_down`) that run against a live `compose up`.
+#[derive(Debug)]
+pub struct ComposeConfig {
+    dir: PathBuf,
+    extra_files: Vec<PathBuf>,
+}
+
+impl ComposeConfig {
+    /// Validate and wrap a compose config directory.
+    ///
+    /// Checks that the directory exists and contains `docker-compose.yaml`.
+    pub fn new(dir: PathBuf) -> Result<Self> {
+        if !dir.is_dir() {
+            bail!(
+                "config directory error: '{}' is not a directory",
+                dir.display()
+            );
+        }
+
+        if dir.join("docker-compose.yml").is_file() {
+            bail!(
+                "config directory error: directory '{}' contains docker-compose.yml, but Antithesis requires docker-compose.yaml (rename the file)",
+                dir.display()
+            );
+        }
+
+        if !dir.join("docker-compose.yaml").is_file() {
+            bail!(
+                "config directory error: directory '{}' does not contain a docker-compose.yaml file",
+                dir.display()
+            );
+        }
+
+        Ok(Self {
+            dir,
+            extra_files: Vec::new(),
+        })
+    }
+
+    /// Add an overlay file (e.g. a compose override) to the config.
+    pub fn with_overlay(mut self, path: PathBuf) -> Self {
+        self.extra_files.push(path);
+        self
+    }
+
+    /// The compose config directory.
+    pub fn dir(&self) -> &Path {
+        &self.dir
+    }
+
+    /// Return the `-f` flags for `compose` subcommands.
+    ///
+    /// Always includes `-f docker-compose.yaml`, followed by `-f <path>` for
+    /// each overlay in `extra_files`.
+    fn file_args(&self) -> Vec<String> {
+        let mut args = vec!["-f".to_string(), "docker-compose.yaml".to_string()];
+        for f in &self.extra_files {
+            args.push("-f".to_string());
+            args.push(f.display().to_string());
+        }
+        args
+    }
+}
 
 /// Trait representing a container runtime (podman or docker).
 pub trait ContainerRuntime: Send + Sync {
@@ -21,22 +89,38 @@ pub trait ContainerRuntime: Send + Sync {
     /// (e.g. `example.com/foo/image@sha256:...`).
     fn image_push(&self, image_ref: &str) -> Result<String>;
 
-    /// Build a scratch image containing the directory contents.
+    /// Build a container image from a directory.
+    ///
+    /// If the directory contains a `Dockerfile`, it is used as-is.
+    /// Otherwise a scratch image containing the directory contents is built
+    /// via an implicit `FROM scratch\nCOPY . /\n` Dockerfile.
     fn build_image(&self, config_dir: &Path, image_ref: &str) -> Result<()> {
         let runtime = self.name();
-        let mut child = Command::new(runtime)
-            .args(["build", "-t", image_ref, "-f", "-", "."])
+        let has_dockerfile = config_dir.join("Dockerfile").exists();
+
+        let mut cmd = Command::new(runtime);
+        cmd.args(["build", "-t", image_ref]);
+        if !has_dockerfile {
+            cmd.args(["-f", "-"]);
+        }
+        cmd.arg(".")
             .current_dir(config_dir)
-            .stdin(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped());
+        if !has_dockerfile {
+            cmd.stdin(std::process::Stdio::piped());
+        }
+
+        let mut child = cmd
             .spawn()
             .wrap_err(format!("failed to start '{runtime} build'"))?;
 
-        if let Some(mut stdin) = child.stdin.take() {
-            stdin
-                .write_all(b"FROM scratch\nCOPY . /\n")
-                .wrap_err("failed to write Dockerfile to stdin")?;
+        if !has_dockerfile {
+            if let Some(mut stdin) = child.stdin.take() {
+                stdin
+                    .write_all(b"FROM scratch\nCOPY . /\n")
+                    .wrap_err("failed to write Dockerfile to stdin")?;
+            }
         }
 
         let output = child
@@ -70,11 +154,33 @@ pub trait ContainerRuntime: Send + Sync {
         Ok(pinned)
     }
 
+    /// Run `compose config` to resolve the compose file with env substitutions,
+    /// returning the resolved YAML as a string.
+    fn compose_config(&self, config_dir: &Path) -> Result<String> {
+        let runtime = self.name();
+        let output = Command::new(runtime)
+            .args(["compose", "-f", "docker-compose.yaml", "config"])
+            .current_dir(config_dir)
+            .output()
+            .wrap_err(format!("failed to run '{runtime} compose config'"))?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            return Err(eyre!("'{runtime} compose config' failed"))
+                .with_section(move || stdout.trim().to_string().header("Stdout:"))
+                .with_section(move || stderr.trim().to_string().header("Stderr:"));
+        }
+
+        Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+    }
+
     /// Push compose images that match the registry.
     /// Returns the pinned image reference for each pushed image.
     fn push_compose_images(&self, config_dir: &Path, registry: &str) -> Result<Vec<String>> {
-        let runtime = self.name();
-        let images = extract_image_refs(runtime, config_dir)?;
+        let yaml = self.compose_config(config_dir)?;
+        let entries = parse_compose_config(&yaml)?;
+        let images: Vec<String> = entries.into_iter().map(|(_, img)| img).collect();
         let pushable = filter_pushable_images(&images, registry);
 
         let mut pinned = Vec::new();
@@ -86,6 +192,86 @@ pub trait ContainerRuntime: Send + Sync {
         }
 
         Ok(pinned)
+    }
+
+    /// Parse `compose ps --format json` to get `(service_name, container_id)` pairs.
+    fn compose_ps(&self, config: &ComposeConfig) -> Result<Vec<(String, String)>> {
+        let runtime = self.name();
+        let mut cmd = Command::new(runtime);
+        cmd.current_dir(&config.dir);
+        cmd.arg("compose").args(config.file_args());
+        cmd.args(["ps", "--format", "json"]);
+
+        let output = cmd
+            .output()
+            .wrap_err_with(|| format!("failed to run '{runtime} compose ps'"))?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(eyre!("'{runtime} compose ps' failed"))
+                .with_section(move || stderr.trim().to_string().header("Stderr:"));
+        }
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        parse_compose_ps(&stdout)
+    }
+
+    /// Copy files from a container to the local filesystem.
+    ///
+    /// Runs `{runtime} cp {container_id}:{src} {dst}`.
+    fn container_cp(&self, container_id: &str, src: &str, dst: &Path) -> Result<()> {
+        let runtime = self.name();
+        let src_arg = format!("{container_id}:{src}");
+        let output = Command::new(runtime)
+            .args(["cp", &src_arg, &dst.display().to_string()])
+            .output()
+            .wrap_err_with(|| format!("failed to run '{runtime} cp'"))?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(eyre!("'{runtime} cp' failed"))
+                .with_section(move || stderr.trim().to_string().header("Stderr:"));
+        }
+
+        Ok(())
+    }
+
+    /// Run a command inside a running compose service container.
+    ///
+    /// Runs `{runtime} compose exec -T [-w workdir] {service} {cmd...}`.
+    /// The `-T` flag disables TTY allocation for non-interactive use.
+    /// If `workdir` is `Some`, sets the working directory inside the container.
+    fn compose_exec(
+        &self,
+        config: &ComposeConfig,
+        service: &str,
+        workdir: Option<&str>,
+        cmd: &[&str],
+    ) -> Result<std::process::ExitStatus> {
+        let runtime = self.name();
+        let mut command = Command::new(runtime);
+        command.current_dir(&config.dir);
+        command.arg("compose").args(config.file_args());
+        command.args(["exec", "-T"]);
+        if let Some(w) = workdir {
+            command.args(["-w", w]);
+        }
+        command.arg(service);
+        command.args(cmd);
+
+        command
+            .status()
+            .wrap_err_with(|| format!("failed to run '{runtime} compose exec'"))
+    }
+
+    /// Run `compose down` for cleanup. Best-effort, ignores errors.
+    fn compose_down(&self, config: &ComposeConfig) {
+        let runtime = self.name();
+        let mut cmd = Command::new(runtime);
+        cmd.current_dir(&config.dir);
+        cmd.arg("compose").args(config.file_args());
+        cmd.args(["down", "--timeout", "0"]);
+        let _ = cmd.output();
     }
 }
 
@@ -186,38 +372,12 @@ impl ContainerRuntime for DockerRuntime {
     }
 }
 
-/// Check that the directory exists and contains a docker-compose file.
-pub fn validate_config_dir(config_dir: &Path) -> Result<()> {
-    if !config_dir.is_dir() {
-        bail!(
-            "config directory error: '{}' is not a directory",
-            config_dir.display()
-        );
-    }
-
-    if config_dir.join("docker-compose.yml").is_file() {
-        bail!(
-            "config directory error: directory '{}' contains docker-compose.yml, but Antithesis requires docker-compose.yaml (rename the file)",
-            config_dir.display()
-        );
-    }
-
-    if !config_dir.join("docker-compose.yaml").is_file() {
-        bail!(
-            "config directory error: directory '{}' does not contain a docker-compose.yaml file",
-            config_dir.display()
-        );
-    }
-
-    Ok(())
-}
-
 /// Run `{runtime} compose config` to validate the compose file.
 fn validate_compose_file(runtime: &str, config_dir: &Path) -> Result<()> {
     let output = Command::new(runtime)
         // Keep compose validation independent of directory naming quirks.
         .env("COMPOSE_PROJECT_NAME", "snouty")
-        .args(["compose", "config", "--quiet"])
+        .args(["compose", "-f", "docker-compose.yaml", "config"])
         .current_dir(config_dir)
         .output()
         .wrap_err(format!("failed to run '{runtime} compose config'"))?;
@@ -383,47 +543,24 @@ fn parse_docker_push_digest(stdout: &str) -> Result<String> {
     })
 }
 
-/// Extract image references from the docker-compose.yaml in the given config directory.
-/// Uses `{runtime} compose config` to resolve env variable substitutions.
-fn extract_image_refs(runtime: &str, config_dir: &Path) -> Result<Vec<String>> {
-    let output = Command::new(runtime)
-        // Keep image extraction independent of directory naming quirks.
-        .env("COMPOSE_PROJECT_NAME", "snouty")
-        .args(["compose", "config"])
-        .current_dir(config_dir)
-        .output()
-        .wrap_err(format!("failed to run '{runtime} compose config'"))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        return Err(eyre!("'{runtime} compose config' failed"))
-            .with_section(move || stdout.trim().to_string().header("Stdout:"))
-            .with_section(move || stderr.trim().to_string().header("Stderr:"));
-    }
-
-    let contents = String::from_utf8_lossy(&output.stdout);
-    parse_compose_images(&contents)
-}
-
-/// Parse image references from resolved compose config YAML.
-fn parse_compose_images(yaml: &str) -> Result<Vec<String>> {
+/// Parse services from resolved compose config YAML.
+/// Returns `(service_name, image)` pairs. Services without an `image` key are omitted.
+pub fn parse_compose_config(yaml: &str) -> Result<Vec<(String, String)>> {
     let doc: serde_yaml::Value =
         serde_yaml::from_str(yaml).wrap_err("failed to parse docker-compose.yaml")?;
 
-    let mut images = Vec::new();
+    let mut entries = Vec::new();
     if let Some(services) = doc.get("services").and_then(|s| s.as_mapping()) {
-        for (_name, service) in services {
-            if let Some(image) = service.get("image").and_then(|i| i.as_str()) {
-                let image = image.to_string();
-                if !images.contains(&image) {
-                    images.push(image);
-                }
+        for (name, service) in services {
+            if let (Some(name), Some(image)) =
+                (name.as_str(), service.get("image").and_then(|i| i.as_str()))
+            {
+                entries.push((name.to_string(), image.to_string()));
             }
         }
     }
 
-    Ok(images)
+    Ok(entries)
 }
 
 /// Filter images to only those that should be pushed: images whose name
@@ -431,10 +568,84 @@ fn parse_compose_images(yaml: &str) -> Result<Vec<String>> {
 fn filter_pushable_images<'a>(images: &'a [String], registry: &str) -> Vec<&'a str> {
     let registry = registry.trim_end_matches('/');
     let prefix = format!("{registry}/");
+    let mut seen = std::collections::HashSet::new();
     images
         .iter()
-        .filter(|img| img.starts_with(&prefix))
+        .filter(|img| img.starts_with(&prefix) && seen.insert(img.as_str()))
         .map(|s| s.as_str())
+        .collect()
+}
+
+/// Start `{runtime} compose up` and return the child process plus an async
+/// readable handle for its output.
+///
+/// A PTY is used so that podman produces proper output.
+pub fn compose_up(
+    runtime: &str,
+    config: &ComposeConfig,
+    args: &[&str],
+) -> Result<(Child, impl tokio::io::AsyncRead + Unpin + use<>)> {
+    let (pty, pts) = pty_process::open().wrap_err("failed to open PTY")?;
+
+    let cmd = pty_process::Command::new(runtime);
+    let cmd = cmd.current_dir(&config.dir);
+    let cmd = cmd.arg("compose").args(config.file_args());
+    let cmd = cmd.arg("up");
+    let cmd = cmd.args(args);
+
+    let child = cmd
+        .spawn(pts)
+        .wrap_err_with(|| format!("failed to start '{runtime} compose up'"))?;
+
+    Ok((child, pty))
+}
+
+/// Parse the JSON output of `compose ps --format json`.
+///
+/// Handles both NDJSON (one object per line) and JSON array formats.
+///
+/// Two schemas are supported:
+/// - **docker compose**: `{"Service": "...", "ID": "..."}`
+/// - **podman-compose** (native podman ps): `{"Id": "...", "Labels": {"com.docker.compose.service": "..."}}`
+fn parse_compose_ps(stdout: &str) -> Result<Vec<(String, String)>> {
+    let stdout = stdout.trim();
+    if stdout.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let entries: Vec<serde_json::Value> = if stdout.starts_with('[') {
+        serde_json::from_str(stdout).wrap_err("failed to parse compose ps JSON array")?
+    } else {
+        stdout
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .map(|line| serde_json::from_str(line))
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .wrap_err("failed to parse compose ps NDJSON")?
+    };
+
+    entries
+        .iter()
+        .map(|v| {
+            let id = v
+                .get("ID")
+                .or_else(|| v.get("Id"))
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| eyre!("missing container ID in compose ps output"))?;
+
+            let service = v
+                .get("Service")
+                .or_else(|| v.get("service"))
+                .and_then(|v| v.as_str())
+                .or_else(|| {
+                    v.get("Labels")
+                        .and_then(|l| l.get("com.docker.compose.service"))
+                        .and_then(|s| s.as_str())
+                })
+                .ok_or_else(|| eyre!("missing service name in compose ps output"))?;
+
+            Ok((service.to_string(), id.to_string()))
+        })
         .collect()
 }
 
@@ -481,8 +692,65 @@ mod tests {
     }
 
     #[test]
-    fn validate_config_dir_nonexistent() {
-        let result = validate_config_dir(Path::new("/nonexistent/path/that/does/not/exist"));
+    fn parse_compose_ps_ndjson() {
+        let stdout = "{\"ID\":\"abc123\",\"Service\":\"app\",\"State\":\"running\"}\n\
+                      {\"ID\":\"def456\",\"Service\":\"sidecar\",\"State\":\"running\"}\n";
+        let result = parse_compose_ps(stdout).unwrap();
+        assert_eq!(
+            result,
+            vec![
+                ("app".to_string(), "abc123".to_string()),
+                ("sidecar".to_string(), "def456".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn parse_compose_ps_json_array() {
+        let stdout = r#"[{"ID":"abc123","Service":"app"},{"ID":"def456","Service":"sidecar"}]"#;
+        let result = parse_compose_ps(stdout).unwrap();
+        assert_eq!(
+            result,
+            vec![
+                ("app".to_string(), "abc123".to_string()),
+                ("sidecar".to_string(), "def456".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn parse_compose_ps_empty() {
+        let result = parse_compose_ps("").unwrap();
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn parse_compose_ps_podman_format() {
+        let stdout = r#"[
+            {
+                "Id": "abc123",
+                "Names": ["project-app-1"],
+                "Labels": {"com.docker.compose.service": "app"}
+            },
+            {
+                "Id": "def456",
+                "Names": ["project-sidecar-1"],
+                "Labels": {"com.docker.compose.service": "sidecar"}
+            }
+        ]"#;
+        let result = parse_compose_ps(stdout).unwrap();
+        assert_eq!(
+            result,
+            vec![
+                ("app".to_string(), "abc123".to_string()),
+                ("sidecar".to_string(), "def456".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn compose_config_nonexistent() {
+        let result = ComposeConfig::new(PathBuf::from("/nonexistent/path/that/does/not/exist"));
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(err.contains("not a directory"), "got: {err}");
@@ -513,7 +781,7 @@ mod tests {
     }
 
     #[test]
-    fn parse_compose_images_basic() {
+    fn parse_compose_config_basic() {
         let yaml = "\
 services:
   app:
@@ -524,38 +792,31 @@ services:
     build:
       context: ./builder
 ";
-        let refs = parse_compose_images(yaml).unwrap();
+        let entries = parse_compose_config(yaml).unwrap();
         assert_eq!(
-            refs,
+            entries,
             vec![
-                "us-central1-docker.pkg.dev/proj/repo/app:v1",
-                "us-central1-docker.pkg.dev/proj/repo/sidecar:latest",
+                (
+                    "app".to_string(),
+                    "us-central1-docker.pkg.dev/proj/repo/app:v1".to_string()
+                ),
+                (
+                    "sidecar".to_string(),
+                    "us-central1-docker.pkg.dev/proj/repo/sidecar:latest".to_string()
+                ),
             ]
         );
     }
 
     #[test]
-    fn parse_compose_images_deduplicates() {
-        let yaml = "\
-services:
-  a:
-    image: myimage:latest
-  b:
-    image: myimage:latest
-";
-        let refs = parse_compose_images(yaml).unwrap();
-        assert_eq!(refs, vec!["myimage:latest"]);
-    }
-
-    #[test]
-    fn parse_compose_images_no_services() {
+    fn parse_compose_config_no_services() {
         let yaml = "version: '3'\n";
-        let refs = parse_compose_images(yaml).unwrap();
-        assert!(refs.is_empty());
+        let entries = parse_compose_config(yaml).unwrap();
+        assert!(entries.is_empty());
     }
 
     #[test]
-    fn extract_image_refs_resolves_env() {
+    fn compose_config_resolves_env() {
         let runtimes = require_runtimes_with_compose();
         if runtimes.is_empty() {
             return;
@@ -581,9 +842,11 @@ services:
             )
             .unwrap();
 
-            let refs = extract_image_refs(rt.name(), dir.path()).unwrap();
+            let yaml = rt.compose_config(dir.path()).unwrap();
+            let entries = parse_compose_config(&yaml).unwrap();
+            let images: Vec<&str> = entries.iter().map(|(_, img)| img.as_str()).collect();
             assert_eq!(
-                refs,
+                images,
                 vec![
                     "us-central1-docker.pkg.dev/proj/repo/app:v2",
                     "docker.io/library/nginx:latest",
@@ -592,6 +855,23 @@ services:
                 rt.name()
             );
         }
+    }
+
+    #[test]
+    fn filter_pushable_images_deduplicates_non_consecutive() {
+        let images = vec![
+            "registry.example.com/repo/app:v1".to_string(),
+            "registry.example.com/repo/sidecar:latest".to_string(),
+            "registry.example.com/repo/app:v1".to_string(),
+        ];
+        let result = filter_pushable_images(&images, "registry.example.com/repo");
+        assert_eq!(
+            result,
+            vec![
+                "registry.example.com/repo/app:v1",
+                "registry.example.com/repo/sidecar:latest",
+            ]
+        );
     }
 
     #[test]

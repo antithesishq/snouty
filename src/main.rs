@@ -12,6 +12,7 @@ use snouty::container;
 use snouty::docs;
 use snouty::moment;
 use snouty::params::Params;
+use snouty::validate;
 
 fn read_stdin() -> Result<String> {
     let mut buf = String::new();
@@ -61,7 +62,12 @@ fn get_params(args: Vec<String>, use_stdin: bool, support_moment: bool) -> Resul
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<()> {
     color_eyre::install().unwrap();
-    env_logger::init();
+    env_logger::Builder::from_default_env()
+        .format(|buf, record| {
+            use std::io::Write;
+            writeln!(buf, "{}", record.args())
+        })
+        .init();
     let cli = Cli::parse();
 
     match cli.command {
@@ -81,6 +87,7 @@ async fn main() -> Result<()> {
             info!("starting debug session");
             cmd_debug(args, stdin).await
         }
+        Commands::Validate(args) => validate::cmd_validate(args).await,
         Commands::Completions { shell } => cmd_completions(shell),
         Commands::Version => {
             println!("snouty {}", env!("CARGO_PKG_VERSION"));
@@ -132,14 +139,14 @@ async fn cmd_run(args: RunArgs) -> Result<()> {
     }
 
     let config_image_ref = if let Some(config_dir) = args.config {
-        container::validate_config_dir(&config_dir)?;
+        let config = container::ComposeConfig::new(config_dir)?;
 
         let registry = std::env::var("ANTITHESIS_REPOSITORY")
             .wrap_err("missing environment variable: ANTITHESIS_REPOSITORY")?;
 
         let image_ref = container::generate_image_ref(&registry);
         params.insert("antithesis.config_image", &image_ref);
-        Some((config_dir, registry, image_ref))
+        Some((config, registry, image_ref))
     } else {
         None
     };
@@ -174,15 +181,15 @@ async fn cmd_run(args: RunArgs) -> Result<()> {
     params.validate_test_params()?;
 
     // Build and push config image (after validation passes)
-    if let Some((config_dir, registry, config_image)) = config_image_ref {
+    if let Some((config, registry, config_image)) = config_image_ref {
         let rt = container::runtime()?;
 
-        let pinned_images = rt.push_compose_images(&config_dir, &registry)?;
+        let pinned_images = rt.push_compose_images(config.dir(), &registry)?;
         if !pinned_images.is_empty() {
             params.insert("antithesis.images", pinned_images.join(";"));
         }
 
-        let pinned_config = rt.build_and_push_config_image(&config_dir, &config_image)?;
+        let pinned_config = rt.build_and_push_config_image(config.dir(), &config_image)?;
         params.insert("antithesis.config_image", pinned_config);
     }
 

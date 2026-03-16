@@ -2,21 +2,13 @@
 
 use assert_cmd::Command;
 use assert_cmd::cargo::cargo_bin_cmd;
-use predicates::prelude::*;
-use std::ffi::OsString;
-use std::fs;
 use std::io::Read;
 use std::io::Write;
 use std::net::TcpListener;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use tempfile::TempDir;
-
-const SHIM_PODMAN: &str = include_str!("../fixtures/container-shims/podman.sh");
-const SHIM_DOCKER: &str = include_str!("../fixtures/container-shims/docker.sh");
-const SHIM_DOCKER_AS_PODMAN: &str = include_str!("../fixtures/container-shims/docker-as-podman.sh");
-const SHIM_UNAVAILABLE: &str = include_str!("../fixtures/container-shims/unavailable.sh");
 
 #[derive(Debug, Default)]
 struct MockDocsServerState {
@@ -175,68 +167,6 @@ pub(crate) fn start_mock_server(response_body: &'static str, status: u16) -> Str
     url
 }
 
-#[derive(Clone, Copy)]
-pub(crate) enum ShimRuntime {
-    Podman,
-    Docker,
-    PodmanAsDocker,
-}
-
-struct ContainerRuntimeShim {
-    _dir: TempDir,
-    log_path: PathBuf,
-}
-
-impl ContainerRuntimeShim {
-    fn new(runtime: ShimRuntime) -> Self {
-        let dir = TempDir::new().unwrap();
-        let log_path = dir.path().join("runtime.log");
-
-        match runtime {
-            ShimRuntime::Podman => install_shim(dir.path(), "podman", SHIM_PODMAN),
-            ShimRuntime::Docker => {
-                install_shim(dir.path(), "podman", SHIM_UNAVAILABLE);
-                install_shim(dir.path(), "docker", SHIM_DOCKER);
-            }
-            ShimRuntime::PodmanAsDocker => {
-                install_shim(dir.path(), "podman", SHIM_UNAVAILABLE);
-                install_shim(dir.path(), "docker", SHIM_DOCKER_AS_PODMAN);
-            }
-        }
-
-        Self {
-            _dir: dir,
-            log_path,
-        }
-    }
-
-    fn apply(&self, cmd: &mut Command) {
-        cmd.env("PATH", self.prepended_path())
-            .env("SNOUTY_SHIM_LOG", &self.log_path);
-    }
-
-    fn prepended_path(&self) -> OsString {
-        let current = std::env::var_os("PATH").unwrap_or_default();
-        let mut paths = vec![self._dir.path().to_path_buf()];
-        paths.extend(std::env::split_paths(&current));
-        std::env::join_paths(paths).unwrap()
-    }
-
-    fn log(&self) -> String {
-        fs::read_to_string(&self.log_path).unwrap_or_default()
-    }
-}
-
-/// Install a shell shim into `dir` so it is found on PATH as `name`.
-fn install_shim(dir: &Path, name: &str, content: &str) {
-    use std::os::unix::fs::PermissionsExt;
-    let path = dir.join(name);
-    fs::write(&path, content).unwrap();
-    let mut perms = fs::metadata(&path).unwrap().permissions();
-    perms.set_mode(0o755);
-    fs::set_permissions(&path, perms).unwrap();
-}
-
 pub(crate) fn expected_docs_user_agent() -> String {
     format!(
         "snouty/{} ({}; {}; rust{})",
@@ -296,48 +226,4 @@ pub(crate) fn snouty_with_mock(mock_url: &str) -> Command {
         .env("ANTITHESIS_TENANT", "testtenant")
         .env("ANTITHESIS_BASE_URL", mock_url);
     cmd
-}
-
-fn write_config_fixture(dir: &Path) {
-    fs::write(
-        dir.join("docker-compose.yaml"),
-        "\
-services:
-  app:
-    image: registry.example.com/repo/app:1.2.3
-  sidecar:
-    image: registry.example.com/repo/sidecar@sha256:oldsidecar
-  external:
-    image: docker.io/library/nginx:latest
-",
-    )
-    .unwrap();
-}
-
-pub(crate) fn run_config_with_runtime(runtime: ShimRuntime) -> (String, String) {
-    let shim = ContainerRuntimeShim::new(runtime);
-    let dir = TempDir::new().unwrap();
-    write_config_fixture(dir.path());
-
-    let mut cmd = snouty();
-    shim.apply(&mut cmd);
-    let stderr = cmd
-        .env("ANTITHESIS_REPOSITORY", "registry.example.com/repo")
-        .args([
-            "run",
-            "-w",
-            "basic_test",
-            "--config",
-            dir.path().to_str().unwrap(),
-            "--duration",
-            "30",
-        ])
-        .assert()
-        .failure()
-        .stderr(predicate::str::contains("missing environment variable"))
-        .get_output()
-        .stderr
-        .clone();
-
-    (String::from_utf8(stderr).unwrap(), shim.log())
 }

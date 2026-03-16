@@ -571,8 +571,15 @@ pub fn parse_compose_config(yaml: &str) -> Result<ComposeContents> {
 
     let mut networks = Vec::new();
     if let Some(net_map) = doc.get("networks").and_then(|s| s.as_mapping()) {
-        for name in net_map.keys() {
+        for (name, value) in net_map {
             if let Some(name) = name.as_str() {
+                let is_external = value
+                    .get("external")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                if is_external {
+                    bail!("network '{name}' is declared as external and won't work on Antithesis");
+                }
                 networks.push(name.to_string());
             }
         }
@@ -849,6 +856,23 @@ networks:
         let contents = parse_compose_config(yaml).unwrap();
         assert_eq!(contents.services.len(), 1);
         assert_eq!(contents.networks, vec!["backend", "frontend"]);
+    }
+
+    #[test]
+    fn parse_compose_config_rejects_external_network() {
+        let yaml = "\
+services:
+  app:
+    image: myapp:latest
+networks:
+  shared_net:
+    external: true
+";
+        let err = parse_compose_config(yaml).unwrap_err();
+        assert!(
+            err.to_string().contains("external"),
+            "expected error about external network, got: {err}"
+        );
     }
 
     #[test]

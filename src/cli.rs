@@ -68,6 +68,34 @@ Using Moment.from (copy from triage report):
         shell: String,
     },
 
+    /// Validate local Antithesis setup
+    #[command(long_about = r#"Validate local Antithesis setup
+
+Runs docker-compose locally and watches for the setup-complete event to confirm
+instrumentation is working. After setup-complete is detected, discovers and
+executes Test Composer scripts from /opt/antithesis/test/v1 inside the running
+containers via compose exec.
+
+Scripts are discovered by copying /opt/antithesis/test/v1 from each running
+container and scanning for {test_name}/{command} entries. Scripts from all
+services are merged into a single pool and executed in order:
+
+  1. first_ scripts (sorted)
+  2. drivers + anytime (shuffled together)
+  3. eventually_ scripts (sorted)
+  4. finally_ scripts (sorted)
+
+Every script runs regardless of earlier failures. The exit code is nonzero
+if any script fails. If no test scripts are found, validation still succeeds
+(only setup-complete is checked).
+
+Requires at least one driver or anytime script when test scripts are present.
+
+Example:
+  snouty validate ./config
+  snouty validate ./config --timeout 120"#)]
+    Validate(ValidateArgs),
+
     /// Print version information
     Version,
 
@@ -147,6 +175,16 @@ If the exact path is not found, suggests similar pages."#)]
         /// Page path (e.g. "getting_started/overview")
         path: String,
     },
+}
+
+#[derive(Args)]
+pub struct ValidateArgs {
+    /// Path to config directory containing docker-compose.yaml
+    pub config: std::path::PathBuf,
+
+    /// Maximum seconds to wait for the setup-complete event
+    #[arg(long, default_value = "60")]
+    pub timeout: u64,
 }
 
 #[derive(Args)]

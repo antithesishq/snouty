@@ -1,0 +1,19 @@
+# snouty validate
+#
+# Validate a local Antithesis setup by running docker-compose and
+# watching for the setup-complete event.
+
+# 1. Requires a config directory argument.
+! snouty validate
+stderr 'required.*'
+
+# 2. Rejects a nonexistent directory.
+! snouty validate /nonexistent/path
+stderr 'not a directory.*'
+
+# 3. Rejects a directory without docker-compose.yaml.
+! snouty validate empty
+stderr 'docker-compose.*'
+
+-- empty/.keep --
+-- yml_dir/docker-compose.yml --

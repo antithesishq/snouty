@@ -91,11 +91,24 @@ jobs:
       - name: Install Nextest
         uses: taiki-e/install-action@cargo-nextest
 
-      - name: Install Podman (Ubuntu)
+      # Actions has both Docker and Podman installed by default. We only want
+      # to test with either.
+      #
+      # Additionally, podman compose falls back to docker-compose if it is
+      # installed.
+      #
+      # Finally, current ubuntu-latest (24.04LTS) doesn't have new enough
+      # podman-compose.
+      - name: Configure Docker (Ubuntu)
+        if: matrix.runtime == 'docker' && startsWith(matrix.os, 'ubuntu')
+        run: |
+          sudo rm -v -f "$(which podman)" "$(which podman-compose)"
+
+      - name: Configure Podman (Ubuntu)
         if: matrix.runtime == 'podman' && startsWith(matrix.os, 'ubuntu')
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq podman
+          sudo pip install podman-compose==1.1.0
+          sudo rm -v -f "$(which docker)" /usr/libexec/docker/cli-plugins/docker-compose
 
       - name: Install Podman (macOS)
         if: matrix.runtime == 'podman' && startsWith(matrix.os, 'macos')
@@ -126,6 +139,10 @@ jobs:
         with:
           token: ${{secrets.GITHUB_TOKEN}}
           persist-credentials: false
+
+      - name: Start Podman socket
+        run: |
+          systemctl --user start podman.socket
 
       - name: Test
         run: nix-shell --run "cargo nextest run"

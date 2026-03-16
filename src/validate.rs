@@ -31,8 +31,8 @@ struct SetupStatus {
 /// `compose_yaml` should be the resolved output of `compose_config()`.
 /// Returns the path to the generated override file.
 fn generate_setup_override(compose_yaml: &str, temp_dir: &Path) -> Result<PathBuf> {
-    let entries = container::parse_compose_config(compose_yaml)?;
-    if entries.is_empty() {
+    let contents = container::parse_compose_config(compose_yaml)?;
+    if contents.services.is_empty() {
         bail!("no services found in docker-compose.yaml");
     }
 
@@ -43,7 +43,7 @@ fn generate_setup_override(compose_yaml: &str, temp_dir: &Path) -> Result<PathBu
     let vol = format!("{}:/tmp/antithesis", antithesis_dir.display());
 
     let mut services = serde_yaml::Mapping::new();
-    for (name, _) in &entries {
+    for (name, _) in &contents.services {
         let mut svc = serde_yaml::Mapping::new();
         svc.insert(
             serde_yaml::Value::String("volumes".to_string()),
@@ -64,10 +64,36 @@ fn generate_setup_override(compose_yaml: &str, temp_dir: &Path) -> Result<PathBu
         );
     }
 
+    // Build network overrides: always include "default", plus any explicit networks.
+    let mut net_names = contents.networks;
+    if !net_names.contains(&"default".to_string()) {
+        net_names.push("default".to_string());
+    }
+    net_names.sort();
+
+    eprintln!("Isolating networks: {}", net_names.join(", "));
+
+    let mut networks = serde_yaml::Mapping::new();
+    for name in &net_names {
+        let mut net = serde_yaml::Mapping::new();
+        net.insert(
+            serde_yaml::Value::String("internal".to_string()),
+            serde_yaml::Value::Bool(true),
+        );
+        networks.insert(
+            serde_yaml::Value::String(name.clone()),
+            serde_yaml::Value::Mapping(net),
+        );
+    }
+
     let mut doc = serde_yaml::Mapping::new();
     doc.insert(
         serde_yaml::Value::String("services".to_string()),
         serde_yaml::Value::Mapping(services),
+    );
+    doc.insert(
+        serde_yaml::Value::String("networks".to_string()),
+        serde_yaml::Value::Mapping(networks),
     );
 
     let override_yaml =
@@ -434,6 +460,59 @@ services:
                 "/tmp/antithesis/sdk_output.jsonl"
             );
         }
+
+        // Check networks — default should always be present and internal
+        let networks = doc.get("networks").unwrap().as_mapping().unwrap();
+        let default_net = networks
+            .get(&serde_yaml::Value::String("default".to_string()))
+            .unwrap()
+            .as_mapping()
+            .unwrap();
+        assert_eq!(
+            default_net
+                .get(&serde_yaml::Value::String("internal".to_string()))
+                .unwrap()
+                .as_bool()
+                .unwrap(),
+            true
+        );
+    }
+
+    #[test]
+    fn generate_setup_override_custom_networks() {
+        let compose_yaml = "\
+services:
+  app:
+    image: myapp:latest
+networks:
+  backend: {}
+  frontend:
+    driver: bridge
+";
+        let dir = tempfile::tempdir().unwrap();
+        let path = generate_setup_override(compose_yaml, dir.path()).unwrap();
+        let content = std::fs::read_to_string(&path).unwrap();
+
+        let doc: serde_yaml::Value = serde_yaml::from_str(&content).unwrap();
+        let networks = doc.get("networks").unwrap().as_mapping().unwrap();
+
+        // All three networks should be present: backend, default, frontend
+        for name in ["backend", "default", "frontend"] {
+            let net = networks
+                .get(&serde_yaml::Value::String(name.to_string()))
+                .unwrap()
+                .as_mapping()
+                .unwrap();
+            assert_eq!(
+                net.get(&serde_yaml::Value::String("internal".to_string()))
+                    .unwrap()
+                    .as_bool()
+                    .unwrap(),
+                true,
+                "network '{name}' should be internal"
+            );
+        }
+        assert_eq!(networks.len(), 3);
     }
 
     #[test]

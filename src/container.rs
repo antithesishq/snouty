@@ -179,8 +179,8 @@ pub trait ContainerRuntime: Send + Sync {
     /// Returns the pinned image reference for each pushed image.
     fn push_compose_images(&self, config_dir: &Path, registry: &str) -> Result<Vec<String>> {
         let yaml = self.compose_config(config_dir)?;
-        let entries = parse_compose_config(&yaml)?;
-        let images: Vec<String> = entries.into_iter().map(|(_, img)| img).collect();
+        let contents = parse_compose_config(&yaml)?;
+        let images: Vec<String> = contents.services.into_iter().map(|(_, img)| img).collect();
         let pushable = filter_pushable_images(&images, registry);
 
         let mut pinned = Vec::new();
@@ -543,24 +543,43 @@ fn parse_docker_push_digest(stdout: &str) -> Result<String> {
     })
 }
 
-/// Parse services from resolved compose config YAML.
-/// Returns `(service_name, image)` pairs. Services without an `image` key are omitted.
-pub fn parse_compose_config(yaml: &str) -> Result<Vec<(String, String)>> {
+/// Parsed contents of a compose config file.
+#[derive(Debug)]
+pub struct ComposeContents {
+    /// `(service_name, image)` pairs. Services without `image` are omitted.
+    pub services: Vec<(String, String)>,
+    /// Explicitly declared network names (from the top-level `networks` key).
+    pub networks: Vec<String>,
+}
+
+/// Parse services and networks from resolved compose config YAML.
+/// Services without an `image` key are omitted.
+pub fn parse_compose_config(yaml: &str) -> Result<ComposeContents> {
     let doc: serde_yaml::Value =
         serde_yaml::from_str(yaml).wrap_err("failed to parse docker-compose.yaml")?;
 
-    let mut entries = Vec::new();
-    if let Some(services) = doc.get("services").and_then(|s| s.as_mapping()) {
-        for (name, service) in services {
+    let mut services = Vec::new();
+    if let Some(svc_map) = doc.get("services").and_then(|s| s.as_mapping()) {
+        for (name, service) in svc_map {
             if let (Some(name), Some(image)) =
                 (name.as_str(), service.get("image").and_then(|i| i.as_str()))
             {
-                entries.push((name.to_string(), image.to_string()));
+                services.push((name.to_string(), image.to_string()));
             }
         }
     }
 
-    Ok(entries)
+    let mut networks = Vec::new();
+    if let Some(net_map) = doc.get("networks").and_then(|s| s.as_mapping()) {
+        for name in net_map.keys() {
+            if let Some(name) = name.as_str() {
+                networks.push(name.to_string());
+            }
+        }
+    }
+    networks.sort();
+
+    Ok(ComposeContents { services, networks })
 }
 
 /// Filter images to only those that should be pushed: images whose name
@@ -792,9 +811,9 @@ services:
     build:
       context: ./builder
 ";
-        let entries = parse_compose_config(yaml).unwrap();
+        let contents = parse_compose_config(yaml).unwrap();
         assert_eq!(
-            entries,
+            contents.services,
             vec![
                 (
                     "app".to_string(),
@@ -806,13 +825,30 @@ services:
                 ),
             ]
         );
+        assert!(contents.networks.is_empty());
     }
 
     #[test]
     fn parse_compose_config_no_services() {
         let yaml = "version: '3'\n";
-        let entries = parse_compose_config(yaml).unwrap();
-        assert!(entries.is_empty());
+        let contents = parse_compose_config(yaml).unwrap();
+        assert!(contents.services.is_empty());
+    }
+
+    #[test]
+    fn parse_compose_config_with_networks() {
+        let yaml = "\
+services:
+  app:
+    image: myapp:latest
+networks:
+  backend: {}
+  frontend:
+    driver: bridge
+";
+        let contents = parse_compose_config(yaml).unwrap();
+        assert_eq!(contents.services.len(), 1);
+        assert_eq!(contents.networks, vec!["backend", "frontend"]);
     }
 
     #[test]
@@ -843,8 +879,12 @@ services:
             .unwrap();
 
             let yaml = rt.compose_config(dir.path()).unwrap();
-            let entries = parse_compose_config(&yaml).unwrap();
-            let images: Vec<&str> = entries.iter().map(|(_, img)| img.as_str()).collect();
+            let contents = parse_compose_config(&yaml).unwrap();
+            let images: Vec<&str> = contents
+                .services
+                .iter()
+                .map(|(_, img)| img.as_str())
+                .collect();
             assert_eq!(
                 images,
                 vec![

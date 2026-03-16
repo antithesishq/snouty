@@ -3,6 +3,7 @@
 # 1. Setup-complete only (no test scripts) — validate succeeds.
 build-image setup-emitter:latest setup_emitter
 snouty validate config_no_scripts --timeout 15
+stderr 'Isolating networks: default.*'
 stderr 'Setup-complete event detected.*'
 stderr 'No test scripts in service.*'
 stderr 'Setup validation successful.*'
@@ -42,6 +43,14 @@ stderr 'suite/readme.txt.*'
 build-image noexec:latest noexec
 ! snouty validate config_noexec --timeout 15
 stderr 'FAIL.*'
+
+# 7. Custom networks are isolated and outbound traffic is blocked.
+build-image net-check:latest net_check
+snouty validate config_net_check --timeout 15
+stderr 'Isolating networks: default.*'
+stdout 'Network isolation confirmed.*'
+stderr 'Setup-complete event detected.*'
+stderr 'Setup validation successful.*'
 
 -- setup_emitter/Dockerfile --
 FROM busybox
@@ -156,3 +165,21 @@ CMD sh -c 'echo "{\"antithesis_setup\":{\"status\":\"complete\"}}" >> "$ANTITHES
 services:
   runner:
     image: ${ANTITHESIS_REPOSITORY}/noexec:latest
+
+-- net_check/suite/anytime_ping_blocked --
+#!/bin/sh
+if ping -c 1 -W 2 example.org >/dev/null 2>&1; then
+    echo "ERROR: ping to example.org succeeded, network is not isolated"
+    exit 1
+fi
+echo "Network isolation confirmed: ping to example.org failed"
+
+-- net_check/Dockerfile --
+FROM busybox
+COPY suite/ /opt/antithesis/test/v1/suite/
+RUN chmod +x /opt/antithesis/test/v1/suite/*
+CMD sh -c 'echo "{\"antithesis_setup\":{\"status\":\"complete\"}}" >> "$ANTITHESIS_SDK_LOCAL_OUTPUT" && sleep 3600'
+-- config_net_check/docker-compose.yaml --
+services:
+  checker:
+    image: ${ANTITHESIS_REPOSITORY}/net-check:latest

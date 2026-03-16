@@ -268,6 +268,12 @@ fn directory_contains_binary(dir: &Path, binary: &str) -> bool {
 }
 
 #[cfg(test)]
+#[ctor::ctor]
+fn init_test_eyre() {
+    let _ = color_eyre::install();
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use std::fs;

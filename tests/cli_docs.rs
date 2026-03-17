@@ -304,6 +304,34 @@ fn docs_show_strips_docs_prefix() {
 }
 
 #[test]
+fn docs_show_accepts_full_antithesis_docs_url() {
+    snouty_docs()
+        .args([
+            "docs",
+            "--offline",
+            "show",
+            "https://antithesis.com/docs/getting_started/",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("# Setup guide"));
+}
+
+#[test]
+fn docs_show_accepts_full_antithesis_docs_url_with_md_suffix() {
+    snouty_docs()
+        .args([
+            "docs",
+            "--offline",
+            "show",
+            "https://antithesis.com/docs/getting_started.md",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("# Setup guide"));
+}
+
+#[test]
 fn docs_show_missing_page_suggests() {
     snouty_docs()
         .args(["docs", "--offline", "show", "nonexistent_page"])

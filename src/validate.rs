@@ -167,7 +167,7 @@ pub async fn cmd_validate(args: ValidateArgs) -> Result<()> {
         Err(e) => Err(e),
     };
 
-    if let Ok(_) = test_result {
+    if test_result.is_ok() {
         eprintln!("Setup validation successful.");
     }
 

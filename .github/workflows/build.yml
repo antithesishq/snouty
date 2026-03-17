@@ -72,7 +72,7 @@ jobs:
             runtime: docker
           - os: ubuntu-latest
             runtime: podman
-          - os: macos-15-intel
+          - os: macos-15
             runtime: podman
     env:
       SNOUTY_TEST_RUNTIME: ${{ matrix.runtime }}

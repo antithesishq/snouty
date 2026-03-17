@@ -357,22 +357,31 @@ async fn watch_for_setup_complete(output_dir: &Path, timeout: Duration) -> Resul
         }
 
         // Discover new .jsonl files in the directory.
-        if let Ok(entries) = std::fs::read_dir(output_dir) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if path.extension().is_some_and(|e| e == "jsonl") && !files.contains_key(&path) {
-                    if let Ok(f) = std::fs::File::open(&path) {
-                        files.insert(
-                            path,
-                            TailedFile {
-                                file: f,
-                                offset: 0,
-                                remainder: String::new(),
-                            },
-                        );
+        match std::fs::read_dir(output_dir) {
+            Ok(entries) => {
+                for entry in entries {
+                    let path = entry?.path();
+                    if path.extension().is_some_and(|e| e == "jsonl") && !files.contains_key(&path)
+                    {
+                        match std::fs::File::open(&path) {
+                            Ok(f) => {
+                                files.insert(
+                                    path,
+                                    TailedFile {
+                                        file: f,
+                                        offset: 0,
+                                        remainder: String::new(),
+                                    },
+                                );
+                            }
+                            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                            Err(e) => return Err(e.into()),
+                        }
                     }
                 }
             }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e.into()),
         }
 
         // Tail each known file for new data.
@@ -382,7 +391,7 @@ async fn watch_for_setup_complete(output_dir: &Path, timeout: Duration) -> Resul
             let n = match tailed.file.read(&mut buf) {
                 Ok(0) => continue,
                 Ok(n) => n,
-                Err(_) => continue,
+                Err(e) => return Err(e.into()),
             };
             tailed.offset += n as u64;
             progress = true;

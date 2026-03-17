@@ -154,9 +154,13 @@ pub async fn cmd_validate(args: ValidateArgs) -> Result<()> {
         _ = tokio::signal::ctrl_c() => Err(color_eyre::eyre::eyre!("interrupted")),
     };
 
-    // Stop compose logs so subsequent status messages aren't interleaved
-    // with container output.
-    let _ = logs_child.kill().await;
+    // Stop the entire compose logs process group so child processes
+    // (e.g. per-service `podman logs`) don't keep writing to the terminal.
+    if let Some(pid) = logs_child.id() {
+        unsafe {
+            libc::kill(-(pid as libc::pid_t), libc::SIGKILL);
+        }
+    }
     let _ = logs_child.wait().await;
 
     // After setup-complete, discover and execute test scripts while compose is still running.

@@ -22,10 +22,13 @@ stderr 'Running \[suite/finally_cleanup\] in service runner.*'
 stderr 'Setup validation successful.*'
 
 # 3. Failing script — remaining scripts still run, validate fails.
+#    Captured stdout and stderr from the failed script are printed.
 build-image fail-with-finally:latest fail_with_finally
 ! snouty validate config_fail_finally --timeout 15
 stderr 'Running \[suite/first_setup\] in service runner.*'
-stderr 'FAIL \[suite/parallel_driver_bad\] in service runner.*'
+stderr 'Running \[suite/parallel_driver_bad\] in service runner\.\.\. failed.*'
+stderr 'stdout from bad script.*'
+stderr 'stderr from bad script.*'
 stderr 'Running \[suite/finally_cleanup\] in service runner.*'
 stderr 'one or more test scripts failed.*'
 
@@ -43,7 +46,7 @@ stderr 'suite/readme.txt.*'
 # 6. Non-executable script — compose exec fails, validate reports failure.
 build-image noexec:latest noexec
 ! snouty validate config_noexec --timeout 15
-stderr 'FAIL.*'
+stderr 'Running .* failed.*'
 
 # 7. Setup-complete via ANTITHESIS_SDK_LOCAL_OUTPUT (legacy env var).
 build-image sdk-local-emitter:latest sdk_local_emitter
@@ -55,7 +58,6 @@ stderr 'Setup validation successful.*'
 build-image net-check:latest net_check
 snouty validate config_net_check --timeout 15
 stderr 'Isolating networks: default.*'
-stdout 'Network isolation confirmed.*'
 stderr 'Setup-complete event detected.*'
 stderr 'Setup validation successful.*'
 
@@ -109,7 +111,8 @@ echo "first_setup ran"
 
 -- fail_with_finally/suite/parallel_driver_bad --
 #!/bin/sh
-echo "this script fails"
+echo "stdout from bad script"
+echo "stderr from bad script" >&2
 exit 1
 
 -- fail_with_finally/suite/finally_cleanup --

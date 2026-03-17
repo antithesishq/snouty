@@ -241,13 +241,14 @@ pub trait ContainerRuntime: Send + Sync {
     /// Runs `{runtime} compose exec -T [--workdir workdir] {service} {cmd...}`.
     /// The `-T` flag disables TTY allocation for non-interactive use.
     /// If `workdir` is `Some`, sets the working directory inside the container.
+    /// Stdout and stderr are captured in the returned `Output`.
     fn compose_exec(
         &self,
         config: &ComposeConfig,
         service: &str,
         workdir: Option<&str>,
         cmd: &[&str],
-    ) -> Result<std::process::ExitStatus> {
+    ) -> Result<std::process::Output> {
         let runtime = self.name();
         let mut command = Command::new(runtime);
         command.current_dir(&config.dir);
@@ -260,7 +261,7 @@ pub trait ContainerRuntime: Send + Sync {
         command.args(cmd);
 
         command
-            .status()
+            .output()
             .wrap_err_with(|| format!("failed to run '{runtime} compose exec'"))
     }
 

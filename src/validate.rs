@@ -298,25 +298,31 @@ fn exec_script(
 ) -> Result<bool> {
     let script_dir = format!("/opt/antithesis/test/v1/{}", script.test_name);
     let container_path = format!("{}/{}", script_dir, script.command_name);
-    eprintln!(
-        "Running [{}/{}] in service {}",
+    eprint!(
+        "Running [{}/{}] in service {}...",
         script.test_name, script.command_name, script.service
     );
 
-    let status = rt.compose_exec(
+    let output = rt.compose_exec(
         config,
         &script.service,
         Some(&script_dir),
         &[&container_path],
     )?;
 
-    if status.success() {
+    if output.status.success() {
+        eprintln!(" ok");
         Ok(true)
     } else {
-        eprintln!(
-            "FAIL [{}/{}] in service {} ({})",
-            script.test_name, script.command_name, script.service, status
-        );
+        eprintln!(" failed ({})", output.status);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if !stdout.is_empty() {
+            eprint!("{stdout}");
+        }
+        if !stderr.is_empty() {
+            eprint!("{stderr}");
+        }
         Ok(false)
     }
 }

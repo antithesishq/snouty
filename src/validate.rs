@@ -3,7 +3,6 @@ use std::path::{Path, PathBuf};
 use color_eyre::eyre::{Context, Result, bail};
 use log::info;
 use serde::Deserialize;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::time::{Duration, sleep};
 
 use crate::cli::ValidateArgs;
@@ -24,7 +23,8 @@ struct SetupStatus {
 ///
 /// For each service in the resolved compose YAML, adds:
 /// - A volume mount: `{temp_dir}/antithesis:/tmp/antithesis`
-/// - An environment variable: `ANTITHESIS_SDK_LOCAL_OUTPUT=/tmp/antithesis/sdk_output.jsonl`
+/// - Environment variables: `ANTITHESIS_OUTPUT_DIR=/tmp/antithesis` and
+///   `ANTITHESIS_SDK_LOCAL_OUTPUT=/tmp/antithesis/sdk.jsonl`
 ///
 /// The SDK creates the output file; we mount the parent directory so it can do so.
 ///
@@ -51,8 +51,12 @@ fn generate_setup_override(compose_yaml: &str, temp_dir: &Path) -> Result<PathBu
         );
         let mut env = serde_yaml::Mapping::new();
         env.insert(
+            serde_yaml::Value::String("ANTITHESIS_OUTPUT_DIR".to_string()),
+            serde_yaml::Value::String("/tmp/antithesis".to_string()),
+        );
+        env.insert(
             serde_yaml::Value::String("ANTITHESIS_SDK_LOCAL_OUTPUT".to_string()),
-            serde_yaml::Value::String("/tmp/antithesis/sdk_output.jsonl".to_string()),
+            serde_yaml::Value::String("/tmp/antithesis/sdk.jsonl".to_string()),
         );
         svc.insert(
             serde_yaml::Value::String("environment".to_string()),
@@ -106,6 +110,17 @@ fn generate_setup_override(compose_yaml: &str, temp_dir: &Path) -> Result<PathBu
     Ok(override_path)
 }
 
+struct ComposeDownGuard<'a> {
+    rt: &'static dyn container::ContainerRuntime,
+    config: &'a ComposeConfig,
+}
+
+impl Drop for ComposeDownGuard<'_> {
+    fn drop(&mut self) {
+        self.rt.compose_down(self.config);
+    }
+}
+
 pub async fn cmd_validate(args: ValidateArgs) -> Result<()> {
     let config = ComposeConfig::new(args.config)?;
     let rt = container::runtime()?;
@@ -116,47 +131,33 @@ pub async fn cmd_validate(args: ValidateArgs) -> Result<()> {
     let config = config.with_overlay(override_path);
 
     eprintln!("Starting compose services...");
-    let (mut child, mut output) =
-        container::compose_up(rt.name(), &config, &["--abort-on-container-exit"])?;
+    rt.compose_up_detached(&config)?;
+    let _guard = ComposeDownGuard {
+        rt,
+        config: &config,
+    };
 
-    // Spawn task to forward compose output to stderr
-    let forward_handle = tokio::spawn(async move {
-        let mut buf = [0u8; 4096];
-        loop {
-            match output.read(&mut buf).await {
-                Ok(0) => break,
-                Ok(n) => {
-                    let _ = tokio::io::stderr().write_all(&buf[..n]).await;
-                }
-                Err(_) => break,
-            }
-        }
-    });
+    let mut logs_child = rt.compose_logs_follow(&config)?;
 
-    let sdk_output_file = temp_dir.path().join("antithesis/sdk_output.jsonl");
+    let sdk_output_dir = temp_dir.path().join("antithesis");
     let timeout = Duration::from_secs(args.timeout);
 
     let result = tokio::select! {
-        status = child.wait() => {
+        result = watch_for_setup_complete(&sdk_output_dir, timeout) => result,
+        status = logs_child.wait() => {
             match status {
-                Ok(status) if !status.success() => {
-                    bail!("compose exited with status: {}", status);
-                }
-                Ok(_) => {
-                    bail!("compose exited before setup-complete event was detected");
-                }
-                Err(e) => {
-                    bail!("failed to wait for compose: {}", e);
-                }
+                Ok(s) if !s.success() => Err(color_eyre::eyre::eyre!("compose exited with status: {s}")),
+                Ok(_) => Err(color_eyre::eyre::eyre!("compose exited before setup-complete event was detected")),
+                Err(e) => Err(color_eyre::eyre::eyre!("failed to wait for compose: {e}")),
             }
         }
-        result = watch_for_setup_complete(&sdk_output_file, timeout) => {
-            result
-        }
-        _ = tokio::signal::ctrl_c() => {
-            Err(color_eyre::eyre::eyre!("interrupted"))
-        }
+        _ = tokio::signal::ctrl_c() => Err(color_eyre::eyre::eyre!("interrupted")),
     };
+
+    // Stop compose logs so subsequent status messages aren't interleaved
+    // with container output.
+    let _ = logs_child.kill().await;
+    let _ = logs_child.wait().await;
 
     // After setup-complete, discover and execute test scripts while compose is still running.
     let test_result = match result {
@@ -170,12 +171,6 @@ pub async fn cmd_validate(args: ValidateArgs) -> Result<()> {
     if test_result.is_ok() {
         eprintln!("Setup validation successful.");
     }
-
-    // Cleanup: kill child and compose down
-    forward_handle.abort();
-    let _ = child.kill().await;
-    let _ = child.wait().await;
-    rt.compose_down(&config);
 
     test_result
 }
@@ -332,39 +327,27 @@ fn shuffle<T>(slice: &mut [T]) {
     }
 }
 
-/// Watch a JSONL file for the `{"antithesis_setup": {"status": "complete"}}` event.
+/// Watch a directory of JSONL files for the `{"antithesis_setup": {"status": "complete"}}` event.
 ///
-/// Two-phase polling: first waits for the file to appear (100ms interval), then
-/// tails it for new data (100ms idle interval). Returns an error if the event is
-/// not found within the given timeout.
+/// Polls the directory for `.jsonl` files (100ms interval), tailing each for new
+/// data. Returns an error if the event is not found within the given timeout.
 ///
 /// Uses blocking `std::fs` calls (open, seek, read) intentionally — reads are
 /// small and infrequent, and this avoids pulling in tokio::fs for a simple poll loop.
-async fn watch_for_setup_complete(output_file: &Path, timeout: Duration) -> Result<()> {
+async fn watch_for_setup_complete(output_dir: &Path, timeout: Duration) -> Result<()> {
+    use std::collections::HashMap;
     use std::io::{Read, Seek, SeekFrom};
 
+    struct TailedFile {
+        file: std::fs::File,
+        offset: u64,
+        remainder: String,
+    }
+
     let deadline = tokio::time::Instant::now() + timeout;
-    let mut offset: u64 = 0;
+    let mut files: HashMap<PathBuf, TailedFile> = HashMap::new();
     let mut buf = vec![0u8; 4096];
-    let mut remainder = String::new();
 
-    // Phase 1: wait for the file to appear.
-    let mut f = loop {
-        if tokio::time::Instant::now() >= deadline {
-            bail!(
-                "timed out after {}s waiting for setup-complete event",
-                timeout.as_secs()
-            );
-        }
-        sleep(Duration::from_millis(100)).await;
-        match std::fs::File::open(output_file) {
-            Ok(f) => break f,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
-            Err(e) => return Err(e.into()),
-        }
-    };
-
-    // Phase 2: tail the file for the setup-complete event.
     loop {
         if tokio::time::Instant::now() >= deadline {
             bail!(
@@ -372,30 +355,58 @@ async fn watch_for_setup_complete(output_file: &Path, timeout: Duration) -> Resu
                 timeout.as_secs()
             );
         }
-        f.seek(SeekFrom::Start(offset))?;
-        let n = match f.read(&mut buf) {
-            Ok(0) => {
-                sleep(Duration::from_millis(100)).await;
-                continue;
-            }
-            Ok(n) => n,
-            Err(e) => return Err(e.into()),
-        };
-        offset += n as u64;
 
-        remainder.push_str(&String::from_utf8_lossy(&buf[..n]));
-
-        while let Some(newline) = remainder.find('\n') {
-            let line = &remainder[..newline];
-            let line = line.trim();
-            if !line.is_empty()
-                && let Ok(event) = serde_json::from_str::<SetupEvent>(line)
-                && let Some(setup) = event.antithesis_setup
-                && setup.status == "complete"
-            {
-                return Ok(());
+        // Discover new .jsonl files in the directory.
+        if let Ok(entries) = std::fs::read_dir(output_dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.extension().is_some_and(|e| e == "jsonl") && !files.contains_key(&path) {
+                    if let Ok(f) = std::fs::File::open(&path) {
+                        files.insert(
+                            path,
+                            TailedFile {
+                                file: f,
+                                offset: 0,
+                                remainder: String::new(),
+                            },
+                        );
+                    }
+                }
             }
-            remainder.drain(..=newline);
+        }
+
+        // Tail each known file for new data.
+        let mut progress = false;
+        for tailed in files.values_mut() {
+            tailed.file.seek(SeekFrom::Start(tailed.offset))?;
+            let n = match tailed.file.read(&mut buf) {
+                Ok(0) => continue,
+                Ok(n) => n,
+                Err(_) => continue,
+            };
+            tailed.offset += n as u64;
+            progress = true;
+
+            tailed
+                .remainder
+                .push_str(&String::from_utf8_lossy(&buf[..n]));
+
+            while let Some(newline) = tailed.remainder.find('\n') {
+                let line = &tailed.remainder[..newline];
+                let line = line.trim();
+                if !line.is_empty()
+                    && let Ok(event) = serde_json::from_str::<SetupEvent>(line)
+                    && let Some(setup) = event.antithesis_setup
+                    && setup.status == "complete"
+                {
+                    return Ok(());
+                }
+                tailed.remainder.drain(..=newline);
+            }
+        }
+
+        if !progress {
+            sleep(Duration::from_millis(100)).await;
         }
     }
 }
@@ -452,12 +463,21 @@ services:
                 .unwrap();
             assert_eq!(
                 env.get(&serde_yaml::Value::String(
+                    "ANTITHESIS_OUTPUT_DIR".to_string()
+                ))
+                .unwrap()
+                .as_str()
+                .unwrap(),
+                "/tmp/antithesis"
+            );
+            assert_eq!(
+                env.get(&serde_yaml::Value::String(
                     "ANTITHESIS_SDK_LOCAL_OUTPUT".to_string()
                 ))
                 .unwrap()
                 .as_str()
                 .unwrap(),
-                "/tmp/antithesis/sdk_output.jsonl"
+                "/tmp/antithesis/sdk.jsonl"
             );
         }
 
@@ -546,14 +566,13 @@ services:
     #[tokio::test]
     async fn detects_setup_complete() {
         let dir = tempfile::tempdir().unwrap();
-        let file = dir.path().join("output.jsonl");
         std::fs::write(
-            &file,
+            dir.path().join("output.jsonl"),
             "{\"antithesis_setup\": {\"status\": \"complete\"}}\n",
         )
         .unwrap();
 
-        watch_for_setup_complete(&file, TEST_TIMEOUT)
+        watch_for_setup_complete(dir.path(), TEST_TIMEOUT)
             .await
             .expect("watch failed");
     }
@@ -562,19 +581,17 @@ services:
     #[tokio::test]
     async fn detects_late_file_creation() {
         let dir = tempfile::tempdir().unwrap();
-        let file = dir.path().join("output.jsonl");
-
-        let path = file.clone();
+        let path = dir.path().to_path_buf();
         tokio::spawn(async move {
             sleep(Duration::from_millis(500)).await;
             std::fs::write(
-                &path,
+                path.join("sdk.jsonl"),
                 "{\"antithesis_setup\": {\"status\": \"complete\"}}\n",
             )
             .unwrap();
         });
 
-        watch_for_setup_complete(&file, TEST_TIMEOUT)
+        watch_for_setup_complete(dir.path(), TEST_TIMEOUT)
             .await
             .expect("watch failed");
     }
@@ -596,7 +613,7 @@ services:
             writeln!(f, "{{\"antithesis_setup\": {{\"status\": \"complete\"}}}}").unwrap();
         });
 
-        watch_for_setup_complete(&file, TEST_TIMEOUT)
+        watch_for_setup_complete(dir.path(), TEST_TIMEOUT)
             .await
             .expect("watch failed");
     }
@@ -618,7 +635,7 @@ services:
             writeln!(f, "{{\"antithesis_setup\": {{\"status\": \"complete\"}}}}").unwrap();
         });
 
-        watch_for_setup_complete(&file, TEST_TIMEOUT)
+        watch_for_setup_complete(dir.path(), TEST_TIMEOUT)
             .await
             .expect("watch failed");
     }
@@ -642,7 +659,7 @@ services:
             writeln!(f, " {{\"status\": \"complete\"}}}}").unwrap();
         });
 
-        watch_for_setup_complete(&file, TEST_TIMEOUT)
+        watch_for_setup_complete(dir.path(), TEST_TIMEOUT)
             .await
             .expect("watch failed");
     }
@@ -651,10 +668,9 @@ services:
     #[tokio::test]
     async fn times_out_without_event() {
         let dir = tempfile::tempdir().unwrap();
-        let file = dir.path().join("output.jsonl");
-        std::fs::write(&file, "{\"unrelated\": true}\n").unwrap();
+        std::fs::write(dir.path().join("output.jsonl"), "{\"unrelated\": true}\n").unwrap();
 
-        let err = watch_for_setup_complete(&file, Duration::from_secs(1))
+        let err = watch_for_setup_complete(dir.path(), Duration::from_secs(1))
             .await
             .unwrap_err();
         assert!(

@@ -149,8 +149,10 @@ fn cmd_build_image(
             .ok_or_else(|| err("ENGINE_CTX not set".to_string()))?;
         let image_ref = format!("{}/{}", ctx.registry, args[0]);
         let dir = env.work_dir.join(&args[1]);
+        let dockerfile = dir.join("Dockerfile");
+        let dockerfile = dockerfile.exists().then_some(dockerfile.as_path());
         ctx.engine
-            .build_image(&dir, &image_ref)
+            .build_image(&dir, &image_ref, dockerfile)
             .map_err(|e| err(format!("build-image: {e}")))?;
         eprintln!(
             "[{:.1}s] build-image {label}",

@@ -91,23 +91,25 @@ pub trait ContainerRuntime: Send + Sync {
 
     /// Build a container image from a directory.
     ///
-    /// If the directory contains a `Dockerfile`, it is used as-is.
-    /// Otherwise a scratch image containing the directory contents is built
-    /// via an implicit `FROM scratch\nCOPY . /\n` Dockerfile.
-    fn build_image(&self, config_dir: &Path, image_ref: &str) -> Result<()> {
+    /// When `dockerfile` is `Some`, the given path is passed via `-f`.
+    /// When `None`, a scratch image containing the directory contents is built
+    /// via an implicit `FROM scratch\nCOPY . /\n` Dockerfile piped to stdin.
+    fn build_image(&self, dir: &Path, image_ref: &str, dockerfile: Option<&Path>) -> Result<()> {
         let runtime = self.name();
-        let has_dockerfile = config_dir.join("Dockerfile").exists();
+        let scratch = dockerfile.is_none();
 
         let mut cmd = Command::new(runtime);
         cmd.args(["build", "-t", image_ref]);
-        if !has_dockerfile {
+        if let Some(df) = dockerfile {
+            cmd.args(["-f", &df.display().to_string()]);
+        } else {
             cmd.args(["-f", "-"]);
         }
         cmd.arg(".")
-            .current_dir(config_dir)
+            .current_dir(dir)
             .stderr(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped());
-        if !has_dockerfile {
+        if scratch {
             cmd.stdin(std::process::Stdio::piped());
         }
 
@@ -115,10 +117,12 @@ pub trait ContainerRuntime: Send + Sync {
             .spawn()
             .wrap_err(format!("failed to start '{runtime} build'"))?;
 
-        if !has_dockerfile && let Some(mut stdin) = child.stdin.take() {
-            stdin
-                .write_all(b"FROM scratch\nCOPY . /\n")
-                .wrap_err("failed to write Dockerfile to stdin")?;
+        if scratch {
+            if let Some(mut stdin) = child.stdin.take() {
+                stdin
+                    .write_all(b"FROM scratch\nCOPY . /\n")
+                    .wrap_err("failed to write Dockerfile to stdin")?;
+            }
         }
 
         let output = child
@@ -144,7 +148,7 @@ pub trait ContainerRuntime: Send + Sync {
         validate_compose_file(runtime, config_dir)?;
 
         eprintln!("Building config image: {}", image_ref);
-        self.build_image(config_dir, image_ref)?;
+        self.build_image(config_dir, image_ref, None)?;
 
         eprintln!("Pushing config image: {}", image_ref);
         let pinned = self.image_push(image_ref)?;

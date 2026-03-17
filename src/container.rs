@@ -309,6 +309,7 @@ pub trait ContainerRuntime: Send + Sync {
         cmd.stdin(std::process::Stdio::null());
         cmd.stdout(std::process::Stdio::inherit());
         cmd.stderr(std::process::Stdio::inherit());
+        cmd.process_group(0);
 
         cmd.spawn()
             .wrap_err_with(|| format!("failed to start '{runtime} compose logs --follow'"))

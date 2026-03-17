@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 
 use color_eyre::eyre::{Context, Result, bail};
-use log::info;
+use log::{debug, info};
 use serde::Deserialize;
 use tokio::time::{Duration, sleep};
 
@@ -212,7 +212,7 @@ fn run_test_scripts(
             }
             Err(_) => {
                 info!("No test scripts in service '{service_name}'");
-                return Ok(());
+                continue;
             }
         }
     }
@@ -247,6 +247,11 @@ fn run_test_scripts(
         eventually.len(),
         finally.len(),
     );
+
+    if all_scripts.is_empty() {
+        debug!("no services contained test scripts");
+        return Ok(());
+    }
 
     if drivers.is_empty() && anytime.is_empty() {
         bail!("test scripts found but no driver or anytime scripts");

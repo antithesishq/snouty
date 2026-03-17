@@ -9,6 +9,7 @@ stderr 'No test scripts in service.*'
 stderr 'Setup validation successful.*'
 
 # 2. All script types run in correct phases, helper_ ignored.
+#    Includes a sidecar without scripts to verify it doesn't block execution.
 build-image all-types:latest all_types
 snouty validate config_all_types --timeout 15
 stderr 'Setup-complete event detected.*'
@@ -99,6 +100,8 @@ CMD sh -c 'echo "{\"antithesis_setup\":{\"status\":\"complete\"}}" >> "$ANTITHES
 services:
   runner:
     image: ${ANTITHESIS_REPOSITORY}/all-types:latest
+  sidecar:
+    image: ${ANTITHESIS_REPOSITORY}/setup-emitter:latest
 
 -- fail_with_finally/suite/first_setup --
 #!/bin/sh

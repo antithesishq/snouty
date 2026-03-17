@@ -115,12 +115,10 @@ pub trait ContainerRuntime: Send + Sync {
             .spawn()
             .wrap_err(format!("failed to start '{runtime} build'"))?;
 
-        if !has_dockerfile {
-            if let Some(mut stdin) = child.stdin.take() {
-                stdin
-                    .write_all(b"FROM scratch\nCOPY . /\n")
-                    .wrap_err("failed to write Dockerfile to stdin")?;
-            }
+        if !has_dockerfile && let Some(mut stdin) = child.stdin.take() {
+            stdin
+                .write_all(b"FROM scratch\nCOPY . /\n")
+                .wrap_err("failed to write Dockerfile to stdin")?;
         }
 
         let output = child
@@ -645,7 +643,7 @@ fn parse_compose_ps(stdout: &str) -> Result<Vec<(String, String)>> {
         stdout
             .lines()
             .filter(|l| !l.trim().is_empty())
-            .map(|line| serde_json::from_str(line))
+            .map(serde_json::from_str)
             .collect::<std::result::Result<Vec<_>, _>>()
             .wrap_err("failed to parse compose ps NDJSON")?
     };

@@ -17,6 +17,14 @@ stdout '# Setup guide.*'
 snouty docs --offline show docs/getting_started
 stdout '# Setup guide.*'
 
+# 2c. Accepts a full Antithesis docs URL.
+snouty docs --offline show https://antithesis.com/docs/getting_started/
+stdout '# Setup guide.*'
+
+# 2d. Accepts a full Antithesis docs URL ending in .md.
+snouty docs --offline show https://antithesis.com/docs/getting_started.md
+stdout '# Setup guide.*'
+
 # 3. If show cannot find an exact page, it fails with the normalized
 #    docs/... path in the error message and includes up to 10 similar
 #    page-path suggestions when available.

@@ -454,9 +454,7 @@ fn open_db() -> Result<Connection> {
 fn show(path: &str) -> Result<()> {
     let conn = open_db()?;
 
-    // Normalize: strip leading/trailing slashes and optional "docs/" prefix
-    let path = path.trim_matches('/');
-    let path = path.strip_prefix("docs/").unwrap_or(path);
+    let path = normalized_path(path);
     let db_path = format!("docs/{}", path);
 
     // Try exact match (normalize DB paths the same way)
@@ -638,8 +636,51 @@ fn filter_tree(node: TreeNode, path_prefix: &str, filter: &str) -> Option<TreeNo
 }
 
 /// Normalize documentation paths so tree construction consistently works with
-/// stored `docs/...` paths and user-facing relative paths.
+/// stored `docs/...` paths, public Antithesis docs URLs, and user-facing
+/// relative paths.
 fn normalized_path(path: &str) -> String {
-    let trimmed = path.trim_matches('/');
-    trimmed.strip_prefix("docs/").unwrap_or(trimmed).to_string()
+    let trimmed = path
+        .split(['?', '#'])
+        .next()
+        .unwrap_or(path)
+        .trim_matches('/');
+    let trimmed = trimmed
+        .strip_prefix("https://antithesis.com/")
+        .unwrap_or(trimmed);
+    let trimmed = trimmed.strip_prefix("docs/").unwrap_or(trimmed);
+    trimmed.strip_suffix(".md").unwrap_or(trimmed).to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::normalized_path;
+
+    #[test]
+    fn normalized_path_strips_docs_prefix() {
+        assert_eq!(normalized_path("docs/getting_started"), "getting_started");
+    }
+
+    #[test]
+    fn normalized_path_accepts_full_antithesis_docs_url() {
+        assert_eq!(
+            normalized_path("https://antithesis.com/docs/getting_started/"),
+            "getting_started"
+        );
+    }
+
+    #[test]
+    fn normalized_path_strips_markdown_suffix() {
+        assert_eq!(
+            normalized_path("https://antithesis.com/docs/getting_started.md"),
+            "getting_started"
+        );
+    }
+
+    #[test]
+    fn normalized_path_discards_query_and_fragment() {
+        assert_eq!(
+            normalized_path("https://antithesis.com/docs/getting_started/?utm=1#overview"),
+            "getting_started"
+        );
+    }
 }

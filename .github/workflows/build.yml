@@ -113,7 +113,8 @@ jobs:
       - name: Install Podman (macOS)
         if: matrix.runtime == 'podman' && startsWith(matrix.os, 'macos')
         run: |
-          brew install podman podman-compose
+          brew install podman podman-compose libkrun
+          export CONTAINERS_MACHINE_PROVIDER=libkrun
           podman machine init
           podman machine start
 

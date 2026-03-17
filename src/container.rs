@@ -238,7 +238,7 @@ pub trait ContainerRuntime: Send + Sync {
 
     /// Run a command inside a running compose service container.
     ///
-    /// Runs `{runtime} compose exec -T [-w workdir] {service} {cmd...}`.
+    /// Runs `{runtime} compose exec -T [--workdir workdir] {service} {cmd...}`.
     /// The `-T` flag disables TTY allocation for non-interactive use.
     /// If `workdir` is `Some`, sets the working directory inside the container.
     fn compose_exec(
@@ -254,7 +254,7 @@ pub trait ContainerRuntime: Send + Sync {
         command.arg("compose").args(config.file_args());
         command.args(["exec", "-T"]);
         if let Some(w) = workdir {
-            command.args(["-w", w]);
+            command.args(["--workdir", w]);
         }
         command.arg(service);
         command.args(cmd);
@@ -264,6 +264,53 @@ pub trait ContainerRuntime: Send + Sync {
             .wrap_err_with(|| format!("failed to run '{runtime} compose exec'"))
     }
 
+    /// Run `compose up --detach` to start services in detached mode.
+    ///
+    /// stdout and stderr are inherited so progress is visible during pulls.
+    fn compose_up_detached(&self, config: &ComposeConfig) -> Result<()> {
+        let runtime = self.name();
+        let status = Command::new(runtime)
+            .current_dir(&config.dir)
+            .arg("compose")
+            .args(config.file_args())
+            .args(["up", "--detach"])
+            .status()
+            .wrap_err_with(|| format!("failed to run '{runtime} compose up --detach'"))?;
+
+        if !status.success() {
+            bail!("'{runtime} compose up --detach' failed (exit status: {status})");
+        }
+        Ok(())
+    }
+
+    /// Extra arguments to pass to `compose logs`.
+    ///
+    /// Podman overrides this to include `--names` so log lines are prefixed
+    /// with service names (docker does this by default).
+    fn compose_logs_extra_args(&self) -> &[&str] {
+        &[]
+    }
+
+    /// Spawn `compose logs --follow` and return the child process.
+    ///
+    /// stdout and stderr are inherited so compose log output goes straight
+    /// to the terminal. stdin is null. The process exits when all
+    /// containers stop.
+    fn compose_logs_follow(&self, config: &ComposeConfig) -> Result<Child> {
+        let runtime = self.name();
+        let mut cmd = tokio::process::Command::new(runtime);
+        cmd.current_dir(&config.dir);
+        cmd.arg("compose").args(config.file_args());
+        cmd.args(["logs", "--follow"]);
+        cmd.args(self.compose_logs_extra_args());
+        cmd.stdin(std::process::Stdio::null());
+        cmd.stdout(std::process::Stdio::inherit());
+        cmd.stderr(std::process::Stdio::inherit());
+
+        cmd.spawn()
+            .wrap_err_with(|| format!("failed to start '{runtime} compose logs --follow'"))
+    }
+
     /// Run `compose down` for cleanup. Best-effort, ignores errors.
     fn compose_down(&self, config: &ComposeConfig) {
         let runtime = self.name();
@@ -271,7 +318,10 @@ pub trait ContainerRuntime: Send + Sync {
         cmd.current_dir(&config.dir);
         cmd.arg("compose").args(config.file_args());
         cmd.args(["down", "--timeout", "0"]);
-        let _ = cmd.output();
+        cmd.stdin(std::process::Stdio::null());
+        cmd.stdout(std::process::Stdio::null());
+        cmd.stderr(std::process::Stdio::null());
+        let _ = cmd.status();
     }
 }
 
@@ -328,6 +378,10 @@ impl ContainerRuntime for PodmanRuntime {
             .trim()
             .to_string();
         Ok(pinned_image_ref(image_ref, &digest))
+    }
+
+    fn compose_logs_extra_args(&self) -> &[&str] {
+        &["--names"]
     }
 }
 
@@ -593,30 +647,6 @@ fn filter_pushable_images<'a>(images: &'a [String], registry: &str) -> Vec<&'a s
         .filter(|img| img.starts_with(&prefix) && seen.insert(img.as_str()))
         .map(|s| s.as_str())
         .collect()
-}
-
-/// Start `{runtime} compose up` and return the child process plus an async
-/// readable handle for its output.
-///
-/// A PTY is used so that podman produces proper output.
-pub fn compose_up(
-    runtime: &str,
-    config: &ComposeConfig,
-    args: &[&str],
-) -> Result<(Child, impl tokio::io::AsyncRead + Unpin + use<>)> {
-    let (pty, pts) = pty_process::open().wrap_err("failed to open PTY")?;
-
-    let cmd = pty_process::Command::new(runtime);
-    let cmd = cmd.current_dir(&config.dir);
-    let cmd = cmd.arg("compose").args(config.file_args());
-    let cmd = cmd.arg("up");
-    let cmd = cmd.args(args);
-
-    let child = cmd
-        .spawn(pts)
-        .wrap_err_with(|| format!("failed to start '{runtime} compose up'"))?;
-
-    Ok((child, pty))
 }
 
 /// Parse the JSON output of `compose ps --format json`.

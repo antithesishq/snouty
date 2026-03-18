@@ -21,8 +21,8 @@ Example:
     --recipients "team@example.com"
 
 The -c/--config flag points at a local directory containing docker-compose.yaml.
-Snouty builds a config image from that directory and pushes it to the registry
-specified by the ANTITHESIS_REPOSITORY environment variable.
+Images required for the run need to have been built already. Pushing happens
+automatically.
 
 Alternatively, pass a pre-built config image directly:
   snouty run --webhook basic_test \

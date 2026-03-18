@@ -13,7 +13,6 @@ fn err(msg: String) -> testscript_rs::Error {
 // --- Engine context (thread-local so fn-pointer commands can access it) ---
 
 struct EngineContext {
-    registry: String,
     engine: Box<dyn snouty::container::ContainerRuntime>,
     built_images: Vec<String>,
 }
@@ -147,7 +146,7 @@ fn cmd_build_image(
         let ctx = ctx
             .as_mut()
             .ok_or_else(|| err("ENGINE_CTX not set".to_string()))?;
-        let image_ref = format!("{}/{}", ctx.registry, args[0]);
+        let image_ref = args[0].to_string();
         let dir = env.work_dir.join(&args[1]);
         let dockerfile = dir.join("Dockerfile");
         let dockerfile = dockerfile.exists().then_some(dockerfile.as_path());
@@ -237,7 +236,6 @@ fn engine_spec_tests() {
         let registry_addr = registry.host_port();
 
         ENGINE_CTX.set(Some(EngineContext {
-            registry: registry_addr.clone(),
             engine: engine.clone_box(),
             built_images: Vec::new(),
         }));
@@ -263,6 +261,11 @@ fn engine_spec_tests() {
                 for image in &ctx.built_images {
                     let _ = std::process::Command::new(engine.name())
                         .args(["rmi", "-f", image])
+                        .output();
+                    // Remove registry-prefixed copy created by push_compose_images.
+                    let prefixed = format!("{registry_addr}/{image}");
+                    let _ = std::process::Command::new(engine.name())
+                        .args(["rmi", "-f", &prefixed])
                         .output();
                 }
             }

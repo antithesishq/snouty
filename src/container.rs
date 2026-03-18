@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -88,6 +89,21 @@ pub trait ContainerRuntime: Send + Sync {
     /// Push the image to the registry, returning the pinned image reference
     /// (e.g. `example.com/foo/image@sha256:...`).
     fn image_push(&self, image_ref: &str) -> Result<String>;
+
+    /// Tag an image with a new reference.
+    fn image_tag(&self, src: &str, dst: &str) -> Result<()> {
+        let runtime = self.name();
+        let output = Command::new(runtime)
+            .args(["tag", src, dst])
+            .output()
+            .wrap_err(format!("failed to run '{runtime} tag'"))?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(eyre!("'{runtime} tag {src} {dst}' failed"))
+                .with_section(move || stderr.trim().to_string().header("Stderr:"));
+        }
+        Ok(())
+    }
 
     /// Build a container image from a directory.
     ///
@@ -182,9 +198,30 @@ pub trait ContainerRuntime: Send + Sync {
     fn push_compose_images(&self, config_dir: &Path, registry: &str) -> Result<Vec<String>> {
         let yaml = self.compose_config(config_dir)?;
         let contents = parse_compose_config(&yaml)?;
-        let images: Vec<String> = contents.services.into_iter().map(|(_, img)| img).collect();
-        let pushable = filter_pushable_images(&images, registry);
+        let registry_trimmed = registry.trim_end_matches('/');
+        let prefix = format!("{registry_trimmed}/");
 
+        // Phase 1: Build the image list. Local build images get tagged with
+        // the registry prefix so they become pushable.
+        let mut tagged = HashSet::new();
+        let mut images = Vec::new();
+        for (name, image) in &contents.services {
+            if contents.build_services.contains(name)
+                && is_local_image(image)
+                && !image.starts_with(&prefix)
+            {
+                let dest = format!("{prefix}{image}");
+                if tagged.insert(image.clone()) {
+                    self.image_tag(image, &dest)?;
+                }
+                images.push(dest);
+            } else {
+                images.push(image.clone());
+            }
+        }
+
+        // Phase 2: Push images matching registry prefix (existing logic).
+        let pushable = filter_pushable_images(&images, registry);
         let mut pinned = Vec::new();
         for image in pushable {
             eprintln!("Pushing image: {image}");
@@ -192,7 +229,6 @@ pub trait ContainerRuntime: Send + Sync {
             eprintln!("Image pushed: {p}");
             pinned.push(p);
         }
-
         Ok(pinned)
     }
 
@@ -606,6 +642,8 @@ fn parse_docker_push_digest(stdout: &str) -> Result<String> {
 pub struct ComposeContents {
     /// `(service_name, image)` pairs. Services without `image` are omitted.
     pub services: Vec<(String, String)>,
+    /// Service names that have a `build:` stanza.
+    pub build_services: HashSet<String>,
     /// Explicitly declared network names (from the top-level `networks` key).
     pub networks: Vec<String>,
 }
@@ -617,12 +655,16 @@ pub fn parse_compose_config(yaml: &str) -> Result<ComposeContents> {
         serde_yaml::from_str(yaml).wrap_err("failed to parse docker-compose.yaml")?;
 
     let mut services = Vec::new();
+    let mut build_services = HashSet::new();
     if let Some(svc_map) = doc.get("services").and_then(|s| s.as_mapping()) {
         for (name, service) in svc_map {
-            if let (Some(name), Some(image)) =
-                (name.as_str(), service.get("image").and_then(|i| i.as_str()))
-            {
-                services.push((name.to_string(), image.to_string()));
+            if let Some(name_str) = name.as_str() {
+                if service.get("build").is_some() {
+                    build_services.insert(name_str.to_string());
+                }
+                if let Some(image) = service.get("image").and_then(|i| i.as_str()) {
+                    services.push((name_str.to_string(), image.to_string()));
+                }
             }
         }
     }
@@ -644,7 +686,11 @@ pub fn parse_compose_config(yaml: &str) -> Result<ComposeContents> {
     }
     networks.sort();
 
-    Ok(ComposeContents { services, networks })
+    Ok(ComposeContents {
+        services,
+        build_services,
+        networks,
+    })
 }
 
 /// Filter images to only those that should be pushed: images whose name
@@ -652,12 +698,28 @@ pub fn parse_compose_config(yaml: &str) -> Result<ComposeContents> {
 fn filter_pushable_images<'a>(images: &'a [String], registry: &str) -> Vec<&'a str> {
     let registry = registry.trim_end_matches('/');
     let prefix = format!("{registry}/");
-    let mut seen = std::collections::HashSet::new();
+    let mut seen = HashSet::new();
     images
         .iter()
         .filter(|img| img.starts_with(&prefix) && seen.insert(img.as_str()))
         .map(|s| s.as_str())
         .collect()
+}
+
+/// Check whether an image reference is "local" (not from a remote registry).
+///
+/// An image is local if its first path component has no dots, no colons, and
+/// is not literally "localhost". Examples:
+/// - `myapp:latest` -> local
+/// - `org/myapp:latest` -> local
+/// - `docker.io/library/nginx:latest` -> not local
+/// - `localhost/myapp:latest` -> not local
+/// - `registry:5000/myapp:latest` -> not local
+fn is_local_image(image: &str) -> bool {
+    match image.split_once('/') {
+        None => true,
+        Some((first, _)) => !(first.contains('.') || first.contains(':') || first == "localhost"),
+    }
 }
 
 /// Parse the JSON output of `compose ps --format json`.
@@ -866,6 +928,10 @@ services:
                 ),
             ]
         );
+        assert_eq!(
+            contents.build_services,
+            HashSet::from(["builder".to_string()])
+        );
         assert!(contents.networks.is_empty());
     }
 
@@ -874,6 +940,7 @@ services:
         let yaml = "version: '3'\n";
         let contents = parse_compose_config(yaml).unwrap();
         assert!(contents.services.is_empty());
+        assert!(contents.build_services.is_empty());
     }
 
     #[test]
@@ -889,6 +956,7 @@ networks:
 ";
         let contents = parse_compose_config(yaml).unwrap();
         assert_eq!(contents.services.len(), 1);
+        assert!(contents.build_services.is_empty());
         assert_eq!(contents.networks, vec!["backend", "frontend"]);
     }
 
@@ -1090,5 +1158,64 @@ tag2: digest: sha256:bbb222 size: 200
             pinned_image_ref("registry.example.com/team/service@sha256:old", "sha256:new"),
             "registry.example.com/team/service@sha256:new"
         );
+    }
+
+    #[test]
+    fn is_local_image_bare_name() {
+        assert!(is_local_image("myapp:latest"));
+    }
+
+    #[test]
+    fn is_local_image_org_name() {
+        assert!(is_local_image("myorg/myapp:latest"));
+    }
+
+    #[test]
+    fn is_local_image_registry_with_dot() {
+        assert!(!is_local_image("registry.example.com/myapp:latest"));
+    }
+
+    #[test]
+    fn is_local_image_docker_io() {
+        assert!(!is_local_image("docker.io/library/nginx:latest"));
+    }
+
+    #[test]
+    fn is_local_image_localhost() {
+        assert!(!is_local_image("localhost/myapp:latest"));
+    }
+
+    #[test]
+    fn is_local_image_localhost_port() {
+        assert!(!is_local_image("localhost:5000/myapp:latest"));
+    }
+
+    #[test]
+    fn is_local_image_host_port() {
+        assert!(!is_local_image("myregistry:5000/myapp:latest"));
+    }
+
+    #[test]
+    fn parse_compose_config_build_with_image() {
+        let yaml = "\
+services:
+  app:
+    build: .
+    image: myapp:latest
+  sidecar:
+    image: docker.io/library/nginx:latest
+";
+        let contents = parse_compose_config(yaml).unwrap();
+        assert_eq!(
+            contents.services,
+            vec![
+                ("app".to_string(), "myapp:latest".to_string()),
+                (
+                    "sidecar".to_string(),
+                    "docker.io/library/nginx:latest".to_string()
+                ),
+            ]
+        );
+        assert_eq!(contents.build_services, HashSet::from(["app".to_string()]));
     }
 }

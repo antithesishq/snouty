@@ -67,7 +67,8 @@ CMD sh -c 'echo "{\"antithesis_setup\":{\"status\":\"complete\"}}" >> "$ANTITHES
 -- config_no_scripts/docker-compose.yaml --
 services:
   emitter:
-    image: ${ANTITHESIS_REPOSITORY}/setup-emitter:latest
+    image: setup-emitter:latest
+    pull_policy: never
 
 -- all_types/suite/first_setup --
 #!/bin/sh
@@ -101,9 +102,11 @@ CMD sh -c 'echo "{\"antithesis_setup\":{\"status\":\"complete\"}}" >> "$ANTITHES
 -- config_all_types/docker-compose.yaml --
 services:
   runner:
-    image: ${ANTITHESIS_REPOSITORY}/all-types:latest
+    image: all-types:latest
+    pull_policy: never
   sidecar:
-    image: ${ANTITHESIS_REPOSITORY}/setup-emitter:latest
+    image: setup-emitter:latest
+    pull_policy: never
 
 -- fail_with_finally/suite/first_setup --
 #!/bin/sh
@@ -127,7 +130,8 @@ CMD sh -c 'echo "{\"antithesis_setup\":{\"status\":\"complete\"}}" >> "$ANTITHES
 -- config_fail_finally/docker-compose.yaml --
 services:
   runner:
-    image: ${ANTITHESIS_REPOSITORY}/fail-with-finally:latest
+    image: fail-with-finally:latest
+    pull_policy: never
 
 -- nodrivers/suite/first_setup --
 #!/bin/sh
@@ -141,7 +145,8 @@ CMD sh -c 'echo "{\"antithesis_setup\":{\"status\":\"complete\"}}" >> "$ANTITHES
 -- config_nodrivers/docker-compose.yaml --
 services:
   runner:
-    image: ${ANTITHESIS_REPOSITORY}/nodrivers:latest
+    image: nodrivers:latest
+    pull_policy: never
 
 -- unknown_prefix/suite/first_ok --
 #!/bin/sh
@@ -158,7 +163,8 @@ CMD sh -c 'echo "{\"antithesis_setup\":{\"status\":\"complete\"}}" >> "$ANTITHES
 -- config_unknown/docker-compose.yaml --
 services:
   runner:
-    image: ${ANTITHESIS_REPOSITORY}/unknown-prefix:latest
+    image: unknown-prefix:latest
+    pull_policy: never
 
 -- noexec/suite/first_noexec --
 #!/bin/sh
@@ -176,7 +182,8 @@ CMD sh -c 'echo "{\"antithesis_setup\":{\"status\":\"complete\"}}" >> "$ANTITHES
 -- config_noexec/docker-compose.yaml --
 services:
   runner:
-    image: ${ANTITHESIS_REPOSITORY}/noexec:latest
+    image: noexec:latest
+    pull_policy: never
 
 -- net_check/suite/anytime_ping_blocked --
 #!/bin/sh
@@ -194,7 +201,8 @@ CMD sh -c 'echo "{\"antithesis_setup\":{\"status\":\"complete\"}}" >> "$ANTITHES
 -- config_net_check/docker-compose.yaml --
 services:
   checker:
-    image: ${ANTITHESIS_REPOSITORY}/net-check:latest
+    image: net-check:latest
+    pull_policy: never
 
 -- sdk_local_emitter/Dockerfile --
 FROM busybox
@@ -202,4 +210,5 @@ CMD sh -c 'echo "{\"antithesis_setup\":{\"status\":\"complete\"}}" >> "$ANTITHES
 -- config_sdk_local/docker-compose.yaml --
 services:
   emitter:
-    image: ${ANTITHESIS_REPOSITORY}/sdk-local-emitter:latest
+    image: sdk-local-emitter:latest
+    pull_policy: never

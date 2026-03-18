@@ -1,10 +1,11 @@
 # snouty run --config — image push and pinning
 #
-# When --config is used, snouty pushes compose images matching
-# ANTITHESIS_REPOSITORY and builds+pushes a config image.
+# When --config is used, snouty detects local build images, tags them
+# with the ANTITHESIS_REPOSITORY prefix, and pushes them alongside a
+# config image.
 # Both get pinned references (name@sha256:digest) in the webhook params.
 
-# 1. Compose images matching the registry are pushed and pinned.
+# 1. Local build images are tagged with registry prefix, pushed and pinned.
 mock-server 200 '{"status": "ok"}'
 build-image myapp:latest images/myapp
 build-image sidecar:v1 images/sidecar
@@ -19,13 +20,19 @@ snouty run -w basic_test -c external_config --duration 30
 stderr '"antithesis.config_image":.*@sha256:'
 ! stderr '"antithesis.images"'
 
-# 3. Mixed: only matching images appear in antithesis.images.
+# 3. Mixed: local build image is tagged+pushed, external image is skipped.
 mock-server 200 '{"status": "ok"}'
 build-image myapp:latest images/myapp
 snouty run -w basic_test -c mixed_config --duration 30
 stderr '"antithesis.images":.*myapp@sha256:'
 ! stderr 'nginx.*@sha256:'
 stderr '"antithesis.config_image":.*@sha256:'
+
+# 4. Local image without build stanza is not pushed.
+mock-server 200 '{"status": "ok"}'
+snouty run -w basic_test -c local_no_build_config --duration 30
+stderr '"antithesis.config_image":.*@sha256:'
+! stderr '"antithesis.images"'
 
 -- images/myapp/content --
 placeholder
@@ -34,9 +41,11 @@ placeholder
 -- push_config/docker-compose.yaml --
 services:
   app:
-    image: ${ANTITHESIS_REPOSITORY}/myapp:latest
+    build: .
+    image: myapp:latest
   sidecar:
-    image: ${ANTITHESIS_REPOSITORY}/sidecar:v1
+    build: .
+    image: sidecar:v1
 -- external_config/docker-compose.yaml --
 services:
   app:
@@ -44,6 +53,11 @@ services:
 -- mixed_config/docker-compose.yaml --
 services:
   app:
-    image: ${ANTITHESIS_REPOSITORY}/myapp:latest
+    build: .
+    image: myapp:latest
   nginx:
     image: docker.io/library/nginx:latest
+-- local_no_build_config/docker-compose.yaml --
+services:
+  app:
+    image: localapp:latest

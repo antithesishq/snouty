@@ -189,14 +189,28 @@ pub async fn cmd_validate(args: ValidateArgs) -> Result<()> {
 
 /// Check whether a reader contains the setup-complete event.
 ///
-/// Reads all content, checks each complete line for
-/// `{"antithesis_setup": {"status": "complete"}}`.
-fn contains_setup_complete(reader: &mut impl std::io::Read) -> Result<bool> {
-    let mut buf = String::new();
-    reader
-        .read_to_string(&mut buf)
-        .wrap_err("failed to read setup output")?;
-    for line in buf.lines() {
+/// Reads from the current position, checks each complete line for
+/// `{"antithesis_setup": {"status": "complete"}}`, and seeks back over any
+/// partial trailing line so it will be re-read on the next call.
+fn contains_setup_complete(reader: &mut (impl std::io::Read + std::io::Seek)) -> Result<bool> {
+    let mut content = String::new();
+    reader.read_to_string(&mut content)?;
+
+    if content.is_empty() {
+        return Ok(false);
+    }
+
+    // Seek back over any partial trailing line so it's re-read next call.
+    if !content.ends_with('\n') {
+        let partial_len = match content.rfind('\n') {
+            Some(pos) => content.len() - pos - 1,
+            None => content.len(),
+        };
+        reader.seek(std::io::SeekFrom::Current(-(partial_len as i64)))?;
+        content.truncate(content.len() - partial_len);
+    }
+
+    for line in content.lines() {
         let line = line.trim();
         if !line.is_empty()
             && let Ok(event) = serde_json::from_str::<SetupEvent>(line)
@@ -440,93 +454,40 @@ fn shuffle<T>(slice: &mut [T]) {
     }
 }
 
-/// Watch a directory of JSONL files for the `{"antithesis_setup": {"status": "complete"}}` event.
+/// Watch `sdk.jsonl` in the given directory for the setup-complete event.
 ///
-/// Polls the directory for `.jsonl` files (100ms interval), tailing each for new data.
+/// Polls for the file to appear (100ms interval), then tails it for new data.
 /// Returns `Ok(true)` when the event is found, `Ok(false)` on timeout.
 ///
 /// Uses blocking `std::fs` calls intentionally — reads are small and infrequent,
 /// and this avoids pulling in tokio::fs for a simple poll loop.
 async fn watch_for_setup_complete(output_dir: &Path, timeout: Duration) -> Result<bool> {
-    use std::collections::HashMap;
-    use std::io::{Read, Seek, SeekFrom};
-
-    struct TailedFile {
-        file: std::fs::File,
-        offset: u64,
-        remainder: String,
-    }
-
     let deadline = tokio::time::Instant::now() + timeout;
-    let mut files: HashMap<PathBuf, TailedFile> = HashMap::new();
-    let mut buf = vec![0u8; 4096];
+    let sdk_path = output_dir.join("sdk.jsonl");
 
+    // Wait for the file to appear.
+    let mut file = loop {
+        if tokio::time::Instant::now() >= deadline {
+            return Ok(false);
+        }
+        match std::fs::File::open(&sdk_path) {
+            Ok(f) => break f,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                sleep(Duration::from_millis(100)).await;
+            }
+            Err(e) => return Err(e.into()),
+        }
+    };
+
+    // Tail the file for the setup-complete event.
     loop {
         if tokio::time::Instant::now() >= deadline {
             return Ok(false);
         }
-
-        // Discover new .jsonl files in the directory.
-        match std::fs::read_dir(output_dir) {
-            Ok(entries) => {
-                for entry in entries {
-                    let path = entry?.path();
-                    if path.extension().is_some_and(|e| e == "jsonl") && !files.contains_key(&path)
-                    {
-                        match std::fs::File::open(&path) {
-                            Ok(f) => {
-                                files.insert(
-                                    path,
-                                    TailedFile {
-                                        file: f,
-                                        offset: 0,
-                                        remainder: String::new(),
-                                    },
-                                );
-                            }
-                            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                            Err(e) => return Err(e.into()),
-                        }
-                    }
-                }
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => return Err(e.into()),
+        if contains_setup_complete(&mut file)? {
+            return Ok(true);
         }
-
-        // Tail each known file for new data.
-        let mut progress = false;
-        for tailed in files.values_mut() {
-            tailed.file.seek(SeekFrom::Start(tailed.offset))?;
-            let n = match tailed.file.read(&mut buf) {
-                Ok(0) => continue,
-                Ok(n) => n,
-                Err(e) => return Err(e.into()),
-            };
-            tailed.offset += n as u64;
-            progress = true;
-
-            tailed
-                .remainder
-                .push_str(&String::from_utf8_lossy(&buf[..n]));
-
-            while let Some(newline) = tailed.remainder.find('\n') {
-                let line = &tailed.remainder[..newline];
-                let line = line.trim();
-                if !line.is_empty()
-                    && let Ok(event) = serde_json::from_str::<SetupEvent>(line)
-                    && let Some(setup) = event.antithesis_setup
-                    && setup.status == "complete"
-                {
-                    return Ok(true);
-                }
-                tailed.remainder.drain(..=newline);
-            }
-        }
-
-        if !progress {
-            sleep(Duration::from_millis(100)).await;
-        }
+        sleep(Duration::from_millis(100)).await;
     }
 }
 
@@ -682,19 +643,19 @@ services:
     #[test]
     fn contains_setup_complete_found() {
         let data = "{\"antithesis_setup\": {\"status\": \"complete\"}}\n";
-        assert!(contains_setup_complete(&mut data.as_bytes()).unwrap());
+        assert!(contains_setup_complete(&mut std::io::Cursor::new(data)).unwrap());
     }
 
     #[test]
     fn contains_setup_complete_not_found() {
         let data = "{\"antithesis_setup\": {\"status\": \"running\"}}\n";
-        assert!(!contains_setup_complete(&mut data.as_bytes()).unwrap());
+        assert!(!contains_setup_complete(&mut std::io::Cursor::new(data)).unwrap());
     }
 
     #[test]
     fn contains_setup_complete_empty() {
         let data = "";
-        assert!(!contains_setup_complete(&mut data.as_bytes()).unwrap());
+        assert!(!contains_setup_complete(&mut std::io::Cursor::new(data)).unwrap());
     }
 
     #[test]
@@ -703,7 +664,7 @@ services:
                     not json at all\n\
                     {\"antithesis_setup\": {\"status\": \"complete\"}}\n\
                     {\"more\": \"stuff\"}\n";
-        assert!(contains_setup_complete(&mut data.as_bytes()).unwrap());
+        assert!(contains_setup_complete(&mut std::io::Cursor::new(data)).unwrap());
     }
 
     const TEST_TIMEOUT: Duration = Duration::from_secs(3);
@@ -713,7 +674,7 @@ services:
     async fn detects_setup_complete() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(
-            dir.path().join("output.jsonl"),
+            dir.path().join("sdk.jsonl"),
             "{\"antithesis_setup\": {\"status\": \"complete\"}}\n",
         )
         .unwrap();
@@ -750,7 +711,7 @@ services:
     #[tokio::test]
     async fn detects_appended_event() {
         let dir = tempfile::tempdir().unwrap();
-        let file = dir.path().join("output.jsonl");
+        let file = dir.path().join("sdk.jsonl");
         std::fs::write(&file, "{\"unrelated\": true}\n").unwrap();
 
         let path = file.clone();
@@ -774,7 +735,7 @@ services:
     #[tokio::test]
     async fn ignores_non_complete_status() {
         let dir = tempfile::tempdir().unwrap();
-        let file = dir.path().join("output.jsonl");
+        let file = dir.path().join("sdk.jsonl");
         std::fs::write(&file, "{\"antithesis_setup\": {\"status\": \"running\"}}\n").unwrap();
 
         let path = file.clone();
@@ -798,7 +759,7 @@ services:
     #[tokio::test]
     async fn handles_partial_line() {
         let dir = tempfile::tempdir().unwrap();
-        let file = dir.path().join("output.jsonl");
+        let file = dir.path().join("sdk.jsonl");
 
         let path = file.clone();
         tokio::spawn(async move {
@@ -824,7 +785,7 @@ services:
     #[tokio::test]
     async fn times_out_without_event() {
         let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("output.jsonl"), "{\"unrelated\": true}\n").unwrap();
+        std::fs::write(dir.path().join("sdk.jsonl"), "{\"unrelated\": true}\n").unwrap();
 
         let found = watch_for_setup_complete(dir.path(), Duration::from_secs(1))
             .await

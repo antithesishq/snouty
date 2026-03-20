@@ -312,7 +312,9 @@ pub trait ContainerRuntime: Send + Sync {
             .current_dir(&config.dir)
             .arg("compose")
             .args(config.file_args())
-            .args(["up", "--detach"])
+            .args(self.compose_extra_args())
+            .args(["up", "--detach", "--no-build"])
+            .args(self.compose_up_extra_args())
             .status()
             .wrap_err_with(|| format!("failed to run '{runtime} compose up --detach'"))?;
 
@@ -320,6 +322,22 @@ pub trait ContainerRuntime: Send + Sync {
             bail!("'{runtime} compose up --detach' failed (exit status: {status})");
         }
         Ok(())
+    }
+
+    /// Extra arguments inserted between file args and the subcommand.
+    ///
+    /// Podman overrides this to include `--podman-run-args=--pull=never`
+    /// since podman compose doesn't support `--pull=never` as an `up` flag.
+    fn compose_extra_args(&self) -> &[&str] {
+        &[]
+    }
+
+    /// Extra arguments to pass to `compose up`.
+    ///
+    /// Docker overrides this to include `--pull=never` so validate never
+    /// pulls or builds images.
+    fn compose_up_extra_args(&self) -> &[&str] {
+        &[]
     }
 
     /// Extra arguments to pass to `compose logs`.
@@ -420,6 +438,10 @@ impl ContainerRuntime for PodmanRuntime {
         Ok(pinned_image_ref(image_ref, &digest))
     }
 
+    fn compose_extra_args(&self) -> &[&str] {
+        &["--podman-run-args=--pull=never"]
+    }
+
     fn compose_logs_extra_args(&self) -> &[&str] {
         &["--names"]
     }
@@ -443,6 +465,10 @@ impl ContainerRuntime for DockerRuntime {
 
     fn name(&self) -> &str {
         &self.cmd
+    }
+
+    fn compose_up_extra_args(&self) -> &[&str] {
+        &["--pull=never"]
     }
 
     fn image_push(&self, image_ref: &str) -> Result<String> {

@@ -140,9 +140,9 @@ jobs:
           token: ${{secrets.GITHUB_TOKEN}}
           persist-credentials: false
 
-      - name: Start Podman socket
+      - name: Configure Docker
         run: |
-          systemctl --user start podman.socket
+          sudo rm -v -f "$(which podman)" "$(which podman-compose)"
 
       - name: Test
         run: nix-shell --run "cargo nextest run"

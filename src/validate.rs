@@ -122,6 +122,36 @@ impl Drop for ComposeDownGuard<'_> {
     }
 }
 
+/// Recursively copy the contents of `src` into `dst`, creating `dst` if needed.
+fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<()> {
+    std::fs::create_dir_all(dst)
+        .wrap_err_with(|| format!("failed to create directory {}", dst.display()))?;
+    for entry in std::fs::read_dir(src)
+        .wrap_err_with(|| format!("failed to read directory {}", src.display()))?
+    {
+        let entry = entry?;
+        let file_type = entry.file_type()?;
+        // There are no valid reasons for a symlink to exist in the SDK output directory, so skip them if they do
+        if file_type.is_symlink() {
+            continue;
+        }
+        let src_path = entry.path();
+        let dst_path = dst.join(entry.file_name());
+        if file_type.is_dir() {
+            copy_dir_recursive(&src_path, &dst_path)?;
+        } else {
+            std::fs::copy(&src_path, &dst_path).wrap_err_with(|| {
+                format!(
+                    "failed to copy {} to {}",
+                    src_path.display(),
+                    dst_path.display()
+                )
+            })?;
+        }
+    }
+    Ok(())
+}
+
 pub async fn cmd_validate(args: ValidateArgs) -> Result<()> {
     let config = ComposeConfig::new(args.config)?;
     let rt = container::runtime()?;
@@ -197,6 +227,11 @@ pub async fn cmd_validate(args: ValidateArgs) -> Result<()> {
 
     if test_result.is_ok() {
         eprintln!("Setup validation successful.");
+    }
+
+    if let Some(out_path) = args.antithesis_sdk_out_dir {
+        copy_dir_recursive(&sdk_output_dir, &out_path)
+            .wrap_err("failed to copy SDK output directory")?;
     }
 
     test_result
@@ -801,6 +836,86 @@ services:
                 .await
                 .expect("watch failed")
         );
+    }
+
+    #[test]
+    fn copy_dir_recursive_copies_files() {
+        let src = tempfile::tempdir().unwrap();
+        std::fs::write(src.path().join("a.txt"), "hello").unwrap();
+        std::fs::write(src.path().join("b.txt"), "world").unwrap();
+
+        let dst = tempfile::tempdir().unwrap();
+        let dst_path = dst.path().join("output");
+        copy_dir_recursive(src.path(), &dst_path).unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(dst_path.join("a.txt")).unwrap(),
+            "hello"
+        );
+        assert_eq!(
+            std::fs::read_to_string(dst_path.join("b.txt")).unwrap(),
+            "world"
+        );
+    }
+
+    #[test]
+    fn copy_dir_recursive_copies_nested_dirs() {
+        let src = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(src.path().join("sub/deep")).unwrap();
+        std::fs::write(src.path().join("top.txt"), "top").unwrap();
+        std::fs::write(src.path().join("sub/mid.txt"), "mid").unwrap();
+        std::fs::write(src.path().join("sub/deep/bottom.txt"), "bottom").unwrap();
+
+        let dst = tempfile::tempdir().unwrap();
+        let dst_path = dst.path().join("output");
+        copy_dir_recursive(src.path(), &dst_path).unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(dst_path.join("top.txt")).unwrap(),
+            "top"
+        );
+        assert_eq!(
+            std::fs::read_to_string(dst_path.join("sub/mid.txt")).unwrap(),
+            "mid"
+        );
+        assert_eq!(
+            std::fs::read_to_string(dst_path.join("sub/deep/bottom.txt")).unwrap(),
+            "bottom"
+        );
+    }
+
+    #[test]
+    fn copy_dir_recursive_empty_source() {
+        let src = tempfile::tempdir().unwrap();
+        let dst = tempfile::tempdir().unwrap();
+        let dst_path = dst.path().join("output");
+
+        copy_dir_recursive(src.path(), &dst_path).unwrap();
+        assert!(dst_path.is_dir());
+        assert_eq!(std::fs::read_dir(&dst_path).unwrap().count(), 0);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn copy_dir_recursive_skips_symlinks() {
+        let src = tempfile::tempdir().unwrap();
+        std::fs::write(src.path().join("real.txt"), "data").unwrap();
+        std::os::unix::fs::symlink(src.path().join("real.txt"), src.path().join("link.txt"))
+            .unwrap();
+
+        let dst = tempfile::tempdir().unwrap();
+        let dst_path = dst.path().join("output");
+        copy_dir_recursive(src.path(), &dst_path).unwrap();
+
+        assert!(dst_path.join("real.txt").exists());
+        assert!(!dst_path.join("link.txt").exists());
+    }
+
+    #[test]
+    fn copy_dir_recursive_nonexistent_source() {
+        let dst = tempfile::tempdir().unwrap();
+        let result = copy_dir_recursive(Path::new("/nonexistent/path"), &dst.path().join("out"));
+        assert!(result.is_err());
     }
 
     /// Times out when the event never arrives.

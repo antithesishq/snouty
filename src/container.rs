@@ -11,6 +11,64 @@ use color_eyre::{
 };
 use tokio::process::Child;
 
+/// RAII wrapper around a [`Child`] spawned with `process_group(0)`.
+///
+/// Ensures the entire process group is killed on drop, not just the leader.
+/// The inner child is `Option<Child>` so `Drop` can handle partially-consumed state.
+pub struct ProcessGroupChild {
+    inner: Option<Child>,
+}
+
+impl ProcessGroupChild {
+    /// Wrap a freshly-spawned child that was created with `process_group(0)`.
+    pub fn new(child: Child) -> Self {
+        Self { inner: Some(child) }
+    }
+
+    /// Send `SIGKILL` to the entire process group, then reap the child.
+    pub async fn kill_group(&mut self) -> std::io::Result<()> {
+        if let Some(ref mut child) = self.inner {
+            if let Some(pid) = child.id() {
+                // Safety: negative PID targets the entire process group.
+                unsafe {
+                    libc::kill(-(pid as libc::pid_t), libc::SIGKILL);
+                }
+            }
+            child.wait().await?;
+        }
+        Ok(())
+    }
+
+    /// Delegate to the inner [`Child::wait()`].
+    pub async fn wait(&mut self) -> std::io::Result<std::process::ExitStatus> {
+        self.inner
+            .as_mut()
+            .expect("ProcessGroupChild already consumed")
+            .wait()
+            .await
+    }
+
+    /// Delegate to the inner [`Child::id()`].
+    pub fn id(&self) -> Option<u32> {
+        self.inner.as_ref().and_then(|c| c.id())
+    }
+}
+
+impl Drop for ProcessGroupChild {
+    fn drop(&mut self) {
+        if let Some(ref mut child) = self.inner {
+            if let Some(pid) = child.id() {
+                // Safety: best-effort cleanup of the process group.
+                unsafe {
+                    libc::kill(-(pid as libc::pid_t), libc::SIGKILL);
+                }
+            }
+            // Best-effort synchronous reap — we can't .await in Drop.
+            let _ = child.try_wait();
+        }
+    }
+}
+
 /// Bundles a compose config directory with optional overlay files (e.g. overrides).
 ///
 /// Used by compose session operations (`up`, `ps`, `exec`,
@@ -354,26 +412,28 @@ pub trait Compose: Send + Sync {
             .wrap_err_with(|| format!("failed to run '{runtime} compose exec'"))
     }
 
-    /// Run `compose up --detach` to start services in detached mode.
+    /// Spawn `compose up --detach` and return the child process.
     ///
     /// stdout and stderr are inherited so progress is visible during pulls.
-    fn up_detached(&self, config: &ComposeConfig) -> Result<()> {
+    /// The caller is responsible for awaiting the child and checking its exit
+    /// status. Uses `process_group(0)` so the whole group can be killed on
+    /// timeout.
+    fn up_detached(&self, config: &ComposeConfig) -> Result<ProcessGroupChild> {
         let runtime = self.runtime().name();
-        let status = self
-            .runtime()
-            .command(&["compose"])
-            .current_dir(&config.dir)
-            .args(config.file_args())
-            .args(self.extra_args())
-            .args(["up", "--detach", "--no-build"])
-            .args(self.up_extra_args())
-            .status()
-            .wrap_err_with(|| format!("failed to run '{runtime} compose up --detach'"))?;
+        let mut cmd = self.runtime().tokio_command(&["compose"]);
+        cmd.current_dir(&config.dir);
+        cmd.args(config.file_args());
+        cmd.args(self.extra_args());
+        cmd.args(["up", "--detach", "--no-build"]);
+        cmd.args(self.up_extra_args());
+        cmd.stdin(std::process::Stdio::null());
+        cmd.stdout(std::process::Stdio::inherit());
+        cmd.stderr(std::process::Stdio::inherit());
+        cmd.process_group(0);
 
-        if !status.success() {
-            bail!("'{runtime} compose up --detach' failed (exit status: {status})");
-        }
-        Ok(())
+        cmd.spawn()
+            .map(ProcessGroupChild::new)
+            .wrap_err_with(|| format!("failed to start '{runtime} compose up --detach'"))
     }
 
     /// Spawn `compose logs --follow` and return the child process.
@@ -381,7 +441,7 @@ pub trait Compose: Send + Sync {
     /// stdout and stderr are inherited so compose log output goes straight
     /// to the terminal. stdin is null. The process exits when all
     /// containers stop.
-    fn logs_follow(&self, config: &ComposeConfig) -> Result<Child> {
+    fn logs_follow(&self, config: &ComposeConfig) -> Result<ProcessGroupChild> {
         let runtime = self.runtime().name();
         let mut cmd = self.runtime().tokio_command(&["compose"]);
         cmd.current_dir(&config.dir);
@@ -394,6 +454,7 @@ pub trait Compose: Send + Sync {
         cmd.process_group(0);
 
         cmd.spawn()
+            .map(ProcessGroupChild::new)
             .wrap_err_with(|| format!("failed to start '{runtime} compose logs --follow'"))
     }
 

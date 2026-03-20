@@ -22,7 +22,8 @@ struct SetupStatus {
 /// Generate a compose override file that injects Antithesis SDK output monitoring.
 ///
 /// For each service in the resolved compose YAML, adds:
-/// - A volume mount: `{temp_dir}/antithesis:/tmp/antithesis`
+/// - A volume mount: `{temp_dir}/antithesis:/tmp/antithesis:z`
+///   (`:z` relabels for SELinux shared access; no-op without SELinux)
 /// - Environment variables: `ANTITHESIS_OUTPUT_DIR=/tmp/antithesis` and
 ///   `ANTITHESIS_SDK_LOCAL_OUTPUT=/tmp/antithesis/sdk.jsonl`
 ///
@@ -40,7 +41,7 @@ fn generate_setup_override(compose_yaml: &str, temp_dir: &Path) -> Result<PathBu
     std::fs::create_dir_all(&antithesis_dir)
         .wrap_err("failed to create antithesis output directory")?;
 
-    let vol = format!("{}:/tmp/antithesis", antithesis_dir.display());
+    let vol = format!("{}:/tmp/antithesis:z", antithesis_dir.display());
 
     let mut services = serde_yaml::Mapping::new();
     for (name, _) in &contents.services {
@@ -462,7 +463,7 @@ services:
         assert!(services.contains_key(&serde_yaml::Value::String("sidecar".to_string())));
 
         let antithesis_dir = dir.path().join("antithesis");
-        let expected_vol = format!("{}:/tmp/antithesis", antithesis_dir.display());
+        let expected_vol = format!("{}:/tmp/antithesis:z", antithesis_dir.display());
 
         for name in ["app", "sidecar"] {
             let svc = services

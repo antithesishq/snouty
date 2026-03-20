@@ -112,37 +112,38 @@ fn generate_setup_override(compose_yaml: &str, temp_dir: &Path) -> Result<PathBu
 }
 
 struct ComposeDownGuard<'a> {
-    rt: &'static dyn container::ContainerRuntime,
+    compose: &'a dyn container::Compose,
     config: &'a ComposeConfig,
 }
 
 impl Drop for ComposeDownGuard<'_> {
     fn drop(&mut self) {
-        self.rt.compose_down(self.config);
+        self.compose.down(self.config);
     }
 }
 
 pub async fn cmd_validate(args: ValidateArgs) -> Result<()> {
     let config = ComposeConfig::new(args.config)?;
     let rt = container::runtime()?;
+    let compose = rt.compose();
 
     let temp_dir = tempfile::tempdir()?;
-    let compose_yaml = rt.compose_config(config.dir())?;
+    let compose_yaml = compose.config(config.dir())?;
     let override_path = generate_setup_override(&compose_yaml, temp_dir.path())?;
     let config = config.with_overlay(override_path);
 
     eprintln!("Starting compose services...");
-    rt.compose_up_detached(&config)?;
+    compose.up_detached(&config)?;
     let _guard = ComposeDownGuard {
-        rt,
+        compose: &*compose,
         config: &config,
     };
 
     // Discover scripts early so we can use them for both the success path
     // and the timeout diagnostic.
-    let scripts = discover_scripts(rt, &config, temp_dir.path())?;
+    let scripts = discover_scripts(&*compose, &config, temp_dir.path())?;
 
-    let mut logs_child = rt.compose_logs_follow(&config)?;
+    let mut logs_child = compose.logs_follow(&config)?;
 
     let sdk_output_dir = temp_dir.path().join("antithesis");
     let timeout = Duration::from_secs(args.timeout);
@@ -171,10 +172,10 @@ pub async fn cmd_validate(args: ValidateArgs) -> Result<()> {
     let test_result = match result {
         Ok(true) => {
             eprintln!("Setup-complete event detected.");
-            run_test_scripts(rt, &config, &scripts)
+            run_test_scripts(&*compose, &config, &scripts)
         }
         Ok(false) => {
-            diagnose_setup_in_first_scripts(rt, &config, &scripts, temp_dir.path());
+            diagnose_setup_in_first_scripts(&*compose, &config, &scripts, temp_dir.path());
             bail!("timed out waiting for setup-complete event");
         }
         Err(e) => Err(e),
@@ -226,7 +227,7 @@ fn contains_setup_complete(reader: &mut (impl std::io::Read + std::io::Seek)) ->
 /// Run first scripts with a redirected output dir and check if they emit setup_complete.
 /// If so, print a diagnostic explaining the chicken-and-egg problem.
 fn diagnose_setup_in_first_scripts(
-    rt: &dyn container::ContainerRuntime,
+    compose: &dyn container::Compose,
     config: &ComposeConfig,
     scripts: &[TestScript],
     temp_dir: &Path,
@@ -256,7 +257,7 @@ fn diagnose_setup_in_first_scripts(
     for s in &first_scripts {
         let script_dir = format!("/opt/antithesis/test/v1/{}", s.test_name);
         let container_path = format!("{}/{}", script_dir, s.command_name);
-        let _ = rt.compose_exec(
+        let _ = compose.exec(
             config,
             &s.service,
             Some(&script_dir),
@@ -284,11 +285,11 @@ fn diagnose_setup_in_first_scripts(
 
 /// Discover test scripts from running containers.
 fn discover_scripts(
-    rt: &dyn container::ContainerRuntime,
+    compose: &dyn container::Compose,
     config: &ComposeConfig,
     temp_dir: &Path,
 ) -> Result<Vec<TestScript>> {
-    let services = rt.compose_ps(config)?;
+    let services = compose.ps(config)?;
 
     let scripts_dir = temp_dir.join("scripts");
     std::fs::create_dir_all(&scripts_dir).wrap_err("failed to create scripts directory")?;
@@ -296,7 +297,10 @@ fn discover_scripts(
     let mut all_scripts: Vec<TestScript> = Vec::new();
     for (service_name, container_id) in &services {
         let service_dir = scripts_dir.join(service_name);
-        match rt.container_cp(container_id, "/opt/antithesis/test/v1", &service_dir) {
+        match compose
+            .runtime()
+            .container_cp(container_id, "/opt/antithesis/test/v1", &service_dir)
+        {
             Ok(()) => {
                 let result = scan_scripts(&service_dir, service_name)?;
                 if !result.unrecognized.is_empty() {
@@ -327,7 +331,7 @@ fn discover_scripts(
 
 /// Categorize and execute pre-discovered test scripts.
 fn run_test_scripts(
-    rt: &dyn container::ContainerRuntime,
+    compose: &dyn container::Compose,
     config: &ComposeConfig,
     scripts: &[TestScript],
 ) -> Result<()> {
@@ -375,24 +379,24 @@ fn run_test_scripts(
 
     // Execute first scripts (sorted by path — already sorted from scan_scripts)
     for s in &first {
-        ok &= exec_script(rt, config, s, &[])?;
+        ok &= exec_script(compose, config, s, &[])?;
     }
 
     // Execute drivers + anytime (shuffled together)
     let mut runnable: Vec<_> = drivers.iter().chain(anytime.iter()).copied().collect();
     shuffle(&mut runnable);
     for s in &runnable {
-        ok &= exec_script(rt, config, s, &[])?;
+        ok &= exec_script(compose, config, s, &[])?;
     }
 
     // Execute eventually scripts (sorted)
     for s in &eventually {
-        ok &= exec_script(rt, config, s, &[])?;
+        ok &= exec_script(compose, config, s, &[])?;
     }
 
     // Execute finally scripts (sorted)
     for s in &finally {
-        ok &= exec_script(rt, config, s, &[])?;
+        ok &= exec_script(compose, config, s, &[])?;
     }
 
     if !ok {
@@ -406,7 +410,7 @@ fn run_test_scripts(
 ///
 /// Returns `true` if the script succeeded, `false` if it failed.
 fn exec_script(
-    rt: &dyn container::ContainerRuntime,
+    compose: &dyn container::Compose,
     config: &ComposeConfig,
     script: &TestScript,
     env: &[(&str, &str)],
@@ -418,7 +422,7 @@ fn exec_script(
         script.test_name, script.command_name, script.service
     );
 
-    let output = rt.compose_exec(
+    let output = compose.exec(
         config,
         &script.service,
         Some(&script_dir),

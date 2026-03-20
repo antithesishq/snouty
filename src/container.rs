@@ -13,8 +13,8 @@ use tokio::process::Child;
 
 /// Bundles a compose config directory with optional overlay files (e.g. overrides).
 ///
-/// Used by compose session operations (`compose_up`, `compose_ps`, `compose_exec`,
-/// `compose_down`) that run against a live `compose up`.
+/// Used by compose session operations (`up`, `ps`, `exec`,
+/// `down`) that run against a live `compose up`.
 #[derive(Debug)]
 pub struct ComposeConfig {
     dir: PathBuf,
@@ -85,6 +85,23 @@ pub trait ContainerRuntime: Send + Sync {
 
     /// Clone into a boxed trait object.
     fn clone_box(&self) -> Box<dyn ContainerRuntime>;
+
+    /// Return a `Command` pre-configured with the runtime binary and given args.
+    fn command(&self, args: &[&str]) -> Command {
+        let mut cmd = Command::new(self.name());
+        cmd.args(args);
+        cmd
+    }
+
+    /// Like [`command`](Self::command) but returns a [`tokio::process::Command`].
+    fn tokio_command(&self, args: &[&str]) -> tokio::process::Command {
+        let mut cmd = tokio::process::Command::new(self.name());
+        cmd.args(args);
+        cmd
+    }
+
+    /// Return a compose backend appropriate for this runtime.
+    fn compose(&self) -> Box<dyn Compose + '_>;
 
     /// Push the image to the registry, returning the pinned image reference
     /// (e.g. `example.com/foo/image@sha256:...`).
@@ -172,31 +189,10 @@ pub trait ContainerRuntime: Send + Sync {
         Ok(pinned)
     }
 
-    /// Run `compose config` to resolve the compose file with env substitutions,
-    /// returning the resolved YAML as a string.
-    fn compose_config(&self, config_dir: &Path) -> Result<String> {
-        let runtime = self.name();
-        let output = Command::new(runtime)
-            .args(["compose", "-f", "docker-compose.yaml", "config"])
-            .current_dir(config_dir)
-            .output()
-            .wrap_err(format!("failed to run '{runtime} compose config'"))?;
-
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            return Err(eyre!("'{runtime} compose config' failed"))
-                .with_section(move || stdout.trim().to_string().header("Stdout:"))
-                .with_section(move || stderr.trim().to_string().header("Stderr:"));
-        }
-
-        Ok(String::from_utf8_lossy(&output.stdout).into_owned())
-    }
-
     /// Push compose images that match the registry.
     /// Returns the pinned image reference for each pushed image.
     fn push_compose_images(&self, config_dir: &Path, registry: &str) -> Result<Vec<String>> {
-        let yaml = self.compose_config(config_dir)?;
+        let yaml = self.compose().config(config_dir)?;
         let contents = parse_compose_config(&yaml)?;
         let registry_trimmed = registry.trim_end_matches('/');
         let prefix = format!("{registry_trimmed}/");
@@ -232,28 +228,6 @@ pub trait ContainerRuntime: Send + Sync {
         Ok(pinned)
     }
 
-    /// Parse `compose ps --format json` to get `(service_name, container_id)` pairs.
-    fn compose_ps(&self, config: &ComposeConfig) -> Result<Vec<(String, String)>> {
-        let runtime = self.name();
-        let mut cmd = Command::new(runtime);
-        cmd.current_dir(&config.dir);
-        cmd.arg("compose").args(config.file_args());
-        cmd.args(["ps", "--format", "json"]);
-
-        let output = cmd
-            .output()
-            .wrap_err_with(|| format!("failed to run '{runtime} compose ps'"))?;
-
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(eyre!("'{runtime} compose ps' failed"))
-                .with_section(move || stderr.trim().to_string().header("Stderr:"));
-        }
-
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        parse_compose_ps(&stdout)
-    }
-
     /// Copy files from a container to the local filesystem.
     ///
     /// Runs `{runtime} cp {container_id}:{src} {dst}`.
@@ -273,6 +247,79 @@ pub trait ContainerRuntime: Send + Sync {
 
         Ok(())
     }
+}
+
+/// Compose backend abstraction.
+///
+/// Implementations customize behavior via hook methods (`extra_args`,
+/// `up_extra_args`, `logs_extra_args`). The default method implementations
+/// build commands using `self.runtime().command()`.
+pub trait Compose: Send + Sync {
+    /// Access the underlying container runtime.
+    fn runtime(&self) -> &dyn ContainerRuntime;
+
+    // --- customization hooks (override per-backend) ---
+
+    /// Extra arguments inserted between file args and the subcommand.
+    fn extra_args(&self) -> &[&str] {
+        &[]
+    }
+
+    /// Extra arguments appended after `up --detach --no-build`.
+    fn up_extra_args(&self) -> &[&str] {
+        &[]
+    }
+
+    /// Extra arguments appended after `logs --follow`.
+    fn logs_extra_args(&self) -> &[&str] {
+        &[]
+    }
+
+    // --- default implementations ---
+
+    /// Run `compose config` to resolve the compose file with env substitutions,
+    /// returning the resolved YAML as a string.
+    fn config(&self, config_dir: &Path) -> Result<String> {
+        let runtime = self.runtime().name();
+        let output = self
+            .runtime()
+            .command(&["compose", "-f", "docker-compose.yaml", "config"])
+            .current_dir(config_dir)
+            .output()
+            .wrap_err(format!("failed to run '{runtime} compose config'"))?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            return Err(eyre!("'{runtime} compose config' failed"))
+                .with_section(move || stdout.trim().to_string().header("Stdout:"))
+                .with_section(move || stderr.trim().to_string().header("Stderr:"));
+        }
+
+        Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+    }
+
+    /// Parse `compose ps --format json` to get `(service_name, container_id)` pairs.
+    fn ps(&self, config: &ComposeConfig) -> Result<Vec<(String, String)>> {
+        let runtime = self.runtime().name();
+        let mut cmd = self.runtime().command(&["compose"]);
+        cmd.current_dir(&config.dir);
+        cmd.args(config.file_args());
+        cmd.args(["ps", "--format", "json"]);
+
+        let output = cmd
+            .output()
+            .wrap_err_with(|| format!("failed to run '{runtime} compose ps'"))?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(eyre!("'{runtime} compose ps' failed"))
+                .with_section(move || stderr.trim().to_string().header("Stderr:"));
+        }
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        parse_compose_ps(&stdout)
+    }
 
     /// Run a command inside a running compose service container.
     ///
@@ -280,7 +327,7 @@ pub trait ContainerRuntime: Send + Sync {
     /// The `-T` flag disables TTY allocation for non-interactive use.
     /// If `workdir` is `Some`, sets the working directory inside the container.
     /// Stdout and stderr are captured in the returned `Output`.
-    fn compose_exec(
+    fn exec(
         &self,
         config: &ComposeConfig,
         service: &str,
@@ -288,10 +335,10 @@ pub trait ContainerRuntime: Send + Sync {
         env: &[(&str, &str)],
         cmd: &[&str],
     ) -> Result<std::process::Output> {
-        let runtime = self.name();
-        let mut command = Command::new(runtime);
+        let runtime = self.runtime().name();
+        let mut command = self.runtime().command(&["compose"]);
         command.current_dir(&config.dir);
-        command.arg("compose").args(config.file_args());
+        command.args(config.file_args());
         command.args(["exec", "-T"]);
         for (k, v) in env {
             command.args(["-e", &format!("{k}={v}")]);
@@ -310,15 +357,16 @@ pub trait ContainerRuntime: Send + Sync {
     /// Run `compose up --detach` to start services in detached mode.
     ///
     /// stdout and stderr are inherited so progress is visible during pulls.
-    fn compose_up_detached(&self, config: &ComposeConfig) -> Result<()> {
-        let runtime = self.name();
-        let status = Command::new(runtime)
+    fn up_detached(&self, config: &ComposeConfig) -> Result<()> {
+        let runtime = self.runtime().name();
+        let status = self
+            .runtime()
+            .command(&["compose"])
             .current_dir(&config.dir)
-            .arg("compose")
             .args(config.file_args())
-            .args(self.compose_extra_args())
+            .args(self.extra_args())
             .args(["up", "--detach", "--no-build"])
-            .args(self.compose_up_extra_args())
+            .args(self.up_extra_args())
             .status()
             .wrap_err_with(|| format!("failed to run '{runtime} compose up --detach'"))?;
 
@@ -328,42 +376,18 @@ pub trait ContainerRuntime: Send + Sync {
         Ok(())
     }
 
-    /// Extra arguments inserted between file args and the subcommand.
-    ///
-    /// Podman overrides this to include `--podman-run-args=--pull=never`
-    /// since podman compose doesn't support `--pull=never` as an `up` flag.
-    fn compose_extra_args(&self) -> &[&str] {
-        &[]
-    }
-
-    /// Extra arguments to pass to `compose up`.
-    ///
-    /// Docker overrides this to include `--pull=never` so validate never
-    /// pulls or builds images.
-    fn compose_up_extra_args(&self) -> &[&str] {
-        &[]
-    }
-
-    /// Extra arguments to pass to `compose logs`.
-    ///
-    /// Podman overrides this to include `--names` so log lines are prefixed
-    /// with service names (docker does this by default).
-    fn compose_logs_extra_args(&self) -> &[&str] {
-        &[]
-    }
-
     /// Spawn `compose logs --follow` and return the child process.
     ///
     /// stdout and stderr are inherited so compose log output goes straight
     /// to the terminal. stdin is null. The process exits when all
     /// containers stop.
-    fn compose_logs_follow(&self, config: &ComposeConfig) -> Result<Child> {
-        let runtime = self.name();
-        let mut cmd = tokio::process::Command::new(runtime);
+    fn logs_follow(&self, config: &ComposeConfig) -> Result<Child> {
+        let runtime = self.runtime().name();
+        let mut cmd = self.runtime().tokio_command(&["compose"]);
         cmd.current_dir(&config.dir);
-        cmd.arg("compose").args(config.file_args());
+        cmd.args(config.file_args());
         cmd.args(["logs", "--follow"]);
-        cmd.args(self.compose_logs_extra_args());
+        cmd.args(self.logs_extra_args());
         cmd.stdin(std::process::Stdio::null());
         cmd.stdout(std::process::Stdio::inherit());
         cmd.stderr(std::process::Stdio::inherit());
@@ -374,11 +398,10 @@ pub trait ContainerRuntime: Send + Sync {
     }
 
     /// Run `compose down` for cleanup. Best-effort, ignores errors.
-    fn compose_down(&self, config: &ComposeConfig) {
-        let runtime = self.name();
-        let mut cmd = Command::new(runtime);
+    fn down(&self, config: &ComposeConfig) {
+        let mut cmd = self.runtime().command(&["compose"]);
         cmd.current_dir(&config.dir);
-        cmd.arg("compose").args(config.file_args());
+        cmd.args(config.file_args());
         cmd.args(["down", "--timeout", "0"]);
         cmd.stdin(std::process::Stdio::null());
         cmd.stdout(std::process::Stdio::null());
@@ -387,14 +410,86 @@ pub trait ContainerRuntime: Send + Sync {
     }
 }
 
+struct DockerCompose<'a> {
+    rt: &'a dyn ContainerRuntime,
+}
+
+impl Compose for DockerCompose<'_> {
+    fn runtime(&self) -> &dyn ContainerRuntime {
+        self.rt
+    }
+
+    fn up_extra_args(&self) -> &[&str] {
+        &["--pull=never"]
+    }
+}
+
+struct PodmanCompose<'a> {
+    rt: &'a dyn ContainerRuntime,
+}
+
+impl Compose for PodmanCompose<'_> {
+    fn runtime(&self) -> &dyn ContainerRuntime {
+        self.rt
+    }
+
+    fn extra_args(&self) -> &[&str] {
+        &["--podman-run-args=--pull=never"]
+    }
+
+    fn logs_extra_args(&self) -> &[&str] {
+        &["--names"]
+    }
+}
+
+/// Which compose implementation podman dispatches to.
+#[derive(Clone, Copy)]
+enum ComposeFlavor {
+    /// Podman dispatches to `docker-compose` (standalone binary).
+    DockerCompose,
+    /// Podman dispatches to native `podman-compose`.
+    PodmanCompose,
+}
+
+/// Parse `compose version` output to detect which compose backend is in use.
+///
+/// Returns `DockerCompose` when the output contains "docker compose"
+/// (case-insensitive), otherwise returns `PodmanCompose` as the conservative
+/// fallback.
+fn parse_compose_version(output: &str) -> ComposeFlavor {
+    if output.to_lowercase().contains("docker compose") {
+        ComposeFlavor::DockerCompose
+    } else {
+        ComposeFlavor::PodmanCompose
+    }
+}
+
 #[derive(Clone)]
 pub struct PodmanRuntime {
     cmd: String,
+    compose_flavor: ComposeFlavor,
 }
 
 impl PodmanRuntime {
     pub(crate) fn new(cmd: impl Into<String>) -> Self {
-        Self { cmd: cmd.into() }
+        let cmd = cmd.into();
+        let compose_flavor = Command::new(&cmd)
+            .args(["compose", "version"])
+            .output()
+            .ok()
+            .and_then(|o| {
+                if o.status.success() {
+                    String::from_utf8(o.stdout).ok()
+                } else {
+                    None
+                }
+            })
+            .map(|s| parse_compose_version(&s))
+            .unwrap_or(ComposeFlavor::PodmanCompose);
+        Self {
+            cmd,
+            compose_flavor,
+        }
     }
 }
 
@@ -405,6 +500,13 @@ impl ContainerRuntime for PodmanRuntime {
 
     fn clone_box(&self) -> Box<dyn ContainerRuntime> {
         Box::new(self.clone())
+    }
+
+    fn compose(&self) -> Box<dyn Compose + '_> {
+        match self.compose_flavor {
+            ComposeFlavor::DockerCompose => Box::new(DockerCompose { rt: self }),
+            ComposeFlavor::PodmanCompose => Box::new(PodmanCompose { rt: self }),
+        }
     }
 
     fn image_push(&self, image_ref: &str) -> Result<String> {
@@ -441,14 +543,6 @@ impl ContainerRuntime for PodmanRuntime {
             .to_string();
         Ok(pinned_image_ref(image_ref, &digest))
     }
-
-    fn compose_extra_args(&self) -> &[&str] {
-        &["--podman-run-args=--pull=never"]
-    }
-
-    fn compose_logs_extra_args(&self) -> &[&str] {
-        &["--names"]
-    }
 }
 
 #[derive(Clone)]
@@ -471,8 +565,8 @@ impl ContainerRuntime for DockerRuntime {
         &self.cmd
     }
 
-    fn compose_up_extra_args(&self) -> &[&str] {
-        &["--pull=never"]
+    fn compose(&self) -> Box<dyn Compose + '_> {
+        Box::new(DockerCompose { rt: self })
     }
 
     fn image_push(&self, image_ref: &str) -> Result<String> {
@@ -1034,7 +1128,7 @@ services:
             )
             .unwrap();
 
-            let yaml = rt.compose_config(dir.path()).unwrap();
+            let yaml = rt.compose().config(dir.path()).unwrap();
             let contents = parse_compose_config(&yaml).unwrap();
             let images: Vec<&str> = contents
                 .services
@@ -1247,5 +1341,29 @@ services:
             ]
         );
         assert_eq!(contents.build_services, HashSet::from(["app".to_string()]));
+    }
+
+    #[test]
+    fn parse_compose_version_docker() {
+        assert!(matches!(
+            parse_compose_version("Docker Compose version v2.24.5"),
+            ComposeFlavor::DockerCompose
+        ));
+    }
+
+    #[test]
+    fn parse_compose_version_podman() {
+        assert!(matches!(
+            parse_compose_version("podman-compose version 1.0.6"),
+            ComposeFlavor::PodmanCompose
+        ));
+    }
+
+    #[test]
+    fn parse_compose_version_unknown() {
+        assert!(matches!(
+            parse_compose_version(""),
+            ComposeFlavor::PodmanCompose
+        ));
     }
 }

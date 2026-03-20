@@ -36,7 +36,7 @@ cargo install snouty
 ### Uninstalling
 
 ```
-rm "$(which snouty)" "$(which snouty-update)"
+cargo uninstall snouty || rm -f "$(which snouty)" "$(which snouty-update)"
 ```
 
 ## Requirements
@@ -59,9 +59,10 @@ export ANTITHESIS_REPOSITORY="us-central1-docker.pkg.dev/your-project/your-repo"
 Snouty provides the following subcommands. Invoke `snouty <command> --help` to find out more.
 
 - `snouty run`: push images and kick off an Antithesis run.
-- `snouty validate`: check for common mistakes in `docker-compose.yaml` setups.
+- `snouty validate`: locally run and validate your docker-compose.yaml setup.
 - `snouty docs`: fast, local search of the Antithesis documentation.
 - `snouty debug`: start a debug session.
+- `snouty update`: install the latest version.
 
 ## Shell Completions
 

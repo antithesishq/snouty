@@ -138,6 +138,10 @@ pub async fn cmd_validate(args: ValidateArgs) -> Result<()> {
         config: &config,
     };
 
+    // Discover scripts early so we can use them for both the success path
+    // and the timeout diagnostic.
+    let scripts = discover_scripts(rt, &config, temp_dir.path())?;
+
     let mut logs_child = rt.compose_logs_follow(&config)?;
 
     let sdk_output_dir = temp_dir.path().join("antithesis");
@@ -164,11 +168,14 @@ pub async fn cmd_validate(args: ValidateArgs) -> Result<()> {
     }
     let _ = logs_child.wait().await;
 
-    // After setup-complete, discover and execute test scripts while compose is still running.
     let test_result = match result {
-        Ok(()) => {
+        Ok(true) => {
             eprintln!("Setup-complete event detected.");
-            run_test_scripts(rt, &config, temp_dir.path())
+            run_test_scripts(rt, &config, &scripts)
+        }
+        Ok(false) => {
+            diagnose_setup_in_first_scripts(rt, &config, &scripts, temp_dir.path());
+            bail!("timed out waiting for setup-complete event");
         }
         Err(e) => Err(e),
     };
@@ -180,16 +187,95 @@ pub async fn cmd_validate(args: ValidateArgs) -> Result<()> {
     test_result
 }
 
-/// Discover test scripts from running containers and execute them.
-fn run_test_scripts(
+/// Check whether a reader contains the setup-complete event.
+///
+/// Reads all content, checks each complete line for
+/// `{"antithesis_setup": {"status": "complete"}}`.
+fn contains_setup_complete(reader: &mut impl std::io::Read) -> Result<bool> {
+    let mut buf = String::new();
+    reader
+        .read_to_string(&mut buf)
+        .wrap_err("failed to read setup output")?;
+    for line in buf.lines() {
+        let line = line.trim();
+        if !line.is_empty()
+            && let Ok(event) = serde_json::from_str::<SetupEvent>(line)
+            && let Some(setup) = event.antithesis_setup
+            && setup.status == "complete"
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+/// Run first scripts with a redirected output dir and check if they emit setup_complete.
+/// If so, print a diagnostic explaining the chicken-and-egg problem.
+fn diagnose_setup_in_first_scripts(
+    rt: &dyn container::ContainerRuntime,
+    config: &ComposeConfig,
+    scripts: &[TestScript],
+    temp_dir: &Path,
+) {
+    let first_scripts: Vec<_> = scripts
+        .iter()
+        .filter(|s| s.script_type == ScriptType::First)
+        .collect();
+    if first_scripts.is_empty() {
+        return;
+    }
+
+    let check_dir = temp_dir.join("antithesis").join("first-check");
+    if std::fs::create_dir_all(&check_dir).is_err() {
+        return;
+    }
+
+    let container_output_dir = "/tmp/antithesis/first-check";
+    let sdk_output = format!("{container_output_dir}/sdk.jsonl");
+    let env = [
+        ("ANTITHESIS_OUTPUT_DIR", container_output_dir),
+        ("ANTITHESIS_SDK_LOCAL_OUTPUT", sdk_output.as_str()),
+    ];
+
+    let sdk_file = check_dir.join("sdk.jsonl");
+
+    for s in &first_scripts {
+        let script_dir = format!("/opt/antithesis/test/v1/{}", s.test_name);
+        let container_path = format!("{}/{}", script_dir, s.command_name);
+        let _ = rt.compose_exec(
+            config,
+            &s.service,
+            Some(&script_dir),
+            &env,
+            &[&container_path],
+        );
+
+        if let Ok(mut f) = std::fs::File::open(&sdk_file) {
+            if contains_setup_complete(&mut f).unwrap_or(false) {
+                eprintln!(
+                    "\nDiagnostic: {}/{} in service {} emits setup_complete, but first \
+                     scripts only run after setup_complete is detected — this is a deadlock. \
+                     Move the setup_complete event to the container entrypoint \
+                     (CMD/ENTRYPOINT) instead.",
+                    s.test_name, s.command_name, s.service
+                );
+                return;
+            }
+
+            // Remove any output from the previous script.
+            let _ = std::fs::remove_file(&sdk_file);
+        }
+    }
+}
+
+/// Discover test scripts from running containers.
+fn discover_scripts(
     rt: &dyn container::ContainerRuntime,
     config: &ComposeConfig,
     temp_dir: &Path,
-) -> Result<()> {
-    // Get running containers
+) -> Result<Vec<TestScript>> {
     let services = rt.compose_ps(config)?;
 
-    // Copy test scripts from each container and scan them
     let scripts_dir = temp_dir.join("scripts");
     std::fs::create_dir_all(&scripts_dir).wrap_err("failed to create scripts directory")?;
 
@@ -222,24 +308,33 @@ fn run_test_scripts(
         }
     }
 
+    Ok(all_scripts)
+}
+
+/// Categorize and execute pre-discovered test scripts.
+fn run_test_scripts(
+    rt: &dyn container::ContainerRuntime,
+    config: &ComposeConfig,
+    scripts: &[TestScript],
+) -> Result<()> {
     // Categorize scripts
-    let first: Vec<_> = all_scripts
+    let first: Vec<_> = scripts
         .iter()
         .filter(|s| s.script_type == ScriptType::First)
         .collect();
-    let drivers: Vec<_> = all_scripts
+    let drivers: Vec<_> = scripts
         .iter()
         .filter(|s| s.script_type.is_driver())
         .collect();
-    let anytime: Vec<_> = all_scripts
+    let anytime: Vec<_> = scripts
         .iter()
         .filter(|s| s.script_type == ScriptType::Anytime)
         .collect();
-    let eventually: Vec<_> = all_scripts
+    let eventually: Vec<_> = scripts
         .iter()
         .filter(|s| s.script_type == ScriptType::Eventually)
         .collect();
-    let finally: Vec<_> = all_scripts
+    let finally: Vec<_> = scripts
         .iter()
         .filter(|s| s.script_type == ScriptType::Finally)
         .collect();
@@ -253,7 +348,7 @@ fn run_test_scripts(
         finally.len(),
     );
 
-    if all_scripts.is_empty() {
+    if scripts.is_empty() {
         debug!("no services contained test scripts");
         return Ok(());
     }
@@ -266,24 +361,24 @@ fn run_test_scripts(
 
     // Execute first scripts (sorted by path — already sorted from scan_scripts)
     for s in &first {
-        ok &= exec_script(rt, config, s)?;
+        ok &= exec_script(rt, config, s, &[])?;
     }
 
     // Execute drivers + anytime (shuffled together)
     let mut runnable: Vec<_> = drivers.iter().chain(anytime.iter()).copied().collect();
     shuffle(&mut runnable);
     for s in &runnable {
-        ok &= exec_script(rt, config, s)?;
+        ok &= exec_script(rt, config, s, &[])?;
     }
 
     // Execute eventually scripts (sorted)
     for s in &eventually {
-        ok &= exec_script(rt, config, s)?;
+        ok &= exec_script(rt, config, s, &[])?;
     }
 
     // Execute finally scripts (sorted)
     for s in &finally {
-        ok &= exec_script(rt, config, s)?;
+        ok &= exec_script(rt, config, s, &[])?;
     }
 
     if !ok {
@@ -300,6 +395,7 @@ fn exec_script(
     rt: &dyn container::ContainerRuntime,
     config: &ComposeConfig,
     script: &TestScript,
+    env: &[(&str, &str)],
 ) -> Result<bool> {
     let script_dir = format!("/opt/antithesis/test/v1/{}", script.test_name);
     let container_path = format!("{}/{}", script_dir, script.command_name);
@@ -312,6 +408,7 @@ fn exec_script(
         config,
         &script.service,
         Some(&script_dir),
+        env,
         &[&container_path],
     )?;
 
@@ -345,12 +442,12 @@ fn shuffle<T>(slice: &mut [T]) {
 
 /// Watch a directory of JSONL files for the `{"antithesis_setup": {"status": "complete"}}` event.
 ///
-/// Polls the directory for `.jsonl` files (100ms interval), tailing each for new
-/// data. Returns an error if the event is not found within the given timeout.
+/// Polls the directory for `.jsonl` files (100ms interval), tailing each for new data.
+/// Returns `Ok(true)` when the event is found, `Ok(false)` on timeout.
 ///
-/// Uses blocking `std::fs` calls (open, seek, read) intentionally — reads are
-/// small and infrequent, and this avoids pulling in tokio::fs for a simple poll loop.
-async fn watch_for_setup_complete(output_dir: &Path, timeout: Duration) -> Result<()> {
+/// Uses blocking `std::fs` calls intentionally — reads are small and infrequent,
+/// and this avoids pulling in tokio::fs for a simple poll loop.
+async fn watch_for_setup_complete(output_dir: &Path, timeout: Duration) -> Result<bool> {
     use std::collections::HashMap;
     use std::io::{Read, Seek, SeekFrom};
 
@@ -366,10 +463,7 @@ async fn watch_for_setup_complete(output_dir: &Path, timeout: Duration) -> Resul
 
     loop {
         if tokio::time::Instant::now() >= deadline {
-            bail!(
-                "timed out after {}s waiting for setup-complete event",
-                timeout.as_secs()
-            );
+            return Ok(false);
         }
 
         // Discover new .jsonl files in the directory.
@@ -424,7 +518,7 @@ async fn watch_for_setup_complete(output_dir: &Path, timeout: Duration) -> Resul
                     && let Some(setup) = event.antithesis_setup
                     && setup.status == "complete"
                 {
-                    return Ok(());
+                    return Ok(true);
                 }
                 tailed.remainder.drain(..=newline);
             }
@@ -585,6 +679,33 @@ services:
         assert!(err.to_string().contains("no services"), "got: {err}");
     }
 
+    #[test]
+    fn contains_setup_complete_found() {
+        let data = "{\"antithesis_setup\": {\"status\": \"complete\"}}\n";
+        assert!(contains_setup_complete(&mut data.as_bytes()).unwrap());
+    }
+
+    #[test]
+    fn contains_setup_complete_not_found() {
+        let data = "{\"antithesis_setup\": {\"status\": \"running\"}}\n";
+        assert!(!contains_setup_complete(&mut data.as_bytes()).unwrap());
+    }
+
+    #[test]
+    fn contains_setup_complete_empty() {
+        let data = "";
+        assert!(!contains_setup_complete(&mut data.as_bytes()).unwrap());
+    }
+
+    #[test]
+    fn contains_setup_complete_mixed_lines() {
+        let data = "{\"unrelated\": true}\n\
+                    not json at all\n\
+                    {\"antithesis_setup\": {\"status\": \"complete\"}}\n\
+                    {\"more\": \"stuff\"}\n";
+        assert!(contains_setup_complete(&mut data.as_bytes()).unwrap());
+    }
+
     const TEST_TIMEOUT: Duration = Duration::from_secs(3);
 
     /// Write the setup-complete event before the watcher starts.
@@ -597,9 +718,11 @@ services:
         )
         .unwrap();
 
-        watch_for_setup_complete(dir.path(), TEST_TIMEOUT)
-            .await
-            .expect("watch failed");
+        assert!(
+            watch_for_setup_complete(dir.path(), TEST_TIMEOUT)
+                .await
+                .expect("watch failed")
+        );
     }
 
     /// The file appears after the watcher starts polling.
@@ -616,9 +739,11 @@ services:
             .unwrap();
         });
 
-        watch_for_setup_complete(dir.path(), TEST_TIMEOUT)
-            .await
-            .expect("watch failed");
+        assert!(
+            watch_for_setup_complete(dir.path(), TEST_TIMEOUT)
+                .await
+                .expect("watch failed")
+        );
     }
 
     /// The event arrives in a later append, after unrelated lines.
@@ -638,9 +763,11 @@ services:
             writeln!(f, "{{\"antithesis_setup\": {{\"status\": \"complete\"}}}}").unwrap();
         });
 
-        watch_for_setup_complete(dir.path(), TEST_TIMEOUT)
-            .await
-            .expect("watch failed");
+        assert!(
+            watch_for_setup_complete(dir.path(), TEST_TIMEOUT)
+                .await
+                .expect("watch failed")
+        );
     }
 
     /// Non-complete status values are ignored.
@@ -660,9 +787,11 @@ services:
             writeln!(f, "{{\"antithesis_setup\": {{\"status\": \"complete\"}}}}").unwrap();
         });
 
-        watch_for_setup_complete(dir.path(), TEST_TIMEOUT)
-            .await
-            .expect("watch failed");
+        assert!(
+            watch_for_setup_complete(dir.path(), TEST_TIMEOUT)
+                .await
+                .expect("watch failed")
+        );
     }
 
     /// The event is split across two writes (partial line buffering).
@@ -684,9 +813,11 @@ services:
             writeln!(f, " {{\"status\": \"complete\"}}}}").unwrap();
         });
 
-        watch_for_setup_complete(dir.path(), TEST_TIMEOUT)
-            .await
-            .expect("watch failed");
+        assert!(
+            watch_for_setup_complete(dir.path(), TEST_TIMEOUT)
+                .await
+                .expect("watch failed")
+        );
     }
 
     /// Times out when the event never arrives.
@@ -695,12 +826,9 @@ services:
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("output.jsonl"), "{\"unrelated\": true}\n").unwrap();
 
-        let err = watch_for_setup_complete(dir.path(), Duration::from_secs(1))
+        let found = watch_for_setup_complete(dir.path(), Duration::from_secs(1))
             .await
-            .unwrap_err();
-        assert!(
-            err.to_string().contains("timed out"),
-            "expected timeout error, got: {err}"
-        );
+            .expect("watch failed");
+        assert!(!found, "expected timeout (false), got true");
     }
 }

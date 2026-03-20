@@ -93,7 +93,7 @@ Requires at least one driver or anytime script when test scripts are present.
 
 Example:
   snouty validate ./config
-  snouty validate ./config --timeout 120"#)]
+  snouty validate ./config --timeout 10"#)]
     Validate(ValidateArgs),
 
     /// Print version information

@@ -132,11 +132,31 @@ pub async fn cmd_validate(args: ValidateArgs) -> Result<()> {
     let override_path = generate_setup_override(&compose_yaml, temp_dir.path())?;
     let config = config.with_overlay(override_path);
 
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(args.timeout);
+
     eprintln!("Starting compose services...");
-    compose.up_detached(&config)?;
+    let mut up_child = compose.up_detached(&config)?;
     let _guard = ComposeDownGuard {
         compose: &*compose,
         config: &config,
+    };
+
+    // Wait for compose up to finish, but respect the timeout and ctrl+c.
+    tokio::select! {
+        status = up_child.wait() => {
+            let status = status.wrap_err("failed to wait for compose up")?;
+            if !status.success() {
+                bail!("compose up --detach failed (exit status: {status})");
+            }
+        }
+        _ = tokio::time::sleep_until(deadline) => {
+            up_child.kill_group().await.ok();
+            bail!("timed out during 'compose up --detach'");
+        }
+        _ = tokio::signal::ctrl_c() => {
+            up_child.kill_group().await.ok();
+            bail!("interrupted");
+        }
     };
 
     // Discover scripts early so we can use them for both the success path
@@ -146,10 +166,9 @@ pub async fn cmd_validate(args: ValidateArgs) -> Result<()> {
     let mut logs_child = compose.logs_follow(&config)?;
 
     let sdk_output_dir = temp_dir.path().join("antithesis");
-    let timeout = Duration::from_secs(args.timeout);
 
     let result = tokio::select! {
-        result = watch_for_setup_complete(&sdk_output_dir, timeout) => result,
+        result = watch_for_setup_complete(&sdk_output_dir, deadline) => result,
         status = logs_child.wait() => {
             match status {
                 Ok(s) if !s.success() => Err(color_eyre::eyre::eyre!("compose exited with status: {s}")),
@@ -162,12 +181,7 @@ pub async fn cmd_validate(args: ValidateArgs) -> Result<()> {
 
     // Stop the entire compose logs process group so child processes
     // (e.g. per-service `podman logs`) don't keep writing to the terminal.
-    if let Some(pid) = logs_child.id() {
-        unsafe {
-            libc::kill(-(pid as libc::pid_t), libc::SIGKILL);
-        }
-    }
-    let _ = logs_child.wait().await;
+    logs_child.kill_group().await.ok();
 
     let test_result = match result {
         Ok(true) => {
@@ -465,8 +479,10 @@ fn shuffle<T>(slice: &mut [T]) {
 ///
 /// Uses blocking `std::fs` calls intentionally — reads are small and infrequent,
 /// and this avoids pulling in tokio::fs for a simple poll loop.
-async fn watch_for_setup_complete(output_dir: &Path, timeout: Duration) -> Result<bool> {
-    let deadline = tokio::time::Instant::now() + timeout;
+async fn watch_for_setup_complete(
+    output_dir: &Path,
+    deadline: tokio::time::Instant,
+) -> Result<bool> {
     let sdk_path = output_dir.join("sdk.jsonl");
 
     // Wait for the file to appear.
@@ -671,7 +687,9 @@ services:
         assert!(contains_setup_complete(&mut std::io::Cursor::new(data)).unwrap());
     }
 
-    const TEST_TIMEOUT: Duration = Duration::from_secs(3);
+    fn test_deadline() -> tokio::time::Instant {
+        tokio::time::Instant::now() + Duration::from_secs(3)
+    }
 
     /// Write the setup-complete event before the watcher starts.
     #[tokio::test]
@@ -684,7 +702,7 @@ services:
         .unwrap();
 
         assert!(
-            watch_for_setup_complete(dir.path(), TEST_TIMEOUT)
+            watch_for_setup_complete(dir.path(), test_deadline())
                 .await
                 .expect("watch failed")
         );
@@ -705,7 +723,7 @@ services:
         });
 
         assert!(
-            watch_for_setup_complete(dir.path(), TEST_TIMEOUT)
+            watch_for_setup_complete(dir.path(), test_deadline())
                 .await
                 .expect("watch failed")
         );
@@ -729,7 +747,7 @@ services:
         });
 
         assert!(
-            watch_for_setup_complete(dir.path(), TEST_TIMEOUT)
+            watch_for_setup_complete(dir.path(), test_deadline())
                 .await
                 .expect("watch failed")
         );
@@ -753,7 +771,7 @@ services:
         });
 
         assert!(
-            watch_for_setup_complete(dir.path(), TEST_TIMEOUT)
+            watch_for_setup_complete(dir.path(), test_deadline())
                 .await
                 .expect("watch failed")
         );
@@ -779,7 +797,7 @@ services:
         });
 
         assert!(
-            watch_for_setup_complete(dir.path(), TEST_TIMEOUT)
+            watch_for_setup_complete(dir.path(), test_deadline())
                 .await
                 .expect("watch failed")
         );
@@ -791,7 +809,7 @@ services:
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("sdk.jsonl"), "{\"unrelated\": true}\n").unwrap();
 
-        let found = watch_for_setup_complete(dir.path(), Duration::from_secs(1))
+        let found = watch_for_setup_complete(dir.path(), test_deadline())
             .await
             .expect("watch failed");
         assert!(!found, "expected timeout (false), got true");

@@ -57,7 +57,7 @@ stderr 'Setup validation successful.*'
 # 8. Chicken-and-egg: first script emits setup_complete, entrypoint does not.
 #    Validate times out and prints a diagnostic about the deadlock.
 build-image chicken-egg:latest chicken_egg
-! snouty validate config_chicken_egg --timeout 1
+! snouty validate config_chicken_egg --timeout 10
 stderr 'timed out waiting for setup-complete event.*'
 stderr 'suite/first_emit_setup in service runner emits setup_complete.*deadlock.*'
 

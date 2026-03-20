@@ -54,7 +54,14 @@ snouty validate config_sdk_local --timeout 15
 stderr 'Setup-complete event detected.*'
 stderr 'Setup validation successful.*'
 
-# 8. Custom networks are isolated and outbound traffic is blocked.
+# 8. Chicken-and-egg: first script emits setup_complete, entrypoint does not.
+#    Validate times out and prints a diagnostic about the deadlock.
+build-image chicken-egg:latest chicken_egg
+! snouty validate config_chicken_egg --timeout 1
+stderr 'timed out waiting for setup-complete event.*'
+stderr 'suite/first_emit_setup in service runner emits setup_complete.*deadlock.*'
+
+# 9. Custom networks are isolated and outbound traffic is blocked.
 build-image net-check:latest net_check
 snouty validate config_net_check --timeout 15
 stderr 'Isolating networks: default.*'
@@ -72,6 +79,9 @@ services:
 
 -- all_types/suite/first_setup --
 #!/bin/sh
+# Emit an SDK event to sdk.jsonl to verify that non-setup_complete events
+# in first scripts don't trigger the chicken-and-egg diagnostic.
+echo '{"antithesis_assert":{"hit":true,"must_hit":true,"assert_type":"sometimes","display_type":"Sometimes","message":"first_setup ran","condition":true,"id":"first_setup","location":{},"details":null}}' >> "$ANTITHESIS_OUTPUT_DIR/sdk.jsonl"
 echo "first_setup ran"
 
 -- all_types/suite/parallel_driver_load --
@@ -202,6 +212,25 @@ CMD sh -c 'echo "{\"antithesis_setup\":{\"status\":\"complete\"}}" >> "$ANTITHES
 services:
   checker:
     image: net-check:latest
+    pull_policy: never
+
+-- chicken_egg/suite/first_emit_setup --
+#!/bin/sh
+echo '{"antithesis_setup":{"status":"complete"}}' >> "$ANTITHESIS_OUTPUT_DIR/sdk.jsonl"
+
+-- chicken_egg/suite/parallel_driver_noop --
+#!/bin/sh
+echo "driver ran"
+
+-- chicken_egg/Dockerfile --
+FROM busybox
+COPY suite/ /opt/antithesis/test/v1/suite/
+RUN chmod +x /opt/antithesis/test/v1/suite/*
+CMD sleep 3600
+-- config_chicken_egg/docker-compose.yaml --
+services:
+  runner:
+    image: chicken-egg:latest
     pull_policy: never
 
 -- sdk_local_emitter/Dockerfile --

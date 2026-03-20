@@ -285,6 +285,7 @@ pub trait ContainerRuntime: Send + Sync {
         config: &ComposeConfig,
         service: &str,
         workdir: Option<&str>,
+        env: &[(&str, &str)],
         cmd: &[&str],
     ) -> Result<std::process::Output> {
         let runtime = self.name();
@@ -292,6 +293,9 @@ pub trait ContainerRuntime: Send + Sync {
         command.current_dir(&config.dir);
         command.arg("compose").args(config.file_args());
         command.args(["exec", "-T"]);
+        for (k, v) in env {
+            command.args(["-e", &format!("{k}={v}")]);
+        }
         if let Some(w) = workdir {
             command.args(["--workdir", w]);
         }

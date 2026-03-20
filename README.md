@@ -33,6 +33,12 @@ cargo install snouty
 | [snouty-aarch64-unknown-linux-gnu.tar.xz](https://github.com/antithesishq/snouty/releases/latest/download/snouty-aarch64-unknown-linux-gnu.tar.xz) | ARM64 Linux         | [checksum](https://github.com/antithesishq/snouty/releases/latest/download/snouty-aarch64-unknown-linux-gnu.tar.xz.sha256) |
 | [snouty-x86_64-unknown-linux-gnu.tar.xz](https://github.com/antithesishq/snouty/releases/latest/download/snouty-x86_64-unknown-linux-gnu.tar.xz)   | x64 Linux           | [checksum](https://github.com/antithesishq/snouty/releases/latest/download/snouty-x86_64-unknown-linux-gnu.tar.xz.sha256)  |
 
+### Uninstalling
+
+```
+rm "$(which snouty)" "$(which snouty-update)"
+```
+
 ## Requirements
 
 Commands that work with `docker-compose.yaml` files (e.g. `run --config`, `validate`) require Docker or Podman. When using Podman, [`podman-compose`](https://github.com/containers/podman-compose) **1.1.0 or later** must be installed.
@@ -50,86 +56,12 @@ export ANTITHESIS_REPOSITORY="us-central1-docker.pkg.dev/your-project/your-repo"
 
 ## Usage
 
-The `-w`/`--webhook` flag specifies which webhook to call. Common values are `basic_test` (Docker environment) or `basic_k8s_test` (Kubernetes environment), unless you have a custom webhook registered with Antithesis.
+Snouty provides the following subcommands. Invoke `snouty <command> --help` to find out more.
 
-### Validate your local setup
-
-The `validate` command starts your `docker-compose.yaml` locally, watches for the `setup-complete` event, and then discovers and runs any [Test Composer](https://antithesis.com/docs/test_templates/) scripts found inside the running containers.
-
-```sh
-snouty validate ./config
-```
-
-Use `--timeout` to adjust how long to wait for `setup-complete` (default 60s):
-
-```sh
-snouty validate ./config --timeout 120
-```
-
-### Launch a test run
-
-The `-c`/`--config` flag points at a local directory containing your `docker-compose.yaml`. Snouty builds a config image from that directory and pushes it to `ANTITHESIS_REPOSITORY` automatically.
-
-```sh
-snouty run --webhook basic_test --config ./config \
-  --test-name "my-test" \
-  --description "nightly test run" \
-  --duration 30 \
-  --recipients "team@example.com"
-```
-
-Alternatively, pass a pre-built config image directly:
-
-```sh
-snouty run --webhook basic_test \
-  --config-image us-central1-docker.pkg.dev/proj/repo/config:latest \
-  --duration 30
-```
-
-Extra parameters (e.g. integration tokens, custom properties) can be passed with `--param`:
-
-```sh
-snouty run -w basic_test --duration 30 \
-  --param antithesis.integrations.github.token=TOKEN \
-  --param my.custom.property=value
-```
-
-### Raw API access
-
-The `api webhook` subcommand provides raw access to the webhook API using `--key value` pairs. This is useful for CI pipelines or advanced use cases.
-
-```sh
-snouty api webhook -w basic_test \
-  --antithesis.config_image us-central1-docker.pkg.dev/proj/repo/config:latest \
-  --antithesis.test_name "my-test" \
-  --antithesis.duration 30 \
-  --antithesis.report.recipients "team@example.com"
-```
-
-Parameters can also be passed via stdin as JSON:
-
-```sh
-echo '{"antithesis.duration": "30"}' | snouty api webhook -w basic_test --stdin
-```
-
-### Launch a debugging session
-
-Using CLI arguments:
-
-```sh
-snouty debug \
-  --antithesis.debugging.session_id f89d5c11f5e3bf5e4bb3641809800cee-44-22 \
-  --antithesis.debugging.input_hash 6057726200491963783 \
-  --antithesis.debugging.vtime 329.8037810830865 \
-  --antithesis.report.recipients "team@example.com"
-```
-
-Snouty can handle passing in a `Moment.from` via stdin:
-
-```sh
-echo 'Moment.from({ session_id: "...", input_hash: "...", vtime: ... })' | \
-  snouty debug --stdin --antithesis.report.recipients "team@example.com"
-```
+- `snouty run`: push images and kick off an Antithesis run.
+- `snouty validate`: check for common mistakes in `docker-compose.yaml` setups.
+- `snouty docs`: fast, local search of the Antithesis documentation.
+- `snouty debug`: start a debug session.
 
 ## Shell Completions
 

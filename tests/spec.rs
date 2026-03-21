@@ -162,6 +162,66 @@ fn cmd_build_image(
     })
 }
 
+fn cmd_pull_image(
+    _env: &mut testscript_rs::TestEnvironment,
+    args: &[String],
+) -> testscript_rs::Result<()> {
+    // Usage: pull-image [--platform <platform>] <target> <source>
+    // Pulls <source> with the active engine, then tags it as <target>.
+    let (platform, target, source) = match args {
+        [target, source] => (None, target.to_string(), source.to_string()),
+        [flag, platform, target, source] if flag == "--platform" => (
+            Some(platform.to_string()),
+            target.to_string(),
+            source.to_string(),
+        ),
+        _ => {
+            return Err(err(
+                "pull-image requires [--platform <platform>] <target> <source>".to_string(),
+            ));
+        }
+    };
+    let start = std::time::Instant::now();
+    ENGINE_CTX.with_borrow_mut(|ctx| {
+        let ctx = ctx
+            .as_mut()
+            .ok_or_else(|| err("ENGINE_CTX not set".to_string()))?;
+        let runtime = ctx.engine.name().to_string();
+
+        let mut cmd = std::process::Command::new(&runtime);
+        cmd.arg("pull");
+        if let Some(platform) = platform.as_deref() {
+            cmd.args(["--platform", platform]);
+        }
+        cmd.arg(&source);
+
+        let output = cmd
+            .output()
+            .map_err(|e| err(format!("pull-image pull: {e}")))?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            return Err(err(format!(
+                "pull-image pull failed\nstdout:\n{}\nstderr:\n{}",
+                stdout.trim(),
+                stderr.trim()
+            )));
+        }
+
+        ctx.engine
+            .image_tag(&source, &target)
+            .map_err(|e| err(format!("pull-image tag: {e}")))?;
+        eprintln!(
+            "[{:.1}s] pull-image {} {}",
+            start.elapsed().as_secs_f64(),
+            target,
+            source
+        );
+        ctx.built_images.push(target);
+        Ok(())
+    })
+}
+
 // --- Test functions ---
 
 #[test]
@@ -253,6 +313,7 @@ fn engine_spec_tests() {
             .command("snouty", cmd_snouty)
             .command("mock-server", cmd_mock_server)
             .command("build-image", cmd_build_image)
+            .command("pull-image", cmd_pull_image)
             .execute();
 
         // Best-effort cleanup of built images.

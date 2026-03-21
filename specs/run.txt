@@ -5,28 +5,28 @@
 # As a developer, I want to launch an Antithesis test run from the command
 # line so that I can trigger testing without using the web UI.
 
-# 1. The user specifies a webhook endpoint name via -w / --webhook (required).
+# The user specifies a webhook endpoint name via -w / --webhook (required).
 ! snouty run --duration 30
 stderr '--webhook.*'
 
-# 2. Parameters are validated against the testParams schema before making
+# Parameters are validated against the testParams schema before making
 #    any API call.
 ! snouty run -w basic_test --duration abc
 stderr 'invalid value.*'
 
-# 3. --stdin applies to `api webhook`, not `run`.
+# --stdin applies to `api webhook`, not `run`.
 ! snouty run -w basic_test --stdin --duration 30
 stderr 'unexpected argument.*'
 
-# 4. Old-style raw --antithesis.* args are not accepted by `run`.
+# Old-style raw --antithesis.* args are not accepted by `run`.
 ! snouty run -w basic_test --antithesis.duration 30
 
-# 5. The command authenticates with the Antithesis API using
+# The command authenticates with the Antithesis API using
 #    ANTITHESIS_USERNAME, ANTITHESIS_PASSWORD, and ANTITHESIS_TENANT env vars.
 ! snouty run -w basic_test --duration 30
 stderr 'missing environment variable.*'
 
-# 6. Parameters are provided as --key value typed flags
+# Parameters are provided as --key value typed flags
 #    (e.g. --duration 30, --test-name my-test). Before sending, the resolved
 #    parameters are printed to stderr with sensitive values (tokens, email
 #    recipients) redacted.
@@ -60,25 +60,25 @@ mock-server 200 '{"ok": true}'
 ! snouty run -w basic_test --duration 30 --param antithesis.duration=60
 stderr 'cannot be overridden via --param.*'
 
-# 7. At least one source of parameters must be provided; otherwise the
+# At least one source of parameters must be provided; otherwise the
 #    command fails.
 mock-server 200 '{}'
 ! snouty run -w basic_test
 stderr 'no parameters provided.*'
 
-# 8. On success, the command prints a human-readable ETA for the report
+# On success, the command prints a human-readable ETA for the report
 #    email to stderr.
 mock-server 200 '{"ok": true}'
 snouty run -w basic_test --duration 30
 stderr 'Expect a report email.*'
 
-# 9. On API failure, the command exits with an error showing the HTTP status
+# On API failure, the command exits with an error showing the HTTP status
 #    and response body.
 mock-server 400 '{"error": "bad request"}'
 ! snouty run -w basic_test --duration 30
 stderr 'API error: 400.*'
 
-# 10. antithesis.images must not be passed via --param; use api webhook instead.
+# antithesis.images must not be passed via --param; use api webhook instead.
 mock-server 200 '{"ok": true}'
 ! snouty run -w basic_test --duration 30 --param antithesis.images=app:latest
 stderr 'do not specify antithesis.images.*'

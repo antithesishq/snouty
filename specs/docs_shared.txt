@@ -19,13 +19,13 @@
 #     command prints a warning to stderr and continues with the cached
 #     database. If no database exists yet, the command fails.
 
-# 1. When --offline is passed and no database exists (no ANTITHESIS_DOCS_DB_PATH
+# When --offline is passed and no database exists (no ANTITHESIS_DOCS_DB_PATH
 #    set), the command tells the user to remove --offline.
 env HOME=$WORK/empty-home
 ! snouty docs --offline search docker
 stderr 'Documentation database not found. Remove --offline to download it.'
 
-# 2. The command is exposed as `snouty docs` with search, show, tree, and
+# The command is exposed as `snouty docs` with search, show, tree, and
 #    sqlite subcommands.
 setup-docs-db
 snouty docs --offline search docker
@@ -40,7 +40,7 @@ stdout 'guides.*'
 snouty docs --offline sqlite
 stdout 'docs\.db'
 
-# 3. ANTITHESIS_DOCS_URL overrides the base URL and ANTITHESIS_DOCS_DB_PATH
+# ANTITHESIS_DOCS_URL overrides the base URL and ANTITHESIS_DOCS_DB_PATH
 #    overrides the local database path. When ANTITHESIS_DOCS_DB_PATH is set,
 #    Snouty treats docs access as offline and does not attempt to update the
 #    database first. The downloaded database is marked readonly via
@@ -50,7 +50,7 @@ snouty docs search docker
 stdout '/docs/guides/docker_basics/.*'
 ! stderr 'failed to update docs.*'
 
-# 4. After any automatic update attempt, if the documentation database is
+# After any automatic update attempt, if the documentation database is
 #    still missing then search, show, and sqlite fail with guidance tailored
 #    to the reason updates were skipped: point ANTITHESIS_DOCS_DB_PATH at an
 #    existing file.

@@ -1,6 +1,6 @@
 # snouty docs tree
 
-# 1. `snouty docs tree [filter]` reads all stored documentation page paths
+# `snouty docs tree [filter]` reads all stored documentation page paths
 #    and prints a directory-like tree derived from those paths. The printed
 #    tree omits the synthetic docs root — top-level documentation sections
 #    appear as root nodes. The tree uses Unicode tree-drawing characters.
@@ -19,7 +19,7 @@ stdout 'python_sdk - Python SDK.*'
 stdout '┗.*'
 stdout '━.*'
 
-# 2. Supports --depth <n> and -d <n>. When the depth flag is omitted, the
+# Supports --depth <n> and -d <n>. When the depth flag is omitted, the
 #    command prints the full tree. When provided, it limits output to nodes
 #    at depth n or shallower, where top-level sections are depth 1.
 snouty docs --offline tree --depth 1
@@ -35,7 +35,7 @@ stdout 'multiverse_debugging - Multiverse debugging.*'
 ! stdout 'docker_basics - Docker basics.*'
 ! stdout 'overview - Overview.*'
 
-# 3. Accepts an optional positional filter string. When present, the command
+# Accepts an optional positional filter string. When present, the command
 #    includes any page whose normalized path or page title contains the
 #    filter string using case-insensitive substring matching, and includes
 #    the ancestor nodes required to place matching pages in the tree.
@@ -49,7 +49,7 @@ snouty docs --offline tree 'setup GUIDE'
 stdout 'getting_started - Setup guide.*'
 ! stdout 'docker_basics.*'
 
-# 4. If the filter matches no pages, the command exits successfully and
+# If the filter matches no pages, the command exits successfully and
 #    prints a "No results found" message to stderr.
 snouty docs --offline tree no-such-doc-page
 stderr 'No results found.*'

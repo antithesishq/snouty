@@ -185,6 +185,11 @@ pub struct ValidateArgs {
     /// Maximum seconds to wait for the setup-complete event
     #[arg(long, default_value = "60")]
     pub timeout: u64,
+
+    /// Optional directory to which Antithesis SDK outputs will be written.
+    /// When not provided, SDK outputs will be written to a temp directory and then silently discarded.
+    #[arg(long, default_value = None)]
+    pub antithesis_sdk_out_dir: Option<std::path::PathBuf>,
 }
 
 #[derive(Args)]

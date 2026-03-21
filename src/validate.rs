@@ -279,8 +279,11 @@ fn contains_setup_complete(reader: &mut (impl std::io::Read + std::io::Seek)) ->
     Ok(false)
 }
 
-/// Run first scripts with a redirected output dir and check if they emit setup_complete.
-/// If so, print a diagnostic explaining the chicken-and-egg problem.
+/// Test composer workloads do not begin until the SUT emits a setup_complete event.
+/// A common mistake is to emit the setup_complete event within a test composer script,
+/// which results in a chicken-and-egg problem. To diagnose, we run the scripts anyway
+/// (after timing out waiting for setup_complete), and if the scripts output setup_complete,
+/// we've identified and can print a diagnostic explaining the chicken-and-egg problem.
 fn diagnose_setup_in_first_scripts(
     compose: &dyn container::Compose,
     config: &ComposeConfig,

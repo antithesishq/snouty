@@ -80,6 +80,13 @@ snouty validate config_multiarch_image --timeout 15
 stderr 'Setup-complete event detected.*'
 stderr 'Setup validation successful.*'
 
+# Missing images are reported together before architecture validation.
+! snouty validate config_missing_images --timeout 15
+stderr 'some images are not available locally.*'
+stderr '.*image: missing-app:latest.*'
+stderr '.*image: missing-sidecar:latest.*'
+stderr '.*pull or build the missing images, then retry.*'
+
 -- setup_emitter/Dockerfile --
 FROM busybox
 CMD sh -c 'echo "{\"antithesis_setup\":{\"status\":\"complete\"}}" >> "$ANTITHESIS_OUTPUT_DIR/sdk.jsonl" && sleep 3600'
@@ -242,6 +249,18 @@ services:
     pull_policy: never
   multiarch-sidecar:
     image: multiarch-sidecar:latest
+    pull_policy: never
+
+-- config_missing_images/docker-compose.yaml --
+services:
+  emitter:
+    image: setup-emitter:latest
+    pull_policy: never
+  app:
+    image: missing-app:latest
+    pull_policy: never
+  sidecar:
+    image: missing-sidecar:latest
     pull_policy: never
 
 -- chicken_egg/suite/first_emit_setup --

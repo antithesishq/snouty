@@ -217,6 +217,7 @@ fn cmd_pull_image(
             target,
             source
         );
+        ctx.built_images.push(source);
         ctx.built_images.push(target);
         Ok(())
     })

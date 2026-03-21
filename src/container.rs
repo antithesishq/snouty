@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::sync::OnceLock;
 
 use chrono::Utc;
@@ -164,6 +164,18 @@ pub trait ContainerRuntime: Send + Sync {
     /// Push the image to the registry, returning the pinned image reference
     /// (e.g. `example.com/foo/image@sha256:...`).
     fn image_push(&self, image_ref: &str) -> Result<String>;
+
+    /// Return whether the image is available in the local image store.
+    fn image_exists(&self, image_ref: &str) -> Result<bool> {
+        let runtime = self.name();
+        let status = Command::new(runtime)
+            .args(["image", "inspect", image_ref])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .wrap_err(format!("failed to run '{runtime} image inspect'"))?;
+        Ok(status.success())
+    }
 
     /// Return the local image architecture (for example `amd64` or `arm64`).
     fn image_architecture(&self, image_ref: &str) -> Result<String> {

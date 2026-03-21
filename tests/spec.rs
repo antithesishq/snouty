@@ -137,17 +137,17 @@ fn cmd_build_image(
     // If <dir> contains a Dockerfile it is used; otherwise a scratch image
     // containing the directory contents is built.
     // Registry and engine come from the ENGINE_CTX thread-local.
-    if args.len() < 2 {
+    let [image_ref, dir_arg] = args else {
         return Err(err("build-image requires <name:tag> <dir>".to_string()));
-    }
+    };
     let start = std::time::Instant::now();
     let label = args.join(" ");
     ENGINE_CTX.with_borrow_mut(|ctx| {
         let ctx = ctx
             .as_mut()
             .ok_or_else(|| err("ENGINE_CTX not set".to_string()))?;
-        let image_ref = args[0].to_string();
-        let dir = env.work_dir.join(&args[1]);
+        let image_ref = image_ref.to_string();
+        let dir = env.work_dir.join(dir_arg);
         let dockerfile = dir.join("Dockerfile");
         let dockerfile = dockerfile.exists().then_some(dockerfile.as_path());
         ctx.engine

@@ -68,11 +68,17 @@ stderr 'Isolating networks: default.*'
 stderr 'Setup-complete event detected.*'
 stderr 'Setup validation successful.*'
 
-# An arm64 image in an inactive profile is still rejected.
-pull-image --platform linux/arm64 arm-sidecar:latest docker.io/library/busybox:latest
-! snouty validate config_arm_profile --timeout 15
+# An arm64-only image is rejected during validation.
+pull-image --platform linux/arm64 arm-sidecar:latest docker.io/arm64v8/hello-world:latest
+! snouty validate config_arm_image --timeout 15
 stderr 'x86-64 \(amd64\).*'
-stderr "service 'arm-sidecar' uses image 'arm-sidecar:latest' with architecture 'arm64'"
+stderr 'service '\''arm-sidecar'\'' uses image '\''arm-sidecar:latest'\'' with architecture '\''arm64'\''.*'
+
+# A multi-arch image is accepted by using the local amd64 variant.
+pull-image multiarch-sidecar:latest docker.io/library/busybox:latest
+snouty validate config_multiarch_image --timeout 15
+stderr 'Setup-complete event detected.*'
+stderr 'Setup validation successful.*'
 
 -- setup_emitter/Dockerfile --
 FROM busybox
@@ -220,7 +226,7 @@ services:
     image: net-check:latest
     pull_policy: never
 
--- config_arm_profile/docker-compose.yaml --
+-- config_arm_image/docker-compose.yaml --
 services:
   emitter:
     image: setup-emitter:latest
@@ -228,8 +234,15 @@ services:
   arm-sidecar:
     image: arm-sidecar:latest
     pull_policy: never
-    profiles:
-      - arm-only
+
+-- config_multiarch_image/docker-compose.yaml --
+services:
+  emitter:
+    image: setup-emitter:latest
+    pull_policy: never
+  multiarch-sidecar:
+    image: multiarch-sidecar:latest
+    pull_policy: never
 
 -- chicken_egg/suite/first_emit_setup --
 #!/bin/sh

@@ -30,25 +30,30 @@ struct SetupStatus {
 /// The SDK creates the output file; we mount the parent directory so it can do so.
 ///
 /// `compose_yaml` should be the resolved output of `compose_config()`.
-/// Returns the path to the generated override file.
-fn generate_setup_override(compose_yaml: &str, temp_dir: &Path) -> Result<PathBuf> {
+/// Returns the path to the generated override file and a list of paths to service-level
+/// Antithesis SDK output directories.
+fn generate_setup_override(compose_yaml: &str, temp_dir: &Path) -> Result<(PathBuf, Vec<PathBuf>)> {
     let contents = container::parse_compose_config(compose_yaml)?;
     if contents.services.is_empty() {
         bail!("no services found in docker-compose.yaml");
     }
 
     let antithesis_dir = temp_dir.join("antithesis");
-    std::fs::create_dir_all(&antithesis_dir)
-        .wrap_err("failed to create antithesis output directory")?;
-
-    let vol = format!("{}:/tmp/antithesis:z", antithesis_dir.display());
 
     let mut services = serde_yaml::Mapping::new();
+    let mut service_sdk_dirs: Vec<PathBuf> = Vec::new();
     for (name, _) in &contents.services {
+        let service_dir = antithesis_dir.join(name);
+        std::fs::create_dir_all(&service_dir)
+            .wrap_err("failed to create antithesis output directory")?;
+        service_sdk_dirs.push(service_dir.clone());
+
+        let vol = format!("{}:/tmp/antithesis:z", service_dir.display());
+
         let mut svc = serde_yaml::Mapping::new();
         svc.insert(
             serde_yaml::Value::String("volumes".to_string()),
-            serde_yaml::Value::Sequence(vec![serde_yaml::Value::String(vol.clone())]),
+            serde_yaml::Value::Sequence(vec![serde_yaml::Value::String(vol)]),
         );
         let mut env = serde_yaml::Mapping::new();
         env.insert(
@@ -108,7 +113,7 @@ fn generate_setup_override(compose_yaml: &str, temp_dir: &Path) -> Result<PathBu
     std::fs::write(&override_path, &override_yaml)
         .wrap_err("failed to write compose override file")?;
 
-    Ok(override_path)
+    Ok((override_path, service_sdk_dirs))
 }
 
 struct ComposeDownGuard<'a> {
@@ -159,7 +164,7 @@ pub async fn cmd_validate(args: ValidateArgs) -> Result<()> {
 
     let temp_dir = tempfile::tempdir()?;
     let compose_yaml = compose.config(config.dir())?;
-    let override_path = generate_setup_override(&compose_yaml, temp_dir.path())?;
+    let (override_path, service_sdk_dirs) = generate_setup_override(&compose_yaml, temp_dir.path())?;
     let config = config.with_overlay(override_path);
 
     let deadline = tokio::time::Instant::now() + Duration::from_secs(args.timeout);
@@ -198,7 +203,7 @@ pub async fn cmd_validate(args: ValidateArgs) -> Result<()> {
     let sdk_output_dir = temp_dir.path().join("antithesis");
 
     let result = tokio::select! {
-        result = watch_for_setup_complete(&sdk_output_dir, deadline) => result,
+        result = watch_for_setup_complete(&service_sdk_dirs, deadline) => result,
         status = logs_child.wait() => {
             match status {
                 Ok(s) if !s.success() => Err(color_eyre::eyre::eyre!("compose exited with status: {s}")),
@@ -507,41 +512,35 @@ fn shuffle<T>(slice: &mut [T]) {
     }
 }
 
-/// Watch `sdk.jsonl` in the given directory for the setup-complete event.
+/// Watch `sdk.jsonl` in each of the given per-service directories for the setup-complete event.
 ///
-/// Polls for the file to appear (100ms interval), then tails it for new data.
-/// Returns `Ok(true)` when the event is found, `Ok(false)` on timeout.
+/// Polls every 100ms for each file to appear, then tails it for new data.
+/// Returns `Ok(true)` when the event is found in any service's output, `Ok(false)` on timeout.
 ///
+/// Each service gets its own output directory, so files are watched independently.
 /// Uses blocking `std::fs` calls intentionally — reads are small and infrequent,
 /// and this avoids pulling in tokio::fs for a simple poll loop.
 async fn watch_for_setup_complete(
-    output_dir: &Path,
+    output_dirs: &[PathBuf],
     deadline: tokio::time::Instant,
 ) -> Result<bool> {
-    let sdk_path = output_dir.join("sdk.jsonl");
-
-    // Wait for the file to appear.
-    let mut file = loop {
-        if tokio::time::Instant::now() >= deadline {
-            return Ok(false);
-        }
-        match std::fs::File::open(&sdk_path) {
-            Ok(f) => break f,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                sleep(Duration::from_millis(100)).await;
-            }
-            Err(e) => return Err(e.into()),
-        }
-    };
-
-    // Tail the file for the setup-complete event.
     loop {
         if tokio::time::Instant::now() >= deadline {
             return Ok(false);
         }
-        if contains_setup_complete(&mut file)? {
-            return Ok(true);
+
+        for dir in output_dirs {
+            match std::fs::File::open(dir.join("sdk.jsonl")) {
+                Ok(mut f) => {
+                    if contains_setup_complete(&mut f)? {
+                        return Ok(true);
+                    }
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => return Err(e.into()),
+            }
         }
+
         sleep(Duration::from_millis(100)).await;
     }
 }
@@ -561,7 +560,7 @@ services:
     image: sidecar:latest
 ";
         let dir = tempfile::tempdir().unwrap();
-        let path = generate_setup_override(compose_yaml, dir.path()).unwrap();
+        let (path, service_sdk_dirs) = generate_setup_override(compose_yaml, dir.path()).unwrap();
         let content = std::fs::read_to_string(&path).unwrap();
 
         // Parse the override as YAML to verify it's valid
@@ -571,9 +570,9 @@ services:
         // Both services should be present
         assert!(services.contains_key(&serde_yaml::Value::String("app".to_string())));
         assert!(services.contains_key(&serde_yaml::Value::String("sidecar".to_string())));
+        assert_eq!(service_sdk_dirs.len(), 2);
 
         let antithesis_dir = dir.path().join("antithesis");
-        let expected_vol = format!("{}:/tmp/antithesis:z", antithesis_dir.display());
 
         for name in ["app", "sidecar"] {
             let svc = services
@@ -582,7 +581,8 @@ services:
                 .as_mapping()
                 .unwrap();
 
-            // Check volume
+            // Check volume — each service gets its own subdirectory
+            let expected_vol = format!("{}/{}:/tmp/antithesis:z", antithesis_dir.display(), name);
             let volumes = svc
                 .get(&serde_yaml::Value::String("volumes".to_string()))
                 .unwrap()
@@ -645,7 +645,7 @@ networks:
     driver: bridge
 ";
         let dir = tempfile::tempdir().unwrap();
-        let path = generate_setup_override(compose_yaml, dir.path()).unwrap();
+        let (path, _) = generate_setup_override(compose_yaml, dir.path()).unwrap();
         let content = std::fs::read_to_string(&path).unwrap();
 
         let doc: serde_yaml::Value = serde_yaml::from_str(&content).unwrap();
@@ -678,7 +678,7 @@ services:
     image: myapp:latest
 ";
         let dir = tempfile::tempdir().unwrap();
-        let path = generate_setup_override(compose_yaml, dir.path()).unwrap();
+        let (path, _) = generate_setup_override(compose_yaml, dir.path()).unwrap();
         let content = std::fs::read_to_string(&path).unwrap();
 
         // Must parse as valid YAML even with special characters in service name
@@ -737,7 +737,7 @@ services:
         .unwrap();
 
         assert!(
-            watch_for_setup_complete(dir.path(), test_deadline())
+            watch_for_setup_complete(&[dir.path().to_path_buf()], test_deadline())
                 .await
                 .expect("watch failed")
         );
@@ -758,7 +758,7 @@ services:
         });
 
         assert!(
-            watch_for_setup_complete(dir.path(), test_deadline())
+            watch_for_setup_complete(&[dir.path().to_path_buf()], test_deadline())
                 .await
                 .expect("watch failed")
         );
@@ -782,7 +782,7 @@ services:
         });
 
         assert!(
-            watch_for_setup_complete(dir.path(), test_deadline())
+            watch_for_setup_complete(&[dir.path().to_path_buf()], test_deadline())
                 .await
                 .expect("watch failed")
         );
@@ -806,7 +806,7 @@ services:
         });
 
         assert!(
-            watch_for_setup_complete(dir.path(), test_deadline())
+            watch_for_setup_complete(&[dir.path().to_path_buf()], test_deadline())
                 .await
                 .expect("watch failed")
         );
@@ -832,9 +832,41 @@ services:
         });
 
         assert!(
-            watch_for_setup_complete(dir.path(), test_deadline())
+            watch_for_setup_complete(&[dir.path().to_path_buf()], test_deadline())
                 .await
                 .expect("watch failed")
+        );
+    }
+
+    /// Event in the second of two service dirs is detected.
+    #[tokio::test]
+    async fn detects_event_in_second_service_dir() {
+        let dir1 = tempfile::tempdir().unwrap();
+        let dir2 = tempfile::tempdir().unwrap();
+        // dir1 has no event, dir2 gets the event after a delay.
+        std::fs::write(
+            dir1.path().join("sdk.jsonl"),
+            "{\"unrelated\": true}\n",
+        )
+        .unwrap();
+
+        let path2 = dir2.path().to_path_buf();
+        tokio::spawn(async move {
+            sleep(Duration::from_millis(500)).await;
+            std::fs::write(
+                path2.join("sdk.jsonl"),
+                "{\"antithesis_setup\": {\"status\": \"complete\"}}\n",
+            )
+            .unwrap();
+        });
+
+        assert!(
+            watch_for_setup_complete(
+                &[dir1.path().to_path_buf(), dir2.path().to_path_buf()],
+                test_deadline()
+            )
+            .await
+            .expect("watch failed")
         );
     }
 
@@ -924,7 +956,7 @@ services:
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("sdk.jsonl"), "{\"unrelated\": true}\n").unwrap();
 
-        let found = watch_for_setup_complete(dir.path(), test_deadline())
+        let found = watch_for_setup_complete(&[dir.path().to_path_buf()], test_deadline())
             .await
             .expect("watch failed");
         assert!(!found, "expected timeout (false), got true");

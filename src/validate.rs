@@ -164,7 +164,8 @@ pub async fn cmd_validate(args: ValidateArgs) -> Result<()> {
 
     let temp_dir = tempfile::tempdir()?;
     let compose_yaml = compose.config(config.dir())?;
-    let (override_path, service_sdk_dirs) = generate_setup_override(&compose_yaml, temp_dir.path())?;
+    let (override_path, service_sdk_dirs) =
+        generate_setup_override(&compose_yaml, temp_dir.path())?;
     let config = config.with_overlay(override_path);
 
     let deadline = tokio::time::Instant::now() + Duration::from_secs(args.timeout);
@@ -294,11 +295,6 @@ fn diagnose_setup_in_first_scripts(
         return;
     }
 
-    let check_dir = temp_dir.join("antithesis").join("first-check");
-    if std::fs::create_dir_all(&check_dir).is_err() {
-        return;
-    }
-
     let container_output_dir = "/tmp/antithesis/first-check";
     let sdk_output = format!("{container_output_dir}/sdk.jsonl");
     let env = [
@@ -306,9 +302,18 @@ fn diagnose_setup_in_first_scripts(
         ("ANTITHESIS_SDK_LOCAL_OUTPUT", sdk_output.as_str()),
     ];
 
-    let sdk_file = check_dir.join("sdk.jsonl");
-
     for s in &first_scripts {
+        // Each service has its own antithesis dir; first-check is a subdir of it.
+        // /tmp/antithesis inside the container maps to antithesis/{service}/ on the host.
+        let check_dir = temp_dir
+            .join("antithesis")
+            .join(&s.service)
+            .join("first-check");
+        if std::fs::create_dir_all(&check_dir).is_err() {
+            continue;
+        }
+        let sdk_file = check_dir.join("sdk.jsonl");
+
         let script_dir = format!("/opt/antithesis/test/v1/{}", s.test_name);
         let container_path = format!("{}/{}", script_dir, s.command_name);
         let _ = compose.exec(
@@ -844,11 +849,7 @@ services:
         let dir1 = tempfile::tempdir().unwrap();
         let dir2 = tempfile::tempdir().unwrap();
         // dir1 has no event, dir2 gets the event after a delay.
-        std::fs::write(
-            dir1.path().join("sdk.jsonl"),
-            "{\"unrelated\": true}\n",
-        )
-        .unwrap();
+        std::fs::write(dir1.path().join("sdk.jsonl"), "{\"unrelated\": true}\n").unwrap();
 
         let path2 = dir2.path().to_path_buf();
         tokio::spawn(async move {

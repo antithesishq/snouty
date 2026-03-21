@@ -501,6 +501,36 @@ impl Compose for PodmanCompose<'_> {
     fn logs_extra_args(&self) -> &[&str] {
         &["--names"]
     }
+
+    /// `podman compose ps --format json` is not supported; use `podman ps` directly,
+    /// filtered by the compose project label.
+    fn ps(&self, config: &ComposeConfig) -> Result<Vec<(String, String)>> {
+        let runtime = self.runtime().name();
+
+        // podman-compose derives the project name from the lowercased directory basename.
+        let project_name = config
+            .dir
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("")
+            .to_lowercase();
+
+        let filter = format!("label=com.docker.compose.project={project_name}");
+        let output = self
+            .rt
+            .command(&["ps", "--filter", &filter, "--format", "json"])
+            .output()
+            .wrap_err_with(|| format!("failed to run '{runtime} ps'"))?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(eyre!("'{runtime} ps' failed"))
+                .with_section(move || stderr.trim().to_string().header("Stderr:"));
+        }
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        parse_compose_ps(&stdout)
+    }
 }
 
 /// Which compose implementation podman dispatches to.

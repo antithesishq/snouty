@@ -13,6 +13,15 @@ fn version_prints_version() {
 }
 
 #[test]
+fn version_flag_prints_version() {
+    snouty()
+        .arg("--version")
+        .assert()
+        .success()
+        .stdout(predicate::str::is_match(r"^snouty \d+\.\d+\.\d+").unwrap());
+}
+
+#[test]
 fn help_shows_subcommands() {
     snouty()
         .arg("--help")

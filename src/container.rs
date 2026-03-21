@@ -165,6 +165,25 @@ pub trait ContainerRuntime: Send + Sync {
     /// (e.g. `example.com/foo/image@sha256:...`).
     fn image_push(&self, image_ref: &str) -> Result<String>;
 
+    /// Return the local image architecture (for example `amd64` or `arm64`).
+    fn image_architecture(&self, image_ref: &str) -> Result<String> {
+        let runtime = self.name();
+        let output = Command::new(runtime)
+            .args(["image", "inspect", image_ref])
+            .output()
+            .wrap_err(format!("failed to run '{runtime} image inspect'"))?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            return Err(eyre!("'{runtime} image inspect {image_ref}' failed"))
+                .with_section(move || stdout.trim().to_string().header("Stdout:"))
+                .with_section(move || stderr.trim().to_string().header("Stderr:"));
+        }
+
+        parse_image_inspect_architecture(&output.stdout)
+    }
+
     /// Tag an image with a new reference.
     fn image_tag(&self, src: &str, dst: &str) -> Result<()> {
         let runtime = self.name();
@@ -208,12 +227,10 @@ pub trait ContainerRuntime: Send + Sync {
             .spawn()
             .wrap_err(format!("failed to start '{runtime} build'"))?;
 
-        if scratch {
-            if let Some(mut stdin) = child.stdin.take() {
-                stdin
-                    .write_all(b"FROM scratch\nCOPY . /\n")
-                    .wrap_err("failed to write Dockerfile to stdin")?;
-            }
+        if scratch && let Some(mut stdin) = child.stdin.take() {
+            stdin
+                .write_all(b"FROM scratch\nCOPY . /\n")
+                .wrap_err("failed to write Dockerfile to stdin")?;
         }
 
         let output = child
@@ -822,6 +839,23 @@ fn parse_docker_push_digest(stdout: &str) -> Result<String> {
     })
 }
 
+fn parse_image_inspect_architecture(stdout: &[u8]) -> Result<String> {
+    let value: serde_json::Value =
+        serde_json::from_slice(stdout).wrap_err("failed to parse image inspect output")?;
+
+    let image = value
+        .as_array()
+        .and_then(|images| images.first())
+        .or(Some(&value))
+        .ok_or_else(|| eyre!("empty image inspect output"))?;
+
+    image
+        .get("Architecture")
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
+        .ok_or_else(|| eyre!("missing Architecture in image inspect output"))
+}
+
 /// Parsed contents of a compose config file.
 #[derive(Debug)]
 pub struct ComposeContents {
@@ -1029,6 +1063,28 @@ mod tests {
     fn parse_compose_ps_empty() {
         let result = parse_compose_ps("").unwrap();
         assert!(result.is_empty());
+    }
+
+    #[test]
+    fn parse_image_inspect_architecture_docker_array() {
+        let stdout = br#"[{"Id":"sha256:abc","Architecture":"amd64"}]"#;
+        assert_eq!(parse_image_inspect_architecture(stdout).unwrap(), "amd64");
+    }
+
+    #[test]
+    fn parse_image_inspect_architecture_single_object() {
+        let stdout = br#"{"Id":"sha256:abc","Architecture":"arm64"}"#;
+        assert_eq!(parse_image_inspect_architecture(stdout).unwrap(), "arm64");
+    }
+
+    #[test]
+    fn parse_image_inspect_architecture_rejects_missing_field() {
+        let stdout = br#"[{"Id":"sha256:abc"}]"#;
+        let err = parse_image_inspect_architecture(stdout).unwrap_err();
+        assert!(
+            err.to_string().contains("missing Architecture"),
+            "got: {err}"
+        );
     }
 
     #[test]

@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use color_eyre::eyre::{Context, Result, bail};
@@ -129,6 +130,7 @@ pub async fn cmd_validate(args: ValidateArgs) -> Result<()> {
 
     let temp_dir = tempfile::tempdir()?;
     let compose_yaml = compose.config(config.dir())?;
+    let contents = container::parse_compose_config(&compose_yaml)?;
     let override_path = generate_setup_override(&compose_yaml, temp_dir.path())?;
     let config = config.with_overlay(override_path);
 
@@ -158,6 +160,8 @@ pub async fn cmd_validate(args: ValidateArgs) -> Result<()> {
             bail!("interrupted");
         }
     };
+
+    validate_image_architectures(rt, &contents.services)?;
 
     // Discover scripts early so we can use them for both the success path
     // and the timeout diagnostic.
@@ -200,6 +204,41 @@ pub async fn cmd_validate(args: ValidateArgs) -> Result<()> {
     }
 
     test_result
+}
+
+fn validate_image_architectures(
+    runtime: &dyn container::ContainerRuntime,
+    services: &[(String, String)],
+) -> Result<()> {
+    let mut architectures = BTreeMap::new();
+    for (_, image) in services {
+        architectures
+            .entry(image.clone())
+            .or_insert(runtime.image_architecture(image)?);
+    }
+
+    let unsupported: Vec<_> = services
+        .iter()
+        .filter_map(|(service, image)| {
+            let arch = architectures.get(image)?;
+            if arch == "amd64" {
+                None
+            } else {
+                Some(format!(
+                    "service '{service}' uses image '{image}' with architecture '{arch}'"
+                ))
+            }
+        })
+        .collect();
+
+    if unsupported.is_empty() {
+        return Ok(());
+    }
+
+    bail!(
+        "Antithesis requires x86-64 (amd64) container images:\n  {}",
+        unsupported.join("\n  ")
+    );
 }
 
 /// Check whether a reader contains the setup-complete event.
@@ -516,6 +555,8 @@ mod tests {
     use super::*;
     use std::io::Write;
 
+    use crate::container::{Compose, ContainerRuntime};
+
     #[test]
     fn generate_setup_override_basic() {
         let compose_yaml = "\
@@ -534,22 +575,22 @@ services:
         let services = doc.get("services").unwrap().as_mapping().unwrap();
 
         // Both services should be present
-        assert!(services.contains_key(&serde_yaml::Value::String("app".to_string())));
-        assert!(services.contains_key(&serde_yaml::Value::String("sidecar".to_string())));
+        assert!(services.contains_key(serde_yaml::Value::String("app".to_string())));
+        assert!(services.contains_key(serde_yaml::Value::String("sidecar".to_string())));
 
         let antithesis_dir = dir.path().join("antithesis");
         let expected_vol = format!("{}:/tmp/antithesis:z", antithesis_dir.display());
 
         for name in ["app", "sidecar"] {
             let svc = services
-                .get(&serde_yaml::Value::String(name.to_string()))
+                .get(serde_yaml::Value::String(name.to_string()))
                 .unwrap()
                 .as_mapping()
                 .unwrap();
 
             // Check volume
             let volumes = svc
-                .get(&serde_yaml::Value::String("volumes".to_string()))
+                .get(serde_yaml::Value::String("volumes".to_string()))
                 .unwrap()
                 .as_sequence()
                 .unwrap();
@@ -557,12 +598,12 @@ services:
 
             // Check environment
             let env = svc
-                .get(&serde_yaml::Value::String("environment".to_string()))
+                .get(serde_yaml::Value::String("environment".to_string()))
                 .unwrap()
                 .as_mapping()
                 .unwrap();
             assert_eq!(
-                env.get(&serde_yaml::Value::String(
+                env.get(serde_yaml::Value::String(
                     "ANTITHESIS_OUTPUT_DIR".to_string()
                 ))
                 .unwrap()
@@ -571,7 +612,7 @@ services:
                 "/tmp/antithesis"
             );
             assert_eq!(
-                env.get(&serde_yaml::Value::String(
+                env.get(serde_yaml::Value::String(
                     "ANTITHESIS_SDK_LOCAL_OUTPUT".to_string()
                 ))
                 .unwrap()
@@ -584,17 +625,16 @@ services:
         // Check networks — default should always be present and internal
         let networks = doc.get("networks").unwrap().as_mapping().unwrap();
         let default_net = networks
-            .get(&serde_yaml::Value::String("default".to_string()))
+            .get(serde_yaml::Value::String("default".to_string()))
             .unwrap()
             .as_mapping()
             .unwrap();
-        assert_eq!(
+        assert!(
             default_net
-                .get(&serde_yaml::Value::String("internal".to_string()))
+                .get(serde_yaml::Value::String("internal".to_string()))
                 .unwrap()
                 .as_bool()
-                .unwrap(),
-            true
+                .unwrap()
         );
     }
 
@@ -619,16 +659,15 @@ networks:
         // All three networks should be present: backend, default, frontend
         for name in ["backend", "default", "frontend"] {
             let net = networks
-                .get(&serde_yaml::Value::String(name.to_string()))
+                .get(serde_yaml::Value::String(name.to_string()))
                 .unwrap()
                 .as_mapping()
                 .unwrap();
-            assert_eq!(
-                net.get(&serde_yaml::Value::String("internal".to_string()))
+            assert!(
+                net.get(serde_yaml::Value::String("internal".to_string()))
                     .unwrap()
                     .as_bool()
                     .unwrap(),
-                true,
                 "network '{name}' should be internal"
             );
         }
@@ -649,7 +688,7 @@ services:
         // Must parse as valid YAML even with special characters in service name
         let doc: serde_yaml::Value = serde_yaml::from_str(&content).unwrap();
         let services = doc.get("services").unwrap().as_mapping().unwrap();
-        assert!(services.contains_key(&serde_yaml::Value::String("a: b".to_string())));
+        assert!(services.contains_key(serde_yaml::Value::String("a: b".to_string())));
     }
 
     #[test]
@@ -813,5 +852,83 @@ services:
             .await
             .expect("watch failed");
         assert!(!found, "expected timeout (false), got true");
+    }
+
+    #[derive(Clone)]
+    struct FakeRuntime {
+        architectures: BTreeMap<String, String>,
+    }
+
+    impl ContainerRuntime for FakeRuntime {
+        fn name(&self) -> &str {
+            "fake"
+        }
+
+        fn clone_box(&self) -> Box<dyn ContainerRuntime> {
+            Box::new(self.clone())
+        }
+
+        fn compose(&self) -> Box<dyn Compose + '_> {
+            panic!("compose() not used in this test");
+        }
+
+        fn image_push(&self, _image_ref: &str) -> Result<String> {
+            panic!("image_push() not used in this test");
+        }
+
+        fn image_architecture(&self, image_ref: &str) -> Result<String> {
+            self.architectures
+                .get(image_ref)
+                .cloned()
+                .ok_or_else(|| color_eyre::eyre::eyre!("missing fake architecture for {image_ref}"))
+        }
+    }
+
+    #[test]
+    fn validate_image_architectures_accepts_amd64_images() {
+        let runtime = FakeRuntime {
+            architectures: BTreeMap::from([
+                ("app:latest".to_string(), "amd64".to_string()),
+                ("sidecar:latest".to_string(), "amd64".to_string()),
+            ]),
+        };
+
+        validate_image_architectures(
+            &runtime,
+            &[
+                ("app".to_string(), "app:latest".to_string()),
+                ("sidecar".to_string(), "sidecar:latest".to_string()),
+            ],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn validate_image_architectures_rejects_non_amd64_images() {
+        let runtime = FakeRuntime {
+            architectures: BTreeMap::from([
+                ("app:latest".to_string(), "arm64".to_string()),
+                ("sidecar:latest".to_string(), "amd64".to_string()),
+            ]),
+        };
+
+        let err = validate_image_architectures(
+            &runtime,
+            &[
+                ("app".to_string(), "app:latest".to_string()),
+                ("sidecar".to_string(), "sidecar:latest".to_string()),
+            ],
+        )
+        .unwrap_err();
+
+        let msg = err.to_string();
+        assert!(
+            msg.contains("x86-64 (amd64)"),
+            "expected architecture guidance, got: {msg}"
+        );
+        assert!(
+            msg.contains("service 'app' uses image 'app:latest' with architecture 'arm64'"),
+            "expected offending image details, got: {msg}"
+        );
     }
 }

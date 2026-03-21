@@ -4,7 +4,11 @@
 snouty version
 stdout 'snouty \d+\.\d+\.\d+'
 
-# 2. --help shows primary subcommands.
+# 2. --version flag prints version string.
+snouty --version
+stdout 'snouty \d+\.\d+\.\d+'
+
+# 3. --help shows primary subcommands.
 snouty --help
 stdout '.*run.*'
 stdout '.*debug.*'
@@ -15,6 +19,6 @@ stdout '.*completions.*'
 stdout '.*update.*'
 stdout '.*validate.*'
 
-# 3. api --help shows webhook subcommand.
+# 4. api --help shows webhook subcommand.
 snouty api --help
 stdout '.*webhook.*'

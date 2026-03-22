@@ -186,10 +186,11 @@ pub struct ValidateArgs {
     #[arg(long, default_value = "60")]
     pub timeout: u64,
 
-    /// Optional directory to which Antithesis SDK outputs will be written.
-    /// When not provided, SDK outputs will be written to a temp directory and then silently discarded.
+    /// Optional directory to which validate outputs will be written.
+    /// When provided, copies scripts/ (discovered test scripts) and sdk/ (Antithesis SDK outputs)
+    /// into this directory. When not provided, outputs are written to a temp directory and discarded.
     #[arg(long, default_value = None)]
-    pub antithesis_sdk_out_dir: Option<std::path::PathBuf>,
+    pub out_dir: Option<std::path::PathBuf>,
 }
 
 #[derive(Args)]

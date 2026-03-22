@@ -201,8 +201,6 @@ pub async fn cmd_validate(args: ValidateArgs) -> Result<()> {
 
     let mut logs_child = compose.logs_follow(&config)?;
 
-    let sdk_output_dir = temp_dir.path().join("antithesis");
-
     let result = tokio::select! {
         result = watch_for_setup_complete(&service_sdk_dirs, deadline) => result,
         status = logs_child.wait() => {
@@ -235,8 +233,10 @@ pub async fn cmd_validate(args: ValidateArgs) -> Result<()> {
         eprintln!("Setup validation successful.");
     }
 
-    if let Some(out_path) = args.antithesis_sdk_out_dir {
-        copy_dir_recursive(&sdk_output_dir, &out_path)
+    if let Some(out_path) = args.out_dir {
+        copy_dir_recursive(&temp_dir.path().join("scripts"), &out_path.join("scripts"))
+            .wrap_err("failed to copy scripts directory")?;
+        copy_dir_recursive(&temp_dir.path().join("antithesis"), &out_path.join("sdk"))
             .wrap_err("failed to copy SDK output directory")?;
     }
 

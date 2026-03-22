@@ -1,6 +1,6 @@
 # snouty validate — positive tests with container runtime
 
-# 1. Setup-complete only (no test scripts) — validate succeeds.
+# Setup-complete only (no test scripts) — validate succeeds.
 build-image setup-emitter:latest setup_emitter
 snouty validate config_no_scripts --timeout 15
 stderr 'Isolating networks: default.*'
@@ -8,7 +8,7 @@ stderr 'Setup-complete event detected.*'
 stderr 'No test scripts in service.*'
 stderr 'Setup validation successful.*'
 
-# 2. All script types run in correct phases, helper_ ignored.
+# All script types run in correct phases, helper_ ignored.
 #    Includes a sidecar without scripts to verify it doesn't block execution.
 build-image all-types:latest all_types
 snouty validate config_all_types --timeout 15
@@ -21,7 +21,7 @@ stderr 'Running \[suite/eventually_verify\] in service runner.*'
 stderr 'Running \[suite/finally_cleanup\] in service runner.*'
 stderr 'Setup validation successful.*'
 
-# 3. Failing script — remaining scripts still run, validate fails.
+# Failing script — remaining scripts still run, validate fails.
 #    Captured stdout and stderr from the failed script are printed.
 build-image fail-with-finally:latest fail_with_finally
 ! snouty validate config_fail_finally --timeout 15
@@ -32,41 +32,60 @@ stderr 'stderr from bad script.*'
 stderr 'Running \[suite/finally_cleanup\] in service runner.*'
 stderr 'one or more test scripts failed.*'
 
-# 4. No driver or anytime scripts — validate errors.
+# No driver or anytime scripts — validate errors.
 build-image nodrivers:latest nodrivers
 ! snouty validate config_nodrivers --timeout 15
 stderr 'no driver or anytime scripts.*'
 
-# 5. Unknown prefix file — validate errors.
+# Unknown prefix file — validate errors.
 build-image unknown-prefix:latest unknown_prefix
 ! snouty validate config_unknown --timeout 15
 stderr 'unrecognized command names.*'
 stderr 'suite/readme.txt.*'
 
-# 6. Non-executable script — compose exec fails, validate reports failure.
+# Non-executable script — compose exec fails, validate reports failure.
 build-image noexec:latest noexec
 ! snouty validate config_noexec --timeout 15
 stderr 'Running .* failed.*'
 
-# 7. Setup-complete via ANTITHESIS_SDK_LOCAL_OUTPUT (legacy env var).
+# Setup-complete via ANTITHESIS_SDK_LOCAL_OUTPUT (legacy env var).
 build-image sdk-local-emitter:latest sdk_local_emitter
 snouty validate config_sdk_local --timeout 15
 stderr 'Setup-complete event detected.*'
 stderr 'Setup validation successful.*'
 
-# 8. Chicken-and-egg: first script emits setup_complete, entrypoint does not.
+# Chicken-and-egg: first script emits setup_complete, entrypoint does not.
 #    Validate times out and prints a diagnostic about the deadlock.
 build-image chicken-egg:latest chicken_egg
 ! snouty validate config_chicken_egg --timeout 10
 stderr 'timed out waiting for setup-complete event.*'
 stderr 'suite/first_emit_setup in service runner emits setup_complete.*deadlock.*'
 
-# 9. Custom networks are isolated and outbound traffic is blocked.
+# Custom networks are isolated and outbound traffic is blocked.
 build-image net-check:latest net_check
 snouty validate config_net_check --timeout 15
 stderr 'Isolating networks: default.*'
 stderr 'Setup-complete event detected.*'
 stderr 'Setup validation successful.*'
+
+# An arm64-only image is rejected during validation.
+pull-image --platform linux/arm64 arm-sidecar:latest docker.io/arm64v8/hello-world:latest
+! snouty validate config_arm_image --timeout 15
+stderr 'x86-64 \(amd64\).*'
+stderr 'service '\''arm-sidecar'\'' uses image '\''arm-sidecar:latest'\'' with architecture '\''arm64'\''.*'
+
+# A multi-arch image is accepted by using the local variant.
+pull-image multiarch-sidecar:latest docker.io/library/busybox:latest
+snouty validate config_multiarch_image --timeout 15
+stderr 'Setup-complete event detected.*'
+stderr 'Setup validation successful.*'
+
+# Missing images are reported together before architecture validation.
+! snouty validate config_missing_images --timeout 15
+stderr 'some images are not available locally.*'
+stderr '.*image: missing-app:latest.*'
+stderr '.*image: missing-sidecar:latest.*'
+stderr '.*pull or build the missing images, then retry.*'
 
 -- setup_emitter/Dockerfile --
 FROM busybox
@@ -212,6 +231,36 @@ CMD sh -c 'echo "{\"antithesis_setup\":{\"status\":\"complete\"}}" >> "$ANTITHES
 services:
   checker:
     image: net-check:latest
+    pull_policy: never
+
+-- config_arm_image/docker-compose.yaml --
+services:
+  emitter:
+    image: setup-emitter:latest
+    pull_policy: never
+  arm-sidecar:
+    image: arm-sidecar:latest
+    pull_policy: never
+
+-- config_multiarch_image/docker-compose.yaml --
+services:
+  emitter:
+    image: setup-emitter:latest
+    pull_policy: never
+  multiarch-sidecar:
+    image: multiarch-sidecar:latest
+    pull_policy: never
+
+-- config_missing_images/docker-compose.yaml --
+services:
+  emitter:
+    image: setup-emitter:latest
+    pull_policy: never
+  app:
+    image: missing-app:latest
+    pull_policy: never
+  sidecar:
+    image: missing-sidecar:latest
     pull_policy: never
 
 -- chicken_egg/suite/first_emit_setup --

@@ -165,6 +165,49 @@ pub trait ContainerRuntime: Send + Sync {
     /// (e.g. `example.com/foo/image@sha256:...`).
     fn image_push(&self, image_ref: &str) -> Result<String>;
 
+    /// Return whether the image is available in the local image store.
+    fn image_exists(&self, image_ref: &str) -> Result<bool> {
+        let runtime = self.name();
+        let output = Command::new(runtime)
+            .args(["image", "inspect", image_ref])
+            .output()
+            .wrap_err(format!("failed to run '{runtime} image inspect'"))?;
+        image_exists_from_inspect_output(runtime, image_ref, output)
+    }
+
+    /// Return the local image architecture (for example `amd64` or `arm64`).
+    fn image_architecture(&self, image_ref: &str) -> Result<String> {
+        let runtime = self.name();
+        let output = Command::new(runtime)
+            .args([
+                "image",
+                "inspect",
+                "--format",
+                "{{.Architecture}}",
+                image_ref,
+            ])
+            .output()
+            .wrap_err(format!("failed to run '{runtime} image inspect'"))?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            return Err(eyre!("'{runtime} image inspect {image_ref}' failed"))
+                .with_section(move || stdout.trim().to_string().header("Stdout:"))
+                .with_section(move || stderr.trim().to_string().header("Stderr:"));
+        }
+
+        let architecture = std::str::from_utf8(&output.stdout)
+            .wrap_err("failed to parse image inspect output")?
+            .trim();
+
+        if architecture.is_empty() {
+            bail!("empty image inspect output");
+        }
+
+        Ok(architecture.to_string())
+    }
+
     /// Tag an image with a new reference.
     fn image_tag(&self, src: &str, dst: &str) -> Result<()> {
         let runtime = self.name();
@@ -208,12 +251,10 @@ pub trait ContainerRuntime: Send + Sync {
             .spawn()
             .wrap_err(format!("failed to start '{runtime} build'"))?;
 
-        if scratch {
-            if let Some(mut stdin) = child.stdin.take() {
-                stdin
-                    .write_all(b"FROM scratch\nCOPY . /\n")
-                    .wrap_err("failed to write Dockerfile to stdin")?;
-            }
+        if scratch && let Some(mut stdin) = child.stdin.take() {
+            stdin
+                .write_all(b"FROM scratch\nCOPY . /\n")
+                .wrap_err("failed to write Dockerfile to stdin")?;
         }
 
         let output = child
@@ -956,12 +997,40 @@ fn parse_compose_ps(stdout: &str) -> Result<Vec<(String, String)>> {
         .collect()
 }
 
+fn image_exists_from_inspect_output(
+    runtime: &str,
+    image_ref: &str,
+    output: std::process::Output,
+) -> Result<bool> {
+    if output.status.success() {
+        return Ok(true);
+    }
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    if image_inspect_reports_missing_image(&stderr) {
+        return Ok(false);
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    Err(eyre!("'{runtime} image inspect {image_ref}' failed"))
+        .with_section(move || stdout.trim().to_string().header("Stdout:"))
+        .with_section(move || stderr.trim().to_string().header("Stderr:"))
+}
+
+fn image_inspect_reports_missing_image(stderr: &str) -> bool {
+    let stderr = stderr.trim().to_ascii_lowercase();
+    stderr.contains("no such image")
+        || stderr.contains("no such object")
+        || stderr.contains("image not known")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::testutils::{
         OCIRegistry, has_compose, require_runtimes, require_runtimes_with_compose, skip_or_fail,
     };
+    use std::os::unix::process::ExitStatusExt;
 
     #[tokio::test]
     async fn build_and_push_to_mock_registry() {
@@ -1378,6 +1447,59 @@ tag2: digest: sha256:bbb222 size: 200
     #[test]
     fn is_local_image_host_port() {
         assert!(!is_local_image("myregistry:5000/myapp:latest"));
+    }
+
+    #[test]
+    fn image_exists_from_inspect_output_accepts_success() {
+        let result = image_exists_from_inspect_output(
+            "docker",
+            "app:latest",
+            std::process::Output {
+                status: std::process::ExitStatus::from_raw(0),
+                stdout: Vec::new(),
+                stderr: Vec::new(),
+            },
+        )
+        .unwrap();
+
+        assert!(result);
+    }
+
+    #[test]
+    fn image_exists_from_inspect_output_reports_missing_image() {
+        let result = image_exists_from_inspect_output(
+            "docker",
+            "missing:latest",
+            std::process::Output {
+                status: std::process::ExitStatus::from_raw(1 << 8),
+                stdout: Vec::new(),
+                stderr: b"Error response from daemon: No such image: missing:latest".to_vec(),
+            },
+        )
+        .unwrap();
+
+        assert!(!result);
+    }
+
+    #[test]
+    fn image_exists_from_inspect_output_surfaces_runtime_errors() {
+        let err = image_exists_from_inspect_output(
+            "docker",
+            "app:latest",
+            std::process::Output {
+                status: std::process::ExitStatus::from_raw(1 << 8),
+                stdout: Vec::new(),
+                stderr: b"Cannot connect to the Docker daemon at unix:///var/run/docker.sock"
+                    .to_vec(),
+            },
+        )
+        .unwrap_err();
+
+        let debug = format!("{err:?}");
+        assert!(
+            debug.contains("Cannot connect to the Docker daemon"),
+            "expected daemon error details, got: {debug}"
+        );
     }
 
     #[test]

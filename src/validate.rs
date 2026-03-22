@@ -576,6 +576,14 @@ fn find_jsonl_files(root: &Path) -> Result<Vec<PathBuf>> {
     Ok(paths)
 }
 
+fn open_jsonl_file(path: &Path) -> Result<Option<std::fs::File>> {
+    match std::fs::File::open(path) {
+        Ok(file) => Ok(Some(file)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(e.into()),
+    }
+}
+
 /// Watch `.jsonl` files anywhere under the given directory for setup-complete.
 ///
 /// Polls recursively for new files (100ms interval), tails each file for new
@@ -597,7 +605,9 @@ async fn watch_for_setup_complete(
 
         for path in find_jsonl_files(output_dir)? {
             let previous_offset = offsets.get(&path).copied().unwrap_or(0);
-            let mut file = std::fs::File::open(&path)?;
+            let Some(mut file) = open_jsonl_file(&path)? else {
+                continue;
+            };
             let start_offset = previous_offset.min(file.metadata()?.len());
             file.seek(std::io::SeekFrom::Start(start_offset))?;
 
@@ -809,6 +819,15 @@ services:
             files,
             vec![dir.path().join("root.jsonl"), nested.join("events.jsonl")]
         );
+    }
+
+    #[test]
+    fn open_jsonl_file_returns_none_for_missing_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("missing.jsonl");
+
+        let file = open_jsonl_file(&path).unwrap();
+        assert!(file.is_none(), "missing files should be skipped");
     }
 
     fn test_deadline() -> tokio::time::Instant {

@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+use std::io::Seek;
 use std::path::{Path, PathBuf};
 
 use color_eyre::Section;
@@ -25,9 +27,11 @@ struct SetupStatus {
 /// Generate a compose override file that injects Antithesis SDK output monitoring.
 ///
 /// For each service in the resolved compose YAML, adds:
-/// - A volume mount: `{temp_dir}/antithesis:/tmp/antithesis:z`
+/// - A per-service volume mount:
+///   `{temp_dir}/antithesis/{service}:/tmp/antithesis:z`
 ///   (`:z` relabels for SELinux shared access; no-op without SELinux)
-/// - Environment variables: `ANTITHESIS_OUTPUT_DIR=/tmp/antithesis` and
+/// - Environment variables:
+///   `ANTITHESIS_OUTPUT_DIR=/tmp/antithesis` and
 ///   `ANTITHESIS_SDK_LOCAL_OUTPUT=/tmp/antithesis/sdk.jsonl`
 ///
 /// The SDK creates the output file; we mount the parent directory so it can do so.
@@ -44,10 +48,13 @@ fn generate_setup_override(compose_yaml: &str, temp_dir: &Path) -> Result<PathBu
     std::fs::create_dir_all(&antithesis_dir)
         .wrap_err("failed to create antithesis output directory")?;
 
-    let vol = format!("{}:/tmp/antithesis:z", antithesis_dir.display());
-
     let mut services = serde_yaml::Mapping::new();
     for (name, _) in &contents.services {
+        let service_dir = antithesis_dir.join(name);
+        std::fs::create_dir_all(&service_dir).wrap_err_with(|| {
+            format!("failed to create antithesis output directory for service '{name}'")
+        })?;
+        let vol = format!("{}:/tmp/antithesis:z", service_dir.display());
         let mut svc = serde_yaml::Mapping::new();
         svc.insert(
             serde_yaml::Value::String("volumes".to_string()),
@@ -319,21 +326,23 @@ fn diagnose_setup_in_first_scripts(
         return;
     }
 
-    let check_dir = temp_dir.join("antithesis").join("first-check");
-    if std::fs::create_dir_all(&check_dir).is_err() {
-        return;
-    }
-
-    let container_output_dir = "/tmp/antithesis/first-check";
-    let sdk_output = format!("{container_output_dir}/sdk.jsonl");
-    let env = [
-        ("ANTITHESIS_OUTPUT_DIR", container_output_dir),
-        ("ANTITHESIS_SDK_LOCAL_OUTPUT", sdk_output.as_str()),
-    ];
-
-    let sdk_file = check_dir.join("sdk.jsonl");
-
     for s in &first_scripts {
+        let check_dir = temp_dir
+            .join("antithesis")
+            .join(&s.service)
+            .join("first-check");
+        if std::fs::create_dir_all(&check_dir).is_err() {
+            continue;
+        }
+
+        let container_output_dir = "/tmp/antithesis/first-check";
+        let sdk_output = format!("{container_output_dir}/sdk.jsonl");
+        let env = [
+            ("ANTITHESIS_OUTPUT_DIR", container_output_dir),
+            ("ANTITHESIS_SDK_LOCAL_OUTPUT", sdk_output.as_str()),
+        ];
+
+        let sdk_file = check_dir.join("sdk.jsonl");
         let script_dir = format!("/opt/antithesis/test/v1/{}", s.test_name);
         let container_path = format!("{}/{}", script_dir, s.command_name);
         let _ = compose.exec(
@@ -539,9 +548,38 @@ fn shuffle<T>(slice: &mut [T]) {
     }
 }
 
-/// Watch `sdk.jsonl` in the given directory for the setup-complete event.
+/// Return all `.jsonl` files recursively under `root`.
+fn find_jsonl_files(root: &Path) -> Result<Vec<PathBuf>> {
+    let mut paths = Vec::new();
+    let mut dirs = vec![root.to_path_buf()];
+
+    while let Some(dir) = dirs.pop() {
+        let entries = match std::fs::read_dir(&dir) {
+            Ok(entries) => entries,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(e) => return Err(e.into()),
+        };
+
+        for entry in entries {
+            let entry = entry?;
+            let path = entry.path();
+            let file_type = entry.file_type()?;
+            if file_type.is_dir() {
+                dirs.push(path);
+            } else if path.extension().is_some_and(|ext| ext == "jsonl") {
+                paths.push(path);
+            }
+        }
+    }
+
+    paths.sort();
+    Ok(paths)
+}
+
+/// Watch `.jsonl` files anywhere under the given directory for setup-complete.
 ///
-/// Polls for the file to appear (100ms interval), then tails it for new data.
+/// Polls recursively for new files (100ms interval), tails each file for new
+/// data, and tolerates truncation/recreation by tracking offsets per path.
 /// Returns `Ok(true)` when the event is found, `Ok(false)` on timeout.
 ///
 /// Uses blocking `std::fs` calls intentionally — reads are small and infrequent,
@@ -550,30 +588,26 @@ async fn watch_for_setup_complete(
     output_dir: &Path,
     deadline: tokio::time::Instant,
 ) -> Result<bool> {
-    let sdk_path = output_dir.join("sdk.jsonl");
+    let mut offsets = BTreeMap::new();
 
-    // Wait for the file to appear.
-    let mut file = loop {
-        if tokio::time::Instant::now() >= deadline {
-            return Ok(false);
-        }
-        match std::fs::File::open(&sdk_path) {
-            Ok(f) => break f,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                sleep(Duration::from_millis(100)).await;
-            }
-            Err(e) => return Err(e.into()),
-        }
-    };
-
-    // Tail the file for the setup-complete event.
     loop {
         if tokio::time::Instant::now() >= deadline {
             return Ok(false);
         }
-        if contains_setup_complete(&mut file)? {
-            return Ok(true);
+
+        for path in find_jsonl_files(output_dir)? {
+            let previous_offset = offsets.get(&path).copied().unwrap_or(0);
+            let mut file = std::fs::File::open(&path)?;
+            let start_offset = previous_offset.min(file.metadata()?.len());
+            file.seek(std::io::SeekFrom::Start(start_offset))?;
+
+            if contains_setup_complete(&mut file)? {
+                return Ok(true);
+            }
+
+            offsets.insert(path, file.stream_position()?);
         }
+
         sleep(Duration::from_millis(100)).await;
     }
 }
@@ -610,9 +644,13 @@ services:
         assert!(services.contains_key(serde_yaml::Value::String("sidecar".to_string())));
 
         let antithesis_dir = dir.path().join("antithesis");
-        let expected_vol = format!("{}:/tmp/antithesis:z", antithesis_dir.display());
 
         for name in ["app", "sidecar"] {
+            let expected_vol = format!("{}:/tmp/antithesis:z", antithesis_dir.join(name).display());
+            assert!(
+                antithesis_dir.join(name).is_dir(),
+                "expected output directory for service '{name}'"
+            );
             let svc = services
                 .get(serde_yaml::Value::String(name.to_string()))
                 .unwrap()
@@ -757,6 +795,22 @@ services:
         assert!(contains_setup_complete(&mut std::io::Cursor::new(data)).unwrap());
     }
 
+    #[test]
+    fn find_jsonl_files_finds_nested_jsonl_files_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let nested = dir.path().join("service-a").join("nested");
+        std::fs::create_dir_all(&nested).unwrap();
+        std::fs::write(dir.path().join("root.jsonl"), "").unwrap();
+        std::fs::write(nested.join("events.jsonl"), "").unwrap();
+        std::fs::write(nested.join("ignore.txt"), "").unwrap();
+
+        let files = find_jsonl_files(dir.path()).unwrap();
+        assert_eq!(
+            files,
+            vec![dir.path().join("root.jsonl"), nested.join("events.jsonl")]
+        );
+    }
+
     fn test_deadline() -> tokio::time::Instant {
         tokio::time::Instant::now() + Duration::from_secs(3)
     }
@@ -765,8 +819,9 @@ services:
     #[tokio::test]
     async fn detects_setup_complete() {
         let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("app")).unwrap();
         std::fs::write(
-            dir.path().join("sdk.jsonl"),
+            dir.path().join("app").join("sdk.jsonl"),
             "{\"antithesis_setup\": {\"status\": \"complete\"}}\n",
         )
         .unwrap();
@@ -785,8 +840,9 @@ services:
         let path = dir.path().to_path_buf();
         tokio::spawn(async move {
             sleep(Duration::from_millis(500)).await;
+            std::fs::create_dir_all(path.join("app")).unwrap();
             std::fs::write(
-                path.join("sdk.jsonl"),
+                path.join("app").join("sdk.jsonl"),
                 "{\"antithesis_setup\": {\"status\": \"complete\"}}\n",
             )
             .unwrap();
@@ -803,7 +859,9 @@ services:
     #[tokio::test]
     async fn detects_appended_event() {
         let dir = tempfile::tempdir().unwrap();
-        let file = dir.path().join("sdk.jsonl");
+        let service_dir = dir.path().join("app");
+        std::fs::create_dir_all(&service_dir).unwrap();
+        let file = service_dir.join("events.jsonl");
         std::fs::write(&file, "{\"unrelated\": true}\n").unwrap();
 
         let path = file.clone();
@@ -827,7 +885,9 @@ services:
     #[tokio::test]
     async fn ignores_non_complete_status() {
         let dir = tempfile::tempdir().unwrap();
-        let file = dir.path().join("sdk.jsonl");
+        let service_dir = dir.path().join("app");
+        std::fs::create_dir_all(&service_dir).unwrap();
+        let file = service_dir.join("setup.jsonl");
         std::fs::write(&file, "{\"antithesis_setup\": {\"status\": \"running\"}}\n").unwrap();
 
         let path = file.clone();
@@ -851,7 +911,9 @@ services:
     #[tokio::test]
     async fn handles_partial_line() {
         let dir = tempfile::tempdir().unwrap();
-        let file = dir.path().join("sdk.jsonl");
+        let service_dir = dir.path().join("app");
+        std::fs::create_dir_all(&service_dir).unwrap();
+        let file = service_dir.join("setup.jsonl");
 
         let path = file.clone();
         tokio::spawn(async move {
@@ -877,7 +939,12 @@ services:
     #[tokio::test]
     async fn times_out_without_event() {
         let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("sdk.jsonl"), "{\"unrelated\": true}\n").unwrap();
+        std::fs::create_dir_all(dir.path().join("app")).unwrap();
+        std::fs::write(
+            dir.path().join("app").join("events.jsonl"),
+            "{\"unrelated\": true}\n",
+        )
+        .unwrap();
 
         let found = watch_for_setup_complete(dir.path(), test_deadline())
             .await

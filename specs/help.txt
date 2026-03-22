@@ -22,3 +22,11 @@ stdout '.*validate.*'
 # api --help shows webhook subcommand.
 snouty api --help
 stdout '.*webhook.*'
+
+# validate --help explains how setup-complete is detected.
+snouty validate --help
+stdout '.*\/tmp\/antithesis.*'
+stdout '.*ANTITHESIS_OUTPUT_DIR.*'
+stdout '.*ANTITHESIS_SDK_LOCAL_OUTPUT.*'
+stdout '.*JSONL.*'
+stdout '.*not by scraping compose logs.*'

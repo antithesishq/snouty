@@ -51,6 +51,19 @@ fn api_help_shows_webhook() {
 }
 
 #[test]
+fn validate_help_explains_setup_complete_detection() {
+    snouty()
+        .args(["validate", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("/tmp/antithesis"))
+        .stdout(predicate::str::contains("ANTITHESIS_OUTPUT_DIR"))
+        .stdout(predicate::str::contains("ANTITHESIS_SDK_LOCAL_OUTPUT"))
+        .stdout(predicate::str::contains("JSONL"))
+        .stdout(predicate::str::contains("not by scraping compose logs"));
+}
+
+#[test]
 fn run_with_typed_flags() {
     let mock_url = start_mock_server(r#"{"status": "ok"}"#, 200);
 

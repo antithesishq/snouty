@@ -74,7 +74,7 @@ pull-image --platform linux/arm64 arm-sidecar:latest docker.io/arm64v8/hello-wor
 stderr 'x86-64 \(amd64\).*'
 stderr 'service '\''arm-sidecar'\'' uses image '\''arm-sidecar:latest'\'' with architecture '\''arm64'\''.*'
 
-# A multi-arch image is accepted by using the local amd64 variant.
+# A multi-arch image is accepted by using the local variant.
 pull-image multiarch-sidecar:latest docker.io/library/busybox:latest
 snouty validate config_multiarch_image --timeout 15
 stderr 'Setup-complete event detected.*'

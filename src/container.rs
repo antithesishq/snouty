@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Command;
 use std::sync::OnceLock;
 
 use chrono::Utc;
@@ -168,13 +168,11 @@ pub trait ContainerRuntime: Send + Sync {
     /// Return whether the image is available in the local image store.
     fn image_exists(&self, image_ref: &str) -> Result<bool> {
         let runtime = self.name();
-        let status = Command::new(runtime)
+        let output = Command::new(runtime)
             .args(["image", "inspect", image_ref])
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
+            .output()
             .wrap_err(format!("failed to run '{runtime} image inspect'"))?;
-        Ok(status.success())
+        image_exists_from_inspect_output(runtime, image_ref, output)
     }
 
     /// Return the local image architecture (for example `amd64` or `arm64`).
@@ -999,12 +997,40 @@ fn parse_compose_ps(stdout: &str) -> Result<Vec<(String, String)>> {
         .collect()
 }
 
+fn image_exists_from_inspect_output(
+    runtime: &str,
+    image_ref: &str,
+    output: std::process::Output,
+) -> Result<bool> {
+    if output.status.success() {
+        return Ok(true);
+    }
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    if image_inspect_reports_missing_image(&stderr) {
+        return Ok(false);
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    Err(eyre!("'{runtime} image inspect {image_ref}' failed"))
+        .with_section(move || stdout.trim().to_string().header("Stdout:"))
+        .with_section(move || stderr.trim().to_string().header("Stderr:"))
+}
+
+fn image_inspect_reports_missing_image(stderr: &str) -> bool {
+    let stderr = stderr.trim().to_ascii_lowercase();
+    stderr.contains("no such image")
+        || stderr.contains("no such object")
+        || stderr.contains("image not known")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::testutils::{
         OCIRegistry, has_compose, require_runtimes, require_runtimes_with_compose, skip_or_fail,
     };
+    use std::os::unix::process::ExitStatusExt;
 
     #[tokio::test]
     async fn build_and_push_to_mock_registry() {
@@ -1421,6 +1447,59 @@ tag2: digest: sha256:bbb222 size: 200
     #[test]
     fn is_local_image_host_port() {
         assert!(!is_local_image("myregistry:5000/myapp:latest"));
+    }
+
+    #[test]
+    fn image_exists_from_inspect_output_accepts_success() {
+        let result = image_exists_from_inspect_output(
+            "docker",
+            "app:latest",
+            std::process::Output {
+                status: std::process::ExitStatus::from_raw(0),
+                stdout: Vec::new(),
+                stderr: Vec::new(),
+            },
+        )
+        .unwrap();
+
+        assert!(result);
+    }
+
+    #[test]
+    fn image_exists_from_inspect_output_reports_missing_image() {
+        let result = image_exists_from_inspect_output(
+            "docker",
+            "missing:latest",
+            std::process::Output {
+                status: std::process::ExitStatus::from_raw(1 << 8),
+                stdout: Vec::new(),
+                stderr: b"Error response from daemon: No such image: missing:latest".to_vec(),
+            },
+        )
+        .unwrap();
+
+        assert!(!result);
+    }
+
+    #[test]
+    fn image_exists_from_inspect_output_surfaces_runtime_errors() {
+        let err = image_exists_from_inspect_output(
+            "docker",
+            "app:latest",
+            std::process::Output {
+                status: std::process::ExitStatus::from_raw(1 << 8),
+                stdout: Vec::new(),
+                stderr: b"Cannot connect to the Docker daemon at unix:///var/run/docker.sock"
+                    .to_vec(),
+            },
+        )
+        .unwrap_err();
+
+        let debug = format!("{err:?}");
+        assert!(
+            debug.contains("Cannot connect to the Docker daemon"),
+            "expected daemon error details, got: {debug}"
+        );
     }
 
     #[test]

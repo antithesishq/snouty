@@ -967,7 +967,7 @@ services:
         );
         assert!(
             debug.contains("service 'app' uses image 'app:latest' with architecture 'arm64'"),
-            "expected offending image details, got: {msg}"
+            "expected offending image details, got: {debug}"
         );
     }
 
@@ -1020,11 +1020,11 @@ services:
         );
         assert!(
             debug.contains("image: missing-a:latest"),
-            "expected first missing image, got: {msg}"
+            "expected first missing image, got: {debug}"
         );
         assert!(
             debug.contains("image: missing-b:latest"),
-            "expected second missing image, got: {msg}"
+            "expected second missing image, got: {debug}"
         );
     }
 }

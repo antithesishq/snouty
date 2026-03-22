@@ -143,6 +143,29 @@ jobs:
 
       - name: Test
         run: cargo nextest run
+  tests-passed:
+    runs-on: ubuntu-latest
+    needs:
+      - skip-check
+      - test
+      - build-nix
+    if: always()
+    steps:
+      - name: Verify test matrix
+        run: |
+          if [ "${{ needs.skip-check.outputs.should_skip }}" = "true" ]; then
+            exit 0
+          fi
+
+          if [ "${{ needs.test.result }}" = "success" ]; then
+            if [ "${{ needs.build-nix.result }}" = "success" ]; then
+              exit 0
+            fi
+          fi
+
+          echo "test matrix result: ${{ needs.test.result }}"
+          echo "build-nix result: ${{ needs.build-nix.result }}"
+          exit 1
   build-nix:
     runs-on: ubuntu-latest
     needs: skip-check

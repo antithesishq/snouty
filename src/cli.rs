@@ -77,6 +77,11 @@ instrumentation is working. After setup-complete is detected, discovers and
 executes Test Composer scripts from /opt/antithesis/test/v1 inside the running
 containers via compose exec.
 
+snouty validate injects a bind mount at /tmp/antithesis in each container and
+sets ANTITHESIS_OUTPUT_DIR plus ANTITHESIS_SDK_LOCAL_OUTPUT so SDK output is
+written there. It detects setup-complete by reading JSONL files from that mount,
+not by scraping compose logs or container stdout.
+
 Scripts are discovered by copying /opt/antithesis/test/v1 from each running
 container and scanning for {test_name}/{command} entries. Scripts from all
 services are merged into a single pool and executed in order:

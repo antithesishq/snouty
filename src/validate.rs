@@ -364,6 +364,9 @@ fn diagnose_setup_in_first_scripts(
                 );
                 return;
             }
+
+            // Remove any output from the previous script.
+            let _ = std::fs::remove_file(&sdk_file);
         }
     }
 }

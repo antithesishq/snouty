@@ -41,7 +41,7 @@ cargo uninstall snouty || rm -f "$(which snouty)" "$(which snouty-update)"
 
 ## Requirements
 
-Commands that work with `docker-compose.yaml` files (e.g. `run --config`, `validate`) require Docker or Podman. When using Podman, [`podman-compose`](https://github.com/containers/podman-compose) **1.1.0 or later** must be installed.
+Commands that work with `docker-compose.yaml` files (e.g. `run --config`, `validate`) require Docker or Podman.
 
 ## Configuration
 

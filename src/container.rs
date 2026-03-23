@@ -350,8 +350,8 @@ pub trait ContainerRuntime: Send + Sync {
 
 /// Compose backend abstraction.
 ///
-/// Implementations customize behavior via hook methods (`extra_args`,
-/// `up_extra_args`, `logs_extra_args`). The default method implementations
+/// Implementations customize behavior via hook methods (`up_extra_args`,
+/// `logs_extra_args`, `ps_extra_args`). The default method implementations
 /// build commands using `self.runtime().command()`.
 pub trait Compose: Send + Sync {
     /// Access the underlying container runtime.
@@ -359,19 +359,25 @@ pub trait Compose: Send + Sync {
 
     // --- customization hooks (override per-backend) ---
 
-    /// Extra arguments inserted between file args and the subcommand.
-    fn extra_args(&self) -> &[&str] {
-        &[]
+    /// Extra arguments for `compose up`.
+    /// Returns `(pre_args, post_args)` — pre_args go before the `up` subcommand,
+    /// post_args go after it.
+    fn up_extra_args(&self) -> (&[&str], &[&str]) {
+        (&[], &[])
     }
 
-    /// Extra arguments appended after `up --detach --no-build`.
-    fn up_extra_args(&self) -> &[&str] {
-        &[]
+    /// Extra arguments for `compose logs`.
+    /// Returns `(pre_args, post_args)` — pre_args go before the `logs` subcommand,
+    /// post_args go after it.
+    fn logs_extra_args(&self) -> (&[&str], &[&str]) {
+        (&[], &[])
     }
 
-    /// Extra arguments appended after `logs --follow`.
-    fn logs_extra_args(&self) -> &[&str] {
-        &[]
+    /// Arguments to get JSON output from `compose ps`.
+    /// Returns `(pre_args, post_args)` — pre_args go before the `ps` subcommand,
+    /// post_args go after it.
+    fn ps_extra_args(&self) -> (&[&str], &[&str]) {
+        (&[], &["--format", "json"])
     }
 
     // --- default implementations ---
@@ -403,8 +409,11 @@ pub trait Compose: Send + Sync {
         let runtime = self.runtime().name();
         let mut cmd = self.runtime().command(&["compose"]);
         cmd.current_dir(&config.dir);
+        let (pre, post) = self.ps_extra_args();
         cmd.args(config.file_args());
-        cmd.args(["ps", "--format", "json"]);
+        cmd.args(pre);
+        cmd.args(["ps"]);
+        cmd.args(post);
 
         let output = cmd
             .output()
@@ -463,10 +472,11 @@ pub trait Compose: Send + Sync {
         let runtime = self.runtime().name();
         let mut cmd = self.runtime().tokio_command(&["compose"]);
         cmd.current_dir(&config.dir);
+        let (pre, post) = self.up_extra_args();
         cmd.args(config.file_args());
-        cmd.args(self.extra_args());
+        cmd.args(pre);
         cmd.args(["up", "--detach", "--no-build"]);
-        cmd.args(self.up_extra_args());
+        cmd.args(post);
         cmd.stdin(std::process::Stdio::null());
         cmd.stdout(std::process::Stdio::inherit());
         cmd.stderr(std::process::Stdio::inherit());
@@ -486,9 +496,11 @@ pub trait Compose: Send + Sync {
         let runtime = self.runtime().name();
         let mut cmd = self.runtime().tokio_command(&["compose"]);
         cmd.current_dir(&config.dir);
+        let (pre, post) = self.logs_extra_args();
         cmd.args(config.file_args());
+        cmd.args(pre);
         cmd.args(["logs", "--follow"]);
-        cmd.args(self.logs_extra_args());
+        cmd.args(post);
         cmd.stdin(std::process::Stdio::null());
         cmd.stdout(std::process::Stdio::inherit());
         cmd.stderr(std::process::Stdio::inherit());
@@ -521,8 +533,8 @@ impl Compose for DockerCompose<'_> {
         self.rt
     }
 
-    fn up_extra_args(&self) -> &[&str] {
-        &["--pull=never"]
+    fn up_extra_args(&self) -> (&[&str], &[&str]) {
+        (&[], &["--pull=never"])
     }
 }
 
@@ -535,12 +547,16 @@ impl Compose for PodmanCompose<'_> {
         self.rt
     }
 
-    fn extra_args(&self) -> &[&str] {
-        &["--podman-run-args=--pull=never"]
+    fn up_extra_args(&self) -> (&[&str], &[&str]) {
+        (&["--podman-run-args=--pull=never"], &[])
     }
 
-    fn logs_extra_args(&self) -> &[&str] {
-        &["--names"]
+    fn logs_extra_args(&self) -> (&[&str], &[&str]) {
+        (&[], &["--names"])
+    }
+
+    fn ps_extra_args(&self) -> (&[&str], &[&str]) {
+        (&["--podman-args=--format=json"], &[])
     }
 }
 

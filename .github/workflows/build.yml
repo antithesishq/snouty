@@ -112,7 +112,7 @@ jobs:
       - name: Configure Podman + podman-compose (Ubuntu)
         if: matrix.runtime == 'podman' && matrix.compose == 'podman-compose' && startsWith(matrix.os, 'ubuntu')
         run: |
-          sudo pip install podman-compose==1.1.0
+          sudo apt install -y --no-install-recommends podman-compose
           sudo rm -v -f "$(which docker)" /usr/libexec/docker/cli-plugins/docker-compose
 
       - name: Configure Podman + docker-compose (Ubuntu)

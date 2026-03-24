@@ -18,7 +18,7 @@ stderr 'no parameters provided.*'
 
 # Parameters are provided as --key value pairs and printed to stderr
 #    with sensitive values redacted.
-mock-server 200 '{"status": "ok"}'
+mock-server 200 '{"run_id": "run-123"}'
 snouty api webhook -w basic_test --antithesis.test_name my-test --antithesis.description 'nightly test run' --antithesis.config_image config:latest --antithesis.images app:latest --antithesis.duration 30 --antithesis.report.recipients team@example.com
 stderr '"antithesis.test_name": "my-test"'
 stderr '"antithesis.description": "nightly test run"'
@@ -28,30 +28,30 @@ stderr '"antithesis.duration": "30"'
 stderr '"antithesis.report.recipients": "\[REDACTED\]"'
 
 # Parameters can be read from stdin via --stdin as JSON.
-mock-server 200 '{"launched": true}'
+mock-server 200 '{"run_id": "run-123"}'
 stdin webhook_stdin.json
 snouty api webhook -w basic_test --stdin
 stderr '"antithesis.duration": "60"'
 stderr '"antithesis.is_ephemeral": "true"'
 
 # Custom (non-antithesis) properties are accepted.
-mock-server 200 '{"ok": true}'
+mock-server 200 '{"run_id": "run-123"}'
 snouty api webhook -w basic_test --antithesis.duration 30 --my.custom.prop value
 stderr '"my.custom.prop": "value"'
 
 # Without --stdin flag, stdin content is ignored.
-mock-server 200 '{"ok": true}'
+mock-server 200 '{"run_id": "run-123"}'
 stdin ignored_stdin.json
 snouty api webhook -w basic_test --antithesis.duration 30
 stderr '"antithesis.duration": "30"'
 ! stderr '.*SHOULD_BE_IGNORED.*'
 
 # --webhook long flag form accepted.
-mock-server 200 '{"status": "ok"}'
+mock-server 200 '{"run_id": "run-123"}'
 snouty api webhook --webhook basic_k8s_test --antithesis.duration 30
 
 # Custom webhook names accepted.
-mock-server 200 '{"status": "ok"}'
+mock-server 200 '{"run_id": "run-123"}'
 snouty api webhook -w my_custom_webhook --antithesis.duration 30
 
 # Invalid JSON on stdin fails.
@@ -71,18 +71,18 @@ mock-server 200 '{}'
 stderr 'unexpected argument.*'
 
 # API errors are reported with status code.
-mock-server 400 '{"error": "bad request"}'
+mock-server 400 '{"error":"bad_request","message":"bad request"}'
 ! snouty api webhook -w basic_test --antithesis.duration 30
 stderr 'API error: 400.*'
 
 # On API error, nothing is printed to stdout.
-mock-server 500 '{"error": "something went wrong"}'
+mock-server 500 '{"error":"internal_error","message":"something went wrong"}'
 ! snouty api webhook -w basic_test --antithesis.duration 30
 stderr 'API error: 500.*'
 ! stdout .+
 
 # Stdin JSON is merged with CLI args; CLI args take priority.
-mock-server 200 '{"ok": true}'
+mock-server 200 '{"run_id": "run-123"}'
 stdin merge_stdin.json
 snouty api webhook -w basic_test --stdin --antithesis.report.recipients team@example.com
 stderr '"antithesis.duration": "60"'
@@ -90,20 +90,19 @@ stderr '"antithesis.description": "from stdin"'
 stderr '"antithesis.report.recipients": "\[REDACTED\]"'
 
 # CLI args override values from stdin.
-mock-server 200 '{"ok": true}'
+mock-server 200 '{"run_id": "run-123"}'
 stdin merge_stdin.json
 snouty api webhook -w basic_test --stdin --antithesis.duration 120
 stderr '"antithesis.duration": "120"'
 stderr '"antithesis.description": "from stdin"'
 
 # On success, response body is printed as JSON to stdout.
-mock-server 200 '{"session_id": "abc123", "status": "launched"}'
+mock-server 200 '{"run_id": "run-123"}'
 snouty api webhook -w basic_test --antithesis.duration 30
-stdout '"session_id".*'
-stdout '"status".*'
+stdout '"run_id".*'
 
 # On success, no report email ETA is printed (unlike `run`).
-mock-server 200 '{"ok": true}'
+mock-server 200 '{"run_id": "run-123"}'
 snouty api webhook -w basic_test --antithesis.duration 30
 ! stderr 'Expect a report email.*'
 

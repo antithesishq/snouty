@@ -48,6 +48,9 @@ Environment variables:
     #[command(hide = true)]
     Run(LaunchArgs),
 
+    /// List all runs
+    Runs,
+
     /// Access raw API endpoints
     #[command(subcommand)]
     Api(ApiCommands),

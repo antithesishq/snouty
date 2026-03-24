@@ -135,6 +135,57 @@ fn cmd_mock_server(
     Ok(())
 }
 
+fn cmd_mock_runs_server(
+    env: &mut testscript_rs::TestEnvironment,
+    args: &[String],
+) -> testscript_rs::Result<()> {
+    let empty = match args {
+        [] => false,
+        [mode] if mode == "empty" => true,
+        _ => {
+            return Err(err(
+                "mock-runs-server accepts either no arguments or 'empty'".to_string(),
+            ));
+        }
+    };
+
+    let listener =
+        TcpListener::bind("127.0.0.1:0").map_err(|e| err(format!("failed to bind: {e}")))?;
+    let addr = listener
+        .local_addr()
+        .map_err(|e| err(format!("failed to get addr: {e}")))?;
+    let url = format!("http://{addr}");
+
+    thread::spawn(move || {
+        for stream in listener.incoming().flatten() {
+            let mut stream = stream;
+            let mut buf = [0u8; 4096];
+            let bytes_read = Read::read(&mut stream, &mut buf).unwrap_or(0);
+            let request = String::from_utf8_lossy(&buf[..bytes_read]);
+
+            let body = if empty {
+                r#"{"data":[],"next_cursor":null}"#
+            } else if request.contains("after=cursor-1") {
+                r#"{"data":[{"run_id":"run-2","status":"running","type":"mvd","created_at":"2025-03-19T14:00:00Z","launcher":"debug"}],"next_cursor":null}"#
+            } else {
+                r#"{"data":[{"run_id":"run-1","status":"completed","type":"test","created_at":"2025-03-20T02:00:00Z","launcher":"nightly"}],"next_cursor":"cursor-1"}"#
+            };
+
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+                body.len(),
+            );
+            let _ = stream.write_all(response.as_bytes());
+        }
+    });
+
+    env.set_env_var("ANTITHESIS_BASE_URL", &url);
+    env.set_env_var("ANTITHESIS_USERNAME", "testuser");
+    env.set_env_var("ANTITHESIS_PASSWORD", "testpass");
+    env.set_env_var("ANTITHESIS_TENANT", "testtenant");
+    Ok(())
+}
+
 fn cmd_build_image(
     env: &mut testscript_rs::TestEnvironment,
     args: &[String],
@@ -287,6 +338,7 @@ fn spec_tests() {
         })
         .command("snouty", cmd_snouty)
         .command("mock-server", cmd_mock_server)
+        .command("mock-runs-server", cmd_mock_runs_server)
         .command("set-env", |env, args| {
             // Usage: set-env KEY value...
             // Interpolates ${VAR} references in value using env.env_vars.

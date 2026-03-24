@@ -1,4 +1,5 @@
 use std::fs;
+use std::path::Path;
 use std::process::Command;
 
 use clap::CommandFactory;
@@ -8,20 +9,37 @@ include!("src/cli.rs");
 
 fn main() {
     println!("cargo:rerun-if-env-changed=RUSTC");
+    println!("cargo:rerun-if-changed=openapi.json");
     println!(
         "cargo:rustc-env=SNOUTY_RUSTC_VERSION={}",
         rustc_version().unwrap()
     );
 
-    let outdir = std::env::var_os("SHELL_COMPLETIONS_DIR")
-        .or_else(|| std::env::var_os("OUT_DIR"))
-        .unwrap();
-    fs::create_dir_all(&outdir).unwrap();
+    let out_dir = std::env::var_os("OUT_DIR").unwrap();
+    fs::create_dir_all(&out_dir).unwrap();
+    generate_api_client(Path::new(&out_dir));
+
+    let completions_dir = std::env::var_os("SHELL_COMPLETIONS_DIR").unwrap_or(out_dir);
+    fs::create_dir_all(&completions_dir).unwrap();
 
     let mut command = Cli::command();
     for shell in [Shell::Bash, Shell::Fish, Shell::Zsh, Shell::Elvish] {
-        generate_to(shell, &mut command, "snouty", &outdir).unwrap();
+        generate_to(shell, &mut command, "snouty", &completions_dir).unwrap();
     }
+}
+
+fn generate_api_client(out_dir: &Path) {
+    let file = std::fs::File::open("openapi.json").unwrap();
+    let spec = serde_json::from_reader(file).unwrap();
+
+    let mut settings = progenitor::GenerationSettings::default();
+    let settings = settings.with_interface(progenitor::InterfaceStyle::Builder);
+    let mut generator = progenitor::Generator::new(settings);
+    let tokens = generator.generate_tokens(&spec).unwrap();
+    let ast = syn::parse2(tokens).unwrap();
+    let content = prettyplease::unparse(&ast);
+
+    fs::write(out_dir.join("antithesis_api.rs"), content).unwrap();
 }
 
 fn rustc_version() -> Result<String, Box<dyn std::error::Error>> {

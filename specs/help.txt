@@ -11,6 +11,7 @@ stdout 'snouty \d+\.\d+\.\d+'
 # --help shows primary subcommands.
 snouty --help
 stdout '.*run.*'
+stdout '.*runs.*'
 stdout '.*debug.*'
 stdout '.*version.*'
 stdout '.*api.*'

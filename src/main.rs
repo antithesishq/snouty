@@ -3,10 +3,11 @@ use std::process::Command;
 
 use chrono::{Duration, Local};
 use clap::Parser;
+use futures_util::TryStreamExt;
 use log::{debug, info};
 
 use color_eyre::eyre::{Context, Result, bail};
-use snouty::api::AntithesisApi;
+use snouty::api::{AntithesisApi, RunSummary};
 use snouty::cli::{ApiCommands, Cli, Commands, LaunchArgs};
 use snouty::container;
 use snouty::docs;
@@ -79,6 +80,10 @@ async fn main() -> Result<()> {
             eprintln!("warning: `snouty run` is deprecated, use `snouty launch` instead");
             info!("launching test with webhook: {}", args.webhook);
             cmd_launch(args).await
+        }
+        Commands::Runs => {
+            info!("listing runs");
+            cmd_runs().await
         }
         Commands::Api(ApiCommands::Webhook {
             webhook,
@@ -228,11 +233,11 @@ async fn cmd_launch(args: LaunchArgs) -> Result<()> {
 async fn cmd_api_webhook(webhook: String, args: Vec<String>, use_stdin: bool) -> Result<()> {
     let params = get_params(args, use_stdin, false)?;
     let body = launch_webhook(&webhook, params).await?;
-    println!("{}", body);
+    println!("{}", serde_json::to_string(&body)?);
     Ok(())
 }
 
-async fn launch_webhook(webhook: &str, params: Params) -> Result<String> {
+async fn launch_webhook(webhook: &str, params: Params) -> Result<snouty::api::LaunchResponse> {
     params.validate_test_params()?;
 
     // Print params to stderr for user visibility (with sensitive values redacted)
@@ -242,21 +247,7 @@ async fn launch_webhook(webhook: &str, params: Params) -> Result<String> {
     );
 
     let api = AntithesisApi::from_env()?;
-    let response = api
-        .post(&format!("/launch/{}", webhook))
-        .json(&serde_json::json!({ "params": params.to_value() }))
-        .send()
-        .await?;
-
-    let status = response.status();
-    let body = response.text().await?;
-    debug!("response status: {}, body:\n{}", status, body);
-
-    if status.is_success() {
-        Ok(body)
-    } else {
-        bail!("API error: {} - {}", status.as_u16(), body)
-    }
+    api.launch_test(webhook, &params).await
 }
 
 async fn cmd_debug(args: Vec<String>, use_stdin: bool) -> Result<()> {
@@ -270,30 +261,96 @@ async fn cmd_debug(args: Vec<String>, use_stdin: bool) -> Result<()> {
     );
 
     let api = AntithesisApi::from_env()?;
-    let response = api
-        .post("/launch/debugging")
-        .json(&serde_json::json!({ "params": params.to_value() }))
-        .send()
-        .await?;
+    let body = api.launch_debugging(&params).await?;
+    println!("{}", body);
 
-    let status = response.status();
-    let body = response.text().await?;
-    debug!("response status: {}, body length: {}", status, body.len());
+    // Estimate when the debugging session email will arrive
+    let eta = Local::now() + Duration::minutes(10);
+    eprintln!(
+        "\nExpect a debugging session email from Antithesis around {}",
+        eta.format("%b %-d at %-I:%M %p")
+    );
 
-    if status.is_success() {
-        println!("{}", body);
+    Ok(())
+}
 
-        // Estimate when the debugging session email will arrive
-        let eta = Local::now() + Duration::minutes(10);
-        eprintln!(
-            "\nExpect a debugging session email from Antithesis around {}",
-            eta.format("%b %-d at %-I:%M %p")
-        );
+async fn cmd_runs() -> Result<()> {
+    let api = AntithesisApi::from_env()?;
+    let runs = api.stream_runs().try_collect::<Vec<_>>().await?;
 
-        Ok(())
-    } else {
-        bail!("API error: {} - {}", status.as_u16(), body)
+    if runs.is_empty() {
+        println!("No runs found.");
+        return Ok(());
     }
+
+    println!("{}", render_runs_table(&runs));
+    Ok(())
+}
+
+fn render_runs_table(runs: &[RunSummary]) -> String {
+    let headers = vec![
+        "RUN ID".to_string(),
+        "STATUS".to_string(),
+        "TYPE".to_string(),
+        "CREATED AT".to_string(),
+        "LAUNCHER".to_string(),
+    ];
+    let rows = runs
+        .iter()
+        .map(|run| {
+            vec![
+                run.run_id.clone(),
+                render_enum(&run.status),
+                run.type_
+                    .as_ref()
+                    .map(render_enum)
+                    .unwrap_or_default(),
+                run.created_at.to_rfc3339(),
+                run.launcher.clone(),
+            ]
+        })
+        .collect::<Vec<_>>();
+
+    let mut widths = headers
+        .iter()
+        .map(|header| header.len())
+        .collect::<Vec<_>>();
+    for row in &rows {
+        for (index, cell) in row.iter().enumerate() {
+            widths[index] = widths[index].max(cell.len());
+        }
+    }
+
+    let mut output = String::new();
+    push_table_row(&mut output, &headers, &widths);
+    push_table_row(
+        &mut output,
+        &widths
+            .iter()
+            .map(|width| "-".repeat(*width))
+            .collect::<Vec<_>>(),
+        &widths,
+    );
+    for row in rows {
+        push_table_row(&mut output, &row, &widths);
+    }
+
+    output.trim_end().to_string()
+}
+
+fn push_table_row(output: &mut String, row: &[String], widths: &[usize]) {
+    for (index, cell) in row.iter().enumerate() {
+        if index > 0 {
+            output.push_str("  ");
+        }
+        output.push_str(&format!("{cell:<width$}", width = widths[index]));
+    }
+    output.push('\n');
+}
+
+fn render_enum(value: &impl serde::Serialize) -> String {
+    let json = serde_json::to_string(value).unwrap_or_default();
+    json.trim_matches('"').to_string()
 }
 
 fn cmd_completions(shell: String) -> Result<()> {

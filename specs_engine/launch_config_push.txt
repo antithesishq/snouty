@@ -6,7 +6,7 @@
 # Both get pinned references (name@sha256:digest) in the webhook params.
 
 # Local build images are tagged with registry prefix, pushed and pinned.
-mock-server 200 '{"status": "ok"}'
+mock-server 200 '{"run_id": "run-123"}'
 build-image myapp:latest images/myapp
 build-image sidecar:v1 images/sidecar
 snouty launch -w basic_test -c push_config --duration 30
@@ -15,13 +15,13 @@ stderr '"antithesis.images":.*myapp@sha256:'
 stderr '"antithesis.images":.*sidecar@sha256:'
 
 # No compose images match the registry — only config image is pinned.
-mock-server 200 '{"status": "ok"}'
+mock-server 200 '{"run_id": "run-123"}'
 snouty launch -w basic_test -c external_config --duration 30
 stderr '"antithesis.config_image":.*@sha256:'
 ! stderr '"antithesis.images"'
 
 # Mixed: local build image is tagged+pushed, external image is skipped.
-mock-server 200 '{"status": "ok"}'
+mock-server 200 '{"run_id": "run-123"}'
 build-image myapp:latest images/myapp
 snouty launch -w basic_test -c mixed_config --duration 30
 stderr '"antithesis.images":.*myapp@sha256:'
@@ -29,7 +29,7 @@ stderr '"antithesis.images":.*myapp@sha256:'
 stderr '"antithesis.config_image":.*@sha256:'
 
 # Local image without build stanza is not pushed.
-mock-server 200 '{"status": "ok"}'
+mock-server 200 '{"run_id": "run-123"}'
 snouty launch -w basic_test -c local_no_build_config --duration 30
 stderr '"antithesis.config_image":.*@sha256:'
 ! stderr '"antithesis.images"'

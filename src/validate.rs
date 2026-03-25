@@ -460,7 +460,7 @@ fn run_test_scripts(
     scripts: &[TestScript],
 ) -> Result<()> {
     // Categorize scripts
-    let first: Vec<_> = scripts
+    let mut first: Vec<_> = scripts
         .iter()
         .filter(|s| s.script_type == ScriptType::First)
         .collect();
@@ -501,9 +501,17 @@ fn run_test_scripts(
 
     let mut ok = true;
 
-    // Execute first scripts (sorted by path — already sorted from scan_scripts)
-    for s in &first {
-        ok &= exec_script(compose, config, s, &[])?;
+    // Execute one first script chosen at random. The platform treats first scripts
+    // as mutually exclusive, so the others are skipped.
+    shuffle(&mut first);
+    if let Some(selected) = first.first().copied() {
+        ok &= exec_script(compose, config, selected, &[])?;
+        for skipped in &first[1..] {
+            eprintln!(
+                "Not executing [{}/{}]",
+                skipped.test_name, skipped.command_name
+            );
+        }
     }
 
     // Execute drivers + anytime (shuffled together)

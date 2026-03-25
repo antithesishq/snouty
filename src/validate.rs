@@ -121,6 +121,25 @@ fn generate_setup_override(compose_yaml: &str, temp_dir: &Path) -> Result<PathBu
     Ok(override_path)
 }
 
+/// Create a directory at the requested path if it does not already exist.
+/// If it already exists, ensure it is a directory, and ensure there is nothing in it.
+fn mkdir_or_require_empty(path: &Path) -> Result<()> {
+    if path.exists() {
+        if !path.is_dir() {
+            bail!("{} exists but is not a directory", path.display());
+        }
+        let mut entries = std::fs::read_dir(path)
+            .wrap_err_with(|| format!("failed to read directory {}", path.display()))?;
+        if entries.next().is_some() {
+            bail!("{} exists but is not empty", path.display());
+        }
+        Ok(())
+    } else {
+        std::fs::create_dir_all(path)
+            .wrap_err_with(|| format!("failed to create directory {}", path.display()))
+    }
+}
+
 struct ComposeDownGuard<'a> {
     compose: &'a dyn container::Compose,
     config: &'a ComposeConfig,
@@ -133,16 +152,31 @@ impl Drop for ComposeDownGuard<'_> {
 }
 
 pub async fn cmd_validate(args: ValidateArgs) -> Result<()> {
+    match std::env::var("SNOUTY_TEMP_DIR") {
+        Ok(out_dir) => {
+            let temp_dir = Path::new(&out_dir);
+            // To avoid conflating results of subsequent runs, we require that the provided
+            // SNOUTY_TEMP_DIR is empty or non-existent
+            mkdir_or_require_empty(&temp_dir)?;
+            validate_with_temp_dir(args, &temp_dir).await
+        }
+        _ => {
+            let temp_dir = tempfile::tempdir()?;
+            validate_with_temp_dir(args, temp_dir.path()).await
+        }
+    }
+}
+
+async fn validate_with_temp_dir(args: ValidateArgs, temp_dir: &Path) -> Result<()> {
     let config = ComposeConfig::new(args.config)?;
     let rt = container::runtime()?;
     let compose = rt.compose();
 
-    let temp_dir = tempfile::tempdir()?;
     let compose_yaml = compose.config(config.dir())?;
     let contents = container::parse_compose_config(&compose_yaml)?;
     validate_images_are_available(rt, &contents.services)?;
     validate_image_architectures(rt, &contents.services)?;
-    let override_path = generate_setup_override(&compose_yaml, temp_dir.path())?;
+    let override_path = generate_setup_override(&compose_yaml, temp_dir)?;
     let config = config.with_overlay(override_path);
 
     let deadline = tokio::time::Instant::now() + Duration::from_secs(args.timeout);
@@ -174,11 +208,11 @@ pub async fn cmd_validate(args: ValidateArgs) -> Result<()> {
 
     // Discover scripts early so we can use them for both the success path
     // and the timeout diagnostic.
-    let scripts = discover_scripts(&*compose, &config, temp_dir.path())?;
+    let scripts = discover_scripts(&*compose, &config, temp_dir)?;
 
     let mut logs_child = compose.logs_follow(&config)?;
 
-    let sdk_output_dir = temp_dir.path().join("antithesis");
+    let sdk_output_dir = temp_dir.join("antithesis");
 
     let result = tokio::select! {
         result = watch_for_setup_complete(&sdk_output_dir, deadline) => result,
@@ -202,7 +236,7 @@ pub async fn cmd_validate(args: ValidateArgs) -> Result<()> {
             run_test_scripts(&*compose, &config, &scripts)
         }
         Ok(false) => {
-            diagnose_setup_in_first_scripts(&*compose, &config, &scripts, temp_dir.path());
+            diagnose_setup_in_first_scripts(&*compose, &config, &scripts, temp_dir);
             bail!("timed out waiting for setup-complete event");
         }
         Err(e) => Err(e),
@@ -1111,6 +1145,43 @@ services:
         assert!(
             debug.contains("image: missing-b:latest"),
             "expected second missing image, got: {debug}"
+        );
+    }
+
+    #[test]
+    fn mkdir_or_require_empty_creates_new_dir() {
+        let parent = tempfile::tempdir().unwrap();
+        let target = parent.path().join("new");
+        mkdir_or_require_empty(&target).unwrap();
+        assert!(target.is_dir());
+    }
+
+    #[test]
+    fn mkdir_or_require_empty_accepts_existing_empty_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        mkdir_or_require_empty(dir.path()).unwrap();
+    }
+
+    #[test]
+    fn mkdir_or_require_empty_rejects_non_empty_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("file.txt"), "content").unwrap();
+        let err = mkdir_or_require_empty(dir.path()).unwrap_err();
+        assert!(
+            format!("{err}").contains("not empty"),
+            "expected 'not empty' error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn mkdir_or_require_empty_rejects_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("not_a_dir");
+        std::fs::write(&file, "content").unwrap();
+        let err = mkdir_or_require_empty(&file).unwrap_err();
+        assert!(
+            format!("{err}").contains("not a directory"),
+            "expected 'not a directory' error, got: {err}"
         );
     }
 }

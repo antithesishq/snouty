@@ -1,4 +1,6 @@
-use snouty::testutils::{OCIRegistry, filtered_path_without_binary, skip_or_fail};
+use snouty::testutils::{
+    OCIRegistry, available_runtimes, filtered_path_without_binary, skip_or_fail,
+};
 use std::cell::RefCell;
 use std::io::{Read, Write};
 use std::net::TcpListener;
@@ -15,6 +17,12 @@ fn err(msg: String) -> testscript_rs::Error {
 struct EngineContext {
     engine: Box<dyn snouty::container::ContainerRuntime>,
     built_images: Vec<String>,
+}
+
+#[derive(Clone, Copy)]
+struct EngineSpecCase {
+    file: &'static str,
+    needs_registry: bool,
 }
 
 thread_local! {
@@ -223,6 +231,101 @@ fn cmd_pull_image(
     })
 }
 
+fn requested_runtime_matches(runtime_name: &str) -> Result<bool, String> {
+    match std::env::var("SNOUTY_TEST_RUNTIME") {
+        Ok(requested) => match requested.as_str() {
+            "docker" | "podman" => Ok(requested == runtime_name),
+            _ => Err(format!(
+                "invalid SNOUTY_TEST_RUNTIME `{requested}`: expected `docker` or `podman`"
+            )),
+        },
+        Err(std::env::VarError::NotPresent) => Ok(true),
+        Err(std::env::VarError::NotUnicode(_)) => {
+            Err("SNOUTY_TEST_RUNTIME must be valid UTF-8".to_string())
+        }
+    }
+}
+
+fn find_runtime(runtime_name: &str) -> Option<Box<dyn snouty::container::ContainerRuntime>> {
+    available_runtimes()
+        .into_iter()
+        .find(|runtime| runtime.name() == runtime_name)
+}
+
+fn cleanup_engine_images(runtime_name: &str, built_images: &[String], registry_addr: Option<&str>) {
+    for image in built_images {
+        let _ = std::process::Command::new(runtime_name)
+            .args(["rmi", "-f", image])
+            .output();
+        if let Some(registry_addr) = registry_addr {
+            let prefixed = format!("{registry_addr}/{image}");
+            let _ = std::process::Command::new(runtime_name)
+                .args(["rmi", "-f", &prefixed])
+                .output();
+        }
+    }
+}
+
+fn run_engine_spec_case(runtime_name: &'static str, case: EngineSpecCase) {
+    if !requested_runtime_matches(runtime_name)
+        .unwrap_or_else(|e| panic!("invalid test runtime selection: {e}"))
+    {
+        return;
+    }
+
+    let engine = match find_runtime(runtime_name) {
+        Some(engine) => engine,
+        None => {
+            skip_or_fail(&format!("{runtime_name}: no container runtime available"));
+            return;
+        }
+    };
+
+    eprintln!("=== engine specs with: {runtime_name} ({}) ===", case.file);
+
+    let registry = if case.needs_registry {
+        match OCIRegistry::start(engine.as_ref()) {
+            Some(registry) => Some(registry),
+            None => return,
+        }
+    } else {
+        None
+    };
+    let registry_addr = registry.as_ref().map(OCIRegistry::host_port);
+
+    ENGINE_CTX.set(Some(EngineContext {
+        engine: engine.clone_box(),
+        built_images: Vec::new(),
+    }));
+
+    let name = runtime_name.to_string();
+    let registry_addr_for_setup = registry_addr.clone();
+
+    let result = testscript::run("specs_engine")
+        .files([case.file])
+        .setup(move |env| {
+            env.set_env_var("RUST_LOG", "debug");
+            env.set_env_var("SNOUTY_CONTAINER_ENGINE", &name);
+            if let Some(addr) = registry_addr_for_setup.as_deref() {
+                env.set_env_var("ANTITHESIS_REPOSITORY", addr);
+            }
+            Ok(())
+        })
+        .command("snouty", cmd_snouty)
+        .command("mock-server", cmd_mock_server)
+        .command("build-image", cmd_build_image)
+        .command("pull-image", cmd_pull_image)
+        .execute();
+
+    let built_images = ENGINE_CTX
+        .with_borrow_mut(|ctx| ctx.take().map(|ctx| ctx.built_images).unwrap_or_default());
+    cleanup_engine_images(engine.name(), &built_images, registry_addr.as_deref());
+
+    if let Err(e) = result {
+        panic!("\n{runtime_name} {}: {e}", case.file);
+    }
+}
+
 // --- Test functions ---
 
 #[test]
@@ -279,62 +382,78 @@ fn spec_tests() {
     }
 }
 
-#[test]
-fn engine_spec_tests() {
-    let engines = snouty::container::available_engines();
-    if engines.is_empty() {
-        skip_or_fail("no container runtime available");
-        return;
-    }
-
-    for engine in &engines {
-        let engine_name = engine.name().to_string();
-        eprintln!("=== engine specs with: {engine_name} ===");
-        let registry = match OCIRegistry::start(engine.as_ref()) {
-            Some(r) => r,
-            None => continue,
-        };
-        let registry_addr = registry.host_port();
-
-        ENGINE_CTX.set(Some(EngineContext {
-            engine: engine.clone_box(),
-            built_images: Vec::new(),
-        }));
-
-        let name = engine_name.clone();
-        let addr = registry_addr.clone();
-
-        let result = testscript::run("specs_engine")
-            .setup(move |env| {
-                env.set_env_var("RUST_LOG", "debug");
-                env.set_env_var("SNOUTY_CONTAINER_ENGINE", &name);
-                env.set_env_var("ANTITHESIS_REPOSITORY", &addr);
-                Ok(())
-            })
-            .command("snouty", cmd_snouty)
-            .command("mock-server", cmd_mock_server)
-            .command("build-image", cmd_build_image)
-            .command("pull-image", cmd_pull_image)
-            .execute();
-
-        // Best-effort cleanup of built images.
-        ENGINE_CTX.with_borrow(|ctx| {
-            if let Some(ctx) = ctx.as_ref() {
-                for image in &ctx.built_images {
-                    let _ = std::process::Command::new(engine.name())
-                        .args(["rmi", "-f", image])
-                        .output();
-                    // Remove registry-prefixed copy created by push_compose_images.
-                    let prefixed = format!("{registry_addr}/{image}");
-                    let _ = std::process::Command::new(engine.name())
-                        .args(["rmi", "-f", &prefixed])
-                        .output();
-                }
-            }
-        });
-
-        if let Err(e) = result {
-            panic!("\n{engine_name}: {e}");
+macro_rules! engine_spec_case_test {
+    ($name:ident, $runtime:literal, $file:literal, $needs_registry:expr) => {
+        #[test]
+        fn $name() {
+            run_engine_spec_case(
+                $runtime,
+                EngineSpecCase {
+                    file: $file,
+                    needs_registry: $needs_registry,
+                },
+            );
         }
-    }
+    };
 }
+
+engine_spec_case_test!(
+    podman_engine_run_config_push_specs,
+    "podman",
+    "run_config_push.txt",
+    true
+);
+engine_spec_case_test!(
+    podman_engine_validate_setup_specs,
+    "podman",
+    "validate_setup.txt",
+    false
+);
+engine_spec_case_test!(
+    podman_engine_validate_failures_specs,
+    "podman",
+    "validate_failures.txt",
+    false
+);
+engine_spec_case_test!(
+    podman_engine_validate_network_arch_specs,
+    "podman",
+    "validate_network_arch.txt",
+    false
+);
+engine_spec_case_test!(
+    podman_engine_validate_timeout_specs,
+    "podman",
+    "validate_timeout.txt",
+    false
+);
+engine_spec_case_test!(
+    docker_engine_run_config_push_specs,
+    "docker",
+    "run_config_push.txt",
+    true
+);
+engine_spec_case_test!(
+    docker_engine_validate_setup_specs,
+    "docker",
+    "validate_setup.txt",
+    false
+);
+engine_spec_case_test!(
+    docker_engine_validate_failures_specs,
+    "docker",
+    "validate_failures.txt",
+    false
+);
+engine_spec_case_test!(
+    docker_engine_validate_network_arch_specs,
+    "docker",
+    "validate_network_arch.txt",
+    false
+);
+engine_spec_case_test!(
+    docker_engine_validate_timeout_specs,
+    "docker",
+    "validate_timeout.txt",
+    false
+);

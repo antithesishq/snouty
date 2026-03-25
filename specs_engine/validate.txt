@@ -13,8 +13,9 @@ stderr 'Setup validation successful.*'
 build-image all-types:latest all_types
 snouty validate config_all_types --timeout 15
 stderr 'Setup-complete event detected.*'
-stderr 'Found 1 first, 1 driver, 1 anytime, 1 eventually, 1 finally scripts.*'
-stderr 'Running \[suite/first_setup\] in service runner.*'
+stderr 'Found 2 first, 1 driver, 1 anytime, 1 eventually, 1 finally scripts.*'
+stderr 'Not executing .*'
+stderr 'Running \[suite/first_(setup|secondary)\] in service runner.*'
 stderr 'Running \[suite/parallel_driver_load\] in service runner.*'
 stderr 'Running \[suite/anytime_check\] in service runner.*'
 stderr 'Running \[suite/eventually_verify\] in service runner.*'
@@ -102,6 +103,10 @@ services:
 # in first scripts don't trigger the chicken-and-egg diagnostic.
 echo '{"antithesis_assert":{"hit":true,"must_hit":true,"assert_type":"sometimes","display_type":"Sometimes","message":"first_setup ran","condition":true,"id":"first_setup","location":{},"details":null}}' >> "$ANTITHESIS_OUTPUT_DIR/sdk.jsonl"
 echo "first_setup ran"
+
+-- all_types/suite/first_secondary --
+#!/bin/sh
+echo "first_secondary ran"
 
 -- all_types/suite/parallel_driver_load --
 #!/bin/sh

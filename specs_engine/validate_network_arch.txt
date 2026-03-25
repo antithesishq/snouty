@@ -1,0 +1,83 @@
+# snouty validate — network and architecture cases with container runtime
+
+# Shared emitter image for scenarios that need a local setup-complete source.
+build-image setup-emitter-netarch:latest setup_emitter
+
+# Custom networks are isolated and outbound traffic is blocked.
+build-image net-check-netarch:latest net_check
+snouty validate config_net_check --timeout 15
+stderr 'Isolating networks: default.*'
+stderr 'Setup-complete event detected.*'
+stderr 'Setup validation successful.*'
+
+# An arm64-only image is rejected during validation.
+pull-image --platform linux/arm64 arm-sidecar-netarch:latest docker.io/arm64v8/hello-world:latest
+! snouty validate config_arm_image --timeout 15
+stderr 'x86-64 \(amd64\).*'
+stderr 'service '\''arm-sidecar'\'' uses image '\''arm-sidecar-netarch:latest'\'' with architecture '\''arm64'\''.*'
+
+# A multi-arch image is accepted by using the local variant.
+pull-image multiarch-sidecar-netarch:latest docker.io/library/busybox:latest
+snouty validate config_multiarch_image --timeout 15
+stderr 'Setup-complete event detected.*'
+stderr 'Setup validation successful.*'
+
+# Missing images are reported together before architecture validation.
+! snouty validate config_missing_images --timeout 15
+stderr 'some images are not available locally.*'
+stderr '.*image: missing-app:latest.*'
+stderr '.*image: missing-sidecar:latest.*'
+stderr '.*pull or build the missing images, then retry.*'
+
+-- setup_emitter/Dockerfile --
+FROM busybox
+CMD sh -c 'echo "{\"antithesis_setup\":{\"status\":\"complete\"}}" >> "$ANTITHESIS_OUTPUT_DIR/sdk.jsonl" && sleep 3600'
+
+-- net_check/suite/anytime_ping_blocked --
+#!/bin/sh
+if ping -c 1 -W 2 example.org >/dev/null 2>&1; then
+    echo "ERROR: ping to example.org succeeded, network is not isolated"
+    exit 1
+fi
+echo "Network isolation confirmed: ping to example.org failed"
+
+-- net_check/Dockerfile --
+FROM busybox
+COPY suite/ /opt/antithesis/test/v1/suite/
+RUN chmod +x /opt/antithesis/test/v1/suite/*
+CMD sh -c 'echo "{\"antithesis_setup\":{\"status\":\"complete\"}}" >> "$ANTITHESIS_OUTPUT_DIR/sdk.jsonl" && sleep 3600'
+-- config_net_check/docker-compose.yaml --
+services:
+  checker:
+    image: net-check-netarch:latest
+    pull_policy: never
+
+-- config_arm_image/docker-compose.yaml --
+services:
+  emitter:
+    image: setup-emitter-netarch:latest
+    pull_policy: never
+  arm-sidecar:
+    image: arm-sidecar-netarch:latest
+    pull_policy: never
+
+-- config_multiarch_image/docker-compose.yaml --
+services:
+  emitter:
+    image: setup-emitter-netarch:latest
+    pull_policy: never
+  multiarch-sidecar:
+    image: multiarch-sidecar-netarch:latest
+    pull_policy: never
+
+-- config_missing_images/docker-compose.yaml --
+services:
+  emitter:
+    image: setup-emitter-netarch:latest
+    pull_policy: never
+  app:
+    image: missing-app:latest
+    pull_policy: never
+  sidecar:
+    image: missing-sidecar:latest
+    pull_policy: never

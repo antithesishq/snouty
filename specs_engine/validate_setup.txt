@@ -1,0 +1,92 @@
+# snouty validate — positive setup cases with container runtime
+
+# Setup-complete only (no test scripts) — validate succeeds.
+build-image setup-emitter-setup:latest setup_emitter
+snouty validate config_no_scripts --timeout 15
+stderr 'Isolating networks: default.*'
+stderr 'Setup-complete event detected.*'
+stderr 'No test scripts in service.*'
+stderr 'Setup validation successful.*'
+
+# All script types run in correct phases, helper_ ignored.
+#    Includes a sidecar without scripts to verify it doesn't block execution.
+build-image all-types-setup:latest all_types
+snouty validate config_all_types --timeout 15
+stderr 'Setup-complete event detected.*'
+stderr 'Found 2 first, 1 driver, 1 anytime, 1 eventually, 1 finally scripts.*'
+stderr 'Not executing .*'
+stderr 'Running \[suite/first_(setup|secondary)\] in service runner.*'
+stderr 'Running \[suite/parallel_driver_load\] in service runner.*'
+stderr 'Running \[suite/anytime_check\] in service runner.*'
+stderr 'Running \[suite/eventually_verify\] in service runner.*'
+stderr 'Running \[suite/finally_cleanup\] in service runner.*'
+stderr 'Setup validation successful.*'
+
+# Setup-complete via ANTITHESIS_SDK_LOCAL_OUTPUT (legacy env var).
+build-image sdk-local-emitter-setup:latest sdk_local_emitter
+snouty validate config_sdk_local --timeout 15
+stderr 'Setup-complete event detected.*'
+stderr 'Setup validation successful.*'
+
+-- setup_emitter/Dockerfile --
+FROM busybox
+CMD sh -c 'echo "{\"antithesis_setup\":{\"status\":\"complete\"}}" >> "$ANTITHESIS_OUTPUT_DIR/sdk.jsonl" && sleep 3600'
+-- config_no_scripts/docker-compose.yaml --
+services:
+  emitter:
+    image: setup-emitter-setup:latest
+    pull_policy: never
+
+-- all_types/suite/first_setup --
+#!/bin/sh
+# Emit an SDK event to sdk.jsonl to verify that non-setup_complete events
+# in first scripts don't trigger the chicken-and-egg diagnostic.
+echo '{"antithesis_assert":{"hit":true,"must_hit":true,"assert_type":"sometimes","display_type":"Sometimes","message":"first_setup ran","condition":true,"id":"first_setup","location":{},"details":null}}' >> "$ANTITHESIS_OUTPUT_DIR/sdk.jsonl"
+echo "first_setup ran"
+
+-- all_types/suite/first_secondary --
+#!/bin/sh
+echo "first_secondary ran"
+
+-- all_types/suite/parallel_driver_load --
+#!/bin/sh
+echo "parallel_driver_load ran"
+
+-- all_types/suite/anytime_check --
+#!/bin/sh
+echo "anytime_check ran"
+
+-- all_types/suite/eventually_verify --
+#!/bin/sh
+echo "eventually_verify ran"
+
+-- all_types/suite/finally_cleanup --
+#!/bin/sh
+echo "finally_cleanup ran"
+
+-- all_types/suite/helper_utils --
+#!/bin/sh
+echo "helper should not run"
+
+-- all_types/Dockerfile --
+FROM busybox
+COPY suite/ /opt/antithesis/test/v1/suite/
+RUN chmod +x /opt/antithesis/test/v1/suite/*
+CMD sh -c 'echo "{\"antithesis_setup\":{\"status\":\"complete\"}}" >> "$ANTITHESIS_OUTPUT_DIR/sdk.jsonl" && sleep 3600'
+-- config_all_types/docker-compose.yaml --
+services:
+  runner:
+    image: all-types-setup:latest
+    pull_policy: never
+  sidecar:
+    image: setup-emitter-setup:latest
+    pull_policy: never
+
+-- sdk_local_emitter/Dockerfile --
+FROM busybox
+CMD sh -c 'echo "{\"antithesis_setup\":{\"status\":\"complete\"}}" >> "$ANTITHESIS_SDK_LOCAL_OUTPUT" && sleep 3600'
+-- config_sdk_local/docker-compose.yaml --
+services:
+  emitter:
+    image: sdk-local-emitter-setup:latest
+    pull_policy: never

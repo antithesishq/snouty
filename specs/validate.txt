@@ -15,5 +15,9 @@ stderr 'not a directory.*'
 ! snouty validate empty
 stderr 'docker-compose.*'
 
+# --no-build flag is accepted.
+! snouty validate empty --no-build
+stderr 'docker-compose.*'
+
 -- empty/.keep --
 -- yml_dir/docker-compose.yml --

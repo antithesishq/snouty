@@ -1,0 +1,24 @@
+# snouty validate — compose build stage with container runtime
+
+# --no-build skips compose build, so missing local images fail validation.
+remove-image validate-build-setup:latest
+! snouty validate config_build_only --timeout 15 --no-build
+stderr 'some images are not available locally.*'
+stderr '.*image: validate-build-setup:latest.*'
+stderr '.*pull or build the missing images, then retry.*'
+
+# By default, validate runs compose build before checking local images.
+remove-image validate-build-setup:latest
+snouty validate config_build_only --timeout 15
+stderr 'Setup-complete event detected.*'
+stderr 'Setup validation successful.*'
+
+-- setup_emitter/Dockerfile --
+FROM busybox
+CMD sh -c 'echo "{\"antithesis_setup\":{\"status\":\"complete\"}}" >> "$ANTITHESIS_OUTPUT_DIR/sdk.jsonl" && sleep 3600'
+-- config_build_only/docker-compose.yaml --
+services:
+  emitter:
+    build: ../setup_emitter
+    image: validate-build-setup:latest
+    pull_policy: never

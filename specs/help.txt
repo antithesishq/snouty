@@ -23,8 +23,15 @@ stdout '.*validate.*'
 snouty api --help
 stdout '.*webhook.*'
 
+# run --help explains the compose build stage.
+snouty run --help
+stdout '.*compose build.*'
+stdout '.*--no-build.*'
+
 # validate --help explains how setup-complete is detected.
 snouty validate --help
+stdout '.*compose build.*'
+stdout '.*--no-build.*'
 stdout '.*\/tmp\/antithesis.*'
 stdout '.*ANTITHESIS_OUTPUT_DIR.*'
 stdout '.*ANTITHESIS_SDK_LOCAL_OUTPUT.*'

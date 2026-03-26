@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::io::{self, ErrorKind, Read};
 use std::process::Command;
 
@@ -59,6 +60,63 @@ fn get_params(args: Vec<String>, use_stdin: bool, support_moment: bool) -> Resul
     }
 }
 
+fn filter_pushable_images(
+    contents: &container::ComposeContents,
+    registry: &str,
+) -> Vec<container::ComposeService> {
+    let registry = registry.trim_end_matches('/');
+    let prefix = format!("{registry}/");
+
+    contents
+        .services
+        .iter()
+        .filter(|service| {
+            (contents.build_services.contains(&service.name)
+                && is_local_image(&service.image)
+                && !service.image.starts_with(&prefix))
+                || service.image.starts_with(&prefix)
+        })
+        .cloned()
+        .collect()
+}
+
+fn retag_and_push_images(
+    runtime: &dyn container::ContainerRuntime,
+    services: &[container::ComposeService],
+    registry: &str,
+) -> Result<Vec<String>> {
+    let prefix = format!("{}/", registry.trim_end_matches('/'));
+
+    let mut images = HashSet::new();
+    for service in services {
+        let target_image = if service.image.starts_with(&prefix) {
+            service.image.clone()
+        } else {
+            format!("{prefix}{}", service.image)
+        };
+
+        if !images.insert(target_image.clone()) && service.image != target_image {
+            runtime.image_tag(&service.image, &target_image)?;
+        }
+    }
+
+    let mut pinned = Vec::new();
+    for image in images {
+        eprintln!("Pushing image: {}", image);
+        let pinned_ref = runtime.image_push(&image)?;
+        eprintln!("Image pushed: {pinned_ref}");
+        pinned.push(pinned_ref);
+    }
+    Ok(pinned)
+}
+
+fn is_local_image(image: &str) -> bool {
+    match image.split_once('/') {
+        None => true,
+        Some((first, _)) => !(first.contains('.') || first.contains(':') || first == "localhost"),
+    }
+}
+
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<()> {
     color_eyre::install().unwrap();
@@ -99,6 +157,7 @@ async fn main() -> Result<()> {
 }
 
 async fn cmd_run(args: RunArgs) -> Result<()> {
+    let no_build = args.no_build;
     let mut params = Params::new();
 
     // Insert typed flags into params (skip None/false)
@@ -139,7 +198,7 @@ async fn cmd_run(args: RunArgs) -> Result<()> {
     }
 
     let config_image_ref = if let Some(config_dir) = args.config {
-        let config = container::ComposeConfig::new(config_dir)?;
+        let config = container::runtime()?.compose().config(&config_dir)?;
 
         let registry = std::env::var("ANTITHESIS_REPOSITORY")
             .wrap_err("missing environment variable: ANTITHESIS_REPOSITORY")?;
@@ -184,7 +243,19 @@ async fn cmd_run(args: RunArgs) -> Result<()> {
     if let Some((config, registry, config_image)) = config_image_ref {
         let rt = container::runtime()?;
 
-        let pinned_images = rt.push_compose_images(config.dir(), &registry)?;
+        if !no_build {
+            eprintln!("Building compose services...");
+            rt.compose().build(&config)?;
+        }
+
+        let contents = rt.compose().contents(&config)?;
+        // `run` validates only the service images it will publish so users do
+        // not need to pull unrelated remote images just to satisfy this check.
+        let pushable_images = filter_pushable_images(&contents, &registry);
+        container::validate_images_are_available(rt, &pushable_images)?;
+        container::validate_image_architectures(rt, &pushable_images)?;
+
+        let pinned_images = retag_and_push_images(rt, &pushable_images, &registry)?;
         if !pinned_images.is_empty() {
             params.insert("antithesis.images", pinned_images.join(";"));
         }
@@ -324,4 +395,120 @@ fn cmd_update() -> Result<()> {
         env!("CARGO_PKG_VERSION")
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn filter_pushable_images_selects_publishable_service_images() {
+        let contents = container::ComposeContents {
+            services: vec![
+                container::ComposeService {
+                    name: "app".to_string(),
+                    image: "myapp:latest".to_string(),
+                },
+                container::ComposeService {
+                    name: "prefixed".to_string(),
+                    image: "registry.example.com/repo/prefixed:v1".to_string(),
+                },
+                container::ComposeService {
+                    name: "external".to_string(),
+                    image: "docker.io/library/nginx:latest".to_string(),
+                },
+                container::ComposeService {
+                    name: "local-only".to_string(),
+                    image: "local-only:latest".to_string(),
+                },
+            ],
+            build_services: HashSet::from(["app".to_string()]),
+            networks: Vec::new(),
+        };
+
+        let planned = filter_pushable_images(&contents, "registry.example.com/repo");
+
+        assert_eq!(
+            planned,
+            vec![
+                container::ComposeService {
+                    name: "app".to_string(),
+                    image: "myapp:latest".to_string(),
+                },
+                container::ComposeService {
+                    name: "prefixed".to_string(),
+                    image: "registry.example.com/repo/prefixed:v1".to_string(),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn filter_pushable_images_keeps_duplicate_targets_for_service_diagnostics() {
+        let contents = container::ComposeContents {
+            services: vec![
+                container::ComposeService {
+                    name: "app".to_string(),
+                    image: "myapp:latest".to_string(),
+                },
+                container::ComposeService {
+                    name: "worker".to_string(),
+                    image: "myapp:latest".to_string(),
+                },
+            ],
+            build_services: HashSet::from(["app".to_string(), "worker".to_string()]),
+            networks: Vec::new(),
+        };
+
+        let planned = filter_pushable_images(&contents, "registry.example.com/repo");
+
+        assert_eq!(
+            planned,
+            vec![
+                container::ComposeService {
+                    name: "app".to_string(),
+                    image: "myapp:latest".to_string(),
+                },
+                container::ComposeService {
+                    name: "worker".to_string(),
+                    image: "myapp:latest".to_string(),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn is_local_image_bare_name() {
+        assert!(is_local_image("myapp:latest"));
+    }
+
+    #[test]
+    fn is_local_image_org_name() {
+        assert!(is_local_image("myorg/myapp:latest"));
+    }
+
+    #[test]
+    fn is_local_image_registry_with_dot() {
+        assert!(!is_local_image("registry.example.com/myapp:latest"));
+    }
+
+    #[test]
+    fn is_local_image_docker_io() {
+        assert!(!is_local_image("docker.io/library/nginx:latest"));
+    }
+
+    #[test]
+    fn is_local_image_localhost() {
+        assert!(!is_local_image("localhost/myapp:latest"));
+    }
+
+    #[test]
+    fn is_local_image_localhost_port() {
+        assert!(!is_local_image("localhost:5000/myapp:latest"));
+    }
+
+    #[test]
+    fn is_local_image_host_port() {
+        assert!(!is_local_image("myregistry:5000/myapp:latest"));
+    }
 }

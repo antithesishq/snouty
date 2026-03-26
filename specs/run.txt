@@ -39,6 +39,12 @@ stderr '"antithesis.duration": "30"'
 stderr '"antithesis.report.recipients": "\[REDACTED\]"'
 stderr '"antithesis.source": "ci-pipeline"'
 
+# --no-build is accepted for pre-built config images and still launches the run.
+mock-server 200 '{"status": "ok"}'
+snouty run -w basic_test --config-image config:latest --duration 30 --no-build
+stderr '"antithesis.config_image": "config:latest"'
+stderr '"antithesis.duration": "30"'
+
 # 6b. --ephemeral flag sets antithesis.is_ephemeral to "true".
 mock-server 200 '{"status": "ok"}'
 snouty run -w basic_test --duration 30 --ephemeral

@@ -7,6 +7,11 @@
 ! snouty run -w basic_test -c config --duration 30
 stderr 'ANTITHESIS_REPOSITORY.*'
 
+# --no-build skips compose build only; config image publishing still requires
+#    ANTITHESIS_REPOSITORY.
+! snouty run -w basic_test -c config --duration 30 --no-build
+stderr 'ANTITHESIS_REPOSITORY.*'
+
 env ANTITHESIS_REPOSITORY=registry.example.com/repo
 
 # Rejects a nonexistent directory.

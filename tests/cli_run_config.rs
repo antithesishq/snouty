@@ -107,6 +107,27 @@ fn run_config_requires_registry_env() {
 }
 
 #[test]
+fn run_config_no_build_still_requires_registry_env() {
+    let dir = TempDir::new().unwrap();
+    std::fs::write(dir.path().join("docker-compose.yaml"), "version: '3'\n").unwrap();
+
+    snouty()
+        .args([
+            "run",
+            "-w",
+            "basic_test",
+            "-c",
+            dir.path().to_str().unwrap(),
+            "--duration",
+            "30",
+            "--no-build",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("ANTITHESIS_REPOSITORY"));
+}
+
+#[test]
 fn run_config_long_flag_accepted() {
     snouty()
         .env("ANTITHESIS_REPOSITORY", "registry.example.com/repo")

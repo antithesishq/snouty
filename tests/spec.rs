@@ -139,14 +139,24 @@ fn cmd_build_image(
     env: &mut testscript_rs::TestEnvironment,
     args: &[String],
 ) -> testscript_rs::Result<()> {
-    // Usage: build-image <name:tag> <dir>
+    // Usage: build-image [--platform <platform>] <name:tag> <dir>
     // Builds a container image from <dir> (relative to work_dir), tagged as
     // {registry}/<name:tag> so it matches compose references.
     // If <dir> contains a Dockerfile it is used; otherwise a scratch image
     // containing the directory contents is built.
     // Registry and engine come from the ENGINE_CTX thread-local.
-    let [image_ref, dir_arg] = args else {
-        return Err(err("build-image requires <name:tag> <dir>".to_string()));
+    let (platform, image_ref, dir_arg) = match args {
+        [image_ref, dir_arg] => (None, image_ref.to_string(), dir_arg.to_string()),
+        [flag, platform, image_ref, dir_arg] if flag == "--platform" => (
+            Some(platform.to_string()),
+            image_ref.to_string(),
+            dir_arg.to_string(),
+        ),
+        _ => {
+            return Err(err(
+                "build-image requires [--platform <platform>] <name:tag> <dir>".to_string(),
+            ));
+        }
     };
     let start = std::time::Instant::now();
     let label = args.join(" ");
@@ -154,12 +164,11 @@ fn cmd_build_image(
         let ctx = ctx
             .as_mut()
             .ok_or_else(|| err("ENGINE_CTX not set".to_string()))?;
-        let image_ref = image_ref.to_string();
         let dir = env.work_dir.join(dir_arg);
         let dockerfile = dir.join("Dockerfile");
         let dockerfile = dockerfile.exists().then_some(dockerfile.as_path());
         ctx.engine
-            .build_image(&dir, &image_ref, dockerfile)
+            .build_image(&dir, &image_ref, dockerfile, platform.as_deref())
             .map_err(|e| err(format!("build-image: {e}")))?;
         eprintln!(
             "[{:.1}s] build-image {label}",
@@ -227,6 +236,25 @@ fn cmd_pull_image(
         );
         ctx.built_images.push(source);
         ctx.built_images.push(target);
+        Ok(())
+    })
+}
+
+fn cmd_remove_image(
+    _env: &mut testscript_rs::TestEnvironment,
+    args: &[String],
+) -> testscript_rs::Result<()> {
+    let [image_ref] = args else {
+        return Err(err("remove-image requires <image-ref>".to_string()));
+    };
+
+    ENGINE_CTX.with_borrow_mut(|ctx| {
+        let ctx = ctx
+            .as_mut()
+            .ok_or_else(|| err("ENGINE_CTX not set".to_string()))?;
+        let _ = std::process::Command::new(ctx.engine.name())
+            .args(["rmi", "-f", image_ref])
+            .output();
         Ok(())
     })
 }
@@ -315,6 +343,7 @@ fn run_engine_spec_case(runtime_name: &'static str, case: EngineSpecCase) {
         .command("mock-server", cmd_mock_server)
         .command("build-image", cmd_build_image)
         .command("pull-image", cmd_pull_image)
+        .command("remove-image", cmd_remove_image)
         .execute();
 
     let built_images = ENGINE_CTX
@@ -404,9 +433,21 @@ engine_spec_case_test!(
     true
 );
 engine_spec_case_test!(
+    podman_engine_run_config_arch_specs,
+    "podman",
+    "run_config_arch.txt",
+    true
+);
+engine_spec_case_test!(
     podman_engine_validate_setup_specs,
     "podman",
     "validate_setup.txt",
+    false
+);
+engine_spec_case_test!(
+    podman_engine_validate_build_specs,
+    "podman",
+    "validate_build.txt",
     false
 );
 engine_spec_case_test!(
@@ -434,9 +475,21 @@ engine_spec_case_test!(
     true
 );
 engine_spec_case_test!(
+    docker_engine_run_config_arch_specs,
+    "docker",
+    "run_config_arch.txt",
+    true
+);
+engine_spec_case_test!(
     docker_engine_validate_setup_specs,
     "docker",
     "validate_setup.txt",
+    false
+);
+engine_spec_case_test!(
+    docker_engine_validate_build_specs,
+    "docker",
+    "validate_build.txt",
     false
 );
 engine_spec_case_test!(

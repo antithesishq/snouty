@@ -22,8 +22,9 @@ Example:
     --recipients "team@example.com"
 
 The -c/--config flag points at a local directory containing docker-compose.yaml.
-Images required for the run need to have been built already. Pushing happens
-automatically.
+snouty runs compose build first so the local images are up to date, then
+pushes the compose images and config image automatically. Pass --no-build to
+skip the compose build stage.
 
 Alternatively, pass a pre-built config image directly:
   snouty run --webhook basic_test \
@@ -75,7 +76,8 @@ Using Moment.from (copy from triage report):
 Runs docker-compose locally and watches for the setup-complete event to confirm
 instrumentation is working. After setup-complete is detected, discovers and
 executes Test Composer scripts from /opt/antithesis/test/v1 inside the running
-containers via compose exec.
+containers via compose exec. Before starting the stack, snouty runs compose
+build so the local images are up to date; pass --no-build to skip that stage.
 
 snouty validate injects a bind mount at /tmp/antithesis in each container and
 sets ANTITHESIS_OUTPUT_DIR plus ANTITHESIS_SDK_LOCAL_OUTPUT so SDK output is
@@ -191,6 +193,10 @@ pub struct ValidateArgs {
     /// Maximum seconds to wait for the setup-complete event
     #[arg(long, default_value = "60")]
     pub timeout: u64,
+
+    /// Skip the compose build stage before validation
+    #[arg(long)]
+    pub no_build: bool,
 }
 
 #[derive(Args)]
@@ -200,10 +206,15 @@ pub struct RunArgs {
     pub webhook: String,
 
     /// Path to a local config directory containing docker-compose.yaml.
-    /// Builds and pushes a config image automatically, setting antithesis.config_image.
-    /// Requires ANTITHESIS_REPOSITORY environment variable.
+    /// Runs compose build by default, then builds and pushes a config image,
+    /// setting antithesis.config_image. Requires ANTITHESIS_REPOSITORY
+    /// environment variable.
     #[arg(short, long, conflicts_with = "config_image")]
     pub config: Option<std::path::PathBuf>,
+
+    /// Skip the compose build stage before pushing images from --config
+    #[arg(long)]
+    pub no_build: bool,
 
     /// Pre-built config image reference (e.g., us-central1-docker.pkg.dev/proj/repo/config:latest)
     #[arg(long)]

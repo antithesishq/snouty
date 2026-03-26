@@ -1,0 +1,21 @@
+# snouty run --config — architecture preflight for publishable images
+#
+# run checks only the compose images it is about to publish. Third-party
+# service images outside the publish set are ignored.
+
+# A publishable arm64 image is rejected before push or webhook launch.
+build-image --platform linux/arm64 run-arch-app:latest images/arm_meta
+! snouty run -w basic_test -c arm_publish_config --duration 30 --no-build
+stderr 'x86-64 \(amd64\).*'
+stderr 'service '\''app'\'' uses image '\''run-arch-app:latest'\'' with architecture '\''arm64'\''.*'
+! stderr '"antithesis.config_image"'
+
+-- images/arm_meta/Dockerfile --
+FROM scratch
+-- arm_publish_config/docker-compose.yaml --
+services:
+  app:
+    build: ../images/arm_meta
+    image: run-arch-app:latest
+  sidecar:
+    image: docker.io/library/nginx:latest

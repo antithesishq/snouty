@@ -51,11 +51,24 @@ fn api_help_shows_webhook() {
 }
 
 #[test]
+fn run_help_mentions_no_build_stage() {
+    snouty()
+        .args(["run", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("compose build"))
+        .stdout(predicate::str::contains("--no-build"))
+        .stdout(predicate::str::contains("built already").not());
+}
+
+#[test]
 fn validate_help_explains_setup_complete_detection() {
     snouty()
         .args(["validate", "--help"])
         .assert()
         .success()
+        .stdout(predicate::str::contains("compose build"))
+        .stdout(predicate::str::contains("--no-build"))
         .stdout(predicate::str::contains("/tmp/antithesis"))
         .stdout(predicate::str::contains("ANTITHESIS_OUTPUT_DIR"))
         .stdout(predicate::str::contains("ANTITHESIS_SDK_LOCAL_OUTPUT"))

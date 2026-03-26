@@ -5,11 +5,19 @@
 # config image.
 # Both get pinned references (name@sha256:digest) in the webhook params.
 
-# Local build images are tagged with registry prefix, pushed and pinned.
+# Local build images are built via compose build, tagged with the registry
+# prefix, pushed and pinned.
+mock-server 200 '{"status": "ok"}'
+snouty run -w basic_test -c push_config --duration 30
+stderr '"antithesis.config_image":.*@sha256:'
+stderr '"antithesis.images":.*myapp@sha256:'
+stderr '"antithesis.images":.*sidecar@sha256:'
+
+# With --no-build, pre-built local images are used instead of compose build.
 mock-server 200 '{"status": "ok"}'
 build-image myapp:latest images/myapp
 build-image sidecar:v1 images/sidecar
-snouty run -w basic_test -c push_config --duration 30
+snouty run -w basic_test -c push_config --duration 30 --no-build
 stderr '"antithesis.config_image":.*@sha256:'
 stderr '"antithesis.images":.*myapp@sha256:'
 stderr '"antithesis.images":.*sidecar@sha256:'
@@ -20,9 +28,8 @@ snouty run -w basic_test -c external_config --duration 30
 stderr '"antithesis.config_image":.*@sha256:'
 ! stderr '"antithesis.images"'
 
-# Mixed: local build image is tagged+pushed, external image is skipped.
+# Mixed: compose build refreshes the local build image, external image is skipped.
 mock-server 200 '{"status": "ok"}'
-build-image myapp:latest images/myapp
 snouty run -w basic_test -c mixed_config --duration 30
 stderr '"antithesis.images":.*myapp@sha256:'
 ! stderr 'nginx.*@sha256:'
@@ -36,15 +43,21 @@ stderr '"antithesis.config_image":.*@sha256:'
 
 -- images/myapp/content --
 placeholder
+-- images/myapp/Dockerfile --
+FROM scratch
+COPY content /content
 -- images/sidecar/content --
 placeholder
+-- images/sidecar/Dockerfile --
+FROM scratch
+COPY content /content
 -- push_config/docker-compose.yaml --
 services:
   app:
-    build: .
+    build: ../images/myapp
     image: myapp:latest
   sidecar:
-    build: .
+    build: ../images/sidecar
     image: sidecar:v1
 -- external_config/docker-compose.yaml --
 services:
@@ -53,7 +66,7 @@ services:
 -- mixed_config/docker-compose.yaml --
 services:
   app:
-    build: .
+    build: ../images/myapp
     image: myapp:latest
   nginx:
     image: docker.io/library/nginx:latest

@@ -150,6 +150,9 @@
           "401": {
             "$ref": "#/components/responses/Unauthorized"
           },
+          "406": {
+            "$ref": "#/components/responses/NotAcceptable"
+          },
           "429": {
             "$ref": "#/components/responses/TooManyRequests"
           },
@@ -237,6 +240,207 @@
           "404": {
             "$ref": "#/components/responses/NotFound"
           },
+          "406": {
+            "$ref": "#/components/responses/NotAcceptable"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      }
+    },
+    "/api/{version}/runs/{run_id}/logs": {
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/Version"
+        }
+      ],
+      "get": {
+        "operationId": "getRunLogs",
+        "summary": "Stream logs for a moment",
+        "description": "Streams the logs for a particular moment in a run as newline-delimited JSON (NDJSON). Each line is a self-contained JSON object. The response is streamed — the connection remains open until all matching log lines have been sent.",
+        "tags": ["Runs"],
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "description": "Unique identifier of the run to retrieve logs for.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "input_hash",
+            "in": "query",
+            "description": "The input hash value identifying the moment.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "vtime",
+            "in": "query",
+            "description": "The virtual time value identifying the moment.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "begin_vtime",
+            "in": "query",
+            "description": "Start streaming logs from this virtual time value instead of from the beginning of the run.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "disable_default_log_filter",
+            "in": "query",
+            "description": "Set to `true` to disable the default log filter and return all log lines.",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": false
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "A stream of log lines in NDJSON format. Each line is a JSON object.",
+            "content": {
+              "application/x-ndjson": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "description": "A single log line. Each line in the NDJSON stream is a single JSON object on one line, separated by newlines. The examples below show the structure of each line. Fields vary by log source."
+                },
+                "examples": {
+                  "raft_vote_log": {
+                    "summary": "A raft pre-vote request log line",
+                    "value": {
+                      "output_text": "{\"level\":\"info\",\"ts\":\"2026-03-26T01:42:55.628233Z\",\"logger\":\"raft\",\"caller\":\"v3@v3.6.0/raft.go:1064\",\"msg\":\"2c6c7b8d0d0933f7 [logterm: 78, index: 436] sent MsgPreVote request to dcb68c82481661be at term 79\"}",
+                      "source": {
+                        "container": "etcd0",
+                        "name": "etcd0",
+                        "stream": "error"
+                      },
+                      "moment": {
+                        "input_hash": "-3625518438076122494",
+                        "vtime": 398.4898056755774,
+                        "session_id": "029043c3c85c435e7b034aaa6f218b6a-50-1"
+                      }
+                    }
+                  },
+                  "slow_request_log": {
+                    "summary": "A slow request warning log line",
+                    "value": {
+                      "output_text": "{\"level\":\"warn\",\"ts\":\"2026-03-26T01:41:30.289731Z\",\"caller\":\"txn/util.go:93\",\"msg\":\"apply request took too long\",\"took\":\"200.69629ms\",\"expected-duration\":\"100ms\",\"prefix\":\"read-only range \",\"request\":\"key:\\\"key\\\" \",\"response\":\"\",\"error\":\"context deadline exceeded\"}",
+                      "source": {
+                        "container": "etcd1",
+                        "name": "etcd1",
+                        "stream": "error"
+                      },
+                      "moment": {
+                        "input_hash": "-8212366801093655922",
+                        "vtime": 313.15126806590706,
+                        "session_id": "029043c3c85c435e7b034aaa6f218b6a-50-1"
+                      }
+                    }
+                  },
+                  "watch_channel_log": {
+                    "summary": "A watch channel closed log line",
+                    "value": {
+                      "output_text": "{\"level\":\"info\",\"ts\":1774489067.310644,\"caller\":\"client/watch.go:101\",\"msg\":\"Watch channel closed\"}",
+                      "source": {
+                        "container": "client",
+                        "name": "antithesis/pods/client/commands/robustness/singleton_driver_traffic.err",
+                        "pid": 45,
+                        "stream": "error"
+                      },
+                      "moment": {
+                        "input_hash": "-3704286174724581163",
+                        "vtime": 90.17225814750418,
+                        "session_id": "029043c3c85c435e7b034aaa6f218b6a-50-1"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "406": {
+            "$ref": "#/components/responses/NotAcceptable"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      }
+    },
+    "/api/{version}/runs/{run_id}/build_logs": {
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/Version"
+        }
+      ],
+      "get": {
+        "operationId": "getRunBuildLogs",
+        "summary": "Stream build logs",
+        "description": "Streams the build logs for a run as newline-delimited JSON (NDJSON). Each line contains a timestamp, a stream indicator, and the log text. The response is streamed — the connection remains open until all log lines have been sent.",
+        "tags": ["Runs"],
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "description": "Unique identifier of the run to retrieve build logs for.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "A stream of build log lines in NDJSON format.",
+            "content": {
+              "application/x-ndjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Build_Log_Line"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "406": {
+            "$ref": "#/components/responses/NotAcceptable"
+          },
           "429": {
             "$ref": "#/components/responses/TooManyRequests"
           },
@@ -295,6 +499,9 @@
           },
           "401": {
             "$ref": "#/components/responses/Unauthorized"
+          },
+          "406": {
+            "$ref": "#/components/responses/NotAcceptable"
           },
           "429": {
             "$ref": "#/components/responses/TooManyRequests"
@@ -494,6 +701,29 @@
           "description": "Additional parameters including tooling integration parameters (e.g. `antithesis.integrations.<type>.callback_url`, `antithesis.integrations.<type>.token` where type is `github`, `discord`, or `slack`)."
         }
       },
+      "Build_Log_Line": {
+        "type": "object",
+        "description": "A single build log line.",
+        "required": ["timestamp", "text"],
+        "properties": {
+          "timestamp": {
+            "type": "string",
+            "format": "date-time",
+            "description": "UTC timestamp of the log line (ISO 8601).",
+            "example": "2025-03-20T02:01:12Z"
+          },
+          "stream": {
+            "type": "string",
+            "enum": ["out", "err"],
+            "description": "Whether this line is from standard output or standard error."
+          },
+          "text": {
+            "type": "string",
+            "description": "The log line text.",
+            "example": "Building image payments-service..."
+          }
+        }
+      },
       "Run_Status": {
         "type": "string",
         "enum": ["starting", "in_progress", "debugger_ready", "completed", "cancelled", "failed"],
@@ -609,6 +839,19 @@
             },
             "example": {
               "message": "Run not found: YcYh0bux4F0rsV96Xq3XqAhv"
+            }
+          }
+        }
+      },
+      "NotAcceptable": {
+        "description": "Not acceptable — the requested content type in the Accept header is not supported by this endpoint.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error_Response"
+            },
+            "example": {
+              "message": "This endpoint does not support the requested Accept type."
             }
           }
         }

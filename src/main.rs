@@ -276,12 +276,14 @@ async fn cmd_debug(args: Vec<String>, use_stdin: bool) -> Result<()> {
 
 async fn cmd_runs() -> Result<()> {
     let api = AntithesisApi::from_env()?;
-    let runs = api.stream_runs().try_collect::<Vec<_>>().await?;
+    let mut runs = api.stream_runs().try_collect::<Vec<_>>().await?;
 
     if runs.is_empty() {
         println!("No runs found.");
         return Ok(());
     }
+
+    runs.sort_by(|a, b| b.created_at.cmp(&a.created_at).then(a.status.cmp(&b.status)));
 
     println!("{}", render_runs_table(&runs));
     Ok(())
@@ -323,14 +325,6 @@ fn render_runs_table(runs: &[RunSummary]) -> String {
 
     let mut output = String::new();
     push_table_row(&mut output, &headers, &widths);
-    push_table_row(
-        &mut output,
-        &widths
-            .iter()
-            .map(|width| "-".repeat(*width))
-            .collect::<Vec<_>>(),
-        &widths,
-    );
     for row in rows {
         push_table_row(&mut output, &row, &widths);
     }

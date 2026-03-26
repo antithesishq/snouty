@@ -5,6 +5,7 @@ edition = "2024"
 description = "A CLI tool for using the Antithesis API"
 license = "Apache-2.0"
 repository = "https://github.com/antithesishq/snouty"
+default-run = "snouty"
 
 [dependencies]
 base64 = "0.22"
@@ -31,6 +32,10 @@ libc = "0.2"
 regex = "1"
 ptree = { version = "0.5.2", default-features = false }
 serde_yaml = "0.9"
+
+[[bin]]
+name = "mock_api"
+path = "src/bin/mock_api.rs"
 
 [build-dependencies]
 clap = { version = "4", features = ["derive"] }

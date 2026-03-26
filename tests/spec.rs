@@ -1,5 +1,5 @@
 use snouty::testutils::{
-    OCIRegistry, available_runtimes, filtered_path_without_binary, skip_or_fail,
+    MockApiServer, OCIRegistry, available_runtimes, filtered_path_without_binary, skip_or_fail,
 };
 use std::cell::RefCell;
 use std::io::{Read, Write};
@@ -149,37 +149,13 @@ fn cmd_mock_runs_server(
         }
     };
 
-    let listener =
-        TcpListener::bind("127.0.0.1:0").map_err(|e| err(format!("failed to bind: {e}")))?;
-    let addr = listener
-        .local_addr()
-        .map_err(|e| err(format!("failed to get addr: {e}")))?;
-    let url = format!("http://{addr}");
-
-    thread::spawn(move || {
-        for stream in listener.incoming().flatten() {
-            let mut stream = stream;
-            let mut buf = [0u8; 4096];
-            let bytes_read = Read::read(&mut stream, &mut buf).unwrap_or(0);
-            let request = String::from_utf8_lossy(&buf[..bytes_read]);
-
-            let body = if empty {
-                r#"{"data":[],"next_cursor":null}"#
-            } else if request.contains("after=cursor-1") {
-                r#"{"data":[{"run_id":"run-2","status":"running","type":"mvd","created_at":"2025-03-19T14:00:00Z","launcher":"debug"}],"next_cursor":null}"#
-            } else {
-                r#"{"data":[{"run_id":"run-1","status":"completed","type":"test","created_at":"2025-03-20T02:00:00Z","launcher":"nightly"}],"next_cursor":"cursor-1"}"#
-            };
-
-            let response = format!(
-                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
-                body.len(),
-            );
-            let _ = stream.write_all(response.as_bytes());
-        }
-    });
-
-    env.set_env_var("ANTITHESIS_BASE_URL", &url);
+    let server = if empty {
+        MockApiServer::start_empty()
+    } else {
+        MockApiServer::start()
+    };
+    env.set_env_var("ANTITHESIS_BASE_URL", server.url());
+    std::mem::forget(server);
     env.set_env_var("ANTITHESIS_USERNAME", "testuser");
     env.set_env_var("ANTITHESIS_PASSWORD", "testpass");
     env.set_env_var("ANTITHESIS_TENANT", "testtenant");

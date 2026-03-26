@@ -436,7 +436,7 @@ mod tests {
                 "data": [
                     {
                         "run_id": "run-2",
-                        "status": "running",
+                        "status": "in_progress",
                         "created_at": "2025-03-19T02:00:00Z",
                         "launcher": "debug"
                     }

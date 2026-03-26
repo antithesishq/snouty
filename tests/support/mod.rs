@@ -168,37 +168,6 @@ pub(crate) fn start_mock_server(response_body: &'static str, status: u16) -> Str
     url
 }
 
-pub(crate) fn start_runs_server(empty: bool) -> String {
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let addr = listener.local_addr().unwrap();
-    let url = format!("http://{}", addr);
-
-    thread::spawn(move || {
-        for mut stream in listener.incoming().flatten() {
-            let mut buf = [0u8; 4096];
-            let bytes_read = std::io::Read::read(&mut stream, &mut buf).unwrap_or(0);
-            let request = String::from_utf8_lossy(&buf[..bytes_read]);
-
-            let body = if empty {
-                r#"{"data":[],"next_cursor":null}"#
-            } else if request.contains("after=cursor-1") {
-                r#"{"data":[{"run_id":"run-2","status":"running","type":"mvd","created_at":"2025-03-19T14:00:00Z","launcher":"debug"}],"next_cursor":null}"#
-            } else {
-                r#"{"data":[{"run_id":"run-1","status":"completed","type":"test","created_at":"2025-03-20T02:00:00Z","launcher":"nightly"}],"next_cursor":"cursor-1"}"#
-            };
-
-            let response = format!(
-                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
-                body.len(),
-                body
-            );
-            let _ = stream.write_all(response.as_bytes());
-        }
-    });
-
-    url
-}
-
 pub(crate) fn expected_docs_user_agent() -> String {
     format!(
         "snouty/{} ({}; {}; rust{})",
@@ -249,6 +218,17 @@ pub(crate) fn docs_search_json(query_args: &[&str]) -> Vec<serde_json::Value> {
         .as_array()
         .unwrap()
         .clone()
+}
+
+pub(crate) fn start_runs_server(empty: bool) -> String {
+    let server = if empty {
+        snouty::testutils::MockApiServer::start_empty()
+    } else {
+        snouty::testutils::MockApiServer::start()
+    };
+    let url = server.url().to_string();
+    std::mem::forget(server);
+    url
 }
 
 pub(crate) fn snouty_with_mock(mock_url: &str) -> Command {

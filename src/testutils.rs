@@ -1,7 +1,8 @@
+use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
-use std::thread;
+use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
 use crate::container::{ContainerRuntime, DockerRuntime, PodmanRuntime, is_podman_in_disguise};
@@ -265,6 +266,136 @@ pub fn filtered_path_without_binary(binary: &str) -> Option<String> {
 
 fn directory_contains_binary(dir: &Path, binary: &str) -> bool {
     dir.join(binary).is_file()
+}
+
+/// A mock Antithesis API server for development and testing.
+///
+/// Handles:
+/// - `GET  /api/v1/runs` — paginated run listing
+/// - `GET  /api/v1/runs/{run_id}` — run detail (returns a fixed completed run)
+/// - `POST /api/v1/launch/{launcher_name}` — returns a mock run_id
+pub struct MockApiServer {
+    url: String,
+    handle: Option<JoinHandle<()>>,
+}
+
+impl MockApiServer {
+    /// Start a mock server with sample run data (two runs, paginated).
+    pub fn start() -> Self {
+        Self::start_inner(false)
+    }
+
+    /// Start a mock server with no runs.
+    pub fn start_empty() -> Self {
+        Self::start_inner(true)
+    }
+
+    /// Return the base URL of the mock server (e.g. `http://127.0.0.1:12345`).
+    pub fn url(&self) -> &str {
+        &self.url
+    }
+
+    /// Block until the server thread stops.
+    pub fn wait(mut self) {
+        if let Some(handle) = self.handle.take() {
+            let _ = handle.join();
+        }
+    }
+
+    fn start_inner(empty: bool) -> Self {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let url = format!("http://{}", addr);
+
+        let handle = thread::spawn(move || {
+            for mut stream in listener.incoming().flatten() {
+                let mut buf = [0u8; 8192];
+                let bytes_read = match stream.read(&mut buf) {
+                    Ok(n) => n,
+                    Err(_) => continue,
+                };
+                let request = String::from_utf8_lossy(&buf[..bytes_read]);
+                let (method, path) = mock_parse_request_line(&request);
+                let (status, body) = mock_route(&method, &path, empty);
+                let response = format!(
+                    "HTTP/1.1 {} OK\r\nContent-Type: application/json\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{}",
+                    status,
+                    body.len(),
+                    body
+                );
+                let _ = stream.write_all(response.as_bytes());
+            }
+        });
+
+        Self {
+            url,
+            handle: Some(handle),
+        }
+    }
+}
+
+/// Parse the first line of an HTTP request into (method, path).
+fn mock_parse_request_line(request: &str) -> (String, String) {
+    let first_line = request.lines().next().unwrap_or("");
+    let mut parts = first_line.split_whitespace();
+    let method = parts.next().unwrap_or("").to_string();
+    let path = parts.next().unwrap_or("").to_string();
+    (method, path)
+}
+
+/// Route a request and return (status_code, response_body).
+fn mock_route(method: &str, path: &str, empty: bool) -> (u16, String) {
+    // Split path and query string
+    let (path_part, query) = match path.split_once('?') {
+        Some((p, q)) => (p, Some(q)),
+        None => (path.as_ref(), None),
+    };
+
+    match (method, path_part) {
+        ("GET", "/api/v1/runs") => mock_route_list_runs(query, empty),
+        ("GET", p) if p.starts_with("/api/v1/runs/") => {
+            let run_id = &p["/api/v1/runs/".len()..];
+            mock_route_get_run(run_id)
+        }
+        ("POST", p) if p.starts_with("/api/v1/launch/") => mock_route_launch(),
+        _ => (404, r#"{"message":"not found"}"#.to_string()),
+    }
+}
+
+fn mock_route_list_runs(query: Option<&str>, empty: bool) -> (u16, String) {
+    if empty {
+        return (200, r#"{"data":[],"next_cursor":null}"#.to_string());
+    }
+
+    let after = query.and_then(|q| {
+        q.split('&')
+            .find_map(|pair| pair.strip_prefix("after="))
+    });
+
+    match after {
+        Some("cursor-1") => (
+            200,
+            r#"{"data":[{"run_id":"run-2","status":"in_progress","type":"mvd","created_at":"2025-03-19T14:00:00Z","launcher":"debug"}],"next_cursor":null}"#.to_string(),
+        ),
+        _ => (
+            200,
+            r#"{"data":[{"run_id":"run-1","status":"completed","type":"test","created_at":"2025-03-20T02:00:00Z","launcher":"nightly"}],"next_cursor":"cursor-1"}"#.to_string(),
+        ),
+    }
+}
+
+fn mock_route_get_run(run_id: &str) -> (u16, String) {
+    (
+        200,
+        format!(
+            r#"{{"run_id":"{}","status":"completed","type":"test","created_at":"2025-03-20T02:00:00Z","started_at":"2025-03-20T02:01:12Z","completed_at":"2025-03-20T02:31:45Z","launcher":"nightly","session_id":"1d66e9a01d7d9c892038bc100232da6b-50-1","links":{{"triage_report":"https://demo.antithesis.com/reports/{}"}}}}"#,
+            run_id, run_id
+        ),
+    )
+}
+
+fn mock_route_launch() -> (u16, String) {
+    (200, r#"{"run_id":"mock-run-id"}"#.to_string())
 }
 
 #[cfg(test)]

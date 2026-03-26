@@ -12,7 +12,7 @@ mock-runs-server
 snouty runs
 stdout 'RUN ID.*STATUS.*TYPE.*CREATED AT.*LAUNCHER'
 stdout 'run-1.*completed.*test.*2025-03-20T02:00:00\+00:00.*nightly'
-stdout 'run-2.*running.*mvd.*2025-03-19T14:00:00\+00:00.*debug'
+stdout 'run-2.*in_progress.*mvd.*2025-03-19T14:00:00\+00:00.*debug'
 
 # If no runs are returned, the command prints a friendly empty-state message.
 mock-runs-server empty

@@ -47,10 +47,8 @@
       "get": {
         "operationId": "listRuns",
         "summary": "List all runs",
-        "description": "Returns a paginated list of test runs for your organization. Results are ordered by creation time, newest first.",
-        "tags": [
-          "Runs"
-        ],
+        "description": "Returns a paginated list of runs for your organization. Results are ordered by creation time, newest first.",
+        "tags": ["Runs"],
         "parameters": [
           {
             "name": "limit",
@@ -67,7 +65,7 @@
           {
             "name": "after",
             "in": "query",
-            "description": "Cursor for pagination. Pass the `next_cursor` value from a previous response to fetch the next page.",
+            "description": "Cursor for pagination. Pass the `next_cursor` value (as well as any filter parameters) from a previous response to fetch the next page.",
             "required": false,
             "schema": {
               "type": "string"
@@ -79,13 +77,7 @@
             "description": "Filter runs by status.",
             "required": false,
             "schema": {
-              "type": "string",
-              "enum": [
-                "pending",
-                "running",
-                "completed",
-                "failed"
-              ]
+              "$ref": "#/components/schemas/Run_Status"
             }
           },
           {
@@ -147,7 +139,7 @@
                       "launcher": "Debug Runner"
                     }
                   ],
-                  "next_cursor": "2025-03-19T14:00:00Z"
+                  "next_cursor": "eyJjcmVhdGVkX2F0IjoiMjAyNS0wMy0xOVQxNDowMDowMFoiLCJydW5faWQiOiJiN2YzYTFlOWQwNDg0N2ExYjJjM2Q0ZTVmNmE3YjhjOSJ9"
                 }
               }
             }
@@ -176,10 +168,8 @@
       "get": {
         "operationId": "getRun",
         "summary": "Get run details",
-        "description": "Returns the full details of a single test run, including results.",
-        "tags": [
-          "Runs"
-        ],
+        "description": "Returns the full details of a single run, including results.",
+        "tags": ["Runs"],
         "parameters": [
           {
             "name": "run_id",
@@ -215,48 +205,14 @@
                         "triage_report": "https://demo.antithesis.com/reports/YcYh0bux4F0rsV96Xq3XqAhv"
                       },
                       "results": {
-                        "properties": [
-                          {
-                            "name": "No deadlocks under concurrent load",
-                            "status": "failed",
-                            "passed_count": 0,
-                            "failed_count": 3,
-                            "examples": [
-                              {
-                                "moment": {
-                                  "input-hash": "6122721973385124456",
-                                  "vtime": "70.59983575553633"
-                                },
-                                "message": "W0310 01:49:27.810287       1 control.go:161] Error getting value from vault...",
-                                "source": {
-                                  "container": "control",
-                                  "name": "service_control",
-                                  "pid": 1,
-                                  "stream": "info"
-                                }
-                              }
-                            ],
-                            "counterexamples": [],
-                            "child_properties": []
-                          },
-                          {
-                            "name": "All transactions are eventually committed or rolled back",
-                            "status": "passed",
-                            "passed_count": 1200,
-                            "failed_count": 0,
-                            "examples": [],
-                            "counterexamples": [],
-                            "child_properties": []
-                          }
-                        ]
                       }
                     }
                   },
                   "mvd_run": {
-                    "summary": "A completed multiverse debugging session",
+                    "summary": "A multiverse debugging session with debugger ready",
                     "value": {
                       "run_id": "b7f3a1e9d04847a1b2c3d4e5f6a7b8c9",
-                      "status": "completed",
+                      "status": "debugger_ready",
                       "type": "mvd",
                       "created_at": "2025-03-21T14:00:00Z",
                       "started_at": "2025-03-21T14:00:32Z",
@@ -265,11 +221,6 @@
                       "session_id": "a3b8c2d4e5f6a7b8c9d0e1f2a3b4c5d6-50-1",
                       "links": {
                         "triage_report": "https://demo.antithesis.com/reports/b7f3a1e9d04847a1b2c3d4e5f6a7b8c9"
-                      },
-                      "results": {
-                        "target_bug_id": "BUG-4821",
-                        "reproduced": true,
-                        "root_cause_candidates": 2
                       }
                     }
                   }
@@ -305,14 +256,7 @@
         "operationId": "launchTest",
         "summary": "Launch a test",
         "description": "Kicks off a test using the specified launcher (e.g. `basic_test` or `basic_k8s_test`). Fetches the relevant container images specified in configuration files and in `antithesis.images`, builds the test environment, and runs the test for the duration set in `antithesis.duration`. Returns an HTTP status code indicating whether the test was successfully started (not the test result itself).",
-        "tags": [
-          "Launch"
-        ],
-        "security": [
-          {
-            "BasicAuth": []
-          }
-        ],
+        "tags": ["Launch"],
         "parameters": [
           {
             "name": "launcher_name",
@@ -321,10 +265,7 @@
             "required": true,
             "schema": {
               "type": "string",
-              "examples": [
-                "basic_test",
-                "basic_k8s_test"
-              ]
+              "example": "basic_test"
             }
           }
         ],
@@ -375,9 +316,7 @@
         "schema": {
           "type": "string",
           "default": "v1",
-          "examples": [
-            "v1"
-          ]
+          "example": "v1"
         }
       }
     },
@@ -385,33 +324,19 @@
       "Error_Response": {
         "type": "object",
         "description": "Standard error envelope returned by all error responses.",
-        "required": [
-          "error",
-          "message"
-        ],
+        "required": ["message"],
         "properties": {
-          "error": {
-            "type": "string",
-            "description": "A machine-readable error code (e.g. `bad_request`, `unauthorized`, `not_found`, `rate_limit_exceeded`, `internal_error`).",
-            "examples": [
-              "bad_request"
-            ]
-          },
           "message": {
             "type": "string",
             "description": "A human-readable explanation of what went wrong.",
-            "examples": [
-              "limit must be between 1 and 100"
-            ]
+            "example": "limit must be between 1 and 100"
           }
         }
       },
       "Run_List_Response": {
         "type": "object",
         "description": "A page of test run summaries returned by the list endpoint. Use `next_cursor` to iterate through all available results.",
-        "required": [
-          "data"
-        ],
+        "required": ["data"],
         "properties": {
           "data": {
             "type": "array",
@@ -428,19 +353,12 @@
       },
       "Run_Summary": {
         "type": "object",
-        "required": [
-          "run_id",
-          "status",
-          "created_at",
-          "launcher"
-        ],
+        "required": ["run_id", "status", "created_at", "launcher"],
         "properties": {
           "run_id": {
             "type": "string",
             "description": "Unique identifier for the run.",
-            "examples": [
-              "YcYh0bux4F0rsV96Xq3XqAhv"
-            ]
+            "example": "YcYh0bux4F0rsV96Xq3XqAhv"
           },
           "status": {
             "$ref": "#/components/schemas/Run_Status"
@@ -450,25 +368,28 @@
           },
           "created_at": {
             "type": "string",
-            "format": "date-time"
+            "format": "date-time",
+            "description": "Timestamp when the run was created (ISO 8601)."
           },
           "started_at": {
             "type": "string",
-            "format": "date-time"
+            "format": "date-time",
+            "nullable": true,
+            "description": "Timestamp when the run started executing. Null if the run has not yet started."
           },
           "completed_at": {
             "type": "string",
-            "format": "date-time"
+            "format": "date-time",
+            "nullable": true,
+            "description": "Timestamp when the run finished. Null if the run is still in progress or has not started."
           },
           "creator": {
-            "$ref": "#/components/schemas/Creator_info"
+            "$ref": "#/components/schemas/Creator_Info"
           },
           "launcher": {
             "type": "string",
             "description": "The name of the launcher that kicked off this run.",
-            "examples": [
-              "Payments Nightly"
-            ]
+            "example": "Payments Nightly"
           },
           "parameters": {
             "$ref": "#/components/schemas/Params"
@@ -487,21 +408,17 @@
           },
           {
             "type": "object",
-            "required": [
-              "session_id"
-            ],
+            "required": [],
             "properties": {
               "session_id": {
                 "type": "string",
                 "description": "Unique identifier for the test session. Used to correlate logs, events, and search queries back to this specific execution.",
-                "examples": [
-                  "1d66e9a01d7d9c892038bc100232da6b-50-1"
-                ]
+                "example": "1d66e9a01d7d9c892038bc100232da6b-50-1"
               },
               "results": {
                 "type": "object",
                 "additionalProperties": true,
-                "description": "Aggregate test results for a completed run. Structure varies by run type."
+                "description": "Aggregate results for the run. Structure varies by run type. May be absent or partial for runs that have not yet completed."
               },
               "environment": {
                 "$ref": "#/components/schemas/Run_Environment"
@@ -513,25 +430,19 @@
       "Launch_Response": {
         "type": "object",
         "description": "Response returned when a test is successfully launched.",
-        "required": [
-          "run_id"
-        ],
+        "required": ["run_id"],
         "properties": {
           "run_id": {
             "type": "string",
             "description": "Unique identifier for the launched run.",
-            "examples": [
-              "59484bec2cf242c3aeee5454c3de0e95-50-1"
-            ]
+            "example": "59484bec2cf242c3aeee5454c3de0e95-50-1"
           }
         }
       },
       "Launch_Request": {
         "type": "object",
         "description": "Request body for launching a test.",
-        "required": [
-          "params"
-        ],
+        "required": ["params"],
         "properties": {
           "params": {
             "$ref": "#/components/schemas/Params"
@@ -545,53 +456,37 @@
           "antithesis.config_image": {
             "type": "string",
             "description": "The image version of your config image. Should be a single image version formatted as `image_name:tag`.",
-            "examples": [
-              "my-config:latest"
-            ]
+            "example": "my-config:latest"
           },
           "antithesis.description": {
             "type": "string",
             "description": "A description of the test run. Appears in report headers and any emails triggered by the run.",
-            "examples": [
-              "basic_test on main"
-            ]
+            "example": "basic_test on main"
           },
           "antithesis.duration": {
             "type": "string",
             "description": "Desired duration of the test run in minutes.",
-            "examples": [
-              "30"
-            ]
+            "example": "30"
           },
           "antithesis.images": {
             "type": "string",
             "description": "A semicolon-delimited list of container image versions needed in the testing environment. Each entry in the format `[REGISTRY/]NAME(:TAG|@DIGEST)`. Images specified by digest will be tagged as `latest` within the Antithesis environment.",
-            "examples": [
-              "registry/container_1:tag1; registry/container_2:latest"
-            ]
+            "example": "registry/container_1:tag1; registry/container_2:latest"
           },
           "antithesis.is_ephemeral": {
             "type": "string",
             "description": "Whether the run's results should be excluded from historic reports. Set to `\"true\"` for one-off exploratory runs. Defaults to `\"false\"`.",
-            "enum": [
-              "true",
-              "false"
-            ]
+            "enum": ["true", "false"]
           },
           "antithesis.report.recipients": {
             "type": "string",
             "description": "A semicolon-delimited list of email addresses to receive the triage report link. If not specified, emails are sent to the default users configured for the endpoint.",
-            "examples": [
-              "user1@example.com; user2@example.com"
-            ]
+            "example": "user1@example.com; user2@example.com"
           },
           "antithesis.source": {
             "type": "string",
             "description": "An identifier used to separate property history in reports. Each property's history is generated from all previous runs sharing the same source value. Useful for tracking test history per branch.",
-            "examples": [
-              "main",
-              "feature/payments-v2"
-            ]
+            "example": "main"
           }
         },
         "additionalProperties": {
@@ -601,13 +496,8 @@
       },
       "Run_Status": {
         "type": "string",
-        "enum": [
-          "pending",
-          "running",
-          "completed",
-          "failed"
-        ],
-        "description": "Current lifecycle status of a run. Transitions follow the order: `pending` → `running` → `completed` or `failed`."
+        "enum": ["starting", "in_progress", "debugger_ready", "completed", "cancelled", "failed"],
+        "description": "Current lifecycle status of a run. `starting` — the run is being set up. `in_progress` — the run is actively running. `debugger_ready` — the multiverse debugger (MVD) session is ready for interaction (MVD runs only). `completed` — the run finished successfully. `cancelled` — the run was cancelled before completion. `failed` — the run did not complete successfully (incomplete)."
       },
       "Run_Environment": {
         "type": "object",
@@ -616,9 +506,7 @@
           "antithesis_version": {
             "type": "string",
             "description": "Version of the Antithesis platform used for this run.",
-            "examples": [
-              "v49-1"
-            ]
+            "example": "v49-1"
           },
           "images": {
             "type": "array",
@@ -632,61 +520,43 @@
       "Container_Image": {
         "type": "object",
         "description": "A container image used in the test environment.",
-        "required": [
-          "name",
-          "image"
-        ],
+        "required": ["name", "image"],
         "properties": {
           "name": {
             "type": "string",
             "description": "Logical name of the service or component.",
-            "examples": [
-              "payments-service",
-              "driver"
-            ]
+            "example": "payments-service"
           },
           "image": {
             "type": "string",
-            "description": "Full image reference including registry, repository, and tag.",
-            "examples": [
-              "registry.example.com/payments:main-abc1234"
-            ]
+            "description": "Docker image digest, a content-addressable identifier for the image.",
+            "example": "registry.example.com/payments@sha256:a3ed95caeb02ffe68cdd9fd84406680ae93d633cb16422d00e8a7c22955b46d4"
           },
-          "digest": {
+          "tag": {
             "type": "string",
-            "description": "Content-addressable image digest.",
-            "examples": [
-              "sha256:deadbeef..."
-            ]
+            "description": "Image tag identifying the specific version.",
+            "example": "main-abc1234"
           }
         }
       },
       "Run_Type": {
         "type": "string",
-        "enum": [
-          "test",
-          "mvd",
-          "other"
-        ],
+        "enum": ["test", "mvd", "other"],
         "description": "The type of run. `test` is a standard test run, `mvd` is a multiverse debugging session, `other` covers any additional run types."
       },
-      "Creator_info": {
+      "Creator_Info": {
         "type": "object",
         "description": "Information about who or what created this run. Distinguishes between CI-triggered runs, manual user-initiated runs, and agent-driven runs.",
         "properties": {
           "name": {
             "type": "string",
             "description": "The name of the creator.",
-            "examples": [
-              "demo"
-            ]
+            "example": "demo"
           },
           "type": {
             "type": "string",
             "description": "The type of creator (e.g. \"ci\", \"user\", \"agent\").",
-            "examples": [
-              "ci"
-            ]
+            "example": "ci"
           }
         },
         "additionalProperties": true
@@ -712,11 +582,10 @@
               "$ref": "#/components/schemas/Error_Response"
             },
             "example": {
-              "error": "bad_request",
               "message": "limit must be between 1 and 100"
             }
           }
-        }
+        }   
       },
       "Unauthorized": {
         "description": "Unauthorized — invalid or missing authentication credentials.",
@@ -726,7 +595,6 @@
               "$ref": "#/components/schemas/Error_Response"
             },
             "example": {
-              "error": "unauthorized",
               "message": "Invalid or expired bearer token."
             }
           }
@@ -740,7 +608,6 @@
               "$ref": "#/components/schemas/Error_Response"
             },
             "example": {
-              "error": "not_found",
               "message": "Run not found: YcYh0bux4F0rsV96Xq3XqAhv"
             }
           }
@@ -754,7 +621,6 @@
               "$ref": "#/components/schemas/Error_Response"
             },
             "example": {
-              "error": "rate_limit_exceeded",
               "message": "Too many requests. Retry after 30 seconds."
             }
           }
@@ -768,7 +634,6 @@
               "$ref": "#/components/schemas/Error_Response"
             },
             "example": {
-              "error": "internal_error",
               "message": "An unexpected error occurred. Please try again later."
             }
           }
@@ -779,12 +644,7 @@
       "BearerAuth": {
         "type": "http",
         "scheme": "bearer",
-        "description": "OAuth2 bearer token obtained via the `snouty login` CLI flow. Pass the token in the Authorization header as `Authorization: Bearer <token>`."
-      },
-      "BasicAuth": {
-        "type": "http",
-        "scheme": "basic",
-        "description": "Basic auth machine credentials for your tenant. Used for webhook/launch endpoints."
+        "description": "API key provided by your Antithesis forward deployment engineer. Pass the key in the Authorization header as `Authorization: Bearer <api_key>`."
       }
     }
   }

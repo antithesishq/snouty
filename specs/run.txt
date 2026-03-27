@@ -23,7 +23,7 @@ stderr 'unexpected argument.*'
 
 # The command authenticates with the Antithesis API using
 #    ANTITHESIS_USERNAME, ANTITHESIS_PASSWORD, and ANTITHESIS_TENANT env vars.
-! snouty run -w basic_test --duration 30
+! snouty run -w basic_test --duration 30 --source ci-pipeline
 stderr 'missing environment variable.*'
 
 # Parameters are provided as --key value typed flags
@@ -41,44 +41,85 @@ stderr '"antithesis.source": "ci-pipeline"'
 
 # 6b. --ephemeral flag sets antithesis.is_ephemeral to "true".
 mock-server 200 '{"status": "ok"}'
-snouty run -w basic_test --duration 30 --ephemeral
+snouty run -w basic_test --duration 30 --ephemeral --source ci-pipeline
 stderr '"antithesis.is_ephemeral": "true"'
 
 # 6c. Without --ephemeral, the key is omitted entirely.
 mock-server 200 '{"status": "ok"}'
-snouty run -w basic_test --duration 30
+snouty run -w basic_test --duration 30 --source ci-pipeline
 ! stderr 'is_ephemeral.*'
 
 # 6d. --param flag passes custom properties.
 mock-server 200 '{"ok": true}'
-snouty run -w basic_test --duration 30 --param my.custom.prop=value --param antithesis.integrations.github.callback_url=https://example.com/cb
+snouty run -w basic_test --duration 30 --source ci-pipeline --param my.custom.prop=value --param antithesis.integrations.github.callback_url=https://example.com/cb
 stderr '"my.custom.prop": "value"'
 stderr '"antithesis.integrations.github.callback_url": "https://example.com/cb"'
 
 # 6e. --param cannot override typed flag values.
 mock-server 200 '{"ok": true}'
-! snouty run -w basic_test --duration 30 --param antithesis.duration=60
+! snouty run -w basic_test --duration 30 --source ci-pipeline --param antithesis.duration=60
 stderr 'cannot be overridden via --param.*'
 
-# At least one source of parameters must be provided; otherwise the
-#    command fails.
+# When no explicit params are provided, a git repo defaults antithesis.source
+#    from the repo name.
+setup-git-repo repo
+cd repo
+mock-server 200 '{}'
+snouty run -w basic_test
+stderr '"antithesis.source": "repo"'
+
+# Linked worktrees use the common git dir, so the default source is still the
+#    main repo name rather than the worktree directory name.
+cd ..
+setup-git-repo common-repo
+cd common-repo
+add-git-worktree common-repo linked linked-worktree
+cd ..
+cd linked-worktree
+mock-server 200 '{}'
+snouty run -w basic_test
+stderr '"antithesis.source": "common-repo"'
+
+# Repos initialized with --separate-git-dir do not infer a default source.
+cd ..
+setup-git-repo-separate-git-dir separate-repo git-storage
+cd separate-repo
 mock-server 200 '{}'
 ! snouty run -w basic_test
-stderr 'no parameters provided.*'
+stderr '--source is required.*'
+
+# Submodules default antithesis.source from the mounted submodule root rather
+#    than from .git/modules.
+cd ..
+setup-git-repo super-repo
+setup-git-repo child-repo
+add-git-submodule super-repo child-repo libs/renamed-child
+cd super-repo/libs/renamed-child
+mock-server 200 '{}'
+snouty run -w basic_test
+stderr '"antithesis.source": "renamed-child"'
+! stderr '"antithesis.source": "modules"'
+
+# Outside git, --source is required when neither --config nor pwd resolve to a
+#    git repo.
+cd ../../..
+mock-server 200 '{}'
+! snouty run -w basic_test
+stderr '--source is required.*'
 
 # On success, the command prints a human-readable ETA for the report
 #    email to stderr.
 mock-server 200 '{"ok": true}'
-snouty run -w basic_test --duration 30
+snouty run -w basic_test --duration 30 --source ci-pipeline
 stderr 'Expect a report email.*'
 
 # On API failure, the command exits with an error showing the HTTP status
 #    and response body.
 mock-server 400 '{"error": "bad request"}'
-! snouty run -w basic_test --duration 30
+! snouty run -w basic_test --duration 30 --source ci-pipeline
 stderr 'API error: 400.*'
 
 # antithesis.images must not be passed via --param; use api webhook instead.
 mock-server 200 '{"ok": true}'
-! snouty run -w basic_test --duration 30 --param antithesis.images=app:latest
+! snouty run -w basic_test --duration 30 --source ci-pipeline --param antithesis.images=app:latest
 stderr 'do not specify antithesis.images.*'

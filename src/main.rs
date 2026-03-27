@@ -1,4 +1,6 @@
+use std::ffi::OsStr;
 use std::io::{self, ErrorKind, Read};
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use chrono::{Duration, Local};
@@ -59,6 +61,69 @@ fn get_params(args: Vec<String>, use_stdin: bool, support_moment: bool) -> Resul
     }
 }
 
+fn infer_default_run_source(config_dir: Option<&Path>, cwd: Option<&Path>) -> Option<String> {
+    config_dir
+        .and_then(infer_git_source_from_probe)
+        .or_else(|| cwd.and_then(infer_git_source_from_probe))
+}
+
+fn git_rev_parse_path(probe_dir: &Path, flag: &str) -> Option<PathBuf> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(probe_dir)
+        .args(["rev-parse", flag])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+
+    let path = String::from_utf8(output.stdout).ok()?;
+    let path = path.trim();
+    if path.is_empty() {
+        return None;
+    }
+
+    let path = PathBuf::from(path);
+    let path = if path.is_absolute() {
+        path
+    } else {
+        probe_dir.join(path)
+    };
+    path.canonicalize().ok()
+}
+
+fn infer_git_source_from_probe(probe_dir: &Path) -> Option<String> {
+    if git_rev_parse_path(probe_dir, "--show-superproject-working-tree").is_some() {
+        let submodule_root = git_rev_parse_path(probe_dir, "--show-toplevel")?;
+        let source = submodule_root.file_name()?.to_str()?.to_string();
+        debug!(
+            "inferred antithesis.source={} from submodule probe {}",
+            source,
+            probe_dir.display()
+        );
+        return Some(source);
+    }
+
+    let git_common_dir = git_rev_parse_path(probe_dir, "--git-common-dir")?;
+    if git_common_dir.file_name() != Some(OsStr::new(".git")) {
+        debug!(
+            "skipping antithesis.source inference for git probe {} because git-common-dir {} is unsupported",
+            probe_dir.display(),
+            git_common_dir.display()
+        );
+        return None;
+    }
+
+    let repo_dir = git_common_dir.parent()?;
+    let source = repo_dir.file_name()?.to_str()?.to_string();
+    debug!(
+        "inferred antithesis.source={} from git probe {}",
+        source,
+        probe_dir.display()
+    );
+    Some(source)
+}
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<()> {
     color_eyre::install().unwrap();
@@ -99,6 +164,8 @@ async fn main() -> Result<()> {
 }
 
 async fn cmd_run(args: RunArgs) -> Result<()> {
+    let current_dir = std::env::current_dir().ok();
+    let inferred_source = infer_default_run_source(args.config.as_deref(), current_dir.as_deref());
     let mut params = Params::new();
 
     // Insert typed flags into params (skip None/false)
@@ -174,8 +241,14 @@ async fn cmd_run(args: RunArgs) -> Result<()> {
         );
     }
 
-    if params.is_empty() {
-        bail!("invalid arguments: no parameters provided");
+    if !params.contains_key("antithesis.source") {
+        if let Some(source) = inferred_source {
+            params.insert("antithesis.source", source);
+        } else {
+            bail!(
+                "invalid arguments: --source is required when source cannot be inferred from --config or the current working directory"
+            );
+        }
     }
 
     params.validate_test_params()?;
@@ -324,4 +397,196 @@ fn cmd_update() -> Result<()> {
         env!("CARGO_PKG_VERSION")
     );
     Ok(())
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    fn git(dir: &Path, args: &[&str]) {
+        let output = Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .output()
+            .unwrap();
+
+        assert!(
+            output.status.success(),
+            "git {:?} failed\nstdout:\n{}\nstderr:\n{}",
+            args,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        );
+    }
+
+    fn init_git_repo(parent: &TempDir, name: &str) -> PathBuf {
+        let repo = parent.path().join(name);
+        std::fs::create_dir(&repo).unwrap();
+
+        git(&repo, &["init", "."]);
+        git(
+            &repo,
+            &["config", "--local", "user.email", "test@example.com"],
+        );
+        git(&repo, &["config", "--local", "user.name", "test"]);
+        std::fs::write(repo.join("README.md"), "test\n").unwrap();
+        git(&repo, &["add", "README.md"]);
+        git(&repo, &["commit", "-m", "init"]);
+
+        repo
+    }
+
+    fn init_git_repo_with_separate_git_dir(
+        parent: &TempDir,
+        name: &str,
+        git_dir_name: &str,
+    ) -> PathBuf {
+        let repo = parent.path().join(name);
+        let git_dir = parent.path().join(git_dir_name);
+        std::fs::create_dir(&repo).unwrap();
+
+        git(
+            parent.path(),
+            &[
+                "init",
+                "--separate-git-dir",
+                git_dir.to_str().unwrap(),
+                repo.to_str().unwrap(),
+            ],
+        );
+        git(
+            &repo,
+            &["config", "--local", "user.email", "test@example.com"],
+        );
+        git(&repo, &["config", "--local", "user.name", "test"]);
+        std::fs::write(repo.join("README.md"), "test\n").unwrap();
+        git(&repo, &["add", "README.md"]);
+        git(&repo, &["commit", "-m", "init"]);
+
+        repo
+    }
+
+    fn add_git_worktree(repo: &Path, branch: &str, worktree_name: &str) -> PathBuf {
+        let worktree = repo.parent().unwrap().join(worktree_name);
+        git(repo, &["branch", branch]);
+        git(
+            repo,
+            &["worktree", "add", worktree.to_str().unwrap(), branch],
+        );
+        worktree
+    }
+
+    fn add_git_submodule(repo: &Path, submodule_repo: &Path, submodule_path: &str) -> PathBuf {
+        git(
+            repo,
+            &[
+                "-c",
+                "protocol.file.allow=always",
+                "submodule",
+                "add",
+                submodule_repo.to_str().unwrap(),
+                submodule_path,
+            ],
+        );
+        repo.join(submodule_path)
+    }
+
+    #[test]
+    fn infer_default_run_source_uses_repo_name_from_nested_dir() {
+        let temp = TempDir::new().unwrap();
+        let repo = init_git_repo(&temp, "plain-repo");
+        let nested = repo.join("nested");
+        std::fs::create_dir(&nested).unwrap();
+
+        assert_eq!(
+            infer_default_run_source(None, Some(nested.as_path())),
+            Some("plain-repo".to_string())
+        );
+    }
+
+    #[test]
+    fn infer_default_run_source_uses_common_git_dir_for_worktree() {
+        let temp = TempDir::new().unwrap();
+        let repo = init_git_repo(&temp, "common-repo");
+        let worktree = add_git_worktree(&repo, "linked", "linked-worktree");
+
+        assert_eq!(
+            infer_default_run_source(None, Some(worktree.as_path())),
+            Some("common-repo".to_string())
+        );
+    }
+
+    #[test]
+    fn infer_default_run_source_returns_none_for_separate_git_dir_repo() {
+        let temp = TempDir::new().unwrap();
+        let repo = init_git_repo_with_separate_git_dir(&temp, "separate-repo", "git-storage");
+
+        assert_eq!(infer_default_run_source(None, Some(repo.as_path())), None);
+    }
+
+    #[test]
+    fn infer_default_run_source_uses_submodule_root_name() {
+        let temp = TempDir::new().unwrap();
+        let repo = init_git_repo(&temp, "super-repo");
+        let submodule_repo = init_git_repo(&temp, "child-repo");
+        let submodule = add_git_submodule(&repo, &submodule_repo, "libs/renamed-child");
+
+        assert_eq!(
+            infer_default_run_source(None, Some(submodule.as_path())),
+            Some("renamed-child".to_string())
+        );
+    }
+
+    #[test]
+    fn infer_default_run_source_uses_nested_submodule_root_name() {
+        let temp = TempDir::new().unwrap();
+        let repo = init_git_repo(&temp, "super-repo");
+        let submodule_repo = init_git_repo(&temp, "child-repo");
+        let nested_submodule_repo = init_git_repo(&temp, "grandchild-repo");
+        let submodule = add_git_submodule(&repo, &submodule_repo, "deps/child");
+        let nested_submodule =
+            add_git_submodule(&submodule, &nested_submodule_repo, "vendor/grandchild");
+
+        assert_eq!(
+            infer_default_run_source(None, Some(nested_submodule.as_path())),
+            Some("grandchild".to_string())
+        );
+    }
+
+    #[test]
+    fn infer_default_run_source_prefers_config_dir_over_cwd() {
+        let temp = TempDir::new().unwrap();
+        let config_repo = init_git_repo(&temp, "config-repo");
+        let cwd_repo = init_git_repo(&temp, "cwd-repo");
+        let config_dir = config_repo.join("config");
+        let cwd_subdir = cwd_repo.join("subdir");
+        std::fs::create_dir(&config_dir).unwrap();
+        std::fs::create_dir(&cwd_subdir).unwrap();
+
+        assert_eq!(
+            infer_default_run_source(Some(config_dir.as_path()), Some(cwd_subdir.as_path())),
+            Some("config-repo".to_string())
+        );
+    }
+
+    #[test]
+    fn infer_default_run_source_falls_back_to_cwd_when_config_probe_fails() {
+        let temp = TempDir::new().unwrap();
+        let repo = init_git_repo(&temp, "cwd-repo");
+        let repo_subdir = repo.join("subdir");
+        let missing_config = temp.path().join("missing-config");
+        std::fs::create_dir(&repo_subdir).unwrap();
+
+        assert_eq!(
+            infer_default_run_source(Some(missing_config.as_path()), Some(repo_subdir.as_path())),
+            Some("cwd-repo".to_string())
+        );
+    }
+
+    #[test]
+    fn infer_default_run_source_returns_none_outside_git_repo() {
+        let temp = TempDir::new().unwrap();
+
+        assert_eq!(infer_default_run_source(None, Some(temp.path())), None);
+    }
 }

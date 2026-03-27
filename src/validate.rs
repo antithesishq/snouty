@@ -157,8 +157,8 @@ pub async fn cmd_validate(args: ValidateArgs) -> Result<()> {
             let temp_dir = Path::new(&out_dir);
             // To avoid conflating results of subsequent runs, we require that the provided
             // SNOUTY_TEMP_DIR is empty or non-existent
-            mkdir_or_require_empty(&temp_dir)?;
-            validate_with_temp_dir(args, &temp_dir).await
+            mkdir_or_require_empty(temp_dir)?;
+            validate_with_temp_dir(args, temp_dir).await
         }
         _ => {
             let temp_dir = tempfile::tempdir()?;

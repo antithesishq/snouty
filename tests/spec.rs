@@ -231,6 +231,24 @@ fn cmd_pull_image(
     })
 }
 
+fn run_git(dir: &std::path::Path, args: &[&str]) -> testscript_rs::Result<()> {
+    let output = std::process::Command::new("git")
+        .args(args)
+        .current_dir(dir)
+        .output()
+        .map_err(|e| err(format!("git {:?}: {e}", args)))?;
+
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(err(format!(
+            "git {:?} failed\nstdout:\n{}\nstderr:\n{}",
+            args,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        )))
+    }
+}
 fn requested_runtime_matches(runtime_name: &str) -> Result<bool, String> {
     match std::env::var("SNOUTY_TEST_RUNTIME") {
         Ok(requested) => match requested.as_str() {
@@ -340,6 +358,95 @@ fn spec_tests() {
         })
         .command("snouty", cmd_snouty)
         .command("mock-server", cmd_mock_server)
+        .command("setup-git-repo", |env, args| {
+            let [dir] = args else {
+                return Err(err("setup-git-repo requires <dir>".to_string()));
+            };
+
+            let repo = env.work_dir.join(dir);
+            std::fs::create_dir_all(&repo)
+                .map_err(|e| err(format!("failed to create repo dir: {e}")))?;
+
+            run_git(&repo, &["init", "."])?;
+            run_git(
+                &repo,
+                &["config", "--local", "user.email", "test@example.com"],
+            )?;
+            run_git(&repo, &["config", "--local", "user.name", "test"])?;
+            run_git(&repo, &["commit", "--allow-empty", "-m", "init"])?;
+            Ok(())
+        })
+        .command("setup-git-repo-separate-git-dir", |env, args| {
+            let [repo_dir, git_dir_name] = args else {
+                return Err(err(
+                    "setup-git-repo-separate-git-dir requires <repo-dir> <git-dir-name>"
+                        .to_string(),
+                ));
+            };
+
+            let repo = env.work_dir.join(repo_dir);
+            let git_dir = env.work_dir.join(git_dir_name);
+            std::fs::create_dir_all(&repo)
+                .map_err(|e| err(format!("failed to create repo dir: {e}")))?;
+
+            run_git(
+                &env.work_dir,
+                &[
+                    "init",
+                    "--separate-git-dir",
+                    git_dir.to_str().unwrap(),
+                    repo.to_str().unwrap(),
+                ],
+            )?;
+            run_git(
+                &repo,
+                &["config", "--local", "user.email", "test@example.com"],
+            )?;
+            run_git(&repo, &["config", "--local", "user.name", "test"])?;
+            run_git(&repo, &["commit", "--allow-empty", "-m", "init"])?;
+            Ok(())
+        })
+        .command("add-git-worktree", |env, args| {
+            let [repo_dir, branch, worktree_dir] = args else {
+                return Err(err(
+                    "add-git-worktree requires <repo-dir> <branch> <worktree-dir>".to_string(),
+                ));
+            };
+
+            let repo = env.work_dir.join(repo_dir);
+            let worktree = env.work_dir.join(worktree_dir);
+
+            run_git(&repo, &["branch", branch])?;
+            run_git(
+                &repo,
+                &["worktree", "add", worktree.to_str().unwrap(), branch],
+            )?;
+            Ok(())
+        })
+        .command("add-git-submodule", |env, args| {
+            let [repo_dir, submodule_repo_dir, submodule_dir] = args else {
+                return Err(err(
+                    "add-git-submodule requires <repo-dir> <submodule-repo-dir> <submodule-dir>"
+                        .to_string(),
+                ));
+            };
+
+            let repo = env.work_dir.join(repo_dir);
+            let submodule_repo = env.work_dir.join(submodule_repo_dir);
+
+            run_git(
+                &repo,
+                &[
+                    "-c",
+                    "protocol.file.allow=always",
+                    "submodule",
+                    "add",
+                    submodule_repo.to_str().unwrap(),
+                    submodule_dir,
+                ],
+            )?;
+            Ok(())
+        })
         .command("set-env", |env, args| {
             // Usage: set-env KEY value...
             // Interpolates ${VAR} references in value using env.env_vars.

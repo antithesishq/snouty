@@ -5,6 +5,7 @@ use assert_cmd::cargo::cargo_bin_cmd;
 use std::io::Read;
 use std::io::Write;
 use std::net::TcpListener;
+use std::path::Path;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -226,4 +227,96 @@ pub(crate) fn snouty_with_mock(mock_url: &str) -> Command {
         .env("ANTITHESIS_TENANT", "testtenant")
         .env("ANTITHESIS_BASE_URL", mock_url);
     cmd
+}
+
+fn git(dir: &Path, args: &[&str]) {
+    let output = std::process::Command::new("git")
+        .args(args)
+        .current_dir(dir)
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "git {:?} failed\nstdout:\n{}\nstderr:\n{}",
+        args,
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+}
+
+pub(crate) fn init_git_repo(parent: &TempDir, name: &str) -> PathBuf {
+    let repo = parent.path().join(name);
+    std::fs::create_dir(&repo).unwrap();
+
+    git(&repo, &["init", "."]);
+    git(
+        &repo,
+        &["config", "--local", "user.email", "test@example.com"],
+    );
+    git(&repo, &["config", "--local", "user.name", "test"]);
+    std::fs::write(repo.join("README.md"), "test\n").unwrap();
+    git(&repo, &["add", "README.md"]);
+    git(&repo, &["commit", "-m", "init"]);
+
+    repo
+}
+
+pub(crate) fn init_git_repo_with_separate_git_dir(
+    parent: &TempDir,
+    name: &str,
+    git_dir_name: &str,
+) -> PathBuf {
+    let repo = parent.path().join(name);
+    let git_dir = parent.path().join(git_dir_name);
+    std::fs::create_dir(&repo).unwrap();
+
+    git(
+        parent.path(),
+        &[
+            "init",
+            "--separate-git-dir",
+            git_dir.to_str().unwrap(),
+            repo.to_str().unwrap(),
+        ],
+    );
+    git(
+        &repo,
+        &["config", "--local", "user.email", "test@example.com"],
+    );
+    git(&repo, &["config", "--local", "user.name", "test"]);
+    std::fs::write(repo.join("README.md"), "test\n").unwrap();
+    git(&repo, &["add", "README.md"]);
+    git(&repo, &["commit", "-m", "init"]);
+
+    repo
+}
+
+pub(crate) fn add_git_worktree(repo: &Path, branch: &str, worktree_name: &str) -> PathBuf {
+    let worktree = repo.parent().unwrap().join(worktree_name);
+    git(repo, &["branch", branch]);
+    git(
+        repo,
+        &["worktree", "add", worktree.to_str().unwrap(), branch],
+    );
+    worktree
+}
+
+pub(crate) fn add_git_submodule(
+    repo: &Path,
+    submodule_repo: &Path,
+    submodule_path: &str,
+) -> PathBuf {
+    git(
+        repo,
+        &[
+            "-c",
+            "protocol.file.allow=always",
+            "submodule",
+            "add",
+            submodule_repo.to_str().unwrap(),
+            submodule_path,
+        ],
+    );
+    repo.join(submodule_path)
 }

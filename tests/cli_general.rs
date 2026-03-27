@@ -2,6 +2,7 @@ mod support;
 
 use predicates::prelude::*;
 use support::*;
+use tempfile::TempDir;
 
 #[test]
 fn version_prints_version() {
@@ -214,12 +215,134 @@ fn run_fails_without_webhook() {
 #[test]
 fn run_fails_without_parameters() {
     let mock_url = start_mock_server(r#"{}"#, 200);
+    let temp = TempDir::new().unwrap();
 
     snouty_with_mock(&mock_url)
+        .current_dir(temp.path())
         .args(["run", "-w", "basic_test"])
         .assert()
         .failure()
-        .stderr(predicate::str::contains("no parameters provided"));
+        .stderr(predicate::str::contains("--source is required"));
+}
+
+#[test]
+fn run_requires_source_outside_git_even_with_other_parameters() {
+    let mock_url = start_mock_server(r#"{}"#, 200);
+    let temp = TempDir::new().unwrap();
+
+    snouty_with_mock(&mock_url)
+        .current_dir(temp.path())
+        .args(["run", "-w", "basic_test", "--duration", "30"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("--source is required"));
+}
+
+#[test]
+fn run_defaults_source_from_git_repo_name() {
+    let mock_url = start_mock_server(r#"{}"#, 200);
+    let temp = TempDir::new().unwrap();
+    let repo = init_git_repo(&temp, "plain-repo");
+
+    snouty_with_mock(&mock_url)
+        .current_dir(&repo)
+        .args(["run", "-w", "basic_test"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains(
+            r#""antithesis.source": "plain-repo""#,
+        ));
+}
+
+#[test]
+fn run_defaults_source_from_git_common_dir_in_worktree() {
+    let mock_url = start_mock_server(r#"{}"#, 200);
+    let temp = TempDir::new().unwrap();
+    let repo = init_git_repo(&temp, "common-repo");
+    let worktree = add_git_worktree(&repo, "linked", "linked-worktree");
+
+    snouty_with_mock(&mock_url)
+        .current_dir(&worktree)
+        .args(["run", "-w", "basic_test"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains(
+            r#""antithesis.source": "common-repo""#,
+        ))
+        .stderr(predicate::str::contains(r#""antithesis.source": "linked-worktree""#).not());
+}
+
+#[test]
+fn run_requires_explicit_source_for_separate_git_dir_repo() {
+    let mock_url = start_mock_server(r#"{}"#, 200);
+    let temp = TempDir::new().unwrap();
+    let repo = init_git_repo_with_separate_git_dir(&temp, "separate-repo", "git-storage");
+
+    snouty_with_mock(&mock_url)
+        .current_dir(&repo)
+        .args(["run", "-w", "basic_test"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("--source is required"));
+}
+
+#[test]
+fn run_defaults_source_from_submodule_root_name() {
+    let mock_url = start_mock_server(r#"{}"#, 200);
+    let temp = TempDir::new().unwrap();
+    let repo = init_git_repo(&temp, "super-repo");
+    let submodule_repo = init_git_repo(&temp, "child-repo");
+    let submodule = add_git_submodule(&repo, &submodule_repo, "libs/renamed-child");
+
+    snouty_with_mock(&mock_url)
+        .current_dir(&submodule)
+        .args(["run", "-w", "basic_test"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains(
+            r#""antithesis.source": "renamed-child""#,
+        ))
+        .stderr(predicate::str::contains(r#""antithesis.source": "modules""#).not());
+}
+
+#[test]
+fn run_explicit_source_overrides_git_default() {
+    let mock_url = start_mock_server(r#"{}"#, 200);
+    let temp = TempDir::new().unwrap();
+    let repo = init_git_repo(&temp, "plain-repo");
+
+    snouty_with_mock(&mock_url)
+        .current_dir(&repo)
+        .args(["run", "-w", "basic_test", "--source", "ci-pipeline"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains(
+            r#""antithesis.source": "ci-pipeline""#,
+        ))
+        .stderr(predicate::str::contains(r#""antithesis.source": "plain-repo""#).not());
+}
+
+#[test]
+fn run_param_source_suppresses_git_default() {
+    let mock_url = start_mock_server(r#"{}"#, 200);
+    let temp = TempDir::new().unwrap();
+    let repo = init_git_repo(&temp, "plain-repo");
+
+    snouty_with_mock(&mock_url)
+        .current_dir(&repo)
+        .args([
+            "run",
+            "-w",
+            "basic_test",
+            "--param",
+            "antithesis.source=from-param",
+        ])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains(
+            r#""antithesis.source": "from-param""#,
+        ))
+        .stderr(predicate::str::contains(r#""antithesis.source": "plain-repo""#).not());
 }
 
 #[test]

@@ -7,7 +7,8 @@ use log::{debug, info};
 
 use color_eyre::eyre::{Context, Result, bail};
 use snouty::api::AntithesisApi;
-use snouty::cli::{ApiCommands, Cli, Commands, RunArgs};
+use snouty::cli::{ApiCommands, Cli, Commands, ConfigCommands, RunArgs};
+use snouty::config;
 use snouty::container;
 use snouty::docs;
 use snouty::moment;
@@ -87,6 +88,8 @@ async fn main() -> Result<()> {
             info!("starting debug session");
             cmd_debug(args, stdin).await
         }
+        Commands::Config(ConfigCommands::Init { source }) => config::init(source),
+        Commands::Config(ConfigCommands::Show) => config::show(),
         Commands::Validate(args) => validate::cmd_validate(args).await,
         Commands::Completions { shell } => cmd_completions(shell),
         Commands::Version => {
@@ -99,26 +102,68 @@ async fn main() -> Result<()> {
 }
 
 async fn cmd_run(args: RunArgs) -> Result<()> {
+    let RunArgs {
+        webhook,
+        config: config_dir,
+        config_image,
+        test_name,
+        description,
+        duration,
+        ephemeral,
+        source,
+        recipients,
+        params: extra_params,
+    } = args;
+
+    assert!(
+        !(config_image.is_some() && config_dir.is_some()),
+        "config and config_image are mutually exclusive"
+    );
+
+    // TODO: enable config directory support for k8s manifests
+    if webhook == "basic_k8s_test" && config_dir.is_some() {
+        bail!(
+            "The 'basic_k8s_test' webhook does not support the --config flag. Please use --config-image with a pre-built config image instead."
+        );
+    }
+
+    let config_dir = match config_dir {
+        Some(config_dir) => Some(container::ComposeConfig::new(config_dir)?),
+        None => None,
+    };
+
+    let config_lookup_root = match &config_dir {
+        Some(config) => config.dir().to_path_buf(),
+        None => std::env::current_dir()?,
+    };
+    let cfg = config::load(&config_lookup_root)?;
     let mut params = Params::new();
 
     // Insert typed flags into params (skip None/false)
-    if let Some(test_name) = args.test_name {
+    if let Some(test_name) = test_name {
         params.insert("antithesis.test_name", test_name);
     }
-    if let Some(description) = args.description {
+    if let Some(description) = description {
         params.insert("antithesis.description", description);
     }
-    if let Some(duration) = args.duration {
+    if let Some(duration) = duration {
         params.insert("antithesis.duration", duration.to_string());
     }
-    if args.ephemeral {
+    if ephemeral {
         params.insert("antithesis.is_ephemeral", "true");
     }
-    if let Some(source) = args.source {
+    if let Some(source) = source {
         params.insert("antithesis.source", source);
     }
-    if let Some(recipients) = args.recipients {
+    if let Some(recipients) = recipients {
         params.insert("antithesis.report.recipients", recipients);
+    }
+
+    // Apply config file defaults (lower precedence than flags)
+    if let Some(source) = cfg.merged.source
+        && !params.contains_key("antithesis.source")
+    {
+        params.insert("antithesis.source", source);
     }
 
     // Process config_image and config flags
@@ -138,9 +183,7 @@ async fn cmd_run(args: RunArgs) -> Result<()> {
         params.insert("antithesis.config_image", config_image);
     }
 
-    let config_image_ref = if let Some(config_dir) = args.config {
-        let config = container::ComposeConfig::new(config_dir)?;
-
+    let config_image_ref = if let Some(config) = config_dir {
         let registry = std::env::var("ANTITHESIS_REPOSITORY")
             .wrap_err("missing environment variable: ANTITHESIS_REPOSITORY")?;
 
@@ -152,8 +195,8 @@ async fn cmd_run(args: RunArgs) -> Result<()> {
     };
 
     // Parse --param key=value pairs
-    if !args.params.is_empty() {
-        let extra = Params::from_key_value_pairs(&args.params)?;
+    if !extra_params.is_empty() {
+        let extra = Params::from_key_value_pairs(&extra_params)?;
 
         // Check for conflicts with typed flags already set in params
         for key in extra.as_map().keys() {
@@ -200,7 +243,7 @@ async fn cmd_run(args: RunArgs) -> Result<()> {
         .and_then(|s| s.parse().ok())
         .unwrap_or(0);
 
-    launch_webhook(&args.webhook, params).await?;
+    launch_webhook(&webhook, params).await?;
 
     let eta = Local::now() + Duration::minutes(duration_mins + 10);
     eprintln!(

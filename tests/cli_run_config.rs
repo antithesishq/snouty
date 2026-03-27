@@ -144,3 +144,106 @@ fn run_config_conflicts_with_param_config_image() {
         .failure()
         .stderr(predicate::str::contains("cannot be overridden via --param"));
 }
+
+#[test]
+fn run_config_loads_local_config_from_passed_directory() {
+    let workspace = TempDir::new().unwrap();
+    let caller_dir = workspace.path().join("caller");
+    let config_dir = workspace.path().join("repo").join("config");
+    std::fs::create_dir_all(&caller_dir).unwrap();
+    std::fs::create_dir_all(&config_dir).unwrap();
+    std::fs::write(caller_dir.join(".snouty.yaml"), "source: from-cwd\n").unwrap();
+    std::fs::write(config_dir.join("docker-compose.yaml"), "version: '3'\n").unwrap();
+    std::fs::write(config_dir.join(".snouty.yaml"), "source: x\nbogus: y\n").unwrap();
+
+    snouty()
+        .current_dir(&caller_dir)
+        .env("ANTITHESIS_REPOSITORY", "registry.example.com/repo")
+        .args([
+            "run",
+            "-w",
+            "basic_test",
+            "-c",
+            "../repo/config",
+            "--duration",
+            "30",
+            "--source",
+            "ci",
+            "--param",
+            "antithesis.config_image=some-image:latest",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("invalid config file"))
+        .stderr(predicate::str::contains(
+            config_dir.join(".snouty.yaml").to_str().unwrap(),
+        ));
+}
+
+#[test]
+fn run_config_walks_up_from_passed_directory_to_parent() {
+    let workspace = TempDir::new().unwrap();
+    let caller_dir = workspace.path().join("caller");
+    let repo_dir = workspace.path().join("repo");
+    let config_dir = repo_dir.join("config");
+    std::fs::create_dir_all(&caller_dir).unwrap();
+    std::fs::create_dir_all(&config_dir).unwrap();
+    std::fs::write(caller_dir.join(".snouty.yaml"), "source: from-cwd\n").unwrap();
+    std::fs::write(config_dir.join("docker-compose.yaml"), "version: '3'\n").unwrap();
+    std::fs::write(repo_dir.join(".snouty.yaml"), "source: x\nbogus: y\n").unwrap();
+
+    snouty()
+        .current_dir(&caller_dir)
+        .env("ANTITHESIS_REPOSITORY", "registry.example.com/repo")
+        .args([
+            "run",
+            "-w",
+            "basic_test",
+            "-c",
+            "../repo/config",
+            "--duration",
+            "30",
+            "--source",
+            "ci",
+            "--param",
+            "antithesis.config_image=some-image:latest",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("invalid config file"))
+        .stderr(predicate::str::contains(
+            repo_dir.join(".snouty.yaml").to_str().unwrap(),
+        ));
+}
+
+#[test]
+fn run_config_does_not_fall_back_to_caller_directory_tree() {
+    let workspace = TempDir::new().unwrap();
+    let caller_dir = workspace.path().join("caller");
+    let config_dir = workspace.path().join("repo").join("config");
+    std::fs::create_dir_all(&caller_dir).unwrap();
+    std::fs::create_dir_all(&config_dir).unwrap();
+    std::fs::write(caller_dir.join(".snouty.yaml"), "source: x\nbogus: y\n").unwrap();
+    std::fs::write(config_dir.join("docker-compose.yaml"), "version: '3'\n").unwrap();
+
+    snouty()
+        .current_dir(&caller_dir)
+        .env("ANTITHESIS_REPOSITORY", "registry.example.com/repo")
+        .args([
+            "run",
+            "-w",
+            "basic_test",
+            "-c",
+            "../repo/config",
+            "--duration",
+            "30",
+            "--source",
+            "ci",
+            "--param",
+            "antithesis.config_image=some-image:latest",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("cannot be overridden via --param"))
+        .stderr(predicate::str::contains("invalid config file").not());
+}

@@ -9,6 +9,20 @@ stderr 'ANTITHESIS_REPOSITORY.*'
 
 env ANTITHESIS_REPOSITORY=registry.example.com/repo
 
+# When --config is used, local .snouty.yaml discovery starts from the passed
+# config directory instead of the caller's current directory.
+cd caller
+! snouty run -w basic_test -c ../repo/config --duration 30 --source ci --param antithesis.config_image=some-image:latest
+stderr 'invalid config file.*repo/config/\.snouty\.yaml'
+
+# If the config directory has no .snouty.yaml, Snouty walks up from that
+# directory to its parents.
+cd caller
+! snouty run -w basic_test -c ../parent_repo/config --duration 30 --source ci --param antithesis.config_image=some-image:latest
+stderr 'invalid config file.*parent_repo/\.snouty\.yaml'
+
+cd .
+
 # Rejects a nonexistent directory.
 ! snouty run -w basic_test -c /nonexistent/path --duration 30
 stderr 'not a directory.*'
@@ -38,6 +52,17 @@ stderr 'cannot be overridden via --param.*'
 stderr 'basic_k8s_test.*does not support the --config flag.*'
 
 -- config/docker-compose.yaml --
--- empty/.keep --
+-- caller/.snouty.yaml --
+source: from-cwd
+-- repo/config/docker-compose.yaml --
+-- repo/config/.snouty.yaml --
+source: x
+bogus: y
+-- parent_repo/.snouty.yaml --
+source: x
+bogus: y
+-- parent_repo/config/docker-compose.yaml --
+-- empty/README.md --
+placeholder
 -- yml_dir/docker-compose.yml --
 -- k8s_config/docker-compose.yaml --

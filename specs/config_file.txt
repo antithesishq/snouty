@@ -1,0 +1,69 @@
+# snouty config file
+#
+# Snouty reads .snouty.yaml config files to provide defaults for CLI flags.
+# Local config (walking up from CWD) overrides global config.
+# CLI flags override both.
+
+# No config file is fine — existing behavior unchanged.
+mock-server 200 '{"ok": true}'
+snouty run -w basic_test --duration 30
+! stderr 'antithesis.source.*'
+
+# Local .snouty.yaml sets source as default for antithesis.source.
+mock-server 200 '{"ok": true}'
+cd with_config
+snouty run -w basic_test --duration 30
+stderr '"antithesis.source": "from-config"'
+
+# CLI --source overrides config source.
+mock-server 200 '{"ok": true}'
+cd with_config
+snouty run -w basic_test --duration 30 --source from-flag
+stderr '"antithesis.source": "from-flag"'
+
+# Config in a parent directory is found from a subdirectory.
+mock-server 200 '{"ok": true}'
+cd with_config/subdir
+snouty run -w basic_test --duration 30
+stderr '"antithesis.source": "from-config"'
+
+# Unknown fields in .snouty.yaml cause a clear error.
+cd bad_field
+! snouty run -w basic_test --duration 30
+stderr 'invalid config file.*'
+
+# Invalid YAML in .snouty.yaml causes a clear error.
+cd bad_yaml
+! snouty run -w basic_test --duration 30
+stderr 'invalid config file.*'
+
+# config init --source creates a .snouty.yaml in the current directory.
+cd init_dir
+snouty config init --source my-branch
+stderr 'Created.*\.snouty\.yaml'
+
+# config init fails if .snouty.yaml already exists.
+cd init_dir
+! snouty config init --source other
+stderr 'already exists.*'
+
+# config init requires --source.
+cd init_no_source
+! snouty config init
+stderr '.*required.*'
+
+# config show displays merged config with origins.
+cd with_config
+snouty config show
+stdout 'local.*\.snouty\.yaml'
+
+-- with_config/.snouty.yaml --
+source: from-config
+-- with_config/subdir/.keep --
+-- bad_field/.snouty.yaml --
+source: x
+bogus: y
+-- bad_yaml/.snouty.yaml --
+: not valid yaml [
+-- init_dir/.keep --
+-- init_no_source/.keep --

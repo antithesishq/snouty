@@ -102,6 +102,10 @@ Example:
   snouty validate ./config --timeout 10"#)]
     Validate(ValidateArgs),
 
+    /// Manage snouty configuration
+    #[command(subcommand)]
+    Config(ConfigCommands),
+
     /// Print version information
     Version,
 
@@ -240,6 +244,18 @@ pub struct RunArgs {
     /// Extra parameters as key=value pairs (repeatable)
     #[arg(long = "param")]
     pub params: Vec<String>,
+}
+
+#[derive(Subcommand)]
+pub enum ConfigCommands {
+    /// Create a .snouty.yaml in the current directory
+    Init {
+        /// Value for the source setting (used as antithesis.source in runs)
+        #[arg(long)]
+        source: String,
+    },
+    /// Show merged configuration with origins
+    Show,
 }
 
 #[derive(Subcommand)]

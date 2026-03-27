@@ -21,8 +21,9 @@ stderr 'unexpected argument.*'
 # Old-style raw --antithesis.* args are not accepted by `run`.
 ! snouty run -w basic_test --antithesis.duration 30
 
-# The command authenticates with the Antithesis API using
-#    ANTITHESIS_USERNAME, ANTITHESIS_PASSWORD, and ANTITHESIS_TENANT env vars.
+# The command authenticates with the Antithesis API using either
+#    ANTITHESIS_API_KEY and ANTITHESIS_TENANT, or
+#    ANTITHESIS_USERNAME, ANTITHESIS_PASSWORD, and ANTITHESIS_TENANT.
 ! snouty run -w basic_test --duration 30
 stderr 'missing environment variable.*'
 

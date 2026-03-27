@@ -33,7 +33,15 @@ Alternatively, pass a pre-built config image directly:
 Extra parameters can be passed with --param:
   snouty run -w basic_test --duration 30 \
     --param antithesis.integrations.github.token=TOKEN \
-    --param my.custom.property=value"#)]
+    --param my.custom.property=value
+
+Environment variables:
+  ANTITHESIS_TENANT       (required) Your Antithesis tenant name.
+  ANTITHESIS_API_KEY      API key authentication (preferred).
+  ANTITHESIS_USERNAME     Legacy username (required when API key is not set).
+  ANTITHESIS_PASSWORD     Legacy password (required when API key is not set).
+  ANTITHESIS_REPOSITORY   Container registry for pushing images (required with --config).
+  SNOUTY_CONTAINER_ENGINE Force "docker" or "podman" (auto-detected by default)."#)]
     Run(RunArgs),
 
     /// Access raw API endpoints

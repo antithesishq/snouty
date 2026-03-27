@@ -27,9 +27,9 @@ cargo install snouty
 
 ### Download prebuilt binaries
 
-| File                                                                                                                                               | Platform            | Checksum                                                                                                                   |
-| -------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------- | -------------------------------------------------------------------------------------------------------------------------- |
-| [snouty-aarch64-apple-darwin.tar.xz](https://github.com/antithesishq/snouty/releases/latest/download/snouty-aarch64-apple-darwin.tar.xz)           | Apple Silicon macOS | [checksum](https://github.com/antithesishq/snouty/releases/latest/download/snouty-aarch64-apple-darwin.tar.xz.sha256)      |
+| File                                                                                                                                                 | Platform            | Checksum                                                                                                                    |
+| ---------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------- | --------------------------------------------------------------------------------------------------------------------------- |
+| [snouty-aarch64-apple-darwin.tar.xz](https://github.com/antithesishq/snouty/releases/latest/download/snouty-aarch64-apple-darwin.tar.xz)             | Apple Silicon macOS | [checksum](https://github.com/antithesishq/snouty/releases/latest/download/snouty-aarch64-apple-darwin.tar.xz.sha256)       |
 | [snouty-aarch64-unknown-linux-musl.tar.xz](https://github.com/antithesishq/snouty/releases/latest/download/snouty-aarch64-unknown-linux-musl.tar.xz) | ARM64 Linux         | [checksum](https://github.com/antithesishq/snouty/releases/latest/download/snouty-aarch64-unknown-linux-musl.tar.xz.sha256) |
 | [snouty-x86_64-unknown-linux-musl.tar.xz](https://github.com/antithesishq/snouty/releases/latest/download/snouty-x86_64-unknown-linux-musl.tar.xz)   | x64 Linux           | [checksum](https://github.com/antithesishq/snouty/releases/latest/download/snouty-x86_64-unknown-linux-musl.tar.xz.sha256)  |
 
@@ -47,13 +47,24 @@ If both are installed, Podman is preferred. You can override via environment `SN
 
 ## Configuration
 
-Set the following environment variables:
+At a minimum Snouty requires tenant and repository to be provided as environment variables when using the API. Docs commands require no configuration at the moment.
+
+```sh
+export ANTITHESIS_TENANT="your-tenant"
+export ANTITHESIS_REPOSITORY="us-central1-docker.pkg.dev/your-project/your-repo"
+```
+
+Antithesis supports two forms of authentication. Some tenants have API keys, which you can specify like so:
+
+```sh
+export ANTITHESIS_API_KEY="your-api-key"
+```
+
+Other tenants use legacy username/password authentication, which you can specify like so:
 
 ```sh
 export ANTITHESIS_USERNAME="your-username"
 export ANTITHESIS_PASSWORD="your-password"
-export ANTITHESIS_TENANT="your-tenant"
-export ANTITHESIS_REPOSITORY="us-central1-docker.pkg.dev/your-project/your-repo"
 ```
 
 ## Usage

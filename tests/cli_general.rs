@@ -114,7 +114,16 @@ fn run_with_ephemeral_flag() {
     let mock_url = start_mock_server(r#"{"status": "ok"}"#, 200);
 
     snouty_with_mock(&mock_url)
-        .args(["run", "-w", "basic_test", "--duration", "30", "--ephemeral"])
+        .args([
+            "run",
+            "-w",
+            "basic_test",
+            "--duration",
+            "30",
+            "--ephemeral",
+            "--source",
+            "ci",
+        ])
         .assert()
         .success()
         .stderr(predicate::str::contains(
@@ -127,7 +136,15 @@ fn run_without_ephemeral_omits_key() {
     let mock_url = start_mock_server(r#"{"status": "ok"}"#, 200);
 
     snouty_with_mock(&mock_url)
-        .args(["run", "-w", "basic_test", "--duration", "30"])
+        .args([
+            "run",
+            "-w",
+            "basic_test",
+            "--duration",
+            "30",
+            "--source",
+            "ci",
+        ])
         .assert()
         .success()
         .stderr(predicate::str::contains("is_ephemeral").not());
@@ -144,6 +161,8 @@ fn run_with_param_flag() {
             "basic_test",
             "--duration",
             "30",
+            "--source",
+            "ci",
             "--param",
             "my.custom.prop=value",
             "--param",
@@ -168,6 +187,8 @@ fn run_param_cannot_override_typed_flag() {
             "basic_test",
             "--duration",
             "30",
+            "--source",
+            "ci",
             "--param",
             "antithesis.duration=60",
         ])
@@ -212,14 +233,15 @@ fn run_fails_without_webhook() {
 }
 
 #[test]
-fn run_fails_without_parameters() {
+fn run_fails_without_source() {
     let mock_url = start_mock_server(r#"{}"#, 200);
 
     snouty_with_mock(&mock_url)
-        .args(["run", "-w", "basic_test"])
+        .args(["run", "-w", "basic_test", "--duration", "30"])
         .assert()
         .failure()
-        .stderr(predicate::str::contains("no parameters provided"));
+        .stderr(predicate::str::contains("--source is required"))
+        .stderr(predicate::str::contains("snouty config init --source"));
 }
 
 #[test]
@@ -227,7 +249,15 @@ fn run_reports_api_errors() {
     let mock_url = start_mock_server(r#"{"error": "bad request"}"#, 400);
 
     snouty_with_mock(&mock_url)
-        .args(["run", "-w", "basic_test", "--duration", "30"])
+        .args([
+            "run",
+            "-w",
+            "basic_test",
+            "--duration",
+            "30",
+            "--source",
+            "ci",
+        ])
         .assert()
         .failure()
         .stderr(predicate::str::contains("API error: 400"));
@@ -236,7 +266,15 @@ fn run_reports_api_errors() {
 #[test]
 fn run_fails_without_credentials() {
     snouty()
-        .args(["run", "-w", "basic_test", "--duration", "30"])
+        .args([
+            "run",
+            "-w",
+            "basic_test",
+            "--duration",
+            "30",
+            "--source",
+            "ci",
+        ])
         .assert()
         .failure()
         .stderr(predicate::str::contains("missing environment variable"));
@@ -586,7 +624,15 @@ fn run_prints_email_eta() {
     let mock_url = start_mock_server(r#"{"ok": true}"#, 200);
 
     snouty_with_mock(&mock_url)
-        .args(["run", "-w", "basic_test", "--duration", "30"])
+        .args([
+            "run",
+            "-w",
+            "basic_test",
+            "--duration",
+            "30",
+            "--source",
+            "ci",
+        ])
         .assert()
         .success()
         .stderr(predicate::str::contains("Expect a report email"));

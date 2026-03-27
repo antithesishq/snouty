@@ -23,7 +23,7 @@ stderr 'unexpected argument.*'
 
 # The command authenticates with the Antithesis API using
 #    ANTITHESIS_USERNAME, ANTITHESIS_PASSWORD, and ANTITHESIS_TENANT env vars.
-! snouty run -w basic_test --duration 30
+! snouty run -w basic_test --duration 30 --source ci
 stderr 'missing environment variable.*'
 
 # Parameters are provided as --key value typed flags
@@ -41,44 +41,43 @@ stderr '"antithesis.source": "ci-pipeline"'
 
 # 6b. --ephemeral flag sets antithesis.is_ephemeral to "true".
 mock-server 200 '{"status": "ok"}'
-snouty run -w basic_test --duration 30 --ephemeral
+snouty run -w basic_test --duration 30 --ephemeral --source ci
 stderr '"antithesis.is_ephemeral": "true"'
 
 # 6c. Without --ephemeral, the key is omitted entirely.
 mock-server 200 '{"status": "ok"}'
-snouty run -w basic_test --duration 30
+snouty run -w basic_test --duration 30 --source ci
 ! stderr 'is_ephemeral.*'
 
 # 6d. --param flag passes custom properties.
 mock-server 200 '{"ok": true}'
-snouty run -w basic_test --duration 30 --param my.custom.prop=value --param antithesis.integrations.github.callback_url=https://example.com/cb
+snouty run -w basic_test --duration 30 --source ci --param my.custom.prop=value --param antithesis.integrations.github.callback_url=https://example.com/cb
 stderr '"my.custom.prop": "value"'
 stderr '"antithesis.integrations.github.callback_url": "https://example.com/cb"'
 
 # 6e. --param cannot override typed flag values.
 mock-server 200 '{"ok": true}'
-! snouty run -w basic_test --duration 30 --param antithesis.duration=60
+! snouty run -w basic_test --duration 30 --source ci --param antithesis.duration=60
 stderr 'cannot be overridden via --param.*'
 
-# At least one source of parameters must be provided; otherwise the
-#    command fails.
-mock-server 200 '{}'
-! snouty run -w basic_test
-stderr 'no parameters provided.*'
+# --source is required; without it the command fails with a helpful hint.
+! snouty run -w basic_test --duration 30
+stderr '--source is required.*'
+stderr 'snouty config init --source.*'
 
 # On success, the command prints a human-readable ETA for the report
 #    email to stderr.
 mock-server 200 '{"ok": true}'
-snouty run -w basic_test --duration 30
+snouty run -w basic_test --duration 30 --source ci
 stderr 'Expect a report email.*'
 
 # On API failure, the command exits with an error showing the HTTP status
 #    and response body.
 mock-server 400 '{"error": "bad request"}'
-! snouty run -w basic_test --duration 30
+! snouty run -w basic_test --duration 30 --source ci
 stderr 'API error: 400.*'
 
 # antithesis.images must not be passed via --param; use api webhook instead.
 mock-server 200 '{"ok": true}'
-! snouty run -w basic_test --duration 30 --param antithesis.images=app:latest
+! snouty run -w basic_test --duration 30 --source ci --param antithesis.images=app:latest
 stderr 'do not specify antithesis.images.*'

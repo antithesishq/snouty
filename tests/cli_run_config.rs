@@ -16,6 +16,8 @@ fn run_config_rejects_nonexistent_dir() {
             "/nonexistent/path",
             "--duration",
             "30",
+            "--source",
+            "ci",
         ])
         .assert()
         .failure()
@@ -36,6 +38,8 @@ fn run_config_rejects_dir_without_compose() {
             dir.path().to_str().unwrap(),
             "--duration",
             "30",
+            "--source",
+            "ci",
         ])
         .assert()
         .failure()
@@ -57,6 +61,8 @@ fn run_config_rejects_yml_extension() {
             dir.path().to_str().unwrap(),
             "--duration",
             "30",
+            "--source",
+            "ci",
         ])
         .assert()
         .failure()
@@ -100,6 +106,8 @@ fn run_config_requires_registry_env() {
             dir.path().to_str().unwrap(),
             "--duration",
             "30",
+            "--source",
+            "ci",
         ])
         .assert()
         .failure()
@@ -118,6 +126,8 @@ fn run_config_long_flag_accepted() {
             "/nonexistent/path",
             "--duration",
             "30",
+            "--source",
+            "ci",
         ])
         .assert()
         .failure()
@@ -137,6 +147,8 @@ fn run_config_conflicts_with_param_config_image() {
             "basic_test",
             "-c",
             dir.path().to_str().unwrap(),
+            "--source",
+            "ci",
             "--param",
             "antithesis.config_image=some-image:latest",
         ])

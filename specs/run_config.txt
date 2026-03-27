@@ -4,7 +4,7 @@
 # docker-compose.yaml file that will be pushed as a config image.
 
 # Requires ANTITHESIS_REPOSITORY when --config is used.
-! snouty run -w basic_test -c config --duration 30
+! snouty run -w basic_test -c config --duration 30 --source ci
 stderr 'ANTITHESIS_REPOSITORY.*'
 
 env ANTITHESIS_REPOSITORY=registry.example.com/repo
@@ -24,19 +24,19 @@ stderr 'invalid config file.*parent_repo/\.snouty\.yaml'
 cd .
 
 # Rejects a nonexistent directory.
-! snouty run -w basic_test -c /nonexistent/path --duration 30
+! snouty run -w basic_test -c /nonexistent/path --duration 30 --source ci
 stderr 'not a directory.*'
 
 # 2b. Long flag --config also accepted.
-! snouty run -w basic_test --config /nonexistent/path --duration 30
+! snouty run -w basic_test --config /nonexistent/path --duration 30 --source ci
 stderr 'not a directory.*'
 
 # Rejects a directory without docker-compose.
-! snouty run -w basic_test -c empty --duration 30
+! snouty run -w basic_test -c empty --duration 30 --source ci
 stderr 'docker-compose.*'
 
 # Rejects docker-compose.yml (wrong extension).
-! snouty run -w basic_test -c yml_dir --duration 30
+! snouty run -w basic_test -c yml_dir --duration 30 --source ci
 stderr 'requires docker-compose.yaml.*'
 
 # --config conflicts with --config-image (clap).
@@ -44,11 +44,11 @@ stderr 'requires docker-compose.yaml.*'
 stderr '--config.*'
 
 # --config conflicts with --param antithesis.config_image.
-! snouty run -w basic_test -c config --param antithesis.config_image=some-image:latest
+! snouty run -w basic_test -c config --source ci --param antithesis.config_image=some-image:latest
 stderr 'cannot be overridden via --param.*'
 
 # basic_k8s_test webhook does not support --config flag.
-! snouty run -w basic_k8s_test -c k8s_config --duration 30
+! snouty run -w basic_k8s_test -c k8s_config --duration 30 --source ci
 stderr 'basic_k8s_test.*does not support the --config flag.*'
 
 -- config/docker-compose.yaml --

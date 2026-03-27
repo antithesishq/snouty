@@ -4,10 +4,10 @@
 # Local config (walking up from CWD) overrides global config.
 # CLI flags override both.
 
-# No config file is fine — existing behavior unchanged.
-mock-server 200 '{"ok": true}'
-snouty run -w basic_test --duration 30
-! stderr 'antithesis.source.*'
+# Without --source or config file, the command fails with a helpful hint.
+! snouty run -w basic_test --duration 30
+stderr '--source is required.*'
+stderr 'snouty config init --source.*'
 
 # Local .snouty.yaml sets source as default for antithesis.source.
 mock-server 200 '{"ok": true}'
@@ -55,7 +55,7 @@ stderr '.*required.*'
 # config show displays merged config with origins.
 cd with_config
 snouty config show
-stdout 'local.*\.snouty\.yaml'
+stderr 'local.*\.snouty\.yaml'
 
 -- with_config/.snouty.yaml --
 source: from-config

@@ -166,20 +166,15 @@ async fn cmd_run(args: RunArgs) -> Result<()> {
         params.insert("antithesis.source", source);
     }
 
-    // Process config_image and config flags
-    assert!(
-        !(args.config_image.is_some() && args.config.is_some()),
-        "config and config_image are mutually exclusive"
-    );
-
-    // TODO: enable config directory support for k8s manifests
-    if args.webhook == "basic_k8s_test" && args.config.is_some() {
+    if !params.contains_key("antithesis.source") {
         bail!(
-            "The 'basic_k8s_test' webhook does not support the --config flag. Please use --config-image with a pre-built config image instead."
+            "--source is required.\n\n\
+             Set it per-run with --source <value>, or save a default with:\n\n    \
+             snouty config init --source <value>"
         );
     }
 
-    if let Some(config_image) = args.config_image {
+    if let Some(config_image) = config_image {
         params.insert("antithesis.config_image", config_image);
     }
 

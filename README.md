@@ -43,6 +43,8 @@ cargo uninstall snouty || rm -f "$(which snouty)" "$(which snouty-update)"
 
 Commands that work with `docker-compose.yaml` files (e.g. `run --config`, `validate`) require Docker or Podman.
 
+If both are installed, Podman is preferred. You can override via environment `SNOUTY_CONTAINER_ENGINE=docker`.
+
 ## Configuration
 
 Set the following environment variables:

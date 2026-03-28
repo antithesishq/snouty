@@ -131,6 +131,7 @@ pub(crate) fn snouty() -> Command {
     let mut cmd = cargo_bin_cmd!("snouty");
     cmd.env("RUST_LOG", "debug");
     for env_var in [
+        "ANTITHESIS_API_KEY",
         "ANTITHESIS_USERNAME",
         "ANTITHESIS_PASSWORD",
         "ANTITHESIS_TENANT",

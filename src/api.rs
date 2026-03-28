@@ -12,27 +12,78 @@ fn required_env(name: &'static str) -> Result<String> {
     })
 }
 
-#[derive(Clone)]
+fn optional_env(name: &'static str) -> Result<Option<String>> {
+    match env::var(name) {
+        Ok(value) => Ok(Some(value)),
+        Err(env::VarError::NotPresent) => Ok(None),
+        Err(e) => Err(eyre!(e).wrap_err(format!("invalid environment variable {name}"))),
+    }
+}
+
+#[derive(Clone, PartialEq, Eq)]
+pub enum Auth {
+    Basic { username: String, password: String },
+    Bearer { api_key: String },
+}
+
+impl std::fmt::Debug for Auth {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Basic { username, .. } => f
+                .debug_struct("Basic")
+                .field("username", username)
+                .field("password", &"[REDACTED]")
+                .finish(),
+            Self::Bearer { .. } => f
+                .debug_struct("Bearer")
+                .field("api_key", &"[REDACTED]")
+                .finish(),
+        }
+    }
+}
+
+impl Auth {
+    pub fn basic(username: String, password: String) -> Self {
+        Self::Basic { username, password }
+    }
+
+    pub fn bearer(api_key: String) -> Self {
+        Self::Bearer { api_key }
+    }
+
+    fn from_env() -> Result<Self> {
+        if let Some(api_key) = optional_env("ANTITHESIS_API_KEY")? {
+            return Ok(Self::bearer(api_key));
+        }
+        Ok(Self::basic(
+            required_env("ANTITHESIS_USERNAME")?,
+            required_env("ANTITHESIS_PASSWORD")?,
+        ))
+    }
+
+    fn authenticate(&self, request: RequestBuilder) -> RequestBuilder {
+        match self {
+            Self::Basic { username, password } => request.basic_auth(username, Some(password)),
+            Self::Bearer { api_key } => request.bearer_auth(api_key),
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
 pub struct Config {
-    pub username: String,
-    pub password: String,
+    pub auth: Auth,
     pub tenant: String,
 }
 
 impl Config {
-    pub fn new(username: String, password: String, tenant: String) -> Self {
-        Self {
-            username,
-            password,
-            tenant,
-        }
+    pub fn new(auth: Auth, tenant: String) -> Self {
+        Self { auth, tenant }
     }
 
     pub fn from_env() -> Result<Self> {
         debug!("loading config from environment");
         Ok(Self {
-            username: required_env("ANTITHESIS_USERNAME")?,
-            password: required_env("ANTITHESIS_PASSWORD")?,
+            auth: Auth::from_env()?,
             tenant: required_env("ANTITHESIS_TENANT")?,
         })
     }
@@ -41,8 +92,7 @@ impl Config {
 pub struct AntithesisApi {
     client: Client,
     base_url: String,
-    username: String,
-    password: String,
+    auth: Auth,
 }
 
 impl AntithesisApi {
@@ -73,8 +123,7 @@ impl AntithesisApi {
         Ok(Self {
             client,
             base_url,
-            username: config.username,
-            password: config.password,
+            auth: config.auth,
         })
     }
 
@@ -85,58 +134,66 @@ impl AntithesisApi {
     pub fn get(&self, path: &str) -> RequestBuilder {
         let url = format!("{}{}", self.base_url, path);
         debug!("GET {}", url);
-        self.client
-            .get(url)
-            .basic_auth(&self.username, Some(&self.password))
+        self.auth.authenticate(self.client.get(url))
     }
 
     pub fn post(&self, path: &str) -> RequestBuilder {
         let url = format!("{}{}", self.base_url, path);
         debug!("POST {}", url);
-        self.client
-            .post(url)
-            .basic_auth(&self.username, Some(&self.password))
+        self.auth.authenticate(self.client.post(url))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use wiremock::matchers::{basic_auth, method, path};
-    use wiremock::{Mock, MockServer, ResponseTemplate};
+    use reqwest::header::AUTHORIZATION;
 
     #[test]
-    fn config_new_creates_config() {
-        let config = Config::new("user".to_string(), "pass".to_string(), "tenant".to_string());
-        assert_eq!(config.username, "user");
-        assert_eq!(config.password, "pass");
-        assert_eq!(config.tenant, "tenant");
+    fn api_uses_basic_auth() {
+        let config = Config::new(
+            Auth::basic("user".to_string(), "pass".to_string()),
+            "tenant".to_string(),
+        );
+        let api = AntithesisApi::with_base_url(config, "http://example.com").unwrap();
+        let request = api.get("/test").build().unwrap();
+
+        assert_eq!(request.headers()[AUTHORIZATION], "Basic dXNlcjpwYXNz");
     }
 
-    #[tokio::test]
-    async fn api_uses_basic_auth() {
-        let mock_server = MockServer::start().await;
+    #[test]
+    fn api_uses_bearer_auth() {
+        let config = Config::new(Auth::bearer("api-key".to_string()), "tenant".to_string());
+        let api = AntithesisApi::with_base_url(config, "http://example.com").unwrap();
+        let request = api.post("/test").build().unwrap();
 
-        Mock::given(method("GET"))
-            .and(path("/test"))
-            .and(basic_auth("user", "pass"))
-            .respond_with(ResponseTemplate::new(200))
-            .expect(1)
-            .mount(&mock_server)
-            .await;
-
-        let config = Config::new("user".to_string(), "pass".to_string(), "tenant".to_string());
-        let api = AntithesisApi::with_base_url(config, mock_server.uri()).unwrap();
-
-        let response = api.get("/test").send().await.unwrap();
-
-        assert_eq!(response.status(), 200);
+        assert_eq!(request.headers()[AUTHORIZATION], "Bearer api-key");
     }
 
     #[test]
     fn with_base_url_trims_trailing_slash() {
-        let config = Config::new("user".to_string(), "pass".to_string(), "tenant".to_string());
+        let config = Config::new(
+            Auth::basic("user".to_string(), "pass".to_string()),
+            "tenant".to_string(),
+        );
         let api = AntithesisApi::with_base_url(config, "http://example.com/").unwrap();
         assert_eq!(api.base_url(), "http://example.com");
+    }
+
+    #[test]
+    fn auth_debug_redacts_password() {
+        let auth = Auth::basic("user".to_string(), "secret".to_string());
+        let debug = format!("{:?}", auth);
+        assert!(debug.contains("user"));
+        assert!(!debug.contains("secret"));
+        assert!(debug.contains("[REDACTED]"));
+    }
+
+    #[test]
+    fn auth_debug_redacts_api_key() {
+        let auth = Auth::bearer("secret-key".to_string());
+        let debug = format!("{:?}", auth);
+        assert!(!debug.contains("secret-key"));
+        assert!(debug.contains("[REDACTED]"));
     }
 }

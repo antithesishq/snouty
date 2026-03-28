@@ -6,8 +6,9 @@
 # using details from a triage report so that I can reproduce and investigate
 # a specific moment in time.
 
-# The command authenticates with the Antithesis API using
-#    ANTITHESIS_USERNAME, ANTITHESIS_PASSWORD, and ANTITHESIS_TENANT env vars.
+# The command authenticates with the Antithesis API using either
+#    ANTITHESIS_API_KEY and ANTITHESIS_TENANT, or
+#    ANTITHESIS_USERNAME, ANTITHESIS_PASSWORD, and ANTITHESIS_TENANT.
 ! snouty debug --antithesis.debugging.input_hash abc --antithesis.debugging.session_id sess --antithesis.debugging.vtime 123
 stderr 'missing environment variable.*'
 

@@ -353,6 +353,84 @@ fn docs_show_partial_match_suggests() {
 }
 
 #[test]
+fn docs_show_generated_page_hints_live_url() {
+    snouty_docs()
+        .args([
+            "docs",
+            "--offline",
+            "show",
+            "/docs/generated/sdk/golang/assert/",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "generated pages (e.g. SDK references) are not included in the offline docs.",
+        ))
+        .stderr(predicate::str::contains(
+            "If this is a valid page, try: https://antithesis.com/docs/generated/sdk/golang/assert/",
+        ));
+}
+
+#[test]
+fn docs_show_generated_page_from_full_url_hints_live_url() {
+    snouty_docs()
+        .args([
+            "docs",
+            "--offline",
+            "show",
+            "https://antithesis.com/docs/generated/sdk/golang/assert/",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "generated pages (e.g. SDK references) are not included in the offline docs.",
+        ))
+        .stderr(predicate::str::contains(
+            "If this is a valid page, try: https://antithesis.com/docs/generated/sdk/golang/assert/",
+        ));
+}
+
+#[test]
+fn docs_show_generated_page_respects_custom_docs_url() {
+    let mut cmd = snouty_docs();
+    cmd.env("ANTITHESIS_DOCS_URL", "https://custom.example.com/docs");
+    cmd.args([
+        "docs",
+        "--offline",
+        "show",
+        "generated/sdk/golang/assert",
+    ])
+    .assert()
+    .failure()
+    .stderr(predicate::str::contains(
+        "If this is a valid page, try: https://custom.example.com/docs/generated/sdk/golang/assert/",
+    ));
+}
+
+#[test]
+fn docs_show_generated_root_hints_live_url() {
+    snouty_docs()
+        .args(["docs", "--offline", "show", "/docs/generated/"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "generated pages (e.g. SDK references) are not included in the offline docs.",
+        ))
+        .stderr(predicate::str::contains(
+            "If this is a valid page, try: https://antithesis.com/docs/generated/",
+        ));
+}
+
+#[test]
+fn docs_show_non_generated_missing_page_no_generated_hint() {
+    snouty_docs()
+        .args(["docs", "--offline", "show", "nonexistent_page"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("Generated pages").not());
+}
+
+#[test]
 fn docs_tree_omits_docs_root_and_shows_titles() {
     snouty_docs()
         .args(["docs", "--offline", "tree"])

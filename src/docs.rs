@@ -475,10 +475,20 @@ fn show(path: &str) -> Result<()> {
     let mut stmt =
         conn.prepare("SELECT path FROM pages WHERE path LIKE '%' || ?1 || '%' LIMIT 10")?;
     let suggestions: Vec<String> = stmt
-        .query_map([path], |row| row.get(0))?
+        .query_map([&path], |row| row.get(0))?
         .collect::<std::result::Result<Vec<_>, _>>()?;
 
     let mut msg = format!("page not found: {}", db_path);
+    if path == "generated" || path.starts_with("generated/") {
+        msg.push_str(
+            "\n\nNote: generated pages (e.g. SDK references) are not included in the offline docs.",
+        );
+        msg.push_str(&format!(
+            "\nIf this is a valid page, try: {}/{}/",
+            docs_url(),
+            path
+        ));
+    }
     if !suggestions.is_empty() {
         msg.push_str("\n\nDid you mean one of these?");
         for s in &suggestions {

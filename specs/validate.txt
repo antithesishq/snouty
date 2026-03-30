@@ -15,5 +15,9 @@ stderr 'not a directory.*'
 ! snouty validate empty
 stderr 'docker-compose.*'
 
+# Help text mentions --keep-running.
+snouty validate --help
+stdout '.*keep-running.*'
+
 -- empty/.keep --
 -- yml_dir/docker-compose.yml --

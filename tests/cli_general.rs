@@ -749,3 +749,31 @@ fn debug_merges_moment_with_cli_args() {
             r#""antithesis.report.recipients": "[REDACTED]""#,
         ));
 }
+
+#[test]
+fn doctor_help_shows_description() {
+    snouty()
+        .args(["doctor", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Check environment configuration"));
+}
+
+#[test]
+fn doctor_reports_missing_env_vars() {
+    snouty()
+        .arg("doctor")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("ANTITHESIS_TENANT"))
+        .stderr(predicate::str::contains("ANTITHESIS_REPOSITORY"));
+}
+
+#[test]
+fn validate_help_shows_keep_running() {
+    snouty()
+        .args(["validate", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--keep-running"));
+}

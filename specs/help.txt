@@ -18,6 +18,7 @@ stdout '.*docs.*'
 stdout '.*completions.*'
 stdout '.*update.*'
 stdout '.*validate.*'
+stdout '.*doctor.*'
 
 # api --help shows webhook subcommand.
 snouty api --help

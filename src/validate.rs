@@ -161,7 +161,8 @@ pub async fn cmd_validate(args: ValidateArgs) -> Result<()> {
             validate_with_temp_dir(args, temp_dir).await
         }
         _ => {
-            let temp_dir = tempfile::tempdir()?;
+            let mut temp_dir = tempfile::tempdir()?;
+            temp_dir.disable_cleanup(args.keep_running);
             validate_with_temp_dir(args, temp_dir.path()).await
         }
     }
@@ -177,15 +178,30 @@ async fn validate_with_temp_dir(args: ValidateArgs, temp_dir: &Path) -> Result<(
     validate_images_are_available(rt, &contents.services)?;
     validate_image_architectures(rt, &contents.services)?;
     let override_path = generate_setup_override(&compose_yaml, temp_dir)?;
+
+    if args.keep_running {
+        eprintln!(
+            "Note: --keep-running is set. When done, bring containers down with:\n  \
+             {} compose -f {}/docker-compose.yaml -f {} down\n",
+            rt.name(),
+            config.dir().display(),
+            override_path.display(),
+        );
+    }
+
     let config = config.with_overlay(override_path);
 
     let deadline = tokio::time::Instant::now() + Duration::from_secs(args.timeout);
 
     eprintln!("Starting compose services...");
     let mut up_child = compose.up_detached(&config)?;
-    let _guard = ComposeDownGuard {
-        compose: &*compose,
-        config: &config,
+    let _guard = if args.keep_running {
+        None
+    } else {
+        Some(ComposeDownGuard {
+            compose: &*compose,
+            config: &config,
+        })
     };
 
     // Wait for compose up to finish, but respect the timeout and ctrl+c.

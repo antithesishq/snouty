@@ -110,6 +110,16 @@ Example:
   snouty validate ./config --timeout 10"#)]
     Validate(ValidateArgs),
 
+    /// Check environment configuration
+    #[command(long_about = r#"Check environment configuration
+
+Verifies that your environment is properly configured for Antithesis testing.
+Checks container runtime availability and required environment variables.
+
+Example:
+  snouty doctor"#)]
+    Doctor,
+
     /// Print version information
     Version,
 
@@ -199,6 +209,10 @@ pub struct ValidateArgs {
     /// Maximum seconds to wait for the setup-complete event
     #[arg(long, default_value = "60")]
     pub timeout: u64,
+
+    /// Leave containers running after validation for manual inspection
+    #[arg(long)]
+    pub keep_running: bool,
 }
 
 #[derive(Args)]

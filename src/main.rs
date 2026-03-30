@@ -88,6 +88,7 @@ async fn main() -> Result<()> {
             cmd_debug(args, stdin).await
         }
         Commands::Validate(args) => validate::cmd_validate(args).await,
+        Commands::Doctor => snouty::doctor::cmd_doctor(),
         Commands::Completions { shell } => cmd_completions(shell),
         Commands::Version => {
             println!("snouty {}", env!("CARGO_PKG_VERSION"));

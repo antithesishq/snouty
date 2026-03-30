@@ -1,0 +1,9 @@
+# snouty doctor
+#
+# Check environment configuration for Antithesis testing.
+
+# Shows help text.
+snouty doctor --help
+stdout '.*Check environment configuration.*'
+stdout '.*container runtime.*'
+stdout '.*environment variables.*'

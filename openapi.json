@@ -3,7 +3,7 @@
   "info": {
     "title": "Antithesis API",
     "version": "1.0.0",
-    "description": "The Antithesis API enables programmatic access to the Antithesis autonomous testing environments. List runs, inspect run details and retrieve logs.",
+    "description": "The Antithesis API enables programmatic access to the Antithesis autonomous testing environments. List runs, inspect run details and retrieve logs.\n\n### Versioning\n\nPublic API endpoints are versioned via a path prefix:\n\n- `/api/v0/...` — **Preview.** APIs accessed from the `v0` route are in preview. They may change or be removed.\n- `/api/v1/...` — **Stable.** The first generally-available version with a compatibility commitment.\n\nIn the future only breaking changes trigger a new major version (e.g., `v2`). When that happens the previous version (`v1`) remains available, and preview APIs restart under `v0`.",
     "contact": {
       "name": "Antithesis Team",
       "url": "https://www.antithesis.com",
@@ -121,7 +121,7 @@
                 "example": {
                   "data": [
                     {
-                      "run_id": "YcYh0bux4F0rsV96Xq3XqAhv",
+                      "run_id": "9325f006ffd3a399a8497bc888878b97-50-1",
                       "status": "completed",
                       "type": "test",
                       "created_at": "2025-03-20T02:00:00Z",
@@ -130,7 +130,7 @@
                       "launcher": "Payments Nightly"
                     },
                     {
-                      "run_id": "b7f3a1e9d04847a1b2c3d4e5f6a7b8c9",
+                      "run_id": "a1c4e7f2b5d8039c6e9f1a4b7d0e3f68-50-1",
                       "status": "completed",
                       "type": "mvd",
                       "created_at": "2025-03-19T14:00:00Z",
@@ -196,7 +196,7 @@
                   "test_run": {
                     "summary": "A completed test run",
                     "value": {
-                      "run_id": "YcYh0bux4F0rsV96Xq3XqAhv",
+                      "run_id": "9325f006ffd3a399a8497bc888878b97-50-1",
                       "status": "completed",
                       "type": "test",
                       "created_at": "2025-03-20T02:00:00Z",
@@ -205,7 +205,7 @@
                       "launcher": "Payments Nightly",
                       "session_id": "1d66e9a01d7d9c892038bc100232da6b-50-1",
                       "links": {
-                        "triage_report": "https://demo.antithesis.com/reports/YcYh0bux4F0rsV96Xq3XqAhv"
+                        "triage_report": "https://demo.antithesis.com/report/dBDNYWsHWywLBl1mtobJjjuB/dw8bjBJES6HzQ9iw8PSlGUXNnraLuWpLlbavyABg_R0.html"
                       },
                       "results": {
                       }
@@ -214,7 +214,7 @@
                   "mvd_run": {
                     "summary": "A multiverse debugging session with debugger ready",
                     "value": {
-                      "run_id": "b7f3a1e9d04847a1b2c3d4e5f6a7b8c9",
+                      "run_id": "a1c4e7f2b5d8039c6e9f1a4b7d0e3f68-50-1",
                       "status": "debugger_ready",
                       "type": "mvd",
                       "created_at": "2025-03-21T14:00:00Z",
@@ -223,7 +223,7 @@
                       "launcher": "Debug Runner",
                       "session_id": "a3b8c2d4e5f6a7b8c9d0e1f2a3b4c5d6-50-1",
                       "links": {
-                        "triage_report": "https://demo.antithesis.com/reports/b7f3a1e9d04847a1b2c3d4e5f6a7b8c9"
+                        "triage_report": "https://demo.antithesis.com/report/kP3mXvR7nYqW2cA9fTgH5sLe/aB4cD8eF2gH6iJ0kL3mN7oP1qR5sT9uV2wX4yZ6bC8d.html"
                       }
                     }
                   }
@@ -260,8 +260,8 @@
       ],
       "get": {
         "operationId": "getRunLogs",
-        "summary": "Stream logs for a moment",
-        "description": "Streams the logs for a particular moment in a run as newline-delimited JSON (NDJSON). Each line is a self-contained JSON object. The response is streamed — the connection remains open until all matching log lines have been sent.",
+        "summary": "Stream moment logs",
+        "description": "Streams the logs for a moment in the run as newline-delimited JSON (NDJSON) in chronological order. Each line is a self-contained JSON object. The response is streamed — the connection remains open until all matching log lines have been sent.\n\nThere is a limit on the number of events returned per request. If the limit is reached, use the `moment` of the last event received as the begin moment (`begin_vtime` and `begin_input_hash`) in a subsequent request to continue from where you left off.\n\nTo retrieve a subset of logs starting from a specific point, provide both `begin_vtime` and `begin_input_hash` to specify the begin moment.",
         "tags": ["Runs"],
         "parameters": [
           {
@@ -288,16 +288,28 @@
             "description": "The virtual time value identifying the moment.",
             "required": true,
             "schema": {
-              "type": "string"
+              "type": "string",
+              "example": "8.692346630850807"
             }
           },
           {
             "name": "begin_vtime",
             "in": "query",
-            "description": "Start streaming logs from this virtual time value instead of from the beginning of the run.",
+            "description": "Start streaming logs from this virtual time instead of from the beginning of the run.",
             "required": false,
             "schema": {
-              "type": "string"
+              "type": "string",
+              "example": "8.692346630850807"
+            }
+          },
+          {
+            "name": "begin_input_hash",
+            "in": "query",
+            "description": "The input hash of the moment to start streaming logs from. Must be provided together with `begin_vtime` to fully identify the begin moment.",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "example": "-3625518438076122494"
             }
           },
           {
@@ -333,7 +345,7 @@
                       },
                       "moment": {
                         "input_hash": "-3625518438076122494",
-                        "vtime": 398.4898056755774,
+                        "vtime": "398.4898056755774",
                         "session_id": "029043c3c85c435e7b034aaa6f218b6a-50-1"
                       }
                     }
@@ -349,7 +361,7 @@
                       },
                       "moment": {
                         "input_hash": "-8212366801093655922",
-                        "vtime": 313.15126806590706,
+                        "vtime": "313.15126806590706",
                         "session_id": "029043c3c85c435e7b034aaa6f218b6a-50-1"
                       }
                     }
@@ -366,7 +378,7 @@
                       },
                       "moment": {
                         "input_hash": "-3704286174724581163",
-                        "vtime": 90.17225814750418,
+                        "vtime": "90.17225814750418",
                         "session_id": "029043c3c85c435e7b034aaa6f218b6a-50-1"
                       }
                     }
@@ -518,10 +530,11 @@
       "Version": {
         "name": "version",
         "in": "path",
-        "description": "API version identifier.",
+        "description": "API version identifier. Use `v0` for preview APIs (may change without notice) or `v1` for the stable, compatibility-committed version. See the Versioning section in the API description for the full policy.",
         "required": true,
         "schema": {
           "type": "string",
+          "enum": ["v0", "v1"],
           "default": "v1",
           "example": "v1"
         }
@@ -565,7 +578,7 @@
           "run_id": {
             "type": "string",
             "description": "Unique identifier for the run.",
-            "example": "YcYh0bux4F0rsV96Xq3XqAhv"
+            "example": "9325f006ffd3a399a8497bc888878b97-50-1"
           },
           "status": {
             "$ref": "#/components/schemas/Run_Status"
@@ -591,7 +604,13 @@
             "description": "Timestamp when the run finished. Null if the run is still in progress or has not started."
           },
           "creator": {
-            "$ref": "#/components/schemas/Creator_Info"
+            "nullable": true,
+            "description": "Information about who or what created this run. Null if the creator is unknown.",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/Creator_Info"
+              }
+            ]
           },
           "launcher": {
             "type": "string",
@@ -599,10 +618,22 @@
             "example": "Payments Nightly"
           },
           "parameters": {
-            "$ref": "#/components/schemas/Params"
+            "nullable": true,
+            "description": "Run parameters. Null if no parameters were specified.",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/Params"
+              }
+            ]
           },
           "links": {
-            "$ref": "#/components/schemas/Run_Links"
+            "nullable": true,
+            "description": "Relevant links for this run. Null if no links are available yet.",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/Run_Links"
+              }
+            ]
           }
         },
         "additionalProperties": true
@@ -615,7 +646,6 @@
           },
           {
             "type": "object",
-            "required": [],
             "properties": {
               "session_id": {
                 "type": "string",
@@ -642,7 +672,7 @@
           "run_id": {
             "type": "string",
             "description": "Unique identifier for the launched run.",
-            "example": "59484bec2cf242c3aeee5454c3de0e95-50-1"
+            "example": "c8d2f4a6e0b3197d5f8a2c4e6b0d3f79-49-1"
           }
         }
       },
@@ -652,7 +682,12 @@
         "required": ["params"],
         "properties": {
           "params": {
-            "$ref": "#/components/schemas/Params"
+            "description": "Launch parameters. All parameters are optional.",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/Params"
+              }
+            ]
           }
         }
       },
@@ -662,7 +697,7 @@
         "properties": {
           "antithesis.config_image": {
             "type": "string",
-            "description": "The image version of your config image. Should be a single image version formatted as `image_name:tag`.",
+            "description": "The image version of your config image. This should be a single image version formatted in the same way as those in the `antithesis.images` parameter.",
             "example": "my-config:latest"
           },
           "antithesis.description": {
@@ -677,13 +712,14 @@
           },
           "antithesis.images": {
             "type": "string",
-            "description": "A semicolon-delimited list of container image versions needed in the testing environment. Each entry in the format `[REGISTRY/]NAME(:TAG|@DIGEST)`. Images specified by digest will be tagged as `latest` within the Antithesis environment.",
+            "description": "A semicolon-delimited list of container image versions needed in the testing environment. Each entry in the format `[REGISTRY/]NAME(:TAG|@DIGEST)`. In most cases, images are parsed from the orchestration configuration (e.g. `docker-compose.yaml` or `/manifests`) and do not need to be specified here. It is recommended to use a digest over a tag. Images specified by digest will be tagged as `latest` within the Antithesis environment. The default registry is `us-central1-docker.pkg.dev/molten-verve-216720/$TENANT_NAME-repository/`. When images mentioned in the config are also passed via this parameter, the value here overwrites the config. We recommend only using this parameter for images not already mentioned in the config files.",
             "example": "registry/container_1:tag1; registry/container_2:latest"
           },
           "antithesis.is_ephemeral": {
             "type": "string",
-            "description": "Whether the run's results should be excluded from historic reports. Set to `\"true\"` for one-off exploratory runs. Defaults to `\"false\"`.",
-            "enum": ["true", "false"]
+            "nullable": true,
+            "enum": ["true", "false"],
+            "description": "A boolean (represented as `\"true\"` or `\"false\"`) that indicates whether or not the run's results should be reflected in future reports as a historic result. Set to `\"true\"` when kicking off one-off, exploratory runs. Defaults to `\"false\"`."
           },
           "antithesis.report.recipients": {
             "type": "string",
@@ -838,7 +874,7 @@
               "$ref": "#/components/schemas/Error_Response"
             },
             "example": {
-              "message": "Run not found: YcYh0bux4F0rsV96Xq3XqAhv"
+              "message": "Run not found: 9325f006ffd3a399a8497bc888878b97-48-1"
             }
           }
         }

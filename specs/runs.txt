@@ -56,9 +56,21 @@ stdout '2025-03-20T02:01:12Z \[out\] Building image payments-service\.\.\.'
 stdout '2025-03-20T02:01:15Z \[err\] Warning: deprecated feature'
 stdout '2025-03-20T02:01:20Z \[out\] Build complete'
 
-# `snouty runs logs` streams NDJSON lines.
+# `snouty runs build-logs --json` outputs raw NDJSON.
+mock-runs-server
+snouty runs build-logs --json run-1
+stdout '"timestamp".*"text"'
+
+# `snouty runs logs` outputs a table by default.
 mock-runs-server
 snouty runs logs run-1 --input-hash -123 --vtime 1.0
+stdout 'VTIME.*SOURCE.*OUTPUT'
+stdout '1\.0.*\[app:out\].*starting'
+stdout '2\.0.*\[app:error\].*slow request'
+
+# `snouty runs logs --json` outputs raw NDJSON.
+mock-runs-server
+snouty runs logs run-1 --input-hash -123 --vtime 1.0 --json
 stdout 'output_text.*starting'
 stdout 'output_text.*slow request'
 

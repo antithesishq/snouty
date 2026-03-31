@@ -12,7 +12,9 @@ pub async fn cmd_runs(command: Option<RunsCommands>) -> Result<()> {
         None => cmd_runs_list(RunsListArgs::default()).await,
         Some(RunsCommands::List(args)) => cmd_runs_list(args).await,
         Some(RunsCommands::Show { run_id, json }) => cmd_runs_show(&run_id, json).await,
-        Some(RunsCommands::BuildLogs { run_id }) => cmd_runs_build_logs(&run_id).await,
+        Some(RunsCommands::BuildLogs { run_id, json }) => {
+            cmd_runs_build_logs(&run_id, json).await
+        }
         Some(RunsCommands::Logs {
             run_id,
             input_hash,
@@ -20,6 +22,7 @@ pub async fn cmd_runs(command: Option<RunsCommands>) -> Result<()> {
             begin_vtime,
             begin_input_hash,
             disable_default_log_filter,
+            json,
         }) => {
             cmd_runs_logs(
                 &run_id,
@@ -28,6 +31,7 @@ pub async fn cmd_runs(command: Option<RunsCommands>) -> Result<()> {
                 begin_input_hash.as_deref(),
                 begin_vtime.as_deref(),
                 disable_default_log_filter,
+                json,
             )
             .await
         }
@@ -159,25 +163,33 @@ fn print_run_detail(run: &RunDetail) {
     }
 }
 
-async fn cmd_runs_build_logs(run_id: &str) -> Result<()> {
+async fn cmd_runs_build_logs(run_id: &str, json: bool) -> Result<()> {
     info!("streaming build logs for run: {}", run_id);
 
     let api = AntithesisApi::from_env()?;
     let response = api.get_run_build_logs(run_id).await?;
     let mut stdout = std::io::stdout().lock();
 
-    stream_ndjson_lines(response, |line| {
-        if let Ok(entry) = serde_json::from_str::<serde_json::Value>(line) {
-            let ts = entry["timestamp"].as_str().unwrap_or("");
-            let stream = entry["stream"].as_str().unwrap_or("out");
-            let text = entry["text"].as_str().unwrap_or("");
-            writeln!(stdout, "{ts} [{stream}] {text}")?;
-        } else {
+    if json {
+        stream_ndjson_lines(response, |line| {
             writeln!(stdout, "{line}")?;
-        }
-        Ok(())
-    })
-    .await
+            Ok(())
+        })
+        .await
+    } else {
+        stream_ndjson_lines(response, |line| {
+            if let Ok(entry) = serde_json::from_str::<serde_json::Value>(line) {
+                let ts = entry["timestamp"].as_str().unwrap_or("");
+                let stream = entry["stream"].as_str().unwrap_or("out");
+                let text = entry["text"].as_str().unwrap_or("");
+                writeln!(stdout, "{ts} [{stream}] {text}")?;
+            } else {
+                writeln!(stdout, "{line}")?;
+            }
+            Ok(())
+        })
+        .await
+    }
 }
 
 async fn cmd_runs_logs(
@@ -187,6 +199,7 @@ async fn cmd_runs_logs(
     begin_input_hash: Option<&str>,
     begin_vtime: Option<&str>,
     disable_default_log_filter: bool,
+    json: bool,
 ) -> Result<()> {
     info!("streaming logs for run: {}", run_id);
 
@@ -203,11 +216,29 @@ async fn cmd_runs_logs(
         .await?;
 
     let mut stdout = std::io::stdout().lock();
-    stream_ndjson_lines(response, |line| {
-        writeln!(stdout, "{line}")?;
-        Ok(())
-    })
-    .await
+    if json {
+        stream_ndjson_lines(response, |line| {
+            writeln!(stdout, "{line}")?;
+            Ok(())
+        })
+        .await
+    } else {
+        writeln!(stdout, "{:<22}  {:<20}  {}", "VTIME", "SOURCE", "OUTPUT")?;
+        stream_ndjson_lines(response, |line| {
+            if let Ok(entry) = serde_json::from_str::<serde_json::Value>(line) {
+                let vtime = entry["moment"]["vtime"].as_str().unwrap_or("");
+                let container = entry["source"]["container"].as_str().unwrap_or("");
+                let stream = entry["source"]["stream"].as_str().unwrap_or("");
+                let source = format!("[{container}:{stream}]");
+                let output = entry["output_text"].as_str().unwrap_or("");
+                writeln!(stdout, "{vtime:<22}  {source:<20}  {output}")?;
+            } else {
+                writeln!(stdout, "{line}")?;
+            }
+            Ok(())
+        })
+        .await
+    }
 }
 
 async fn stream_ndjson_lines(

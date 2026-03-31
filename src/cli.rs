@@ -308,6 +308,10 @@ pub enum RunsCommands {
     BuildLogs {
         /// Run ID
         run_id: String,
+
+        /// Print output as JSON
+        #[arg(short = 'j', long)]
+        json: bool,
     },
 
     /// Stream moment logs for a run
@@ -334,6 +338,10 @@ pub enum RunsCommands {
         /// Disable the default log filter
         #[arg(long)]
         disable_default_log_filter: bool,
+
+        /// Print output as JSON
+        #[arg(short = 'j', long)]
+        json: bool,
     },
 }
 

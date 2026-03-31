@@ -107,19 +107,19 @@ snouty api webhook -w basic_test --antithesis.duration 30
 ! stderr 'Expect a report email.*'
 
 # Username/password auth works when ANTITHESIS_API_KEY is not set.
-mock-server 200 '{"ok": true}'
+mock-server 200 '{"run_id": "run-456"}'
 snouty api webhook -w basic_test --antithesis.duration 30
 
 # ANTITHESIS_API_KEY switches authentication to bearer auth and removes the
 #    ANTITHESIS_USERNAME / ANTITHESIS_PASSWORD requirement.
-mock-server 200 '{"ok": true}'
+mock-server 200 '{"run_id": "run-456"}'
 env ANTITHESIS_API_KEY=test-api-key
 env ANTITHESIS_USERNAME=
 env ANTITHESIS_PASSWORD=
 snouty api webhook -w basic_test --antithesis.duration 30
 
 # When both auth styles are present, ANTITHESIS_API_KEY still takes precedence.
-mock-server 200 '{"ok": true}'
+mock-server 200 '{"run_id": "run-456"}'
 env ANTITHESIS_USERNAME=testuser
 env ANTITHESIS_PASSWORD=testpass
 snouty api webhook -w basic_test --antithesis.duration 30

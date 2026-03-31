@@ -17,7 +17,8 @@ mod generated {
     include!(concat!(env!("OUT_DIR"), "/antithesis_api.rs"));
 }
 
-pub use generated::types::{LaunchResponse, RunSummary};
+pub use generated::types::{BuildLogLine, LaunchResponse, RunDetail, RunStatus, RunSummary};
+pub use progenitor_client::ByteStream;
 
 const API_VERSION: &str = "v1";
 const CLIENT_TIMEOUT_SECS: u64 = 30;
@@ -206,13 +207,145 @@ impl AntithesisApi {
         }
     }
 
+    pub async fn get_run(&self, run_id: &str) -> Result<RunDetail> {
+        match self
+            .client
+            .get_run()
+            .version(API_VERSION)
+            .run_id(run_id)
+            .send()
+            .await
+        {
+            Ok(response) => Ok(response.into_inner()),
+            Err(err) => Err(format_api_client_error(err).await),
+        }
+    }
+
+    pub async fn get_run_build_logs(
+        &self,
+        run_id: &str,
+    ) -> Result<reqwest::Response> {
+        let url = format!(
+            "{}/api/{}/runs/{}/build_logs",
+            self.base_url, API_VERSION, run_id
+        );
+        debug!("GET {}", url);
+
+        let response = self.http_client.get(url).send().await?;
+
+        let status = response.status();
+        if status.is_success() {
+            Ok(response)
+        } else {
+            let body = response.text().await.unwrap_or_default();
+            Err(eyre!("API error: {} - {}", status.as_u16(), body))
+        }
+    }
+
+    pub async fn get_run_logs(
+        &self,
+        run_id: &str,
+        input_hash: &str,
+        vtime: &str,
+        begin_input_hash: Option<&str>,
+        begin_vtime: Option<&str>,
+        disable_default_log_filter: bool,
+    ) -> Result<reqwest::Response> {
+        let url = format!(
+            "{}/api/{}/runs/{}/logs",
+            self.base_url, API_VERSION, run_id
+        );
+        debug!("GET {}", url);
+
+        let mut query = vec![
+            ("input_hash", input_hash.to_string()),
+            ("vtime", vtime.to_string()),
+        ];
+        if let Some(v) = begin_input_hash {
+            query.push(("begin_input_hash", v.to_string()));
+        }
+        if let Some(v) = begin_vtime {
+            query.push(("begin_vtime", v.to_string()));
+        }
+        if disable_default_log_filter {
+            query.push(("disable_default_log_filter", "true".to_string()));
+        }
+
+        let response = self.http_client.get(url).query(&query).send().await?;
+
+        let status = response.status();
+        if status.is_success() {
+            Ok(response)
+        } else {
+            let body = response.text().await.unwrap_or_default();
+            Err(eyre!("API error: {} - {}", status.as_u16(), body))
+        }
+    }
+
+    pub fn stream_runs_filtered(
+        &self,
+        opts: &RunsFilterOptions,
+    ) -> impl futures_util::Stream<Item = Result<RunSummary>> + '_ {
+        let opts = opts.clone();
+        stream::try_unfold(
+            FilteredRunStreamState {
+                api: self,
+                opts,
+                after: None,
+                buffered_runs: VecDeque::new(),
+                finished: false,
+            },
+            |mut state| async move {
+                loop {
+                    if let Some(run) = state.buffered_runs.pop_front() {
+                        return Ok(Some((run, state)));
+                    }
+
+                    if state.finished {
+                        return Ok(None);
+                    }
+
+                    let page = state
+                        .api
+                        .fetch_runs_page_filtered(state.after.as_deref(), &state.opts)
+                        .await?;
+                    let generated::types::RunListResponse { data, next_cursor } = page;
+                    state.buffered_runs = data.into();
+                    state.finished = next_cursor.is_none();
+                    state.after = next_cursor;
+                }
+            },
+        )
+    }
+
     async fn fetch_runs_page(
         &self,
         after: Option<&str>,
     ) -> Result<generated::types::RunListResponse> {
+        self.fetch_runs_page_filtered(after, &RunsFilterOptions::default())
+            .await
+    }
+
+    async fn fetch_runs_page_filtered(
+        &self,
+        after: Option<&str>,
+        opts: &RunsFilterOptions,
+    ) -> Result<generated::types::RunListResponse> {
         let mut request = self.client.list_runs().version(API_VERSION).limit(100_u64);
         if let Some(cursor) = after {
             request = request.after(cursor);
+        }
+        if let Some(ref status) = opts.status {
+            request = request.status(status.clone());
+        }
+        if let Some(ref launcher) = opts.launcher {
+            request = request.launcher(launcher.clone());
+        }
+        if let Some(ref ts) = opts.created_after {
+            request = request.created_after(ts.clone());
+        }
+        if let Some(ref ts) = opts.created_before {
+            request = request.created_before(ts.clone());
         }
 
         match request.send().await {
@@ -222,8 +355,24 @@ impl AntithesisApi {
     }
 }
 
+#[derive(Clone, Default)]
+pub struct RunsFilterOptions {
+    pub status: Option<generated::types::RunStatus>,
+    pub launcher: Option<String>,
+    pub created_after: Option<chrono::DateTime<chrono::Utc>>,
+    pub created_before: Option<chrono::DateTime<chrono::Utc>>,
+}
+
 struct RunStreamState<'a> {
     api: &'a AntithesisApi,
+    after: Option<String>,
+    buffered_runs: VecDeque<RunSummary>,
+    finished: bool,
+}
+
+struct FilteredRunStreamState<'a> {
+    api: &'a AntithesisApi,
+    opts: RunsFilterOptions,
     after: Option<String>,
     buffered_runs: VecDeque<RunSummary>,
     finished: bool,

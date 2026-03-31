@@ -276,6 +276,7 @@ fn directory_contains_binary(dir: &Path, binary: &str) -> bool {
 /// - `POST /api/v1/launch/{launcher_name}` — returns a mock run_id
 pub struct MockApiServer {
     url: String,
+    token: String,
     handle: Option<JoinHandle<()>>,
 }
 
@@ -295,6 +296,11 @@ impl MockApiServer {
         &self.url
     }
 
+    /// Return the token the server expects in Authorization headers.
+    pub fn token(&self) -> &str {
+        &self.token
+    }
+
     /// Block until the server thread stops.
     pub fn wait(mut self) {
         if let Some(handle) = self.handle.take() {
@@ -306,6 +312,8 @@ impl MockApiServer {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
         let url = format!("http://{}", addr);
+        let token = mock_generate_token();
+        let expected_token = token.clone();
 
         let handle = thread::spawn(move || {
             for mut stream in listener.incoming().flatten() {
@@ -315,11 +323,23 @@ impl MockApiServer {
                     Err(_) => continue,
                 };
                 let request = String::from_utf8_lossy(&buf[..bytes_read]);
-                let (method, path) = mock_parse_request_line(&request);
-                let (status, body) = mock_route(&method, &path, empty);
+
+                let (status, body, content_type) =
+                    if !mock_check_auth(&request, &expected_token) {
+                        (
+                            401,
+                            r#"{"message":"Invalid or expired bearer token."}"#.to_string(),
+                            "application/json",
+                        )
+                    } else {
+                        let (method, path) = mock_parse_request_line(&request);
+                        mock_route(&method, &path, empty)
+                    };
+
                 let response = format!(
-                    "HTTP/1.1 {} OK\r\nContent-Type: application/json\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{}",
+                    "HTTP/1.1 {} OK\r\nContent-Type: {}\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{}",
                     status,
+                    content_type,
                     body.len(),
                     body
                 );
@@ -329,9 +349,26 @@ impl MockApiServer {
 
         Self {
             url,
+            token,
             handle: Some(handle),
         }
     }
+}
+
+fn mock_generate_token() -> String {
+    let mut bytes = [0u8; 16];
+    getrandom::fill(&mut bytes).expect("failed to generate random token");
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+fn mock_check_auth(request: &str, expected_token: &str) -> bool {
+    let expected = format!("Bearer {expected_token}");
+    request.lines().any(|line| {
+        let line = line.trim();
+        line.strip_prefix("Authorization:")
+            .or_else(|| line.strip_prefix("authorization:"))
+            .is_some_and(|val| val.trim() == expected)
+    })
 }
 
 /// Parse the first line of an HTTP request into (method, path).
@@ -343,45 +380,102 @@ fn mock_parse_request_line(request: &str) -> (String, String) {
     (method, path)
 }
 
-/// Route a request and return (status_code, response_body).
-fn mock_route(method: &str, path: &str, empty: bool) -> (u16, String) {
+/// Route a request and return (status_code, response_body, content_type).
+fn mock_route(method: &str, path: &str, empty: bool) -> (u16, String, &'static str) {
     // Split path and query string
     let (path_part, query) = match path.split_once('?') {
         Some((p, q)) => (p, Some(q)),
         None => (path.as_ref(), None),
     };
 
+    let json = "application/json";
+    let ndjson = "application/x-ndjson";
+
     match (method, path_part) {
-        ("GET", "/api/v1/runs") => mock_route_list_runs(query, empty),
-        ("GET", p) if p.starts_with("/api/v1/runs/") => {
-            let run_id = &p["/api/v1/runs/".len()..];
-            mock_route_get_run(run_id)
+        ("GET", "/api/v1/runs") => {
+            let (s, b) = mock_route_list_runs(query, empty);
+            (s, b, json)
         }
-        ("POST", p) if p.starts_with("/api/v1/launch/") => mock_route_launch(),
-        _ => (404, r#"{"message":"not found"}"#.to_string()),
+        ("GET", p) if p.starts_with("/api/v1/runs/") => {
+            let rest = &p["/api/v1/runs/".len()..];
+            if let Some(run_id) = rest.strip_suffix("/build_logs") {
+                let (s, b) = mock_route_get_run_build_logs(run_id);
+                (s, b, ndjson)
+            } else if let Some(run_id) = rest.strip_suffix("/logs") {
+                let (s, b) = mock_route_get_run_logs(run_id);
+                (s, b, ndjson)
+            } else {
+                let (s, b) = mock_route_get_run(rest);
+                (s, b, json)
+            }
+        }
+        ("POST", p) if p.starts_with("/api/v1/launch/") => {
+            let (s, b) = mock_route_launch();
+            (s, b, json)
+        }
+        _ => (404, r#"{"message":"not found"}"#.to_string(), json),
     }
 }
+
+fn mock_query_param<'a>(query: Option<&'a str>, key: &str) -> Option<&'a str> {
+    query.and_then(|q| {
+        q.split('&').find_map(|pair| {
+            let (k, v) = pair.split_once('=')?;
+            (k == key).then_some(v)
+        })
+    })
+}
+
+const MOCK_RUNS: &[(&str, &str, &str, &str, &str)] = &[
+    ("run-1", "completed", "test", "2025-03-20T02:00:00Z", "nightly"),
+    ("run-2", "in_progress", "mvd", "2025-03-19T14:00:00Z", "debug"),
+];
 
 fn mock_route_list_runs(query: Option<&str>, empty: bool) -> (u16, String) {
     if empty {
         return (200, r#"{"data":[],"next_cursor":null}"#.to_string());
     }
 
-    let after = query.and_then(|q| {
-        q.split('&')
-            .find_map(|pair| pair.strip_prefix("after="))
-    });
+    let after = mock_query_param(query, "after");
+    let status_filter = mock_query_param(query, "status");
+    let launcher_filter = mock_query_param(query, "launcher");
 
-    match after {
-        Some("cursor-1") => (
-            200,
-            r#"{"data":[{"run_id":"run-2","status":"in_progress","type":"mvd","created_at":"2025-03-19T14:00:00Z","launcher":"debug"}],"next_cursor":null}"#.to_string(),
-        ),
-        _ => (
-            200,
-            r#"{"data":[{"run_id":"run-1","status":"completed","type":"test","created_at":"2025-03-20T02:00:00Z","launcher":"nightly"}],"next_cursor":"cursor-1"}"#.to_string(),
-        ),
+    // Determine which runs to consider based on cursor position.
+    let start = match after {
+        Some("cursor-1") => 1,
+        _ => 0,
+    };
+
+    let mut runs = Vec::new();
+    for &(id, status, type_, created, launcher) in &MOCK_RUNS[start..] {
+        if let Some(f) = status_filter {
+            if status != f {
+                continue;
+            }
+        }
+        if let Some(f) = launcher_filter {
+            if launcher != f {
+                continue;
+            }
+        }
+        runs.push(format!(
+            r#"{{"run_id":"{id}","status":"{status}","type":"{type_}","created_at":"{created}","launcher":"{launcher}"}}"#,
+        ));
     }
+
+    // Paginate: return one run per page when no filters are active and starting from the beginning.
+    let (data, next_cursor) = if status_filter.is_none() && launcher_filter.is_none() && start == 0 && runs.len() > 1 {
+        (vec![runs[0].clone()], Some("cursor-1"))
+    } else {
+        (runs, None)
+    };
+
+    let data_json = data.join(",");
+    let cursor_json = match next_cursor {
+        Some(c) => format!("\"{c}\""),
+        None => "null".to_string(),
+    };
+    (200, format!(r#"{{"data":[{data_json}],"next_cursor":{cursor_json}}}"#))
 }
 
 fn mock_route_get_run(run_id: &str) -> (u16, String) {
@@ -392,6 +486,23 @@ fn mock_route_get_run(run_id: &str) -> (u16, String) {
             run_id, run_id
         ),
     )
+}
+
+fn mock_route_get_run_build_logs(_run_id: &str) -> (u16, String) {
+    let lines = [
+        r#"{"timestamp":"2025-03-20T02:01:12Z","stream":"out","text":"Building image payments-service..."}"#,
+        r#"{"timestamp":"2025-03-20T02:01:15Z","stream":"err","text":"Warning: deprecated feature"}"#,
+        r#"{"timestamp":"2025-03-20T02:01:20Z","stream":"out","text":"Build complete"}"#,
+    ];
+    (200, lines.join("\n") + "\n")
+}
+
+fn mock_route_get_run_logs(_run_id: &str) -> (u16, String) {
+    let lines = [
+        r#"{"output_text":"{\"level\":\"info\",\"msg\":\"starting\"}","source":{"container":"app","name":"app","stream":"out"},"moment":{"input_hash":"-123","vtime":"1.0","session_id":"sess-1"}}"#,
+        r#"{"output_text":"{\"level\":\"warn\",\"msg\":\"slow request\"}","source":{"container":"app","name":"app","stream":"error"},"moment":{"input_hash":"-456","vtime":"2.0","session_id":"sess-1"}}"#,
+    ];
+    (200, lines.join("\n") + "\n")
 }
 
 fn mock_route_launch() -> (u16, String) {

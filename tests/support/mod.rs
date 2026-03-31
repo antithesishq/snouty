@@ -220,15 +220,23 @@ pub(crate) fn docs_search_json(query_args: &[&str]) -> Vec<serde_json::Value> {
         .clone()
 }
 
-pub(crate) fn start_runs_server(empty: bool) -> String {
+pub(crate) struct MockServer {
+    pub url: String,
+    pub token: String,
+}
+
+pub(crate) fn start_runs_server(empty: bool) -> MockServer {
     let server = if empty {
         snouty::testutils::MockApiServer::start_empty()
     } else {
         snouty::testutils::MockApiServer::start()
     };
-    let url = server.url().to_string();
+    let mock = MockServer {
+        url: server.url().to_string(),
+        token: server.token().to_string(),
+    };
     std::mem::forget(server);
-    url
+    mock
 }
 
 pub(crate) fn snouty_with_mock(mock_url: &str) -> Command {
@@ -237,5 +245,13 @@ pub(crate) fn snouty_with_mock(mock_url: &str) -> Command {
         .env("ANTITHESIS_PASSWORD", "testpass")
         .env("ANTITHESIS_TENANT", "testtenant")
         .env("ANTITHESIS_BASE_URL", mock_url);
+    cmd
+}
+
+pub(crate) fn snouty_with_mock_server(mock: &MockServer) -> Command {
+    let mut cmd = snouty();
+    cmd.env("ANTITHESIS_API_KEY", &mock.token)
+        .env("ANTITHESIS_TENANT", "testtenant")
+        .env("ANTITHESIS_BASE_URL", &mock.url);
     cmd
 }

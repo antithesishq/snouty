@@ -3,7 +3,6 @@ use std::process::Command;
 
 use chrono::{Duration, Local};
 use clap::Parser;
-use futures_util::TryStreamExt;
 use log::{debug, info};
 
 use color_eyre::eyre::{Context, Result, bail};
@@ -81,10 +80,7 @@ async fn main() -> Result<()> {
             info!("launching test with webhook: {}", args.webhook);
             cmd_launch(args).await
         }
-        Commands::Runs => {
-            info!("listing runs");
-            cmd_runs().await
-        }
+        Commands::Runs { command } => snouty::runs::cmd_runs(command).await,
         Commands::Api(ApiCommands::Webhook {
             webhook,
             stdin,
@@ -272,79 +268,6 @@ async fn cmd_debug(args: Vec<String>, use_stdin: bool) -> Result<()> {
     );
 
     Ok(())
-}
-
-async fn cmd_runs() -> Result<()> {
-    let api = AntithesisApi::from_env()?;
-    let mut runs = api.stream_runs().try_collect::<Vec<_>>().await?;
-
-    if runs.is_empty() {
-        println!("No runs found.");
-        return Ok(());
-    }
-
-    runs.sort_by(|a, b| b.created_at.cmp(&a.created_at).then(a.status.cmp(&b.status)));
-
-    println!("{}", render_runs_table(&runs));
-    Ok(())
-}
-
-fn render_runs_table(runs: &[RunSummary]) -> String {
-    let headers = vec![
-        "RUN ID".to_string(),
-        "STATUS".to_string(),
-        "TYPE".to_string(),
-        "CREATED AT".to_string(),
-        "LAUNCHER".to_string(),
-    ];
-    let rows = runs
-        .iter()
-        .map(|run| {
-            vec![
-                run.run_id.clone(),
-                render_enum(&run.status),
-                run.type_
-                    .as_ref()
-                    .map(render_enum)
-                    .unwrap_or_default(),
-                run.created_at.to_rfc3339(),
-                run.launcher.clone(),
-            ]
-        })
-        .collect::<Vec<_>>();
-
-    let mut widths = headers
-        .iter()
-        .map(|header| header.len())
-        .collect::<Vec<_>>();
-    for row in &rows {
-        for (index, cell) in row.iter().enumerate() {
-            widths[index] = widths[index].max(cell.len());
-        }
-    }
-
-    let mut output = String::new();
-    push_table_row(&mut output, &headers, &widths);
-    for row in rows {
-        push_table_row(&mut output, &row, &widths);
-    }
-
-    output.trim_end().to_string()
-}
-
-fn push_table_row(output: &mut String, row: &[String], widths: &[usize]) {
-    for (index, cell) in row.iter().enumerate() {
-        if index > 0 {
-            output.push_str("  ");
-        }
-        output.push_str(&format!("{cell:<width$}", width = widths[index]));
-    }
-    output.push('\n');
-}
-
-fn render_enum(value: &impl serde::Serialize) -> String {
-    let json = serde_json::to_string(value).unwrap_or_default();
-    json.trim_matches('"').to_string()
 }
 
 fn cmd_completions(shell: String) -> Result<()> {

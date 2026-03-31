@@ -48,8 +48,26 @@ Environment variables:
     #[command(hide = true)]
     Run(LaunchArgs),
 
-    /// List all runs
-    Runs,
+    /// Interact with test runs
+    #[command(
+        long_about = r#"Interact with test runs
+
+List, inspect, and view logs for Antithesis test runs.
+
+When no subcommand is given, lists all runs (same as `snouty runs list`).
+
+Examples:
+  snouty runs
+  snouty runs list --status completed --launcher nightly
+  snouty runs show <run_id>
+  snouty runs build-logs <run_id>
+  snouty runs logs <run_id> --input-hash <hash> --vtime <vtime>"#,
+        subcommand_required = false,
+    )]
+    Runs {
+        #[command(subcommand)]
+        command: Option<RunsCommands>,
+    },
 
     /// Access raw API endpoints
     #[command(subcommand)]
@@ -269,6 +287,89 @@ pub struct LaunchArgs {
     /// Extra parameters as key=value pairs (repeatable)
     #[arg(long = "param")]
     pub params: Vec<String>,
+}
+
+#[derive(Subcommand)]
+pub enum RunsCommands {
+    /// List all runs
+    List(RunsListArgs),
+
+    /// Show details of a specific run
+    Show {
+        /// Run ID
+        run_id: String,
+
+        /// Print output as JSON
+        #[arg(short = 'j', long)]
+        json: bool,
+    },
+
+    /// Stream build logs for a run
+    BuildLogs {
+        /// Run ID
+        run_id: String,
+    },
+
+    /// Stream moment logs for a run
+    Logs {
+        /// Run ID
+        run_id: String,
+
+        /// The input hash value identifying the moment
+        #[arg(long, allow_hyphen_values = true)]
+        input_hash: String,
+
+        /// The virtual time value identifying the moment
+        #[arg(long)]
+        vtime: String,
+
+        /// Start streaming from this virtual time
+        #[arg(long)]
+        begin_vtime: Option<String>,
+
+        /// Start streaming from this input hash (must be paired with --begin-vtime)
+        #[arg(long, allow_hyphen_values = true)]
+        begin_input_hash: Option<String>,
+
+        /// Disable the default log filter
+        #[arg(long)]
+        disable_default_log_filter: bool,
+    },
+}
+
+#[derive(Args)]
+pub struct RunsListArgs {
+    /// Filter by status (starting, in_progress, debugger_ready, completed, cancelled, failed)
+    #[arg(short, long)]
+    pub status: Option<String>,
+
+    /// Filter by launcher name
+    #[arg(short, long)]
+    pub launcher: Option<String>,
+
+    /// Only show runs created after this timestamp (ISO 8601)
+    #[arg(long)]
+    pub created_after: Option<String>,
+
+    /// Only show runs created before this timestamp (ISO 8601)
+    #[arg(long)]
+    pub created_before: Option<String>,
+
+    /// Maximum number of runs to display
+    #[arg(short = 'n', long, default_value = "50")]
+    pub limit: usize,
+}
+
+impl Default for RunsListArgs {
+    fn default() -> Self {
+        Self {
+            status: None,
+            launcher: None,
+            created_after: None,
+            created_before: None,
+            limit: 50,
+        }
+    }
 }
 
 #[derive(Subcommand)]

@@ -155,10 +155,14 @@ fn cmd_mock_runs_server(
         MockApiServer::start()
     };
     env.set_env_var("ANTITHESIS_BASE_URL", server.url());
-    std::mem::forget(server);
-    env.set_env_var("ANTITHESIS_USERNAME", "testuser");
-    env.set_env_var("ANTITHESIS_PASSWORD", "testpass");
+    env.set_env_var("ANTITHESIS_API_KEY", server.token());
     env.set_env_var("ANTITHESIS_TENANT", "testtenant");
+    env.last_output = Some(std::process::Output {
+        status: std::process::ExitStatus::default(),
+        stdout: format!("{}\n", server.token()).into_bytes(),
+        stderr: Vec::new(),
+    });
+    std::mem::forget(server);
     Ok(())
 }
 

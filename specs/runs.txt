@@ -23,3 +23,46 @@ stdout 'No runs found\.'
 mock-server 400 '{"error":"bad_request","message":"bad request"}'
 ! snouty runs
 stderr 'API error: 400.*'
+
+# `snouty runs list` is the same as bare `snouty runs`.
+mock-runs-server
+snouty runs list
+stdout 'RUN ID.*STATUS.*TYPE.*CREATED AT.*LAUNCHER'
+stdout 'run-1.*completed.*test.*2025-03-20T02:00:00\+00:00.*nightly'
+stdout 'run-2.*in_progress.*mvd.*2025-03-19T14:00:00\+00:00.*debug'
+
+# `snouty runs show` displays run details in key-value format.
+mock-runs-server
+snouty runs show run-1
+stdout 'Run ID.*run-1'
+stdout 'Status.*completed'
+stdout 'Launcher.*nightly'
+stdout 'Session ID.*1d66e9a01d7d9c892038bc100232da6b-50-1'
+
+# `snouty runs show --json` outputs JSON.
+mock-runs-server
+snouty runs show --json run-1
+stdout '"run_id".*"run-1"'
+stdout '"status".*"completed"'
+
+# `snouty runs show` requires a run ID.
+! snouty runs show
+stderr '.*'
+
+# `snouty runs build-logs` streams formatted build log lines.
+mock-runs-server
+snouty runs build-logs run-1
+stdout '2025-03-20T02:01:12Z \[out\] Building image payments-service\.\.\.'
+stdout '2025-03-20T02:01:15Z \[err\] Warning: deprecated feature'
+stdout '2025-03-20T02:01:20Z \[out\] Build complete'
+
+# `snouty runs logs` streams NDJSON lines.
+mock-runs-server
+snouty runs logs run-1 --input-hash -123 --vtime 1.0
+stdout 'output_text.*starting'
+stdout 'output_text.*slow request'
+
+# `snouty runs logs` requires --input-hash and --vtime.
+mock-runs-server
+! snouty runs logs run-1
+stderr '.*input.hash.*'

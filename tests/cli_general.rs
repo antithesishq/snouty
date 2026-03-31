@@ -70,9 +70,9 @@ fn validate_help_explains_setup_complete_detection() {
 
 #[test]
 fn runs_lists_all_pages() {
-    let mock_url = start_runs_server(false);
+    let mock = start_runs_server(false);
 
-    snouty_with_mock(&mock_url)
+    snouty_with_mock_server(&mock)
         .arg("runs")
         .assert()
         .success()
@@ -83,9 +83,9 @@ fn runs_lists_all_pages() {
 
 #[test]
 fn runs_prints_empty_state() {
-    let mock_url = start_runs_server(true);
+    let mock = start_runs_server(true);
 
-    snouty_with_mock(&mock_url)
+    snouty_with_mock_server(&mock)
         .arg("runs")
         .assert()
         .success()

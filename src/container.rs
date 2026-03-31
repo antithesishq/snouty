@@ -197,12 +197,23 @@ pub trait ContainerRuntime: Send + Sync {
     /// When `dockerfile` is `Some`, the given path is passed via `-f`.
     /// When `None`, a scratch image containing the directory contents is built
     /// via an implicit `FROM scratch\nCOPY . /\n` Dockerfile piped to stdin.
-    fn build_image(&self, dir: &Path, image_ref: &str, dockerfile: Option<&Path>) -> Result<()> {
+    ///
+    /// When `platform` is `Some`, passes `--platform <platform>` to the build.
+    fn build_image(
+        &self,
+        dir: &Path,
+        image_ref: &str,
+        dockerfile: Option<&Path>,
+        platform: Option<&str>,
+    ) -> Result<()> {
         let runtime = self.name();
         let scratch = dockerfile.is_none();
 
         let mut cmd = Command::new(runtime);
         cmd.args(["build", "-t", image_ref]);
+        if let Some(platform) = platform {
+            cmd.args(["--platform", platform]);
+        }
         if let Some(df) = dockerfile {
             cmd.args(["-f", &df.display().to_string()]);
         } else {
@@ -249,7 +260,7 @@ pub trait ContainerRuntime: Send + Sync {
         let config = compose.config(config_dir)?;
 
         eprintln!("Building config image: {}", image_ref);
-        self.build_image(config.dir(), image_ref, None)?;
+        self.build_image(config.dir(), image_ref, None, None)?;
 
         eprintln!("Pushing config image: {}", image_ref);
         let pinned = self.image_push(image_ref)?;

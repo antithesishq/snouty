@@ -11,7 +11,7 @@ stderr 'Setup-complete event detected.*'
 stderr 'Setup validation successful.*'
 
 # An arm64-only image is rejected during validation.
-pull-image --platform linux/arm64 arm-sidecar-netarch:latest docker.io/arm64v8/hello-world:latest
+build-image --platform linux/arm64 arm-sidecar-netarch:latest arm_meta
 ! snouty validate config_arm_image --timeout 15
 stderr 'x86-64 \(amd64\).*'
 stderr 'service '\''arm-sidecar'\'' uses image '\''arm-sidecar-netarch:latest'\'' with architecture '\''arm64'\''.*'
@@ -32,6 +32,9 @@ stderr '.*pull or build the missing images, then retry.*'
 -- setup_emitter/Dockerfile --
 FROM busybox
 CMD sh -c 'echo "{\"antithesis_setup\":{\"status\":\"complete\"}}" >> "$ANTITHESIS_OUTPUT_DIR/sdk.jsonl" && sleep 3600'
+
+-- arm_meta/Dockerfile --
+FROM scratch
 
 -- net_check/suite/anytime_ping_blocked --
 #!/bin/sh

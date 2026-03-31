@@ -139,14 +139,24 @@ fn cmd_build_image(
     env: &mut testscript_rs::TestEnvironment,
     args: &[String],
 ) -> testscript_rs::Result<()> {
-    // Usage: build-image <name:tag> <dir>
+    // Usage: build-image [--platform <platform>] <name:tag> <dir>
     // Builds a container image from <dir> (relative to work_dir), tagged as
     // {registry}/<name:tag> so it matches compose references.
     // If <dir> contains a Dockerfile it is used; otherwise a scratch image
     // containing the directory contents is built.
     // Registry and engine come from the ENGINE_CTX thread-local.
-    let [image_ref, dir_arg] = args else {
-        return Err(err("build-image requires <name:tag> <dir>".to_string()));
+    let (platform, image_ref, dir_arg) = match args {
+        [image_ref, dir_arg] => (None, image_ref.to_string(), dir_arg.to_string()),
+        [flag, platform, image_ref, dir_arg] if flag == "--platform" => (
+            Some(platform.to_string()),
+            image_ref.to_string(),
+            dir_arg.to_string(),
+        ),
+        _ => {
+            return Err(err(
+                "build-image requires [--platform <platform>] <name:tag> <dir>".to_string(),
+            ));
+        }
     };
     let start = std::time::Instant::now();
     let label = args.join(" ");
@@ -154,12 +164,11 @@ fn cmd_build_image(
         let ctx = ctx
             .as_mut()
             .ok_or_else(|| err("ENGINE_CTX not set".to_string()))?;
-        let image_ref = image_ref.to_string();
         let dir = env.work_dir.join(dir_arg);
         let dockerfile = dir.join("Dockerfile");
         let dockerfile = dockerfile.exists().then_some(dockerfile.as_path());
         ctx.engine
-            .build_image(&dir, &image_ref, dockerfile)
+            .build_image(&dir, &image_ref, dockerfile, platform.as_deref())
             .map_err(|e| err(format!("build-image: {e}")))?;
         eprintln!(
             "[{:.1}s] build-image {label}",

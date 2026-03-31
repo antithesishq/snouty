@@ -143,7 +143,7 @@ async fn cmd_run(args: RunArgs) -> Result<()> {
     }
 
     let config_image_ref = if let Some(config_dir) = args.config {
-        let config = container::ComposeConfig::new(config_dir)?;
+        let config = container::runtime()?.compose().config(&config_dir)?;
 
         let registry = std::env::var("ANTITHESIS_REPOSITORY")
             .wrap_err("missing environment variable: ANTITHESIS_REPOSITORY")?;

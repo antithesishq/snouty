@@ -80,37 +80,6 @@ pub struct ComposeConfig {
 }
 
 impl ComposeConfig {
-    /// Validate and wrap a compose config directory.
-    ///
-    /// Checks that the directory exists and contains `docker-compose.yaml`.
-    pub fn new(dir: PathBuf) -> Result<Self> {
-        if !dir.is_dir() {
-            bail!(
-                "config directory error: '{}' is not a directory",
-                dir.display()
-            );
-        }
-
-        if dir.join("docker-compose.yml").is_file() {
-            bail!(
-                "config directory error: directory '{}' contains docker-compose.yml, but Antithesis requires docker-compose.yaml (rename the file)",
-                dir.display()
-            );
-        }
-
-        if !dir.join("docker-compose.yaml").is_file() {
-            bail!(
-                "config directory error: directory '{}' does not contain a docker-compose.yaml file",
-                dir.display()
-            );
-        }
-
-        Ok(Self {
-            dir,
-            extra_files: Vec::new(),
-        })
-    }
-
     /// Add an overlay file (e.g. a compose override) to the config.
     pub fn with_overlay(mut self, path: PathBuf) -> Self {
         self.extra_files.push(path);
@@ -276,11 +245,11 @@ pub trait ContainerRuntime: Send + Sync {
     /// The directory must contain a `docker-compose.yaml` file.
     /// Returns the pinned image reference.
     fn build_and_push_config_image(&self, config_dir: &Path, image_ref: &str) -> Result<String> {
-        let runtime = self.name();
-        validate_compose_file(runtime, config_dir)?;
+        let compose = self.compose();
+        let config = compose.config(config_dir)?;
 
         eprintln!("Building config image: {}", image_ref);
-        self.build_image(config_dir, image_ref, None)?;
+        self.build_image(config.dir(), image_ref, None)?;
 
         eprintln!("Pushing config image: {}", image_ref);
         let pinned = self.image_push(image_ref)?;
@@ -291,8 +260,9 @@ pub trait ContainerRuntime: Send + Sync {
     /// Push compose images that match the registry.
     /// Returns the pinned image reference for each pushed image.
     fn push_compose_images(&self, config_dir: &Path, registry: &str) -> Result<Vec<String>> {
-        let yaml = self.compose().config(config_dir)?;
-        let contents = parse_compose_config(&yaml)?;
+        let compose = self.compose();
+        let config = compose.config(config_dir)?;
+        let contents = compose.contents(&config)?;
         let registry_trimmed = registry.trim_end_matches('/');
         let prefix = format!("{registry_trimmed}/");
 
@@ -300,18 +270,18 @@ pub trait ContainerRuntime: Send + Sync {
         // the registry prefix so they become pushable.
         let mut tagged = HashSet::new();
         let mut images = Vec::new();
-        for (name, image) in &contents.services {
-            if contents.build_services.contains(name)
-                && is_local_image(image)
-                && !image.starts_with(&prefix)
+        for service in &contents.services {
+            if contents.build_services.contains(&service.name)
+                && is_local_image(&service.image)
+                && !service.image.starts_with(&prefix)
             {
-                let dest = format!("{prefix}{image}");
-                if tagged.insert(image.clone()) {
-                    self.image_tag(image, &dest)?;
+                let dest = format!("{prefix}{}", service.image);
+                if tagged.insert(service.image.clone()) {
+                    self.image_tag(&service.image, &dest)?;
                 }
                 images.push(dest);
             } else {
-                images.push(image.clone());
+                images.push(service.image.clone());
             }
         }
 
@@ -382,14 +352,48 @@ pub trait Compose: Send + Sync {
 
     // --- default implementations ---
 
+    /// Validate and wrap a compose config directory.
+    ///
+    /// Snouty requires `docker-compose.yaml`, even if the underlying compose
+    /// backend would also accept `docker-compose.yml`.
+    fn config(&self, config_dir: &Path) -> Result<ComposeConfig> {
+        if !config_dir.is_dir() {
+            bail!(
+                "config directory error: '{}' is not a directory",
+                config_dir.display()
+            );
+        }
+
+        if config_dir.join("docker-compose.yml").is_file() {
+            bail!(
+                "config directory error: directory '{}' contains docker-compose.yml, but Antithesis requires docker-compose.yaml (rename the file)",
+                config_dir.display()
+            );
+        }
+
+        if !config_dir.join("docker-compose.yaml").is_file() {
+            bail!(
+                "config directory error: directory '{}' does not contain a docker-compose.yaml file",
+                config_dir.display()
+            );
+        }
+
+        Ok(ComposeConfig {
+            dir: config_dir.to_path_buf(),
+            extra_files: Vec::new(),
+        })
+    }
+
     /// Run `compose config` to resolve the compose file with env substitutions,
     /// returning the resolved YAML as a string.
-    fn config(&self, config_dir: &Path) -> Result<String> {
+    fn raw_contents(&self, config: &ComposeConfig) -> Result<String> {
         let runtime = self.runtime().name();
-        let output = self
-            .runtime()
-            .command(&["compose", "-f", "docker-compose.yaml", "config"])
-            .current_dir(config_dir)
+        let mut cmd = self.runtime().command(&["compose"]);
+        cmd.env("COMPOSE_PROJECT_NAME", "snouty");
+        cmd.current_dir(&config.dir);
+        cmd.args(config.file_args());
+        cmd.arg("config");
+        let output = cmd
             .output()
             .wrap_err(format!("failed to run '{runtime} compose config'"))?;
 
@@ -402,6 +406,12 @@ pub trait Compose: Send + Sync {
         }
 
         Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+    }
+
+    /// Resolve and parse a compose config into structured contents.
+    fn contents(&self, config: &ComposeConfig) -> Result<ComposeContents> {
+        let yaml = self.raw_contents(config)?;
+        parse_compose_config(&yaml)
     }
 
     /// Parse `compose ps --format json` to get `(service_name, container_id)` pairs.
@@ -708,27 +718,6 @@ impl ContainerRuntime for DockerRuntime {
     }
 }
 
-/// Run `{runtime} compose config` to validate the compose file.
-fn validate_compose_file(runtime: &str, config_dir: &Path) -> Result<()> {
-    let output = Command::new(runtime)
-        // Keep compose validation independent of directory naming quirks.
-        .env("COMPOSE_PROJECT_NAME", "snouty")
-        .args(["compose", "-f", "docker-compose.yaml", "config"])
-        .current_dir(config_dir)
-        .output()
-        .wrap_err(format!("failed to run '{runtime} compose config'"))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        return Err(eyre!("docker-compose file validation failed"))
-            .with_section(move || stdout.trim().to_string().header("Stdout:"))
-            .with_section(move || stderr.trim().to_string().header("Stderr:"));
-    }
-
-    Ok(())
-}
-
 /// Generate a unique image reference with a timestamp + random suffix tag.
 pub fn generate_image_ref(registry: &str) -> String {
     let ts = Utc::now().format("%Y%m%d-%H%M%S");
@@ -879,11 +868,17 @@ fn parse_docker_push_digest(stdout: &str) -> Result<String> {
     })
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ComposeService {
+    pub name: String,
+    pub image: String,
+}
+
 /// Parsed contents of a compose config file.
 #[derive(Debug)]
 pub struct ComposeContents {
-    /// `(service_name, image)` pairs. Services without `image` are omitted.
-    pub services: Vec<(String, String)>,
+    /// Services with an explicit `image:` value. Services without `image` are omitted.
+    pub services: Vec<ComposeService>,
     /// Service names that have a `build:` stanza.
     pub build_services: HashSet<String>,
     /// Explicitly declared network names (from the top-level `networks` key).
@@ -905,7 +900,10 @@ pub fn parse_compose_config(yaml: &str) -> Result<ComposeContents> {
                     build_services.insert(name_str.to_string());
                 }
                 if let Some(image) = service.get("image").and_then(|i| i.as_str()) {
-                    services.push((name_str.to_string(), image.to_string()));
+                    services.push(ComposeService {
+                        name: name_str.to_string(),
+                        image: image.to_string(),
+                    });
                 }
             }
         }
@@ -933,6 +931,70 @@ pub fn parse_compose_config(yaml: &str) -> Result<ComposeContents> {
         build_services,
         networks,
     })
+}
+
+/// Ensure the referenced images are available in the local image store.
+pub fn validate_images_are_available(
+    runtime: &dyn ContainerRuntime,
+    services: &[ComposeService],
+) -> Result<()> {
+    let mut seen = HashSet::new();
+    let mut missing = Vec::new();
+
+    for service in services {
+        if !seen.insert(service.image.as_str()) {
+            continue;
+        }
+
+        if !runtime.image_exists(&service.image)? {
+            missing.push(service.image.clone());
+        }
+    }
+
+    if missing.is_empty() {
+        return Ok(());
+    }
+
+    let mut err = eyre!("some images are not available locally");
+    for image in missing {
+        err = err.with_note(|| format!("image: {image}"));
+    }
+    err = err.with_suggestion(|| "pull or build the missing images, then retry");
+    Err(err)
+}
+
+/// Ensure the referenced images all use the amd64 architecture.
+pub fn validate_image_architectures(
+    runtime: &dyn ContainerRuntime,
+    services: &[ComposeService],
+) -> Result<()> {
+    let mut seen = HashSet::new();
+    let mut unsupported = Vec::new();
+
+    for service in services {
+        if !seen.insert(service.image.as_str()) {
+            continue;
+        }
+
+        let arch = runtime.image_architecture(&service.image)?;
+        if arch != "amd64" {
+            unsupported.push(format!(
+                "service '{}' uses image '{}' with architecture '{arch}'",
+                service.name, service.image
+            ));
+        }
+    }
+
+    if unsupported.is_empty() {
+        return Ok(());
+    }
+
+    let mut err = eyre!("Antithesis requires x86-64 (amd64) container images");
+    for detail in unsupported {
+        err = err.with_note(|| detail);
+    }
+    err = err.with_suggestion(|| "use x86-64 (amd64) images, then retry");
+    Err(err)
 }
 
 /// Filter images to only those that should be pushed: images whose name
@@ -1046,6 +1108,7 @@ mod tests {
     use crate::testutils::{
         OCIRegistry, has_compose, require_runtimes, require_runtimes_with_compose, skip_or_fail,
     };
+    use std::collections::BTreeMap;
     use std::os::unix::process::ExitStatusExt;
 
     #[tokio::test]
@@ -1141,11 +1204,45 @@ mod tests {
     }
 
     #[test]
-    fn compose_config_nonexistent() {
-        let result = ComposeConfig::new(PathBuf::from("/nonexistent/path/that/does/not/exist"));
+    fn compose_config_rejects_nonexistent_directory() {
+        let runtime = DockerRuntime::new("docker");
+        let result = runtime
+            .compose()
+            .config(Path::new("/nonexistent/path/that/does/not/exist"));
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(err.contains("not a directory"), "got: {err}");
+    }
+
+    #[test]
+    fn compose_config_rejects_yml_extension() {
+        let runtime = DockerRuntime::new("docker");
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("docker-compose.yml"), "services: {}\n").unwrap();
+
+        let err = runtime
+            .compose()
+            .config(dir.path())
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("docker-compose.yml"), "got: {err}");
+        assert!(err.contains("docker-compose.yaml"), "got: {err}");
+    }
+
+    #[test]
+    fn compose_config_requires_yaml_file() {
+        let runtime = DockerRuntime::new("docker");
+        let dir = tempfile::tempdir().unwrap();
+
+        let err = runtime
+            .compose()
+            .config(dir.path())
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("does not contain a docker-compose.yaml file"),
+            "got: {err}"
+        );
     }
 
     #[test]
@@ -1188,14 +1285,14 @@ services:
         assert_eq!(
             contents.services,
             vec![
-                (
-                    "app".to_string(),
-                    "us-central1-docker.pkg.dev/proj/repo/app:v1".to_string()
-                ),
-                (
-                    "sidecar".to_string(),
-                    "us-central1-docker.pkg.dev/proj/repo/sidecar:latest".to_string()
-                ),
+                ComposeService {
+                    name: "app".to_string(),
+                    image: "us-central1-docker.pkg.dev/proj/repo/app:v1".to_string(),
+                },
+                ComposeService {
+                    name: "sidecar".to_string(),
+                    image: "us-central1-docker.pkg.dev/proj/repo/sidecar:latest".to_string(),
+                },
             ]
         );
         assert_eq!(
@@ -1274,12 +1371,13 @@ services:
             )
             .unwrap();
 
-            let yaml = rt.compose().config(dir.path()).unwrap();
-            let contents = parse_compose_config(&yaml).unwrap();
+            let compose = rt.compose();
+            let config = compose.config(dir.path()).unwrap();
+            let contents = compose.contents(&config).unwrap();
             let images: Vec<&str> = contents
                 .services
                 .iter()
-                .map(|(_, img)| img.as_str())
+                .map(|service| service.image.as_str())
                 .collect();
             assert_eq!(
                 images,
@@ -1294,46 +1392,218 @@ services:
     }
 
     #[test]
-    fn filter_pushable_images_deduplicates_non_consecutive() {
-        let images = vec![
-            "registry.example.com/repo/app:v1".to_string(),
-            "registry.example.com/repo/sidecar:latest".to_string(),
-            "registry.example.com/repo/app:v1".to_string(),
-        ];
-        let result = filter_pushable_images(&images, "registry.example.com/repo");
-        assert_eq!(
-            result,
-            vec![
-                "registry.example.com/repo/app:v1",
-                "registry.example.com/repo/sidecar:latest",
-            ]
+    fn compose_contents_apply_overlays() {
+        let runtimes = require_runtimes_with_compose();
+        if runtimes.is_empty() {
+            return;
+        }
+
+        for rt in &runtimes {
+            eprintln!("testing with runtime: {}", rt.name());
+            let dir = tempfile::tempdir().unwrap();
+            std::fs::write(
+                dir.path().join("docker-compose.yaml"),
+                "\
+services:
+  app:
+    image: base:latest
+",
+            )
+            .unwrap();
+            let overlay = dir.path().join("override.yaml");
+            std::fs::write(
+                &overlay,
+                "\
+services:
+  app:
+    image: overlay:latest
+",
+            )
+            .unwrap();
+
+            let compose = rt.compose();
+            let config = compose.config(dir.path()).unwrap().with_overlay(overlay);
+            let yaml = compose.raw_contents(&config).unwrap();
+            let contents = compose.contents(&config).unwrap();
+
+            assert!(
+                yaml.contains("overlay:latest"),
+                "expected overlay image in resolved yaml for runtime {}: {yaml}",
+                rt.name()
+            );
+            assert_eq!(contents.services.len(), 1);
+            assert_eq!(contents.services[0].image, "overlay:latest");
+        }
+    }
+
+    #[derive(Clone)]
+    struct FakeRuntime {
+        available_images: BTreeMap<String, bool>,
+        architectures: BTreeMap<String, String>,
+    }
+
+    impl ContainerRuntime for FakeRuntime {
+        fn name(&self) -> &str {
+            "fake"
+        }
+
+        fn clone_box(&self) -> Box<dyn ContainerRuntime> {
+            Box::new(self.clone())
+        }
+
+        fn compose(&self) -> Box<dyn Compose + '_> {
+            panic!("compose() not used in this test");
+        }
+
+        fn image_push(&self, _image_ref: &str) -> Result<String> {
+            panic!("image_push() not used in this test");
+        }
+
+        fn image_exists(&self, image_ref: &str) -> Result<bool> {
+            Ok(*self.available_images.get(image_ref).unwrap_or(&false))
+        }
+
+        fn image_architecture(&self, image_ref: &str) -> Result<String> {
+            self.architectures
+                .get(image_ref)
+                .cloned()
+                .ok_or_else(|| eyre!("missing fake architecture for {image_ref}"))
+        }
+    }
+
+    #[test]
+    fn validate_image_architectures_accepts_amd64_images() {
+        let runtime = FakeRuntime {
+            available_images: BTreeMap::new(),
+            architectures: BTreeMap::from([
+                ("app:latest".to_string(), "amd64".to_string()),
+                ("sidecar:latest".to_string(), "amd64".to_string()),
+            ]),
+        };
+
+        validate_image_architectures(
+            &runtime,
+            &[
+                ComposeService {
+                    name: "app".to_string(),
+                    image: "app:latest".to_string(),
+                },
+                ComposeService {
+                    name: "sidecar".to_string(),
+                    image: "sidecar:latest".to_string(),
+                },
+            ],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn validate_image_architectures_rejects_non_amd64_images() {
+        let runtime = FakeRuntime {
+            available_images: BTreeMap::new(),
+            architectures: BTreeMap::from([
+                ("app:latest".to_string(), "arm64".to_string()),
+                ("sidecar:latest".to_string(), "amd64".to_string()),
+            ]),
+        };
+
+        let err = validate_image_architectures(
+            &runtime,
+            &[
+                ComposeService {
+                    name: "app".to_string(),
+                    image: "app:latest".to_string(),
+                },
+                ComposeService {
+                    name: "sidecar".to_string(),
+                    image: "sidecar:latest".to_string(),
+                },
+            ],
+        )
+        .unwrap_err();
+
+        let msg = err.to_string();
+        let debug = format!("{err:?}");
+        assert!(
+            msg.contains("x86-64 (amd64)"),
+            "expected architecture guidance, got: {msg}"
+        );
+        assert!(
+            debug.contains("service 'app' uses image 'app:latest' with architecture 'arm64'"),
+            "expected offending image details, got: {debug}"
         );
     }
 
     #[test]
-    fn filter_pushable_images_matching_registry() {
-        let images = vec![
-            "us-central1-docker.pkg.dev/proj/repo/app:v1".to_string(),
-            "ghcr.io/other/image:latest".to_string(),
-            "myorg/foo:bar".to_string(),
-            "app:latest".to_string(),
-        ];
-        let result = filter_pushable_images(&images, "us-central1-docker.pkg.dev/proj/repo");
-        assert_eq!(result, vec!["us-central1-docker.pkg.dev/proj/repo/app:v1"]);
+    fn validate_images_are_available_accepts_local_images() {
+        let runtime = FakeRuntime {
+            available_images: BTreeMap::from([
+                ("app:latest".to_string(), true),
+                ("sidecar:latest".to_string(), true),
+            ]),
+            architectures: BTreeMap::new(),
+        };
+
+        validate_images_are_available(
+            &runtime,
+            &[
+                ComposeService {
+                    name: "app".to_string(),
+                    image: "app:latest".to_string(),
+                },
+                ComposeService {
+                    name: "sidecar".to_string(),
+                    image: "sidecar:latest".to_string(),
+                },
+            ],
+        )
+        .unwrap();
     }
 
     #[test]
-    fn filter_pushable_images_trailing_slash() {
-        let images = vec!["us-central1-docker.pkg.dev/proj/repo/app:v1".to_string()];
-        let result = filter_pushable_images(&images, "us-central1-docker.pkg.dev/proj/repo/");
-        assert_eq!(result, vec!["us-central1-docker.pkg.dev/proj/repo/app:v1"]);
-    }
+    fn validate_images_are_available_reports_all_missing_images() {
+        let runtime = FakeRuntime {
+            available_images: BTreeMap::from([
+                ("present:latest".to_string(), true),
+                ("missing-a:latest".to_string(), false),
+                ("missing-b:latest".to_string(), false),
+            ]),
+            architectures: BTreeMap::new(),
+        };
 
-    #[test]
-    fn filter_pushable_images_empty() {
-        let images: Vec<String> = vec![];
-        let result = filter_pushable_images(&images, "registry.example.com/repo");
-        assert!(result.is_empty());
+        let err = validate_images_are_available(
+            &runtime,
+            &[
+                ComposeService {
+                    name: "present".to_string(),
+                    image: "present:latest".to_string(),
+                },
+                ComposeService {
+                    name: "app".to_string(),
+                    image: "missing-a:latest".to_string(),
+                },
+                ComposeService {
+                    name: "sidecar".to_string(),
+                    image: "missing-b:latest".to_string(),
+                },
+            ],
+        )
+        .unwrap_err();
+
+        let msg = err.to_string();
+        let debug = format!("{err:?}");
+        assert!(
+            msg.contains("some images are not available locally"),
+            "expected missing-image guidance, got: {msg}"
+        );
+        assert!(
+            debug.contains("image: missing-a:latest"),
+            "expected first missing image details, got: {debug}"
+        );
+        assert!(
+            debug.contains("image: missing-b:latest"),
+            "expected second missing image details, got: {debug}"
+        );
     }
 
     #[test]
@@ -1431,41 +1701,6 @@ tag2: digest: sha256:bbb222 size: 200
     }
 
     #[test]
-    fn is_local_image_bare_name() {
-        assert!(is_local_image("myapp:latest"));
-    }
-
-    #[test]
-    fn is_local_image_org_name() {
-        assert!(is_local_image("myorg/myapp:latest"));
-    }
-
-    #[test]
-    fn is_local_image_registry_with_dot() {
-        assert!(!is_local_image("registry.example.com/myapp:latest"));
-    }
-
-    #[test]
-    fn is_local_image_docker_io() {
-        assert!(!is_local_image("docker.io/library/nginx:latest"));
-    }
-
-    #[test]
-    fn is_local_image_localhost() {
-        assert!(!is_local_image("localhost/myapp:latest"));
-    }
-
-    #[test]
-    fn is_local_image_localhost_port() {
-        assert!(!is_local_image("localhost:5000/myapp:latest"));
-    }
-
-    #[test]
-    fn is_local_image_host_port() {
-        assert!(!is_local_image("myregistry:5000/myapp:latest"));
-    }
-
-    #[test]
     fn image_exists_from_inspect_output_accepts_success() {
         let result = image_exists_from_inspect_output(
             "docker",
@@ -1532,11 +1767,14 @@ services:
         assert_eq!(
             contents.services,
             vec![
-                ("app".to_string(), "myapp:latest".to_string()),
-                (
-                    "sidecar".to_string(),
-                    "docker.io/library/nginx:latest".to_string()
-                ),
+                ComposeService {
+                    name: "app".to_string(),
+                    image: "myapp:latest".to_string(),
+                },
+                ComposeService {
+                    name: "sidecar".to_string(),
+                    image: "docker.io/library/nginx:latest".to_string(),
+                },
             ]
         );
         assert_eq!(contents.build_services, HashSet::from(["app".to_string()]));

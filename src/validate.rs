@@ -4,11 +4,9 @@ use std::path::{Path, PathBuf};
 
 use color_eyre::Section;
 use color_eyre::eyre::{Context, Result, bail, eyre};
-use itertools::Itertools;
 use log::{debug, info};
 use serde::Deserialize;
 use tokio::time::{Duration, sleep};
-use tryiter::TryIteratorExt;
 
 use crate::cli::ValidateArgs;
 use crate::container::{self, ComposeConfig};
@@ -36,10 +34,12 @@ struct SetupStatus {
 ///
 /// The SDK creates the output file; we mount the parent directory so it can do so.
 ///
-/// `compose_yaml` should be the resolved output of `compose_config()`.
+/// `contents` should be the parsed output of `compose.contents()`.
 /// Returns the path to the generated override file.
-fn generate_setup_override(compose_yaml: &str, temp_dir: &Path) -> Result<PathBuf> {
-    let contents = container::parse_compose_config(compose_yaml)?;
+fn generate_setup_override(
+    contents: &container::ComposeContents,
+    temp_dir: &Path,
+) -> Result<PathBuf> {
     if contents.services.is_empty() {
         bail!("no services found in docker-compose.yaml");
     }
@@ -49,10 +49,13 @@ fn generate_setup_override(compose_yaml: &str, temp_dir: &Path) -> Result<PathBu
         .wrap_err("failed to create antithesis output directory")?;
 
     let mut services = serde_yaml::Mapping::new();
-    for (name, _) in &contents.services {
-        let service_dir = antithesis_dir.join(name);
+    for service in &contents.services {
+        let service_dir = antithesis_dir.join(&service.name);
         std::fs::create_dir_all(&service_dir).wrap_err_with(|| {
-            format!("failed to create antithesis output directory for service '{name}'")
+            format!(
+                "failed to create antithesis output directory for service '{}'",
+                service.name
+            )
         })?;
         let vol = format!("{}:/tmp/antithesis:z", service_dir.display());
         let mut svc = serde_yaml::Mapping::new();
@@ -74,13 +77,13 @@ fn generate_setup_override(compose_yaml: &str, temp_dir: &Path) -> Result<PathBu
             serde_yaml::Value::Mapping(env),
         );
         services.insert(
-            serde_yaml::Value::String(name.clone()),
+            serde_yaml::Value::String(service.name.clone()),
             serde_yaml::Value::Mapping(svc),
         );
     }
 
     // Build network overrides: always include "default", plus any explicit networks.
-    let mut net_names = contents.networks;
+    let mut net_names = contents.networks.clone();
     if !net_names.contains(&"default".to_string()) {
         net_names.push("default".to_string());
     }
@@ -169,17 +172,20 @@ pub async fn cmd_validate(args: ValidateArgs) -> Result<()> {
 }
 
 async fn validate_with_temp_dir(args: ValidateArgs, temp_dir: &Path) -> Result<()> {
-    let config = ComposeConfig::new(args.config)?;
+    let ValidateArgs {
+        config: config_path,
+        timeout,
+        keep_running,
+    } = args;
     let rt = container::runtime()?;
     let compose = rt.compose();
+    let config = compose.config(&config_path)?;
+    let contents = compose.contents(&config)?;
+    container::validate_images_are_available(rt, &contents.services)?;
+    container::validate_image_architectures(rt, &contents.services)?;
+    let override_path = generate_setup_override(&contents, temp_dir)?;
 
-    let compose_yaml = compose.config(config.dir())?;
-    let contents = container::parse_compose_config(&compose_yaml)?;
-    validate_images_are_available(rt, &contents.services)?;
-    validate_image_architectures(rt, &contents.services)?;
-    let override_path = generate_setup_override(&compose_yaml, temp_dir)?;
-
-    if args.keep_running {
+    if keep_running {
         eprintln!(
             "Note: --keep-running is set. When done, bring containers down with:\n  \
              {} compose -f {}/docker-compose.yaml -f {} down\n",
@@ -191,11 +197,11 @@ async fn validate_with_temp_dir(args: ValidateArgs, temp_dir: &Path) -> Result<(
 
     let config = config.with_overlay(override_path);
 
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(args.timeout);
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(timeout);
 
     eprintln!("Starting compose services...");
     let mut up_child = compose.up_detached(&config)?;
-    let _guard = if args.keep_running {
+    let _guard = if keep_running {
         None
     } else {
         Some(ComposeDownGuard {
@@ -263,65 +269,6 @@ async fn validate_with_temp_dir(args: ValidateArgs, temp_dir: &Path) -> Result<(
     }
 
     test_result
-}
-
-fn validate_images_are_available(
-    runtime: &dyn container::ContainerRuntime,
-    services: &[(String, String)],
-) -> Result<()> {
-    let missing = services
-        .iter()
-        .map(|(_, image)| image)
-        .unique()
-        .map(|image| runtime.image_exists(image).map(|exists| (image, exists)))
-        .try_filter_map(|(image, exists)| Ok((!exists).then_some(image)))
-        .collect::<Result<Vec<_>>>()?;
-
-    if missing.is_empty() {
-        return Ok(());
-    }
-
-    let mut err = eyre!("some images are not available locally");
-    for image in missing {
-        err = err.with_note(|| format!("image: {image}"));
-    }
-    err = err.with_suggestion(|| "pull or build the missing images, then retry");
-    Err(err)
-}
-
-fn validate_image_architectures(
-    runtime: &dyn container::ContainerRuntime,
-    services: &[(String, String)],
-) -> Result<()> {
-    let unsupported = services
-        .iter()
-        .unique_by(|(_, image)| image)
-        .map(|(service, image)| {
-            runtime
-                .image_architecture(image)
-                .map(|arch| (service, image, arch))
-        })
-        .try_filter_map(|(service, image, arch)| {
-            Ok(if arch == "amd64" {
-                None
-            } else {
-                Some(format!(
-                    "service '{service}' uses image '{image}' with architecture '{arch}'"
-                ))
-            })
-        })
-        .collect::<Result<Vec<_>>>()?;
-
-    if unsupported.is_empty() {
-        return Ok(());
-    }
-
-    let mut err = eyre!("Antithesis requires x86-64 (amd64) container images");
-    for detail in unsupported {
-        err = err.with_note(|| detail);
-    }
-    err = err.with_suggestion(|| "use x86-64 (amd64) images, then retry");
-    Err(err)
 }
 
 /// Check whether a reader contains the setup-complete event.
@@ -682,13 +629,8 @@ async fn watch_for_setup_complete(
 
 #[cfg(test)]
 mod tests {
-    use color_eyre::eyre::eyre;
-
     use super::*;
-    use std::collections::BTreeMap;
     use std::io::Write;
-
-    use crate::container::{Compose, ContainerRuntime};
 
     #[test]
     fn generate_setup_override_basic() {
@@ -699,8 +641,9 @@ services:
   sidecar:
     image: sidecar:latest
 ";
+        let contents = container::parse_compose_config(compose_yaml).unwrap();
         let dir = tempfile::tempdir().unwrap();
-        let path = generate_setup_override(compose_yaml, dir.path()).unwrap();
+        let path = generate_setup_override(&contents, dir.path()).unwrap();
         let content = std::fs::read_to_string(&path).unwrap();
 
         // Parse the override as YAML to verify it's valid
@@ -786,8 +729,9 @@ networks:
   frontend:
     driver: bridge
 ";
+        let contents = container::parse_compose_config(compose_yaml).unwrap();
         let dir = tempfile::tempdir().unwrap();
-        let path = generate_setup_override(compose_yaml, dir.path()).unwrap();
+        let path = generate_setup_override(&contents, dir.path()).unwrap();
         let content = std::fs::read_to_string(&path).unwrap();
 
         let doc: serde_yaml::Value = serde_yaml::from_str(&content).unwrap();
@@ -818,8 +762,9 @@ services:
   \"a: b\":
     image: myapp:latest
 ";
+        let contents = container::parse_compose_config(compose_yaml).unwrap();
         let dir = tempfile::tempdir().unwrap();
-        let path = generate_setup_override(compose_yaml, dir.path()).unwrap();
+        let path = generate_setup_override(&contents, dir.path()).unwrap();
         let content = std::fs::read_to_string(&path).unwrap();
 
         // Must parse as valid YAML even with special characters in service name
@@ -830,9 +775,9 @@ services:
 
     #[test]
     fn generate_setup_override_no_services() {
-        let compose_yaml = "version: '3'\n";
+        let contents = container::parse_compose_config("version: '3'\n").unwrap();
         let dir = tempfile::tempdir().unwrap();
-        let err = generate_setup_override(compose_yaml, dir.path()).unwrap_err();
+        let err = generate_setup_override(&contents, dir.path()).unwrap_err();
         assert!(err.to_string().contains("no services"), "got: {err}");
     }
 
@@ -1027,149 +972,6 @@ services:
             .await
             .expect("watch failed");
         assert!(!found, "expected timeout (false), got true");
-    }
-
-    #[derive(Clone)]
-    struct FakeRuntime {
-        available_images: BTreeMap<String, bool>,
-        architectures: BTreeMap<String, String>,
-    }
-
-    impl ContainerRuntime for FakeRuntime {
-        fn name(&self) -> &str {
-            "fake"
-        }
-
-        fn clone_box(&self) -> Box<dyn ContainerRuntime> {
-            Box::new(self.clone())
-        }
-
-        fn compose(&self) -> Box<dyn Compose + '_> {
-            panic!("compose() not used in this test");
-        }
-
-        fn image_push(&self, _image_ref: &str) -> Result<String> {
-            panic!("image_push() not used in this test");
-        }
-
-        fn image_exists(&self, image_ref: &str) -> Result<bool> {
-            Ok(*self.available_images.get(image_ref).unwrap_or(&false))
-        }
-
-        fn image_architecture(&self, image_ref: &str) -> Result<String> {
-            self.architectures
-                .get(image_ref)
-                .cloned()
-                .ok_or_else(|| eyre!("missing fake architecture for {image_ref}"))
-        }
-    }
-
-    #[test]
-    fn validate_image_architectures_accepts_amd64_images() {
-        let runtime = FakeRuntime {
-            available_images: BTreeMap::new(),
-            architectures: BTreeMap::from([
-                ("app:latest".to_string(), "amd64".to_string()),
-                ("sidecar:latest".to_string(), "amd64".to_string()),
-            ]),
-        };
-
-        validate_image_architectures(
-            &runtime,
-            &[
-                ("app".to_string(), "app:latest".to_string()),
-                ("sidecar".to_string(), "sidecar:latest".to_string()),
-            ],
-        )
-        .unwrap();
-    }
-
-    #[test]
-    fn validate_image_architectures_rejects_non_amd64_images() {
-        let runtime = FakeRuntime {
-            available_images: BTreeMap::new(),
-            architectures: BTreeMap::from([
-                ("app:latest".to_string(), "arm64".to_string()),
-                ("sidecar:latest".to_string(), "amd64".to_string()),
-            ]),
-        };
-
-        let err = validate_image_architectures(
-            &runtime,
-            &[
-                ("app".to_string(), "app:latest".to_string()),
-                ("sidecar".to_string(), "sidecar:latest".to_string()),
-            ],
-        )
-        .unwrap_err();
-
-        let msg = err.to_string();
-        let debug = format!("{err:?}");
-        assert!(
-            msg.contains("x86-64 (amd64)"),
-            "expected architecture guidance, got: {msg}"
-        );
-        assert!(
-            debug.contains("service 'app' uses image 'app:latest' with architecture 'arm64'"),
-            "expected offending image details, got: {debug}"
-        );
-    }
-
-    #[test]
-    fn validate_images_are_available_accepts_local_images() {
-        let runtime = FakeRuntime {
-            available_images: BTreeMap::from([
-                ("app:latest".to_string(), true),
-                ("sidecar:latest".to_string(), true),
-            ]),
-            architectures: BTreeMap::new(),
-        };
-
-        validate_images_are_available(
-            &runtime,
-            &[
-                ("app".to_string(), "app:latest".to_string()),
-                ("sidecar".to_string(), "sidecar:latest".to_string()),
-            ],
-        )
-        .unwrap();
-    }
-
-    #[test]
-    fn validate_images_are_available_reports_all_missing_images() {
-        let runtime = FakeRuntime {
-            available_images: BTreeMap::from([
-                ("present:latest".to_string(), true),
-                ("missing-a:latest".to_string(), false),
-                ("missing-b:latest".to_string(), false),
-            ]),
-            architectures: BTreeMap::new(),
-        };
-
-        let err = validate_images_are_available(
-            &runtime,
-            &[
-                ("present".to_string(), "present:latest".to_string()),
-                ("app".to_string(), "missing-a:latest".to_string()),
-                ("sidecar".to_string(), "missing-b:latest".to_string()),
-            ],
-        )
-        .unwrap_err();
-
-        let msg = err.to_string();
-        let debug = format!("{err:?}");
-        assert!(
-            msg.contains("some images are not available locally"),
-            "expected missing-image guidance, got: {msg}"
-        );
-        assert!(
-            debug.contains("image: missing-a:latest"),
-            "expected first missing image, got: {debug}"
-        );
-        assert!(
-            debug.contains("image: missing-b:latest"),
-            "expected second missing image, got: {debug}"
-        );
     }
 
     #[test]

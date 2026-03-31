@@ -62,7 +62,7 @@ Examples:
   snouty runs show <run_id>
   snouty runs build-logs <run_id>
   snouty runs logs <run_id> --input-hash <hash> --vtime <vtime>"#,
-        subcommand_required = false,
+        subcommand_required = false
     )]
     Runs {
         #[command(subcommand)]

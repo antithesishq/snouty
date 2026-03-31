@@ -12,9 +12,7 @@ pub async fn cmd_runs(command: Option<RunsCommands>) -> Result<()> {
         None => cmd_runs_list(RunsListArgs::default()).await,
         Some(RunsCommands::List(args)) => cmd_runs_list(args).await,
         Some(RunsCommands::Show { run_id, json }) => cmd_runs_show(&run_id, json).await,
-        Some(RunsCommands::BuildLogs { run_id, json }) => {
-            cmd_runs_build_logs(&run_id, json).await
-        }
+        Some(RunsCommands::BuildLogs { run_id, json }) => cmd_runs_build_logs(&run_id, json).await,
         Some(RunsCommands::Logs {
             run_id,
             input_hash,
@@ -93,7 +91,11 @@ async fn cmd_runs_list(args: RunsListArgs) -> Result<()> {
         return Ok(());
     }
 
-    runs.sort_by(|a, b| b.created_at.cmp(&a.created_at).then(a.status.cmp(&b.status)));
+    runs.sort_by(|a, b| {
+        b.created_at
+            .cmp(&a.created_at)
+            .then(a.status.cmp(&b.status))
+    });
 
     println!("{}", render_runs_table(&runs));
     Ok(())
@@ -287,10 +289,7 @@ fn render_runs_table(runs: &[RunSummary]) -> String {
             vec![
                 run.run_id.clone(),
                 render_enum(&run.status),
-                run.type_
-                    .as_ref()
-                    .map(render_enum)
-                    .unwrap_or_default(),
+                run.type_.as_ref().map(render_enum).unwrap_or_default(),
                 run.created_at.to_rfc3339(),
                 run.launcher.clone(),
             ]

@@ -221,10 +221,7 @@ impl AntithesisApi {
         }
     }
 
-    pub async fn get_run_build_logs(
-        &self,
-        run_id: &str,
-    ) -> Result<reqwest::Response> {
+    pub async fn get_run_build_logs(&self, run_id: &str) -> Result<reqwest::Response> {
         let url = format!(
             "{}/api/{}/runs/{}/build_logs",
             self.base_url, API_VERSION, run_id
@@ -251,10 +248,7 @@ impl AntithesisApi {
         begin_vtime: Option<&str>,
         disable_default_log_filter: bool,
     ) -> Result<reqwest::Response> {
-        let url = format!(
-            "{}/api/{}/runs/{}/logs",
-            self.base_url, API_VERSION, run_id
-        );
+        let url = format!("{}/api/{}/runs/{}/logs", self.base_url, API_VERSION, run_id);
         debug!("GET {}", url);
 
         let mut query = vec![
@@ -389,10 +383,7 @@ fn normalize_base_url(base_url: impl Into<String>) -> String {
 
 fn build_http_client(config: &Config) -> Result<Client> {
     let mut headers = reqwest::header::HeaderMap::new();
-    headers.insert(
-        reqwest::header::AUTHORIZATION,
-        auth_header(&config.auth)?,
-    );
+    headers.insert(reqwest::header::AUTHORIZATION, auth_header(&config.auth)?);
 
     Client::builder()
         .default_headers(headers)

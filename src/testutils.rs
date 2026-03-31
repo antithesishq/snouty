@@ -324,17 +324,16 @@ impl MockApiServer {
                 };
                 let request = String::from_utf8_lossy(&buf[..bytes_read]);
 
-                let (status, body, content_type) =
-                    if !mock_check_auth(&request, &expected_token) {
-                        (
-                            401,
-                            r#"{"message":"Invalid or expired bearer token."}"#.to_string(),
-                            "application/json",
-                        )
-                    } else {
-                        let (method, path) = mock_parse_request_line(&request);
-                        mock_route(&method, &path, empty)
-                    };
+                let (status, body, content_type) = if !mock_check_auth(&request, &expected_token) {
+                    (
+                        401,
+                        r#"{"message":"Invalid or expired bearer token."}"#.to_string(),
+                        "application/json",
+                    )
+                } else {
+                    let (method, path) = mock_parse_request_line(&request);
+                    mock_route(&method, &path, empty)
+                };
 
                 let response = format!(
                     "HTTP/1.1 {} OK\r\nContent-Type: {}\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{}",
@@ -427,8 +426,20 @@ fn mock_query_param<'a>(query: Option<&'a str>, key: &str) -> Option<&'a str> {
 }
 
 const MOCK_RUNS: &[(&str, &str, &str, &str, &str)] = &[
-    ("run-1", "completed", "test", "2025-03-20T02:00:00Z", "nightly"),
-    ("run-2", "in_progress", "mvd", "2025-03-19T14:00:00Z", "debug"),
+    (
+        "run-1",
+        "completed",
+        "test",
+        "2025-03-20T02:00:00Z",
+        "nightly",
+    ),
+    (
+        "run-2",
+        "in_progress",
+        "mvd",
+        "2025-03-19T14:00:00Z",
+        "debug",
+    ),
 ];
 
 fn mock_route_list_runs(query: Option<&str>, empty: bool) -> (u16, String) {
@@ -464,18 +475,22 @@ fn mock_route_list_runs(query: Option<&str>, empty: bool) -> (u16, String) {
     }
 
     // Paginate: return one run per page when no filters are active and starting from the beginning.
-    let (data, next_cursor) = if status_filter.is_none() && launcher_filter.is_none() && start == 0 && runs.len() > 1 {
-        (vec![runs[0].clone()], Some("cursor-1"))
-    } else {
-        (runs, None)
-    };
+    let (data, next_cursor) =
+        if status_filter.is_none() && launcher_filter.is_none() && start == 0 && runs.len() > 1 {
+            (vec![runs[0].clone()], Some("cursor-1"))
+        } else {
+            (runs, None)
+        };
 
     let data_json = data.join(",");
     let cursor_json = match next_cursor {
         Some(c) => format!("\"{c}\""),
         None => "null".to_string(),
     };
-    (200, format!(r#"{{"data":[{data_json}],"next_cursor":{cursor_json}}}"#))
+    (
+        200,
+        format!(r#"{{"data":[{data_json}],"next_cursor":{cursor_json}}}"#),
+    )
 }
 
 fn mock_route_get_run(run_id: &str) -> (u16, String) {

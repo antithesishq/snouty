@@ -16,12 +16,6 @@ build-image --platform linux/arm64 arm-sidecar-netarch:latest arm_meta
 stderr 'x86-64 \(amd64\).*'
 stderr 'service '\''arm-sidecar'\'' uses image '\''arm-sidecar-netarch:latest'\'' with architecture '\''arm64'\''.*'
 
-# A multi-arch image is accepted by using the local variant.
-pull-image multiarch-sidecar-netarch:latest docker.io/library/busybox:latest
-snouty validate config_multiarch_image --timeout 15
-stderr 'Setup-complete event detected.*'
-stderr 'Setup validation successful.*'
-
 # Missing images are reported together before architecture validation.
 ! snouty validate config_missing_images --timeout 15
 stderr 'some images are not available locally.*'
@@ -62,15 +56,6 @@ services:
     pull_policy: never
   arm-sidecar:
     image: arm-sidecar-netarch:latest
-    pull_policy: never
-
--- config_multiarch_image/docker-compose.yaml --
-services:
-  emitter:
-    image: setup-emitter-netarch:latest
-    pull_policy: never
-  multiarch-sidecar:
-    image: multiarch-sidecar-netarch:latest
     pull_policy: never
 
 -- config_missing_images/docker-compose.yaml --

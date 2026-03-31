@@ -27,7 +27,7 @@ fn help_shows_subcommands() {
         .arg("--help")
         .assert()
         .success()
-        .stdout(predicate::str::contains("run"))
+        .stdout(predicate::str::contains("launch"))
         .stdout(predicate::str::contains("debug"))
         .stdout(predicate::str::contains("version"));
 }
@@ -68,12 +68,12 @@ fn validate_help_explains_setup_complete_detection() {
 }
 
 #[test]
-fn run_with_typed_flags() {
+fn launch_with_typed_flags() {
     let mock_url = start_mock_server(r#"{"status": "ok"}"#, 200);
 
     snouty_with_mock(&mock_url)
         .args([
-            "run",
+            "launch",
             "-w",
             "basic_test",
             "--test-name",
@@ -111,11 +111,18 @@ fn run_with_typed_flags() {
 }
 
 #[test]
-fn run_with_ephemeral_flag() {
+fn launch_with_ephemeral_flag() {
     let mock_url = start_mock_server(r#"{"status": "ok"}"#, 200);
 
     snouty_with_mock(&mock_url)
-        .args(["run", "-w", "basic_test", "--duration", "30", "--ephemeral"])
+        .args([
+            "launch",
+            "-w",
+            "basic_test",
+            "--duration",
+            "30",
+            "--ephemeral",
+        ])
         .assert()
         .success()
         .stderr(predicate::str::contains(
@@ -124,11 +131,11 @@ fn run_with_ephemeral_flag() {
 }
 
 #[test]
-fn run_without_source_sets_ephemeral() {
+fn launch_without_source_sets_ephemeral() {
     let mock_url = start_mock_server(r#"{"status": "ok"}"#, 200);
 
     snouty_with_mock(&mock_url)
-        .args(["run", "-w", "basic_test", "--duration", "30"])
+        .args(["launch", "-w", "basic_test", "--duration", "30"])
         .assert()
         .success()
         .stderr(predicate::str::contains(
@@ -140,12 +147,12 @@ fn run_without_source_sets_ephemeral() {
 }
 
 #[test]
-fn run_with_source_omits_ephemeral() {
+fn launch_with_source_omits_ephemeral() {
     let mock_url = start_mock_server(r#"{"status": "ok"}"#, 200);
 
     snouty_with_mock(&mock_url)
         .args([
-            "run",
+            "launch",
             "-w",
             "basic_test",
             "--duration",
@@ -160,12 +167,12 @@ fn run_with_source_omits_ephemeral() {
 }
 
 #[test]
-fn run_with_param_flag() {
+fn launch_with_param_flag() {
     let mock_url = start_mock_server(r#"{"ok": true}"#, 200);
 
     snouty_with_mock(&mock_url)
         .args([
-            "run",
+            "launch",
             "-w",
             "basic_test",
             "--duration",
@@ -184,12 +191,12 @@ fn run_with_param_flag() {
 }
 
 #[test]
-fn run_param_cannot_override_typed_flag() {
+fn launch_param_cannot_override_typed_flag() {
     let mock_url = start_mock_server(r#"{"ok": true}"#, 200);
 
     snouty_with_mock(&mock_url)
         .args([
-            "run",
+            "launch",
             "-w",
             "basic_test",
             "--duration",
@@ -203,66 +210,66 @@ fn run_param_cannot_override_typed_flag() {
 }
 
 #[test]
-fn run_duration_rejects_non_numeric() {
+fn launch_duration_rejects_non_numeric() {
     snouty()
-        .args(["run", "-w", "basic_test", "--duration", "abc"])
+        .args(["launch", "-w", "basic_test", "--duration", "abc"])
         .assert()
         .failure()
         .stderr(predicate::str::contains("invalid value"));
 }
 
 #[test]
-fn run_no_stdin_flag() {
+fn launch_no_stdin_flag() {
     snouty()
-        .args(["run", "-w", "basic_test", "--stdin", "--duration", "30"])
+        .args(["launch", "-w", "basic_test", "--stdin", "--duration", "30"])
         .assert()
         .failure()
         .stderr(predicate::str::contains("unexpected argument"));
 }
 
 #[test]
-fn run_no_trailing_raw_args() {
+fn launch_no_trailing_raw_args() {
     snouty()
-        .args(["run", "-w", "basic_test", "--antithesis.duration", "30"])
+        .args(["launch", "-w", "basic_test", "--antithesis.duration", "30"])
         .assert()
         .failure();
 }
 
 #[test]
-fn run_fails_without_webhook() {
+fn launch_fails_without_webhook() {
     snouty()
-        .args(["run", "--duration", "30"])
+        .args(["launch", "--duration", "30"])
         .assert()
         .failure()
         .stderr(predicate::str::contains("--webhook"));
 }
 
 #[test]
-fn run_fails_without_parameters() {
+fn launch_fails_without_parameters() {
     let mock_url = start_mock_server(r#"{}"#, 200);
 
     snouty_with_mock(&mock_url)
-        .args(["run", "-w", "basic_test"])
+        .args(["launch", "-w", "basic_test"])
         .assert()
         .failure()
         .stderr(predicate::str::contains("no parameters provided"));
 }
 
 #[test]
-fn run_reports_api_errors() {
+fn launch_reports_api_errors() {
     let mock_url = start_mock_server(r#"{"error": "bad request"}"#, 400);
 
     snouty_with_mock(&mock_url)
-        .args(["run", "-w", "basic_test", "--duration", "30"])
+        .args(["launch", "-w", "basic_test", "--duration", "30"])
         .assert()
         .failure()
         .stderr(predicate::str::contains("API error: 400"));
 }
 
 #[test]
-fn run_fails_without_credentials() {
+fn launch_fails_without_credentials() {
     snouty()
-        .args(["run", "-w", "basic_test", "--duration", "30"])
+        .args(["launch", "-w", "basic_test", "--duration", "30"])
         .assert()
         .failure()
         .stderr(predicate::str::contains("missing environment variable"));
@@ -608,14 +615,27 @@ fn api_webhook_success_does_not_print_email_eta() {
 }
 
 #[test]
-fn run_prints_email_eta() {
+fn launch_prints_email_eta() {
+    let mock_url = start_mock_server(r#"{"ok": true}"#, 200);
+
+    snouty_with_mock(&mock_url)
+        .args(["launch", "-w", "basic_test", "--duration", "30"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("Expect a report email"));
+}
+
+#[test]
+fn run_prints_deprecation_warning() {
     let mock_url = start_mock_server(r#"{"ok": true}"#, 200);
 
     snouty_with_mock(&mock_url)
         .args(["run", "-w", "basic_test", "--duration", "30"])
         .assert()
         .success()
-        .stderr(predicate::str::contains("Expect a report email"));
+        .stderr(predicate::str::contains(
+            "`snouty run` is deprecated, use `snouty launch` instead",
+        ));
 }
 
 #[test]

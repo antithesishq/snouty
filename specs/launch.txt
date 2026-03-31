@@ -1,4 +1,4 @@
-# snouty run
+# snouty launch
 #
 # Launch an Antithesis test run.
 #
@@ -6,25 +6,25 @@
 # line so that I can trigger testing without using the web UI.
 
 # The user specifies a webhook endpoint name via -w / --webhook (required).
-! snouty run --duration 30
+! snouty launch --duration 30
 stderr '--webhook.*'
 
 # Parameters are validated against the testParams schema before making
 #    any API call.
-! snouty run -w basic_test --duration abc
+! snouty launch -w basic_test --duration abc
 stderr 'invalid value.*'
 
-# --stdin applies to `api webhook`, not `run`.
-! snouty run -w basic_test --stdin --duration 30
+# --stdin applies to `api webhook`, not `launch`.
+! snouty launch -w basic_test --stdin --duration 30
 stderr 'unexpected argument.*'
 
-# Old-style raw --antithesis.* args are not accepted by `run`.
-! snouty run -w basic_test --antithesis.duration 30
+# Old-style raw --antithesis.* args are not accepted by `launch`.
+! snouty launch -w basic_test --antithesis.duration 30
 
 # The command authenticates with the Antithesis API using either
 #    ANTITHESIS_API_KEY and ANTITHESIS_TENANT, or
 #    ANTITHESIS_USERNAME, ANTITHESIS_PASSWORD, and ANTITHESIS_TENANT.
-! snouty run -w basic_test --duration 30
+! snouty launch -w basic_test --duration 30
 stderr 'missing environment variable.*'
 
 # Parameters are provided as --key value typed flags
@@ -32,7 +32,7 @@ stderr 'missing environment variable.*'
 #    parameters are printed to stderr with sensitive values (tokens, email
 #    recipients) redacted.
 mock-server 200 '{"status": "ok"}'
-snouty run -w basic_test --test-name my-test --description 'nightly test run' --config-image config:latest --duration 30 --recipients team@example.com --source ci-pipeline
+snouty launch -w basic_test --test-name my-test --description 'nightly test run' --config-image config:latest --duration 30 --recipients team@example.com --source ci-pipeline
 stderr '"antithesis.test_name": "my-test"'
 stderr '"antithesis.description": "nightly test run"'
 stderr '"antithesis.config_image": "config:latest"'
@@ -42,51 +42,56 @@ stderr '"antithesis.source": "ci-pipeline"'
 
 # 6b. --ephemeral flag sets antithesis.is_ephemeral to "true".
 mock-server 200 '{"status": "ok"}'
-snouty run -w basic_test --duration 30 --ephemeral
+snouty launch -w basic_test --duration 30 --ephemeral
 stderr '"antithesis.is_ephemeral": "true"'
 
 # 6c. Without --source, is_ephemeral is set automatically and an info message is shown.
 mock-server 200 '{"status": "ok"}'
-snouty run -w basic_test --duration 30
+snouty launch -w basic_test --duration 30
 stderr '"antithesis.is_ephemeral": "true"'
 stderr 'Starting ephemeral run, Findings will not be available \(provide --source\)'
 
 # 6c2. With --source, is_ephemeral is not set unless --ephemeral is passed.
 mock-server 200 '{"status": "ok"}'
-snouty run -w basic_test --duration 30 --source ci-pipeline
+snouty launch -w basic_test --duration 30 --source ci-pipeline
 ! stderr 'is_ephemeral.*'
 ! stderr 'Starting ephemeral run.*'
 
 # 6d. --param flag passes custom properties.
 mock-server 200 '{"ok": true}'
-snouty run -w basic_test --duration 30 --param my.custom.prop=value --param antithesis.integrations.github.callback_url=https://example.com/cb
+snouty launch -w basic_test --duration 30 --param my.custom.prop=value --param antithesis.integrations.github.callback_url=https://example.com/cb
 stderr '"my.custom.prop": "value"'
 stderr '"antithesis.integrations.github.callback_url": "https://example.com/cb"'
 
 # 6e. --param cannot override typed flag values.
 mock-server 200 '{"ok": true}'
-! snouty run -w basic_test --duration 30 --param antithesis.duration=60
+! snouty launch -w basic_test --duration 30 --param antithesis.duration=60
 stderr 'cannot be overridden via --param.*'
 
 # At least one source of parameters must be provided; otherwise the
 #    command fails.
 mock-server 200 '{}'
-! snouty run -w basic_test
+! snouty launch -w basic_test
 stderr 'no parameters provided.*'
 
 # On success, the command prints a human-readable ETA for the report
 #    email to stderr.
 mock-server 200 '{"ok": true}'
-snouty run -w basic_test --duration 30
+snouty launch -w basic_test --duration 30
 stderr 'Expect a report email.*'
 
 # On API failure, the command exits with an error showing the HTTP status
 #    and response body.
 mock-server 400 '{"error": "bad request"}'
-! snouty run -w basic_test --duration 30
+! snouty launch -w basic_test --duration 30
 stderr 'API error: 400.*'
 
 # antithesis.images must not be passed via --param; use api webhook instead.
 mock-server 200 '{"ok": true}'
-! snouty run -w basic_test --duration 30 --param antithesis.images=app:latest
+! snouty launch -w basic_test --duration 30 --param antithesis.images=app:latest
 stderr 'do not specify antithesis.images.*'
+
+# `snouty run` still works but prints a deprecation warning.
+mock-server 200 '{"ok": true}'
+snouty run -w basic_test --duration 30
+stderr 'snouty run.*is deprecated.*snouty launch'

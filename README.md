@@ -41,7 +41,7 @@ cargo uninstall snouty || rm -f "$(which snouty)" "$(which snouty-update)"
 
 ## Requirements
 
-Commands that work with `docker-compose.yaml` files (e.g. `run --config`, `validate`) require Docker or Podman.
+Commands that work with `docker-compose.yaml` files (e.g. `launch --config`, `validate`) require Docker or Podman.
 
 If both are installed, Podman is preferred. You can override via environment `SNOUTY_CONTAINER_ENGINE=docker`.
 
@@ -71,7 +71,7 @@ export ANTITHESIS_PASSWORD="your-password"
 
 Snouty provides the following subcommands. Invoke `snouty <command> --help` to find out more.
 
-- `snouty run`: push images and kick off an Antithesis run.
+- `snouty launch`: push images and kick off an Antithesis run.
 - `snouty validate`: locally run and validate your docker-compose.yaml setup.
 - `snouty docs`: fast, local search of the Antithesis documentation.
 - `snouty debug`: start a debug session.

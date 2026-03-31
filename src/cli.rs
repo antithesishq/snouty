@@ -15,7 +15,7 @@ pub enum Commands {
     #[command(long_about = r#"Launch a test run
 
 Example:
-  snouty run --webhook basic_test --config ./config \
+  snouty launch --webhook basic_test --config ./config \
     --test-name "my-test" \
     --description "nightly test run" \
     --duration 30 \
@@ -26,12 +26,12 @@ Images required for the run need to have been built already. Pushing happens
 automatically.
 
 Alternatively, pass a pre-built config image directly:
-  snouty run --webhook basic_test \
+  snouty launch --webhook basic_test \
     --config-image us-central1-docker.pkg.dev/proj/repo/config:latest \
     --duration 30
 
 Extra parameters can be passed with --param:
-  snouty run -w basic_test --duration 30 \
+  snouty launch -w basic_test --duration 30 \
     --param antithesis.integrations.github.token=TOKEN \
     --param my.custom.property=value
 
@@ -42,7 +42,11 @@ Environment variables:
   ANTITHESIS_PASSWORD     Legacy password (required when API key is not set).
   ANTITHESIS_REPOSITORY   Container registry for pushing images (required with --config).
   SNOUTY_CONTAINER_ENGINE Force "docker" or "podman" (auto-detected by default)."#)]
-    Run(RunArgs),
+    Launch(LaunchArgs),
+
+    /// Deprecated: use `launch` instead
+    #[command(hide = true)]
+    Run(LaunchArgs),
 
     /// Access raw API endpoints
     #[command(subcommand)]
@@ -216,7 +220,7 @@ pub struct ValidateArgs {
 }
 
 #[derive(Args)]
-pub struct RunArgs {
+pub struct LaunchArgs {
     /// Webhook endpoint name (e.g., basic_test, basic_k8s_test)
     #[arg(short, long)]
     pub webhook: String,

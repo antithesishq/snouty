@@ -345,9 +345,9 @@ macro_rules! engine_spec_case_test {
 }
 
 engine_spec_case_test!(
-    podman_engine_run_config_push_specs,
+    podman_engine_launch_config_push_specs,
     "podman",
-    "run_config_push.txt",
+    "launch_config_push.txt",
     true
 );
 engine_spec_case_test!(
@@ -375,9 +375,9 @@ engine_spec_case_test!(
     false
 );
 engine_spec_case_test!(
-    docker_engine_run_config_push_specs,
+    docker_engine_launch_config_push_specs,
     "docker",
-    "run_config_push.txt",
+    "launch_config_push.txt",
     true
 );
 engine_spec_case_test!(

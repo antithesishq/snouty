@@ -5,11 +5,11 @@ use support::*;
 use tempfile::TempDir;
 
 #[test]
-fn run_config_rejects_nonexistent_dir() {
+fn launch_config_rejects_nonexistent_dir() {
     snouty()
         .env("ANTITHESIS_REPOSITORY", "registry.example.com/repo")
         .args([
-            "run",
+            "launch",
             "-w",
             "basic_test",
             "-c",
@@ -23,13 +23,13 @@ fn run_config_rejects_nonexistent_dir() {
 }
 
 #[test]
-fn run_config_rejects_dir_without_compose() {
+fn launch_config_rejects_dir_without_compose() {
     let dir = TempDir::new().unwrap();
 
     snouty()
         .env("ANTITHESIS_REPOSITORY", "registry.example.com/repo")
         .args([
-            "run",
+            "launch",
             "-w",
             "basic_test",
             "-c",
@@ -43,14 +43,14 @@ fn run_config_rejects_dir_without_compose() {
 }
 
 #[test]
-fn run_config_rejects_yml_extension() {
+fn launch_config_rejects_yml_extension() {
     let dir = TempDir::new().unwrap();
     std::fs::write(dir.path().join("docker-compose.yml"), "version: '3'\n").unwrap();
 
     snouty()
         .env("ANTITHESIS_REPOSITORY", "registry.example.com/repo")
         .args([
-            "run",
+            "launch",
             "-w",
             "basic_test",
             "-c",
@@ -64,14 +64,14 @@ fn run_config_rejects_yml_extension() {
 }
 
 #[test]
-fn run_config_conflicts_with_config_image_param() {
+fn launch_config_conflicts_with_config_image_param() {
     let dir = TempDir::new().unwrap();
     std::fs::write(dir.path().join("docker-compose.yaml"), "version: '3'\n").unwrap();
 
     snouty()
         .env("ANTITHESIS_REPOSITORY", "registry.example.com/repo")
         .args([
-            "run",
+            "launch",
             "-w",
             "basic_test",
             "-c",
@@ -87,13 +87,13 @@ fn run_config_conflicts_with_config_image_param() {
 }
 
 #[test]
-fn run_config_requires_registry_env() {
+fn launch_config_requires_registry_env() {
     let dir = TempDir::new().unwrap();
     std::fs::write(dir.path().join("docker-compose.yaml"), "version: '3'\n").unwrap();
 
     snouty()
         .args([
-            "run",
+            "launch",
             "-w",
             "basic_test",
             "-c",
@@ -107,11 +107,11 @@ fn run_config_requires_registry_env() {
 }
 
 #[test]
-fn run_config_long_flag_accepted() {
+fn launch_config_long_flag_accepted() {
     snouty()
         .env("ANTITHESIS_REPOSITORY", "registry.example.com/repo")
         .args([
-            "run",
+            "launch",
             "-w",
             "basic_test",
             "--config",
@@ -125,14 +125,14 @@ fn run_config_long_flag_accepted() {
 }
 
 #[test]
-fn run_config_conflicts_with_param_config_image() {
+fn launch_config_conflicts_with_param_config_image() {
     let dir = TempDir::new().unwrap();
     std::fs::write(dir.path().join("docker-compose.yaml"), "version: '3'\n").unwrap();
 
     snouty()
         .env("ANTITHESIS_REPOSITORY", "registry.example.com/repo")
         .args([
-            "run",
+            "launch",
             "-w",
             "basic_test",
             "-c",

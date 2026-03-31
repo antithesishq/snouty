@@ -7,7 +7,7 @@ use log::{debug, info};
 
 use color_eyre::eyre::{Context, Result, bail};
 use snouty::api::AntithesisApi;
-use snouty::cli::{ApiCommands, Cli, Commands, RunArgs};
+use snouty::cli::{ApiCommands, Cli, Commands, LaunchArgs};
 use snouty::container;
 use snouty::docs;
 use snouty::moment;
@@ -71,9 +71,14 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
+        Commands::Launch(args) => {
+            info!("launching test with webhook: {}", args.webhook);
+            cmd_launch(args).await
+        }
         Commands::Run(args) => {
-            info!("running test with webhook: {}", args.webhook);
-            cmd_run(args).await
+            eprintln!("warning: `snouty run` is deprecated, use `snouty launch` instead");
+            info!("launching test with webhook: {}", args.webhook);
+            cmd_launch(args).await
         }
         Commands::Api(ApiCommands::Webhook {
             webhook,
@@ -99,7 +104,7 @@ async fn main() -> Result<()> {
     }
 }
 
-async fn cmd_run(args: RunArgs) -> Result<()> {
+async fn cmd_launch(args: LaunchArgs) -> Result<()> {
     let mut params = Params::new();
 
     // Insert typed flags into params (skip None/false)

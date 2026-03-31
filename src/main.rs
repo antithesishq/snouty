@@ -112,11 +112,14 @@ async fn cmd_run(args: RunArgs) -> Result<()> {
     if let Some(duration) = args.duration {
         params.insert("antithesis.duration", duration.to_string());
     }
+    let has_source = if let Some(source) = args.source {
+        params.insert("antithesis.source", source);
+        true
+    } else {
+        false
+    };
     if args.ephemeral {
         params.insert("antithesis.is_ephemeral", "true");
-    }
-    if let Some(source) = args.source {
-        params.insert("antithesis.source", source);
     }
     if let Some(recipients) = args.recipients {
         params.insert("antithesis.report.recipients", recipients);
@@ -177,6 +180,11 @@ async fn cmd_run(args: RunArgs) -> Result<()> {
 
     if params.is_empty() {
         bail!("invalid arguments: no parameters provided");
+    }
+
+    if !has_source {
+        params.insert("antithesis.is_ephemeral", "true");
+        eprintln!("Starting ephemeral run, Findings will not be available (provide --source)");
     }
 
     params.validate_test_params()?;

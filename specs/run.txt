@@ -45,10 +45,17 @@ mock-server 200 '{"status": "ok"}'
 snouty run -w basic_test --duration 30 --ephemeral
 stderr '"antithesis.is_ephemeral": "true"'
 
-# 6c. Without --ephemeral, the key is omitted entirely.
+# 6c. Without --source, is_ephemeral is set automatically and an info message is shown.
 mock-server 200 '{"status": "ok"}'
 snouty run -w basic_test --duration 30
+stderr '"antithesis.is_ephemeral": "true"'
+stderr 'Starting ephemeral run, Findings will not be available \(provide --source\)'
+
+# 6c2. With --source, is_ephemeral is not set unless --ephemeral is passed.
+mock-server 200 '{"status": "ok"}'
+snouty run -w basic_test --duration 30 --source ci-pipeline
 ! stderr 'is_ephemeral.*'
+! stderr 'Starting ephemeral run.*'
 
 # 6d. --param flag passes custom properties.
 mock-server 200 '{"ok": true}'

@@ -106,7 +106,8 @@ fn run_with_typed_flags() {
         ))
         .stderr(predicate::str::contains(
             r#""antithesis.source": "ci-pipeline""#,
-        ));
+        ))
+        .stderr(predicate::str::contains("is_ephemeral").not());
 }
 
 #[test]
@@ -123,14 +124,39 @@ fn run_with_ephemeral_flag() {
 }
 
 #[test]
-fn run_without_ephemeral_omits_key() {
+fn run_without_source_sets_ephemeral() {
     let mock_url = start_mock_server(r#"{"status": "ok"}"#, 200);
 
     snouty_with_mock(&mock_url)
         .args(["run", "-w", "basic_test", "--duration", "30"])
         .assert()
         .success()
-        .stderr(predicate::str::contains("is_ephemeral").not());
+        .stderr(predicate::str::contains(
+            r#""antithesis.is_ephemeral": "true""#,
+        ))
+        .stderr(predicate::str::contains(
+            "Starting ephemeral run, Findings will not be available (provide --source)",
+        ));
+}
+
+#[test]
+fn run_with_source_omits_ephemeral() {
+    let mock_url = start_mock_server(r#"{"status": "ok"}"#, 200);
+
+    snouty_with_mock(&mock_url)
+        .args([
+            "run",
+            "-w",
+            "basic_test",
+            "--duration",
+            "30",
+            "--source",
+            "ci",
+        ])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("is_ephemeral").not())
+        .stderr(predicate::str::contains("Starting ephemeral run").not());
 }
 
 #[test]

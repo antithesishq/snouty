@@ -34,7 +34,7 @@
     },
     {
       "name": "Launch",
-      "description": "Launch test runs and debugging sessions"
+      "description": "Launch test and debugging runs"
     }
   ],
   "paths": {
@@ -203,7 +203,6 @@
                       "started_at": "2025-03-20T02:01:12Z",
                       "completed_at": "2025-03-20T02:31:45Z",
                       "launcher": "Payments Nightly",
-                      "session_id": "1d66e9a01d7d9c892038bc100232da6b-50-1",
                       "links": {
                         "triage_report": "https://demo.antithesis.com/report/dBDNYWsHWywLBl1mtobJjjuB/dw8bjBJES6HzQ9iw8PSlGUXNnraLuWpLlbavyABg_R0.html"
                       },
@@ -212,7 +211,7 @@
                     }
                   },
                   "mvd_run": {
-                    "summary": "A multiverse debugging session with debugger ready",
+                    "summary": "A multiverse debugging run with debugger ready",
                     "value": {
                       "run_id": "a1c4e7f2b5d8039c6e9f1a4b7d0e3f68-50-1",
                       "status": "debugger_ready",
@@ -221,7 +220,6 @@
                       "started_at": "2025-03-21T14:00:32Z",
                       "completed_at": "2025-03-21T14:45:10Z",
                       "launcher": "Debug Runner",
-                      "session_id": "a3b8c2d4e5f6a7b8c9d0e1f2a3b4c5d6-50-1",
                       "links": {
                         "triage_report": "https://demo.antithesis.com/report/kP3mXvR7nYqW2cA9fTgH5sLe/aB4cD8eF2gH6iJ0kL3mN7oP1qR5sT9uV2wX4yZ6bC8d.html"
                       }
@@ -345,8 +343,7 @@
                       },
                       "moment": {
                         "input_hash": "-3625518438076122494",
-                        "vtime": "398.4898056755774",
-                        "session_id": "029043c3c85c435e7b034aaa6f218b6a-50-1"
+                        "vtime": "398.4898056755774"
                       }
                     }
                   },
@@ -361,8 +358,7 @@
                       },
                       "moment": {
                         "input_hash": "-8212366801093655922",
-                        "vtime": "313.15126806590706",
-                        "session_id": "029043c3c85c435e7b034aaa6f218b6a-50-1"
+                        "vtime": "313.15126806590706"
                       }
                     }
                   },
@@ -378,8 +374,7 @@
                       },
                       "moment": {
                         "input_hash": "-3704286174724581163",
-                        "vtime": "90.17225814750418",
-                        "session_id": "029043c3c85c435e7b034aaa6f218b6a-50-1"
+                        "vtime": "90.17225814750418"
                       }
                     }
                   }
@@ -437,6 +432,91 @@
               "application/x-ndjson": {
                 "schema": {
                   "$ref": "#/components/schemas/Build_Log_Line"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "406": {
+            "$ref": "#/components/responses/NotAcceptable"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      }
+    },
+    "/api/{version}/runs/{run_id}/properties": {
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/Version"
+        }
+      ],
+      "get": {
+        "operationId": "listRunProperties",
+        "summary": "List run properties",
+        "description": "Returns a paginated list of property results for a run. By default only failed properties are returned. Set `include_passing_properties` to `true` to include passed properties as well.",
+        "tags": ["Runs"],
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "description": "Unique identifier of the run to retrieve properties for.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "include_passing_properties",
+            "in": "query",
+            "description": "When `true`, include passed properties in the response in addition to failed ones.",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": false
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Maximum number of results to return. Server-capped at 100.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "default": 50,
+              "minimum": 1,
+              "maximum": 100
+            }
+          },
+          {
+            "name": "after",
+            "in": "query",
+            "description": "Cursor for pagination. Pass the `next_cursor` value from a previous response to fetch the next page.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "A paginated list of property results.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Property_List_Response"
                 }
               }
             }
@@ -639,7 +719,7 @@
         "additionalProperties": true
       },
       "Run_Detail": {
-        "description": "Full details of a test run. Extends Run_Summary with session information, results, and environment metadata.",
+        "description": "Full details of a test run. Extends Run_Summary with run information, results, and environment metadata.",
         "allOf": [
           {
             "$ref": "#/components/schemas/Run_Summary"
@@ -647,18 +727,10 @@
           {
             "type": "object",
             "properties": {
-              "session_id": {
-                "type": "string",
-                "description": "Unique identifier for the test session. Used to correlate logs, events, and search queries back to this specific execution.",
-                "example": "1d66e9a01d7d9c892038bc100232da6b-50-1"
-              },
               "results": {
                 "type": "object",
                 "additionalProperties": true,
                 "description": "Aggregate results for the run. Structure varies by run type. May be absent or partial for runs that have not yet completed."
-              },
-              "environment": {
-                "$ref": "#/components/schemas/Run_Environment"
               }
             }
           }
@@ -760,55 +832,96 @@
           }
         }
       },
-      "Run_Status": {
-        "type": "string",
-        "enum": ["starting", "in_progress", "debugger_ready", "completed", "cancelled", "failed"],
-        "description": "Current lifecycle status of a run. `starting` — the run is being set up. `in_progress` — the run is actively running. `debugger_ready` — the multiverse debugger (MVD) session is ready for interaction (MVD runs only). `completed` — the run finished successfully. `cancelled` — the run was cancelled before completion. `failed` — the run did not complete successfully (incomplete)."
-      },
-      "Run_Environment": {
+      "Property_List_Response": {
         "type": "object",
-        "description": "Environment details for the test run, including the Antithesis platform version and the full set of container images that were deployed.",
+        "description": "A page of property results returned by the properties endpoint. Use `next_cursor` to iterate through all available results.",
+        "required": ["data"],
         "properties": {
-          "antithesis_version": {
-            "type": "string",
-            "description": "Version of the Antithesis platform used for this run.",
-            "example": "v49-1"
-          },
-          "images": {
+          "data": {
             "type": "array",
-            "description": "Container images deployed in this run.",
             "items": {
-              "$ref": "#/components/schemas/Container_Image"
+              "$ref": "#/components/schemas/Property"
             }
+          },
+          "next_cursor": {
+            "type": "string",
+            "nullable": true,
+            "description": "Opaque pagination cursor. Pass as the `after` query parameter to fetch the next page. Null if no more pages."
           }
         }
       },
-      "Container_Image": {
+      "Property": {
         "type": "object",
-        "description": "A container image used in the test environment.",
-        "required": ["name", "image"],
+        "description": "A property result from a test run. Properties with `is_group` set to true represent a group property that contain other individual properties; individual properties within that group reference it via the `group` field.",
+        "required": ["name", "status", "is_event", "is_existential", "is_universal"],
         "properties": {
           "name": {
             "type": "string",
-            "description": "Logical name of the service or component.",
-            "example": "payments-service"
+            "description": "The name of the property."
           },
-          "image": {
+          "description": {
             "type": "string",
-            "description": "Docker image digest, a content-addressable identifier for the image.",
-            "example": "registry.example.com/payments@sha256:a3ed95caeb02ffe68cdd9fd84406680ae93d633cb16422d00e8a7c22955b46d4"
+            "description": "A human-readable description of the property."
           },
-          "tag": {
+          "status": {
+            "$ref": "#/components/schemas/Property_Status"
+          },
+          "is_event": {
+            "type": "boolean",
+            "description": "Whether this property is an event based property."
+          },
+          "is_existential": {
+            "type": "boolean",
+            "description": "Whether this is an existential (sometimes) property \u2014 one that applies to at least one member of a category or domain, asserting that something exists with that characteristic."
+          },
+          "is_universal": {
+            "type": "boolean",
+            "description": "Whether this is a universal (always) property \u2014 one that applies to all members of a category or domain, asserting that everything in the relevant scope shares that characteristic."
+          },
+          "is_group": {
+            "type": "boolean",
+            "description": "When true, this property represents a group property that contains other properties. Individual properties belonging to this group will reference it by name via the `group` field."
+          },
+          "group": {
             "type": "string",
-            "description": "Image tag identifying the specific version.",
-            "example": "main-abc1234"
+            "description": "The name of the group this property belongs to. Present only for properties that are part of a group."
+          },
+          "example_count": {
+            "type": "integer",
+            "format": "uint32",
+            "description": "Total number of examples observed."
+          },
+          "counter_example_count": {
+            "type": "integer",
+            "format": "uint32",
+            "description": "Total number of counter_examples observed."
+          },
+          "examples": {
+            "type": "array",
+            "description": "A sample of example instances that satisfy the property. This is not an exhaustive list.",
+            "items": {}
+          },
+          "counter_examples": {
+            "type": "array",
+            "description": "A sample of counter example instances that violate the property. This is not an exhaustive list.",
+            "items": {}
           }
         }
+      },
+      "Property_Status": {
+        "type": "string",
+        "enum": ["Passing", "Failing"],
+        "description": "Whether the property is currently passing or failing."
+      },
+      "Run_Status": {
+        "type": "string",
+        "enum": ["starting", "in_progress", "debugger_ready", "completed", "cancelled", "failed"],
+        "description": "Current lifecycle status of a run. `starting` — the run is being set up. `in_progress` — the run is actively running. `debugger_ready` — the multiverse debugger (MVD) run is ready for interaction (MVD runs only). `completed` — the run finished successfully. `cancelled` — the run was cancelled before completion. `failed` — the run did not complete successfully (incomplete)."
       },
       "Run_Type": {
         "type": "string",
         "enum": ["test", "mvd", "other"],
-        "description": "The type of run. `test` is a standard test run, `mvd` is a multiverse debugging session, `other` covers any additional run types."
+        "description": "The type of run. `test` is a standard test run, `mvd` is a multiverse debugging run, `other` covers any additional run types."
       },
       "Creator_Info": {
         "type": "object",

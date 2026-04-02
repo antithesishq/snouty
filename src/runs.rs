@@ -151,7 +151,7 @@ fn print_run_detail(run: &RunDetail) {
 
     let label_width = rows.iter().map(|(label, _)| label.len()).max().unwrap_or(0);
     for (label, value) in &rows {
-        println!("{label:label_width$}  {value}");
+        println!("{label:label_width$}  {}", sanitize(value));
     }
 }
 
@@ -173,7 +173,7 @@ async fn cmd_runs_build_logs(run_id: &str, json: bool) -> Result<()> {
             if let Ok(entry) = serde_json::from_str::<serde_json::Value>(line) {
                 let ts = entry["timestamp"].as_str().unwrap_or("");
                 let stream = entry["stream"].as_str().unwrap_or("out");
-                let text = entry["text"].as_str().unwrap_or("");
+                let text = sanitize(entry["text"].as_str().unwrap_or(""));
                 writeln!(stdout, "{ts} [{stream}] {text}")?;
             } else {
                 writeln!(stdout, "{line}")?;
@@ -222,7 +222,7 @@ async fn cmd_runs_logs(
                 let container = entry["source"]["container"].as_str().unwrap_or("");
                 let stream = entry["source"]["stream"].as_str().unwrap_or("");
                 let source = format!("[{container}:{stream}]");
-                let output = entry["output_text"].as_str().unwrap_or("");
+                let output = sanitize(entry["output_text"].as_str().unwrap_or(""));
                 writeln!(stdout, "{vtime:<22}  {source:<20}  {output}")?;
             } else {
                 writeln!(stdout, "{line}")?;
@@ -277,11 +277,11 @@ fn render_runs_table(runs: &[RunSummary]) -> String {
         .iter()
         .map(|run| {
             vec![
-                run.run_id.clone(),
-                render_enum(&run.status),
-                run.type_.as_ref().map(render_enum).unwrap_or_default(),
+                sanitize(&run.run_id),
+                sanitize(&render_enum(&run.status)),
+                sanitize(&run.type_.as_ref().map(render_enum).unwrap_or_default()),
                 run.created_at.to_rfc3339(),
-                run.launcher.clone(),
+                sanitize(&run.launcher),
             ]
         })
         .collect::<Vec<_>>();
@@ -313,6 +313,10 @@ fn push_table_row(output: &mut String, row: &[String], widths: &[usize]) {
         output.push_str(&format!("{cell:<width$}", width = widths[index]));
     }
     output.push('\n');
+}
+
+fn sanitize(s: &str) -> String {
+    s.escape_default().to_string()
 }
 
 fn render_enum(value: &impl serde::Serialize) -> String {

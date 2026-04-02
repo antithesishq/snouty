@@ -6,7 +6,7 @@ use clap::Parser;
 use log::{debug, info};
 
 use color_eyre::eyre::{Context, Result, bail};
-use snouty::api::{AntithesisApi, RunSummary};
+use snouty::api::AntithesisApi;
 use snouty::cli::{ApiCommands, Cli, Commands, LaunchArgs};
 use snouty::container;
 use snouty::docs;

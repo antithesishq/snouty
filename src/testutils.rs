@@ -312,8 +312,8 @@ impl MockApiServer {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
         let url = format!("http://{}", addr);
-        let token = mock_generate_token();
-        let expected_token = token.clone();
+        let token = MOCK_API_TOKEN.to_string();
+        let expected_token = MOCK_API_TOKEN.to_string();
 
         let handle = thread::spawn(move || {
             for mut stream in listener.incoming().flatten() {
@@ -354,11 +354,7 @@ impl MockApiServer {
     }
 }
 
-fn mock_generate_token() -> String {
-    let mut bytes = [0u8; 16];
-    getrandom::fill(&mut bytes).expect("failed to generate random token");
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
-}
+const MOCK_API_TOKEN: &str = "snouty-mock-api-token";
 
 fn mock_check_auth(request: &str, expected_token: &str) -> bool {
     let expected = format!("Bearer {expected_token}");

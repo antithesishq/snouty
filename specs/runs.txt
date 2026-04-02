@@ -73,6 +73,12 @@ snouty runs logs run-1 --input-hash -123 --vtime 1.0 --json
 stdout 'output_text.*starting'
 stdout 'output_text.*slow request'
 
+# `snouty runs logs --json` emits a record whose output_text contains
+# a JSON-escaped newline on a single output line.
+mock-runs-server
+snouty runs logs run-1 --input-hash -123 --vtime 1.0 --json
+stdout -count=1 'line one\\nline two'
+
 # `snouty runs logs` requires --input-hash and --vtime.
 mock-runs-server
 ! snouty runs logs run-1

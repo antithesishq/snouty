@@ -516,6 +516,12 @@ fn mock_route_get_run_logs(_run_id: &str) -> (u16, String) {
     let lines = [
         r#"{"output_text":"{\"level\":\"info\",\"msg\":\"starting\"}","source":{"container":"app","name":"app","stream":"out"},"moment":{"input_hash":"-123","vtime":"1.0","session_id":"sess-1"}}"#,
         r#"{"output_text":"{\"level\":\"warn\",\"msg\":\"slow request\"}","source":{"container":"app","name":"app","stream":"error"},"moment":{"input_hash":"-456","vtime":"2.0","session_id":"sess-1"}}"#,
+        // Record whose output_text contains a JSON-escaped newline (\n).
+        // Verifies that --json emits this as a single output line.
+        r#"{"output_text":"line one\nline two","source":{"container":"app","name":"app","stream":"out"},"moment":{"input_hash":"-789","vtime":"3.0"}}"#,
+        r#"{"IPT_bytes_out":563000,"output_text":"W0320 15:07:26.913251       1 control.go:315] Error setting vault 10.0.1.123:8003 value to 64: Post \"http://10.0.1.123:8003/\": dial tcp 10.0.1.123:8003: i/o timeout (Client.Timeout exceeded while awaiting headers)","source":{"container":"control","name":"service_control","stream":"error"},"moment":{"input_hash":"-7835669064649885519","vtime":"73.94233945617452"}}"#,
+        r#"{"antithesis_assert":{"assert_type":"always","condition":false,"details":null,"display_type":"AlwaysOrUnreachable","hit":false,"id":"Counter's value retrieved","location":{"begin_column":0,"begin_line":87,"class":"","file":"/go/src/antithesis/control/control.go","function":"get"},"message":"Counter's value retrieved","must_hit":false},"IPT_bytes_out":1837376,"source":{"container":"control","name":"control","pid":1},"moment":{"input_hash":"-4735081784258020614","vtime":"311.8487535319291"}}"#,
+        r#"{"input_byte":225,"input_count":659,"IPT_bytes_out":2130016,"prev_input_hash":"335559623669971735","moment":{"input_hash":"4869836942553022903","vtime":"498.2362972020637"}}"#,
     ];
     (200, lines.join("\n") + "\n")
 }

@@ -258,7 +258,7 @@
       ],
       "get": {
         "operationId": "getRunLogs",
-        "summary": "Stream moment logs",
+        "summary": "Get logs for a specific moment",
         "description": "Streams the logs for a moment in the run as newline-delimited JSON (NDJSON) in chronological order. Each line is a self-contained JSON object. The response is streamed — the connection remains open until all matching log lines have been sent.\n\nThere is a limit on the number of events returned per request. If the limit is reached, use the `moment` of the last event received as the begin moment (`begin_vtime` and `begin_input_hash`) in a subsequent request to continue from where you left off.\n\nTo retrieve a subset of logs starting from a specific point, provide both `begin_vtime` and `begin_input_hash` to specify the begin moment.",
         "tags": ["Runs"],
         "parameters": [
@@ -327,9 +327,7 @@
             "content": {
               "application/x-ndjson": {
                 "schema": {
-                  "type": "object",
-                  "additionalProperties": true,
-                  "description": "A single log line. Each line in the NDJSON stream is a single JSON object on one line, separated by newlines. The examples below show the structure of each line. Fields vary by log source."
+                  "$ref": "#/components/schemas/Event"
                 },
                 "examples": {
                   "raft_vote_log": {
@@ -809,6 +807,35 @@
           "description": "Additional parameters including tooling integration parameters (e.g. `antithesis.integrations.<type>.callback_url`, `antithesis.integrations.<type>.token` where type is `github`, `discord`, or `slack`)."
         }
       },
+      "Event": {
+        "type": "object",
+        "description": "A single event. Each event includes its moment information. Fields vary by event source.",
+        "required": ["moment"],
+        "properties": {
+          "moment": {
+            "$ref": "#/components/schemas/Moment"
+          }
+        },
+        "additionalProperties": true
+      },
+      "Moment": {
+        "type": "object",
+        "description": "Identifies a specific moment in the run's execution timeline.",
+        "required": ["input_hash", "vtime"],
+        "properties": {
+          "input_hash": {
+            "type": "string",
+            "description": "The input hash value identifying the moment.",
+            "example": "-3625518438076122494"
+          },
+          "vtime": {
+            "type": "string",
+            "description": "The virtual time value identifying the moment.",
+            "example": "398.4898056755774"
+          }
+        },
+        "additionalProperties": true
+      },
       "Build_Log_Line": {
         "type": "object",
         "description": "A single build log line.",
@@ -899,12 +926,16 @@
           "examples": {
             "type": "array",
             "description": "A sample of example instances that satisfy the property. This is not an exhaustive list.",
-            "items": {}
+            "items": {
+              "$ref": "#/components/schemas/Event"
+            }
           },
           "counter_examples": {
             "type": "array",
             "description": "A sample of counter example instances that violate the property. This is not an exhaustive list.",
-            "items": {}
+            "items": {
+              "$ref": "#/components/schemas/Event"
+            }
           }
         }
       },

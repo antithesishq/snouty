@@ -497,7 +497,7 @@ fn mock_route_get_run(run_id: &str) -> (u16, String) {
     (
         200,
         format!(
-            r#"{{"run_id":"{}","status":"completed","type":"test","created_at":"2025-03-20T02:00:00Z","started_at":"2025-03-20T02:01:12Z","completed_at":"2025-03-20T02:31:45Z","launcher":"nightly","session_id":"1d66e9a01d7d9c892038bc100232da6b-50-1","links":{{"triage_report":"https://demo.antithesis.com/reports/{}"}}}}"#,
+            r#"{{"run_id":"{}","status":"completed","type":"test","created_at":"2025-03-20T02:00:00Z","started_at":"2025-03-20T02:01:12Z","completed_at":"2025-03-20T02:31:45Z","launcher":"nightly","links":{{"triage_report":"https://demo.antithesis.com/reports/{}"}}}}"#,
             run_id, run_id
         ),
     )

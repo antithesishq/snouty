@@ -37,7 +37,6 @@ snouty runs show run-1
 stdout 'Run ID.*run-1'
 stdout 'Status.*completed'
 stdout 'Launcher.*nightly'
-stdout 'Session ID.*1d66e9a01d7d9c892038bc100232da6b-50-1'
 
 # `snouty runs show --json` outputs JSON.
 mock-runs-server

@@ -137,10 +137,6 @@ fn print_run_detail(run: &RunDetail) {
 
     rows.push(("Launcher", run.launcher.clone()));
 
-    if let Some(ref s) = run.session_id {
-        rows.push(("Session ID", s.clone()));
-    }
-
     if let Some(ref links) = run.links {
         if let Some(ref url) = links.triage_report {
             rows.push(("Report", url.clone()));
@@ -150,12 +146,6 @@ fn print_run_detail(run: &RunDetail) {
     if let Some(ref creator) = run.creator {
         if let Some(ref name) = creator.name {
             rows.push(("Creator", name.clone()));
-        }
-    }
-
-    if let Some(ref env) = run.environment {
-        if let Some(ref ver) = env.antithesis_version {
-            rows.push(("Platform", ver.clone()));
         }
     }
 

@@ -1,0 +1,103 @@
+{
+  "$schema": "http://json-schema.org/draft-04/schema#",
+  "$id": "https://antithesis.com/assertions.schema.json",
+  "title": "Antithesis Assertions",
+  "description": "This describes the details of an Antithesis assertion",
+  "type": "object",
+  "properties": {
+    "antithesis_assert": {
+      "description": "Asserts a specific condition value and reachability",
+      "type": "object",
+      "properties": {
+        "id": {
+          "description": "A unique identifier for an assertion",
+          "type": "string"
+        },
+        "message": {
+          "description": "Description of the assertion",
+          "type": "string"
+        },
+        "condition": {
+          "description": "Evaluation of execution state and location",
+          "type": "boolean"
+        },
+        "display_type": {
+          "description": "User-supplied name of the assertion type, for use in reports.",
+          "type": "string"
+        },
+        "hit": {
+          "description": "Indicates the assertion was evaluated",
+          "type": "boolean"
+        },
+        "must_hit": {
+          "description": "True if the assertion is expected to be evaluated at least once to consider it to be passed",
+          "type": "boolean"
+        },
+        "assert_type": {
+          "description": "Type of assertion that was established",
+          "type": "string",
+          "enum": [ 
+            "always",
+            "sometimes",
+            "reachability"
+          ]
+        },
+        "location": {
+          "description": "Describes physical and logical source code location",
+          "type": "object",
+          "properties": {
+            "file": {
+              "description": "Filename containing the assertion",
+              "type": "string"
+            },
+            "function": {
+              "description": "Function or method containing the assertion",
+              "type": "string"
+            },
+            "class": {
+              "description": "Class or package for the code containing the assertion",
+              "type": "string"
+            },
+            "begin_line": {
+              "description": "Line number for the assertion",
+              "type": "number"
+            },
+            "begin_column": {
+              "description": "Column number for the assertion",
+              "type": "number"
+            }
+          }
+        },
+        "details": {
+          "description": "User-provided JSON, for display in reports as additional details. If no additional details are desired, set as null.",
+          "type": "object",
+          "patternProperties": {
+            "^.*$": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "object"
+                },
+                {
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "additionalProperties": false
+        }
+      }
+    }
+  }
+}

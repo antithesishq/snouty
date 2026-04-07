@@ -151,6 +151,11 @@ async fn cmd_runs_properties(run_id: &str, all: bool, json: bool) -> Result<()> 
     } else if properties.is_empty() {
         println!("No properties found.");
     } else {
+        properties.sort_by(|a, b| {
+            property_status_rank(a.status)
+                .cmp(&property_status_rank(b.status))
+                .then(a.name.cmp(&b.name))
+        });
         let rows = flatten_property_events(&properties);
         if rows.is_empty() {
             println!("No sampled property events found.");
@@ -630,6 +635,7 @@ struct PropertyEventRow<'a> {
 fn flatten_property_events(properties: &[Property]) -> Vec<PropertyEventRow<'_>> {
     let mut rows = Vec::new();
     for property in properties {
+        let start = rows.len();
         for event in &property.counter_examples {
             rows.push(PropertyEventRow {
                 example: "Failing",
@@ -646,13 +652,12 @@ fn flatten_property_events(properties: &[Property]) -> Vec<PropertyEventRow<'_>>
                 name: &property.name,
             });
         }
+        rows[start..].sort_by(|a, b| {
+            example_rank(a.example)
+                .cmp(&example_rank(b.example))
+                .then(a.vtime.cmp(b.vtime))
+        });
     }
-    rows.sort_by(|a, b| {
-        example_rank(a.example)
-            .cmp(&example_rank(b.example))
-            .then(a.vtime.cmp(b.vtime))
-            .then(a.hash.cmp(b.hash))
-    });
     rows
 }
 
@@ -944,9 +949,9 @@ mod tests {
         assert!(lines[1].contains("Failing") && lines[1].contains("-200") && lines[1].contains("10.0") && lines[1].contains("Counter value stays below limit"));
         assert!(lines[2].contains("Failing") && lines[2].contains("-100") && lines[2].contains("5.0") && lines[2].contains("Counter value stays below limit"));
 
-        // Passing rows come after, sorted by vtime (lexicographic: "1.0" < "15.0")
-        assert!(lines[3].contains("Passing") && lines[3].contains("-400") && lines[3].contains("1.0") && lines[3].contains("Setup completes"));
-        assert!(lines[4].contains("Passing") && lines[4].contains("-300") && lines[4].contains("15.0") && lines[4].contains("Counter value stays below limit"));
+        // Passing rows come after, grouped by property (Counter value first, then Setup completes)
+        assert!(lines[3].contains("Passing") && lines[3].contains("-300") && lines[3].contains("15.0") && lines[3].contains("Counter value stays below limit"));
+        assert!(lines[4].contains("Passing") && lines[4].contains("-400") && lines[4].contains("1.0") && lines[4].contains("Setup completes"));
     }
 
     #[test]

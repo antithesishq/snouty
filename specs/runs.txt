@@ -61,8 +61,8 @@ mock-runs-server
 snouty runs properties --all run-1
 stdout 'Failing.*-100.*5\.0.*Counter value stays below limit'
 stdout 'Failing.*-200.*10\.0.*Counter value stays below limit'
-stdout 'Passing.*-400.*1\.0.*Setup completes'
 stdout 'Passing.*-300.*15\.0.*Counter value stays below limit'
+stdout 'Passing.*-400.*1\.0.*Setup completes'
 
 # `snouty --json runs properties` outputs JSON.
 mock-runs-server

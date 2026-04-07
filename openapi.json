@@ -310,16 +310,6 @@
               "example": "-3625518438076122494"
             }
           },
-          {
-            "name": "disable_default_log_filter",
-            "in": "query",
-            "description": "Set to `true` to disable the default log filter and return all log lines.",
-            "required": false,
-            "schema": {
-              "type": "boolean",
-              "default": false
-            }
-          }
         ],
         "responses": {
           "200": {
@@ -515,6 +505,69 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Property_List_Response"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "406": {
+            "$ref": "#/components/responses/NotAcceptable"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      }
+    },
+    "/api/{version}/runs/{run_id}/search": {
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/Version"
+        }
+      ],
+      "get": {
+        "operationId": "searchRunEvents",
+        "summary": "Search run events",
+        "description": "Searches events in a run for the given query string. The search matches against output text, assertion messages, function names, and test composer commands. Results are streamed as newline-delimited JSON (NDJSON). Each line is a self-contained JSON object representing an event.",
+        "tags": ["Runs"],
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "description": "Unique identifier of the run to search.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "q",
+            "in": "query",
+            "description": "The search term. Matches events where this string is contained in the output text, assertion message, function name, or test composer command.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "A stream of matching events in NDJSON format. Each line is a JSON object.",
+            "content": {
+              "application/x-ndjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Event"
                 }
               }
             }

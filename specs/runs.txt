@@ -38,9 +38,9 @@ stdout 'Run ID.*run-1'
 stdout 'Status.*completed'
 stdout 'Launcher.*nightly'
 
-# `snouty runs show --json` outputs JSON.
+# `snouty --json runs show` outputs JSON.
 mock-runs-server
-snouty runs show --json run-1
+snouty --json runs show run-1
 stdout '"run_id".*"run-1"'
 stdout '"status".*"completed"'
 
@@ -64,9 +64,9 @@ stdout 'Failing.*-200.*10\.0.*Counter value stays below limit'
 stdout 'Passing.*-400.*1\.0.*Setup completes'
 stdout 'Passing.*-300.*15\.0.*Counter value stays below limit'
 
-# `snouty runs properties --json` outputs JSON.
+# `snouty --json runs properties` outputs JSON.
 mock-runs-server
-snouty runs properties --json run-1
+snouty --json runs properties run-1
 stdout '"name".*"Counter value stays below limit"'
 stdout '"status".*"Failing"'
 
@@ -91,9 +91,9 @@ stdout '2025-03-20T02:01:12Z \[out\] Building image payments-service\.\.\.'
 stdout '2025-03-20T02:01:15Z \[err\] Warning: deprecated feature'
 stdout '2025-03-20T02:01:20Z \[out\] Build complete'
 
-# `snouty runs build-logs --json` outputs raw NDJSON.
+# `snouty --json runs build-logs` outputs raw NDJSON.
 mock-runs-server
-snouty runs build-logs --json run-1
+snouty --json runs build-logs run-1
 stdout '"timestamp".*"text"'
 
 # `snouty runs logs` outputs a table by default.
@@ -106,17 +106,17 @@ stdout '3\.0.*\[app:out\].*line one\\\\nline two'
 stdout '73\.94233945617452.*\[control:error\].*Post "http://10\.0\.1\.123:8003/"'
 stdout '311\.8487535319291.*\[control:assert\].*UNHIT AlwaysOrUnreachable "Counter'\''s value retrieved" @ control\.go:get:87'
 
-# `snouty runs logs --json` outputs raw NDJSON.
+# `snouty --json runs logs` outputs raw NDJSON.
 mock-runs-server
-snouty runs logs run-1 --input-hash -123 --vtime 1.0 --json
+snouty --json runs logs run-1 --input-hash -123 --vtime 1.0
 stdout 'output_text.*starting'
 stdout 'output_text.*slow request'
 stdout '"antithesis_assert".*"display_type":"AlwaysOrUnreachable"'
 
-# `snouty runs logs --json` emits a record whose output_text contains
+# `snouty --json runs logs` emits a record whose output_text contains
 # a JSON-escaped newline on a single output line.
 mock-runs-server
-snouty runs logs run-1 --input-hash -123 --vtime 1.0 --json
+snouty --json runs logs run-1 --input-hash -123 --vtime 1.0
 stdout -count=1 'line one\\nline two'
 
 # `snouty runs logs` requires --input-hash and --vtime.
@@ -130,9 +130,9 @@ snouty runs events run-1 request
 stdout 'INPUT HASH.*VTIME.*SOURCE.*OUTPUT'
 stdout '-456.*2\.0.*\[app:error\].*\{"level":"warn","msg":"slow request"\}'
 
-# `snouty runs events --json` outputs raw NDJSON.
+# `snouty --json runs events` outputs raw NDJSON.
 mock-runs-server
-snouty runs events --json run-1 counter
+snouty --json runs events run-1 counter
 stdout '"antithesis_assert".*"Counter'\''s value retrieved"'
 stdout '.*"moment".*"input_hash":"-4735081784258020614".*'
 stdout '.*"moment".*"vtime":"311\.8487535319291".*'

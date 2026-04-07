@@ -70,6 +70,7 @@ async fn main() -> Result<()> {
         .init();
     let cli = Cli::parse();
 
+    let json = cli.json;
     match cli.command {
         Commands::Launch(args) => {
             info!("launching test with webhook: {}", args.webhook);
@@ -80,7 +81,7 @@ async fn main() -> Result<()> {
             info!("launching test with webhook: {}", args.webhook);
             cmd_launch(args).await
         }
-        Commands::Runs { command } => snouty::runs::cmd_runs(command).await,
+        Commands::Runs { command } => snouty::runs::cmd_runs(command, json).await,
         Commands::Api(ApiCommands::Webhook {
             webhook,
             stdin,
@@ -101,7 +102,7 @@ async fn main() -> Result<()> {
             Ok(())
         }
         Commands::Update => cmd_update(),
-        Commands::Docs { offline, command } => docs::cmd_docs(command, offline).await,
+        Commands::Docs { offline, command } => docs::cmd_docs(command, offline, json).await,
     }
 }
 

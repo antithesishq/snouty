@@ -63,7 +63,7 @@ fn etag_path() -> Result<PathBuf> {
     Ok(cache_dir()?.join("docs.db.etag"))
 }
 
-pub async fn cmd_docs(command: DocsCommands, offline: bool) -> Result<()> {
+pub async fn cmd_docs(command: DocsCommands, offline: bool, json: bool) -> Result<()> {
     if !(offline || env_db_path_is_set()) {
         update_with_fallback().await?;
     }
@@ -73,7 +73,6 @@ pub async fn cmd_docs(command: DocsCommands, offline: bool) -> Result<()> {
     match command {
         DocsCommands::Search {
             query,
-            json,
             list,
             limit,
         } => {

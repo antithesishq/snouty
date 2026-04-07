@@ -18,22 +18,21 @@ use crate::cli::{RunsCommands, RunsListArgs};
 
 static ASSERTION_VALIDATOR: LazyLock<Validator> = LazyLock::new(build_assertion_validator);
 
-pub async fn cmd_runs(command: Option<RunsCommands>) -> Result<()> {
+pub async fn cmd_runs(command: Option<RunsCommands>, json: bool) -> Result<()> {
     match command {
         None => cmd_runs_list(RunsListArgs::default()).await,
         Some(RunsCommands::List(args)) => cmd_runs_list(args).await,
-        Some(RunsCommands::Show { run_id, json }) => cmd_runs_show(&run_id, json).await,
-        Some(RunsCommands::Properties { run_id, all, json }) => {
+        Some(RunsCommands::Show { run_id }) => cmd_runs_show(&run_id, json).await,
+        Some(RunsCommands::Properties { run_id, all }) => {
             cmd_runs_properties(&run_id, all, json).await
         }
-        Some(RunsCommands::BuildLogs { run_id, json }) => cmd_runs_build_logs(&run_id, json).await,
+        Some(RunsCommands::BuildLogs { run_id }) => cmd_runs_build_logs(&run_id, json).await,
         Some(RunsCommands::Logs {
             run_id,
             input_hash,
             vtime,
             begin_vtime,
             begin_input_hash,
-            json,
         }) => {
             cmd_runs_logs(
                 &run_id,
@@ -45,11 +44,9 @@ pub async fn cmd_runs(command: Option<RunsCommands>) -> Result<()> {
             )
             .await
         }
-        Some(RunsCommands::Events {
-            run_id,
-            json,
-            query,
-        }) => cmd_runs_events(&run_id, &query, json).await,
+        Some(RunsCommands::Events { run_id, query }) => {
+            cmd_runs_events(&run_id, &query, json).await
+        }
     }
 }
 

@@ -5,6 +5,10 @@ use clap::{Args, Parser, Subcommand};
 #[command(about = "CLI for the Antithesis API", long_about = None)]
 #[command(version)]
 pub struct Cli {
+    /// Output NDJSON where supported
+    #[arg(long, global = true)]
+    pub json: bool,
+
     #[command(subcommand)]
     pub command: Commands,
 }
@@ -178,10 +182,6 @@ Examples:
   snouty docs search "config image"
   snouty docs --offline search sdk setup"#)]
     Search {
-        /// Print search results as JSON
-        #[arg(short = 'j', long)]
-        json: bool,
-
         /// Print only matching page paths, one per line
         #[arg(short = 'l', long)]
         list: bool,
@@ -301,10 +301,6 @@ pub enum RunsCommands {
     Show {
         /// Run ID
         run_id: String,
-
-        /// Print output as JSON
-        #[arg(short = 'j', long)]
-        json: bool,
     },
 
     /// List property results for a run
@@ -315,20 +311,12 @@ pub enum RunsCommands {
         /// Include passing properties in addition to failing ones
         #[arg(long)]
         all: bool,
-
-        /// Print output as JSON
-        #[arg(short = 'j', long)]
-        json: bool,
     },
 
     /// Stream build logs for a run
     BuildLogs {
         /// Run ID
         run_id: String,
-
-        /// Print output as JSON
-        #[arg(short = 'j', long)]
-        json: bool,
     },
 
     /// Stream moment logs for a run
@@ -352,19 +340,12 @@ pub enum RunsCommands {
         #[arg(long, allow_hyphen_values = true)]
         begin_input_hash: Option<String>,
 
-        /// Print output as JSON
-        #[arg(short = 'j', long)]
-        json: bool,
     },
 
     /// Search events in a run
     Events {
         /// Run ID
         run_id: String,
-
-        /// Print output as JSON
-        #[arg(short = 'j', long)]
-        json: bool,
 
         /// Search query
         #[arg(required = true, num_args = 1..)]

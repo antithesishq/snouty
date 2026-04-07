@@ -19,7 +19,6 @@ pub async fn cmd_runs(command: Option<RunsCommands>) -> Result<()> {
             vtime,
             begin_vtime,
             begin_input_hash,
-            disable_default_log_filter,
             json,
         }) => {
             cmd_runs_logs(
@@ -28,7 +27,6 @@ pub async fn cmd_runs(command: Option<RunsCommands>) -> Result<()> {
                 &vtime,
                 begin_input_hash.as_deref(),
                 begin_vtime.as_deref(),
-                disable_default_log_filter,
                 json,
             )
             .await
@@ -137,16 +135,16 @@ fn print_run_detail(run: &RunDetail) {
 
     rows.push(("Launcher", run.launcher.clone()));
 
-    if let Some(ref links) = run.links {
-        if let Some(ref url) = links.triage_report {
-            rows.push(("Report", url.clone()));
-        }
+    if let Some(ref links) = run.links
+        && let Some(ref url) = links.triage_report
+    {
+        rows.push(("Report", url.clone()));
     }
 
-    if let Some(ref creator) = run.creator {
-        if let Some(ref name) = creator.name {
-            rows.push(("Creator", name.clone()));
-        }
+    if let Some(ref creator) = run.creator
+        && let Some(ref name) = creator.name
+    {
+        rows.push(("Creator", name.clone()));
     }
 
     let label_width = rows.iter().map(|(label, _)| label.len()).max().unwrap_or(0);
@@ -190,21 +188,13 @@ async fn cmd_runs_logs(
     vtime: &str,
     begin_input_hash: Option<&str>,
     begin_vtime: Option<&str>,
-    disable_default_log_filter: bool,
     json: bool,
 ) -> Result<()> {
     info!("streaming logs for run: {}", run_id);
 
     let api = AntithesisApi::from_env()?;
     let response = api
-        .get_run_logs(
-            run_id,
-            input_hash,
-            vtime,
-            begin_input_hash,
-            begin_vtime,
-            disable_default_log_filter,
-        )
+        .get_run_logs(run_id, input_hash, vtime, begin_input_hash, begin_vtime)
         .await?;
 
     let mut stdout = std::io::stdout().lock();
@@ -215,7 +205,7 @@ async fn cmd_runs_logs(
         })
         .await
     } else {
-        writeln!(stdout, "{:<22}  {:<20}  {}", "VTIME", "SOURCE", "OUTPUT")?;
+        writeln!(stdout, "{:<22}  {:<20}  OUTPUT", "VTIME", "SOURCE")?;
         stream_ndjson_lines(response, |line| {
             if let Ok(entry) = serde_json::from_str::<serde_json::Value>(line) {
                 let vtime = entry["moment"]["vtime"].as_str().unwrap_or("");

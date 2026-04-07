@@ -246,7 +246,6 @@ impl AntithesisApi {
         vtime: &str,
         begin_input_hash: Option<&str>,
         begin_vtime: Option<&str>,
-        disable_default_log_filter: bool,
     ) -> Result<reqwest::Response> {
         let url = format!("{}/api/{}/runs/{}/logs", self.base_url, API_VERSION, run_id);
         debug!("GET {}", url);
@@ -260,9 +259,6 @@ impl AntithesisApi {
         }
         if let Some(v) = begin_vtime {
             query.push(("begin_vtime", v.to_string()));
-        }
-        if disable_default_log_filter {
-            query.push(("disable_default_log_filter", "true".to_string()));
         }
 
         let response = self.http_client.get(url).query(&query).send().await?;
@@ -330,16 +326,16 @@ impl AntithesisApi {
             request = request.after(cursor);
         }
         if let Some(ref status) = opts.status {
-            request = request.status(status.clone());
+            request = request.status(*status);
         }
         if let Some(ref launcher) = opts.launcher {
             request = request.launcher(launcher.clone());
         }
         if let Some(ref ts) = opts.created_after {
-            request = request.created_after(ts.clone());
+            request = request.created_after(*ts);
         }
         if let Some(ref ts) = opts.created_before {
-            request = request.created_before(ts.clone());
+            request = request.created_before(*ts);
         }
 
         match request.send().await {

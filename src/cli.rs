@@ -335,10 +335,6 @@ pub enum RunsCommands {
         #[arg(long, allow_hyphen_values = true)]
         begin_input_hash: Option<String>,
 
-        /// Disable the default log filter
-        #[arg(long)]
-        disable_default_log_filter: bool,
-
         /// Print output as JSON
         #[arg(short = 'j', long)]
         json: bool,

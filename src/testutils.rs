@@ -380,7 +380,7 @@ fn mock_route(method: &str, path: &str, empty: bool) -> (u16, String, &'static s
     // Split path and query string
     let (path_part, query) = match path.split_once('?') {
         Some((p, q)) => (p, Some(q)),
-        None => (path.as_ref(), None),
+        None => (path, None),
     };
 
     let json = "application/json";
@@ -455,15 +455,15 @@ fn mock_route_list_runs(query: Option<&str>, empty: bool) -> (u16, String) {
 
     let mut runs = Vec::new();
     for &(id, status, type_, created, launcher) in &MOCK_RUNS[start..] {
-        if let Some(f) = status_filter {
-            if status != f {
-                continue;
-            }
+        if let Some(f) = status_filter
+            && status != f
+        {
+            continue;
         }
-        if let Some(f) = launcher_filter {
-            if launcher != f {
-                continue;
-            }
+        if let Some(f) = launcher_filter
+            && launcher != f
+        {
+            continue;
         }
         runs.push(format!(
             r#"{{"run_id":"{id}","status":"{status}","type":"{type_}","created_at":"{created}","launcher":"{launcher}"}}"#,

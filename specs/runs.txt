@@ -64,14 +64,18 @@ stdout '"timestamp".*"text"'
 mock-runs-server
 snouty runs logs run-1 --input-hash -123 --vtime 1.0
 stdout 'VTIME.*SOURCE.*OUTPUT'
-stdout '1\.0.*\[app:out\].*starting'
-stdout '2\.0.*\[app:error\].*slow request'
+stdout '1\.0.*\[app:out\].*\{"level":"info","msg":"starting"\}'
+stdout '2\.0.*\[app:error\].*\{"level":"warn","msg":"slow request"\}'
+stdout '3\.0.*\[app:out\].*line one\\\\nline two'
+stdout '73\.94233945617452.*\[control:error\].*Post "http://10\.0\.1\.123:8003/"'
+stdout '311\.8487535319291.*\[control:assert\].*UNHIT AlwaysOrUnreachable "Counter'\''s value retrieved" @ control\.go:get:87'
 
 # `snouty runs logs --json` outputs raw NDJSON.
 mock-runs-server
 snouty runs logs run-1 --input-hash -123 --vtime 1.0 --json
 stdout 'output_text.*starting'
 stdout 'output_text.*slow request'
+stdout '"antithesis_assert".*"display_type":"AlwaysOrUnreachable"'
 
 # `snouty runs logs --json` emits a record whose output_text contains
 # a JSON-escaped newline on a single output line.

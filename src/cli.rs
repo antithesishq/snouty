@@ -60,8 +60,11 @@ Examples:
   snouty runs
   snouty runs list --status completed --launcher nightly
   snouty runs show <run_id>
+  snouty runs properties <run_id>
+  snouty runs properties --all <run_id>
   snouty runs build-logs <run_id>
-  snouty runs logs <run_id> --input-hash <hash> --vtime <vtime>"#,
+  snouty runs logs <run_id> --input-hash <hash> --vtime <vtime>
+  snouty runs events <run_id> <query>"#,
         subcommand_required = false
     )]
     Runs {
@@ -304,6 +307,20 @@ pub enum RunsCommands {
         json: bool,
     },
 
+    /// List property results for a run
+    Properties {
+        /// Run ID
+        run_id: String,
+
+        /// Include passing properties in addition to failing ones
+        #[arg(long)]
+        all: bool,
+
+        /// Print output as JSON
+        #[arg(short = 'j', long)]
+        json: bool,
+    },
+
     /// Stream build logs for a run
     BuildLogs {
         /// Run ID
@@ -338,6 +355,20 @@ pub enum RunsCommands {
         /// Print output as JSON
         #[arg(short = 'j', long)]
         json: bool,
+    },
+
+    /// Search events in a run
+    Events {
+        /// Run ID
+        run_id: String,
+
+        /// Print output as JSON
+        #[arg(short = 'j', long)]
+        json: bool,
+
+        /// Search query
+        #[arg(required = true, num_args = 1..)]
+        query: Vec<String>,
     },
 }
 

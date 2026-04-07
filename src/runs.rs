@@ -9,7 +9,11 @@ use log::info;
 use serde::Deserialize;
 use serde_json::Value;
 
-use crate::api::{AntithesisApi, RunDetail, RunStatus, RunSummary, RunsFilterOptions};
+use crate::api::{
+    AntithesisApi, Property, PropertyStatus, RunDetail, RunStatus, RunSummary, RunsFilterOptions,
+};
+#[cfg(test)]
+use crate::api::{Event, Moment};
 use crate::cli::{RunsCommands, RunsListArgs};
 
 static ASSERTION_VALIDATOR: LazyLock<Validator> = LazyLock::new(build_assertion_validator);
@@ -19,6 +23,9 @@ pub async fn cmd_runs(command: Option<RunsCommands>) -> Result<()> {
         None => cmd_runs_list(RunsListArgs::default()).await,
         Some(RunsCommands::List(args)) => cmd_runs_list(args).await,
         Some(RunsCommands::Show { run_id, json }) => cmd_runs_show(&run_id, json).await,
+        Some(RunsCommands::Properties { run_id, all, json }) => {
+            cmd_runs_properties(&run_id, all, json).await
+        }
         Some(RunsCommands::BuildLogs { run_id, json }) => cmd_runs_build_logs(&run_id, json).await,
         Some(RunsCommands::Logs {
             run_id,
@@ -38,6 +45,11 @@ pub async fn cmd_runs(command: Option<RunsCommands>) -> Result<()> {
             )
             .await
         }
+        Some(RunsCommands::Events {
+            run_id,
+            json,
+            query,
+        }) => cmd_runs_events(&run_id, &query, json).await,
     }
 }
 
@@ -121,6 +133,38 @@ async fn cmd_runs_show(run_id: &str, json: bool) -> Result<()> {
     Ok(())
 }
 
+async fn cmd_runs_properties(run_id: &str, all: bool, json: bool) -> Result<()> {
+    info!("listing properties for run: {}", run_id);
+
+    let api = AntithesisApi::from_env()?;
+    let mut properties = api
+        .stream_run_properties(run_id, all)
+        .try_collect::<Vec<_>>()
+        .await?;
+
+    if json {
+        properties.sort_by(|a, b| {
+            property_status_rank(a.status)
+                .cmp(&property_status_rank(b.status))
+                .then(a.name.cmp(&b.name))
+        });
+        for property in &properties {
+            println!("{}", serde_json::to_string(property)?);
+        }
+    } else if properties.is_empty() {
+        println!("No properties found.");
+    } else {
+        let rows = flatten_property_events(&properties);
+        if rows.is_empty() {
+            println!("No sampled property events found.");
+        } else {
+            println!("{}", render_property_events_table(&rows));
+        }
+    }
+
+    Ok(())
+}
+
 fn print_run_detail(run: &RunDetail) {
     let mut rows: Vec<(&str, String)> = vec![
         ("Run ID", run.run_id.clone()),
@@ -189,6 +233,56 @@ async fn cmd_runs_build_logs(run_id: &str, json: bool) -> Result<()> {
     }
 }
 
+async fn cmd_runs_events(run_id: &str, query: &[String], json: bool) -> Result<()> {
+    info!("searching events for run: {}", run_id);
+
+    let api = AntithesisApi::from_env()?;
+    let response = api.search_run_events(run_id, &query.join(" ")).await?;
+
+    let mut stdout = std::io::stdout().lock();
+    if json {
+        stream_ndjson_lines(response, |line| {
+            writeln!(stdout, "{line}")?;
+            Ok(())
+        })
+        .await
+    } else {
+        let mut saw_rows = false;
+        stream_ndjson_lines(response, |line| {
+            if !saw_rows {
+                writeln!(
+                    stdout,
+                    "{:<22}  {:<22}  {:<20}  OUTPUT",
+                    "INPUT HASH", "VTIME", "SOURCE"
+                )?;
+                saw_rows = true;
+            }
+
+            if let Ok(entry) = serde_json::from_str::<Value>(line) {
+                let rendered = render_event_entry(&entry);
+                let input_hash = rendered.input_hash;
+                let vtime = rendered.vtime;
+                let source = rendered.source;
+                let output = rendered.output;
+                writeln!(
+                    stdout,
+                    "{input_hash:<22}  {vtime:<22}  {source:<20}  {output}"
+                )?;
+            } else {
+                writeln!(stdout, "{:<22}  {:<22}  {:<20}  {line}", "", "", "")?;
+            }
+            Ok(())
+        })
+        .await?;
+
+        if !saw_rows {
+            writeln!(stdout, "No matching events found.")?;
+        }
+
+        Ok(())
+    }
+}
+
 async fn cmd_runs_logs(
     run_id: &str,
     input_hash: &str,
@@ -215,7 +309,7 @@ async fn cmd_runs_logs(
         writeln!(stdout, "{:<22}  {:<20}  OUTPUT", "VTIME", "SOURCE")?;
         stream_ndjson_lines(response, |line| {
             if let Ok(entry) = serde_json::from_str::<Value>(line) {
-                let rendered = render_log_entry(&entry);
+                let rendered = render_event_entry(&entry);
                 let vtime = rendered.vtime;
                 let source = rendered.source;
                 let output = rendered.output;
@@ -292,7 +386,8 @@ fn build_assertion_validator() -> Validator {
 }
 
 #[derive(Debug, PartialEq, Eq)]
-struct RenderedLogEntry {
+struct RenderedEventEntry {
+    input_hash: String,
     vtime: String,
     source: String,
     output: String,
@@ -385,23 +480,37 @@ impl TryFrom<AssertionPayload> for AssertionSummary {
     }
 }
 
-fn render_log_entry(entry: &Value) -> RenderedLogEntry {
+fn render_event_entry(entry: &Value) -> RenderedEventEntry {
+    let input_hash = entry["moment"]["input_hash"]
+        .as_str()
+        .unwrap_or("")
+        .to_string();
     let vtime = entry["moment"]["vtime"].as_str().unwrap_or("").to_string();
     let container = entry["source"]["container"].as_str().unwrap_or("");
     let stream = entry["source"]["stream"].as_str().unwrap_or("");
 
     if let Some(summary) = parse_assertion_summary(entry) {
-        return RenderedLogEntry {
+        return RenderedEventEntry {
+            input_hash,
             vtime,
             source: render_source(container, Some("assert")),
             output: render_assertion_summary(&summary),
         };
     }
 
-    RenderedLogEntry {
+    RenderedEventEntry {
+        input_hash,
         vtime,
         source: render_source(container, (!stream.is_empty()).then_some(stream)),
-        output: sanitize(entry["output_text"].as_str().unwrap_or("")),
+        output: render_event_output(entry),
+    }
+}
+
+fn render_event_output(entry: &Value) -> String {
+    if let Some(output_text) = entry.get("output_text").and_then(Value::as_str) {
+        sanitize(output_text)
+    } else {
+        sanitize(&serde_json::to_string(entry).unwrap_or_default())
     }
 }
 
@@ -511,20 +620,88 @@ fn render_runs_table(runs: &[RunSummary]) -> String {
         })
         .collect::<Vec<_>>();
 
+    render_table(&headers, &rows)
+}
+
+struct PropertyEventRow<'a> {
+    example: &'static str,
+    hash: &'a str,
+    vtime: &'a str,
+    name: &'a str,
+}
+
+fn flatten_property_events(properties: &[Property]) -> Vec<PropertyEventRow<'_>> {
+    let mut rows = Vec::new();
+    for property in properties {
+        for event in &property.counter_examples {
+            rows.push(PropertyEventRow {
+                example: "Failing",
+                hash: &event.moment.input_hash,
+                vtime: &event.moment.vtime,
+                name: &property.name,
+            });
+        }
+        for event in &property.examples {
+            rows.push(PropertyEventRow {
+                example: "Passing",
+                hash: &event.moment.input_hash,
+                vtime: &event.moment.vtime,
+                name: &property.name,
+            });
+        }
+    }
+    rows.sort_by(|a, b| {
+        example_rank(a.example)
+            .cmp(&example_rank(b.example))
+            .then(a.vtime.cmp(b.vtime))
+            .then(a.hash.cmp(b.hash))
+    });
+    rows
+}
+
+fn example_rank(example: &str) -> u8 {
+    match example {
+        "Failing" => 0,
+        _ => 1,
+    }
+}
+
+fn render_property_events_table(rows: &[PropertyEventRow]) -> String {
+    let headers = vec![
+        "EXAMPLE".to_string(),
+        "HASH".to_string(),
+        "VTIME".to_string(),
+        "NAME".to_string(),
+    ];
+    let table_rows = rows
+        .iter()
+        .map(|row| {
+            vec![
+                row.example.to_string(),
+                sanitize(row.hash),
+                sanitize(row.vtime),
+                sanitize(row.name),
+            ]
+        })
+        .collect::<Vec<_>>();
+    render_table(&headers, &table_rows)
+}
+
+fn render_table(headers: &[String], rows: &[Vec<String>]) -> String {
     let mut widths = headers
         .iter()
         .map(|header| header.len())
         .collect::<Vec<_>>();
-    for row in &rows {
+    for row in rows {
         for (index, cell) in row.iter().enumerate() {
             widths[index] = widths[index].max(cell.len());
         }
     }
 
     let mut output = String::new();
-    push_table_row(&mut output, &headers, &widths);
+    push_table_row(&mut output, headers, &widths);
     for row in rows {
-        push_table_row(&mut output, &row, &widths);
+        push_table_row(&mut output, row, &widths);
     }
 
     output.trim_end().to_string()
@@ -538,6 +715,13 @@ fn push_table_row(output: &mut String, row: &[String], widths: &[usize]) {
         output.push_str(&format!("{cell:<width$}", width = widths[index]));
     }
     output.push('\n');
+}
+
+fn property_status_rank(status: PropertyStatus) -> u8 {
+    match status {
+        PropertyStatus::Failing => 0,
+        PropertyStatus::Passing => 1,
+    }
 }
 
 fn sanitize(s: &str) -> String {
@@ -598,8 +782,9 @@ mod tests {
         });
 
         assert_eq!(
-            render_log_entry(&entry),
-            RenderedLogEntry {
+            render_event_entry(&entry),
+            RenderedEventEntry {
+                input_hash: "-4735081784258020614".to_string(),
                 vtime: "311.8487535319291".to_string(),
                 source: "[control:assert]".to_string(),
                 output:
@@ -623,8 +808,9 @@ mod tests {
         });
 
         assert_eq!(
-            render_log_entry(&entry),
-            RenderedLogEntry {
+            render_event_entry(&entry),
+            RenderedEventEntry {
+                input_hash: "".to_string(),
                 vtime: "1.0".to_string(),
                 source: "[app:out]".to_string(),
                 output: "starting".to_string(),
@@ -646,8 +832,9 @@ mod tests {
         });
 
         assert_eq!(
-            render_log_entry(&entry),
-            RenderedLogEntry {
+            render_event_entry(&entry),
+            RenderedEventEntry {
+                input_hash: "".to_string(),
                 vtime: "5.0".to_string(),
                 source: "[control]".to_string(),
                 output: "raw log line".to_string(),
@@ -700,6 +887,90 @@ mod tests {
     #[test]
     fn source_without_stream_omits_trailing_colon() {
         assert_eq!(render_source("control", None), "[control]");
+    }
+
+    fn event(input_hash: &str, vtime: &str) -> Event {
+        Event {
+            moment: Moment {
+                input_hash: input_hash.to_string(),
+                vtime: vtime.to_string(),
+            },
+        }
+    }
+
+    #[test]
+    fn renders_flattened_property_events_table() {
+        let properties = vec![
+            Property {
+                counter_example_count: Some(3),
+                counter_examples: vec![event("-100", "5.0"), event("-200", "10.0")],
+                description: None,
+                example_count: Some(12),
+                examples: vec![event("-300", "15.0")],
+                group: Some("Safety".to_string()),
+                is_event: true,
+                is_existential: false,
+                is_group: None,
+                is_universal: true,
+                name: "Counter value stays below limit".to_string(),
+                status: PropertyStatus::Failing,
+            },
+            Property {
+                counter_example_count: Some(0),
+                counter_examples: Vec::new(),
+                description: None,
+                example_count: Some(1),
+                examples: vec![event("-400", "1.0")],
+                group: None,
+                is_event: false,
+                is_existential: true,
+                is_group: None,
+                is_universal: false,
+                name: "Setup completes".to_string(),
+                status: PropertyStatus::Passing,
+            },
+        ];
+
+        let rows = flatten_property_events(&properties);
+        let table = render_property_events_table(&rows);
+
+        assert!(table.contains("EXAMPLE"));
+        assert!(table.contains("HASH"));
+        assert!(table.contains("VTIME"));
+        assert!(table.contains("NAME"));
+
+        let lines: Vec<&str> = table.lines().collect();
+        // Header + 2 Failing rows + 2 Passing rows = 5 lines
+        assert_eq!(lines.len(), 5);
+
+        // Failing rows come first, sorted by vtime (lexicographic: "10.0" < "5.0")
+        assert!(lines[1].contains("Failing") && lines[1].contains("-200") && lines[1].contains("10.0") && lines[1].contains("Counter value stays below limit"));
+        assert!(lines[2].contains("Failing") && lines[2].contains("-100") && lines[2].contains("5.0") && lines[2].contains("Counter value stays below limit"));
+
+        // Passing rows come after, sorted by vtime (lexicographic: "1.0" < "15.0")
+        assert!(lines[3].contains("Passing") && lines[3].contains("-400") && lines[3].contains("1.0") && lines[3].contains("Setup completes"));
+        assert!(lines[4].contains("Passing") && lines[4].contains("-300") && lines[4].contains("15.0") && lines[4].contains("Counter value stays below limit"));
+    }
+
+    #[test]
+    fn flatten_returns_empty_when_no_sampled_events() {
+        let properties = vec![Property {
+            counter_example_count: Some(0),
+            counter_examples: Vec::new(),
+            description: None,
+            example_count: Some(0),
+            examples: Vec::new(),
+            group: None,
+            is_event: false,
+            is_existential: false,
+            is_group: None,
+            is_universal: true,
+            name: "No events property".to_string(),
+            status: PropertyStatus::Passing,
+        }];
+
+        let rows = flatten_property_events(&properties);
+        assert!(rows.is_empty());
     }
 
     #[test]

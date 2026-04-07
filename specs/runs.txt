@@ -48,6 +48,42 @@ stdout '"status".*"completed"'
 ! snouty runs show
 stderr '.*'
 
+# `snouty runs properties` shows failing properties by default as flattened event rows.
+mock-runs-server
+snouty runs properties run-1
+stdout 'EXAMPLE.*HASH.*VTIME.*NAME'
+stdout 'Failing.*-100.*5\.0.*Counter value stays below limit'
+stdout 'Failing.*-200.*10\.0.*Counter value stays below limit'
+stdout 'Passing.*-300.*15\.0.*Counter value stays below limit'
+
+# `snouty runs properties --all` includes passing properties too.
+mock-runs-server
+snouty runs properties --all run-1
+stdout 'Failing.*-100.*5\.0.*Counter value stays below limit'
+stdout 'Failing.*-200.*10\.0.*Counter value stays below limit'
+stdout 'Passing.*-400.*1\.0.*Setup completes'
+stdout 'Passing.*-300.*15\.0.*Counter value stays below limit'
+
+# `snouty runs properties --json` outputs JSON.
+mock-runs-server
+snouty runs properties --json run-1
+stdout '"name".*"Counter value stays below limit"'
+stdout '"status".*"Failing"'
+
+# `snouty runs properties` prints a friendly empty-state message when no properties exist.
+mock-runs-server
+snouty runs properties run-empty
+stdout 'No properties found\.'
+
+# `snouty runs properties` prints a friendly message when properties exist but have no sampled events.
+mock-runs-server
+snouty runs properties run-no-events
+stdout 'No sampled property events found\.'
+
+# `snouty runs properties` requires a run ID.
+! snouty runs properties
+stderr '.*'
+
 # `snouty runs build-logs` streams formatted build log lines.
 mock-runs-server
 snouty runs build-logs run-1
@@ -87,3 +123,26 @@ stdout -count=1 'line one\\nline two'
 mock-runs-server
 ! snouty runs logs run-1
 stderr '.*input.hash.*'
+
+# `snouty runs events` outputs a table by default.
+mock-runs-server
+snouty runs events run-1 request
+stdout 'INPUT HASH.*VTIME.*SOURCE.*OUTPUT'
+stdout '-456.*2\.0.*\[app:error\].*\{"level":"warn","msg":"slow request"\}'
+
+# `snouty runs events --json` outputs raw NDJSON.
+mock-runs-server
+snouty runs events --json run-1 counter
+stdout '"antithesis_assert".*"Counter'\''s value retrieved"'
+stdout '.*"moment".*"input_hash":"-4735081784258020614".*'
+stdout '.*"moment".*"vtime":"311\.8487535319291".*'
+
+# `snouty runs events` prints a friendly empty-state message.
+mock-runs-server
+snouty runs events run-1 nomatch
+stdout 'No matching events found\.'
+
+# `snouty runs events` requires a query.
+mock-runs-server
+! snouty runs events run-1
+stderr '.*'

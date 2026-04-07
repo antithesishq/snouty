@@ -399,6 +399,12 @@ fn mock_route(method: &str, path: &str, empty: bool) -> (u16, String, &'static s
             } else if let Some(run_id) = rest.strip_suffix("/logs") {
                 let (s, b) = mock_route_get_run_logs(run_id);
                 (s, b, ndjson)
+            } else if let Some(run_id) = rest.strip_suffix("/properties") {
+                let (s, b) = mock_route_list_run_properties(run_id, query);
+                (s, b, json)
+            } else if let Some(run_id) = rest.strip_suffix("/search") {
+                let (s, b) = mock_route_search_run_events(run_id, query);
+                (s, b, ndjson)
             } else {
                 let (s, b) = mock_route_get_run(rest);
                 (s, b, json)
@@ -519,6 +525,71 @@ fn mock_route_get_run_logs(_run_id: &str) -> (u16, String) {
         r#"{"antithesis_assert":{"assert_type":"always","condition":false,"details":null,"display_type":"AlwaysOrUnreachable","hit":false,"id":"Counter's value retrieved","location":{"begin_column":0,"begin_line":87,"class":"","file":"/go/src/antithesis/control/control.go","function":"get"},"message":"Counter's value retrieved","must_hit":false},"IPT_bytes_out":1837376,"source":{"container":"control","name":"control","pid":1},"moment":{"input_hash":"-4735081784258020614","vtime":"311.8487535319291"}}"#,
     ];
     (200, lines.join("\n") + "\n")
+}
+
+fn mock_route_list_run_properties(run_id: &str, query: Option<&str>) -> (u16, String) {
+    if run_id == "run-empty" {
+        return (200, r#"{"data":[],"next_cursor":null}"#.to_string());
+    }
+
+    if run_id == "run-no-events" {
+        return (
+            200,
+            r#"{"data":[{"name":"No events property","status":"Passing","is_event":false,"is_existential":false,"is_universal":true,"example_count":0,"counter_example_count":0}],"next_cursor":null}"#.to_string(),
+        );
+    }
+
+    let include_passing = matches!(
+        mock_query_param(query, "include_passing_properties"),
+        Some("true")
+    );
+    let after = mock_query_param(query, "after");
+
+    let mut properties = vec![
+        r#"{"name":"Counter value stays below limit","description":"Counter stays within safe bounds","status":"Failing","is_event":true,"is_existential":false,"is_universal":true,"group":"Safety","example_count":12,"counter_example_count":3,"examples":[{"moment":{"input_hash":"-300","vtime":"15.0"}}],"counter_examples":[{"moment":{"input_hash":"-100","vtime":"5.0"}},{"moment":{"input_hash":"-200","vtime":"10.0"}}]}"#.to_string(),
+    ];
+    if include_passing {
+        properties.push(
+            r#"{"name":"Setup completes","description":"Setup eventually succeeds","status":"Passing","is_event":false,"is_existential":true,"is_universal":false,"example_count":1,"counter_example_count":0,"examples":[{"moment":{"input_hash":"-400","vtime":"1.0"}}]}"#.to_string(),
+        );
+    }
+
+    let (data, next_cursor) = if include_passing && after.is_none() {
+        (vec![properties[0].clone()], Some("props-cursor-1"))
+    } else if include_passing && after == Some("props-cursor-1") {
+        (vec![properties[1].clone()], None)
+    } else {
+        (properties, None)
+    };
+
+    let data_json = data.join(",");
+    let cursor_json = match next_cursor {
+        Some(cursor) => format!("\"{cursor}\""),
+        None => "null".to_string(),
+    };
+    (
+        200,
+        format!(r#"{{"data":[{data_json}],"next_cursor":{cursor_json}}}"#),
+    )
+}
+
+fn mock_route_search_run_events(run_id: &str, query: Option<&str>) -> (u16, String) {
+    let Some(query) = mock_query_param(query, "q") else {
+        return (400, r#"{"message":"missing q"}"#.to_string());
+    };
+
+    let (_, logs) = mock_route_get_run_logs(run_id);
+    let query = query.to_ascii_lowercase();
+    let matches = logs
+        .lines()
+        .filter(|line| line.to_ascii_lowercase().contains(&query))
+        .collect::<Vec<_>>();
+
+    if matches.is_empty() {
+        (200, String::new())
+    } else {
+        (200, matches.join("\n") + "\n")
+    }
 }
 
 fn mock_route_launch() -> (u16, String) {

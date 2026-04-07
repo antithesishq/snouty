@@ -17,7 +17,10 @@ mod generated {
     include!(concat!(env!("OUT_DIR"), "/antithesis_api.rs"));
 }
 
-pub use generated::types::{BuildLogLine, LaunchResponse, RunDetail, RunStatus, RunSummary};
+pub use generated::types::{
+    BuildLogLine, Event, LaunchResponse, Moment, Property, PropertyStatus, RunDetail, RunStatus,
+    RunSummary,
+};
 pub use progenitor_client::ByteStream;
 
 const API_VERSION: &str = "v1";
@@ -272,6 +275,70 @@ impl AntithesisApi {
         }
     }
 
+    pub fn stream_run_properties(
+        &self,
+        run_id: &str,
+        include_passing_properties: bool,
+    ) -> impl futures_util::Stream<Item = Result<Property>> + '_ {
+        stream::try_unfold(
+            RunPropertyStreamState {
+                api: self,
+                run_id: run_id.to_string(),
+                include_passing_properties,
+                after: None,
+                buffered_properties: VecDeque::new(),
+                finished: false,
+            },
+            |mut state| async move {
+                loop {
+                    if let Some(property) = state.buffered_properties.pop_front() {
+                        return Ok(Some((property, state)));
+                    }
+
+                    if state.finished {
+                        return Ok(None);
+                    }
+
+                    let page = state
+                        .api
+                        .fetch_run_properties_page(
+                            &state.run_id,
+                            state.after.as_deref(),
+                            state.include_passing_properties,
+                        )
+                        .await?;
+                    let generated::types::PropertyListResponse { data, next_cursor } = page;
+                    state.buffered_properties = data.into();
+                    state.finished = next_cursor.is_none();
+                    state.after = next_cursor;
+                }
+            },
+        )
+    }
+
+    pub async fn search_run_events(&self, run_id: &str, query: &str) -> Result<reqwest::Response> {
+        let url = format!(
+            "{}/api/{}/runs/{}/search",
+            self.base_url, API_VERSION, run_id
+        );
+        debug!("GET {}", url);
+
+        let response = self
+            .http_client
+            .get(url)
+            .query(&[("q", query)])
+            .send()
+            .await?;
+
+        let status = response.status();
+        if status.is_success() {
+            Ok(response)
+        } else {
+            let body = response.text().await.unwrap_or_default();
+            Err(eyre!("API error: {} - {}", status.as_u16(), body))
+        }
+    }
+
     pub fn stream_runs_filtered(
         &self,
         opts: &RunsFilterOptions,
@@ -343,6 +410,29 @@ impl AntithesisApi {
             Err(err) => Err(format_api_client_error(err).await),
         }
     }
+
+    async fn fetch_run_properties_page(
+        &self,
+        run_id: &str,
+        after: Option<&str>,
+        include_passing_properties: bool,
+    ) -> Result<generated::types::PropertyListResponse> {
+        let mut request = self
+            .client
+            .list_run_properties()
+            .version(API_VERSION)
+            .run_id(run_id)
+            .include_passing_properties(include_passing_properties)
+            .limit(100_u64);
+        if let Some(cursor) = after {
+            request = request.after(cursor);
+        }
+
+        match request.send().await {
+            Ok(response) => Ok(response.into_inner()),
+            Err(err) => Err(format_api_client_error(err).await),
+        }
+    }
 }
 
 #[derive(Clone, Default)]
@@ -365,6 +455,15 @@ struct FilteredRunStreamState<'a> {
     opts: RunsFilterOptions,
     after: Option<String>,
     buffered_runs: VecDeque<RunSummary>,
+    finished: bool,
+}
+
+struct RunPropertyStreamState<'a> {
+    api: &'a AntithesisApi,
+    run_id: String,
+    include_passing_properties: bool,
+    after: Option<String>,
+    buffered_properties: VecDeque<Property>,
     finished: bool,
 }
 
@@ -620,6 +719,137 @@ mod tests {
         let runs = api.stream_runs().try_collect::<Vec<_>>().await.unwrap();
 
         assert!(runs.is_empty());
+    }
+
+    #[tokio::test]
+    async fn stream_run_properties_follows_next_cursor() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/api/v1/runs/run-1/properties"))
+            .and(query_param("limit", "100"))
+            .and(query_param("include_passing_properties", "true"))
+            .and(query_param_is_missing("after"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "data": [
+                    {
+                        "name": "Counter value stays below limit",
+                        "status": "Failing",
+                        "is_event": true,
+                        "is_existential": false,
+                        "is_universal": true
+                    }
+                ],
+                "next_cursor": "props-cursor-1"
+            })))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        Mock::given(method("GET"))
+            .and(path("/api/v1/runs/run-1/properties"))
+            .and(query_param("limit", "100"))
+            .and(query_param("include_passing_properties", "true"))
+            .and(query_param("after", "props-cursor-1"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "data": [
+                    {
+                        "name": "Setup completes",
+                        "status": "Passing",
+                        "is_event": false,
+                        "is_existential": true,
+                        "is_universal": false
+                    }
+                ],
+                "next_cursor": null
+            })))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let config = Config::new(
+            Auth::basic("user".to_string(), "pass".to_string()),
+            "tenant".to_string(),
+        );
+        let api = AntithesisApi::with_base_url(config, mock_server.uri()).unwrap();
+
+        let properties = api
+            .stream_run_properties("run-1", true)
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+
+        let names = properties
+            .into_iter()
+            .map(|property| property.name)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            names,
+            vec![
+                "Counter value stays below limit".to_string(),
+                "Setup completes".to_string()
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn stream_run_properties_requests_failures_only_by_default() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/api/v1/runs/run-1/properties"))
+            .and(query_param("limit", "100"))
+            .and(query_param("include_passing_properties", "false"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "data": [],
+                "next_cursor": null
+            })))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let config = Config::new(
+            Auth::basic("user".to_string(), "pass".to_string()),
+            "tenant".to_string(),
+        );
+        let api = AntithesisApi::with_base_url(config, mock_server.uri()).unwrap();
+
+        let properties = api
+            .stream_run_properties("run-1", false)
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+
+        assert!(properties.is_empty());
+    }
+
+    #[tokio::test]
+    async fn search_run_events_passes_query_through() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/api/v1/runs/run-1/search"))
+            .and(query_param("q", "slow request"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(
+                r#"{"output_text":"{\"level\":\"warn\",\"msg\":\"slow request\"}","moment":{"input_hash":"-456","vtime":"2.0"}}"#,
+            ))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let config = Config::new(
+            Auth::basic("user".to_string(), "pass".to_string()),
+            "tenant".to_string(),
+        );
+        let api = AntithesisApi::with_base_url(config, mock_server.uri()).unwrap();
+
+        let response = api
+            .search_run_events("run-1", "slow request")
+            .await
+            .unwrap();
+        let body = response.text().await.unwrap();
+
+        assert!(body.contains("slow request"));
     }
 
     #[test]

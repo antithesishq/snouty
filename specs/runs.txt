@@ -127,7 +127,7 @@ stderr '.*input.hash.*'
 # `snouty runs events` outputs a table by default.
 mock-runs-server
 snouty runs events run-1 request
-stdout 'INPUT HASH.*VTIME.*SOURCE.*OUTPUT'
+stdout '^HASH\s+VTIME\s+SOURCE\s+OUTPUT'
 stdout '-456.*2\.0.*\[app:error\].*\{"level":"warn","msg":"slow request"\}'
 
 # `snouty --json runs events` outputs raw NDJSON.

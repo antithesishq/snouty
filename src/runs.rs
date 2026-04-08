@@ -255,7 +255,7 @@ async fn cmd_runs_events(run_id: &str, query: &[String], json: bool) -> Result<(
                 writeln!(
                     stdout,
                     "{:<22}  {:<22}  {:<20}  OUTPUT",
-                    "INPUT HASH", "VTIME", "SOURCE"
+                    "HASH", "VTIME", "SOURCE"
                 )?;
                 saw_rows = true;
             }
@@ -946,12 +946,32 @@ mod tests {
         assert_eq!(lines.len(), 5);
 
         // Failing rows come first, sorted by vtime (lexicographic: "10.0" < "5.0")
-        assert!(lines[1].contains("Failing") && lines[1].contains("-200") && lines[1].contains("10.0") && lines[1].contains("Counter value stays below limit"));
-        assert!(lines[2].contains("Failing") && lines[2].contains("-100") && lines[2].contains("5.0") && lines[2].contains("Counter value stays below limit"));
+        assert!(
+            lines[1].contains("Failing")
+                && lines[1].contains("-200")
+                && lines[1].contains("10.0")
+                && lines[1].contains("Counter value stays below limit")
+        );
+        assert!(
+            lines[2].contains("Failing")
+                && lines[2].contains("-100")
+                && lines[2].contains("5.0")
+                && lines[2].contains("Counter value stays below limit")
+        );
 
         // Passing rows come after, grouped by property (Counter value first, then Setup completes)
-        assert!(lines[3].contains("Passing") && lines[3].contains("-300") && lines[3].contains("15.0") && lines[3].contains("Counter value stays below limit"));
-        assert!(lines[4].contains("Passing") && lines[4].contains("-400") && lines[4].contains("1.0") && lines[4].contains("Setup completes"));
+        assert!(
+            lines[3].contains("Passing")
+                && lines[3].contains("-300")
+                && lines[3].contains("15.0")
+                && lines[3].contains("Counter value stays below limit")
+        );
+        assert!(
+            lines[4].contains("Passing")
+                && lines[4].contains("-400")
+                && lines[4].contains("1.0")
+                && lines[4].contains("Setup completes")
+        );
     }
 
     #[test]

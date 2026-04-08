@@ -71,11 +71,7 @@ pub async fn cmd_docs(command: DocsCommands, offline: bool, json: bool) -> Resul
     ensure_docs_db_available(offline)?;
 
     match command {
-        DocsCommands::Search {
-            query,
-            list,
-            limit,
-        } => {
+        DocsCommands::Search { query, list, limit } => {
             if query.is_empty() {
                 bail!("search query required");
             }

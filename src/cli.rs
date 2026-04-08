@@ -339,7 +339,6 @@ pub enum RunsCommands {
         /// Start streaming from this input hash (must be paired with --begin-vtime)
         #[arg(long, allow_hyphen_values = true)]
         begin_input_hash: Option<String>,
-
     },
 
     /// Search events in a run

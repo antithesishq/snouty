@@ -51,18 +51,18 @@ stderr '.*'
 # `snouty runs properties` shows failing properties by default as flattened event rows.
 mock-runs-server
 snouty runs properties run-1
-stdout 'EXAMPLE.*HASH.*VTIME.*NAME'
-stdout 'Failing.*-100.*5\.0.*Counter value stays below limit'
-stdout 'Failing.*-200.*10\.0.*Counter value stays below limit'
-stdout 'Passing.*-300.*15\.0.*Counter value stays below limit'
+stdout 'EXAMPLE.*MOMENT.*NAME'
+stdout 'Failing.*Fa84QWiAxKy2RNvUNjFJwm.*Counter value stays below limit'
+stdout 'Failing.*Fa84QWiAxKOaZBZOzDzEfI.*Counter value stays below limit'
+stdout 'Passing.*Fa84QWiAxJp8gzDJaij9No.*Counter value stays below limit'
 
 # `snouty runs properties --all` includes passing properties too.
 mock-runs-server
 snouty runs properties --all run-1
-stdout 'Failing.*-100.*5\.0.*Counter value stays below limit'
-stdout 'Failing.*-200.*10\.0.*Counter value stays below limit'
-stdout 'Passing.*-300.*15\.0.*Counter value stays below limit'
-stdout 'Passing.*-400.*1\.0.*Setup completes'
+stdout 'Failing.*Fa84QWiAxKy2RNvUNjFJwm.*Counter value stays below limit'
+stdout 'Failing.*Fa84QWiAxKOaZBZOzDzEfI.*Counter value stays below limit'
+stdout 'Passing.*Fa84QWiAxJp8gzDJaij9No.*Counter value stays below limit'
+stdout 'Passing.*Fa84QWiAxJFgomrCl8pPP6.*Setup completes'
 
 # `snouty --json runs properties` outputs JSON.
 mock-runs-server
@@ -98,7 +98,7 @@ stdout '"timestamp".*"text"'
 
 # `snouty runs logs` outputs a table by default.
 mock-runs-server
-snouty runs logs run-1 --input-hash -123 --vtime 1.0
+snouty runs logs run-1 Fa84QWiAxKpsvhP7fglpSa
 stdout 'VTIME.*SOURCE.*OUTPUT'
 stdout '1\.0.*\[app:out\].*\{"level":"info","msg":"starting"\}'
 stdout '2\.0.*\[app:error\].*\{"level":"warn","msg":"slow request"\}'
@@ -106,9 +106,19 @@ stdout '3\.0.*\[app:out\].*line one\\\\nline two'
 stdout '73\.94233945617452.*\[control:error\].*Post "http://10\.0\.1\.123:8003/"'
 stdout '311\.8487535319291.*\[control:assert\].*UNHIT AlwaysOrUnreachable "Counter'\''s value retrieved" @ control\.go:get:87'
 
+# `snouty runs logs --begin` resumes streaming from a given vtime.
+mock-runs-server
+snouty runs logs run-1 Fa84QWiAxKpsvhP7fglpSa --begin 10.0
+stdout 'VTIME.*SOURCE.*OUTPUT'
+
+# `snouty runs logs --begin-moment` resumes streaming from a copy-pasteable token.
+mock-runs-server
+snouty runs logs run-1 Fa84QWiAxKpsvhP7fglpSa --begin-moment Fa84QWiAxIvq0ayfqGCnei
+stdout 'VTIME.*SOURCE.*OUTPUT'
+
 # `snouty --json runs logs` outputs raw NDJSON.
 mock-runs-server
-snouty --json runs logs run-1 --input-hash -123 --vtime 1.0
+snouty --json runs logs run-1 Fa84QWiAxKpsvhP7fglpSa
 stdout 'output_text.*starting'
 stdout 'output_text.*slow request'
 stdout '"antithesis_assert".*"display_type":"AlwaysOrUnreachable"'
@@ -116,19 +126,19 @@ stdout '"antithesis_assert".*"display_type":"AlwaysOrUnreachable"'
 # `snouty --json runs logs` emits a record whose output_text contains
 # a JSON-escaped newline on a single output line.
 mock-runs-server
-snouty --json runs logs run-1 --input-hash -123 --vtime 1.0
+snouty --json runs logs run-1 Fa84QWiAxKpsvhP7fglpSa
 stdout -count=1 'line one\\nline two'
 
-# `snouty runs logs` requires --input-hash and --vtime.
+# `snouty runs logs` requires a moment token.
 mock-runs-server
 ! snouty runs logs run-1
-stderr '.*input.hash.*'
+stderr '.*<MOMENT>.*'
 
 # `snouty runs events` outputs a table by default.
 mock-runs-server
 snouty runs events run-1 request
-stdout '^HASH\s+VTIME\s+SOURCE\s+OUTPUT'
-stdout '-456.*2\.0.*\[app:error\].*\{"level":"warn","msg":"slow request"\}'
+stdout '^MOMENT\s+SOURCE\s+OUTPUT'
+stdout 'Fa84QWiAxIvq0ayfqGCnei.*\[app:error\].*\{"level":"warn","msg":"slow request"\}'
 
 # `snouty --json runs events` outputs raw NDJSON.
 mock-runs-server

@@ -15,6 +15,7 @@ use crate::api::{
 #[cfg(test)]
 use crate::api::{Event, Moment};
 use crate::cli::{RunsCommands, RunsListArgs};
+use crate::run_moment::RunMoment;
 
 static ASSERTION_VALIDATOR: LazyLock<Validator> = LazyLock::new(build_assertion_validator);
 
@@ -29,17 +30,15 @@ pub async fn cmd_runs(command: Option<RunsCommands>, json: bool) -> Result<()> {
         Some(RunsCommands::BuildLogs { run_id }) => cmd_runs_build_logs(&run_id, json).await,
         Some(RunsCommands::Logs {
             run_id,
-            input_hash,
-            vtime,
-            begin_vtime,
-            begin_input_hash,
+            moment,
+            begin,
+            begin_moment,
         }) => {
             cmd_runs_logs(
                 &run_id,
-                &input_hash,
-                &vtime,
-                begin_input_hash.as_deref(),
-                begin_vtime.as_deref(),
+                &moment,
+                begin.as_deref(),
+                begin_moment.as_deref(),
                 json,
             )
             .await
@@ -252,26 +251,18 @@ async fn cmd_runs_events(run_id: &str, query: &[String], json: bool) -> Result<(
         let mut saw_rows = false;
         stream_ndjson_lines(response, |line| {
             if !saw_rows {
-                writeln!(
-                    stdout,
-                    "{:<22}  {:<22}  {:<20}  OUTPUT",
-                    "HASH", "VTIME", "SOURCE"
-                )?;
+                writeln!(stdout, "{:<22}  {:<20}  OUTPUT", "MOMENT", "SOURCE")?;
                 saw_rows = true;
             }
 
             if let Ok(entry) = serde_json::from_str::<Value>(line) {
                 let rendered = render_event_entry(&entry);
-                let input_hash = rendered.input_hash;
-                let vtime = rendered.vtime;
+                let moment = rendered.moment;
                 let source = rendered.source;
                 let output = rendered.output;
-                writeln!(
-                    stdout,
-                    "{input_hash:<22}  {vtime:<22}  {source:<20}  {output}"
-                )?;
+                writeln!(stdout, "{moment:<22}  {source:<20}  {output}")?;
             } else {
-                writeln!(stdout, "{:<22}  {:<22}  {:<20}  {line}", "", "", "")?;
+                writeln!(stdout, "{:<22}  {:<20}  {line}", "", "")?;
             }
             Ok(())
         })
@@ -287,17 +278,34 @@ async fn cmd_runs_events(run_id: &str, query: &[String], json: bool) -> Result<(
 
 async fn cmd_runs_logs(
     run_id: &str,
-    input_hash: &str,
-    vtime: &str,
-    begin_input_hash: Option<&str>,
+    moment: &str,
     begin_vtime: Option<&str>,
+    begin_moment: Option<&str>,
     json: bool,
 ) -> Result<()> {
     info!("streaming logs for run: {}", run_id);
 
+    let moment = RunMoment::from_token(moment)?;
+    let (input_hash, vtime) = moment.to_wire();
+
+    let (begin_hash, begin_vtime): (Option<String>, Option<String>) =
+        if let Some(token) = begin_moment {
+            let m = RunMoment::from_token(token)?;
+            let (h, v) = m.to_wire();
+            (Some(h), Some(v))
+        } else {
+            (None, begin_vtime.map(String::from))
+        };
+
     let api = AntithesisApi::from_env()?;
     let response = api
-        .get_run_logs(run_id, input_hash, vtime, begin_input_hash, begin_vtime)
+        .get_run_logs(
+            run_id,
+            &input_hash,
+            &vtime,
+            begin_hash.as_deref(),
+            begin_vtime.as_deref(),
+        )
         .await?;
 
     let mut stdout = std::io::stdout().lock();
@@ -389,7 +397,7 @@ fn build_assertion_validator() -> Validator {
 
 #[derive(Debug, PartialEq, Eq)]
 struct RenderedEventEntry {
-    input_hash: String,
+    moment: String,
     vtime: String,
     source: String,
     output: String,
@@ -483,17 +491,14 @@ impl TryFrom<AssertionPayload> for AssertionSummary {
 }
 
 fn render_event_entry(entry: &Value) -> RenderedEventEntry {
-    let input_hash = entry["moment"]["input_hash"]
-        .as_str()
-        .unwrap_or("")
-        .to_string();
+    let moment = render_moment_value(entry.get("moment"));
     let vtime = entry["moment"]["vtime"].as_str().unwrap_or("").to_string();
     let container = entry["source"]["container"].as_str().unwrap_or("");
     let stream = entry["source"]["stream"].as_str().unwrap_or("");
 
     if let Some(summary) = parse_assertion_summary(entry) {
         return RenderedEventEntry {
-            input_hash,
+            moment,
             vtime,
             source: render_source(container, Some("assert")),
             output: render_assertion_summary(&summary),
@@ -501,7 +506,7 @@ fn render_event_entry(entry: &Value) -> RenderedEventEntry {
     }
 
     RenderedEventEntry {
-        input_hash,
+        moment,
         vtime,
         source: render_source(container, (!stream.is_empty()).then_some(stream)),
         output: render_event_output(entry),
@@ -524,6 +529,29 @@ fn parse_assertion_summary(entry: &Value) -> Option<AssertionSummary> {
 
     let payload: AssertionPayload = serde_json::from_value(assertion.clone()).ok()?;
     AssertionSummary::try_from(payload).ok()
+}
+
+fn render_moment_value(value: Option<&Value>) -> String {
+    let Some(moment) = value else {
+        return String::new();
+    };
+
+    let input_hash = moment
+        .get("input_hash")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let vtime = moment
+        .get("vtime")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+
+    if input_hash.is_empty() || vtime.is_empty() {
+        return String::new();
+    }
+
+    RunMoment::from_wire(input_hash, vtime)
+        .map(RunMoment::to_token)
+        .unwrap_or_else(|_| format!("{input_hash}@{vtime}"))
 }
 
 fn render_source(container: &str, stream: Option<&str>) -> String {
@@ -627,8 +655,8 @@ fn render_runs_table(runs: &[RunSummary]) -> String {
 
 struct PropertyEventRow<'a> {
     example: &'static str,
-    hash: &'a str,
-    vtime: &'a str,
+    moment: String,
+    sort_key: (u64, i64),
     name: &'a str,
 }
 
@@ -637,25 +665,35 @@ fn flatten_property_events(properties: &[Property]) -> Vec<PropertyEventRow<'_>>
     for property in properties {
         let start = rows.len();
         for event in &property.counter_examples {
+            let parsed = RunMoment::from_wire(&event.moment.input_hash, &event.moment.vtime).ok();
             rows.push(PropertyEventRow {
                 example: "Failing",
-                hash: &event.moment.input_hash,
-                vtime: &event.moment.vtime,
+                moment: parsed.map(RunMoment::to_token).unwrap_or_else(|| {
+                    format!("{}@{}", event.moment.input_hash, event.moment.vtime)
+                }),
+                sort_key: parsed
+                    .map(RunMoment::sort_key)
+                    .unwrap_or((u64::MAX, i64::MAX)),
                 name: &property.name,
             });
         }
         for event in &property.examples {
+            let parsed = RunMoment::from_wire(&event.moment.input_hash, &event.moment.vtime).ok();
             rows.push(PropertyEventRow {
                 example: "Passing",
-                hash: &event.moment.input_hash,
-                vtime: &event.moment.vtime,
+                moment: parsed.map(RunMoment::to_token).unwrap_or_else(|| {
+                    format!("{}@{}", event.moment.input_hash, event.moment.vtime)
+                }),
+                sort_key: parsed
+                    .map(RunMoment::sort_key)
+                    .unwrap_or((u64::MAX, i64::MAX)),
                 name: &property.name,
             });
         }
         rows[start..].sort_by(|a, b| {
             example_rank(a.example)
                 .cmp(&example_rank(b.example))
-                .then(a.vtime.cmp(b.vtime))
+                .then(a.sort_key.cmp(&b.sort_key))
         });
     }
     rows
@@ -671,8 +709,7 @@ fn example_rank(example: &str) -> u8 {
 fn render_property_events_table(rows: &[PropertyEventRow]) -> String {
     let headers = vec![
         "EXAMPLE".to_string(),
-        "HASH".to_string(),
-        "VTIME".to_string(),
+        "MOMENT".to_string(),
         "NAME".to_string(),
     ];
     let table_rows = rows
@@ -680,8 +717,7 @@ fn render_property_events_table(rows: &[PropertyEventRow]) -> String {
         .map(|row| {
             vec![
                 row.example.to_string(),
-                sanitize(row.hash),
-                sanitize(row.vtime),
+                sanitize(&row.moment),
                 sanitize(row.name),
             ]
         })
@@ -786,7 +822,7 @@ mod tests {
         assert_eq!(
             render_event_entry(&entry),
             RenderedEventEntry {
-                input_hash: "-4735081784258020614".to_string(),
+                moment: "Da8DV943BygFz4ybuVRlDS".to_string(),
                 vtime: "311.8487535319291".to_string(),
                 source: "[control:assert]".to_string(),
                 output:
@@ -812,7 +848,7 @@ mod tests {
         assert_eq!(
             render_event_entry(&entry),
             RenderedEventEntry {
-                input_hash: "".to_string(),
+                moment: "".to_string(),
                 vtime: "1.0".to_string(),
                 source: "[app:out]".to_string(),
                 output: "starting".to_string(),
@@ -836,7 +872,7 @@ mod tests {
         assert_eq!(
             render_event_entry(&entry),
             RenderedEventEntry {
-                input_hash: "".to_string(),
+                moment: "".to_string(),
                 vtime: "5.0".to_string(),
                 source: "[control]".to_string(),
                 output: "raw log line".to_string(),
@@ -937,39 +973,34 @@ mod tests {
         let table = render_property_events_table(&rows);
 
         assert!(table.contains("EXAMPLE"));
-        assert!(table.contains("HASH"));
-        assert!(table.contains("VTIME"));
+        assert!(table.contains("MOMENT"));
         assert!(table.contains("NAME"));
 
         let lines: Vec<&str> = table.lines().collect();
         // Header + 2 Failing rows + 2 Passing rows = 5 lines
         assert_eq!(lines.len(), 5);
 
-        // Failing rows come first, sorted by vtime (lexicographic: "10.0" < "5.0")
+        // Failing rows come first, sorted by numeric moment order.
         assert!(
             lines[1].contains("Failing")
-                && lines[1].contains("-200")
-                && lines[1].contains("10.0")
+                && lines[1].contains("Fa84QWiAxKy2RNvUNjFJwm")
                 && lines[1].contains("Counter value stays below limit")
         );
         assert!(
             lines[2].contains("Failing")
-                && lines[2].contains("-100")
-                && lines[2].contains("5.0")
+                && lines[2].contains("Fa84QWiAxKOaZBZOzDzEfI")
                 && lines[2].contains("Counter value stays below limit")
         );
 
         // Passing rows come after, grouped by property (Counter value first, then Setup completes)
         assert!(
             lines[3].contains("Passing")
-                && lines[3].contains("-300")
-                && lines[3].contains("15.0")
+                && lines[3].contains("Fa84QWiAxJp8gzDJaij9No")
                 && lines[3].contains("Counter value stays below limit")
         );
         assert!(
             lines[4].contains("Passing")
-                && lines[4].contains("-400")
-                && lines[4].contains("1.0")
+                && lines[4].contains("Fa84QWiAxJFgomrCl8pPP6")
                 && lines[4].contains("Setup completes")
         );
     }

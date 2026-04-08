@@ -1,6 +1,7 @@
 mod support;
 
 use predicates::prelude::*;
+use snouty::run_moment::RunMoment;
 use support::*;
 
 #[test]
@@ -90,6 +91,60 @@ fn runs_prints_empty_state() {
         .assert()
         .success()
         .stdout(predicate::str::contains("No runs found."));
+}
+
+#[test]
+fn runs_logs_accepts_positional_moment_token() {
+    let mock = start_runs_server(false);
+
+    snouty_with_mock_server(&mock)
+        .args(["runs", "logs", "run-1", "Fa84QWiAxKpsvhP7fglpSa"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("VTIME"))
+        .stdout(predicate::str::contains("1.0"))
+        .stdout(predicate::str::contains("2.0"));
+}
+
+#[test]
+fn runs_logs_accepts_begin_vtime() {
+    let mock = start_runs_server(false);
+
+    snouty_with_mock_server(&mock)
+        .args([
+            "runs",
+            "logs",
+            "run-1",
+            "Fa84QWiAxKpsvhP7fglpSa",
+            "--begin",
+            "10.0",
+        ])
+        .assert()
+        .success();
+}
+
+#[test]
+fn runs_logs_accepts_begin_moment_token() {
+    let mock = start_runs_server(false);
+
+    snouty_with_mock_server(&mock)
+        .args([
+            "runs",
+            "logs",
+            "run-1",
+            "Fa84QWiAxKpsvhP7fglpSa",
+            "--begin-moment",
+            "Fa84QWiAxIvq0ayfqGCnei",
+        ])
+        .assert()
+        .success();
+}
+
+#[test]
+fn run_moment_formats_wire_values_as_token() {
+    let moment = RunMoment::from_wire("-123", "1.0").unwrap();
+
+    assert_eq!(moment.to_token(), "Fa84QWiAxKpsvhP7fglpSa");
 }
 
 #[test]

@@ -5,6 +5,7 @@ pub mod docs;
 pub mod doctor;
 pub mod moment;
 pub mod params;
+pub mod run_moment;
 pub mod runs;
 pub mod scripts;
 #[doc(hidden)]

@@ -1,4 +1,5 @@
 use std::fs;
+use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 
 use color_eyre::eyre::{Context, Result};
@@ -59,6 +60,8 @@ pub struct ScanResult {
     pub scripts: Vec<TestScript>,
     /// Unrecognized file paths (e.g. `"suite/readme.txt"`).
     pub unrecognized: Vec<String>,
+    /// Scripts that lack an executable bit (e.g. `"suite/first_setup"`).
+    pub not_executable: Vec<String>,
 }
 
 /// Scan `base` for test scripts organized as `{test_name}/{command}`.
@@ -70,6 +73,7 @@ pub struct ScanResult {
 pub fn scan_scripts(base: &Path, service: &str) -> Result<ScanResult> {
     let mut scripts = Vec::new();
     let mut unrecognized: Vec<String> = Vec::new();
+    let mut not_executable: Vec<String> = Vec::new();
 
     let entries = fs::read_dir(base).wrap_err_with(|| format!("reading {}", base.display()))?;
 
@@ -104,6 +108,12 @@ pub fn scan_scripts(base: &Path, service: &str) -> Result<ScanResult> {
                 }
             };
 
+            let metadata =
+                fs::metadata(&cmd_path).wrap_err_with(|| format!("stat {}", cmd_path.display()))?;
+            if metadata.permissions().mode() & 0o111 == 0 {
+                not_executable.push(format!("{}/{}", test_name, command_name));
+            }
+
             scripts.push(TestScript {
                 service: service.to_string(),
                 test_name: test_name.clone(),
@@ -115,10 +125,12 @@ pub fn scan_scripts(base: &Path, service: &str) -> Result<ScanResult> {
     }
 
     unrecognized.sort();
+    not_executable.sort();
     scripts.sort_by(|a, b| a.path.cmp(&b.path));
     Ok(ScanResult {
         scripts,
         unrecognized,
+        not_executable,
     })
 }
 
@@ -203,5 +215,17 @@ mod tests {
     fn scan_scripts_nonexistent_dir() {
         let result = scan_scripts(Path::new("/nonexistent/path/that/does/not/exist"), "svc");
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn scan_scripts_not_executable() {
+        let tmp = TempDir::new().unwrap();
+        let base = tmp.path();
+        make_script(base, "mytest", "first_setup", false);
+        make_script(base, "mytest", "parallel_driver_load", true);
+
+        let result = scan_scripts(base, "svc").unwrap();
+        assert_eq!(result.scripts.len(), 2);
+        assert_eq!(result.not_executable, vec!["mytest/first_setup"]);
     }
 }

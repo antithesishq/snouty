@@ -1,71 +1,16 @@
 # snouty validate — failure cases with container runtime
 
-# Failing script — remaining scripts still run, validate fails.
-#    Captured stdout and stderr from the failed script are printed.
-build-image fail-with-finally-failures:latest fail_with_finally
-! snouty validate config_fail_finally --timeout 15
-stderr 'Running \[suite/first_setup\] in service runner.*'
-stderr 'Running \[suite/parallel_driver_bad\] in service runner\.\.\. failed.*'
-stderr 'stdout from bad script.*'
-stderr 'stderr from bad script.*'
-stderr 'Running \[suite/finally_cleanup\] in service runner.*'
-stderr 'one or more test scripts failed.*'
-
-# No driver or anytime scripts — validate errors.
-build-image nodrivers-failures:latest nodrivers
-! snouty validate config_nodrivers --timeout 15
-stderr 'no driver or anytime scripts.*'
-
 # Unknown prefix file — validate errors.
 build-image unknown-prefix-failures:latest unknown_prefix
 ! snouty validate config_unknown --timeout 15
 stderr 'unrecognized command names.*'
 stderr 'suite/readme.txt.*'
 
-# Non-executable script — compose exec fails, validate reports failure.
+# Non-executable script — validate detects missing executable bit.
 build-image noexec-failures:latest noexec
 ! snouty validate config_noexec --timeout 15
-stderr 'Running .* failed.*'
-
--- fail_with_finally/suite/first_setup --
-#!/bin/sh
-echo "first_setup ran"
-
--- fail_with_finally/suite/parallel_driver_bad --
-#!/bin/sh
-echo "stdout from bad script"
-echo "stderr from bad script" >&2
-exit 1
-
--- fail_with_finally/suite/finally_cleanup --
-#!/bin/sh
-echo "finally_cleanup ran"
-
--- fail_with_finally/Dockerfile --
-FROM busybox
-COPY suite/ /opt/antithesis/test/v1/suite/
-RUN chmod +x /opt/antithesis/test/v1/suite/*
-CMD sh -c 'echo "{\"antithesis_setup\":{\"status\":\"complete\"}}" >> "$ANTITHESIS_OUTPUT_DIR/sdk.jsonl" && sleep 3600'
--- config_fail_finally/docker-compose.yaml --
-services:
-  runner:
-    image: fail-with-finally-failures:latest
-    pull_policy: never
-
--- nodrivers/suite/first_setup --
-#!/bin/sh
-echo "first_setup ran"
-
--- nodrivers/Dockerfile --
-FROM busybox
-COPY suite/ /opt/antithesis/test/v1/suite/
-RUN chmod +x /opt/antithesis/test/v1/suite/*
-CMD sh -c 'echo "{\"antithesis_setup\":{\"status\":\"complete\"}}" >> "$ANTITHESIS_OUTPUT_DIR/sdk.jsonl" && sleep 3600'
--- config_nodrivers/docker-compose.yaml --
-services:
-  runner:
-    image: nodrivers-failures:latest
-    pull_policy: never
+stderr 'not executable.*'
+stderr 'suite/first_noexec.*'
 
 -- unknown_prefix/suite/first_ok --
 #!/bin/sh

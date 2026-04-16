@@ -61,10 +61,7 @@ fn validate_help_explains_setup_complete_detection() {
         .stdout(predicate::str::contains("ANTITHESIS_SDK_LOCAL_OUTPUT"))
         .stdout(predicate::str::contains("JSONL"))
         .stdout(predicate::str::contains("not by scraping compose logs"))
-        .stdout(predicate::str::contains("one random first_ script"))
-        .stdout(predicate::str::contains(
-            "additional first_ scripts are skipped",
-        ));
+        .stdout(predicate::str::contains("Scripts are not executed"));
 }
 
 #[test]

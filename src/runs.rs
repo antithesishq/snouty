@@ -23,8 +23,19 @@ pub async fn cmd_runs(command: Option<RunsCommands>, json: bool) -> Result<()> {
         None => cmd_runs_list(RunsListArgs::default()).await,
         Some(RunsCommands::List(args)) => cmd_runs_list(args).await,
         Some(RunsCommands::Show { run_id }) => cmd_runs_show(&run_id, json).await,
-        Some(RunsCommands::Properties { run_id, all }) => {
-            cmd_runs_properties(&run_id, all, json).await
+        Some(RunsCommands::Properties {
+            run_id,
+            passing,
+            failing,
+        }) => {
+            let status = if passing {
+                Some(PropertyStatus::Passing)
+            } else if failing {
+                Some(PropertyStatus::Failing)
+            } else {
+                None
+            };
+            cmd_runs_properties(&run_id, status, json).await
         }
         Some(RunsCommands::BuildLogs { run_id }) => cmd_runs_build_logs(&run_id, json).await,
         Some(RunsCommands::Logs {
@@ -130,12 +141,16 @@ async fn cmd_runs_show(run_id: &str, json: bool) -> Result<()> {
     Ok(())
 }
 
-async fn cmd_runs_properties(run_id: &str, all: bool, json: bool) -> Result<()> {
+async fn cmd_runs_properties(
+    run_id: &str,
+    status: Option<PropertyStatus>,
+    json: bool,
+) -> Result<()> {
     info!("listing properties for run: {}", run_id);
 
     let api = AntithesisApi::from_env()?;
     let mut properties = api
-        .stream_run_properties(run_id, all)
+        .stream_run_properties(run_id, status)
         .try_collect::<Vec<_>>()
         .await?;
 

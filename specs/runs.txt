@@ -48,21 +48,32 @@ stdout '"status".*"completed"'
 ! snouty runs show
 stderr '.*'
 
-# `snouty runs properties` shows failing properties by default as flattened event rows.
+# `snouty runs properties` shows all properties by default as flattened event rows.
 mock-runs-server
 snouty runs properties run-1
 stdout 'EXAMPLE.*HASH.*VTIME.*NAME'
 stdout 'Failing.*-100.*5\.0.*Counter value stays below limit'
 stdout 'Failing.*-200.*10\.0.*Counter value stays below limit'
 stdout 'Passing.*-300.*15\.0.*Counter value stays below limit'
+stdout 'Passing.*-400.*1\.0.*Setup completes'
 
-# `snouty runs properties --all` includes passing properties too.
+# `snouty runs properties --failing` shows only failing properties.
 mock-runs-server
-snouty runs properties --all run-1
+snouty runs properties --failing run-1
 stdout 'Failing.*-100.*5\.0.*Counter value stays below limit'
 stdout 'Failing.*-200.*10\.0.*Counter value stays below limit'
 stdout 'Passing.*-300.*15\.0.*Counter value stays below limit'
+! stdout 'Setup completes'
+
+# `snouty runs properties --passing` shows only passing properties.
+mock-runs-server
+snouty runs properties --passing run-1
 stdout 'Passing.*-400.*1\.0.*Setup completes'
+! stdout 'Counter value stays below limit'
+
+# `snouty runs properties --passing --failing` is rejected.
+! snouty runs properties --passing --failing run-1
+stderr '.*cannot be used with.*'
 
 # `snouty --json runs properties` outputs JSON.
 mock-runs-server

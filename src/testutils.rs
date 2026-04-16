@@ -539,27 +539,19 @@ fn mock_route_list_run_properties(run_id: &str, query: Option<&str>) -> (u16, St
         );
     }
 
-    let include_passing = matches!(
-        mock_query_param(query, "include_passing_properties"),
-        Some("true")
-    );
+    let status = mock_query_param(query, "status");
     let after = mock_query_param(query, "after");
 
-    let mut properties = vec![
-        r#"{"name":"Counter value stays below limit","description":"Counter stays within safe bounds","status":"Failing","is_event":true,"is_existential":false,"is_universal":true,"group":"Safety","example_count":12,"counter_example_count":3,"examples":[{"moment":{"input_hash":"-300","vtime":"15.0"}}],"counter_examples":[{"moment":{"input_hash":"-100","vtime":"5.0"}},{"moment":{"input_hash":"-200","vtime":"10.0"}}]}"#.to_string(),
-    ];
-    if include_passing {
-        properties.push(
-            r#"{"name":"Setup completes","description":"Setup eventually succeeds","status":"Passing","is_event":false,"is_existential":true,"is_universal":false,"example_count":1,"counter_example_count":0,"examples":[{"moment":{"input_hash":"-400","vtime":"1.0"}}]}"#.to_string(),
-        );
-    }
+    let failing = r#"{"name":"Counter value stays below limit","description":"Counter stays within safe bounds","status":"Failing","is_event":true,"is_existential":false,"is_universal":true,"group":"Safety","example_count":12,"counter_example_count":3,"examples":[{"moment":{"input_hash":"-300","vtime":"15.0"}}],"counter_examples":[{"moment":{"input_hash":"-100","vtime":"5.0"}},{"moment":{"input_hash":"-200","vtime":"10.0"}}]}"#.to_string();
+    let passing = r#"{"name":"Setup completes","description":"Setup eventually succeeds","status":"Passing","is_event":false,"is_existential":true,"is_universal":false,"example_count":1,"counter_example_count":0,"examples":[{"moment":{"input_hash":"-400","vtime":"1.0"}}]}"#.to_string();
 
-    let (data, next_cursor) = if include_passing && after.is_none() {
-        (vec![properties[0].clone()], Some("props-cursor-1"))
-    } else if include_passing && after == Some("props-cursor-1") {
-        (vec![properties[1].clone()], None)
-    } else {
-        (properties, None)
+    let (data, next_cursor) = match (status, after) {
+        (Some("Failing"), _) => (vec![failing], None),
+        (Some("Passing"), _) => (vec![passing], None),
+        (None, None) => (vec![failing], Some("props-cursor-1")),
+        (None, Some("props-cursor-1")) => (vec![passing], None),
+        (None, _) => (vec![], None),
+        _ => (vec![], None),
     };
 
     let data_json = data.join(",");

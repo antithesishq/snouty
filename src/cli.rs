@@ -65,7 +65,8 @@ Examples:
   snouty runs list --status completed --launcher nightly
   snouty runs show <run_id>
   snouty runs properties <run_id>
-  snouty runs properties --all <run_id>
+  snouty runs properties --failing <run_id>
+  snouty runs properties --passing <run_id>
   snouty runs build-logs <run_id>
   snouty runs logs <run_id> --input-hash <hash> --vtime <vtime>
   snouty runs events <run_id> <query>"#,
@@ -308,9 +309,13 @@ pub enum RunsCommands {
         /// Run ID
         run_id: String,
 
-        /// Include passing properties in addition to failing ones
+        /// Show only passing properties
+        #[arg(long, conflicts_with = "failing")]
+        passing: bool,
+
+        /// Show only failing properties
         #[arg(long)]
-        all: bool,
+        failing: bool,
     },
 
     /// Stream build logs for a run

@@ -278,13 +278,13 @@ impl AntithesisApi {
     pub fn stream_run_properties(
         &self,
         run_id: &str,
-        include_passing_properties: bool,
+        status: Option<PropertyStatus>,
     ) -> impl futures_util::Stream<Item = Result<Property>> + '_ {
         stream::try_unfold(
             RunPropertyStreamState {
                 api: self,
                 run_id: run_id.to_string(),
-                include_passing_properties,
+                status,
                 after: None,
                 buffered_properties: VecDeque::new(),
                 finished: false,
@@ -304,7 +304,7 @@ impl AntithesisApi {
                         .fetch_run_properties_page(
                             &state.run_id,
                             state.after.as_deref(),
-                            state.include_passing_properties,
+                            state.status,
                         )
                         .await?;
                     let generated::types::PropertyListResponse { data, next_cursor } = page;
@@ -415,15 +415,17 @@ impl AntithesisApi {
         &self,
         run_id: &str,
         after: Option<&str>,
-        include_passing_properties: bool,
+        status: Option<PropertyStatus>,
     ) -> Result<generated::types::PropertyListResponse> {
         let mut request = self
             .client
             .list_run_properties()
             .version(API_VERSION)
             .run_id(run_id)
-            .include_passing_properties(include_passing_properties)
             .limit(100_u64);
+        if let Some(status) = status {
+            request = request.status(status);
+        }
         if let Some(cursor) = after {
             request = request.after(cursor);
         }
@@ -461,7 +463,7 @@ struct FilteredRunStreamState<'a> {
 struct RunPropertyStreamState<'a> {
     api: &'a AntithesisApi,
     run_id: String,
-    include_passing_properties: bool,
+    status: Option<PropertyStatus>,
     after: Option<String>,
     buffered_properties: VecDeque<Property>,
     finished: bool,
@@ -728,7 +730,7 @@ mod tests {
         Mock::given(method("GET"))
             .and(path("/api/v1/runs/run-1/properties"))
             .and(query_param("limit", "100"))
-            .and(query_param("include_passing_properties", "true"))
+            .and(query_param_is_missing("status"))
             .and(query_param_is_missing("after"))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "data": [
@@ -749,7 +751,7 @@ mod tests {
         Mock::given(method("GET"))
             .and(path("/api/v1/runs/run-1/properties"))
             .and(query_param("limit", "100"))
-            .and(query_param("include_passing_properties", "true"))
+            .and(query_param_is_missing("status"))
             .and(query_param("after", "props-cursor-1"))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "data": [
@@ -774,7 +776,7 @@ mod tests {
         let api = AntithesisApi::with_base_url(config, mock_server.uri()).unwrap();
 
         let properties = api
-            .stream_run_properties("run-1", true)
+            .stream_run_properties("run-1", None)
             .try_collect::<Vec<_>>()
             .await
             .unwrap();
@@ -793,13 +795,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn stream_run_properties_requests_failures_only_by_default() {
+    async fn stream_run_properties_forwards_status_filter() {
         let mock_server = MockServer::start().await;
 
         Mock::given(method("GET"))
             .and(path("/api/v1/runs/run-1/properties"))
             .and(query_param("limit", "100"))
-            .and(query_param("include_passing_properties", "false"))
+            .and(query_param("status", "Failing"))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "data": [],
                 "next_cursor": null
@@ -815,7 +817,7 @@ mod tests {
         let api = AntithesisApi::with_base_url(config, mock_server.uri()).unwrap();
 
         let properties = api
-            .stream_run_properties("run-1", false)
+            .stream_run_properties("run-1", Some(PropertyStatus::Failing))
             .try_collect::<Vec<_>>()
             .await
             .unwrap();

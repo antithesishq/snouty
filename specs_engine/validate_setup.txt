@@ -8,18 +8,12 @@ stderr 'Setup-complete event detected.*'
 stderr 'No test scripts in service.*'
 stderr 'Setup validation successful.*'
 
-# All script types run in correct phases, helper_ ignored.
-#    Includes a sidecar without scripts to verify it doesn't block execution.
+# All script types discovered and validated, helper_ ignored.
+#    Includes a sidecar without scripts to verify it doesn't block validation.
 build-image all-types-setup:latest all_types
 snouty validate config_all_types --timeout 15
 stderr 'Setup-complete event detected.*'
 stderr 'Found 2 first, 1 driver, 1 anytime, 1 eventually, 1 finally scripts.*'
-stderr 'Not executing .*'
-stderr 'Running \[suite/first_(setup|secondary)\] in service runner.*'
-stderr 'Running \[suite/parallel_driver_load\] in service runner.*'
-stderr 'Running \[suite/anytime_check\] in service runner.*'
-stderr 'Running \[suite/eventually_verify\] in service runner.*'
-stderr 'Running \[suite/finally_cleanup\] in service runner.*'
 stderr 'Setup validation successful.*'
 
 # Setup-complete via ANTITHESIS_SDK_LOCAL_OUTPUT (legacy env var).

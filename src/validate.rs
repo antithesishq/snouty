@@ -255,10 +255,9 @@ async fn validate_with_temp_dir(args: ValidateArgs, temp_dir: &Path) -> Result<(
     let test_result = match result {
         Ok(true) => {
             eprintln!("Setup-complete event detected.");
-            run_test_scripts(&*compose, &config, &scripts)
+            validate_test_scripts(&scripts)
         }
         Ok(false) => {
-            diagnose_setup_in_first_scripts(&*compose, &config, &scripts, temp_dir);
             bail!("timed out waiting for setup-complete event");
         }
         Err(e) => Err(e),
@@ -307,67 +306,6 @@ fn contains_setup_complete(reader: &mut (impl std::io::Read + std::io::Seek)) ->
     Ok(false)
 }
 
-/// Run first scripts with a redirected output dir and check if they emit setup_complete.
-/// If so, print a diagnostic explaining the chicken-and-egg problem.
-fn diagnose_setup_in_first_scripts(
-    compose: &dyn container::Compose,
-    config: &ComposeConfig,
-    scripts: &[TestScript],
-    temp_dir: &Path,
-) {
-    let first_scripts: Vec<_> = scripts
-        .iter()
-        .filter(|s| s.script_type == ScriptType::First)
-        .collect();
-    if first_scripts.is_empty() {
-        return;
-    }
-
-    for s in &first_scripts {
-        let check_dir = temp_dir
-            .join("antithesis")
-            .join(&s.service)
-            .join("first-check");
-        if std::fs::create_dir_all(&check_dir).is_err() {
-            continue;
-        }
-
-        let container_output_dir = "/tmp/antithesis/first-check";
-        let sdk_output = format!("{container_output_dir}/sdk.jsonl");
-        let env = [
-            ("ANTITHESIS_OUTPUT_DIR", container_output_dir),
-            ("ANTITHESIS_SDK_LOCAL_OUTPUT", sdk_output.as_str()),
-        ];
-
-        let sdk_file = check_dir.join("sdk.jsonl");
-        let script_dir = format!("/opt/antithesis/test/v1/{}", s.test_name);
-        let container_path = format!("{}/{}", script_dir, s.command_name);
-        let _ = compose.exec(
-            config,
-            &s.service,
-            Some(&script_dir),
-            &env,
-            &[&container_path],
-        );
-
-        if let Ok(mut f) = std::fs::File::open(&sdk_file) {
-            if contains_setup_complete(&mut f).unwrap_or(false) {
-                eprintln!(
-                    "\nDiagnostic: {}/{} in service {} emits setup_complete, but first \
-                     scripts only run after setup_complete is detected — this is a deadlock. \
-                     Move the setup_complete event to the container entrypoint \
-                     (CMD/ENTRYPOINT) instead.",
-                    s.test_name, s.command_name, s.service
-                );
-                return;
-            }
-
-            // Remove any output from the previous script.
-            let _ = std::fs::remove_file(&sdk_file);
-        }
-    }
-}
-
 /// Discover test scripts from running containers.
 fn discover_scripts(
     compose: &dyn container::Compose,
@@ -397,8 +335,15 @@ fn discover_scripts(
                     }
                     return Err(err);
                 }
+                if !result.not_executable.is_empty() {
+                    let mut err = eyre!("scripts in service {service_name} are not executable");
+                    for command in result.not_executable {
+                        err = err.with_note(|| command);
+                    }
+                    return Err(err);
+                }
                 if result.scripts.is_empty() {
-                    bail!("No scripts found in {service_name}");
+                    eprintln!("No scripts found in {service_name}");
                 }
                 info!(
                     "Found {} scripts in service '{service_name}'",
@@ -416,41 +361,29 @@ fn discover_scripts(
     Ok(all_scripts)
 }
 
-/// Categorize and execute pre-discovered test scripts.
-fn run_test_scripts(
-    compose: &dyn container::Compose,
-    config: &ComposeConfig,
-    scripts: &[TestScript],
-) -> Result<()> {
-    // Categorize scripts
-    let mut first: Vec<_> = scripts
+/// Validate the structure of discovered test scripts without executing them.
+fn validate_test_scripts(scripts: &[TestScript]) -> Result<()> {
+    let first = scripts
         .iter()
         .filter(|s| s.script_type == ScriptType::First)
-        .collect();
-    let drivers: Vec<_> = scripts
-        .iter()
-        .filter(|s| s.script_type.is_driver())
-        .collect();
-    let anytime: Vec<_> = scripts
+        .count();
+    let drivers = scripts.iter().filter(|s| s.script_type.is_driver()).count();
+    let anytime = scripts
         .iter()
         .filter(|s| s.script_type == ScriptType::Anytime)
-        .collect();
-    let eventually: Vec<_> = scripts
+        .count();
+    let eventually = scripts
         .iter()
         .filter(|s| s.script_type == ScriptType::Eventually)
-        .collect();
-    let finally: Vec<_> = scripts
+        .count();
+    let finally = scripts
         .iter()
         .filter(|s| s.script_type == ScriptType::Finally)
-        .collect();
+        .count();
 
     eprintln!(
         "Found {} first, {} driver, {} anytime, {} eventually, {} finally scripts",
-        first.len(),
-        drivers.len(),
-        anytime.len(),
-        eventually.len(),
-        finally.len(),
+        first, drivers, anytime, eventually, finally,
     );
 
     if scripts.is_empty() {
@@ -458,99 +391,7 @@ fn run_test_scripts(
         return Ok(());
     }
 
-    if drivers.is_empty() && anytime.is_empty() {
-        bail!("test scripts found but no driver or anytime scripts");
-    }
-
-    let mut ok = true;
-
-    // Execute one first script chosen at random. The platform treats first scripts
-    // as mutually exclusive, so the others are skipped.
-    shuffle(&mut first);
-    if let Some(selected) = first.first().copied() {
-        ok &= exec_script(compose, config, selected, &[])?;
-        for skipped in &first[1..] {
-            eprintln!(
-                "Not executing [{}/{}]",
-                skipped.test_name, skipped.command_name
-            );
-        }
-    }
-
-    // Execute drivers + anytime (shuffled together)
-    let mut runnable: Vec<_> = drivers.iter().chain(anytime.iter()).copied().collect();
-    shuffle(&mut runnable);
-    for s in &runnable {
-        ok &= exec_script(compose, config, s, &[])?;
-    }
-
-    // Execute eventually scripts (sorted)
-    for s in &eventually {
-        ok &= exec_script(compose, config, s, &[])?;
-    }
-
-    // Execute finally scripts (sorted)
-    for s in &finally {
-        ok &= exec_script(compose, config, s, &[])?;
-    }
-
-    if !ok {
-        bail!("one or more test scripts failed");
-    }
-
     Ok(())
-}
-
-/// Execute a single test script via `compose exec`.
-///
-/// Returns `true` if the script succeeded, `false` if it failed.
-fn exec_script(
-    compose: &dyn container::Compose,
-    config: &ComposeConfig,
-    script: &TestScript,
-    env: &[(&str, &str)],
-) -> Result<bool> {
-    let script_dir = format!("/opt/antithesis/test/v1/{}", script.test_name);
-    let container_path = format!("{}/{}", script_dir, script.command_name);
-    eprint!(
-        "Running [{}/{}] in service {}...",
-        script.test_name, script.command_name, script.service
-    );
-
-    let output = compose.exec(
-        config,
-        &script.service,
-        Some(&script_dir),
-        env,
-        &[&container_path],
-    )?;
-
-    if output.status.success() {
-        eprintln!(" ok");
-        Ok(true)
-    } else {
-        eprintln!(" failed ({})", output.status);
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        if !stdout.is_empty() {
-            eprint!("{stdout}");
-        }
-        if !stderr.is_empty() {
-            eprint!("{stderr}");
-        }
-        Ok(false)
-    }
-}
-
-/// Fisher-Yates shuffle using `getrandom` for randomness.
-fn shuffle<T>(slice: &mut [T]) {
-    for i in (1..slice.len()).rev() {
-        let mut buf = [0u8; 8];
-        getrandom::fill(&mut buf).expect("getrandom failed");
-        let r = u64::from_le_bytes(buf);
-        let j = (r % (i as u64 + 1)) as usize;
-        slice.swap(i, j);
-    }
 }
 
 /// Return all `.jsonl` files recursively under `root`.

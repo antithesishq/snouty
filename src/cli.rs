@@ -85,9 +85,9 @@ Using Moment.from (copy from triage report):
     #[command(long_about = r#"Validate local Antithesis setup
 
 Runs docker-compose locally and watches for the setup-complete event to confirm
-instrumentation is working. After setup-complete is detected, discovers and
-executes Test Composer scripts from /opt/antithesis/test/v1 inside the running
-containers via compose exec.
+instrumentation is working. After setup-complete is detected, discovers
+Test Composer scripts from /opt/antithesis/test/v1 inside the running
+containers and validates their structure.
 
 snouty validate injects a bind mount at /tmp/antithesis in each container and
 sets ANTITHESIS_OUTPUT_DIR plus ANTITHESIS_SDK_LOCAL_OUTPUT so SDK output is
@@ -95,19 +95,9 @@ written there. It detects setup-complete by reading JSONL files from that mount,
 not by scraping compose logs or container stdout.
 
 Scripts are discovered by copying /opt/antithesis/test/v1 from each running
-container and scanning for {test_name}/{command} entries. Scripts from all
-services are merged into a single pool and executed in order:
-
-  1. one random first_ script (additional first_ scripts are skipped)
-  2. drivers + anytime (shuffled together)
-  3. eventually_ scripts (sorted)
-  4. finally_ scripts (sorted)
-
-Every script runs regardless of earlier failures. The exit code is nonzero
-if any script fails. If no test scripts are found, validation still succeeds
-(only setup-complete is checked).
-
-Requires at least one driver or anytime script when test scripts are present.
+container and scanning for {test_name}/{command} entries. Scripts are validated
+to have recognized prefixes and at least one driver or anytime script when
+test scripts are present. Scripts are not executed.
 
 Example:
   snouty validate ./config

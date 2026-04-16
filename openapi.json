@@ -400,7 +400,7 @@
       "get": {
         "operationId": "getRunBuildLogs",
         "summary": "Stream build logs",
-        "description": "Streams the build logs for a run as newline-delimited JSON (NDJSON). Each line contains a timestamp, a stream indicator, and the log text. The response is streamed — the connection remains open until all log lines have been sent.",
+        "description": "Streams the build logs for a run as newline-delimited JSON (NDJSON). Each line contains a timestamp, a stream indicator, and the log text. The response is streamed — the connection remains open until all matching log lines have been sent.\n\nThere is a limit on the number of log lines returned per request. If the limit is reached, use the `timestamp` of the last log line received as `begin_timestamp` in a subsequent request to continue from where you left off.\n\nTo retrieve a subset of build logs starting from a specific point, provide `begin_timestamp` to specify the starting point.",
         "tags": ["Runs"],
         "parameters": [
           {
@@ -410,6 +410,17 @@
             "required": true,
             "schema": {
               "type": "string"
+            }
+          },
+          {
+            "name": "begin_timestamp",
+            "in": "query",
+            "description": "Start streaming build logs from this timestamp instead of from the beginning. Use the `timestamp` of the last log line received in a previous request to continue from where you left off.",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "format": "date-time",
+              "example": "2025-03-20T02:01:12Z"
             }
           }
         ],
@@ -454,7 +465,7 @@
       "get": {
         "operationId": "listRunProperties",
         "summary": "List run properties",
-        "description": "Returns a paginated list of property results for a run. By default only failed properties are returned. Set `include_passing_properties` to `true` to include passed properties as well.",
+        "description": "Returns a paginated list of property results for a run, including both passing and failing properties by default. Use the `status` parameter to filter by a specific status.",
         "tags": ["Runs"],
         "parameters": [
           {
@@ -467,13 +478,12 @@
             }
           },
           {
-            "name": "include_passing_properties",
+            "name": "status",
             "in": "query",
-            "description": "When `true`, include passed properties in the response in addition to failed ones.",
+            "description": "Filter properties by status. When omitted, properties of all statuses are returned.",
             "required": false,
             "schema": {
-              "type": "boolean",
-              "default": false
+              "$ref": "#/components/schemas/Property_Status"
             }
           },
           {
@@ -682,7 +692,8 @@
             "description": "A human-readable explanation of what went wrong.",
             "example": "limit must be between 1 and 100"
           }
-        }
+        },
+        "additionalProperties": true
       },
       "Run_List_Response": {
         "type": "object",
@@ -797,7 +808,8 @@
             "description": "Unique identifier for the launched run.",
             "example": "c8d2f4a6e0b3197d5f8a2c4e6b0d3f79-49-1"
           }
-        }
+        },
+        "additionalProperties": true
       },
       "Launch_Request": {
         "type": "object",
@@ -812,7 +824,8 @@
               }
             ]
           }
-        }
+        },
+        "additionalProperties": true
       },
       "Params": {
         "type": "object",
@@ -910,7 +923,8 @@
             "description": "The log line text.",
             "example": "Building image payments-service..."
           }
-        }
+        },
+        "additionalProperties": true
       },
       "Property_List_Response": {
         "type": "object",
@@ -990,7 +1004,8 @@
               "$ref": "#/components/schemas/Event"
             }
           }
-        }
+        },
+        "additionalProperties": true
       },
       "Property_Status": {
         "type": "string",
@@ -1033,7 +1048,8 @@
             "format": "uri",
             "description": "URL to the triage report for this run."
           }
-        }
+        },
+        "additionalProperties": true
       }
     },
     "responses": {

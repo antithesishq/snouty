@@ -149,6 +149,18 @@ fn cmd_mock_runs_server(
         }
     };
 
+    if let Some(staging) = staging_env() {
+        if empty {
+            return Err(err(
+                "mock-runs-server empty is not supported against staging; gate the block with [!staging]".to_string(),
+            ));
+        }
+        env.set_env_var("ANTITHESIS_BASE_URL", &staging.base_url);
+        env.set_env_var("ANTITHESIS_API_KEY", &staging.api_key);
+        env.set_env_var("ANTITHESIS_TENANT", &staging.tenant);
+        return Ok(());
+    }
+
     let server = if empty {
         MockApiServer::start_empty()
     } else {
@@ -164,6 +176,23 @@ fn cmd_mock_runs_server(
     });
     std::mem::forget(server);
     Ok(())
+}
+
+struct StagingEnv {
+    base_url: String,
+    api_key: String,
+    tenant: String,
+}
+
+fn staging_env() -> Option<StagingEnv> {
+    let base_url = std::env::var("SNOUTY_STAGING_BASE_URL").ok()?;
+    let api_key = std::env::var("SNOUTY_STAGING_API_KEY").ok()?;
+    let tenant = std::env::var("SNOUTY_STAGING_TENANT").ok()?;
+    Some(StagingEnv {
+        base_url,
+        api_key,
+        tenant,
+    })
 }
 
 fn cmd_build_image(
@@ -308,7 +337,9 @@ fn run_engine_spec_case(runtime_name: &'static str, case: EngineSpecCase) {
 
 #[test]
 fn spec_tests() {
+    let staging = staging_env().is_some();
     let result = testscript::run("specs")
+        .condition("staging", staging)
         .setup(|env| {
             env.set_env_var("RUST_LOG", "debug");
             if let Some(path) = filtered_path_without_binary("snouty-update") {

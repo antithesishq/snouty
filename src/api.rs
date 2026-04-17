@@ -206,7 +206,7 @@ impl AntithesisApi {
         if status.is_success() {
             Ok(body)
         } else {
-            Err(eyre!("API error: {} - {}", status.as_u16(), body))
+            Err(format_api_error(status.as_u16(), &body))
         }
     }
 
@@ -238,7 +238,7 @@ impl AntithesisApi {
             Ok(response)
         } else {
             let body = response.text().await.unwrap_or_default();
-            Err(eyre!("API error: {} - {}", status.as_u16(), body))
+            Err(format_api_error(status.as_u16(), &body))
         }
     }
 
@@ -271,7 +271,7 @@ impl AntithesisApi {
             Ok(response)
         } else {
             let body = response.text().await.unwrap_or_default();
-            Err(eyre!("API error: {} - {}", status.as_u16(), body))
+            Err(format_api_error(status.as_u16(), &body))
         }
     }
 
@@ -335,7 +335,7 @@ impl AntithesisApi {
             Ok(response)
         } else {
             let body = response.text().await.unwrap_or_default();
-            Err(eyre!("API error: {} - {}", status.as_u16(), body))
+            Err(format_api_error(status.as_u16(), &body))
         }
     }
 
@@ -544,22 +544,42 @@ fn launch_request(params: &Params) -> Result<generated::types::LaunchRequest> {
     .wrap_err("failed to build launch request")
 }
 
+fn format_api_error(status: u16, body: &str) -> Report {
+    let reason = reqwest::StatusCode::from_u16(status)
+        .ok()
+        .and_then(|s| s.canonical_reason())
+        .unwrap_or("");
+    let body = body.trim();
+
+    let mut msg = format!("API error: {status}");
+    if !reason.is_empty() {
+        msg.push(' ');
+        msg.push_str(reason);
+    }
+    if !body.is_empty() {
+        msg.push_str(" — ");
+        msg.push_str(body);
+    }
+    if matches!(status, 401 | 403) {
+        msg.push_str(
+            "\n\nCheck that ANTITHESIS_API_KEY (or ANTITHESIS_USERNAME/ANTITHESIS_PASSWORD) \
+             is set correctly and has access to this tenant.",
+        );
+    }
+    eyre!("{msg}")
+}
+
 async fn format_api_client_error(err: ClientError<generated::types::ErrorResponse>) -> Report {
     match err {
         ClientError::ErrorResponse(response) => {
             let status = response.status().as_u16();
             let body = response.into_inner();
-            let body =
-                serde_json::to_string(&body).unwrap_or_else(|e| format!("{{\"error\":\"{e}\"}}"));
-            eyre!("API error: {} - {}", status, body)
+            format_api_error(status, &body.message)
         }
         ClientError::UnexpectedResponse(response) => {
             let status = response.status().as_u16();
-            let body = response
-                .text()
-                .await
-                .unwrap_or_else(|e| format!("failed to read response body: {e}"));
-            eyre!("API error: {} - {}", status, body)
+            let body = response.text().await.unwrap_or_default();
+            format_api_error(status, &body)
         }
         ClientError::InvalidRequest(message) => eyre!("invalid API request: {message}"),
         ClientError::CommunicationError(err) => eyre!(err).wrap_err("failed to contact API"),

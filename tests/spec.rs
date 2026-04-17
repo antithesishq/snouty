@@ -368,57 +368,73 @@ fn run_engine_spec_case(runtime_name: &'static str, case: EngineSpecCase) {
 #[test]
 fn spec_tests() {
     let staging = is_staging();
-    let result = testscript::run("specs")
-        .condition("staging", staging)
-        .setup(|env| {
-            env.set_env_var("RUST_LOG", "debug");
-            if let Some(path) = filtered_path_without_binary("snouty-update") {
-                env.set_env_var("PATH", &path);
-            }
-            Ok(())
-        })
-        .command("snouty", cmd_snouty)
-        .command("mock-server", cmd_mock_server)
-        .command("mock-runs-server", cmd_mock_runs_server)
-        .command("set-env", |env, args| {
-            // Usage: set-env KEY value...
-            // Interpolates ${VAR} references in value using env.env_vars.
-            if args.len() < 2 {
-                return Err(err("set-env requires KEY and value".to_string()));
-            }
-            let key = &args[0];
-            let raw_value = args[1..].join(" ");
-            let value = env.substitute_env_vars(&raw_value);
-            env.set_env_var(key, &value);
-            Ok(())
-        })
-        .command("snouty-bg", |env, args| {
-            let child = snouty_cmd(env, args)
-                .spawn()
-                .map_err(|e| err(format!("spawn snouty-bg: {e}")))?;
-            env.background_processes.insert("snouty".to_string(), child);
-            Ok(())
-        })
-        .command("setup-docs-db", |env, args| {
-            // Usage: setup-docs-db
-            // Copies the fixture docs.db into the workdir and sets ANTITHESIS_DOCS_DB_PATH.
-            let fixture =
-                std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/docs.db");
-            let dest = env.work_dir.join("docs.db");
-            std::fs::copy(&fixture, &dest)
-                .map_err(|e| err(format!("failed to copy fixture docs.db: {e}")))?;
-            let var_name = if args.is_empty() {
-                "ANTITHESIS_DOCS_DB_PATH"
-            } else {
-                &args[0]
-            };
-            env.set_env_var(var_name, dest.to_str().unwrap());
-            Ok(())
-        })
-        .execute();
+    let specs_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("specs");
+    let mut files: Vec<String> = std::fs::read_dir(&specs_dir)
+        .expect("read specs/")
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().extension().is_some_and(|ext| ext == "txt"))
+        .filter_map(|e| e.file_name().into_string().ok())
+        .collect();
+    files.sort();
 
-    if let Err(e) = result {
-        panic!("\n{e}");
+    for file in files {
+        let result = testscript::run("specs")
+            .files([file.clone()])
+            .condition("staging", staging)
+            .setup(|env| {
+                env.set_env_var("RUST_LOG", "debug");
+                if let Some(path) = filtered_path_without_binary("snouty-update") {
+                    env.set_env_var("PATH", &path);
+                }
+                Ok(())
+            })
+            .command("snouty", cmd_snouty)
+            .command("mock-server", cmd_mock_server)
+            .command("mock-runs-server", cmd_mock_runs_server)
+            .command("set-env", |env, args| {
+                // Usage: set-env KEY value...
+                // Interpolates ${VAR} references in value using env.env_vars.
+                if args.len() < 2 {
+                    return Err(err("set-env requires KEY and value".to_string()));
+                }
+                let key = &args[0];
+                let raw_value = args[1..].join(" ");
+                let value = env.substitute_env_vars(&raw_value);
+                env.set_env_var(key, &value);
+                Ok(())
+            })
+            .command("snouty-bg", |env, args| {
+                let child = snouty_cmd(env, args)
+                    .spawn()
+                    .map_err(|e| err(format!("spawn snouty-bg: {e}")))?;
+                env.background_processes.insert("snouty".to_string(), child);
+                Ok(())
+            })
+            .command("setup-docs-db", |env, args| {
+                // Usage: setup-docs-db
+                // Copies the fixture docs.db into the workdir and sets ANTITHESIS_DOCS_DB_PATH.
+                let fixture =
+                    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/docs.db");
+                let dest = env.work_dir.join("docs.db");
+                std::fs::copy(&fixture, &dest)
+                    .map_err(|e| err(format!("failed to copy fixture docs.db: {e}")))?;
+                let var_name = if args.is_empty() {
+                    "ANTITHESIS_DOCS_DB_PATH"
+                } else {
+                    &args[0]
+                };
+                env.set_env_var(var_name, dest.to_str().unwrap());
+                Ok(())
+            })
+            .execute();
+
+        match result {
+            Ok(()) => {}
+            Err(e) if e.to_string().contains("SKIP:") => {
+                eprintln!("skipping {file}");
+            }
+            Err(e) => panic!("\n{e}"),
+        }
     }
 }
 

@@ -2,6 +2,8 @@
 #
 # Submit raw parameters to an Antithesis webhook endpoint.
 
+[staging] skip
+
 # Requires API credentials from environment.
 ! snouty api webhook -w basic_test --antithesis.duration 30
 stderr 'missing environment variable.*'
@@ -50,7 +52,7 @@ stderr '"antithesis.duration": "30"'
 mock-server 200 '{"statusCode":202,"runId":"run-123"}'
 snouty api webhook --webhook basic_k8s_test --antithesis.duration 30
 
-# Custom webhook names accepted.
+# Custom webhook names accepted (CLI does no client-side validation).
 mock-server 200 '{"statusCode":202,"runId":"run-123"}'
 snouty api webhook -w my_custom_webhook --antithesis.duration 30
 

@@ -39,6 +39,9 @@ stderr '"antithesis.config_image": "config:latest"'
 stderr '"antithesis.duration": "30"'
 stderr '"antithesis.report.recipients": "\[REDACTED\]"'
 stderr '"antithesis.source": "ci-pipeline"'
+stderr 'Expect a report email.*'
+
+[staging] skip
 
 # 6b. --ephemeral flag sets antithesis.is_ephemeral to "true".
 mock-server 200 '{"statusCode":202,"runId":"run-123"}'
@@ -73,12 +76,6 @@ stderr 'cannot be overridden via --param.*'
 mock-server 200 '{}'
 ! snouty launch -w basic_test
 stderr 'no parameters provided.*'
-
-# On success, the command prints a human-readable ETA for the report
-#    email to stderr.
-mock-server 200 '{"statusCode":202,"runId":"run-123"}'
-snouty launch -w basic_test --duration 30
-stderr 'Expect a report email.*'
 
 # On API failure, the command exits with an error showing the HTTP status
 #    and response body.

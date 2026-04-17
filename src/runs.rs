@@ -20,8 +20,8 @@ static ASSERTION_VALIDATOR: LazyLock<Validator> = LazyLock::new(build_assertion_
 
 pub async fn cmd_runs(command: Option<RunsCommands>, json: bool) -> Result<()> {
     match command {
-        None => cmd_runs_list(RunsListArgs::default()).await,
-        Some(RunsCommands::List(args)) => cmd_runs_list(args).await,
+        None => cmd_runs_list(RunsListArgs::default(), json).await,
+        Some(RunsCommands::List(args)) => cmd_runs_list(args, json).await,
         Some(RunsCommands::Show { run_id }) => cmd_runs_show(&run_id, json).await,
         Some(RunsCommands::Properties {
             run_id,
@@ -61,7 +61,7 @@ pub async fn cmd_runs(command: Option<RunsCommands>, json: bool) -> Result<()> {
     }
 }
 
-async fn cmd_runs_list(args: RunsListArgs) -> Result<()> {
+async fn cmd_runs_list(args: RunsListArgs, json: bool) -> Result<()> {
     info!("listing runs");
 
     let api = AntithesisApi::from_env()?;
@@ -111,16 +111,23 @@ async fn cmd_runs_list(args: RunsListArgs) -> Result<()> {
     // Apply client-side limit
     runs.truncate(args.limit);
 
-    if runs.is_empty() {
-        println!("No runs found.");
-        return Ok(());
-    }
-
     runs.sort_by(|a, b| {
         b.created_at
             .cmp(&a.created_at)
             .then(a.status.cmp(&b.status))
     });
+
+    if json {
+        for run in &runs {
+            println!("{}", serde_json::to_string(run)?);
+        }
+        return Ok(());
+    }
+
+    if runs.is_empty() {
+        println!("No runs found.");
+        return Ok(());
+    }
 
     println!("{}", render_runs_table(&runs));
     Ok(())

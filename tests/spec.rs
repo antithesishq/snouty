@@ -62,8 +62,9 @@ fn cmd_snouty(
     args: &[String],
 ) -> testscript_rs::Result<()> {
     let start = std::time::Instant::now();
-    let label = args.join(" ");
-    let mut cmd = snouty_cmd(env, args);
+    let expanded: Vec<String> = args.iter().map(|a| env.substitute_env_vars(a)).collect();
+    let label = expanded.join(" ");
+    let mut cmd = snouty_cmd(env, &expanded);
     if env.next_stdin.is_some() {
         cmd.stdin(Stdio::piped());
     }
@@ -138,6 +139,50 @@ fn cmd_mock_server(
     env.set_env_var("ANTITHESIS_USERNAME", "testuser");
     env.set_env_var("ANTITHESIS_PASSWORD", "testpass");
     env.set_env_var("ANTITHESIS_TENANT", "testtenant");
+    Ok(())
+}
+
+fn cmd_env_from_json(
+    env: &mut testscript_rs::TestEnvironment,
+    args: &[String],
+) -> testscript_rs::Result<()> {
+    // Usage: env_from_json <line_index> <json_key>
+    // Parses the previous command's stdout as NDJSON, extracts <json_key>
+    // from line <line_index> (0-based) and stores it as $R_<json_key>.
+    if args.len() != 2 {
+        return Err(err(
+            "env_from_json requires <line_index> <json_key>".to_string(),
+        ));
+    }
+    let line_idx: usize = args[0]
+        .parse()
+        .map_err(|_| err("line_index must be a non-negative integer".to_string()))?;
+    let key = &args[1];
+
+    let output = env
+        .last_output
+        .as_ref()
+        .ok_or_else(|| err("no previous command output".to_string()))?;
+    let stdout = std::str::from_utf8(&output.stdout)
+        .map_err(|e| err(format!("stdout is not valid UTF-8: {e}")))?;
+    let lines: Vec<&str> = stdout.lines().collect();
+    let line = lines.get(line_idx).ok_or_else(|| {
+        err(format!(
+            "stdout has only {} line(s); cannot read line {}",
+            lines.len(),
+            line_idx
+        ))
+    })?;
+    let value: serde_json::Value =
+        serde_json::from_str(line).map_err(|e| err(format!("parse JSON line: {e}")))?;
+    let extracted = match value.get(key) {
+        Some(serde_json::Value::Null) | None => {
+            return Err(err(format!("key '{key}' not found in JSON")));
+        }
+        Some(serde_json::Value::String(s)) => s.clone(),
+        Some(other) => other.to_string(),
+    };
+    env.set_env_var(&format!("R_{key}"), &extracted);
     Ok(())
 }
 
@@ -351,6 +396,7 @@ fn run_engine_spec_case(runtime_name: &'static str, case: EngineSpecCase) {
         })
         .command("snouty", cmd_snouty)
         .command("mock-server", cmd_mock_server)
+        .command("env_from_json", cmd_env_from_json)
         .command("build-image", cmd_build_image)
         .execute();
 
@@ -391,6 +437,7 @@ fn spec_tests() {
             .command("snouty", cmd_snouty)
             .command("mock-server", cmd_mock_server)
             .command("mock-runs-server", cmd_mock_runs_server)
+            .command("env_from_json", cmd_env_from_json)
             .command("set-env", |env, args| {
                 // Usage: set-env KEY value...
                 // Interpolates ${VAR} references in value using env.env_vars.

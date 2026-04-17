@@ -30,6 +30,85 @@ stdout 'RUN ID.*STATUS.*TYPE.*CREATED AT.*LAUNCHER'
 ! snouty runs show
 stderr '.*'
 
+# `snouty --json runs` outputs NDJSON (one run per line) so a run id can be
+#    captured for use in subsequent commands as $R_run_id.
+mock-runs-server
+snouty --json runs
+[!staging] stdout '"run_id":"run-.*'
+[!staging] stdout -count=2 '"run_id":"run-'
+env_from_json 0 run_id
+
+# `snouty runs show` displays run details in key-value format.
+mock-runs-server
+snouty runs show $R_run_id
+stdout 'Run ID.*$R_run_id'
+[!staging] stdout 'Status.*completed'
+[!staging] stdout 'Launcher.*nightly'
+
+# `snouty --json runs show` outputs JSON.
+mock-runs-server
+snouty --json runs show $R_run_id
+stdout '"run_id".*"$R_run_id"'
+[!staging] stdout '"status".*"completed"'
+
+# `snouty runs properties` shows all properties by default as flattened event rows.
+mock-runs-server
+snouty runs properties $R_run_id
+[!staging] stdout 'EXAMPLE.*HASH.*VTIME.*NAME'
+[!staging] stdout 'Failing.*-100.*5\.0.*Counter value stays below limit'
+[!staging] stdout 'Failing.*-200.*10\.0.*Counter value stays below limit'
+[!staging] stdout 'Passing.*-300.*15\.0.*Counter value stays below limit'
+[!staging] stdout 'Passing.*-400.*1\.0.*Setup completes'
+
+# `snouty runs properties --failing` shows only failing properties.
+mock-runs-server
+snouty runs properties --failing $R_run_id
+[!staging] stdout 'Failing.*-100.*5\.0.*Counter value stays below limit'
+[!staging] stdout 'Failing.*-200.*10\.0.*Counter value stays below limit'
+[!staging] stdout 'Passing.*-300.*15\.0.*Counter value stays below limit'
+[!staging] ! stdout 'Setup completes'
+
+# `snouty runs properties --passing` shows only passing properties.
+mock-runs-server
+snouty runs properties --passing $R_run_id
+[!staging] stdout 'Passing.*-400.*1\.0.*Setup completes'
+[!staging] ! stdout 'Counter value stays below limit'
+
+# `snouty runs properties --passing --failing` is rejected.
+! snouty runs properties --passing --failing $R_run_id
+stderr '.*cannot be used with.*'
+
+# `snouty --json runs properties` outputs JSON.
+mock-runs-server
+snouty --json runs properties $R_run_id
+[!staging] stdout '"name".*"Counter value stays below limit"'
+[!staging] stdout '"status".*"Failing"'
+
+# `snouty runs build-logs` streams formatted build log lines.
+mock-runs-server
+snouty runs build-logs $R_run_id
+[!staging] stdout '2025-03-20T02:01:12Z \[out\] Building image payments-service\.\.\.'
+[!staging] stdout '2025-03-20T02:01:15Z \[err\] Warning: deprecated feature'
+[!staging] stdout '2025-03-20T02:01:20Z \[out\] Build complete'
+
+# `snouty --json runs build-logs` outputs raw NDJSON.
+mock-runs-server
+snouty --json runs build-logs $R_run_id
+[!staging] stdout '"timestamp".*"text"'
+
+# `snouty runs events` outputs a table by default.
+mock-runs-server
+snouty runs events $R_run_id request
+[!staging] stdout '^HASH\s+VTIME\s+SOURCE\s+OUTPUT'
+[!staging] stdout '-456.*2\.0.*\[app:error\].*\{"level":"warn","msg":"slow request"\}'
+
+# `snouty --json runs events` outputs raw NDJSON.
+mock-runs-server
+snouty --json runs events $R_run_id counter
+[!staging] stdout '"antithesis_assert".*"Counter'\''s value retrieved"'
+[!staging] stdout '.*"moment".*"input_hash":"-4735081784258020614".*'
+[!staging] stdout '.*"moment".*"vtime":"311\.8487535319291".*'
+
 [staging] skip
 
 # If no runs are returned, the command prints a friendly empty-state message.
@@ -41,52 +120,6 @@ stdout 'No runs found\.'
 mock-server 400 '{"error":"bad_request","message":"bad request"}'
 ! snouty runs
 stderr 'API error: 400.*'
-
-# `snouty runs show` displays run details in key-value format.
-mock-runs-server
-snouty runs show run-1
-stdout 'Run ID.*run-1'
-stdout 'Status.*completed'
-stdout 'Launcher.*nightly'
-
-# `snouty --json runs show` outputs JSON.
-mock-runs-server
-snouty --json runs show run-1
-stdout '"run_id".*"run-1"'
-stdout '"status".*"completed"'
-
-# `snouty runs properties` shows all properties by default as flattened event rows.
-mock-runs-server
-snouty runs properties run-1
-stdout 'EXAMPLE.*HASH.*VTIME.*NAME'
-stdout 'Failing.*-100.*5\.0.*Counter value stays below limit'
-stdout 'Failing.*-200.*10\.0.*Counter value stays below limit'
-stdout 'Passing.*-300.*15\.0.*Counter value stays below limit'
-stdout 'Passing.*-400.*1\.0.*Setup completes'
-
-# `snouty runs properties --failing` shows only failing properties.
-mock-runs-server
-snouty runs properties --failing run-1
-stdout 'Failing.*-100.*5\.0.*Counter value stays below limit'
-stdout 'Failing.*-200.*10\.0.*Counter value stays below limit'
-stdout 'Passing.*-300.*15\.0.*Counter value stays below limit'
-! stdout 'Setup completes'
-
-# `snouty runs properties --passing` shows only passing properties.
-mock-runs-server
-snouty runs properties --passing run-1
-stdout 'Passing.*-400.*1\.0.*Setup completes'
-! stdout 'Counter value stays below limit'
-
-# `snouty runs properties --passing --failing` is rejected.
-! snouty runs properties --passing --failing run-1
-stderr '.*cannot be used with.*'
-
-# `snouty --json runs properties` outputs JSON.
-mock-runs-server
-snouty --json runs properties run-1
-stdout '"name".*"Counter value stays below limit"'
-stdout '"status".*"Failing"'
 
 # `snouty runs properties` prints a friendly empty-state message when no properties exist.
 mock-runs-server
@@ -101,18 +134,6 @@ stdout 'No sampled property events found\.'
 # `snouty runs properties` requires a run ID.
 ! snouty runs properties
 stderr '.*'
-
-# `snouty runs build-logs` streams formatted build log lines.
-mock-runs-server
-snouty runs build-logs run-1
-stdout '2025-03-20T02:01:12Z \[out\] Building image payments-service\.\.\.'
-stdout '2025-03-20T02:01:15Z \[err\] Warning: deprecated feature'
-stdout '2025-03-20T02:01:20Z \[out\] Build complete'
-
-# `snouty --json runs build-logs` outputs raw NDJSON.
-mock-runs-server
-snouty --json runs build-logs run-1
-stdout '"timestamp".*"text"'
 
 # `snouty runs logs` outputs a table by default.
 mock-runs-server
@@ -141,19 +162,6 @@ stdout -count=1 'line one\\nline two'
 mock-runs-server
 ! snouty runs logs run-1
 stderr '.*input.hash.*'
-
-# `snouty runs events` outputs a table by default.
-mock-runs-server
-snouty runs events run-1 request
-stdout '^HASH\s+VTIME\s+SOURCE\s+OUTPUT'
-stdout '-456.*2\.0.*\[app:error\].*\{"level":"warn","msg":"slow request"\}'
-
-# `snouty --json runs events` outputs raw NDJSON.
-mock-runs-server
-snouty --json runs events run-1 counter
-stdout '"antithesis_assert".*"Counter'\''s value retrieved"'
-stdout '.*"moment".*"input_hash":"-4735081784258020614".*'
-stdout '.*"moment".*"vtime":"311\.8487535319291".*'
 
 # `snouty runs events` prints a friendly empty-state message.
 mock-runs-server

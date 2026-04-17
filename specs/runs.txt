@@ -82,7 +82,7 @@ stderr '.*cannot be used with.*'
 mock-runs-server
 snouty --json runs properties $R_run_id
 [!staging] stdout '"name".*"Counter value stays below limit"'
-[!staging] stdout '"status".*"Failing"'
+[!staging] stdout '"status".*"failing"'
 
 # `snouty runs build-logs` streams formatted build log lines.
 mock-runs-server

@@ -1014,7 +1014,7 @@
       },
       "Property_Status": {
         "type": "string",
-        "enum": ["Passing", "Failing"],
+        "enum": ["passing", "failing"],
         "description": "Whether the property is currently passing or failing."
       },
       "Run_Status": {

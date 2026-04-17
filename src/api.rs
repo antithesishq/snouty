@@ -808,7 +808,7 @@ mod tests {
                 "data": [
                     {
                         "name": "Counter value stays below limit",
-                        "status": "Failing",
+                        "status": "failing",
                         "is_event": true,
                         "is_existential": false,
                         "is_universal": true
@@ -829,7 +829,7 @@ mod tests {
                 "data": [
                     {
                         "name": "Setup completes",
-                        "status": "Passing",
+                        "status": "passing",
                         "is_event": false,
                         "is_existential": true,
                         "is_universal": false
@@ -873,7 +873,7 @@ mod tests {
         Mock::given(method("GET"))
             .and(path("/api/v1/runs/run-1/properties"))
             .and(query_param("limit", "100"))
-            .and(query_param("status", "Failing"))
+            .and(query_param("status", "failing"))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "data": [],
                 "next_cursor": null

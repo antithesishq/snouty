@@ -569,6 +569,50 @@ fn format_api_error(status: u16, body: &str) -> Report {
     eyre!("{msg}")
 }
 
+fn format_payload_snippet(body: &str, line: usize, column: usize) -> String {
+    const WINDOW: usize = 60;
+
+    let offset = char_pos_to_byte_offset(body, line, column);
+    let start_target = offset.saturating_sub(WINDOW);
+    let end_target = offset.saturating_add(WINDOW).min(body.len());
+    let start = (0..=start_target)
+        .rev()
+        .find(|&i| body.is_char_boundary(i))
+        .unwrap_or(0);
+    let end = (end_target..=body.len())
+        .find(|&i| body.is_char_boundary(i))
+        .unwrap_or(body.len());
+
+    let prefix = if start > 0 { "..." } else { "" };
+    let suffix = if end < body.len() { "..." } else { "" };
+
+    let snippet: String = body[start..end]
+        .chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect();
+    let caret_col = prefix.chars().count() + body[start..offset].chars().count();
+    let caret = format!("{:width$}^", "", width = caret_col);
+
+    format!("  {prefix}{snippet}{suffix}\n  {caret}")
+}
+
+fn char_pos_to_byte_offset(body: &str, line: usize, column: usize) -> usize {
+    let mut cur_line = 1;
+    let mut cur_col = 1;
+    for (i, c) in body.char_indices() {
+        if cur_line == line && cur_col == column {
+            return i;
+        }
+        if c == '\n' {
+            cur_line += 1;
+            cur_col = 1;
+        } else {
+            cur_col += 1;
+        }
+    }
+    body.len()
+}
+
 async fn format_api_client_error(err: ClientError<generated::types::ErrorResponse>) -> Report {
     match err {
         ClientError::ErrorResponse(response) => {
@@ -587,10 +631,11 @@ async fn format_api_client_error(err: ClientError<generated::types::ErrorRespons
         ClientError::ResponseBodyError(err) => {
             eyre!(err).wrap_err("failed to read API response body")
         }
-        ClientError::InvalidResponsePayload(body, err) => eyre!(
-            "invalid API response payload: {err}; body: {}",
-            String::from_utf8_lossy(&body)
-        ),
+        ClientError::InvalidResponsePayload(body, err) => {
+            let body = String::from_utf8_lossy(&body);
+            let snippet = format_payload_snippet(&body, err.line(), err.column());
+            eyre!("invalid API response payload: {err}\n{snippet}")
+        }
         ClientError::Custom(message) => eyre!(message),
     }
 }

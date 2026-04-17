@@ -17,7 +17,7 @@ json5 = "1.3.0"
 jsonschema = { version = "0.37.4", default-features = false, features = ["resolve-file"] }
 log = "0.4"
 progenitor-client = "0.13.0"
-reqwest = { version = "0.13.1", default-features = false, features = ["json", "query", "stream", "native-tls-vendored"] }
+reqwest = { version = "0.13.1", default-features = false, features = ["http2", "json", "query", "stream", "native-tls-vendored"] }
 color-eyre = { version = "0.6", default-features = false }
 futures-util = "0.3"
 tokio = { version = "1", features = ["rt", "macros", "process", "time", "io-util", "io-std", "signal"] }

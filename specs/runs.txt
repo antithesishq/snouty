@@ -87,9 +87,9 @@ snouty --json runs properties $R_run_id
 # `snouty runs build-logs` streams formatted build log lines.
 mock-runs-server
 snouty runs build-logs $R_run_id
-[!staging] stdout '2025-03-20T02:01:12Z \[out\] Building image payments-service\.\.\.'
-[!staging] stdout '2025-03-20T02:01:15Z \[err\] Warning: deprecated feature'
-[!staging] stdout '2025-03-20T02:01:20Z \[out\] Build complete'
+[!staging] stdout '2025-03-20T02:01:12Z \[stdout\] Building image payments-service\.\.\.'
+[!staging] stdout '2025-03-20T02:01:15Z \[stderr\] Warning: deprecated feature'
+[!staging] stdout '2025-03-20T02:01:20Z \[stdout\] Build complete'
 
 # `snouty --json runs build-logs` outputs raw NDJSON.
 mock-runs-server

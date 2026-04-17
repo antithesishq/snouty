@@ -920,7 +920,7 @@
           },
           "stream": {
             "type": "string",
-            "enum": ["out", "err"],
+            "enum": ["stdout", "stderr"],
             "description": "Whether this line is from standard output or standard error."
           },
           "text": {

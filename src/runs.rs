@@ -245,7 +245,7 @@ async fn cmd_runs_build_logs(run_id: &str, json: bool) -> Result<()> {
         stream_ndjson_lines(response, |line| {
             if let Ok(entry) = serde_json::from_str::<serde_json::Value>(line) {
                 let ts = entry["timestamp"].as_str().unwrap_or("");
-                let stream = entry["stream"].as_str().unwrap_or("out");
+                let stream = entry["stream"].as_str().unwrap_or("stdout");
                 let text = sanitize(entry["text"].as_str().unwrap_or(""));
                 writeln!(stdout, "{ts} [{stream}] {text}")?;
             } else {

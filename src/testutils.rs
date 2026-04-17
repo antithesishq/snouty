@@ -507,9 +507,9 @@ fn mock_route_get_run(run_id: &str) -> (u16, String) {
 
 fn mock_route_get_run_build_logs(_run_id: &str) -> (u16, String) {
     let lines = [
-        r#"{"timestamp":"2025-03-20T02:01:12Z","stream":"out","text":"Building image payments-service..."}"#,
-        r#"{"timestamp":"2025-03-20T02:01:15Z","stream":"err","text":"Warning: deprecated feature"}"#,
-        r#"{"timestamp":"2025-03-20T02:01:20Z","stream":"out","text":"Build complete"}"#,
+        r#"{"timestamp":"2025-03-20T02:01:12Z","stream":"stdout","text":"Building image payments-service..."}"#,
+        r#"{"timestamp":"2025-03-20T02:01:15Z","stream":"stderr","text":"Warning: deprecated feature"}"#,
+        r#"{"timestamp":"2025-03-20T02:01:20Z","stream":"stdout","text":"Build complete"}"#,
     ];
     (200, lines.join("\n") + "\n")
 }

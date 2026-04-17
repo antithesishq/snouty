@@ -1014,8 +1014,8 @@
       },
       "Run_Status": {
         "type": "string",
-        "enum": ["starting", "in_progress", "debugger_ready", "completed", "cancelled", "failed"],
-        "description": "Current lifecycle status of a run. `starting` — the run is being set up. `in_progress` — the run is actively running. `debugger_ready` — the multiverse debugger (MVD) run is ready for interaction (MVD runs only). `completed` — the run finished successfully. `cancelled` — the run was cancelled before completion. `failed` — the run did not complete successfully (incomplete)."
+        "enum": ["starting", "in_progress", "debugger_ready", "completed", "cancelled", "failed", "unknown"],
+        "description": "Current lifecycle status of a run. `starting` — the run is being set up. `in_progress` — the run is actively running. `debugger_ready` — the multiverse debugger (MVD) run is ready for interaction (MVD runs only). `completed` — the run finished successfully. `cancelled` — the run was cancelled before completion. `failed` — the run did not complete successfully (incomplete). `unknown` — the run's status could not be determined."
       },
       "Run_Type": {
         "type": "string",

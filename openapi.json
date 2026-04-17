@@ -801,9 +801,9 @@
       "Launch_Response": {
         "type": "object",
         "description": "Response returned when a test is successfully launched.",
-        "required": ["run_id"],
+        "required": ["runId"],
         "properties": {
-          "run_id": {
+          "runId": {
             "type": "string",
             "description": "Unique identifier for the launched run.",
             "example": "c8d2f4a6e0b3197d5f8a2c4e6b0d3f79-49-1"

@@ -94,7 +94,7 @@ fn runs_prints_empty_state() {
 
 #[test]
 fn launch_with_typed_flags() {
-    let mock_url = start_mock_server(r#"{"run_id": "run-123"}"#, 200);
+    let mock_url = start_mock_server(r#"{"runId": "run-123"}"#, 200);
 
     snouty_with_mock(&mock_url)
         .args([
@@ -137,7 +137,7 @@ fn launch_with_typed_flags() {
 
 #[test]
 fn launch_with_ephemeral_flag() {
-    let mock_url = start_mock_server(r#"{"run_id": "run-123"}"#, 200);
+    let mock_url = start_mock_server(r#"{"runId": "run-123"}"#, 200);
 
     snouty_with_mock(&mock_url)
         .args([
@@ -157,7 +157,7 @@ fn launch_with_ephemeral_flag() {
 
 #[test]
 fn launch_without_source_sets_ephemeral() {
-    let mock_url = start_mock_server(r#"{"run_id": "run-123"}"#, 200);
+    let mock_url = start_mock_server(r#"{"runId": "run-123"}"#, 200);
 
     snouty_with_mock(&mock_url)
         .args(["launch", "-w", "basic_test", "--duration", "30"])
@@ -173,7 +173,7 @@ fn launch_without_source_sets_ephemeral() {
 
 #[test]
 fn launch_with_source_omits_ephemeral() {
-    let mock_url = start_mock_server(r#"{"run_id": "run-123"}"#, 200);
+    let mock_url = start_mock_server(r#"{"runId": "run-123"}"#, 200);
 
     snouty_with_mock(&mock_url)
         .args([
@@ -193,7 +193,7 @@ fn launch_with_source_omits_ephemeral() {
 
 #[test]
 fn launch_with_param_flag() {
-    let mock_url = start_mock_server(r#"{"run_id": "run-123"}"#, 200);
+    let mock_url = start_mock_server(r#"{"runId": "run-123"}"#, 200);
 
     snouty_with_mock(&mock_url)
         .args([
@@ -217,7 +217,7 @@ fn launch_with_param_flag() {
 
 #[test]
 fn launch_param_cannot_override_typed_flag() {
-    let mock_url = start_mock_server(r#"{"run_id": "run-123"}"#, 200);
+    let mock_url = start_mock_server(r#"{"runId": "run-123"}"#, 200);
 
     snouty_with_mock(&mock_url)
         .args([
@@ -302,7 +302,7 @@ fn launch_fails_without_credentials() {
 
 #[test]
 fn api_webhook_with_cli_args() {
-    let mock_url = start_mock_server(r#"{"run_id": "run-123"}"#, 200);
+    let mock_url = start_mock_server(r#"{"runId": "run-123"}"#, 200);
 
     snouty_with_mock(&mock_url)
         .args([
@@ -345,7 +345,7 @@ fn api_webhook_with_cli_args() {
 
 #[test]
 fn api_webhook_with_stdin_json() {
-    let mock_url = start_mock_server(r#"{"run_id": "run-123"}"#, 200);
+    let mock_url = start_mock_server(r#"{"runId": "run-123"}"#, 200);
 
     snouty_with_mock(&mock_url)
         .args(["api", "webhook", "-w", "basic_test", "--stdin"])
@@ -360,7 +360,7 @@ fn api_webhook_with_stdin_json() {
 
 #[test]
 fn api_webhook_with_custom_properties() {
-    let mock_url = start_mock_server(r#"{"run_id": "run-123"}"#, 200);
+    let mock_url = start_mock_server(r#"{"runId": "run-123"}"#, 200);
 
     snouty_with_mock(&mock_url)
         .args([
@@ -380,7 +380,7 @@ fn api_webhook_with_custom_properties() {
 
 #[test]
 fn api_webhook_stdin_flag_required_for_stdin_input() {
-    let mock_url = start_mock_server(r#"{"run_id": "run-123"}"#, 200);
+    let mock_url = start_mock_server(r#"{"runId": "run-123"}"#, 200);
 
     snouty_with_mock(&mock_url)
         .args([
@@ -400,7 +400,7 @@ fn api_webhook_stdin_flag_required_for_stdin_input() {
 
 #[test]
 fn api_webhook_with_k8s_webhook() {
-    let mock_url = start_mock_server(r#"{"run_id": "run-123"}"#, 200);
+    let mock_url = start_mock_server(r#"{"runId": "run-123"}"#, 200);
 
     snouty_with_mock(&mock_url)
         .args([
@@ -417,7 +417,7 @@ fn api_webhook_with_k8s_webhook() {
 
 #[test]
 fn api_webhook_with_custom_webhook() {
-    let mock_url = start_mock_server(r#"{"run_id": "run-123"}"#, 200);
+    let mock_url = start_mock_server(r#"{"runId": "run-123"}"#, 200);
 
     snouty_with_mock(&mock_url)
         .args([
@@ -530,7 +530,7 @@ fn api_webhook_fails_without_parameters() {
 
 #[test]
 fn api_webhook_merges_stdin_json_with_cli_args() {
-    let mock_url = start_mock_server(r#"{"run_id": "run-123"}"#, 200);
+    let mock_url = start_mock_server(r#"{"runId": "run-123"}"#, 200);
 
     snouty_with_mock(&mock_url)
         .args([
@@ -556,7 +556,7 @@ fn api_webhook_merges_stdin_json_with_cli_args() {
 
 #[test]
 fn api_webhook_cli_args_override_stdin_json() {
-    let mock_url = start_mock_server(r#"{"run_id": "run-123"}"#, 200);
+    let mock_url = start_mock_server(r#"{"runId": "run-123"}"#, 200);
 
     snouty_with_mock(&mock_url)
         .args([
@@ -579,7 +579,7 @@ fn api_webhook_cli_args_override_stdin_json() {
 
 #[test]
 fn api_webhook_success_outputs_valid_json() {
-    let mock_url = start_mock_server(r#"{"run_id": "run-123"}"#, 200);
+    let mock_url = start_mock_server(r#"{"runId": "run-123"}"#, 200);
 
     let output = snouty_with_mock(&mock_url)
         .args([
@@ -600,7 +600,7 @@ fn api_webhook_success_outputs_valid_json() {
     let parsed: serde_json::Value =
         serde_json::from_str(stdout.trim()).expect("stdout should be valid JSON");
     assert!(parsed.is_object());
-    assert_eq!(parsed["run_id"], "run-123");
+    assert_eq!(parsed["runId"], "run-123");
 }
 
 #[test]
@@ -627,7 +627,7 @@ fn api_webhook_error_outputs_string_on_stderr() {
 
 #[test]
 fn api_webhook_success_does_not_print_email_eta() {
-    let mock_url = start_mock_server(r#"{"run_id": "run-123"}"#, 200);
+    let mock_url = start_mock_server(r#"{"runId": "run-123"}"#, 200);
 
     snouty_with_mock(&mock_url)
         .args([
@@ -645,7 +645,7 @@ fn api_webhook_success_does_not_print_email_eta() {
 
 #[test]
 fn launch_prints_email_eta() {
-    let mock_url = start_mock_server(r#"{"run_id": "run-123"}"#, 200);
+    let mock_url = start_mock_server(r#"{"runId": "run-123"}"#, 200);
 
     snouty_with_mock(&mock_url)
         .args(["launch", "-w", "basic_test", "--duration", "30"])
@@ -656,7 +656,7 @@ fn launch_prints_email_eta() {
 
 #[test]
 fn run_prints_deprecation_warning() {
-    let mock_url = start_mock_server(r#"{"run_id": "run-123"}"#, 200);
+    let mock_url = start_mock_server(r#"{"runId": "run-123"}"#, 200);
 
     snouty_with_mock(&mock_url)
         .args(["run", "-w", "basic_test", "--duration", "30"])

@@ -102,6 +102,12 @@ fn cmd_mock_server(
     if args.len() < 2 {
         return Err(err("mock-server requires <status> <body>".to_string()));
     }
+
+    if is_staging() {
+        propagate_antithesis_env(env)?;
+        return Ok(());
+    }
+
     let status: u16 = args[0]
         .parse()
         .map_err(|e| err(format!("invalid status code: {e}")))?;
@@ -149,15 +155,13 @@ fn cmd_mock_runs_server(
         }
     };
 
-    if let Some(staging) = staging_env() {
+    if is_staging() {
         if empty {
             return Err(err(
                 "mock-runs-server empty is not supported against staging; gate the block with [!staging]".to_string(),
             ));
         }
-        env.set_env_var("ANTITHESIS_BASE_URL", &staging.base_url);
-        env.set_env_var("ANTITHESIS_API_KEY", &staging.api_key);
-        env.set_env_var("ANTITHESIS_TENANT", &staging.tenant);
+        propagate_antithesis_env(env)?;
         return Ok(());
     }
 
@@ -178,21 +182,47 @@ fn cmd_mock_runs_server(
     Ok(())
 }
 
-struct StagingEnv {
-    base_url: String,
-    api_key: String,
-    tenant: String,
+fn is_staging() -> bool {
+    std::env::var("SNOUTY_STAGING")
+        .ok()
+        .is_some_and(|v| !v.is_empty() && v != "0")
 }
 
-fn staging_env() -> Option<StagingEnv> {
-    let base_url = std::env::var("SNOUTY_STAGING_BASE_URL").ok()?;
-    let api_key = std::env::var("SNOUTY_STAGING_API_KEY").ok()?;
-    let tenant = std::env::var("SNOUTY_STAGING_TENANT").ok()?;
-    Some(StagingEnv {
-        base_url,
-        api_key,
-        tenant,
-    })
+fn propagate_antithesis_env(
+    env: &mut testscript_rs::TestEnvironment,
+) -> testscript_rs::Result<()> {
+    let tenant = std::env::var("ANTITHESIS_TENANT")
+        .map_err(|_| err("SNOUTY_STAGING is set but ANTITHESIS_TENANT is not".to_string()))?;
+    let has_bearer = std::env::var("ANTITHESIS_API_KEY").is_ok();
+    let has_basic = std::env::var("ANTITHESIS_USERNAME").is_ok()
+        && std::env::var("ANTITHESIS_PASSWORD").is_ok();
+    if !has_bearer && !has_basic {
+        return Err(err(
+            "SNOUTY_STAGING is set but no credentials found (set ANTITHESIS_API_KEY or ANTITHESIS_USERNAME+ANTITHESIS_PASSWORD)"
+                .to_string(),
+        ));
+    }
+    for var in [
+        "ANTITHESIS_BASE_URL",
+        "ANTITHESIS_API_KEY",
+        "ANTITHESIS_USERNAME",
+        "ANTITHESIS_PASSWORD",
+        "ANTITHESIS_TENANT",
+    ] {
+        env.env_vars.remove(var);
+    }
+    env.set_env_var("ANTITHESIS_TENANT", &tenant);
+    for var in [
+        "ANTITHESIS_BASE_URL",
+        "ANTITHESIS_API_KEY",
+        "ANTITHESIS_USERNAME",
+        "ANTITHESIS_PASSWORD",
+    ] {
+        if let Ok(v) = std::env::var(var) {
+            env.set_env_var(var, &v);
+        }
+    }
+    Ok(())
 }
 
 fn cmd_build_image(
@@ -337,7 +367,7 @@ fn run_engine_spec_case(runtime_name: &'static str, case: EngineSpecCase) {
 
 #[test]
 fn spec_tests() {
-    let staging = staging_env().is_some();
+    let staging = is_staging();
     let result = testscript::run("specs")
         .condition("staging", staging)
         .setup(|env| {

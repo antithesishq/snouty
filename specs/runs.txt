@@ -2,15 +2,15 @@
 #
 # List all Antithesis runs.
 #
-# Assertions prefixed with [!staging] are skipped when SNOUTY_STAGING_* env
-# vars are set: they assert against hardcoded mock data that does not exist
-# on the live staging backend. Unprefixed assertions are structural and run
-# in both modes.
+# Assertions prefixed with [!staging] are skipped when SNOUTY_STAGING is
+# set: they assert against hardcoded mock data (or behaviors that only make
+# sense against the in-process mock) that does not exist on the live staging
+# backend. Unprefixed assertions are structural and run in both modes.
 
 # The command authenticates with the Antithesis API using
 #    ANTITHESIS_USERNAME, ANTITHESIS_PASSWORD, and ANTITHESIS_TENANT env vars.
-! snouty runs
-stderr 'missing environment variable.*'
+[!staging] ! snouty runs
+[!staging] stderr 'missing environment variable.*'
 
 # On success, the command fetches all pages via next_cursor and prints a table.
 mock-runs-server
@@ -25,9 +25,9 @@ stdout 'RUN ID.*STATUS.*TYPE.*CREATED AT.*LAUNCHER'
 [!staging] stdout 'No runs found\.'
 
 # API errors are reported with status code and body.
-mock-server 400 '{"error":"bad_request","message":"bad request"}'
-! snouty runs
-stderr 'API error: 400.*'
+[!staging] mock-server 400 '{"error":"bad_request","message":"bad request"}'
+[!staging] ! snouty runs
+[!staging] stderr 'API error: 400.*'
 
 # `snouty runs list` is the same as bare `snouty runs`.
 mock-runs-server

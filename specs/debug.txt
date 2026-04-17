@@ -14,7 +14,7 @@ stderr 'missing environment variable.*'
 
 # Parameters are provided as --key value pairs
 #    (e.g. --antithesis.debugging.session_id ...).
-mock-server 200 '{"session": "started"}'
+mock-server 200 '{"statusCode":202,"runId":"run-123"}'
 snouty debug --antithesis.debugging.input_hash abc123 --antithesis.debugging.session_id sess-456 --antithesis.debugging.vtime 1234567890
 stderr '"antithesis.debugging.input_hash": "abc123"'
 
@@ -23,7 +23,7 @@ stderr '"antithesis.debugging.input_hash": "abc123"'
 #    (e.g. Moment.from({ session_id: "...", ... })) is auto-detected on
 #    stdin. Keys are mapped to antithesis.debugging.* and numeric values are
 #    converted to strings.
-mock-server 200 '{"debugging": true}'
+mock-server 200 '{"statusCode":202,"runId":"run-123"}'
 stdin moment_input.txt
 snouty debug --stdin
 stderr '"antithesis.debugging.session_id": "f89d5c11f5e3bf5e4bb3641809800cee-44-22"'
@@ -31,14 +31,14 @@ stderr '"antithesis.debugging.input_hash": "6057726200491963783"'
 stderr '"antithesis.debugging.vtime": "329.8037810830865"'
 
 # 3b. stdin as JSON
-mock-server 200 '{"ok": true}'
+mock-server 200 '{"statusCode":202,"runId":"run-123"}'
 stdin debug_json.txt
 snouty debug --stdin
 stderr '"antithesis.debugging.input_hash": "abc"'
 
 # When both stdin and CLI args are provided, CLI args take priority over
 #    stdin values.
-mock-server 200 '{"debugging": true}'
+mock-server 200 '{"statusCode":202,"runId":"run-123"}'
 stdin moment_input.txt
 snouty debug --stdin --antithesis.report.recipients team@example.com
 stderr '"antithesis.debugging.session_id": "f89d5c11f5e3bf5e4bb3641809800cee-44-22"'
@@ -62,17 +62,17 @@ stderr 'validation failed.*'
 
 # On success, the API response body is printed to stdout and a
 #    human-readable ETA for the debugging session email is printed to stderr.
-mock-server 200 '{"debugging": true}'
+mock-server 200 '{"statusCode":202,"runId":"run-123"}'
 stdin moment_input.txt
 snouty debug --stdin
-stdout '\{"debugging": true\}.*'
+stdout '"runId".*'
 stderr 'Expect a debugging session email.*'
 
 # On API failure, the command exits with an error showing the HTTP status
 #    and response body.
-mock-server 401 '{"error": "unauthorized"}'
-! snouty debug --antithesis.debugging.input_hash abc123 --antithesis.debugging.session_id sess-456 --antithesis.debugging.vtime 1234567890
-stderr 'API error: 401.*'
+[!staging] mock-server 401 '{"error": "unauthorized"}'
+[!staging] ! snouty debug --antithesis.debugging.input_hash abc123 --antithesis.debugging.session_id sess-456 --antithesis.debugging.vtime 1234567890
+[!staging] stderr 'API error: 401.*'
 
 -- moment_input.txt --
 Moment.from({ session_id: "f89d5c11f5e3bf5e4bb3641809800cee-44-22", input_hash: "6057726200491963783", vtime: 329.8037810830865 })

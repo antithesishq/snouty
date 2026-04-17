@@ -638,7 +638,7 @@
         },
         "responses": {
           "200": {
-            "description": "Test successfully launched.",
+            "description": "Test accepted for launch. The response body's `statusCode` field is `202`, indicating the run is queued.",
             "content": {
               "application/json": {
                 "schema": {
@@ -801,12 +801,17 @@
       "Launch_Response": {
         "type": "object",
         "description": "Response returned when a test is successfully launched.",
-        "required": ["runId"],
+        "required": ["runId", "statusCode"],
         "properties": {
           "runId": {
             "type": "string",
             "description": "Unique identifier for the launched run.",
             "example": "c8d2f4a6e0b3197d5f8a2c4e6b0d3f79-49-1"
+          },
+          "statusCode": {
+            "type": "integer",
+            "description": "Status code echoed in the response body. `202` indicates the run was accepted and queued. Note this is independent of the HTTP status, which is `200`.",
+            "example": 202
           }
         },
         "additionalProperties": true

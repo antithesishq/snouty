@@ -585,7 +585,10 @@ fn mock_route_search_run_events(run_id: &str, query: Option<&str>) -> (u16, Stri
 }
 
 fn mock_route_launch() -> (u16, String) {
-    (200, r#"{"runId":"mock-run-id"}"#.to_string())
+    (
+        200,
+        r#"{"statusCode":202,"runId":"mock-run-id"}"#.to_string(),
+    )
 }
 
 #[cfg(test)]

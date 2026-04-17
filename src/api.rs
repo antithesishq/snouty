@@ -674,6 +674,7 @@ mod tests {
         Mock::given(method("POST"))
             .and(path("/api/v1/launch/basic_test"))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "statusCode": 202,
                 "runId": "run-123"
             })))
             .expect(1)

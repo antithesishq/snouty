@@ -464,8 +464,8 @@ fn normalize_base_url(base_url: impl Into<String>) -> String {
 fn build_http_client(config: &Config) -> Result<Client> {
     let mut headers = reqwest::header::HeaderMap::new();
     headers.insert(reqwest::header::AUTHORIZATION, auth_header(&config.auth)?);
-    // HACK: the API rejects GET requests without a Content-Type header. Remove
-    // this once the server is fixed.
+    // HACK: the API rejects GET requests without a Content-Type header.
+    // Tracked in ENG-3772; remove this once the server-side fix ships.
     headers.insert(
         reqwest::header::CONTENT_TYPE,
         reqwest::header::HeaderValue::from_static("application/json"),

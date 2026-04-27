@@ -71,6 +71,9 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
 
     let json = cli.json;
+    if json && let Some(name) = json_unaware_command_name(&cli.command) {
+        eprintln!("warning: --json has no effect for `snouty {name}`");
+    }
     match cli.command {
         Commands::Launch(args) => {
             info!("launching test with webhook: {}", args.webhook);
@@ -103,6 +106,21 @@ async fn main() -> Result<()> {
         }
         Commands::Update => cmd_update(),
         Commands::Docs { offline, command } => docs::cmd_docs(command, offline, json).await,
+    }
+}
+
+fn json_unaware_command_name(command: &Commands) -> Option<&'static str> {
+    match command {
+        Commands::Runs { .. } | Commands::Docs { .. } => None,
+        Commands::Launch(_) => Some("launch"),
+        Commands::Run(_) => Some("run"),
+        Commands::Api(ApiCommands::Webhook { .. }) => Some("api webhook"),
+        Commands::Debug { .. } => Some("debug"),
+        Commands::Validate(_) => Some("validate"),
+        Commands::Doctor => Some("doctor"),
+        Commands::Completions { .. } => Some("completions"),
+        Commands::Version => Some("version"),
+        Commands::Update => Some("update"),
     }
 }
 

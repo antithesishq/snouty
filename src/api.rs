@@ -224,21 +224,17 @@ impl AntithesisApi {
         }
     }
 
-    pub async fn get_run_build_logs(&self, run_id: &str) -> Result<reqwest::Response> {
-        let url = format!(
-            "{}/api/{}/runs/{}/build_logs",
-            self.base_url, API_VERSION, run_id
-        );
-        debug!("GET {}", url);
-
-        let response = self.http_client.get(url).send().await?;
-
-        let status = response.status();
-        if status.is_success() {
-            Ok(response)
-        } else {
-            let body = response.text().await.unwrap_or_default();
-            Err(format_api_error(status.as_u16(), &body))
+    pub async fn get_run_build_logs(&self, run_id: &str) -> Result<ByteStream> {
+        match self
+            .client
+            .get_run_build_logs()
+            .version(API_VERSION)
+            .run_id(run_id)
+            .send()
+            .await
+        {
+            Ok(response) => Ok(response.into_inner()),
+            Err(err) => Err(format_api_client_error(err).await),
         }
     }
 
@@ -249,29 +245,24 @@ impl AntithesisApi {
         vtime: &str,
         begin_input_hash: Option<&str>,
         begin_vtime: Option<&str>,
-    ) -> Result<reqwest::Response> {
-        let url = format!("{}/api/{}/runs/{}/logs", self.base_url, API_VERSION, run_id);
-        debug!("GET {}", url);
-
-        let mut query = vec![
-            ("input_hash", input_hash.to_string()),
-            ("vtime", vtime.to_string()),
-        ];
+    ) -> Result<ByteStream> {
+        let mut request = self
+            .client
+            .get_run_logs()
+            .version(API_VERSION)
+            .run_id(run_id)
+            .input_hash(input_hash)
+            .vtime(vtime);
         if let Some(v) = begin_input_hash {
-            query.push(("begin_input_hash", v.to_string()));
+            request = request.begin_input_hash(v);
         }
         if let Some(v) = begin_vtime {
-            query.push(("begin_vtime", v.to_string()));
+            request = request.begin_vtime(v);
         }
 
-        let response = self.http_client.get(url).query(&query).send().await?;
-
-        let status = response.status();
-        if status.is_success() {
-            Ok(response)
-        } else {
-            let body = response.text().await.unwrap_or_default();
-            Err(format_api_error(status.as_u16(), &body))
+        match request.send().await {
+            Ok(response) => Ok(response.into_inner()),
+            Err(err) => Err(format_api_client_error(err).await),
         }
     }
 
@@ -316,26 +307,18 @@ impl AntithesisApi {
         )
     }
 
-    pub async fn search_run_events(&self, run_id: &str, query: &str) -> Result<reqwest::Response> {
-        let url = format!(
-            "{}/api/{}/runs/{}/events",
-            self.base_url, API_VERSION, run_id
-        );
-        debug!("GET {}", url);
-
-        let response = self
-            .http_client
-            .get(url)
-            .query(&[("q", query)])
+    pub async fn search_run_events(&self, run_id: &str, query: &str) -> Result<ByteStream> {
+        match self
+            .client
+            .search_run_events()
+            .version(API_VERSION)
+            .run_id(run_id)
+            .q(query)
             .send()
-            .await?;
-
-        let status = response.status();
-        if status.is_success() {
-            Ok(response)
-        } else {
-            let body = response.text().await.unwrap_or_default();
-            Err(format_api_error(status.as_u16(), &body))
+            .await
+        {
+            Ok(response) => Ok(response.into_inner()),
+            Err(err) => Err(format_api_client_error(err).await),
         }
     }
 
@@ -916,11 +899,16 @@ mod tests {
         );
         let api = AntithesisApi::with_base_url(config, mock_server.uri()).unwrap();
 
-        let response = api
+        let mut stream = api
             .search_run_events("run-1", "slow request")
             .await
-            .unwrap();
-        let body = response.text().await.unwrap();
+            .unwrap()
+            .into_inner();
+        let mut body = Vec::new();
+        while let Some(chunk) = futures_util::StreamExt::next(&mut stream).await {
+            body.extend_from_slice(&chunk.unwrap());
+        }
+        let body = String::from_utf8(body).unwrap();
 
         assert!(body.contains("slow request"));
     }

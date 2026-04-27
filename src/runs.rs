@@ -228,17 +228,17 @@ async fn cmd_runs_build_logs(run_id: &str, json: bool) -> Result<()> {
     info!("streaming build logs for run: {}", run_id);
 
     let api = AntithesisApi::from_env()?;
-    let response = api.get_run_build_logs(run_id).await?;
+    let stream = api.get_run_build_logs(run_id).await?.into_inner();
     let mut stdout = std::io::stdout().lock();
 
     if json {
-        stream_ndjson_lines(response, |line| {
+        stream_ndjson_lines(stream, |line| {
             writeln!(stdout, "{line}")?;
             Ok(())
         })
         .await
     } else {
-        stream_ndjson_lines(response, |line| {
+        stream_ndjson_lines(stream, |line| {
             if let Ok(entry) = serde_json::from_str::<serde_json::Value>(line) {
                 let ts = entry["timestamp"].as_str().unwrap_or("");
                 let stream = entry["stream"].as_str().unwrap_or("out");
@@ -257,18 +257,21 @@ async fn cmd_runs_events(run_id: &str, query: &[String], json: bool) -> Result<(
     info!("searching events for run: {}", run_id);
 
     let api = AntithesisApi::from_env()?;
-    let response = api.search_run_events(run_id, &query.join(" ")).await?;
+    let stream = api
+        .search_run_events(run_id, &query.join(" "))
+        .await?
+        .into_inner();
 
     let mut stdout = std::io::stdout().lock();
     if json {
-        stream_ndjson_lines(response, |line| {
+        stream_ndjson_lines(stream, |line| {
             writeln!(stdout, "{line}")?;
             Ok(())
         })
         .await
     } else {
         let mut saw_rows = false;
-        stream_ndjson_lines(response, |line| {
+        stream_ndjson_lines(stream, |line| {
             if !saw_rows {
                 writeln!(
                     stdout,
@@ -314,20 +317,21 @@ async fn cmd_runs_logs(
     info!("streaming logs for run: {}", run_id);
 
     let api = AntithesisApi::from_env()?;
-    let response = api
+    let stream = api
         .get_run_logs(run_id, input_hash, vtime, begin_input_hash, begin_vtime)
-        .await?;
+        .await?
+        .into_inner();
 
     let mut stdout = std::io::stdout().lock();
     if json {
-        stream_ndjson_lines(response, |line| {
+        stream_ndjson_lines(stream, |line| {
             writeln!(stdout, "{line}")?;
             Ok(())
         })
         .await
     } else {
         writeln!(stdout, "{:<22}  {:<20}  OUTPUT", "VTIME", "SOURCE")?;
-        stream_ndjson_lines(response, |line| {
+        stream_ndjson_lines(stream, |line| {
             if let Ok(entry) = serde_json::from_str::<Value>(line) {
                 let rendered = render_event_entry(&entry);
                 let vtime = rendered.vtime;
@@ -343,18 +347,21 @@ async fn cmd_runs_logs(
     }
 }
 
-async fn stream_ndjson_lines(
-    response: reqwest::Response,
+async fn stream_ndjson_lines<S, C>(
+    mut stream: S,
     mut process_line: impl FnMut(&str) -> Result<()>,
-) -> Result<()> {
+) -> Result<()>
+where
+    S: futures_util::Stream<Item = reqwest::Result<C>> + Unpin,
+    C: AsRef<[u8]>,
+{
     use futures_util::StreamExt;
 
-    let mut stream = response.bytes_stream();
     let mut buf = String::new();
 
     while let Some(chunk) = stream.next().await {
         let chunk = chunk?;
-        let text = std::str::from_utf8(&chunk)
+        let text = std::str::from_utf8(chunk.as_ref())
             .map_err(|e| eyre!("invalid UTF-8 in response stream: {e}"))?;
         buf.push_str(text);
 

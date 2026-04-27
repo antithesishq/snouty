@@ -33,9 +33,9 @@ regex = "1"
 ptree = { version = "0.5.2", default-features = false }
 serde_yaml = "0.9"
 
-[[bin]]
+[[example]]
 name = "mock_api"
-path = "src/bin/mock_api.rs"
+path = "examples/mock_api.rs"
 
 [build-dependencies]
 clap = { version = "4", features = ["derive"] }

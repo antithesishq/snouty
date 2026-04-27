@@ -605,7 +605,10 @@ async fn format_api_client_error(err: ClientError<generated::types::ErrorRespons
         }
         ClientError::UnexpectedResponse(response) => {
             let status = response.status().as_u16();
-            let body = response.text().await.unwrap_or_default();
+            let body = response
+                .text()
+                .await
+                .unwrap_or_else(|err| format!("<failed to read response body: {err}>"));
             format_api_error(status, &body)
         }
         ClientError::InvalidRequest(message) => eyre!("invalid API request: {message}"),

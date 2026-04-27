@@ -3,7 +3,7 @@ use std::path::Path;
 use std::sync::LazyLock;
 
 use color_eyre::eyre::{Result, eyre};
-use futures_util::TryStreamExt;
+use futures_util::{StreamExt, TryStreamExt};
 use jsonschema::Validator;
 use log::info;
 use serde::Deserialize;
@@ -100,16 +100,19 @@ async fn cmd_runs_list(args: RunsListArgs, json: bool) -> Result<()> {
         || opts.created_after.is_some()
         || opts.created_before.is_some();
 
+    // Server returns runs newest-first; .take(limit) short-circuits pagination
+    // so we don't materialise the entire run history just to drop most of it.
     let mut runs: Vec<RunSummary> = if has_filters {
         api.stream_runs_filtered(&opts)
+            .take(args.limit)
             .try_collect::<Vec<_>>()
             .await?
     } else {
-        api.stream_runs().try_collect::<Vec<_>>().await?
+        api.stream_runs()
+            .take(args.limit)
+            .try_collect::<Vec<_>>()
+            .await?
     };
-
-    // Apply client-side limit
-    runs.truncate(args.limit);
 
     runs.sort_by(|a, b| {
         b.created_at

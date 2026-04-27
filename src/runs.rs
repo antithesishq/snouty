@@ -373,7 +373,7 @@ where
             if !line.is_empty() {
                 process_line(line)?;
             }
-            buf = buf[pos + 1..].to_string();
+            buf.drain(..=pos);
         }
     }
 

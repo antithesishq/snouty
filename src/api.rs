@@ -318,7 +318,7 @@ impl AntithesisApi {
 
     pub async fn search_run_events(&self, run_id: &str, query: &str) -> Result<reqwest::Response> {
         let url = format!(
-            "{}/api/{}/runs/{}/search",
+            "{}/api/{}/runs/{}/events",
             self.base_url, API_VERSION, run_id
         );
         debug!("GET {}", url);
@@ -674,8 +674,7 @@ mod tests {
         Mock::given(method("POST"))
             .and(path("/api/v1/launch/basic_test"))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "statusCode": 202,
-                "runId": "run-123"
+                "run_id": "run-123"
             })))
             .expect(1)
             .mount(&mock_server)
@@ -808,7 +807,7 @@ mod tests {
                 "data": [
                     {
                         "name": "Counter value stays below limit",
-                        "status": "failing",
+                        "status": "Failing",
                         "is_event": true,
                         "is_existential": false,
                         "is_universal": true
@@ -829,7 +828,7 @@ mod tests {
                 "data": [
                     {
                         "name": "Setup completes",
-                        "status": "passing",
+                        "status": "Passing",
                         "is_event": false,
                         "is_existential": true,
                         "is_universal": false
@@ -873,7 +872,7 @@ mod tests {
         Mock::given(method("GET"))
             .and(path("/api/v1/runs/run-1/properties"))
             .and(query_param("limit", "100"))
-            .and(query_param("status", "failing"))
+            .and(query_param("status", "Failing"))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "data": [],
                 "next_cursor": null
@@ -902,7 +901,7 @@ mod tests {
         let mock_server = MockServer::start().await;
 
         Mock::given(method("GET"))
-            .and(path("/api/v1/runs/run-1/search"))
+            .and(path("/api/v1/runs/run-1/events"))
             .and(query_param("q", "slow request"))
             .respond_with(ResponseTemplate::new(200).set_body_string(
                 r#"{"output_text":"{\"level\":\"warn\",\"msg\":\"slow request\"}","moment":{"input_hash":"-456","vtime":"2.0"}}"#,

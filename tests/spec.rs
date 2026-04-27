@@ -151,7 +151,7 @@ fn cmd_env_from_json(
     // from line <line_index> (0-based) and stores it as $R_<json_key>.
     if args.len() != 2 {
         return Err(err(
-            "env_from_json requires <line_index> <json_key>".to_string(),
+            "env_from_json requires <line_index> <json_key>".to_string()
         ));
     }
     let line_idx: usize = args[0]
@@ -233,9 +233,7 @@ fn is_staging() -> bool {
         .is_some_and(|v| !v.is_empty() && v != "0")
 }
 
-fn propagate_antithesis_env(
-    env: &mut testscript_rs::TestEnvironment,
-) -> testscript_rs::Result<()> {
+fn propagate_antithesis_env(env: &mut testscript_rs::TestEnvironment) -> testscript_rs::Result<()> {
     let tenant = std::env::var("ANTITHESIS_TENANT")
         .map_err(|_| err("SNOUTY_STAGING is set but ANTITHESIS_TENANT is not".to_string()))?;
     let has_bearer = std::env::var("ANTITHESIS_API_KEY").is_ok();

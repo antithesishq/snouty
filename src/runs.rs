@@ -73,7 +73,7 @@ async fn cmd_runs_list(args: RunsListArgs, json: bool) -> Result<()> {
         .transpose()
         .map_err(|_| {
             eyre!(
-                "invalid status: '{}'\nvalid values: starting, in_progress, debugger_ready, completed, cancelled, failed",
+                "invalid status: '{}'\nvalid values: starting, in_progress, completed, cancelled, failed, unknown",
                 args.status.as_deref().unwrap_or_default()
             )
         })?;
@@ -195,10 +195,6 @@ fn print_run_detail(run: &RunDetail) {
         ("Status", render_enum(&run.status)),
     ];
 
-    if let Some(ref t) = run.type_ {
-        rows.push(("Type", render_enum(t)));
-    }
-
     rows.push(("Created", run.created_at.to_rfc3339()));
 
     if let Some(ref t) = run.started_at {
@@ -245,7 +241,7 @@ async fn cmd_runs_build_logs(run_id: &str, json: bool) -> Result<()> {
         stream_ndjson_lines(response, |line| {
             if let Ok(entry) = serde_json::from_str::<serde_json::Value>(line) {
                 let ts = entry["timestamp"].as_str().unwrap_or("");
-                let stream = entry["stream"].as_str().unwrap_or("stdout");
+                let stream = entry["stream"].as_str().unwrap_or("out");
                 let text = sanitize(entry["text"].as_str().unwrap_or(""));
                 writeln!(stdout, "{ts} [{stream}] {text}")?;
             } else {
@@ -627,7 +623,6 @@ fn render_runs_table(runs: &[RunSummary]) -> String {
     let headers = vec![
         "RUN ID".to_string(),
         "STATUS".to_string(),
-        "TYPE".to_string(),
         "CREATED AT".to_string(),
         "LAUNCHER".to_string(),
     ];
@@ -637,7 +632,6 @@ fn render_runs_table(runs: &[RunSummary]) -> String {
             vec![
                 sanitize(&run.run_id),
                 sanitize(&render_enum(&run.status)),
-                sanitize(&run.type_.as_ref().map(render_enum).unwrap_or_default()),
                 run.created_at.to_rfc3339(),
                 sanitize(&run.launcher),
             ]
@@ -658,7 +652,7 @@ fn flatten_property_events(properties: &[Property]) -> Vec<PropertyEventRow<'_>>
     let mut rows = Vec::new();
     for property in properties {
         let start = rows.len();
-        for event in &property.counter_examples {
+        for event in &property.counterexamples {
             rows.push(PropertyEventRow {
                 example: "Failing",
                 hash: &event.moment.input_hash,
@@ -926,8 +920,8 @@ mod tests {
     fn renders_flattened_property_events_table() {
         let properties = vec![
             Property {
-                counter_example_count: Some(3),
-                counter_examples: vec![event("-100", "5.0"), event("-200", "10.0")],
+                counterexample_count: Some(3),
+                counterexamples: vec![event("-100", "5.0"), event("-200", "10.0")],
                 description: None,
                 example_count: Some(12),
                 examples: vec![event("-300", "15.0")],
@@ -940,8 +934,8 @@ mod tests {
                 status: PropertyStatus::Failing,
             },
             Property {
-                counter_example_count: Some(0),
-                counter_examples: Vec::new(),
+                counterexample_count: Some(0),
+                counterexamples: Vec::new(),
                 description: None,
                 example_count: Some(1),
                 examples: vec![event("-400", "1.0")],
@@ -999,8 +993,8 @@ mod tests {
     #[test]
     fn flatten_returns_empty_when_no_sampled_events() {
         let properties = vec![Property {
-            counter_example_count: Some(0),
-            counter_examples: Vec::new(),
+            counterexample_count: Some(0),
+            counterexamples: Vec::new(),
             description: None,
             example_count: Some(0),
             examples: Vec::new(),

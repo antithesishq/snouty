@@ -15,16 +15,16 @@ stderr 'missing environment variable.*'
 # On success, the command fetches all pages via next_cursor and prints a table.
 mock-runs-server
 snouty runs
-stdout 'RUN ID.*STATUS.*TYPE.*CREATED AT.*LAUNCHER'
-[!staging] stdout 'run-1.*completed.*test.*2025-03-20T02:00:00\+00:00.*nightly'
-[!staging] stdout 'run-2.*in_progress.*mvd.*2025-03-19T14:00:00\+00:00.*debug'
+stdout 'RUN ID.*STATUS.*CREATED AT.*LAUNCHER'
+[!staging] stdout 'run-1.*completed.*2025-03-20T02:00:00\+00:00.*nightly'
+[!staging] stdout 'run-2.*in_progress.*2025-03-19T14:00:00\+00:00.*debug'
 
 # `snouty runs list` is the same as bare `snouty runs`.
 mock-runs-server
 snouty runs list
-stdout 'RUN ID.*STATUS.*TYPE.*CREATED AT.*LAUNCHER'
-[!staging] stdout 'run-1.*completed.*test.*2025-03-20T02:00:00\+00:00.*nightly'
-[!staging] stdout 'run-2.*in_progress.*mvd.*2025-03-19T14:00:00\+00:00.*debug'
+stdout 'RUN ID.*STATUS.*CREATED AT.*LAUNCHER'
+[!staging] stdout 'run-1.*completed.*2025-03-20T02:00:00\+00:00.*nightly'
+[!staging] stdout 'run-2.*in_progress.*2025-03-19T14:00:00\+00:00.*debug'
 
 # `snouty runs show` requires a run ID.
 ! snouty runs show
@@ -82,14 +82,14 @@ stderr '.*cannot be used with.*'
 mock-runs-server
 snouty --json runs properties $R_run_id
 [!staging] stdout '"name".*"Counter value stays below limit"'
-[!staging] stdout '"status".*"failing"'
+[!staging] stdout '"status".*"Failing"'
 
 # `snouty runs build-logs` streams formatted build log lines.
 mock-runs-server
 snouty runs build-logs $R_run_id
-[!staging] stdout '2025-03-20T02:01:12Z \[stdout\] Building image payments-service\.\.\.'
-[!staging] stdout '2025-03-20T02:01:15Z \[stderr\] Warning: deprecated feature'
-[!staging] stdout '2025-03-20T02:01:20Z \[stdout\] Build complete'
+[!staging] stdout '2025-03-20T02:01:12Z \[out\] Building image payments-service\.\.\.'
+[!staging] stdout '2025-03-20T02:01:15Z \[err\] Warning: deprecated feature'
+[!staging] stdout '2025-03-20T02:01:20Z \[out\] Build complete'
 
 # `snouty --json runs build-logs` outputs raw NDJSON.
 mock-runs-server

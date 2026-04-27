@@ -402,7 +402,7 @@ fn mock_route(method: &str, path: &str, empty: bool) -> (u16, String, &'static s
             } else if let Some(run_id) = rest.strip_suffix("/properties") {
                 let (s, b) = mock_route_list_run_properties(run_id, query);
                 (s, b, json)
-            } else if let Some(run_id) = rest.strip_suffix("/search") {
+            } else if let Some(run_id) = rest.strip_suffix("/events") {
                 let (s, b) = mock_route_search_run_events(run_id, query);
                 (s, b, ndjson)
             } else {
@@ -427,21 +427,9 @@ fn mock_query_param<'a>(query: Option<&'a str>, key: &str) -> Option<&'a str> {
     })
 }
 
-const MOCK_RUNS: &[(&str, &str, &str, &str, &str)] = &[
-    (
-        "run-1",
-        "completed",
-        "test",
-        "2025-03-20T02:00:00Z",
-        "nightly",
-    ),
-    (
-        "run-2",
-        "in_progress",
-        "mvd",
-        "2025-03-19T14:00:00Z",
-        "debug",
-    ),
+const MOCK_RUNS: &[(&str, &str, &str, &str)] = &[
+    ("run-1", "completed", "2025-03-20T02:00:00Z", "nightly"),
+    ("run-2", "in_progress", "2025-03-19T14:00:00Z", "debug"),
 ];
 
 fn mock_route_list_runs(query: Option<&str>, empty: bool) -> (u16, String) {
@@ -460,7 +448,7 @@ fn mock_route_list_runs(query: Option<&str>, empty: bool) -> (u16, String) {
     };
 
     let mut runs = Vec::new();
-    for &(id, status, type_, created, launcher) in &MOCK_RUNS[start..] {
+    for &(id, status, created, launcher) in &MOCK_RUNS[start..] {
         if let Some(f) = status_filter
             && status != f
         {
@@ -472,7 +460,7 @@ fn mock_route_list_runs(query: Option<&str>, empty: bool) -> (u16, String) {
             continue;
         }
         runs.push(format!(
-            r#"{{"run_id":"{id}","status":"{status}","type":"{type_}","created_at":"{created}","launcher":"{launcher}"}}"#,
+            r#"{{"run_id":"{id}","status":"{status}","created_at":"{created}","launcher":"{launcher}"}}"#,
         ));
     }
 
@@ -499,7 +487,7 @@ fn mock_route_get_run(run_id: &str) -> (u16, String) {
     (
         200,
         format!(
-            r#"{{"run_id":"{}","status":"completed","type":"test","created_at":"2025-03-20T02:00:00Z","started_at":"2025-03-20T02:01:12Z","completed_at":"2025-03-20T02:31:45Z","launcher":"nightly","links":{{"triage_report":"https://demo.antithesis.com/reports/{}"}}}}"#,
+            r#"{{"run_id":"{}","status":"completed","created_at":"2025-03-20T02:00:00Z","started_at":"2025-03-20T02:01:12Z","completed_at":"2025-03-20T02:31:45Z","launcher":"nightly","links":{{"triage_report":"https://demo.antithesis.com/reports/{}"}}}}"#,
             run_id, run_id
         ),
     )
@@ -507,9 +495,9 @@ fn mock_route_get_run(run_id: &str) -> (u16, String) {
 
 fn mock_route_get_run_build_logs(_run_id: &str) -> (u16, String) {
     let lines = [
-        r#"{"timestamp":"2025-03-20T02:01:12Z","stream":"stdout","text":"Building image payments-service..."}"#,
-        r#"{"timestamp":"2025-03-20T02:01:15Z","stream":"stderr","text":"Warning: deprecated feature"}"#,
-        r#"{"timestamp":"2025-03-20T02:01:20Z","stream":"stdout","text":"Build complete"}"#,
+        r#"{"timestamp":"2025-03-20T02:01:12Z","stream":"out","text":"Building image payments-service..."}"#,
+        r#"{"timestamp":"2025-03-20T02:01:15Z","stream":"err","text":"Warning: deprecated feature"}"#,
+        r#"{"timestamp":"2025-03-20T02:01:20Z","stream":"out","text":"Build complete"}"#,
     ];
     (200, lines.join("\n") + "\n")
 }
@@ -535,19 +523,19 @@ fn mock_route_list_run_properties(run_id: &str, query: Option<&str>) -> (u16, St
     if run_id == "run-no-events" {
         return (
             200,
-            r#"{"data":[{"name":"No events property","status":"passing","is_event":false,"is_existential":false,"is_universal":true,"example_count":0,"counter_example_count":0}],"next_cursor":null}"#.to_string(),
+            r#"{"data":[{"name":"No events property","status":"Passing","is_event":false,"is_existential":false,"is_universal":true,"example_count":0,"counterexample_count":0}],"next_cursor":null}"#.to_string(),
         );
     }
 
     let status = mock_query_param(query, "status");
     let after = mock_query_param(query, "after");
 
-    let failing = r#"{"name":"Counter value stays below limit","description":"Counter stays within safe bounds","status":"failing","is_event":true,"is_existential":false,"is_universal":true,"group":"Safety","example_count":12,"counter_example_count":3,"examples":[{"moment":{"input_hash":"-300","vtime":"15.0"}}],"counter_examples":[{"moment":{"input_hash":"-100","vtime":"5.0"}},{"moment":{"input_hash":"-200","vtime":"10.0"}}]}"#.to_string();
-    let passing = r#"{"name":"Setup completes","description":"Setup eventually succeeds","status":"passing","is_event":false,"is_existential":true,"is_universal":false,"example_count":1,"counter_example_count":0,"examples":[{"moment":{"input_hash":"-400","vtime":"1.0"}}]}"#.to_string();
+    let failing = r#"{"name":"Counter value stays below limit","description":"Counter stays within safe bounds","status":"Failing","is_event":true,"is_existential":false,"is_universal":true,"group":"Safety","example_count":12,"counterexample_count":3,"examples":[{"moment":{"input_hash":"-300","vtime":"15.0"}}],"counterexamples":[{"moment":{"input_hash":"-100","vtime":"5.0"}},{"moment":{"input_hash":"-200","vtime":"10.0"}}]}"#.to_string();
+    let passing = r#"{"name":"Setup completes","description":"Setup eventually succeeds","status":"Passing","is_event":false,"is_existential":true,"is_universal":false,"example_count":1,"counterexample_count":0,"examples":[{"moment":{"input_hash":"-400","vtime":"1.0"}}]}"#.to_string();
 
     let (data, next_cursor) = match (status, after) {
-        (Some("failing"), _) => (vec![failing], None),
-        (Some("passing"), _) => (vec![passing], None),
+        (Some("Failing"), _) => (vec![failing], None),
+        (Some("Passing"), _) => (vec![passing], None),
         (None, None) => (vec![failing], Some("props-cursor-1")),
         (None, Some("props-cursor-1")) => (vec![passing], None),
         (None, _) => (vec![], None),
@@ -585,10 +573,7 @@ fn mock_route_search_run_events(run_id: &str, query: Option<&str>) -> (u16, Stri
 }
 
 fn mock_route_launch() -> (u16, String) {
-    (
-        200,
-        r#"{"statusCode":202,"runId":"mock-run-id"}"#.to_string(),
-    )
+    (200, r#"{"run_id":"mock-run-id"}"#.to_string())
 }
 
 #[cfg(test)]

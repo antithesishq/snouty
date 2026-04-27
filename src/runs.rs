@@ -681,7 +681,7 @@ fn flatten_property_events(properties: &[Property]) -> Vec<PropertyEventRow<'_>>
         rows[start..].sort_by(|a, b| {
             example_rank(a.example)
                 .cmp(&example_rank(b.example))
-                .then(a.vtime.cmp(b.vtime))
+                .then_with(|| compare_vtime(a.vtime, b.vtime))
         });
     }
     rows
@@ -691,6 +691,13 @@ fn example_rank(example: &str) -> u8 {
     match example {
         "Failing" => 0,
         _ => 1,
+    }
+}
+
+fn compare_vtime(a: &str, b: &str) -> std::cmp::Ordering {
+    match (a.parse::<f64>(), b.parse::<f64>()) {
+        (Ok(a), Ok(b)) => a.partial_cmp(&b).unwrap_or(std::cmp::Ordering::Equal),
+        _ => a.cmp(b),
     }
 }
 
@@ -971,17 +978,17 @@ mod tests {
         // Header + 2 Failing rows + 2 Passing rows = 5 lines
         assert_eq!(lines.len(), 5);
 
-        // Failing rows come first, sorted by vtime (lexicographic: "10.0" < "5.0")
+        // Failing rows come first, sorted by vtime numerically (5.0 < 10.0)
         assert!(
             lines[1].contains("Failing")
-                && lines[1].contains("-200")
-                && lines[1].contains("10.0")
+                && lines[1].contains("-100")
+                && lines[1].contains("5.0")
                 && lines[1].contains("Counter value stays below limit")
         );
         assert!(
             lines[2].contains("Failing")
-                && lines[2].contains("-100")
-                && lines[2].contains("5.0")
+                && lines[2].contains("-200")
+                && lines[2].contains("10.0")
                 && lines[2].contains("Counter value stays below limit")
         );
 

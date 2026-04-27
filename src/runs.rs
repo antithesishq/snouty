@@ -1,10 +1,8 @@
 use std::io::Write;
 use std::path::Path;
-use std::sync::LazyLock;
 
 use color_eyre::eyre::{Result, eyre};
 use futures_util::{StreamExt, TryStreamExt};
-use jsonschema::Validator;
 use log::info;
 use serde::Deserialize;
 use serde_json::Value;
@@ -15,8 +13,6 @@ use crate::api::{
 #[cfg(test)]
 use crate::api::{Event, Moment};
 use crate::cli::{RunsCommands, RunsListArgs};
-
-static ASSERTION_VALIDATOR: LazyLock<Validator> = LazyLock::new(build_assertion_validator);
 
 pub async fn cmd_runs(command: Option<RunsCommands>, json: bool) -> Result<()> {
     match command {
@@ -385,36 +381,6 @@ where
     Ok(())
 }
 
-fn build_assertion_validator() -> Validator {
-    let root_schema: Value =
-        serde_json::from_str(include_str!("../assertions.json")).expect("valid assertion schema");
-    let mut assertion_schema = root_schema["properties"]["antithesis_assert"].clone();
-
-    if let Some(schema_object) = assertion_schema.as_object_mut()
-        && let Some(draft) = root_schema.get("$schema").cloned()
-    {
-        schema_object.insert("$schema".to_string(), draft);
-
-        // The published schema documents `details: null` as valid and real payloads use it.
-        if let Some(properties) = schema_object
-            .get_mut("properties")
-            .and_then(Value::as_object_mut)
-            && let Some(details) = properties.get_mut("details").and_then(Value::as_object_mut)
-        {
-            details.remove("type");
-            details.insert(
-                "anyOf".to_string(),
-                serde_json::json!([
-                    {"type": "object"},
-                    {"type": "null"}
-                ]),
-            );
-        }
-    }
-
-    Validator::new(&assertion_schema).expect("valid nested assertion schema")
-}
-
 #[derive(Debug, PartialEq, Eq)]
 struct RenderedEventEntry {
     input_hash: String,
@@ -546,10 +512,6 @@ fn render_event_output(entry: &Value) -> String {
 
 fn parse_assertion_summary(entry: &Value) -> Option<AssertionSummary> {
     let assertion = entry.get("antithesis_assert")?;
-    if !ASSERTION_VALIDATOR.is_valid(assertion) {
-        return None;
-    }
-
     let payload: AssertionPayload = serde_json::from_value(assertion.clone()).ok()?;
     AssertionSummary::try_from(payload).ok()
 }

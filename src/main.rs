@@ -151,10 +151,7 @@ async fn cmd_launch(args: LaunchArgs) -> Result<()> {
     }
 
     // Process config_image and config flags
-    assert!(
-        !(args.config_image.is_some() && args.config.is_some()),
-        "config and config_image are mutually exclusive"
-    );
+    // (mutual exclusion is enforced by clap's #[arg(conflicts_with = "config_image")])
 
     // TODO: enable config directory support for k8s manifests
     if args.webhook == "basic_k8s_test" && args.config.is_some() {

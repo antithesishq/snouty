@@ -123,7 +123,6 @@
                     {
                       "run_id": "9325f006ffd3a399a8497bc888878b97-50-1",
                       "status": "completed",
-                      "type": "test",
                       "created_at": "2025-03-20T02:00:00Z",
                       "started_at": "2025-03-20T02:01:12Z",
                       "completed_at": "2025-03-20T02:31:45Z",
@@ -132,7 +131,6 @@
                     {
                       "run_id": "a1c4e7f2b5d8039c6e9f1a4b7d0e3f68-50-1",
                       "status": "completed",
-                      "type": "mvd",
                       "created_at": "2025-03-19T14:00:00Z",
                       "started_at": "2025-03-19T14:00:32Z",
                       "completed_at": "2025-03-19T14:45:10Z",
@@ -198,7 +196,6 @@
                     "value": {
                       "run_id": "9325f006ffd3a399a8497bc888878b97-50-1",
                       "status": "completed",
-                      "type": "test",
                       "created_at": "2025-03-20T02:00:00Z",
                       "started_at": "2025-03-20T02:01:12Z",
                       "completed_at": "2025-03-20T02:31:45Z",
@@ -207,21 +204,6 @@
                         "triage_report": "https://demo.antithesis.com/report/dBDNYWsHWywLBl1mtobJjjuB/dw8bjBJES6HzQ9iw8PSlGUXNnraLuWpLlbavyABg_R0.html"
                       },
                       "results": {
-                      }
-                    }
-                  },
-                  "mvd_run": {
-                    "summary": "A multiverse debugging run with debugger ready",
-                    "value": {
-                      "run_id": "a1c4e7f2b5d8039c6e9f1a4b7d0e3f68-50-1",
-                      "status": "debugger_ready",
-                      "type": "mvd",
-                      "created_at": "2025-03-21T14:00:00Z",
-                      "started_at": "2025-03-21T14:00:32Z",
-                      "completed_at": "2025-03-21T14:45:10Z",
-                      "launcher": "Debug Runner",
-                      "links": {
-                        "triage_report": "https://demo.antithesis.com/report/kP3mXvR7nYqW2cA9fTgH5sLe/aB4cD8eF2gH6iJ0kL3mN7oP1qR5sT9uV2wX4yZ6bC8d.html"
                       }
                     }
                   }
@@ -540,7 +522,7 @@
         }
       }
     },
-    "/api/{version}/runs/{run_id}/search": {
+    "/api/{version}/runs/{run_id}/events": {
       "parameters": [
         {
           "$ref": "#/components/parameters/Version"
@@ -549,7 +531,7 @@
       "get": {
         "operationId": "searchRunEvents",
         "summary": "Search run events",
-        "description": "Searches events in a run for the given query string. The search matches against output text, assertion messages, function names, and test composer commands. Results are streamed as newline-delimited JSON (NDJSON). Each line is a self-contained JSON object representing an event.",
+        "description": "Searches events in a run for the given query string. The search matches against output text, assertion messages, function names, and test composer commands. Returns up to 50 events that match the query. Results are streamed as newline-delimited JSON (NDJSON). Each line is a self-contained JSON object representing an event.",
         "tags": ["Runs"],
         "parameters": [
           {
@@ -638,7 +620,7 @@
         },
         "responses": {
           "200": {
-            "description": "Test accepted for launch. The response body's `statusCode` field is `202`, indicating the run is queued.",
+            "description": "Test successfully launched.",
             "content": {
               "application/json": {
                 "schema": {
@@ -725,9 +707,6 @@
           "status": {
             "$ref": "#/components/schemas/Run_Status"
           },
-          "type": {
-            "$ref": "#/components/schemas/Run_Type"
-          },
           "created_at": {
             "type": "string",
             "format": "date-time",
@@ -801,17 +780,12 @@
       "Launch_Response": {
         "type": "object",
         "description": "Response returned when a test is successfully launched.",
-        "required": ["runId", "statusCode"],
+        "required": ["run_id"],
         "properties": {
-          "runId": {
+          "run_id": {
             "type": "string",
             "description": "Unique identifier for the launched run.",
             "example": "c8d2f4a6e0b3197d5f8a2c4e6b0d3f79-49-1"
-          },
-          "statusCode": {
-            "type": "integer",
-            "description": "Status code echoed in the response body. `202` indicates the run was accepted and queued. Note this is independent of the HTTP status, which is `200`.",
-            "example": 202
           }
         },
         "additionalProperties": true
@@ -920,7 +894,7 @@
           },
           "stream": {
             "type": "string",
-            "enum": ["stdout", "stderr"],
+            "enum": ["out", "err"],
             "description": "Whether this line is from standard output or standard error."
           },
           "text": {
@@ -990,10 +964,10 @@
             "format": "uint32",
             "description": "Total number of examples observed."
           },
-          "counter_example_count": {
+          "counterexample_count": {
             "type": "integer",
             "format": "uint32",
-            "description": "Total number of counter_examples observed."
+            "description": "Total number of counterexamples observed."
           },
           "examples": {
             "type": "array",
@@ -1002,9 +976,9 @@
               "$ref": "#/components/schemas/Event"
             }
           },
-          "counter_examples": {
+          "counterexamples": {
             "type": "array",
-            "description": "A sample of counter example instances that violate the property. This is not an exhaustive list.",
+            "description": "A sample of counterexample instances that violate the property. This is not an exhaustive list.",
             "items": {
               "$ref": "#/components/schemas/Event"
             }
@@ -1014,18 +988,13 @@
       },
       "Property_Status": {
         "type": "string",
-        "enum": ["passing", "failing"],
+        "enum": ["Passing", "Failing"],
         "description": "Whether the property is currently passing or failing."
       },
       "Run_Status": {
         "type": "string",
-        "enum": ["starting", "in_progress", "debugger_ready", "completed", "cancelled", "failed", "unknown"],
-        "description": "Current lifecycle status of a run. `starting` — the run is being set up. `in_progress` — the run is actively running. `debugger_ready` — the multiverse debugger (MVD) run is ready for interaction (MVD runs only). `completed` — the run finished successfully. `cancelled` — the run was cancelled before completion. `failed` — the run did not complete successfully (incomplete). `unknown` — the run's status could not be determined."
-      },
-      "Run_Type": {
-        "type": "string",
-        "enum": ["test", "mvd", "other"],
-        "description": "The type of run. `test` is a standard test run, `mvd` is a multiverse debugging run, `other` covers any additional run types."
+        "enum": ["starting", "in_progress", "completed", "cancelled", "failed", "unknown"],
+        "description": "Current lifecycle status of a run. `starting` — the run is being set up. `in_progress` — the run is actively running. `completed` — the run finished successfully. `cancelled` — the run was cancelled before completion. `failed` — the run did not complete successfully (incomplete). `unknown` — the status of the run is unknown."
       },
       "Creator_Info": {
         "type": "object",

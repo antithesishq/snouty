@@ -7,12 +7,14 @@ use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use color_eyre::eyre::{Context, Report, Result, eyre};
 use futures_util::stream;
 use log::debug;
-use progenitor_client::Error as ClientError;
+use progenitor_client::{ClientHooks, ClientInfo, Error as ClientError, OperationInfo};
 use reqwest::Client;
+use reqwest_middleware::ClientWithMiddleware;
 
+use crate::api_cache;
 use crate::params::Params;
 
-#[allow(dead_code, unused_imports)]
+#[allow(dead_code, unused_imports, private_interfaces)]
 mod generated {
     include!(concat!(env!("OUT_DIR"), "/antithesis_api.rs"));
 }
@@ -131,7 +133,8 @@ impl AntithesisApi {
         debug!("initializing API client for {}", base_url);
 
         let http_client = build_http_client(&config)?;
-        let client = generated::Client::new_with_client(&base_url, http_client.clone());
+        let cached = api_cache::build_cached_client(http_client.clone());
+        let client = generated::Client::new_with_client(&base_url, http_client.clone(), cached);
 
         Ok(Self {
             client,
@@ -142,6 +145,15 @@ impl AntithesisApi {
 
     pub fn base_url(&self) -> &str {
         &self.base_url
+    }
+
+    #[cfg(test)]
+    fn with_cache_dir(mut self, root: impl Into<std::path::PathBuf>) -> Self {
+        self.client.inner = Some(api_cache::build_cached_client_at(
+            self.http_client.clone(),
+            root.into(),
+        ));
+        self
     }
 
     pub async fn launch_test(&self, launcher: &str, params: &Params) -> Result<LaunchResponse> {
@@ -406,16 +418,45 @@ impl AntithesisApi {
             .version(API_VERSION)
             .run_id(run_id)
             .limit(100_u64);
-        if let Some(status) = status {
-            request = request.status(status);
-        }
         if let Some(cursor) = after {
             request = request.after(cursor);
+        }
+        if let Some(status) = status {
+            request = request.status(status);
         }
 
         match request.send().await {
             Ok(response) => Ok(response.into_inner()),
             Err(err) => Err(format_api_client_error(err).await),
+        }
+    }
+}
+
+impl ClientHooks<Option<ClientWithMiddleware>> for generated::Client {
+    async fn exec(
+        &self,
+        request: reqwest::Request,
+        _info: &OperationInfo,
+    ) -> reqwest::Result<reqwest::Response> {
+        let Some(cached) = self.inner() else {
+            return self.client().execute(request).await;
+        };
+
+        // Bypass the cache for non-cloneable (streaming) bodies so the
+        // remaining path always has a fallback to retry against on cache I/O
+        // failures (which surface as `Error::Middleware` and can't be
+        // re-packaged as a `reqwest::Error`).
+        let Some(fallback) = request.try_clone() else {
+            return self.client().execute(request).await;
+        };
+
+        match cached.execute(request).await {
+            Ok(response) => Ok(response),
+            Err(reqwest_middleware::Error::Reqwest(err)) => Err(err),
+            Err(reqwest_middleware::Error::Middleware(err)) => {
+                log::warn!("API cache failure, bypassing cache: {err}");
+                self.client().execute(fallback).await
+            }
         }
     }
 }
@@ -630,8 +671,22 @@ async fn format_api_client_error(err: ClientError<generated::types::ErrorRespons
 mod tests {
     use super::*;
     use futures_util::TryStreamExt;
+    use tempfile::TempDir;
     use wiremock::matchers::{method, path, query_param, query_param_is_missing};
     use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    fn test_config() -> Config {
+        Config::new(
+            Auth::basic("user".to_string(), "pass".to_string()),
+            "tenant".to_string(),
+        )
+    }
+
+    fn test_api_with_cache(mock_server: &MockServer, cache_dir: &TempDir) -> AntithesisApi {
+        AntithesisApi::with_base_url(test_config(), mock_server.uri())
+            .unwrap()
+            .with_cache_dir(cache_dir.path().join("api-cache"))
+    }
 
     #[test]
     fn with_base_url_trims_trailing_slash() {
@@ -778,6 +833,36 @@ mod tests {
         let runs = api.stream_runs().try_collect::<Vec<_>>().await.unwrap();
 
         assert!(runs.is_empty());
+    }
+
+    #[tokio::test]
+    async fn cache_serves_repeated_get_with_cache_control() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/api/v1/runs/run-1"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("Cache-Control", "max-age=60")
+                    .set_body_json(serde_json::json!({
+                        "run_id": "run-1",
+                        "status": "completed",
+                        "created_at": "2025-03-20T02:00:00Z",
+                        "launcher": "nightly"
+                    })),
+            )
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let cache_dir = TempDir::new().unwrap();
+        let api = test_api_with_cache(&mock_server, &cache_dir);
+
+        let first = api.get_run("run-1").await.unwrap();
+        let second = api.get_run("run-1").await.unwrap();
+
+        assert_eq!(first.run_id, "run-1");
+        assert_eq!(second.run_id, "run-1");
     }
 
     #[tokio::test]

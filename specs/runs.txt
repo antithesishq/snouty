@@ -6,6 +6,10 @@
 # set: they assert against hardcoded mock data (or behaviors that only make
 # sense against the in-process mock) that does not exist on the live staging
 # backend. Unprefixed assertions are structural and run in both modes.
+#
+# Run-id scoped read responses may be cached under
+# $XDG_RUNTIME_DIR/snouty/api-cache-v1. Caching is internal and must not change
+# command output or required arguments.
 
 # The command authenticates with the Antithesis API using
 #    ANTITHESIS_USERNAME, ANTITHESIS_PASSWORD, and ANTITHESIS_TENANT env vars.

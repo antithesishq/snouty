@@ -33,8 +33,11 @@ fn generate_api_client(out_dir: &Path) {
     let spec = serde_json::from_reader(file).unwrap();
 
     let mut settings = progenitor::GenerationSettings::default();
-    let settings = settings.with_interface(progenitor::InterfaceStyle::Builder);
-    let mut generator = progenitor::Generator::new(settings);
+    settings.with_interface(progenitor::InterfaceStyle::Builder);
+    settings.with_inner_type(quote::quote!(
+        ::std::option::Option<::reqwest_middleware::ClientWithMiddleware>
+    ));
+    let mut generator = progenitor::Generator::new(&settings);
     let tokens = generator.generate_tokens(&spec).unwrap();
     let ast = syn::parse2(tokens).unwrap();
     let content = prettyplease::unparse(&ast);

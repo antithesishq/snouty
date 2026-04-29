@@ -34,6 +34,13 @@ snouty launch -w basic_test -c local_no_build_config --duration 30
 stderr '"antithesis.config_image":.*@sha256:'
 ! stderr '"antithesis.images"'
 
+# Kubernetes config: builds and pushes the config image, never sets
+# antithesis.images (the platform pulls images from the manifests).
+mock-server 200 '{"status": "ok"}'
+snouty launch -w basic_k8s_test -c k8s_config --duration 30
+stderr '"antithesis.config_image":.*@sha256:'
+! stderr '"antithesis.images"'
+
 -- images/myapp/content --
 placeholder
 -- images/sidecar/content --
@@ -61,3 +68,8 @@ services:
 services:
   app:
     image: localapp:latest
+-- k8s_config/manifests/ns.yaml --
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: snouty-demo

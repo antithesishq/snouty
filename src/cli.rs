@@ -197,7 +197,8 @@ If the exact path is not found, suggests similar pages."#)]
 
 #[derive(Args)]
 pub struct ValidateArgs {
-    /// Path to config directory containing docker-compose.yaml
+    /// Path to config directory containing either docker-compose.yaml or a
+    /// manifests/ subdirectory (Kubernetes manifests).
     pub config: std::path::PathBuf,
 
     /// Maximum seconds to wait for the setup-complete event
@@ -215,8 +216,12 @@ pub struct LaunchArgs {
     #[arg(short, long)]
     pub webhook: String,
 
-    /// Path to a local config directory containing docker-compose.yaml.
-    /// Builds and pushes a config image automatically, setting antithesis.config_image.
+    /// Path to a local config directory containing either docker-compose.yaml
+    /// or a manifests/ subdirectory (Kubernetes manifests). Builds and pushes
+    /// a config image automatically, setting antithesis.config_image. For
+    /// docker-compose configs, locally-built service images are also pushed
+    /// and exposed via antithesis.images. For Kubernetes configs, images are
+    /// pulled by the platform from the references in the manifests.
     /// Requires ANTITHESIS_REPOSITORY environment variable.
     #[arg(short, long, conflicts_with = "config_image")]
     pub config: Option<std::path::PathBuf>,

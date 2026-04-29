@@ -11,7 +11,7 @@ use crate::api::{
     AntithesisApi, Property, PropertyStatus, RunDetail, RunStatus, RunSummary, RunsFilterOptions,
 };
 #[cfg(test)]
-use crate::api::{Event, Moment};
+use crate::api::{Event, EventProperty, Moment, NonEventProperty};
 use crate::cli::{RunsCommands, RunsListArgs};
 
 pub async fn cmd_runs(command: Option<RunsCommands>, json: bool) -> Result<()> {
@@ -162,9 +162,9 @@ async fn cmd_runs_properties(
 
     if json {
         properties.sort_by(|a, b| {
-            property_status_rank(a.status)
-                .cmp(&property_status_rank(b.status))
-                .then(a.name.cmp(&b.name))
+            property_status_rank(a.status())
+                .cmp(&property_status_rank(b.status()))
+                .then(a.name().cmp(b.name()))
         });
         for property in &properties {
             println!("{}", serde_json::to_string(property)?);
@@ -173,9 +173,9 @@ async fn cmd_runs_properties(
         println!("No properties found.");
     } else {
         properties.sort_by(|a, b| {
-            property_status_rank(a.status)
-                .cmp(&property_status_rank(b.status))
-                .then(a.name.cmp(&b.name))
+            property_status_rank(a.status())
+                .cmp(&property_status_rank(b.status()))
+                .then(a.name().cmp(b.name()))
         });
         let rows = flatten_property_events(&properties);
         if rows.is_empty() {
@@ -624,20 +624,20 @@ fn flatten_property_events(properties: &[Property]) -> Vec<PropertyEventRow<'_>>
     let mut rows = Vec::new();
     for property in properties {
         let start = rows.len();
-        for event in &property.counterexamples {
+        for event in property.event_counterexamples() {
             rows.push(PropertyEventRow {
                 example: "Failing",
                 hash: &event.moment.input_hash,
                 vtime: &event.moment.vtime,
-                name: &property.name,
+                name: property.name(),
             });
         }
-        for event in &property.examples {
+        for event in property.event_examples() {
             rows.push(PropertyEventRow {
                 example: "Passing",
                 hash: &event.moment.input_hash,
                 vtime: &event.moment.vtime,
-                name: &property.name,
+                name: property.name(),
             });
         }
         rows[start..].sort_by(|a, b| {
@@ -898,7 +898,7 @@ mod tests {
     #[test]
     fn renders_flattened_property_events_table() {
         let properties = vec![
-            Property {
+            Property::EventProperty(EventProperty {
                 counterexample_count: Some(3),
                 counterexamples: vec![event("-100", "5.0"), event("-200", "10.0")],
                 description: None,
@@ -906,26 +906,22 @@ mod tests {
                 examples: vec![event("-300", "15.0")],
                 group: Some("Safety".to_string()),
                 is_event: true,
-                is_existential: false,
                 is_group: None,
-                is_universal: true,
                 name: "Counter value stays below limit".to_string(),
                 status: PropertyStatus::Failing,
-            },
-            Property {
+            }),
+            Property::EventProperty(EventProperty {
                 counterexample_count: Some(0),
                 counterexamples: Vec::new(),
                 description: None,
                 example_count: Some(1),
                 examples: vec![event("-400", "1.0")],
                 group: None,
-                is_event: false,
-                is_existential: true,
+                is_event: true,
                 is_group: None,
-                is_universal: false,
                 name: "Setup completes".to_string(),
                 status: PropertyStatus::Passing,
-            },
+            }),
         ];
 
         let rows = flatten_property_events(&properties);
@@ -971,7 +967,7 @@ mod tests {
 
     #[test]
     fn flatten_returns_empty_when_no_sampled_events() {
-        let properties = vec![Property {
+        let properties = vec![Property::NonEventProperty(NonEventProperty {
             counterexample_count: Some(0),
             counterexamples: Vec::new(),
             description: None,
@@ -979,12 +975,10 @@ mod tests {
             examples: Vec::new(),
             group: None,
             is_event: false,
-            is_existential: false,
             is_group: None,
-            is_universal: true,
             name: "No events property".to_string(),
             status: PropertyStatus::Passing,
-        }];
+        })];
 
         let rows = flatten_property_events(&properties);
         assert!(rows.is_empty());

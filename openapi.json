@@ -148,6 +148,9 @@
           "401": {
             "$ref": "#/components/responses/Unauthorized"
           },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
           "406": {
             "$ref": "#/components/responses/NotAcceptable"
           },
@@ -216,6 +219,9 @@
           },
           "401": {
             "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
           },
           "404": {
             "$ref": "#/components/responses/NotFound"
@@ -358,6 +364,9 @@
           "401": {
             "$ref": "#/components/responses/Unauthorized"
           },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
           "404": {
             "$ref": "#/components/responses/NotFound"
           },
@@ -422,6 +431,9 @@
           },
           "401": {
             "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
           },
           "404": {
             "$ref": "#/components/responses/NotFound"
@@ -507,6 +519,9 @@
           "401": {
             "$ref": "#/components/responses/Unauthorized"
           },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
           "404": {
             "$ref": "#/components/responses/NotFound"
           },
@@ -569,6 +584,9 @@
           },
           "401": {
             "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
           },
           "404": {
             "$ref": "#/components/responses/NotFound"
@@ -634,6 +652,9 @@
           },
           "401": {
             "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
           },
           "406": {
             "$ref": "#/components/responses/NotAcceptable"
@@ -923,10 +944,10 @@
           }
         }
       },
-      "Property": {
+      "Property_Base": {
         "type": "object",
-        "description": "A property result from a test run. Properties with `is_group` set to true represent a group property that contain other individual properties; individual properties within that group reference it via the `group` field.",
-        "required": ["name", "status", "is_event", "is_existential", "is_universal"],
+        "description": "Shared fields for all property results. A property result from a test run. Properties with `is_group` set to true represent a group property that contain other individual properties; individual properties within that group reference it via the `group` field.",
+        "required": ["name", "status", "is_event"],
         "properties": {
           "name": {
             "type": "string",
@@ -941,15 +962,7 @@
           },
           "is_event": {
             "type": "boolean",
-            "description": "Whether this property is an event based property."
-          },
-          "is_existential": {
-            "type": "boolean",
-            "description": "Whether this is an existential (sometimes) property \u2014 one that applies to at least one member of a category or domain, asserting that something exists with that characteristic."
-          },
-          "is_universal": {
-            "type": "boolean",
-            "description": "Whether this is a universal (always) property \u2014 one that applies to all members of a category or domain, asserting that everything in the relevant scope shares that characteristic."
+            "description": "Whether this property is event-based. When true, examples and counterexamples are Event objects; when false, they may have any shape."
           },
           "is_group": {
             "type": "boolean",
@@ -968,23 +981,76 @@
             "type": "integer",
             "format": "uint32",
             "description": "Total number of counterexamples observed."
-          },
-          "examples": {
-            "type": "array",
-            "description": "A sample of example instances that satisfy the property. This is not an exhaustive list.",
-            "items": {
-              "$ref": "#/components/schemas/Event"
-            }
-          },
-          "counterexamples": {
-            "type": "array",
-            "description": "A sample of counterexample instances that violate the property. This is not an exhaustive list.",
-            "items": {
-              "$ref": "#/components/schemas/Event"
-            }
           }
         },
         "additionalProperties": true
+      },
+      "Event_Property": {
+        "description": "A property where `is_event` is true. Examples and counterexamples are Event objects.",
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/Property_Base"
+          },
+          {
+            "type": "object",
+            "properties": {
+              "examples": {
+                "type": "array",
+                "description": "A sample of example events that satisfy the property. This is not an exhaustive list.",
+                "items": {
+                  "$ref": "#/components/schemas/Event"
+                }
+              },
+              "counterexamples": {
+                "type": "array",
+                "description": "A sample of counterexample events that violate the property. This is not an exhaustive list.",
+                "items": {
+                  "$ref": "#/components/schemas/Event"
+                }
+              }
+            }
+          }
+        ]
+      },
+      "Non_Event_Property": {
+        "description": "A property where `is_event` is false. Examples and counterexamples are arbitrary objects.",
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/Property_Base"
+          },
+          {
+            "type": "object",
+            "properties": {
+              "examples": {
+                "type": "array",
+                "description": "A sample of example instances that satisfy the property. This is not an exhaustive list.",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              },
+              "counterexamples": {
+                "type": "array",
+                "description": "A sample of counterexample instances that violate the property. This is not an exhaustive list.",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          }
+        ]
+      },
+      "Property": {
+        "description": "A property result from a test run. When `is_event` is true, examples and counterexamples are Event objects; otherwise, they may have any shape.",
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/Event_Property"
+          },
+          {
+            "$ref": "#/components/schemas/Non_Event_Property"
+          }
+        ]
       },
       "Property_Status": {
         "type": "string",
@@ -1049,6 +1115,19 @@
             },
             "example": {
               "message": "Invalid or expired bearer token."
+            }
+          }
+        }
+      },
+      "Forbidden": {
+        "description": "Forbidden — the authenticated user does not have permission to access this resource.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error_Response"
+            },
+            "example": {
+              "message": "You do not have permission to access this resource."
             }
           }
         }

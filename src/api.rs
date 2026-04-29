@@ -20,10 +20,45 @@ mod generated {
 }
 
 pub use generated::types::{
-    BuildLogLine, Event, LaunchResponse, Moment, Property, PropertyStatus, RunDetail, RunStatus,
-    RunSummary,
+    BuildLogLine, Event, EventProperty, LaunchResponse, Moment, NonEventProperty, Property,
+    PropertyStatus, RunDetail, RunStatus, RunSummary,
 };
 pub use progenitor_client::ByteStream;
+
+impl Property {
+    pub fn name(&self) -> &str {
+        match self {
+            Self::EventProperty(p) => &p.name,
+            Self::NonEventProperty(p) => &p.name,
+        }
+    }
+
+    pub fn status(&self) -> PropertyStatus {
+        match self {
+            Self::EventProperty(p) => p.status,
+            Self::NonEventProperty(p) => p.status,
+        }
+    }
+
+    /// Sampled example events for an event-based property. Returns an empty
+    /// slice for non-event properties, whose examples are arbitrary objects
+    /// without a `moment`.
+    pub fn event_examples(&self) -> &[Event] {
+        match self {
+            Self::EventProperty(p) => &p.examples,
+            Self::NonEventProperty(_) => &[],
+        }
+    }
+
+    /// Sampled counterexample events for an event-based property. Returns an
+    /// empty slice for non-event properties.
+    pub fn event_counterexamples(&self) -> &[Event] {
+        match self {
+            Self::EventProperty(p) => &p.counterexamples,
+            Self::NonEventProperty(_) => &[],
+        }
+    }
+}
 
 const API_VERSION: &str = "v1";
 const CLIENT_TIMEOUT_SECS: u64 = 30;
@@ -924,8 +959,8 @@ mod tests {
             .unwrap();
 
         let names = properties
-            .into_iter()
-            .map(|property| property.name)
+            .iter()
+            .map(|property| property.name().to_string())
             .collect::<Vec<_>>();
         assert_eq!(
             names,

@@ -59,7 +59,7 @@ impl Config {
 /// Kubernetes config.
 ///
 /// - Contains `docker-compose.yaml` → [`Config::Compose`].
-/// - Contains a `manifests/` subdirectory with at least one regular file →
+/// - Contains a non-empty `manifests/` subdirectory →
 ///   [`Config::Kubernetes`].
 /// - Both present → ambiguous (error).
 /// - Neither present → error mentioning both.
@@ -94,11 +94,12 @@ pub fn detect_config(config_dir: &Path) -> Result<Config> {
     }
 
     if has_manifests_dir {
-        let has_files = std::fs::read_dir(&manifests_dir)
+        let is_non_empty = std::fs::read_dir(&manifests_dir)
             .wrap_err_with(|| format!("failed to read {}", manifests_dir.display()))?
             .filter_map(Result::ok)
-            .any(|e| e.file_type().is_ok_and(|t| t.is_file()));
-        if !has_files {
+            .next()
+            .is_some();
+        if !is_non_empty {
             bail!(
                 "directory '{}' contains an empty manifests/ subdirectory",
                 config_dir.display()
@@ -140,6 +141,20 @@ mod tests {
                 assert_eq!(c.dir(), dir.path());
                 assert_eq!(c.manifests_dir(), manifests);
             }
+            other => panic!("expected Kubernetes, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn detect_config_kubernetes_subdir_only() {
+        // manifests/ containing only subdirectories (e.g. kustomize overlays)
+        // must be accepted as a valid Kubernetes config.
+        let dir = tempfile::tempdir().unwrap();
+        let manifests = dir.path().join("manifests");
+        std::fs::create_dir(&manifests).unwrap();
+        std::fs::create_dir(manifests.join("overlays")).unwrap();
+        match detect_config(dir.path()).unwrap() {
+            Config::Kubernetes(c) => assert_eq!(c.dir(), dir.path()),
             other => panic!("expected Kubernetes, got {other:?}"),
         }
     }

@@ -302,14 +302,16 @@ async fn validate_kubernetes(
     );
 
     // Bind-mount the host path. Podman interprets relative paths as named
-    // volumes, so always pass an absolute path.
+    // volumes, so always pass an absolute path. Include an SELinux relabel
+    // option so the validator can read the manifests directory on
+    // SELinux-enabled systems.
     let manifests_abs = std::fs::canonicalize(&manifests_dir).wrap_err_with(|| {
         format!(
             "failed to resolve manifests directory '{}'",
             manifests_dir.display()
         )
     })?;
-    let mount = format!("{}:/manifests:ro", manifests_abs.display());
+    let mount = format!("{}:/manifests:ro,z", manifests_abs.display());
     let mut cmd = rt.tokio_command(&["run", "--rm", "-v", &mount, K8S_VALIDATOR_IMAGE]);
     cmd.stdin(std::process::Stdio::null());
     cmd.stdout(std::process::Stdio::inherit());

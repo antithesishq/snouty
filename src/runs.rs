@@ -177,12 +177,18 @@ async fn cmd_runs_properties(
                 .cmp(&property_status_rank(b.status()))
                 .then(a.name().cmp(b.name()))
         });
-        let rows = flatten_property_events(&properties);
-        if rows.is_empty() {
-            println!("No sampled property events found.");
-        } else {
-            println!("{}", render_property_events_table(&rows));
+
+        let event_rows = flatten_property_events(&properties);
+        let non_event_rows = flatten_non_event_property_values(&properties);
+
+        let mut sections = Vec::new();
+        if !event_rows.is_empty() {
+            sections.push(render_property_events_table(&event_rows));
         }
+        if !non_event_rows.is_empty() {
+            sections.push(render_property_values_table(&non_event_rows));
+        }
+        println!("{}", sections.join("\n\n"));
     }
 
     Ok(())
@@ -620,6 +626,12 @@ struct PropertyEventRow<'a> {
     name: &'a str,
 }
 
+struct PropertyValueRow<'a> {
+    example: &'static str,
+    name: &'a str,
+    value: String,
+}
+
 fn flatten_property_events(properties: &[Property]) -> Vec<PropertyEventRow<'_>> {
     let mut rows = Vec::new();
     for property in properties {
@@ -678,6 +690,59 @@ fn render_property_events_table(rows: &[PropertyEventRow]) -> String {
                 sanitize(row.hash),
                 sanitize(row.vtime),
                 sanitize(row.name),
+            ]
+        })
+        .collect::<Vec<_>>();
+    render_table(&headers, &table_rows)
+}
+
+fn flatten_non_event_property_values(properties: &[Property]) -> Vec<PropertyValueRow<'_>> {
+    let mut rows = Vec::new();
+    for property in properties {
+        let Property::NonEventProperty(p) = property else {
+            continue;
+        };
+        let mut emitted = false;
+        for value in &p.counterexamples {
+            rows.push(PropertyValueRow {
+                example: "Failing",
+                name: &p.name,
+                value: serde_json::to_string(value).unwrap_or_default(),
+            });
+            emitted = true;
+        }
+        for value in &p.examples {
+            rows.push(PropertyValueRow {
+                example: "Passing",
+                name: &p.name,
+                value: serde_json::to_string(value).unwrap_or_default(),
+            });
+            emitted = true;
+        }
+        if !emitted {
+            rows.push(PropertyValueRow {
+                example: "-",
+                name: &p.name,
+                value: "-".to_string(),
+            });
+        }
+    }
+    rows
+}
+
+fn render_property_values_table(rows: &[PropertyValueRow]) -> String {
+    let headers = vec![
+        "EXAMPLE".to_string(),
+        "NAME".to_string(),
+        "VALUE".to_string(),
+    ];
+    let table_rows = rows
+        .iter()
+        .map(|row| {
+            vec![
+                row.example.to_string(),
+                sanitize(row.name),
+                sanitize(&row.value),
             ]
         })
         .collect::<Vec<_>>();

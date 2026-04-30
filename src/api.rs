@@ -41,7 +41,7 @@ impl Property {
     }
 
     /// Sampled example events for an event-based property. Returns an empty
-    /// slice for non-event properties, whose examples are arbitrary objects
+    /// slice for non-event properties, whose examples are arbitrary values
     /// without a `moment`.
     pub fn event_examples(&self) -> &[Event] {
         match self {
@@ -57,6 +57,38 @@ impl Property {
             Self::EventProperty(p) => &p.counterexamples,
             Self::NonEventProperty(_) => &[],
         }
+    }
+}
+
+/// `Property` is an untagged `oneOf` whose variants are structurally similar:
+/// a `NonEventProperty` whose examples happen to fit `Event`'s shape (or that
+/// has no examples at all) silently deserializes as `EventProperty`. Coerce
+/// each property into the variant indicated by its `is_event` flag.
+fn normalize_property(property: Property) -> Property {
+    match property {
+        Property::EventProperty(p) if !p.is_event => {
+            Property::NonEventProperty(NonEventProperty {
+                counterexample_count: p.counterexample_count,
+                counterexamples: p
+                    .counterexamples
+                    .iter()
+                    .map(|e| serde_json::to_value(e).unwrap_or(serde_json::Value::Null))
+                    .collect(),
+                description: p.description,
+                example_count: p.example_count,
+                examples: p
+                    .examples
+                    .iter()
+                    .map(|e| serde_json::to_value(e).unwrap_or(serde_json::Value::Null))
+                    .collect(),
+                group: p.group,
+                is_event: p.is_event,
+                is_group: p.is_group,
+                name: p.name,
+                status: p.status,
+            })
+        }
+        other => other,
     }
 }
 
@@ -346,7 +378,8 @@ impl AntithesisApi {
                         )
                         .await?;
                     let generated::types::PropertyListResponse { data, next_cursor } = page;
-                    state.buffered_properties = data.into();
+                    state.buffered_properties =
+                        data.into_iter().map(normalize_property).collect();
                     state.finished = next_cursor.is_none();
                     state.after = next_cursor;
                 }

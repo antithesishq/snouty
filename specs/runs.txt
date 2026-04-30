@@ -55,14 +55,16 @@ snouty --json runs show $R_run_id
 stdout '"run_id".*"$R_run_id"'
 [!staging] stdout '"status".*"completed"'
 
-# `snouty runs properties` shows all properties by default as flattened event rows.
+# `snouty runs properties` renders event-based properties as a flattened HASH/VTIME
+# table and non-event properties as a separate NAME/VALUE table.
 mock-runs-server
 snouty runs properties $R_run_id
 [!staging] stdout 'EXAMPLE.*HASH.*VTIME.*NAME'
 [!staging] stdout 'Failing.*-100.*5\.0.*Counter value stays below limit'
 [!staging] stdout 'Failing.*-200.*10\.0.*Counter value stays below limit'
 [!staging] stdout 'Passing.*-300.*15\.0.*Counter value stays below limit'
-[!staging] stdout 'Passing.*-400.*1\.0.*Setup completes'
+[!staging] stdout 'EXAMPLE.*NAME.*VALUE'
+[!staging] stdout 'Passing.*Setup completes.*"final_counter":42'
 
 # `snouty runs properties --failing` shows only failing properties.
 mock-runs-server
@@ -75,7 +77,8 @@ snouty runs properties --failing $R_run_id
 # `snouty runs properties --passing` shows only passing properties.
 mock-runs-server
 snouty runs properties --passing $R_run_id
-[!staging] stdout 'Passing.*-400.*1\.0.*Setup completes'
+[!staging] stdout 'EXAMPLE.*NAME.*VALUE'
+[!staging] stdout 'Passing.*Setup completes.*"final_counter":42'
 [!staging] ! stdout 'Counter value stays below limit'
 
 # `snouty runs properties --passing --failing` is rejected.
@@ -130,10 +133,14 @@ mock-runs-server
 snouty runs properties run-empty
 stdout 'No properties found\.'
 
-# `snouty runs properties` prints a friendly message when properties exist but have no sampled events.
+# `snouty runs properties` shows a values table for non-event properties even
+# when they have no sampled values; such properties render as "-" rows and the
+# events table is omitted.
 mock-runs-server
 snouty runs properties run-no-events
-stdout 'No sampled property events found\.'
+stdout 'EXAMPLE.*NAME.*VALUE'
+stdout '-.*No events property.*-'
+! stdout 'EXAMPLE.*HASH.*VTIME'
 
 # `snouty runs properties` requires a run ID.
 ! snouty runs properties

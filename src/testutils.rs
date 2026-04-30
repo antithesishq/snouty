@@ -523,15 +523,15 @@ fn mock_route_list_run_properties(run_id: &str, query: Option<&str>) -> (u16, St
     if run_id == "run-no-events" {
         return (
             200,
-            r#"{"data":[{"name":"No events property","status":"Passing","is_event":false,"is_existential":false,"is_universal":true,"example_count":0,"counterexample_count":0}],"next_cursor":null}"#.to_string(),
+            r#"{"data":[{"name":"No events property","status":"Passing","is_event":false,"example_count":0,"counterexample_count":0}],"next_cursor":null}"#.to_string(),
         );
     }
 
     let status = mock_query_param(query, "status");
     let after = mock_query_param(query, "after");
 
-    let failing = r#"{"name":"Counter value stays below limit","description":"Counter stays within safe bounds","status":"Failing","is_event":true,"is_existential":false,"is_universal":true,"group":"Safety","example_count":12,"counterexample_count":3,"examples":[{"moment":{"input_hash":"-300","vtime":"15.0"}}],"counterexamples":[{"moment":{"input_hash":"-100","vtime":"5.0"}},{"moment":{"input_hash":"-200","vtime":"10.0"}}]}"#.to_string();
-    let passing = r#"{"name":"Setup completes","description":"Setup eventually succeeds","status":"Passing","is_event":false,"is_existential":true,"is_universal":false,"example_count":1,"counterexample_count":0,"examples":[{"moment":{"input_hash":"-400","vtime":"1.0"}}]}"#.to_string();
+    let failing = r#"{"name":"Counter value stays below limit","description":"Counter stays within safe bounds","status":"Failing","is_event":true,"group":"Safety","example_count":12,"counterexample_count":3,"examples":[{"moment":{"input_hash":"-300","vtime":"15.0"}}],"counterexamples":[{"moment":{"input_hash":"-100","vtime":"5.0"}},{"moment":{"input_hash":"-200","vtime":"10.0"}}]}"#.to_string();
+    let passing = r#"{"name":"Setup completes","description":"Setup eventually succeeds","status":"Passing","is_event":false,"example_count":1,"counterexample_count":0,"examples":[{"final_counter":42}]}"#.to_string();
 
     let (data, next_cursor) = match (status, after) {
         (Some("Failing"), _) => (vec![failing], None),

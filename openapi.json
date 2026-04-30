@@ -1013,7 +1013,7 @@
         ]
       },
       "Non_Event_Property": {
-        "description": "A property where `is_event` is false. Examples and counterexamples are arbitrary objects.",
+        "description": "A property where `is_event` is false. Examples and counterexamples are arbitrary JSON values whose shape varies by property.",
         "allOf": [
           {
             "$ref": "#/components/schemas/Property_Base"
@@ -1024,18 +1024,12 @@
               "examples": {
                 "type": "array",
                 "description": "A sample of example instances that satisfy the property. This is not an exhaustive list.",
-                "items": {
-                  "type": "object",
-                  "additionalProperties": true
-                }
+                "items": {}
               },
               "counterexamples": {
                 "type": "array",
                 "description": "A sample of counterexample instances that violate the property. This is not an exhaustive list.",
-                "items": {
-                  "type": "object",
-                  "additionalProperties": true
-                }
+                "items": {}
               }
             }
           }

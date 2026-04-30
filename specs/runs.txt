@@ -156,9 +156,10 @@ stdout '3\.0.*\[app:out\].*line one\\\\nline two'
 stdout '73\.94233945617452.*\[control:error\].*Post "http://10\.0\.1\.123:8003/"'
 stdout '311\.8487535319291.*\[control:assert\].*UNHIT AlwaysOrUnreachable "Counter'\''s value retrieved" @ control\.go:get:87'
 # Events without source.container fall back to a sanitized source.name label
-# (with any leading `antithesis_` stripped).
-stdout '400\.5.*\[test_composer\].*started_task'
-stdout '401\.5.*\[fault_injector\].*"fault"'
+# (with any leading `antithesis_` stripped). Known sources render their
+# curated fields as <path>=<value> pairs in config order.
+stdout '400\.5.*\[test_composer\].*task_status=started command=core/parallel_driver_fetch container_id=d700ef3d05a263 tasks_len=1'
+stdout '401\.5.*\[fault_injector\].*fault\.name=clog fault\.type=network fault\.details\.disruption_type=Stopped fault\.affected_nodes=client2,setup fault\.max_duration=0\.267'
 
 # `snouty --json runs logs` outputs raw NDJSON.
 mock-runs-server

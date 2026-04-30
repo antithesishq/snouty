@@ -511,10 +511,10 @@ fn mock_route_get_run_logs(_run_id: &str) -> (u16, String) {
         r#"{"output_text":"line one\nline two","source":{"container":"app","name":"app","stream":"out"},"moment":{"input_hash":"-789","vtime":"3.0"}}"#,
         r#"{"IPT_bytes_out":563000,"output_text":"W0320 15:07:26.913251       1 control.go:315] Error setting vault 10.0.1.123:8003 value to 64: Post \"http://10.0.1.123:8003/\": dial tcp 10.0.1.123:8003: i/o timeout (Client.Timeout exceeded while awaiting headers)","source":{"container":"control","name":"service_control","stream":"error"},"moment":{"input_hash":"-7835669064649885519","vtime":"73.94233945617452"}}"#,
         r#"{"antithesis_assert":{"assert_type":"always","condition":false,"details":null,"display_type":"AlwaysOrUnreachable","hit":false,"id":"Counter's value retrieved","location":{"begin_column":0,"begin_line":87,"class":"","file":"/go/src/antithesis/control/control.go","function":"get"},"message":"Counter's value retrieved","must_hit":false},"IPT_bytes_out":1837376,"source":{"container":"control","name":"control","pid":1},"moment":{"input_hash":"-4735081784258020614","vtime":"311.8487535319291"}}"#,
-        // Platform events with no container; source.name should be used as the
-        // bracketed label, with any leading `antithesis_` stripped.
-        r#"{"started_task":"abc_parallel_driver_fetch","task_status":"started","source":{"name":"antithesis_test_composer","pid":974},"moment":{"input_hash":"5181922178177328213","vtime":"400.5"}}"#,
-        r#"{"fault":{"name":"clog","type":"network","details":{"disruption_type":"Stopped"}},"source":{"name":"fault_injector","pid":1086},"moment":{"input_hash":"5181922178177328213","vtime":"401.5"}}"#,
+        // Platform events with no container; source.name is used as the
+        // bracketed label and curated fields render as <path>=<value> pairs.
+        r#"{"started_task":"abc_parallel_driver_fetch","task_status":"started","command":"core/parallel_driver_fetch","container_id":"d700ef3d05a263","tasks_len":"1","source":{"name":"antithesis_test_composer","pid":974},"moment":{"input_hash":"5181922178177328213","vtime":"400.5"}}"#,
+        r#"{"fault":{"name":"clog","type":"network","details":{"disruption_type":"Stopped"},"affected_nodes":["client2","setup"],"max_duration":0.267},"source":{"name":"fault_injector","pid":1086},"moment":{"input_hash":"5181922178177328213","vtime":"401.5"}}"#,
     ];
     (200, lines.join("\n") + "\n")
 }

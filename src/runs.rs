@@ -510,10 +510,98 @@ fn render_event_entry(entry: &Value) -> RenderedEventEntry {
 }
 
 fn render_event_output(entry: &Value) -> String {
+    if let Some(rendered) = render_known_event(entry) {
+        return rendered;
+    }
     if let Some(output_text) = entry.get("output_text").and_then(Value::as_str) {
-        sanitize(output_text)
-    } else {
-        sanitize(&serde_json::to_string(entry).unwrap_or_default())
+        return sanitize(output_text);
+    }
+    sanitize(&serde_json::to_string(entry).unwrap_or_default())
+}
+
+struct EventKind {
+    source_name: &'static str,
+    fields: &'static [&'static str],
+}
+
+const EVENT_KINDS: &[EventKind] = &[
+    EventKind {
+        source_name: "antithesis_test_composer",
+        fields: &[
+            "task_status",
+            "command",
+            "container_id",
+            "command_return_code",
+            "command_runtime",
+            "additional_stderr",
+            "added_task",
+            "got_pid_back",
+            "tasks_len",
+            "weight",
+            "weight_type",
+        ],
+    },
+    EventKind {
+        source_name: "fault_injector",
+        fields: &[
+            "fault.name",
+            "fault.type",
+            "fault.details.disruption_type",
+            "fault.affected_nodes",
+            "fault.max_duration",
+        ],
+    },
+];
+
+fn render_known_event(entry: &Value) -> Option<String> {
+    let source_name = entry["source"]["name"].as_str()?;
+    let kind = EVENT_KINDS
+        .iter()
+        .find(|kind| kind.source_name == source_name)?;
+
+    let parts: Vec<String> = kind
+        .fields
+        .iter()
+        .filter_map(|path| {
+            let value = lookup_path(entry, path)?;
+            let rendered = format_event_value(value)?;
+            Some(format!("{path}={rendered}"))
+        })
+        .collect();
+
+    (!parts.is_empty()).then(|| parts.join(" "))
+}
+
+fn lookup_path<'a>(entry: &'a Value, path: &str) -> Option<&'a Value> {
+    path.split('.')
+        .try_fold(entry, |current, segment| current.get(segment))
+}
+
+fn format_event_value(value: &Value) -> Option<String> {
+    match value {
+        Value::Null => None,
+        Value::Bool(b) => Some(b.to_string()),
+        Value::Number(n) => Some(n.to_string()),
+        Value::String(s) if s.is_empty() => None,
+        Value::String(s) => Some(sanitize(s)),
+        Value::Array(items) => {
+            let scalars: Option<Vec<String>> = items
+                .iter()
+                .map(|item| match item {
+                    Value::Null => Some(String::new()),
+                    Value::Bool(b) => Some(b.to_string()),
+                    Value::Number(n) => Some(n.to_string()),
+                    Value::String(s) => Some(s.clone()),
+                    _ => None,
+                })
+                .collect();
+            let scalars = scalars?;
+            if scalars.is_empty() {
+                return None;
+            }
+            Some(sanitize(&scalars.join(",")))
+        }
+        Value::Object(_) => None,
     }
 }
 
@@ -1008,6 +1096,115 @@ mod tests {
             "[test_composer]".to_string()
         );
     }
+
+    #[test]
+    fn renders_started_task_as_key_value_pairs() {
+        let entry = json!({
+            "command": "core/parallel_driver_fetch",
+            "container_id": "d700ef3d05a263877d0d0c175f2954bdc8bc098faf501211b34bb20ba09f4435",
+            "started_task": "d700ef3d_parallel_driver_fetch",
+            "task_status": "started",
+            "tasks_len": "1",
+            "source": {"name": "antithesis_test_composer"},
+            "moment": {"vtime": "1.0"}
+        });
+
+        assert_eq!(
+            render_event_entry(&entry).output,
+            "task_status=started command=core/parallel_driver_fetch container_id=d700ef3d05a263877d0d0c175f2954bdc8bc098faf501211b34bb20ba09f4435 tasks_len=1"
+        );
+    }
+
+    #[test]
+    fn renders_finished_task_omitting_empty_stderr() {
+        let entry = json!({
+            "additional_stderr": "",
+            "additional_stdout": "",
+            "command": "core/parallel_driver_fetch",
+            "command_return_code": "0",
+            "command_runtime": "2.1254637241363525",
+            "finished_task": "abc",
+            "task_status": "finished",
+            "source": {"name": "antithesis_test_composer"},
+            "moment": {"vtime": "2.0"}
+        });
+
+        assert_eq!(
+            render_event_entry(&entry).output,
+            "task_status=finished command=core/parallel_driver_fetch command_return_code=0 command_runtime=2.1254637241363525"
+        );
+    }
+
+    #[test]
+    fn renders_weight_event_as_key_value_pairs() {
+        let entry = json!({
+            "command": "abc_/opt/antithesis/test/v1/core/parallel_driver_fetch",
+            "weight": "0.157917609630634",
+            "weight_type": "masked_for_step",
+            "source": {"name": "antithesis_test_composer"},
+            "moment": {"vtime": "7.0"}
+        });
+
+        assert_eq!(
+            render_event_entry(&entry).output,
+            "command=abc_/opt/antithesis/test/v1/core/parallel_driver_fetch weight=0.157917609630634 weight_type=masked_for_step"
+        );
+    }
+
+    #[test]
+    fn renders_fault_event_with_nested_paths_and_array() {
+        let entry = json!({
+            "fault": {
+                "name": "clog",
+                "type": "network",
+                "details": {"disruption_type": "Stopped"},
+                "affected_nodes": ["client2", "setup"],
+                "max_duration": 0.267319258
+            },
+            "source": {"name": "fault_injector"},
+            "moment": {"vtime": "3.0"}
+        });
+
+        assert_eq!(
+            render_event_entry(&entry).output,
+            "fault.name=clog fault.type=network fault.details.disruption_type=Stopped fault.affected_nodes=client2,setup fault.max_duration=0.267319258"
+        );
+    }
+
+    #[test]
+    fn renders_fault_event_with_empty_affected_nodes() {
+        let entry = json!({
+            "fault": {
+                "name": "clog",
+                "type": "network",
+                "details": {"disruption_type": "Stopped"},
+                "affected_nodes": [],
+                "max_duration": 0.259267334
+            },
+            "source": {"name": "fault_injector"},
+            "moment": {"vtime": "4.0"}
+        });
+
+        assert_eq!(
+            render_event_entry(&entry).output,
+            "fault.name=clog fault.type=network fault.details.disruption_type=Stopped fault.max_duration=0.259267334"
+        );
+    }
+
+    #[test]
+    fn falls_back_to_json_dump_for_unknown_source() {
+        let entry = json!({
+            "antithesis_sdk": {"sdk_version": "0.2.0"},
+            "source": {"container": "client1", "name": "python3.11"},
+            "moment": {"vtime": "6.0"}
+        });
+
+        // source.name is not in EVENT_KINDS; no output_text; fall back to JSON.
+        let output = render_event_entry(&entry).output;
+        assert!(output.starts_with('{'), "expected JSON dump, got: {output}");
+        assert!(output.contains("antithesis_sdk"));
+    }
+
 
     fn event(input_hash: &str, vtime: &str) -> Event {
         Event {

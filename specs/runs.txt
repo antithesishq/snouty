@@ -148,7 +148,7 @@ stderr '.*'
 
 # `snouty runs logs` outputs a table by default.
 mock-runs-server
-snouty runs logs run-1 --input-hash -123 --vtime 1.0
+snouty runs logs run-1 -123 1.0
 stdout 'VTIME.*SOURCE.*OUTPUT'
 stdout '1\.0.*\[app:out\].*\{"level":"info","msg":"starting"\}'
 stdout '2\.0.*\[app:error\].*\{"level":"warn","msg":"slow request"\}'
@@ -158,7 +158,7 @@ stdout '311\.8487535319291.*\[control:assert\].*UNHIT AlwaysOrUnreachable "Count
 
 # `snouty --json runs logs` outputs raw NDJSON.
 mock-runs-server
-snouty --json runs logs run-1 --input-hash -123 --vtime 1.0
+snouty --json runs logs run-1 -123 1.0
 stdout 'output_text.*starting'
 stdout 'output_text.*slow request'
 stdout '"antithesis_assert".*"display_type":"AlwaysOrUnreachable"'
@@ -166,13 +166,13 @@ stdout '"antithesis_assert".*"display_type":"AlwaysOrUnreachable"'
 # `snouty --json runs logs` emits a record whose output_text contains
 # a JSON-escaped newline on a single output line.
 mock-runs-server
-snouty --json runs logs run-1 --input-hash -123 --vtime 1.0
+snouty --json runs logs run-1 -123 1.0
 stdout -count=1 'line one\\nline two'
 
-# `snouty runs logs` requires --input-hash and --vtime.
+# `snouty runs logs` requires hash and vtime positional arguments.
 mock-runs-server
 ! snouty runs logs run-1
-stderr '.*input.hash.*'
+stderr '.*INPUT_HASH.*'
 
 # `snouty runs events` prints a friendly empty-state message.
 mock-runs-server

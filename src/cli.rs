@@ -68,7 +68,7 @@ Examples:
   snouty runs properties --failing <run_id>
   snouty runs properties --passing <run_id>
   snouty runs build-logs <run_id>
-  snouty runs logs <run_id> --input-hash <hash> --vtime <vtime>
+  snouty runs logs <run_id> <hash> <vtime>
   snouty runs events <run_id> <query>"#,
         subcommand_required = false
     )]
@@ -330,11 +330,10 @@ pub enum RunsCommands {
         run_id: String,
 
         /// The input hash value identifying the moment
-        #[arg(long, allow_hyphen_values = true)]
+        #[arg(allow_hyphen_values = true)]
         input_hash: String,
 
         /// The virtual time value identifying the moment
-        #[arg(long)]
         vtime: String,
 
         /// Start streaming from this virtual time

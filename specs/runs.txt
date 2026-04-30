@@ -155,6 +155,10 @@ stdout '2\.0.*\[app:error\].*\{"level":"warn","msg":"slow request"\}'
 stdout '3\.0.*\[app:out\].*line one\\\\nline two'
 stdout '73\.94233945617452.*\[control:error\].*Post "http://10\.0\.1\.123:8003/"'
 stdout '311\.8487535319291.*\[control:assert\].*UNHIT AlwaysOrUnreachable "Counter'\''s value retrieved" @ control\.go:get:87'
+# Events without source.container fall back to a sanitized source.name label
+# (with any leading `antithesis_` stripped).
+stdout '400\.5.*\[test_composer\].*started_task'
+stdout '401\.5.*\[fault_injector\].*"fault"'
 
 # `snouty --json runs logs` outputs raw NDJSON.
 mock-runs-server

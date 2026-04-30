@@ -489,13 +489,14 @@ fn render_event_entry(entry: &Value) -> RenderedEventEntry {
         .to_string();
     let vtime = entry["moment"]["vtime"].as_str().unwrap_or("").to_string();
     let container = entry["source"]["container"].as_str().unwrap_or("");
+    let name = entry["source"]["name"].as_str().unwrap_or("");
     let stream = entry["source"]["stream"].as_str().unwrap_or("");
 
     if let Some(summary) = parse_assertion_summary(entry) {
         return RenderedEventEntry {
             input_hash,
             vtime,
-            source: render_source(container, Some("assert")),
+            source: render_source(container, name, Some("assert")),
             output: render_assertion_summary(&summary),
         };
     }
@@ -503,7 +504,7 @@ fn render_event_entry(entry: &Value) -> RenderedEventEntry {
     RenderedEventEntry {
         input_hash,
         vtime,
-        source: render_source(container, (!stream.is_empty()).then_some(stream)),
+        source: render_source(container, name, (!stream.is_empty()).then_some(stream)),
         output: render_event_output(entry),
     }
 }
@@ -522,13 +523,17 @@ fn parse_assertion_summary(entry: &Value) -> Option<AssertionSummary> {
     AssertionSummary::try_from(payload).ok()
 }
 
-fn render_source(container: &str, stream: Option<&str>) -> String {
-    let container = sanitize(container);
+fn render_source(container: &str, name: &str, stream: Option<&str>) -> String {
+    let label = if !container.trim().is_empty() {
+        sanitize(container)
+    } else {
+        sanitize(name.trim().strip_prefix("antithesis_").unwrap_or(name))
+    };
     let stream = stream.map(sanitize).filter(|stream| !stream.is_empty());
 
-    match (container.is_empty(), stream) {
-        (false, Some(stream)) => format!("[{container}:{stream}]"),
-        (false, None) => format!("[{container}]"),
+    match (label.is_empty(), stream) {
+        (false, Some(stream)) => format!("[{label}:{stream}]"),
+        (false, None) => format!("[{label}]"),
         (true, Some(stream)) => format!("[{stream}]"),
         (true, None) => "[]".to_string(),
     }
@@ -948,7 +953,60 @@ mod tests {
 
     #[test]
     fn source_without_stream_omits_trailing_colon() {
-        assert_eq!(render_source("control", None), "[control]");
+        assert_eq!(render_source("control", "", None), "[control]");
+    }
+
+    #[test]
+    fn source_falls_back_to_name_when_container_empty() {
+        assert_eq!(
+            render_source("", "fault_injector", None),
+            "[fault_injector]"
+        );
+    }
+
+    #[test]
+    fn source_strips_antithesis_prefix_from_name() {
+        assert_eq!(
+            render_source("", "antithesis_test_composer", None),
+            "[test_composer]"
+        );
+    }
+
+    #[test]
+    fn source_prefers_container_over_name() {
+        assert_eq!(
+            render_source("client1", "python3.11", None),
+            "[client1]"
+        );
+    }
+
+    #[test]
+    fn source_combines_name_fallback_with_stream() {
+        assert_eq!(
+            render_source("", "antithesis_test_composer", Some("info")),
+            "[test_composer:info]"
+        );
+    }
+
+    #[test]
+    fn renders_test_composer_event_with_name_fallback() {
+        let entry = json!({
+            "added_task": "parallel_driver_fetch",
+            "tasks_len": "1",
+            "source": {
+                "name": "antithesis_test_composer",
+                "pid": 974
+            },
+            "moment": {
+                "input_hash": "5181922178177328213",
+                "vtime": "315.41654103668407"
+            }
+        });
+
+        assert_eq!(
+            render_event_entry(&entry).source,
+            "[test_composer]".to_string()
+        );
     }
 
     fn event(input_hash: &str, vtime: &str) -> Event {

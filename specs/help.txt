@@ -24,11 +24,12 @@ stdout '.*doctor.*'
 snouty api --help
 stdout '.*webhook.*'
 
-# validate --help explains how setup-complete is detected.
+# validate --help documents both the compose and Kubernetes flows.
 snouty validate --help
-stdout '.*\/tmp\/antithesis.*'
-stdout '.*ANTITHESIS_OUTPUT_DIR.*'
-stdout '.*ANTITHESIS_SDK_LOCAL_OUTPUT.*'
-stdout '.*JSONL.*'
-stdout '.*not by scraping compose logs.*'
+stdout '.*Compose configs:.*'
+stdout '.*docker-compose locally.*'
+stdout '.*setup-complete.*'
 stdout '.*Scripts are not executed.*'
+stdout '.*Kubernetes configs:.*'
+stdout '.*k8s-validator.*'
+stdout '.*manifests\/.*'

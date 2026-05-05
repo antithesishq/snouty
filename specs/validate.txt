@@ -11,13 +11,32 @@ stderr 'required.*'
 ! snouty validate /nonexistent/path
 stderr 'not a directory.*'
 
-# Rejects a directory without docker-compose.yaml.
+# Rejects a directory without docker-compose.yaml or manifests/.
 ! snouty validate empty
-stderr 'docker-compose.*'
+stderr '.*does not contain.*docker-compose.yaml.*manifests/.*'
+
+# Lowercase docker-compose.yml is rejected with a rename hint.
+! snouty validate yml_dir
+stderr '.*rename.*'
+
+# Rejects an ambiguous directory containing both compose and manifests/.
+! snouty validate ambiguous
+stderr '.*both docker-compose.yaml and a manifests/ subdirectory.*'
 
 # Help text mentions --keep-running.
 snouty validate --help
 stdout '.*keep-running.*'
 
+# Help text mentions the manifests/ subdirectory option.
+snouty validate --help
+stdout '.*manifests/.*'
+
 -- empty/.keep --
 -- yml_dir/docker-compose.yml --
+-- ambiguous/docker-compose.yaml --
+services: {}
+-- ambiguous/manifests/ns.yaml --
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: demo

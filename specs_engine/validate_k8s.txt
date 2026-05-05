@@ -1,0 +1,23 @@
+# snouty validate — Kubernetes manifest cases
+
+# Valid manifest — validator passes.
+snouty validate config_valid
+stderr 'Running k8s-validator against manifests in.*'
+stderr 'k8s manifests valid.*'
+
+# Invalid manifest (unknown kind) — validator fails.
+! snouty validate config_invalid
+stderr 'k8s-validator failed.*'
+
+-- config_valid/manifests/ns.yaml --
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: snouty-demo
+-- config_invalid/manifests/pod.yaml --
+apiVersion: v1
+kind: Pod
+metadata:
+  name: bad-pod
+spec:
+  containers: "should be a list"

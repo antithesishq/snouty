@@ -8,6 +8,7 @@ use log::{debug, info};
 use color_eyre::eyre::{Context, Result, bail};
 use snouty::api::AntithesisApi;
 use snouty::cli::{ApiCommands, Cli, Commands, LaunchArgs};
+use snouty::config;
 use snouty::container;
 use snouty::docs;
 use snouty::moment;
@@ -136,19 +137,12 @@ async fn cmd_launch(args: LaunchArgs) -> Result<()> {
         "config and config_image are mutually exclusive"
     );
 
-    // TODO: enable config directory support for k8s manifests
-    if args.webhook == "basic_k8s_test" && args.config.is_some() {
-        bail!(
-            "The 'basic_k8s_test' webhook does not support the --config flag. Please use --config-image with a pre-built config image instead."
-        );
-    }
-
     if let Some(config_image) = args.config_image {
         params.insert("antithesis.config_image", config_image);
     }
 
     let config_image_ref = if let Some(config_dir) = args.config {
-        let config = container::runtime()?.compose().config(&config_dir)?;
+        let config = config::detect_config(&config_dir)?;
 
         let registry = std::env::var("ANTITHESIS_REPOSITORY")
             .wrap_err("missing environment variable: ANTITHESIS_REPOSITORY")?;
@@ -198,9 +192,14 @@ async fn cmd_launch(args: LaunchArgs) -> Result<()> {
     if let Some((config, registry, config_image)) = config_image_ref {
         let rt = container::runtime()?;
 
-        let pinned_images = rt.push_compose_images(config.dir(), &registry)?;
-        if !pinned_images.is_empty() {
-            params.insert("antithesis.images", pinned_images.join(";"));
+        // Compose configs reference local image tags that need to be pushed to
+        // the registry; k8s configs reference images by name in the manifests
+        // and the platform pulls them itself.
+        if let config::Config::Compose(compose_config) = &config {
+            let pinned_images = rt.push_compose_images(compose_config, &registry)?;
+            if !pinned_images.is_empty() {
+                params.insert("antithesis.images", pinned_images.join(";"));
+            }
         }
 
         let pinned_config = rt.build_and_push_config_image(config.dir(), &config_image)?;

@@ -7,6 +7,11 @@
 ! snouty launch -w basic_test -c config --duration 30
 stderr 'ANTITHESIS_REPOSITORY.*'
 
+# Kubernetes config directories (manifests/ subdirectory) are also accepted
+# by --config and likewise require ANTITHESIS_REPOSITORY.
+! snouty launch -w basic_k8s_test -c k8s_config --duration 30
+stderr 'ANTITHESIS_REPOSITORY.*'
+
 env ANTITHESIS_REPOSITORY=registry.example.com/repo
 
 # Rejects a nonexistent directory.
@@ -17,13 +22,17 @@ stderr 'not a directory.*'
 ! snouty launch -w basic_test --config /nonexistent/path --duration 30
 stderr 'not a directory.*'
 
-# Rejects a directory without docker-compose.
+# Rejects a directory without docker-compose.yaml or manifests/.
 ! snouty launch -w basic_test -c empty --duration 30
-stderr 'docker-compose.*'
+stderr '.*does not contain.*docker-compose.yaml.*manifests/.*'
 
 # Rejects docker-compose.yml (wrong extension).
 ! snouty launch -w basic_test -c yml_dir --duration 30
-stderr 'requires docker-compose.yaml.*'
+stderr '.*requires docker-compose.yaml.*'
+
+# Rejects an ambiguous directory containing both compose and manifests/.
+! snouty launch -w basic_test -c ambiguous --duration 30
+stderr '.*both docker-compose.yaml and a manifests/ subdirectory.*'
 
 # --config conflicts with --config-image (clap).
 ! snouty launch -w basic_test -c config --config-image some-image:latest --duration 30
@@ -33,11 +42,18 @@ stderr '--config.*'
 ! snouty launch -w basic_test -c config --param antithesis.config_image=some-image:latest
 stderr 'cannot be overridden via --param.*'
 
-# basic_k8s_test webhook does not support --config flag.
-! snouty launch -w basic_k8s_test -c k8s_config --duration 30
-stderr 'basic_k8s_test.*does not support the --config flag.*'
-
 -- config/docker-compose.yaml --
 -- empty/.keep --
 -- yml_dir/docker-compose.yml --
--- k8s_config/docker-compose.yaml --
+-- k8s_config/manifests/ns.yaml --
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: demo
+-- ambiguous/docker-compose.yaml --
+services: {}
+-- ambiguous/manifests/ns.yaml --
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: demo

@@ -369,6 +369,12 @@ engine_spec_case_test!(
     false
 );
 engine_spec_case_test!(
+    podman_engine_validate_k8s_specs,
+    "podman",
+    "validate_k8s.txt",
+    false
+);
+engine_spec_case_test!(
     docker_engine_launch_config_push_specs,
     "docker",
     "launch_config_push.txt",
@@ -390,5 +396,11 @@ engine_spec_case_test!(
     docker_engine_validate_network_arch_specs,
     "docker",
     "validate_network_arch.txt",
+    false
+);
+engine_spec_case_test!(
+    docker_engine_validate_k8s_specs,
+    "docker",
+    "validate_k8s.txt",
     false
 );

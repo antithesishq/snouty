@@ -51,17 +51,18 @@ fn api_help_shows_webhook() {
 }
 
 #[test]
-fn validate_help_explains_setup_complete_detection() {
+fn validate_help_documents_compose_and_kubernetes() {
     snouty()
         .args(["validate", "--help"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("/tmp/antithesis"))
-        .stdout(predicate::str::contains("ANTITHESIS_OUTPUT_DIR"))
-        .stdout(predicate::str::contains("ANTITHESIS_SDK_LOCAL_OUTPUT"))
-        .stdout(predicate::str::contains("JSONL"))
-        .stdout(predicate::str::contains("not by scraping compose logs"))
-        .stdout(predicate::str::contains("Scripts are not executed"));
+        .stdout(predicate::str::contains("Compose configs:"))
+        .stdout(predicate::str::contains("docker-compose locally"))
+        .stdout(predicate::str::contains("setup-complete"))
+        .stdout(predicate::str::contains("Scripts are not executed"))
+        .stdout(predicate::str::contains("Kubernetes configs:"))
+        .stdout(predicate::str::contains("k8s-validator"))
+        .stdout(predicate::str::contains("manifests/"));
 }
 
 #[test]

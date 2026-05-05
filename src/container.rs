@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Command;
 use std::sync::OnceLock;
 
@@ -10,6 +10,8 @@ use color_eyre::{
     eyre::{Context, Result, bail, eyre},
 };
 use tokio::process::Child;
+
+use crate::config::ComposeConfig;
 
 /// RAII wrapper around a [`Child`] spawned with `process_group(0)`.
 ///
@@ -69,40 +71,15 @@ impl Drop for ProcessGroupChild {
     }
 }
 
-/// Bundles a compose config directory with optional overlay files (e.g. overrides).
-///
-/// Used by compose session operations (`up`, `ps`, `exec`,
-/// `down`) that run against a live `compose up`.
-#[derive(Debug)]
-pub struct ComposeConfig {
-    dir: PathBuf,
-    extra_files: Vec<PathBuf>,
-}
-
-impl ComposeConfig {
-    /// Add an overlay file (e.g. a compose override) to the config.
-    pub fn with_overlay(mut self, path: PathBuf) -> Self {
-        self.extra_files.push(path);
-        self
+/// Build the `-f` flags for `compose` subcommands: always
+/// `-f docker-compose.yaml`, plus `-f <overlay>` if an overlay was provided.
+fn compose_file_args(overlay: Option<&Path>) -> Vec<String> {
+    let mut args = vec!["-f".to_string(), "docker-compose.yaml".to_string()];
+    if let Some(path) = overlay {
+        args.push("-f".to_string());
+        args.push(path.display().to_string());
     }
-
-    /// The compose config directory.
-    pub fn dir(&self) -> &Path {
-        &self.dir
-    }
-
-    /// Return the `-f` flags for `compose` subcommands.
-    ///
-    /// Always includes `-f docker-compose.yaml`, followed by `-f <path>` for
-    /// each overlay in `extra_files`.
-    fn file_args(&self) -> Vec<String> {
-        let mut args = vec!["-f".to_string(), "docker-compose.yaml".to_string()];
-        for f in &self.extra_files {
-            args.push("-f".to_string());
-            args.push(f.display().to_string());
-        }
-        args
-    }
+    args
 }
 
 /// Trait representing a container runtime (podman or docker).
@@ -252,15 +229,13 @@ pub trait ContainerRuntime: Send + Sync {
         Ok(())
     }
 
-    /// Build and push a config image from a local directory.
-    /// The directory must contain a `docker-compose.yaml` file.
-    /// Returns the pinned image reference.
+    /// Build a scratch image from the contents of `config_dir` and push it.
+    /// Callers are responsible for validating the directory beforehand
+    /// (typically via [`crate::config::detect_config`]). Returns the pinned
+    /// image reference.
     fn build_and_push_config_image(&self, config_dir: &Path, image_ref: &str) -> Result<String> {
-        let compose = self.compose();
-        let config = compose.config(config_dir)?;
-
         eprintln!("Building config image: {}", image_ref);
-        self.build_image(config.dir(), image_ref, None, None)?;
+        self.build_image(config_dir, image_ref, None, None)?;
 
         eprintln!("Pushing config image: {}", image_ref);
         let pinned = self.image_push(image_ref)?;
@@ -270,10 +245,9 @@ pub trait ContainerRuntime: Send + Sync {
 
     /// Push compose images that match the registry.
     /// Returns the pinned image reference for each pushed image.
-    fn push_compose_images(&self, config_dir: &Path, registry: &str) -> Result<Vec<String>> {
+    fn push_compose_images(&self, config: &ComposeConfig, registry: &str) -> Result<Vec<String>> {
         let compose = self.compose();
-        let config = compose.config(config_dir)?;
-        let contents = compose.contents(&config)?;
+        let contents = compose.contents(config, None)?;
         let registry_trimmed = registry.trim_end_matches('/');
         let prefix = format!("{registry_trimmed}/");
 
@@ -363,46 +337,14 @@ pub trait Compose: Send + Sync {
 
     // --- default implementations ---
 
-    /// Validate and wrap a compose config directory.
-    ///
-    /// Snouty requires `docker-compose.yaml`, even if the underlying compose
-    /// backend would also accept `docker-compose.yml`.
-    fn config(&self, config_dir: &Path) -> Result<ComposeConfig> {
-        if !config_dir.is_dir() {
-            bail!(
-                "config directory error: '{}' is not a directory",
-                config_dir.display()
-            );
-        }
-
-        if config_dir.join("docker-compose.yml").is_file() {
-            bail!(
-                "config directory error: directory '{}' contains docker-compose.yml, but Antithesis requires docker-compose.yaml (rename the file)",
-                config_dir.display()
-            );
-        }
-
-        if !config_dir.join("docker-compose.yaml").is_file() {
-            bail!(
-                "config directory error: directory '{}' does not contain a docker-compose.yaml file",
-                config_dir.display()
-            );
-        }
-
-        Ok(ComposeConfig {
-            dir: config_dir.to_path_buf(),
-            extra_files: Vec::new(),
-        })
-    }
-
     /// Run `compose config` to resolve the compose file with env substitutions,
     /// returning the resolved YAML as a string.
-    fn raw_contents(&self, config: &ComposeConfig) -> Result<String> {
+    fn raw_contents(&self, config: &ComposeConfig, overlay: Option<&Path>) -> Result<String> {
         let runtime = self.runtime().name();
         let mut cmd = self.runtime().command(&["compose"]);
         cmd.env("COMPOSE_PROJECT_NAME", "snouty");
-        cmd.current_dir(&config.dir);
-        cmd.args(config.file_args());
+        cmd.current_dir(config.dir());
+        cmd.args(compose_file_args(overlay));
         cmd.arg("config");
         let output = cmd
             .output()
@@ -420,18 +362,18 @@ pub trait Compose: Send + Sync {
     }
 
     /// Resolve and parse a compose config into structured contents.
-    fn contents(&self, config: &ComposeConfig) -> Result<ComposeContents> {
-        let yaml = self.raw_contents(config)?;
+    fn contents(&self, config: &ComposeConfig, overlay: Option<&Path>) -> Result<ComposeContents> {
+        let yaml = self.raw_contents(config, overlay)?;
         parse_compose_config(&yaml)
     }
 
     /// Parse `compose ps --format json` to get `(service_name, container_id)` pairs.
-    fn ps(&self, config: &ComposeConfig) -> Result<Vec<(String, String)>> {
+    fn ps(&self, config: &ComposeConfig, overlay: Option<&Path>) -> Result<Vec<(String, String)>> {
         let runtime = self.runtime().name();
         let mut cmd = self.runtime().command(&["compose"]);
-        cmd.current_dir(&config.dir);
+        cmd.current_dir(config.dir());
         let (pre, post) = self.ps_extra_args();
-        cmd.args(config.file_args());
+        cmd.args(compose_file_args(overlay));
         cmd.args(pre);
         cmd.args(["ps"]);
         cmd.args(post);
@@ -459,6 +401,7 @@ pub trait Compose: Send + Sync {
     fn exec(
         &self,
         config: &ComposeConfig,
+        overlay: Option<&Path>,
         service: &str,
         workdir: Option<&str>,
         env: &[(&str, &str)],
@@ -466,8 +409,8 @@ pub trait Compose: Send + Sync {
     ) -> Result<std::process::Output> {
         let runtime = self.runtime().name();
         let mut command = self.runtime().command(&["compose"]);
-        command.current_dir(&config.dir);
-        command.args(config.file_args());
+        command.current_dir(config.dir());
+        command.args(compose_file_args(overlay));
         command.args(["exec", "-T"]);
         for (k, v) in env {
             command.args(["-e", &format!("{k}={v}")]);
@@ -489,12 +432,16 @@ pub trait Compose: Send + Sync {
     /// The caller is responsible for awaiting the child and checking its exit
     /// status. Uses `process_group(0)` so the whole group can be killed on
     /// timeout.
-    fn up_detached(&self, config: &ComposeConfig) -> Result<ProcessGroupChild> {
+    fn up_detached(
+        &self,
+        config: &ComposeConfig,
+        overlay: Option<&Path>,
+    ) -> Result<ProcessGroupChild> {
         let runtime = self.runtime().name();
         let mut cmd = self.runtime().tokio_command(&["compose"]);
-        cmd.current_dir(&config.dir);
+        cmd.current_dir(config.dir());
         let (pre, post) = self.up_extra_args();
-        cmd.args(config.file_args());
+        cmd.args(compose_file_args(overlay));
         cmd.args(pre);
         cmd.args(["up", "--detach", "--no-build"]);
         cmd.args(post);
@@ -513,12 +460,16 @@ pub trait Compose: Send + Sync {
     /// stdout and stderr are inherited so compose log output goes straight
     /// to the terminal. stdin is null. The process exits when all
     /// containers stop.
-    fn logs_follow(&self, config: &ComposeConfig) -> Result<ProcessGroupChild> {
+    fn logs_follow(
+        &self,
+        config: &ComposeConfig,
+        overlay: Option<&Path>,
+    ) -> Result<ProcessGroupChild> {
         let runtime = self.runtime().name();
         let mut cmd = self.runtime().tokio_command(&["compose"]);
-        cmd.current_dir(&config.dir);
+        cmd.current_dir(config.dir());
         let (pre, post) = self.logs_extra_args();
-        cmd.args(config.file_args());
+        cmd.args(compose_file_args(overlay));
         cmd.args(pre);
         cmd.args(["logs", "--follow"]);
         cmd.args(post);
@@ -533,10 +484,10 @@ pub trait Compose: Send + Sync {
     }
 
     /// Run `compose down` for cleanup. Best-effort, ignores errors.
-    fn down(&self, config: &ComposeConfig) {
+    fn down(&self, config: &ComposeConfig, overlay: Option<&Path>) {
         let mut cmd = self.runtime().command(&["compose"]);
-        cmd.current_dir(&config.dir);
-        cmd.args(config.file_args());
+        cmd.current_dir(config.dir());
+        cmd.args(compose_file_args(overlay));
         cmd.args(["down", "--timeout", "0"]);
         cmd.stdin(std::process::Stdio::null());
         cmd.stdout(std::process::Stdio::null());
@@ -1121,6 +1072,7 @@ mod tests {
     };
     use std::collections::BTreeMap;
     use std::os::unix::process::ExitStatusExt;
+    use std::path::PathBuf;
 
     #[tokio::test]
     async fn build_and_push_to_mock_registry() {
@@ -1211,48 +1163,6 @@ mod tests {
                 ("app".to_string(), "abc123".to_string()),
                 ("sidecar".to_string(), "def456".to_string()),
             ]
-        );
-    }
-
-    #[test]
-    fn compose_config_rejects_nonexistent_directory() {
-        let runtime = DockerRuntime::new("docker");
-        let result = runtime
-            .compose()
-            .config(Path::new("/nonexistent/path/that/does/not/exist"));
-        assert!(result.is_err());
-        let err = result.unwrap_err().to_string();
-        assert!(err.contains("not a directory"), "got: {err}");
-    }
-
-    #[test]
-    fn compose_config_rejects_yml_extension() {
-        let runtime = DockerRuntime::new("docker");
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("docker-compose.yml"), "services: {}\n").unwrap();
-
-        let err = runtime
-            .compose()
-            .config(dir.path())
-            .unwrap_err()
-            .to_string();
-        assert!(err.contains("docker-compose.yml"), "got: {err}");
-        assert!(err.contains("docker-compose.yaml"), "got: {err}");
-    }
-
-    #[test]
-    fn compose_config_requires_yaml_file() {
-        let runtime = DockerRuntime::new("docker");
-        let dir = tempfile::tempdir().unwrap();
-
-        let err = runtime
-            .compose()
-            .config(dir.path())
-            .unwrap_err()
-            .to_string();
-        assert!(
-            err.contains("does not contain a docker-compose.yaml file"),
-            "got: {err}"
         );
     }
 
@@ -1383,8 +1293,11 @@ services:
             .unwrap();
 
             let compose = rt.compose();
-            let config = compose.config(dir.path()).unwrap();
-            let contents = compose.contents(&config).unwrap();
+            let config = match crate::config::detect_config(dir.path()).unwrap() {
+                crate::config::Config::Compose(c) => c,
+                other => panic!("expected Compose, got {other:?}"),
+            };
+            let contents = compose.contents(&config, None).unwrap();
             let images: Vec<&str> = contents
                 .services
                 .iter()
@@ -1433,9 +1346,12 @@ services:
             .unwrap();
 
             let compose = rt.compose();
-            let config = compose.config(dir.path()).unwrap().with_overlay(overlay);
-            let yaml = compose.raw_contents(&config).unwrap();
-            let contents = compose.contents(&config).unwrap();
+            let config = match crate::config::detect_config(dir.path()).unwrap() {
+                crate::config::Config::Compose(c) => c,
+                other => panic!("expected Compose, got {other:?}"),
+            };
+            let yaml = compose.raw_contents(&config, Some(&overlay)).unwrap();
+            let contents = compose.contents(&config, Some(&overlay)).unwrap();
 
             assert!(
                 yaml.contains("overlay:latest"),
@@ -1813,5 +1729,27 @@ services:
             parse_compose_version(""),
             ComposeFlavor::PodmanCompose
         ));
+    }
+
+    #[test]
+    fn compose_file_args_no_overlay() {
+        assert_eq!(
+            compose_file_args(None),
+            vec!["-f".to_string(), "docker-compose.yaml".to_string()]
+        );
+    }
+
+    #[test]
+    fn compose_file_args_with_overlay() {
+        let overlay = PathBuf::from("/tmp/override.yaml");
+        assert_eq!(
+            compose_file_args(Some(&overlay)),
+            vec![
+                "-f".to_string(),
+                "docker-compose.yaml".to_string(),
+                "-f".to_string(),
+                "/tmp/override.yaml".to_string(),
+            ]
+        );
     }
 }

@@ -9,8 +9,11 @@ use serde::Deserialize;
 use tokio::time::{Duration, sleep};
 
 use crate::cli::ValidateArgs;
-use crate::container::{self, ComposeConfig};
+use crate::config::{self, ComposeConfig, Config, KubernetesConfig};
+use crate::container;
 use crate::scripts::{ScriptType, TestScript, scan_scripts};
+
+const K8S_VALIDATOR_IMAGE: &str = "docker.io/antithesishq/k8s-validator:1.0.0";
 
 #[derive(Deserialize)]
 struct SetupEvent {
@@ -146,11 +149,12 @@ fn mkdir_or_require_empty(path: &Path) -> Result<()> {
 struct ComposeDownGuard<'a> {
     compose: &'a dyn container::Compose,
     config: &'a ComposeConfig,
+    overlay: Option<&'a Path>,
 }
 
 impl Drop for ComposeDownGuard<'_> {
     fn drop(&mut self) {
-        self.compose.down(self.config);
+        self.compose.down(self.config, self.overlay);
     }
 }
 
@@ -178,12 +182,25 @@ async fn validate_with_temp_dir(args: ValidateArgs, temp_dir: &Path) -> Result<(
         keep_running,
     } = args;
     let rt = container::runtime()?;
+    match config::detect_config(&config_path)? {
+        Config::Compose(cfg) => validate_compose(rt, cfg, timeout, keep_running, temp_dir).await,
+        Config::Kubernetes(cfg) => validate_kubernetes(rt, &cfg, keep_running).await,
+    }
+}
+
+async fn validate_compose(
+    rt: &dyn container::ContainerRuntime,
+    config: ComposeConfig,
+    timeout: u64,
+    keep_running: bool,
+    temp_dir: &Path,
+) -> Result<()> {
     let compose = rt.compose();
-    let config = compose.config(&config_path)?;
-    let contents = compose.contents(&config)?;
+    let contents = compose.contents(&config, None)?;
     container::validate_images_are_available(rt, &contents.services)?;
     container::validate_image_architectures(rt, &contents.services)?;
     let override_path = generate_setup_override(&contents, temp_dir)?;
+    let overlay = Some(override_path.as_path());
 
     if keep_running {
         eprintln!(
@@ -195,18 +212,17 @@ async fn validate_with_temp_dir(args: ValidateArgs, temp_dir: &Path) -> Result<(
         );
     }
 
-    let config = config.with_overlay(override_path);
-
     let deadline = tokio::time::Instant::now() + Duration::from_secs(timeout);
 
     eprintln!("Starting compose services...");
-    let mut up_child = compose.up_detached(&config)?;
+    let mut up_child = compose.up_detached(&config, overlay)?;
     let _guard = if keep_running {
         None
     } else {
         Some(ComposeDownGuard {
             compose: &*compose,
             config: &config,
+            overlay,
         })
     };
 
@@ -230,9 +246,9 @@ async fn validate_with_temp_dir(args: ValidateArgs, temp_dir: &Path) -> Result<(
 
     // Discover scripts early so we can use them for both the success path
     // and the timeout diagnostic.
-    let scripts = discover_scripts(&*compose, &config, temp_dir)?;
+    let scripts = discover_scripts(&*compose, &config, overlay, temp_dir)?;
 
-    let mut logs_child = compose.logs_follow(&config)?;
+    let mut logs_child = compose.logs_follow(&config, overlay)?;
 
     let sdk_output_dir = temp_dir.join("antithesis");
 
@@ -268,6 +284,61 @@ async fn validate_with_temp_dir(args: ValidateArgs, temp_dir: &Path) -> Result<(
     }
 
     test_result
+}
+
+async fn validate_kubernetes(
+    rt: &dyn container::ContainerRuntime,
+    config: &KubernetesConfig,
+    keep_running: bool,
+) -> Result<()> {
+    if keep_running {
+        eprintln!("Note: --keep-running has no effect for Kubernetes configs.");
+    }
+
+    let manifests_dir = config.manifests_dir();
+    eprintln!(
+        "Running k8s-validator against manifests in {}...",
+        manifests_dir.display()
+    );
+
+    // Bind-mount the host path. Podman interprets relative paths as named
+    // volumes, so always pass an absolute path. Include an SELinux relabel
+    // option so the validator can read the manifests directory on
+    // SELinux-enabled systems.
+    let manifests_abs = std::fs::canonicalize(&manifests_dir).wrap_err_with(|| {
+        format!(
+            "failed to resolve manifests directory '{}'",
+            manifests_dir.display()
+        )
+    })?;
+    let mount = format!("{}:/manifests:ro,z", manifests_abs.display());
+    let mut cmd = rt.tokio_command(&["run", "--rm", "-v", &mount, K8S_VALIDATOR_IMAGE]);
+    cmd.stdin(std::process::Stdio::null());
+    cmd.stdout(std::process::Stdio::inherit());
+    cmd.stderr(std::process::Stdio::inherit());
+    cmd.process_group(0);
+
+    let runtime_name = rt.name();
+    let mut child = cmd
+        .spawn()
+        .map(container::ProcessGroupChild::new)
+        .wrap_err_with(|| format!("failed to start '{runtime_name} run' for k8s-validator"))?;
+
+    tokio::select! {
+        status = child.wait() => {
+            let status = status.wrap_err("failed to wait for k8s-validator")?;
+            if !status.success() {
+                bail!("k8s-validator failed (exit status: {status})");
+            }
+        }
+        _ = tokio::signal::ctrl_c() => {
+            child.kill_group().await.ok();
+            bail!("interrupted");
+        }
+    };
+
+    eprintln!("k8s manifests valid.");
+    Ok(())
 }
 
 /// Check whether a reader contains the setup-complete event.
@@ -310,9 +381,10 @@ fn contains_setup_complete(reader: &mut (impl std::io::Read + std::io::Seek)) ->
 fn discover_scripts(
     compose: &dyn container::Compose,
     config: &ComposeConfig,
+    overlay: Option<&Path>,
     temp_dir: &Path,
 ) -> Result<Vec<TestScript>> {
-    let services = compose.ps(config)?;
+    let services = compose.ps(config, overlay)?;
 
     let scripts_dir = temp_dir.join("scripts");
     std::fs::create_dir_all(&scripts_dir).wrap_err("failed to create scripts directory")?;

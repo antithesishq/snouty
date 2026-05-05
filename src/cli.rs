@@ -84,24 +84,28 @@ Using Moment.from (copy from triage report):
     /// Validate local Antithesis setup
     #[command(long_about = r#"Validate local Antithesis setup
 
-Runs docker-compose locally and watches for the setup-complete event to confirm
-instrumentation is working. After setup-complete is detected, discovers
-Test Composer scripts from /opt/antithesis/test/v1 inside the running
-containers and validates their structure.
+Compose configs:
+  Runs docker-compose locally and watches for the setup-complete event to
+  confirm instrumentation is working. After setup-complete is detected,
+  discovers Test Composer scripts from /opt/antithesis/test/v1 inside the
+  running containers and validates their structure.
 
-snouty validate injects a bind mount at /tmp/antithesis in each container and
-sets ANTITHESIS_OUTPUT_DIR plus ANTITHESIS_SDK_LOCAL_OUTPUT so SDK output is
-written there. It detects setup-complete by reading JSONL files from that mount,
-not by scraping compose logs or container stdout.
 
-Scripts are discovered by copying /opt/antithesis/test/v1 from each running
-container and scanning for {test_name}/{command} entries. Scripts are validated
-to have recognized prefixes and at least one driver or anytime script when
-test scripts are present. Scripts are not executed.
+  Scripts are discovered by scanning /opt/antithesis/test/v1 from each running
+  container for {test_name}/{command} entries. Scripts are
+  validated to have recognized prefixes and at least one driver or anytime
+  script when test scripts are present. Scripts are not executed.
+
+Kubernetes configs:
+  Runs docker.io/antithesishq/k8s-validator against the manifests/
+  directory to perform static analysis of the manifests. --timeout has no
+  effect (the validator does not start any workloads), and --keep-running
+  has no effect (no containers are launched).
 
 Example:
   snouty validate ./config
-  snouty validate ./config --timeout 10"#)]
+  snouty validate ./config --timeout 10
+  snouty validate ./k8s-config"#)]
     Validate(ValidateArgs),
 
     /// Check environment configuration
@@ -197,7 +201,8 @@ If the exact path is not found, suggests similar pages."#)]
 
 #[derive(Args)]
 pub struct ValidateArgs {
-    /// Path to config directory containing docker-compose.yaml
+    /// Path to config directory containing either docker-compose.yaml or a
+    /// manifests/ subdirectory (Kubernetes manifests).
     pub config: std::path::PathBuf,
 
     /// Maximum seconds to wait for the setup-complete event
@@ -215,8 +220,12 @@ pub struct LaunchArgs {
     #[arg(short, long)]
     pub webhook: String,
 
-    /// Path to a local config directory containing docker-compose.yaml.
-    /// Builds and pushes a config image automatically, setting antithesis.config_image.
+    /// Path to a local config directory containing either docker-compose.yaml
+    /// or a manifests/ subdirectory (Kubernetes manifests). Builds and pushes
+    /// a config image automatically, setting antithesis.config_image. For
+    /// docker-compose configs, locally-built service images are also pushed
+    /// and exposed via antithesis.images. For Kubernetes configs, images are
+    /// pulled by the platform from the references in the manifests.
     /// Requires ANTITHESIS_REPOSITORY environment variable.
     #[arg(short, long, conflicts_with = "config_image")]
     pub config: Option<std::path::PathBuf>,

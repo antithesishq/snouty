@@ -60,7 +60,7 @@ Antithesis supports two forms of authentication. Some tenants have API keys, whi
 export ANTITHESIS_API_KEY="your-api-key"
 ```
 
-Other tenants use legacy username/password authentication, which you can specify like so:
+Other tenants use username/password authentication, which you can specify like so:
 
 ```sh
 export ANTITHESIS_USERNAME="your-username"

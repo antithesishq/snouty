@@ -36,10 +36,10 @@ Extra parameters can be passed with --param:
     --param my.custom.property=value
 
 Environment variables:
-  ANTITHESIS_TENANT       (required) Your Antithesis tenant name.
+  ANTITHESIS_TENANT       Your Antithesis tenant name (required).
   ANTITHESIS_API_KEY      API key authentication (preferred).
-  ANTITHESIS_USERNAME     Legacy username (required when API key is not set).
-  ANTITHESIS_PASSWORD     Legacy password (required when API key is not set).
+  ANTITHESIS_USERNAME     Username (required when API key is not set).
+  ANTITHESIS_PASSWORD     Password (required when API key is not set).
   ANTITHESIS_REPOSITORY   Container registry for pushing images (required with --config).
   SNOUTY_CONTAINER_ENGINE Force "docker" or "podman" (auto-detected by default)."#)]
     Launch(LaunchArgs),

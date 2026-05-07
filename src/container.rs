@@ -274,8 +274,9 @@ pub trait ContainerRuntime: Send + Sync {
             }
         }
 
-        // Phase 2: Push images matching registry prefix (existing logic).
+        // Phase 2: arch-check, then push images matching the registry prefix.
         let pushable = filter_pushable_images(&images, registry);
+        validate_image_architectures(self, &pushable)?;
         let mut pinned = Vec::new();
         for image in pushable {
             eprintln!("Pushing image: {image}");
@@ -929,25 +930,22 @@ pub fn validate_images_are_available(
     Err(err)
 }
 
-/// Ensure the referenced images all use the amd64 architecture.
-pub fn validate_image_architectures(
-    runtime: &dyn ContainerRuntime,
-    services: &[ComposeService],
-) -> Result<()> {
+/// Ensure the given image references all use the amd64 architecture.
+fn validate_image_architectures<R>(runtime: &R, images: &[&str]) -> Result<()>
+where
+    R: ContainerRuntime + ?Sized,
+{
     let mut seen = HashSet::new();
     let mut unsupported = Vec::new();
 
-    for service in services {
-        if !seen.insert(service.image.as_str()) {
+    for image in images {
+        if !seen.insert(*image) {
             continue;
         }
 
-        let arch = runtime.image_architecture(&service.image)?;
+        let arch = runtime.image_architecture(image)?;
         if arch != "amd64" {
-            unsupported.push(format!(
-                "service '{}' uses image '{}' with architecture '{arch}'",
-                service.name, service.image
-            ));
+            unsupported.push(format!("image '{image}' has architecture '{arch}'"));
         }
     }
 
@@ -1412,20 +1410,7 @@ services:
             ]),
         };
 
-        validate_image_architectures(
-            &runtime,
-            &[
-                ComposeService {
-                    name: "app".to_string(),
-                    image: "app:latest".to_string(),
-                },
-                ComposeService {
-                    name: "sidecar".to_string(),
-                    image: "sidecar:latest".to_string(),
-                },
-            ],
-        )
-        .unwrap();
+        validate_image_architectures(&runtime, &["app:latest", "sidecar:latest"]).unwrap();
     }
 
     #[test]
@@ -1438,20 +1423,8 @@ services:
             ]),
         };
 
-        let err = validate_image_architectures(
-            &runtime,
-            &[
-                ComposeService {
-                    name: "app".to_string(),
-                    image: "app:latest".to_string(),
-                },
-                ComposeService {
-                    name: "sidecar".to_string(),
-                    image: "sidecar:latest".to_string(),
-                },
-            ],
-        )
-        .unwrap_err();
+        let err =
+            validate_image_architectures(&runtime, &["app:latest", "sidecar:latest"]).unwrap_err();
 
         let msg = err.to_string();
         let debug = format!("{err:?}");
@@ -1460,8 +1433,63 @@ services:
             "expected architecture guidance, got: {msg}"
         );
         assert!(
-            debug.contains("service 'app' uses image 'app:latest' with architecture 'arm64'"),
+            debug.contains("image 'app:latest' has architecture 'arm64'"),
             "expected offending image details, got: {debug}"
+        );
+    }
+
+    #[test]
+    fn pushable_filter_skips_arch_check_for_non_pushable_images() {
+        // Mirrors how push_compose_images wires filter + arch check together:
+        // bare (non-pushable) images with a non-amd64 arch must not fail the
+        // check, because we never push them.
+        let runtime = FakeRuntime {
+            available_images: BTreeMap::new(),
+            architectures: BTreeMap::from([
+                ("nginx:latest".to_string(), "arm64".to_string()),
+                (
+                    "registry.example.com/app:latest".to_string(),
+                    "amd64".to_string(),
+                ),
+            ]),
+        };
+
+        let images = vec![
+            "nginx:latest".to_string(),
+            "registry.example.com/app:latest".to_string(),
+        ];
+        let pushable = filter_pushable_images(&images, "registry.example.com");
+        validate_image_architectures(&runtime, &pushable).unwrap();
+    }
+
+    #[test]
+    fn pushable_filter_flags_arch_for_pushable_images() {
+        let runtime = FakeRuntime {
+            available_images: BTreeMap::new(),
+            architectures: BTreeMap::from([
+                ("nginx:latest".to_string(), "amd64".to_string()),
+                (
+                    "registry.example.com/app:latest".to_string(),
+                    "arm64".to_string(),
+                ),
+            ]),
+        };
+
+        let images = vec![
+            "nginx:latest".to_string(),
+            "registry.example.com/app:latest".to_string(),
+        ];
+        let pushable = filter_pushable_images(&images, "registry.example.com");
+        let err = validate_image_architectures(&runtime, &pushable).unwrap_err();
+
+        let debug = format!("{err:?}");
+        assert!(
+            debug.contains("image 'registry.example.com/app:latest' has architecture 'arm64'"),
+            "expected pushable image to be flagged, got: {debug}"
+        );
+        assert!(
+            !debug.contains("nginx:latest"),
+            "non-pushable image should not appear in error, got: {debug}"
         );
     }
 

@@ -148,7 +148,11 @@ pub trait ContainerRuntime: Send + Sync {
             .trim();
 
         if architecture.is_empty() {
-            bail!("empty image inspect output");
+            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            return Err(eyre!(
+                "'{runtime} image inspect {image_ref}' returned empty architecture"
+            ))
+            .with_section(move || stderr.header("Stderr:"));
         }
 
         Ok(architecture.to_string())

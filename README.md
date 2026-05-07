@@ -13,6 +13,8 @@ A CLI for the [Antithesis](https://antithesis.com) API. See the [webhook documen
 curl --proto '=https' --tlsv1.2 -LsSf https://github.com/antithesishq/snouty/releases/latest/download/snouty-installer.sh | sh
 ```
 
+This also allows you to update via `snouty update` later on.
+
 ### Install prebuilt binaries via cargo binstall
 
 ```sh

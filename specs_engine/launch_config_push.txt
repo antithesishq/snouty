@@ -34,6 +34,22 @@ snouty launch -w basic_test -c local_no_build_config --duration 30
 stderr '"antithesis.config_image":.*@sha256:'
 ! stderr '"antithesis.images"'
 
+# A non-amd64 image scheduled for push is rejected before any push happens.
+mock-server 200 '{"status": "ok"}'
+build-image --platform linux/arm64 arm-launch:latest images/arm_launch
+! snouty launch -w basic_test -c arm_push_config --duration 30
+stderr 'x86-64 \(amd64\).*'
+stderr 'image '\''.*arm-launch:latest'\'' has architecture '\''arm64'\''.*'
+! stderr 'Pushing image:'
+
+# A non-amd64 image that is NOT pushed (no registry prefix, no build) does
+# not trigger the architecture check.
+mock-server 200 '{"status": "ok"}'
+build-image --platform linux/arm64 arm-external:latest images/arm_launch
+snouty launch -w basic_test -c arm_external_config --duration 30
+stderr '"antithesis.config_image":.*@sha256:'
+! stderr '"antithesis.images"'
+
 # Kubernetes config: builds and pushes the config image, never sets
 # antithesis.images (the platform pulls images from the manifests).
 mock-server 200 '{"status": "ok"}'
@@ -45,6 +61,8 @@ stderr '"antithesis.config_image":.*@sha256:'
 placeholder
 -- images/sidecar/content --
 placeholder
+-- images/arm_launch/Dockerfile --
+FROM scratch
 -- push_config/docker-compose.yaml --
 services:
   app:
@@ -68,6 +86,15 @@ services:
 services:
   app:
     image: localapp:latest
+-- arm_push_config/docker-compose.yaml --
+services:
+  app:
+    build: .
+    image: arm-launch:latest
+-- arm_external_config/docker-compose.yaml --
+services:
+  app:
+    image: arm-external:latest
 -- k8s_config/manifests/ns.yaml --
 apiVersion: v1
 kind: Namespace

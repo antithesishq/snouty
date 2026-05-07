@@ -198,7 +198,6 @@ async fn validate_compose(
     let compose = rt.compose();
     let contents = compose.contents(&config, None)?;
     container::validate_images_are_available(rt, &contents.services)?;
-    container::validate_image_architectures(rt, &contents.services)?;
     let override_path = generate_setup_override(&contents, temp_dir)?;
     let overlay = Some(override_path.as_path());
 

@@ -1,4 +1,4 @@
-# snouty validate — network and architecture cases with container runtime
+# snouty validate — network and missing-image cases with container runtime
 
 # Shared emitter image for scenarios that need a local setup-complete source.
 build-image setup-emitter-netarch:latest setup_emitter
@@ -10,13 +10,7 @@ stderr 'Isolating networks: default.*'
 stderr 'Setup-complete event detected.*'
 stderr 'Setup validation successful.*'
 
-# An arm64-only image is rejected during validation.
-build-image --platform linux/arm64 arm-sidecar-netarch:latest arm_meta
-! snouty validate config_arm_image --timeout 15
-stderr 'x86-64 \(amd64\).*'
-stderr 'service '\''arm-sidecar'\'' uses image '\''arm-sidecar-netarch:latest'\'' with architecture '\''arm64'\''.*'
-
-# Missing images are reported together before architecture validation.
+# Missing images are reported together before any container is started.
 ! snouty validate config_missing_images --timeout 15
 stderr 'some images are not available locally.*'
 stderr '.*image: missing-app:latest.*'
@@ -26,9 +20,6 @@ stderr '.*pull or build the missing images, then retry.*'
 -- setup_emitter/Dockerfile --
 FROM busybox
 CMD sh -c 'echo "{\"antithesis_setup\":{\"status\":\"complete\"}}" >> "$ANTITHESIS_OUTPUT_DIR/sdk.jsonl" && sleep 3600'
-
--- arm_meta/Dockerfile --
-FROM scratch
 
 -- net_check/suite/anytime_ping_blocked --
 #!/bin/sh
@@ -47,15 +38,6 @@ CMD sh -c 'echo "{\"antithesis_setup\":{\"status\":\"complete\"}}" >> "$ANTITHES
 services:
   checker:
     image: net-check-netarch:latest
-    pull_policy: never
-
--- config_arm_image/docker-compose.yaml --
-services:
-  emitter:
-    image: setup-emitter-netarch:latest
-    pull_policy: never
-  arm-sidecar:
-    image: arm-sidecar-netarch:latest
     pull_policy: never
 
 -- config_missing_images/docker-compose.yaml --

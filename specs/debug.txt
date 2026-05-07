@@ -60,13 +60,11 @@ mock-server 200 '{}'
 ! snouty debug --antithesis.debugging.input_hash abc --antithesis.debugging.session_id sess --antithesis.debugging.vtime 123 --my.custom.prop value
 stderr 'validation failed.*'
 
-# On success, the API response body is printed to stdout and a
-#    human-readable ETA for the debugging session email is printed to stderr.
+# On success, the API response body is printed to stdout.
 mock-server 200 '{"debugging": true}'
 stdin moment_input.txt
 snouty debug --stdin
 stdout '\{"debugging": true\}.*'
-stderr 'Expect a debugging session email.*'
 
 # On API failure, the command exits with an error showing the HTTP status
 #    and response body.

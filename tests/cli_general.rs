@@ -213,7 +213,18 @@ fn launch_duration_rejects_non_numeric() {
         .args(["launch", "-w", "basic_test", "--duration", "abc"])
         .assert()
         .failure()
-        .stderr(predicate::str::contains("invalid value"));
+        .stderr(predicate::str::contains("validation failed"));
+}
+
+#[test]
+fn launch_duration_accepts_fractional() {
+    let mock_url = start_mock_server(r#"{"status": "ok"}"#, 200);
+
+    snouty_with_mock(&mock_url)
+        .args(["launch", "-w", "basic_test", "--duration", "0.05"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains(r#""antithesis.duration": "0.05""#));
 }
 
 #[test]
@@ -592,35 +603,6 @@ fn api_webhook_error_outputs_string_on_stderr() {
         .failure()
         .stderr(predicate::str::contains("API error: 500"))
         .stdout(predicate::str::is_empty());
-}
-
-#[test]
-fn api_webhook_success_does_not_print_email_eta() {
-    let mock_url = start_mock_server(r#"{"ok": true}"#, 200);
-
-    snouty_with_mock(&mock_url)
-        .args([
-            "api",
-            "webhook",
-            "-w",
-            "basic_test",
-            "--antithesis.duration",
-            "30",
-        ])
-        .assert()
-        .success()
-        .stderr(predicate::str::contains("Expect a report email").not());
-}
-
-#[test]
-fn launch_prints_email_eta() {
-    let mock_url = start_mock_server(r#"{"ok": true}"#, 200);
-
-    snouty_with_mock(&mock_url)
-        .args(["launch", "-w", "basic_test", "--duration", "30"])
-        .assert()
-        .success()
-        .stderr(predicate::str::contains("Expect a report email"));
 }
 
 #[test]

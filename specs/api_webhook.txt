@@ -102,11 +102,6 @@ snouty api webhook -w basic_test --antithesis.duration 30
 stdout '"session_id".*'
 stdout '"status".*'
 
-# On success, no report email ETA is printed (unlike `run`).
-mock-server 200 '{"ok": true}'
-snouty api webhook -w basic_test --antithesis.duration 30
-! stderr 'Expect a report email.*'
-
 # Username/password auth works when ANTITHESIS_API_KEY is not set.
 mock-server 200 '{"ok": true}'
 snouty api webhook -w basic_test --antithesis.duration 30

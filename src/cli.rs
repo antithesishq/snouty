@@ -242,9 +242,13 @@ pub struct LaunchArgs {
     #[arg(long)]
     pub description: Option<String>,
 
-    /// Test duration in minutes
+    /// Test duration
+    // The unit is determined by the webhook configuration on the platform side,
+    // so snouty intentionally stays unit-agnostic. A string lets callers pass
+    // fractional values when the unit is something coarse like minutes; the
+    // numeric format is enforced by the params schema.
     #[arg(long)]
-    pub duration: Option<u32>,
+    pub duration: Option<String>,
 
     /// Mark the test run as ephemeral. Ephemeral runs will not appear in future reports as a historic result.
     #[arg(long)]

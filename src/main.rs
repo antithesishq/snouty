@@ -1,7 +1,6 @@
 use std::io::{self, ErrorKind, Read};
 use std::process::Command;
 
-use chrono::{Duration, Local};
 use clap::Parser;
 use log::{debug, info};
 
@@ -116,7 +115,7 @@ async fn cmd_launch(args: LaunchArgs) -> Result<()> {
         params.insert("antithesis.description", description);
     }
     if let Some(duration) = args.duration {
-        params.insert("antithesis.duration", duration.to_string());
+        params.insert("antithesis.duration", duration);
     }
     let has_source = if let Some(source) = args.source {
         params.insert("antithesis.source", source);
@@ -206,20 +205,7 @@ async fn cmd_launch(args: LaunchArgs) -> Result<()> {
         params.insert("antithesis.config_image", pinned_config);
     }
 
-    let duration_mins: i64 = params
-        .as_map()
-        .get("antithesis.duration")
-        .and_then(|v| v.as_str())
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(0);
-
     launch_webhook(&args.webhook, params).await?;
-
-    let eta = Local::now() + Duration::minutes(duration_mins + 10);
-    eprintln!(
-        "\nExpect a report email from Antithesis around {}",
-        eta.format("%b %-d at %-I:%M %p")
-    );
 
     Ok(())
 }
@@ -281,14 +267,6 @@ async fn cmd_debug(args: Vec<String>, use_stdin: bool) -> Result<()> {
 
     if status.is_success() {
         println!("{}", body);
-
-        // Estimate when the debugging session email will arrive
-        let eta = Local::now() + Duration::minutes(10);
-        eprintln!(
-            "\nExpect a debugging session email from Antithesis around {}",
-            eta.format("%b %-d at %-I:%M %p")
-        );
-
         Ok(())
     } else {
         bail!("API error: {} - {}", status.as_u16(), body)

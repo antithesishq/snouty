@@ -12,7 +12,7 @@ stderr '--webhook.*'
 # Parameters are validated against the testParams schema before making
 #    any API call.
 ! snouty launch -w basic_test --duration abc
-stderr 'invalid value.*'
+stderr 'validation failed.*'
 
 # --stdin applies to `api webhook`, not `launch`.
 ! snouty launch -w basic_test --stdin --duration 30
@@ -73,12 +73,6 @@ stderr 'cannot be overridden via --param.*'
 mock-server 200 '{}'
 ! snouty launch -w basic_test
 stderr 'no parameters provided.*'
-
-# On success, the command prints a human-readable ETA for the report
-#    email to stderr.
-mock-server 200 '{"ok": true}'
-snouty launch -w basic_test --duration 30
-stderr 'Expect a report email.*'
 
 # On API failure, the command exits with an error showing the HTTP status
 #    and response body.

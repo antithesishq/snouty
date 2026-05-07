@@ -48,8 +48,8 @@
         },
         "antithesis.duration": {
           "type": "string",
-          "pattern": "^[0-9]+$",
-          "description": "Desired test duration in minutes"
+          "pattern": "^[0-9]+(\\.[0-9]+)?$",
+          "description": "Desired test duration"
         },
         "antithesis.images": {
           "type": "string",

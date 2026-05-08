@@ -55,12 +55,23 @@ impl Params {
 
     /// Create params from a JSON value.
     ///
-    /// The value must be a JSON object.
+    /// The value must be a JSON object. A `{"params": {...}}` envelope (the
+    /// shape of the API request body) is unwrapped so users can paste a
+    /// captured request body back as input.
     pub fn from_json(value: &Value) -> Result<Self> {
-        let inner = value
+        let obj = value
             .as_object()
-            .ok_or_eyre("invalid arguments: expected JSON object")?
-            .clone();
+            .ok_or_eyre("invalid arguments: expected JSON object")?;
+
+        let inner = if obj.len() == 1
+            && let Some(Value::Object(nested)) = obj.get("params")
+        {
+            debug!("unwrapping {{\"params\": ...}} envelope");
+            nested.clone()
+        } else {
+            obj.clone()
+        };
+
         debug!("parsed {} params from JSON", inner.len());
         Ok(Self { inner })
     }
@@ -427,6 +438,50 @@ mod tests {
         let result = Params::from_key_value_pairs(pairs);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("empty key"));
+    }
+
+    #[test]
+    fn from_json_unwraps_params_envelope() {
+        // Users sometimes paste in the `{"params": {...}}` shape of the API
+        // request body. Unwrap it so the real keys land in the params map
+        // (and so validation runs against the right thing).
+        let input = serde_json::json!({
+            "params": {
+                "antithesis.description": "test run",
+                "antithesis.duration": "0.05",
+                "antithesis.is_ephemeral": "true",
+                "antithesis.report.recipients": "user@example.com",
+                "antithesis.source": "example",
+            }
+        });
+
+        let params = Params::from_json(&input).unwrap();
+
+        assert_eq!(params.as_map().get("antithesis.duration").unwrap(), "0.05");
+        assert_eq!(params.as_map().len(), 5);
+        params.validate_test_params().unwrap();
+    }
+
+    #[test]
+    fn from_json_does_not_unwrap_string_params_key() {
+        // A user property literally named "params" with a string value is
+        // not the envelope shape and must be preserved as-is.
+        let input = serde_json::json!({ "params": "literal" });
+        let params = Params::from_json(&input).unwrap();
+        assert_eq!(params.as_map().get("params").unwrap(), "literal");
+    }
+
+    #[test]
+    fn from_json_does_not_unwrap_when_siblings_present() {
+        // If the top level has siblings alongside "params", don't guess —
+        // leave the structure alone.
+        let input = serde_json::json!({
+            "params": { "antithesis.duration": "30" },
+            "antithesis.source": "example",
+        });
+        let params = Params::from_json(&input).unwrap();
+        assert!(params.as_map().contains_key("params"));
+        assert!(params.as_map().contains_key("antithesis.source"));
     }
 
     #[test]

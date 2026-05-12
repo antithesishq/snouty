@@ -1,0 +1,213 @@
+# snouty runs
+#
+# List all Antithesis runs.
+#
+# Assertions prefixed with [!staging] are skipped when SNOUTY_STAGING is
+# set: they assert against hardcoded mock data (or behaviors that only make
+# sense against the in-process mock) that does not exist on the live staging
+# backend. Unprefixed assertions are structural and run in both modes.
+#
+# Run-id scoped read responses may be cached under
+# $XDG_RUNTIME_DIR/snouty/api-cache-v1. Caching is internal and must not change
+# command output or required arguments.
+
+# The command authenticates with the Antithesis API using
+#    ANTITHESIS_USERNAME, ANTITHESIS_PASSWORD, and ANTITHESIS_TENANT env vars.
+! snouty runs
+stderr 'missing environment variable.*'
+
+# On success, the command fetches all pages via next_cursor and prints a table.
+mock-runs-server
+snouty runs
+stdout 'RUN ID.*STATUS.*CREATED AT.*LAUNCHER'
+[!staging] stdout 'run-1.*completed.*2025-03-20T02:00:00\+00:00.*nightly'
+[!staging] stdout 'run-2.*in_progress.*2025-03-19T14:00:00\+00:00.*debug'
+
+# `snouty runs list` is the same as bare `snouty runs`.
+mock-runs-server
+snouty runs list
+stdout 'RUN ID.*STATUS.*CREATED AT.*LAUNCHER'
+[!staging] stdout 'run-1.*completed.*2025-03-20T02:00:00\+00:00.*nightly'
+[!staging] stdout 'run-2.*in_progress.*2025-03-19T14:00:00\+00:00.*debug'
+
+# `snouty runs show` requires a run ID.
+! snouty runs show
+stderr '.*'
+
+# `snouty --json runs` outputs NDJSON (one run per line) so a run id can be
+#    captured for use in subsequent commands as $R_run_id. Subsequent read
+#    endpoints (properties, build-logs, events) only return data once a run
+#    has reached a terminal state, so list with --status completed first.
+mock-runs-server
+snouty --json runs list --status completed
+[!staging] stdout '"run_id":"run-.*'
+env_from_json 0 run_id
+
+# `snouty runs show` displays run details in key-value format.
+mock-runs-server
+snouty runs show $R_run_id
+stdout 'Run ID.*$R_run_id'
+[!staging] stdout 'Status.*failed'
+[!staging] stdout 'Launcher.*nightly'
+
+# `snouty --json runs show` outputs JSON.
+mock-runs-server
+snouty --json runs show $R_run_id
+stdout '"run_id".*"$R_run_id"'
+[!staging] stdout '"status".*"failed"'
+
+# `snouty runs properties` renders event-based properties as a flattened HASH/VTIME
+# table and non-event properties as a separate NAME/VALUE table.
+mock-runs-server
+snouty runs properties $R_run_id
+[!staging] stdout 'EXAMPLE.*HASH.*VTIME.*NAME'
+[!staging] stdout 'Failing.*-100.*5\.0.*Counter value stays below limit'
+[!staging] stdout 'Failing.*-200.*10\.0.*Counter value stays below limit'
+[!staging] stdout 'Passing.*-300.*15\.0.*Counter value stays below limit'
+[!staging] stdout 'EXAMPLE.*NAME.*VALUE'
+[!staging] stdout 'Passing.*Setup completes.*"final_counter":42'
+
+# `snouty runs properties --failing` shows only failing properties.
+mock-runs-server
+snouty runs properties --failing $R_run_id
+[!staging] stdout 'Failing.*-100.*5\.0.*Counter value stays below limit'
+[!staging] stdout 'Failing.*-200.*10\.0.*Counter value stays below limit'
+[!staging] stdout 'Passing.*-300.*15\.0.*Counter value stays below limit'
+[!staging] stdout -count=0 'Setup completes'
+
+# `snouty runs properties --passing` shows only passing properties.
+mock-runs-server
+snouty runs properties --passing $R_run_id
+[!staging] stdout 'EXAMPLE.*NAME.*VALUE'
+[!staging] stdout 'Passing.*Setup completes.*"final_counter":42'
+[!staging] stdout -count=0 'Counter value stays below limit'
+
+# `snouty runs properties --passing --failing` is rejected.
+! snouty runs properties --passing --failing $R_run_id
+stderr '.*cannot be used with.*'
+
+# `snouty --json runs properties` outputs JSON.
+mock-runs-server
+snouty --json runs properties $R_run_id
+[!staging] stdout '"name".*"Counter value stays below limit"'
+[!staging] stdout '"status".*"Failing"'
+
+# `snouty runs build-logs` streams formatted build log lines.
+mock-runs-server
+snouty runs build-logs $R_run_id
+[!staging] stdout '2025-03-20T02:01:12Z \[stdout\] Building image payments-service\.\.\.'
+[!staging] stdout '2025-03-20T02:01:15Z \[stderr\] Warning: deprecated feature'
+[!staging] stdout '2025-03-20T02:01:20Z \[stdout\] Build complete'
+
+# `snouty --json runs build-logs` outputs raw NDJSON.
+mock-runs-server
+snouty --json runs build-logs $R_run_id
+[!staging] stdout '"timestamp".*"text"'
+
+# `snouty runs events` outputs a table by default.
+mock-runs-server
+snouty runs events $R_run_id request
+[!staging] stdout '^HASH\s+VTIME\s+SOURCE\s+OUTPUT'
+[!staging] stdout '-456.*2\.0.*\[app:error\].*\{"level":"warn","msg":"slow request"\}'
+
+# `snouty --json runs events` outputs raw NDJSON.
+mock-runs-server
+snouty --json runs events $R_run_id counter
+[!staging] stdout '"antithesis_assert".*"Counter'\''s value retrieved"'
+[!staging] stdout '.*"moment".*"input_hash":"-4735081784258020614".*'
+[!staging] stdout '.*"moment".*"vtime":"311\.8487535319291".*'
+
+# A failed run carries the failure moment (input_hash + vtime) in its detail
+#    response. Filter the list with --status failed so we know the run we
+#    inspect actually entered the failed terminal state, then assert that
+#    the human-readable view shows "Failure VTime" / "Failure Hash" and the
+#    --json view exposes failure_moment with input_hash and vtime.
+mock-runs-server
+snouty --json runs list --status failed
+stdout '"run_id":.*'
+stdout '"status":"failed".*'
+env_from_json 0 run_id
+
+mock-runs-server
+snouty runs show $R_run_id
+stdout 'Failure VTime.*'
+stdout 'Failure Hash.*'
+
+mock-runs-server
+snouty --json runs show $R_run_id
+stdout '"failure_moment".*'
+stdout '"input_hash".*'
+stdout '"vtime".*'
+
+[staging] skip
+
+# If no runs are returned, the command prints a friendly empty-state message.
+mock-runs-server empty
+snouty runs
+stdout 'No runs found\.'
+
+# API errors are reported with status code and body.
+mock-server 400 '{"message":"bad request"}'
+! snouty runs
+stderr 'API error: 400.*'
+
+# `snouty runs properties` prints a friendly empty-state message when no properties exist.
+mock-runs-server
+snouty runs properties run-empty
+stdout 'No properties found\.'
+
+# `snouty runs properties` shows a values table for non-event properties even
+# when they have no sampled values; such properties render as "-" rows and the
+# events table is omitted.
+mock-runs-server
+snouty runs properties run-no-events
+stdout 'EXAMPLE.*NAME.*VALUE'
+stdout '-.*No events property.*-'
+! stdout 'EXAMPLE.*HASH.*VTIME'
+
+# `snouty runs properties` requires a run ID.
+! snouty runs properties
+stderr '.*'
+
+# `snouty runs logs` outputs a table by default.
+mock-runs-server
+snouty runs logs run-1 -123 1.0
+stdout 'VTIME.*SOURCE.*OUTPUT'
+stdout '1\.0.*\[app:out\].*\{"level":"info","msg":"starting"\}'
+stdout '2\.0.*\[app:error\].*\{"level":"warn","msg":"slow request"\}'
+stdout '3\.0.*\[app:out\].*line one\\\\nline two'
+stdout '73\.94233945617452.*\[control:error\].*Post "http://10\.0\.1\.123:8003/"'
+stdout '311\.8487535319291.*\[control:assert\].*UNHIT AlwaysOrUnreachable "Counter'\''s value retrieved" @ control\.go:get:87'
+# Events without source.container fall back to a sanitized source.name label
+# (with any leading `antithesis_` stripped). Known sources render their
+# curated fields as <path>=<value> pairs in config order.
+stdout '400\.5.*\[test_composer\].*task_status=started command=core/parallel_driver_fetch container_id=d700ef3d05a263 tasks_len=1'
+stdout '401\.5.*\[fault_injector\].*fault\.name=clog fault\.type=network fault\.details\.disruption_type=Stopped fault\.affected_nodes=client2,setup fault\.max_duration=0\.267'
+
+# `snouty --json runs logs` outputs raw NDJSON.
+mock-runs-server
+snouty --json runs logs run-1 -123 1.0
+stdout 'output_text.*starting'
+stdout 'output_text.*slow request'
+stdout '"antithesis_assert".*"display_type":"AlwaysOrUnreachable"'
+
+# `snouty --json runs logs` emits a record whose output_text contains
+# a JSON-escaped newline on a single output line.
+mock-runs-server
+snouty --json runs logs run-1 -123 1.0
+stdout -count=1 'line one\\nline two'
+
+# `snouty runs logs` requires hash and vtime positional arguments.
+mock-runs-server
+! snouty runs logs run-1
+stderr '.*INPUT_HASH.*'
+
+# `snouty runs events` prints a friendly empty-state message.
+mock-runs-server
+snouty runs events run-1 nomatch
+stdout 'No matching events found\.'
+
+# `snouty runs events` requires a query.
+mock-runs-server
+! snouty runs events run-1
+stderr '.*'

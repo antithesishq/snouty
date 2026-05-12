@@ -28,6 +28,7 @@ fn help_shows_subcommands() {
         .assert()
         .success()
         .stdout(predicate::str::contains("launch"))
+        .stdout(predicate::str::contains("runs"))
         .stdout(predicate::str::contains("debug"))
         .stdout(predicate::str::contains("version"));
 }
@@ -66,8 +67,32 @@ fn validate_help_documents_compose_and_kubernetes() {
 }
 
 #[test]
+fn runs_lists_all_pages() {
+    let mock = start_runs_server(false);
+
+    snouty_with_mock_server(&mock)
+        .arg("runs")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("RUN ID"))
+        .stdout(predicate::str::contains("run-1"))
+        .stdout(predicate::str::contains("run-2"));
+}
+
+#[test]
+fn runs_prints_empty_state() {
+    let mock = start_runs_server(true);
+
+    snouty_with_mock_server(&mock)
+        .arg("runs")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("No runs found."));
+}
+
+#[test]
 fn launch_with_typed_flags() {
-    let mock_url = start_mock_server(r#"{"status": "ok"}"#, 200);
+    let mock_url = start_mock_server(r#"{"runId":"run-123","statusCode":200}"#, 200);
 
     snouty_with_mock(&mock_url)
         .args([
@@ -110,7 +135,7 @@ fn launch_with_typed_flags() {
 
 #[test]
 fn launch_with_ephemeral_flag() {
-    let mock_url = start_mock_server(r#"{"status": "ok"}"#, 200);
+    let mock_url = start_mock_server(r#"{"runId":"run-123","statusCode":200}"#, 200);
 
     snouty_with_mock(&mock_url)
         .args([
@@ -130,7 +155,7 @@ fn launch_with_ephemeral_flag() {
 
 #[test]
 fn launch_without_source_sets_ephemeral() {
-    let mock_url = start_mock_server(r#"{"status": "ok"}"#, 200);
+    let mock_url = start_mock_server(r#"{"runId":"run-123","statusCode":200}"#, 200);
 
     snouty_with_mock(&mock_url)
         .args(["launch", "-w", "basic_test", "--duration", "30"])
@@ -146,7 +171,7 @@ fn launch_without_source_sets_ephemeral() {
 
 #[test]
 fn launch_with_source_omits_ephemeral() {
-    let mock_url = start_mock_server(r#"{"status": "ok"}"#, 200);
+    let mock_url = start_mock_server(r#"{"runId":"run-123","statusCode":200}"#, 200);
 
     snouty_with_mock(&mock_url)
         .args([
@@ -166,7 +191,7 @@ fn launch_with_source_omits_ephemeral() {
 
 #[test]
 fn launch_with_param_flag() {
-    let mock_url = start_mock_server(r#"{"ok": true}"#, 200);
+    let mock_url = start_mock_server(r#"{"runId":"run-123","statusCode":200}"#, 200);
 
     snouty_with_mock(&mock_url)
         .args([
@@ -190,7 +215,7 @@ fn launch_with_param_flag() {
 
 #[test]
 fn launch_param_cannot_override_typed_flag() {
-    let mock_url = start_mock_server(r#"{"ok": true}"#, 200);
+    let mock_url = start_mock_server(r#"{"runId":"run-123","statusCode":200}"#, 200);
 
     snouty_with_mock(&mock_url)
         .args([
@@ -218,7 +243,7 @@ fn launch_duration_rejects_non_numeric() {
 
 #[test]
 fn launch_duration_accepts_fractional() {
-    let mock_url = start_mock_server(r#"{"status": "ok"}"#, 200);
+    let mock_url = start_mock_server(r#"{"runId":"run-123","statusCode":200}"#, 200);
 
     snouty_with_mock(&mock_url)
         .args(["launch", "-w", "basic_test", "--duration", "0.05"])
@@ -266,7 +291,7 @@ fn launch_fails_without_parameters() {
 
 #[test]
 fn launch_reports_api_errors() {
-    let mock_url = start_mock_server(r#"{"error": "bad request"}"#, 400);
+    let mock_url = start_mock_server(r#"{"message":"bad request"}"#, 400);
 
     snouty_with_mock(&mock_url)
         .args(["launch", "-w", "basic_test", "--duration", "30"])
@@ -286,7 +311,7 @@ fn launch_fails_without_credentials() {
 
 #[test]
 fn api_webhook_with_cli_args() {
-    let mock_url = start_mock_server(r#"{"status": "ok"}"#, 200);
+    let mock_url = start_mock_server(r#"{"runId":"run-123","statusCode":200}"#, 200);
 
     snouty_with_mock(&mock_url)
         .args([
@@ -329,7 +354,7 @@ fn api_webhook_with_cli_args() {
 
 #[test]
 fn api_webhook_with_stdin_json() {
-    let mock_url = start_mock_server(r#"{"launched": true}"#, 200);
+    let mock_url = start_mock_server(r#"{"runId":"run-123","statusCode":200}"#, 200);
 
     snouty_with_mock(&mock_url)
         .args(["api", "webhook", "-w", "basic_test", "--stdin"])
@@ -344,7 +369,7 @@ fn api_webhook_with_stdin_json() {
 
 #[test]
 fn api_webhook_with_custom_properties() {
-    let mock_url = start_mock_server(r#"{"ok": true}"#, 200);
+    let mock_url = start_mock_server(r#"{"runId":"run-123","statusCode":200}"#, 200);
 
     snouty_with_mock(&mock_url)
         .args([
@@ -364,7 +389,7 @@ fn api_webhook_with_custom_properties() {
 
 #[test]
 fn api_webhook_stdin_flag_required_for_stdin_input() {
-    let mock_url = start_mock_server(r#"{"ok": true}"#, 200);
+    let mock_url = start_mock_server(r#"{"runId":"run-123","statusCode":200}"#, 200);
 
     snouty_with_mock(&mock_url)
         .args([
@@ -384,7 +409,7 @@ fn api_webhook_stdin_flag_required_for_stdin_input() {
 
 #[test]
 fn api_webhook_with_k8s_webhook() {
-    let mock_url = start_mock_server(r#"{"status": "ok"}"#, 200);
+    let mock_url = start_mock_server(r#"{"runId":"run-123","statusCode":200}"#, 200);
 
     snouty_with_mock(&mock_url)
         .args([
@@ -401,7 +426,7 @@ fn api_webhook_with_k8s_webhook() {
 
 #[test]
 fn api_webhook_with_custom_webhook() {
-    let mock_url = start_mock_server(r#"{"status": "ok"}"#, 200);
+    let mock_url = start_mock_server(r#"{"runId":"run-123","statusCode":200}"#, 200);
 
     snouty_with_mock(&mock_url)
         .args([
@@ -469,7 +494,7 @@ fn api_webhook_fails_without_webhook() {
 
 #[test]
 fn api_webhook_reports_api_errors() {
-    let mock_url = start_mock_server(r#"{"error": "bad request"}"#, 400);
+    let mock_url = start_mock_server(r#"{"message":"bad request"}"#, 400);
 
     snouty_with_mock(&mock_url)
         .args([
@@ -514,7 +539,7 @@ fn api_webhook_fails_without_parameters() {
 
 #[test]
 fn api_webhook_merges_stdin_json_with_cli_args() {
-    let mock_url = start_mock_server(r#"{"ok": true}"#, 200);
+    let mock_url = start_mock_server(r#"{"runId":"run-123","statusCode":200}"#, 200);
 
     snouty_with_mock(&mock_url)
         .args([
@@ -540,7 +565,7 @@ fn api_webhook_merges_stdin_json_with_cli_args() {
 
 #[test]
 fn api_webhook_cli_args_override_stdin_json() {
-    let mock_url = start_mock_server(r#"{"ok": true}"#, 200);
+    let mock_url = start_mock_server(r#"{"runId":"run-123","statusCode":200}"#, 200);
 
     snouty_with_mock(&mock_url)
         .args([
@@ -563,7 +588,7 @@ fn api_webhook_cli_args_override_stdin_json() {
 
 #[test]
 fn api_webhook_success_outputs_valid_json() {
-    let mock_url = start_mock_server(r#"{"session_id": "abc123", "status": "launched"}"#, 200);
+    let mock_url = start_mock_server(r#"{"runId":"run-123","statusCode":200}"#, 200);
 
     let output = snouty_with_mock(&mock_url)
         .args([
@@ -584,11 +609,13 @@ fn api_webhook_success_outputs_valid_json() {
     let parsed: serde_json::Value =
         serde_json::from_str(stdout.trim()).expect("stdout should be valid JSON");
     assert!(parsed.is_object());
+    assert_eq!(parsed["runId"], "run-123");
+    assert_eq!(parsed["statusCode"], 200);
 }
 
 #[test]
 fn api_webhook_error_outputs_string_on_stderr() {
-    let mock_url = start_mock_server(r#"{"error": "something went wrong"}"#, 500);
+    let mock_url = start_mock_server(r#"{"message":"something went wrong"}"#, 500);
 
     snouty_with_mock(&mock_url)
         .args([
@@ -607,7 +634,7 @@ fn api_webhook_error_outputs_string_on_stderr() {
 
 #[test]
 fn run_prints_deprecation_warning() {
-    let mock_url = start_mock_server(r#"{"ok": true}"#, 200);
+    let mock_url = start_mock_server(r#"{"runId":"run-123","statusCode":200}"#, 200);
 
     snouty_with_mock(&mock_url)
         .args(["run", "-w", "basic_test", "--duration", "30"])
@@ -637,28 +664,67 @@ fn api_webhook_no_config_flag() {
 
 #[test]
 fn debug_with_cli_args() {
-    let mock_url = start_mock_server(r#"{"session": "started"}"#, 200);
+    let mock_url = start_mock_server(r#"{"runId": "run-abc-1-1", "statusCode": 202}"#, 200);
 
     snouty_with_mock(&mock_url)
         .args([
             "debug",
-            "--antithesis.debugging.input_hash",
+            "--input-hash",
             "abc123",
-            "--antithesis.debugging.session_id",
+            "--session-id",
             "sess-456",
-            "--antithesis.debugging.vtime",
+            "--vtime",
             "1234567890",
+            "--description",
+            "debug this moment",
+            "--recipients",
+            "team@example.com",
         ])
         .assert()
         .success()
         .stderr(predicate::str::contains(
             r#""antithesis.debugging.input_hash": "abc123""#,
+        ))
+        .stderr(predicate::str::contains(
+            r#""antithesis.debugging.session_id": "sess-456""#,
+        ))
+        .stderr(predicate::str::contains(
+            r#""antithesis.debugging.vtime": "1234567890""#,
+        ))
+        .stderr(predicate::str::contains(
+            r#""antithesis.event_description": "debug this moment""#,
+        ))
+        .stderr(predicate::str::contains(
+            r#""antithesis.report.recipients": "[REDACTED]""#,
+        ))
+        .stdout(predicate::str::contains(
+            "Debugging session started: run_id run-abc-1-1",
         ));
 }
 
 #[test]
+fn debug_with_json_flag() {
+    let mock_url = start_mock_server(r#"{"runId": "run-abc-1-1", "statusCode": 202}"#, 200);
+
+    snouty_with_mock(&mock_url)
+        .args([
+            "--json",
+            "debug",
+            "--input-hash",
+            "abc123",
+            "--session-id",
+            "sess-456",
+            "--vtime",
+            "1234567890",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(r#""runId": "run-abc-1-1""#));
+}
+
+#[test]
 fn debug_with_moment_from_format() {
-    let mock_url = start_mock_server(r#"{"debugging": true}"#, 200);
+    let mock_url = start_mock_server(r#"{"runId": "run-1", "statusCode": 202}"#, 200);
     let moment_input = r#"Moment.from({ session_id: "f89d5c11f5e3bf5e4bb3641809800cee-44-22", input_hash: "6057726200491963783", vtime: 329.8037810830865 })"#;
 
     snouty_with_mock(&mock_url)
@@ -679,7 +745,7 @@ fn debug_with_moment_from_format() {
 
 #[test]
 fn debug_with_stdin_json() {
-    let mock_url = start_mock_server(r#"{"ok": true}"#, 200);
+    let mock_url = start_mock_server(r#"{"runId": "run-1", "statusCode": 202}"#, 200);
     let json = r#"{
          "antithesis.debugging.input_hash": "abc",
          "antithesis.debugging.session_id": "sess",
@@ -701,17 +767,15 @@ fn debug_fails_missing_required_fields() {
     let mock_url = start_mock_server(r#"{}"#, 200);
 
     snouty_with_mock(&mock_url)
-        .args(["debug", "--antithesis.debugging.input_hash", "abc"])
+        .args(["debug", "--input-hash", "abc"])
         .assert()
         .failure()
         .stderr(predicate::str::contains("validation failed"));
 }
 
 #[test]
-fn debug_rejects_custom_properties() {
-    let mock_url = start_mock_server(r#"{}"#, 200);
-
-    snouty_with_mock(&mock_url)
+fn debug_rejects_old_raw_args() {
+    snouty()
         .args([
             "debug",
             "--antithesis.debugging.input_hash",
@@ -720,12 +784,10 @@ fn debug_rejects_custom_properties() {
             "sess",
             "--antithesis.debugging.vtime",
             "123",
-            "--my.custom.prop",
-            "value",
         ])
         .assert()
         .failure()
-        .stderr(predicate::str::contains("validation failed"));
+        .stderr(predicate::str::contains("unexpected argument"));
 }
 
 #[test]
@@ -749,14 +811,16 @@ fn completions_unsupported_shell_fails() {
 
 #[test]
 fn debug_merges_moment_with_cli_args() {
-    let mock_url = start_mock_server(r#"{"debugging": true}"#, 200);
+    let mock_url = start_mock_server(r#"{"runId": "run-1", "statusCode": 202}"#, 200);
     let moment_input = r#"Moment.from({ session_id: "f89d5c11f5e3bf5e4bb3641809800cee-44-22", input_hash: "6057726200491963783", vtime: 329.8037810830865 })"#;
 
     snouty_with_mock(&mock_url)
         .args([
             "debug",
             "--stdin",
-            "--antithesis.report.recipients",
+            "--input-hash",
+            "override",
+            "--recipients",
             "team@example.com",
         ])
         .write_stdin(moment_input)
@@ -766,7 +830,7 @@ fn debug_merges_moment_with_cli_args() {
             r#""antithesis.debugging.session_id": "f89d5c11f5e3bf5e4bb3641809800cee-44-22""#,
         ))
         .stderr(predicate::str::contains(
-            r#""antithesis.debugging.input_hash": "6057726200491963783""#,
+            r#""antithesis.debugging.input_hash": "override""#,
         ))
         .stderr(predicate::str::contains(
             r#""antithesis.debugging.vtime": "329.8037810830865""#,

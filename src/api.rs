@@ -290,40 +290,20 @@ impl AntithesisApi {
         run_id: &str,
         status: Option<PropertyStatus>,
     ) -> impl futures_util::Stream<Item = Result<Property>> + '_ {
-        stream::try_unfold(
-            RunPropertyStreamState {
-                api: self,
-                run_id: run_id.to_string(),
-                status,
-                after: None,
-                buffered_properties: VecDeque::new(),
-                finished: false,
-            },
-            |mut state| async move {
-                loop {
-                    if let Some(property) = state.buffered_properties.pop_front() {
-                        return Ok(Some((property, state)));
-                    }
-
-                    if state.finished {
-                        return Ok(None);
-                    }
-
-                    let page = state
-                        .api
-                        .fetch_run_properties_page(
-                            &state.run_id,
-                            state.after.as_deref(),
-                            state.status,
-                        )
-                        .await?;
-                    let generated::types::PropertyListResponse { data, next_cursor } = page;
-                    state.buffered_properties = data.into_iter().map(normalize_property).collect();
-                    state.finished = next_cursor.is_none();
-                    state.after = next_cursor;
-                }
-            },
-        )
+        let run_id = run_id.to_string();
+        paginate(move |after| {
+            let run_id = run_id.clone();
+            async move {
+                let page = self
+                    .fetch_run_properties_page(&run_id, after.as_deref(), status)
+                    .await?;
+                let generated::types::PropertyListResponse { data, next_cursor } = page;
+                Ok((
+                    data.into_iter().map(normalize_property).collect(),
+                    next_cursor,
+                ))
+            }
+        })
     }
 
     pub async fn search_run_events(&self, run_id: &str, query: &str) -> Result<ByteStream> {
@@ -345,35 +325,16 @@ impl AntithesisApi {
         opts: &RunsFilterOptions,
     ) -> impl futures_util::Stream<Item = Result<RunSummary>> + '_ {
         let opts = opts.clone();
-        stream::try_unfold(
-            FilteredRunStreamState {
-                api: self,
-                opts,
-                after: None,
-                buffered_runs: VecDeque::new(),
-                finished: false,
-            },
-            |mut state| async move {
-                loop {
-                    if let Some(run) = state.buffered_runs.pop_front() {
-                        return Ok(Some((run, state)));
-                    }
-
-                    if state.finished {
-                        return Ok(None);
-                    }
-
-                    let page = state
-                        .api
-                        .fetch_runs_page_filtered(state.after.as_deref(), &state.opts)
-                        .await?;
-                    let generated::types::RunListResponse { data, next_cursor } = page;
-                    state.buffered_runs = data.into();
-                    state.finished = next_cursor.is_none();
-                    state.after = next_cursor;
-                }
-            },
-        )
+        paginate(move |after| {
+            let opts = opts.clone();
+            async move {
+                let page = self
+                    .fetch_runs_page_filtered(after.as_deref(), &opts)
+                    .await?;
+                let generated::types::RunListResponse { data, next_cursor } = page;
+                Ok((data, next_cursor))
+            }
+        })
     }
 
     async fn fetch_runs_page_filtered(
@@ -466,21 +427,29 @@ pub struct RunsFilterOptions {
     pub created_before: Option<chrono::DateTime<chrono::Utc>>,
 }
 
-struct FilteredRunStreamState<'a> {
-    api: &'a AntithesisApi,
-    opts: RunsFilterOptions,
-    after: Option<String>,
-    buffered_runs: VecDeque<RunSummary>,
-    finished: bool,
-}
-
-struct RunPropertyStreamState<'a> {
-    api: &'a AntithesisApi,
-    run_id: String,
-    status: Option<PropertyStatus>,
-    after: Option<String>,
-    buffered_properties: VecDeque<Property>,
-    finished: bool,
+fn paginate<'a, T, F, Fut>(fetch: F) -> impl futures_util::Stream<Item = Result<T>> + 'a
+where
+    F: FnMut(Option<String>) -> Fut + 'a,
+    Fut: std::future::Future<Output = Result<(Vec<T>, Option<String>)>> + 'a,
+    T: 'a,
+{
+    stream::try_unfold(
+        (None::<String>, VecDeque::<T>::new(), false, fetch),
+        |(mut after, mut buffer, mut finished, mut fetch)| async move {
+            loop {
+                if let Some(item) = buffer.pop_front() {
+                    return Ok(Some((item, (after, buffer, finished, fetch))));
+                }
+                if finished {
+                    return Ok(None);
+                }
+                let (items, next) = fetch(after.take()).await?;
+                buffer.extend(items);
+                finished = next.is_none();
+                after = next;
+            }
+        },
+    )
 }
 
 fn normalize_base_url(base_url: impl Into<String>) -> String {

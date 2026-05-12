@@ -91,24 +91,13 @@ async fn cmd_runs_list(args: RunsListArgs, json: bool) -> Result<()> {
             .map_err(|e| eyre!("invalid --created-before timestamp: {e}"))?,
     };
 
-    let has_filters = opts.status.is_some()
-        || opts.launcher.is_some()
-        || opts.created_after.is_some()
-        || opts.created_before.is_some();
-
     // Server returns runs newest-first; .take(limit) short-circuits pagination
     // so we don't materialise the entire run history just to drop most of it.
-    let mut runs: Vec<RunSummary> = if has_filters {
-        api.stream_runs_filtered(&opts)
-            .take(args.limit)
-            .try_collect::<Vec<_>>()
-            .await?
-    } else {
-        api.stream_runs()
-            .take(args.limit)
-            .try_collect::<Vec<_>>()
-            .await?
-    };
+    let mut runs: Vec<RunSummary> = api
+        .stream_runs_filtered(&opts)
+        .take(args.limit)
+        .try_collect::<Vec<_>>()
+        .await?;
 
     runs.sort_by(|a, b| {
         b.created_at
@@ -160,24 +149,19 @@ async fn cmd_runs_properties(
         .try_collect::<Vec<_>>()
         .await?;
 
+    properties.sort_by(|a, b| {
+        property_status_rank(a.status())
+            .cmp(&property_status_rank(b.status()))
+            .then(a.name().cmp(b.name()))
+    });
+
     if json {
-        properties.sort_by(|a, b| {
-            property_status_rank(a.status())
-                .cmp(&property_status_rank(b.status()))
-                .then(a.name().cmp(b.name()))
-        });
         for property in &properties {
             println!("{}", serde_json::to_string(property)?);
         }
     } else if properties.is_empty() {
         println!("No properties found.");
     } else {
-        properties.sort_by(|a, b| {
-            property_status_rank(a.status())
-                .cmp(&property_status_rank(b.status()))
-                .then(a.name().cmp(b.name()))
-        });
-
         let event_rows = flatten_property_events(&properties);
         let non_event_rows = flatten_non_event_property_values(&properties);
 
@@ -197,7 +181,7 @@ async fn cmd_runs_properties(
 fn print_run_detail(run: &RunDetail) {
     let mut rows: Vec<(&str, String)> = vec![
         ("Run ID", run.run_id.clone()),
-        ("Status", render_enum(&run.status)),
+        ("Status", run.status.to_string()),
     ];
 
     rows.push(("Created", run.created_at.to_rfc3339()));
@@ -707,7 +691,7 @@ fn render_runs_table(runs: &[RunSummary]) -> String {
         .map(|run| {
             vec![
                 sanitize(&run.run_id),
-                sanitize(&render_enum(&run.status)),
+                run.status.to_string(),
                 run.created_at.to_rfc3339(),
                 sanitize(&run.launcher),
             ]
@@ -903,11 +887,6 @@ fn sanitize(s: &str) -> String {
         }
     }
     escaped
-}
-
-fn render_enum(value: &impl serde::Serialize) -> String {
-    let json = serde_json::to_string(value).unwrap_or_default();
-    json.trim_matches('"').to_string()
 }
 
 #[cfg(test)]

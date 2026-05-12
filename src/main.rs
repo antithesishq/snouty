@@ -41,17 +41,15 @@ fn get_stdin_params(use_stdin: bool, support_moment: bool) -> Result<Option<Para
 }
 
 fn get_params(args: Vec<String>, use_stdin: bool, support_moment: bool) -> Result<Params> {
-    // Parse stdin params if --stdin flag is set
     let stdin_params = get_stdin_params(use_stdin, support_moment)?;
 
-    // Parse CLI args if provided
     let args_params = if !args.is_empty() {
         Some(Params::from_args(&args)?)
     } else {
         None
     };
 
-    // Merge params: CLI args take priority over stdin
+    // CLI args take priority over stdin
     match (stdin_params, args_params) {
         (Some(mut stdin), Some(args)) => {
             stdin.merge(args);
@@ -132,7 +130,6 @@ fn json_unaware_command_name(command: &Commands) -> Option<&'static str> {
 async fn cmd_launch(args: LaunchArgs, json: bool) -> Result<()> {
     let mut params = Params::new();
 
-    // Insert typed flags into params (skip None/false)
     if let Some(test_name) = args.test_name {
         params.insert("antithesis.test_name", test_name);
     }
@@ -155,9 +152,6 @@ async fn cmd_launch(args: LaunchArgs, json: bool) -> Result<()> {
         params.insert("antithesis.report.recipients", recipients);
     }
 
-    // Process config_image and config flags
-    // (mutual exclusion is enforced by clap's #[arg(conflicts_with = "config_image")])
-
     if let Some(config_image) = args.config_image {
         params.insert("antithesis.config_image", config_image);
     }
@@ -175,7 +169,6 @@ async fn cmd_launch(args: LaunchArgs, json: bool) -> Result<()> {
         None
     };
 
-    // Parse --param key=value pairs
     if !args.params.is_empty() {
         let extra = Params::from_key_value_pairs(&args.params)?;
 
@@ -209,7 +202,6 @@ async fn cmd_launch(args: LaunchArgs, json: bool) -> Result<()> {
 
     params.validate_test_params()?;
 
-    // Build and push config image (after validation passes)
     if let Some((config, registry, config_image)) = config_image_ref {
         let rt = container::runtime()?;
 
@@ -248,10 +240,9 @@ async fn cmd_api_webhook(webhook: String, args: Vec<String>, use_stdin: bool) ->
 async fn launch_webhook(webhook: &str, params: Params) -> Result<snouty::api::LaunchResponse> {
     params.validate_test_params()?;
 
-    // Print params to stderr for user visibility (with sensitive values redacted)
     eprintln!(
         "\nRequesting Antithesis test run with params:\n{}",
-        serde_json::to_string_pretty(&params.to_redacted_map()).unwrap()
+        serde_json::to_string_pretty(&params.to_redacted_map())?
     );
 
     let api = AntithesisApi::from_env()?;
@@ -295,10 +286,9 @@ async fn cmd_debug(args: DebugArgs, json: bool) -> Result<()> {
     let params = debug_params(args)?;
     params.validate_debugging_params()?;
 
-    // Print params to stderr for user visibility (with sensitive values redacted)
     eprintln!(
         "\nRequesting the Antithesis multiverse debugger with params:\n{}",
-        serde_json::to_string_pretty(&params.to_redacted_map()).unwrap()
+        serde_json::to_string_pretty(&params.to_redacted_map())?
     );
 
     let api = AntithesisApi::from_env()?;

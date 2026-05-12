@@ -236,34 +236,6 @@ impl AntithesisApi {
         }
     }
 
-    pub fn stream_runs(&self) -> impl futures_util::Stream<Item = Result<RunSummary>> + '_ {
-        stream::try_unfold(
-            RunStreamState {
-                api: self,
-                after: None,
-                buffered_runs: VecDeque::new(),
-                finished: false,
-            },
-            |mut state| async move {
-                loop {
-                    if let Some(run) = state.buffered_runs.pop_front() {
-                        return Ok(Some((run, state)));
-                    }
-
-                    if state.finished {
-                        return Ok(None);
-                    }
-
-                    let page = state.api.fetch_runs_page(state.after.as_deref()).await?;
-                    let generated::types::RunListResponse { data, next_cursor } = page;
-                    state.buffered_runs = data.into();
-                    state.finished = next_cursor.is_none();
-                    state.after = next_cursor;
-                }
-            },
-        )
-    }
-
     pub async fn launch_debugging(&self, params: &Params) -> Result<LaunchResponse> {
         let body = launch_mvd_request(params)?;
         match self.client.launch_mvd().body(body).send().await {
@@ -404,14 +376,6 @@ impl AntithesisApi {
         )
     }
 
-    async fn fetch_runs_page(
-        &self,
-        after: Option<&str>,
-    ) -> Result<generated::types::RunListResponse> {
-        self.fetch_runs_page_filtered(after, &RunsFilterOptions::default())
-            .await
-    }
-
     async fn fetch_runs_page_filtered(
         &self,
         after: Option<&str>,
@@ -500,13 +464,6 @@ pub struct RunsFilterOptions {
     pub launcher: Option<String>,
     pub created_after: Option<chrono::DateTime<chrono::Utc>>,
     pub created_before: Option<chrono::DateTime<chrono::Utc>>,
-}
-
-struct RunStreamState<'a> {
-    api: &'a AntithesisApi,
-    after: Option<String>,
-    buffered_runs: VecDeque<RunSummary>,
-    finished: bool,
 }
 
 struct FilteredRunStreamState<'a> {
@@ -915,7 +872,11 @@ mod tests {
         );
         let api = AntithesisApi::with_base_url(config, mock_server.uri()).unwrap();
 
-        let runs = api.stream_runs().try_collect::<Vec<_>>().await.unwrap();
+        let runs = api
+            .stream_runs_filtered(&RunsFilterOptions::default())
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
 
         let run_ids = runs.into_iter().map(|run| run.run_id).collect::<Vec<_>>();
         assert_eq!(run_ids, vec!["run-1", "run-2"]);
@@ -943,7 +904,11 @@ mod tests {
         );
         let api = AntithesisApi::with_base_url(config, mock_server.uri()).unwrap();
 
-        let runs = api.stream_runs().try_collect::<Vec<_>>().await.unwrap();
+        let runs = api
+            .stream_runs_filtered(&RunsFilterOptions::default())
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
 
         assert!(runs.is_empty());
     }

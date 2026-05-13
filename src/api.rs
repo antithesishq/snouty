@@ -64,29 +64,35 @@ impl Property {
 /// a `NonEventProperty` whose examples happen to fit `Event`'s shape (or that
 /// has no examples at all) silently deserializes as `EventProperty`. Coerce
 /// each property into the variant indicated by its `is_event` flag.
-fn normalize_property(property: Property) -> Property {
+fn normalize_property(property: Property) -> Result<Property> {
     match property {
-        Property::EventProperty(p) if !p.is_event => Property::NonEventProperty(NonEventProperty {
-            counterexample_count: p.counterexample_count,
-            counterexamples: p
+        Property::EventProperty(p) if !p.is_event => {
+            let counterexamples = p
                 .counterexamples
-                .iter()
-                .map(|e| serde_json::to_value(e).unwrap_or(serde_json::Value::Null))
-                .collect(),
-            description: p.description,
-            example_count: p.example_count,
-            examples: p
+                .into_iter()
+                .map(serde_json::to_value)
+                .collect::<Result<Vec<_>, _>>()
+                .wrap_err("re-serializing property counterexamples")?;
+            let examples = p
                 .examples
-                .iter()
-                .map(|e| serde_json::to_value(e).unwrap_or(serde_json::Value::Null))
-                .collect(),
-            group: p.group,
-            is_event: p.is_event,
-            is_group: p.is_group,
-            name: p.name,
-            status: p.status,
-        }),
-        other => other,
+                .into_iter()
+                .map(serde_json::to_value)
+                .collect::<Result<Vec<_>, _>>()
+                .wrap_err("re-serializing property examples")?;
+            Ok(Property::NonEventProperty(NonEventProperty {
+                counterexample_count: p.counterexample_count,
+                counterexamples,
+                description: p.description,
+                example_count: p.example_count,
+                examples,
+                group: p.group,
+                is_event: p.is_event,
+                is_group: p.is_group,
+                name: p.name,
+                status: p.status,
+            }))
+        }
+        other => Ok(other),
     }
 }
 
@@ -171,8 +177,6 @@ impl Config {
 
 pub struct AntithesisApi {
     client: generated::Client,
-    #[cfg_attr(not(test), allow(dead_code))]
-    http_client: Client,
     base_url: String,
 }
 
@@ -194,31 +198,37 @@ impl AntithesisApi {
     }
 
     pub fn with_base_url(config: Config, base_url: impl Into<String>) -> Result<Self> {
+        Self::build(config, base_url, api_cache::build_cached_client)
+    }
+
+    #[cfg(test)]
+    fn with_base_url_and_cache_dir(
+        config: Config,
+        base_url: impl Into<String>,
+        cache_dir: std::path::PathBuf,
+    ) -> Result<Self> {
+        Self::build(config, base_url, move |client| {
+            Some(api_cache::build_cached_client_at(client, cache_dir))
+        })
+    }
+
+    fn build(
+        config: Config,
+        base_url: impl Into<String>,
+        build_cache: impl FnOnce(Client) -> Option<ClientWithMiddleware>,
+    ) -> Result<Self> {
         let base_url = normalize_base_url(base_url);
         debug!("initializing API client for {}", base_url);
 
         let http_client = build_http_client(&config)?;
-        let cached = api_cache::build_cached_client(http_client.clone());
-        let client = generated::Client::new_with_client(&base_url, http_client.clone(), cached);
+        let cached = build_cache(http_client.clone());
+        let client = generated::Client::new_with_client(&base_url, http_client, cached);
 
-        Ok(Self {
-            client,
-            http_client,
-            base_url,
-        })
+        Ok(Self { client, base_url })
     }
 
     pub fn base_url(&self) -> &str {
         &self.base_url
-    }
-
-    #[cfg(test)]
-    fn with_cache_dir(mut self, root: impl Into<std::path::PathBuf>) -> Self {
-        self.client.inner = Some(api_cache::build_cached_client_at(
-            self.http_client.clone(),
-            root.into(),
-        ));
-        self
     }
 
     pub async fn launch_test(&self, launcher: &str, params: &Params) -> Result<LaunchResponse> {
@@ -298,10 +308,11 @@ impl AntithesisApi {
                     .fetch_run_properties_page(&run_id, after.as_deref(), status)
                     .await?;
                 let generated::types::PropertyListResponse { data, next_cursor } = page;
-                Ok((
-                    data.into_iter().map(normalize_property).collect(),
-                    next_cursor,
-                ))
+                let normalized = data
+                    .into_iter()
+                    .map(normalize_property)
+                    .collect::<Result<Vec<_>>>()?;
+                Ok((normalized, next_cursor))
             }
         })
     }
@@ -537,9 +548,7 @@ fn launch_mvd_request(params: &Params) -> Result<generated::types::LaunchMvdRequ
             "antithesis.debugging.session_id" => {
                 builder.antithesis_debugging_session_id(value.to_string())
             }
-            "antithesis.debugging.vtime" => {
-                builder.antithesis_debugging_vtime(value.to_string())
-            }
+            "antithesis.debugging.vtime" => builder.antithesis_debugging_vtime(value.to_string()),
             "antithesis.event_description" => {
                 builder.antithesis_event_description(Some(value.to_string()))
             }
@@ -676,9 +685,12 @@ mod tests {
     }
 
     fn test_api_with_cache(mock_server: &MockServer, cache_dir: &TempDir) -> AntithesisApi {
-        AntithesisApi::with_base_url(test_config(), mock_server.uri())
-            .unwrap()
-            .with_cache_dir(cache_dir.path().join("api-cache"))
+        AntithesisApi::with_base_url_and_cache_dir(
+            test_config(),
+            mock_server.uri(),
+            cache_dir.path().join("api-cache"),
+        )
+        .unwrap()
     }
 
     #[test]

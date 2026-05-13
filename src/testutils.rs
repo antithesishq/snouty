@@ -272,7 +272,7 @@ fn directory_contains_binary(dir: &Path, binary: &str) -> bool {
 ///
 /// Handles:
 /// - `GET  /api/v0/runs` — paginated run listing
-/// - `GET  /api/v0/runs/{run_id}` — run detail (returns a fixed completed run)
+/// - `GET  /api/v0/runs/{run_id}` — run detail (keyed by run id; 404 unknown)
 /// - `POST /api/v1/launch/{launcher_name}` — returns a mock launch response
 pub struct MockApiServer {
     url: String,
@@ -485,13 +485,32 @@ fn mock_route_list_runs(query: Option<&str>, empty: bool) -> (u16, String) {
 }
 
 fn mock_route_get_run(run_id: &str) -> (u16, String) {
-    (
-        200,
-        format!(
-            r#"{{"run_id":"{}","status":"failed","created_at":"2025-03-20T02:00:00Z","started_at":"2025-03-20T02:01:12Z","completed_at":"2025-03-20T02:31:45Z","launcher":"nightly","links":{{"triage_report":"https://demo.antithesis.com/reports/{}"}},"failure_moment":{{"input_hash":"-3625518438076122494","vtime":"398.4898056755774"}}}}"#,
-            run_id, run_id
-        ),
-    )
+    let Some(&(_, status, created, launcher)) = MOCK_RUNS.iter().find(|(id, ..)| *id == run_id)
+    else {
+        return (404, format!(r#"{{"message":"run not found: {run_id}"}}"#));
+    };
+
+    let mut fields = vec![
+        format!(r#""run_id":"{run_id}""#),
+        format!(r#""status":"{status}""#),
+        format!(r#""created_at":"{created}""#),
+    ];
+    if status == "completed" || status == "failed" {
+        fields.push(r#""started_at":"2025-03-20T02:01:12Z""#.to_string());
+        fields.push(r#""completed_at":"2025-03-20T02:31:45Z""#.to_string());
+    }
+    fields.push(format!(r#""launcher":"{launcher}""#));
+    fields.push(format!(
+        r#""links":{{"triage_report":"https://demo.antithesis.com/reports/{run_id}"}}"#
+    ));
+    if status == "failed" {
+        fields.push(
+            r#""failure_moment":{"input_hash":"-3625518438076122494","vtime":"398.4898056755774"}"#
+                .to_string(),
+        );
+    }
+
+    (200, format!("{{{}}}", fields.join(",")))
 }
 
 fn mock_route_get_run_build_logs(_run_id: &str) -> (u16, String) {

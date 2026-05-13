@@ -47,14 +47,14 @@ env_from_json 0 run_id
 mock-runs-server
 snouty runs show $R_run_id
 stdout 'Run ID.*$R_run_id'
-[!staging] stdout 'Status.*failed'
+[!staging] stdout 'Status.*completed'
 [!staging] stdout 'Launcher.*nightly'
 
 # `snouty --json runs show` outputs JSON.
 mock-runs-server
 snouty --json runs show $R_run_id
 stdout '"run_id".*"$R_run_id"'
-[!staging] stdout '"status".*"failed"'
+[!staging] stdout '"status".*"completed"'
 
 # `snouty runs properties` renders event-based properties as a flattened HASH/VTIME
 # table and non-event properties as a separate NAME/VALUE table.

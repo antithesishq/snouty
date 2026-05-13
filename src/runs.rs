@@ -3,7 +3,7 @@ use std::path::Path;
 
 use color_eyre::eyre::{Result, eyre};
 use futures_util::{StreamExt, TryStreamExt};
-use log::info;
+use log::debug;
 use serde::Deserialize;
 use serde_json::Value;
 
@@ -58,7 +58,7 @@ pub async fn cmd_runs(command: Option<RunsCommands>, json: bool) -> Result<()> {
 }
 
 async fn cmd_runs_list(args: RunsListArgs, json: bool) -> Result<()> {
-    info!("listing runs");
+    debug!("listing runs");
 
     let api = AntithesisApi::from_env()?;
 
@@ -122,7 +122,7 @@ async fn cmd_runs_list(args: RunsListArgs, json: bool) -> Result<()> {
 }
 
 async fn cmd_runs_show(run_id: &str, json: bool) -> Result<()> {
-    info!("showing run: {}", run_id);
+    debug!("showing run: {}", run_id);
 
     let api = AntithesisApi::from_env()?;
     let run = api.get_run(run_id).await?;
@@ -141,7 +141,7 @@ async fn cmd_runs_properties(
     status: Option<PropertyStatus>,
     json: bool,
 ) -> Result<()> {
-    info!("listing properties for run: {}", run_id);
+    debug!("listing properties for run: {}", run_id);
 
     let api = AntithesisApi::from_env()?;
     let mut properties = api
@@ -219,7 +219,7 @@ fn print_run_detail(run: &RunDetail) {
 }
 
 async fn cmd_runs_build_logs(run_id: &str, json: bool) -> Result<()> {
-    info!("streaming build logs for run: {}", run_id);
+    debug!("streaming build logs for run: {}", run_id);
 
     let api = AntithesisApi::from_env()?;
     let stream = api.get_run_build_logs(run_id).await?.into_inner();
@@ -248,7 +248,7 @@ async fn cmd_runs_build_logs(run_id: &str, json: bool) -> Result<()> {
 }
 
 async fn cmd_runs_events(run_id: &str, query: &[String], json: bool) -> Result<()> {
-    info!("searching events for run: {}", run_id);
+    debug!("searching events for run: {}", run_id);
 
     let api = AntithesisApi::from_env()?;
     let stream = api
@@ -308,7 +308,7 @@ async fn cmd_runs_logs(
     begin_vtime: Option<&str>,
     json: bool,
 ) -> Result<()> {
-    info!("streaming logs for run: {}", run_id);
+    debug!("streaming logs for run: {}", run_id);
 
     let api = AntithesisApi::from_env()?;
     let stream = api

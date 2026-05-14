@@ -117,15 +117,15 @@ snouty --json runs events $R_run_id counter
 [!staging] stdout '.*"moment".*"input_hash":"-4735081784258020614".*'
 [!staging] stdout '.*"moment".*"vtime":"311\.8487535319291".*'
 
-# A failed run carries the failure moment (input_hash + vtime) in its detail
-#    response. Filter the list with --status failed so we know the run we
-#    inspect actually entered the failed terminal state, then assert that
+# An incomplete run carries the failure moment (input_hash + vtime) in its detail
+#    response. Filter the list with --status incomplete so we know the run we
+#    inspect actually entered the incomplete terminal state, then assert that
 #    the human-readable view shows "Failure VTime" / "Failure Hash" and the
 #    --json view exposes failure_moment with input_hash and vtime.
 mock-runs-server
-snouty --json runs list --status failed
+snouty --json runs list --status incomplete
 stdout '"run_id":.*'
-stdout '"status":"failed".*'
+stdout '"status":"incomplete".*'
 env_from_json 0 run_id
 
 mock-runs-server

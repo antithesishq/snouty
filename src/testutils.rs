@@ -430,7 +430,7 @@ fn mock_query_param<'a>(query: Option<&'a str>, key: &str) -> Option<&'a str> {
 const MOCK_RUNS: &[(&str, &str, &str, &str)] = &[
     ("run-1", "completed", "2025-03-20T02:00:00Z", "nightly"),
     ("run-2", "in_progress", "2025-03-19T14:00:00Z", "debug"),
-    ("run-3", "failed", "2025-03-18T08:00:00Z", "nightly"),
+    ("run-3", "incomplete", "2025-03-18T08:00:00Z", "nightly"),
 ];
 
 fn mock_route_list_runs(query: Option<&str>, empty: bool) -> (u16, String) {
@@ -495,7 +495,7 @@ fn mock_route_get_run(run_id: &str) -> (u16, String) {
         format!(r#""status":"{status}""#),
         format!(r#""created_at":"{created}""#),
     ];
-    if status == "completed" || status == "failed" {
+    if status == "completed" || status == "incomplete" {
         fields.push(r#""started_at":"2025-03-20T02:01:12Z""#.to_string());
         fields.push(r#""completed_at":"2025-03-20T02:31:45Z""#.to_string());
     }
@@ -503,7 +503,7 @@ fn mock_route_get_run(run_id: &str) -> (u16, String) {
     fields.push(format!(
         r#""links":{{"triage_report":"https://demo.antithesis.com/reports/{run_id}"}}"#
     ));
-    if status == "failed" {
+    if status == "incomplete" {
         fields.push(
             r#""failure_moment":{"input_hash":"-3625518438076122494","vtime":"398.4898056755774"}"#
                 .to_string(),

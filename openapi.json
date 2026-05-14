@@ -822,7 +822,7 @@
               "failure_moment": {
                 "type": "object",
                 "nullable": true,
-                "description": "The moment at which the run failed. Populated only when the run failed. Pass this moment's `vtime` and `input_hash` to the logs endpoint to retrieve logs around the failure event that caused the run to fail.",
+                "description": "The moment at which the run became incomplete. Populated only when the run is incomplete. Pass this moment's `vtime` and `input_hash` to the logs endpoint to retrieve logs around the event that caused the run to become incomplete.",
                 "allOf": [
                   {
                     "$ref": "#/components/schemas/Moment"
@@ -963,10 +963,6 @@
             "description": "A semicolon-delimited list of email addresses that receive the link to the debugging session when ready. If not specified, emails are sent to the default users configured for the endpoint.",
             "example": "user1@example.com; user2@example.com"
           }
-        },
-        "additionalProperties": {
-          "type": "string",
-          "description": "Additional debugging session parameters."
         }
       },
       "Event": {
@@ -1149,8 +1145,8 @@
       },
       "Run_Status": {
         "type": "string",
-        "enum": ["starting", "in_progress", "completed", "cancelled", "failed", "unknown"],
-        "description": "Current lifecycle status of a run. `starting` — the run is being set up. `in_progress` — the run is actively running. `completed` — the run finished successfully. `cancelled` — the run was cancelled before completion. `failed` — the run did not complete successfully (incomplete). `unknown` — the status of the run is unknown."
+        "enum": ["starting", "in_progress", "completed", "cancelled", "incomplete", "unknown"],
+        "description": "Current lifecycle status of a run. `starting` — the run is being set up. `in_progress` — the run is actively running. `completed` — the run finished successfully. `cancelled` — the run was cancelled before completion. `incomplete` — the run did not complete successfully. `unknown` — the status of the run is unknown."
       },
       "Creator_Info": {
         "type": "object",

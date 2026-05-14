@@ -319,7 +319,7 @@ mod tests {
     }
 
     #[test]
-    fn validate_debugging_params_accepts_custom_props() {
+    fn validate_debugging_params_rejects_custom_props() {
         let args = [
             "--antithesis.debugging.input_hash",
             "abc123",
@@ -329,22 +329,8 @@ mod tests {
             "123",
             "--my.custom.prop",
             "value",
-            "--antithesis.event_description",
-            "debug this moment",
         ];
         let params = Params::from_args(args).unwrap();
-        assert!(params.validate_debugging_params().is_ok());
-    }
-
-    #[test]
-    fn validate_debugging_params_rejects_non_string_custom_props() {
-        let value = serde_json::json!({
-            "antithesis.debugging.input_hash": "abc123",
-            "antithesis.debugging.session_id": "sess-456",
-            "antithesis.debugging.vtime": "123",
-            "my.custom.prop": true
-        });
-        let params = Params::from_json(&value).unwrap();
         assert!(params.validate_debugging_params().is_err());
     }
 

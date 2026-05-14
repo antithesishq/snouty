@@ -69,7 +69,7 @@ async fn cmd_runs_list(args: RunsListArgs, json: bool) -> Result<()> {
         .transpose()
         .map_err(|_| {
             eyre!(
-                "invalid status: '{}'\nvalid values: starting, in_progress, completed, cancelled, failed, unknown",
+                "invalid status: '{}'\nvalid values: starting, in_progress, completed, cancelled, incomplete, unknown",
                 args.status.as_deref().unwrap_or_default()
             )
         })?;

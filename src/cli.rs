@@ -381,7 +381,7 @@ pub enum RunsCommands {
 
 #[derive(Args)]
 pub struct RunsListArgs {
-    /// Filter by status (starting, in_progress, completed, cancelled, failed, unknown)
+    /// Filter by status (starting, in_progress, completed, cancelled, incomplete, unknown)
     #[arg(short, long)]
     pub status: Option<String>,
 

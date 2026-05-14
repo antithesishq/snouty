@@ -534,7 +534,6 @@ fn launch_request(params: &Params) -> Result<generated::types::LaunchRequest> {
 
 fn launch_mvd_request(params: &Params) -> Result<generated::types::LaunchMvdRequest> {
     let mut builder = generated::types::builder::MvdParams::default();
-    let mut extra = HashMap::new();
 
     for (key, value) in params.as_map() {
         let value = value
@@ -555,14 +554,11 @@ fn launch_mvd_request(params: &Params) -> Result<generated::types::LaunchMvdRequ
             "antithesis.report.recipients" => {
                 builder.antithesis_report_recipients(Some(value.to_string()))
             }
-            _ => {
-                extra.insert(key.clone(), value.to_string());
-                builder
-            }
+            _ => return Err(eyre!("unknown debugging param: {key}")),
         };
     }
 
-    let typed_params = generated::types::MvdParams::try_from(builder.extra(extra))
+    let typed_params = generated::types::MvdParams::try_from(builder)
         .wrap_err("failed to build debugging params")?;
     generated::types::LaunchMvdRequest::try_from(
         generated::types::builder::LaunchMvdRequest::default().params(typed_params),
@@ -756,50 +752,6 @@ mod tests {
             serde_json::json!({
                 "params": {
                     "antithesis.duration": "30"
-                }
-            })
-        );
-    }
-
-    #[tokio::test]
-    async fn launch_debugging_forwards_extra_params() {
-        let mock_server = MockServer::start().await;
-
-        Mock::given(method("POST"))
-            .and(path("/api/v1/launch/debugging"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "runId": "run-123",
-                "statusCode": 202
-            })))
-            .expect(1)
-            .mount(&mock_server)
-            .await;
-
-        let api = AntithesisApi::with_base_url(test_config(), mock_server.uri()).unwrap();
-        let params = Params::from_key_value_pairs([
-            "antithesis.debugging.input_hash=abc",
-            "antithesis.debugging.session_id=sess",
-            "antithesis.debugging.vtime=123",
-            "antithesis.event_description=debug this moment",
-            "my.custom.prop=value",
-        ])
-        .unwrap();
-
-        let response = api.launch_debugging(&params).await.unwrap();
-        let requests = mock_server.received_requests().await.unwrap();
-
-        assert_eq!(response.run_id, "run-123");
-        assert_eq!(response.status_code, 202);
-        assert_eq!(requests.len(), 1);
-        assert_eq!(
-            requests[0].body_json::<serde_json::Value>().unwrap(),
-            serde_json::json!({
-                "params": {
-                    "antithesis.debugging.input_hash": "abc",
-                    "antithesis.debugging.session_id": "sess",
-                    "antithesis.debugging.vtime": "123",
-                    "antithesis.event_description": "debug this moment",
-                    "my.custom.prop": "value"
                 }
             })
         );

@@ -13,6 +13,7 @@ chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4", features = ["derive"] }
 getrandom = "0.3"
 env_logger = "0.11"
+form_urlencoded = "1"
 # pinned: alpha API churn between releases
 http-cache-reqwest = "=1.0.0-alpha.6"
 json5 = "1.3.0"

@@ -418,13 +418,10 @@ fn mock_route(method: &str, path: &str, empty: bool) -> (u16, String, &'static s
     }
 }
 
-fn mock_query_param<'a>(query: Option<&'a str>, key: &str) -> Option<&'a str> {
-    query.and_then(|q| {
-        q.split('&').find_map(|pair| {
-            let (k, v) = pair.split_once('=')?;
-            (k == key).then_some(v)
-        })
-    })
+fn mock_query_param(query: Option<&str>, key: &str) -> Option<String> {
+    form_urlencoded::parse(query?.as_bytes())
+        .find(|(k, _)| k == key)
+        .map(|(_, v)| v.into_owned())
 }
 
 const MOCK_RUNS: &[(&str, &str, &str, &str)] = &[
@@ -443,19 +440,19 @@ fn mock_route_list_runs(query: Option<&str>, empty: bool) -> (u16, String) {
     let launcher_filter = mock_query_param(query, "launcher");
 
     // Determine which runs to consider based on cursor position.
-    let start = match after {
+    let start = match after.as_deref() {
         Some("cursor-1") => 1,
         _ => 0,
     };
 
     let mut runs = Vec::new();
     for &(id, status, created, launcher) in &MOCK_RUNS[start..] {
-        if let Some(f) = status_filter
+        if let Some(f) = status_filter.as_deref()
             && status != f
         {
             continue;
         }
-        if let Some(f) = launcher_filter
+        if let Some(f) = launcher_filter.as_deref()
             && launcher != f
         {
             continue;
@@ -557,7 +554,7 @@ fn mock_route_list_run_properties(run_id: &str, query: Option<&str>) -> (u16, St
     let failing = r#"{"name":"Counter value stays below limit","description":"Counter stays within safe bounds","status":"Failing","is_event":true,"group":"Safety","example_count":12,"counterexample_count":3,"examples":[{"moment":{"input_hash":"-300","vtime":"15.0"}}],"counterexamples":[{"moment":{"input_hash":"-100","vtime":"5.0"}},{"moment":{"input_hash":"-200","vtime":"10.0"}}]}"#.to_string();
     let passing = r#"{"name":"Setup completes","description":"Setup eventually succeeds","status":"Passing","is_event":false,"example_count":1,"counterexample_count":0,"examples":[{"final_counter":42}]}"#.to_string();
 
-    let (data, next_cursor) = match (status, after) {
+    let (data, next_cursor) = match (status.as_deref(), after.as_deref()) {
         (Some("Failing"), _) => (vec![failing], None),
         (Some("Passing"), _) => (vec![passing], None),
         (None, None) => (vec![failing], Some("props-cursor-1")),
@@ -616,6 +613,26 @@ mod tests {
 
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn mock_query_param_decodes_form_encoded_value() {
+        // reqwest form-encodes spaces as '+' and other bytes as %XX.
+        let q = Some("q=slow+request&other=a%26b");
+        assert_eq!(mock_query_param(q, "q"), Some("slow request".to_string()));
+        assert_eq!(mock_query_param(q, "other"), Some("a&b".to_string()));
+        assert_eq!(mock_query_param(q, "missing"), None);
+        assert_eq!(mock_query_param(None, "q"), None);
+    }
+
+    #[test]
+    fn mock_route_search_run_events_matches_after_decoding() {
+        let (status, body) = mock_route_search_run_events("run-1", Some("q=slow+request"));
+        assert_eq!(status, 200);
+        assert!(
+            body.contains("slow request"),
+            "expected match for decoded query, got: {body}"
+        );
+    }
 
     #[test]
     fn directory_contains_plain_binary() {

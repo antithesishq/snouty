@@ -1,9 +1,102 @@
+use std::collections::{HashMap, VecDeque};
 use std::env;
+use std::time::Duration;
 
+use base64::Engine;
+use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
+use color_eyre::eyre::{Context, Report, Result, eyre};
+use futures_util::stream;
 use log::debug;
-use reqwest::{Client, RequestBuilder};
+use progenitor_client::{ClientHooks, ClientInfo, Error as ClientError, OperationInfo};
+use reqwest::Client;
+use reqwest_middleware::ClientWithMiddleware;
 
-use color_eyre::eyre::{Result, eyre};
+use crate::api_cache;
+use crate::params::Params;
+
+#[allow(dead_code, unused_imports, private_interfaces)]
+mod generated {
+    include!(concat!(env!("OUT_DIR"), "/antithesis_api.rs"));
+}
+
+pub use generated::types::{
+    BuildLogLine, Event, EventProperty, LaunchResponse, Moment, NonEventProperty, Property,
+    PropertyStatus, RunDetail, RunStatus, RunSummary,
+};
+pub use progenitor_client::ByteStream;
+
+impl Property {
+    pub fn name(&self) -> &str {
+        match self {
+            Self::EventProperty(p) => &p.name,
+            Self::NonEventProperty(p) => &p.name,
+        }
+    }
+
+    pub fn status(&self) -> PropertyStatus {
+        match self {
+            Self::EventProperty(p) => p.status,
+            Self::NonEventProperty(p) => p.status,
+        }
+    }
+
+    /// Sampled example events for an event-based property. Returns an empty
+    /// slice for non-event properties, whose examples are arbitrary values
+    /// without a `moment`.
+    pub fn event_examples(&self) -> &[Event] {
+        match self {
+            Self::EventProperty(p) => &p.examples,
+            Self::NonEventProperty(_) => &[],
+        }
+    }
+
+    /// Sampled counterexample events for an event-based property. Returns an
+    /// empty slice for non-event properties.
+    pub fn event_counterexamples(&self) -> &[Event] {
+        match self {
+            Self::EventProperty(p) => &p.counterexamples,
+            Self::NonEventProperty(_) => &[],
+        }
+    }
+}
+
+/// `Property` is an untagged `oneOf` whose variants are structurally similar:
+/// a `NonEventProperty` whose examples happen to fit `Event`'s shape (or that
+/// has no examples at all) silently deserializes as `EventProperty`. Coerce
+/// each property into the variant indicated by its `is_event` flag.
+fn normalize_property(property: Property) -> Result<Property> {
+    match property {
+        Property::EventProperty(p) if !p.is_event => {
+            let counterexamples = p
+                .counterexamples
+                .into_iter()
+                .map(serde_json::to_value)
+                .collect::<Result<Vec<_>, _>>()
+                .wrap_err("re-serializing property counterexamples")?;
+            let examples = p
+                .examples
+                .into_iter()
+                .map(serde_json::to_value)
+                .collect::<Result<Vec<_>, _>>()
+                .wrap_err("re-serializing property examples")?;
+            Ok(Property::NonEventProperty(NonEventProperty {
+                counterexample_count: p.counterexample_count,
+                counterexamples,
+                description: p.description,
+                example_count: p.example_count,
+                examples,
+                group: p.group,
+                is_event: p.is_event,
+                is_group: p.is_group,
+                name: p.name,
+                status: p.status,
+            }))
+        }
+        other => Ok(other),
+    }
+}
+
+const CLIENT_TIMEOUT_SECS: u64 = 30;
 
 fn required_env(name: &'static str) -> Result<String> {
     env::var(name).map_err(|e| match e {
@@ -60,13 +153,6 @@ impl Auth {
             required_env("ANTITHESIS_PASSWORD")?,
         ))
     }
-
-    fn authenticate(&self, request: RequestBuilder) -> RequestBuilder {
-        match self {
-            Self::Basic { username, password } => request.basic_auth(username, Some(password)),
-            Self::Bearer { api_key } => request.bearer_auth(api_key),
-        }
-    }
 }
 
 #[derive(Clone, Debug)]
@@ -90,21 +176,19 @@ impl Config {
 }
 
 pub struct AntithesisApi {
-    client: Client,
+    client: generated::Client,
     base_url: String,
-    auth: Auth,
 }
 
 impl AntithesisApi {
     pub fn new(config: Config) -> Result<Self> {
-        let base_url = format!("https://{}.antithesis.com/api/v1", config.tenant);
+        let base_url = format!("https://{}.antithesis.com", config.tenant);
         debug!("using default base URL: {}", base_url);
         Self::with_base_url(config, base_url)
     }
 
     pub fn from_env() -> Result<Self> {
         let config = Config::from_env()?;
-        // Allow base URL override for testing
         if let Ok(base_url) = env::var("ANTITHESIS_BASE_URL") {
             debug!("using ANTITHESIS_BASE_URL override: {}", base_url);
             Self::with_base_url(config, base_url)
@@ -114,60 +198,495 @@ impl AntithesisApi {
     }
 
     pub fn with_base_url(config: Config, base_url: impl Into<String>) -> Result<Self> {
-        let base_url = base_url.into().trim_end_matches('/').to_string();
-        debug!("initializing API client for {}", base_url);
-        let client = Client::builder()
-            .timeout(std::time::Duration::from_secs(30))
-            .build()?;
+        Self::build(config, base_url, api_cache::build_cached_client)
+    }
 
-        Ok(Self {
-            client,
-            base_url,
-            auth: config.auth,
+    #[cfg(test)]
+    fn with_base_url_and_cache_dir(
+        config: Config,
+        base_url: impl Into<String>,
+        cache_dir: std::path::PathBuf,
+    ) -> Result<Self> {
+        Self::build(config, base_url, move |client| {
+            Some(api_cache::build_cached_client_at(client, cache_dir))
         })
+    }
+
+    fn build(
+        config: Config,
+        base_url: impl Into<String>,
+        build_cache: impl FnOnce(Client) -> Option<ClientWithMiddleware>,
+    ) -> Result<Self> {
+        let base_url = normalize_base_url(base_url);
+        debug!("initializing API client for {}", base_url);
+
+        let http_client = build_http_client(&config)?;
+        let cached = build_cache(http_client.clone());
+        let client = generated::Client::new_with_client(&base_url, http_client, cached);
+
+        Ok(Self { client, base_url })
     }
 
     pub fn base_url(&self) -> &str {
         &self.base_url
     }
 
-    pub fn get(&self, path: &str) -> RequestBuilder {
-        let url = format!("{}{}", self.base_url, path);
-        debug!("GET {}", url);
-        self.auth.authenticate(self.client.get(url))
+    pub async fn launch_test(&self, launcher: &str, params: &Params) -> Result<LaunchResponse> {
+        let body = launch_request(params)?;
+        match self
+            .client
+            .launch_test()
+            .launcher_name(launcher)
+            .body(body)
+            .send()
+            .await
+        {
+            Ok(response) => Ok(response.into_inner()),
+            Err(err) => Err(format_api_client_error(err).await),
+        }
     }
 
-    pub fn post(&self, path: &str) -> RequestBuilder {
-        let url = format!("{}{}", self.base_url, path);
-        debug!("POST {}", url);
-        self.auth.authenticate(self.client.post(url))
+    pub async fn launch_debugging(&self, params: &Params) -> Result<LaunchResponse> {
+        let body = launch_mvd_request(params)?;
+        match self.client.launch_mvd().body(body).send().await {
+            Ok(response) => Ok(response.into_inner()),
+            Err(err) => Err(format_api_client_error(err).await),
+        }
+    }
+
+    pub async fn get_run(&self, run_id: &str) -> Result<RunDetail> {
+        match self.client.get_run().run_id(run_id).send().await {
+            Ok(response) => Ok(response.into_inner()),
+            Err(err) => Err(format_api_client_error(err).await),
+        }
+    }
+
+    pub async fn get_run_build_logs(&self, run_id: &str) -> Result<ByteStream> {
+        match self.client.get_run_build_logs().run_id(run_id).send().await {
+            Ok(response) => Ok(response.into_inner()),
+            Err(err) => Err(format_api_client_error(err).await),
+        }
+    }
+
+    pub async fn get_run_logs(
+        &self,
+        run_id: &str,
+        input_hash: &str,
+        vtime: &str,
+        begin_input_hash: Option<&str>,
+        begin_vtime: Option<&str>,
+    ) -> Result<ByteStream> {
+        let mut request = self
+            .client
+            .get_run_logs()
+            .run_id(run_id)
+            .input_hash(input_hash)
+            .vtime(vtime);
+        if let Some(v) = begin_input_hash {
+            request = request.begin_input_hash(v);
+        }
+        if let Some(v) = begin_vtime {
+            request = request.begin_vtime(v);
+        }
+
+        match request.send().await {
+            Ok(response) => Ok(response.into_inner()),
+            Err(err) => Err(format_api_client_error(err).await),
+        }
+    }
+
+    pub fn stream_run_properties(
+        &self,
+        run_id: &str,
+        status: Option<PropertyStatus>,
+    ) -> impl futures_util::Stream<Item = Result<Property>> + '_ {
+        let run_id = run_id.to_string();
+        paginate(move |after| {
+            let run_id = run_id.clone();
+            async move {
+                let page = self
+                    .fetch_run_properties_page(&run_id, after.as_deref(), status)
+                    .await?;
+                let generated::types::PropertyListResponse { data, next_cursor } = page;
+                let normalized = data
+                    .into_iter()
+                    .map(normalize_property)
+                    .collect::<Result<Vec<_>>>()?;
+                Ok((normalized, next_cursor))
+            }
+        })
+    }
+
+    pub async fn search_run_events(&self, run_id: &str, query: &str) -> Result<ByteStream> {
+        match self
+            .client
+            .search_run_events()
+            .run_id(run_id)
+            .q(query)
+            .send()
+            .await
+        {
+            Ok(response) => Ok(response.into_inner()),
+            Err(err) => Err(format_api_client_error(err).await),
+        }
+    }
+
+    pub fn stream_runs_filtered(
+        &self,
+        opts: &RunsFilterOptions,
+    ) -> impl futures_util::Stream<Item = Result<RunSummary>> + '_ {
+        let opts = opts.clone();
+        paginate(move |after| {
+            let opts = opts.clone();
+            async move {
+                let page = self
+                    .fetch_runs_page_filtered(after.as_deref(), &opts)
+                    .await?;
+                let generated::types::RunListResponse { data, next_cursor } = page;
+                Ok((data, next_cursor))
+            }
+        })
+    }
+
+    async fn fetch_runs_page_filtered(
+        &self,
+        after: Option<&str>,
+        opts: &RunsFilterOptions,
+    ) -> Result<generated::types::RunListResponse> {
+        let mut request = self.client.list_runs().limit(100_u64);
+        if let Some(cursor) = after {
+            request = request.after(cursor);
+        }
+        if let Some(ref status) = opts.status {
+            request = request.status(*status);
+        }
+        if let Some(ref launcher) = opts.launcher {
+            request = request.launcher(launcher.clone());
+        }
+        if let Some(ref ts) = opts.created_after {
+            request = request.created_after(*ts);
+        }
+        if let Some(ref ts) = opts.created_before {
+            request = request.created_before(*ts);
+        }
+
+        match request.send().await {
+            Ok(response) => Ok(response.into_inner()),
+            Err(err) => Err(format_api_client_error(err).await),
+        }
+    }
+
+    async fn fetch_run_properties_page(
+        &self,
+        run_id: &str,
+        after: Option<&str>,
+        status: Option<PropertyStatus>,
+    ) -> Result<generated::types::PropertyListResponse> {
+        let mut request = self
+            .client
+            .list_run_properties()
+            .run_id(run_id)
+            .limit(100_u64);
+        if let Some(cursor) = after {
+            request = request.after(cursor);
+        }
+        if let Some(status) = status {
+            request = request.status(status);
+        }
+
+        match request.send().await {
+            Ok(response) => Ok(response.into_inner()),
+            Err(err) => Err(format_api_client_error(err).await),
+        }
+    }
+}
+
+impl ClientHooks<Option<ClientWithMiddleware>> for generated::Client {
+    async fn exec(
+        &self,
+        request: reqwest::Request,
+        _info: &OperationInfo,
+    ) -> reqwest::Result<reqwest::Response> {
+        let Some(cached) = self.inner() else {
+            return self.client().execute(request).await;
+        };
+
+        // Bypass the cache for non-cloneable (streaming) bodies so the
+        // remaining path always has a fallback to retry against on cache I/O
+        // failures (which surface as `Error::Middleware` and can't be
+        // re-packaged as a `reqwest::Error`).
+        let Some(fallback) = request.try_clone() else {
+            return self.client().execute(request).await;
+        };
+
+        match cached.execute(request).await {
+            Ok(response) => Ok(response),
+            Err(reqwest_middleware::Error::Reqwest(err)) => Err(err),
+            Err(reqwest_middleware::Error::Middleware(err)) => {
+                log::warn!("API cache failure, bypassing cache: {err}");
+                self.client().execute(fallback).await
+            }
+        }
+    }
+}
+
+#[derive(Clone, Default)]
+pub struct RunsFilterOptions {
+    pub status: Option<generated::types::RunStatus>,
+    pub launcher: Option<String>,
+    pub created_after: Option<chrono::DateTime<chrono::Utc>>,
+    pub created_before: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+fn paginate<'a, T, F, Fut>(fetch: F) -> impl futures_util::Stream<Item = Result<T>> + 'a
+where
+    F: FnMut(Option<String>) -> Fut + 'a,
+    Fut: std::future::Future<Output = Result<(Vec<T>, Option<String>)>> + 'a,
+    T: 'a,
+{
+    stream::try_unfold(
+        (None::<String>, VecDeque::<T>::new(), false, fetch),
+        |(mut after, mut buffer, mut finished, mut fetch)| async move {
+            loop {
+                if let Some(item) = buffer.pop_front() {
+                    return Ok(Some((item, (after, buffer, finished, fetch))));
+                }
+                if finished {
+                    return Ok(None);
+                }
+                let (items, next) = fetch(after.take()).await?;
+                buffer.extend(items);
+                finished = next.is_none();
+                after = next;
+            }
+        },
+    )
+}
+
+fn normalize_base_url(base_url: impl Into<String>) -> String {
+    let base_url = base_url.into();
+    let trimmed = base_url.trim_end_matches('/');
+    trimmed
+        .strip_suffix("/api/v1")
+        .unwrap_or(trimmed)
+        .to_string()
+}
+
+fn build_http_client(config: &Config) -> Result<Client> {
+    let mut headers = reqwest::header::HeaderMap::new();
+    headers.insert(reqwest::header::AUTHORIZATION, auth_header(&config.auth)?);
+
+    Client::builder()
+        .default_headers(headers)
+        .timeout(Duration::from_secs(CLIENT_TIMEOUT_SECS))
+        .build()
+        .wrap_err("failed to build API client")
+}
+
+fn auth_header(auth: &Auth) -> Result<reqwest::header::HeaderValue> {
+    let value = match auth {
+        Auth::Basic { username, password } => {
+            let credentials = format!("{username}:{password}");
+            let encoded = BASE64_STANDARD.encode(credentials);
+            format!("Basic {encoded}")
+        }
+        Auth::Bearer { api_key } => format!("Bearer {api_key}"),
+    };
+    reqwest::header::HeaderValue::from_str(&value).wrap_err("failed to build Authorization header")
+}
+
+fn launch_request(params: &Params) -> Result<generated::types::LaunchRequest> {
+    let mut builder = generated::types::builder::Params::default();
+    let mut extra = HashMap::new();
+
+    for (key, value) in params.as_map() {
+        let value = value
+            .as_str()
+            .ok_or_else(|| eyre!("launch params must be strings: {key}"))?;
+
+        builder = match key.as_str() {
+            "antithesis.config_image" => builder.antithesis_config_image(Some(value.to_string())),
+            "antithesis.description" => builder.antithesis_description(Some(value.to_string())),
+            "antithesis.duration" => builder.antithesis_duration(Some(value.to_string())),
+            "antithesis.images" => builder.antithesis_images(Some(value.to_string())),
+            "antithesis.is_ephemeral" => builder.antithesis_is_ephemeral(Some(
+                generated::types::ParamsAntithesisIsEphemeral::try_from(value)
+                    .wrap_err("invalid antithesis.is_ephemeral value")?,
+            )),
+            "antithesis.report.recipients" => {
+                builder.antithesis_report_recipients(Some(value.to_string()))
+            }
+            "antithesis.source" => builder.antithesis_source(Some(value.to_string())),
+            _ => {
+                extra.insert(key.clone(), value.to_string());
+                builder
+            }
+        };
+    }
+
+    let typed_params = generated::types::Params::try_from(builder.extra(extra))
+        .wrap_err("failed to build params")?;
+    generated::types::LaunchRequest::try_from(
+        generated::types::builder::LaunchRequest::default().params(typed_params),
+    )
+    .wrap_err("failed to build launch request")
+}
+
+fn launch_mvd_request(params: &Params) -> Result<generated::types::LaunchMvdRequest> {
+    let mut builder = generated::types::builder::MvdParams::default();
+
+    for (key, value) in params.as_map() {
+        let value = value
+            .as_str()
+            .ok_or_else(|| eyre!("debugging params must be strings: {key}"))?;
+
+        builder = match key.as_str() {
+            "antithesis.debugging.input_hash" => {
+                builder.antithesis_debugging_input_hash(value.to_string())
+            }
+            "antithesis.debugging.session_id" => {
+                builder.antithesis_debugging_session_id(value.to_string())
+            }
+            "antithesis.debugging.vtime" => builder.antithesis_debugging_vtime(value.to_string()),
+            "antithesis.event_description" => {
+                builder.antithesis_event_description(Some(value.to_string()))
+            }
+            "antithesis.report.recipients" => {
+                builder.antithesis_report_recipients(Some(value.to_string()))
+            }
+            _ => return Err(eyre!("unknown debugging param: {key}")),
+        };
+    }
+
+    let typed_params = generated::types::MvdParams::try_from(builder)
+        .wrap_err("failed to build debugging params")?;
+    generated::types::LaunchMvdRequest::try_from(
+        generated::types::builder::LaunchMvdRequest::default().params(typed_params),
+    )
+    .wrap_err("failed to build debugging request")
+}
+
+fn format_api_error(status: u16, body: &str) -> Report {
+    let reason = reqwest::StatusCode::from_u16(status)
+        .ok()
+        .and_then(|s| s.canonical_reason())
+        .unwrap_or("");
+    let body = body.trim();
+
+    let mut msg = format!("API error: {status}");
+    if !reason.is_empty() {
+        msg.push(' ');
+        msg.push_str(reason);
+    }
+    if !body.is_empty() {
+        msg.push_str(" — ");
+        msg.push_str(body);
+    }
+    if matches!(status, 401 | 403) {
+        msg.push_str(
+            "\n\nCheck that ANTITHESIS_API_KEY (or ANTITHESIS_USERNAME/ANTITHESIS_PASSWORD) \
+             is set correctly and has access to this tenant.",
+        );
+    }
+    eyre!("{msg}")
+}
+
+fn format_payload_snippet(body: &str, line: usize, column: usize) -> String {
+    const WINDOW: usize = 60;
+
+    let offset = char_pos_to_byte_offset(body, line, column);
+    let start_target = offset.saturating_sub(WINDOW);
+    let end_target = offset.saturating_add(WINDOW).min(body.len());
+    let start = (0..=start_target)
+        .rev()
+        .find(|&i| body.is_char_boundary(i))
+        .unwrap_or(0);
+    let end = (end_target..=body.len())
+        .find(|&i| body.is_char_boundary(i))
+        .unwrap_or(body.len());
+
+    let prefix = if start > 0 { "..." } else { "" };
+    let suffix = if end < body.len() { "..." } else { "" };
+
+    let snippet: String = body[start..end]
+        .chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect();
+    let caret_col = prefix.chars().count() + body[start..offset].chars().count();
+    let caret = format!("{:width$}^", "", width = caret_col);
+
+    format!("  {prefix}{snippet}{suffix}\n  {caret}")
+}
+
+fn char_pos_to_byte_offset(body: &str, line: usize, column: usize) -> usize {
+    let mut cur_line = 1;
+    let mut cur_col = 1;
+    for (i, c) in body.char_indices() {
+        if cur_line == line && cur_col == column {
+            return i;
+        }
+        if c == '\n' {
+            cur_line += 1;
+            cur_col = 1;
+        } else {
+            cur_col += 1;
+        }
+    }
+    body.len()
+}
+
+async fn format_api_client_error(err: ClientError<generated::types::ErrorResponse>) -> Report {
+    match err {
+        ClientError::ErrorResponse(response) => {
+            let status = response.status().as_u16();
+            let body = response.into_inner();
+            format_api_error(status, &body.message)
+        }
+        ClientError::UnexpectedResponse(response) => {
+            let status = response.status().as_u16();
+            let body = response
+                .text()
+                .await
+                .unwrap_or_else(|err| format!("<failed to read response body: {err}>"));
+            format_api_error(status, &body)
+        }
+        ClientError::InvalidRequest(message) => eyre!("invalid API request: {message}"),
+        ClientError::CommunicationError(err) => eyre!(err).wrap_err("failed to contact API"),
+        ClientError::InvalidUpgrade(err) => eyre!(err).wrap_err("invalid API upgrade response"),
+        ClientError::ResponseBodyError(err) => {
+            eyre!(err).wrap_err("failed to read API response body")
+        }
+        ClientError::InvalidResponsePayload(body, err) => {
+            let body = String::from_utf8_lossy(&body);
+            let snippet = format_payload_snippet(&body, err.line(), err.column());
+            eyre!("invalid API response payload: {err}\n{snippet}")
+        }
+        ClientError::Custom(message) => eyre!(message),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use reqwest::header::AUTHORIZATION;
+    use futures_util::TryStreamExt;
+    use tempfile::TempDir;
+    use wiremock::matchers::{method, path, query_param, query_param_is_missing};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
 
-    #[test]
-    fn api_uses_basic_auth() {
-        let config = Config::new(
+    fn test_config() -> Config {
+        Config::new(
             Auth::basic("user".to_string(), "pass".to_string()),
             "tenant".to_string(),
-        );
-        let api = AntithesisApi::with_base_url(config, "http://example.com").unwrap();
-        let request = api.get("/test").build().unwrap();
-
-        assert_eq!(request.headers()[AUTHORIZATION], "Basic dXNlcjpwYXNz");
+        )
     }
 
-    #[test]
-    fn api_uses_bearer_auth() {
-        let config = Config::new(Auth::bearer("api-key".to_string()), "tenant".to_string());
-        let api = AntithesisApi::with_base_url(config, "http://example.com").unwrap();
-        let request = api.post("/test").build().unwrap();
-
-        assert_eq!(request.headers()[AUTHORIZATION], "Bearer api-key");
+    fn test_api_with_cache(mock_server: &MockServer, cache_dir: &TempDir) -> AntithesisApi {
+        AntithesisApi::with_base_url_and_cache_dir(
+            test_config(),
+            mock_server.uri(),
+            cache_dir.path().join("api-cache"),
+        )
+        .unwrap()
     }
 
     #[test]
@@ -178,6 +697,319 @@ mod tests {
         );
         let api = AntithesisApi::with_base_url(config, "http://example.com/").unwrap();
         assert_eq!(api.base_url(), "http://example.com");
+    }
+
+    #[test]
+    fn with_base_url_strips_legacy_api_suffix() {
+        let config = Config::new(
+            Auth::basic("user".to_string(), "pass".to_string()),
+            "tenant".to_string(),
+        );
+        let api = AntithesisApi::with_base_url(config, "http://example.com/api/v1/").unwrap();
+        assert_eq!(api.base_url(), "http://example.com");
+    }
+
+    #[tokio::test]
+    async fn launch_test_uses_basic_auth() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/api/v1/launch/basic_test"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "runId": "run-123",
+                "statusCode": 200
+            })))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let config = Config::new(
+            Auth::basic("user".to_string(), "pass".to_string()),
+            "tenant".to_string(),
+        );
+        let api = AntithesisApi::with_base_url(config, mock_server.uri()).unwrap();
+        let params = Params::from_key_value_pairs(["antithesis.duration=30"]).unwrap();
+
+        let response = api.launch_test("basic_test", &params).await.unwrap();
+        let requests = mock_server.received_requests().await.unwrap();
+
+        assert_eq!(response.run_id, "run-123");
+        assert_eq!(response.status_code, 200);
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].url.path(), "/api/v1/launch/basic_test");
+        assert_eq!(requests[0].method, reqwest::Method::POST);
+        assert_eq!(
+            requests[0]
+                .headers
+                .get("authorization")
+                .unwrap()
+                .to_str()
+                .unwrap(),
+            "Basic dXNlcjpwYXNz"
+        );
+        assert_eq!(
+            requests[0].body_json::<serde_json::Value>().unwrap(),
+            serde_json::json!({
+                "params": {
+                    "antithesis.duration": "30"
+                }
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn stream_runs_follows_next_cursor() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/api/v0/runs"))
+            .and(query_param("limit", "100"))
+            .and(query_param_is_missing("after"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "data": [
+                    {
+                        "run_id": "run-1",
+                        "status": "completed",
+                        "created_at": "2025-03-20T02:00:00Z",
+                        "launcher": "nightly"
+                    }
+                ],
+                "next_cursor": "cursor-1"
+            })))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        Mock::given(method("GET"))
+            .and(path("/api/v0/runs"))
+            .and(query_param("limit", "100"))
+            .and(query_param("after", "cursor-1"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "data": [
+                    {
+                        "run_id": "run-2",
+                        "status": "in_progress",
+                        "created_at": "2025-03-19T02:00:00Z",
+                        "launcher": "debug"
+                    }
+                ],
+                "next_cursor": null
+            })))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let config = Config::new(
+            Auth::basic("user".to_string(), "pass".to_string()),
+            "tenant".to_string(),
+        );
+        let api = AntithesisApi::with_base_url(config, mock_server.uri()).unwrap();
+
+        let runs = api
+            .stream_runs_filtered(&RunsFilterOptions::default())
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+
+        let run_ids = runs.into_iter().map(|run| run.run_id).collect::<Vec<_>>();
+        assert_eq!(run_ids, vec!["run-1", "run-2"]);
+    }
+
+    #[tokio::test]
+    async fn stream_runs_returns_empty_when_no_runs_exist() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/api/v0/runs"))
+            .and(query_param("limit", "100"))
+            .and(query_param_is_missing("after"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "data": [],
+                "next_cursor": null
+            })))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let config = Config::new(
+            Auth::basic("user".to_string(), "pass".to_string()),
+            "tenant".to_string(),
+        );
+        let api = AntithesisApi::with_base_url(config, mock_server.uri()).unwrap();
+
+        let runs = api
+            .stream_runs_filtered(&RunsFilterOptions::default())
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+
+        assert!(runs.is_empty());
+    }
+
+    #[tokio::test]
+    async fn cache_serves_repeated_get_with_cache_control() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/api/v0/runs/run-1"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("Cache-Control", "max-age=60")
+                    .set_body_json(serde_json::json!({
+                        "run_id": "run-1",
+                        "status": "completed",
+                        "created_at": "2025-03-20T02:00:00Z",
+                        "launcher": "nightly"
+                    })),
+            )
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let cache_dir = TempDir::new().unwrap();
+        let api = test_api_with_cache(&mock_server, &cache_dir);
+
+        let first = api.get_run("run-1").await.unwrap();
+        let second = api.get_run("run-1").await.unwrap();
+
+        assert_eq!(first.run_id, "run-1");
+        assert_eq!(second.run_id, "run-1");
+    }
+
+    #[tokio::test]
+    async fn stream_run_properties_follows_next_cursor() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/api/v0/runs/run-1/properties"))
+            .and(query_param("limit", "100"))
+            .and(query_param_is_missing("status"))
+            .and(query_param_is_missing("after"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "data": [
+                    {
+                        "name": "Counter value stays below limit",
+                        "status": "Failing",
+                        "is_event": true,
+                        "is_existential": false,
+                        "is_universal": true
+                    }
+                ],
+                "next_cursor": "props-cursor-1"
+            })))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        Mock::given(method("GET"))
+            .and(path("/api/v0/runs/run-1/properties"))
+            .and(query_param("limit", "100"))
+            .and(query_param_is_missing("status"))
+            .and(query_param("after", "props-cursor-1"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "data": [
+                    {
+                        "name": "Setup completes",
+                        "status": "Passing",
+                        "is_event": false,
+                        "is_existential": true,
+                        "is_universal": false
+                    }
+                ],
+                "next_cursor": null
+            })))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let config = Config::new(
+            Auth::basic("user".to_string(), "pass".to_string()),
+            "tenant".to_string(),
+        );
+        let api = AntithesisApi::with_base_url(config, mock_server.uri()).unwrap();
+
+        let properties = api
+            .stream_run_properties("run-1", None)
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+
+        let names = properties
+            .iter()
+            .map(|property| property.name().to_string())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            names,
+            vec![
+                "Counter value stays below limit".to_string(),
+                "Setup completes".to_string()
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn stream_run_properties_forwards_status_filter() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/api/v0/runs/run-1/properties"))
+            .and(query_param("limit", "100"))
+            .and(query_param("status", "Failing"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "data": [],
+                "next_cursor": null
+            })))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let config = Config::new(
+            Auth::basic("user".to_string(), "pass".to_string()),
+            "tenant".to_string(),
+        );
+        let api = AntithesisApi::with_base_url(config, mock_server.uri()).unwrap();
+
+        let properties = api
+            .stream_run_properties("run-1", Some(PropertyStatus::Failing))
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+
+        assert!(properties.is_empty());
+    }
+
+    #[tokio::test]
+    async fn search_run_events_passes_query_through() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/api/v0/runs/run-1/events"))
+            .and(query_param("q", "slow request"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(
+                r#"{"output_text":"{\"level\":\"warn\",\"msg\":\"slow request\"}","moment":{"input_hash":"-456","vtime":"2.0"}}"#,
+            ))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let config = Config::new(
+            Auth::basic("user".to_string(), "pass".to_string()),
+            "tenant".to_string(),
+        );
+        let api = AntithesisApi::with_base_url(config, mock_server.uri()).unwrap();
+
+        let mut stream = api
+            .search_run_events("run-1", "slow request")
+            .await
+            .unwrap()
+            .into_inner();
+        let mut body = Vec::new();
+        while let Some(chunk) = futures_util::StreamExt::next(&mut stream).await {
+            body.extend_from_slice(&chunk.unwrap());
+        }
+        let body = String::from_utf8(body).unwrap();
+
+        assert!(body.contains("slow request"));
     }
 
     #[test]

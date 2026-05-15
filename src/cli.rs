@@ -5,6 +5,10 @@ use clap::{Args, Parser, Subcommand};
 #[command(about = "CLI for the Antithesis API", long_about = None)]
 #[command(version)]
 pub struct Cli {
+    /// Output JSON where supported (NDJSON for list/stream commands, pretty JSON otherwise)
+    #[arg(long, global = true)]
+    pub json: bool,
+
     #[command(subcommand)]
     pub command: Commands,
 }
@@ -48,6 +52,31 @@ Environment variables:
     #[command(hide = true)]
     Run(LaunchArgs),
 
+    /// Interact with test runs
+    #[command(
+        long_about = r#"Interact with test runs
+
+List, inspect, and view logs for Antithesis test runs.
+
+When no subcommand is given, lists all runs (same as `snouty runs list`).
+
+Examples:
+  snouty runs
+  snouty runs list --status completed --launcher nightly
+  snouty runs show <run_id>
+  snouty runs properties <run_id>
+  snouty runs properties --failing <run_id>
+  snouty runs properties --passing <run_id>
+  snouty runs build-logs <run_id>
+  snouty runs logs <run_id> <hash> <vtime>
+  snouty runs events <run_id> <query>"#,
+        subcommand_required = false
+    )]
+    Runs {
+        #[command(subcommand)]
+        command: Option<RunsCommands>,
+    },
+
     /// Access raw API endpoints
     #[command(subcommand)]
     Api(ApiCommands),
@@ -57,23 +86,16 @@ Environment variables:
 
 Using CLI arguments:
   snouty debug \
-    --antithesis.debugging.session_id f89d5c11f5e3bf5e4bb3641809800cee-44-22 \
-    --antithesis.debugging.input_hash 6057726200491963783 \
-    --antithesis.debugging.vtime 329.8037810830865 \
-    --antithesis.report.recipients "team@example.com"
+    --session-id f89d5c11f5e3bf5e4bb3641809800cee-44-22 \
+    --input-hash 6057726200491963783 \
+    --vtime 329.8037810830865 \
+    --description "debug this moment" \
+    --recipients "team@example.com"
 
 Using Moment.from (copy from triage report):
   echo 'Moment.from({ session_id: "...", input_hash: "...", vtime: ... })' | \
-    snouty debug --stdin --antithesis.report.recipients "team@example.com""#)]
-    Debug {
-        /// Read parameters from stdin (JSON or Moment.from format)
-        #[arg(long)]
-        stdin: bool,
-
-        /// Parameters as `--key value` pairs
-        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
-        args: Vec<String>,
-    },
+    snouty debug --stdin --recipients "team@example.com""#)]
+    Debug(DebugArgs),
 
     /// Output shell completions
     Completions {
@@ -148,10 +170,6 @@ Examples:
   snouty docs search "config image"
   snouty docs --offline search sdk setup"#)]
     Search {
-        /// Print search results as JSON
-        #[arg(short = 'j', long)]
-        json: bool,
-
         /// Print only matching page paths, one per line
         #[arg(short = 'l', long)]
         list: bool,
@@ -269,6 +287,131 @@ pub struct LaunchArgs {
     /// Extra parameters as key=value pairs (repeatable)
     #[arg(long = "param")]
     pub params: Vec<String>,
+}
+
+#[derive(Args)]
+pub struct DebugArgs {
+    /// Read parameters from stdin (JSON or Moment.from format)
+    #[arg(long)]
+    pub stdin: bool,
+
+    /// Session ID of the test run to debug
+    #[arg(long)]
+    pub session_id: Option<String>,
+
+    /// Input hash identifying the moment to debug
+    #[arg(long, allow_hyphen_values = true)]
+    pub input_hash: Option<String>,
+
+    /// Virtual time identifying the moment to debug
+    #[arg(long)]
+    pub vtime: Option<String>,
+
+    /// Debugging session description
+    #[arg(long)]
+    pub description: Option<String>,
+
+    /// Report recipients (semicolon-delimited email addresses)
+    #[arg(long)]
+    pub recipients: Option<String>,
+}
+
+#[derive(Subcommand)]
+pub enum RunsCommands {
+    /// List all runs
+    List(RunsListArgs),
+
+    /// Show details of a specific run
+    Show {
+        /// Run ID
+        run_id: String,
+    },
+
+    /// List property results for a run
+    Properties {
+        /// Run ID
+        run_id: String,
+
+        /// Show only passing properties
+        #[arg(long, conflicts_with = "failing")]
+        passing: bool,
+
+        /// Show only failing properties
+        #[arg(long)]
+        failing: bool,
+    },
+
+    /// Stream build logs for a run
+    BuildLogs {
+        /// Run ID
+        run_id: String,
+    },
+
+    /// Stream moment logs for a run
+    Logs {
+        /// Run ID
+        run_id: String,
+
+        /// The input hash value identifying the moment
+        #[arg(allow_hyphen_values = true)]
+        input_hash: String,
+
+        /// The virtual time value identifying the moment
+        vtime: String,
+
+        /// Start streaming from this virtual time (must be paired with --begin-input-hash)
+        #[arg(long, requires = "begin_input_hash")]
+        begin_vtime: Option<String>,
+
+        /// Start streaming from this input hash
+        #[arg(long, allow_hyphen_values = true)]
+        begin_input_hash: Option<String>,
+    },
+
+    /// Search events in a run
+    Events {
+        /// Run ID
+        run_id: String,
+
+        /// Search query
+        #[arg(required = true, num_args = 1..)]
+        query: Vec<String>,
+    },
+}
+
+#[derive(Args)]
+pub struct RunsListArgs {
+    /// Filter by status (starting, in_progress, completed, cancelled, incomplete, unknown)
+    #[arg(short, long)]
+    pub status: Option<String>,
+
+    /// Filter by launcher name
+    #[arg(short, long)]
+    pub launcher: Option<String>,
+
+    /// Only show runs created after this timestamp (ISO 8601)
+    #[arg(long)]
+    pub created_after: Option<String>,
+
+    /// Only show runs created before this timestamp (ISO 8601)
+    #[arg(long)]
+    pub created_before: Option<String>,
+
+    /// Maximum number of runs to display
+    #[arg(short = 'n', long, default_value = "50")]
+    pub limit: usize,
+}
+
+impl Default for RunsListArgs {
+    fn default() -> Self {
+        Self {
+            status: None,
+            launcher: None,
+            created_after: None,
+            created_before: None,
+            limit: 50,
+        }
+    }
 }
 
 #[derive(Subcommand)]

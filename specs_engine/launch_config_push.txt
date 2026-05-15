@@ -6,7 +6,7 @@
 # Both get pinned references (name@sha256:digest) in the webhook params.
 
 # Local build images are tagged with registry prefix, pushed and pinned.
-mock-server 200 '{"status": "ok"}'
+mock-server 200 '{"runId":"run-123","statusCode":200}'
 build-image myapp:latest images/myapp
 build-image sidecar:v1 images/sidecar
 snouty launch -w basic_test -c push_config --duration 30
@@ -15,13 +15,13 @@ stderr '"antithesis.images":.*myapp@sha256:'
 stderr '"antithesis.images":.*sidecar@sha256:'
 
 # No compose images match the registry — only config image is pinned.
-mock-server 200 '{"status": "ok"}'
+mock-server 200 '{"runId":"run-123","statusCode":200}'
 snouty launch -w basic_test -c external_config --duration 30
 stderr '"antithesis.config_image":.*@sha256:'
 ! stderr '"antithesis.images"'
 
 # Mixed: local build image is tagged+pushed, external image is skipped.
-mock-server 200 '{"status": "ok"}'
+mock-server 200 '{"runId":"run-123","statusCode":200}'
 build-image myapp:latest images/myapp
 snouty launch -w basic_test -c mixed_config --duration 30
 stderr '"antithesis.images":.*myapp@sha256:'
@@ -29,13 +29,13 @@ stderr '"antithesis.images":.*myapp@sha256:'
 stderr '"antithesis.config_image":.*@sha256:'
 
 # Local image without build stanza is not pushed.
-mock-server 200 '{"status": "ok"}'
+mock-server 200 '{"runId":"run-123","statusCode":200}'
 snouty launch -w basic_test -c local_no_build_config --duration 30
 stderr '"antithesis.config_image":.*@sha256:'
 ! stderr '"antithesis.images"'
 
 # A non-amd64 image scheduled for push is rejected before any push happens.
-mock-server 200 '{"status": "ok"}'
+mock-server 200 '{"runId":"run-123","statusCode":200}'
 build-image --platform linux/arm64 arm-launch:latest images/arm_launch
 ! snouty launch -w basic_test -c arm_push_config --duration 30
 stderr 'x86-64 \(amd64\).*'
@@ -44,7 +44,7 @@ stderr 'image '\''.*arm-launch:latest'\'' has architecture '\''arm64'\''.*'
 
 # A non-amd64 image that is NOT pushed (no registry prefix, no build) does
 # not trigger the architecture check.
-mock-server 200 '{"status": "ok"}'
+mock-server 200 '{"runId":"run-123","statusCode":200}'
 build-image --platform linux/arm64 arm-external:latest images/arm_launch
 snouty launch -w basic_test -c arm_external_config --duration 30
 stderr '"antithesis.config_image":.*@sha256:'
@@ -52,7 +52,7 @@ stderr '"antithesis.config_image":.*@sha256:'
 
 # Kubernetes config: builds and pushes the config image, never sets
 # antithesis.images (the platform pulls images from the manifests).
-mock-server 200 '{"status": "ok"}'
+mock-server 200 '{"runId":"run-123","statusCode":200}'
 snouty launch -w basic_k8s_test -c k8s_config --duration 30
 stderr '"antithesis.config_image":.*@sha256:'
 ! stderr '"antithesis.images"'

@@ -87,6 +87,10 @@
         "antithesis.debugging.vtime": {
           "type": "string",
           "description": "The vtime at which to start debugging, from the copy moment button in triage report"
+        },
+        "antithesis.event_description": {
+          "type": "string",
+          "description": "Description for the debugging event/session"
         }
       },
       "required": [

@@ -1,5 +1,5 @@
 use snouty::testutils::{
-    OCIRegistry, available_runtimes, filtered_path_without_binary, skip_or_fail,
+    MockApiServer, OCIRegistry, available_runtimes, filtered_path_without_binary, skip_or_fail,
 };
 use std::cell::RefCell;
 use std::io::{Read, Write};
@@ -62,8 +62,9 @@ fn cmd_snouty(
     args: &[String],
 ) -> testscript_rs::Result<()> {
     let start = std::time::Instant::now();
-    let label = args.join(" ");
-    let mut cmd = snouty_cmd(env, args);
+    let expanded: Vec<String> = args.iter().map(|a| env.substitute_env_vars(a)).collect();
+    let label = expanded.join(" ");
+    let mut cmd = snouty_cmd(env, &expanded);
     if env.next_stdin.is_some() {
         cmd.stdin(Stdio::piped());
     }
@@ -102,6 +103,12 @@ fn cmd_mock_server(
     if args.len() < 2 {
         return Err(err("mock-server requires <status> <body>".to_string()));
     }
+
+    if is_staging() {
+        propagate_antithesis_env(env)?;
+        return Ok(());
+    }
+
     let status: u16 = args[0]
         .parse()
         .map_err(|e| err(format!("invalid status code: {e}")))?;
@@ -132,6 +139,132 @@ fn cmd_mock_server(
     env.set_env_var("ANTITHESIS_USERNAME", "testuser");
     env.set_env_var("ANTITHESIS_PASSWORD", "testpass");
     env.set_env_var("ANTITHESIS_TENANT", "testtenant");
+    Ok(())
+}
+
+fn cmd_env_from_json(
+    env: &mut testscript_rs::TestEnvironment,
+    args: &[String],
+) -> testscript_rs::Result<()> {
+    // Usage: env_from_json <line_index> <json_key>
+    // Parses the previous command's stdout as NDJSON, extracts <json_key>
+    // from line <line_index> (0-based) and stores it as $R_<json_key>.
+    if args.len() != 2 {
+        return Err(err(
+            "env_from_json requires <line_index> <json_key>".to_string()
+        ));
+    }
+    let line_idx: usize = args[0]
+        .parse()
+        .map_err(|_| err("line_index must be a non-negative integer".to_string()))?;
+    let key = &args[1];
+
+    let output = env
+        .last_output
+        .as_ref()
+        .ok_or_else(|| err("no previous command output".to_string()))?;
+    let stdout = std::str::from_utf8(&output.stdout)
+        .map_err(|e| err(format!("stdout is not valid UTF-8: {e}")))?;
+    let lines: Vec<&str> = stdout.lines().collect();
+    let line = lines.get(line_idx).ok_or_else(|| {
+        err(format!(
+            "stdout has only {} line(s); cannot read line {}",
+            lines.len(),
+            line_idx
+        ))
+    })?;
+    let value: serde_json::Value =
+        serde_json::from_str(line).map_err(|e| err(format!("parse JSON line: {e}")))?;
+    let extracted = match value.get(key) {
+        Some(serde_json::Value::Null) | None => {
+            return Err(err(format!("key '{key}' not found in JSON")));
+        }
+        Some(serde_json::Value::String(s)) => s.clone(),
+        Some(other) => other.to_string(),
+    };
+    env.set_env_var(&format!("R_{key}"), &extracted);
+    Ok(())
+}
+
+fn cmd_mock_runs_server(
+    env: &mut testscript_rs::TestEnvironment,
+    args: &[String],
+) -> testscript_rs::Result<()> {
+    let empty = match args {
+        [] => false,
+        [mode] if mode == "empty" => true,
+        _ => {
+            return Err(err(
+                "mock-runs-server accepts either no arguments or 'empty'".to_string(),
+            ));
+        }
+    };
+
+    if is_staging() {
+        if empty {
+            return Err(err(
+                "mock-runs-server empty is not supported against staging; gate the block with [!staging]".to_string(),
+            ));
+        }
+        propagate_antithesis_env(env)?;
+        return Ok(());
+    }
+
+    let server = if empty {
+        MockApiServer::start_empty()
+    } else {
+        MockApiServer::start()
+    };
+    env.set_env_var("ANTITHESIS_BASE_URL", server.url());
+    env.set_env_var("ANTITHESIS_API_KEY", server.token());
+    env.set_env_var("ANTITHESIS_TENANT", "testtenant");
+    env.last_output = Some(std::process::Output {
+        status: std::process::ExitStatus::default(),
+        stdout: format!("{}\n", server.token()).into_bytes(),
+        stderr: Vec::new(),
+    });
+    std::mem::forget(server);
+    Ok(())
+}
+
+fn is_staging() -> bool {
+    std::env::var("SNOUTY_STAGING")
+        .ok()
+        .is_some_and(|v| !v.is_empty() && v != "0")
+}
+
+fn propagate_antithesis_env(env: &mut testscript_rs::TestEnvironment) -> testscript_rs::Result<()> {
+    let tenant = std::env::var("ANTITHESIS_TENANT")
+        .map_err(|_| err("SNOUTY_STAGING is set but ANTITHESIS_TENANT is not".to_string()))?;
+    let has_bearer = std::env::var("ANTITHESIS_API_KEY").is_ok();
+    let has_basic = std::env::var("ANTITHESIS_USERNAME").is_ok()
+        && std::env::var("ANTITHESIS_PASSWORD").is_ok();
+    if !has_bearer && !has_basic {
+        return Err(err(
+            "SNOUTY_STAGING is set but no credentials found (set ANTITHESIS_API_KEY or ANTITHESIS_USERNAME+ANTITHESIS_PASSWORD)"
+                .to_string(),
+        ));
+    }
+    for var in [
+        "ANTITHESIS_BASE_URL",
+        "ANTITHESIS_API_KEY",
+        "ANTITHESIS_USERNAME",
+        "ANTITHESIS_PASSWORD",
+        "ANTITHESIS_TENANT",
+    ] {
+        env.env_vars.remove(var);
+    }
+    env.set_env_var("ANTITHESIS_TENANT", &tenant);
+    for var in [
+        "ANTITHESIS_BASE_URL",
+        "ANTITHESIS_API_KEY",
+        "ANTITHESIS_USERNAME",
+        "ANTITHESIS_PASSWORD",
+    ] {
+        if let Ok(v) = std::env::var(var) {
+            env.set_env_var(var, &v);
+        }
+    }
     Ok(())
 }
 
@@ -261,6 +394,7 @@ fn run_engine_spec_case(runtime_name: &'static str, case: EngineSpecCase) {
         })
         .command("snouty", cmd_snouty)
         .command("mock-server", cmd_mock_server)
+        .command("env_from_json", cmd_env_from_json)
         .command("build-image", cmd_build_image)
         .execute();
 
@@ -277,55 +411,75 @@ fn run_engine_spec_case(runtime_name: &'static str, case: EngineSpecCase) {
 
 #[test]
 fn spec_tests() {
-    let result = testscript::run("specs")
-        .setup(|env| {
-            env.set_env_var("RUST_LOG", "debug");
-            if let Some(path) = filtered_path_without_binary("snouty-update") {
-                env.set_env_var("PATH", &path);
-            }
-            Ok(())
-        })
-        .command("snouty", cmd_snouty)
-        .command("mock-server", cmd_mock_server)
-        .command("set-env", |env, args| {
-            // Usage: set-env KEY value...
-            // Interpolates ${VAR} references in value using env.env_vars.
-            if args.len() < 2 {
-                return Err(err("set-env requires KEY and value".to_string()));
-            }
-            let key = &args[0];
-            let raw_value = args[1..].join(" ");
-            let value = env.substitute_env_vars(&raw_value);
-            env.set_env_var(key, &value);
-            Ok(())
-        })
-        .command("snouty-bg", |env, args| {
-            let child = snouty_cmd(env, args)
-                .spawn()
-                .map_err(|e| err(format!("spawn snouty-bg: {e}")))?;
-            env.background_processes.insert("snouty".to_string(), child);
-            Ok(())
-        })
-        .command("setup-docs-db", |env, args| {
-            // Usage: setup-docs-db
-            // Copies the fixture docs.db into the workdir and sets ANTITHESIS_DOCS_DB_PATH.
-            let fixture =
-                std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/docs.db");
-            let dest = env.work_dir.join("docs.db");
-            std::fs::copy(&fixture, &dest)
-                .map_err(|e| err(format!("failed to copy fixture docs.db: {e}")))?;
-            let var_name = if args.is_empty() {
-                "ANTITHESIS_DOCS_DB_PATH"
-            } else {
-                &args[0]
-            };
-            env.set_env_var(var_name, dest.to_str().unwrap());
-            Ok(())
-        })
-        .execute();
+    let staging = is_staging();
+    let specs_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("specs");
+    let mut files: Vec<String> = std::fs::read_dir(&specs_dir)
+        .expect("read specs/")
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().extension().is_some_and(|ext| ext == "txt"))
+        .filter_map(|e| e.file_name().into_string().ok())
+        .collect();
+    files.sort();
 
-    if let Err(e) = result {
-        panic!("\n{e}");
+    for file in files {
+        let result = testscript::run("specs")
+            .files([file.clone()])
+            .condition("staging", staging)
+            .setup(|env| {
+                env.set_env_var("RUST_LOG", "debug");
+                if let Some(path) = filtered_path_without_binary("snouty-update") {
+                    env.set_env_var("PATH", &path);
+                }
+                Ok(())
+            })
+            .command("snouty", cmd_snouty)
+            .command("mock-server", cmd_mock_server)
+            .command("mock-runs-server", cmd_mock_runs_server)
+            .command("env_from_json", cmd_env_from_json)
+            .command("set-env", |env, args| {
+                // Usage: set-env KEY value...
+                // Interpolates ${VAR} references in value using env.env_vars.
+                if args.len() < 2 {
+                    return Err(err("set-env requires KEY and value".to_string()));
+                }
+                let key = &args[0];
+                let raw_value = args[1..].join(" ");
+                let value = env.substitute_env_vars(&raw_value);
+                env.set_env_var(key, &value);
+                Ok(())
+            })
+            .command("snouty-bg", |env, args| {
+                let child = snouty_cmd(env, args)
+                    .spawn()
+                    .map_err(|e| err(format!("spawn snouty-bg: {e}")))?;
+                env.background_processes.insert("snouty".to_string(), child);
+                Ok(())
+            })
+            .command("setup-docs-db", |env, args| {
+                // Usage: setup-docs-db
+                // Copies the fixture docs.db into the workdir and sets ANTITHESIS_DOCS_DB_PATH.
+                let fixture =
+                    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/docs.db");
+                let dest = env.work_dir.join("docs.db");
+                std::fs::copy(&fixture, &dest)
+                    .map_err(|e| err(format!("failed to copy fixture docs.db: {e}")))?;
+                let var_name = if args.is_empty() {
+                    "ANTITHESIS_DOCS_DB_PATH"
+                } else {
+                    &args[0]
+                };
+                env.set_env_var(var_name, dest.to_str().unwrap());
+                Ok(())
+            })
+            .execute();
+
+        match result {
+            Ok(()) => {}
+            Err(e) if e.to_string().contains("SKIP:") => {
+                eprintln!("skipping {file}");
+            }
+            Err(e) => panic!("\n{e}"),
+        }
     }
 }
 

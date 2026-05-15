@@ -359,12 +359,12 @@ pub enum RunsCommands {
         /// The virtual time value identifying the moment
         vtime: String,
 
-        /// Start streaming from this virtual time (must be paired with --begin-input-hash)
-        #[arg(long, requires = "begin_input_hash")]
+        /// Start streaming from this virtual time (defaults to the root)
+        #[arg(long)]
         begin_vtime: Option<String>,
 
-        /// Start streaming from this input hash
-        #[arg(long, allow_hyphen_values = true)]
+        /// Start streaming from this input hash (optimization; must be paired with --begin-vtime)
+        #[arg(long, allow_hyphen_values = true, requires = "begin_vtime")]
         begin_input_hash: Option<String>,
     },
 

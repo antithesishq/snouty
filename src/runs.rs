@@ -351,26 +351,27 @@ where
 {
     use futures_util::StreamExt;
 
-    let mut buf = String::new();
+    let mut buf: Vec<u8> = Vec::new();
 
     while let Some(chunk) = stream.next().await {
         let chunk = chunk?;
-        let text = std::str::from_utf8(chunk.as_ref())
-            .map_err(|e| eyre!("invalid UTF-8 in response stream: {e}"))?;
-        buf.push_str(text);
+        buf.extend_from_slice(chunk.as_ref());
 
-        while let Some(pos) = buf.find('\n') {
-            let line = &buf[..pos];
-            if !line.is_empty() {
+        while let Some(pos) = buf.iter().position(|&b| b == b'\n') {
+            let line_bytes = &buf[..pos];
+            if !line_bytes.is_empty() {
+                let line = std::str::from_utf8(line_bytes)
+                    .map_err(|e| eyre!("invalid UTF-8 in response stream: {e}"))?;
                 process_line(line)?;
             }
             buf.drain(..=pos);
         }
     }
 
-    // Process any remaining data without a trailing newline
     if !buf.is_empty() {
-        process_line(&buf)?;
+        let line = std::str::from_utf8(&buf)
+            .map_err(|e| eyre!("invalid UTF-8 in response stream: {e}"))?;
+        process_line(line)?;
     }
 
     Ok(())

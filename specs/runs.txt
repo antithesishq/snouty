@@ -202,10 +202,10 @@ mock-runs-server
 ! snouty runs logs run-1
 stderr '.*INPUT_HASH.*'
 
-# `snouty runs events` prints a friendly empty-state message.
+# `snouty runs events` prints the header row even when there are no matching events.
 mock-runs-server
 snouty runs events run-1 nomatch
-stdout 'No matching events found\.'
+stdout '^HASH\s+VTIME\s+SOURCE\s+OUTPUT'
 
 # `snouty runs events` requires a query.
 mock-runs-server

@@ -264,17 +264,12 @@ async fn cmd_runs_events(run_id: &str, query: &[String], json: bool) -> Result<(
         })
         .await
     } else {
-        let mut saw_rows = false;
+        writeln!(
+            stdout,
+            "{:<22}  {:<22}  {:<20}  OUTPUT",
+            "HASH", "VTIME", "SOURCE"
+        )?;
         stream_ndjson_lines(stream, |line| {
-            if !saw_rows {
-                writeln!(
-                    stdout,
-                    "{:<22}  {:<22}  {:<20}  OUTPUT",
-                    "HASH", "VTIME", "SOURCE"
-                )?;
-                saw_rows = true;
-            }
-
             if let Ok(entry) = serde_json::from_str::<Value>(line) {
                 let rendered = render_event_entry(&entry);
                 let input_hash = rendered.input_hash;
@@ -290,13 +285,7 @@ async fn cmd_runs_events(run_id: &str, query: &[String], json: bool) -> Result<(
             }
             Ok(())
         })
-        .await?;
-
-        if !saw_rows {
-            writeln!(stdout, "No matching events found.")?;
-        }
-
-        Ok(())
+        .await
     }
 }
 

@@ -5,25 +5,46 @@
 # As a developer, I want to launch a debugging session from the command line
 # using details from a triage report so that I can reproduce and investigate
 # a specific moment in time.
+#
+# Each successful invocation actually starts a debugging session against the
+# API, so the bulk of this file is gated behind `[staging] skip` to avoid
+# mutating staging. Read-only checks (env-var and schema validation that
+# fail before any API call) run in both modes.
 
 # The command authenticates with the Antithesis API using either
 #    ANTITHESIS_API_KEY and ANTITHESIS_TENANT, or
 #    ANTITHESIS_USERNAME, ANTITHESIS_PASSWORD, and ANTITHESIS_TENANT.
-! snouty debug --antithesis.debugging.input_hash abc --antithesis.debugging.session_id sess --antithesis.debugging.vtime 123
+! snouty debug --input-hash abc --session-id sess --vtime 123
 stderr 'missing environment variable.*'
 
-# Parameters are provided as --key value pairs
-#    (e.g. --antithesis.debugging.session_id ...).
-mock-server 200 '{"session": "started"}'
-snouty debug --antithesis.debugging.input_hash abc123 --antithesis.debugging.session_id sess-456 --antithesis.debugging.vtime 1234567890
+# Parameters are validated against the debuggingParams schema before
+#    making any API call. Required fields: session_id, input_hash, vtime.
+mock-server 200 '{}'
+! snouty debug --input-hash abc
+stderr 'validation failed.*'
+
+# Old-style raw --antithesis.* args are not accepted by `debug`.
+! snouty debug --antithesis.debugging.input_hash abc --antithesis.debugging.session_id sess --antithesis.debugging.vtime 123
+stderr 'unexpected argument.*'
+
+[staging] skip
+
+# Parameters are provided as typed flags. Before sending, the resolved
+#    parameters are printed to stderr with sensitive values redacted.
+mock-server 200 '{"runId":"run-123","statusCode":202}'
+snouty debug --input-hash abc123 --session-id sess-456 --vtime 1234567890 --description 'debug this moment' --recipients team@example.com
 stderr '"antithesis.debugging.input_hash": "abc123"'
+stderr '"antithesis.debugging.session_id": "sess-456"'
+stderr '"antithesis.debugging.vtime": "1234567890"'
+stderr '"antithesis.event_description": "debug this moment"'
+stderr '"antithesis.report.recipients": "\[REDACTED\]"'
 
 # Parameters can alternatively be read from stdin via --stdin, as JSON,
 #    JSON5, or Moment.from format. Moment.from format
 #    (e.g. Moment.from({ session_id: "...", ... })) is auto-detected on
 #    stdin. Keys are mapped to antithesis.debugging.* and numeric values are
 #    converted to strings.
-mock-server 200 '{"debugging": true}'
+mock-server 200 '{"runId":"run-123","statusCode":202}'
 stdin moment_input.txt
 snouty debug --stdin
 stderr '"antithesis.debugging.session_id": "f89d5c11f5e3bf5e4bb3641809800cee-44-22"'
@@ -31,45 +52,37 @@ stderr '"antithesis.debugging.input_hash": "6057726200491963783"'
 stderr '"antithesis.debugging.vtime": "329.8037810830865"'
 
 # 3b. stdin as JSON
-mock-server 200 '{"ok": true}'
+mock-server 200 '{"runId":"run-123","statusCode":202}'
 stdin debug_json.txt
 snouty debug --stdin
 stderr '"antithesis.debugging.input_hash": "abc"'
 
 # When both stdin and CLI args are provided, CLI args take priority over
 #    stdin values.
-mock-server 200 '{"debugging": true}'
+mock-server 200 '{"runId":"run-123","statusCode":202}'
 stdin moment_input.txt
-snouty debug --stdin --antithesis.report.recipients team@example.com
+snouty debug --stdin --input-hash override --recipients team@example.com
 stderr '"antithesis.debugging.session_id": "f89d5c11f5e3bf5e4bb3641809800cee-44-22"'
-stderr '"antithesis.debugging.input_hash": "6057726200491963783"'
+stderr '"antithesis.debugging.input_hash": "override"'
 stderr '"antithesis.debugging.vtime": "329.8037810830865"'
-
-# Before sending, the resolved parameters are printed to stderr with
-#    sensitive values redacted.
 stderr '"antithesis.report.recipients": "\[REDACTED\]"'
 
-# Parameters are validated against the debuggingParams schema before
-#    making any API call. Required fields: session_id, input_hash, vtime.
-mock-server 200 '{}'
-! snouty debug --antithesis.debugging.input_hash abc
-stderr 'validation failed.*'
-
-# 6b. Rejects custom/extra properties.
-mock-server 200 '{}'
-! snouty debug --antithesis.debugging.input_hash abc --antithesis.debugging.session_id sess --antithesis.debugging.vtime 123 --my.custom.prop value
-stderr 'validation failed.*'
-
-# On success, the API response body is printed to stdout.
-mock-server 200 '{"debugging": true}'
+# On success, a one-line confirmation with the run_id is printed to stdout.
+mock-server 200 '{"runId":"run-123","statusCode":202}'
 stdin moment_input.txt
 snouty debug --stdin
-stdout '\{"debugging": true\}.*'
+stdout 'Debugging session started: run_id run-123'
+
+# With --json, the full response body is printed as pretty JSON.
+mock-server 200 '{"runId":"run-123","statusCode":202}'
+stdin moment_input.txt
+snouty --json debug --stdin
+stdout '\s*"runId": "run-123".*'
 
 # On API failure, the command exits with an error showing the HTTP status
 #    and response body.
-mock-server 401 '{"error": "unauthorized"}'
-! snouty debug --antithesis.debugging.input_hash abc123 --antithesis.debugging.session_id sess-456 --antithesis.debugging.vtime 1234567890
+mock-server 401 '{"message": "unauthorized"}'
+! snouty debug --input-hash abc123 --session-id sess-456 --vtime 1234567890
 stderr 'API error: 401.*'
 
 -- moment_input.txt --

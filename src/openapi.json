@@ -1,0 +1,1305 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "Antithesis API",
+    "version": "1.0.0",
+    "description": "The Antithesis API enables programmatic access to the Antithesis autonomous testing environments. List runs, inspect run details and retrieve logs.\n\n### Authentication\n\nAll endpoints require an API key. Pass it in the `Authorization` header as `Authorization: Bearer <api_key>`. To obtain an API key, please contact support at support@antithesis.com.\n\n### Versioning\n\nPublic API endpoints are versioned via a path prefix:\n\n- `/api/v0/...` — **Preview.** APIs accessed from the `v0` route are in preview. They may change or be removed.\n- `/api/v1/...` — **Stable.** The first generally-available version with a compatibility commitment.\n\nIn the future only breaking changes trigger a new major version (e.g., `v2`). When that happens the previous version (`v1`) remains available, and preview APIs restart under `v0`.",
+    "contact": {
+      "name": "Antithesis Team",
+      "url": "https://www.antithesis.com",
+      "email": "support@antithesis.com"
+    }
+  },
+  "servers": [
+    {
+      "url": "https://{tenant}.antithesis.com",
+      "description": "Production",
+      "variables": {
+        "tenant": {
+          "description": "Your organization's tenant name.",
+          "default": "demo"
+        }
+      }
+    }
+  ],
+  "security": [
+    {
+      "BearerAuth": []
+    }
+  ],
+  "tags": [
+    {
+      "name": "Test runs",
+      "description": "Operations on test runs."
+    },
+    {
+      "name": "Launch",
+      "description": "Launch a test run or debugging session."
+    }
+  ],
+  "paths": {
+    "/api/v0/runs": {
+      "get": {
+        "operationId": "listRuns",
+        "summary": "List all runs",
+        "description": "Returns a paginated list of runs for your organization. Results are ordered by creation time, newest first.",
+        "tags": ["Test runs"],
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Maximum number of results to return. Server-capped at 100.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "default": 50,
+              "minimum": 1,
+              "maximum": 100
+            }
+          },
+          {
+            "name": "after",
+            "in": "query",
+            "description": "Cursor for pagination. Pass the `next_cursor` value (as well as any filter parameters) from a previous response to fetch the next page.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "description": "Filter runs by status.",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/Run_Status"
+            }
+          },
+          {
+            "name": "created_after",
+            "in": "query",
+            "description": "Only return runs created after this timestamp (ISO 8601).",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          {
+            "name": "created_before",
+            "in": "query",
+            "description": "Only return runs created before this timestamp (ISO 8601).",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          {
+            "name": "launcher",
+            "in": "query",
+            "description": "Filter by the launcher that kicked off the run.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "A paginated list of runs.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Run_List_Response"
+                },
+                "example": {
+                  "data": [
+                    {
+                      "run_id": "9325f006ffd3a399a8497bc888878b97-50-1",
+                      "status": "completed",
+                      "created_at": "2025-03-20T02:00:00Z",
+                      "started_at": "2025-03-20T02:01:12Z",
+                      "completed_at": "2025-03-20T02:31:45Z",
+                      "launcher": "Payments Nightly"
+                    },
+                    {
+                      "run_id": "a1c4e7f2b5d8039c6e9f1a4b7d0e3f68-50-1",
+                      "status": "completed",
+                      "created_at": "2025-03-19T14:00:00Z",
+                      "started_at": "2025-03-19T14:00:32Z",
+                      "completed_at": "2025-03-19T14:45:10Z",
+                      "launcher": "Debug Runner"
+                    }
+                  ],
+                  "next_cursor": "eyJjcmVhdGVkX2F0IjoiMjAyNS0wMy0xOVQxNDowMDowMFoiLCJydW5faWQiOiJiN2YzYTFlOWQwNDg0N2ExYjJjM2Q0ZTVmNmE3YjhjOSJ9"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "405": {
+            "$ref": "#/components/responses/MethodNotAllowed"
+          },
+          "406": {
+            "$ref": "#/components/responses/NotAcceptable"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      }
+    },
+    "/api/v0/runs/{run_id}": {
+      "get": {
+        "operationId": "getRun",
+        "summary": "Get run details",
+        "description": "Returns the full details of a single run, including results.",
+        "tags": ["Test runs"],
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "description": "Unique identifier of the run to retrieve.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Full details of the requested run.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Run_Detail"
+                },
+                "examples": {
+                  "test_run": {
+                    "summary": "A completed test run",
+                    "value": {
+                      "run_id": "9325f006ffd3a399a8497bc888878b97-50-1",
+                      "status": "completed",
+                      "created_at": "2025-03-20T02:00:00Z",
+                      "started_at": "2025-03-20T02:01:12Z",
+                      "completed_at": "2025-03-20T02:31:45Z",
+                      "launcher": "Payments Nightly",
+                      "links": {
+                        "triage_report": "https://demo.antithesis.com/report/dBDNYWsHWywLBl1mtobJjjuB/dw8bjBJES6HzQ9iw8PSlGUXNnraLuWpLlbavyABg_R0.html"
+                      },
+                      "results": {
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "405": {
+            "$ref": "#/components/responses/MethodNotAllowed"
+          },
+          "406": {
+            "$ref": "#/components/responses/NotAcceptable"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      }
+    },
+    "/api/v0/runs/{run_id}/logs": {
+      "get": {
+        "operationId": "getRunLogs",
+        "summary": "Get logs for a specific moment",
+        "description": "Streams the logs for a moment in the run as newline-delimited JSON (NDJSON) in chronological order. Each line is a self-contained JSON object. The response is streamed — the connection remains open until all matching log lines have been sent.",
+        "tags": ["Test runs"],
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "description": "Unique identifier of the run to retrieve logs for.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "input_hash",
+            "in": "query",
+            "description": "The input hash value identifying the moment.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "vtime",
+            "in": "query",
+            "description": "The virtual time value identifying the moment.",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "example": "8.692346630850807"
+            }
+          },
+          {
+            "name": "begin_vtime",
+            "in": "query",
+            "description": "Start streaming logs from this virtual time instead of from the beginning of the run.",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "example": "8.692346630850807"
+            }
+          },
+          {
+            "name": "begin_input_hash",
+            "in": "query",
+            "description": "The input hash of the moment to start streaming logs from. Must be provided together with `begin_vtime` to fully identify the begin moment.",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "example": "-3625518438076122494"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "A stream of log lines in NDJSON format. Each line is a JSON object.",
+            "content": {
+              "application/x-ndjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Event"
+                },
+                "examples": {
+                  "raft_vote_log": {
+                    "summary": "A raft pre-vote request log line",
+                    "value": {
+                      "output_text": "{\"level\":\"info\",\"ts\":\"2026-03-26T01:42:55.628233Z\",\"logger\":\"raft\",\"caller\":\"v3@v3.6.0/raft.go:1064\",\"msg\":\"2c6c7b8d0d0933f7 [logterm: 78, index: 436] sent MsgPreVote request to dcb68c82481661be at term 79\"}",
+                      "source": {
+                        "container": "etcd0",
+                        "name": "etcd0",
+                        "stream": "error"
+                      },
+                      "moment": {
+                        "input_hash": "-3625518438076122494",
+                        "vtime": "398.4898056755774"
+                      }
+                    }
+                  },
+                  "slow_request_log": {
+                    "summary": "A slow request warning log line",
+                    "value": {
+                      "output_text": "{\"level\":\"warn\",\"ts\":\"2026-03-26T01:41:30.289731Z\",\"caller\":\"txn/util.go:93\",\"msg\":\"apply request took too long\",\"took\":\"200.69629ms\",\"expected-duration\":\"100ms\",\"prefix\":\"read-only range \",\"request\":\"key:\\\"key\\\" \",\"response\":\"\",\"error\":\"context deadline exceeded\"}",
+                      "source": {
+                        "container": "etcd1",
+                        "name": "etcd1",
+                        "stream": "error"
+                      },
+                      "moment": {
+                        "input_hash": "-8212366801093655922",
+                        "vtime": "313.15126806590706"
+                      }
+                    }
+                  },
+                  "watch_channel_log": {
+                    "summary": "A watch channel closed log line",
+                    "value": {
+                      "output_text": "{\"level\":\"info\",\"ts\":1774489067.310644,\"caller\":\"client/watch.go:101\",\"msg\":\"Watch channel closed\"}",
+                      "source": {
+                        "container": "client",
+                        "name": "antithesis/pods/client/commands/robustness/singleton_driver_traffic.err",
+                        "pid": 45,
+                        "stream": "error"
+                      },
+                      "moment": {
+                        "input_hash": "-3704286174724581163",
+                        "vtime": "90.17225814750418"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "405": {
+            "$ref": "#/components/responses/MethodNotAllowed"
+          },
+          "406": {
+            "$ref": "#/components/responses/NotAcceptable"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      }
+    },
+    "/api/v0/runs/{run_id}/build_logs": {
+      "get": {
+        "operationId": "getRunBuildLogs",
+        "summary": "Stream build logs",
+        "description": "Streams the build logs for a run as newline-delimited JSON (NDJSON). Each line contains a timestamp, a stream indicator, and the log text. The response is streamed — the connection remains open until all matching log lines have been sent.",
+        "tags": ["Test runs"],
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "description": "Unique identifier of the run to retrieve build logs for.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "A stream of build log lines in NDJSON format.",
+            "content": {
+              "application/x-ndjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Build_Log_Line"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "405": {
+            "$ref": "#/components/responses/MethodNotAllowed"
+          },
+          "406": {
+            "$ref": "#/components/responses/NotAcceptable"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      }
+    },
+    "/api/v0/runs/{run_id}/properties": {
+      "get": {
+        "operationId": "listRunProperties",
+        "summary": "List run properties",
+        "description": "Returns a paginated list of property results for a run, including both passing and failing properties by default. Use the `status` parameter to filter by a specific status.",
+        "tags": ["Test runs"],
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "description": "Unique identifier of the run to retrieve properties for.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "description": "Filter properties by status. When omitted, properties of all statuses are returned.",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/Property_Status"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Maximum number of results to return. Server-capped at 100.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "default": 50,
+              "minimum": 1,
+              "maximum": 100
+            }
+          },
+          {
+            "name": "after",
+            "in": "query",
+            "description": "Cursor for pagination. Pass the `next_cursor` value from a previous response to fetch the next page.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "A paginated list of property results.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Property_List_Response"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "405": {
+            "$ref": "#/components/responses/MethodNotAllowed"
+          },
+          "406": {
+            "$ref": "#/components/responses/NotAcceptable"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      }
+    },
+    "/api/v0/runs/{run_id}/events": {
+      "get": {
+        "operationId": "searchRunEvents",
+        "summary": "Search run events",
+        "description": "Searches events in a run for the given query string. The search matches against output text, assertion messages, function names, and test composer commands. Results are streamed as newline-delimited JSON (NDJSON). Each line is a self-contained JSON object representing an event.",
+        "tags": ["Test runs"],
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "description": "Unique identifier of the run to search.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "q",
+            "in": "query",
+            "description": "The search term. Matches events where this string is contained in the output text, assertion message, function name, or test composer command.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "A stream of matching events in NDJSON format. Each line is a JSON object.",
+            "content": {
+              "application/x-ndjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Event"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "405": {
+            "$ref": "#/components/responses/MethodNotAllowed"
+          },
+          "406": {
+            "$ref": "#/components/responses/NotAcceptable"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      }
+    },
+    "/api/v1/launch/{launcher_name}": {
+      "post": {
+        "operationId": "launchTest",
+        "summary": "Launch a test",
+        "description": "Kicks off a test using the specified launcher (e.g. `basic_test` or `basic_k8s_test`). Fetches the relevant container images specified in configuration files and in `antithesis.images`, builds the test environment, and runs the test for the duration set in `antithesis.duration`. Returns an HTTP status code indicating whether the test was successfully started (not the test result itself).",
+        "tags": ["Launch"],
+        "parameters": [
+          {
+            "name": "launcher_name",
+            "in": "path",
+            "description": "Name of the launcher to use. Use `basic_test` for Docker Compose orchestration or `basic_k8s_test` for Kubernetes orchestration.",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "example": "basic_test"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Launch_Request"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Test successfully launched.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Launch_Response"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "405": {
+            "$ref": "#/components/responses/MethodNotAllowed"
+          },
+          "406": {
+            "$ref": "#/components/responses/NotAcceptable"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      }
+    },
+    "/api/v1/launch/debugging": {
+      "post": {
+        "operationId": "launchMvd",
+        "summary": "Launch a debugging session",
+        "description": "Kicks off a multiverse debugging session that'll be available for six hours. Returns an HTTP status code indicating whether the debugging session request was successfully accepted and the session is getting ready.",
+        "tags": ["Launch"],
+        "parameters": [
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Launch_MVD_Request"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Debugging session launcher successfully started.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Launch_Response"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "405": {
+            "$ref": "#/components/responses/MethodNotAllowed"
+          },
+          "406": {
+            "$ref": "#/components/responses/NotAcceptable"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "Error_Response": {
+        "type": "object",
+        "description": "Standard error envelope returned by all error responses.",
+        "required": ["message"],
+        "properties": {
+          "message": {
+            "type": "string",
+            "description": "A human-readable explanation of what went wrong.",
+            "example": "limit must be between 1 and 100"
+          }
+        },
+        "additionalProperties": false
+      },
+      "Run_List_Response": {
+        "type": "object",
+        "description": "A page of test run summaries returned by the list endpoint. Use `next_cursor` to iterate through all available results.",
+        "required": ["data"],
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Run_Summary"
+            }
+          },
+          "next_cursor": {
+            "type": "string",
+            "nullable": true,
+            "description": "Opaque pagination cursor. Pass as the `after` query parameter to fetch the next page. Null if no more pages."
+          }
+        }
+      },
+      "Run_Summary": {
+        "type": "object",
+        "required": ["run_id", "status", "created_at", "launcher"],
+        "properties": {
+          "run_id": {
+            "type": "string",
+            "description": "Unique identifier for the run.",
+            "example": "9325f006ffd3a399a8497bc888878b97-50-1"
+          },
+          "status": {
+            "$ref": "#/components/schemas/Run_Status"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Timestamp when the run was created (ISO 8601)."
+          },
+          "started_at": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true,
+            "description": "Timestamp when the run started executing. Null if the run has not yet started."
+          },
+          "completed_at": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true,
+            "description": "Timestamp when the run finished. Null if the run is still in progress or has not started."
+          },
+          "creator": {
+            "type": "object",
+            "nullable": true,
+            "description": "Information about who or what created this run. Null if the creator is unknown.",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/Creator_Info"
+              }
+            ]
+          },
+          "launcher": {
+            "type": "string",
+            "description": "The name of the launcher that kicked off this run.",
+            "example": "Payments Nightly"
+          },
+          "parameters": {
+            "type": "object",
+            "nullable": true,
+            "description": "Run parameters. Null if no parameters were specified.",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/Params"
+              }
+            ]
+          },
+          "links": {
+            "type": "object",
+            "nullable": true,
+            "description": "Relevant links for this run. Null if no links are available yet.",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/Run_Links"
+              }
+            ]
+          }
+        }
+      },
+      "Run_Detail": {
+        "description": "Full details of a test run. Extends Run_Summary with run information, results, and environment metadata.",
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/Run_Summary"
+          },
+          {
+            "type": "object",
+            "properties": {
+              "results": {
+                "type": "object",
+                "additionalProperties": true,
+                "description": "Aggregate results for the run. Structure varies by run type. May be absent or partial for runs that have not yet completed."
+              },
+              "failure_moment": {
+                "type": "object",
+                "nullable": true,
+                "description": "The moment at which the run became incomplete. Populated only when the run is incomplete. Pass this moment's `vtime` and `input_hash` to the logs endpoint to retrieve logs around the event that caused the run to become incomplete.",
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/Moment"
+                  }
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "Launch_Response": {
+        "type": "object",
+        "description": "Response returned when a test is successfully launched.",
+        "required": ["runId", "statusCode"],
+        "properties": {
+          "runId": {
+            "type": "string",
+            "description": "Unique identifier for the launched run.",
+            "example": "c8d2f4a6e0b3197d5f8a2c4e6b0d3f79-49-1"
+          },
+          "statusCode": {
+            "type": "integer",
+            "description": "HTTP status code indicating whether the test was successfully started.",
+            "example": 200
+          }
+        },
+        "additionalProperties": false
+      },
+      "Launch_Request": {
+        "type": "object",
+        "description": "Request body for launching a test.",
+        "required": ["params"],
+        "properties": {
+          "params": {
+            "description": "Launch parameters. All parameters are optional.",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/Params"
+              }
+            ]
+          }
+        },
+        "additionalProperties": false
+      },
+      "Launch_MVD_Request": {
+        "type": "object",
+        "description": "Request body for launching a multiverse debugging session.",
+        "required": ["params"],
+        "properties": {
+          "params": {
+            "description": "Launch parameters. All parameters are optional.",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/MVD_Params"
+              }
+            ]
+          }
+        },
+        "additionalProperties": true
+      },
+      "Params": {
+        "type": "object",
+        "description": "Key-value pairs of run parameters. Used both when launching a test and when inspecting a run's configuration. All properties are optional.",
+        "properties": {
+          "antithesis.config_image": {
+            "type": "string",
+            "description": "The image version of your config image. This should be a single image version formatted in the same way as those in the `antithesis.images` parameter.",
+            "example": "my-config:latest"
+          },
+          "antithesis.description": {
+            "type": "string",
+            "description": "A description of the test run. Appears in report headers and any emails triggered by the run.",
+            "example": "basic_test on main"
+          },
+          "antithesis.duration": {
+            "type": "string",
+            "description": "Desired duration of the test run in minutes.",
+            "example": "30"
+          },
+          "antithesis.images": {
+            "type": "string",
+            "description": "A semicolon-delimited list of container image versions needed in the testing environment. Each entry in the format `[REGISTRY/]NAME(:TAG|@DIGEST)`. In most cases, images are parsed from the orchestration configuration (e.g. `docker-compose.yaml` or `/manifests`) and do not need to be specified here. It is recommended to use a digest over a tag. Images specified by digest will be tagged as `latest` within the Antithesis environment. The default registry is `us-central1-docker.pkg.dev/molten-verve-216720/$TENANT_NAME-repository/`. When images mentioned in the config are also passed via this parameter, the value here overwrites the config. We recommend only using this parameter for images not already mentioned in the config files.",
+            "example": "registry/container_1:tag1; registry/container_2:latest"
+          },
+          "antithesis.is_ephemeral": {
+            "type": "string",
+            "nullable": true,
+            "enum": ["true", "false"],
+            "description": "A boolean (represented as `\"true\"` or `\"false\"`) that indicates whether or not the run's results should be reflected in future reports as a historic result. Set to `\"true\"` when kicking off one-off, exploratory runs. Defaults to `\"false\"`."
+          },
+          "antithesis.report.recipients": {
+            "type": "string",
+            "description": "A semicolon-delimited list of email addresses to receive the triage report link. If not specified, emails are sent to the default users configured for the endpoint.",
+            "example": "user1@example.com; user2@example.com"
+          },
+          "antithesis.source": {
+            "type": "string",
+            "description": "An identifier used to separate property history in reports. Each property's history is generated from all previous runs sharing the same source value. Useful for tracking test history per branch.",
+            "example": "main"
+          }
+        },
+        "additionalProperties": {
+          "type": "string",
+          "description": "Additional parameters including tooling integration parameters (e.g. `antithesis.integrations.<type>.callback_url`, `antithesis.integrations.<type>.token` where type is `github`, `discord`, or `slack`)."
+        }
+      },
+      "MVD_Params": {
+        "type": "object",
+        "description": "Key-value pairs of multiverse debugging session parameters. Used when launching a debugging session.",
+        "required": [
+          "antithesis.debugging.input_hash",
+          "antithesis.debugging.session_id",
+          "antithesis.debugging.vtime"
+        ],
+        "properties": {
+          "antithesis.debugging.session_id": {
+            "type": "string",
+            "description": "The session ID of the test run you want to start debugging. Obtain it from the [copy moment button](/docs/reports/properties/#copy-moment) in the triage report.",
+            "example": "d5d1c9cf0e64b5dd69b00e97b07fe3f4-18-1"
+          },
+          "antithesis.debugging.input_hash": {
+            "type": "string",
+            "description": "Obtain it from the [copy moment button](/docs/reports/properties/#copy-moment) in the triage report.",
+            "example": "-9067336385060865277"
+          },
+          "antithesis.debugging.vtime": {
+            "type": "string",
+            "description": "The virtual time at which you want to start debugging. Obtain it from the [copy moment button](/docs/reports/properties/#copy-moment) in the triage report.",
+            "example": "45.334635781589895"
+          },
+          "antithesis.event_description": {
+            "type": "string",
+            "description": "A description of the debugging event or session.",
+            "example": "Investigate the failed assertion at this moment"
+          },
+          "antithesis.report.recipients": {
+            "type": "string",
+            "description": "A semicolon-delimited list of email addresses that receive the link to the debugging session when ready. If not specified, emails are sent to the default users configured for the endpoint.",
+            "example": "user1@example.com; user2@example.com"
+          }
+        }
+      },
+      "Event": {
+        "type": "object",
+        "description": "A single event. Each event includes its moment information. Fields vary by event source.",
+        "required": ["moment"],
+        "properties": {
+          "moment": {
+            "$ref": "#/components/schemas/Moment"
+          }
+        },
+        "additionalProperties": true
+      },
+      "Moment": {
+        "type": "object",
+        "description": "Identifies a specific moment in the run's execution timeline.",
+        "required": ["input_hash", "vtime"],
+        "properties": {
+          "input_hash": {
+            "type": "string",
+            "description": "The input hash value identifying the moment.",
+            "example": "-3625518438076122494"
+          },
+          "vtime": {
+            "type": "string",
+            "description": "The virtual time value identifying the moment.",
+            "example": "398.4898056755774"
+          }
+        },
+        "additionalProperties": false
+      },
+      "Build_Log_Line": {
+        "type": "object",
+        "description": "A single build log line.",
+        "required": ["timestamp", "text"],
+        "properties": {
+          "timestamp": {
+            "type": "string",
+            "format": "date-time",
+            "description": "UTC timestamp of the log line (ISO 8601).",
+            "example": "2025-03-20T02:01:12Z"
+          },
+          "stream": {
+            "type": "string",
+            "enum": ["stdout", "stderr"],
+            "description": "Whether this line is from standard output or standard error."
+          },
+          "text": {
+            "type": "string",
+            "description": "The log line text.",
+            "example": "Building image payments-service..."
+          }
+        },
+        "additionalProperties": true
+      },
+      "Property_List_Response": {
+        "type": "object",
+        "description": "A page of property results returned by the properties endpoint. Use `next_cursor` to iterate through all available results.",
+        "required": ["data"],
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Property"
+            }
+          },
+          "next_cursor": {
+            "type": "string",
+            "nullable": true,
+            "description": "Opaque pagination cursor. Pass as the `after` query parameter to fetch the next page. Null if no more pages."
+          }
+        }
+      },
+      "Property_Base": {
+        "type": "object",
+        "description": "Shared fields for all property results. A property result from a test run. Properties with `is_group` set to true represent a group property that contain other individual properties; individual properties within that group reference it via the `group` field.",
+        "required": ["name", "status", "is_event"],
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "The name of the property."
+          },
+          "description": {
+            "type": "string",
+            "description": "A human-readable description of the property."
+          },
+          "status": {
+            "$ref": "#/components/schemas/Property_Status"
+          },
+          "is_event": {
+            "type": "boolean",
+            "description": "Whether this property is event-based. When true, examples and counterexamples are Event objects; when false, they may have any shape."
+          },
+          "is_group": {
+            "type": "boolean",
+            "description": "When true, this property represents a group property that contains other properties. Individual properties belonging to this group will reference it by name via the `group` field."
+          },
+          "group": {
+            "type": "string",
+            "description": "The name of the group this property belongs to. Present only for properties that are part of a group."
+          },
+          "example_count": {
+            "type": "integer",
+            "format": "uint32",
+            "description": "Total number of examples observed."
+          },
+          "counterexample_count": {
+            "type": "integer",
+            "format": "uint32",
+            "description": "Total number of counterexamples observed."
+          }
+        },
+        "additionalProperties": true
+      },
+      "Event_Property": {
+        "description": "A property where `is_event` is true. Examples and counterexamples are Event objects.",
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/Property_Base"
+          },
+          {
+            "type": "object",
+            "properties": {
+              "examples": {
+                "type": "array",
+                "description": "A sample of example events that satisfy the property. This is not an exhaustive list.",
+                "items": {
+                  "$ref": "#/components/schemas/Event"
+                }
+              },
+              "counterexamples": {
+                "type": "array",
+                "description": "A sample of counterexample events that violate the property. This is not an exhaustive list.",
+                "items": {
+                  "$ref": "#/components/schemas/Event"
+                }
+              }
+            }
+          }
+        ]
+      },
+      "Non_Event_Property": {
+        "description": "A property where `is_event` is false. Examples and counterexamples are arbitrary JSON values whose shape varies by property.",
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/Property_Base"
+          },
+          {
+            "type": "object",
+            "properties": {
+              "examples": {
+                "type": "array",
+                "description": "A sample of example instances that satisfy the property. This is not an exhaustive list.",
+                "items": {}
+              },
+              "counterexamples": {
+                "type": "array",
+                "description": "A sample of counterexample instances that violate the property. This is not an exhaustive list.",
+                "items": {}
+              }
+            }
+          }
+        ]
+      },
+      "Property": {
+        "description": "A property result from a test run. When `is_event` is true, examples and counterexamples are Event objects; otherwise, they may have any shape.",
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/Event_Property"
+          },
+          {
+            "$ref": "#/components/schemas/Non_Event_Property"
+          }
+        ]
+      },
+      "Property_Status": {
+        "type": "string",
+        "enum": ["Passing", "Failing"],
+        "description": "Whether the property is currently passing or failing."
+      },
+      "Run_Status": {
+        "type": "string",
+        "enum": ["starting", "in_progress", "completed", "cancelled", "incomplete", "unknown"],
+        "description": "Current lifecycle status of a run. `starting` — the run is being set up. `in_progress` — the run is actively running. `completed` — the run finished successfully. `cancelled` — the run was cancelled before completion. `incomplete` — the run did not complete successfully. `unknown` — the status of the run is unknown."
+      },
+      "Creator_Info": {
+        "type": "object",
+        "description": "Information about who or what created this run. Distinguishes between CI-triggered runs, manual user-initiated runs, and agent-driven runs.",
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "The name of the creator.",
+            "example": "demo"
+          },
+          "type": {
+            "type": "string",
+            "description": "The type of creator (e.g. \"ci\", \"user\", \"agent\").",
+            "example": "ci"
+          }
+        },
+        "additionalProperties": false
+      },
+      "Run_Links": {
+        "type": "object",
+        "description": "Relevant links for this run, providing direct access to the triage report.",
+        "properties": {
+          "triage_report": {
+            "type": "string",
+            "format": "uri",
+            "description": "URL to the triage report for this run."
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "responses": {
+      "BadRequest": {
+        "description": "Bad request — likely missing or invalid parameters.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error_Response"
+            },
+            "example": {
+              "message": "limit must be between 1 and 100"
+            }
+          }
+        }   
+      },
+      "Unauthorized": {
+        "description": "Unauthorized — invalid or missing authentication credentials.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error_Response"
+            },
+            "example": {
+              "message": "Invalid or expired bearer token."
+            }
+          }
+        }
+      },
+      "Forbidden": {
+        "description": "Forbidden — the authenticated user does not have permission to access this resource.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error_Response"
+            },
+            "example": {
+              "message": "You do not have permission to access this resource."
+            }
+          }
+        }
+      },
+      "NotFound": {
+        "description": "The requested resource was not found.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error_Response"
+            },
+            "example": {
+              "message": "Run not found: 9325f006ffd3a399a8497bc888878b97-48-1"
+            }
+          }
+        }
+      },
+      "MethodNotAllowed": {
+        "description": "Method not allowed — the HTTP method is not supported for this endpoint.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error_Response"
+            },
+            "example": {
+              "message": "Resource not found"
+            }
+          }
+        }
+      },
+      "NotAcceptable": {
+        "description": "Not acceptable — the requested content type in the Accept header is not supported by this endpoint.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error_Response"
+            },
+            "example": {
+              "message": "This endpoint does not support the requested Accept type."
+            }
+          }
+        }
+      },
+      "TooManyRequests": {
+        "description": "Rate limit exceeded. The response includes a `Retry-After` header indicating the number of seconds to wait before retrying.\n\nWe recommend implementing a retry mechanism to handle rate limiting. Follow an exponential backoff schedule to reduce request volume when necessary, and add randomness (jitter) to the backoff schedule to avoid thundering-herd retries.",
+        "headers": {
+          "Retry-After": {
+            "description": "The number of seconds to wait before retrying the request.",
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "example": 30
+            }
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error_Response"
+            },
+            "example": {
+              "message": "Too many requests. Retry after 30 seconds."
+            }
+          }
+        }
+      },
+      "InternalError": {
+        "description": "Unknown internal server error.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error_Response"
+            },
+            "example": {
+              "message": "An unexpected error occurred. Please try again later."
+            }
+          }
+        }
+      }
+    },
+    "securitySchemes": {
+      "BearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "API key provided by your Antithesis forward deployment engineer. Pass the key in the Authorization header as `Authorization: Bearer <api_key>`."
+      }
+    }
+  }
+}

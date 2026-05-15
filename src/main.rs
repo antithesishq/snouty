@@ -6,7 +6,7 @@ use log::{debug, info};
 
 use color_eyre::eyre::{Context, Result, bail};
 use snouty::api::AntithesisApi;
-use snouty::cli::{ApiCommands, Cli, Commands, LaunchArgs};
+use snouty::cli::{ApiCommands, Cli, Commands, DebugArgs, LaunchArgs};
 use snouty::config;
 use snouty::container;
 use snouty::docs;
@@ -23,31 +23,33 @@ fn read_stdin() -> Result<String> {
     Ok(buf)
 }
 
-fn get_params(args: Vec<String>, use_stdin: bool, support_moment: bool) -> Result<Params> {
-    // Parse stdin params if --stdin flag is set
-    let stdin_params = if use_stdin {
+fn get_stdin_params(use_stdin: bool, support_moment: bool) -> Result<Option<Params>> {
+    if use_stdin {
         let input = read_stdin()?;
         if support_moment && moment::is_moment_format(&input) {
             debug!("detected Moment.from on stdin");
-            Some(moment::parse(&input)?)
+            Ok(Some(moment::parse(&input)?))
         } else {
             debug!("parsing input as JSON");
             let value: serde_json::Value =
                 json5::from_str(&input).wrap_err("invalid arguments: invalid JSON")?;
-            Some(Params::from_json(&value)?)
+            Ok(Some(Params::from_json(&value)?))
         }
     } else {
-        None
-    };
+        Ok(None)
+    }
+}
 
-    // Parse CLI args if provided
+fn get_params(args: Vec<String>, use_stdin: bool, support_moment: bool) -> Result<Params> {
+    let stdin_params = get_stdin_params(use_stdin, support_moment)?;
+
     let args_params = if !args.is_empty() {
         Some(Params::from_args(&args)?)
     } else {
         None
     };
 
-    // Merge params: CLI args take priority over stdin
+    // CLI args take priority over stdin
     match (stdin_params, args_params) {
         (Some(mut stdin), Some(args)) => {
             stdin.merge(args);
@@ -70,16 +72,21 @@ async fn main() -> Result<()> {
         .init();
     let cli = Cli::parse();
 
+    let json = cli.json;
+    if json && let Some(name) = json_unaware_command_name(&cli.command) {
+        eprintln!("warning: --json has no effect for `snouty {name}`");
+    }
     match cli.command {
         Commands::Launch(args) => {
             info!("launching test with webhook: {}", args.webhook);
-            cmd_launch(args).await
+            cmd_launch(args, json).await
         }
         Commands::Run(args) => {
             eprintln!("warning: `snouty run` is deprecated, use `snouty launch` instead");
             info!("launching test with webhook: {}", args.webhook);
-            cmd_launch(args).await
+            cmd_launch(args, json).await
         }
+        Commands::Runs { command } => snouty::runs::cmd_runs(command, json).await,
         Commands::Api(ApiCommands::Webhook {
             webhook,
             stdin,
@@ -88,9 +95,9 @@ async fn main() -> Result<()> {
             info!("running api webhook with webhook: {}", webhook);
             cmd_api_webhook(webhook, args, stdin).await
         }
-        Commands::Debug { stdin, args } => {
+        Commands::Debug(args) => {
             info!("starting debug session");
-            cmd_debug(args, stdin).await
+            cmd_debug(args, json).await
         }
         Commands::Validate(args) => validate::cmd_validate(args).await,
         Commands::Doctor => snouty::doctor::cmd_doctor(),
@@ -100,14 +107,29 @@ async fn main() -> Result<()> {
             Ok(())
         }
         Commands::Update => cmd_update(),
-        Commands::Docs { offline, command } => docs::cmd_docs(command, offline).await,
+        Commands::Docs { offline, command } => docs::cmd_docs(command, offline, json).await,
     }
 }
 
-async fn cmd_launch(args: LaunchArgs) -> Result<()> {
+fn json_unaware_command_name(command: &Commands) -> Option<&'static str> {
+    match command {
+        Commands::Launch(_)
+        | Commands::Run(_)
+        | Commands::Runs { .. }
+        | Commands::Docs { .. }
+        | Commands::Debug { .. } => None,
+        Commands::Api(ApiCommands::Webhook { .. }) => Some("api webhook"),
+        Commands::Validate(_) => Some("validate"),
+        Commands::Doctor => Some("doctor"),
+        Commands::Completions { .. } => Some("completions"),
+        Commands::Version => Some("version"),
+        Commands::Update => Some("update"),
+    }
+}
+
+async fn cmd_launch(args: LaunchArgs, json: bool) -> Result<()> {
     let mut params = Params::new();
 
-    // Insert typed flags into params (skip None/false)
     if let Some(test_name) = args.test_name {
         params.insert("antithesis.test_name", test_name);
     }
@@ -130,12 +152,6 @@ async fn cmd_launch(args: LaunchArgs) -> Result<()> {
         params.insert("antithesis.report.recipients", recipients);
     }
 
-    // Process config_image and config flags
-    assert!(
-        !(args.config_image.is_some() && args.config.is_some()),
-        "config and config_image are mutually exclusive"
-    );
-
     if let Some(config_image) = args.config_image {
         params.insert("antithesis.config_image", config_image);
     }
@@ -153,7 +169,6 @@ async fn cmd_launch(args: LaunchArgs) -> Result<()> {
         None
     };
 
-    // Parse --param key=value pairs
     if !args.params.is_empty() {
         let extra = Params::from_key_value_pairs(&args.params)?;
 
@@ -187,7 +202,6 @@ async fn cmd_launch(args: LaunchArgs) -> Result<()> {
 
     params.validate_test_params()?;
 
-    // Build and push config image (after validation passes)
     if let Some((config, registry, config_image)) = config_image_ref {
         let rt = container::runtime()?;
 
@@ -205,7 +219,13 @@ async fn cmd_launch(args: LaunchArgs) -> Result<()> {
         params.insert("antithesis.config_image", pinned_config);
     }
 
-    launch_webhook(&args.webhook, params).await?;
+    let response = launch_webhook(&args.webhook, params).await?;
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&response)?);
+    } else {
+        println!("Test run started: run_id {}", response.run_id);
+    }
 
     Ok(())
 }
@@ -213,64 +233,74 @@ async fn cmd_launch(args: LaunchArgs) -> Result<()> {
 async fn cmd_api_webhook(webhook: String, args: Vec<String>, use_stdin: bool) -> Result<()> {
     let params = get_params(args, use_stdin, false)?;
     let body = launch_webhook(&webhook, params).await?;
-    println!("{}", body);
+    println!("{}", serde_json::to_string(&body)?);
     Ok(())
 }
 
-async fn launch_webhook(webhook: &str, params: Params) -> Result<String> {
+async fn launch_webhook(webhook: &str, params: Params) -> Result<snouty::api::LaunchResponse> {
     params.validate_test_params()?;
 
-    // Print params to stderr for user visibility (with sensitive values redacted)
     eprintln!(
         "\nRequesting Antithesis test run with params:\n{}",
-        serde_json::to_string_pretty(&params.to_redacted_map()).unwrap()
+        serde_json::to_string_pretty(&params.to_redacted_map())?
     );
 
     let api = AntithesisApi::from_env()?;
-    let response = api
-        .post(&format!("/launch/{}", webhook))
-        .json(&serde_json::json!({ "params": params.to_value() }))
-        .send()
-        .await?;
-
-    let status = response.status();
-    let body = response.text().await?;
-    debug!("response status: {}, body:\n{}", status, body);
-
-    if status.is_success() {
-        Ok(body)
-    } else {
-        bail!("API error: {} - {}", status.as_u16(), body)
-    }
+    api.launch_test(webhook, &params).await
 }
 
-async fn cmd_debug(args: Vec<String>, use_stdin: bool) -> Result<()> {
-    let params = get_params(args, use_stdin, true)?;
+fn debug_typed_params(args: &DebugArgs) -> Params {
+    let mut params = Params::new();
+
+    if let Some(session_id) = &args.session_id {
+        params.insert("antithesis.debugging.session_id", session_id.as_str());
+    }
+    if let Some(input_hash) = &args.input_hash {
+        params.insert("antithesis.debugging.input_hash", input_hash.as_str());
+    }
+    if let Some(vtime) = &args.vtime {
+        params.insert("antithesis.debugging.vtime", vtime.as_str());
+    }
+    if let Some(description) = &args.description {
+        params.insert("antithesis.event_description", description.as_str());
+    }
+    if let Some(recipients) = &args.recipients {
+        params.insert("antithesis.report.recipients", recipients.as_str());
+    }
+
+    params
+}
+
+fn debug_params(args: DebugArgs) -> Result<Params> {
+    let mut params = get_stdin_params(args.stdin, true)?.unwrap_or_default();
+    params.merge(debug_typed_params(&args));
+
+    if params.is_empty() {
+        bail!("invalid arguments: no parameters provided");
+    }
+
+    Ok(params)
+}
+
+async fn cmd_debug(args: DebugArgs, json: bool) -> Result<()> {
+    let params = debug_params(args)?;
     params.validate_debugging_params()?;
 
-    // Print params to stderr for user visibility (with sensitive values redacted)
     eprintln!(
         "\nRequesting the Antithesis multiverse debugger with params:\n{}",
-        serde_json::to_string_pretty(&params.to_redacted_map()).unwrap()
+        serde_json::to_string_pretty(&params.to_redacted_map())?
     );
 
     let api = AntithesisApi::from_env()?;
-    let response = api
-        .post("/launch/debugging")
-        .json(&serde_json::json!({ "params": params.to_value() }))
-        .send()
-        .await?;
+    let response = api.launch_debugging(&params).await?;
 
-    let status = response.status();
-    let body = response.text().await?;
-    debug!("response status: {}, body length: {}", status, body.len());
-
-    if status.is_success() {
-        println!("{}", body);
-        Ok(())
+    if json {
+        println!("{}", serde_json::to_string_pretty(&response)?);
     } else {
-        bail!("API error: {} - {}", status.as_u16(), body)
+        println!("Debugging session started: run_id {}", response.run_id);
     }
+
+    Ok(())
 }
 
 fn cmd_completions(shell: String) -> Result<()> {

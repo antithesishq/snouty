@@ -319,13 +319,6 @@ mod tests {
     }
 
     #[test]
-    fn validate_debugging_params_missing_required() {
-        let args = ["--antithesis.debugging.input_hash", "abc123"];
-        let params = Params::from_args(args).unwrap();
-        assert!(params.validate_debugging_params().is_err());
-    }
-
-    #[test]
     fn validate_debugging_params_rejects_custom_props() {
         let args = [
             "--antithesis.debugging.input_hash",

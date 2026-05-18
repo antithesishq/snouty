@@ -168,16 +168,6 @@ pub(crate) fn start_mock_server(response_body: &'static str, status: u16) -> Str
     url
 }
 
-pub(crate) fn expected_docs_user_agent() -> String {
-    format!(
-        "snouty/{} ({}; {}; rust{})",
-        env!("CARGO_PKG_VERSION"),
-        std::env::consts::OS,
-        std::env::consts::ARCH,
-        env!("SNOUTY_RUSTC_VERSION")
-    )
-}
-
 pub(crate) fn cached_docs_db_path(cache_dir: &TempDir) -> PathBuf {
     cache_dir.path().join("snouty").join("docs.db")
 }

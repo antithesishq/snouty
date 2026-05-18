@@ -27,16 +27,6 @@ fn docs_url() -> String {
     base
 }
 
-fn docs_user_agent() -> String {
-    format!(
-        "snouty/{} ({}; {}; rust{})",
-        env!("CARGO_PKG_VERSION"),
-        std::env::consts::OS,
-        std::env::consts::ARCH,
-        env!("SNOUTY_RUSTC_VERSION")
-    )
-}
-
 fn cache_dir() -> Result<PathBuf> {
     let dir = if let Some(dir) = std::env::var_os("SNOUTY_TEST_CACHE_DIR") {
         PathBuf::from(dir)
@@ -127,7 +117,7 @@ async fn download_and_cache_db() -> Result<()> {
 /// has not changed (304 Not Modified).
 async fn fetch_db_if_changed() -> Result<Option<(Vec<u8>, String)>> {
     let client = reqwest::Client::builder()
-        .user_agent(docs_user_agent())
+        .user_agent(crate::user_agent())
         .build()?;
     let mut request = client.get(format!("{}/sqlite.db", docs_url()));
 

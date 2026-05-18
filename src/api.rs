@@ -618,6 +618,11 @@ fn normalize_base_url(base_url: impl Into<String>) -> String {
 fn default_request_headers(config: &Config) -> Result<reqwest::header::HeaderMap> {
     let mut headers = reqwest::header::HeaderMap::new();
     headers.insert(reqwest::header::AUTHORIZATION, auth_header(&config.auth)?);
+    headers.insert(
+        reqwest::header::USER_AGENT,
+        reqwest::header::HeaderValue::from_str(&crate::user_agent())
+            .wrap_err("failed to build User-Agent header")?,
+    );
     Ok(headers)
 }
 
@@ -1031,6 +1036,35 @@ mod tests {
         );
         let api = AntithesisApi::with_base_url(config, "http://example.com/api/v1/").unwrap();
         assert_eq!(api.base_url(), "http://example.com");
+    }
+
+    #[tokio::test]
+    async fn launch_test_sends_snouty_user_agent() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/api/v1/launch/basic_test"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "runId": "run-123",
+                "statusCode": 200
+            })))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let api = AntithesisApi::with_base_url(test_config(), mock_server.uri()).unwrap();
+        let params = Params::from_key_value_pairs(["antithesis.duration=30"]).unwrap();
+        api.launch_test("basic_test", &params).await.unwrap();
+
+        let requests = mock_server.received_requests().await.unwrap();
+        let user_agent = requests[0]
+            .headers
+            .get("user-agent")
+            .expect("request should carry a User-Agent")
+            .to_str()
+            .unwrap();
+        assert_eq!(user_agent, crate::user_agent());
+        assert!(user_agent.starts_with("snouty/"));
     }
 
     #[tokio::test]

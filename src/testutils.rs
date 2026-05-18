@@ -324,7 +324,13 @@ impl MockApiServer {
                 };
                 let request = String::from_utf8_lossy(&buf[..bytes_read]);
 
-                let (status, body, content_type) = if !mock_check_auth(&request, &expected_token) {
+                let (status, body, content_type) = if !mock_check_user_agent(&request) {
+                    (
+                        400,
+                        r#"{"message":"Missing User-Agent header."}"#.to_string(),
+                        "application/json",
+                    )
+                } else if !mock_check_auth(&request, &expected_token) {
                     (
                         401,
                         r#"{"message":"Invalid or expired bearer token."}"#.to_string(),
@@ -363,6 +369,15 @@ fn mock_check_auth(request: &str, expected_token: &str) -> bool {
         line.strip_prefix("Authorization:")
             .or_else(|| line.strip_prefix("authorization:"))
             .is_some_and(|val| val.trim() == expected)
+    })
+}
+
+fn mock_check_user_agent(request: &str) -> bool {
+    request.lines().any(|line| {
+        let Some((name, value)) = line.split_once(':') else {
+            return false;
+        };
+        name.eq_ignore_ascii_case("user-agent") && !value.trim().is_empty()
     })
 }
 
@@ -622,6 +637,19 @@ mod tests {
         assert_eq!(mock_query_param(q, "other"), Some("a&b".to_string()));
         assert_eq!(mock_query_param(q, "missing"), None);
         assert_eq!(mock_query_param(None, "q"), None);
+    }
+
+    #[test]
+    fn mock_check_user_agent_requires_non_empty_header() {
+        let with = "GET /api/v0/runs HTTP/1.1\r\nUser-Agent: snouty/0.0.0\r\n\r\n";
+        let lowercase = "GET /api/v0/runs HTTP/1.1\r\nuser-agent: snouty/0.0.0\r\n\r\n";
+        let empty = "GET /api/v0/runs HTTP/1.1\r\nUser-Agent:   \r\n\r\n";
+        let missing = "GET /api/v0/runs HTTP/1.1\r\n\r\n";
+
+        assert!(mock_check_user_agent(with));
+        assert!(mock_check_user_agent(lowercase));
+        assert!(!mock_check_user_agent(empty));
+        assert!(!mock_check_user_agent(missing));
     }
 
     #[test]

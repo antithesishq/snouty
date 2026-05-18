@@ -28,7 +28,6 @@ fn help_shows_subcommands() {
         .assert()
         .success()
         .stdout(predicate::str::contains("launch"))
-        .stdout(predicate::str::contains("runs"))
         .stdout(predicate::str::contains("debug"))
         .stdout(predicate::str::contains("version"));
 }

@@ -159,11 +159,16 @@ impl Auth {
 pub struct Config {
     pub auth: Auth,
     pub tenant: String,
+    pub verbose: bool,
 }
 
 impl Config {
     pub fn new(auth: Auth, tenant: String) -> Self {
-        Self { auth, tenant }
+        Self {
+            auth,
+            tenant,
+            verbose: false,
+        }
     }
 
     pub fn from_env() -> Result<Self> {
@@ -171,6 +176,7 @@ impl Config {
         Ok(Self {
             auth: Auth::from_env()?,
             tenant: required_env("ANTITHESIS_TENANT")?,
+            verbose: false,
         })
     }
 }
@@ -187,8 +193,9 @@ impl AntithesisApi {
         Self::with_base_url(config, base_url)
     }
 
-    pub fn from_env() -> Result<Self> {
-        let config = Config::from_env()?;
+    pub fn from_env(verbose: bool) -> Result<Self> {
+        let mut config = Config::from_env()?;
+        config.verbose = verbose;
         if let Ok(base_url) = env::var("ANTITHESIS_BASE_URL") {
             debug!("using ANTITHESIS_BASE_URL override: {}", base_url);
             Self::with_base_url(config, base_url)
@@ -220,9 +227,14 @@ impl AntithesisApi {
         let base_url = normalize_base_url(base_url);
         debug!("initializing API client for {}", base_url);
 
-        let http_client = build_http_client(&config)?;
+        let default_headers = default_request_headers(&config)?;
+        let http_client = build_http_client(default_headers.clone())?;
         let cached = build_cache(http_client.clone());
-        let client = generated::Client::new_with_client(&base_url, http_client, cached);
+        let state = ClientState {
+            cached,
+            default_headers: config.verbose.then_some(default_headers),
+        };
+        let client = generated::Client::new_with_client(&base_url, http_client, state);
 
         Ok(Self { client, base_url })
     }
@@ -401,32 +413,163 @@ impl AntithesisApi {
     }
 }
 
-impl ClientHooks<Option<ClientWithMiddleware>> for generated::Client {
+#[derive(Clone, Debug)]
+pub struct ClientState {
+    pub(crate) cached: Option<ClientWithMiddleware>,
+    /// Default headers reqwest will merge into the outgoing request at
+    /// `Client::execute` time (after our `exec` hook runs). `Some` enables
+    /// verbose request/response logging to stderr; we hold the headers here
+    /// so the log matches what's actually sent.
+    pub(crate) default_headers: Option<reqwest::header::HeaderMap>,
+}
+
+impl ClientHooks<ClientState> for generated::Client {
     async fn exec(
         &self,
         request: reqwest::Request,
         _info: &OperationInfo,
     ) -> reqwest::Result<reqwest::Response> {
-        let Some(cached) = self.inner() else {
-            return self.client().execute(request).await;
-        };
+        let state = self.inner();
+        let verbose_headers = state.default_headers.as_ref();
+        if let Some(default_headers) = verbose_headers {
+            let mut out = String::new();
+            format_request(&request, default_headers, &mut out);
+            eprint!("{out}");
+        }
 
-        // Bypass the cache for non-cloneable (streaming) bodies so the
-        // remaining path always has a fallback to retry against on cache I/O
-        // failures (which surface as `Error::Middleware` and can't be
-        // re-packaged as a `reqwest::Error`).
-        let Some(fallback) = request.try_clone() else {
-            return self.client().execute(request).await;
-        };
+        let result = send_request(self.client(), state.cached.as_ref(), request).await;
 
-        match cached.execute(request).await {
-            Ok(response) => Ok(response),
-            Err(reqwest_middleware::Error::Reqwest(err)) => Err(err),
-            Err(reqwest_middleware::Error::Middleware(err)) => {
-                log::warn!("API cache failure, bypassing cache: {err}");
-                self.client().execute(fallback).await
+        if verbose_headers.is_some()
+            && let Ok(response) = &result
+        {
+            let mut out = String::new();
+            format_response(response, &mut out);
+            eprint!("{out}");
+        }
+        result
+    }
+}
+
+async fn send_request(
+    client: &Client,
+    cached: Option<&ClientWithMiddleware>,
+    request: reqwest::Request,
+) -> reqwest::Result<reqwest::Response> {
+    let Some(cached) = cached else {
+        return client.execute(request).await;
+    };
+
+    // Bypass the cache for non-cloneable (streaming) bodies so the remaining
+    // path always has a fallback to retry against on cache I/O failures
+    // (which surface as `Error::Middleware` and can't be re-packaged as a
+    // `reqwest::Error`).
+    let Some(fallback) = request.try_clone() else {
+        return client.execute(request).await;
+    };
+
+    match cached.execute(request).await {
+        Ok(response) => Ok(response),
+        Err(reqwest_middleware::Error::Reqwest(err)) => Err(err),
+        Err(reqwest_middleware::Error::Middleware(err)) => {
+            log::warn!("API cache failure, bypassing cache: {err}");
+            client.execute(fallback).await
+        }
+    }
+}
+
+fn format_response(response: &reqwest::Response, out: &mut String) {
+    use std::fmt::Write;
+
+    let status = response.status();
+    match status.canonical_reason() {
+        Some(reason) => {
+            let _ = writeln!(out, "< {} {reason}", status.as_u16());
+        }
+        None => {
+            let _ = writeln!(out, "< {}", status.as_u16());
+        }
+    }
+    for (name, value) in response.headers() {
+        let value = value.to_str().unwrap_or("[non-ascii]");
+        if is_sensitive_header(name) {
+            let _ = writeln!(out, "< {name}: {}", redact_sensitive_value(name, value));
+        } else {
+            let _ = writeln!(out, "< {name}: {value}");
+        }
+    }
+}
+
+fn format_request(
+    request: &reqwest::Request,
+    default_headers: &reqwest::header::HeaderMap,
+    out: &mut String,
+) {
+    use std::fmt::Write;
+
+    let _ = writeln!(out, "> {} {}", request.method(), request.url());
+
+    // reqwest merges `default_headers` at `Client::execute` time, after this
+    // hook runs. Merge them in explicitly so the verbose log matches what's
+    // actually sent, with sensitive values redacted.
+    let mut emit = |name: &reqwest::header::HeaderName, value: &reqwest::header::HeaderValue| {
+        let value = value.to_str().unwrap_or("[non-ascii]");
+        if is_sensitive_header(name) {
+            let _ = writeln!(out, "> {name}: {}", redact_sensitive_value(name, value));
+        } else {
+            let _ = writeln!(out, "> {name}: {value}");
+        }
+    };
+    for (name, value) in request.headers() {
+        emit(name, value);
+    }
+    for (name, value) in default_headers {
+        if !request.headers().contains_key(name) {
+            emit(name, value);
+        }
+    }
+    let Some(body) = request.body() else {
+        return;
+    };
+    let Some(bytes) = body.as_bytes() else {
+        let _ = writeln!(out, "> <streaming body>");
+        return;
+    };
+    if bytes.is_empty() {
+        return;
+    }
+    match std::str::from_utf8(bytes) {
+        Ok(text) => {
+            out.push_str(">\n");
+            out.push_str(text);
+            if !text.ends_with('\n') {
+                out.push('\n');
             }
         }
+        Err(_) => {
+            let _ = writeln!(out, "> <{} bytes>", bytes.len());
+        }
+    }
+}
+
+fn is_sensitive_header(name: &reqwest::header::HeaderName) -> bool {
+    use reqwest::header::{AUTHORIZATION, COOKIE, PROXY_AUTHORIZATION, SET_COOKIE};
+    matches!(name, n if n == AUTHORIZATION || n == PROXY_AUTHORIZATION || n == COOKIE || n == SET_COOKIE)
+}
+
+/// Redact a sensitive header value. For `Authorization` /
+/// `Proxy-Authorization` the auth scheme is preserved so the log still shows
+/// what kind of credential was sent (`Bearer secret-token` becomes
+/// `bearer sec...`). Other sensitive headers (cookies) are reduced to their
+/// first three chars.
+fn redact_sensitive_value(name: &reqwest::header::HeaderName, value: &str) -> String {
+    use reqwest::header::{AUTHORIZATION, PROXY_AUTHORIZATION};
+    let take_prefix = |s: &str| s.chars().take(3).collect::<String>();
+    let is_auth = name == AUTHORIZATION || name == PROXY_AUTHORIZATION;
+    match value.split_once(' ') {
+        Some((scheme, rest)) if is_auth => {
+            format!("{} {}...", scheme.to_ascii_lowercase(), take_prefix(rest))
+        }
+        _ => format!("{}...", take_prefix(value)),
     }
 }
 
@@ -472,12 +615,15 @@ fn normalize_base_url(base_url: impl Into<String>) -> String {
         .to_string()
 }
 
-fn build_http_client(config: &Config) -> Result<Client> {
+fn default_request_headers(config: &Config) -> Result<reqwest::header::HeaderMap> {
     let mut headers = reqwest::header::HeaderMap::new();
     headers.insert(reqwest::header::AUTHORIZATION, auth_header(&config.auth)?);
+    Ok(headers)
+}
 
+fn build_http_client(default_headers: reqwest::header::HeaderMap) -> Result<Client> {
     Client::builder()
-        .default_headers(headers)
+        .default_headers(default_headers)
         .timeout(Duration::from_secs(CLIENT_TIMEOUT_SECS))
         .build()
         .wrap_err("failed to build API client")
@@ -687,6 +833,144 @@ mod tests {
             cache_dir.path().join("api-cache"),
         )
         .unwrap()
+    }
+
+    #[test]
+    fn format_request_redacts_authorization_and_dumps_text_body() {
+        use reqwest::header::{AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderValue};
+
+        let mut request = reqwest::Request::new(
+            reqwest::Method::POST,
+            "http://example.com/api/v1/launch".parse().unwrap(),
+        );
+        request.headers_mut().insert(
+            AUTHORIZATION,
+            HeaderValue::from_static("Bearer secret-rest-of-token"),
+        );
+        request
+            .headers_mut()
+            .insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+        *request.body_mut() = Some(r#"{"hello":"world"}"#.into());
+
+        let mut out = String::new();
+        format_request(&request, &HeaderMap::new(), &mut out);
+
+        assert!(out.contains("POST http://example.com/api/v1/launch"));
+        assert!(out.contains("authorization: bearer sec...\n"));
+        assert!(!out.contains("secret-rest"));
+        assert!(out.contains("content-type: application/json"));
+        assert!(out.contains(r#"{"hello":"world"}"#));
+    }
+
+    #[test]
+    fn format_request_merges_default_headers_with_redaction() {
+        use reqwest::header::{AUTHORIZATION, HeaderMap, HeaderValue};
+
+        let request = reqwest::Request::new(
+            reqwest::Method::GET,
+            "http://example.com/api/v1/runs".parse().unwrap(),
+        );
+        let mut defaults = HeaderMap::new();
+        defaults.insert(
+            AUTHORIZATION,
+            HeaderValue::from_static("Basic dXNlcjpwYXNz"),
+        );
+
+        let mut out = String::new();
+        format_request(&request, &defaults, &mut out);
+
+        assert!(out.contains("authorization: basic dXN...\n"));
+        assert!(!out.contains("dXNlcjpwYXNz"));
+    }
+
+    #[test]
+    fn redact_sensitive_value_handles_bearer_basic_and_cookies() {
+        use reqwest::header::{AUTHORIZATION, COOKIE, HeaderName};
+        let set_cookie = HeaderName::from_static("set-cookie");
+
+        assert_eq!(
+            redact_sensitive_value(&AUTHORIZATION, "Bearer secret-token-12345"),
+            "bearer sec..."
+        );
+        assert_eq!(
+            redact_sensitive_value(&AUTHORIZATION, "Basic dXNlcjpwYXNz"),
+            "basic dXN..."
+        );
+        assert_eq!(
+            redact_sensitive_value(&COOKIE, "sessionid=abcdef"),
+            "ses..."
+        );
+        // Set-Cookie values often contain spaces (e.g. attributes), so the
+        // scheme-detection heuristic must not apply.
+        assert_eq!(
+            redact_sensitive_value(&set_cookie, "session=very-secret; Path=/"),
+            "ses..."
+        );
+    }
+
+    #[test]
+    fn format_request_does_not_duplicate_request_headers() {
+        use reqwest::header::{HeaderMap, HeaderValue};
+
+        let mut request = reqwest::Request::new(
+            reqwest::Method::GET,
+            "http://example.com/api/v1/runs".parse().unwrap(),
+        );
+        request
+            .headers_mut()
+            .insert("api-version", HeaderValue::from_static("2.0"));
+        let mut defaults = HeaderMap::new();
+        defaults.insert("api-version", HeaderValue::from_static("1.0"));
+
+        let mut out = String::new();
+        format_request(&request, &defaults, &mut out);
+
+        assert_eq!(out.matches("api-version").count(), 1);
+        assert!(out.contains("api-version: 2.0"));
+        assert!(!out.contains("api-version: 1.0"));
+    }
+
+    #[tokio::test]
+    async fn format_response_dumps_status_and_redacts_set_cookie() {
+        let mock_server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/health"))
+            .respond_with(
+                ResponseTemplate::new(418)
+                    .insert_header("content-type", "text/plain")
+                    .insert_header("set-cookie", "session=very-secret-token; Path=/"),
+            )
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let response = reqwest::Client::new()
+            .get(format!("{}/health", mock_server.uri()))
+            .send()
+            .await
+            .unwrap();
+
+        let mut out = String::new();
+        format_response(&response, &mut out);
+
+        assert!(out.contains("< 418 I'm a teapot"));
+        assert!(out.contains("< content-type: text/plain"));
+        assert!(out.contains("< set-cookie: ses..."));
+        assert!(!out.contains("very-secret-token"));
+    }
+
+    #[test]
+    fn format_request_summarizes_binary_body() {
+        let mut request = reqwest::Request::new(
+            reqwest::Method::POST,
+            "http://example.com/upload".parse().unwrap(),
+        );
+        *request.body_mut() = Some(vec![0xff_u8, 0xfe, 0xfd].into());
+
+        let mut out = String::new();
+        format_request(&request, &reqwest::header::HeaderMap::new(), &mut out);
+
+        assert!(out.contains("<3 bytes>"));
     }
 
     #[test]

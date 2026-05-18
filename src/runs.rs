@@ -14,11 +14,11 @@ use crate::api::{
 use crate::api::{Event, EventProperty, Moment, NonEventProperty};
 use crate::cli::{RunsCommands, RunsListArgs};
 
-pub async fn cmd_runs(command: Option<RunsCommands>, json: bool) -> Result<()> {
+pub async fn cmd_runs(command: Option<RunsCommands>, json: bool, verbose: bool) -> Result<()> {
     match command {
-        None => cmd_runs_list(RunsListArgs::default(), json).await,
-        Some(RunsCommands::List(args)) => cmd_runs_list(args, json).await,
-        Some(RunsCommands::Show { run_id }) => cmd_runs_show(&run_id, json).await,
+        None => cmd_runs_list(RunsListArgs::default(), json, verbose).await,
+        Some(RunsCommands::List(args)) => cmd_runs_list(args, json, verbose).await,
+        Some(RunsCommands::Show { run_id }) => cmd_runs_show(&run_id, json, verbose).await,
         Some(RunsCommands::Properties {
             run_id,
             passing,
@@ -31,9 +31,11 @@ pub async fn cmd_runs(command: Option<RunsCommands>, json: bool) -> Result<()> {
             } else {
                 None
             };
-            cmd_runs_properties(&run_id, status, json).await
+            cmd_runs_properties(&run_id, status, json, verbose).await
         }
-        Some(RunsCommands::BuildLogs { run_id }) => cmd_runs_build_logs(&run_id, json).await,
+        Some(RunsCommands::BuildLogs { run_id }) => {
+            cmd_runs_build_logs(&run_id, json, verbose).await
+        }
         Some(RunsCommands::Logs {
             run_id,
             input_hash,
@@ -48,19 +50,20 @@ pub async fn cmd_runs(command: Option<RunsCommands>, json: bool) -> Result<()> {
                 begin_input_hash.as_deref(),
                 begin_vtime.as_deref(),
                 json,
+                verbose,
             )
             .await
         }
         Some(RunsCommands::Events { run_id, query }) => {
-            cmd_runs_events(&run_id, &query, json).await
+            cmd_runs_events(&run_id, &query, json, verbose).await
         }
     }
 }
 
-async fn cmd_runs_list(args: RunsListArgs, json: bool) -> Result<()> {
+async fn cmd_runs_list(args: RunsListArgs, json: bool, verbose: bool) -> Result<()> {
     debug!("listing runs");
 
-    let api = AntithesisApi::from_env()?;
+    let api = AntithesisApi::from_env(verbose)?;
 
     let status = args
         .status
@@ -121,10 +124,10 @@ async fn cmd_runs_list(args: RunsListArgs, json: bool) -> Result<()> {
     Ok(())
 }
 
-async fn cmd_runs_show(run_id: &str, json: bool) -> Result<()> {
+async fn cmd_runs_show(run_id: &str, json: bool, verbose: bool) -> Result<()> {
     debug!("showing run: {}", run_id);
 
-    let api = AntithesisApi::from_env()?;
+    let api = AntithesisApi::from_env(verbose)?;
     let run = api.get_run(run_id).await?;
 
     if json {
@@ -140,10 +143,11 @@ async fn cmd_runs_properties(
     run_id: &str,
     status: Option<PropertyStatus>,
     json: bool,
+    verbose: bool,
 ) -> Result<()> {
     debug!("listing properties for run: {}", run_id);
 
-    let api = AntithesisApi::from_env()?;
+    let api = AntithesisApi::from_env(verbose)?;
     let mut properties = api
         .stream_run_properties(run_id, status)
         .try_collect::<Vec<_>>()
@@ -218,10 +222,10 @@ fn print_run_detail(run: &RunDetail) {
     }
 }
 
-async fn cmd_runs_build_logs(run_id: &str, json: bool) -> Result<()> {
+async fn cmd_runs_build_logs(run_id: &str, json: bool, verbose: bool) -> Result<()> {
     debug!("streaming build logs for run: {}", run_id);
 
-    let api = AntithesisApi::from_env()?;
+    let api = AntithesisApi::from_env(verbose)?;
     let stream = api.get_run_build_logs(run_id).await?.into_inner();
     let mut stdout = std::io::stdout().lock();
 
@@ -247,10 +251,10 @@ async fn cmd_runs_build_logs(run_id: &str, json: bool) -> Result<()> {
     }
 }
 
-async fn cmd_runs_events(run_id: &str, query: &[String], json: bool) -> Result<()> {
+async fn cmd_runs_events(run_id: &str, query: &[String], json: bool, verbose: bool) -> Result<()> {
     debug!("searching events for run: {}", run_id);
 
-    let api = AntithesisApi::from_env()?;
+    let api = AntithesisApi::from_env(verbose)?;
     let stream = api
         .search_run_events(run_id, &query.join(" "))
         .await?
@@ -296,10 +300,11 @@ async fn cmd_runs_logs(
     begin_input_hash: Option<&str>,
     begin_vtime: Option<&str>,
     json: bool,
+    verbose: bool,
 ) -> Result<()> {
     debug!("streaming logs for run: {}", run_id);
 
-    let api = AntithesisApi::from_env()?;
+    let api = AntithesisApi::from_env(verbose)?;
     let stream = api
         .get_run_logs(run_id, input_hash, vtime, begin_input_hash, begin_vtime)
         .await?

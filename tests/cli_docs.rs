@@ -39,7 +39,7 @@ fn docs_update_sets_custom_user_agent() {
 
     assert_eq!(
         mock_server.user_agent().as_deref(),
-        Some(expected_docs_user_agent().as_str()),
+        Some(snouty::user_agent().as_str()),
     );
 }
 

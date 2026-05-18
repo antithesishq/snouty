@@ -73,31 +73,32 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
 
     let json = cli.json;
+    let verbose = cli.verbose;
     if json && let Some(name) = json_unaware_command_name(&cli.command) {
         eprintln!("warning: --json has no effect for `snouty {name}`");
     }
     match cli.command {
         Commands::Launch(args) => {
             info!("launching test with webhook: {}", args.webhook);
-            cmd_launch(args, json).await
+            cmd_launch(args, json, verbose).await
         }
         Commands::Run(args) => {
             eprintln!("warning: `snouty run` is deprecated, use `snouty launch` instead");
             info!("launching test with webhook: {}", args.webhook);
-            cmd_launch(args, json).await
+            cmd_launch(args, json, verbose).await
         }
-        Commands::Runs { command } => snouty::runs::cmd_runs(command, json).await,
+        Commands::Runs { command } => snouty::runs::cmd_runs(command, json, verbose).await,
         Commands::Api(ApiCommands::Webhook {
             webhook,
             stdin,
             args,
         }) => {
             info!("running api webhook with webhook: {}", webhook);
-            cmd_api_webhook(webhook, args, stdin).await
+            cmd_api_webhook(webhook, args, stdin, verbose).await
         }
         Commands::Debug(args) => {
             info!("starting debug session");
-            cmd_debug(args, json).await
+            cmd_debug(args, json, verbose).await
         }
         Commands::Validate(args) => validate::cmd_validate(args).await,
         Commands::Doctor => snouty::doctor::cmd_doctor(),
@@ -127,7 +128,7 @@ fn json_unaware_command_name(command: &Commands) -> Option<&'static str> {
     }
 }
 
-async fn cmd_launch(args: LaunchArgs, json: bool) -> Result<()> {
+async fn cmd_launch(args: LaunchArgs, json: bool, verbose: bool) -> Result<()> {
     let mut params = Params::new();
 
     if let Some(test_name) = args.test_name {
@@ -219,7 +220,7 @@ async fn cmd_launch(args: LaunchArgs, json: bool) -> Result<()> {
         params.insert("antithesis.config_image", pinned_config);
     }
 
-    let response = launch_webhook(&args.webhook, params).await?;
+    let response = launch_webhook(&args.webhook, params, verbose).await?;
 
     if json {
         println!("{}", serde_json::to_string_pretty(&response)?);
@@ -230,14 +231,23 @@ async fn cmd_launch(args: LaunchArgs, json: bool) -> Result<()> {
     Ok(())
 }
 
-async fn cmd_api_webhook(webhook: String, args: Vec<String>, use_stdin: bool) -> Result<()> {
+async fn cmd_api_webhook(
+    webhook: String,
+    args: Vec<String>,
+    use_stdin: bool,
+    verbose: bool,
+) -> Result<()> {
     let params = get_params(args, use_stdin, false)?;
-    let body = launch_webhook(&webhook, params).await?;
+    let body = launch_webhook(&webhook, params, verbose).await?;
     println!("{}", serde_json::to_string(&body)?);
     Ok(())
 }
 
-async fn launch_webhook(webhook: &str, params: Params) -> Result<snouty::api::LaunchResponse> {
+async fn launch_webhook(
+    webhook: &str,
+    params: Params,
+    verbose: bool,
+) -> Result<snouty::api::LaunchResponse> {
     params.validate_test_params()?;
 
     eprintln!(
@@ -245,7 +255,7 @@ async fn launch_webhook(webhook: &str, params: Params) -> Result<snouty::api::La
         serde_json::to_string_pretty(&params.to_redacted_map())?
     );
 
-    let api = AntithesisApi::from_env()?;
+    let api = AntithesisApi::from_env(verbose)?;
     api.launch_test(webhook, &params).await
 }
 
@@ -282,7 +292,7 @@ fn debug_params(args: DebugArgs) -> Result<Params> {
     Ok(params)
 }
 
-async fn cmd_debug(args: DebugArgs, json: bool) -> Result<()> {
+async fn cmd_debug(args: DebugArgs, json: bool, verbose: bool) -> Result<()> {
     let params = debug_params(args)?;
     params.validate_debugging_params()?;
 
@@ -291,7 +301,7 @@ async fn cmd_debug(args: DebugArgs, json: bool) -> Result<()> {
         serde_json::to_string_pretty(&params.to_redacted_map())?
     );
 
-    let api = AntithesisApi::from_env()?;
+    let api = AntithesisApi::from_env(verbose)?;
     let response = api.launch_debugging(&params).await?;
 
     if json {

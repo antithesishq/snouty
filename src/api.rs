@@ -804,8 +804,12 @@ async fn format_api_client_error(err: ClientError<generated::types::ErrorRespons
         }
         ClientError::InvalidResponsePayload(body, err) => {
             let body = String::from_utf8_lossy(&body);
-            let snippet = format_payload_snippet(&body, err.line(), err.column());
-            eyre!("invalid API response payload: {err}\n{snippet}")
+            if body.trim().is_empty() {
+                eyre!("invalid API response payload: response body was empty")
+            } else {
+                let snippet = format_payload_snippet(&body, err.line(), err.column());
+                eyre!("invalid API response payload: {err}\n{snippet}")
+            }
         }
         ClientError::Custom(message) => eyre!(message),
     }
@@ -928,6 +932,42 @@ mod tests {
         assert_eq!(out.matches("api-version").count(), 1);
         assert!(out.contains("api-version: 2.0"));
         assert!(!out.contains("api-version: 1.0"));
+    }
+
+    #[tokio::test]
+    async fn format_api_client_error_describes_empty_invalid_payload() {
+        let parse_err = serde_json::from_slice::<serde_json::Value>(b"").unwrap_err();
+        let err = ClientError::<generated::types::ErrorResponse>::InvalidResponsePayload(
+            Default::default(),
+            parse_err,
+        );
+
+        let report = format_api_client_error(err).await;
+        let message = format!("{report}");
+
+        assert_eq!(
+            message,
+            "invalid API response payload: response body was empty"
+        );
+        assert!(!message.contains("EOF while parsing"));
+        assert!(!message.contains('^'));
+    }
+
+    #[tokio::test]
+    async fn format_api_client_error_keeps_snippet_for_non_empty_invalid_payload() {
+        let body: &[u8] = b"not json";
+        let parse_err = serde_json::from_slice::<serde_json::Value>(body).unwrap_err();
+        let err = ClientError::<generated::types::ErrorResponse>::InvalidResponsePayload(
+            body.to_vec().into(),
+            parse_err,
+        );
+
+        let report = format_api_client_error(err).await;
+        let message = format!("{report}");
+
+        assert!(message.starts_with("invalid API response payload: "));
+        assert!(message.contains("not json"));
+        assert!(message.contains('^'));
     }
 
     #[tokio::test]

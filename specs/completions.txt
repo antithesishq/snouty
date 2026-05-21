@@ -23,4 +23,4 @@ stdout '.*snouty.*'
 
 # Unsupported shells are rejected.
 ! snouty completions nushell
-stderr 'unsupported shell: nushell.*'
+stderr 'invalid value .nushell.'

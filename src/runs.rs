@@ -1,5 +1,6 @@
+use std::io::{BufWriter, Write};
 use std::path::Path;
-use std::{io::Write, sync::OnceLock};
+use std::sync::OnceLock;
 
 use color_eyre::eyre::{Result, eyre};
 use futures_util::{StreamExt, TryStreamExt};
@@ -10,6 +11,9 @@ use regex::Regex;
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
 
+use chrono::{DateTime, Utc};
+use chrono_humanize::{Accuracy, HumanTime, Tense};
+
 use crate::api::{
     AntithesisApi, Property, PropertyStatus, RunDetail, RunStatus, RunSummary, RunsFilterOptions,
 };
@@ -17,11 +21,50 @@ use crate::api::{
 use crate::api::{Event, EventProperty, Moment, NonEventProperty};
 use crate::cli::{RunsCommands, RunsListArgs};
 
+/// Event stream classification. Variants match the canonical values that
+/// appear in an event's `source.stream` field.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Stream {
+    Stdout,
+    Stderr,
+    Info,
+    Error,
+}
+
+impl Stream {
+    /// Three-character display abbreviation used in the logs viewer.
+    pub fn abbreviated(self) -> &'static str {
+        match self {
+            Self::Stdout => "out",
+            Self::Stderr => "err",
+            Self::Info => "inf",
+            Self::Error => "err",
+        }
+    }
+}
+
+impl std::str::FromStr for Stream {
+    type Err = String;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s {
+            "stdout" => Ok(Self::Stdout),
+            "stderr" => Ok(Self::Stderr),
+            "info" => Ok(Self::Info),
+            "error" => Ok(Self::Error),
+            other => Err(format!(
+                "invalid stream '{other}' (expected one of: stdout, stderr, info, error)"
+            )),
+        }
+    }
+}
+
 pub async fn cmd_runs(command: Option<RunsCommands>, json: bool, verbose: bool) -> Result<()> {
     match command {
         None => cmd_runs_list(RunsListArgs::default(), json, verbose).await,
         Some(RunsCommands::List(args)) => cmd_runs_list(args, json, verbose).await,
         Some(RunsCommands::Show { run_id }) => cmd_runs_show(&run_id, json, verbose).await,
+        Some(RunsCommands::Open { run_id }) => cmd_runs_open(&run_id, json, verbose).await,
         Some(RunsCommands::Properties {
             run_id,
             passing,
@@ -35,6 +78,9 @@ pub async fn cmd_runs(command: Option<RunsCommands>, json: bool, verbose: bool) 
                 None
             };
             cmd_runs_properties(&run_id, status, json, verbose).await
+        }
+        Some(RunsCommands::Property { run_id, name }) => {
+            cmd_runs_property(&run_id, &name, json, verbose).await
         }
         Some(RunsCommands::BuildLogs { run_id }) => {
             cmd_runs_build_logs(&run_id, json, verbose).await
@@ -61,8 +107,22 @@ pub async fn cmd_runs(command: Option<RunsCommands>, json: bool, verbose: bool) 
             )
             .await
         }
-        Some(RunsCommands::Events { run_id, query }) => {
-            cmd_runs_events(&run_id, &query, json, verbose).await
+        Some(RunsCommands::Events {
+            run_id,
+            matches,
+            source,
+            stream,
+            vtime_min,
+            vtime_max,
+        }) => {
+            let filters = EventFilters {
+                matches: &matches,
+                sources: &source,
+                stream,
+                vtime_min,
+                vtime_max,
+            };
+            cmd_runs_events(&run_id, filters, json, verbose).await
         }
     }
 }
@@ -127,8 +187,32 @@ async fn cmd_runs_list(args: RunsListArgs, json: bool, verbose: bool) -> Result<
         return Ok(());
     }
 
-    println!("{}", render_runs_table(&runs));
+    let width = terminal_width();
+    println!("{}", render_runs_table(&runs, args.long, width));
     Ok(())
+}
+
+fn terminal_width() -> usize {
+    let term = console::Term::stdout();
+    if !term.is_term() {
+        return 100;
+    }
+    term.size().1 as usize
+}
+
+fn status_glyph(status: RunStatus) -> &'static str {
+    match status {
+        RunStatus::Completed => "✓",
+        RunStatus::Incomplete => "✗",
+        RunStatus::InProgress => "…",
+        RunStatus::Starting => "·",
+        RunStatus::Cancelled => "⊘",
+        RunStatus::Unknown => "?",
+    }
+}
+
+fn relative_time(then: DateTime<Utc>) -> String {
+    HumanTime::from(then - Utc::now()).to_text_en(Accuracy::Rough, Tense::Past)
 }
 
 async fn cmd_runs_show(run_id: &str, json: bool, verbose: bool) -> Result<()> {
@@ -146,6 +230,61 @@ async fn cmd_runs_show(run_id: &str, json: bool, verbose: bool) -> Result<()> {
     Ok(())
 }
 
+async fn cmd_runs_open(run_id: &str, json: bool, verbose: bool) -> Result<()> {
+    debug!("opening report for run: {}", run_id);
+
+    let api = AntithesisApi::from_env(verbose)?;
+    let run = api.get_run(run_id).await?;
+
+    let url = run
+        .links
+        .as_ref()
+        .and_then(|l| l.triage_report.as_deref())
+        .ok_or_else(|| {
+            eyre!(
+                "no report available for run {} with status {}",
+                run_id,
+                run.status
+            )
+        })?;
+
+    if json {
+        println!("{}", serde_json::json!({ "url": url }));
+        return Ok(());
+    }
+
+    let launched = launch_browser(url);
+    if launched {
+        println!("Opening report for run {run_id}…");
+        println!("If your browser didn't open, manually visit:");
+        println!("  {url}");
+    } else {
+        println!("Open this URL to view the report:");
+        println!("  {url}");
+    }
+    Ok(())
+}
+
+fn launch_browser(url: &str) -> bool {
+    use std::process::{Command, Stdio};
+
+    let (program, args): (&str, Vec<&str>) = if cfg!(target_os = "macos") {
+        ("open", vec![url])
+    } else if cfg!(target_os = "windows") {
+        ("cmd", vec!["/C", "start", "", url])
+    } else {
+        ("xdg-open", vec![url])
+    };
+
+    Command::new(program)
+        .args(&args)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
 async fn cmd_runs_properties(
     run_id: &str,
     status: Option<PropertyStatus>,
@@ -161,8 +300,9 @@ async fn cmd_runs_properties(
         .await?;
 
     properties.sort_by(|a, b| {
-        property_status_rank(a.status())
-            .cmp(&property_status_rank(b.status()))
+        property_group(a)
+            .unwrap_or("")
+            .cmp(property_group(b).unwrap_or(""))
             .then(a.name().cmp(b.name()))
     });
 
@@ -173,28 +313,262 @@ async fn cmd_runs_properties(
     } else if properties.is_empty() {
         println!("No properties found.");
     } else {
-        let event_rows = flatten_property_events(&properties);
-        let non_event_rows = flatten_non_event_property_values(&properties);
-
-        let mut sections = Vec::new();
-        if !event_rows.is_empty() {
-            sections.push(render_property_events_table(&event_rows));
-        }
-        if !non_event_rows.is_empty() {
-            sections.push(render_property_values_table(&non_event_rows));
-        }
-        println!("{}", sections.join("\n\n"));
+        println!("{}", render_properties_table(&properties));
     }
 
     Ok(())
 }
 
-fn print_run_detail(run: &RunDetail) {
-    let mut rows: Vec<(&str, String)> = vec![
-        ("Run ID", run.run_id.clone()),
-        ("Status", run.status.to_string()),
-    ];
+fn property_group(p: &Property) -> Option<&str> {
+    match p {
+        Property::EventProperty(p) => p.group.as_deref(),
+        Property::NonEventProperty(p) => p.group.as_deref(),
+    }
+}
 
+fn property_is_group(p: &Property) -> bool {
+    match p {
+        Property::EventProperty(p) => p.is_group.unwrap_or(false),
+        Property::NonEventProperty(p) => p.is_group.unwrap_or(false),
+    }
+}
+
+fn property_example_total(p: &Property) -> u64 {
+    let (ex, cex) = match p {
+        Property::EventProperty(p) => (p.example_count, p.counterexample_count),
+        Property::NonEventProperty(p) => (p.example_count, p.counterexample_count),
+    };
+    u64::from(ex.unwrap_or(0)) + u64::from(cex.unwrap_or(0))
+}
+
+fn property_status_glyph(status: PropertyStatus) -> &'static str {
+    match status {
+        PropertyStatus::Passing => "✓",
+        PropertyStatus::Failing => "✗",
+    }
+}
+
+async fn cmd_runs_property(run_id: &str, name: &str, json: bool, verbose: bool) -> Result<()> {
+    debug!("looking up property '{}' for run: {}", name, run_id);
+
+    let api = AntithesisApi::from_env(verbose)?;
+    let properties = api
+        .stream_run_properties(run_id, None)
+        .try_collect::<Vec<_>>()
+        .await?;
+
+    let resolved = resolve_property(&properties, name)?;
+    let property = match resolved {
+        Resolved::Exact(p) => p,
+        Resolved::Fuzzy(p) => {
+            if !json {
+                eprintln!(
+                    "note: no exact match for '{}', using closest property: '{}'",
+                    name,
+                    p.name()
+                );
+            }
+            p
+        }
+    };
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(property)?);
+        return Ok(());
+    }
+
+    print_property_header(property);
+    println!("{}", render_property_examples(property));
+    Ok(())
+}
+
+#[derive(Debug)]
+enum Resolved<'a> {
+    Exact(&'a Property),
+    Fuzzy(&'a Property),
+}
+
+fn resolve_property<'a>(properties: &'a [Property], query: &str) -> Result<Resolved<'a>> {
+    if let Some(p) = properties.iter().find(|p| p.name() == query) {
+        return Ok(Resolved::Exact(p));
+    }
+
+    let needle = query.to_lowercase();
+    let matches: Vec<&Property> = properties
+        .iter()
+        .filter(|p| p.name().to_lowercase().contains(&needle))
+        .collect();
+
+    match matches.as_slice() {
+        [] => Err(eyre!("no property matches '{}'", query)),
+        [only] => Ok(Resolved::Fuzzy(only)),
+        many => {
+            let names = many
+                .iter()
+                .map(|p| format!("  - {}", p.name()))
+                .collect::<Vec<_>>()
+                .join("\n");
+            Err(eyre!(
+                "multiple properties match '{}', did you mean one of:\n{}",
+                query,
+                names
+            ))
+        }
+    }
+}
+
+fn print_property_header(property: &Property) {
+    println!("Name      {}", sanitize(property.name()));
+    println!("Status    {}", property_status_glyph(property.status()));
+    if let Some(group) = property_group(property) {
+        println!("Group     {}", sanitize(group));
+    }
+    let description = match property {
+        Property::EventProperty(p) => p.description.as_deref(),
+        Property::NonEventProperty(p) => p.description.as_deref(),
+    };
+    if let Some(desc) = description {
+        println!("Details   {}", sanitize(desc));
+    }
+    println!();
+}
+
+fn render_property_examples(property: &Property) -> String {
+    match property {
+        Property::EventProperty(p) => {
+            let mut rows: Vec<Vec<String>> = Vec::new();
+            for event in &p.counterexamples {
+                rows.push(vec![
+                    "failing".to_string(),
+                    sanitize(&event.moment.input_hash),
+                    sanitize(&event.moment.vtime),
+                ]);
+            }
+            for event in &p.examples {
+                rows.push(vec![
+                    "passing".to_string(),
+                    sanitize(&event.moment.input_hash),
+                    sanitize(&event.moment.vtime),
+                ]);
+            }
+            if rows.is_empty() {
+                rows.push(vec![
+                    "unreachable".to_string(),
+                    "-".to_string(),
+                    "-".to_string(),
+                ]);
+            }
+            let headers = vec![
+                "STATUS".to_string(),
+                "HASH".to_string(),
+                "VTIME".to_string(),
+            ];
+            render_table(&headers, &rows)
+        }
+        Property::NonEventProperty(p) => {
+            let mut rows: Vec<Vec<String>> = Vec::new();
+            let mut detail_blocks: Vec<(usize, String)> = Vec::new();
+
+            for value in &p.counterexamples {
+                push_value_row(&mut rows, &mut detail_blocks, "failing", value);
+            }
+            for value in &p.examples {
+                push_value_row(&mut rows, &mut detail_blocks, "passing", value);
+            }
+            if rows.is_empty() {
+                rows.push(vec!["unreachable".to_string(), "-".to_string()]);
+            }
+            let headers = vec!["STATUS".to_string(), "VALUE".to_string()];
+            let mut out = render_table(&headers, &rows);
+            for (row_index, block) in detail_blocks {
+                out.push_str(&format!(
+                    "\n\nrow {} details:\n{}",
+                    row_index + 1,
+                    indent_lines(&block, "  ")
+                ));
+            }
+            out
+        }
+    }
+}
+
+fn push_value_row(
+    rows: &mut Vec<Vec<String>>,
+    detail_blocks: &mut Vec<(usize, String)>,
+    status: &str,
+    value: &Value,
+) {
+    let row_index = rows.len();
+    let (cell, detail) = render_property_value(value);
+    rows.push(vec![status.to_string(), cell]);
+    if let Some(detail) = detail {
+        detail_blocks.push((row_index, detail));
+    }
+}
+
+fn render_property_value(value: &Value) -> (String, Option<String>) {
+    match value {
+        Value::Null => ("null".to_string(), None),
+        Value::Bool(b) => (b.to_string(), None),
+        Value::Number(n) => (n.to_string(), None),
+        Value::String(s) => (sanitize(s), None),
+        Value::Array(_) | Value::Object(_) => {
+            let summary = match value {
+                Value::Array(items) => format!("[{} items]", items.len()),
+                Value::Object(map) => format!("{{{} fields}}", map.len()),
+                _ => unreachable!(),
+            };
+            let pretty = serde_json::to_string_pretty(value).unwrap_or_default();
+            (summary, Some(pretty))
+        }
+    }
+}
+
+fn indent_lines(text: &str, prefix: &str) -> String {
+    text.lines()
+        .map(|line| format!("{prefix}{line}"))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn render_properties_table(properties: &[Property]) -> String {
+    let headers = vec![
+        "STATUS".to_string(),
+        "GROUP".to_string(),
+        "NAME".to_string(),
+        "EXAMPLES".to_string(),
+    ];
+    let rows = properties
+        .iter()
+        .map(|p| {
+            let name = if property_is_group(p) {
+                format!("▸ {}", sanitize(p.name()))
+            } else {
+                sanitize(p.name())
+            };
+            vec![
+                property_status_glyph(p.status()).to_string(),
+                sanitize(property_group(p).unwrap_or("")),
+                name,
+                property_example_total(p).to_string(),
+            ]
+        })
+        .collect::<Vec<_>>();
+    render_table(&headers, &rows)
+}
+
+fn print_run_detail(run: &RunDetail) {
+    let mut rows: Vec<(&str, String)> = Vec::new();
+
+    if let Some(name) = run.test_name() {
+        rows.push(("Test Name", name.to_string()));
+    }
+    if let Some(desc) = run.test_description() {
+        rows.push(("Description", desc.to_string()));
+    }
+
+    rows.push(("Run ID", run.run_id.clone()));
+    rows.push(("Status", run.status.to_string()));
     rows.push(("Created", run.created_at.to_rfc3339()));
 
     if let Some(ref t) = run.started_at {
@@ -209,12 +583,6 @@ fn print_run_detail(run: &RunDetail) {
     if let Some(ref moment) = run.failure_moment {
         rows.push(("Failure VTime", moment.vtime.clone()));
         rows.push(("Failure Hash", moment.input_hash.clone()));
-    }
-
-    if let Some(ref links) = run.links
-        && let Some(ref url) = links.triage_report
-    {
-        rows.push(("Report", url.clone()));
     }
 
     if let Some(ref creator) = run.creator
@@ -240,9 +608,9 @@ async fn cmd_runs_build_logs(run_id: &str, json: bool, verbose: bool) -> Result<
 
     let api = AntithesisApi::from_env(verbose)?;
     let stream = api.get_run_build_logs(run_id).await?.into_inner();
-    let mut stdout = std::io::stdout().lock();
+    let mut stdout = BufWriter::new(std::io::stdout().lock());
 
-    if json {
+    let result = if json {
         stream_ndjson_lines(stream, NoOpTransformer {}, |line| {
             writeln!(stdout, "{line}")?;
             Ok(())
@@ -261,49 +629,155 @@ async fn cmd_runs_build_logs(run_id: &str, json: bool, verbose: bool) -> Result<
             Ok(())
         })
         .await
-    }
+    };
+
+    stdout.flush()?;
+    result
 }
 
-async fn cmd_runs_events(run_id: &str, query: &[String], json: bool, verbose: bool) -> Result<()> {
+#[derive(Clone, Copy)]
+struct EventFilters<'a> {
+    matches: &'a [String],
+    sources: &'a [String],
+    stream: Option<Stream>,
+    vtime_min: Option<f64>,
+    vtime_max: Option<f64>,
+}
+
+async fn cmd_runs_events(
+    run_id: &str,
+    filters: EventFilters<'_>,
+    json: bool,
+    verbose: bool,
+) -> Result<()> {
     debug!("searching events for run: {}", run_id);
+
+    // The server endpoint takes a single combined `q` substring. Send the first
+    // --match to maximize server-side filtering; AND-combine the rest of the
+    // matches plus the structural filters client-side on the streamed NDJSON.
+    let server_query = filters.matches.first().cloned().unwrap_or_default();
 
     let api = AntithesisApi::from_env(verbose)?;
     let stream = api
-        .search_run_events(run_id, &query.join(" "))
+        .search_run_events(run_id, &server_query)
         .await?
         .into_inner();
 
-    let mut stdout = std::io::stdout().lock();
-    if json {
-        stream_ndjson_lines(stream, NoOpTransformer {}, |line| {
-            writeln!(stdout, "{line}")?;
-            Ok(())
-        })
-        .await
-    } else {
+    let lowered_matches: Vec<String> = filters
+        .matches
+        .iter()
+        .map(|m| m.to_ascii_lowercase())
+        .collect();
+    let has_structural_filters = !filters.sources.is_empty()
+        || filters.stream.is_some()
+        || filters.vtime_min.is_some()
+        || filters.vtime_max.is_some();
+
+    let mut stdout = BufWriter::new(std::io::stdout().lock());
+    if !json {
         writeln!(
             stdout,
             "{:<22}  {:<22}  {:<20}  OUTPUT",
             "HASH", "VTIME", "SOURCE"
         )?;
-        stream_ndjson_lines(stream, NoOpTransformer {}, |line| {
-            if let Ok(entry) = serde_json::from_str::<Value>(line) {
-                let rendered = render_event_entry(&entry);
-                let input_hash = rendered.input_hash;
-                let vtime = rendered.vtime;
-                let source = rendered.source;
-                let output = rendered.output;
-                writeln!(
-                    stdout,
-                    "{input_hash:<22}  {vtime:<22}  {source:<20}  {output}"
-                )?;
-            } else {
-                writeln!(stdout, "{:<22}  {:<22}  {:<20}  {line}", "", "", "")?;
-            }
-            Ok(())
-        })
-        .await
     }
+    let result = stream_ndjson_lines(stream, NoOpTransformer {}, |line| {
+        // Cheap path: substring AND across all --match needles on the raw line.
+        let line_lower = line.to_ascii_lowercase();
+        if !lowered_matches.iter().all(|n| line_lower.contains(n)) {
+            return Ok(());
+        }
+
+        // JSON mode with only --match filters: pass through without parsing.
+        if json && !has_structural_filters {
+            writeln!(stdout, "{line}")?;
+            return Ok(());
+        }
+
+        let entry: Value = match serde_json::from_str(line) {
+            Ok(v) => v,
+            Err(_) => {
+                if json {
+                    writeln!(stdout, "{line}")?;
+                }
+                return Ok(());
+            }
+        };
+
+        if has_structural_filters && !entry_matches_structural_filters(&entry, filters) {
+            return Ok(());
+        }
+
+        if json {
+            writeln!(stdout, "{line}")?;
+        } else {
+            let rendered = render_event_entry(&entry);
+            let input_hash = rendered.input_hash;
+            let vtime = rendered.vtime;
+            let source = rendered.source;
+            let output = rendered.output;
+            writeln!(
+                stdout,
+                "{input_hash:<22}  {vtime:<22}  {source:<20}  {output}"
+            )?;
+        }
+        Ok(())
+    })
+    .await;
+    stdout.flush()?;
+    result
+}
+
+#[cfg(test)]
+fn event_matches_filters(entry: &Value, raw_line: &str, filters: EventFilters) -> bool {
+    let line_lower = raw_line.to_ascii_lowercase();
+    let all_match = filters
+        .matches
+        .iter()
+        .all(|n| line_lower.contains(&n.to_ascii_lowercase()));
+    all_match && entry_matches_structural_filters(entry, filters)
+}
+
+fn entry_matches_structural_filters(entry: &Value, filters: EventFilters) -> bool {
+    if !filters.sources.is_empty() {
+        let container = entry["source"]["container"].as_str().unwrap_or("");
+        let name = entry["source"]["name"].as_str().unwrap_or("");
+        if !filters
+            .sources
+            .iter()
+            .any(|wanted| wanted == container || wanted == name)
+        {
+            return false;
+        }
+    }
+
+    if let Some(wanted) = filters.stream {
+        let raw = entry["source"]["stream"].as_str().unwrap_or("");
+        if raw.parse::<Stream>().ok() != Some(wanted) {
+            return false;
+        }
+    }
+
+    if filters.vtime_min.is_some() || filters.vtime_max.is_some() {
+        let vtime = entry["moment"]["vtime"]
+            .as_str()
+            .and_then(|s| s.parse::<f64>().ok());
+        let Some(vtime) = vtime else {
+            return false;
+        };
+        if let Some(min) = filters.vtime_min
+            && vtime < min
+        {
+            return false;
+        }
+        if let Some(max) = filters.vtime_max
+            && vtime > max
+        {
+            return false;
+        }
+    }
+
+    true
 }
 
 async fn cmd_runs_logs(
@@ -326,8 +800,8 @@ async fn cmd_runs_logs(
         .await?
         .into_inner();
 
-    let mut stdout = std::io::stdout().lock();
-    if json {
+    let mut stdout = BufWriter::new(std::io::stdout().lock());
+    let result = if json {
         if annotate_faults {
             stream_ndjson_lines(
                 stream,
@@ -349,21 +823,70 @@ async fn cmd_runs_logs(
             .await
         }
     } else {
-        writeln!(stdout, "{:<22}  {:<20}  OUTPUT", "VTIME", "SOURCE")?;
         stream_ndjson_lines(stream, NoOpTransformer {}, |line| {
             if let Ok(entry) = serde_json::from_str::<Value>(line) {
-                let rendered = render_event_entry(&entry);
-                let vtime = rendered.vtime;
-                let source = rendered.source;
-                let output = rendered.output;
-                writeln!(stdout, "{vtime:<22}  {source:<20}  {output}")?;
+                writeln!(stdout, "{}", format_log_line(&entry))?;
             } else {
                 writeln!(stdout, "{line}")?;
             }
             Ok(())
         })
         .await
+    };
+    stdout.flush()?;
+    result
+}
+
+const LOG_SOURCE_MIN_WIDTH: usize = 20;
+const LOG_VTIME_WIDTH: usize = 14;
+const LOG_STREAM_WIDTH: usize = 3;
+
+fn format_log_line(entry: &Value) -> String {
+    let vtime = entry["moment"]["vtime"].as_str().unwrap_or("");
+    let container = entry["source"]["container"].as_str().unwrap_or("");
+    let name = entry["source"]["name"].as_str().unwrap_or("");
+    let source = if !container.is_empty() {
+        container
+    } else {
+        name
+    };
+    let stream_raw = entry["source"]["stream"].as_str().unwrap_or("");
+    let stream = abbreviate_stream(stream_raw);
+
+    // Web UI format: text records sit one space after the stream bracket.
+    // JSON records get an extra " - " separator before the body.
+    let payload = if let Some(text) = entry.get("output_text").and_then(Value::as_str) {
+        text.to_string()
+    } else {
+        format!(" - {}", strip_log_envelope(entry))
+    };
+
+    format!(
+        "[{vtime:>vw$}] [{source:>sw$}] [{stream:<stw$}] {payload}",
+        vw = LOG_VTIME_WIDTH,
+        sw = LOG_SOURCE_MIN_WIDTH,
+        stw = LOG_STREAM_WIDTH,
+    )
+}
+
+fn abbreviate_stream(stream: &str) -> std::borrow::Cow<'static, str> {
+    if let Ok(s) = stream.parse::<Stream>() {
+        return std::borrow::Cow::Borrowed(s.abbreviated());
     }
+    if stream.is_empty() {
+        return std::borrow::Cow::Borrowed("   ");
+    }
+    std::borrow::Cow::Owned(stream.chars().take(LOG_STREAM_WIDTH).collect())
+}
+
+fn strip_log_envelope(entry: &Value) -> String {
+    let mut clone = entry.clone();
+    if let Some(obj) = clone.as_object_mut() {
+        obj.remove("moment");
+        obj.remove("source");
+        obj.remove("IPT_bytes_out");
+    }
+    serde_json::to_string(&clone).unwrap_or_default()
 }
 
 const TICKS_PER_SECOND: f64 = (1u64 << 32) as f64;
@@ -983,7 +1506,7 @@ fn format_event_value(value: &Value) -> Option<String> {
 
 fn parse_assertion_summary(entry: &Value) -> Option<AssertionSummary> {
     let assertion = entry.get("antithesis_assert")?;
-    let payload: AssertionPayload = serde_json::from_value(assertion.clone()).ok()?;
+    let payload = AssertionPayload::deserialize(assertion).ok()?;
     AssertionSummary::try_from(payload).ok()
 }
 
@@ -1066,166 +1589,78 @@ fn file_basename(file: &str) -> Option<&str> {
         .or(Some(trimmed))
 }
 
-fn render_runs_table(runs: &[RunSummary]) -> String {
+fn render_runs_table(runs: &[RunSummary], long: bool, width: usize) -> String {
     let headers = vec![
         "RUN ID".to_string(),
         "STATUS".to_string(),
         "CREATED AT".to_string(),
-        "LAUNCHER".to_string(),
+        "TITLE".to_string(),
+        "DESCRIPTION".to_string(),
     ];
-    let rows = runs
+
+    let prepared: Vec<(Vec<String>, Option<String>)> = runs
         .iter()
         .map(|run| {
-            vec![
+            let title = run.test_name().map(sanitize).unwrap_or_else(|| "-".into());
+            let description = run.test_description().map(sanitize);
+            let row = vec![
                 sanitize(&run.run_id),
-                run.status.to_string(),
-                run.created_at.to_rfc3339(),
-                sanitize(&run.launcher),
-            ]
+                status_glyph(run.status).to_string(),
+                relative_time(run.created_at),
+                title,
+                String::new(),
+            ];
+            (row, description)
         })
-        .collect::<Vec<_>>();
+        .collect();
 
-    render_table(&headers, &rows)
-}
-
-struct PropertyEventRow<'a> {
-    example: &'static str,
-    hash: &'a str,
-    vtime: &'a str,
-    name: &'a str,
-}
-
-struct PropertyValueRow<'a> {
-    example: &'static str,
-    name: &'a str,
-    value: String,
-}
-
-fn flatten_property_events(properties: &[Property]) -> Vec<PropertyEventRow<'_>> {
-    let mut rows = Vec::new();
-    for property in properties {
-        let start = rows.len();
-        for event in property.event_counterexamples() {
-            rows.push(PropertyEventRow {
-                example: "Failing",
-                hash: &event.moment.input_hash,
-                vtime: &event.moment.vtime,
-                name: property.name(),
-            });
-        }
-        for event in property.event_examples() {
-            rows.push(PropertyEventRow {
-                example: "Passing",
-                hash: &event.moment.input_hash,
-                vtime: &event.moment.vtime,
-                name: property.name(),
-            });
-        }
-        rows[start..].sort_by(|a, b| {
-            example_rank(a.example)
-                .cmp(&example_rank(b.example))
-                .then_with(|| compare_vtime(a.vtime, b.vtime))
-        });
-    }
-    rows
-}
-
-fn example_rank(example: &str) -> u8 {
-    match example {
-        "Failing" => 0,
-        _ => 1,
-    }
-}
-
-fn compare_vtime(a: &str, b: &str) -> std::cmp::Ordering {
-    match (a.parse::<f64>(), b.parse::<f64>()) {
-        (Ok(a), Ok(b)) => a.partial_cmp(&b).unwrap_or(std::cmp::Ordering::Equal),
-        _ => a.cmp(b),
-    }
-}
-
-fn render_property_events_table(rows: &[PropertyEventRow]) -> String {
-    let headers = vec![
-        "EXAMPLE".to_string(),
-        "HASH".to_string(),
-        "VTIME".to_string(),
-        "NAME".to_string(),
-    ];
-    let table_rows = rows
+    let mut widths = headers
         .iter()
-        .map(|row| {
-            vec![
-                row.example.to_string(),
-                sanitize(row.hash),
-                sanitize(row.vtime),
-                sanitize(row.name),
-            ]
-        })
+        .map(|header| header.len())
         .collect::<Vec<_>>();
-    render_table(&headers, &table_rows)
-}
-
-fn flatten_non_event_property_values(properties: &[Property]) -> Vec<PropertyValueRow<'_>> {
-    let mut rows = Vec::new();
-    for property in properties {
-        let Property::NonEventProperty(p) = property else {
-            continue;
-        };
-        let mut emitted = false;
-        for value in &p.counterexamples {
-            rows.push(PropertyValueRow {
-                example: "Failing",
-                name: &p.name,
-                value: serde_json::to_string(value).unwrap_or_default(),
-            });
-            emitted = true;
-        }
-        for value in &p.examples {
-            rows.push(PropertyValueRow {
-                example: "Passing",
-                name: &p.name,
-                value: serde_json::to_string(value).unwrap_or_default(),
-            });
-            emitted = true;
-        }
-        if !emitted {
-            rows.push(PropertyValueRow {
-                example: "-",
-                name: &p.name,
-                value: "-".to_string(),
-            });
+    for (row, _) in &prepared {
+        for (index, cell) in row.iter().enumerate().take(headers.len() - 1) {
+            widths[index] = widths[index].max(cell.chars().count());
         }
     }
-    rows
-}
+    // Description gets whatever room remains. Two-space separators between
+    // columns; reserve at least 8 chars for description so the column header
+    // remains readable on narrow terminals.
+    let fixed_width: usize =
+        widths.iter().take(headers.len() - 1).sum::<usize>() + 2 * (headers.len() - 1);
+    let desc_width = width.saturating_sub(fixed_width).max(8);
+    widths[headers.len() - 1] = desc_width;
 
-fn render_property_values_table(rows: &[PropertyValueRow]) -> String {
-    let headers = vec![
-        "EXAMPLE".to_string(),
-        "NAME".to_string(),
-        "VALUE".to_string(),
-    ];
-    let table_rows = rows
-        .iter()
-        .map(|row| {
-            vec![
-                row.example.to_string(),
-                sanitize(row.name),
-                sanitize(&row.value),
-            ]
-        })
-        .collect::<Vec<_>>();
-    render_table(&headers, &table_rows)
+    let mut output = String::new();
+    push_table_row(&mut output, &headers, &widths);
+
+    for (mut row, description) in prepared {
+        let description = description.unwrap_or_else(|| "-".into());
+        if long {
+            row[4] = String::new();
+            push_table_row(&mut output, &row, &widths);
+            // Indent the full description under the row, then a blank line.
+            output.push_str("    ");
+            output.push_str(&description);
+            output.push('\n');
+            output.push('\n');
+        } else {
+            row[4] = console::truncate_str(&description, desc_width, "…").into_owned();
+            push_table_row(&mut output, &row, &widths);
+        }
+    }
+
+    output.trim_end().to_string()
 }
 
 fn render_table(headers: &[String], rows: &[Vec<String>]) -> String {
     let mut widths = headers
         .iter()
-        .map(|header| header.len())
+        .map(|header| header.chars().count())
         .collect::<Vec<_>>();
     for row in rows {
         for (index, cell) in row.iter().enumerate() {
-            widths[index] = widths[index].max(cell.len());
+            widths[index] = widths[index].max(cell.chars().count());
         }
     }
 
@@ -1251,13 +1686,6 @@ fn push_table_row(output: &mut String, row: &[String], widths: &[usize]) {
         }
     }
     output.push('\n');
-}
-
-fn property_status_rank(status: PropertyStatus) -> u8 {
-    match status {
-        PropertyStatus::Failing => 0,
-        PropertyStatus::Passing => 1,
-    }
 }
 
 fn sanitize(s: &str) -> String {
@@ -1587,93 +2015,241 @@ mod tests {
         }
     }
 
+    fn event_property(
+        name: &str,
+        status: PropertyStatus,
+        group: Option<&str>,
+        examples: Vec<Event>,
+        counterexamples: Vec<Event>,
+    ) -> Property {
+        let ex_count = examples.len() as u32;
+        let cex_count = counterexamples.len() as u32;
+        Property::EventProperty(EventProperty {
+            counterexample_count: Some(cex_count),
+            counterexamples,
+            description: None,
+            example_count: Some(ex_count),
+            examples,
+            group: group.map(str::to_string),
+            is_event: true,
+            is_group: None,
+            name: name.to_string(),
+            status,
+        })
+    }
+
+    fn non_event_property(
+        name: &str,
+        status: PropertyStatus,
+        examples: Vec<Value>,
+        counterexamples: Vec<Value>,
+    ) -> Property {
+        let ex_count = examples.len() as u32;
+        let cex_count = counterexamples.len() as u32;
+        Property::NonEventProperty(NonEventProperty {
+            counterexample_count: Some(cex_count),
+            counterexamples,
+            description: None,
+            example_count: Some(ex_count),
+            examples,
+            group: None,
+            is_event: false,
+            is_group: None,
+            name: name.to_string(),
+            status,
+        })
+    }
+
     #[test]
-    fn renders_flattened_property_events_table() {
+    fn properties_table_groups_status_glyph_and_totals() {
         let properties = vec![
-            Property::EventProperty(EventProperty {
-                counterexample_count: Some(3),
-                counterexamples: vec![event("-100", "5.0"), event("-200", "10.0")],
-                description: None,
-                example_count: Some(12),
-                examples: vec![event("-300", "15.0")],
-                group: Some("Safety".to_string()),
-                is_event: true,
-                is_group: None,
-                name: "Counter value stays below limit".to_string(),
-                status: PropertyStatus::Failing,
-            }),
-            Property::EventProperty(EventProperty {
-                counterexample_count: Some(0),
-                counterexamples: Vec::new(),
-                description: None,
-                example_count: Some(1),
-                examples: vec![event("-400", "1.0")],
-                group: None,
-                is_event: true,
-                is_group: None,
-                name: "Setup completes".to_string(),
-                status: PropertyStatus::Passing,
-            }),
+            event_property(
+                "Counter value stays below limit",
+                PropertyStatus::Failing,
+                Some("Safety"),
+                vec![event("-300", "15.0")],
+                vec![event("-100", "5.0"), event("-200", "10.0")],
+            ),
+            event_property(
+                "Setup completes",
+                PropertyStatus::Passing,
+                None,
+                vec![event("-400", "1.0")],
+                vec![],
+            ),
         ];
 
-        let rows = flatten_property_events(&properties);
-        let table = render_property_events_table(&rows);
-
-        assert!(table.contains("EXAMPLE"));
-        assert!(table.contains("HASH"));
-        assert!(table.contains("VTIME"));
-        assert!(table.contains("NAME"));
-
+        let table = render_properties_table(&properties);
         let lines: Vec<&str> = table.lines().collect();
-        // Header + 2 Failing rows + 2 Passing rows = 5 lines
-        assert_eq!(lines.len(), 5);
+        assert!(lines[0].contains("STATUS"));
+        assert!(lines[0].contains("GROUP"));
+        assert!(lines[0].contains("NAME"));
+        assert!(lines[0].contains("EXAMPLES"));
 
-        // Failing rows come first, sorted by vtime numerically (5.0 < 10.0)
-        assert!(
-            lines[1].contains("Failing")
-                && lines[1].contains("-100")
-                && lines[1].contains("5.0")
-                && lines[1].contains("Counter value stays below limit")
-        );
-        assert!(
-            lines[2].contains("Failing")
-                && lines[2].contains("-200")
-                && lines[2].contains("10.0")
-                && lines[2].contains("Counter value stays below limit")
-        );
+        // Two property rows. Counter property has 1 example + 2 counterexamples = 3 total.
+        let counter_row = lines.iter().find(|l| l.contains("Counter value")).unwrap();
+        assert!(counter_row.contains("✗"));
+        assert!(counter_row.contains("Safety"));
+        assert!(counter_row.contains("3"));
 
-        // Passing rows come after, grouped by property (Counter value first, then Setup completes)
-        assert!(
-            lines[3].contains("Passing")
-                && lines[3].contains("-300")
-                && lines[3].contains("15.0")
-                && lines[3].contains("Counter value stays below limit")
+        let setup_row = lines
+            .iter()
+            .find(|l| l.contains("Setup completes"))
+            .unwrap();
+        assert!(setup_row.contains("✓"));
+        assert!(setup_row.contains("1"));
+    }
+
+    #[test]
+    fn resolve_property_prefers_exact_match() {
+        let properties = vec![
+            event_property("Setup ran", PropertyStatus::Passing, None, vec![], vec![]),
+            event_property(
+                "Setup completes",
+                PropertyStatus::Passing,
+                None,
+                vec![],
+                vec![],
+            ),
+        ];
+        let resolved = resolve_property(&properties, "Setup ran").unwrap();
+        assert!(matches!(resolved, Resolved::Exact(_)));
+    }
+
+    #[test]
+    fn resolve_property_falls_back_to_single_substring_match() {
+        let properties = vec![
+            event_property("Setup ran", PropertyStatus::Passing, None, vec![], vec![]),
+            event_property(
+                "Counter limit",
+                PropertyStatus::Passing,
+                None,
+                vec![],
+                vec![],
+            ),
+        ];
+        let resolved = resolve_property(&properties, "counter").unwrap();
+        match resolved {
+            Resolved::Fuzzy(p) => assert_eq!(p.name(), "Counter limit"),
+            _ => panic!("expected fuzzy match"),
+        }
+    }
+
+    #[test]
+    fn resolve_property_errors_on_multiple_substring_matches() {
+        let properties = vec![
+            event_property("Setup ran", PropertyStatus::Passing, None, vec![], vec![]),
+            event_property(
+                "Setup completes",
+                PropertyStatus::Passing,
+                None,
+                vec![],
+                vec![],
+            ),
+        ];
+        let err = resolve_property(&properties, "setup").unwrap_err();
+        let msg = format!("{err}");
+        assert!(msg.contains("did you mean"));
+        assert!(msg.contains("Setup ran"));
+        assert!(msg.contains("Setup completes"));
+    }
+
+    #[test]
+    fn render_event_property_examples_uses_status_column() {
+        let property = event_property(
+            "Counter",
+            PropertyStatus::Failing,
+            None,
+            vec![event("ex", "2.0")],
+            vec![event("cex", "1.0")],
         );
-        assert!(
-            lines[4].contains("Passing")
-                && lines[4].contains("-400")
-                && lines[4].contains("1.0")
-                && lines[4].contains("Setup completes")
+        let out = render_property_examples(&property);
+        assert!(out.contains("STATUS"));
+        assert!(out.contains("HASH"));
+        assert!(out.contains("VTIME"));
+        assert!(out.contains("passing"));
+        assert!(out.contains("failing"));
+    }
+
+    #[test]
+    fn render_non_event_property_examples_pretty_prints_objects() {
+        let property = non_event_property(
+            "Determinator Max Memory",
+            PropertyStatus::Passing,
+            vec![json!({
+                "maximum_used_bytes": 17012928512u64,
+                "percent_used": "0.04"
+            })],
+            vec![],
+        );
+        let out = render_property_examples(&property);
+        // Summary cell collapses the object…
+        assert!(out.contains("{2 fields}"));
+        // …with the full pretty body shown below.
+        assert!(out.contains("row 1 details:"));
+        assert!(out.contains("maximum_used_bytes"));
+    }
+
+    #[test]
+    fn format_log_line_renders_json_record_with_stripped_envelope() {
+        let entry = json!({
+            "moment": {"input_hash": "6409410329507290816", "vtime": "9.093"},
+            "IPT_bytes_out": 126952,
+            "source": {"name": "fault_injector", "pid": 924},
+            "info": {"details": {"started": true}, "message": "status"}
+        });
+        assert_eq!(
+            format_log_line(&entry),
+            "[         9.093] [      fault_injector] [   ]  - {\"info\":{\"details\":{\"started\":true},\"message\":\"status\"}}"
         );
     }
 
     #[test]
-    fn flatten_returns_empty_when_no_sampled_events() {
-        let properties = vec![Property::NonEventProperty(NonEventProperty {
-            counterexample_count: Some(0),
-            counterexamples: Vec::new(),
-            description: None,
-            example_count: Some(0),
-            examples: Vec::new(),
-            group: None,
-            is_event: false,
-            is_group: None,
-            name: "No events property".to_string(),
-            status: PropertyStatus::Passing,
-        })];
+    fn format_log_line_renders_text_record_with_inf_stream() {
+        let entry = json!({
+            "moment": {"input_hash": "1", "vtime": "15.174"},
+            "source": {"container": "bank/first_setup.sh", "name": "bank/first_setup.sh", "stream": "info"},
+            "output_text": "NbmXgEki  INFO main lsm_tree::tree::ingest: Finished ingestion writer"
+        });
+        assert_eq!(
+            format_log_line(&entry),
+            "[        15.174] [ bank/first_setup.sh] [inf] NbmXgEki  INFO main lsm_tree::tree::ingest: Finished ingestion writer"
+        );
+    }
 
-        let rows = flatten_property_events(&properties);
-        assert!(rows.is_empty());
+    #[test]
+    fn format_log_line_preserves_ansi_in_output_text() {
+        let entry = json!({
+            "moment": {"input_hash": "1", "vtime": "14.118"},
+            "source": {"name": "setup", "stream": "error"},
+            "output_text": "\x1B[4m>>>> hello"
+        });
+        let rendered = format_log_line(&entry);
+        assert!(rendered.contains("\x1B[4m>>>> hello"));
+        assert!(rendered.contains("[err]"));
+    }
+
+    #[test]
+    fn format_log_line_overflows_source_column_when_too_long() {
+        let entry = json!({
+            "moment": {"vtime": "14.284"},
+            "source": {
+                "container": "antithesis/pods/client/sdk.jsonl",
+                "name": "antithesis/pods/client/sdk.jsonl"
+            },
+            "antithesis_setup": {"details": null, "status": "complete"}
+        });
+        assert_eq!(
+            format_log_line(&entry),
+            "[        14.284] [antithesis/pods/client/sdk.jsonl] [   ]  - {\"antithesis_setup\":{\"details\":null,\"status\":\"complete\"}}"
+        );
+    }
+
+    #[test]
+    fn render_event_property_examples_marks_unreachable_when_empty() {
+        let property = event_property("Maybe ran", PropertyStatus::Passing, None, vec![], vec![]);
+        let out = render_property_examples(&property);
+        assert!(out.contains("unreachable"));
     }
 
     #[test]
@@ -2879,6 +3455,180 @@ mod tests {
                 )
                 .to_string()
             )
+        );
+    }
+
+    #[test]
+    fn status_glyph_covers_every_variant() {
+        assert_eq!(status_glyph(RunStatus::Completed), "✓");
+        assert_eq!(status_glyph(RunStatus::Incomplete), "✗");
+        assert_eq!(status_glyph(RunStatus::InProgress), "…");
+        assert_eq!(status_glyph(RunStatus::Starting), "·");
+        assert_eq!(status_glyph(RunStatus::Cancelled), "⊘");
+        assert_eq!(status_glyph(RunStatus::Unknown), "?");
+    }
+
+    fn summary(
+        run_id: &str,
+        status: RunStatus,
+        created: &str,
+        launcher: &str,
+        test_name: Option<&str>,
+        description: Option<&str>,
+    ) -> RunSummary {
+        let parameters = if test_name.is_some() || description.is_some() {
+            let mut extra = std::collections::HashMap::new();
+            if let Some(name) = test_name {
+                extra.insert("antithesis.test_name".to_string(), name.to_string());
+            }
+            Some(crate::api::RunParams {
+                antithesis_config_image: None,
+                antithesis_description: description.map(str::to_string),
+                antithesis_duration: None,
+                antithesis_images: None,
+                antithesis_is_ephemeral: None,
+                antithesis_report_recipients: None,
+                antithesis_source: None,
+                extra,
+            })
+        } else {
+            None
+        };
+        RunSummary {
+            run_id: run_id.to_string(),
+            status,
+            created_at: created.parse().unwrap(),
+            started_at: None,
+            completed_at: None,
+            launcher: launcher.to_string(),
+            creator: None,
+            parameters,
+            links: None,
+        }
+    }
+
+    #[test]
+    fn runs_table_default_view_shows_truncated_description() {
+        // Use a fixed past time so relative_time produces a stable-ish value.
+        let runs = vec![summary(
+            "abc-54-1",
+            RunStatus::Completed,
+            "2024-01-01T00:00:00Z",
+            "basic_test",
+            Some("snouty-empty-tt"),
+            Some("issue #91: probe Antithesis behavior with empty test template dir"),
+        )];
+
+        let table = render_runs_table(&runs, false, 80);
+        let lines: Vec<&str> = table.lines().collect();
+
+        assert!(lines[0].contains("RUN ID"));
+        assert!(lines[0].contains("STATUS"));
+        assert!(lines[0].contains("CREATED AT"));
+        assert!(lines[0].contains("TITLE"));
+        assert!(lines[0].contains("DESCRIPTION"));
+        assert!(!lines[0].contains("LAUNCHER"));
+
+        assert!(lines[1].contains("abc-54-1"));
+        assert!(lines[1].contains("✓"));
+        assert!(lines[1].contains("snouty-empty-tt"));
+        // Description is truncated with an ellipsis on a narrow terminal.
+        assert!(lines[1].contains('…'));
+    }
+
+    #[test]
+    fn runs_table_long_view_prints_description_on_separate_line() {
+        let runs = vec![summary(
+            "abc-54-1",
+            RunStatus::Completed,
+            "2024-01-01T00:00:00Z",
+            "basic_test",
+            Some("snouty-empty-tt"),
+            Some("full description goes here"),
+        )];
+
+        let table = render_runs_table(&runs, true, 200);
+        let lines: Vec<&str> = table.lines().collect();
+        assert!(lines[1].contains("snouty-empty-tt"));
+        // -l mode strips description from the main row and prints it indented below.
+        assert!(!lines[1].contains("full description"));
+        assert!(lines[2].starts_with("    full description"));
+    }
+
+    #[test]
+    fn event_matches_anding_of_multiple_needles() {
+        let entry = json!({
+            "source": {"name": "fault_injector"},
+            "moment": {"vtime": "1.0"},
+            "info": {"message": "network partition started"}
+        });
+        let line = entry.to_string();
+
+        let needles = vec!["network".to_string(), "partition".to_string()];
+        let filters = EventFilters {
+            matches: &needles,
+            sources: &[],
+            stream: None,
+            vtime_min: None,
+            vtime_max: None,
+        };
+        assert!(event_matches_filters(&entry, &line, filters));
+
+        let missing = vec!["network".to_string(), "missing".to_string()];
+        let filters = EventFilters {
+            matches: &missing,
+            ..filters
+        };
+        assert!(!event_matches_filters(&entry, &line, filters));
+    }
+
+    #[test]
+    fn event_filters_by_source_and_stream_and_vtime() {
+        let entry = json!({
+            "source": {"name": "control", "container": "control", "stream": "stderr"},
+            "moment": {"vtime": "12.5"},
+            "output_text": "boom"
+        });
+        let line = entry.to_string();
+
+        let needles = vec!["boom".to_string()];
+        let sources = vec!["control".to_string()];
+        let filters = EventFilters {
+            matches: &needles,
+            sources: &sources,
+            stream: Some(Stream::Stderr),
+            vtime_min: Some(10.0),
+            vtime_max: Some(15.0),
+        };
+        assert!(event_matches_filters(&entry, &line, filters));
+
+        let wrong_source = vec!["other".to_string()];
+        let filters = EventFilters {
+            sources: &wrong_source,
+            ..filters
+        };
+        assert!(!event_matches_filters(&entry, &line, filters));
+    }
+
+    #[test]
+    fn runs_table_renders_dashes_when_test_name_and_description_missing() {
+        let runs = vec![summary(
+            "abc-54-1",
+            RunStatus::Incomplete,
+            "2024-01-01T00:00:00Z",
+            "basic_test",
+            None,
+            None,
+        )];
+        let table = render_runs_table(&runs, false, 100);
+        let lines: Vec<&str> = table.lines().collect();
+        assert!(lines[1].contains("✗"));
+        // Two dash placeholders: one for title, one for description.
+        let dash_count = lines[1].matches('-').count();
+        assert!(
+            dash_count >= 2,
+            "expected at least two dashes, got: {}",
+            lines[1]
         );
     }
 }

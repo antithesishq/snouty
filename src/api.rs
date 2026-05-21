@@ -23,7 +23,36 @@ pub use generated::types::{
     BuildLogLine, Event, EventProperty, LaunchResponse, Moment, NonEventProperty, Property,
     PropertyStatus, RunDetail, RunStatus, RunSummary,
 };
+pub(crate) use generated::types::Params as RunParams;
 pub use progenitor_client::ByteStream;
+
+fn params_test_name(params: Option<&RunParams>) -> Option<&str> {
+    params.and_then(|p| p.extra.get("antithesis.test_name").map(String::as_str))
+}
+
+fn params_test_description(params: Option<&RunParams>) -> Option<&str> {
+    params.and_then(|p| p.antithesis_description.as_deref())
+}
+
+impl RunSummary {
+    pub(crate) fn test_name(&self) -> Option<&str> {
+        params_test_name(self.parameters.as_ref())
+    }
+
+    pub(crate) fn test_description(&self) -> Option<&str> {
+        params_test_description(self.parameters.as_ref())
+    }
+}
+
+impl RunDetail {
+    pub(crate) fn test_name(&self) -> Option<&str> {
+        params_test_name(self.parameters.as_ref())
+    }
+
+    pub(crate) fn test_description(&self) -> Option<&str> {
+        params_test_description(self.parameters.as_ref())
+    }
+}
 
 impl Property {
     pub fn name(&self) -> &str {
@@ -37,25 +66,6 @@ impl Property {
         match self {
             Self::EventProperty(p) => p.status,
             Self::NonEventProperty(p) => p.status,
-        }
-    }
-
-    /// Sampled example events for an event-based property. Returns an empty
-    /// slice for non-event properties, whose examples are arbitrary values
-    /// without a `moment`.
-    pub fn event_examples(&self) -> &[Event] {
-        match self {
-            Self::EventProperty(p) => &p.examples,
-            Self::NonEventProperty(_) => &[],
-        }
-    }
-
-    /// Sampled counterexample events for an event-based property. Returns an
-    /// empty slice for non-event properties.
-    pub fn event_counterexamples(&self) -> &[Event] {
-        match self {
-            Self::EventProperty(p) => &p.counterexamples,
-            Self::NonEventProperty(_) => &[],
         }
     }
 }

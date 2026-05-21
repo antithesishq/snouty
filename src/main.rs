@@ -1,7 +1,8 @@
 use std::io::{self, ErrorKind, Read};
 use std::process::Command;
 
-use clap::Parser;
+use clap::{CommandFactory, Parser};
+use clap_complete::Shell;
 use log::{debug, info};
 
 use color_eyre::eyre::{Context, Result, bail};
@@ -313,19 +314,10 @@ async fn cmd_debug(args: DebugArgs, json: bool, verbose: bool) -> Result<()> {
     Ok(())
 }
 
-fn cmd_completions(shell: String) -> Result<()> {
-    let output = match shell.as_str() {
-        "bash" => include_str!(concat!(env!("OUT_DIR"), "/snouty.bash")),
-        "zsh" => include_str!(concat!(env!("OUT_DIR"), "/_snouty")),
-        "fish" => include_str!(concat!(env!("OUT_DIR"), "/snouty.fish")),
-        "elvish" => include_str!(concat!(env!("OUT_DIR"), "/snouty.elv")),
-        _ => {
-            bail!(
-                "invalid arguments: unsupported shell: {shell}\nsupported: bash, zsh, fish, elvish"
-            );
-        }
-    };
-    print!("{output}");
+fn cmd_completions(shell: Shell) -> Result<()> {
+    let mut cmd = Cli::command();
+    let bin_name = cmd.get_name().to_string();
+    clap_complete::generate(shell, &mut cmd, bin_name, &mut io::stdout());
     Ok(())
 }
 

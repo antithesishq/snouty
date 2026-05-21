@@ -16,19 +16,18 @@
 ! snouty runs
 stderr 'missing environment variable.*'
 
-# On success, the command fetches all pages via next_cursor and prints a table.
+# On success, the command fetches all pages via next_cursor and prints a table
+# with relative timestamps and status glyphs.
 mock-runs-server
 snouty runs
-stdout 'RUN ID.*STATUS.*CREATED AT.*LAUNCHER'
-[!staging] stdout 'run-1.*completed.*2025-03-20T02:00:00\+00:00.*nightly'
-[!staging] stdout 'run-2.*in_progress.*2025-03-19T14:00:00\+00:00.*debug'
+stdout 'RUN ID.*STATUS.*CREATED AT.*TITLE.*DESCRIPTION'
+[!staging] stdout 'run-1.*✓'
+[!staging] stdout 'run-2.*…'
 
 # `snouty runs list` is the same as bare `snouty runs`.
 mock-runs-server
 snouty runs list
-stdout 'RUN ID.*STATUS.*CREATED AT.*LAUNCHER'
-[!staging] stdout 'run-1.*completed.*2025-03-20T02:00:00\+00:00.*nightly'
-[!staging] stdout 'run-2.*in_progress.*2025-03-19T14:00:00\+00:00.*debug'
+stdout 'RUN ID.*STATUS.*CREATED AT.*TITLE.*DESCRIPTION'
 
 # `snouty runs show` requires a run ID.
 ! snouty runs show
@@ -50,36 +49,36 @@ stdout 'Run ID.*$R_run_id'
 [!staging] stdout 'Status.*completed'
 [!staging] stdout 'Launcher.*nightly'
 
+# `snouty runs show` no longer prints the raw report URL — `snouty runs open`
+# is the new way to follow that link.
+mock-runs-server
+snouty runs show $R_run_id
+! stdout 'Report.*https'
+
 # `snouty --json runs show` outputs JSON.
 mock-runs-server
 snouty --json runs show $R_run_id
 stdout '"run_id".*"$R_run_id"'
 [!staging] stdout '"status".*"completed"'
 
-# `snouty runs properties` renders event-based properties as a flattened HASH/VTIME
-# table and non-event properties as a separate NAME/VALUE table.
+# `snouty runs properties` renders one row per property with status glyph,
+# group, name, and total example count.
 mock-runs-server
 snouty runs properties $R_run_id
-[!staging] stdout 'EXAMPLE.*HASH.*VTIME.*NAME'
-[!staging] stdout 'Failing.*-100.*5\.0.*Counter value stays below limit'
-[!staging] stdout 'Failing.*-200.*10\.0.*Counter value stays below limit'
-[!staging] stdout 'Passing.*-300.*15\.0.*Counter value stays below limit'
-[!staging] stdout 'EXAMPLE.*NAME.*VALUE'
-[!staging] stdout 'Passing.*Setup completes.*"final_counter":42'
+[!staging] stdout 'STATUS.*GROUP.*NAME.*EXAMPLES'
+[!staging] stdout '✗.*Counter value stays below limit'
+[!staging] stdout '✓.*Setup completes'
 
 # `snouty runs properties --failing` shows only failing properties.
 mock-runs-server
 snouty runs properties --failing $R_run_id
-[!staging] stdout 'Failing.*-100.*5\.0.*Counter value stays below limit'
-[!staging] stdout 'Failing.*-200.*10\.0.*Counter value stays below limit'
-[!staging] stdout 'Passing.*-300.*15\.0.*Counter value stays below limit'
+[!staging] stdout '✗.*Counter value stays below limit'
 [!staging] stdout -count=0 'Setup completes'
 
 # `snouty runs properties --passing` shows only passing properties.
 mock-runs-server
 snouty runs properties --passing $R_run_id
-[!staging] stdout 'EXAMPLE.*NAME.*VALUE'
-[!staging] stdout 'Passing.*Setup completes.*"final_counter":42'
+[!staging] stdout '✓.*Setup completes'
 [!staging] stdout -count=0 'Counter value stays below limit'
 
 # `snouty runs properties --passing --failing` is rejected.
@@ -91,6 +90,26 @@ mock-runs-server
 snouty --json runs properties $R_run_id
 [!staging] stdout '"name".*"Counter value stays below limit"'
 [!staging] stdout '"status".*"Failing"'
+
+# `snouty runs property` drills in on a single property and shows its examples
+# with a status column (passing/failing/unreachable).
+mock-runs-server
+snouty runs property $R_run_id 'Counter value stays below limit'
+[!staging] stdout 'STATUS.*HASH.*VTIME'
+[!staging] stdout 'failing.*-100.*5\.0'
+[!staging] stdout 'failing.*-200.*10\.0'
+[!staging] stdout 'passing.*-300.*15\.0'
+
+# Non-event properties drill into a STATUS/VALUE table.
+mock-runs-server
+snouty runs property $R_run_id 'Setup completes'
+[!staging] stdout 'STATUS.*VALUE'
+[!staging] stdout 'passing.*'
+
+# An unknown property errors clearly.
+mock-runs-server
+! snouty runs property $R_run_id no-such-property
+stderr 'no property matches.*no-such-property'
 
 # `snouty runs build-logs` streams formatted build log lines.
 mock-runs-server
@@ -104,15 +123,15 @@ mock-runs-server
 snouty --json runs build-logs $R_run_id
 [!staging] stdout '"timestamp".*"text"'
 
-# `snouty runs events` outputs a table by default.
+# `snouty runs events` requires --match (positional query was removed).
 mock-runs-server
-snouty runs events $R_run_id request
+snouty runs events $R_run_id --match request
 [!staging] stdout '^HASH\s+VTIME\s+SOURCE\s+OUTPUT'
 [!staging] stdout '-456.*2\.0.*\[app:error\].*\{"level":"warn","msg":"slow request"\}'
 
 # `snouty --json runs events` outputs raw NDJSON.
 mock-runs-server
-snouty --json runs events $R_run_id counter
+snouty --json runs events $R_run_id --match counter
 [!staging] stdout '"antithesis_assert".*"Counter'\''s value retrieved"'
 [!staging] stdout '.*"moment".*"input_hash":"-4735081784258020614".*'
 [!staging] stdout '.*"moment".*"vtime":"311\.8487535319291".*'
@@ -156,33 +175,26 @@ mock-runs-server
 snouty runs properties run-empty
 stdout 'No properties found\.'
 
-# `snouty runs properties` shows a values table for non-event properties even
-# when they have no sampled values; such properties render as "-" rows and the
-# events table is omitted.
+# `snouty runs properties` renders one row per property regardless of whether
+# any examples were sampled.
 mock-runs-server
 snouty runs properties run-no-events
-stdout 'EXAMPLE.*NAME.*VALUE'
-stdout '-.*No events property.*-'
-! stdout 'EXAMPLE.*HASH.*VTIME'
+stdout 'STATUS.*GROUP.*NAME.*EXAMPLES'
+stdout '✓.*No events property'
 
 # `snouty runs properties` requires a run ID.
 ! snouty runs properties
 stderr '.*'
 
-# `snouty runs logs` outputs a table by default.
+# `snouty runs logs` matches the web UI download format: `[vtime] [source]
+# [stream] payload`. Text records (those with `output_text`) sit one space
+# after the stream bracket; JSON records get a " - " separator and have the
+# moment/source/IPT_bytes_out envelope stripped.
 mock-runs-server
 snouty runs logs run-1 -123 1.0
-stdout 'VTIME.*SOURCE.*OUTPUT'
-stdout '1\.0.*\[app:out\].*\{"level":"info","msg":"starting"\}'
-stdout '2\.0.*\[app:error\].*\{"level":"warn","msg":"slow request"\}'
-stdout '3\.0.*\[app:out\].*line one\\\\nline two'
-stdout '73\.94233945617452.*\[control:error\].*Post "http://10\.0\.1\.123:8003/"'
-stdout '311\.8487535319291.*\[control:assert\].*UNHIT AlwaysOrUnreachable "Counter'\''s value retrieved" @ control\.go:get:87'
-# Events without source.container fall back to a sanitized source.name label
-# (with any leading `antithesis_` stripped). Known sources render their
-# curated fields as <path>=<value> pairs in config order.
-stdout '400\.5.*\[test_composer\].*task_status=started command=core/parallel_driver_fetch container_id=d700ef3d05a263 tasks_len=1'
-stdout '401\.5.*\[fault_injector\].*fault\.name=clog fault\.type=network fault\.details\.disruption_type=Stopped fault\.affected_nodes=client2,setup fault\.max_duration=0\.267'
+stdout '\[\s*1\.0\] \[\s*app\] \[out\] \{"level":"info","msg":"starting"\}'
+stdout '\[\s*2\.0\] \[\s*app\] \[err\] \{"level":"warn","msg":"slow request"\}'
+stdout '\[\s*311\.8487535319291\] \[\s*control\] \[\s\s\s\]  - \{"antithesis_assert"'
 
 # `snouty --json runs logs` outputs NDJSON with faults annotated.
 mock-runs-server
@@ -215,10 +227,10 @@ stderr '.*INPUT_HASH.*'
 
 # `snouty runs events` prints the header row even when there are no matching events.
 mock-runs-server
-snouty runs events run-1 nomatch
+snouty runs events run-1 --match nomatch
 stdout '^HASH\s+VTIME\s+SOURCE\s+OUTPUT'
 
-# `snouty runs events` requires a query.
+# `snouty runs events` requires --match.
 mock-runs-server
 ! snouty runs events run-1
-stderr '.*'
+stderr '.*--match.*'

@@ -2,11 +2,6 @@ use std::fs;
 use std::path::Path;
 use std::process::Command;
 
-use clap::CommandFactory;
-use clap_complete::{Shell, generate_to};
-
-include!("src/cli.rs");
-
 fn main() {
     println!("cargo:rerun-if-env-changed=RUSTC");
     println!("cargo:rerun-if-changed=src/openapi.json");
@@ -18,14 +13,6 @@ fn main() {
     let out_dir = std::env::var_os("OUT_DIR").unwrap();
     fs::create_dir_all(&out_dir).unwrap();
     generate_api_client(Path::new(&out_dir));
-
-    let completions_dir = std::env::var_os("SHELL_COMPLETIONS_DIR").unwrap_or(out_dir);
-    fs::create_dir_all(&completions_dir).unwrap();
-
-    let mut command = Cli::command();
-    for shell in [Shell::Bash, Shell::Fish, Shell::Zsh, Shell::Elvish] {
-        generate_to(shell, &mut command, "snouty", &completions_dir).unwrap();
-    }
 }
 
 fn generate_api_client(out_dir: &Path) {

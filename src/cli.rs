@@ -1,5 +1,7 @@
 use clap::{Args, Parser, Subcommand};
 
+use crate::runs::Stream;
+
 #[derive(Parser)]
 #[command(name = "snouty")]
 #[command(about = "CLI for the Antithesis API", long_about = None)]
@@ -104,8 +106,8 @@ Using Moment.from (copy from triage report):
 
     /// Output shell completions
     Completions {
-        /// Shell to generate completions for (bash, zsh, fish, elvish)
-        shell: String,
+        /// Shell to generate completions for
+        shell: clap_complete::Shell,
     },
 
     /// Validate local Antithesis setup
@@ -332,6 +334,12 @@ pub enum RunsCommands {
         run_id: String,
     },
 
+    /// Open the triage report for a run in the browser
+    Open {
+        /// Run ID
+        run_id: String,
+    },
+
     /// List property results for a run
     Properties {
         /// Run ID
@@ -344,6 +352,15 @@ pub enum RunsCommands {
         /// Show only failing properties
         #[arg(long)]
         failing: bool,
+    },
+
+    /// Show examples and counter-examples for a single property
+    Property {
+        /// Run ID
+        run_id: String,
+
+        /// Property name (exact match preferred; otherwise unique substring match)
+        name: String,
     },
 
     /// Stream build logs for a run
@@ -382,9 +399,25 @@ pub enum RunsCommands {
         /// Run ID
         run_id: String,
 
-        /// Search query
-        #[arg(required = true, num_args = 1..)]
-        query: Vec<String>,
+        /// Substring to search for (repeatable; all matches must be present)
+        #[arg(short = 'm', long = "match", required = true)]
+        matches: Vec<String>,
+
+        /// Restrict to events from this source name or container (repeatable)
+        #[arg(long)]
+        source: Vec<String>,
+
+        /// Restrict to events on this stream (stdout, stderr, info, error)
+        #[arg(long)]
+        stream: Option<Stream>,
+
+        /// Only include events with vtime >= this value
+        #[arg(long)]
+        vtime_min: Option<f64>,
+
+        /// Only include events with vtime <= this value
+        #[arg(long)]
+        vtime_max: Option<f64>,
     },
 }
 
@@ -395,7 +428,7 @@ pub struct RunsListArgs {
     pub status: Option<String>,
 
     /// Filter by launcher name
-    #[arg(short, long)]
+    #[arg(long)]
     pub launcher: Option<String>,
 
     /// Only show runs created after this timestamp (ISO 8601)
@@ -409,6 +442,10 @@ pub struct RunsListArgs {
     /// Maximum number of runs to display
     #[arg(short = 'n', long, default_value = "50")]
     pub limit: usize,
+
+    /// Print full descriptions on a second line instead of truncating
+    #[arg(short = 'l', long)]
+    pub long: bool,
 }
 
 impl Default for RunsListArgs {
@@ -419,6 +456,7 @@ impl Default for RunsListArgs {
             created_after: None,
             created_before: None,
             limit: 50,
+            long: false,
         }
     }
 }

@@ -350,6 +350,10 @@ pub enum RunsCommands {
     BuildLogs {
         /// Run ID
         run_id: String,
+
+        /// Whether to annotate faults that appear in individual log lines
+        #[arg(long, default_value_t = true)]
+        annotate_faults: bool,
     },
 
     /// Stream moment logs for a run
@@ -371,6 +375,10 @@ pub enum RunsCommands {
         /// Start streaming from this input hash (optimization; must be paired with --begin-vtime)
         #[arg(long, allow_hyphen_values = true, requires = "begin_vtime")]
         begin_input_hash: Option<String>,
+
+        /// Whether to annotate faults that appear in individual log lines
+        #[arg(long, default_value_t = true)]
+        annotate_faults: bool,
     },
 
     /// Search events in a run
@@ -381,6 +389,10 @@ pub enum RunsCommands {
         /// Search query
         #[arg(required = true, num_args = 1..)]
         query: Vec<String>,
+
+        /// Whether to annotate faults that appear in individual log lines
+        #[arg(long, default_value_t = true)]
+        annotate_faults: bool,
     },
 }
 

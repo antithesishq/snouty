@@ -1,11 +1,14 @@
-use std::io::Write;
+use std::collections::hash_map::Entry;
+use std::collections::{HashMap, LinkedList};
+use std::{io::Write, sync::OnceLock};
 use std::path::Path;
 
 use color_eyre::eyre::{Result, eyre};
 use futures_util::{StreamExt, TryStreamExt};
 use log::debug;
+use regex::Regex;
 use serde::Deserialize;
-use serde_json::Value;
+use serde_json::{Map, Value, json};
 
 use crate::api::{
     AntithesisApi, Property, PropertyStatus, RunDetail, RunStatus, RunSummary, RunsFilterOptions,
@@ -33,8 +36,8 @@ pub async fn cmd_runs(command: Option<RunsCommands>, json: bool, verbose: bool) 
             };
             cmd_runs_properties(&run_id, status, json, verbose).await
         }
-        Some(RunsCommands::BuildLogs { run_id }) => {
-            cmd_runs_build_logs(&run_id, json, verbose).await
+        Some(RunsCommands::BuildLogs { run_id, annotate_faults }) => {
+            cmd_runs_build_logs(&run_id, json, verbose, annotate_faults).await
         }
         Some(RunsCommands::Logs {
             run_id,
@@ -42,6 +45,7 @@ pub async fn cmd_runs(command: Option<RunsCommands>, json: bool, verbose: bool) 
             vtime,
             begin_vtime,
             begin_input_hash,
+            annotate_faults,
         }) => {
             cmd_runs_logs(
                 &run_id,
@@ -51,11 +55,12 @@ pub async fn cmd_runs(command: Option<RunsCommands>, json: bool, verbose: bool) 
                 begin_vtime.as_deref(),
                 json,
                 verbose,
+                annotate_faults,
             )
             .await
         }
-        Some(RunsCommands::Events { run_id, query }) => {
-            cmd_runs_events(&run_id, &query, json, verbose).await
+        Some(RunsCommands::Events { run_id, query, annotate_faults }) => {
+            cmd_runs_events(&run_id, &query, json, verbose, annotate_faults).await
         }
     }
 }
@@ -222,7 +227,7 @@ fn print_run_detail(run: &RunDetail) {
     }
 }
 
-async fn cmd_runs_build_logs(run_id: &str, json: bool, verbose: bool) -> Result<()> {
+async fn cmd_runs_build_logs(run_id: &str, json: bool, verbose: bool, annotate_faults: bool) -> Result<()> {
     debug!("streaming build logs for run: {}", run_id);
 
     let api = AntithesisApi::from_env(verbose)?;
@@ -230,13 +235,13 @@ async fn cmd_runs_build_logs(run_id: &str, json: bool, verbose: bool) -> Result<
     let mut stdout = std::io::stdout().lock();
 
     if json {
-        stream_ndjson_lines(stream, |line| {
+        stream_ndjson_lines(stream, annotate_faults, |line| {
             writeln!(stdout, "{line}")?;
             Ok(())
         })
         .await
     } else {
-        stream_ndjson_lines(stream, |line| {
+        stream_ndjson_lines(stream, annotate_faults, |line| {
             if let Ok(entry) = serde_json::from_str::<serde_json::Value>(line) {
                 let ts = entry["timestamp"].as_str().unwrap_or("");
                 let stream = entry["stream"].as_str().unwrap_or("out");
@@ -251,7 +256,7 @@ async fn cmd_runs_build_logs(run_id: &str, json: bool, verbose: bool) -> Result<
     }
 }
 
-async fn cmd_runs_events(run_id: &str, query: &[String], json: bool, verbose: bool) -> Result<()> {
+async fn cmd_runs_events(run_id: &str, query: &[String], json: bool, verbose: bool, annotate_faults: bool) -> Result<()> {
     debug!("searching events for run: {}", run_id);
 
     let api = AntithesisApi::from_env(verbose)?;
@@ -262,7 +267,7 @@ async fn cmd_runs_events(run_id: &str, query: &[String], json: bool, verbose: bo
 
     let mut stdout = std::io::stdout().lock();
     if json {
-        stream_ndjson_lines(stream, |line| {
+        stream_ndjson_lines(stream, annotate_faults, |line| {
             writeln!(stdout, "{line}")?;
             Ok(())
         })
@@ -273,7 +278,7 @@ async fn cmd_runs_events(run_id: &str, query: &[String], json: bool, verbose: bo
             "{:<22}  {:<22}  {:<20}  OUTPUT",
             "HASH", "VTIME", "SOURCE"
         )?;
-        stream_ndjson_lines(stream, |line| {
+        stream_ndjson_lines(stream, annotate_faults, |line| {
             if let Ok(entry) = serde_json::from_str::<Value>(line) {
                 let rendered = render_event_entry(&entry);
                 let input_hash = rendered.input_hash;
@@ -301,6 +306,7 @@ async fn cmd_runs_logs(
     begin_vtime: Option<&str>,
     json: bool,
     verbose: bool,
+    annotate_faults: bool
 ) -> Result<()> {
     debug!("streaming logs for run: {}", run_id);
 
@@ -312,14 +318,14 @@ async fn cmd_runs_logs(
 
     let mut stdout = std::io::stdout().lock();
     if json {
-        stream_ndjson_lines(stream, |line| {
+        stream_ndjson_lines(stream, annotate_faults, |line| {
             writeln!(stdout, "{line}")?;
             Ok(())
         })
         .await
     } else {
         writeln!(stdout, "{:<22}  {:<20}  OUTPUT", "VTIME", "SOURCE")?;
-        stream_ndjson_lines(stream, |line| {
+        stream_ndjson_lines(stream, annotate_faults, |line| {
             if let Ok(entry) = serde_json::from_str::<Value>(line) {
                 let rendered = render_event_entry(&entry);
                 let vtime = rendered.vtime;
@@ -335,8 +341,11 @@ async fn cmd_runs_logs(
     }
 }
 
+const TICKS_PER_SECOND: f64 = (1u64 << 32) as f64;
+
 async fn stream_ndjson_lines<S, C>(
     mut stream: S,
+    annotate_faults: bool,
     mut process_line: impl FnMut(&str) -> Result<()>,
 ) -> Result<()>
 where
@@ -346,6 +355,9 @@ where
     use futures_util::StreamExt;
 
     let mut buf: Vec<u8> = Vec::new();
+    let mut faults_need_updating;
+    let mut active_fault_windows = LinkedList::<FaultWindow>::new();
+    let mut active_faults: Option<Value> = None;
 
     while let Some(chunk) = stream.next().await {
         let chunk = chunk?;
@@ -356,7 +368,69 @@ where
             if !line_bytes.is_empty() {
                 let line = std::str::from_utf8(line_bytes)
                     .map_err(|e| eyre!("invalid UTF-8 in response stream: {e}"))?;
-                process_line(line)?;
+                if let Ok(mut entry) = serde_json::from_str::<Value>(line) {
+                    let mut rewrite_line = false;
+
+                    if annotate_faults {
+                        let event_vtime_ticks = entry["moment"]["_vtime_ticks"].as_u64().unwrap_or(0);
+                        let fault_name =  entry["fault"]["name"].as_str();
+                        let is_fault_injector = entry["source"]["name"].as_str().map(|source| source.eq("fault_injector")).unwrap_or(false);
+                        let faults_were_paused = is_fault_injector && 
+                            entry["info"]["message"].as_str().map(|message| message.eq("status")).unwrap_or(false) &&
+                            entry["info"]["details"]["paused"].as_bool().unwrap_or(false);
+                        let is_restore_event = fault_name.map(|n| n.eq("restore")).unwrap_or(false);
+
+                        let windows_before_scrubbing = active_fault_windows.len();
+                        // clear any fault windows that are expired or mooted by fault injector pauses
+                        active_fault_windows
+                            .extract_if(|w| w.is_expired(event_vtime_ticks) ||
+                                (faults_were_paused && (w.is_network_fault() || w.is_node_fault())) ||
+                                (is_restore_event && w.is_network_fault()))
+                            .for_each(drop);
+                        faults_need_updating = windows_before_scrubbing == active_fault_windows.len();
+
+                        if is_fault_injector && let Some(fault_name) = fault_name {
+                            let max_duration_ticks = entry["fault"]["max_duration"].as_f64().filter(|d| *d >= 0.0).map(|d| (d * TICKS_PER_SECOND) as u64);
+                            let end_vtime = max_duration_ticks.map(|duration| duration + event_vtime_ticks);
+                            let fault_type = entry["fault"]["type"].as_str().unwrap_or("");
+
+                            if let Some(target) = entry["fault"]["affected_nodes"].as_array().and_then(|arr| arr.first()).and_then(|first| first.as_str()) {
+                                if fault_name.eq("partition") || fault_name.eq("clog") {
+                                    active_fault_windows.push_back(FaultWindow::Network { name: fault_name.to_string(), start_vtime: event_vtime_ticks, end_vtime });
+                                    faults_need_updating = true;
+                                } else if fault_type.eq("node") && (fault_name.eq("pause") || fault_name.eq("throttle")) {
+                                    active_fault_windows.push_back(FaultWindow::Node { name: fault_name.to_string(), start_vtime: event_vtime_ticks, end_vtime, container: target.to_string() });
+                                    faults_need_updating = true;
+                                }
+                            }
+
+                            if fault_name.eq("skip") && fault_type.eq("clock") && let Some(offset) = entry["fault"]["details"]["offset"].as_f64() {
+                                active_fault_windows.push_back(FaultWindow::Clock { name: fault_name.to_string(), start_vtime: event_vtime_ticks, offset, end_vtime });
+                                faults_need_updating = true;
+                            }
+                        }
+
+                        if faults_need_updating {
+                            active_faults = if active_fault_windows.is_empty() { None } else { Some(active_fault_dictionary(&active_fault_windows)) };
+                        }
+
+                        if let Some(output_text) = entry["output_text"].as_str() {
+                            entry["output_text"] = Value::String(strip_ansi(output_text));
+                            rewrite_line = true;
+                        }
+
+                        if let Some(ref faults_snapshot) = active_faults {
+                            entry["active_faults"] = faults_snapshot.clone();
+                            rewrite_line = true;
+                        }
+                    }
+
+                    let line_to_process = if rewrite_line { &format!("{}", entry) } else { line };
+
+                    process_line(line_to_process)?;
+                } else {
+                    process_line(line)?;
+                }
             }
             buf.drain(..=pos);
         }
@@ -377,6 +451,98 @@ struct RenderedEventEntry {
     vtime: String,
     source: String,
     output: String,
+}
+
+#[derive(Debug, PartialEq)]
+enum FaultWindow {
+    Network { name: String, start_vtime: u64, end_vtime: Option<u64> },
+    Node { name: String, start_vtime: u64, end_vtime: Option<u64>, container: String },
+    Clock { name: String, start_vtime: u64, offset: f64, end_vtime: Option<u64> }
+}
+
+impl FaultWindow {
+    fn get_end_vtime(&self) -> &Option<u64> {
+        match self {
+            Self::Network { name: _, start_vtime: _, end_vtime } => end_vtime,
+            Self::Node { name: _, start_vtime: _, end_vtime, container: _ } => end_vtime,
+            Self::Clock { name: _, start_vtime: _, offset: _, end_vtime } => end_vtime,
+        }
+    }
+
+    fn is_expired(&self, latest_vtime: u64) -> bool {
+        self.get_end_vtime().map(|t| t < latest_vtime).unwrap_or(false)
+    }
+
+    fn is_network_fault(&self) -> bool {
+        match self {
+            Self::Network { name: _, start_vtime: _, end_vtime: _ } => true,
+            _ => false,
+        }
+    }
+
+    fn is_node_fault(&self) -> bool {
+        match self {
+            Self::Node { name: _, start_vtime: _, end_vtime: _, container: _ } => true,
+            _ => false,
+        }
+    }
+}
+
+fn ansi_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(concat!(
+            r"\x1b\[[\x20-\x3f]*[\x40-\x7e]",      // CSI: ESC [ ... final
+            r"|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)", // OSC: ESC ] ... (BEL | ESC \)
+            r"|\x1b[\x20-\x7e]",                   // two-byte: ESC + single printable
+        ))
+        .unwrap()
+    })
+}
+
+fn strip_ansi(text: &str) -> String {
+    ansi_re().replace_all(text, "").to_string()
+}
+
+fn active_fault_dictionary(open_windows: &LinkedList<FaultWindow>) -> Value {
+    let mut result = Map::new();
+    let mut offset_sum = 0f64;
+    let mut max_clock_fault_start: Option<u64> = None;
+    let mut network_fault_starts = HashMap::<String, u64>::new();
+    let mut node_faults = HashMap::<String, Map<String, Value>>::new();
+
+    for fault_window in open_windows {
+        if let FaultWindow::Clock { name: _, start_vtime, offset, end_vtime: _ } = fault_window {
+            max_clock_fault_start = max_clock_fault_start.map(|prev| prev.max(*start_vtime)).or(Some(*start_vtime));
+            offset_sum += offset;
+        } else if let FaultWindow::Network { name, start_vtime, end_vtime: _ } = fault_window {
+            match network_fault_starts.entry(format!("network_{}", name)) {
+                Entry::Vacant(entry) => { entry.insert(*start_vtime); },
+                Entry::Occupied(mut entry) => {
+                    if entry.get().ge(start_vtime) {
+                        entry.insert(*start_vtime);
+                    }
+                }
+            }
+        } else if let FaultWindow::Node { name, start_vtime, end_vtime: _, container } = fault_window {
+            node_faults.entry(format!("node_{}", name)).or_insert_with(|| Map::new())
+                .insert(container.clone(), json!((*start_vtime as f64) / TICKS_PER_SECOND));
+        }
+    }
+
+    for entry in network_fault_starts {
+        result[&entry.0] = json!(entry.1);
+    }
+
+    for entry in node_faults {
+        result[&entry.0] = Value::Object(entry.1);
+    }
+
+    if let Some(latest_vtime) = max_clock_fault_start {
+        result["clock_skip"] = json!({"cumulative_offset": offset_sum, "vtime": (latest_vtime as f64) / TICKS_PER_SECOND});
+    }
+
+    return Value::Object(result);
 }
 
 #[derive(Debug, Deserialize)]

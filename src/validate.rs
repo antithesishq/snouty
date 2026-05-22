@@ -438,11 +438,13 @@ fn discover_scripts(
 }
 
 fn is_missing_test_scripts_dir_error(err: &color_eyre::eyre::Report) -> bool {
-    let error_text = format!("{err:?}").to_ascii_lowercase();
-    error_text.contains("no such file or directory")
-        || error_text.contains("could not find the file")
-        || error_text.contains("file does not exist")
-        || error_text.contains("cannot stat")
+    err.chain().any(|cause| {
+        let error_text = cause.to_string().to_ascii_lowercase();
+        error_text.contains("no such file or directory")
+            || error_text.contains("could not find the file")
+            || error_text.contains("file does not exist")
+            || error_text.contains("cannot stat")
+    })
 }
 
 /// Validate the structure of discovered test scripts without executing them.

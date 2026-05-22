@@ -300,7 +300,7 @@ pub trait ContainerRuntime: Send + Sync {
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(eyre!("'{runtime} cp' failed"))
+            return Err(eyre!("'{runtime} cp' failed: {}", stderr.trim()))
                 .with_section(move || stderr.trim().to_string().header("Stderr:"));
         }
 

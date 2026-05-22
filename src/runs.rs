@@ -235,13 +235,21 @@ async fn cmd_runs_build_logs(run_id: &str, json: bool, verbose: bool, annotate_f
     let mut stdout = std::io::stdout().lock();
 
     if json {
-        stream_ndjson_lines(stream, annotate_faults, |line| {
-            writeln!(stdout, "{line}")?;
-            Ok(())
-        })
-        .await
+        if annotate_faults {
+            stream_ndjson_lines(stream, FaultAnnotator { active_fault_windows: LinkedList::new(), active_faults: json!({}) }, |line| {
+                writeln!(stdout, "{line}")?;
+                Ok(())
+            })
+            .await
+        } else {
+            stream_ndjson_lines(stream, NoOpTransformer {}, |line| {
+                writeln!(stdout, "{line}")?;
+                Ok(())
+            })
+            .await
+        }
     } else {
-        stream_ndjson_lines(stream, annotate_faults, |line| {
+        stream_ndjson_lines(stream, NoOpTransformer {}, |line| {
             if let Ok(entry) = serde_json::from_str::<serde_json::Value>(line) {
                 let ts = entry["timestamp"].as_str().unwrap_or("");
                 let stream = entry["stream"].as_str().unwrap_or("out");
@@ -267,18 +275,26 @@ async fn cmd_runs_events(run_id: &str, query: &[String], json: bool, verbose: bo
 
     let mut stdout = std::io::stdout().lock();
     if json {
-        stream_ndjson_lines(stream, annotate_faults, |line| {
-            writeln!(stdout, "{line}")?;
-            Ok(())
-        })
-        .await
+        if annotate_faults {
+            stream_ndjson_lines(stream, FaultAnnotator { active_fault_windows: LinkedList::new(), active_faults: json!({}) }, |line| {
+                writeln!(stdout, "{line}")?;
+                Ok(())
+            })
+            .await
+        } else {
+            stream_ndjson_lines(stream, NoOpTransformer {}, |line| {
+                writeln!(stdout, "{line}")?;
+                Ok(())
+            })
+            .await
+        }
     } else {
         writeln!(
             stdout,
             "{:<22}  {:<22}  {:<20}  OUTPUT",
             "HASH", "VTIME", "SOURCE"
         )?;
-        stream_ndjson_lines(stream, annotate_faults, |line| {
+        stream_ndjson_lines(stream, NoOpTransformer {}, |line| {
             if let Ok(entry) = serde_json::from_str::<Value>(line) {
                 let rendered = render_event_entry(&entry);
                 let input_hash = rendered.input_hash;
@@ -318,14 +334,22 @@ async fn cmd_runs_logs(
 
     let mut stdout = std::io::stdout().lock();
     if json {
-        stream_ndjson_lines(stream, annotate_faults, |line| {
-            writeln!(stdout, "{line}")?;
-            Ok(())
-        })
-        .await
+        if annotate_faults {
+            stream_ndjson_lines(stream, FaultAnnotator { active_fault_windows: LinkedList::new(), active_faults: json!({}) }, |line| {
+                writeln!(stdout, "{line}")?;
+                Ok(())
+            })
+            .await
+        } else {
+            stream_ndjson_lines(stream, NoOpTransformer {}, |line| {
+                writeln!(stdout, "{line}")?;
+                Ok(())
+            })
+            .await
+        }
     } else {
         writeln!(stdout, "{:<22}  {:<20}  OUTPUT", "VTIME", "SOURCE")?;
-        stream_ndjson_lines(stream, annotate_faults, |line| {
+        stream_ndjson_lines(stream, NoOpTransformer {}, |line| {
             if let Ok(entry) = serde_json::from_str::<Value>(line) {
                 let rendered = render_event_entry(&entry);
                 let vtime = rendered.vtime;
@@ -345,7 +369,7 @@ const TICKS_PER_SECOND: f64 = (1u64 << 32) as f64;
 
 async fn stream_ndjson_lines<S, C>(
     mut stream: S,
-    annotate_faults: bool,
+    mut line_transformer: impl LineTransformer,
     mut process_line: impl FnMut(&str) -> Result<()>,
 ) -> Result<()>
 where
@@ -355,9 +379,6 @@ where
     use futures_util::StreamExt;
 
     let mut buf: Vec<u8> = Vec::new();
-    let mut faults_need_updating;
-    let mut active_fault_windows = LinkedList::<FaultWindow>::new();
-    let mut active_faults: Option<Value> = None;
 
     while let Some(chunk) = stream.next().await {
         let chunk = chunk?;
@@ -368,66 +389,8 @@ where
             if !line_bytes.is_empty() {
                 let line = std::str::from_utf8(line_bytes)
                     .map_err(|e| eyre!("invalid UTF-8 in response stream: {e}"))?;
-                if let Ok(mut entry) = serde_json::from_str::<Value>(line) {
-                    let mut rewrite_line = false;
-
-                    if annotate_faults {
-                        let event_vtime_ticks = entry["moment"]["_vtime_ticks"].as_u64().unwrap_or(0);
-                        let fault_name =  entry["fault"]["name"].as_str();
-                        let is_fault_injector = entry["source"]["name"].as_str().map(|source| source.eq("fault_injector")).unwrap_or(false);
-                        let faults_were_paused = is_fault_injector && 
-                            entry["info"]["message"].as_str().map(|message| message.eq("status")).unwrap_or(false) &&
-                            entry["info"]["details"]["paused"].as_bool().unwrap_or(false);
-                        let is_restore_event = fault_name.map(|n| n.eq("restore")).unwrap_or(false);
-
-                        let windows_before_scrubbing = active_fault_windows.len();
-                        // clear any fault windows that are expired or mooted by fault injector pauses
-                        active_fault_windows
-                            .extract_if(|w| w.is_expired(event_vtime_ticks) ||
-                                (faults_were_paused && (w.is_network_fault() || w.is_node_fault())) ||
-                                (is_restore_event && w.is_network_fault()))
-                            .for_each(drop);
-                        faults_need_updating = windows_before_scrubbing == active_fault_windows.len();
-
-                        if is_fault_injector && let Some(fault_name) = fault_name {
-                            let max_duration_ticks = entry["fault"]["max_duration"].as_f64().filter(|d| *d >= 0.0).map(|d| (d * TICKS_PER_SECOND) as u64);
-                            let end_vtime = max_duration_ticks.map(|duration| duration + event_vtime_ticks);
-                            let fault_type = entry["fault"]["type"].as_str().unwrap_or("");
-
-                            if let Some(target) = entry["fault"]["affected_nodes"].as_array().and_then(|arr| arr.first()).and_then(|first| first.as_str()) {
-                                if fault_name.eq("partition") || fault_name.eq("clog") {
-                                    active_fault_windows.push_back(FaultWindow::Network { name: fault_name.to_string(), start_vtime: event_vtime_ticks, end_vtime });
-                                    faults_need_updating = true;
-                                } else if fault_type.eq("node") && (fault_name.eq("pause") || fault_name.eq("throttle")) {
-                                    active_fault_windows.push_back(FaultWindow::Node { name: fault_name.to_string(), start_vtime: event_vtime_ticks, end_vtime, container: target.to_string() });
-                                    faults_need_updating = true;
-                                }
-                            }
-
-                            if fault_name.eq("skip") && fault_type.eq("clock") && let Some(offset) = entry["fault"]["details"]["offset"].as_f64() {
-                                active_fault_windows.push_back(FaultWindow::Clock { name: fault_name.to_string(), start_vtime: event_vtime_ticks, offset, end_vtime });
-                                faults_need_updating = true;
-                            }
-                        }
-
-                        if faults_need_updating {
-                            active_faults = if active_fault_windows.is_empty() { None } else { Some(active_fault_dictionary(&active_fault_windows)) };
-                        }
-
-                        if let Some(output_text) = entry["output_text"].as_str() {
-                            entry["output_text"] = Value::String(strip_ansi(output_text));
-                            rewrite_line = true;
-                        }
-
-                        if let Some(ref faults_snapshot) = active_faults {
-                            entry["active_faults"] = faults_snapshot.clone();
-                            rewrite_line = true;
-                        }
-                    }
-
-                    let line_to_process = if rewrite_line { &format!("{}", entry) } else { line };
-
-                    process_line(line_to_process)?;
+                if let Some(transformed) = line_transformer.try_transform(line) {
+                    process_line(&transformed)?;
                 } else {
                     process_line(line)?;
                 }
@@ -439,10 +402,98 @@ where
     if !buf.is_empty() {
         let line = std::str::from_utf8(&buf)
             .map_err(|e| eyre!("invalid UTF-8 in response stream: {e}"))?;
-        process_line(line)?;
+        if let Some(transformed) = line_transformer.try_transform(line) {
+            process_line(&transformed)?;
+        } else {
+            process_line(line)?;
+        }
     }
 
     Ok(())
+}
+
+trait LineTransformer {
+    fn try_transform(&mut self, line: &str) -> Option<String>;
+}
+
+struct NoOpTransformer {}
+
+impl LineTransformer for NoOpTransformer {
+    fn try_transform(&mut self, _: &str) -> Option<String> {
+        None
+    }
+}
+
+struct FaultAnnotator {
+    active_fault_windows: LinkedList<FaultWindow>,
+    active_faults: Value,
+}
+
+impl LineTransformer for FaultAnnotator {
+    fn try_transform(&mut self, line: &str) -> Option<String> {
+        if let Ok(mut entry) = serde_json::from_str::<Value>(line) {
+            let mut update_faults;
+
+            let event_vtime_ticks = entry["moment"]["_vtime_ticks"].as_u64().unwrap_or(0);
+            let fault_name =  entry["fault"]["name"].as_str();
+            let is_fault_injector = entry["source"]["name"].as_str().map(|source| source.eq("fault_injector")).unwrap_or(false);
+            let faults_were_paused = is_fault_injector && 
+                entry["info"]["message"].as_str().map(|message| message.eq("status")).unwrap_or(false) &&
+                entry["info"]["details"]["paused"].as_bool().unwrap_or(false);
+            let is_restore_event = fault_name.map(|n| n.eq("restore")).unwrap_or(false);
+
+            // clear any fault windows that are expired or mooted by fault injector pauses
+            let length_before_cleanup = self.active_fault_windows.len();
+            self.active_fault_windows
+                .extract_if(|w| w.is_expired(event_vtime_ticks) ||
+                    (faults_were_paused && (w.is_network_fault() || w.is_node_fault())) ||
+                    (is_restore_event && w.is_network_fault()))
+                .for_each(drop);
+            update_faults = length_before_cleanup != self.active_fault_windows.len();
+
+            if is_fault_injector && let Some(new_window) = try_get_fault_window_defintion(&entry, event_vtime_ticks, fault_name) {
+                self.active_fault_windows.push_back(new_window);
+                update_faults = true;
+            }
+
+            if update_faults {
+                self.active_faults = active_fault_dictionary(&self.active_fault_windows);
+            }
+
+            if let Some(output_text) = entry["output_text"].as_str() {
+                entry["output_text"] = Value::String(strip_ansi(output_text));
+            }
+            entry["active_faults"] = self.active_faults.clone();
+
+            return Some(format!("{}", entry));
+        }
+
+        return None;
+    }
+}
+
+fn try_get_fault_window_defintion(entry: &Value, event_vtime_ticks: u64, maybe_fault_name: Option<&str>) -> Option<FaultWindow> {
+    if let Some(fault_name) = maybe_fault_name {
+        let max_duration_ticks = entry["fault"]["max_duration"].as_f64().filter(|d| *d >= 0.0).map(|d| (d * TICKS_PER_SECOND) as u64);
+        let end_vtime = max_duration_ticks.map(|duration| duration + event_vtime_ticks);
+        let fault_type = entry["fault"]["type"].as_str().unwrap_or("");
+
+        if let Some(target) = entry["fault"]["affected_nodes"].as_array().and_then(|arr| arr.first()).and_then(|first| first.as_str()) {
+            if fault_name.eq("partition") || fault_name.eq("clog") {
+                return Some(FaultWindow::Network { name: fault_name.to_string(), start_vtime: event_vtime_ticks, end_vtime });
+            } 
+            
+            if fault_type.eq("node") && (fault_name.eq("pause") || fault_name.eq("throttle")) {
+                return Some(FaultWindow::Node { name: fault_name.to_string(), start_vtime: event_vtime_ticks, end_vtime, container: target.to_string() });
+            }
+        }
+
+        if fault_name.eq("skip") && fault_type.eq("clock") && let Some(offset) = entry["fault"]["details"]["offset"].as_f64() {
+            return Some(FaultWindow::Clock { name: fault_name.to_string(), start_vtime: event_vtime_ticks, offset, end_vtime });
+        }
+    }
+
+    return None;
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -531,11 +582,11 @@ fn active_fault_dictionary(open_windows: &LinkedList<FaultWindow>) -> Value {
     }
 
     for entry in network_fault_starts {
-        result[&entry.0] = json!(entry.1);
+        result.insert(entry.0, json!((entry.1 as f64) / TICKS_PER_SECOND));
     }
 
     for entry in node_faults {
-        result[&entry.0] = Value::Object(entry.1);
+        result.insert(entry.0, Value::Object(entry.1));
     }
 
     if let Some(latest_vtime) = max_clock_fault_start {
@@ -1468,6 +1519,154 @@ mod tests {
         assert_eq!(
             sanitize("a\u{0001}b\u{000B}c\u{007F}d\te"),
             r"a\x01b\x0Bc\x7Fd	e"
+        );
+    }
+        #[test]
+    fn ansi_sgr() {
+        assert_eq!(strip_ansi("\x1b[1mbold\x1b[0m"), "bold");
+        assert_eq!(strip_ansi("\x1b[38;5;196mred\x1b[0m"), "red");
+        assert_eq!(strip_ansi("\x1b[38;2;255;0;0mred\x1b[0m"), "red");
+        assert_eq!(strip_ansi("\x1b[1;31;42mtext\x1b[0m"), "text");
+        assert_eq!(
+            strip_ansi(
+                "\x1b[2m2026-04-03T08:19:54Z\x1b[0m \x1b[32m INFO\x1b[0m \x1b[2mfoobar\x1b[0m\x1b[2m:\x1b[0m ready"
+            ),
+            "2026-04-03T08:19:54Z  INFO foobar: ready"
+        );
+    }
+
+    #[test]
+    fn ansi_csi_non_sgr() {
+        assert_eq!(strip_ansi("left\x1b[2Aright"), "leftright");
+        assert_eq!(strip_ansi("text\x1b[2K"), "text");
+        assert_eq!(strip_ansi("\x1b[?25hvisible"), "visible");
+        assert_eq!(strip_ansi("\x1b[?25l hidden"), " hidden");
+    }
+
+    #[test]
+    fn ansi_osc() {
+        assert_eq!(
+            strip_ansi("\x1b]0;my window title\x07text after"),
+            "text after"
+        );
+        assert_eq!(strip_ansi("\x1b]0;my title\x1b\\text after"), "text after");
+    }
+
+    #[test]
+    fn ansi_two_byte() {
+        assert_eq!(strip_ansi("\x1bcafter reset"), "after reset");
+        assert_eq!(strip_ansi("before\x1b7after"), "beforeafter");
+    }
+
+    #[test]
+    fn ansi_passthrough() {
+        let cases = [
+            "no escapes here",
+            r#"{"key": "value", "nested": {"a": [1,2,3]}}"#,
+            r#"{"url": "http://example.com/path?q=1&r=2", "count": 42}"#,
+            r#"Options { address: Some(0.0.0.0:3307), deployment: "mydb", mode: Standalone }"#,
+            r#"Config { inner: Inner { values: [1, 2, 3] }, name: "test" }"#,
+            "[2026-04-03] [INFO] [main] started",
+            r#"path: "/nix/store/abc-pkg/bin/cmd""#,
+            r#"{"msg": "he said \"hello\""}"#,
+        ];
+        for c in cases {
+            assert_eq!(strip_ansi(c), c, "passthrough failed: {c:?}");
+        }
+    }
+
+    #[test]
+    fn ansi_mixed() {
+        assert_eq!(
+            strip_ansi("\x1b[2m{\"key\": \"value\"}\x1b[0m"),
+            r#"{"key": "value"}"#
+        );
+        assert_eq!(
+            strip_ansi("\x1b[3mOptions { mode: Standalone }\x1b[0m"),
+            "Options { mode: Standalone }"
+        );
+        assert_eq!(
+            strip_ansi(
+                "\x1b[2m2026-04-03T00:00:00Z\x1b[0m \x1b[32m INFO\x1b[0m request completed {\"status\": 200, \"latency_ms\": 42}"
+            ),
+            r#"2026-04-03T00:00:00Z  INFO request completed {"status": 200, "latency_ms": 42}"#
+        );
+    }
+
+    #[test]
+    fn appends_faults() {
+        let mut transformer = FaultAnnotator { active_fault_windows: LinkedList::new(), active_faults: json!({}) };
+
+        // No faults yet
+        assert_eq!(
+            transformer.try_transform("{\"foo\":\"bar\"}"),
+            Some("{\"foo\":\"bar\",\"active_faults\":{}}".to_string())
+        );
+
+        // Open a network partition fault window
+        assert_eq!(
+            transformer.try_transform(&format!("{}", json!({
+                "moment": {
+                    "_vtime_ticks": 1u64 << 32
+                },
+                "source": {
+                    "name": "fault_injector"
+                },
+                "fault": {
+                    "name": "partition",
+                    "type": "network",
+                    "affected_nodes": ["a", "b"],
+                    "max_duration": 10
+                }
+            }))),
+            Some("{\"moment\":{\"_vtime_ticks\":4294967296},\"source\":{\"name\":\"fault_injector\"},\"fault\":{\"name\":\"partition\",\"type\":\"network\",\"affected_nodes\":[\"a\",\"b\"],\"max_duration\":10},\"active_faults\":{\"network_partition\":1.0}}".to_string())
+        );
+
+        // Another log message; should retain active window state
+        assert_eq!(
+            transformer.try_transform("{\"foo\":\"bar\"}"),
+            Some("{\"foo\":\"bar\",\"active_faults\":{\"network_partition\":1.0}}".to_string())
+        );
+
+        // Open a node throttled fault window
+        assert_eq!(
+            transformer.try_transform(&format!("{}", json!({
+                "moment": {
+                    "_vtime_ticks": 2u64 << 32
+                },
+                "source": {
+                    "name": "fault_injector"
+                },
+                "fault": {
+                    "name": "throttle",
+                    "type": "node",
+                    "affected_nodes": ["c"],
+                    "max_duration": 9
+                }
+            }))),
+            Some("{\"moment\":{\"_vtime_ticks\":8589934592},\"source\":{\"name\":\"fault_injector\"},\"fault\":{\"name\":\"throttle\",\"type\":\"node\",\"affected_nodes\":[\"c\"],\"max_duration\":9},\"active_faults\":{\"network_partition\":1.0,\"node_throttle\":{\"c\":2.0}}}".to_string())
+        );
+
+        // Another non-fault injector message; should retain state
+        assert_eq!(
+            transformer.try_transform(&format!("{}", json!({
+                "moment": {
+                    "_vtime_ticks": 11u64 << 32
+                },
+                "foo": "bar"
+            }))),
+            Some("{\"moment\":{\"_vtime_ticks\":47244640256},\"foo\":\"bar\",\"active_faults\":{\"network_partition\":1.0,\"node_throttle\":{\"c\":2.0}}}".to_string())
+        );
+
+        // Expire both windows
+        assert_eq!(
+            transformer.try_transform(&format!("{}", json!({
+                "moment": {
+                    "_vtime_ticks": (11u64 << 32) + 1
+                },
+                "foo": "bar"
+            }))),
+            Some("{\"moment\":{\"_vtime_ticks\":47244640257},\"foo\":\"bar\",\"active_faults\":{}}".to_string())
         );
     }
 }

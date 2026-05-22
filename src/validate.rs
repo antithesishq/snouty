@@ -422,14 +422,27 @@ fn discover_scripts(
                 );
                 all_scripts.extend(result.scripts);
             }
-            Err(_) => {
-                info!("No test scripts in service '{service_name}'");
-                continue;
+            Err(err) => {
+                if is_missing_test_scripts_dir_error(&err) {
+                    info!("No test scripts in service '{service_name}'");
+                    continue;
+                }
+                return Err(err).wrap_err_with(|| {
+                    format!("failed to inspect test scripts in service '{service_name}'")
+                });
             }
         }
     }
 
     Ok(all_scripts)
+}
+
+fn is_missing_test_scripts_dir_error(err: &color_eyre::eyre::Report) -> bool {
+    let error_text = format!("{err:?}").to_ascii_lowercase();
+    error_text.contains("no such file or directory")
+        || error_text.contains("could not find the file")
+        || error_text.contains("file does not exist")
+        || error_text.contains("cannot stat")
 }
 
 /// Validate the structure of discovered test scripts without executing them.
@@ -542,7 +555,149 @@ async fn watch_for_setup_complete(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config;
+    use crate::container::ContainerRuntime;
+    use std::collections::BTreeMap;
     use std::io::Write;
+
+    enum CopyBehavior {
+        MissingDir,
+        Fatal(String),
+        WithScript { test_name: String, command: String },
+    }
+
+    struct MockRuntime {
+        behavior_by_container: BTreeMap<String, CopyBehavior>,
+    }
+
+    impl ContainerRuntime for MockRuntime {
+        fn name(&self) -> &str {
+            "mock"
+        }
+
+        fn clone_box(&self) -> Box<dyn ContainerRuntime> {
+            panic!("clone_box() should not be called in this unit test")
+        }
+
+        fn compose(&self) -> Box<dyn container::Compose + '_> {
+            panic!("compose() should not be called in this unit test")
+        }
+
+        fn image_push(&self, _image_ref: &str) -> Result<String> {
+            panic!("image_push() should not be called in this unit test")
+        }
+
+        fn container_cp(&self, container_id: &str, _src: &str, dst: &Path) -> Result<()> {
+            let behavior = self
+                .behavior_by_container
+                .get(container_id)
+                .unwrap_or_else(|| panic!("unexpected container id: {container_id}"));
+
+            match behavior {
+                CopyBehavior::MissingDir => {
+                    bail!("Error response from daemon: Could not find the file in container")
+                }
+                CopyBehavior::Fatal(msg) => bail!("{msg}"),
+                CopyBehavior::WithScript { test_name, command } => {
+                    let script_dir = dst.join(test_name);
+                    std::fs::create_dir_all(&script_dir)?;
+                    let script = script_dir.join(command);
+                    std::fs::write(&script, "#!/bin/sh\necho ok\n")?;
+                    #[cfg(unix)]
+                    {
+                        use std::os::unix::fs::PermissionsExt;
+                        let mut perms = std::fs::metadata(&script)?.permissions();
+                        perms.set_mode(0o755);
+                        std::fs::set_permissions(&script, perms)?;
+                    }
+                    Ok(())
+                }
+            }
+        }
+    }
+
+    struct MockCompose {
+        runtime: MockRuntime,
+        services: Vec<(String, String)>,
+    }
+
+    impl container::Compose for MockCompose {
+        fn runtime(&self) -> &dyn ContainerRuntime {
+            &self.runtime
+        }
+
+        fn ps(
+            &self,
+            _config: &ComposeConfig,
+            _overlay: Option<&Path>,
+        ) -> Result<Vec<(String, String)>> {
+            Ok(self.services.clone())
+        }
+    }
+
+    fn make_compose_config(tmp: &tempfile::TempDir) -> ComposeConfig {
+        std::fs::write(tmp.path().join("docker-compose.yaml"), "services: {}\n").unwrap();
+        match config::detect_config(tmp.path()).unwrap() {
+            Config::Compose(cfg) => cfg,
+            Config::Kubernetes(_) => panic!("expected compose config"),
+        }
+    }
+
+    #[test]
+    fn discover_scripts_checks_all_services_when_one_is_missing_scripts_dir() {
+        let config_dir = tempfile::tempdir().unwrap();
+        let config = make_compose_config(&config_dir);
+        let temp_dir = tempfile::tempdir().unwrap();
+
+        let runtime = MockRuntime {
+            behavior_by_container: BTreeMap::from([
+                ("c1".to_string(), CopyBehavior::MissingDir),
+                (
+                    "c2".to_string(),
+                    CopyBehavior::WithScript {
+                        test_name: "suite".to_string(),
+                        command: "parallel_driver_run".to_string(),
+                    },
+                ),
+            ]),
+        };
+        let compose = MockCompose {
+            runtime,
+            services: vec![
+                ("sidecar".to_string(), "c1".to_string()),
+                ("runner".to_string(), "c2".to_string()),
+            ],
+        };
+
+        let scripts = discover_scripts(&compose, &config, None, temp_dir.path()).unwrap();
+        assert_eq!(scripts.len(), 1);
+        assert_eq!(scripts[0].service, "runner");
+    }
+
+    #[test]
+    fn discover_scripts_surfaces_non_missing_copy_errors() {
+        let config_dir = tempfile::tempdir().unwrap();
+        let config = make_compose_config(&config_dir);
+        let temp_dir = tempfile::tempdir().unwrap();
+
+        let runtime = MockRuntime {
+            behavior_by_container: BTreeMap::from([(
+                "c1".to_string(),
+                CopyBehavior::Fatal("permission denied while copying scripts".to_string()),
+            )]),
+        };
+        let compose = MockCompose {
+            runtime,
+            services: vec![("runner".to_string(), "c1".to_string())],
+        };
+
+        let err = discover_scripts(&compose, &config, None, temp_dir.path()).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("failed to inspect test scripts in service 'runner'"),
+            "unexpected error: {err}"
+        );
+    }
 
     #[test]
     fn generate_setup_override_basic() {

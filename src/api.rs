@@ -4,6 +4,7 @@ use std::time::Duration;
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
+use color_eyre::Section;
 use color_eyre::eyre::{Context, Report, Result, eyre};
 use futures_util::stream;
 use log::debug;
@@ -254,7 +255,7 @@ impl AntithesisApi {
             .await
         {
             Ok(response) => Ok(response.into_inner()),
-            Err(err) => Err(format_api_client_error(err).await),
+            Err(err) => Err(format_launch_client_error(err).await),
         }
     }
 
@@ -262,7 +263,7 @@ impl AntithesisApi {
         let body = launch_mvd_request(params)?;
         match self.client.launch_mvd().body(body).send().await {
             Ok(response) => Ok(response.into_inner()),
-            Err(err) => Err(format_api_client_error(err).await),
+            Err(err) => Err(format_launch_client_error(err).await),
         }
     }
 
@@ -810,13 +811,33 @@ async fn format_api_client_error(err: ClientError<generated::types::ErrorRespons
         ClientError::InvalidResponsePayload(body, err) => {
             let body = String::from_utf8_lossy(&body);
             if body.trim().is_empty() {
-                eyre!("invalid API response payload: response body was empty")
+                eyre!("API returned an empty response body where a JSON payload was expected")
             } else {
                 let snippet = format_payload_snippet(&body, err.line(), err.column());
                 eyre!("invalid API response payload: {err}\n{snippet}")
             }
         }
         ClientError::Custom(message) => eyre!(message),
+    }
+}
+
+/// Same as [`format_api_client_error`] but adds a launch-specific suggestion
+/// when the server returned an empty body where a launch response (with
+/// `run_id`) was expected. Call from launch_test / launch_debugging only —
+/// other endpoints have their own meaningful responses for empty bodies.
+async fn format_launch_client_error(err: ClientError<generated::types::ErrorResponse>) -> Report {
+    let body_is_empty = matches!(
+        &err,
+        ClientError::InvalidResponsePayload(body, _)
+            if body.iter().all(u8::is_ascii_whitespace)
+    );
+    let report = format_api_client_error(err).await;
+    if body_is_empty {
+        report.with_suggestion(|| {
+            "this can happen when the Antithesis server is on an older version that omits expected fields (for example, run_id from a launch response). Contact Antithesis support to confirm whether your tenant needs to be upgraded."
+        })
+    } else {
+        report
     }
 }
 
@@ -949,13 +970,57 @@ mod tests {
 
         let report = format_api_client_error(err).await;
         let message = format!("{report}");
+        let debug = format!("{report:?}");
 
         assert_eq!(
             message,
-            "invalid API response payload: response body was empty"
+            "API returned an empty response body where a JSON payload was expected"
         );
         assert!(!message.contains("EOF while parsing"));
         assert!(!message.contains('^'));
+        assert!(
+            !debug.contains("Antithesis support"),
+            "generic formatter must not attach the launch-specific suggestion, got: {debug}"
+        );
+    }
+
+    #[tokio::test]
+    async fn format_launch_client_error_attaches_suggestion_for_empty_body() {
+        let parse_err = serde_json::from_slice::<serde_json::Value>(b"").unwrap_err();
+        let err = ClientError::<generated::types::ErrorResponse>::InvalidResponsePayload(
+            Default::default(),
+            parse_err,
+        );
+
+        let report = format_launch_client_error(err).await;
+        let debug = format!("{report:?}");
+
+        assert!(
+            debug.contains("Antithesis support"),
+            "expected launch-specific suggestion, got: {debug}"
+        );
+        assert!(
+            debug.contains("run_id from a launch response"),
+            "expected run_id wording in suggestion, got: {debug}"
+        );
+    }
+
+    #[tokio::test]
+    async fn format_launch_client_error_skips_suggestion_for_non_empty_body() {
+        let body: &[u8] = b"not json";
+        let parse_err = serde_json::from_slice::<serde_json::Value>(body).unwrap_err();
+        let err = ClientError::<generated::types::ErrorResponse>::InvalidResponsePayload(
+            body.to_vec().into(),
+            parse_err,
+        );
+
+        let report = format_launch_client_error(err).await;
+        let debug = format!("{report:?}");
+
+        assert!(
+            !debug.contains("Antithesis support"),
+            "non-empty body must not attach the launch suggestion, got: {debug}"
+        );
     }
 
     #[tokio::test]

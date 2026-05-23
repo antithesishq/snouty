@@ -1,10 +1,11 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::Seek;
 use std::path::{Path, PathBuf};
 
 use color_eyre::Section;
+use color_eyre::SectionExt;
 use color_eyre::eyre::{Context, Result, bail, eyre};
-use log::{debug, info};
+use log::{debug, info, warn};
 use serde::Deserialize;
 use tokio::time::{Duration, sleep};
 
@@ -376,63 +377,184 @@ fn contains_setup_complete(reader: &mut (impl std::io::Read + std::io::Seek)) ->
     Ok(false)
 }
 
-/// Discover test scripts from running containers.
+/// Discover test commands across all compose containers, including stopped
+/// ones when the backend supports `compose ps -a`.
+///
+/// Each container is inspected regardless of state — Antithesis only runs
+/// test commands in *running* containers, but we still inspect stopped ones
+/// (when visible) so we can fail validation with a clear error when test
+/// commands are stranded in a container whose entrypoint exited prematurely.
+/// Supports scaled services (`replicas > 1`): per-container scratch dirs are
+/// keyed on container ID so replicas don't trample each other's extracts.
+///
+/// Tolerates per-container `cp` failures — the loop logs a warning and
+/// moves on. Only if every container failed (and no scripts were collected)
+/// does the function surface a combined error.
 fn discover_scripts(
     compose: &dyn container::Compose,
     config: &ComposeConfig,
     overlay: Option<&Path>,
     temp_dir: &Path,
 ) -> Result<Vec<TestScript>> {
-    let services = compose.ps(config, overlay)?;
+    let listing = compose.ps(config, overlay)?;
 
     let scripts_dir = temp_dir.join("scripts");
     std::fs::create_dir_all(&scripts_dir).wrap_err("failed to create scripts directory")?;
 
     let mut all_scripts: Vec<TestScript> = Vec::new();
-    for (service_name, container_id) in &services {
-        let service_dir = scripts_dir.join(service_name);
-        match compose
-            .runtime()
-            .container_cp(container_id, "/opt/antithesis/test/v1", &service_dir)
-        {
-            Ok(()) => {
-                let result = scan_scripts(&service_dir, service_name)?;
-                if !result.unrecognized.is_empty() {
-                    let mut err = eyre!(
-                        "unrecognized command names in service {service_name} (not a known prefix or helper_)"
-                    );
-                    for command in result.unrecognized {
-                        err = err.with_note(|| command);
-                    }
-                    return Err(err);
-                }
-                if !result.not_executable.is_empty() {
-                    let mut err = eyre!("scripts in service {service_name} are not executable");
-                    for command in result.not_executable {
-                        err = err.with_note(|| command);
-                    }
-                    return Err(err);
-                }
-                if result.scripts.is_empty() {
-                    eprintln!("No scripts found in {service_name}");
-                }
-                info!(
-                    "Found {} scripts in service '{service_name}'",
-                    result.scripts.len()
+    // Replicas share an image, so each one rediscovers the same scripts. Track
+    // (service, test_name, command_name) to count each command once instead of
+    // once per replica.
+    let mut seen_scripts: BTreeSet<(String, String, String)> = BTreeSet::new();
+    let mut stopped_with_scripts: BTreeSet<String> = BTreeSet::new();
+    let mut unrecognized: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    let mut not_executable: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    let mut cp_failures: BTreeMap<String, color_eyre::Report> = BTreeMap::new();
+
+    for container in &listing.containers {
+        let service_name = container.service.as_str();
+        // Key per-container so scaled-replica containers don't collide on
+        // disk. Short the id for readable warnings.
+        let short_id: String = container.id.chars().take(12).collect();
+        let service_dir = scripts_dir.join(format!("{service_name}-{short_id}"));
+        let templates = match compose.runtime().extract_test_templates(
+            &container.id,
+            &service_dir,
+            !container.stopped,
+        ) {
+            Ok(t) => t,
+            Err(e) => {
+                warn!(
+                    "extracting test commands from service '{service_name}' \
+                     (container {short_id}) failed; continuing without it: {e}"
                 );
-                all_scripts.extend(result.scripts);
-            }
-            Err(_) => {
-                info!("No test scripts in service '{service_name}'");
+                cp_failures.insert(format!("{service_name} ({short_id})"), e);
                 continue;
             }
+        };
+
+        if matches!(templates, container::TestTemplates::Absent) {
+            info!("No test commands in service '{service_name}' (container {short_id})");
+            continue;
         }
+
+        let result = scan_scripts(&service_dir, service_name)?;
+        for command in result.unrecognized {
+            unrecognized
+                .entry(service_name.to_string())
+                .or_default()
+                .insert(command);
+        }
+        for command in result.not_executable {
+            not_executable
+                .entry(service_name.to_string())
+                .or_default()
+                .insert(command);
+        }
+        if result.scripts.is_empty() {
+            info!("No test commands found in service '{service_name}' (container {short_id})");
+        } else {
+            info!(
+                "Found {} test commands in service '{service_name}' (container {short_id})",
+                result.scripts.len()
+            );
+            if container.stopped && listing.includes_stopped {
+                stopped_with_scripts.insert(service_name.to_string());
+            }
+            all_scripts.extend(result.scripts.into_iter().filter(|s| {
+                seen_scripts.insert((
+                    s.service.clone(),
+                    s.test_name.clone(),
+                    s.command_name.clone(),
+                ))
+            }));
+        }
+    }
+
+    // If every container failed to surrender its templates and nothing
+    // useful was discovered, surface the underlying errors instead of
+    // silently succeeding with an empty script list.
+    if !cp_failures.is_empty()
+        && all_scripts.is_empty()
+        && unrecognized.is_empty()
+        && not_executable.is_empty()
+        && cp_failures.len() == listing.containers.len()
+    {
+        let mut err = eyre!("failed to extract test commands from every container");
+        for (label, cause) in &cp_failures {
+            err = err.with_section(|| format!("{label}: {cause:?}").header("Container:"));
+        }
+        return Err(err);
+    }
+
+    if !unrecognized.is_empty() || !not_executable.is_empty() || !stopped_with_scripts.is_empty() {
+        return Err(combined_discovery_error(
+            unrecognized,
+            not_executable,
+            stopped_with_scripts,
+        ));
     }
 
     Ok(all_scripts)
 }
 
-/// Validate the structure of discovered test scripts without executing them.
+/// Build a single error report covering every category of discovery problem
+/// found across all containers. Sections are sorted by service name for
+/// deterministic output.
+fn combined_discovery_error(
+    unrecognized: BTreeMap<String, BTreeSet<String>>,
+    not_executable: BTreeMap<String, BTreeSet<String>>,
+    stopped_with_scripts: BTreeSet<String>,
+) -> color_eyre::Report {
+    let mut err = eyre!("test command discovery failed");
+
+    for (service, commands) in &unrecognized {
+        let listing = commands
+            .iter()
+            .map(|c| format!("  {c}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        err = err.with_section(|| {
+            listing.header(format!(
+                "Unrecognized command names in service '{service}' (not a known prefix or helper_):"
+            ))
+        });
+    }
+
+    for (service, commands) in &not_executable {
+        let listing = commands
+            .iter()
+            .map(|c| format!("  {c}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        err = err.with_section(|| {
+            listing.header(format!(
+                "Test commands in service '{service}' are not executable:"
+            ))
+        });
+    }
+
+    if !stopped_with_scripts.is_empty() {
+        let listing = stopped_with_scripts
+            .iter()
+            .map(|s| format!("  {s}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        err = err.with_section(|| {
+            listing.header(
+                "Services contain Antithesis test commands but their containers exited. \
+                 Antithesis cannot run test commands in stopped containers:",
+            )
+        });
+        err = err.with_suggestion(|| {
+            "set the service's command/entrypoint to a long-running process (for example `sleep infinity`, or `tail -f /dev/null`) so the container stays alive for the duration of the test"
+        });
+    }
+
+    err
+}
+
+/// Validate the structure of discovered test commands without executing them.
 fn validate_test_scripts(scripts: &[TestScript]) -> Result<()> {
     let first = scripts
         .iter()
@@ -453,12 +575,12 @@ fn validate_test_scripts(scripts: &[TestScript]) -> Result<()> {
         .count();
 
     eprintln!(
-        "Found {} first, {} driver, {} anytime, {} eventually, {} finally scripts",
+        "Found {} first, {} driver, {} anytime, {} eventually, {} finally test commands",
         first, drivers, anytime, eventually, finally,
     );
 
     if scripts.is_empty() {
-        debug!("no services contained test scripts");
+        debug!("no services contained test commands");
         return Ok(());
     }
 

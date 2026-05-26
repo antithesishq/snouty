@@ -1,0 +1,31 @@
+name: Bug report
+description: Report a reproducible problem with snouty
+title: "BUG: "
+labels: ["bug"]
+body:
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+
+  - type: input
+    id: command
+    attributes:
+      label: What command did you run?
+      description: Please include the `--verbose` flag.
+      placeholder: snouty runs list --verbose
+
+  - type: textarea
+    id: output
+    attributes:
+      label: What was the output?
+      render: text
+
+  - type: input
+    id: version
+    attributes:
+      label: What is your snouty version?
+      description: Run `snouty --version`.
+      placeholder: snouty 0.1.0
+    validations:
+      required: true

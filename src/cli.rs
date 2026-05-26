@@ -389,10 +389,6 @@ pub enum RunsCommands {
         /// Search query
         #[arg(required = true, num_args = 1..)]
         query: Vec<String>,
-
-        /// Whether to annotate faults that appear in individual log lines
-        #[arg(long, default_value_t = true)]
-        annotate_faults: bool,
     },
 }
 

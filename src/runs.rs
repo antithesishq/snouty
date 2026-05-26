@@ -64,8 +64,7 @@ pub async fn cmd_runs(command: Option<RunsCommands>, json: bool, verbose: bool) 
         Some(RunsCommands::Events {
             run_id,
             query,
-            annotate_faults,
-        }) => cmd_runs_events(&run_id, &query, json, verbose, annotate_faults).await,
+        }) => cmd_runs_events(&run_id, &query, json, verbose).await,
     }
 }
 
@@ -285,7 +284,6 @@ async fn cmd_runs_events(
     query: &[String],
     json: bool,
     verbose: bool,
-    annotate_faults: bool,
 ) -> Result<()> {
     debug!("searching events for run: {}", run_id);
 
@@ -297,26 +295,11 @@ async fn cmd_runs_events(
 
     let mut stdout = std::io::stdout().lock();
     if json {
-        if annotate_faults {
-            stream_ndjson_lines(
-                stream,
-                FaultAnnotator {
-                    active_fault_windows: LinkedList::new(),
-                    active_faults: json!({}),
-                },
-                |line| {
-                    writeln!(stdout, "{line}")?;
-                    Ok(())
-                },
-            )
-            .await
-        } else {
-            stream_ndjson_lines(stream, NoOpTransformer {}, |line| {
-                writeln!(stdout, "{line}")?;
-                Ok(())
-            })
-            .await
-        }
+        stream_ndjson_lines(stream, NoOpTransformer {}, |line| {
+            writeln!(stdout, "{line}")?;
+            Ok(())
+        })
+        .await
     } else {
         writeln!(
             stdout,

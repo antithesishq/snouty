@@ -352,7 +352,7 @@ pub enum RunsCommands {
         run_id: String,
 
         /// Whether to annotate faults that appear in individual log lines
-        #[arg(long, default_value_t = true)]
+        #[arg(long, default_value_t = false, requires = "json" )]
         annotate_faults: bool,
     },
 
@@ -377,7 +377,7 @@ pub enum RunsCommands {
         begin_input_hash: Option<String>,
 
         /// Whether to annotate faults that appear in individual log lines
-        #[arg(long, default_value_t = true)]
+        #[arg(long, default_value_t = false, requires = "json" )]
         annotate_faults: bool,
     },
 

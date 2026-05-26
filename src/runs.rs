@@ -461,7 +461,8 @@ impl LineTransformer for FaultAnnotator {
                 && entry["info"]["details"]["paused"]
                     .as_bool()
                     .unwrap_or(false);
-            let is_restore_event = is_fault_injector && fault_name.map(|n| n.eq("restore")).unwrap_or(false);
+            let is_restore_event =
+                is_fault_injector && fault_name.map(|n| n.eq("restore")).unwrap_or(false);
 
             // clear any fault windows that are expired or mooted by fault injector pauses
             let length_before_cleanup = self.active_fault_windows.len();

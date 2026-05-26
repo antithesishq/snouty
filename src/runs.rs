@@ -484,7 +484,7 @@ impl LineTransformer for FaultAnnotator {
                 && entry["info"]["details"]["paused"]
                     .as_bool()
                     .unwrap_or(false);
-            let is_restore_event = fault_name.map(|n| n.eq("restore")).unwrap_or(false);
+            let is_restore_event = is_fault_injector && fault_name.map(|n| n.eq("restore")).unwrap_or(false);
 
             // clear any fault windows that are expired or mooted by fault injector pauses
             let length_before_cleanup = self.active_fault_windows.len();
@@ -499,7 +499,7 @@ impl LineTransformer for FaultAnnotator {
 
             if is_fault_injector
                 && let Some(new_window) =
-                    try_get_fault_window_defintion(&entry, event_vtime_ticks, fault_name)
+                    try_get_fault_window_definition(&entry, event_vtime_ticks, fault_name)
             {
                 self.active_fault_windows.push_back(new_window);
                 update_faults = true;
@@ -521,7 +521,7 @@ impl LineTransformer for FaultAnnotator {
     }
 }
 
-fn try_get_fault_window_defintion(
+fn try_get_fault_window_definition(
     entry: &Value,
     event_vtime_ticks: u64,
     maybe_fault_name: Option<&str>,

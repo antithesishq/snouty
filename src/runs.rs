@@ -1,10 +1,11 @@
-use std::collections::hash_map::Entry;
-use std::collections::{HashMap, LinkedList};
+use std::collections::{LinkedList};
 use std::{io::Write, sync::OnceLock};
 use std::path::Path;
 
 use color_eyre::eyre::{Result, eyre};
 use futures_util::{StreamExt, TryStreamExt};
+use indexmap::IndexMap;
+use indexmap::map::Entry;
 use log::debug;
 use regex::Regex;
 use serde::Deserialize;
@@ -559,8 +560,8 @@ fn active_fault_dictionary(open_windows: &LinkedList<FaultWindow>) -> Value {
     let mut result = Map::new();
     let mut offset_sum = 0f64;
     let mut max_clock_fault_start: Option<u64> = None;
-    let mut network_fault_starts = HashMap::<String, u64>::new();
-    let mut node_faults = HashMap::<String, Map<String, Value>>::new();
+    let mut network_fault_starts = IndexMap::<String, u64>::new();
+    let mut node_faults = IndexMap::<String, Map<String, Value>>::new();
 
     for fault_window in open_windows {
         if let FaultWindow::Clock { name: _, start_vtime, offset, end_vtime: _ } = fault_window {
@@ -590,7 +591,7 @@ fn active_fault_dictionary(open_windows: &LinkedList<FaultWindow>) -> Value {
     }
 
     if let Some(latest_vtime) = max_clock_fault_start {
-        result["clock_skip"] = json!({"cumulative_offset": offset_sum, "vtime": (latest_vtime as f64) / TICKS_PER_SECOND});
+        result.insert("clock_skip".to_string(), json!({"cumulative_offset": offset_sum, "vtime": (latest_vtime as f64) / TICKS_PER_SECOND}));
     }
 
     return Value::Object(result);
@@ -1594,7 +1595,7 @@ mod tests {
     }
 
     #[test]
-    fn appends_faults() {
+    fn tracks_which_faults_are_active_based_on_vtime_and_max_duration() {
         let mut transformer = FaultAnnotator { active_fault_windows: LinkedList::new(), active_faults: json!({}) };
 
         // No faults yet
@@ -1622,7 +1623,7 @@ mod tests {
             Some("{\"moment\":{\"_vtime_ticks\":4294967296},\"source\":{\"name\":\"fault_injector\"},\"fault\":{\"name\":\"partition\",\"type\":\"network\",\"affected_nodes\":[\"a\",\"b\"],\"max_duration\":10},\"active_faults\":{\"network_partition\":1.0}}".to_string())
         );
 
-        // Another log message; should retain active window state
+        // Another log message; should retain active window state since the log message had no timestamp
         assert_eq!(
             transformer.try_transform("{\"foo\":\"bar\"}"),
             Some("{\"foo\":\"bar\",\"active_faults\":{\"network_partition\":1.0}}".to_string())
@@ -1667,6 +1668,251 @@ mod tests {
                 "foo": "bar"
             }))),
             Some("{\"moment\":{\"_vtime_ticks\":47244640257},\"foo\":\"bar\",\"active_faults\":{}}".to_string())
+        );
+    }
+
+    #[test]
+    fn restore_closes_network_faults() {
+        let mut transformer = FaultAnnotator { active_fault_windows: LinkedList::new(), active_faults: json!({}) };
+
+        // Open a network partition fault window
+        assert_eq!(
+            transformer.try_transform(&format!("{}", json!({
+                "moment": {
+                    "_vtime_ticks": 1u64 << 32
+                },
+                "source": {
+                    "name": "fault_injector"
+                },
+                "fault": {
+                    "name": "partition",
+                    "type": "network",
+                    "affected_nodes": ["a", "b"]
+                }
+            }))),
+            Some("{\"moment\":{\"_vtime_ticks\":4294967296},\"source\":{\"name\":\"fault_injector\"},\"fault\":{\"name\":\"partition\",\"type\":\"network\",\"affected_nodes\":[\"a\",\"b\"]},\"active_faults\":{\"network_partition\":1.0}}".to_string())
+        );
+
+        // Open a node throttled fault window
+        assert_eq!(
+            transformer.try_transform(&format!("{}", json!({
+                "moment": {
+                    "_vtime_ticks": 2u64 << 32
+                },
+                "source": {
+                    "name": "fault_injector"
+                },
+                "fault": {
+                    "name": "throttle",
+                    "type": "node",
+                    "affected_nodes": ["c"]
+                }
+            }))),
+            Some("{\"moment\":{\"_vtime_ticks\":8589934592},\"source\":{\"name\":\"fault_injector\"},\"fault\":{\"name\":\"throttle\",\"type\":\"node\",\"affected_nodes\":[\"c\"]},\"active_faults\":{\"network_partition\":1.0,\"node_throttle\":{\"c\":2.0}}}".to_string())
+        );
+
+        // Open a network clog fault window
+        assert_eq!(
+            transformer.try_transform(&format!("{}", json!({
+                "moment": {
+                    "_vtime_ticks": 3u64 << 32
+                },
+                "source": {
+                    "name": "fault_injector"
+                },
+                "fault": {
+                    "name": "clog",
+                    "type": "network",
+                    "affected_nodes": ["b", "c"]
+                }
+            }))),
+            Some("{\"moment\":{\"_vtime_ticks\":12884901888},\"source\":{\"name\":\"fault_injector\"},\"fault\":{\"name\":\"clog\",\"type\":\"network\",\"affected_nodes\":[\"b\",\"c\"]},\"active_faults\":{\"network_partition\":1.0,\"network_clog\":3.0,\"node_throttle\":{\"c\":2.0}}}".to_string())
+        );
+
+        // Verify that state is retained for a non-control log message
+        assert_eq!(
+            transformer.try_transform(&format!("{}", json!({"foo": "bar"}))),
+            Some("{\"foo\":\"bar\",\"active_faults\":{\"network_partition\":1.0,\"network_clog\":3.0,\"node_throttle\":{\"c\":2.0}}}".to_string())
+        );
+
+        // Send a network restore message
+        assert_eq!(
+            transformer.try_transform(&format!("{}", json!({
+                "source": {
+                    "name": "fault_injector"
+                },
+                "fault": {
+                    "name": "restore",
+                    "type": "network"
+                }
+            }))),
+            Some("{\"source\":{\"name\":\"fault_injector\"},\"fault\":{\"name\":\"restore\",\"type\":\"network\"},\"active_faults\":{\"node_throttle\":{\"c\":2.0}}}".to_string())
+        );
+    }
+
+    #[test]
+    fn fault_injector_pause_clears_network_and_node_faults() {
+        let mut transformer = FaultAnnotator { active_fault_windows: LinkedList::new(), active_faults: json!({}) };
+
+        // Open a network partition fault window
+        assert_eq!(
+            transformer.try_transform(&format!("{}", json!({
+                "moment": {
+                    "_vtime_ticks": 1u64 << 32
+                },
+                "source": {
+                    "name": "fault_injector"
+                },
+                "fault": {
+                    "name": "partition",
+                    "type": "network",
+                    "affected_nodes": ["a", "b"]
+                }
+            }))),
+            Some("{\"moment\":{\"_vtime_ticks\":4294967296},\"source\":{\"name\":\"fault_injector\"},\"fault\":{\"name\":\"partition\",\"type\":\"network\",\"affected_nodes\":[\"a\",\"b\"]},\"active_faults\":{\"network_partition\":1.0}}".to_string())
+        );
+
+        // Open a node throttled fault window
+        assert_eq!(
+            transformer.try_transform(&format!("{}", json!({
+                "moment": {
+                    "_vtime_ticks": 2u64 << 32
+                },
+                "source": {
+                    "name": "fault_injector"
+                },
+                "fault": {
+                    "name": "throttle",
+                    "type": "node",
+                    "affected_nodes": ["c"]
+                }
+            }))),
+            Some("{\"moment\":{\"_vtime_ticks\":8589934592},\"source\":{\"name\":\"fault_injector\"},\"fault\":{\"name\":\"throttle\",\"type\":\"node\",\"affected_nodes\":[\"c\"]},\"active_faults\":{\"network_partition\":1.0,\"node_throttle\":{\"c\":2.0}}}".to_string())
+        );
+
+        // Open a network clog fault window
+        assert_eq!(
+            transformer.try_transform(&format!("{}", json!({
+                "moment": {
+                    "_vtime_ticks": 3u64 << 32
+                },
+                "source": {
+                    "name": "fault_injector"
+                },
+                "fault": {
+                    "name": "clog",
+                    "type": "network",
+                    "affected_nodes": ["b", "c"]
+                }
+            }))),
+            Some("{\"moment\":{\"_vtime_ticks\":12884901888},\"source\":{\"name\":\"fault_injector\"},\"fault\":{\"name\":\"clog\",\"type\":\"network\",\"affected_nodes\":[\"b\",\"c\"]},\"active_faults\":{\"network_partition\":1.0,\"network_clog\":3.0,\"node_throttle\":{\"c\":2.0}}}".to_string())
+        );
+
+        // Open a clock fault window
+        assert_eq!(
+            transformer.try_transform(&format!("{}", json!({
+                "moment": {
+                    "_vtime_ticks": 4u64 << 32
+                },
+                "source": {
+                    "name": "fault_injector"
+                },
+                "fault": {
+                    "name": "skip",
+                    "type": "clock",
+                    "details": {
+                        "offset": 10.5
+                    }
+                }
+            }))),
+            Some("{\"moment\":{\"_vtime_ticks\":17179869184},\"source\":{\"name\":\"fault_injector\"},\"fault\":{\"name\":\"skip\",\"type\":\"clock\",\"details\":{\"offset\":10.5}},\"active_faults\":{\"network_partition\":1.0,\"network_clog\":3.0,\"node_throttle\":{\"c\":2.0},\"clock_skip\":{\"cumulative_offset\":10.5,\"vtime\":4.0}}}".to_string())
+        );
+
+        // Verify that state is retained for a non-control log message
+        assert_eq!(
+            transformer.try_transform(&format!("{}", json!({"foo": "bar"}))),
+            Some("{\"foo\":\"bar\",\"active_faults\":{\"network_partition\":1.0,\"network_clog\":3.0,\"node_throttle\":{\"c\":2.0},\"clock_skip\":{\"cumulative_offset\":10.5,\"vtime\":4.0}}}".to_string())
+        );
+
+        // Send a fault injector pause message
+        assert_eq!(
+            transformer.try_transform(&format!("{}", json!({
+                "source": {
+                    "name": "fault_injector"
+                },
+                "info": {
+                    "message": "status",
+                    "details": {
+                        "paused": true
+                    }
+                }
+            }))),
+            Some("{\"source\":{\"name\":\"fault_injector\"},\"info\":{\"message\":\"status\",\"details\":{\"paused\":true}},\"active_faults\":{\"clock_skip\":{\"cumulative_offset\":10.5,\"vtime\":4.0}}}".to_string())
+        );
+    }
+
+    #[test]
+    fn clock_offsets_are_combined() {
+        let mut transformer = FaultAnnotator { active_fault_windows: LinkedList::new(), active_faults: json!({}) };
+
+        // Open a network partition fault window
+        assert_eq!(
+            transformer.try_transform(&format!("{}", json!({
+                "moment": {
+                    "_vtime_ticks": 1u64 << 32
+                },
+                "source": {
+                    "name": "fault_injector"
+                },
+                "fault": {
+                    "name": "skip",
+                    "type": "clock",
+                    "details": {
+                        "offset": 10.5
+                    }
+                }
+            }))),
+            Some("{\"moment\":{\"_vtime_ticks\":4294967296},\"source\":{\"name\":\"fault_injector\"},\"fault\":{\"name\":\"skip\",\"type\":\"clock\",\"details\":{\"offset\":10.5}},\"active_faults\":{\"clock_skip\":{\"cumulative_offset\":10.5,\"vtime\":1.0}}}".to_string())
+        );
+
+        // Open a node throttled fault window
+        assert_eq!(
+            transformer.try_transform(&format!("{}", json!({
+                "moment": {
+                    "_vtime_ticks": 2u64 << 32
+                },
+                "source": {
+                    "name": "fault_injector"
+                },
+                "fault": {
+                    "name": "skip",
+                    "type": "clock",
+                    "details": {
+                        "offset": 0.1
+                    }
+                }
+            }))),
+            Some("{\"moment\":{\"_vtime_ticks\":8589934592},\"source\":{\"name\":\"fault_injector\"},\"fault\":{\"name\":\"skip\",\"type\":\"clock\",\"details\":{\"offset\":0.1}},\"active_faults\":{\"clock_skip\":{\"cumulative_offset\":10.6,\"vtime\":2.0}}}".to_string())
+        );
+
+        // Open a network clog fault window
+        assert_eq!(
+            transformer.try_transform(&format!("{}", json!({
+                "moment": {
+                    "_vtime_ticks": 3u64 << 32
+                },
+                "source": {
+                    "name": "fault_injector"
+                },
+                "fault": {
+                    "name": "skip",
+                    "type": "clock",
+                    "details": {
+                        "offset": -2.3
+                    }
+                }
+            }))),
+            Some("{\"moment\":{\"_vtime_ticks\":12884901888},\"source\":{\"name\":\"fault_injector\"},\"fault\":{\"name\":\"skip\",\"type\":\"clock\",\"details\":{\"offset\":-2.3}},\"active_faults\":{\"clock_skip\":{\"cumulative_offset\":8.3,\"vtime\":3.0}}}".to_string())
         );
     }
 }

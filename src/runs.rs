@@ -61,10 +61,9 @@ pub async fn cmd_runs(command: Option<RunsCommands>, json: bool, verbose: bool) 
             )
             .await
         }
-        Some(RunsCommands::Events {
-            run_id,
-            query,
-        }) => cmd_runs_events(&run_id, &query, json, verbose).await,
+        Some(RunsCommands::Events { run_id, query }) => {
+            cmd_runs_events(&run_id, &query, json, verbose).await
+        }
     }
 }
 
@@ -279,12 +278,7 @@ async fn cmd_runs_build_logs(
     }
 }
 
-async fn cmd_runs_events(
-    run_id: &str,
-    query: &[String],
-    json: bool,
-    verbose: bool,
-) -> Result<()> {
+async fn cmd_runs_events(run_id: &str, query: &[String], json: bool, verbose: bool) -> Result<()> {
     debug!("searching events for run: {}", run_id);
 
     let api = AntithesisApi::from_env(verbose)?;

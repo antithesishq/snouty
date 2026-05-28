@@ -2087,4 +2087,776 @@ mod tests {
             Some("{\"moment\":{\"_vtime_ticks\":12884901888},\"source\":{\"name\":\"fault_injector\"},\"fault\":{\"name\":\"skip\",\"type\":\"clock\",\"details\":{\"offset\":-2.3}},\"vtime_seconds\":3.0,\"active_faults\":{\"clock_skip\":{\"cumulative_offset\":8.3,\"vtime\":3.0}}}".to_string())
         );
     }
+
+    #[test]
+    fn empty_affected_nodes_does_not_open_network_window() {
+        let mut transformer = FaultAnnotator {
+            active_fault_windows: LinkedList::new(),
+            active_faults: json!({}),
+        };
+
+        // Open a real window first
+        transformer.try_transform(&format!(
+            "{}",
+            json!({
+                "moment": { "_vtime_ticks": 1u64 << 32 },
+                "source": { "name": "fault_injector" },
+                "fault": {
+                    "name": "clog",
+                    "type": "network",
+                    "affected_nodes": ["node-1"],
+                    "max_duration": 100
+                }
+            })
+        ));
+
+        // Empty affected_nodes: try_get_fault_window_definition returns None,
+        // so no new window is pushed and the existing one is unchanged.
+        assert_eq!(
+            transformer.try_transform(&format!(
+                "{}",
+                json!({
+                    "moment": { "_vtime_ticks": 2u64 << 32 },
+                    "source": { "name": "fault_injector" },
+                    "fault": {
+                        "name": "clog",
+                        "type": "network",
+                        "affected_nodes": []
+                    }
+                })
+            )),
+            Some(
+                concat!(
+                    r#"{"moment":{"_vtime_ticks":8589934592},"source":{"name":"fault_injector"},"#,
+                    r#""fault":{"name":"clog","type":"network","affected_nodes":[]},"#,
+                    r#""vtime_seconds":2.0,"active_faults":{"network_clog":{"vtime":1.0}}}"#
+                )
+                .to_string()
+            )
+        );
+    }
+
+    #[test]
+    fn missing_affected_nodes_does_not_open_network_window() {
+        let mut transformer = FaultAnnotator {
+            active_fault_windows: LinkedList::new(),
+            active_faults: json!({}),
+        };
+
+        // Open a real window first
+        transformer.try_transform(&format!(
+            "{}",
+            json!({
+                "moment": { "_vtime_ticks": 1u64 << 32 },
+                "source": { "name": "fault_injector" },
+                "fault": {
+                    "name": "partition",
+                    "type": "network",
+                    "affected_nodes": ["ALL"],
+                    "max_duration": 100
+                }
+            })
+        ));
+
+        // No affected_nodes field at all: same result — no new window
+        assert_eq!(
+            transformer.try_transform(&format!(
+                "{}",
+                json!({
+                    "moment": { "_vtime_ticks": 2u64 << 32 },
+                    "source": { "name": "fault_injector" },
+                    "fault": {
+                        "name": "partition",
+                        "type": "network"
+                    }
+                })
+            )),
+            Some(
+                concat!(
+                    r#"{"moment":{"_vtime_ticks":8589934592},"source":{"name":"fault_injector"},"#,
+                    r#""fault":{"name":"partition","type":"network"},"#,
+                    r#""vtime_seconds":2.0,"active_faults":{"network_partition":{"vtime":1.0}}}"#
+                )
+                .to_string()
+            )
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // active_faults: untracked fault names produce no window
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn untracked_fault_names_produce_empty_active_faults() {
+        let mut transformer = FaultAnnotator {
+            active_fault_windows: LinkedList::new(),
+            active_faults: json!({}),
+        };
+
+        assert_eq!(
+            transformer.try_transform(&format!(
+                "{}",
+                json!({
+                    "moment": { "_vtime_ticks": 1u64 << 32 },
+                    "source": { "name": "fault_injector" },
+                    "fault": { "name": "kill" }
+                })
+            )),
+            Some(
+                concat!(
+                    r#"{"moment":{"_vtime_ticks":4294967296},"source":{"name":"fault_injector"},"#,
+                    r#""fault":{"name":"kill"},"#,
+                    r#""vtime_seconds":1.0,"active_faults":{}}"#
+                )
+                .to_string()
+            )
+        );
+
+        assert_eq!(
+            transformer.try_transform(&format!(
+                "{}",
+                json!({
+                    "moment": { "_vtime_ticks": 2u64 << 32 },
+                    "source": { "name": "fault_injector" },
+                    "fault": { "name": "stop" }
+                })
+            )),
+            Some(
+                concat!(
+                    r#"{"moment":{"_vtime_ticks":8589934592},"source":{"name":"fault_injector"},"#,
+                    r#""fault":{"name":"stop"},"#,
+                    r#""vtime_seconds":2.0,"active_faults":{}}"#
+                )
+                .to_string()
+            )
+        );
+    }
+
+    #[test]
+    fn restore_after_only_untracked_faults_is_noop() {
+        let mut transformer = FaultAnnotator {
+            active_fault_windows: LinkedList::new(),
+            active_faults: json!({}),
+        };
+
+        transformer.try_transform(&format!(
+            "{}",
+            json!({
+                "moment": { "_vtime_ticks": 1u64 << 32 },
+                "source": { "name": "fault_injector" },
+                "fault": { "name": "kill" }
+            })
+        ));
+
+        assert_eq!(
+            transformer.try_transform(&format!(
+                "{}",
+                json!({
+                    "moment": { "_vtime_ticks": 2u64 << 32 },
+                    "source": { "name": "fault_injector" },
+                    "fault": {
+                        "name": "restore",
+                        "type": "network",
+                        "affected_nodes": ["ALL"]
+                    }
+                })
+            )),
+            Some(
+                concat!(
+                    r#"{"moment":{"_vtime_ticks":8589934592},"source":{"name":"fault_injector"},"#,
+                    r#""fault":{"name":"restore","type":"network","affected_nodes":["ALL"]},"#,
+                    r#""vtime_seconds":2.0,"active_faults":{}}"#
+                )
+                .to_string()
+            )
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // active_faults: non-fault_injector sources do not open windows
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn fault_fields_from_non_fault_injector_source_are_ignored() {
+        let mut transformer = FaultAnnotator {
+            active_fault_windows: LinkedList::new(),
+            active_faults: json!({}),
+        };
+
+        assert_eq!(
+            transformer.try_transform(&format!("{}", json!({
+                "moment": { "_vtime_ticks": 1u64 << 32 },
+                "source": { "name": "some_other_source" },
+                "fault": {
+                    "name": "partition",
+                    "type": "network",
+                    "affected_nodes": ["ALL"]
+                }
+            }))),
+            Some(concat!(
+                r#"{"moment":{"_vtime_ticks":4294967296},"source":{"name":"some_other_source"},"#,
+                r#""fault":{"name":"partition","type":"network","affected_nodes":["ALL"]},"#,
+                r#""vtime_seconds":1.0,"active_faults":{}}"#
+            ).to_string())
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // active_faults: event without _vtime_ticks still gets active_faults
+    // (and does not get vtime_seconds)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn event_without_vtime_ticks_still_gets_active_faults() {
+        let mut transformer = FaultAnnotator {
+            active_fault_windows: LinkedList::new(),
+            active_faults: json!({}),
+        };
+
+        // Open a partition window at a known vtime
+        transformer.try_transform(&format!(
+            "{}",
+            json!({
+                "moment": { "_vtime_ticks": 1u64 << 32 },
+                "source": { "name": "fault_injector" },
+                "fault": {
+                    "name": "partition",
+                    "type": "network",
+                    "affected_nodes": ["ALL"]
+                }
+            })
+        ));
+
+        // Event with no moment at all: no expiry check, no vtime_seconds, but active_faults injected
+        assert_eq!(
+            transformer.try_transform(&format!("{}", json!({"output_text": "no moment here"}))),
+            Some(
+                concat!(
+                    r#"{"output_text":"no moment here","#,
+                    r#""active_faults":{"network_partition":{"vtime":1.0}}}"#
+                )
+                .to_string()
+            )
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // active_faults: natural expiration — boundary semantics
+    //
+    // is_expired uses strict less-than: end_vtime < latest_vtime.
+    // So at exactly end_vtime ticks the window is still active; it expires
+    // only when the next message arrives with a strictly greater vtime.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn fault_window_active_at_exact_end_vtime_expires_one_tick_later() {
+        let mut transformer = FaultAnnotator {
+            active_fault_windows: LinkedList::new(),
+            active_faults: json!({}),
+        };
+
+        // partition at 5<<32, max_duration=5s → end_vtime = (5+5)<<32 = 10<<32
+        transformer.try_transform(&format!(
+            "{}",
+            json!({
+                "moment": { "_vtime_ticks": 5u64 << 32 },
+                "source": { "name": "fault_injector" },
+                "fault": {
+                    "name": "partition",
+                    "type": "network",
+                    "affected_nodes": ["ALL"],
+                    "max_duration": 5
+                }
+            })
+        ));
+
+        // At exactly end_vtime (10<<32): window is still active (end < latest is false when equal)
+        assert_eq!(
+            transformer.try_transform(&format!(
+                "{}",
+                json!({
+                    "moment": { "_vtime_ticks": 10u64 << 32 },
+                    "output_text": "at exact end"
+                })
+            )),
+            Some(
+                concat!(
+                    r#"{"moment":{"_vtime_ticks":42949672960},"output_text":"at exact end","#,
+                    r#""vtime_seconds":10.0,"active_faults":{"network_partition":{"vtime":5.0}}}"#
+                )
+                .to_string()
+            )
+        );
+
+        // One tick past end_vtime: now expired
+        assert_eq!(
+            transformer.try_transform(&format!(
+                "{}",
+                json!({
+                    "moment": { "_vtime_ticks": (10u64 << 32) + 1 },
+                    "output_text": "just past end"
+                })
+            )),
+            Some(
+                concat!(
+                    r#"{"moment":{"_vtime_ticks":42949672961},"output_text":"just past end","#,
+                    r#""vtime_seconds":10.00000000023283,"active_faults":{}}"#
+                )
+                .to_string()
+            )
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // active_faults: partition without max_duration never expires naturally
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn partition_without_max_duration_never_expires() {
+        let mut transformer = FaultAnnotator {
+            active_fault_windows: LinkedList::new(),
+            active_faults: json!({}),
+        };
+
+        transformer.try_transform(&format!(
+            "{}",
+            json!({
+                "moment": { "_vtime_ticks": 1u64 << 32 },
+                "source": { "name": "fault_injector" },
+                "fault": {
+                    "name": "partition",
+                    "type": "network",
+                    "affected_nodes": ["ALL"]
+                    // no max_duration → end_vtime = None → is_expired always false
+                }
+            })
+        ));
+
+        assert_eq!(
+            transformer.try_transform(&format!(
+                "{}",
+                json!({
+                    "moment": { "_vtime_ticks": 1000u64 << 32 },
+                    "output_text": "much later"
+                })
+            )),
+            Some(
+                concat!(
+                    r#"{"moment":{"_vtime_ticks":4294967296000},"output_text":"much later","#,
+                    r#""vtime_seconds":1000.0,"active_faults":{"network_partition":{"vtime":1.0}}}"#
+                )
+                .to_string()
+            )
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // active_faults: restore before natural expiration clears network faults
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn restore_before_natural_expiration_clears_network_faults() {
+        let mut transformer = FaultAnnotator {
+            active_fault_windows: LinkedList::new(),
+            active_faults: json!({}),
+        };
+
+        transformer.try_transform(&format!(
+            "{}",
+            json!({
+                "moment": { "_vtime_ticks": 1u64 << 32 },
+                "source": { "name": "fault_injector" },
+                "fault": {
+                    "name": "partition",
+                    "type": "network",
+                    "affected_nodes": ["ALL"],
+                    "max_duration": 100
+                }
+            })
+        ));
+
+        assert_eq!(
+            transformer.try_transform(&format!(
+                "{}",
+                json!({
+                    "moment": { "_vtime_ticks": 5u64 << 32 },
+                    "source": { "name": "fault_injector" },
+                    "fault": {
+                        "name": "restore",
+                        "type": "network",
+                        "affected_nodes": ["ALL"]
+                    }
+                })
+            )),
+            Some(
+                concat!(
+                    r#"{"moment":{"_vtime_ticks":21474836480},"source":{"name":"fault_injector"},"#,
+                    r#""fault":{"name":"restore","type":"network","affected_nodes":["ALL"]},"#,
+                    r#""vtime_seconds":5.0,"active_faults":{}}"#
+                )
+                .to_string()
+            )
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // active_faults: partition and clog expire independently
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn partition_and_clog_expire_independently() {
+        let mut transformer = FaultAnnotator {
+            active_fault_windows: LinkedList::new(),
+            active_faults: json!({}),
+        };
+
+        // Partition at vtime 5, max_duration=20 → expires after 25<<32
+        transformer.try_transform(&format!(
+            "{}",
+            json!({
+                "moment": { "_vtime_ticks": 5u64 << 32 },
+                "source": { "name": "fault_injector" },
+                "fault": {
+                    "name": "partition",
+                    "type": "network",
+                    "affected_nodes": ["ALL"],
+                    "max_duration": 20
+                }
+            })
+        ));
+
+        // Clog at vtime 10, max_duration=3 → expires after 13<<32
+        transformer.try_transform(&format!(
+            "{}",
+            json!({
+                "moment": { "_vtime_ticks": 10u64 << 32 },
+                "source": { "name": "fault_injector" },
+                "fault": {
+                    "name": "clog",
+                    "type": "network",
+                    "affected_nodes": ["A"],
+                    "max_duration": 3
+                }
+            })
+        ));
+
+        // At vtime 14: clog's end_vtime (13<<32) < 14<<32, so it expires; partition still active
+        assert_eq!(
+            transformer.try_transform(&format!(
+                "{}",
+                json!({
+                    "moment": { "_vtime_ticks": 14u64 << 32 },
+                    "output_text": "clog expired, partition still active"
+                })
+            )),
+            Some(
+                concat!(
+                    r#"{"moment":{"_vtime_ticks":60129542144},"#,
+                    r#""output_text":"clog expired, partition still active","#,
+                    r#""vtime_seconds":14.0,"active_faults":{"network_partition":{"vtime":5.0}}}"#
+                )
+                .to_string()
+            )
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // active_faults: non-overlapping windows — first expires, new one
+    // starts fresh with the new start_vtime
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn non_overlapping_windows_start_fresh_after_expiry() {
+        let mut transformer = FaultAnnotator {
+            active_fault_windows: LinkedList::new(),
+            active_faults: json!({}),
+        };
+
+        // First window: vtime 1, max_duration=3 → expires after 4<<32
+        assert_eq!(
+            transformer.try_transform(&format!("{}", json!({
+                "moment": { "_vtime_ticks": 1u64 << 32 },
+                "source": { "name": "fault_injector" },
+                "fault": {
+                    "name": "partition",
+                    "type": "network",
+                    "affected_nodes": ["ALL"],
+                    "max_duration": 3
+                }
+            }))),
+            Some(concat!(
+                r#"{"moment":{"_vtime_ticks":4294967296},"source":{"name":"fault_injector"},"#,
+                r#""fault":{"name":"partition","type":"network","affected_nodes":["ALL"],"max_duration":3},"#,
+                r#""vtime_seconds":1.0,"active_faults":{"network_partition":{"vtime":1.0}}}"#
+            ).to_string())
+        );
+
+        // Second window at vtime 5, after the first has expired (5<<32 > 4<<32):
+        // the old window is pruned before the new one is pushed, so the snapshot
+        // reflects only the new window's start_vtime.
+        assert_eq!(
+            transformer.try_transform(&format!("{}", json!({
+                "moment": { "_vtime_ticks": 5u64 << 32 },
+                "source": { "name": "fault_injector" },
+                "fault": {
+                    "name": "partition",
+                    "type": "network",
+                    "affected_nodes": ["ALL"],
+                    "max_duration": 3
+                }
+            }))),
+            Some(concat!(
+                r#"{"moment":{"_vtime_ticks":21474836480},"source":{"name":"fault_injector"},"#,
+                r#""fault":{"name":"partition","type":"network","affected_nodes":["ALL"],"max_duration":3},"#,
+                r#""vtime_seconds":5.0,"active_faults":{"network_partition":{"vtime":5.0}}}"#
+            ).to_string())
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // active_faults: overlapping same-name windows — active_fault_dictionary
+    // reports the earliest start_vtime among all live windows
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn overlapping_windows_report_earliest_start_vtime() {
+        let mut transformer = FaultAnnotator {
+            active_fault_windows: LinkedList::new(),
+            active_faults: json!({}),
+        };
+
+        // First partition at vtime 10, max_duration=5 → expires after 15<<32
+        transformer.try_transform(&format!(
+            "{}",
+            json!({
+                "moment": { "_vtime_ticks": 10u64 << 32 },
+                "source": { "name": "fault_injector" },
+                "fault": {
+                    "name": "partition",
+                    "type": "network",
+                    "affected_nodes": ["ALL"],
+                    "max_duration": 5
+                }
+            })
+        ));
+
+        // Second partition at vtime 14 (overlapping), max_duration=5 → expires after 19<<32
+        // Both windows are alive; active_fault_dictionary picks the min start_vtime (10)
+        assert_eq!(
+            transformer.try_transform(&format!("{}", json!({
+                "moment": { "_vtime_ticks": 14u64 << 32 },
+                "source": { "name": "fault_injector" },
+                "fault": {
+                    "name": "partition",
+                    "type": "network",
+                    "affected_nodes": ["ALL"],
+                    "max_duration": 5
+                }
+            }))),
+            Some(concat!(
+                r#"{"moment":{"_vtime_ticks":60129542144},"source":{"name":"fault_injector"},"#,
+                r#""fault":{"name":"partition","type":"network","affected_nodes":["ALL"],"max_duration":5},"#,
+                r#""vtime_seconds":14.0,"active_faults":{"network_partition":{"vtime":10.0}}}"#
+            ).to_string())
+        );
+
+        // At vtime 16: first window expired (15<<32 < 16<<32), second still alive (19<<32 not < 16<<32)
+        // Now only the second window remains; start_vtime becomes 14
+        assert_eq!(
+            transformer.try_transform(&format!("{}", json!({
+                "moment": { "_vtime_ticks": 16u64 << 32 },
+                "output_text": "after first window expired"
+            }))),
+            Some(concat!(
+                r#"{"moment":{"_vtime_ticks":68719476736},"output_text":"after first window expired","#,
+                r#""vtime_seconds":16.0,"active_faults":{"network_partition":{"vtime":14.0}}}"#
+            ).to_string())
+        );
+
+        // At vtime 20: second window also expired (19<<32 < 20<<32)
+        assert_eq!(
+            transformer.try_transform(&format!(
+                "{}",
+                json!({
+                    "moment": { "_vtime_ticks": 20u64 << 32 },
+                    "output_text": "after both expired"
+                })
+            )),
+            Some(
+                concat!(
+                    r#"{"moment":{"_vtime_ticks":85899345920},"output_text":"after both expired","#,
+                    r#""vtime_seconds":20.0,"active_faults":{}}"#
+                )
+                .to_string()
+            )
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // active_faults: pause preserves clock windows
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn fault_injector_pause_preserves_clock_windows() {
+        let mut transformer = FaultAnnotator {
+            active_fault_windows: LinkedList::new(),
+            active_faults: json!({}),
+        };
+
+        transformer.try_transform(&format!(
+            "{}",
+            json!({
+                "moment": { "_vtime_ticks": 1u64 << 32 },
+                "source": { "name": "fault_injector" },
+                "fault": {
+                    "name": "skip",
+                    "type": "clock",
+                    "details": { "offset": 10.0 }
+                }
+            })
+        ));
+
+        transformer.try_transform(&format!(
+            "{}",
+            json!({
+                "moment": { "_vtime_ticks": 2u64 << 32 },
+                "source": { "name": "fault_injector" },
+                "fault": {
+                    "name": "partition",
+                    "type": "network",
+                    "affected_nodes": ["ALL"],
+                    "max_duration": 100
+                }
+            })
+        ));
+
+        // Pause clears network and node windows; clock survives
+        assert_eq!(
+            transformer.try_transform(&format!(
+                "{}",
+                json!({
+                    "source": { "name": "fault_injector" },
+                    "info": {
+                        "message": "status",
+                        "details": { "paused": true }
+                    }
+                })
+            )),
+            Some(
+                concat!(
+                    r#"{"source":{"name":"fault_injector"},"#,
+                    r#""info":{"message":"status","details":{"paused":true}},"#,
+                    r#""active_faults":{"clock_skip":{"cumulative_offset":10.0,"vtime":1.0}}}"#
+                )
+                .to_string()
+            )
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // active_faults: multiple node containers tracked simultaneously
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn multiple_containers_paused_simultaneously() {
+        let mut transformer = FaultAnnotator {
+            active_fault_windows: LinkedList::new(),
+            active_faults: json!({}),
+        };
+
+        transformer.try_transform(&format!(
+            "{}",
+            json!({
+                "moment": { "_vtime_ticks": 1u64 << 32 },
+                "source": { "name": "fault_injector" },
+                "fault": {
+                    "name": "pause",
+                    "type": "node",
+                    "affected_nodes": ["A"],
+                    "max_duration": 100
+                }
+            })
+        ));
+
+        assert_eq!(
+            transformer.try_transform(&format!("{}", json!({
+                "moment": { "_vtime_ticks": 2u64 << 32 },
+                "source": { "name": "fault_injector" },
+                "fault": {
+                    "name": "pause",
+                    "type": "node",
+                    "affected_nodes": ["B"],
+                    "max_duration": 100
+                }
+            }))),
+            Some(concat!(
+                r#"{"moment":{"_vtime_ticks":8589934592},"source":{"name":"fault_injector"},"#,
+                r#""fault":{"name":"pause","type":"node","affected_nodes":["B"],"max_duration":100},"#,
+                r#""vtime_seconds":2.0,"active_faults":{"node_pause":{"A":1.0,"B":2.0}}}"#
+            ).to_string())
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // active_faults: node fault expires via max_duration
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn node_fault_expires_via_max_duration() {
+        let mut transformer = FaultAnnotator {
+            active_fault_windows: LinkedList::new(),
+            active_faults: json!({}),
+        };
+
+        // Throttle C at vtime 1, max_duration=5 → expires after 6<<32
+        transformer.try_transform(&format!(
+            "{}",
+            json!({
+                "moment": { "_vtime_ticks": 1u64 << 32 },
+                "source": { "name": "fault_injector" },
+                "fault": {
+                    "name": "throttle",
+                    "type": "node",
+                    "affected_nodes": ["C"],
+                    "max_duration": 5
+                }
+            })
+        ));
+
+        // Mid-window at vtime 3: still active
+        assert_eq!(
+            transformer.try_transform(&format!(
+                "{}",
+                json!({
+                    "moment": { "_vtime_ticks": 3u64 << 32 },
+                    "output_text": "mid-window"
+                })
+            )),
+            Some(
+                concat!(
+                    r#"{"moment":{"_vtime_ticks":12884901888},"output_text":"mid-window","#,
+                    r#""vtime_seconds":3.0,"active_faults":{"node_throttle":{"C":1.0}}}"#
+                )
+                .to_string()
+            )
+        );
+
+        // After expiry at vtime 7 (6<<32 < 7<<32): empty
+        assert_eq!(
+            transformer.try_transform(&format!(
+                "{}",
+                json!({
+                    "moment": { "_vtime_ticks": 7u64 << 32 },
+                    "output_text": "after expiry"
+                })
+            )),
+            Some(
+                concat!(
+                    r#"{"moment":{"_vtime_ticks":30064771072},"output_text":"after expiry","#,
+                    r#""vtime_seconds":7.0,"active_faults":{}}"#
+                )
+                .to_string()
+            )
+        );
+    }
 }

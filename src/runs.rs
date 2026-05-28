@@ -332,7 +332,7 @@ async fn cmd_runs_logs(
             stream_ndjson_lines(
                 stream,
                 FaultAnnotator {
-                    active_fault_windows: Vec::new(),
+                    active_fault_windows: ActiveFaultWindows::new(),
                     active_faults: json!({}),
                 },
                 |line| {
@@ -426,14 +426,14 @@ impl LineTransformer for NoOpTransformer {
 }
 
 struct FaultAnnotator {
-    active_fault_windows: Vec<FaultWindow>,
+    active_fault_windows: ActiveFaultWindows,
     active_faults: Value,
 }
 
 impl LineTransformer for FaultAnnotator {
     fn try_transform(&mut self, line: &str) -> Option<String> {
         if let Ok(mut entry) = serde_json::from_str::<Value>(line) {
-            let mut update_faults;
+            let mut update_faults = false;
 
             let vtime_ticks_node = entry["moment"]["_vtime_ticks"].as_u64();
             let vtime_node = entry["moment"]["vtime"]
@@ -447,46 +447,85 @@ impl LineTransformer for FaultAnnotator {
                 .as_str()
                 .map(|source| source.eq("fault_injector"))
                 .unwrap_or(false);
-            let faults_were_paused = is_fault_injector
+
+            // Clear network and node faults if the fault injector was paused
+            if is_fault_injector
                 && entry["info"]["message"]
                     .as_str()
                     .map(|message| message.eq("status"))
                     .unwrap_or(false)
                 && entry["info"]["details"]["paused"]
                     .as_bool()
-                    .unwrap_or(false);
-            let is_restore_event =
-                is_fault_injector && fault_name.map(|n| n.eq("restore")).unwrap_or(false);
-
-            // clear any fault windows that are expired or mooted by fault injector pauses
-            let length_before_cleanup = self.active_fault_windows.len();
-            self.active_fault_windows.retain(|w| {
-                if w.is_expired(event_vtime_ticks) {
-                    return false;
-                }
-
-                if faults_were_paused && (w.is_network_fault() || w.is_node_fault()) {
-                    return false;
-                }
-
-                if is_restore_event && w.is_network_fault() {
-                    return false;
-                }
-
-                true
-            });
-            update_faults = length_before_cleanup != self.active_fault_windows.len();
-
-            if is_fault_injector
-                && let Some(new_window) =
-                    try_get_fault_window_definition(&entry, event_vtime_ticks, fault_name)
+                    .unwrap_or(false)
             {
-                self.active_fault_windows.push(new_window);
-                update_faults = true;
+                update_faults = self.active_fault_windows.clear_network_faults() || update_faults;
+                update_faults = self.active_fault_windows.clear_node_faults() || update_faults;
+            }
+
+            // Clear network faults if the network was restored
+            if is_fault_injector && fault_name.map(|n| n.eq("restore")).unwrap_or(false) {
+                update_faults = self.active_fault_windows.clear_network_faults() || update_faults;
+            }
+
+            // Clear any expired faults
+            update_faults = self
+                .active_fault_windows
+                .clear_expired_faults(event_vtime_ticks)
+                || update_faults;
+
+            if is_fault_injector && let Some(fault_name) = fault_name {
+                let max_duration_ticks = entry["fault"]["max_duration"]
+                    .as_f64()
+                    .filter(|d| *d >= 0.0)
+                    .map(|d| (d * TICKS_PER_SECOND) as u64);
+                let end_vtime = max_duration_ticks.map(|duration| duration + event_vtime_ticks);
+                let fault_type = entry["fault"]["type"].as_str().unwrap_or("");
+
+                if let Some(target) = entry["fault"]["affected_nodes"]
+                    .as_array()
+                    .and_then(|arr| arr.first())
+                    .and_then(|first| first.as_str())
+                {
+                    if fault_name.eq("partition") || fault_name.eq("clog") {
+                        update_faults = self.active_fault_windows.add_network_fault(
+                            fault_name.to_string(),
+                            FaultWindowBounds {
+                                start_vtime: event_vtime_ticks,
+                                end_vtime,
+                            },
+                        ) || update_faults;
+                    }
+
+                    if fault_type.eq("node")
+                        && (fault_name.eq("pause") || fault_name.eq("throttle"))
+                    {
+                        update_faults = self.active_fault_windows.add_node_fault(
+                            fault_name.to_string(),
+                            target.to_string(),
+                            FaultWindowBounds {
+                                start_vtime: event_vtime_ticks,
+                                end_vtime,
+                            },
+                        ) || update_faults;
+                    }
+                }
+
+                if fault_name.eq("skip")
+                    && fault_type.eq("clock")
+                    && let Some(offset) = entry["fault"]["details"]["offset"].as_f64()
+                {
+                    update_faults = self.active_fault_windows.add_clock_fault(
+                        offset,
+                        FaultWindowBounds {
+                            start_vtime: event_vtime_ticks,
+                            end_vtime,
+                        },
+                    ) || update_faults;
+                }
             }
 
             if update_faults {
-                self.active_faults = active_fault_dictionary(&self.active_fault_windows);
+                self.active_faults = self.active_fault_windows.to_json();
             }
 
             if let Some(output_text) = entry["output_text"].as_str() {
@@ -504,138 +543,12 @@ impl LineTransformer for FaultAnnotator {
     }
 }
 
-fn try_get_fault_window_definition(
-    entry: &Value,
-    event_vtime_ticks: u64,
-    maybe_fault_name: Option<&str>,
-) -> Option<FaultWindow> {
-    if let Some(fault_name) = maybe_fault_name {
-        let max_duration_ticks = entry["fault"]["max_duration"]
-            .as_f64()
-            .filter(|d| *d >= 0.0)
-            .map(|d| (d * TICKS_PER_SECOND) as u64);
-        let end_vtime = max_duration_ticks.map(|duration| duration + event_vtime_ticks);
-        let fault_type = entry["fault"]["type"].as_str().unwrap_or("");
-
-        if let Some(target) = entry["fault"]["affected_nodes"]
-            .as_array()
-            .and_then(|arr| arr.first())
-            .and_then(|first| first.as_str())
-        {
-            if fault_name.eq("partition") || fault_name.eq("clog") {
-                return Some(FaultWindow::Network {
-                    name: fault_name.to_string(),
-                    start_vtime: event_vtime_ticks,
-                    end_vtime,
-                });
-            }
-
-            if fault_type.eq("node") && (fault_name.eq("pause") || fault_name.eq("throttle")) {
-                return Some(FaultWindow::Node {
-                    name: fault_name.to_string(),
-                    start_vtime: event_vtime_ticks,
-                    end_vtime,
-                    container: target.to_string(),
-                });
-            }
-        }
-
-        if fault_name.eq("skip")
-            && fault_type.eq("clock")
-            && let Some(offset) = entry["fault"]["details"]["offset"].as_f64()
-        {
-            return Some(FaultWindow::Clock {
-                name: fault_name.to_string(),
-                start_vtime: event_vtime_ticks,
-                offset,
-                end_vtime,
-            });
-        }
-    }
-
-    None
-}
-
 #[derive(Debug, PartialEq, Eq)]
 struct RenderedEventEntry {
     input_hash: String,
     vtime: String,
     source: String,
     output: String,
-}
-
-#[derive(Debug, PartialEq)]
-enum FaultWindow {
-    Network {
-        name: String,
-        start_vtime: u64,
-        end_vtime: Option<u64>,
-    },
-    Node {
-        name: String,
-        start_vtime: u64,
-        end_vtime: Option<u64>,
-        container: String,
-    },
-    Clock {
-        name: String,
-        start_vtime: u64,
-        offset: f64,
-        end_vtime: Option<u64>,
-    },
-}
-
-impl FaultWindow {
-    fn get_end_vtime(&self) -> &Option<u64> {
-        match self {
-            Self::Network {
-                name: _,
-                start_vtime: _,
-                end_vtime,
-            } => end_vtime,
-            Self::Node {
-                name: _,
-                start_vtime: _,
-                end_vtime,
-                container: _,
-            } => end_vtime,
-            Self::Clock {
-                name: _,
-                start_vtime: _,
-                offset: _,
-                end_vtime,
-            } => end_vtime,
-        }
-    }
-
-    fn is_expired(&self, latest_vtime: u64) -> bool {
-        self.get_end_vtime()
-            .map(|t| t < latest_vtime)
-            .unwrap_or(false)
-    }
-
-    fn is_network_fault(&self) -> bool {
-        matches!(
-            self,
-            Self::Network {
-                name: _,
-                start_vtime: _,
-                end_vtime: _,
-            }
-        )
-    }
-
-    fn is_node_fault(&self) -> bool {
-        matches!(
-            self,
-            Self::Node {
-                name: _,
-                start_vtime: _,
-                end_vtime: _,
-                container: _,
-            }
-        )
-    }
 }
 
 fn ansi_re() -> &'static Regex {
@@ -654,74 +567,205 @@ fn strip_ansi(text: &str) -> String {
     ansi_re().replace_all(text, "").to_string()
 }
 
-fn active_fault_dictionary(open_windows: &Vec<FaultWindow>) -> Value {
-    let mut result = Map::new();
-    let mut offset_sum = 0f64;
-    let mut max_clock_fault_start: Option<u64> = None;
-    let mut network_fault_starts = IndexMap::<String, u64>::new();
-    let mut node_faults = IndexMap::<String, Map<String, Value>>::new();
+struct FaultWindowBounds {
+    start_vtime: u64,
+    end_vtime: Option<u64>,
+}
 
-    for fault_window in open_windows {
-        if let FaultWindow::Clock {
-            name: _,
-            start_vtime,
-            offset,
-            end_vtime: _,
-        } = fault_window
-        {
-            max_clock_fault_start = max_clock_fault_start
-                .map(|prev| prev.max(*start_vtime))
-                .or(Some(*start_vtime));
-            offset_sum += offset;
-        } else if let FaultWindow::Network {
-            name,
-            start_vtime,
-            end_vtime: _,
-        } = fault_window
-        {
-            match network_fault_starts.entry(format!("network_{}", name)) {
-                Entry::Vacant(entry) => {
-                    entry.insert(*start_vtime);
-                }
-                Entry::Occupied(mut entry) => {
-                    if entry.get().ge(start_vtime) {
-                        entry.insert(*start_vtime);
-                    }
-                }
-            }
-        } else if let FaultWindow::Node {
-            name,
-            start_vtime,
-            end_vtime: _,
-            container,
-        } = fault_window
-        {
-            node_faults
-                .entry(format!("node_{}", name))
-                .or_default()
-                .insert(
-                    container.clone(),
-                    json!((*start_vtime as f64) / TICKS_PER_SECOND),
-                );
+impl FaultWindowBounds {
+    fn is_expired(&self, latest_vtime_ticks: &u64) -> bool {
+        self.end_vtime
+            .map(|expiry| expiry.lt(latest_vtime_ticks))
+            .unwrap_or(false)
+    }
+}
+
+struct ActiveFaultWindows {
+    network: IndexMap<String, FaultWindowBounds>,
+    node: IndexMap<String, IndexMap<String, FaultWindowBounds>>,
+    clock: Vec<(f64, FaultWindowBounds)>,
+}
+
+impl ActiveFaultWindows {
+    fn new() -> ActiveFaultWindows {
+        ActiveFaultWindows {
+            network: IndexMap::new(),
+            node: IndexMap::new(),
+            clock: Vec::new(),
         }
     }
 
-    for entry in network_fault_starts {
-        result.insert(
-            entry.0,
-            json!({"vtime": (entry.1 as f64) / TICKS_PER_SECOND}),
-        );
+    fn clear_network_faults(&mut self) -> bool {
+        let did_something = !self.network.is_empty();
+        self.network.clear();
+        did_something
     }
 
-    for entry in node_faults {
-        result.insert(entry.0, Value::Object(entry.1));
+    fn clear_node_faults(&mut self) -> bool {
+        let did_something = !self.node.is_empty();
+        self.node.clear();
+        did_something
     }
 
-    if let Some(latest_vtime) = max_clock_fault_start {
-        result.insert("clock_skip".to_string(), json!({"cumulative_offset": offset_sum, "vtime": (latest_vtime as f64) / TICKS_PER_SECOND}));
+    fn clear_expired_faults(&mut self, latest_vtime_ticks: u64) -> bool {
+        let mut did_something;
+
+        let clock_faults_length = self.clock.len();
+        self.clock
+            .retain(|fault| !fault.1.is_expired(&latest_vtime_ticks));
+        did_something = self.clock.len() != clock_faults_length;
+
+        for _ in self
+            .network
+            .extract_if(.., |_k, window| window.is_expired(&latest_vtime_ticks))
+        {
+            did_something = true;
+        }
+
+        let mut dropped_categories_of_node_faults = false;
+        for _ in self.node.extract_if(.., |_k, windows_by_container| {
+            for _ in windows_by_container
+                .extract_if(.., |_c, window| window.is_expired(&latest_vtime_ticks))
+            {
+                did_something = true;
+            }
+
+            windows_by_container.is_empty()
+        }) {
+            dropped_categories_of_node_faults = true;
+        }
+        did_something = did_something || dropped_categories_of_node_faults;
+
+        did_something
     }
 
-    Value::Object(result)
+    fn add_network_fault(&mut self, name: String, window: FaultWindowBounds) -> bool {
+        match self.network.entry(name) {
+            Entry::Vacant(entry) => {
+                entry.insert(window);
+                true
+            }
+            Entry::Occupied(mut entry) => {
+                if let Some(updated) = merge_fault_windows(entry.get(), window) {
+                    entry.insert(updated);
+                    return true;
+                }
+
+                false
+            }
+        }
+    }
+
+    fn add_node_fault(
+        &mut self,
+        name: String,
+        container_name: String,
+        window: FaultWindowBounds,
+    ) -> bool {
+        match self.node.entry(name) {
+            Entry::Vacant(entry) => {
+                let mut by_container_name_map = IndexMap::new();
+                by_container_name_map.insert(container_name, window);
+                entry.insert(by_container_name_map);
+                true
+            }
+            Entry::Occupied(mut container_name_to_window_map) => {
+                match container_name_to_window_map.get_mut().entry(container_name) {
+                    Entry::Vacant(entry) => {
+                        entry.insert(window);
+                        true
+                    }
+                    Entry::Occupied(mut entry) => {
+                        if let Some(updated) = merge_fault_windows(entry.get(), window) {
+                            entry.insert(updated);
+                            return true;
+                        }
+
+                        false
+                    }
+                }
+            }
+        }
+    }
+
+    fn add_clock_fault(&mut self, offset: f64, window: FaultWindowBounds) -> bool {
+        self.clock.push((offset, window));
+        true
+    }
+
+    fn to_json(&self) -> Value {
+        let mut result = Map::new();
+
+        for entry in &self.network {
+            result.insert(
+                format!("network_{}", entry.0),
+                json!({"vtime": (entry.1.start_vtime as f64) / TICKS_PER_SECOND}),
+            );
+        }
+
+        for entry in &self.node {
+            let mut node_fault_starts_by_container = Map::new();
+            for entry in entry.1 {
+                node_fault_starts_by_container.insert(
+                    entry.0.to_string(),
+                    json!((entry.1.start_vtime as f64) / TICKS_PER_SECOND),
+                );
+            }
+
+            result.insert(
+                format!("node_{}", entry.0),
+                Value::Object(node_fault_starts_by_container),
+            );
+        }
+
+        if !&self.clock.is_empty() {
+            let mut offset_sum = 0f64;
+            let mut max_clock_fault_start = 0u64;
+
+            for entry in &self.clock {
+                offset_sum += entry.0;
+                max_clock_fault_start = max_clock_fault_start.max(entry.1.start_vtime);
+            }
+
+            result.insert("clock_skip".to_string(), json!({"cumulative_offset": offset_sum, "vtime": (max_clock_fault_start as f64) / TICKS_PER_SECOND}));
+        }
+
+        Value::Object(result)
+    }
+}
+
+fn merge_fault_windows(
+    incumbent: &FaultWindowBounds,
+    new: FaultWindowBounds,
+) -> Option<FaultWindowBounds> {
+    if new.start_vtime.lt(&incumbent.start_vtime) {
+        return Some(FaultWindowBounds {
+            start_vtime: new.start_vtime,
+            end_vtime: incumbent.end_vtime.and_then(|prev_expiry| {
+                new.end_vtime.map(|new_expiry| new_expiry.max(prev_expiry))
+            }),
+        });
+    }
+
+    match incumbent.end_vtime {
+        None => None,
+        Some(prev_expiry) => match new.end_vtime {
+            None => Some(FaultWindowBounds {
+                start_vtime: incumbent.start_vtime,
+                end_vtime: None,
+            }),
+            Some(new_expiry) => {
+                if new_expiry.gt(&prev_expiry) {
+                    return Some(FaultWindowBounds {
+                        start_vtime: incumbent.start_vtime,
+                        end_vtime: Some(new_expiry),
+                    });
+                }
+
+                None
+            }
+        },
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -1724,7 +1768,7 @@ mod tests {
     #[test]
     fn tracks_which_faults_are_active_based_on_vtime_and_max_duration() {
         let mut transformer = FaultAnnotator {
-            active_fault_windows: Vec::new(),
+            active_fault_windows: ActiveFaultWindows::new(),
             active_faults: json!({}),
         };
 
@@ -1813,7 +1857,7 @@ mod tests {
     #[test]
     fn restore_closes_network_faults() {
         let mut transformer = FaultAnnotator {
-            active_fault_windows: Vec::new(),
+            active_fault_windows: ActiveFaultWindows::new(),
             active_faults: json!({}),
         };
 
@@ -1895,7 +1939,7 @@ mod tests {
     #[test]
     fn fault_injector_pause_clears_network_and_node_faults() {
         let mut transformer = FaultAnnotator {
-            active_fault_windows: Vec::new(),
+            active_fault_windows: ActiveFaultWindows::new(),
             active_faults: json!({}),
         };
 
@@ -1999,7 +2043,7 @@ mod tests {
     #[test]
     fn clock_offsets_are_combined() {
         let mut transformer = FaultAnnotator {
-            active_fault_windows: Vec::new(),
+            active_fault_windows: ActiveFaultWindows::new(),
             active_faults: json!({}),
         };
 
@@ -2067,7 +2111,7 @@ mod tests {
     #[test]
     fn empty_affected_nodes_does_not_open_network_window() {
         let mut transformer = FaultAnnotator {
-            active_fault_windows: Vec::new(),
+            active_fault_windows: ActiveFaultWindows::new(),
             active_faults: json!({}),
         };
 
@@ -2115,7 +2159,7 @@ mod tests {
     #[test]
     fn missing_affected_nodes_does_not_open_network_window() {
         let mut transformer = FaultAnnotator {
-            active_fault_windows: Vec::new(),
+            active_fault_windows: ActiveFaultWindows::new(),
             active_faults: json!({}),
         };
 
@@ -2165,7 +2209,7 @@ mod tests {
     #[test]
     fn untracked_fault_names_produce_empty_active_faults() {
         let mut transformer = FaultAnnotator {
-            active_fault_windows: Vec::new(),
+            active_fault_windows: ActiveFaultWindows::new(),
             active_faults: json!({}),
         };
 
@@ -2211,7 +2255,7 @@ mod tests {
     #[test]
     fn restore_after_only_untracked_faults_is_noop() {
         let mut transformer = FaultAnnotator {
-            active_fault_windows: Vec::new(),
+            active_fault_windows: ActiveFaultWindows::new(),
             active_faults: json!({}),
         };
 
@@ -2255,7 +2299,7 @@ mod tests {
     #[test]
     fn fault_fields_from_non_fault_injector_source_are_ignored() {
         let mut transformer = FaultAnnotator {
-            active_fault_windows: Vec::new(),
+            active_fault_windows: ActiveFaultWindows::new(),
             active_faults: json!({}),
         };
 
@@ -2285,7 +2329,7 @@ mod tests {
     #[test]
     fn event_without_vtime_ticks_still_gets_active_faults() {
         let mut transformer = FaultAnnotator {
-            active_fault_windows: Vec::new(),
+            active_fault_windows: ActiveFaultWindows::new(),
             active_faults: json!({}),
         };
 
@@ -2327,7 +2371,7 @@ mod tests {
     #[test]
     fn fault_window_active_at_exact_end_vtime_expires_one_tick_later() {
         let mut transformer = FaultAnnotator {
-            active_fault_windows: Vec::new(),
+            active_fault_windows: ActiveFaultWindows::new(),
             active_faults: json!({}),
         };
 
@@ -2390,7 +2434,7 @@ mod tests {
     #[test]
     fn partition_without_max_duration_never_expires() {
         let mut transformer = FaultAnnotator {
-            active_fault_windows: Vec::new(),
+            active_fault_windows: ActiveFaultWindows::new(),
             active_faults: json!({}),
         };
 
@@ -2433,7 +2477,7 @@ mod tests {
     #[test]
     fn restore_before_natural_expiration_clears_network_faults() {
         let mut transformer = FaultAnnotator {
-            active_fault_windows: Vec::new(),
+            active_fault_windows: ActiveFaultWindows::new(),
             active_faults: json!({}),
         };
 
@@ -2482,7 +2526,7 @@ mod tests {
     #[test]
     fn partition_and_clog_expire_independently() {
         let mut transformer = FaultAnnotator {
-            active_fault_windows: Vec::new(),
+            active_fault_windows: ActiveFaultWindows::new(),
             active_faults: json!({}),
         };
 
@@ -2544,7 +2588,7 @@ mod tests {
     #[test]
     fn non_overlapping_windows_start_fresh_after_expiry() {
         let mut transformer = FaultAnnotator {
-            active_fault_windows: Vec::new(),
+            active_fault_windows: ActiveFaultWindows::new(),
             active_faults: json!({}),
         };
 
@@ -2597,7 +2641,7 @@ mod tests {
     #[test]
     fn overlapping_windows_report_earliest_start_vtime() {
         let mut transformer = FaultAnnotator {
-            active_fault_windows: Vec::new(),
+            active_fault_windows: ActiveFaultWindows::new(),
             active_faults: json!({}),
         };
 
@@ -2637,7 +2681,6 @@ mod tests {
         );
 
         // At vtime 16: first window expired (15<<32 < 16<<32), second still alive (19<<32 not < 16<<32)
-        // Now only the second window remains; start_vtime becomes 14
         assert_eq!(
             transformer.try_transform(&format!("{}", json!({
                 "moment": { "_vtime_ticks": 16u64 << 32 },
@@ -2645,7 +2688,7 @@ mod tests {
             }))),
             Some(concat!(
                 r#"{"moment":{"_vtime_ticks":68719476736},"output_text":"after first window expired","#,
-                r#""vtime_seconds":16.0,"active_faults":{"network_partition":{"vtime":14.0}}}"#
+                r#""vtime_seconds":16.0,"active_faults":{"network_partition":{"vtime":10.0}}}"#
             ).to_string())
         );
 
@@ -2675,7 +2718,7 @@ mod tests {
     #[test]
     fn fault_injector_pause_preserves_clock_windows() {
         let mut transformer = FaultAnnotator {
-            active_fault_windows: Vec::new(),
+            active_fault_windows: ActiveFaultWindows::new(),
             active_faults: json!({}),
         };
 
@@ -2736,7 +2779,7 @@ mod tests {
     #[test]
     fn multiple_containers_paused_simultaneously() {
         let mut transformer = FaultAnnotator {
-            active_fault_windows: Vec::new(),
+            active_fault_windows: ActiveFaultWindows::new(),
             active_faults: json!({}),
         };
 
@@ -2780,7 +2823,7 @@ mod tests {
     #[test]
     fn node_fault_expires_via_max_duration() {
         let mut transformer = FaultAnnotator {
-            active_fault_windows: Vec::new(),
+            active_fault_windows: ActiveFaultWindows::new(),
             active_faults: json!({}),
         };
 

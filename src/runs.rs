@@ -37,19 +37,8 @@ pub async fn cmd_runs(command: Option<RunsCommands>, json: bool, verbose: bool) 
             };
             cmd_runs_properties(&run_id, status, json, verbose).await
         }
-        Some(RunsCommands::BuildLogs {
-            run_id,
-            annotate_faults,
-        }) => {
-            cmd_runs_build_logs(
-                &run_id,
-                LogOutputOptions {
-                    json,
-                    verbose,
-                    annotate_faults,
-                },
-            )
-            .await
+        Some(RunsCommands::BuildLogs { run_id }) => {
+            cmd_runs_build_logs(&run_id, json, verbose).await
         }
         Some(RunsCommands::Logs {
             run_id,
@@ -57,7 +46,7 @@ pub async fn cmd_runs(command: Option<RunsCommands>, json: bool, verbose: bool) 
             vtime,
             begin_vtime,
             begin_input_hash,
-            annotate_faults,
+            disable_fault_annotation,
         }) => {
             cmd_runs_logs(
                 &run_id,
@@ -68,7 +57,7 @@ pub async fn cmd_runs(command: Option<RunsCommands>, json: bool, verbose: bool) 
                 LogOutputOptions {
                     json,
                     verbose,
-                    annotate_faults,
+                    annotate_faults: !disable_fault_annotation,
                 },
             )
             .await
@@ -247,14 +236,7 @@ struct LogOutputOptions {
     annotate_faults: bool,
 }
 
-async fn cmd_runs_build_logs(
-    run_id: &str,
-    LogOutputOptions {
-        json,
-        verbose,
-        annotate_faults,
-    }: LogOutputOptions,
-) -> Result<()> {
+async fn cmd_runs_build_logs(run_id: &str, json: bool, verbose: bool) -> Result<()> {
     debug!("streaming build logs for run: {}", run_id);
 
     let api = AntithesisApi::from_env(verbose)?;
@@ -262,26 +244,11 @@ async fn cmd_runs_build_logs(
     let mut stdout = std::io::stdout().lock();
 
     if json {
-        if annotate_faults {
-            stream_ndjson_lines(
-                stream,
-                FaultAnnotator {
-                    active_fault_windows: LinkedList::new(),
-                    active_faults: json!({}),
-                },
-                |line| {
-                    writeln!(stdout, "{line}")?;
-                    Ok(())
-                },
-            )
-            .await
-        } else {
-            stream_ndjson_lines(stream, NoOpTransformer {}, |line| {
-                writeln!(stdout, "{line}")?;
-                Ok(())
-            })
-            .await
-        }
+        stream_ndjson_lines(stream, NoOpTransformer {}, |line| {
+            writeln!(stdout, "{line}")?;
+            Ok(())
+        })
+        .await
     } else {
         stream_ndjson_lines(stream, NoOpTransformer {}, |line| {
             if let Ok(entry) = serde_json::from_str::<serde_json::Value>(line) {

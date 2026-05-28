@@ -350,10 +350,6 @@ pub enum RunsCommands {
     BuildLogs {
         /// Run ID
         run_id: String,
-
-        /// Whether to annotate faults that appear in individual log lines
-        #[arg(long, requires = "json")]
-        annotate_faults: bool,
     },
 
     /// Stream moment logs for a run
@@ -376,9 +372,9 @@ pub enum RunsCommands {
         #[arg(long, allow_hyphen_values = true, requires = "begin_vtime")]
         begin_input_hash: Option<String>,
 
-        /// Whether to annotate faults that appear in individual log lines
-        #[arg(long, requires = "json")]
-        annotate_faults: bool,
+        /// Whether to disable fault annotation (tracking of which faults are active for any given log line)
+        #[arg(long)]
+        disable_fault_annotation: bool,
     },
 
     /// Search events in a run

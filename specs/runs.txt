@@ -184,7 +184,7 @@ stdout '311\.8487535319291.*\[control:assert\].*UNHIT AlwaysOrUnreachable "Count
 stdout '400\.5.*\[test_composer\].*task_status=started command=core/parallel_driver_fetch container_id=d700ef3d05a263 tasks_len=1'
 stdout '401\.5.*\[fault_injector\].*fault\.name=clog fault\.type=network fault\.details\.disruption_type=Stopped fault\.affected_nodes=client2,setup fault\.max_duration=0\.267'
 
-# `snouty --json runs logs` outputs raw NDJSON and annotates faults.
+# `snouty --json runs logs` outputs NDJSON with faults annotated.
 mock-runs-server
 snouty --json runs logs run-1 -123 1.0
 stdout 'output_text.*starting'

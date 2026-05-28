@@ -1,4 +1,3 @@
-use std::collections::LinkedList;
 use std::path::Path;
 use std::{io::Write, sync::OnceLock};
 
@@ -333,7 +332,7 @@ async fn cmd_runs_logs(
             stream_ndjson_lines(
                 stream,
                 FaultAnnotator {
-                    active_fault_windows: LinkedList::new(),
+                    active_fault_windows: Vec::new(),
                     active_faults: json!({}),
                 },
                 |line| {
@@ -427,7 +426,7 @@ impl LineTransformer for NoOpTransformer {
 }
 
 struct FaultAnnotator {
-    active_fault_windows: LinkedList<FaultWindow>,
+    active_fault_windows: Vec<FaultWindow>,
     active_faults: Value,
 }
 
@@ -437,7 +436,9 @@ impl LineTransformer for FaultAnnotator {
             let mut update_faults;
 
             let vtime_ticks_node = entry["moment"]["_vtime_ticks"].as_u64();
-            let vtime_node = entry["moment"]["vtime"].as_f64();
+            let vtime_node = entry["moment"]["vtime"]
+                .as_str()
+                .and_then(|seconds_string| seconds_string.parse::<f64>().ok());
             let event_vtime_ticks = vtime_ticks_node
                 .or_else(|| vtime_node.map(|seconds| (seconds * TICKS_PER_SECOND) as u64))
                 .unwrap_or(0);
@@ -459,20 +460,28 @@ impl LineTransformer for FaultAnnotator {
 
             // clear any fault windows that are expired or mooted by fault injector pauses
             let length_before_cleanup = self.active_fault_windows.len();
-            self.active_fault_windows
-                .extract_if(|w| {
-                    w.is_expired(event_vtime_ticks)
-                        || (faults_were_paused && (w.is_network_fault() || w.is_node_fault()))
-                        || (is_restore_event && w.is_network_fault())
-                })
-                .for_each(drop);
+            self.active_fault_windows.retain(|w| {
+                if w.is_expired(event_vtime_ticks) {
+                    return false;
+                }
+
+                if faults_were_paused && (w.is_network_fault() || w.is_node_fault()) {
+                    return false;
+                }
+
+                if is_restore_event && w.is_network_fault() {
+                    return false;
+                }
+
+                true
+            });
             update_faults = length_before_cleanup != self.active_fault_windows.len();
 
             if is_fault_injector
                 && let Some(new_window) =
                     try_get_fault_window_definition(&entry, event_vtime_ticks, fault_name)
             {
-                self.active_fault_windows.push_back(new_window);
+                self.active_fault_windows.push(new_window);
                 update_faults = true;
             }
 
@@ -645,7 +654,7 @@ fn strip_ansi(text: &str) -> String {
     ansi_re().replace_all(text, "").to_string()
 }
 
-fn active_fault_dictionary(open_windows: &LinkedList<FaultWindow>) -> Value {
+fn active_fault_dictionary(open_windows: &Vec<FaultWindow>) -> Value {
     let mut result = Map::new();
     let mut offset_sum = 0f64;
     let mut max_clock_fault_start: Option<u64> = None;
@@ -1715,7 +1724,7 @@ mod tests {
     #[test]
     fn tracks_which_faults_are_active_based_on_vtime_and_max_duration() {
         let mut transformer = FaultAnnotator {
-            active_fault_windows: LinkedList::new(),
+            active_fault_windows: Vec::new(),
             active_faults: json!({}),
         };
 
@@ -1804,7 +1813,7 @@ mod tests {
     #[test]
     fn restore_closes_network_faults() {
         let mut transformer = FaultAnnotator {
-            active_fault_windows: LinkedList::new(),
+            active_fault_windows: Vec::new(),
             active_faults: json!({}),
         };
 
@@ -1886,7 +1895,7 @@ mod tests {
     #[test]
     fn fault_injector_pause_clears_network_and_node_faults() {
         let mut transformer = FaultAnnotator {
-            active_fault_windows: LinkedList::new(),
+            active_fault_windows: Vec::new(),
             active_faults: json!({}),
         };
 
@@ -1990,7 +1999,7 @@ mod tests {
     #[test]
     fn clock_offsets_are_combined() {
         let mut transformer = FaultAnnotator {
-            active_fault_windows: LinkedList::new(),
+            active_fault_windows: Vec::new(),
             active_faults: json!({}),
         };
 
@@ -2058,7 +2067,7 @@ mod tests {
     #[test]
     fn empty_affected_nodes_does_not_open_network_window() {
         let mut transformer = FaultAnnotator {
-            active_fault_windows: LinkedList::new(),
+            active_fault_windows: Vec::new(),
             active_faults: json!({}),
         };
 
@@ -2106,7 +2115,7 @@ mod tests {
     #[test]
     fn missing_affected_nodes_does_not_open_network_window() {
         let mut transformer = FaultAnnotator {
-            active_fault_windows: LinkedList::new(),
+            active_fault_windows: Vec::new(),
             active_faults: json!({}),
         };
 
@@ -2156,7 +2165,7 @@ mod tests {
     #[test]
     fn untracked_fault_names_produce_empty_active_faults() {
         let mut transformer = FaultAnnotator {
-            active_fault_windows: LinkedList::new(),
+            active_fault_windows: Vec::new(),
             active_faults: json!({}),
         };
 
@@ -2202,7 +2211,7 @@ mod tests {
     #[test]
     fn restore_after_only_untracked_faults_is_noop() {
         let mut transformer = FaultAnnotator {
-            active_fault_windows: LinkedList::new(),
+            active_fault_windows: Vec::new(),
             active_faults: json!({}),
         };
 
@@ -2246,7 +2255,7 @@ mod tests {
     #[test]
     fn fault_fields_from_non_fault_injector_source_are_ignored() {
         let mut transformer = FaultAnnotator {
-            active_fault_windows: LinkedList::new(),
+            active_fault_windows: Vec::new(),
             active_faults: json!({}),
         };
 
@@ -2276,7 +2285,7 @@ mod tests {
     #[test]
     fn event_without_vtime_ticks_still_gets_active_faults() {
         let mut transformer = FaultAnnotator {
-            active_fault_windows: LinkedList::new(),
+            active_fault_windows: Vec::new(),
             active_faults: json!({}),
         };
 
@@ -2318,7 +2327,7 @@ mod tests {
     #[test]
     fn fault_window_active_at_exact_end_vtime_expires_one_tick_later() {
         let mut transformer = FaultAnnotator {
-            active_fault_windows: LinkedList::new(),
+            active_fault_windows: Vec::new(),
             active_faults: json!({}),
         };
 
@@ -2381,7 +2390,7 @@ mod tests {
     #[test]
     fn partition_without_max_duration_never_expires() {
         let mut transformer = FaultAnnotator {
-            active_fault_windows: LinkedList::new(),
+            active_fault_windows: Vec::new(),
             active_faults: json!({}),
         };
 
@@ -2424,7 +2433,7 @@ mod tests {
     #[test]
     fn restore_before_natural_expiration_clears_network_faults() {
         let mut transformer = FaultAnnotator {
-            active_fault_windows: LinkedList::new(),
+            active_fault_windows: Vec::new(),
             active_faults: json!({}),
         };
 
@@ -2473,7 +2482,7 @@ mod tests {
     #[test]
     fn partition_and_clog_expire_independently() {
         let mut transformer = FaultAnnotator {
-            active_fault_windows: LinkedList::new(),
+            active_fault_windows: Vec::new(),
             active_faults: json!({}),
         };
 
@@ -2535,7 +2544,7 @@ mod tests {
     #[test]
     fn non_overlapping_windows_start_fresh_after_expiry() {
         let mut transformer = FaultAnnotator {
-            active_fault_windows: LinkedList::new(),
+            active_fault_windows: Vec::new(),
             active_faults: json!({}),
         };
 
@@ -2588,7 +2597,7 @@ mod tests {
     #[test]
     fn overlapping_windows_report_earliest_start_vtime() {
         let mut transformer = FaultAnnotator {
-            active_fault_windows: LinkedList::new(),
+            active_fault_windows: Vec::new(),
             active_faults: json!({}),
         };
 
@@ -2666,7 +2675,7 @@ mod tests {
     #[test]
     fn fault_injector_pause_preserves_clock_windows() {
         let mut transformer = FaultAnnotator {
-            active_fault_windows: LinkedList::new(),
+            active_fault_windows: Vec::new(),
             active_faults: json!({}),
         };
 
@@ -2727,7 +2736,7 @@ mod tests {
     #[test]
     fn multiple_containers_paused_simultaneously() {
         let mut transformer = FaultAnnotator {
-            active_fault_windows: LinkedList::new(),
+            active_fault_windows: Vec::new(),
             active_faults: json!({}),
         };
 
@@ -2771,7 +2780,7 @@ mod tests {
     #[test]
     fn node_fault_expires_via_max_duration() {
         let mut transformer = FaultAnnotator {
-            active_fault_windows: LinkedList::new(),
+            active_fault_windows: Vec::new(),
             active_faults: json!({}),
         };
 
@@ -2779,7 +2788,7 @@ mod tests {
         transformer.try_transform(&format!(
             "{}",
             json!({
-                "moment": { "_vtime_ticks": 1u64 << 32 },
+                "moment": { "vtime": "1" },
                 "source": { "name": "fault_injector" },
                 "fault": {
                     "name": "throttle",
@@ -2795,13 +2804,13 @@ mod tests {
             transformer.try_transform(&format!(
                 "{}",
                 json!({
-                    "moment": { "_vtime_ticks": 3u64 << 32 },
+                    "moment": { "vtime": "3.0" },
                     "output_text": "mid-window"
                 })
             )),
             Some(
                 concat!(
-                    r#"{"moment":{"_vtime_ticks":12884901888},"output_text":"mid-window","#,
+                    r#"{"moment":{"vtime":"3.0"},"output_text":"mid-window","#,
                     r#""vtime_seconds":3.0,"active_faults":{"node_throttle":{"C":1.0}}}"#
                 )
                 .to_string()

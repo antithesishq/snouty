@@ -17,17 +17,28 @@
 stderr 'missing environment variable.*'
 
 # On success, the command fetches all pages via next_cursor and prints a table
-# with relative timestamps and status glyphs.
+# with relative timestamps and short status words.
 mock-runs-server
 snouty runs
-stdout 'RUN ID.*STATUS.*CREATED AT.*TITLE.*DESCRIPTION'
-[!staging] stdout 'run-1.*✓'
-[!staging] stdout 'run-2.*…'
+stdout 'RUN ID.*STATUS.*CREATED.*TEST NAME.*DESCRIPTION'
+[!staging] stdout 'run-1.*completed'
+[!staging] stdout 'run-2.*in_progress'
+# The DESCRIPTION column is populated from the run's top-level description field.
+[!staging] stdout 'run-1.*nightly smoke on main'
+
+# `snouty runs list --long` prints one aligned key-value block per run (no
+# table), so full descriptions are visible.
+mock-runs-server
+snouty runs list --long
+stdout 'Run ID .*run-1'
+[!staging] stdout 'Status .*completed'
+[!staging] stdout 'Description .*nightly smoke on main'
+! stdout 'RUN ID.*STATUS.*CREATED.*TEST NAME.*DESCRIPTION'
 
 # `snouty runs list` is the same as bare `snouty runs`.
 mock-runs-server
 snouty runs list
-stdout 'RUN ID.*STATUS.*CREATED AT.*TITLE.*DESCRIPTION'
+stdout 'RUN ID.*STATUS.*CREATED.*TEST NAME.*DESCRIPTION'
 
 # `snouty runs show` requires a run ID.
 ! snouty runs show
@@ -61,24 +72,24 @@ snouty --json runs show $R_run_id
 stdout '"run_id".*"$R_run_id"'
 [!staging] stdout '"status".*"completed"'
 
-# `snouty runs properties` renders one row per property with status glyph,
+# `snouty runs properties` renders one row per property with a status word,
 # group, name, and total example count.
 mock-runs-server
 snouty runs properties $R_run_id
 [!staging] stdout 'STATUS.*GROUP.*NAME.*EXAMPLES'
-[!staging] stdout '✗.*Counter value stays below limit'
-[!staging] stdout '✓.*Setup completes'
+[!staging] stdout 'failing.*Counter value stays below limit'
+[!staging] stdout 'passing.*Setup completes'
 
 # `snouty runs properties --failing` shows only failing properties.
 mock-runs-server
 snouty runs properties --failing $R_run_id
-[!staging] stdout '✗.*Counter value stays below limit'
+[!staging] stdout 'failing.*Counter value stays below limit'
 [!staging] stdout -count=0 'Setup completes'
 
 # `snouty runs properties --passing` shows only passing properties.
 mock-runs-server
 snouty runs properties --passing $R_run_id
-[!staging] stdout '✓.*Setup completes'
+[!staging] stdout 'passing.*Setup completes'
 [!staging] stdout -count=0 'Counter value stays below limit'
 
 # `snouty runs properties --passing --failing` is rejected.
@@ -111,12 +122,15 @@ mock-runs-server
 ! snouty runs property $R_run_id no-such-property
 stderr 'no property matches.*no-such-property'
 
-# `snouty runs build-logs` streams formatted build log lines.
+# `snouty runs build-logs` streams formatted build log lines. Timestamps are
+# reformatted into the local timezone without a tz suffix; TZ is pinned to UTC
+# here so the rendered times are deterministic.
 mock-runs-server
+env TZ=UTC
 snouty runs build-logs $R_run_id
-[!staging] stdout '2025-03-20T02:01:12Z \[stdout\] Building image payments-service\.\.\.'
-[!staging] stdout '2025-03-20T02:01:15Z \[stderr\] Warning: deprecated feature'
-[!staging] stdout '2025-03-20T02:01:20Z \[stdout\] Build complete'
+[!staging] stdout '2025-03-20 02:01:12 \[stdout\] Building image payments-service\.\.\.'
+[!staging] stdout '2025-03-20 02:01:15 \[stderr\] Warning: deprecated feature'
+[!staging] stdout '2025-03-20 02:01:20 \[stdout\] Build complete'
 
 # `snouty --json runs build-logs` outputs raw NDJSON.
 mock-runs-server
@@ -165,10 +179,12 @@ mock-runs-server empty
 snouty runs
 stdout 'No runs found\.'
 
-# API errors are reported with status code and body.
+# API errors are reported with status code and body. A 4xx is the user's to
+# fix, so it prints as a clean message with no backtrace/internal noise.
 mock-server 400 '{"message":"bad request"}'
 ! snouty runs
 stderr 'API error: 400.*'
+! stderr 'Backtrace omitted'
 
 # `snouty runs properties` prints a friendly empty-state message when no properties exist.
 mock-runs-server
@@ -180,7 +196,7 @@ stdout 'No properties found\.'
 mock-runs-server
 snouty runs properties run-no-events
 stdout 'STATUS.*GROUP.*NAME.*EXAMPLES'
-stdout '✓.*No events property'
+stdout 'passing.*No events property'
 
 # `snouty runs properties` requires a run ID.
 ! snouty runs properties
@@ -225,10 +241,12 @@ mock-runs-server
 ! snouty runs logs run-1
 stderr '.*INPUT_HASH.*'
 
-# `snouty runs events` prints the header row even when there are no matching events.
+# `snouty runs events` prints a friendly message (and no table header) when no
+# events match, instead of an empty table.
 mock-runs-server
 snouty runs events run-1 --match nomatch
-stdout '^HASH\s+VTIME\s+SOURCE\s+OUTPUT'
+stdout 'No events matched "nomatch"\.'
+! stdout '^HASH\s+VTIME\s+SOURCE\s+OUTPUT'
 
 # `snouty runs events` requires --match.
 mock-runs-server

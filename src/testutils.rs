@@ -439,10 +439,24 @@ fn mock_query_param(query: Option<&str>, key: &str) -> Option<String> {
         .map(|(_, v)| v.into_owned())
 }
 
-const MOCK_RUNS: &[(&str, &str, &str, &str)] = &[
-    ("run-1", "completed", "2025-03-20T02:00:00Z", "nightly"),
-    ("run-2", "in_progress", "2025-03-19T14:00:00Z", "debug"),
-    ("run-3", "incomplete", "2025-03-18T08:00:00Z", "nightly"),
+// (run_id, status, created_at, launcher, description). An empty description
+// stands in for a run with no description (the field is omitted from the JSON).
+const MOCK_RUNS: &[(&str, &str, &str, &str, &str)] = &[
+    (
+        "run-1",
+        "completed",
+        "2025-03-20T02:00:00Z",
+        "nightly",
+        "nightly smoke on main",
+    ),
+    ("run-2", "in_progress", "2025-03-19T14:00:00Z", "debug", ""),
+    (
+        "run-3",
+        "incomplete",
+        "2025-03-18T08:00:00Z",
+        "nightly",
+        "incomplete recovery test",
+    ),
 ];
 
 fn mock_route_list_runs(query: Option<&str>, empty: bool) -> (u16, String) {
@@ -461,7 +475,7 @@ fn mock_route_list_runs(query: Option<&str>, empty: bool) -> (u16, String) {
     };
 
     let mut runs = Vec::new();
-    for &(id, status, created, launcher) in &MOCK_RUNS[start..] {
+    for &(id, status, created, launcher, description) in &MOCK_RUNS[start..] {
         if let Some(f) = status_filter.as_deref()
             && status != f
         {
@@ -472,8 +486,13 @@ fn mock_route_list_runs(query: Option<&str>, empty: bool) -> (u16, String) {
         {
             continue;
         }
+        let description_field = if description.is_empty() {
+            String::new()
+        } else {
+            format!(r#","description":"{description}""#)
+        };
         runs.push(format!(
-            r#"{{"run_id":"{id}","status":"{status}","created_at":"{created}","launcher":"{launcher}"}}"#,
+            r#"{{"run_id":"{id}","status":"{status}","created_at":"{created}","launcher":"{launcher}"{description_field}}}"#,
         ));
     }
 
@@ -497,7 +516,8 @@ fn mock_route_list_runs(query: Option<&str>, empty: bool) -> (u16, String) {
 }
 
 fn mock_route_get_run(run_id: &str) -> (u16, String) {
-    let Some(&(_, status, created, launcher)) = MOCK_RUNS.iter().find(|(id, ..)| *id == run_id)
+    let Some(&(_, status, created, launcher, description)) =
+        MOCK_RUNS.iter().find(|(id, ..)| *id == run_id)
     else {
         return (404, format!(r#"{{"message":"run not found: {run_id}"}}"#));
     };
@@ -507,6 +527,9 @@ fn mock_route_get_run(run_id: &str) -> (u16, String) {
         format!(r#""status":"{status}""#),
         format!(r#""created_at":"{created}""#),
     ];
+    if !description.is_empty() {
+        fields.push(format!(r#""description":"{description}""#));
+    }
     if status == "completed" || status == "incomplete" {
         fields.push(r#""started_at":"2025-03-20T02:01:12Z""#.to_string());
         fields.push(r#""completed_at":"2025-03-20T02:31:45Z""#.to_string());

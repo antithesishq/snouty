@@ -12,6 +12,7 @@ use reqwest::Client;
 use reqwest_middleware::ClientWithMiddleware;
 
 use crate::api_cache;
+use crate::error::user_error;
 use crate::params::Params;
 
 #[allow(dead_code, unused_imports, private_interfaces)]
@@ -19,11 +20,11 @@ mod generated {
     include!(concat!(env!("OUT_DIR"), "/antithesis_api.rs"));
 }
 
+pub(crate) use generated::types::Params as RunParams;
 pub use generated::types::{
     BuildLogLine, Event, EventProperty, LaunchResponse, Moment, NonEventProperty, Property,
     PropertyStatus, RunDetail, RunStatus, RunSummary,
 };
-pub(crate) use generated::types::Params as RunParams;
 pub use progenitor_client::ByteStream;
 
 fn params_test_name(params: Option<&RunParams>) -> Option<&str> {
@@ -39,8 +40,13 @@ impl RunSummary {
         params_test_name(self.parameters.as_ref())
     }
 
+    /// Human-readable description: prefer the server-provided top-level
+    /// `description` field, falling back to the `antithesis.description`
+    /// parameter for runs predating that field.
     pub(crate) fn test_description(&self) -> Option<&str> {
-        params_test_description(self.parameters.as_ref())
+        self.description
+            .as_deref()
+            .or_else(|| params_test_description(self.parameters.as_ref()))
     }
 }
 
@@ -50,7 +56,9 @@ impl RunDetail {
     }
 
     pub(crate) fn test_description(&self) -> Option<&str> {
-        params_test_description(self.parameters.as_ref())
+        self.description
+            .as_deref()
+            .or_else(|| params_test_description(self.parameters.as_ref()))
     }
 }
 
@@ -110,8 +118,8 @@ const CLIENT_TIMEOUT_SECS: u64 = 30;
 
 fn required_env(name: &'static str) -> Result<String> {
     env::var(name).map_err(|e| match e {
-        env::VarError::NotPresent => eyre!("missing environment variable: {name}"),
-        _ => eyre!(e).wrap_err(format!("invalid environment variable {name}")),
+        env::VarError::NotPresent => user_error(format!("missing environment variable: {name}")),
+        _ => user_error(format!("invalid environment variable {name}: {e}")),
     })
 }
 
@@ -119,7 +127,9 @@ fn optional_env(name: &'static str) -> Result<Option<String>> {
     match env::var(name) {
         Ok(value) => Ok(Some(value)),
         Err(env::VarError::NotPresent) => Ok(None),
-        Err(e) => Err(eyre!(e).wrap_err(format!("invalid environment variable {name}"))),
+        Err(e) => Err(user_error(format!(
+            "invalid environment variable {name}: {e}"
+        ))),
     }
 }
 
@@ -356,13 +366,14 @@ impl AntithesisApi {
     pub fn stream_runs_filtered(
         &self,
         opts: &RunsFilterOptions,
+        page_limit: u64,
     ) -> impl futures_util::Stream<Item = Result<RunSummary>> + '_ {
         let opts = opts.clone();
         paginate(move |after| {
             let opts = opts.clone();
             async move {
                 let page = self
-                    .fetch_runs_page_filtered(after.as_deref(), &opts)
+                    .fetch_runs_page_filtered(after.as_deref(), &opts, page_limit)
                     .await?;
                 let generated::types::RunListResponse { data, next_cursor } = page;
                 Ok((data, next_cursor))
@@ -374,8 +385,9 @@ impl AntithesisApi {
         &self,
         after: Option<&str>,
         opts: &RunsFilterOptions,
+        page_limit: u64,
     ) -> Result<generated::types::RunListResponse> {
-        let mut request = self.client.list_runs().limit(100_u64);
+        let mut request = self.client.list_runs().limit(page_limit);
         if let Some(cursor) = after {
             request = request.after(cursor);
         }
@@ -749,7 +761,14 @@ fn format_api_error(status: u16, body: &str) -> Report {
              is set correctly and has access to this tenant.",
         );
     }
-    eyre!("{msg}")
+    // 4xx responses are caused by the request the user made (bad credentials,
+    // unknown run id, invalid filter, …); surface them as clean user errors.
+    // 5xx and other failures are treated as internal faults.
+    if (400..500).contains(&status) {
+        user_error(msg)
+    } else {
+        eyre!("{msg}")
+    }
 }
 
 fn format_payload_snippet(body: &str, line: usize, column: usize) -> String {
@@ -1174,7 +1193,7 @@ mod tests {
         let api = AntithesisApi::with_base_url(config, mock_server.uri()).unwrap();
 
         let runs = api
-            .stream_runs_filtered(&RunsFilterOptions::default())
+            .stream_runs_filtered(&RunsFilterOptions::default(), 100)
             .try_collect::<Vec<_>>()
             .await
             .unwrap();
@@ -1206,12 +1225,47 @@ mod tests {
         let api = AntithesisApi::with_base_url(config, mock_server.uri()).unwrap();
 
         let runs = api
-            .stream_runs_filtered(&RunsFilterOptions::default())
+            .stream_runs_filtered(&RunsFilterOptions::default(), 100)
             .try_collect::<Vec<_>>()
             .await
             .unwrap();
 
         assert!(runs.is_empty());
+    }
+
+    #[tokio::test]
+    async fn stream_runs_requests_the_supplied_page_limit() {
+        let mock_server = MockServer::start().await;
+
+        // The page limit is forwarded to the API rather than fetching 100 and
+        // trimming client-side.
+        Mock::given(method("GET"))
+            .and(path("/api/v0/runs"))
+            .and(query_param("limit", "5"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "data": [],
+                "next_cursor": null
+            })))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let api = AntithesisApi::with_base_url(test_config(), mock_server.uri()).unwrap();
+        let runs = api
+            .stream_runs_filtered(&RunsFilterOptions::default(), 5)
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        assert!(runs.is_empty());
+    }
+
+    #[test]
+    fn api_4xx_errors_are_tagged_user_facing() {
+        use crate::error::is_user_error;
+        assert!(is_user_error(&format_api_error(404, "run not found")));
+        assert!(is_user_error(&format_api_error(400, "bad request")));
+        // 5xx is an internal fault, not something the user can fix.
+        assert!(!is_user_error(&format_api_error(500, "boom")));
     }
 
     #[tokio::test]

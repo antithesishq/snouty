@@ -11,7 +11,7 @@ use regex::Regex;
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Local, Utc};
 use chrono_humanize::{Accuracy, HumanTime, Tense};
 
 use crate::api::{
@@ -20,6 +20,7 @@ use crate::api::{
 #[cfg(test)]
 use crate::api::{Event, EventProperty, Moment, NonEventProperty};
 use crate::cli::{RunsCommands, RunsListArgs};
+use crate::error::user_error;
 
 /// Event stream classification. Variants match the canonical values that
 /// appear in an event's `source.stream` field.
@@ -132,39 +133,24 @@ async fn cmd_runs_list(args: RunsListArgs, json: bool, verbose: bool) -> Result<
 
     let api = AntithesisApi::from_env(verbose)?;
 
-    let status = args
-        .status
-        .as_deref()
-        .map(|s| s.parse::<RunStatus>())
-        .transpose()
-        .map_err(|_| {
-            eyre!(
-                "invalid status: '{}'\nvalid values: starting, in_progress, completed, cancelled, incomplete, unknown",
-                args.status.as_deref().unwrap_or_default()
-            )
-        })?;
-
+    // clap parsed and validated the filter flags into their real types, so the
+    // options struct is built directly with no further string parsing here.
     let opts = RunsFilterOptions {
-        status,
+        status: args.status,
         launcher: args.launcher,
-        created_after: args
-            .created_after
-            .as_deref()
-            .map(|s| s.parse())
-            .transpose()
-            .map_err(|e| eyre!("invalid --created-after timestamp: {e}"))?,
-        created_before: args
-            .created_before
-            .as_deref()
-            .map(|s| s.parse())
-            .transpose()
-            .map_err(|e| eyre!("invalid --created-before timestamp: {e}"))?,
+        created_after: args.created_after,
+        created_before: args.created_before,
     };
+
+    // The API caps `limit` at 100, so request only as many as we'll display and
+    // let the server do the trimming. For limits above 100 we still paginate,
+    // capping the total client-side with `.take(limit)`.
+    let page_limit = args.limit.clamp(1, 100) as u64;
 
     // Server returns runs newest-first; .take(limit) short-circuits pagination
     // so we don't materialise the entire run history just to drop most of it.
     let mut runs: Vec<RunSummary> = api
-        .stream_runs_filtered(&opts)
+        .stream_runs_filtered(&opts, page_limit)
         .take(args.limit)
         .try_collect::<Vec<_>>()
         .await?;
@@ -187,8 +173,12 @@ async fn cmd_runs_list(args: RunsListArgs, json: bool, verbose: bool) -> Result<
         return Ok(());
     }
 
-    let width = terminal_width();
-    println!("{}", render_runs_table(&runs, args.long, width));
+    if args.long {
+        print!("{}", render_runs_long(&runs));
+    } else {
+        let width = terminal_width();
+        println!("{}", render_runs_table(&runs, width));
+    }
     Ok(())
 }
 
@@ -200,19 +190,33 @@ fn terminal_width() -> usize {
     term.size().1 as usize
 }
 
-fn status_glyph(status: RunStatus) -> &'static str {
-    match status {
-        RunStatus::Completed => "✓",
-        RunStatus::Incomplete => "✗",
-        RunStatus::InProgress => "…",
-        RunStatus::Starting => "·",
-        RunStatus::Cancelled => "⊘",
-        RunStatus::Unknown => "?",
-    }
+/// Short human-readable run status word (e.g. `completed`, `in_progress`),
+/// reusing the canonical `RunStatus` display string so the term matches the
+/// API and `snouty runs show`.
+fn status_label(status: RunStatus) -> String {
+    status.to_string()
 }
 
 fn relative_time(then: DateTime<Utc>) -> String {
     HumanTime::from(then - Utc::now()).to_text_en(Accuracy::Rough, Tense::Past)
+}
+
+/// Format an absolute timestamp in the user's local timezone, without a
+/// timezone suffix (the times in snouty's output are always local, so showing
+/// the offset would just be noise). Example: `2026-05-27 08:25:13`.
+fn format_local(dt: DateTime<Utc>) -> String {
+    dt.with_timezone(&Local)
+        .format("%Y-%m-%d %H:%M:%S")
+        .to_string()
+}
+
+/// Reformat an RFC 3339 timestamp string into the local, suffix-less format.
+/// Falls back to the original string if it can't be parsed.
+fn format_local_str(raw: &str) -> String {
+    match DateTime::parse_from_rfc3339(raw) {
+        Ok(dt) => format_local(dt.with_timezone(&Utc)),
+        Err(_) => raw.to_string(),
+    }
 }
 
 async fn cmd_runs_show(run_id: &str, json: bool, verbose: bool) -> Result<()> {
@@ -241,11 +245,10 @@ async fn cmd_runs_open(run_id: &str, json: bool, verbose: bool) -> Result<()> {
         .as_ref()
         .and_then(|l| l.triage_report.as_deref())
         .ok_or_else(|| {
-            eyre!(
+            user_error(format!(
                 "no report available for run {} with status {}",
-                run_id,
-                run.status
-            )
+                run_id, run.status
+            ))
         })?;
 
     if json {
@@ -311,7 +314,12 @@ async fn cmd_runs_properties(
             println!("{}", serde_json::to_string(property)?);
         }
     } else if properties.is_empty() {
-        println!("No properties found.");
+        let message = match status {
+            Some(PropertyStatus::Passing) => "No passing properties found.",
+            Some(PropertyStatus::Failing) => "No failing properties found.",
+            None => "No properties found.",
+        };
+        println!("{message}");
     } else {
         println!("{}", render_properties_table(&properties));
     }
@@ -341,10 +349,10 @@ fn property_example_total(p: &Property) -> u64 {
     u64::from(ex.unwrap_or(0)) + u64::from(cex.unwrap_or(0))
 }
 
-fn property_status_glyph(status: PropertyStatus) -> &'static str {
+fn property_status_label(status: PropertyStatus) -> &'static str {
     match status {
-        PropertyStatus::Passing => "✓",
-        PropertyStatus::Failing => "✗",
+        PropertyStatus::Passing => "passing",
+        PropertyStatus::Failing => "failing",
     }
 }
 
@@ -389,18 +397,25 @@ enum Resolved<'a> {
 }
 
 fn resolve_property<'a>(properties: &'a [Property], query: &str) -> Result<Resolved<'a>> {
-    if let Some(p) = properties.iter().find(|p| p.name() == query) {
+    // Match case-insensitively throughout: an exact name in any case is an
+    // exact hit (no "closest property" note), and the substring fallback
+    // ignores case too.
+    let needle = query.to_lowercase();
+
+    if let Some(p) = properties
+        .iter()
+        .find(|p| p.name().to_lowercase() == needle)
+    {
         return Ok(Resolved::Exact(p));
     }
 
-    let needle = query.to_lowercase();
     let matches: Vec<&Property> = properties
         .iter()
         .filter(|p| p.name().to_lowercase().contains(&needle))
         .collect();
 
     match matches.as_slice() {
-        [] => Err(eyre!("no property matches '{}'", query)),
+        [] => Err(user_error(format!("no property matches '{query}'"))),
         [only] => Ok(Resolved::Fuzzy(only)),
         many => {
             let names = many
@@ -408,18 +423,16 @@ fn resolve_property<'a>(properties: &'a [Property], query: &str) -> Result<Resol
                 .map(|p| format!("  - {}", p.name()))
                 .collect::<Vec<_>>()
                 .join("\n");
-            Err(eyre!(
-                "multiple properties match '{}', did you mean one of:\n{}",
-                query,
-                names
-            ))
+            Err(user_error(format!(
+                "multiple properties match '{query}', did you mean one of:\n{names}"
+            )))
         }
     }
 }
 
 fn print_property_header(property: &Property) {
     println!("Name      {}", sanitize(property.name()));
-    println!("Status    {}", property_status_glyph(property.status()));
+    println!("Status    {}", property_status_label(property.status()));
     if let Some(group) = property_group(property) {
         println!("Group     {}", sanitize(group));
     }
@@ -547,7 +560,7 @@ fn render_properties_table(properties: &[Property]) -> String {
                 sanitize(p.name())
             };
             vec![
-                property_status_glyph(p.status()).to_string(),
+                property_status_label(p.status()).to_string(),
                 sanitize(property_group(p).unwrap_or("")),
                 name,
                 property_example_total(p).to_string(),
@@ -568,14 +581,14 @@ fn print_run_detail(run: &RunDetail) {
     }
 
     rows.push(("Run ID", run.run_id.clone()));
-    rows.push(("Status", run.status.to_string()));
-    rows.push(("Created", run.created_at.to_rfc3339()));
+    rows.push(("Status", status_label(run.status)));
+    rows.push(("Created", format_local(run.created_at)));
 
-    if let Some(ref t) = run.started_at {
-        rows.push(("Started", t.to_rfc3339()));
+    if let Some(t) = run.started_at {
+        rows.push(("Started", format_local(t)));
     }
-    if let Some(ref t) = run.completed_at {
-        rows.push(("Completed", t.to_rfc3339()));
+    if let Some(t) = run.completed_at {
+        rows.push(("Completed", format_local(t)));
     }
 
     rows.push(("Launcher", run.launcher.clone()));
@@ -591,10 +604,45 @@ fn print_run_detail(run: &RunDetail) {
         rows.push(("Creator", name.clone()));
     }
 
+    print!("{}", render_kv(&rows));
+}
+
+/// Render aligned `Label  value` lines, sqlite `.mode line`–style. Each line is
+/// terminated with a newline; values are sanitized.
+fn render_kv(rows: &[(&str, String)]) -> String {
     let label_width = rows.iter().map(|(label, _)| label.len()).max().unwrap_or(0);
-    for (label, value) in &rows {
-        println!("{label:label_width$}  {}", sanitize(value));
+    let mut out = String::new();
+    for (label, value) in rows {
+        out.push_str(&format!("{label:label_width$}  {}\n", sanitize(value)));
     }
+    out
+}
+
+/// `runs list --long`: one aligned key-value block per run (no table),
+/// separated by blank lines. Empty optional fields are omitted.
+fn render_runs_long(runs: &[RunSummary]) -> String {
+    let blocks: Vec<String> = runs
+        .iter()
+        .map(|run| {
+            let mut rows: Vec<(&str, String)> = vec![
+                ("Run ID", run.run_id.clone()),
+                ("Status", status_label(run.status)),
+                ("Created", format_local(run.created_at)),
+                ("Launcher", run.launcher.clone()),
+            ];
+            if let Some(name) = run.test_name() {
+                rows.push(("Test Name", name.to_string()));
+            }
+            if let Some(description) = run.test_description() {
+                rows.push(("Description", description.to_string()));
+            }
+            render_kv(&rows)
+        })
+        .collect();
+
+    // Each block already ends in a newline; joining with "\n" inserts one blank
+    // line between consecutive runs.
+    blocks.join("\n")
 }
 
 struct LogOutputOptions {
@@ -619,7 +667,7 @@ async fn cmd_runs_build_logs(run_id: &str, json: bool, verbose: bool) -> Result<
     } else {
         stream_ndjson_lines(stream, NoOpTransformer {}, |line| {
             if let Ok(entry) = serde_json::from_str::<serde_json::Value>(line) {
-                let ts = entry["timestamp"].as_str().unwrap_or("");
+                let ts = format_local_str(entry["timestamp"].as_str().unwrap_or(""));
                 let stream = entry["stream"].as_str().unwrap_or("out");
                 let text = sanitize(entry["text"].as_str().unwrap_or(""));
                 writeln!(stdout, "{ts} [{stream}] {text}")?;
@@ -674,13 +722,9 @@ async fn cmd_runs_events(
         || filters.vtime_max.is_some();
 
     let mut stdout = BufWriter::new(std::io::stdout().lock());
-    if !json {
-        writeln!(
-            stdout,
-            "{:<22}  {:<22}  {:<20}  OUTPUT",
-            "HASH", "VTIME", "SOURCE"
-        )?;
-    }
+    // The table header is printed lazily, on the first matching row, so a run
+    // with no matches shows a friendly message instead of a bare header.
+    let mut emitted: usize = 0;
     let result = stream_ndjson_lines(stream, NoOpTransformer {}, |line| {
         // Cheap path: substring AND across all --match needles on the raw line.
         let line_lower = line.to_ascii_lowercase();
@@ -691,6 +735,7 @@ async fn cmd_runs_events(
         // JSON mode with only --match filters: pass through without parsing.
         if json && !has_structural_filters {
             writeln!(stdout, "{line}")?;
+            emitted += 1;
             return Ok(());
         }
 
@@ -699,6 +744,7 @@ async fn cmd_runs_events(
             Err(_) => {
                 if json {
                     writeln!(stdout, "{line}")?;
+                    emitted += 1;
                 }
                 return Ok(());
             }
@@ -711,6 +757,13 @@ async fn cmd_runs_events(
         if json {
             writeln!(stdout, "{line}")?;
         } else {
+            if emitted == 0 {
+                writeln!(
+                    stdout,
+                    "{:<22}  {:<22}  {:<20}  OUTPUT",
+                    "HASH", "VTIME", "SOURCE"
+                )?;
+            }
             let rendered = render_event_entry(&entry);
             let input_hash = rendered.input_hash;
             let vtime = rendered.vtime;
@@ -721,9 +774,17 @@ async fn cmd_runs_events(
                 "{input_hash:<22}  {vtime:<22}  {source:<20}  {output}"
             )?;
         }
+        emitted += 1;
         Ok(())
     })
     .await;
+
+    // The closure's borrows of `stdout`/`emitted` end once the stream future
+    // above resolves, so it's safe to use them again here.
+    if result.is_ok() && !json && emitted == 0 {
+        let query = filters.matches.join(" ");
+        writeln!(stdout, "No events matched \"{query}\".")?;
+    }
     stdout.flush()?;
     result
 }
@@ -1589,25 +1650,25 @@ fn file_basename(file: &str) -> Option<&str> {
         .or(Some(trimmed))
 }
 
-fn render_runs_table(runs: &[RunSummary], long: bool, width: usize) -> String {
+fn render_runs_table(runs: &[RunSummary], width: usize) -> String {
     let headers = vec![
         "RUN ID".to_string(),
         "STATUS".to_string(),
-        "CREATED AT".to_string(),
-        "TITLE".to_string(),
+        "CREATED".to_string(),
+        "TEST NAME".to_string(),
         "DESCRIPTION".to_string(),
     ];
 
     let prepared: Vec<(Vec<String>, Option<String>)> = runs
         .iter()
         .map(|run| {
-            let title = run.test_name().map(sanitize).unwrap_or_else(|| "-".into());
+            let test_name = run.test_name().map(sanitize).unwrap_or_else(|| "-".into());
             let description = run.test_description().map(sanitize);
             let row = vec![
                 sanitize(&run.run_id),
-                status_glyph(run.status).to_string(),
+                status_label(run.status),
                 relative_time(run.created_at),
-                title,
+                test_name,
                 String::new(),
             ];
             (row, description)
@@ -1636,18 +1697,8 @@ fn render_runs_table(runs: &[RunSummary], long: bool, width: usize) -> String {
 
     for (mut row, description) in prepared {
         let description = description.unwrap_or_else(|| "-".into());
-        if long {
-            row[4] = String::new();
-            push_table_row(&mut output, &row, &widths);
-            // Indent the full description under the row, then a blank line.
-            output.push_str("    ");
-            output.push_str(&description);
-            output.push('\n');
-            output.push('\n');
-        } else {
-            row[4] = console::truncate_str(&description, desc_width, "…").into_owned();
-            push_table_row(&mut output, &row, &widths);
-        }
+        row[4] = console::truncate_str(&description, desc_width, "…").into_owned();
+        push_table_row(&mut output, &row, &widths);
     }
 
     output.trim_end().to_string()
@@ -2061,7 +2112,7 @@ mod tests {
     }
 
     #[test]
-    fn properties_table_groups_status_glyph_and_totals() {
+    fn properties_table_groups_status_word_and_totals() {
         let properties = vec![
             event_property(
                 "Counter value stays below limit",
@@ -2088,7 +2139,7 @@ mod tests {
 
         // Two property rows. Counter property has 1 example + 2 counterexamples = 3 total.
         let counter_row = lines.iter().find(|l| l.contains("Counter value")).unwrap();
-        assert!(counter_row.contains("✗"));
+        assert!(counter_row.contains("failing"));
         assert!(counter_row.contains("Safety"));
         assert!(counter_row.contains("3"));
 
@@ -2096,7 +2147,7 @@ mod tests {
             .iter()
             .find(|l| l.contains("Setup completes"))
             .unwrap();
-        assert!(setup_row.contains("✓"));
+        assert!(setup_row.contains("passing"));
         assert!(setup_row.contains("1"));
     }
 
@@ -2114,6 +2165,26 @@ mod tests {
         ];
         let resolved = resolve_property(&properties, "Setup ran").unwrap();
         assert!(matches!(resolved, Resolved::Exact(_)));
+    }
+
+    #[test]
+    fn resolve_property_exact_match_ignores_case() {
+        let properties = vec![
+            event_property("Setup ran", PropertyStatus::Passing, None, vec![], vec![]),
+            event_property(
+                "Counter limit",
+                PropertyStatus::Passing,
+                None,
+                vec![],
+                vec![],
+            ),
+        ];
+        // Differs only by case: still an exact hit, not a fuzzy "closest" match.
+        let resolved = resolve_property(&properties, "setup RAN").unwrap();
+        match resolved {
+            Resolved::Exact(p) => assert_eq!(p.name(), "Setup ran"),
+            other => panic!("expected exact match, got {other:?}"),
+        }
     }
 
     #[test]
@@ -3459,13 +3530,13 @@ mod tests {
     }
 
     #[test]
-    fn status_glyph_covers_every_variant() {
-        assert_eq!(status_glyph(RunStatus::Completed), "✓");
-        assert_eq!(status_glyph(RunStatus::Incomplete), "✗");
-        assert_eq!(status_glyph(RunStatus::InProgress), "…");
-        assert_eq!(status_glyph(RunStatus::Starting), "·");
-        assert_eq!(status_glyph(RunStatus::Cancelled), "⊘");
-        assert_eq!(status_glyph(RunStatus::Unknown), "?");
+    fn status_label_covers_every_variant() {
+        assert_eq!(status_label(RunStatus::Completed), "completed");
+        assert_eq!(status_label(RunStatus::Incomplete), "incomplete");
+        assert_eq!(status_label(RunStatus::InProgress), "in_progress");
+        assert_eq!(status_label(RunStatus::Starting), "starting");
+        assert_eq!(status_label(RunStatus::Cancelled), "cancelled");
+        assert_eq!(status_label(RunStatus::Unknown), "unknown");
     }
 
     fn summary(
@@ -3502,6 +3573,7 @@ mod tests {
             completed_at: None,
             launcher: launcher.to_string(),
             creator: None,
+            description: None,
             parameters,
             links: None,
         }
@@ -3519,40 +3591,58 @@ mod tests {
             Some("issue #91: probe Antithesis behavior with empty test template dir"),
         )];
 
-        let table = render_runs_table(&runs, false, 80);
+        let table = render_runs_table(&runs, 80);
         let lines: Vec<&str> = table.lines().collect();
 
         assert!(lines[0].contains("RUN ID"));
         assert!(lines[0].contains("STATUS"));
-        assert!(lines[0].contains("CREATED AT"));
-        assert!(lines[0].contains("TITLE"));
+        assert!(lines[0].contains("CREATED"));
+        assert!(lines[0].contains("TEST NAME"));
         assert!(lines[0].contains("DESCRIPTION"));
         assert!(!lines[0].contains("LAUNCHER"));
 
         assert!(lines[1].contains("abc-54-1"));
-        assert!(lines[1].contains("✓"));
+        assert!(lines[1].contains("completed"));
         assert!(lines[1].contains("snouty-empty-tt"));
         // Description is truncated with an ellipsis on a narrow terminal.
         assert!(lines[1].contains('…'));
     }
 
     #[test]
-    fn runs_table_long_view_prints_description_on_separate_line() {
-        let runs = vec![summary(
-            "abc-54-1",
-            RunStatus::Completed,
-            "2024-01-01T00:00:00Z",
-            "basic_test",
-            Some("snouty-empty-tt"),
-            Some("full description goes here"),
-        )];
+    fn runs_long_view_renders_aligned_key_value_block() {
+        let runs = vec![
+            summary(
+                "abc-54-1",
+                RunStatus::Completed,
+                "2024-01-01T00:00:00Z",
+                "basic_test",
+                Some("snouty-empty-tt"),
+                Some("full description goes here"),
+            ),
+            summary(
+                "def-54-2",
+                RunStatus::Incomplete,
+                "2024-01-02T00:00:00Z",
+                "spanner",
+                None,
+                None,
+            ),
+        ];
 
-        let table = render_runs_table(&runs, true, 200);
-        let lines: Vec<&str> = table.lines().collect();
-        assert!(lines[1].contains("snouty-empty-tt"));
-        // -l mode strips description from the main row and prints it indented below.
-        assert!(!lines[1].contains("full description"));
-        assert!(lines[2].starts_with("    full description"));
+        let out = render_runs_long(&runs);
+        // No table header — each field sits on its own aligned line. Labels are
+        // padded to the widest label *within each block*, so the first block
+        // (which has a "Description" label) is wider than the second.
+        assert!(!out.contains("RUN ID  "));
+        assert!(out.contains("Run ID       abc-54-1"));
+        assert!(out.contains("Status       completed"));
+        assert!(out.contains("Test Name    snouty-empty-tt"));
+        assert!(out.contains("Description  full description goes here"));
+        // Second run omits the empty Test Name / Description fields.
+        assert!(out.contains("def-54-2"));
+        assert!(out.contains("incomplete"));
+        // A blank line separates the two run blocks.
+        assert!(out.contains("\n\n"));
     }
 
     #[test]
@@ -3620,14 +3710,13 @@ mod tests {
             None,
             None,
         )];
-        let table = render_runs_table(&runs, false, 100);
+        let table = render_runs_table(&runs, 100);
         let lines: Vec<&str> = table.lines().collect();
-        assert!(lines[1].contains("✗"));
-        // Two dash placeholders: one for title, one for description.
-        let dash_count = lines[1].matches('-').count();
+        assert!(lines[1].contains("incomplete"));
+        // Placeholder dashes stand in for the missing test name and description.
         assert!(
-            dash_count >= 2,
-            "expected at least two dashes, got: {}",
+            lines[1].contains("-  ") || lines[1].trim_end().ends_with('-'),
+            "expected dash placeholders, got: {}",
             lines[1]
         );
     }

@@ -63,7 +63,7 @@ fn get_params(args: Vec<String>, use_stdin: bool, support_moment: bool) -> Resul
 }
 
 #[tokio::main(flavor = "current_thread")]
-async fn main() -> Result<()> {
+async fn main() {
     color_eyre::install().unwrap();
     env_logger::Builder::from_default_env()
         .format(|buf, record| {
@@ -73,6 +73,20 @@ async fn main() -> Result<()> {
         .init();
     let cli = Cli::parse();
 
+    if let Err(report) = run(cli).await {
+        if snouty::error::is_user_error(&report) {
+            // User-facing problem (bad flag, missing env var, 4xx). Print the
+            // message chain only — no backtrace footer or internal noise.
+            eprintln!("error: {report:#}");
+        } else {
+            // Genuine internal fault: keep the full color_eyre report.
+            eprintln!("Error: {report:?}");
+        }
+        std::process::exit(1);
+    }
+}
+
+async fn run(cli: Cli) -> Result<()> {
     let json = cli.json;
     let verbose = cli.verbose;
     if json && let Some(name) = json_unaware_command_name(&cli.command) {

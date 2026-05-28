@@ -1,6 +1,19 @@
+use chrono::{DateTime, Utc};
 use clap::{Args, Parser, Subcommand};
 
+use crate::api::RunStatus;
 use crate::runs::Stream;
+
+/// clap value parser for `--status` that keeps a friendly, enumerated error
+/// message (the generated `RunStatus::from_str` only says "invalid value").
+fn parse_run_status(value: &str) -> Result<RunStatus, String> {
+    value.parse::<RunStatus>().map_err(|_| {
+        format!(
+            "invalid status: '{value}'\n\
+             valid values: starting, in_progress, completed, cancelled, incomplete, unknown"
+        )
+    })
+}
 
 #[derive(Parser)]
 #[command(name = "snouty")]
@@ -424,8 +437,8 @@ pub enum RunsCommands {
 #[derive(Args)]
 pub struct RunsListArgs {
     /// Filter by status (starting, in_progress, completed, cancelled, incomplete, unknown)
-    #[arg(short, long)]
-    pub status: Option<String>,
+    #[arg(short, long, value_parser = parse_run_status)]
+    pub status: Option<RunStatus>,
 
     /// Filter by launcher name
     #[arg(long)]
@@ -433,11 +446,11 @@ pub struct RunsListArgs {
 
     /// Only show runs created after this timestamp (ISO 8601)
     #[arg(long)]
-    pub created_after: Option<String>,
+    pub created_after: Option<DateTime<Utc>>,
 
     /// Only show runs created before this timestamp (ISO 8601)
     #[arg(long)]
-    pub created_before: Option<String>,
+    pub created_before: Option<DateTime<Utc>>,
 
     /// Maximum number of runs to display
     #[arg(short = 'n', long, default_value = "50")]

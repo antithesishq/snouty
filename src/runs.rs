@@ -40,7 +40,17 @@ pub async fn cmd_runs(command: Option<RunsCommands>, json: bool, verbose: bool) 
         Some(RunsCommands::BuildLogs {
             run_id,
             annotate_faults,
-        }) => cmd_runs_build_logs(&run_id, json, verbose, annotate_faults).await,
+        }) => {
+            cmd_runs_build_logs(
+                &run_id,
+                LogOutputOptions {
+                    json,
+                    verbose,
+                    annotate_faults,
+                },
+            )
+            .await
+        }
         Some(RunsCommands::Logs {
             run_id,
             input_hash,
@@ -55,9 +65,11 @@ pub async fn cmd_runs(command: Option<RunsCommands>, json: bool, verbose: bool) 
                 &vtime,
                 begin_input_hash.as_deref(),
                 begin_vtime.as_deref(),
-                json,
-                verbose,
-                annotate_faults,
+                LogOutputOptions {
+                    json,
+                    verbose,
+                    annotate_faults,
+                },
             )
             .await
         }
@@ -229,11 +241,19 @@ fn print_run_detail(run: &RunDetail) {
     }
 }
 
-async fn cmd_runs_build_logs(
-    run_id: &str,
+struct LogOutputOptions {
     json: bool,
     verbose: bool,
     annotate_faults: bool,
+}
+
+async fn cmd_runs_build_logs(
+    run_id: &str,
+    LogOutputOptions {
+        json,
+        verbose,
+        annotate_faults,
+    }: LogOutputOptions,
 ) -> Result<()> {
     debug!("streaming build logs for run: {}", run_id);
 
@@ -326,9 +346,11 @@ async fn cmd_runs_logs(
     vtime: &str,
     begin_input_hash: Option<&str>,
     begin_vtime: Option<&str>,
-    json: bool,
-    verbose: bool,
-    annotate_faults: bool,
+    LogOutputOptions {
+        json,
+        verbose,
+        annotate_faults,
+    }: LogOutputOptions,
 ) -> Result<()> {
     debug!("streaming logs for run: {}", run_id);
 
@@ -495,7 +517,7 @@ impl LineTransformer for FaultAnnotator {
             return Some(format!("{}", entry));
         }
 
-        return None;
+        None
     }
 }
 
@@ -548,7 +570,7 @@ fn try_get_fault_window_definition(
         }
     }
 
-    return None;
+    None
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -610,26 +632,26 @@ impl FaultWindow {
     }
 
     fn is_network_fault(&self) -> bool {
-        match self {
+        matches!(
+            self,
             Self::Network {
                 name: _,
                 start_vtime: _,
                 end_vtime: _,
-            } => true,
-            _ => false,
-        }
+            }
+        )
     }
 
     fn is_node_fault(&self) -> bool {
-        match self {
+        matches!(
+            self,
             Self::Node {
                 name: _,
                 start_vtime: _,
                 end_vtime: _,
                 container: _,
-            } => true,
-            _ => false,
-        }
+            }
+        )
     }
 }
 
@@ -693,7 +715,7 @@ fn active_fault_dictionary(open_windows: &LinkedList<FaultWindow>) -> Value {
         {
             node_faults
                 .entry(format!("node_{}", name))
-                .or_insert_with(|| Map::new())
+                .or_default()
                 .insert(
                     container.clone(),
                     json!((*start_vtime as f64) / TICKS_PER_SECOND),
@@ -713,7 +735,7 @@ fn active_fault_dictionary(open_windows: &LinkedList<FaultWindow>) -> Value {
         result.insert("clock_skip".to_string(), json!({"cumulative_offset": offset_sum, "vtime": (latest_vtime as f64) / TICKS_PER_SECOND}));
     }
 
-    return Value::Object(result);
+    Value::Object(result)
 }
 
 #[derive(Debug, Deserialize)]

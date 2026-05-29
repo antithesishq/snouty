@@ -439,8 +439,9 @@ impl LineTransformer for FaultAnnotator {
             let vtime_node = entry["moment"]["vtime"]
                 .as_str()
                 .and_then(|seconds_string| seconds_string.parse::<f64>().ok());
-            let event_vtime_ticks = vtime_ticks_node
-                .or_else(|| vtime_node.map(|seconds| (seconds * TICKS_PER_SECOND) as u64))
+            let event_vtime_ticks = vtime_node
+                .map(|seconds| (seconds * TICKS_PER_SECOND) as u64)
+                .or(vtime_ticks_node)
                 .unwrap_or(0);
             let fault_name = entry["fault"]["name"].as_str();
             let is_fault_injector = entry["source"]["name"]
@@ -476,7 +477,7 @@ impl LineTransformer for FaultAnnotator {
             if is_fault_injector && let Some(fault_name) = fault_name {
                 let max_duration_ticks = entry["fault"]["max_duration"]
                     .as_f64()
-                    .filter(|d| *d >= 0.0)
+                    .filter(|d| *d > 0.0)
                     .map(|d| (d * TICKS_PER_SECOND) as u64);
                 let end_vtime = max_duration_ticks.map(|duration| duration + event_vtime_ticks);
                 let fault_type = entry["fault"]["type"].as_str().unwrap_or("");
@@ -534,9 +535,11 @@ impl LineTransformer for FaultAnnotator {
             if vtime_ticks_node.is_some() || vtime_node.is_some() {
                 entry["vtime_seconds"] = json!((event_vtime_ticks as f64) / TICKS_PER_SECOND);
             }
-            entry["active_faults"] = self.active_faults.clone();
 
-            return Some(format!("{}", entry));
+            if entry.is_object() {
+                entry["active_faults"] = self.active_faults.clone();
+                return Some(format!("{}", entry));
+            }
         }
 
         None

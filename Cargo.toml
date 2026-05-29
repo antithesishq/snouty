@@ -27,7 +27,7 @@ futures-util = "0.3"
 tokio = { version = "1", features = ["rt", "macros", "process", "time", "io-util", "io-std", "signal"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
-indexmap = { version = "2.2.3" }
+indexmap = { version = "2.10.0" }
 rusqlite = { version = "0.34", features = ["bundled"] }
 console = "0.15"
 dirs = "6"

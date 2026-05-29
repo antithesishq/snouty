@@ -2133,7 +2133,7 @@ mod tests {
             })
         ));
 
-        // Empty affected_nodes: try_get_fault_window_definition returns None,
+        // Empty affected_nodes: network and node faults are only considered active if at least one node is affected,
         // so no new window is pushed and the existing one is unchanged.
         assert_eq!(
             transformer.try_transform(&format!(

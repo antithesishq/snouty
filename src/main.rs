@@ -63,6 +63,9 @@ fn get_params(args: Vec<String>, use_stdin: bool, support_moment: bool) -> Resul
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<()> {
+    // Load a local .env file if present. Real environment variables take
+    // precedence over values in the file (dotenvy does not override).
+    let dotenv_path = dotenvy::dotenv().ok();
     color_eyre::install().unwrap();
     env_logger::Builder::from_default_env()
         .format(|buf, record| {
@@ -70,6 +73,9 @@ async fn main() -> Result<()> {
             writeln!(buf, "{}", record.args())
         })
         .init();
+    if let Some(path) = &dotenv_path {
+        debug!("loaded environment from {}", path.display());
+    }
     let cli = Cli::parse();
 
     let json = cli.json;

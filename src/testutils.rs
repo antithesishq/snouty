@@ -547,6 +547,8 @@ fn mock_route_get_run_logs(_run_id: &str) -> (u16, String) {
         // bracketed label and curated fields render as <path>=<value> pairs.
         r#"{"started_task":"abc_parallel_driver_fetch","task_status":"started","command":"core/parallel_driver_fetch","container_id":"d700ef3d05a263","tasks_len":"1","source":{"name":"antithesis_test_composer","pid":974},"moment":{"input_hash":"5181922178177328213","vtime":"400.5"}}"#,
         r#"{"fault":{"name":"clog","type":"network","details":{"disruption_type":"Stopped"},"affected_nodes":["client2","setup"],"max_duration":0.267},"source":{"name":"fault_injector","pid":1086},"moment":{"input_hash":"5181922178177328213","vtime":"401.5"}}"#,
+        r#"{"started_task":"abc_parallel_driver_fetch","task_status":"progressing","command":"core/parallel_driver_fetch","container_id":"d700ef3d05a263","tasks_len":"1","source":{"name":"antithesis_test_composer","pid":974},"moment":{"input_hash":"5181922178177328213","vtime":"401.75"}}"#,
+        r#"{"started_task":"abc_parallel_driver_fetch","task_status":"completed","command":"core/parallel_driver_fetch","container_id":"d700ef3d05a263","tasks_len":"1","source":{"name":"antithesis_test_composer","pid":974},"moment":{"input_hash":"5181922178177328213","vtime":"402"}}"#,
     ];
     (200, lines.join("\n") + "\n")
 }

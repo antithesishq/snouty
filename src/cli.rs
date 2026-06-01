@@ -371,6 +371,10 @@ pub enum RunsCommands {
         /// Start streaming from this input hash (optimization; must be paired with --begin-vtime)
         #[arg(long, allow_hyphen_values = true, requires = "begin_vtime")]
         begin_input_hash: Option<String>,
+
+        /// Whether to disable fault annotation (tracking of which faults are active for any given log line). Fault annotation only applies to NDJSON output, so this flag has no effect unless combined with `--json` (which annotates faults by default).
+        #[arg(long)]
+        disable_fault_annotation: bool,
     },
 
     /// Search events in a run

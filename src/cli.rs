@@ -58,7 +58,6 @@ Environment variables:
 
     /// Interact with test runs
     #[command(
-        hide = true,
         long_about = r#"Interact with test runs
 
 List, inspect, and view logs for Antithesis test runs.

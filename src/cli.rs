@@ -395,7 +395,7 @@ pub enum RunsCommands {
         vtime: String,
 
         /// Start streaming from this virtual time (defaults to the root)
-        #[arg(long)]
+        #[arg(long, allow_hyphen_values = true)]
         begin_vtime: Option<String>,
 
         /// Start streaming from this input hash (optimization; must be paired with --begin-vtime)
@@ -425,11 +425,11 @@ pub enum RunsCommands {
         stream: Option<Stream>,
 
         /// Only include events with vtime >= this value
-        #[arg(long)]
+        #[arg(long, allow_hyphen_values = true)]
         vtime_min: Option<f64>,
 
         /// Only include events with vtime <= this value
-        #[arg(long)]
+        #[arg(long, allow_hyphen_values = true)]
         vtime_max: Option<f64>,
     },
 }
@@ -500,4 +500,95 @@ Parameters can also be passed via stdin as JSON:
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse(args: &[&str]) -> Cli {
+        Cli::try_parse_from(args).expect("args should parse")
+    }
+
+    fn events(cli: Cli) -> (Option<f64>, Option<f64>) {
+        let Commands::Runs {
+            command:
+                Some(RunsCommands::Events {
+                    vtime_min,
+                    vtime_max,
+                    ..
+                }),
+        } = cli.command
+        else {
+            panic!("expected `runs events`");
+        };
+        (vtime_min, vtime_max)
+    }
+
+    // Negative vtime bounds must parse as values, not be mistaken for flags.
+    // Regression test for `--vtime-min -0.3` => "unexpected argument '-0' found".
+    #[test]
+    fn events_accepts_negative_vtime_bounds() {
+        let cli = parse(&[
+            "snouty",
+            "runs",
+            "events",
+            "RUN",
+            "-m",
+            "x",
+            "--vtime-min",
+            "-1.0",
+            "--vtime-max",
+            "-0.5",
+        ]);
+        assert_eq!(events(cli), (Some(-1.0), Some(-0.5)));
+    }
+
+    #[test]
+    fn events_still_accepts_positive_vtime_bounds() {
+        let cli = parse(&[
+            "snouty",
+            "runs",
+            "events",
+            "RUN",
+            "-m",
+            "x",
+            "--vtime-min",
+            "1.5",
+            "--vtime-max",
+            "2.5",
+        ]);
+        assert_eq!(events(cli), (Some(1.5), Some(2.5)));
+    }
+
+    // `--begin-vtime` is a sibling of `--begin-input-hash`; both must accept
+    // hyphen-led values for consistency with the logs moment coordinates.
+    #[test]
+    fn logs_accepts_negative_begin_vtime() {
+        let cli = parse(&[
+            "snouty",
+            "runs",
+            "logs",
+            "RUN",
+            "HASH",
+            "VTIME",
+            "--begin-vtime",
+            "-2.0",
+            "--begin-input-hash",
+            "0",
+        ]);
+        let Commands::Runs {
+            command:
+                Some(RunsCommands::Logs {
+                    begin_vtime,
+                    begin_input_hash,
+                    ..
+                }),
+        } = cli.command
+        else {
+            panic!("expected `runs logs`");
+        };
+        assert_eq!(begin_vtime.as_deref(), Some("-2.0"));
+        assert_eq!(begin_input_hash.as_deref(), Some("0"));
+    }
 }

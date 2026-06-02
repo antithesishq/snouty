@@ -114,7 +114,7 @@ fn normalize_property(property: Property) -> Result<Property> {
     }
 }
 
-const CLIENT_TIMEOUT_SECS: u64 = 30;
+const CLIENT_TIMEOUT_SECS: u64 = 60;
 
 fn required_env(name: &'static str) -> Result<String> {
     env::var(name).map_err(|e| match e {

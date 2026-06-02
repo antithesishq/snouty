@@ -84,6 +84,41 @@ sn() {
 # First NDJSON line of a `--json` command, or empty.
 json_first() { "$SNOUTY" --json "$@" 2>/dev/null | head -1; }
 
+# Probe a run's events endpoint for a usable event.
+#
+#   probe_events <run_id>
+#
+# Tries a series of common substrings against `runs events` and, on the first
+# hit, sets the globals EVENT_JSON (the raw NDJSON line) and EVENT_KEYWORD (the
+# substring that matched). Crucially, it distinguishes the three outcomes the
+# old discovery code silently collapsed into "no events":
+#
+#   return 0  a real event was sampled         (EVENT_JSON/EVENT_KEYWORD set)
+#   return 1  endpoint reachable but no match   (run genuinely has no such event)
+#   return 2  endpoint errored / timed out      (transport failure — try another run)
+#
+# A timeout affects every keyword equally, so we bail on the first transport
+# error instead of burning the 30s client timeout once per keyword.
+probe_events() {
+    local run="$1" kw out err
+    EVENT_JSON=""; EVENT_KEYWORD=""
+    err="$(mktemp)"
+    for kw in error test client info setup start Container the; do
+        out="$("$SNOUTY" --json runs events "$run" --match "$kw" 2>"$err" | head -1)"
+        if grep -qiE 'failed to contact API|operation timed out|error sending request' "$err"; then
+            rm -f "$err"
+            return 2
+        fi
+        if [[ -n "$out" ]]; then
+            EVENT_JSON="$out"; EVENT_KEYWORD="$kw"
+            rm -f "$err"
+            return 0
+        fi
+    done
+    rm -f "$err"
+    return 1
+}
+
 # ----------------------------------------------------------------------------
 # Story emitter.
 #
@@ -127,18 +162,10 @@ story_opt() {
 
 echo "discovering runs via the live API…" >&2
 
-SUCCESS="$(json_first runs list --status completed -n 1 | jq -r '.run_id // empty')"
 FAIL="$(json_first runs list --status incomplete -n 1 | jq -r '.run_id // empty')"
 CANCELLED="$(json_first runs list --status cancelled -n 1 | jq -r '.run_id // empty')"
 # A syntactically-valid but nonexistent run id, for clean-error stories.
 UNKNOWN="ffffffffffffffffffffffffffffffff-54-5"
-
-[[ -n "$SUCCESS" ]] || { echo "error: no completed run found" >&2; exit 1; }
-[[ -n "$FAIL" ]] || echo "warning: no incomplete run found — incomplete stories will be skipped" >&2
-
-echo "  completed run : $SUCCESS" >&2
-echo "  incomplete run: ${FAIL:-<none>}" >&2
-echo "  cancelled run : ${CANCELLED:-<none>}" >&2
 
 # Derivations below are best-effort: a missing value just means the dependent
 # story is skipped (via story_opt), so don't let errexit abort here. In
@@ -146,31 +173,64 @@ echo "  cancelled run : ${CANCELLED:-<none>}" >&2
 # would otherwise trip `set -e`.
 set +e
 
-# --- Sample a real event from the completed run -----------------------------
-# events requires --match, so probe a few common substrings until one hits.
-EVENT_JSON=""
-EVENT_KEYWORD=""
-for kw in error test client info setup start Container the; do
-    line="$(json_first runs events "$SUCCESS" --match "$kw" | head -1)"
-    if [[ -n "$line" ]]; then EVENT_JSON="$line"; EVENT_KEYWORD="$kw"; break; fi
+# --- Pick the completed run that drives most stories ------------------------
+# It is not enough to grab the *first* completed run: a given run's events
+# endpoint can time out (the 30s client timeout) or simply have nothing to
+# sample, which would silently skip every event/logs story. Instead, walk the
+# recent completed runs and select the first whose events endpoint actually
+# returns data — that run then drives the event, logs, and property stories.
+mapfile -t COMPLETED < <(
+    "$SNOUTY" --json runs list --status completed -n 15 2>/dev/null \
+        | jq -r '.run_id // empty'
+)
+[[ ${#COMPLETED[@]} -gt 0 ]] || { echo "error: no completed run found" >&2; exit 1; }
+
+SUCCESS=""
+for cand in "${COMPLETED[@]}"; do
+    probe_events "$cand"
+    case $? in
+        0) SUCCESS="$cand"
+           echo "  completed run : $cand (events matched '$EVENT_KEYWORD')" >&2
+           break ;;
+        2) echo "  skipping $cand — events endpoint errored/timed out" >&2 ;;
+        1) echo "  skipping $cand — no events matched probe keywords" >&2 ;;
+    esac
 done
 
-EVENT_HASH=""; EVENT_VTIME=""; EVENT_SOURCE=""; EVENT_STREAM=""
-EVENT_VMIN=""; EVENT_VMAX=""; EVENT_KW2=""
-if [[ -n "$EVENT_JSON" ]]; then
-    EVENT_HASH="$(jq -r '.moment.input_hash // empty' <<<"$EVENT_JSON")"
-    EVENT_VTIME="$(jq -r '.moment.vtime // empty' <<<"$EVENT_JSON")"
-    EVENT_SOURCE="$(jq -r '.source.container // empty' <<<"$EVENT_JSON")"
-    EVENT_STREAM="$(jq -r '.source.stream // empty' <<<"$EVENT_JSON")"
-    # A vtime window straddling the sampled event, so the window story matches it.
-    EVENT_VMIN="$(awk "BEGIN{printf \"%.3f\", $EVENT_VTIME - 0.5}")"
-    EVENT_VMAX="$(awk "BEGIN{printf \"%.3f\", $EVENT_VTIME + 0.5}")"
-    # A second needle that co-occurs in the same event (for the multi-match story).
-    EVENT_KW2="$(jq -r '.output_text // ""' <<<"$EVENT_JSON" \
-        | grep -oE '[A-Za-z_]{4,}' | grep -viF "$EVENT_KEYWORD" | head -1 || true)"
-else
-    echo "warning: no events sampled — event/logs stories will be skipped" >&2
+# Refuse to emit a partial gallery: if no completed run yields events, the
+# event/logs stories cannot be generated and silently dropping them is exactly
+# the failure mode this script is meant to avoid.
+if [[ -z "$SUCCESS" ]]; then
+    echo "error: none of the ${#COMPLETED[@]} most recent completed runs returned events" >&2
+    echo "       (all timed out or had no sampleable events) — refusing to write a" >&2
+    echo "       gallery with the event/logs stories skipped. Investigate the events" >&2
+    echo "       endpoint, or widen the completed-run search above." >&2
+    exit 1
 fi
+
+echo "  incomplete run: ${FAIL:-<none>}" >&2
+echo "  cancelled run : ${CANCELLED:-<none>}" >&2
+[[ -n "$FAIL" ]] || echo "warning: no incomplete run found — incomplete stories will be skipped" >&2
+
+# --- Derive event details from the sampled event ----------------------------
+# probe_events guaranteed EVENT_JSON/EVENT_KEYWORD are set for $SUCCESS.
+EVENT_HASH="$(jq -r '.moment.input_hash // empty' <<<"$EVENT_JSON")"
+EVENT_VTIME="$(jq -r '.moment.vtime // empty' <<<"$EVENT_JSON")"
+# Events carry a `source.name` and may also carry a `source.container`; the
+# --source filter matches either, so fall back to name when container is absent.
+EVENT_SOURCE="$(jq -r '.source.container // .source.name // empty' <<<"$EVENT_JSON")"
+EVENT_STREAM="$(jq -r '.source.stream // empty' <<<"$EVENT_JSON")"
+# A vtime window straddling the sampled event, so the window story matches it.
+EVENT_VMIN="$(awk "BEGIN{printf \"%.3f\", $EVENT_VTIME - 0.5}")"
+EVENT_VMAX="$(awk "BEGIN{printf \"%.3f\", $EVENT_VTIME + 0.5}")"
+# A second needle that co-occurs in the same event (for the multi-match story).
+# Filtering is done against the whole NDJSON line, so prefer a content token
+# from output_text but fall back to any other token on the line — that keeps
+# the multi-match story populated even for terse events.
+EVENT_KW2="$(jq -r '.output_text // ""' <<<"$EVENT_JSON" \
+    | grep -oE '[A-Za-z_]{4,}' | grep -vixF "$EVENT_KEYWORD" | head -1)"
+[[ -n "$EVENT_KW2" ]] || EVENT_KW2="$(grep -oE '[A-Za-z_]{4,}' <<<"$EVENT_JSON" \
+    | grep -vixF "$EVENT_KEYWORD" | head -1)"
 
 # --- Pull property metadata from the completed run --------------------------
 PROPS_JSON="$(mktemp)"
@@ -180,6 +240,13 @@ FAIL_PROP="$(jq -rs 'map(select(.status=="Failing")) | .[0].name // empty' "$PRO
 PASS_PROP="$(jq -rs 'map(select(.status=="Passing")) | .[0].name // empty' "$PROPS_JSON")"
 NONEVENT_PROP="$(jq -rs 'map(select(.is_event==false)) | .[0].name // empty' "$PROPS_JSON")"
 PASS_EVENT_PROP="$(jq -rs 'map(select(.is_event==true and .status=="Passing")) | .[0].name // empty' "$PROPS_JSON")"
+
+# Surface, loudly, any property category the chosen run lacks. These stories
+# are genuinely run-dependent (a run with no failing property can't show one),
+# so we warn rather than abort — but never let a skip pass silently.
+[[ -n "$FAIL_PROP" ]]       || echo "warning: $SUCCESS has no failing property — runs-property-failing will be skipped" >&2
+[[ -n "$PASS_EVENT_PROP" ]] || echo "warning: $SUCCESS has no passing event property — runs-property-passing will be skipped" >&2
+[[ -n "$NONEVENT_PROP" ]]   || echo "warning: $SUCCESS has no non-event property — runs-property-non-event will be skipped" >&2
 
 # A fuzzy substring: the first word of a known property name.
 FUZZY="$(awk '{print $1; exit}' <<<"${FAIL_PROP:-$PASS_PROP}")"
@@ -239,18 +306,18 @@ story_opt runs-property-ambiguous         "Substring matches multiple properties
 story     runs-property-not-found         "Typo'd a property name — get a clean error" runs property "$SUCCESS" "this property does not exist"
 
 # --- events -----------------------------------------------------------------
-story_opt runs-events-single        "Find events that mention a particular keyword" runs events "$SUCCESS" --match "$EVENT_KEYWORD"
-story_opt runs-events-source        "Restrict events to those from a specific container" runs events "$SUCCESS" --match "$EVENT_KEYWORD" --source "$EVENT_SOURCE"
-story_opt runs-events-stream        "Filter events to a specific stream (info/error/stdout/stderr)" runs events "$SUCCESS" --match "$EVENT_KEYWORD" --stream "$EVENT_STREAM"
-story_opt runs-events-vtime-window  "Restrict events to a virtual-time window" runs events "$SUCCESS" --match "$EVENT_KEYWORD" --vtime-min "$EVENT_VMIN" --vtime-max "$EVENT_VMAX"
-story_opt runs-events-multi-match   "AND-narrow with two --match needles (both must appear in the event)" runs events "$SUCCESS" --match "$EVENT_KEYWORD" --match "$EVENT_KW2"
-story_opt runs-events-combined      "Combine multiple filters — match, source, stream, and vtime range" runs events "$SUCCESS" --match "$EVENT_KEYWORD" --source "$EVENT_SOURCE" --stream "$EVENT_STREAM" --vtime-min "$EVENT_VMIN" --vtime-max "$EVENT_VMAX"
+story     runs-events-single        "Find events that mention a particular keyword" runs events "$SUCCESS" --match "$EVENT_KEYWORD"
+story     runs-events-source        "Restrict events to those from a specific container" runs events "$SUCCESS" --match "$EVENT_KEYWORD" --source "$EVENT_SOURCE"
+story     runs-events-stream        "Filter events to a specific stream (info/error/stdout/stderr)" runs events "$SUCCESS" --match "$EVENT_KEYWORD" --stream "$EVENT_STREAM"
+story     runs-events-vtime-window  "Restrict events to a virtual-time window" runs events "$SUCCESS" --match "$EVENT_KEYWORD" --vtime-min "$EVENT_VMIN" --vtime-max "$EVENT_VMAX"
+story     runs-events-multi-match   "AND-narrow with two --match needles (both must appear in the event)" runs events "$SUCCESS" --match "$EVENT_KEYWORD" --match "$EVENT_KW2"
+story     runs-events-combined      "Combine multiple filters — match, source, stream, and vtime range" runs events "$SUCCESS" --match "$EVENT_KEYWORD" --source "$EVENT_SOURCE" --stream "$EVENT_STREAM" --vtime-min "$EVENT_VMIN" --vtime-max "$EVENT_VMAX"
 story     runs-events-no-results    "Search events that don't match anything" runs events "$SUCCESS" --match "this string will not appear anywhere"
 story_opt runs-events-incomplete    "Search events on an incomplete run to find the failure context" runs events "$FAIL" --match error
 
 # --- logs -------------------------------------------------------------------
-story_opt runs-logs              "Stream logs at a specific moment" runs logs "$SUCCESS" "$EVENT_HASH" "$EVENT_VTIME"
-story_opt runs-logs-begin-vtime  "Skip ahead — start streaming from a later moment instead of the root" runs logs "$SUCCESS" "$EVENT_HASH" "$EVENT_VTIME" --begin-vtime "$EVENT_VMIN" --begin-input-hash "$EVENT_HASH"
+story     runs-logs              "Stream logs at a specific moment" runs logs "$SUCCESS" "$EVENT_HASH" "$EVENT_VTIME"
+story     runs-logs-begin-vtime  "Skip ahead — start streaming from a later moment instead of the root" runs logs "$SUCCESS" "$EVENT_HASH" "$EVENT_VTIME" --begin-vtime "$EVENT_VMIN" --begin-input-hash "$EVENT_HASH"
 story     runs-logs-bad-moment   "Try logs with a moment that doesn't exist in this run" runs logs "$SUCCESS" 0 999999.0
 story_opt runs-logs-incomplete   "Stream logs at the failure moment of an incomplete run" runs logs "$FAIL" "$FAIL_HASH" "$FAIL_VTIME"
 

@@ -28,7 +28,7 @@ snouty validate --help
 stdout '.*Compose configs:.*'
 stdout '.*docker-compose locally.*'
 stdout '.*setup-complete.*'
-stdout '.*Scripts are not executed.*'
+stdout '.*Test commands are not executed.*'
 stdout '.*Kubernetes configs:.*'
 stdout '.*k8s-validator.*'
 stdout '.*manifests\/.*'

@@ -59,7 +59,7 @@ fn validate_help_documents_compose_and_kubernetes() {
         .stdout(predicate::str::contains("Compose configs:"))
         .stdout(predicate::str::contains("docker-compose locally"))
         .stdout(predicate::str::contains("setup-complete"))
-        .stdout(predicate::str::contains("Scripts are not executed"))
+        .stdout(predicate::str::contains("Test commands are not executed"))
         .stdout(predicate::str::contains("Kubernetes configs:"))
         .stdout(predicate::str::contains("k8s-validator"))
         .stdout(predicate::str::contains("manifests/"));

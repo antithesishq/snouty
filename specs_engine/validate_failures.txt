@@ -3,10 +3,10 @@
 # Unknown prefix file — validate errors.
 build-image unknown-prefix-failures:latest unknown_prefix
 ! snouty validate config_unknown --timeout 15
-stderr 'unrecognized command names.*'
+stderr 'Unrecognized command names.*'
 stderr 'suite/readme.txt.*'
 
-# Non-executable script — validate detects missing executable bit.
+# Non-executable test command — validate detects missing executable bit.
 build-image noexec-failures:latest noexec
 ! snouty validate config_noexec --timeout 15
 stderr 'not executable.*'

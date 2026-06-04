@@ -212,7 +212,7 @@ async fn validate_compose(
         );
     }
 
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(timeout);
+    let up_deadline = tokio::time::Instant::now() + Duration::from_secs(timeout);
 
     eprintln!("Starting compose services...");
     let mut up_child = compose.up_detached(&config, overlay)?;
@@ -234,7 +234,7 @@ async fn validate_compose(
                 bail!("compose up --detach failed (exit status: {status})");
             }
         }
-        _ = tokio::time::sleep_until(deadline) => {
+        _ = tokio::time::sleep_until(up_deadline) => {
             up_child.kill_group().await.ok();
             bail!("timed out during 'compose up --detach'");
         }
@@ -247,6 +247,11 @@ async fn validate_compose(
     // Discover scripts early so we can use them for both the success path
     // and the timeout diagnostic.
     let scripts = discover_scripts(&*compose, &config, overlay, temp_dir)?;
+
+    // Reset the budget now that containers are up. `--timeout` bounds how long
+    // we wait for the setup-complete event; slow container startup (e.g. several
+    // services, or a slow runtime like podman-on-macOS) shouldn't eat into it.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(timeout);
 
     let mut logs_child = compose.logs_follow(&config, overlay)?;
 

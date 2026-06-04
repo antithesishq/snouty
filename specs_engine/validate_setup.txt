@@ -10,8 +10,9 @@ stderr 'Setup validation successful.*'
 
 # All test command types discovered and validated, helper_ ignored.
 #    Includes a sidecar without test commands to verify it doesn't block validation.
+#    Two services start here, so allow extra headroom on slow runtimes.
 build-image all-types-setup:latest all_types
-snouty validate config_all_types --timeout 15
+snouty validate config_all_types --timeout 30
 stderr 'Setup-complete event detected.*'
 stderr 'Found 2 first, 1 driver, 1 anytime, 1 eventually, 1 finally test commands.*'
 stderr 'Setup validation successful.*'

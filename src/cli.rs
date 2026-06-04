@@ -345,12 +345,10 @@ pub enum RunsCommands {
     Show {
         /// Run ID
         run_id: String,
-    },
 
-    /// Open the triage report for a run in the browser
-    Open {
-        /// Run ID
-        run_id: String,
+        /// Open the run's triage report in a browser instead of printing details
+        #[arg(short = 'w', long)]
+        web: bool,
     },
 
     /// List property results for a run
@@ -441,7 +439,7 @@ pub struct RunsListArgs {
     pub status: Option<RunStatus>,
 
     /// Filter by launcher name
-    #[arg(long)]
+    #[arg(short, long)]
     pub launcher: Option<String>,
 
     /// Only show runs created after this timestamp (ISO 8601)
@@ -453,12 +451,12 @@ pub struct RunsListArgs {
     pub created_before: Option<DateTime<Utc>>,
 
     /// Maximum number of runs to display
-    #[arg(short = 'n', long, default_value = "50")]
+    #[arg(short = 'n', long, default_value = "10")]
     pub limit: usize,
 
     /// Print full descriptions on a second line instead of truncating
-    #[arg(short = 'l', long)]
-    pub long: bool,
+    #[arg(short, long)]
+    pub detail: bool,
 }
 
 impl Default for RunsListArgs {
@@ -468,8 +466,8 @@ impl Default for RunsListArgs {
             launcher: None,
             created_after: None,
             created_before: None,
-            limit: 50,
-            long: false,
+            limit: 10,
+            detail: false,
         }
     }
 }

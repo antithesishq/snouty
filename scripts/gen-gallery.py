@@ -80,8 +80,8 @@ class Snouty:
 
     def __init__(self, binary: Path):
         self.binary = binary
-        # `runs open` shells out to xdg-open/open. Drop no-op shims on PATH (and
-        # point $BROWSER at one) so regenerating never spawns a browser.
+        # `runs show --web` shells out to xdg-open/open. Drop no-op shims on PATH
+        # (and point $BROWSER at one) so regenerating never spawns a browser.
         self._shim = Path(tempfile.mkdtemp(prefix="snouty-gallery-shim."))
         for prog in ("xdg-open", "open"):
             shim = self._shim / prog
@@ -658,11 +658,11 @@ def build_stories(d: Discovery) -> list[Story]:
             rows_at_most(3),
         ),
         Story(
-            "runs-list--long",
+            "runs-list--detail",
             "Get full descriptions instead of truncated titles",
             "Default titles are truncated; I want to read the full descriptions.",
             "Descriptions are shown in full (longer than the default view), one row per run.",
-            ["runs", "list", "-n", "6", "--long"],
+            ["runs", "list", "-n", "6", "--detail"],
             non_empty_table,
         ),
         Story(
@@ -734,11 +734,11 @@ def build_stories(d: Discovery) -> list[Story]:
             json_capable=False,
         ),
         Story(
-            "runs-open",
+            "runs-show--web",
             "Jump straight to the triage report in the browser",
             "I want to open this run's triage report in my browser.",
             "Prints the report URL and exits cleanly (the browser is shimmed to a no-op here).",
-            ["runs", "open", d.success],
+            ["runs", "show", d.success, "--web"],
             succeeds_with("http"),
             json_capable=False,
         ),

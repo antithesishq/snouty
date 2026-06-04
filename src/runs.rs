@@ -48,10 +48,13 @@ impl std::str::FromStr for Stream {
     type Err = String;
 
     fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        // Accept the short forms too: the events API reports app stdout/stderr
+        // as `out`/`err` (see `abbreviated`), so the `--stream` filter has to
+        // match those, not just the long forms a user types.
         match s {
-            "stdout" => Ok(Self::Stdout),
-            "stderr" => Ok(Self::Stderr),
-            "info" => Ok(Self::Info),
+            "stdout" | "out" => Ok(Self::Stdout),
+            "stderr" | "err" => Ok(Self::Stderr),
+            "info" | "inf" => Ok(Self::Info),
             "error" => Ok(Self::Error),
             other => Err(format!(
                 "invalid stream '{other}' (expected one of: stdout, stderr, info, error)"
@@ -64,8 +67,9 @@ pub async fn cmd_runs(command: Option<RunsCommands>, json: bool, verbose: bool) 
     match command {
         None => cmd_runs_list(RunsListArgs::default(), json, verbose).await,
         Some(RunsCommands::List(args)) => cmd_runs_list(args, json, verbose).await,
-        Some(RunsCommands::Show { run_id }) => cmd_runs_show(&run_id, json, verbose).await,
-        Some(RunsCommands::Open { run_id }) => cmd_runs_open(&run_id, json, verbose).await,
+        Some(RunsCommands::Show { run_id, web }) => {
+            cmd_runs_show(&run_id, web, json, verbose).await
+        }
         Some(RunsCommands::Properties {
             run_id,
             passing,
@@ -173,8 +177,8 @@ async fn cmd_runs_list(args: RunsListArgs, json: bool, verbose: bool) -> Result<
         return Ok(());
     }
 
-    if args.long {
-        print!("{}", render_runs_long(&runs));
+    if args.detail {
+        print!("{}", render_runs_detail(&runs));
     } else {
         let width = terminal_width();
         println!("{}", render_runs_table(&runs, width));
@@ -219,11 +223,15 @@ fn format_local_str(raw: &str) -> String {
     }
 }
 
-async fn cmd_runs_show(run_id: &str, json: bool, verbose: bool) -> Result<()> {
+async fn cmd_runs_show(run_id: &str, web: bool, json: bool, verbose: bool) -> Result<()> {
     debug!("showing run: {}", run_id);
 
     let api = AntithesisApi::from_env(verbose)?;
     let run = api.get_run(run_id).await?;
+
+    if web {
+        return open_run_report(&run, json);
+    }
 
     if json {
         println!("{}", serde_json::to_string_pretty(&run)?);
@@ -234,12 +242,9 @@ async fn cmd_runs_show(run_id: &str, json: bool, verbose: bool) -> Result<()> {
     Ok(())
 }
 
-async fn cmd_runs_open(run_id: &str, json: bool, verbose: bool) -> Result<()> {
-    debug!("opening report for run: {}", run_id);
-
-    let api = AntithesisApi::from_env(verbose)?;
-    let run = api.get_run(run_id).await?;
-
+/// `runs show --web`: open the run's triage report in a browser. With `--json`,
+/// emit the URL instead of launching anything so scripts can capture it.
+fn open_run_report(run: &RunDetail, json: bool) -> Result<()> {
     let url = run
         .links
         .as_ref()
@@ -247,7 +252,7 @@ async fn cmd_runs_open(run_id: &str, json: bool, verbose: bool) -> Result<()> {
         .ok_or_else(|| {
             user_error(format!(
                 "no report available for run {} with status {}",
-                run_id, run.status
+                run.run_id, run.status
             ))
         })?;
 
@@ -258,7 +263,7 @@ async fn cmd_runs_open(run_id: &str, json: bool, verbose: bool) -> Result<()> {
 
     let launched = launch_browser(url);
     if launched {
-        println!("Opening report for run {run_id}…");
+        println!("Opening report for run {}…", run.run_id);
         println!("If your browser didn't open, manually visit:");
         println!("  {url}");
     } else {
@@ -396,10 +401,16 @@ async fn cmd_runs_property(run_id: &str, name: &str, json: bool, verbose: bool) 
     debug!("looking up property '{}' for run: {}", name, run_id);
 
     let api = AntithesisApi::from_env(verbose)?;
-    let properties = api
+    let properties = match api
         .stream_run_properties(run_id, None)
         .try_collect::<Vec<_>>()
-        .await?;
+        .await
+    {
+        Ok(properties) => properties,
+        // Same 404-on-incomplete-run contract as `cmd_runs_properties`: explain
+        // why there are no properties instead of leaking a bare "404 Not Found".
+        Err(err) => return Err(explain_properties_error(&api, run_id, err).await),
+    };
 
     let resolved = resolve_property(&properties, name)?;
     let property = match resolved {
@@ -686,16 +697,9 @@ fn print_run_detail(run: &RunDetail) {
 
     print!("{}", render_kv(&rows));
 
-    // Point at the obvious next step instead of dumping the huge signed report
-    // URL into the metadata block.
-    println!(
-        "\nView the triage report:\n  snouty runs open {}",
-        run.run_id
-    );
-
-    // The description can be an enormous multi-paragraph blob, so it goes last as
-    // its own block — wrapped to the terminal — rather than as a metadata row
-    // that would otherwise bury Status/timestamps below a wall of text.
+    // The description can be an enormous multi-paragraph blob, so it goes as its
+    // own block — wrapped to the terminal — rather than as a metadata row that
+    // would otherwise bury Status/timestamps below a wall of text.
     if let Some(desc) = run.test_description() {
         let lines = wrap_text(&sanitize_multiline(desc), terminal_width());
         let lines = trim_blank_edges(&lines);
@@ -706,6 +710,13 @@ fn print_run_detail(run: &RunDetail) {
             }
         }
     }
+
+    // Point at the obvious next step instead of dumping the huge signed report
+    // URL into the metadata block.
+    println!(
+        "\nview the report in your browser:\n  snouty runs show {} --web",
+        run.run_id
+    );
 }
 
 /// Render aligned `Label  value` lines, sqlite `.mode line`–style. Each line is
@@ -719,9 +730,9 @@ fn render_kv(rows: &[(&str, String)]) -> String {
     out
 }
 
-/// `runs list --long`: one aligned key-value block per run (no table),
+/// `runs list --detail`: one aligned key-value block per run (no table),
 /// separated by blank lines. Empty optional fields are omitted.
-fn render_runs_long(runs: &[RunSummary]) -> String {
+fn render_runs_detail(runs: &[RunSummary]) -> String {
     let blocks: Vec<String> = runs
         .iter()
         .map(|run| {
@@ -825,6 +836,15 @@ async fn cmd_runs_events(
     let mut stdout = BufWriter::new(std::io::stdout().lock());
     // The table header is printed lazily, on the first matching row, so a run
     // with no matches shows a friendly message instead of a bare header.
+    let event_header = format!(
+        "{:<hw$}  {:<vw$}  {:<sw$}  OUTPUT",
+        "HASH",
+        "VTIME",
+        "SOURCE",
+        hw = EVENT_HASH_WIDTH,
+        vw = EVENT_VTIME_WIDTH,
+        sw = EVENT_SOURCE_WIDTH,
+    );
     let mut emitted: usize = 0;
     let result = stream_ndjson_lines(stream, NoOpTransformer {}, |line| {
         // Cheap path: substring AND across all --match needles on the raw line.
@@ -843,10 +863,29 @@ async fn cmd_runs_events(
         let entry: Value = match serde_json::from_str(line) {
             Ok(v) => v,
             Err(_) => {
+                // The line matched --match but isn't valid JSON (a truncated
+                // final chunk, a proxy-injected error blob, …). Surface it raw
+                // rather than dropping it silently — otherwise table mode would
+                // disagree with --json and the post-stream "No events matched"
+                // check would misfire when matches actually streamed through.
                 if json {
                     writeln!(stdout, "{line}")?;
-                    emitted += 1;
+                } else {
+                    if emitted == 0 {
+                        writeln!(stdout, "{event_header}")?;
+                    }
+                    writeln!(
+                        stdout,
+                        "{:<hw$}  {:<vw$}  {:<sw$}  {line}",
+                        "",
+                        "",
+                        "",
+                        hw = EVENT_HASH_WIDTH,
+                        vw = EVENT_VTIME_WIDTH,
+                        sw = EVENT_SOURCE_WIDTH,
+                    )?;
                 }
+                emitted += 1;
                 return Ok(());
             }
         };
@@ -859,16 +898,7 @@ async fn cmd_runs_events(
             writeln!(stdout, "{line}")?;
         } else {
             if emitted == 0 {
-                writeln!(
-                    stdout,
-                    "{:<hw$}  {:<vw$}  {:<sw$}  OUTPUT",
-                    "HASH",
-                    "VTIME",
-                    "SOURCE",
-                    hw = EVENT_HASH_WIDTH,
-                    vw = EVENT_VTIME_WIDTH,
-                    sw = EVENT_SOURCE_WIDTH,
-                )?;
+                writeln!(stdout, "{event_header}")?;
             }
             let rendered = render_event_entry(&entry);
             let input_hash = rendered.input_hash;
@@ -1769,7 +1799,7 @@ fn file_basename(file: &str) -> Option<&str> {
 
 fn render_runs_table(runs: &[RunSummary], width: usize) -> String {
     // The default view omits the description entirely — it never fit usefully
-    // beside the (necessarily full) run id, and `runs list --long` shows it in
+    // beside the (necessarily full) run id, and `runs list --detail` shows it in
     // full. Test name is the final, width-bounded column.
     let headers = vec![
         "RUN ID".to_string(),
@@ -3871,7 +3901,7 @@ mod tests {
         assert!(lines[0].contains("STATUS"));
         assert!(lines[0].contains("CREATED"));
         assert!(lines[0].contains("TEST NAME"));
-        // The default view no longer shows DESCRIPTION (use `--long` for that).
+        // The default view no longer shows DESCRIPTION (use `--detail` for that).
         assert!(!lines[0].contains("DESCRIPTION"));
         assert!(!lines[0].contains("LAUNCHER"));
 
@@ -3909,7 +3939,7 @@ mod tests {
             ),
         ];
 
-        let out = render_runs_long(&runs);
+        let out = render_runs_detail(&runs);
         // No table header — each field sits on its own aligned line. Labels are
         // padded to the widest label *within each block*, so the first block
         // (which has a "Description" label) is wider than the second.
@@ -3978,6 +4008,37 @@ mod tests {
             ..filters
         };
         assert!(!event_matches_filters(&entry, &line, filters));
+    }
+
+    #[test]
+    fn event_stream_filter_matches_short_form_streams() {
+        // The events API reports app stdout/stderr as the short forms `out`/`err`,
+        // so `--stream stdout`/`--stream stderr` must match those, not just the
+        // long forms a user types.
+        let entry = json!({
+            "source": {"name": "app", "container": "app", "stream": "out"},
+            "moment": {"vtime": "1.0"},
+            "output_text": "starting"
+        });
+        let line = entry.to_string();
+        let needles = vec!["starting".to_string()];
+        let sources: Vec<String> = vec![];
+
+        let matching = EventFilters {
+            matches: &needles,
+            sources: &sources,
+            stream: Some(Stream::Stdout),
+            vtime_min: None,
+            vtime_max: None,
+        };
+        assert!(event_matches_filters(&entry, &line, matching));
+
+        // ...and the wrong stream still excludes it.
+        let mismatched = EventFilters {
+            stream: Some(Stream::Stderr),
+            ..matching
+        };
+        assert!(!event_matches_filters(&entry, &line, mismatched));
     }
 
     #[test]

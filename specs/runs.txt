@@ -20,25 +20,33 @@ stderr 'missing environment variable.*'
 # with relative timestamps and short status words.
 mock-runs-server
 snouty runs
-stdout 'RUN ID.*STATUS.*CREATED.*TEST NAME.*DESCRIPTION'
+stdout 'RUN ID.*STATUS.*CREATED.*TEST NAME'
 [!staging] stdout 'run-1.*completed'
 [!staging] stdout 'run-2.*in_progress'
-# The DESCRIPTION column is populated from the run's top-level description field.
-[!staging] stdout 'run-1.*nightly smoke on main'
+# The default table omits the description (it never fit usefully beside the full
+# run id); use `runs list --detail` to see it.
+! stdout 'DESCRIPTION'
+[!staging] ! stdout 'nightly smoke on main'
 
-# `snouty runs list --long` prints one aligned key-value block per run (no
+# `snouty runs list --detail` prints one aligned key-value block per run (no
 # table), so full descriptions are visible.
 mock-runs-server
-snouty runs list --long
+snouty runs list --detail
 stdout 'Run ID .*run-1'
 [!staging] stdout 'Status .*completed'
 [!staging] stdout 'Description .*nightly smoke on main'
-! stdout 'RUN ID.*STATUS.*CREATED.*TEST NAME.*DESCRIPTION'
+! stdout 'RUN ID.*STATUS.*CREATED.*TEST NAME'
+
+# `-d` is the short form of `--detail`.
+mock-runs-server
+snouty runs list -d
+stdout 'Run ID .*run-1'
+! stdout 'RUN ID.*STATUS.*CREATED.*TEST NAME'
 
 # `snouty runs list` is the same as bare `snouty runs`.
 mock-runs-server
 snouty runs list
-stdout 'RUN ID.*STATUS.*CREATED.*TEST NAME.*DESCRIPTION'
+stdout 'RUN ID.*STATUS.*CREATED.*TEST NAME'
 
 # `snouty runs show` requires a run ID.
 ! snouty runs show
@@ -60,11 +68,18 @@ stdout 'Run ID.*$R_run_id'
 [!staging] stdout 'Status.*completed'
 [!staging] stdout 'Launcher.*nightly'
 
-# `snouty runs show` no longer prints the raw report URL — `snouty runs open`
-# is the new way to follow that link.
+# `snouty runs show` doesn't print the raw report URL — `snouty runs show --web`
+# is the way to follow that link.
 mock-runs-server
 snouty runs show $R_run_id
 ! stdout 'Report.*https'
+
+# `snouty --json runs show --web` resolves the report URL without launching a
+# browser, so a script can capture it. (Plain `--web` would shell out to a
+# browser, so it's not exercised here.)
+mock-runs-server
+snouty --json runs show $R_run_id --web
+[!staging] stdout '"url":.*https.*reports'
 
 # `snouty --json runs show` outputs JSON.
 mock-runs-server
@@ -73,10 +88,11 @@ stdout '"run_id".*"$R_run_id"'
 [!staging] stdout '"status".*"completed"'
 
 # `snouty runs properties` renders one row per property with a status word,
-# group, name, and total example count.
+# total example count, and name (the group is folded into the name as
+# `group ▸ name`).
 mock-runs-server
 snouty runs properties $R_run_id
-[!staging] stdout 'STATUS.*GROUP.*NAME.*EXAMPLES'
+[!staging] stdout 'STATUS.*EXAMPLES.*NAME'
 [!staging] stdout 'failing.*Counter value stays below limit'
 [!staging] stdout 'passing.*Setup completes'
 
@@ -143,6 +159,16 @@ snouty runs events $R_run_id --match request
 [!staging] stdout '^HASH\s+VTIME\s+SOURCE\s+OUTPUT'
 [!staging] stdout '-456.*2\.0.*\[app:error\].*\{"level":"warn","msg":"slow request"\}'
 
+# `--stream` filters by stream. The API reports app stdout/stderr as the short
+# forms `out`/`err`, so the long-form flag value must still match them.
+mock-runs-server
+snouty runs events $R_run_id --match starting --stream stdout
+[!staging] stdout '-123.*1\.0.*\[app:out\].*\{"level":"info","msg":"starting"\}'
+# The same event is excluded when the wrong stream is requested.
+mock-runs-server
+snouty runs events $R_run_id --match starting --stream stderr
+stdout 'No events matched "starting"\.'
+
 # `snouty --json runs events` outputs raw NDJSON.
 mock-runs-server
 snouty --json runs events $R_run_id --match counter
@@ -195,7 +221,7 @@ stdout 'No properties found\.'
 # any examples were sampled.
 mock-runs-server
 snouty runs properties run-no-events
-stdout 'STATUS.*GROUP.*NAME.*EXAMPLES'
+stdout 'STATUS.*EXAMPLES.*NAME'
 stdout 'passing.*No events property'
 
 # `snouty runs properties` requires a run ID.

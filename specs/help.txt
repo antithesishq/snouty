@@ -12,6 +12,7 @@ stdout 'snouty \d+\.\d+\.\d+'
 snouty --help
 stdout '.*debug.*'
 stdout '.*version.*'
+stdout '.*runs.*'
 stdout '.*api.*'
 stdout '.*docs.*'
 stdout '.*completions.*'

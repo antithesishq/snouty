@@ -74,9 +74,19 @@ export ANTITHESIS_PASSWORD="your-password"
 Snouty provides the following subcommands. Invoke `snouty <command> --help` to find out more.
 
 - `snouty launch`: push images and kick off an Antithesis run.
-- `snouty validate`: locally run and validate your docker-compose.yaml setup.
-- `snouty docs`: fast, local search of the Antithesis documentation.
+- `snouty runs`: list and inspect Antithesis test runs and their results.
+  - `snouty runs list`: list runs, with status/launcher/date filters.
+  - `snouty runs show <run_id>`: show details for a single run.
+  - `snouty runs properties <run_id>`: list property (assertion) results.
+  - `snouty runs build-logs <run_id>`: stream a run's build logs.
+  - `snouty runs logs <run_id> <hash> <vtime>`: stream logs for a moment.
+  - `snouty runs events <run_id> <query>`: search events in a run.
 - `snouty debug`: start a debug session.
+- `snouty validate`: locally run and validate your docker-compose.yaml setup.
+- `snouty api webhook`: send a raw request to an Antithesis webhook endpoint.
+- `snouty doctor`: check your environment is configured correctly.
+- `snouty docs`: fast, local search of the Antithesis documentation.
+- `snouty completions <shell>`: generate shell completion scripts.
 - `snouty update`: install the latest version.
 
 ## Shell Completions

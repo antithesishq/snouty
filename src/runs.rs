@@ -483,7 +483,9 @@ fn print_property_header(property: &Property) {
         // to literal "\n"), drop stray leading/trailing blank lines, and wrap to
         // the terminal so a long paragraph doesn't blow past the screen. The
         // label column is 10 chars wide, so continuation lines indent to match.
-        let wrap_width = terminal_width().saturating_sub(PROPERTY_LABEL_WIDTH).max(20);
+        let wrap_width = terminal_width()
+            .saturating_sub(PROPERTY_LABEL_WIDTH)
+            .max(20);
         let lines = wrap_text(&sanitize_multiline(desc), wrap_width);
         let lines = trim_blank_edges(&lines);
         for (index, line) in lines.iter().enumerate() {
@@ -686,7 +688,10 @@ fn print_run_detail(run: &RunDetail) {
 
     // Point at the obvious next step instead of dumping the huge signed report
     // URL into the metadata block.
-    println!("\nView the triage report:\n  snouty runs open {}", run.run_id);
+    println!(
+        "\nView the triage report:\n  snouty runs open {}",
+        run.run_id
+    );
 
     // The description can be an enormous multi-paragraph blob, so it goes last as
     // its own block — wrapped to the terminal — rather than as a metadata row
@@ -1800,7 +1805,9 @@ fn render_runs_table(runs: &[RunSummary], width: usize) -> String {
     // columns; keep at least the header width so the label stays readable on
     // narrow terminals.
     let fixed_width: usize = widths.iter().take(name_col).sum::<usize>() + 2 * name_col;
-    let name_width = width.saturating_sub(fixed_width).max(headers[name_col].len());
+    let name_width = width
+        .saturating_sub(fixed_width)
+        .max(headers[name_col].len());
     widths[name_col] = name_width;
 
     let mut output = String::new();
@@ -2573,7 +2580,10 @@ mod tests {
         let wrapped = wrap_text("the quick brown fox\n\njumps", 9);
         assert_eq!(wrapped, vec!["the quick", "brown fox", "", "jumps"]);
         // A word longer than the width is kept intact rather than split.
-        assert_eq!(wrap_text("supercalifragilistic", 5), vec!["supercalifragilistic"]);
+        assert_eq!(
+            wrap_text("supercalifragilistic", 5),
+            vec!["supercalifragilistic"]
+        );
     }
 
     #[test]
@@ -2585,7 +2595,10 @@ mod tests {
             "b".to_string(),
             String::new(),
         ];
-        assert_eq!(trim_blank_edges(&lines), &["a".to_string(), String::new(), "b".to_string()]);
+        assert_eq!(
+            trim_blank_edges(&lines),
+            &["a".to_string(), String::new(), "b".to_string()]
+        );
     }
 
     #[test]
@@ -2593,8 +2606,14 @@ mod tests {
         // An empty array/object collapses to "(empty)" with no detail block, so
         // a fuzzy hit on a property with no examples doesn't print the confusing
         // "[0 items]" + "row N details: []" pair.
-        assert_eq!(render_property_value(&json!([])), ("(empty)".to_string(), None));
-        assert_eq!(render_property_value(&json!({})), ("(empty)".to_string(), None));
+        assert_eq!(
+            render_property_value(&json!([])),
+            ("(empty)".to_string(), None)
+        );
+        assert_eq!(
+            render_property_value(&json!({})),
+            ("(empty)".to_string(), None)
+        );
     }
     #[test]
     fn ansi_sgr() {

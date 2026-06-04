@@ -297,10 +297,17 @@ async fn cmd_runs_properties(
     debug!("listing properties for run: {}", run_id);
 
     let api = AntithesisApi::from_env(verbose)?;
-    let mut properties = api
+    let mut properties = match api
         .stream_run_properties(run_id, status)
         .try_collect::<Vec<_>>()
-        .await?;
+        .await
+    {
+        Ok(properties) => properties,
+        // The properties endpoint 404s both for a bogus run id and for a real
+        // run that simply has no triage report yet (only `completed` runs do).
+        // Fetch the run to say which, instead of leaking a bare "404 Not Found".
+        Err(err) => return Err(explain_properties_error(&api, run_id, err).await),
+    };
 
     properties.sort_by(|a, b| {
         property_group(a)
@@ -325,6 +332,42 @@ async fn cmd_runs_properties(
     }
 
     Ok(())
+}
+
+/// Turn a properties-endpoint failure into a message that explains *why* there
+/// are no properties. Only the "no report" 404 is rewritten; every other error
+/// (auth, network, 5xx) passes through untouched.
+async fn explain_properties_error(
+    api: &AntithesisApi,
+    run_id: &str,
+    err: color_eyre::eyre::Report,
+) -> color_eyre::eyre::Report {
+    if !format!("{err:#}").contains("404") {
+        return err;
+    }
+    // A 404 here means either the run doesn't exist or it has no triage report.
+    // get_run tells them apart: it 404s for a missing run but succeeds (with a
+    // status) for a real run whose report isn't available.
+    match api.get_run(run_id).await {
+        Err(_) => user_error(format!("run not found: {run_id}")),
+        // Completed runs are expected to have properties; if one 404s anyway,
+        // that's a genuine surprise — keep the original error.
+        Ok(run) if run.status == RunStatus::Completed => err,
+        Ok(run) => {
+            let mut msg = format!(
+                "no properties for run {run_id} — properties are generated when a run completes, \
+                 and this run is {}",
+                status_label(run.status)
+            );
+            if run.status == RunStatus::Incomplete {
+                msg.push_str(&format!(
+                    ". See the failure moment with `snouty runs show {run_id}`, \
+                     then `snouty runs logs`/`runs events` around it"
+                ));
+            }
+            user_error(msg)
+        }
+    }
 }
 
 fn property_group(p: &Property) -> Option<&str> {
@@ -570,10 +613,14 @@ fn indent_lines(text: &str, prefix: &str) -> String {
 }
 
 fn render_properties_table(properties: &[Property]) -> String {
+    // STATUS and EXAMPLES are narrow and fixed; NAME is the long, variable
+    // column and goes last so it can wrap to the terminal instead of one long
+    // name forcing the whole table wider than the screen. Full names are kept —
+    // `runs property` takes a name, so truncating would break the follow-up.
     let headers = vec![
         "STATUS".to_string(),
-        "NAME".to_string(),
         "EXAMPLES".to_string(),
+        "NAME".to_string(),
     ];
 
     // Failing properties first so triage doesn't require scanning the whole
@@ -595,12 +642,12 @@ fn render_properties_table(properties: &[Property]) -> String {
             };
             vec![
                 property_status_label(p.status()).to_string(),
-                name,
                 property_example_total(p).to_string(),
+                name,
             ]
         })
         .collect::<Vec<_>>();
-    render_table(&headers, &rows)
+    render_table_wrap_last(&headers, &rows, terminal_width())
 }
 
 fn print_run_detail(run: &RunDetail) {
@@ -610,9 +657,6 @@ fn print_run_detail(run: &RunDetail) {
     rows.push(("Run ID", run.run_id.clone()));
     if let Some(name) = run.test_name() {
         rows.push(("Test Name", name.to_string()));
-    }
-    if let Some(desc) = run.test_description() {
-        rows.push(("Description", desc.to_string()));
     }
 
     rows.push(("Status", status_label(run.status)));
@@ -643,6 +687,20 @@ fn print_run_detail(run: &RunDetail) {
     // Point at the obvious next step instead of dumping the huge signed report
     // URL into the metadata block.
     println!("\nView the triage report:\n  snouty runs open {}", run.run_id);
+
+    // The description can be an enormous multi-paragraph blob, so it goes last as
+    // its own block — wrapped to the terminal — rather than as a metadata row
+    // that would otherwise bury Status/timestamps below a wall of text.
+    if let Some(desc) = run.test_description() {
+        let lines = wrap_text(&sanitize_multiline(desc), terminal_width());
+        let lines = trim_blank_edges(&lines);
+        if !lines.is_empty() {
+            println!("\nDescription");
+            for line in lines {
+                println!("{line}");
+            }
+        }
+    }
 }
 
 /// Render aligned `Label  value` lines, sqlite `.mode line`–style. Each line is
@@ -1771,6 +1829,56 @@ fn render_table(headers: &[String], rows: &[Vec<String>]) -> String {
     push_table_row(&mut output, headers, &widths);
     for row in rows {
         push_table_row(&mut output, row, &widths);
+    }
+
+    output.trim_end().to_string()
+}
+
+/// Like [`render_table`], but the final column wraps to whatever width is left
+/// over after the (fixed-width) leading columns, so a single long cell can't
+/// push the table past `total_width`. Continuation lines indent to the start of
+/// the final column. Leading columns are sized to their widest cell.
+fn render_table_wrap_last(headers: &[String], rows: &[Vec<String>], total_width: usize) -> String {
+    let last = headers.len() - 1;
+
+    let mut widths = headers
+        .iter()
+        .map(|header| header.chars().count())
+        .collect::<Vec<_>>();
+    for row in rows {
+        for (index, cell) in row.iter().enumerate().take(last) {
+            widths[index] = widths[index].max(cell.chars().count());
+        }
+    }
+
+    // Two-space separators between columns; the leading columns plus separators
+    // form the indent the wrapped final column hangs under.
+    let prefix_width: usize = widths.iter().take(last).sum::<usize>() + 2 * last;
+    let last_width = total_width
+        .saturating_sub(prefix_width)
+        .max(headers[last].chars().count())
+        .max(20);
+
+    let mut output = String::new();
+    push_table_row(&mut output, headers, &widths);
+    for row in rows {
+        let wrapped = wrap_text(&row[last], last_width);
+        let wrapped = if wrapped.is_empty() {
+            vec![String::new()]
+        } else {
+            wrapped
+        };
+        for (line_index, line) in wrapped.iter().enumerate() {
+            if line_index == 0 {
+                for index in 0..last {
+                    output.push_str(&format!("{:<width$}  ", row[index], width = widths[index]));
+                }
+                output.push_str(line);
+            } else {
+                output.push_str(&format!("{:prefix_width$}{line}", ""));
+            }
+            output.push('\n');
+        }
     }
 
     output.trim_end().to_string()

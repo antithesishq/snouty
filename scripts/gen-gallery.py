@@ -35,7 +35,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Callable
@@ -296,7 +296,6 @@ def _pick_fuzzy(prop_names: list[str]) -> str:
 
 
 def _pick_ambiguous(prop_names: list[str]) -> str:
-    lower = [n.lower() for n in prop_names]
     counts: dict[str, int] = {}
     for name in prop_names:
         for word in {w.lower() for w in re.findall(r"[A-Za-z]{5,}", name)}:
@@ -557,8 +556,8 @@ def event_combined(label: str, stream: str, lo: str, hi: str):
         flo, fhi = float(lo), float(hi)
         bad = []
         for r in rows:
-            l, s = _event_source(r)
-            if l != label or s != stream or not (flo <= float(r["moment"]["vtime"]) <= fhi):
+            lbl, s = _event_source(r)
+            if lbl != label or s != stream or not (flo <= float(r["moment"]["vtime"]) <= fhi):
                 bad.append(r)
         return (bool(rows) and not bad, f"{len(rows)} rows satisfy all filters")
 
@@ -635,116 +634,160 @@ def build_stories(d: Discovery) -> list[Story]:
     return [
         # -- listing --------------------------------------------------------
         Story(
-            "runs", "Quickly check what test runs are around",
+            "runs",
+            "Quickly check what test runs are around",
             "I just want to glance at what test runs exist without recalling any subcommands.",
             "A readable table of recent runs (id, status, title, time) appears — `runs` behaves like `runs list`.",
-            ["runs"], non_empty_table,
+            ["runs"],
+            non_empty_table,
         ),
         Story(
-            "runs-list", "List recent runs to find one to inspect",
+            "runs-list",
+            "List recent runs to find one to inspect",
             "I want to scan recent runs and pick one to dig into.",
             "Up to 10 recent runs, newest first, with legible id/status/title/time columns.",
-            ["runs", "list", "-n", "10"], rows_at_most(10),
+            ["runs", "list", "-n", "10"],
+            rows_at_most(10),
         ),
         Story(
-            "runs-list--limit", "Show me just the last three runs",
+            "runs-list--limit",
+            "Show me just the last three runs",
             "I only care about the very latest handful of runs.",
             "At most 3 rows, the most recent ones.",
-            ["runs", "list", "-n", "3"], rows_at_most(3),
+            ["runs", "list", "-n", "3"],
+            rows_at_most(3),
         ),
         Story(
-            "runs-list--long", "Get full descriptions instead of truncated titles",
+            "runs-list--long",
+            "Get full descriptions instead of truncated titles",
             "Default titles are truncated; I want to read the full descriptions.",
             "Descriptions are shown in full (longer than the default view), one row per run.",
-            ["runs", "list", "-n", "6", "--long"], non_empty_table,
+            ["runs", "list", "-n", "6", "--long"],
+            non_empty_table,
         ),
         Story(
-            "runs-list--status-completed", "Only show runs that finished cleanly",
+            "runs-list--status-completed",
+            "Only show runs that finished cleanly",
             "I want to ignore in-flight/failed runs and see only completed ones.",
             "Every row has status=completed.",
-            ["runs", "list", "-n", "8", "--status", "completed"], all_status("completed"),
+            ["runs", "list", "-n", "8", "--status", "completed"],
+            all_status("completed"),
         ),
         Story(
-            "runs-list--status-incomplete", "Find recent failures to triage",
+            "runs-list--status-incomplete",
+            "Find recent failures to triage",
             "I'm triaging and want only runs that ended incomplete.",
             "Every row has status=incomplete.",
-            ["runs", "list", "-n", "8", "--status", "incomplete"], all_status("incomplete"),
+            ["runs", "list", "-n", "8", "--status", "incomplete"],
+            all_status("incomplete"),
         ),
         Story(
-            "runs-list--launcher", f"Show only {d.launcher}-launched runs",
+            "runs-list--launcher",
+            f"Show only {d.launcher}-launched runs",
             "I want to see only the runs kicked off by one particular launcher.",
             f"Non-empty, and every row's launcher is {d.launcher!r}.",
-            ["runs", "list", "-n", "8", "--launcher", d.launcher], all_launcher(d.launcher),
+            ["runs", "list", "-n", "8", "--launcher", d.launcher],
+            all_launcher(d.launcher),
         ),
         Story(
-            "runs-list--created-after", "What runs have we kicked off recently?",
+            "runs-list--created-after",
+            "What runs have we kicked off recently?",
             "I want runs created on or after a given date.",
             f"Non-empty, and every row was created at/after {d.created_after}.",
-            ["runs", "list", "--created-after", d.created_after], all_created_after(d.created_after),
+            ["runs", "list", "--created-after", d.created_after],
+            all_created_after(d.created_after),
         ),
         Story(
-            "runs-list--created-window", "Look at runs from a specific window",
+            "runs-list--created-window",
+            "Look at runs from a specific window",
             "I want runs created within a specific time window.",
             f"Non-empty, and every row was created within [{d.window_after}, {d.window_before}].",
-            ["runs", "list", "--created-after", d.window_after, "--created-before", d.window_before],
+            [
+                "runs",
+                "list",
+                "--created-after",
+                d.window_after,
+                "--created-before",
+                d.window_before,
+            ],
             all_created_within(d.window_after, d.window_before),
         ),
         Story(
-            "runs-verbose", "See the API calls printed while you list runs",
+            "runs-verbose",
+            "See the API calls printed while you list runs",
             "I'm debugging and want to see the HTTP requests snouty makes.",
-            "The run table prints, and stderr shows the `> GET` request lines (tokens redacted).",
-            ["runs", "list", "-n", "3", "--verbose"], verbose_api_calls,
+            "The run table prints, and stderr shows the `> GET` request lines (tokens redacted). "
+            "This is a debugging flag: the FULL request AND response is intended output, "
+            "including bulky response headers (e.g. content-security-policy) and long lines — "
+            "do not treat header verbosity or line width here as a defect.",
+            ["runs", "list", "-n", "3", "--verbose"],
+            verbose_api_calls,
         ),
         # -- single-run metadata -------------------------------------------
         Story(
-            "runs-show", "Peek at the metadata for a completed run",
+            "runs-show",
+            "Peek at the metadata for a completed run",
             "I want the metadata for one specific run.",
             "Shows the run id, status, timestamps, launcher, and links.",
-            ["runs", "show", d.success], contains_all(d.success, "completed"),
+            ["runs", "show", d.success],
+            contains_all(d.success, "completed"),
             json_capable=False,
         ),
         Story(
-            "runs-open", "Jump straight to the triage report in the browser",
+            "runs-open",
+            "Jump straight to the triage report in the browser",
             "I want to open this run's triage report in my browser.",
             "Prints the report URL and exits cleanly (the browser is shimmed to a no-op here).",
-            ["runs", "open", d.success], succeeds_with("http"),
+            ["runs", "open", d.success],
+            succeeds_with("http"),
             json_capable=False,
         ),
         Story(
-            "runs-show-incomplete", "Inspect a run that aborted early",
+            "runs-show-incomplete",
+            "Inspect a run that aborted early",
             "A run ended incomplete; I want to see where it died (failure vtime/hash).",
             "Status is incomplete and the failure moment (vtime/hash) is shown.",
-            ["runs", "show", d.fail], contains_all("incomplete"),
+            ["runs", "show", d.fail],
+            contains_all("incomplete"),
             json_capable=False,
         ),
         Story(
-            "runs-show-cancelled", "What does a cancelled run look like?",
+            "runs-show-cancelled",
+            "What does a cancelled run look like?",
             "I want to see the metadata of a cancelled run.",
             "Status is shown as cancelled.",
-            ["runs", "show", d.cancelled], contains_all("cancelled"),
+            ["runs", "show", d.cancelled],
+            contains_all("cancelled"),
             json_capable=False,
         ),
         # -- properties -----------------------------------------------------
         Story(
-            "runs-properties", "See all properties — pass and fail",
+            "runs-properties",
+            "See all properties — pass and fail",
             "I want the full property list for a completed run.",
             "A table with both passing and failing properties present.",
-            ["runs", "properties", d.success], properties_pass_and_fail,
+            ["runs", "properties", d.success],
+            properties_pass_and_fail,
         ),
         Story(
-            "runs-properties--passing", "List only the green properties",
+            "runs-properties--passing",
+            "List only the green properties",
             "I want to see only the properties that passed.",
             "Every row is a passing property.",
-            ["runs", "properties", d.success, "--passing"], all_status("Passing"),
+            ["runs", "properties", d.success, "--passing"],
+            all_status("Passing"),
         ),
         Story(
-            "runs-properties--failing", "Focus on the properties that broke",
+            "runs-properties--failing",
+            "Focus on the properties that broke",
             "I want to see only the properties that failed.",
             "Every row is a failing property.",
-            ["runs", "properties", d.success, "--failing"], all_status("Failing"),
+            ["runs", "properties", d.success, "--failing"],
+            all_status("Failing"),
         ),
         Story(
-            "runs-properties-incomplete", "Properties for a run that never finished",
+            "runs-properties-incomplete",
+            "Properties for a run that never finished",
             "I try to view properties on an incomplete run.",
             "A clean error indicating the report isn't available (e.g. 404 Not Found) — not a crash or stack trace.",
             ["runs", "properties", d.fail],
@@ -753,42 +796,53 @@ def build_stories(d: Discovery) -> list[Story]:
         ),
         # -- property detail ------------------------------------------------
         Story(
-            "runs-property-failing", "Drill into a failing property's counter-examples",
+            "runs-property-failing",
+            "Drill into a failing property's counter-examples",
             "A property failed; I want to see concrete counter-examples I can debug.",
             "Shows the property plus at least one counter-example with a moment (hash/vtime) — not an empty `unreachable`.",
-            ["runs", "property", d.success, d.fail_prop], property_has_examples,
+            ["runs", "property", d.success, d.fail_prop],
+            property_has_examples,
             json_capable=False,
         ),
         Story(
-            "runs-property-passing", "Look at the examples behind a passing property",
+            "runs-property-passing",
+            "Look at the examples behind a passing property",
             "A property passed; I want to see example moments that satisfied it.",
             "Shows at least one example with a moment (hash/vtime).",
-            ["runs", "property", d.success, d.pass_event_prop], property_has_examples,
+            ["runs", "property", d.success, d.pass_event_prop],
+            property_has_examples,
             json_capable=False,
         ),
         Story(
-            "runs-property-non-event", "View a non-event property — a single value",
+            "runs-property-non-event",
+            "View a non-event property — a single value",
             "I want to inspect a non-event property, which is a single value rather than moments.",
             "Shows the property's value and has no per-moment rows.",
-            ["runs", "property", d.success, d.nonevent_prop], property_single_value,
+            ["runs", "property", d.success, d.nonevent_prop],
+            property_single_value,
             json_capable=False,
         ),
         Story(
-            "runs-property-fuzzy", "Substring match — let snouty figure out which property",
+            "runs-property-fuzzy",
+            "Substring match — let snouty figure out which property",
             "I type part of a property name and expect snouty to find the one I meant.",
             "Resolves to exactly one property and shows it; does NOT print 'multiple properties match'.",
-            ["runs", "property", d.success, d.fuzzy], resolves_single_property,
+            ["runs", "property", d.success, d.fuzzy],
+            resolves_single_property,
             json_capable=False,
         ),
         Story(
-            "runs-property-ambiguous", "Substring matches multiple properties",
+            "runs-property-ambiguous",
+            "Substring matches multiple properties",
             "I type an ambiguous substring; I want to understand how snouty responds.",
             "Lists the candidate properties and asks me to disambiguate.",
-            ["runs", "property", d.success, d.ambiguous], shows_ambiguity,
+            ["runs", "property", d.success, d.ambiguous],
+            shows_ambiguity,
             json_capable=False,
         ),
         Story(
-            "runs-property-not-found", "Typo'd a property name — get a clean error",
+            "runs-property-not-found",
+            "Typo'd a property name — get a clean error",
             "I mistyped a property name and want a helpful error.",
             "A clear 'no property matches' message, not a stack trace.",
             ["runs", "property", d.success, "this property does not exist"],
@@ -797,49 +851,70 @@ def build_stories(d: Discovery) -> list[Story]:
         ),
         # -- events ---------------------------------------------------------
         Story(
-            "runs-events-single", f"Find events that mention '{kw}'",
+            "runs-events-single",
+            f"Find events that mention '{kw}'",
             "I want to find events that mention a particular keyword.",
             f"At least one matching event row, and the keyword '{kw}' appears in the output.",
-            ["runs", "events", d.success, "--match", kw], event_keyword_present(kw),
+            ["runs", "events", d.success, "--match", kw],
+            event_keyword_present(kw),
         ),
         Story(
-            "runs-events-source", "Restrict events to a specific container/source",
+            "runs-events-source",
+            "Restrict events to a specific container/source",
             "I want only the matching events that came from one container.",
             f"At least one row, all from source {d.event_source!r}, and fewer rows than the bare keyword search.",
             ["runs", "events", d.success, "--match", kw, "--source", d.event_source],
             event_source_is(d.event_source),
         ),
         Story(
-            "runs-events-stream", "Filter events to a specific stream",
+            "runs-events-stream",
+            "Filter events to a specific stream",
             "I want only the matching events on one stream (info/error/stdout/stderr).",
             f"At least one row, all on stream {d.event_stream!r}, and fewer rows than the bare keyword search.",
             ["runs", "events", d.success, "--match", kw, "--stream", d.event_stream],
             event_stream_is(d.event_stream),
         ),
         Story(
-            "runs-events-vtime-window", "Restrict events to a virtual-time window",
+            "runs-events-vtime-window",
+            "Restrict events to a virtual-time window",
             "I want matching events only within a slice of virtual time.",
             f"At least one row, all with vtime in [{vmin}, {vmax}], and fewer rows than the bare keyword search.",
             ["runs", "events", d.success, "--match", kw, "--vtime-min", vmin, "--vtime-max", vmax],
             event_within_vtime(vmin, vmax),
         ),
         Story(
-            "runs-events-multi-match", "AND-narrow with two --match needles",
+            "runs-events-multi-match",
+            "AND-narrow with two --match needles",
             "I want to narrow results to events that mention BOTH of two terms.",
             f"At least one row, every row contains both '{kw}' and '{kw2}', and strictly fewer rows than single-match.",
             ["runs", "events", d.success, "--match", kw, "--match", kw2],
             event_multi_match(kw, kw2),
         ),
         Story(
-            "runs-events-combined", "Combine match, source, stream, and vtime filters",
+            "runs-events-combined",
+            "Combine match, source, stream, and vtime filters",
             "I want to pin down events using several filters at once.",
             "At least one row, and every row satisfies all of: keyword, source, stream, and the vtime window.",
-            ["runs", "events", d.success, "--match", kw, "--source", d.event_source,
-             "--stream", d.event_stream, "--vtime-min", vmin, "--vtime-max", vmax],
+            [
+                "runs",
+                "events",
+                d.success,
+                "--match",
+                kw,
+                "--source",
+                d.event_source,
+                "--stream",
+                d.event_stream,
+                "--vtime-min",
+                vmin,
+                "--vtime-max",
+                vmax,
+            ],
             event_combined(d.event_source, d.event_stream, vmin, vmax),
         ),
         Story(
-            "runs-events-no-results", "Search events that don't match anything",
+            "runs-events-no-results",
+            "Search events that don't match anything",
             "I search for a string that doesn't occur; I want a friendly empty result.",
             "A clear 'No events matched' message — not an error or a crash.",
             ["runs", "events", d.success, "--match", "this string will not appear anywhere"],
@@ -847,28 +922,43 @@ def build_stories(d: Discovery) -> list[Story]:
             json_capable=False,
         ),
         Story(
-            "runs-events-incomplete", "Search events on an incomplete run for failure context",
+            "runs-events-incomplete",
+            "Search events on an incomplete run for failure context",
             "An incomplete run failed; I want events around the failure.",
             "At least one matching event row from the incomplete run.",
-            ["runs", "events", d.fail, "--match", "error"], non_empty_table,
+            ["runs", "events", d.fail, "--match", "error"],
+            non_empty_table,
         ),
         # -- logs -----------------------------------------------------------
         Story(
-            "runs-logs", "Stream logs at a specific moment",
+            "runs-logs",
+            "Stream logs at a specific moment",
             "I want the log lines at a particular moment of the run.",
             "At least one log line is streamed at/around the moment.",
-            ["runs", "logs", d.success, d.event_hash, f"{d.event_vtime}"], logs_non_empty,
+            ["runs", "logs", d.success, d.event_hash, f"{d.event_vtime}"],
+            logs_non_empty,
         ),
         Story(
-            "runs-logs-begin-vtime", "Skip ahead — start from a later moment",
+            "runs-logs-begin-vtime",
+            "Skip ahead — start from a later moment",
             "I want to start streaming from a later moment instead of the root.",
             f"At least one line, and the stream starts at/after vtime {vmin} (not the root).",
-            ["runs", "logs", d.success, d.event_hash, f"{d.event_vtime}",
-             "--begin-vtime", vmin, "--begin-input-hash", d.event_hash],
+            [
+                "runs",
+                "logs",
+                d.success,
+                d.event_hash,
+                f"{d.event_vtime}",
+                "--begin-vtime",
+                vmin,
+                "--begin-input-hash",
+                d.event_hash,
+            ],
             logs_begin_at(vmin),
         ),
         Story(
-            "runs-logs-bad-moment", "Try logs with a moment that doesn't exist",
+            "runs-logs-bad-moment",
+            "Try logs with a moment that doesn't exist",
             "I ask for a moment that isn't in this run; I want a clean error.",
             "A clean error, not a crash or stack trace.",
             ["runs", "logs", d.success, "0", "999999.0"],
@@ -876,20 +966,25 @@ def build_stories(d: Discovery) -> list[Story]:
             json_capable=False,
         ),
         Story(
-            "runs-logs-incomplete", "Stream logs at the failure moment of an incomplete run",
+            "runs-logs-incomplete",
+            "Stream logs at the failure moment of an incomplete run",
             "I want the logs right at the moment an incomplete run failed.",
             "At least one log line at the failure moment.",
-            ["runs", "logs", d.fail, d.fail_hash, d.fail_vtime], logs_non_empty,
+            ["runs", "logs", d.fail, d.fail_hash, d.fail_vtime],
+            logs_non_empty,
         ),
         # -- build logs -----------------------------------------------------
         Story(
-            "runs-build-logs", "Stream the build logs to see how a run was set up",
+            "runs-build-logs",
+            "Stream the build logs to see how a run was set up",
             "I want to see the build/setup logs for a run.",
             "At least one build-log line is streamed.",
-            ["runs", "build-logs", d.success], logs_non_empty,
+            ["runs", "build-logs", d.success],
+            logs_non_empty,
         ),
         Story(
-            "runs-build-logs-unknown", "Wrong run ID — build-logs reports a clean error",
+            "runs-build-logs-unknown",
+            "Wrong run ID — build-logs reports a clean error",
             "I pass a run id that doesn't exist; I want a clean error.",
             "A clean error, not a crash or stack trace.",
             ["runs", "build-logs", UNKNOWN_RUN],
@@ -932,11 +1027,19 @@ def main() -> int:
     repo_root = Path(__file__).resolve().parent.parent
     parser = argparse.ArgumentParser(description="Regenerate the snouty gallery.")
     parser.add_argument("--snouty", type=Path, help="snouty binary (default: target/debug/snouty)")
-    parser.add_argument("--build", action=argparse.BooleanOptionalAction, default=True,
-                        help="cargo build before running (default: yes)")
+    parser.add_argument(
+        "--build",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="cargo build before running (default: yes)",
+    )
     parser.add_argument("--out", type=Path, help="output dir (default: a fresh tempdir)")
-    parser.add_argument("--runs-to-scan", type=int, default=15,
-                        help="recent completed runs to probe for one with events")
+    parser.add_argument(
+        "--runs-to-scan",
+        type=int,
+        default=15,
+        help="recent completed runs to probe for one with events",
+    )
     parser.add_argument("--only", nargs="+", metavar="SLUG", help="only generate these stories")
     parser.add_argument("--list", action="store_true", help="list story slugs and exit")
     parser.add_argument("--fail-fast", action="store_true", help="stop at the first failing story")

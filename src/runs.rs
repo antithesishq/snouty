@@ -334,13 +334,6 @@ fn property_group(p: &Property) -> Option<&str> {
     }
 }
 
-fn property_is_group(p: &Property) -> bool {
-    match p {
-        Property::EventProperty(p) => p.is_group.unwrap_or(false),
-        Property::NonEventProperty(p) => p.is_group.unwrap_or(false),
-    }
-}
-
 fn property_example_total(p: &Property) -> u64 {
     let (ex, cex) = match p {
         Property::EventProperty(p) => (p.example_count, p.counterexample_count),
@@ -370,7 +363,9 @@ async fn cmd_runs_property(run_id: &str, name: &str, json: bool, verbose: bool) 
         Resolved::Exact(p) => p,
         Resolved::Fuzzy(p) => {
             if !json {
-                eprintln!(
+                // Print to stdout (not stderr) so the note stays ordered above
+                // the property output when captured or piped.
+                println!(
                     "note: no exact match for '{}', using closest property: '{}'",
                     name,
                     p.name()
@@ -441,9 +436,35 @@ fn print_property_header(property: &Property) {
         Property::NonEventProperty(p) => p.description.as_deref(),
     };
     if let Some(desc) = description {
-        println!("Details   {}", sanitize(desc));
+        // Details is free-form prose: keep real line breaks (don't escape them
+        // to literal "\n"), drop stray leading/trailing blank lines, and wrap to
+        // the terminal so a long paragraph doesn't blow past the screen. The
+        // label column is 10 chars wide, so continuation lines indent to match.
+        let wrap_width = terminal_width().saturating_sub(PROPERTY_LABEL_WIDTH).max(20);
+        let lines = wrap_text(&sanitize_multiline(desc), wrap_width);
+        let lines = trim_blank_edges(&lines);
+        for (index, line) in lines.iter().enumerate() {
+            if index == 0 {
+                println!("Details   {line}");
+            } else {
+                println!("{:width$}{line}", "", width = PROPERTY_LABEL_WIDTH);
+            }
+        }
     }
     println!();
+}
+
+/// Width of the label column in `print_property_header` (`"Details   "`).
+const PROPERTY_LABEL_WIDTH: usize = 10;
+
+/// Drop leading and trailing blank lines, keeping interior ones.
+fn trim_blank_edges(lines: &[String]) -> &[String] {
+    let start = lines.iter().position(|l| !l.is_empty()).unwrap_or(0);
+    let end = lines
+        .iter()
+        .rposition(|l| !l.is_empty())
+        .map_or(0, |i| i + 1);
+    lines.get(start..end).unwrap_or(&[])
 }
 
 fn render_property_examples(property: &Property) -> String {
@@ -525,6 +546,10 @@ fn render_property_value(value: &Value) -> (String, Option<String>) {
         Value::Bool(b) => (b.to_string(), None),
         Value::Number(n) => (n.to_string(), None),
         Value::String(s) => (sanitize(s), None),
+        // An empty collection has nothing to expand — render it inline rather
+        // than as a "[0 items]" summary trailed by an empty "row N details" block.
+        Value::Array(items) if items.is_empty() => ("(empty)".to_string(), None),
+        Value::Object(map) if map.is_empty() => ("(empty)".to_string(), None),
         Value::Array(_) | Value::Object(_) => {
             let summary = match value {
                 Value::Array(items) => format!("[{} items]", items.len()),
@@ -547,21 +572,29 @@ fn indent_lines(text: &str, prefix: &str) -> String {
 fn render_properties_table(properties: &[Property]) -> String {
     let headers = vec![
         "STATUS".to_string(),
-        "GROUP".to_string(),
         "NAME".to_string(),
         "EXAMPLES".to_string(),
     ];
-    let rows = properties
+
+    // Failing properties first so triage doesn't require scanning the whole
+    // (otherwise alphabetical) list; relative order is otherwise preserved.
+    let mut ordered: Vec<&Property> = properties.iter().collect();
+    ordered.sort_by_key(|p| match p.status() {
+        PropertyStatus::Failing => 0,
+        _ => 1,
+    });
+
+    let rows = ordered
         .iter()
         .map(|p| {
-            let name = if property_is_group(p) {
-                format!("▸ {}", sanitize(p.name()))
-            } else {
-                sanitize(p.name())
+            // Fold the group into the name (`group ▸ detail`) instead of padding
+            // a mostly-empty GROUP column out to its widest label.
+            let name = match property_group(p) {
+                Some(group) => format!("{} ▸ {}", sanitize(group), sanitize(p.name())),
+                None => sanitize(p.name()),
             };
             vec![
                 property_status_label(p.status()).to_string(),
-                sanitize(property_group(p).unwrap_or("")),
                 name,
                 property_example_total(p).to_string(),
             ]
@@ -573,6 +606,8 @@ fn render_properties_table(properties: &[Property]) -> String {
 fn print_run_detail(run: &RunDetail) {
     let mut rows: Vec<(&str, String)> = Vec::new();
 
+    // Lead with the identifier; the human labels follow.
+    rows.push(("Run ID", run.run_id.clone()));
     if let Some(name) = run.test_name() {
         rows.push(("Test Name", name.to_string()));
     }
@@ -580,7 +615,6 @@ fn print_run_detail(run: &RunDetail) {
         rows.push(("Description", desc.to_string()));
     }
 
-    rows.push(("Run ID", run.run_id.clone()));
     rows.push(("Status", status_label(run.status)));
     rows.push(("Created", format_local(run.created_at)));
 
@@ -605,6 +639,10 @@ fn print_run_detail(run: &RunDetail) {
     }
 
     print!("{}", render_kv(&rows));
+
+    // Point at the obvious next step instead of dumping the huge signed report
+    // URL into the metadata block.
+    println!("\nView the triage report:\n  snouty runs open {}", run.run_id);
 }
 
 /// Render aligned `Label  value` lines, sqlite `.mode line`–style. Each line is
@@ -760,8 +798,13 @@ async fn cmd_runs_events(
             if emitted == 0 {
                 writeln!(
                     stdout,
-                    "{:<22}  {:<22}  {:<20}  OUTPUT",
-                    "HASH", "VTIME", "SOURCE"
+                    "{:<hw$}  {:<vw$}  {:<sw$}  OUTPUT",
+                    "HASH",
+                    "VTIME",
+                    "SOURCE",
+                    hw = EVENT_HASH_WIDTH,
+                    vw = EVENT_VTIME_WIDTH,
+                    sw = EVENT_SOURCE_WIDTH,
                 )?;
             }
             let rendered = render_event_entry(&entry);
@@ -771,7 +814,10 @@ async fn cmd_runs_events(
             let output = rendered.output;
             writeln!(
                 stdout,
-                "{input_hash:<22}  {vtime:<22}  {source:<20}  {output}"
+                "{input_hash:<hw$}  {vtime:<vw$}  {source:<sw$}  {output}",
+                hw = EVENT_HASH_WIDTH,
+                vw = EVENT_VTIME_WIDTH,
+                sw = EVENT_SOURCE_WIDTH,
             )?;
         }
         emitted += 1;
@@ -901,6 +947,14 @@ async fn cmd_runs_logs(
 const LOG_SOURCE_MIN_WIDTH: usize = 20;
 const LOG_VTIME_WIDTH: usize = 14;
 const LOG_STREAM_WIDTH: usize = 3;
+
+// Column widths for the streamed `runs events` table. The stream is rendered
+// line-by-line, so widths are fixed up front (no second pass to auto-fit). HASH
+// holds a signed i64 (≤20 chars); SOURCE is sized so the common
+// `[container:stream]` labels align without overflowing into OUTPUT.
+const EVENT_HASH_WIDTH: usize = 20;
+const EVENT_VTIME_WIDTH: usize = 19;
+const EVENT_SOURCE_WIDTH: usize = 24;
 
 fn format_log_line(entry: &Value) -> String {
     let vtime = entry["moment"]["vtime"].as_str().unwrap_or("");
@@ -1651,27 +1705,27 @@ fn file_basename(file: &str) -> Option<&str> {
 }
 
 fn render_runs_table(runs: &[RunSummary], width: usize) -> String {
+    // The default view omits the description entirely — it never fit usefully
+    // beside the (necessarily full) run id, and `runs list --long` shows it in
+    // full. Test name is the final, width-bounded column.
     let headers = vec![
         "RUN ID".to_string(),
         "STATUS".to_string(),
         "CREATED".to_string(),
         "TEST NAME".to_string(),
-        "DESCRIPTION".to_string(),
     ];
+    let name_col = headers.len() - 1;
 
-    let prepared: Vec<(Vec<String>, Option<String>)> = runs
+    let mut prepared: Vec<Vec<String>> = runs
         .iter()
         .map(|run| {
             let test_name = run.test_name().map(sanitize).unwrap_or_else(|| "-".into());
-            let description = run.test_description().map(sanitize);
-            let row = vec![
+            vec![
                 sanitize(&run.run_id),
                 status_label(run.status),
                 relative_time(run.created_at),
                 test_name,
-                String::new(),
-            ];
-            (row, description)
+            ]
         })
         .collect();
 
@@ -1679,26 +1733,24 @@ fn render_runs_table(runs: &[RunSummary], width: usize) -> String {
         .iter()
         .map(|header| header.len())
         .collect::<Vec<_>>();
-    for (row, _) in &prepared {
-        for (index, cell) in row.iter().enumerate().take(headers.len() - 1) {
+    for row in &prepared {
+        for (index, cell) in row.iter().enumerate().take(name_col) {
             widths[index] = widths[index].max(cell.chars().count());
         }
     }
-    // Description gets whatever room remains. Two-space separators between
-    // columns; reserve at least 8 chars for description so the column header
-    // remains readable on narrow terminals.
-    let fixed_width: usize =
-        widths.iter().take(headers.len() - 1).sum::<usize>() + 2 * (headers.len() - 1);
-    let desc_width = width.saturating_sub(fixed_width).max(8);
-    widths[headers.len() - 1] = desc_width;
+    // Test name gets whatever room remains. Two-space separators between
+    // columns; keep at least the header width so the label stays readable on
+    // narrow terminals.
+    let fixed_width: usize = widths.iter().take(name_col).sum::<usize>() + 2 * name_col;
+    let name_width = width.saturating_sub(fixed_width).max(headers[name_col].len());
+    widths[name_col] = name_width;
 
     let mut output = String::new();
     push_table_row(&mut output, &headers, &widths);
 
-    for (mut row, description) in prepared {
-        let description = description.unwrap_or_else(|| "-".into());
-        row[4] = console::truncate_str(&description, desc_width, "…").into_owned();
-        push_table_row(&mut output, &row, &widths);
+    for row in &mut prepared {
+        row[name_col] = console::truncate_str(&row[name_col], name_width, "…").into_owned();
+        push_table_row(&mut output, row, &widths);
     }
 
     output.trim_end().to_string()
@@ -1753,6 +1805,55 @@ fn sanitize(s: &str) -> String {
         }
     }
     escaped
+}
+
+/// Like [`sanitize`] but preserves real newlines instead of escaping them to
+/// literal `\n`. For multi-line free text (e.g. property descriptions) that is
+/// meant to be read as prose, not as a single table cell.
+fn sanitize_multiline(s: &str) -> String {
+    let mut out = String::new();
+    for ch in s.chars() {
+        match ch {
+            '\n' => out.push('\n'),
+            '\r' => {}
+            '\t' => out.push('\t'),
+            '\0'..='\u{08}' | '\u{0B}'..='\u{1F}' | '\u{7F}' => {
+                out.push_str(&format!(r"\x{:02X}", ch as u32));
+            }
+            _ => out.push(ch),
+        }
+    }
+    out
+}
+
+/// Greedy word-wrap to `width` columns, preserving existing line breaks (each
+/// `\n` starts a new paragraph; blank lines are kept). Words longer than
+/// `width` are left intact rather than split mid-token.
+fn wrap_text(text: &str, width: usize) -> Vec<String> {
+    let width = width.max(1);
+    let mut lines = Vec::new();
+    for paragraph in text.split('\n') {
+        if paragraph.trim().is_empty() {
+            lines.push(String::new());
+            continue;
+        }
+        let mut current = String::new();
+        for word in paragraph.split_whitespace() {
+            if current.is_empty() {
+                current.push_str(word);
+            } else if current.chars().count() + 1 + word.chars().count() <= width {
+                current.push(' ');
+                current.push_str(word);
+            } else {
+                lines.push(std::mem::take(&mut current));
+                current.push_str(word);
+            }
+        }
+        if !current.is_empty() {
+            lines.push(current);
+        }
+    }
+    lines
 }
 
 #[cfg(test)]
@@ -2133,14 +2234,19 @@ mod tests {
         let table = render_properties_table(&properties);
         let lines: Vec<&str> = table.lines().collect();
         assert!(lines[0].contains("STATUS"));
-        assert!(lines[0].contains("GROUP"));
         assert!(lines[0].contains("NAME"));
         assert!(lines[0].contains("EXAMPLES"));
+        // The GROUP column is gone — the group is folded into NAME instead.
+        assert!(!lines[0].contains("GROUP"));
+
+        // Failing properties sort to the top, ahead of passing ones.
+        assert!(lines[1].contains("Counter value"));
 
         // Two property rows. Counter property has 1 example + 2 counterexamples = 3 total.
+        // Its group is folded into the name as `group ▸ detail`.
         let counter_row = lines.iter().find(|l| l.contains("Counter value")).unwrap();
         assert!(counter_row.contains("failing"));
-        assert!(counter_row.contains("Safety"));
+        assert!(counter_row.contains("Safety ▸ Counter value stays below limit"));
         assert!(counter_row.contains("3"));
 
         let setup_row = lines
@@ -2342,6 +2448,45 @@ mod tests {
             sanitize("a\u{0001}b\u{000B}c\u{007F}d\te"),
             r"a\x01b\x0Bc\x7Fd	e"
         );
+    }
+
+    #[test]
+    fn sanitize_multiline_keeps_newlines_but_escapes_other_controls() {
+        // Real newlines survive (so Details renders as prose), \r is dropped,
+        // and other control chars are still escaped.
+        assert_eq!(
+            sanitize_multiline("one\ntwo\r\nthree\u{0001}"),
+            "one\ntwo\nthree\\x01"
+        );
+    }
+
+    #[test]
+    fn wrap_text_wraps_words_and_preserves_blank_lines() {
+        let wrapped = wrap_text("the quick brown fox\n\njumps", 9);
+        assert_eq!(wrapped, vec!["the quick", "brown fox", "", "jumps"]);
+        // A word longer than the width is kept intact rather than split.
+        assert_eq!(wrap_text("supercalifragilistic", 5), vec!["supercalifragilistic"]);
+    }
+
+    #[test]
+    fn trim_blank_edges_drops_only_outer_blanks() {
+        let lines = vec![
+            String::new(),
+            "a".to_string(),
+            String::new(),
+            "b".to_string(),
+            String::new(),
+        ];
+        assert_eq!(trim_blank_edges(&lines), &["a".to_string(), String::new(), "b".to_string()]);
+    }
+
+    #[test]
+    fn render_property_value_renders_empty_collection_inline() {
+        // An empty array/object collapses to "(empty)" with no detail block, so
+        // a fuzzy hit on a property with no examples doesn't print the confusing
+        // "[0 items]" + "row N details: []" pair.
+        assert_eq!(render_property_value(&json!([])), ("(empty)".to_string(), None));
+        assert_eq!(render_property_value(&json!({})), ("(empty)".to_string(), None));
     }
     #[test]
     fn ansi_sgr() {
@@ -3580,32 +3725,40 @@ mod tests {
     }
 
     #[test]
-    fn runs_table_default_view_shows_truncated_description() {
+    fn runs_table_default_view_omits_description_and_bounds_test_name() {
         // Use a fixed past time so relative_time produces a stable-ish value.
         let runs = vec![summary(
             "abc-54-1",
             RunStatus::Completed,
             "2024-01-01T00:00:00Z",
             "basic_test",
-            Some("snouty-empty-tt"),
+            Some("a-very-long-test-name-that-should-be-truncated-on-a-narrow-terminal"),
             Some("issue #91: probe Antithesis behavior with empty test template dir"),
         )];
 
-        let table = render_runs_table(&runs, 80);
+        let width = 80;
+        let table = render_runs_table(&runs, width);
         let lines: Vec<&str> = table.lines().collect();
 
         assert!(lines[0].contains("RUN ID"));
         assert!(lines[0].contains("STATUS"));
         assert!(lines[0].contains("CREATED"));
         assert!(lines[0].contains("TEST NAME"));
-        assert!(lines[0].contains("DESCRIPTION"));
+        // The default view no longer shows DESCRIPTION (use `--long` for that).
+        assert!(!lines[0].contains("DESCRIPTION"));
         assert!(!lines[0].contains("LAUNCHER"));
 
         assert!(lines[1].contains("abc-54-1"));
         assert!(lines[1].contains("completed"));
-        assert!(lines[1].contains("snouty-empty-tt"));
-        // Description is truncated with an ellipsis on a narrow terminal.
+        // Test name is the final column, truncated with an ellipsis to fit, and
+        // every line stays within the terminal width.
         assert!(lines[1].contains('…'));
+        for line in &lines {
+            assert!(
+                line.chars().count() <= width,
+                "line exceeds width {width}: {line}"
+            );
+        }
     }
 
     #[test]
@@ -3713,10 +3866,10 @@ mod tests {
         let table = render_runs_table(&runs, 100);
         let lines: Vec<&str> = table.lines().collect();
         assert!(lines[1].contains("incomplete"));
-        // Placeholder dashes stand in for the missing test name and description.
+        // A placeholder dash stands in for the missing test name (final column).
         assert!(
-            lines[1].contains("-  ") || lines[1].trim_end().ends_with('-'),
-            "expected dash placeholders, got: {}",
+            lines[1].trim_end().ends_with('-'),
+            "expected dash placeholder, got: {}",
             lines[1]
         );
     }

@@ -237,9 +237,12 @@ pub trait ContainerRuntime: Send + Sync {
     /// Callers are responsible for validating the directory beforehand
     /// (typically via [`crate::config::detect_config`]). Returns the pinned
     /// image reference.
+    ///
+    /// The image is always built for `linux/amd64` (x86-64) because Antithesis
+    /// does not support arm64, and the host may well be an arm machine.
     fn build_and_push_config_image(&self, config_dir: &Path, image_ref: &str) -> Result<String> {
         eprintln!("Building config image: {}", image_ref);
-        self.build_image(config_dir, image_ref, None, None)?;
+        self.build_image(config_dir, image_ref, None, Some("linux/amd64"))?;
 
         eprintln!("Pushing config image: {}", image_ref);
         let pinned = self.image_push(image_ref)?;
@@ -1270,6 +1273,13 @@ mod tests {
             let image_ref = format!("{addr}/test/snouty-config:test");
             rt.build_and_push_config_image(dir.path(), &image_ref)
                 .unwrap_or_else(|e| panic!("{}: {e:?}", rt.name()));
+
+            // The config image must always be amd64: Antithesis does not support
+            // arm64, and this build runs unchanged on arm hosts.
+            let arch = rt
+                .image_architecture(&image_ref)
+                .unwrap_or_else(|e| panic!("{}: {e:?}", rt.name()));
+            assert_eq!(arch, "amd64", "{}: config image must be amd64", rt.name());
 
             // Clean up the local image.
             let _ = Command::new(rt.name()).args(["rmi", &image_ref]).output();

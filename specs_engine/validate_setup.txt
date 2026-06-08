@@ -1,19 +1,20 @@
 # snouty validate — positive setup cases with container runtime
 
-# Setup-complete only (no test scripts) — validate succeeds.
+# Setup-complete only (no test commands) — validate succeeds.
 build-image setup-emitter-setup:latest setup_emitter
 snouty validate config_no_scripts --timeout 15
 stderr 'Isolating networks: default.*'
 stderr 'Setup-complete event detected.*'
-stderr 'No test scripts in service.*'
+stderr 'No test commands in service.*'
 stderr 'Setup validation successful.*'
 
-# All script types discovered and validated, helper_ ignored.
-#    Includes a sidecar without scripts to verify it doesn't block validation.
+# All test command types discovered and validated, helper_ ignored.
+#    Includes a sidecar without test commands to verify it doesn't block validation.
+#    Two services start here, so allow extra headroom on slow runtimes.
 build-image all-types-setup:latest all_types
-snouty validate config_all_types --timeout 15
+snouty validate config_all_types --timeout 30
 stderr 'Setup-complete event detected.*'
-stderr 'Found 2 first, 1 driver, 1 anytime, 1 eventually, 1 finally scripts.*'
+stderr 'Found 2 first, 1 driver, 1 anytime, 1 eventually, 1 finally test commands.*'
 stderr 'Setup validation successful.*'
 
 # Setup-complete via ANTITHESIS_SDK_LOCAL_OUTPUT (legacy env var).
@@ -34,7 +35,7 @@ services:
 -- all_types/suite/first_setup --
 #!/bin/sh
 # Emit an SDK event to sdk.jsonl to verify that non-setup_complete events
-# in first scripts don't trigger the chicken-and-egg diagnostic.
+# in first_ test commands don't trigger the chicken-and-egg diagnostic.
 echo '{"antithesis_assert":{"hit":true,"must_hit":true,"assert_type":"sometimes","display_type":"Sometimes","message":"first_setup ran","condition":true,"id":"first_setup","location":{},"details":null}}' >> "$ANTITHESIS_OUTPUT_DIR/sdk.jsonl"
 echo "first_setup ran"
 

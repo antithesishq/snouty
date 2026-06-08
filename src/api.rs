@@ -4,6 +4,7 @@ use std::time::Duration;
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
+use color_eyre::Section;
 use color_eyre::eyre::{Context, Report, Result, eyre};
 use futures_util::stream;
 use log::debug;
@@ -274,7 +275,7 @@ impl AntithesisApi {
             .await
         {
             Ok(response) => Ok(response.into_inner()),
-            Err(err) => Err(format_api_client_error(err).await),
+            Err(err) => Err(format_launch_client_error(err).await),
         }
     }
 
@@ -282,7 +283,7 @@ impl AntithesisApi {
         let body = launch_mvd_request(params)?;
         match self.client.launch_mvd().body(body).send().await {
             Ok(response) => Ok(response.into_inner()),
-            Err(err) => Err(format_api_client_error(err).await),
+            Err(err) => Err(format_launch_client_error(err).await),
         }
     }
 
@@ -294,6 +295,7 @@ impl AntithesisApi {
     }
 
     pub async fn get_run_build_logs(&self, run_id: &str) -> Result<ByteStream> {
+        ensure_resource_supported(run_id, MIN_BUILD_LOGS_VERSION, "build logs")?;
         match self.client.get_run_build_logs().run_id(run_id).send().await {
             Ok(response) => Ok(response.into_inner()),
             Err(err) => Err(format_api_client_error(err).await),
@@ -336,6 +338,7 @@ impl AntithesisApi {
         paginate(move |after| {
             let run_id = run_id.clone();
             async move {
+                ensure_resource_supported(&run_id, MIN_PROPERTIES_VERSION, "run properties")?;
                 let page = self
                     .fetch_run_properties_page(&run_id, after.as_deref(), status)
                     .await?;
@@ -739,6 +742,54 @@ fn launch_mvd_request(params: &Params) -> Result<generated::types::LaunchMvdRequ
     .wrap_err("failed to build debugging request")
 }
 
+/// The tenant version that first served the run properties resource. Runs
+/// created on older tenants 404 on `/runs/{run_id}/properties`.
+const MIN_PROPERTIES_VERSION: u32 = 52;
+
+/// The tenant version that first served the run build logs resource. Runs
+/// created on older tenants 404 on `/runs/{run_id}/build_logs`.
+///
+/// Note the other nested run resources have different (or no) cutoffs: run
+/// properties arrived in v52, while logs and events are served for every
+/// version we can produce, so neither needs a guard.
+const MIN_BUILD_LOGS_VERSION: u32 = 54;
+
+/// Run IDs encode the tenant version that produced them as their second
+/// dash-delimited field — e.g. the `40` in
+/// `e88ec3ec6cdb7b31ea08718616e04849-40-11`, which is structured as
+/// `{hash}-{version}-{tenant_version}`. Returns an error when that version
+/// predates `min_version`, since `resource` does not exist for those runs and
+/// the server would otherwise answer with an opaque 404.
+///
+/// When the run ID doesn't match the expected structure the run is allowed
+/// through, letting the server respond authoritatively rather than guessing
+/// from the format.
+fn ensure_resource_supported(run_id: &str, min_version: u32, resource: &str) -> Result<()> {
+    if let Some(version) = run_version(run_id)
+        && version < min_version
+    {
+        return Err(eyre!(
+            "run {run_id} was generated on a tenant before v{min_version}, which introduced the {resource} API being used. Re-run {run_id} on a more recent version to access {resource}."
+        ));
+    }
+    Ok(())
+}
+
+/// Extracts the tenant version encoded in a run ID structured as
+/// `{hash}-{version}-{tenant_version}`, where the hash is a 32-character hex
+/// string. Returns `None` when the ID doesn't match that structure (e.g. test
+/// fixtures or future formats), so callers don't act on a misread version.
+fn run_version(run_id: &str) -> Option<u32> {
+    let parts: Vec<&str> = run_id.split('-').collect();
+    let [hash, version, _tenant_version] = parts.as_slice() else {
+        return None;
+    };
+    if hash.len() != 32 || !hash.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return None;
+    }
+    version.parse::<u32>().ok()
+}
+
 fn format_api_error(status: u16, body: &str) -> Report {
     let reason = reqwest::StatusCode::from_u16(status)
         .ok()
@@ -839,13 +890,33 @@ async fn format_api_client_error(err: ClientError<generated::types::ErrorRespons
         ClientError::InvalidResponsePayload(body, err) => {
             let body = String::from_utf8_lossy(&body);
             if body.trim().is_empty() {
-                eyre!("invalid API response payload: response body was empty")
+                eyre!("API returned an empty response body where a JSON payload was expected")
             } else {
                 let snippet = format_payload_snippet(&body, err.line(), err.column());
                 eyre!("invalid API response payload: {err}\n{snippet}")
             }
         }
         ClientError::Custom(message) => eyre!(message),
+    }
+}
+
+/// Same as [`format_api_client_error`] but adds a launch-specific suggestion
+/// when the server returned an empty body where a launch response (with
+/// `run_id`) was expected. Call from launch_test / launch_debugging only —
+/// other endpoints have their own meaningful responses for empty bodies.
+async fn format_launch_client_error(err: ClientError<generated::types::ErrorResponse>) -> Report {
+    let body_is_empty = matches!(
+        &err,
+        ClientError::InvalidResponsePayload(body, _)
+            if body.iter().all(u8::is_ascii_whitespace)
+    );
+    let report = format_api_client_error(err).await;
+    if body_is_empty {
+        report.with_suggestion(|| {
+            "this can happen when the Antithesis server is on an older version that omits expected fields (for example, run_id from a launch response). Contact Antithesis support to confirm whether your tenant needs to be upgraded."
+        })
+    } else {
+        report
     }
 }
 
@@ -978,13 +1049,57 @@ mod tests {
 
         let report = format_api_client_error(err).await;
         let message = format!("{report}");
+        let debug = format!("{report:?}");
 
         assert_eq!(
             message,
-            "invalid API response payload: response body was empty"
+            "API returned an empty response body where a JSON payload was expected"
         );
         assert!(!message.contains("EOF while parsing"));
         assert!(!message.contains('^'));
+        assert!(
+            !debug.contains("Antithesis support"),
+            "generic formatter must not attach the launch-specific suggestion, got: {debug}"
+        );
+    }
+
+    #[tokio::test]
+    async fn format_launch_client_error_attaches_suggestion_for_empty_body() {
+        let parse_err = serde_json::from_slice::<serde_json::Value>(b"").unwrap_err();
+        let err = ClientError::<generated::types::ErrorResponse>::InvalidResponsePayload(
+            Default::default(),
+            parse_err,
+        );
+
+        let report = format_launch_client_error(err).await;
+        let debug = format!("{report:?}");
+
+        assert!(
+            debug.contains("Antithesis support"),
+            "expected launch-specific suggestion, got: {debug}"
+        );
+        assert!(
+            debug.contains("run_id from a launch response"),
+            "expected run_id wording in suggestion, got: {debug}"
+        );
+    }
+
+    #[tokio::test]
+    async fn format_launch_client_error_skips_suggestion_for_non_empty_body() {
+        let body: &[u8] = b"not json";
+        let parse_err = serde_json::from_slice::<serde_json::Value>(body).unwrap_err();
+        let err = ClientError::<generated::types::ErrorResponse>::InvalidResponsePayload(
+            body.to_vec().into(),
+            parse_err,
+        );
+
+        let report = format_launch_client_error(err).await;
+        let debug = format!("{report:?}");
+
+        assert!(
+            !debug.contains("Antithesis support"),
+            "non-empty body must not attach the launch suggestion, got: {debug}"
+        );
     }
 
     #[tokio::test]
@@ -1449,5 +1564,55 @@ mod tests {
         let debug = format!("{:?}", auth);
         assert!(!debug.contains("secret-key"));
         assert!(debug.contains("[REDACTED]"));
+    }
+
+    fn rid(version: u32) -> String {
+        format!("e88ec3ec6cdb7b31ea08718616e04849-{version}-11")
+    }
+
+    #[test]
+    fn properties_rejected_before_v52() {
+        let err = ensure_resource_supported(&rid(40), MIN_PROPERTIES_VERSION, "run properties")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("before v52"));
+        assert!(err.contains("run properties"));
+        assert!(err.contains("Re-run") && err.contains("more recent version"));
+        // v51 is the last version without properties.
+        assert!(
+            ensure_resource_supported(&rid(51), MIN_PROPERTIES_VERSION, "run properties").is_err()
+        );
+    }
+
+    #[test]
+    fn properties_allowed_at_and_after_v52() {
+        ensure_resource_supported(&rid(52), MIN_PROPERTIES_VERSION, "run properties").unwrap();
+        ensure_resource_supported(&rid(60), MIN_PROPERTIES_VERSION, "run properties").unwrap();
+    }
+
+    #[test]
+    fn build_logs_rejected_before_v54() {
+        // build logs arrive two versions after properties, so v52/v53 are still rejected.
+        assert!(ensure_resource_supported(&rid(52), MIN_BUILD_LOGS_VERSION, "build logs").is_err());
+        let err = ensure_resource_supported(&rid(53), MIN_BUILD_LOGS_VERSION, "build logs")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("before v54"));
+        assert!(err.contains("build logs"));
+    }
+
+    #[test]
+    fn build_logs_allowed_at_and_after_v54() {
+        ensure_resource_supported(&rid(54), MIN_BUILD_LOGS_VERSION, "build logs").unwrap();
+        ensure_resource_supported(&rid(60), MIN_BUILD_LOGS_VERSION, "build logs").unwrap();
+    }
+
+    #[test]
+    fn resource_allowed_when_version_unparsable() {
+        // Unexpected formats are allowed through so the server can respond.
+        for id in ["run-1", "no-dashes", "plainrunid"] {
+            ensure_resource_supported(id, MIN_PROPERTIES_VERSION, "run properties").unwrap();
+            ensure_resource_supported(id, MIN_BUILD_LOGS_VERSION, "build logs").unwrap();
+        }
     }
 }

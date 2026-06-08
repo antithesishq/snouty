@@ -73,7 +73,6 @@ Environment variables:
 
     /// Interact with test runs
     #[command(
-        hide = true,
         long_about = r#"Interact with test runs
 
 List, inspect, and view logs for Antithesis test runs.
@@ -129,14 +128,14 @@ Using Moment.from (copy from triage report):
 Compose configs:
   Runs docker-compose locally and watches for the setup-complete event to
   confirm instrumentation is working. After setup-complete is detected,
-  discovers Test Composer scripts from /opt/antithesis/test/v1 inside the
+  discovers test commands from /opt/antithesis/test/v1 inside the
   running containers and validates their structure.
 
 
-  Scripts are discovered by scanning /opt/antithesis/test/v1 from each running
-  container for {test_name}/{command} entries. Scripts are
+  Test commands are discovered by scanning /opt/antithesis/test/v1 from each
+  running container for {test_name}/{command} entries. Test commands are
   validated to have recognized prefixes and at least one driver or anytime
-  script when test scripts are present. Scripts are not executed.
+  test command when any are present. Test commands are not executed.
 
 Kubernetes configs:
   Runs docker.io/antithesishq/k8s-validator against the manifests/

@@ -237,9 +237,12 @@ pub trait ContainerRuntime: Send + Sync {
     /// Callers are responsible for validating the directory beforehand
     /// (typically via [`crate::config::detect_config`]). Returns the pinned
     /// image reference.
+    ///
+    /// The image is always built for `linux/amd64` (x86-64) because Antithesis
+    /// does not support arm64, and the host may well be an arm machine.
     fn build_and_push_config_image(&self, config_dir: &Path, image_ref: &str) -> Result<String> {
         eprintln!("Building config image: {}", image_ref);
-        self.build_image(config_dir, image_ref, None, None)?;
+        self.build_image(config_dir, image_ref, None, Some("linux/amd64"))?;
 
         eprintln!("Pushing config image: {}", image_ref);
         let pinned = self.image_push(image_ref)?;
@@ -287,12 +290,37 @@ pub trait ContainerRuntime: Send + Sync {
         Ok(pinned)
     }
 
-    /// Copy files from a container to the local filesystem.
+    /// Copy the Antithesis test-template tree (`/opt/antithesis/test/v1`)
+    /// out of a container into `dst`. Returns [`TestTemplates::Absent`]
+    /// when the directory does not exist inside the container — a normal
+    /// outcome for services that don't define any test commands. Real cp
+    /// failures (permission denied, runtime errors, etc.) are returned as
+    /// `Err` with stderr attached.
     ///
-    /// Runs `{runtime} cp {container_id}:{src} {dst}`.
-    fn container_cp(&self, container_id: &str, src: &str, dst: &Path) -> Result<()> {
+    /// When `running` is true, performs an unambiguous pre-flight existence
+    /// check via `runtime exec <id> test -d <path>`. When false (stopped
+    /// containers — exec is unavailable), falls back to attempting the cp
+    /// and inspecting stderr to distinguish absence from real errors.
+    fn extract_test_templates(
+        &self,
+        container_id: &str,
+        dst: &Path,
+        running: bool,
+    ) -> Result<TestTemplates> {
+        if running {
+            match self.container_path_kind(container_id, TEST_TEMPLATES_PATH)? {
+                PathKind::Directory => {}
+                PathKind::Missing => return Ok(TestTemplates::Absent),
+                PathKind::OtherOrUnknown => {
+                    // exec succeeded but path isn't a directory, or the
+                    // pre-flight is inconclusive. Fall through to cp and let
+                    // it produce the diagnostic.
+                }
+            }
+        }
+
         let runtime = self.name();
-        let src_arg = format!("{container_id}:{src}");
+        let src_arg = format!("{container_id}:{TEST_TEMPLATES_PATH}");
         let output = Command::new(runtime)
             .args(["cp", &src_arg, &dst.display().to_string()])
             .output()
@@ -300,12 +328,69 @@ pub trait ContainerRuntime: Send + Sync {
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
+            if stderr_indicates_missing_source(&stderr) {
+                return Ok(TestTemplates::Absent);
+            }
             return Err(eyre!("'{runtime} cp' failed"))
                 .with_section(move || stderr.trim().to_string().header("Stderr:"));
         }
 
-        Ok(())
+        Ok(TestTemplates::Present)
     }
+
+    /// Probe whether `path` exists inside `container_id` (must be running).
+    /// Runs `runtime exec <id> test -d <path>`; exit 0 → Directory, exit 1 →
+    /// Missing, any other failure (no shell, container died, etc.) →
+    /// OtherOrUnknown so callers fall back to cp.
+    fn container_path_kind(&self, container_id: &str, path: &str) -> Result<PathKind> {
+        let runtime = self.name();
+        let output = Command::new(runtime)
+            .args(["exec", container_id, "test", "-d", path])
+            .output()
+            .wrap_err_with(|| format!("failed to run '{runtime} exec'"))?;
+        match output.status.code() {
+            Some(0) => Ok(PathKind::Directory),
+            Some(1) => Ok(PathKind::Missing),
+            _ => Ok(PathKind::OtherOrUnknown),
+        }
+    }
+}
+
+/// Result of [`ContainerRuntime::container_path_kind`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PathKind {
+    /// Path exists and is a directory.
+    Directory,
+    /// Path does not exist inside the container.
+    Missing,
+    /// Pre-flight inconclusive (no `test` binary, exec failed, etc.).
+    OtherOrUnknown,
+}
+
+/// Standard path inside a container where Antithesis test templates live.
+const TEST_TEMPLATES_PATH: &str = "/opt/antithesis/test/v1";
+
+/// Result of [`ContainerRuntime::extract_test_templates`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TestTemplates {
+    /// Templates were present and copied into the destination directory.
+    Present,
+    /// The container does not have an Antithesis test-templates directory.
+    Absent,
+}
+
+/// Match patterns `docker cp` and `podman cp` emit when the source path
+/// doesn't exist inside the container. Used only as a fallback for stopped
+/// containers where the `test -d` pre-flight can't run.
+///
+/// The loose substring `"no such file"` (without "or directory") is
+/// deliberately excluded — it matches destination-side messages too.
+fn stderr_indicates_missing_source(stderr: &str) -> bool {
+    let s = stderr.to_ascii_lowercase();
+    s.contains("could not find the file")
+        || s.contains("no such file or directory")
+        || s.contains("does not exist in container")
+        || s.contains("could not be found on container")
 }
 
 /// Compose backend abstraction.
@@ -340,6 +425,18 @@ pub trait Compose: Send + Sync {
         (&[], &["--format", "json"])
     }
 
+    /// Whether `compose ps -a` is safe to use on this backend. When false,
+    /// `ps()` omits `-a` and the returned listing reports
+    /// `includes_stopped = false` so callers can suppress diagnostics that
+    /// depend on seeing stopped containers.
+    ///
+    /// Older `podman-compose` rejects `-a`, and even where it's accepted it
+    /// has been observed to dispatch to `podman ps -a` and leak containers
+    /// from unrelated projects.
+    fn supports_ps_all(&self) -> bool {
+        true
+    }
+
     // --- default implementations ---
 
     /// Run `compose config` to resolve the compose file with env substitutions,
@@ -372,15 +469,26 @@ pub trait Compose: Send + Sync {
         parse_compose_config(&yaml)
     }
 
-    /// Parse `compose ps --format json` to get `(service_name, container_id)` pairs.
-    fn ps(&self, config: &ComposeConfig, overlay: Option<&Path>) -> Result<Vec<(String, String)>> {
+    /// Parse `compose ps [-a] --format json` into a [`PsListing`].
+    ///
+    /// Passes `-a` only when [`supports_ps_all`](Self::supports_ps_all) is
+    /// true, so stopped/exited containers are included alongside running
+    /// ones. Callers can then check [`ComposeContainer::stopped`] to decide
+    /// what to do with them. The returned listing's `includes_stopped`
+    /// indicates whether the backend was queried with `-a`.
+    fn ps(&self, config: &ComposeConfig, overlay: Option<&Path>) -> Result<PsListing> {
         let runtime = self.runtime().name();
+        let includes_stopped = self.supports_ps_all();
         let mut cmd = self.runtime().command(&["compose"]);
         cmd.current_dir(config.dir());
         let (pre, post) = self.ps_extra_args();
         cmd.args(compose_file_args(overlay));
         cmd.args(pre);
-        cmd.args(["ps"]);
+        if includes_stopped {
+            cmd.args(["ps", "-a"]);
+        } else {
+            cmd.arg("ps");
+        }
         cmd.args(post);
 
         let output = cmd
@@ -394,7 +502,11 @@ pub trait Compose: Send + Sync {
         }
 
         let stdout = String::from_utf8_lossy(&output.stdout);
-        parse_compose_ps(&stdout)
+        let containers = parse_compose_ps(&stdout)?;
+        Ok(PsListing {
+            containers,
+            includes_stopped,
+        })
     }
 
     /// Run a command inside a running compose service container.
@@ -534,6 +646,15 @@ impl Compose for PodmanCompose<'_> {
 
     fn ps_extra_args(&self) -> (&[&str], &[&str]) {
         (&["--podman-args=--format=json"], &[])
+    }
+
+    fn supports_ps_all(&self) -> bool {
+        // podman-compose's `ps` rejects `-a` in older releases, and where it
+        // is accepted the call has been observed to dispatch to `podman ps -a`
+        // (returning containers from all projects). Skip `-a` here, which also
+        // means the stranded-test-commands diagnostic doesn't fire on native
+        // podman-compose.
+        false
     }
 }
 
@@ -990,14 +1111,52 @@ fn is_local_image(image: &str) -> bool {
     }
 }
 
+/// A container reported by `compose ps`, with just the fields snouty needs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ComposeContainer {
+    /// Compose service name (e.g. `"app"`).
+    pub service: String,
+    /// Container ID (whatever the runtime emitted — short or full).
+    pub id: String,
+    /// Whether the container's entrypoint has exited. Antithesis can't run
+    /// test commands in stopped containers, so validate flags any service
+    /// that has test commands defined but ended up in this state. Only
+    /// `exited` and `dead` count as stopped — transient states like
+    /// `created`, `restarting`, `paused`, and missing State are treated as
+    /// not-stopped to avoid false positives on healthy setups still settling.
+    pub stopped: bool,
+}
+
+/// Result of [`Compose::ps`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PsListing {
+    /// Containers reported by `compose ps`.
+    pub containers: Vec<ComposeContainer>,
+    /// Whether the listing included stopped containers (i.e. whether `-a`
+    /// was supported and passed). When false, callers must not rely on the
+    /// absence of a service in the listing to mean it isn't stopped.
+    pub includes_stopped: bool,
+}
+
+/// Determine whether a `State` field value reports a stopped container.
+/// Only `exited` and `dead` qualify — every other value (including missing
+/// `State`, transient `created`/`restarting`/`paused`, and human-readable
+/// forms like "Up 5 seconds") is treated as not-stopped.
+fn state_is_stopped(state: Option<&str>) -> bool {
+    match state {
+        Some(s) => s.eq_ignore_ascii_case("exited") || s.eq_ignore_ascii_case("dead"),
+        None => false,
+    }
+}
+
 /// Parse the JSON output of `compose ps --format json`.
 ///
 /// Handles both NDJSON (one object per line) and JSON array formats.
 ///
 /// Two schemas are supported:
-/// - **docker compose**: `{"Service": "...", "ID": "..."}`
-/// - **podman-compose** (native podman ps): `{"Id": "...", "Labels": {"com.docker.compose.service": "..."}}`
-fn parse_compose_ps(stdout: &str) -> Result<Vec<(String, String)>> {
+/// - **docker compose**: `{"Service": "...", "ID": "...", "State": "running"}`
+/// - **podman-compose** (native podman ps): `{"Id": "...", "State": "running", "Labels": {"com.docker.compose.service": "..."}}`
+fn parse_compose_ps(stdout: &str) -> Result<Vec<ComposeContainer>> {
     let stdout = stdout.trim();
     if stdout.is_empty() {
         return Ok(Vec::new());
@@ -1034,7 +1193,16 @@ fn parse_compose_ps(stdout: &str) -> Result<Vec<(String, String)>> {
                 })
                 .ok_or_else(|| eyre!("missing service name in compose ps output"))?;
 
-            Ok((service.to_string(), id.to_string()))
+            let state = v
+                .get("State")
+                .or_else(|| v.get("state"))
+                .and_then(|v| v.as_str());
+
+            Ok(ComposeContainer {
+                service: service.to_string(),
+                id: id.to_string(),
+                stopped: state_is_stopped(state),
+            })
         })
         .collect()
 }
@@ -1106,35 +1274,47 @@ mod tests {
             rt.build_and_push_config_image(dir.path(), &image_ref)
                 .unwrap_or_else(|e| panic!("{}: {e:?}", rt.name()));
 
+            // The config image must always be amd64: Antithesis does not support
+            // arm64, and this build runs unchanged on arm hosts.
+            let arch = rt
+                .image_architecture(&image_ref)
+                .unwrap_or_else(|e| panic!("{}: {e:?}", rt.name()));
+            assert_eq!(arch, "amd64", "{}: config image must be amd64", rt.name());
+
             // Clean up the local image.
             let _ = Command::new(rt.name()).args(["rmi", &image_ref]).output();
+        }
+    }
+
+    fn cc(service: &str, id: &str, stopped: bool) -> ComposeContainer {
+        ComposeContainer {
+            service: service.to_string(),
+            id: id.to_string(),
+            stopped,
         }
     }
 
     #[test]
     fn parse_compose_ps_ndjson() {
         let stdout = "{\"ID\":\"abc123\",\"Service\":\"app\",\"State\":\"running\"}\n\
-                      {\"ID\":\"def456\",\"Service\":\"sidecar\",\"State\":\"running\"}\n";
+                      {\"ID\":\"def456\",\"Service\":\"sidecar\",\"State\":\"exited\"}\n";
         let result = parse_compose_ps(stdout).unwrap();
         assert_eq!(
             result,
-            vec![
-                ("app".to_string(), "abc123".to_string()),
-                ("sidecar".to_string(), "def456".to_string()),
-            ]
+            vec![cc("app", "abc123", false), cc("sidecar", "def456", true)]
         );
     }
 
     #[test]
     fn parse_compose_ps_json_array() {
-        let stdout = r#"[{"ID":"abc123","Service":"app"},{"ID":"def456","Service":"sidecar"}]"#;
+        let stdout = r#"[
+            {"ID":"abc123","Service":"app","State":"running"},
+            {"ID":"def456","Service":"sidecar","State":"running"}
+        ]"#;
         let result = parse_compose_ps(stdout).unwrap();
         assert_eq!(
             result,
-            vec![
-                ("app".to_string(), "abc123".to_string()),
-                ("sidecar".to_string(), "def456".to_string()),
-            ]
+            vec![cc("app", "abc123", false), cc("sidecar", "def456", false)]
         );
     }
 
@@ -1150,22 +1330,105 @@ mod tests {
             {
                 "Id": "abc123",
                 "Names": ["project-app-1"],
+                "State": "running",
                 "Labels": {"com.docker.compose.service": "app"}
             },
             {
                 "Id": "def456",
                 "Names": ["project-sidecar-1"],
+                "State": "exited",
                 "Labels": {"com.docker.compose.service": "sidecar"}
             }
         ]"#;
         let result = parse_compose_ps(stdout).unwrap();
         assert_eq!(
             result,
+            vec![cc("app", "abc123", false), cc("sidecar", "def456", true)]
+        );
+    }
+
+    #[test]
+    fn parse_compose_ps_missing_state_is_not_stopped() {
+        // A container with no State field — typical during early startup —
+        // must NOT be classified as stopped, or the stranded-test-commands
+        // diagnostic fires on healthy containers.
+        let stdout = r#"[{"ID":"abc","Service":"app"}]"#;
+        let result = parse_compose_ps(stdout).unwrap();
+        assert_eq!(result, vec![cc("app", "abc", false)]);
+    }
+
+    #[test]
+    fn parse_compose_ps_transient_states_are_not_stopped() {
+        // created / restarting / paused are not "stopped" — Antithesis may
+        // still see them recover. Only `exited` and `dead` count as stopped.
+        let stdout = r#"[
+            {"ID":"a","Service":"svc","State":"created"},
+            {"ID":"b","Service":"svc","State":"restarting"},
+            {"ID":"c","Service":"svc","State":"paused"},
+            {"ID":"d","Service":"svc","State":"Up 5 seconds"},
+            {"ID":"e","Service":"svc","State":"dead"},
+            {"ID":"f","Service":"svc","State":"EXITED"}
+        ]"#;
+        let result = parse_compose_ps(stdout).unwrap();
+        let stopped: Vec<(&str, bool)> =
+            result.iter().map(|c| (c.id.as_str(), c.stopped)).collect();
+        assert_eq!(
+            stopped,
             vec![
-                ("app".to_string(), "abc123".to_string()),
-                ("sidecar".to_string(), "def456".to_string()),
+                ("a", false),
+                ("b", false),
+                ("c", false),
+                ("d", false),
+                ("e", true),
+                ("f", true),
             ]
         );
+    }
+
+    #[test]
+    fn parse_compose_ps_returns_one_entry_per_replica() {
+        // Scaled services (`replicas: N`) emit one entry per container, all
+        // sharing the same Service value but with distinct IDs. Validate
+        // keys per-container work by container.id rather than service.
+        let stdout = r#"[
+            {"ID":"a1","Service":"worker","State":"running"},
+            {"ID":"a2","Service":"worker","State":"running"},
+            {"ID":"a3","Service":"worker","State":"exited"}
+        ]"#;
+        let result = parse_compose_ps(stdout).unwrap();
+        assert_eq!(
+            result,
+            vec![
+                cc("worker", "a1", false),
+                cc("worker", "a2", false),
+                cc("worker", "a3", true),
+            ]
+        );
+    }
+
+    #[test]
+    fn stderr_indicates_missing_source_matches_docker_and_podman() {
+        assert!(stderr_indicates_missing_source(
+            "Error response from daemon: Could not find the file /opt/x in container abc"
+        ));
+        assert!(stderr_indicates_missing_source(
+            "Error: \"/opt/antithesis/test/v1\": no such file or directory"
+        ));
+        // Podman 4.x phrasings.
+        assert!(stderr_indicates_missing_source(
+            "Error: \"/opt/antithesis/test/v1\" does not exist in container"
+        ));
+        assert!(stderr_indicates_missing_source(
+            "Error: /opt/antithesis/test/v1 could not be found on container abc"
+        ));
+        // Real cp errors must not be misclassified.
+        assert!(!stderr_indicates_missing_source("Error: permission denied"));
+        // The loose "no such file" (without "or directory") is deliberately
+        // excluded — it matches destination-side errors and shadows real
+        // failures.
+        assert!(!stderr_indicates_missing_source(
+            "Error: writing to destination: no such file"
+        ));
     }
 
     #[test]

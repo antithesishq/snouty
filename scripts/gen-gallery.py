@@ -150,8 +150,6 @@ class Discovery:
     event_kw2: str
     event_hash: str
     event_vtime: float
-    event_source: str
-    event_stream: str
     fail_prop: str  # failing event property whose detail shows counter-examples
     pass_event_prop: str  # passing event property whose detail shows examples
     nonevent_prop: str  # non-event property whose detail shows a real value
@@ -159,14 +157,6 @@ class Discovery:
     ambiguous: str  # substring shared by >= 2 property names
     fail_hash: str
     fail_vtime: str
-
-    @property
-    def vtime_min(self) -> str:
-        return f"{max(0.0, self.event_vtime - 0.5):.3f}"
-
-    @property
-    def vtime_max(self) -> str:
-        return f"{self.event_vtime + 0.5:.3f}"
 
 
 def _first_run(sn: Snouty, *filters: str) -> str | None:
@@ -211,12 +201,6 @@ def _pick_event_completed_run(sn: Snouty, scan: int) -> tuple[str, dict]:
         "(all unreachable or empty) — refusing to write a gallery with the "
         "event/logs stories skipped"
     )
-
-
-def _source_label(event: dict) -> str:
-    src = event.get("source") or {}
-    # snouty's --source filter matches container OR name; prefer container.
-    return src.get("container") or src.get("name") or ""
 
 
 def _pick_second_needle(event: dict, keyword: str) -> str:
@@ -359,8 +343,6 @@ def discover(sn: Snouty, scan: int) -> Discovery:
         event_kw2=_pick_second_needle(event, keyword),
         event_hash=moment["input_hash"],
         event_vtime=float(moment["vtime"]),
-        event_source=_source_label(event),
-        event_stream=(event.get("source") or {}).get("stream", ""),
         fail_prop=_pick_property_with_moments(sn, success, props, "Failing"),
         pass_event_prop=_pick_property_with_moments(sn, success, props, "Passing"),
         nonevent_prop=_pick_nonevent_property(sn, success, props),
@@ -369,10 +351,6 @@ def discover(sn: Snouty, scan: int) -> Discovery:
         fail_hash=fail_moment.get("input_hash", ""),
         fail_vtime=fail_moment.get("vtime", ""),
     )
-    if not disc.event_source:
-        raise GalleryError("sampled event has no source — cannot build --source story")
-    if not disc.event_stream:
-        raise GalleryError("sampled event has no stream — cannot build --stream story")
     if not disc.event_kw2:
         raise GalleryError("could not derive a second needle for multi-match story")
     if not disc.fail_hash or not disc.fail_vtime:
@@ -410,12 +388,6 @@ class Registry:
 
     def __init__(self) -> None:
         self.row_counts: dict[str, int] = {}
-
-
-def _event_source(row: dict) -> tuple[str, str]:
-    src = row.get("source") or {}
-    label = src.get("container") or src.get("name") or ""
-    return label, src.get("stream", "")
 
 
 # -- check factories --------------------------------------------------------
@@ -503,40 +475,6 @@ def verbose_api_calls(sr: StoryRun, reg: Registry) -> tuple[bool, str]:
     return (has_get and has_table, f"api_calls={has_get} table={has_table}")
 
 
-def event_source_is(label: str):
-    def chk(sr: StoryRun, reg: Registry) -> tuple[bool, str]:
-        rows = sr.rows or []
-        bad = [r for r in rows if _event_source(r)[0] != label]
-        narrowed = len(rows) < reg.row_counts.get("runs-events-single", 1 << 30)
-        ok = bool(rows) and not bad and narrowed
-        return (ok, f"{len(rows)} rows, all source={label!r}, narrowed={narrowed}")
-
-    return chk
-
-
-def event_stream_is(stream: str):
-    def chk(sr: StoryRun, reg: Registry) -> tuple[bool, str]:
-        rows = sr.rows or []
-        bad = [r for r in rows if _event_source(r)[1] != stream]
-        narrowed = len(rows) < reg.row_counts.get("runs-events-single", 1 << 30)
-        ok = bool(rows) and not bad and narrowed
-        return (ok, f"{len(rows)} rows, all stream={stream!r}, narrowed={narrowed}")
-
-    return chk
-
-
-def event_within_vtime(lo: str, hi: str):
-    def chk(sr: StoryRun, reg: Registry) -> tuple[bool, str]:
-        rows = sr.rows or []
-        flo, fhi = float(lo), float(hi)
-        bad = [r for r in rows if not (flo <= float(r["moment"]["vtime"]) <= fhi)]
-        narrowed = len(rows) < reg.row_counts.get("runs-events-single", 1 << 30)
-        ok = bool(rows) and not bad and narrowed
-        return (ok, f"{len(rows)} rows, all in [{lo}, {hi}], narrowed={narrowed}")
-
-    return chk
-
-
 def event_multi_match(needle: str, second: str):
     def chk(sr: StoryRun, reg: Registry) -> tuple[bool, str]:
         rows = sr.rows or []
@@ -546,20 +484,6 @@ def event_multi_match(needle: str, second: str):
         narrowed = len(rows) < single
         ok = bool(rows) and not bad and narrowed
         return (ok, f"{len(rows)} rows w/ both needles, narrowed {single}->{len(rows)}={narrowed}")
-
-    return chk
-
-
-def event_combined(label: str, stream: str, lo: str, hi: str):
-    def chk(sr: StoryRun, reg: Registry) -> tuple[bool, str]:
-        rows = sr.rows or []
-        flo, fhi = float(lo), float(hi)
-        bad = []
-        for r in rows:
-            lbl, s = _event_source(r)
-            if lbl != label or s != stream or not (flo <= float(r["moment"]["vtime"]) <= fhi):
-                bad.append(r)
-        return (bool(rows) and not bad, f"{len(rows)} rows satisfy all filters")
 
     return chk
 
@@ -630,7 +554,8 @@ def logs_begin_at(begin: str):
 
 def build_stories(d: Discovery) -> list[Story]:
     kw, kw2 = d.event_keyword, d.event_kw2
-    vmin, vmax = d.vtime_min, d.vtime_max
+    # `--begin-vtime` for the logs skip-ahead story: just before the sampled moment.
+    vmin = f"{max(0.0, d.event_vtime - 0.5):.3f}"
     return [
         # -- listing --------------------------------------------------------
         Story(
@@ -859,58 +784,12 @@ def build_stories(d: Discovery) -> list[Story]:
             event_keyword_present(kw),
         ),
         Story(
-            "runs-events-source",
-            "Restrict events to a specific container/source",
-            "I want only the matching events that came from one container.",
-            f"At least one row, all from source {d.event_source!r}, and fewer rows than the bare keyword search.",
-            ["runs", "events", d.success, "--match", kw, "--source", d.event_source],
-            event_source_is(d.event_source),
-        ),
-        Story(
-            "runs-events-stream",
-            "Filter events to a specific stream",
-            "I want only the matching events on one stream (info/error/stdout/stderr).",
-            f"At least one row, all on stream {d.event_stream!r}, and fewer rows than the bare keyword search.",
-            ["runs", "events", d.success, "--match", kw, "--stream", d.event_stream],
-            event_stream_is(d.event_stream),
-        ),
-        Story(
-            "runs-events-vtime-window",
-            "Restrict events to a virtual-time window",
-            "I want matching events only within a slice of virtual time.",
-            f"At least one row, all with vtime in [{vmin}, {vmax}], and fewer rows than the bare keyword search.",
-            ["runs", "events", d.success, "--match", kw, "--vtime-min", vmin, "--vtime-max", vmax],
-            event_within_vtime(vmin, vmax),
-        ),
-        Story(
             "runs-events-multi-match",
             "AND-narrow with two --match needles",
             "I want to narrow results to events that mention BOTH of two terms.",
             f"At least one row, every row contains both '{kw}' and '{kw2}', and strictly fewer rows than single-match.",
             ["runs", "events", d.success, "--match", kw, "--match", kw2],
             event_multi_match(kw, kw2),
-        ),
-        Story(
-            "runs-events-combined",
-            "Combine match, source, stream, and vtime filters",
-            "I want to pin down events using several filters at once.",
-            "At least one row, and every row satisfies all of: keyword, source, stream, and the vtime window.",
-            [
-                "runs",
-                "events",
-                d.success,
-                "--match",
-                kw,
-                "--source",
-                d.event_source,
-                "--stream",
-                d.event_stream,
-                "--vtime-min",
-                vmin,
-                "--vtime-max",
-                vmax,
-            ],
-            event_combined(d.event_source, d.event_stream, vmin, vmax),
         ),
         Story(
             "runs-events-no-results",

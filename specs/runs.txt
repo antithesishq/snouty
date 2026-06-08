@@ -159,15 +159,14 @@ snouty runs events $R_run_id --match request
 [!staging] stdout '^HASH\s+VTIME\s+SOURCE\s+OUTPUT'
 [!staging] stdout '-456.*2\.0.*\[app:error\].*\{"level":"warn","msg":"slow request"\}'
 
-# `--stream` filters by stream. The API reports app stdout/stderr as the short
-# forms `out`/`err`, so the long-form flag value must still match them.
+# A second `--match` AND-narrows: every needle must be present in the line.
 mock-runs-server
-snouty runs events $R_run_id --match starting --stream stdout
-[!staging] stdout '-123.*1\.0.*\[app:out\].*\{"level":"info","msg":"starting"\}'
-# The same event is excluded when the wrong stream is requested.
+snouty runs events $R_run_id --match request --match slow
+[!staging] stdout '-456.*2\.0.*\[app:error\].*\{"level":"warn","msg":"slow request"\}'
+# A needle that isn't present excludes the event entirely.
 mock-runs-server
-snouty runs events $R_run_id --match starting --stream stderr
-stdout 'No events matched "starting"\.'
+snouty runs events $R_run_id --match starting --match nonexistent
+stdout 'No events matched "starting nonexistent"\.'
 
 # `snouty --json runs events` outputs raw NDJSON.
 mock-runs-server

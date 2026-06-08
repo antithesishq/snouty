@@ -48,9 +48,9 @@ impl std::str::FromStr for Stream {
     type Err = String;
 
     fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
-        // Accept the short forms too: the events API reports app stdout/stderr
-        // as `out`/`err` (see `abbreviated`), so the `--stream` filter has to
-        // match those, not just the long forms a user types.
+        // Accept the short forms too: the events/logs API reports app
+        // stdout/stderr as `out`/`err` (see `abbreviated`), so the logs viewer
+        // can normalize either form when rendering a stream label.
         match s {
             "stdout" | "out" => Ok(Self::Stdout),
             "stderr" | "err" => Ok(Self::Stderr),
@@ -112,22 +112,8 @@ pub async fn cmd_runs(command: Option<RunsCommands>, json: bool, verbose: bool) 
             )
             .await
         }
-        Some(RunsCommands::Events {
-            run_id,
-            matches,
-            source,
-            stream,
-            vtime_min,
-            vtime_max,
-        }) => {
-            let filters = EventFilters {
-                matches: &matches,
-                sources: &source,
-                stream,
-                vtime_min,
-                vtime_max,
-            };
-            cmd_runs_events(&run_id, filters, json, verbose).await
+        Some(RunsCommands::Events { run_id, matches }) => {
+            cmd_runs_events(&run_id, &matches, json, verbose).await
         }
     }
 }
@@ -733,6 +719,7 @@ fn render_kv(rows: &[(&str, String)]) -> String {
 /// `runs list --detail`: one aligned key-value block per run (no table),
 /// separated by blank lines. Empty optional fields are omitted.
 fn render_runs_detail(runs: &[RunSummary]) -> String {
+    let width = terminal_width();
     let blocks: Vec<String> = runs
         .iter()
         .map(|run| {
@@ -745,10 +732,38 @@ fn render_runs_detail(runs: &[RunSummary]) -> String {
             if let Some(name) = run.test_name() {
                 rows.push(("Test Name", name.to_string()));
             }
-            if let Some(description) = run.test_description() {
-                rows.push(("Description", description.to_string()));
+
+            // The description can be a multi-paragraph blob, so it wraps to the
+            // terminal with a hanging indent under the value column (matching
+            // `runs show`) instead of running off as one giant line. Include its
+            // label in the width so every row in the block stays aligned.
+            let description = run.test_description();
+            let label_width = rows
+                .iter()
+                .map(|(label, _)| label.len())
+                .chain(description.is_some().then(|| "Description".len()))
+                .max()
+                .unwrap_or(0);
+
+            let mut out = String::new();
+            for (label, value) in &rows {
+                out.push_str(&format!("{label:label_width$}  {}\n", sanitize(value)));
             }
-            render_kv(&rows)
+            if let Some(description) = description {
+                let indent = label_width + 2;
+                let avail = width.saturating_sub(indent).max(1);
+                let wrapped = wrap_text(&sanitize_multiline(description), avail);
+                let lines = trim_blank_edges(&wrapped);
+                for (i, line) in lines.iter().enumerate() {
+                    let label = if i == 0 { "Description" } else { "" };
+                    if line.is_empty() {
+                        out.push('\n');
+                    } else {
+                        out.push_str(&format!("{label:label_width$}  {line}\n"));
+                    }
+                }
+            }
+            out
         })
         .collect();
 
@@ -795,27 +810,28 @@ async fn cmd_runs_build_logs(run_id: &str, json: bool, verbose: bool) -> Result<
     result
 }
 
-#[derive(Clone, Copy)]
-struct EventFilters<'a> {
-    matches: &'a [String],
-    sources: &'a [String],
-    stream: Option<Stream>,
-    vtime_min: Option<f64>,
-    vtime_max: Option<f64>,
+/// True when every needle (already lowercased) appears in the raw line. This is
+/// the only client-side filtering `runs events` does. Structural filters
+/// (source/stream/vtime) are intentionally unsupported: the server streams only
+/// a capped subset of matching events, so filtering it client-side would
+/// silently apply to that subset rather than to all of the run's events.
+fn line_matches_all_needles(line: &str, lowered_needles: &[String]) -> bool {
+    let line_lower = line.to_ascii_lowercase();
+    lowered_needles.iter().all(|n| line_lower.contains(n))
 }
 
 async fn cmd_runs_events(
     run_id: &str,
-    filters: EventFilters<'_>,
+    matches: &[String],
     json: bool,
     verbose: bool,
 ) -> Result<()> {
     debug!("searching events for run: {}", run_id);
 
-    // The server endpoint takes a single combined `q` substring. Send the first
-    // --match to maximize server-side filtering; AND-combine the rest of the
-    // matches plus the structural filters client-side on the streamed NDJSON.
-    let server_query = filters.matches.first().cloned().unwrap_or_default();
+    // The server endpoint takes a single `q` substring. Send the first --match
+    // to maximize server-side filtering; AND-combine any remaining --match
+    // needles client-side on the streamed NDJSON.
+    let server_query = matches.first().cloned().unwrap_or_default();
 
     let api = AntithesisApi::from_env(verbose)?;
     let stream = api
@@ -823,15 +839,7 @@ async fn cmd_runs_events(
         .await?
         .into_inner();
 
-    let lowered_matches: Vec<String> = filters
-        .matches
-        .iter()
-        .map(|m| m.to_ascii_lowercase())
-        .collect();
-    let has_structural_filters = !filters.sources.is_empty()
-        || filters.stream.is_some()
-        || filters.vtime_min.is_some()
-        || filters.vtime_max.is_some();
+    let lowered_matches: Vec<String> = matches.iter().map(|m| m.to_ascii_lowercase()).collect();
 
     let mut stdout = BufWriter::new(std::io::stdout().lock());
     // The table header is printed lazily, on the first matching row, so a run
@@ -848,70 +856,50 @@ async fn cmd_runs_events(
     let mut emitted: usize = 0;
     let result = stream_ndjson_lines(stream, NoOpTransformer {}, |line| {
         // Cheap path: substring AND across all --match needles on the raw line.
-        let line_lower = line.to_ascii_lowercase();
-        if !lowered_matches.iter().all(|n| line_lower.contains(n)) {
+        if !line_matches_all_needles(line, &lowered_matches) {
             return Ok(());
         }
 
-        // JSON mode with only --match filters: pass through without parsing.
-        if json && !has_structural_filters {
+        // JSON mode is a raw passthrough — no parsing needed.
+        if json {
             writeln!(stdout, "{line}")?;
             emitted += 1;
             return Ok(());
         }
 
-        let entry: Value = match serde_json::from_str(line) {
-            Ok(v) => v,
+        if emitted == 0 {
+            writeln!(stdout, "{event_header}")?;
+        }
+        match serde_json::from_str::<Value>(line) {
+            Ok(entry) => {
+                let rendered = render_event_entry(&entry);
+                let input_hash = rendered.input_hash;
+                let vtime = rendered.vtime;
+                let source = rendered.source;
+                let output = rendered.output;
+                writeln!(
+                    stdout,
+                    "{input_hash:<hw$}  {vtime:<vw$}  {source:<sw$}  {output}",
+                    hw = EVENT_HASH_WIDTH,
+                    vw = EVENT_VTIME_WIDTH,
+                    sw = EVENT_SOURCE_WIDTH,
+                )?;
+            }
             Err(_) => {
                 // The line matched --match but isn't valid JSON (a truncated
                 // final chunk, a proxy-injected error blob, …). Surface it raw
-                // rather than dropping it silently — otherwise table mode would
-                // disagree with --json and the post-stream "No events matched"
-                // check would misfire when matches actually streamed through.
-                if json {
-                    writeln!(stdout, "{line}")?;
-                } else {
-                    if emitted == 0 {
-                        writeln!(stdout, "{event_header}")?;
-                    }
-                    writeln!(
-                        stdout,
-                        "{:<hw$}  {:<vw$}  {:<sw$}  {line}",
-                        "",
-                        "",
-                        "",
-                        hw = EVENT_HASH_WIDTH,
-                        vw = EVENT_VTIME_WIDTH,
-                        sw = EVENT_SOURCE_WIDTH,
-                    )?;
-                }
-                emitted += 1;
-                return Ok(());
+                // rather than dropping it silently.
+                writeln!(
+                    stdout,
+                    "{:<hw$}  {:<vw$}  {:<sw$}  {line}",
+                    "",
+                    "",
+                    "",
+                    hw = EVENT_HASH_WIDTH,
+                    vw = EVENT_VTIME_WIDTH,
+                    sw = EVENT_SOURCE_WIDTH,
+                )?;
             }
-        };
-
-        if has_structural_filters && !entry_matches_structural_filters(&entry, filters) {
-            return Ok(());
-        }
-
-        if json {
-            writeln!(stdout, "{line}")?;
-        } else {
-            if emitted == 0 {
-                writeln!(stdout, "{event_header}")?;
-            }
-            let rendered = render_event_entry(&entry);
-            let input_hash = rendered.input_hash;
-            let vtime = rendered.vtime;
-            let source = rendered.source;
-            let output = rendered.output;
-            writeln!(
-                stdout,
-                "{input_hash:<hw$}  {vtime:<vw$}  {source:<sw$}  {output}",
-                hw = EVENT_HASH_WIDTH,
-                vw = EVENT_VTIME_WIDTH,
-                sw = EVENT_SOURCE_WIDTH,
-            )?;
         }
         emitted += 1;
         Ok(())
@@ -921,63 +909,11 @@ async fn cmd_runs_events(
     // The closure's borrows of `stdout`/`emitted` end once the stream future
     // above resolves, so it's safe to use them again here.
     if result.is_ok() && !json && emitted == 0 {
-        let query = filters.matches.join(" ");
+        let query = matches.join(" ");
         writeln!(stdout, "No events matched \"{query}\".")?;
     }
     stdout.flush()?;
     result
-}
-
-#[cfg(test)]
-fn event_matches_filters(entry: &Value, raw_line: &str, filters: EventFilters) -> bool {
-    let line_lower = raw_line.to_ascii_lowercase();
-    let all_match = filters
-        .matches
-        .iter()
-        .all(|n| line_lower.contains(&n.to_ascii_lowercase()));
-    all_match && entry_matches_structural_filters(entry, filters)
-}
-
-fn entry_matches_structural_filters(entry: &Value, filters: EventFilters) -> bool {
-    if !filters.sources.is_empty() {
-        let container = entry["source"]["container"].as_str().unwrap_or("");
-        let name = entry["source"]["name"].as_str().unwrap_or("");
-        if !filters
-            .sources
-            .iter()
-            .any(|wanted| wanted == container || wanted == name)
-        {
-            return false;
-        }
-    }
-
-    if let Some(wanted) = filters.stream {
-        let raw = entry["source"]["stream"].as_str().unwrap_or("");
-        if raw.parse::<Stream>().ok() != Some(wanted) {
-            return false;
-        }
-    }
-
-    if filters.vtime_min.is_some() || filters.vtime_max.is_some() {
-        let vtime = entry["moment"]["vtime"]
-            .as_str()
-            .and_then(|s| s.parse::<f64>().ok());
-        let Some(vtime) = vtime else {
-            return false;
-        };
-        if let Some(min) = filters.vtime_min
-            && vtime < min
-        {
-            return false;
-        }
-        if let Some(max) = filters.vtime_max
-            && vtime > max
-        {
-            return false;
-        }
-    }
-
-    true
 }
 
 async fn cmd_runs_logs(
@@ -3957,88 +3893,15 @@ mod tests {
 
     #[test]
     fn event_matches_anding_of_multiple_needles() {
-        let entry = json!({
-            "source": {"name": "fault_injector"},
-            "moment": {"vtime": "1.0"},
-            "info": {"message": "network partition started"}
-        });
-        let line = entry.to_string();
+        // `--match` is case-insensitive and every needle must be present (AND).
+        let line = "fault_injector: network partition started";
 
-        let needles = vec!["network".to_string(), "partition".to_string()];
-        let filters = EventFilters {
-            matches: &needles,
-            sources: &[],
-            stream: None,
-            vtime_min: None,
-            vtime_max: None,
-        };
-        assert!(event_matches_filters(&entry, &line, filters));
+        let needles = ["Network".to_string(), "partition".to_string()];
+        let lowered: Vec<String> = needles.iter().map(|n| n.to_ascii_lowercase()).collect();
+        assert!(line_matches_all_needles(line, &lowered));
 
-        let missing = vec!["network".to_string(), "missing".to_string()];
-        let filters = EventFilters {
-            matches: &missing,
-            ..filters
-        };
-        assert!(!event_matches_filters(&entry, &line, filters));
-    }
-
-    #[test]
-    fn event_filters_by_source_and_stream_and_vtime() {
-        let entry = json!({
-            "source": {"name": "control", "container": "control", "stream": "stderr"},
-            "moment": {"vtime": "12.5"},
-            "output_text": "boom"
-        });
-        let line = entry.to_string();
-
-        let needles = vec!["boom".to_string()];
-        let sources = vec!["control".to_string()];
-        let filters = EventFilters {
-            matches: &needles,
-            sources: &sources,
-            stream: Some(Stream::Stderr),
-            vtime_min: Some(10.0),
-            vtime_max: Some(15.0),
-        };
-        assert!(event_matches_filters(&entry, &line, filters));
-
-        let wrong_source = vec!["other".to_string()];
-        let filters = EventFilters {
-            sources: &wrong_source,
-            ..filters
-        };
-        assert!(!event_matches_filters(&entry, &line, filters));
-    }
-
-    #[test]
-    fn event_stream_filter_matches_short_form_streams() {
-        // The events API reports app stdout/stderr as the short forms `out`/`err`,
-        // so `--stream stdout`/`--stream stderr` must match those, not just the
-        // long forms a user types.
-        let entry = json!({
-            "source": {"name": "app", "container": "app", "stream": "out"},
-            "moment": {"vtime": "1.0"},
-            "output_text": "starting"
-        });
-        let line = entry.to_string();
-        let needles = vec!["starting".to_string()];
-        let sources: Vec<String> = vec![];
-
-        let matching = EventFilters {
-            matches: &needles,
-            sources: &sources,
-            stream: Some(Stream::Stdout),
-            vtime_min: None,
-            vtime_max: None,
-        };
-        assert!(event_matches_filters(&entry, &line, matching));
-
-        // ...and the wrong stream still excludes it.
-        let mismatched = EventFilters {
-            stream: Some(Stream::Stderr),
-            ..matching
-        };
-        assert!(!event_matches_filters(&entry, &line, mismatched));
+        let missing = ["network".to_string(), "missing".to_string()];
+        assert!(!line_matches_all_needles(line, &missing));
     }
 
     #[test]

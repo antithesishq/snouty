@@ -842,78 +842,93 @@ async fn cmd_runs_events(
     let lowered_matches: Vec<String> = matches.iter().map(|m| m.to_ascii_lowercase()).collect();
 
     let mut stdout = BufWriter::new(std::io::stdout().lock());
-    // The table header is printed lazily, on the first matching row, so a run
-    // with no matches shows a friendly message instead of a bare header.
-    let event_header = format!(
-        "{:<hw$}  {:<vw$}  {:<sw$}  OUTPUT",
-        "HASH",
-        "VTIME",
-        "SOURCE",
-        hw = EVENT_HASH_WIDTH,
-        vw = EVENT_VTIME_WIDTH,
-        sw = EVENT_SOURCE_WIDTH,
-    );
-    let mut emitted: usize = 0;
-    let result = stream_ndjson_lines(stream, NoOpTransformer {}, |line| {
-        // Cheap path: substring AND across all --match needles on the raw line.
-        if !line_matches_all_needles(line, &lowered_matches) {
-            return Ok(());
-        }
 
-        // JSON mode is a raw passthrough — no parsing needed.
-        if json {
+    // JSON mode is a raw passthrough — stream each matching line as it arrives.
+    if json {
+        let mut emitted: usize = 0;
+        let result = stream_ndjson_lines(stream, NoOpTransformer {}, |line| {
+            if !line_matches_all_needles(line, &lowered_matches) {
+                return Ok(());
+            }
             writeln!(stdout, "{line}")?;
             emitted += 1;
-            return Ok(());
-        }
+            Ok(())
+        })
+        .await;
+        stdout.flush()?;
+        return result;
+    }
 
-        if emitted == 0 {
-            writeln!(stdout, "{event_header}")?;
+    // Human table: the event stream is small (the server already substring-
+    // filters), so buffer the matching rows and size the HASH/VTIME/SOURCE
+    // columns to the actual content rather than guessing fixed widths.
+    let mut rows: Vec<[String; 4]> = Vec::new();
+    let result = stream_ndjson_lines(stream, NoOpTransformer {}, |line| {
+        if !line_matches_all_needles(line, &lowered_matches) {
+            return Ok(());
         }
         match serde_json::from_str::<Value>(line) {
             Ok(entry) => {
                 let rendered = render_event_entry(&entry);
-                let input_hash = rendered.input_hash;
-                let vtime = rendered.vtime;
-                let source = rendered.source;
-                let output = rendered.output;
-                writeln!(
-                    stdout,
-                    "{input_hash:<hw$}  {vtime:<vw$}  {source:<sw$}  {output}",
-                    hw = EVENT_HASH_WIDTH,
-                    vw = EVENT_VTIME_WIDTH,
-                    sw = EVENT_SOURCE_WIDTH,
-                )?;
+                rows.push([
+                    rendered.input_hash,
+                    rendered.vtime,
+                    rendered.source,
+                    rendered.output,
+                ]);
             }
             Err(_) => {
                 // The line matched --match but isn't valid JSON (a truncated
                 // final chunk, a proxy-injected error blob, …). Surface it raw
-                // rather than dropping it silently.
-                writeln!(
-                    stdout,
-                    "{:<hw$}  {:<vw$}  {:<sw$}  {line}",
-                    "",
-                    "",
-                    "",
-                    hw = EVENT_HASH_WIDTH,
-                    vw = EVENT_VTIME_WIDTH,
-                    sw = EVENT_SOURCE_WIDTH,
-                )?;
+                // in the OUTPUT column rather than dropping it silently.
+                rows.push([String::new(), String::new(), String::new(), line.to_string()]);
             }
         }
-        emitted += 1;
         Ok(())
     })
     .await;
 
-    // The closure's borrows of `stdout`/`emitted` end once the stream future
-    // above resolves, so it's safe to use them again here.
-    if result.is_ok() && !json && emitted == 0 {
+    // Bail before rendering if the stream itself errored.
+    result?;
+
+    if rows.is_empty() {
         let query = matches.join(" ");
         writeln!(stdout, "No events matched \"{query}\".")?;
+        stdout.flush()?;
+        return Ok(());
+    }
+
+    // Size each non-final column to the widest cell (header included). OUTPUT is
+    // last and never padded.
+    let headers = ["HASH", "VTIME", "SOURCE"];
+    let mut widths = headers.map(str::len);
+    for row in &rows {
+        for (col, width) in widths.iter_mut().enumerate() {
+            *width = (*width).max(row[col].chars().count());
+        }
+    }
+    writeln!(
+        stdout,
+        "{:<hw$}  {:<vw$}  {:<sw$}  OUTPUT",
+        headers[0],
+        headers[1],
+        headers[2],
+        hw = widths[0],
+        vw = widths[1],
+        sw = widths[2],
+    )?;
+    for row in &rows {
+        let [input_hash, vtime, source, output] = row;
+        writeln!(
+            stdout,
+            "{input_hash:<hw$}  {vtime:<vw$}  {source:<sw$}  {output}",
+            hw = widths[0],
+            vw = widths[1],
+            sw = widths[2],
+        )?;
     }
     stdout.flush()?;
-    result
+    Ok(())
 }
 
 async fn cmd_runs_logs(
@@ -977,16 +992,8 @@ const LOG_SOURCE_MIN_WIDTH: usize = 20;
 const LOG_VTIME_WIDTH: usize = 14;
 const LOG_STREAM_WIDTH: usize = 3;
 
-// Column widths for the streamed `runs events` table. The stream is rendered
-// line-by-line, so widths are fixed up front (no second pass to auto-fit). HASH
-// holds a signed i64 (≤20 chars); SOURCE is sized so the common
-// `[container:stream]` labels align without overflowing into OUTPUT.
-const EVENT_HASH_WIDTH: usize = 20;
-const EVENT_VTIME_WIDTH: usize = 19;
-const EVENT_SOURCE_WIDTH: usize = 24;
-
 fn format_log_line(entry: &Value) -> String {
-    let vtime = entry["moment"]["vtime"].as_str().unwrap_or("");
+    let vtime = format_log_vtime(entry);
     let container = entry["source"]["container"].as_str().unwrap_or("");
     let name = entry["source"]["name"].as_str().unwrap_or("");
     let source = if !container.is_empty() {
@@ -999,8 +1006,10 @@ fn format_log_line(entry: &Value) -> String {
 
     // Web UI format: text records sit one space after the stream bracket.
     // JSON records get an extra " - " separator before the body.
+    // Mirror the JSON output path and strip ANSI escapes from the text payload
+    // so container color codes don't leak into the rendered stream.
     let payload = if let Some(text) = entry.get("output_text").and_then(Value::as_str) {
-        text.to_string()
+        strip_ansi(text)
     } else {
         format!(" - {}", strip_log_envelope(entry))
     };
@@ -1011,6 +1020,35 @@ fn format_log_line(entry: &Value) -> String {
         sw = LOG_SOURCE_MIN_WIDTH,
         stw = LOG_STREAM_WIDTH,
     )
+}
+
+/// Render a log line's vtime in seconds with at most 3 decimal places (trailing
+/// zeros trimmed). Full-precision vtimes overflow the fixed `LOG_VTIME_WIDTH`
+/// column and desync the source column; trimming keeps every row aligned.
+/// Prefers the `vtime` seconds string and falls back to `_vtime_ticks`.
+fn format_log_vtime(entry: &Value) -> String {
+    let raw = entry["moment"]["vtime"].as_str().unwrap_or("");
+    let seconds = raw.parse::<f64>().ok().or_else(|| {
+        entry["moment"]["_vtime_ticks"]
+            .as_u64()
+            .map(|ticks| ticks as f64 / TICKS_PER_SECOND)
+    });
+    match seconds {
+        Some(seconds) => trim_decimals(seconds, 3),
+        // Not a parseable number — show whatever the server sent rather than "".
+        None => raw.to_string(),
+    }
+}
+
+/// Format `value` with at most `max_decimals` decimal places, trimming trailing
+/// zeros and a dangling decimal point (e.g. `19.0` -> `19`, `18.9140` -> `18.914`).
+fn trim_decimals(value: f64, max_decimals: usize) -> String {
+    let mut s = format!("{value:.max_decimals$}");
+    if s.contains('.') {
+        let trimmed = s.trim_end_matches('0').trim_end_matches('.').len();
+        s.truncate(trimmed);
+    }
+    s
 }
 
 fn abbreviate_stream(stream: &str) -> std::borrow::Cow<'static, str> {
@@ -2476,15 +2514,48 @@ mod tests {
     }
 
     #[test]
-    fn format_log_line_preserves_ansi_in_output_text() {
+    fn format_log_line_strips_ansi_from_output_text() {
         let entry = json!({
             "moment": {"input_hash": "1", "vtime": "14.118"},
             "source": {"name": "setup", "stream": "error"},
-            "output_text": "\x1B[4m>>>> hello"
+            "output_text": "\x1B[4m>>>> hello\x1B[0m"
         });
         let rendered = format_log_line(&entry);
-        assert!(rendered.contains("\x1B[4m>>>> hello"));
+        assert!(rendered.contains(">>>> hello"));
+        assert!(!rendered.contains('\x1B'));
         assert!(rendered.contains("[err]"));
+    }
+
+    #[test]
+    fn format_log_line_truncates_vtime_to_three_decimals() {
+        let entry = json!({
+            "moment": {"input_hash": "1", "vtime": "18.9141638034489"},
+            "source": {"name": "client", "stream": "info"},
+            "output_text": "hello"
+        });
+        let rendered = format_log_line(&entry);
+        // Trimmed to 3 decimals so it fits the fixed vtime column and the
+        // source column stays aligned across rows.
+        assert!(rendered.starts_with("[        18.914] "), "got: {rendered}");
+    }
+
+    #[test]
+    fn format_log_line_falls_back_to_vtime_ticks() {
+        let entry = json!({
+            "moment": {"_vtime_ticks": 1u64 << 32},
+            "source": {"name": "client", "stream": "info"},
+            "output_text": "hello"
+        });
+        // No `vtime` string: derive seconds from ticks (2^32 ticks = 1s).
+        assert!(format_log_line(&entry).starts_with("[             1] "));
+    }
+
+    #[test]
+    fn trim_decimals_trims_trailing_zeros_and_point() {
+        assert_eq!(trim_decimals(19.0, 3), "19");
+        assert_eq!(trim_decimals(18.5, 3), "18.5");
+        assert_eq!(trim_decimals(18.9141638, 3), "18.914");
+        assert_eq!(trim_decimals(1814.7135719, 3), "1814.714");
     }
 
     #[test]

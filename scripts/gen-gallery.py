@@ -714,9 +714,9 @@ def build_stories(d: Discovery) -> list[Story]:
             "runs-properties-incomplete",
             "Properties for a run that never finished",
             "I try to view properties on an incomplete run.",
-            "A clean error indicating the report isn't available (e.g. 404 Not Found) — not a crash or stack trace.",
+            "A clean error explaining the properties aren't available (because the run is incomplete) — not a crash or stack trace.",
             ["runs", "properties", d.fail],
-            expect_message("not found", "404", "no report", "not available"),
+            expect_message("no properties", "incomplete", "not found", "404"),
             json_capable=False,
         ),
         # -- property detail ------------------------------------------------

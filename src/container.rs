@@ -12,6 +12,7 @@ use color_eyre::{
 use tokio::process::Child;
 
 use crate::config::ComposeConfig;
+use crate::snouty_config::{self, SnoutyConfig};
 
 /// RAII wrapper around a [`Child`] spawned with `process_group(0)`.
 ///
@@ -1122,8 +1123,8 @@ pub fn runtime() -> Result<&'static dyn ContainerRuntime> {
 
     INSTANCE
         .get_or_init(|| {
-            if let Ok(engine) = std::env::var("SNOUTY_CONTAINER_ENGINE") {
-                return match engine.as_str() {
+            if let Some(engine) = snouty_config::default_config(None).container_engine() {
+                return match engine {
                     "podman" => Ok(Box::new(PodmanRuntime::new("podman"))),
                     "docker" => Ok(Box::new(DockerRuntime::new("docker"))),
                     other => Err(format!(

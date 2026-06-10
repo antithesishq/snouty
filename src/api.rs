@@ -796,6 +796,16 @@ fn format_api_error(status: u16, body: &str) -> Report {
         .and_then(|s| s.canonical_reason())
         .unwrap_or("");
     let body = body.trim();
+    // Servers often echo the status reason at the front of the body
+    // ("Bad Request — Bad request: invalid vtime"); drop the redundant echo
+    // and keep only the informative remainder.
+    let body = match body.get(..reason.len()) {
+        Some(prefix) if !reason.is_empty() && prefix.eq_ignore_ascii_case(reason) => body
+            [reason.len()..]
+            .trim_start_matches([':', '-', ' '])
+            .trim_start(),
+        _ => body,
+    };
 
     let mut msg = format!("API error: {status}");
     if !reason.is_empty() {
@@ -1400,6 +1410,25 @@ mod tests {
         let rendered = format!("{:#}", format_api_error(404, "run not found"));
         assert!(rendered.contains("API error: 404"));
         assert!(rendered.contains("run not found"));
+    }
+
+    #[test]
+    fn format_api_error_dedupes_reason_echoed_in_body() {
+        // "Bad Request — Bad request: …" reads twice; the echo is dropped.
+        let rendered = format!(
+            "{:#}",
+            format_api_error(400, "Bad request: Invalid input_hash or vtime")
+        );
+        assert_eq!(
+            rendered,
+            "API error: 400 Bad Request — Invalid input_hash or vtime"
+        );
+        // A body that is nothing but the reason echo adds nothing.
+        let rendered = format!("{:#}", format_api_error(400, "Bad Request"));
+        assert_eq!(rendered, "API error: 400 Bad Request");
+        // Unrelated bodies pass through untouched.
+        let rendered = format!("{:#}", format_api_error(400, "vtime out of range"));
+        assert_eq!(rendered, "API error: 400 Bad Request — vtime out of range");
     }
 
     #[tokio::test]

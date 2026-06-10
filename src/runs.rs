@@ -12,7 +12,6 @@ use serde::Deserialize;
 use serde_json::{Map, Value, json};
 
 use chrono::{DateTime, Local, Utc};
-use chrono_humanize::{Accuracy, HumanTime, Tense};
 
 use crate::api::{
     AntithesisApi, Event, Property, PropertyStatus, RunDetail, RunStatus, RunSummary,
@@ -197,8 +196,21 @@ fn status_label(status: RunStatus) -> String {
     status.to_string()
 }
 
+/// Compact relative age for the runs table ("21h ago", "2d ago"), trading
+/// prose ("21 hours ago") for column width. Rough by design: largest whole
+/// unit only. Future timestamps (clock skew) clamp to "0s ago".
 fn relative_time(then: DateTime<Utc>) -> String {
-    HumanTime::from(then - Utc::now()).to_text_en(Accuracy::Rough, Tense::Past)
+    let secs = (Utc::now() - then).num_seconds().max(0);
+    let (value, unit) = match secs {
+        s if s < 60 => (s, "s"),
+        s if s < 3600 => (s / 60, "m"),
+        s if s < 86_400 => (s / 3600, "h"),
+        s if s < 7 * 86_400 => (s / 86_400, "d"),
+        s if s < 30 * 86_400 => (s / (7 * 86_400), "w"),
+        s if s < 365 * 86_400 => (s / (30 * 86_400), "mo"),
+        s => (s / (365 * 86_400), "y"),
+    };
+    format!("{value}{unit} ago")
 }
 
 /// Format an absolute timestamp in the user's local timezone, without a
@@ -4305,6 +4317,21 @@ mod tests {
             parameters,
             links: None,
         }
+    }
+
+    #[test]
+    fn relative_time_is_compact() {
+        let now = Utc::now();
+        assert_eq!(relative_time(now - chrono::Duration::seconds(5)), "5s ago");
+        assert_eq!(relative_time(now - chrono::Duration::minutes(3)), "3m ago");
+        assert_eq!(relative_time(now - chrono::Duration::hours(21)), "21h ago");
+        assert_eq!(relative_time(now - chrono::Duration::days(2)), "2d ago");
+        assert_eq!(relative_time(now - chrono::Duration::days(8)), "1w ago");
+        assert_eq!(relative_time(now - chrono::Duration::days(45)), "1mo ago");
+        assert_eq!(relative_time(now - chrono::Duration::days(400)), "1y ago");
+        // Clock skew: a slightly-future timestamp clamps instead of rendering
+        // a negative age.
+        assert_eq!(relative_time(now + chrono::Duration::hours(1)), "0s ago");
     }
 
     #[test]

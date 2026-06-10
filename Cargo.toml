@@ -10,7 +10,6 @@ default-run = "snouty"
 [dependencies]
 base64 = "0.22"
 chrono = { version = "0.4", features = ["serde"] }
-chrono-humanize = "0.2"
 clap = { version = "4", features = ["derive"] }
 clap_complete = "4"
 getrandom = "0.3"

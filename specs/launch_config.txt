@@ -5,12 +5,12 @@
 
 # Requires ANTITHESIS_REPOSITORY when --config is used.
 ! snouty launch -w basic_test -c config --duration 30
-stderr 'ANTITHESIS_REPOSITORY.*'
+stderr 'No repository found.*'
 
 # Kubernetes config directories (manifests/ subdirectory) are also accepted
 # by --config and likewise require ANTITHESIS_REPOSITORY.
 ! snouty launch -w basic_k8s_test -c k8s_config --duration 30
-stderr 'ANTITHESIS_REPOSITORY.*'
+stderr 'No repository found.*'
 
 env ANTITHESIS_REPOSITORY=registry.example.com/repo
 

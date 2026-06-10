@@ -103,7 +103,7 @@ fn docs_auto_update_reuses_cached_db_until_etag_changes() {
         ]
     );
 
-    let etag_path = cache_dir.path().join("snouty").join("docs.db.etag");
+    let etag_path = cache_dir.path().join("docs.db.etag");
     assert_eq!(std::fs::read_to_string(etag_path).unwrap(), "test-etag-2");
 }
 

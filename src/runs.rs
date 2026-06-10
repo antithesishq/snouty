@@ -15,10 +15,11 @@ use chrono::{DateTime, Local, Utc};
 use chrono_humanize::{Accuracy, HumanTime, Tense};
 
 use crate::api::{
-    AntithesisApi, Property, PropertyStatus, RunDetail, RunStatus, RunSummary, RunsFilterOptions,
+    AntithesisApi, Event, Property, PropertyStatus, RunDetail, RunStatus, RunSummary,
+    RunsFilterOptions,
 };
 #[cfg(test)]
-use crate::api::{Event, EventProperty, Moment, NonEventProperty};
+use crate::api::{EventProperty, Moment, NonEventProperty};
 use crate::cli::{RunsCommands, RunsListArgs};
 use crate::error::{api_error_status, user_error};
 
@@ -180,10 +181,15 @@ async fn cmd_runs_list(args: RunsListArgs, json: bool, verbose: bool) -> Result<
     Ok(())
 }
 
+/// Width budget for terminal-aware rendering. When stdout is a tty we use its
+/// real column count; otherwise (a pipe or file) we return `usize::MAX` so the
+/// truncating/wrapping call sites become no-ops and full cell content reaches
+/// the consumer — `snouty runs properties RUN | grep '<long name>'` must not
+/// silently miss a row whose NAME was wrapped or ellipsized to fit a screen.
 fn terminal_width() -> usize {
     let term = console::Term::stdout();
     if !term.is_term() {
-        return 100;
+        return usize::MAX;
     }
     term.size().1 as usize
 }
@@ -275,10 +281,14 @@ fn open_run_report(run: &RunDetail, json: bool) -> Result<()> {
 fn launch_browser(url: &str) -> bool {
     use std::process::{Command, Stdio};
 
+    // Quote the URL so cmd.exe doesn't split it on metacharacters like `&`.
+    // cmd's `start` treats the first quoted argument as the window title, so the
+    // empty `""` stays as the title and the URL is the (safe) second quoted arg.
+    let quoted_url = format!("\"{url}\"");
     let (program, args): (&str, Vec<&str>) = if cfg!(target_os = "macos") {
         ("open", vec![url])
     } else if cfg!(target_os = "windows") {
-        ("cmd", vec!["/C", "start", "", url])
+        ("cmd", vec!["/C", "start", "\"\"", &quoted_url])
     } else {
         ("xdg-open", vec![url])
     };
@@ -480,15 +490,14 @@ async fn cmd_runs_property(run_id: &str, name: &str, json: bool, verbose: bool) 
     let property = match resolved {
         Resolved::Exact(p) => p,
         Resolved::Fuzzy(p) => {
-            if !json {
-                // Print to stdout (not stderr) so the note stays ordered above
-                // the property output when captured or piped.
-                println!(
-                    "note: no exact match for '{}', using closest property: '{}'",
-                    name,
-                    p.name()
-                );
-            }
+            // Always disclose the substitution, on stderr in both modes: a
+            // `--json` consumer otherwise silently receives a different property
+            // than it asked for, and stderr keeps it out of the JSON on stdout.
+            eprintln!(
+                "note: no exact match for '{}', using closest property: '{}'",
+                name,
+                p.name()
+            );
             p
         }
     };
@@ -587,18 +596,41 @@ fn trim_blank_edges(lines: &[String]) -> &[String] {
     lines.get(start..end).unwrap_or(&[])
 }
 
+/// Return references to `events` ordered ascending by `moment.vtime` parsed as
+/// f64. Entries whose vtime doesn't parse as a number sort last, preserving
+/// their original relative order. The sort is stable, so events with equal
+/// vtimes keep their incoming order.
+fn sorted_by_vtime(events: &[Event]) -> Vec<&Event> {
+    let mut sorted: Vec<&Event> = events.iter().collect();
+    sorted.sort_by(|a, b| {
+        let av = a.moment.vtime.parse::<f64>().ok();
+        let bv = b.moment.vtime.parse::<f64>().ok();
+        match (av, bv) {
+            (Some(a), Some(b)) => a.total_cmp(&b),
+            // Numeric vtimes sort ahead of non-numeric/unparseable ones.
+            (Some(_), None) => std::cmp::Ordering::Less,
+            (None, Some(_)) => std::cmp::Ordering::Greater,
+            (None, None) => std::cmp::Ordering::Equal,
+        }
+    });
+    sorted
+}
+
 fn render_property_examples(property: &Property) -> String {
     match property {
         Property::EventProperty(p) => {
             let mut rows: Vec<Vec<String>> = Vec::new();
-            for event in &p.counterexamples {
+            // The API guarantees no ordering, so sort each group numerically by
+            // vtime (ascending) for a stable, readable timeline. Counterexamples
+            // (failing) come first, then examples (passing).
+            for event in sorted_by_vtime(&p.counterexamples) {
                 rows.push(vec![
                     "failing".to_string(),
                     sanitize(&event.moment.input_hash),
                     sanitize(&event.moment.vtime),
                 ]);
             }
-            for event in &p.examples {
+            for event in sorted_by_vtime(&p.examples) {
                 rows.push(vec![
                     "passing".to_string(),
                     sanitize(&event.moment.input_hash),
@@ -776,11 +808,19 @@ fn print_run_detail(run: &RunDetail) {
     }
 
     // Point at the obvious next step instead of dumping the huge signed report
-    // URL into the metadata block.
-    println!(
-        "\nview the report in your browser:\n  snouty runs show {} --web",
-        run.run_id
-    );
+    // URL into the metadata block — but only when a triage report actually
+    // exists, since `--web` errors out otherwise (e.g. for incomplete runs).
+    let has_report = run
+        .links
+        .as_ref()
+        .and_then(|l| l.triage_report.as_deref())
+        .is_some();
+    if has_report {
+        println!(
+            "\nview the report in your browser:\n  snouty runs show {} --web",
+            run.run_id
+        );
+    }
 }
 
 /// Render aligned `Label  value` lines, sqlite `.mode line`–style. Each line is
@@ -1149,26 +1189,52 @@ fn format_log_line(entry: &Value) -> String {
 /// column and desync the source column; trimming keeps every row aligned.
 /// Prefers the `vtime` seconds string and falls back to `_vtime_ticks`.
 fn format_log_vtime(entry: &Value) -> String {
-    let raw = entry["moment"]["vtime"].as_str().unwrap_or("");
-    let seconds = raw.parse::<f64>().ok().or_else(|| {
-        entry["moment"]["_vtime_ticks"]
-            .as_u64()
-            .map(|ticks| ticks as f64 / TICKS_PER_SECOND)
-    });
+    let vtime = &entry["moment"]["vtime"];
+    // `vtime` is usually a seconds string, but the API doesn't forbid a JSON
+    // number — accept both (string-then-parse, else `as_f64`) so a numeric vtime
+    // doesn't render as an empty column. Fall back to ticks, then the raw value.
+    let seconds = vtime
+        .as_str()
+        .and_then(|s| s.parse::<f64>().ok())
+        .or_else(|| vtime.as_f64())
+        .or_else(|| {
+            entry["moment"]["_vtime_ticks"]
+                .as_u64()
+                .map(|ticks| ticks as f64 / TICKS_PER_SECOND)
+        });
     match seconds {
         Some(seconds) => trim_decimals(seconds, 3),
         // Not a parseable number — show whatever the server sent rather than "".
-        None => raw.to_string(),
+        None => vtime.as_str().unwrap_or("").to_string(),
     }
 }
 
 /// Format `value` with at most `max_decimals` decimal places, trimming trailing
 /// zeros and a dangling decimal point (e.g. `19.0` -> `19`, `18.9140` -> `18.914`).
+///
+/// A *nonzero* value too small to survive the trim (it would otherwise render as
+/// `0` or `-0`, losing the fact that something happened) renders as `<0.001` for
+/// positives and `>-0.001` for negatives — short, unambiguous, and the same
+/// width regardless of magnitude. An exact `0.0`/`-0.0` renders `0`.
 fn trim_decimals(value: f64, max_decimals: usize) -> String {
     let mut s = format!("{value:.max_decimals$}");
     if s.contains('.') {
         let trimmed = s.trim_end_matches('0').trim_end_matches('.').len();
         s.truncate(trimmed);
+    }
+    // A nonzero input that rounded to "0"/"-0" would misrepresent it as exactly
+    // zero; flag it as a below-threshold magnitude instead.
+    if (s == "0" || s == "-0") && value != 0.0 {
+        let threshold = format!("0.{}1", "0".repeat(max_decimals.saturating_sub(1)));
+        return if value < 0.0 {
+            format!(">-{threshold}")
+        } else {
+            format!("<{threshold}")
+        };
+    }
+    // Normalise an exact -0.0 (rounds to "-0") to plain "0".
+    if s == "-0" {
+        return "0".to_string();
     }
     s
 }
@@ -1183,14 +1249,38 @@ fn abbreviate_stream(stream: &str) -> std::borrow::Cow<'static, str> {
     std::borrow::Cow::Owned(stream.chars().take(LOG_STREAM_WIDTH).collect())
 }
 
-fn strip_log_envelope(entry: &Value) -> String {
-    let mut clone = entry.clone();
-    if let Some(obj) = clone.as_object_mut() {
-        obj.remove("moment");
-        obj.remove("source");
-        obj.remove("IPT_bytes_out");
+/// Keys that wrap a log record's payload; dropped before rendering the body.
+const LOG_ENVELOPE_KEYS: [&str; 3] = ["moment", "source", "IPT_bytes_out"];
+
+/// Serialize-only view over a JSON object that emits every key except the
+/// envelope keys, borrowing the retained values rather than cloning them.
+struct StrippedEnvelope<'a>(&'a Map<String, Value>);
+
+impl serde::Serialize for StrippedEnvelope<'_> {
+    fn serialize<S: serde::Serializer>(
+        &self,
+        serializer: S,
+    ) -> std::result::Result<S::Ok, S::Error> {
+        use serde::ser::SerializeMap;
+        let mut map = serializer.serialize_map(None)?;
+        for (key, value) in self.0 {
+            if !LOG_ENVELOPE_KEYS.contains(&key.as_str()) {
+                map.serialize_entry(key, value)?;
+            }
+        }
+        map.end()
     }
-    serde_json::to_string(&clone).unwrap_or_default()
+}
+
+fn strip_log_envelope(entry: &Value) -> String {
+    // Serialize a borrowed, filtered view of the object rather than deep-cloning
+    // the whole Value just to drop three envelope keys — this runs per JSON log
+    // line. The view preserves the original key order (matching serde_json's
+    // preserve_order) without copying any of the retained subtrees.
+    match entry.as_object() {
+        Some(obj) => serde_json::to_string(&StrippedEnvelope(obj)).unwrap_or_default(),
+        None => serde_json::to_string(entry).unwrap_or_default(),
+    }
 }
 
 const TICKS_PER_SECOND: f64 = (1u64 << 32) as f64;
@@ -2590,6 +2680,30 @@ mod tests {
     }
 
     #[test]
+    fn render_event_property_examples_sorts_each_group_by_vtime() {
+        // API order is arbitrary; rows must come out failing-first, then passing,
+        // each ascending by vtime numerically (5.0 < 10.0, not lexically).
+        let property = event_property(
+            "Counter",
+            PropertyStatus::Failing,
+            None,
+            vec![event("ex-b", "20.0"), event("ex-a", "2.0")],
+            vec![event("cex-b", "10.0"), event("cex-a", "5.0")],
+        );
+        let out = render_property_examples(&property);
+        let rows: Vec<&str> = out
+            .lines()
+            .filter(|l| l.contains("failing") || l.contains("passing"))
+            .collect();
+        // Failing rows come first, sorted by vtime numerically (5.0 < 10.0).
+        assert!(rows[0].contains("failing") && rows[0].contains("cex-a"));
+        assert!(rows[1].contains("failing") && rows[1].contains("cex-b"));
+        // Passing rows follow, also ascending by vtime (2.0 < 20.0).
+        assert!(rows[2].contains("passing") && rows[2].contains("ex-a"));
+        assert!(rows[3].contains("passing") && rows[3].contains("ex-b"));
+    }
+
+    #[test]
     fn render_non_event_property_examples_pretty_prints_objects() {
         let property = non_event_property(
             "Determinator Max Memory",
@@ -2673,11 +2787,37 @@ mod tests {
     }
 
     #[test]
+    fn format_log_line_accepts_numeric_vtime() {
+        // A JSON-number vtime (not a string) must still render, not blank out.
+        let entry = json!({
+            "moment": {"input_hash": "1", "vtime": 12.5},
+            "source": {"name": "client", "stream": "info"},
+            "output_text": "hello"
+        });
+        assert!(
+            format_log_line(&entry).starts_with("[          12.5] "),
+            "got: {}",
+            format_log_line(&entry)
+        );
+    }
+
+    #[test]
     fn trim_decimals_trims_trailing_zeros_and_point() {
         assert_eq!(trim_decimals(19.0, 3), "19");
         assert_eq!(trim_decimals(18.5, 3), "18.5");
         assert_eq!(trim_decimals(18.9141638, 3), "18.914");
         assert_eq!(trim_decimals(1814.7135719, 3), "1814.714");
+    }
+
+    #[test]
+    fn trim_decimals_flags_subthreshold_nonzero_values() {
+        // A nonzero value smaller than the 3-decimal resolution must not be
+        // rendered as a bare "0"/"-0" (which would read as exactly zero).
+        assert_eq!(trim_decimals(0.0004, 3), "<0.001");
+        assert_eq!(trim_decimals(-0.0002, 3), ">-0.001");
+        // Exact zero (either sign) renders as plain "0".
+        assert_eq!(trim_decimals(0.0, 3), "0");
+        assert_eq!(trim_decimals(-0.0, 3), "0");
     }
 
     #[test]
@@ -4110,6 +4250,36 @@ mod tests {
         assert!(haystack_matches_all_needles(&haystack, &needle));
         // The same needle does NOT match the raw escaped line.
         assert!(!haystack_matches_all_needles(line, &needle));
+    }
+
+    #[test]
+    fn runs_table_does_not_truncate_test_name_when_piped() {
+        // `terminal_width()` returns usize::MAX for a non-tty so piped output
+        // keeps the full TEST NAME — `snouty runs | grep` must not miss a row.
+        let long = "a-very-long-test-name-that-would-be-truncated-on-a-narrow-terminal";
+        let runs = vec![summary(
+            "abc-54-1",
+            RunStatus::Completed,
+            "2024-01-01T00:00:00Z",
+            "basic_test",
+            Some(long),
+            None,
+        )];
+        let table = render_runs_table(&runs, usize::MAX);
+        assert!(table.contains(long), "name was truncated: {table}");
+        assert!(!table.contains('…'));
+    }
+
+    #[test]
+    fn wrap_last_does_not_wrap_when_piped() {
+        // With usize::MAX width the final column is emitted on a single line
+        // (no wrap), so a long NAME survives intact for piping/grep.
+        let long = "Safety ▸ a property name long enough to wrap on any real terminal width";
+        let headers = vec!["STATUS".to_string(), "NAME".to_string()];
+        let rows = vec![vec!["failing".to_string(), long.to_string()]];
+        let out = render_table_wrap_last(&headers, &rows, usize::MAX);
+        let row = out.lines().find(|l| l.contains("failing")).unwrap();
+        assert!(row.contains(long), "name was wrapped: {out}");
     }
 
     #[test]

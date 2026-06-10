@@ -388,6 +388,7 @@ pub enum RunsCommands {
         input_hash: String,
 
         /// The virtual time value identifying the moment
+        #[arg(allow_hyphen_values = true)]
         vtime: String,
 
         /// Start streaming from this virtual time (defaults to the root)
@@ -440,7 +441,7 @@ pub struct RunsListArgs {
     #[arg(short = 'n', long, default_value = "10")]
     pub limit: usize,
 
-    /// Print full descriptions on a second line instead of truncating
+    /// Show a detailed key-value block per run, including the full description
     #[arg(short, long)]
     pub detail: bool,
 }
@@ -494,8 +495,9 @@ mod tests {
         Cli::try_parse_from(args).expect("args should parse")
     }
 
-    // `--begin-vtime` is a sibling of `--begin-input-hash`; both must accept
-    // hyphen-led values for consistency with the logs moment coordinates.
+    // The positional `input_hash`/`vtime` and the `--begin-*` flags must all
+    // accept hyphen-led values: moment coordinates are routinely negative
+    // (e.g. `snouty runs logs RUN -123 -2.0`).
     #[test]
     fn logs_accepts_negative_begin_vtime() {
         let cli = parse(&[
@@ -503,8 +505,8 @@ mod tests {
             "runs",
             "logs",
             "RUN",
-            "HASH",
-            "VTIME",
+            "-123",
+            "-2.0",
             "--begin-vtime",
             "-2.0",
             "--begin-input-hash",
@@ -513,6 +515,8 @@ mod tests {
         let Commands::Runs {
             command:
                 Some(RunsCommands::Logs {
+                    input_hash,
+                    vtime,
                     begin_vtime,
                     begin_input_hash,
                     ..
@@ -521,6 +525,8 @@ mod tests {
         else {
             panic!("expected `runs logs`");
         };
+        assert_eq!(input_hash, "-123");
+        assert_eq!(vtime, "-2.0");
         assert_eq!(begin_vtime.as_deref(), Some("-2.0"));
         assert_eq!(begin_input_hash.as_deref(), Some("0"));
     }

@@ -69,10 +69,12 @@ stdout 'Run ID.*$R_run_id'
 [!staging] stdout 'Launcher.*nightly'
 
 # `snouty runs show` doesn't print the raw report URL — `snouty runs show --web`
-# is the way to follow that link.
+# is the way to follow that link. The hint is shown only when a report link
+# exists (mock runs all carry one), since `--web` errors without it.
 mock-runs-server
 snouty runs show $R_run_id
 ! stdout 'Report.*https'
+[!staging] stdout 'snouty runs show .*--web'
 
 # `snouty --json runs show --web` resolves the report URL without launching a
 # browser, so a script can capture it. (Plain `--web` would shell out to a
@@ -123,9 +125,20 @@ snouty --json runs properties $R_run_id
 mock-runs-server
 snouty runs property $R_run_id 'Counter value stays below limit'
 [!staging] stdout 'STATUS.*HASH.*VTIME'
-[!staging] stdout 'failing.*-100.*5\.0'
-[!staging] stdout 'failing.*-200.*10\.0'
-[!staging] stdout 'passing.*-300.*15\.0'
+# Rows within each group are sorted numerically by vtime (5.0 before 10.0,
+# even though the API returns them 10.0-then-5.0), failing before passing.
+[!staging] stdout '(?s)failing.*-100.*5\.0.*failing.*-200.*10\.0.*passing.*-300.*15\.0'
+
+# A fuzzy (substring) match discloses the substitution on stderr, in both human
+# and --json modes, so a JSON consumer never silently gets a different property.
+mock-runs-server
+snouty runs property $R_run_id counter
+[!staging] stderr 'no exact match for .counter., using closest property: .Counter value stays below limit.'
+
+mock-runs-server
+snouty --json runs property $R_run_id counter
+[!staging] stderr 'no exact match for .counter., using closest property: .Counter value stays below limit.'
+[!staging] stdout '"name".*"Counter value stays below limit"'
 
 # Non-event properties drill into a STATUS/VALUE table.
 mock-runs-server

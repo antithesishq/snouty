@@ -1,19 +1,23 @@
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
+use color_eyre::eyre::{Result, eyre};
+
 use crate::container::{ContainerRuntime, DockerRuntime, PodmanRuntime, is_podman_in_disguise};
+use crate::snouty_config::{self, SnoutyConfig};
 
 /// Return all container runtimes that are actually usable on this machine.
 /// Skips `docker` if it is actually podman in disguise.
 pub fn available_runtimes() -> Vec<Box<dyn ContainerRuntime>> {
-    let requested = std::env::var("SNOUTY_TEST_RUNTIME").ok();
+    let config = snouty_config::default_config(None);
+    let requested = config.test_runtime();
     let mut runtimes: Vec<Box<dyn ContainerRuntime>> = Vec::new();
-    let want_podman = requested.as_deref().is_none_or(|r| r == "podman");
-    let want_docker = requested.as_deref().is_none_or(|r| r == "docker");
+    let want_podman = requested.is_none_or(|r| r == "podman");
+    let want_docker = requested.is_none_or(|r| r == "docker");
 
     if want_podman
         && Command::new("podman")
@@ -674,6 +678,75 @@ fn mock_route_launch() -> (u16, String) {
 #[ctor::ctor]
 fn init_test_eyre() {
     let _ = color_eyre::install();
+}
+
+pub struct TestConfig {
+    tenant: Result<String, String>,
+    repository: Result<String, String>,
+    base_url: Option<String>,
+    docs_url: Option<String>,
+    docs_db_path: Option<String>,
+    container_engine: Option<String>,
+    test_runtime: Option<String>,
+    cache_dir: Option<PathBuf>,
+    temp_dir: Option<PathBuf>,
+}
+
+impl TestConfig {
+    pub fn for_base_url_and_maybe_cache_dir(
+        base_url: String,
+        cache_dir: Option<PathBuf>,
+    ) -> Self {
+        Self {
+            base_url: Some(base_url),
+            cache_dir,
+            tenant: Err("not specified".to_owned()),
+            repository: Err("not specified".to_owned()),
+            docs_url: None,
+            docs_db_path: None,
+            container_engine: None,
+            test_runtime: None,
+            temp_dir: None,
+        }
+    }
+}
+
+impl SnoutyConfig for TestConfig {
+    fn tenant(&self) -> Result<&str> {
+        self.tenant.as_deref().map_err(|err| eyre!("{err:#}"))
+    }
+
+    fn repository(&self) -> Result<&str> {
+        self.repository.as_deref().map_err(|err| eyre!("{err:#}"))
+    }
+
+    fn base_url(&self) -> Option<&str> {
+        self.base_url.as_deref()
+    }
+
+    fn docs_url(&self) -> Option<&str> {
+        self.docs_url.as_deref()
+    }
+
+    fn docs_db_path(&self) -> Option<&str> {
+        self.docs_db_path.as_deref()
+    }
+
+    fn container_engine(&self) -> Option<&str> {
+        self.container_engine.as_deref()
+    }
+
+    fn test_runtime(&self) -> Option<&str> {
+        self.test_runtime.as_deref()
+    }
+
+    fn cache_dir(&self) -> Option<&Path> {
+        self.cache_dir.as_deref()
+    }
+
+    fn temp_dir(&self) -> Option<&Path> {
+        self.temp_dir.as_deref()
+    }
 }
 
 #[cfg(test)]

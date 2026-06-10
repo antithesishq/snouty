@@ -11,8 +11,9 @@ use tokio::time::{Duration, sleep};
 
 use crate::cli::ValidateArgs;
 use crate::config::{self, ComposeConfig, Config, KubernetesConfig};
-use crate::container;
 use crate::scripts::{ScriptType, TestScript, scan_scripts};
+use crate::snouty_config::SnoutyConfig;
+use crate::{container, snouty_config};
 
 const K8S_VALIDATOR_IMAGE: &str = "docker.io/antithesishq/k8s-validator:1.0.0";
 
@@ -160,9 +161,8 @@ impl Drop for ComposeDownGuard<'_> {
 }
 
 pub async fn cmd_validate(args: ValidateArgs) -> Result<()> {
-    match std::env::var("SNOUTY_TEMP_DIR") {
-        Ok(out_dir) => {
-            let temp_dir = Path::new(&out_dir);
+    match snouty_config::default_config(None).temp_dir() {
+        Some(temp_dir) => {
             // To avoid conflating results of subsequent runs, we require that the provided
             // SNOUTY_TEMP_DIR is empty or non-existent
             mkdir_or_require_empty(temp_dir)?;

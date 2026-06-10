@@ -169,7 +169,7 @@ pub(crate) fn start_mock_server(response_body: &'static str, status: u16) -> Str
 }
 
 pub(crate) fn cached_docs_db_path(cache_dir: &TempDir) -> PathBuf {
-    cache_dir.path().join("snouty").join("docs.db")
+    cache_dir.path().join("docs.db")
 }
 
 pub(crate) fn fixture_db() -> String {

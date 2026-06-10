@@ -111,7 +111,7 @@ fn launch_config_requires_registry_env() {
         ])
         .assert()
         .failure()
-        .stderr(predicate::str::contains("ANTITHESIS_REPOSITORY"));
+        .stderr(predicate::str::contains("No repository found"));
 }
 
 #[test]
@@ -172,7 +172,7 @@ fn launch_config_k8s_dir_is_accepted() {
         ])
         .assert()
         .failure()
-        .stderr(predicate::str::contains("ANTITHESIS_REPOSITORY"));
+        .stderr(predicate::str::contains("No repository found"));
 }
 
 #[test]

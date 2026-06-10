@@ -281,20 +281,34 @@ fn open_run_report(run: &RunDetail, json: bool) -> Result<()> {
 fn launch_browser(url: &str) -> bool {
     use std::process::{Command, Stdio};
 
-    // Quote the URL so cmd.exe doesn't split it on metacharacters like `&`.
-    // cmd's `start` treats the first quoted argument as the window title, so the
-    // empty `""` stays as the title and the URL is the (safe) second quoted arg.
-    let quoted_url = format!("\"{url}\"");
-    let (program, args): (&str, Vec<&str>) = if cfg!(target_os = "macos") {
-        ("open", vec![url])
-    } else if cfg!(target_os = "windows") {
-        ("cmd", vec!["/C", "start", "\"\"", &quoted_url])
-    } else {
-        ("xdg-open", vec![url])
+    #[cfg(target_os = "windows")]
+    let mut command = {
+        use std::os::windows::process::CommandExt;
+        // cmd.exe's `start` doesn't parse Rust's `\"`-style arg escaping, so build
+        // the command line verbatim with `raw_arg`. The first quoted token is the
+        // window title (kept empty), and the URL is the second quoted token — the
+        // quotes survive intact, so `&` inside the URL isn't treated as a command
+        // separator.
+        let mut command = Command::new("cmd");
+        command.raw_arg(format!("/C start \"\" \"{url}\""));
+        command
     };
 
-    Command::new(program)
-        .args(&args)
+    #[cfg(target_os = "macos")]
+    let mut command = {
+        let mut command = Command::new("open");
+        command.arg(url);
+        command
+    };
+
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    let mut command = {
+        let mut command = Command::new("xdg-open");
+        command.arg(url);
+        command
+    };
+
+    command
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()
@@ -552,6 +566,66 @@ fn resolve_property<'a>(properties: &'a [Property], query: &str) -> Result<Resol
     }
 }
 
+/// How a wrapped free-text block lays its label out (see [`render_prose_block`]).
+enum ProseLayout {
+    /// Label sits in a fixed-width column; the first body line follows it and
+    /// continuation lines indent to the same column (hanging indent). The body
+    /// wraps to `terminal_width - label_col`, floored at `min_body_width`.
+    HangingIndent {
+        label_col: usize,
+        min_body_width: usize,
+    },
+    /// Label sits on its own line; the body follows at column 0 and wraps to the
+    /// full terminal width.
+    OwnLine,
+}
+
+/// Render a labelled block of free-form prose (e.g. a property/run description):
+/// sanitize while keeping real line breaks, drop stray leading/trailing blank
+/// lines, and wrap to the terminal so a long paragraph doesn't blow past the
+/// screen. Blank interior lines are emitted bare (no padding) in every layout.
+/// Returns the empty string when the text has no non-blank lines.
+fn render_prose_block(label: &str, text: &str, layout: ProseLayout) -> String {
+    let body_width = match layout {
+        ProseLayout::HangingIndent {
+            label_col,
+            min_body_width,
+        } => terminal_width()
+            .saturating_sub(label_col)
+            .max(min_body_width),
+        ProseLayout::OwnLine => terminal_width(),
+    };
+    let wrapped = wrap_text(&sanitize_multiline(text), body_width);
+    let lines = trim_blank_edges(&wrapped);
+    if lines.is_empty() {
+        return String::new();
+    }
+
+    let mut out = String::new();
+    match layout {
+        ProseLayout::HangingIndent { label_col, .. } => {
+            for (index, line) in lines.iter().enumerate() {
+                if line.is_empty() {
+                    out.push('\n');
+                } else if index == 0 {
+                    out.push_str(&format!("{label:<label_col$}{line}\n"));
+                } else {
+                    out.push_str(&format!("{:<label_col$}{line}\n", ""));
+                }
+            }
+        }
+        ProseLayout::OwnLine => {
+            out.push_str(label);
+            out.push('\n');
+            for line in lines {
+                out.push_str(line);
+                out.push('\n');
+            }
+        }
+    }
+    out
+}
+
 fn print_property_header(property: &Property) {
     println!("Name      {}", sanitize(property.name()));
     println!("Status    {}", property_status_label(property.status()));
@@ -563,22 +637,19 @@ fn print_property_header(property: &Property) {
         Property::NonEventProperty(p) => p.description.as_deref(),
     };
     if let Some(desc) = description {
-        // Details is free-form prose: keep real line breaks (don't escape them
-        // to literal "\n"), drop stray leading/trailing blank lines, and wrap to
-        // the terminal so a long paragraph doesn't blow past the screen. The
-        // label column is 10 chars wide, so continuation lines indent to match.
-        let wrap_width = terminal_width()
-            .saturating_sub(PROPERTY_LABEL_WIDTH)
-            .max(20);
-        let lines = wrap_text(&sanitize_multiline(desc), wrap_width);
-        let lines = trim_blank_edges(&lines);
-        for (index, line) in lines.iter().enumerate() {
-            if index == 0 {
-                println!("Details   {line}");
-            } else {
-                println!("{:width$}{line}", "", width = PROPERTY_LABEL_WIDTH);
-            }
-        }
+        // Details is free-form prose, wrapped under a 10-char label column so
+        // continuation lines hang-indent to match the value column above.
+        print!(
+            "{}",
+            render_prose_block(
+                "Details",
+                desc,
+                ProseLayout::HangingIndent {
+                    label_col: PROPERTY_LABEL_WIDTH,
+                    min_body_width: 20,
+                },
+            )
+        );
     }
     println!();
 }
@@ -791,19 +862,16 @@ fn print_run_detail(run: &RunDetail) {
         rows.push(("Creator", name.clone()));
     }
 
-    print!("{}", render_kv(&rows));
+    print!("{}", render_kv(&rows, 0));
 
     // The description can be an enormous multi-paragraph blob, so it goes as its
-    // own block — wrapped to the terminal — rather than as a metadata row that
-    // would otherwise bury Status/timestamps below a wall of text.
+    // own block — wrapped to the terminal, with the label on its own line —
+    // rather than as a metadata row that would otherwise bury Status/timestamps
+    // below a wall of text. The leading blank line separates it from the block.
     if let Some(desc) = run.test_description() {
-        let lines = wrap_text(&sanitize_multiline(desc), terminal_width());
-        let lines = trim_blank_edges(&lines);
-        if !lines.is_empty() {
-            println!("\nDescription");
-            for line in lines {
-                println!("{line}");
-            }
+        let block = render_prose_block("Description", desc, ProseLayout::OwnLine);
+        if !block.is_empty() {
+            print!("\n{block}");
         }
     }
 
@@ -824,9 +892,16 @@ fn print_run_detail(run: &RunDetail) {
 }
 
 /// Render aligned `Label  value` lines, sqlite `.mode line`–style. Each line is
-/// terminated with a newline; values are sanitized.
-fn render_kv(rows: &[(&str, String)]) -> String {
-    let label_width = rows.iter().map(|(label, _)| label.len()).max().unwrap_or(0);
+/// terminated with a newline; values are sanitized. Labels are padded to the
+/// widest label, but never narrower than `min_label_width` so a caller that also
+/// renders a wider prose label below the block can keep every row aligned.
+fn render_kv(rows: &[(&str, String)], min_label_width: usize) -> String {
+    let label_width = rows
+        .iter()
+        .map(|(label, _)| label.len())
+        .chain(std::iter::once(min_label_width))
+        .max()
+        .unwrap_or(0);
     let mut out = String::new();
     for (label, value) in rows {
         out.push_str(&format!("{label:label_width$}  {}\n", sanitize(value)));
@@ -837,7 +912,6 @@ fn render_kv(rows: &[(&str, String)]) -> String {
 /// `runs list --detail`: one aligned key-value block per run (no table),
 /// separated by blank lines. Empty optional fields are omitted.
 fn render_runs_detail(runs: &[RunSummary]) -> String {
-    let width = terminal_width();
     let blocks: Vec<String> = runs
         .iter()
         .map(|run| {
@@ -854,32 +928,28 @@ fn render_runs_detail(runs: &[RunSummary]) -> String {
             // The description can be a multi-paragraph blob, so it wraps to the
             // terminal with a hanging indent under the value column (matching
             // `runs show`) instead of running off as one giant line. Include its
-            // label in the width so every row in the block stays aligned.
+            // label in the width so every key-value row stays aligned with it.
             let description = run.test_description();
+            let min_label_width = description.map_or(0, |_| "Description".len());
             let label_width = rows
                 .iter()
                 .map(|(label, _)| label.len())
-                .chain(description.is_some().then(|| "Description".len()))
                 .max()
-                .unwrap_or(0);
+                .unwrap_or(0)
+                .max(min_label_width);
 
-            let mut out = String::new();
-            for (label, value) in &rows {
-                out.push_str(&format!("{label:label_width$}  {}\n", sanitize(value)));
-            }
+            let mut out = render_kv(&rows, min_label_width);
             if let Some(description) = description {
-                let indent = label_width + 2;
-                let avail = width.saturating_sub(indent).max(1);
-                let wrapped = wrap_text(&sanitize_multiline(description), avail);
-                let lines = trim_blank_edges(&wrapped);
-                for (i, line) in lines.iter().enumerate() {
-                    let label = if i == 0 { "Description" } else { "" };
-                    if line.is_empty() {
-                        out.push('\n');
-                    } else {
-                        out.push_str(&format!("{label:label_width$}  {line}\n"));
-                    }
-                }
+                out.push_str(&render_prose_block(
+                    "Description",
+                    description,
+                    // The value column starts two spaces past the label column;
+                    // floored at one so the body never vanishes on a tiny term.
+                    ProseLayout::HangingIndent {
+                        label_col: label_width + 2,
+                        min_body_width: 1,
+                    },
+                ));
             }
             out
         })
@@ -931,27 +1001,47 @@ async fn cmd_runs_build_logs(run_id: &str, json: bool, verbose: bool) -> Result<
     result
 }
 
-/// The text `runs events` searches a single NDJSON line against. We match the
-/// DECODED content the user actually sees in the table (input_hash, vtime,
-/// source, output via `render_event_entry`), not the raw JSON-escaped line — so
-/// a needle containing quotes/backslashes copied from the OUTPUT column matches.
-/// Lines that don't parse as JSON fall back to the raw text.
+/// The text `runs events` searches a single NDJSON line against, built from the
+/// already-rendered event. We match the DECODED content the user actually sees
+/// in the table (input_hash, vtime, source, output), not the raw JSON-escaped
+/// line — so a needle containing quotes/backslashes copied from the OUTPUT
+/// column matches.
 ///
 /// Client-side substring matching is the only filtering `runs events` does.
 /// Structural filters (source/stream/vtime) are intentionally unsupported: the
 /// server streams only a capped subset of matching events, so filtering it
 /// client-side would silently apply to that subset rather than to all of the
 /// run's events.
-fn event_haystack(line: &str) -> String {
+fn event_haystack(rendered: &RenderedEventEntry) -> String {
+    format!(
+        "{} {} {} {}",
+        rendered.input_hash, rendered.vtime, rendered.source, rendered.output
+    )
+}
+
+/// Parse one NDJSON event line a single time and derive both its search haystack
+/// and (for the human table) its rendered row. A line that doesn't parse as JSON
+/// falls back to raw-line matching and a sanitized raw OUTPUT row.
+fn prepare_event_line(line: &str) -> (String, [String; 4]) {
     match serde_json::from_str::<Value>(line) {
         Ok(entry) => {
             let rendered = render_event_entry(&entry);
-            format!(
-                "{} {} {} {}",
-                rendered.input_hash, rendered.vtime, rendered.source, rendered.output
-            )
+            let haystack = event_haystack(&rendered);
+            let row = [
+                rendered.input_hash,
+                rendered.vtime,
+                rendered.source,
+                rendered.output,
+            ];
+            (haystack, row)
         }
-        Err(_) => line.to_string(),
+        // The line isn't valid JSON (a truncated final chunk, a proxy-injected
+        // error blob, …). Match against the raw line and surface it sanitized in
+        // the OUTPUT column rather than dropping it silently.
+        Err(_) => (
+            line.to_string(),
+            [String::new(), String::new(), String::new(), sanitize(line)],
+        ),
     }
 }
 
@@ -999,10 +1089,12 @@ async fn cmd_runs_events(
 
     // JSON mode emits the raw matching line, but matching itself runs against the
     // DECODED fields (see `event_haystack`) so it agrees with what the table
-    // shows. Stream each matching line as it arrives.
+    // shows. Parse each line once to build the haystack, then stream the raw
+    // matching line as it arrives.
     if json {
         let result = stream_ndjson_lines(stream, NoOpTransformer {}, |line| {
-            if !haystack_matches_all_needles(&event_haystack(line), &lowered_matches) {
+            let (haystack, _) = prepare_event_line(line);
+            if !haystack_matches_all_needles(&haystack, &lowered_matches) {
                 return Ok(());
             }
             writeln!(stdout, "{line}")?;
@@ -1015,30 +1107,15 @@ async fn cmd_runs_events(
 
     // Human table: the event stream is small (the server already substring-
     // filters), so buffer the matching rows and size the HASH/VTIME/SOURCE
-    // columns to the actual content rather than guessing fixed widths.
-    let mut rows: Vec<[String; 4]> = Vec::new();
+    // columns to the actual content rather than guessing fixed widths. Each line
+    // is parsed once into both its haystack and its row.
+    let mut rows: Vec<Vec<String>> = Vec::new();
     let result = stream_ndjson_lines(stream, NoOpTransformer {}, |line| {
-        if !haystack_matches_all_needles(&event_haystack(line), &lowered_matches) {
+        let (haystack, row) = prepare_event_line(line);
+        if !haystack_matches_all_needles(&haystack, &lowered_matches) {
             return Ok(());
         }
-        match serde_json::from_str::<Value>(line) {
-            Ok(entry) => {
-                let rendered = render_event_entry(&entry);
-                rows.push([
-                    rendered.input_hash,
-                    rendered.vtime,
-                    rendered.source,
-                    rendered.output,
-                ]);
-            }
-            Err(_) => {
-                // The line matched but isn't valid JSON (a truncated final chunk,
-                // a proxy-injected error blob, …). Surface it raw in the OUTPUT
-                // column rather than dropping it silently, sanitized like every
-                // other row.
-                rows.push([String::new(), String::new(), String::new(), sanitize(line)]);
-            }
-        }
+        rows.push(row.to_vec());
         Ok(())
     })
     .await;
@@ -1054,35 +1131,15 @@ async fn cmd_runs_events(
         return Ok(());
     }
 
-    // Size each non-final column to the widest cell (header included). OUTPUT is
-    // last and never padded.
-    let headers = ["HASH", "VTIME", "SOURCE"];
-    let mut widths = headers.map(str::len);
-    for row in &rows {
-        for (col, width) in widths.iter_mut().enumerate() {
-            *width = (*width).max(row[col].chars().count());
-        }
-    }
-    writeln!(
-        stdout,
-        "{:<hw$}  {:<vw$}  {:<sw$}  OUTPUT",
-        headers[0],
-        headers[1],
-        headers[2],
-        hw = widths[0],
-        vw = widths[1],
-        sw = widths[2],
-    )?;
-    for row in &rows {
-        let [input_hash, vtime, source, output] = row;
-        writeln!(
-            stdout,
-            "{input_hash:<hw$}  {vtime:<vw$}  {source:<sw$}  {output}",
-            hw = widths[0],
-            vw = widths[1],
-            sw = widths[2],
-        )?;
-    }
+    // Auto-width HASH/VTIME/SOURCE columns with OUTPUT emitted verbatim as the
+    // final column — the shared renderer's `Raw` last-column policy.
+    let headers = [
+        "HASH".to_string(),
+        "VTIME".to_string(),
+        "SOURCE".to_string(),
+        "OUTPUT".to_string(),
+    ];
+    writeln!(stdout, "{}", render_table(&headers, &rows))?;
     stdout.flush()?;
 
     // Now that buffered rows are rendered, surface any mid-stream error.
@@ -1168,10 +1225,11 @@ fn format_log_line(entry: &Value) -> String {
 
     // Web UI format: text records sit one space after the stream bracket.
     // JSON records get an extra " - " separator before the body.
-    // Mirror the JSON output path and strip ANSI escapes from the text payload
-    // so container color codes don't leak into the rendered stream.
+    // Run the text payload through the shared terminal normalizer: strip ANSI
+    // color codes, then escape any remaining control bytes so a stray `\r`/BEL
+    // in container output can't corrupt the rendered stream.
     let payload = if let Some(text) = entry.get("output_text").and_then(Value::as_str) {
-        strip_ansi(text)
+        normalize_terminal_text(text)
     } else {
         format!(" - {}", strip_log_envelope(entry))
     };
@@ -1184,28 +1242,42 @@ fn format_log_line(entry: &Value) -> String {
     )
 }
 
+/// The two ways a `moment`'s vtime can be expressed, resolved once so both the
+/// log renderer and the fault annotator agree on precedence. `seconds` is the
+/// `moment.vtime` seconds string parsed as f64 (the canonical form); `ticks` is
+/// the `moment._vtime_ticks` integer fallback. Either, both, or neither may be
+/// present. Callers pick whichever representation they need with the precedence
+/// they require (seconds-first for display, ticks-exact for fault windows).
+struct MomentVtime {
+    seconds: Option<f64>,
+    ticks: Option<u64>,
+}
+
+fn resolve_moment_vtime(entry: &Value) -> MomentVtime {
+    let seconds = entry["moment"]["vtime"]
+        .as_str()
+        .and_then(|s| s.parse::<f64>().ok());
+    let ticks = entry["moment"]["_vtime_ticks"].as_u64();
+    MomentVtime { seconds, ticks }
+}
+
 /// Render a log line's vtime in seconds with at most 3 decimal places (trailing
 /// zeros trimmed). Full-precision vtimes overflow the fixed `LOG_VTIME_WIDTH`
 /// column and desync the source column; trimming keeps every row aligned.
 /// Prefers the `vtime` seconds string and falls back to `_vtime_ticks`.
 fn format_log_vtime(entry: &Value) -> String {
-    let vtime = &entry["moment"]["vtime"];
+    let resolved = resolve_moment_vtime(entry);
     // `vtime` is usually a seconds string, but the API doesn't forbid a JSON
     // number — accept both (string-then-parse, else `as_f64`) so a numeric vtime
     // doesn't render as an empty column. Fall back to ticks, then the raw value.
-    let seconds = vtime
-        .as_str()
-        .and_then(|s| s.parse::<f64>().ok())
-        .or_else(|| vtime.as_f64())
-        .or_else(|| {
-            entry["moment"]["_vtime_ticks"]
-                .as_u64()
-                .map(|ticks| ticks as f64 / TICKS_PER_SECOND)
-        });
+    let seconds = resolved
+        .seconds
+        .or_else(|| entry["moment"]["vtime"].as_f64())
+        .or_else(|| resolved.ticks.map(|ticks| ticks as f64 / TICKS_PER_SECOND));
     match seconds {
         Some(seconds) => trim_decimals(seconds, 3),
         // Not a parseable number — show whatever the server sent rather than "".
-        None => vtime.as_str().unwrap_or("").to_string(),
+        None => entry["moment"]["vtime"].as_str().unwrap_or("").to_string(),
     }
 }
 
@@ -1352,10 +1424,13 @@ impl LineTransformer for FaultAnnotator {
         if let Ok(mut entry) = serde_json::from_str::<Value>(line) {
             let mut update_faults = false;
 
-            let vtime_ticks_node = entry["moment"]["_vtime_ticks"].as_u64();
-            let vtime_node = entry["moment"]["vtime"]
-                .as_str()
-                .and_then(|seconds_string| seconds_string.parse::<f64>().ok());
+            // Resolve the moment's vtime with the same precedence as the log
+            // renderer, but keep ticks exact: prefer the seconds string (scaled
+            // to ticks) and fall back to the raw `_vtime_ticks` integer.
+            let MomentVtime {
+                seconds: vtime_node,
+                ticks: vtime_ticks_node,
+            } = resolve_moment_vtime(&entry);
             let event_vtime_ticks = vtime_node
                 .map(|seconds| (seconds * TICKS_PER_SECOND) as u64)
                 .or(vtime_ticks_node)
@@ -1807,7 +1882,9 @@ fn render_event_output(entry: &Value) -> String {
         return rendered;
     }
     if let Some(output_text) = entry.get("output_text").and_then(Value::as_str) {
-        return sanitize(output_text);
+        // Strip ANSI color codes before escaping controls so colorized container
+        // output shows the plain text, not visible `\x1B[…` escape noise.
+        return normalize_terminal_text(output_text);
     }
     sanitize(&serde_json::to_string(entry).unwrap_or_default())
 }
@@ -1983,19 +2060,120 @@ fn file_basename(file: &str) -> Option<&str> {
         .or(Some(trimmed))
 }
 
+/// How the final column of a table is laid out once the leading columns have
+/// been sized to their widest cell. The leading columns are always padded to
+/// their widest cell; only the final column's policy varies.
+enum LastColumn {
+    /// Emit the final column verbatim with no padding or width bound. The table
+    /// can grow as wide as its widest final cell.
+    Raw,
+    /// Bound the final column to whatever width remains after the leading columns
+    /// fit within `total_width`, truncating a too-long cell with an ellipsis.
+    Truncate { total_width: usize },
+    /// Bound the final column like [`Truncate`], but wrap a too-long cell across
+    /// multiple lines with a hanging indent under the column start (floored at a
+    /// readable minimum width).
+    Wrap { total_width: usize },
+}
+
+/// Shared column-sizing core for every table snouty renders. Leading columns are
+/// sized to their widest cell (header included, counted in chars); the final
+/// column follows `last_column`. Lines are right-trimmed, so a `Raw` final
+/// column never leaves trailing padding.
+fn render_columns(headers: &[String], rows: &[Vec<String>], last_column: LastColumn) -> String {
+    let last = headers.len() - 1;
+
+    // Size every leading column to the widest of its header and cells. The final
+    // column is sized below according to the policy.
+    let mut widths = headers
+        .iter()
+        .map(|header| header.chars().count())
+        .collect::<Vec<_>>();
+    for row in rows {
+        for (index, cell) in row.iter().enumerate().take(last) {
+            widths[index] = widths[index].max(cell.chars().count());
+        }
+    }
+
+    // Two-space separators between columns; the leading columns plus separators
+    // form the prefix a wrapped final column hangs under.
+    let prefix_width: usize = widths.iter().take(last).sum::<usize>() + 2 * last;
+
+    match &last_column {
+        LastColumn::Raw => {
+            // Final column unbounded: `push_table_row` emits it unpadded, so its
+            // width never matters — leave `widths[last]` at the header width.
+            let mut output = String::new();
+            push_table_row(&mut output, headers, &widths);
+            for row in rows {
+                push_table_row(&mut output, row, &widths);
+            }
+            output.trim_end().to_string()
+        }
+        LastColumn::Truncate { total_width } => {
+            let last_width = total_width
+                .saturating_sub(prefix_width)
+                .max(headers[last].chars().count());
+            widths[last] = last_width;
+
+            let mut output = String::new();
+            push_table_row(&mut output, headers, &widths);
+            for row in rows {
+                let mut row = row.clone();
+                row[last] = console::truncate_str(&row[last], last_width, "…").into_owned();
+                push_table_row(&mut output, &row, &widths);
+            }
+            output.trim_end().to_string()
+        }
+        LastColumn::Wrap { total_width } => {
+            let last_width = total_width
+                .saturating_sub(prefix_width)
+                .max(headers[last].chars().count())
+                .max(20);
+
+            let mut output = String::new();
+            push_table_row(&mut output, headers, &widths);
+            for row in rows {
+                let wrapped = wrap_text(&row[last], last_width);
+                let wrapped = if wrapped.is_empty() {
+                    vec![String::new()]
+                } else {
+                    wrapped
+                };
+                for (line_index, line) in wrapped.iter().enumerate() {
+                    if line_index == 0 {
+                        for index in 0..last {
+                            output.push_str(&format!(
+                                "{:<width$}  ",
+                                row[index],
+                                width = widths[index]
+                            ));
+                        }
+                        output.push_str(line);
+                    } else {
+                        output.push_str(&format!("{:prefix_width$}{line}", ""));
+                    }
+                    output.push('\n');
+                }
+            }
+            output.trim_end().to_string()
+        }
+    }
+}
+
 fn render_runs_table(runs: &[RunSummary], width: usize) -> String {
     // The default view omits the description entirely — it never fit usefully
     // beside the (necessarily full) run id, and `runs list --detail` shows it in
-    // full. Test name is the final, width-bounded column.
+    // full. Test name is the final, width-bounded column truncated with an
+    // ellipsis (a `runs show RUN` follow-up still works off the full id).
     let headers = vec![
         "RUN ID".to_string(),
         "STATUS".to_string(),
         "CREATED".to_string(),
         "TEST NAME".to_string(),
     ];
-    let name_col = headers.len() - 1;
 
-    let mut prepared: Vec<Vec<String>> = runs
+    let rows: Vec<Vec<String>> = runs
         .iter()
         .map(|run| {
             let test_name = run.test_name().map(sanitize).unwrap_or_else(|| "-".into());
@@ -2008,53 +2186,13 @@ fn render_runs_table(runs: &[RunSummary], width: usize) -> String {
         })
         .collect();
 
-    let mut widths = headers
-        .iter()
-        .map(|header| header.len())
-        .collect::<Vec<_>>();
-    for row in &prepared {
-        for (index, cell) in row.iter().enumerate().take(name_col) {
-            widths[index] = widths[index].max(cell.chars().count());
-        }
-    }
-    // Test name gets whatever room remains. Two-space separators between
-    // columns; keep at least the header width so the label stays readable on
-    // narrow terminals.
-    let fixed_width: usize = widths.iter().take(name_col).sum::<usize>() + 2 * name_col;
-    let name_width = width
-        .saturating_sub(fixed_width)
-        .max(headers[name_col].len());
-    widths[name_col] = name_width;
-
-    let mut output = String::new();
-    push_table_row(&mut output, &headers, &widths);
-
-    for row in &mut prepared {
-        row[name_col] = console::truncate_str(&row[name_col], name_width, "…").into_owned();
-        push_table_row(&mut output, row, &widths);
-    }
-
-    output.trim_end().to_string()
+    render_columns(&headers, &rows, LastColumn::Truncate { total_width: width })
 }
 
+/// Auto-width table whose final column is emitted verbatim (no padding, no
+/// width bound).
 fn render_table(headers: &[String], rows: &[Vec<String>]) -> String {
-    let mut widths = headers
-        .iter()
-        .map(|header| header.chars().count())
-        .collect::<Vec<_>>();
-    for row in rows {
-        for (index, cell) in row.iter().enumerate() {
-            widths[index] = widths[index].max(cell.chars().count());
-        }
-    }
-
-    let mut output = String::new();
-    push_table_row(&mut output, headers, &widths);
-    for row in rows {
-        push_table_row(&mut output, row, &widths);
-    }
-
-    output.trim_end().to_string()
+    render_columns(headers, rows, LastColumn::Raw)
 }
 
 /// Like [`render_table`], but the final column wraps to whatever width is left
@@ -2062,49 +2200,7 @@ fn render_table(headers: &[String], rows: &[Vec<String>]) -> String {
 /// push the table past `total_width`. Continuation lines indent to the start of
 /// the final column. Leading columns are sized to their widest cell.
 fn render_table_wrap_last(headers: &[String], rows: &[Vec<String>], total_width: usize) -> String {
-    let last = headers.len() - 1;
-
-    let mut widths = headers
-        .iter()
-        .map(|header| header.chars().count())
-        .collect::<Vec<_>>();
-    for row in rows {
-        for (index, cell) in row.iter().enumerate().take(last) {
-            widths[index] = widths[index].max(cell.chars().count());
-        }
-    }
-
-    // Two-space separators between columns; the leading columns plus separators
-    // form the indent the wrapped final column hangs under.
-    let prefix_width: usize = widths.iter().take(last).sum::<usize>() + 2 * last;
-    let last_width = total_width
-        .saturating_sub(prefix_width)
-        .max(headers[last].chars().count())
-        .max(20);
-
-    let mut output = String::new();
-    push_table_row(&mut output, headers, &widths);
-    for row in rows {
-        let wrapped = wrap_text(&row[last], last_width);
-        let wrapped = if wrapped.is_empty() {
-            vec![String::new()]
-        } else {
-            wrapped
-        };
-        for (line_index, line) in wrapped.iter().enumerate() {
-            if line_index == 0 {
-                for index in 0..last {
-                    output.push_str(&format!("{:<width$}  ", row[index], width = widths[index]));
-                }
-                output.push_str(line);
-            } else {
-                output.push_str(&format!("{:prefix_width$}{line}", ""));
-            }
-            output.push('\n');
-        }
-    }
-
-    output.trim_end().to_string()
+    render_columns(headers, rows, LastColumn::Wrap { total_width })
 }
 
 fn push_table_row(output: &mut String, row: &[String], widths: &[usize]) {
@@ -2122,18 +2218,46 @@ fn push_table_row(output: &mut String, row: &[String], widths: &[usize]) {
     output.push('\n');
 }
 
+/// Escape one character into `out`, sharing the control-char policy between
+/// [`sanitize`] and [`sanitize_multiline`]. `newline` decides how `\n`/`\r` are
+/// handled: single-line callers escape them to visible `\n`/`\r`, multi-line
+/// callers keep `\n` as a real break and drop `\r`. Everything else — tab passes
+/// through, other C0/DEL controls become `\xNN`, printable chars pass through —
+/// is identical for both.
+fn sanitize_char(out: &mut String, ch: char, newline: NewlinePolicy) {
+    match ch {
+        '\n' | '\r' => match newline {
+            NewlinePolicy::Escape => {
+                out.push_str(if ch == '\n' { "\\n" } else { "\\r" });
+            }
+            // Multi-line prose keeps real newlines and drops lone carriage
+            // returns (so `\r\n` collapses to `\n`).
+            NewlinePolicy::KeepNewlineDropReturn => {
+                if ch == '\n' {
+                    out.push('\n');
+                }
+            }
+        },
+        '\t' => out.push('\t'),
+        '\0'..='\u{08}' | '\u{0B}'..='\u{1F}' | '\u{7F}' => {
+            out.push_str(&format!(r"\x{:02X}", ch as u32));
+        }
+        _ => out.push(ch),
+    }
+}
+
+#[derive(Clone, Copy)]
+enum NewlinePolicy {
+    /// Escape `\n`/`\r` to literal `\n`/`\r` (single-line table cells).
+    Escape,
+    /// Keep `\n` as a real break, drop `\r` (multi-line prose).
+    KeepNewlineDropReturn,
+}
+
 fn sanitize(s: &str) -> String {
     let mut escaped = String::new();
     for ch in s.chars() {
-        match ch {
-            '\n' => escaped.push_str("\\n"),
-            '\r' => escaped.push_str("\\r"),
-            '\t' => escaped.push('\t'),
-            '\0'..='\u{08}' | '\u{0B}'..='\u{1F}' | '\u{7F}' => {
-                escaped.push_str(&format!(r"\x{:02X}", ch as u32));
-            }
-            _ => escaped.push(ch),
-        }
+        sanitize_char(&mut escaped, ch, NewlinePolicy::Escape);
     }
     escaped
 }
@@ -2144,17 +2268,17 @@ fn sanitize(s: &str) -> String {
 fn sanitize_multiline(s: &str) -> String {
     let mut out = String::new();
     for ch in s.chars() {
-        match ch {
-            '\n' => out.push('\n'),
-            '\r' => {}
-            '\t' => out.push('\t'),
-            '\0'..='\u{08}' | '\u{0B}'..='\u{1F}' | '\u{7F}' => {
-                out.push_str(&format!(r"\x{:02X}", ch as u32));
-            }
-            _ => out.push(ch),
-        }
+        sanitize_char(&mut out, ch, NewlinePolicy::KeepNewlineDropReturn);
     }
     out
+}
+
+/// Single choke point for terminal-bound free text: strip ANSI escape sequences
+/// first, then escape any remaining control bytes so stray `\r`/`\x08`/BEL can't
+/// corrupt the terminal. Used by both the `runs logs` `output_text` path and the
+/// `runs events` OUTPUT column so the two render container output identically.
+fn normalize_terminal_text(text: &str) -> String {
+    sanitize(&strip_ansi(text))
 }
 
 /// Greedy word-wrap to `width` columns, preserving existing line breaks (each
@@ -2487,6 +2611,23 @@ mod tests {
         let output = render_event_entry(&entry).output;
         assert!(output.starts_with('{'), "expected JSON dump, got: {output}");
         assert!(output.contains("antithesis_sdk"));
+    }
+
+    #[test]
+    fn event_output_strips_ansi_and_escapes_remaining_controls() {
+        // The events OUTPUT column now runs through the shared terminal
+        // normalizer (item 7): ANSI color codes are stripped (no visible
+        // `\x1B[…` noise) and stray control bytes are escaped, not passed raw.
+        let entry = json!({
+            "output_text": "\x1B[4mhello\x1B[0m\u{0008}world\r\n",
+            "source": {"container": "app", "stream": "out"},
+            "moment": {"vtime": "1.0"}
+        });
+        let output = render_event_entry(&entry).output;
+        // ANSI sequences are gone, the backspace/CR are escaped, and the
+        // trailing newline is escaped as a single-line cell.
+        assert_eq!(output, r"hello\x08world\r\n");
+        assert!(!output.contains('\x1B'));
     }
 
     fn event(input_hash: &str, vtime: &str) -> Event {
@@ -4243,7 +4384,7 @@ mod tests {
         // decoded haystack carries them unescaped, so the match succeeds even
         // though the raw NDJSON line escapes them as `\"`.
         let line = r#"{"moment":{"input_hash":"42","vtime":"1.0"},"source":{"container":"app","name":"app","stream":"out"},"output_text":"msg \"starting\""}"#;
-        let haystack = event_haystack(line);
+        let (haystack, _row) = prepare_event_line(line);
         assert!(haystack.contains(r#"msg "starting""#));
 
         let needle = vec![r#""starting""#.to_lowercase()];

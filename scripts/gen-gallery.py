@@ -35,6 +35,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -43,8 +44,15 @@ from typing import Callable
 # A syntactically-valid but nonexistent run id, for clean-error stories.
 UNKNOWN_RUN = "ffffffffffffffffffffffffffffffff-54-5"
 
-# Keywords probed (in order) to sample a real event from a run.
-EVENT_KEYWORDS = ["error", "test", "client", "info", "setup", "start", "the"]
+# Stories are captured concurrently (each is one or two snouty subprocesses that
+# can each block on snouty's 60s timeout); checks are then evaluated serially.
+CAPTURE_WORKERS = 6
+
+# Keywords probed (in order) to sample a real event from a run. --match is
+# required, so a truly unfiltered call isn't possible; ordering broadest-first
+# (a near-universal needle, then common log words) makes the common case a
+# single probe per run before falling back to narrower terms.
+EVENT_KEYWORDS = ["the", "info", "test", "start", "error", "client", "setup"]
 
 
 class GalleryError(Exception):
@@ -139,24 +147,26 @@ class Snouty:
 
 @dataclass
 class Discovery:
-    success: str  # completed run that drives the event/logs/property stories
-    fail: str  # an incomplete run
-    cancelled: str  # a cancelled run
-    launcher: str  # a real launcher value (for the --launcher story)
-    created_after: str  # a timestamp with runs after it
-    window_after: str
-    window_before: str
-    event_keyword: str
-    event_kw2: str
-    event_hash: str
-    event_vtime: float
-    fail_prop: str  # failing event property whose detail shows counter-examples
-    pass_event_prop: str  # passing event property whose detail shows examples
-    nonevent_prop: str  # non-event property whose detail shows a real value
-    fuzzy: str  # substring that resolves to exactly one property
-    ambiguous: str  # substring shared by >= 2 property names
-    fail_hash: str
-    fail_vtime: str
+    # All fields default so `--list` can build an empty Discovery() just to
+    # enumerate slugs, immune to future field additions.
+    success: str = ""  # completed run that drives the event/logs/property stories
+    fail: str = ""  # an incomplete run
+    cancelled: str = ""  # a cancelled run
+    launcher: str = ""  # a real launcher value (for the --launcher story)
+    created_after: str = ""  # a timestamp with runs after it
+    window_after: str = ""
+    window_before: str = ""
+    event_keyword: str = ""
+    event_kw2: str = ""
+    event_hash: str = ""
+    event_vtime: float = 0.0
+    fail_prop: str = ""  # failing event property whose detail shows counter-examples
+    pass_event_prop: str = ""  # passing event property whose detail shows examples
+    nonevent_prop: str = ""  # non-event property whose detail shows a real value
+    fuzzy: str = ""  # substring that resolves to exactly one property
+    ambiguous: str = ""  # substring shared by >= 2 property names
+    fail_hash: str = ""
+    fail_vtime: str = ""
 
 
 def _first_run(sn: Snouty, *filters: str) -> str | None:
@@ -165,16 +175,25 @@ def _first_run(sn: Snouty, *filters: str) -> str | None:
 
 
 def _sample_event(sn: Snouty, run: str) -> dict | None:
-    """Return the first event matching any probe keyword, or None if the run has
-    no sampleable events. Raises GalleryError if the endpoint is unreachable."""
+    """Return the first event matching any probe keyword that is usable for the
+    event/logs stories, or None if the run has no such event. Raises GalleryError
+    if the endpoint is unreachable.
+
+    "Usable" means it has a moment with both coordinates (for the logs stories)
+    *and* yields a distinctive second needle (for the multi-match story); we stash
+    both on the returned row so discovery doesn't have to re-derive them."""
     for kw in EVENT_KEYWORDS:
         rows = sn.json_lines(["runs", "events", run, "--match", kw])
         for row in rows:
-            # Need a moment with both coordinates for the logs stories.
             moment = row.get("moment") or {}
-            if moment.get("input_hash") and moment.get("vtime"):
-                row["_keyword"] = kw
-                return row
+            if not (moment.get("input_hash") and moment.get("vtime")):
+                continue
+            second = _pick_second_needle(row, kw)
+            if second is None:
+                continue
+            row["_keyword"] = kw
+            row["_second_needle"] = second
+            return row
     return None
 
 
@@ -203,21 +222,40 @@ def _pick_event_completed_run(sn: Snouty, scan: int) -> tuple[str, dict]:
     )
 
 
-def _pick_second_needle(event: dict, keyword: str) -> str:
-    """A token that co-occurs with the keyword in this event and is distinct
-    from it, preferring real content from output_text. snouty matches against
-    the whole NDJSON line, so any token on the line is valid; we prefer content
-    so the multi-match story reads naturally."""
+# Envelope keys and ubiquitous JSON literals that occur on (nearly) every raw
+# NDJSON event line. A second --match needle drawn from these cannot narrow the
+# result set, so the multi-match story's `len(rows) < single` check is
+# unsatisfiable — exclude them entirely.
+_UBIQUITOUS_TOKENS = frozenset(
+    {
+        "output_text",
+        "moment",
+        "input_hash",
+        "vtime",
+        "source",
+        "container",
+        "stream",
+        "name",
+        "level",
+        "true",
+        "false",
+        "null",
+    }
+)
+
+
+def _pick_second_needle(event: dict, keyword: str) -> str | None:
+    """A token that co-occurs with the keyword in this event and is *distinctive*
+    enough to narrow a search — drawn from the event's output_text content, never
+    from envelope keys. Returns None when no distinctive token exists so the
+    caller can try a different event/run rather than committing to a needle that
+    cannot narrow the multi-match story."""
     kw = keyword.lower()
-
-    def tokens(text: str) -> list[str]:
-        return [t for t in re.findall(r"[A-Za-z_]{4,}", text) if t.lower() != kw]
-
-    for t in tokens(event.get("output_text") or ""):
-        return t
-    for t in tokens(json.dumps(event)):
-        return t
-    return ""
+    for t in re.findall(r"[A-Za-z_]{4,}", event.get("output_text") or ""):
+        low = t.lower()
+        if low != kw and low not in _UBIQUITOUS_TOKENS:
+            return t
+    return None
 
 
 def _render_property(sn: Snouty, run: str, name: str) -> str:
@@ -231,17 +269,33 @@ def _has_moment_rows(rendered: str) -> bool:
     return _MOMENT_ROW.search(rendered) is not None
 
 
+def _moments(values: list) -> list:
+    """The subset of an examples/counterexamples array that has a moment with
+    both coordinates — exactly the elements snouty renders as HASH/VTIME rows."""
+    out = []
+    for v in values or []:
+        moment = (v.get("moment") if isinstance(v, dict) else None) or {}
+        if moment.get("input_hash") and moment.get("vtime"):
+            out.append(v)
+    return out
+
+
 def _pick_property_with_moments(sn: Snouty, run: str, props: list[dict], status: str) -> str:
-    """Pick a property of the given status whose *rendered detail* actually shows
-    example/counter-example moment rows (HASH/VTIME). Counts in the JSON are not
-    reliable predictors of the rendered detail, so we render-probe, trying the
-    highest-count candidates first."""
-    count_key = "counterexample_count" if status == "Failing" else "example_count"
-    candidates = [p for p in props if p.get("status") == status]
-    candidates.sort(key=lambda p: p.get(count_key) or 0, reverse=True)
-    for p in candidates:
+    """Pick a property of the given status that has example/counter-example moment
+    rows. The properties JSON already carries the full `examples`/`counterexamples`
+    arrays snouty renders, so we select straight from it (most moments first) and
+    only render-probe the one chosen property as a cheap safety net."""
+    arr_key = "counterexamples" if status == "Failing" else "examples"
+    candidates = [
+        (p, m)
+        for p in props
+        if p.get("status") == status and (m := _moments(p.get(arr_key) or []))
+    ]
+    candidates.sort(key=lambda c: len(c[1]), reverse=True)
+    for p, _ in candidates:
         if _has_moment_rows(_render_property(sn, run, p["name"])):
             return p["name"]
+        break  # the array said it has moments but the render disagreed — bail
     raise GalleryError(
         f"no {status} property on {run} renders example moments — cannot build "
         f"the {'failing' if status == 'Failing' else 'passing'} property story"
@@ -250,19 +304,39 @@ def _pick_property_with_moments(sn: Snouty, run: str, props: list[dict], status:
 
 _VALUE_ROW = re.compile(r"^(?:passing|failing|unreachable)\s+(.*)$", re.MULTILINE)
 
+# Rendered VALUE cells that aren't a usable single value: the synthetic
+# `unreachable  -` row and the `(empty)` rendering of an empty collection (see
+# render_property_value in src/runs.rs). "[0 items]" can no longer be emitted.
+_DEGENERATE_VALUES = ("-", "(empty)")
+
+
+def _has_real_value(value) -> bool:
+    """Whether a non-event example value renders as a usable single VALUE cell —
+    i.e. a scalar, not an empty collection (which renders as `(empty)`)."""
+    if isinstance(value, (list, dict)):
+        return len(value) > 0
+    return True  # scalars (incl. False/0) all render to a visible cell
+
 
 def _pick_nonevent_property(sn: Snouty, run: str, props: list[dict]) -> str:
-    """Pick a non-event property whose detail shows a real single value (not an
-    empty `[0 items]` placeholder)."""
-    candidates = [p for p in props if p.get("is_event") is False]
+    """Pick a non-event property that shows a real single value. We read the
+    example arrays straight from the JSON and only render-probe the chosen one."""
+    candidates = []
+    for p in props:
+        if p.get("is_event") is not False:
+            continue
+        values = (p.get("examples") or []) + (p.get("counterexamples") or [])
+        if any(_has_real_value(v) for v in values):
+            candidates.append(p)
     candidates.sort(key=lambda p: p.get("example_count") or 0, reverse=True)
     for p in candidates:
         rendered = _render_property(sn, run, p["name"])
         m = _VALUE_ROW.search(rendered)
         if m:
             value = m.group(1).strip()
-            if value and value not in ("-", "[0 items]"):
+            if value and value not in _DEGENERATE_VALUES:
                 return p["name"]
+        break  # chosen candidate didn't render a usable value — bail
     raise GalleryError(f"no non-event property on {run} renders a usable value")
 
 
@@ -288,10 +362,6 @@ def _pick_ambiguous(prop_names: list[str]) -> str:
     if shared:
         return shared[0]
     raise GalleryError("no substring is shared by >= 2 properties")
-
-
-def _rfc3339(ts: str) -> str:
-    return ts
 
 
 def discover(sn: Snouty, scan: int) -> Discovery:
@@ -336,11 +406,11 @@ def discover(sn: Snouty, scan: int) -> Discovery:
         fail=fail,
         cancelled=cancelled,
         launcher=launcher,
-        created_after=_rfc3339(created_after),
-        window_after=_rfc3339(window_after),
-        window_before=_rfc3339(window_before),
+        created_after=created_after,
+        window_after=window_after,
+        window_before=window_before,
         event_keyword=keyword,
-        event_kw2=_pick_second_needle(event, keyword),
+        event_kw2=event["_second_needle"],
         event_hash=moment["input_hash"],
         event_vtime=float(moment["vtime"]),
         fail_prop=_pick_property_with_moments(sn, success, props, "Failing"),
@@ -351,8 +421,6 @@ def discover(sn: Snouty, scan: int) -> Discovery:
         fail_hash=fail_moment.get("input_hash", ""),
         fail_vtime=fail_moment.get("vtime", ""),
     )
-    if not disc.event_kw2:
-        raise GalleryError("could not derive a second needle for multi-match story")
     if not disc.fail_hash or not disc.fail_vtime:
         raise GalleryError(f"incomplete run {fail} has no failure moment")
     return disc
@@ -506,7 +574,7 @@ def property_single_value(sr: StoryRun, reg: Registry) -> tuple[bool, str]:
     text = sr.result.combined
     m = _VALUE_ROW.search(text)
     value = m.group(1).strip() if m else ""
-    ok = bool(value) and value not in ("-", "[0 items]") and not _has_moment_rows(text)
+    ok = bool(value) and value not in _DEGENERATE_VALUES and not _has_moment_rows(text)
     return (ok, f"value={value!r}, no moments")
 
 
@@ -716,7 +784,12 @@ def build_stories(d: Discovery) -> list[Story]:
             "I try to view properties on an incomplete run.",
             "A clean error explaining the properties aren't available (because the run is incomplete) — not a crash or stack trace.",
             ["runs", "properties", d.fail],
-            expect_message("no properties", "incomplete", "not found", "404"),
+            # The friendly error (explain_properties_error in src/runs.rs) says the
+            # run "is incomplete"; require that distinctive word. A bare "404"/"not
+            # found" would mean the friendly message regressed, and "no properties"
+            # also matches the success-path "No properties found." — so neither is
+            # a safe needle here.
+            expect_message("incomplete"),
             json_capable=False,
         ),
         # -- property detail ------------------------------------------------
@@ -925,10 +998,9 @@ def main() -> int:
     args = parser.parse_args()
 
     if args.list:
-        # Build with a dummy Discovery just to enumerate slugs. event_vtime
-        # (index 10) must be a float since build_stories derives the window.
-        dummy = Discovery(*(["x"] * 10 + [0.0] + ["x"] * 9))  # type: ignore[arg-type]
-        for s in build_stories(dummy):
+        # An all-default Discovery is enough to enumerate slugs (build_stories
+        # only reads a few fields, and event_vtime defaults to a real float).
+        for s in build_stories(Discovery()):
             print(s.slug)
         return 0
 
@@ -962,9 +1034,17 @@ def main() -> int:
                 print(f"error: unknown story slug(s): {sorted(unknown)}", file=sys.stderr)
                 return 1
 
+        # Capture concurrently (subprocess + API roundtrips dominate), preserving
+        # story order in the results list. Checks are then evaluated serially in
+        # that order — the only cross-story dependency, event_multi_match reading
+        # reg.row_counts["runs-events-single"], is satisfied by ordered evaluation.
+        print(f"capturing {len(stories)} stories…", file=sys.stderr)
+        with ThreadPoolExecutor(max_workers=CAPTURE_WORKERS) as pool:
+            captured = list(pool.map(lambda s: run_story(sn, s), stories))
+
         reg = Registry()
-        for story in stories:
-            sr = run_story(sn, story)
+        for sr in captured:
+            story = sr.story
             if sr.rows is not None:
                 reg.row_counts[story.slug] = len(sr.rows)
             passed, detail = story.check(sr, reg)
@@ -974,6 +1054,7 @@ def main() -> int:
             if not passed:
                 failures.append((story.slug, detail))
                 if args.fail_fast:
+                    # Everything was already captured; just stop reporting here.
                     break
     except GalleryError as e:
         # A precondition could not be met. Fail loudly and clearly rather than

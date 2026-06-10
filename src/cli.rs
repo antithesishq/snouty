@@ -87,7 +87,7 @@ Examples:
   snouty runs properties --passing <run_id>
   snouty runs build-logs <run_id>
   snouty runs logs <run_id> <hash> <vtime>
-  snouty runs events <run_id> <query>"#,
+  snouty runs events <run_id> -m <query>"#,
         subcommand_required = false
     )]
     Runs {
@@ -409,8 +409,12 @@ pub enum RunsCommands {
         run_id: String,
 
         /// Substring to search for (repeatable; all matches must be present)
-        #[arg(short = 'm', long = "match", required = true)]
+        #[arg(short = 'm', long = "match")]
         matches: Vec<String>,
+
+        /// Additional substrings to search for (same effect as `-m`, which is
+        /// the primary form). At least one needle is required.
+        query: Vec<String>,
     },
 }
 
@@ -519,5 +523,30 @@ mod tests {
         };
         assert_eq!(begin_vtime.as_deref(), Some("-2.0"));
         assert_eq!(begin_input_hash.as_deref(), Some("0"));
+    }
+
+    // `runs events` accepts both the documented `-m/--match` form and a
+    // backward-compatible trailing positional query; the two are merged.
+    #[test]
+    fn events_accepts_match_and_positional_query() {
+        let cli = parse(&["snouty", "runs", "events", "RUN", "-m", "request"]);
+        let Commands::Runs {
+            command: Some(RunsCommands::Events { matches, query, .. }),
+        } = cli.command
+        else {
+            panic!("expected `runs events`");
+        };
+        assert_eq!(matches, vec!["request".to_string()]);
+        assert!(query.is_empty());
+
+        let cli = parse(&["snouty", "runs", "events", "RUN", "request", "slow"]);
+        let Commands::Runs {
+            command: Some(RunsCommands::Events { matches, query, .. }),
+        } = cli.command
+        else {
+            panic!("expected `runs events`");
+        };
+        assert!(matches.is_empty());
+        assert_eq!(query, vec!["request".to_string(), "slow".to_string()]);
     }
 }

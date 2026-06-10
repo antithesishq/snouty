@@ -13,7 +13,8 @@ story, would be **satisfied** with what snouty actually printed.
 
 You review a "gallery": one Markdown file per story, each containing a user
 goal, a judgment rubric, the exact command, the captured output, and the
-automated PASS/FAIL verdict. See `[[gallery-generation]]` for how it's produced.
+automated PASS/FAIL verdict. It's produced by `scripts/gen-gallery.py` (see that
+script's module docstring for how stories, checks, and discovery work).
 
 Produce a report that is useful to **both a human and a coding agent** — someone
 should be able to read it and either start a discussion about what to change or

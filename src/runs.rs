@@ -112,7 +112,15 @@ pub async fn cmd_runs(command: Option<RunsCommands>, json: bool, verbose: bool) 
             )
             .await
         }
-        Some(RunsCommands::Events { run_id, matches }) => {
+        Some(RunsCommands::Events {
+            run_id,
+            mut matches,
+            query,
+        }) => {
+            // `-m/--match` is the documented form; the trailing positional
+            // `query` is a backward-compatible alias whose terms are additional
+            // needles. Merge both into a single needle list.
+            matches.extend(query);
             cmd_runs_events(&run_id, &matches, json, verbose).await
         }
     }
@@ -810,14 +818,36 @@ async fn cmd_runs_build_logs(run_id: &str, json: bool, verbose: bool) -> Result<
     result
 }
 
-/// True when every needle (already lowercased) appears in the raw line. This is
-/// the only client-side filtering `runs events` does. Structural filters
-/// (source/stream/vtime) are intentionally unsupported: the server streams only
-/// a capped subset of matching events, so filtering it client-side would
-/// silently apply to that subset rather than to all of the run's events.
-fn line_matches_all_needles(line: &str, lowered_needles: &[String]) -> bool {
-    let line_lower = line.to_ascii_lowercase();
-    lowered_needles.iter().all(|n| line_lower.contains(n))
+/// The text `runs events` searches a single NDJSON line against. We match the
+/// DECODED content the user actually sees in the table (input_hash, vtime,
+/// source, output via `render_event_entry`), not the raw JSON-escaped line — so
+/// a needle containing quotes/backslashes copied from the OUTPUT column matches.
+/// Lines that don't parse as JSON fall back to the raw text.
+///
+/// Client-side substring matching is the only filtering `runs events` does.
+/// Structural filters (source/stream/vtime) are intentionally unsupported: the
+/// server streams only a capped subset of matching events, so filtering it
+/// client-side would silently apply to that subset rather than to all of the
+/// run's events.
+fn event_haystack(line: &str) -> String {
+    match serde_json::from_str::<Value>(line) {
+        Ok(entry) => {
+            let rendered = render_event_entry(&entry);
+            format!(
+                "{} {} {} {}",
+                rendered.input_hash, rendered.vtime, rendered.source, rendered.output
+            )
+        }
+        Err(_) => line.to_string(),
+    }
+}
+
+/// True when every needle (already lowercased) appears in `haystack`. Both sides
+/// are compared with Unicode `to_lowercase` so case-insensitivity holds for
+/// non-ASCII text the OUTPUT column may contain.
+fn haystack_matches_all_needles(haystack: &str, lowered_needles: &[String]) -> bool {
+    let haystack_lower = haystack.to_lowercase();
+    lowered_needles.iter().all(|n| haystack_lower.contains(n))
 }
 
 async fn cmd_runs_events(
@@ -828,10 +858,21 @@ async fn cmd_runs_events(
 ) -> Result<()> {
     debug!("searching events for run: {}", run_id);
 
-    // The server endpoint takes a single `q` substring. Send the first --match
-    // to maximize server-side filtering; AND-combine any remaining --match
-    // needles client-side on the streamed NDJSON.
-    let server_query = matches.first().cloned().unwrap_or_default();
+    if matches.is_empty() {
+        return Err(user_error(
+            "no search term given: pass at least one needle via `-m/--match` or as a positional argument",
+        ));
+    }
+
+    // The server endpoint takes a single `q` substring and streams only a capped
+    // subset of matching events. Send the LONGEST needle (a crude selectivity
+    // proxy) so the cap is most likely to retain rare matches; any additional
+    // needles are AND-filtered client-side over that capped server subset.
+    let server_query = matches
+        .iter()
+        .max_by_key(|m| m.chars().count())
+        .cloned()
+        .unwrap_or_default();
 
     let api = AntithesisApi::from_env(verbose)?;
     let stream = api
@@ -839,19 +880,19 @@ async fn cmd_runs_events(
         .await?
         .into_inner();
 
-    let lowered_matches: Vec<String> = matches.iter().map(|m| m.to_ascii_lowercase()).collect();
+    let lowered_matches: Vec<String> = matches.iter().map(|m| m.to_lowercase()).collect();
 
     let mut stdout = BufWriter::new(std::io::stdout().lock());
 
-    // JSON mode is a raw passthrough — stream each matching line as it arrives.
+    // JSON mode emits the raw matching line, but matching itself runs against the
+    // DECODED fields (see `event_haystack`) so it agrees with what the table
+    // shows. Stream each matching line as it arrives.
     if json {
-        let mut emitted: usize = 0;
         let result = stream_ndjson_lines(stream, NoOpTransformer {}, |line| {
-            if !line_matches_all_needles(line, &lowered_matches) {
+            if !haystack_matches_all_needles(&event_haystack(line), &lowered_matches) {
                 return Ok(());
             }
             writeln!(stdout, "{line}")?;
-            emitted += 1;
             Ok(())
         })
         .await;
@@ -864,7 +905,7 @@ async fn cmd_runs_events(
     // columns to the actual content rather than guessing fixed widths.
     let mut rows: Vec<[String; 4]> = Vec::new();
     let result = stream_ndjson_lines(stream, NoOpTransformer {}, |line| {
-        if !line_matches_all_needles(line, &lowered_matches) {
+        if !haystack_matches_all_needles(&event_haystack(line), &lowered_matches) {
             return Ok(());
         }
         match serde_json::from_str::<Value>(line) {
@@ -878,20 +919,22 @@ async fn cmd_runs_events(
                 ]);
             }
             Err(_) => {
-                // The line matched --match but isn't valid JSON (a truncated
-                // final chunk, a proxy-injected error blob, …). Surface it raw
-                // in the OUTPUT column rather than dropping it silently.
-                rows.push([String::new(), String::new(), String::new(), line.to_string()]);
+                // The line matched but isn't valid JSON (a truncated final chunk,
+                // a proxy-injected error blob, …). Surface it raw in the OUTPUT
+                // column rather than dropping it silently, sanitized like every
+                // other row.
+                rows.push([String::new(), String::new(), String::new(), sanitize(line)]);
             }
         }
         Ok(())
     })
     .await;
 
-    // Bail before rendering if the stream itself errored.
-    result?;
-
+    // A mid-stream error must not discard rows we already buffered: render them
+    // first, then propagate the error. The clean-empty "No events matched"
+    // message is only for a successful stream that yielded nothing.
     if rows.is_empty() {
+        result?;
         let query = matches.join(" ");
         writeln!(stdout, "No events matched \"{query}\".")?;
         stdout.flush()?;
@@ -928,6 +971,9 @@ async fn cmd_runs_events(
         )?;
     }
     stdout.flush()?;
+
+    // Now that buffered rows are rendered, surface any mid-stream error.
+    result?;
     Ok(())
 }
 
@@ -3968,11 +4014,26 @@ mod tests {
         let line = "fault_injector: network partition started";
 
         let needles = ["Network".to_string(), "partition".to_string()];
-        let lowered: Vec<String> = needles.iter().map(|n| n.to_ascii_lowercase()).collect();
-        assert!(line_matches_all_needles(line, &lowered));
+        let lowered: Vec<String> = needles.iter().map(|n| n.to_lowercase()).collect();
+        assert!(haystack_matches_all_needles(line, &lowered));
 
         let missing = ["network".to_string(), "missing".to_string()];
-        assert!(!line_matches_all_needles(line, &missing));
+        assert!(!haystack_matches_all_needles(line, &missing));
+    }
+
+    #[test]
+    fn event_haystack_matches_decoded_output_with_quotes() {
+        // A needle copied from the OUTPUT column contains literal quotes. The
+        // decoded haystack carries them unescaped, so the match succeeds even
+        // though the raw NDJSON line escapes them as `\"`.
+        let line = r#"{"moment":{"input_hash":"42","vtime":"1.0"},"source":{"container":"app","name":"app","stream":"out"},"output_text":"msg \"starting\""}"#;
+        let haystack = event_haystack(line);
+        assert!(haystack.contains(r#"msg "starting""#));
+
+        let needle = vec![r#""starting""#.to_lowercase()];
+        assert!(haystack_matches_all_needles(&haystack, &needle));
+        // The same needle does NOT match the raw escaped line.
+        assert!(!haystack_matches_all_needles(line, &needle));
     }
 
     #[test]

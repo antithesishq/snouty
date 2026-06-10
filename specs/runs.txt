@@ -153,7 +153,7 @@ mock-runs-server
 snouty --json runs build-logs $R_run_id
 [!staging] stdout '"timestamp".*"text"'
 
-# `snouty runs events` requires --match (positional query was removed).
+# `snouty runs events` filters by `--match` needles against the decoded output.
 mock-runs-server
 snouty runs events $R_run_id --match request
 [!staging] stdout '^HASH\s+VTIME\s+SOURCE\s+OUTPUT'
@@ -233,9 +233,9 @@ stderr '.*'
 # moment/source/IPT_bytes_out envelope stripped.
 mock-runs-server
 snouty runs logs run-1 -123 1.0
-stdout '\[\s*1\.0\] \[\s*app\] \[out\] \{"level":"info","msg":"starting"\}'
-stdout '\[\s*2\.0\] \[\s*app\] \[err\] \{"level":"warn","msg":"slow request"\}'
-stdout '\[\s*311\.8487535319291\] \[\s*control\] \[\s\s\s\]  - \{"antithesis_assert"'
+stdout '\[\s*1\] \[\s*app\] \[out\] \{"level":"info","msg":"starting"\}'
+stdout '\[\s*2\] \[\s*app\] \[err\] \{"level":"warn","msg":"slow request"\}'
+stdout '\[\s*311\.849\] \[\s*control\] \[\s*\] +- \{"antithesis_assert"'
 
 # `snouty --json runs logs` outputs NDJSON with faults annotated.
 mock-runs-server
@@ -273,7 +273,13 @@ snouty runs events run-1 --match nomatch
 stdout 'No events matched "nomatch"\.'
 ! stdout '^HASH\s+VTIME\s+SOURCE\s+OUTPUT'
 
-# `snouty runs events` requires --match.
+# `snouty runs events` requires at least one search needle.
 mock-runs-server
 ! snouty runs events run-1
-stderr '.*--match.*'
+stderr '.*no search term given.*'
+
+# `snouty runs events` also accepts a backward-compatible positional query
+# whose terms are treated as additional needles.
+mock-runs-server
+snouty runs events $R_run_id request
+[!staging] stdout '-456.*2\.0.*\[app:error\].*\{"level":"warn","msg":"slow request"\}'

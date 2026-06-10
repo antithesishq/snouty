@@ -779,8 +779,8 @@ fn render_property_value(value: &Value) -> (String, Option<String>) {
         Value::String(s) => (sanitize(s), None),
         // An empty collection has nothing to expand — render it inline rather
         // than as a "[0 items]" summary trailed by an empty "row N details" block.
-        Value::Array(items) if items.is_empty() => ("(empty)".to_string(), None),
-        Value::Object(map) if map.is_empty() => ("(empty)".to_string(), None),
+        Value::Array(items) if items.is_empty() => ("(no example value)".to_string(), None),
+        Value::Object(map) if map.is_empty() => ("(no example value)".to_string(), None),
         Value::Array(_) | Value::Object(_) => {
             let summary = match value {
                 Value::Array(items) => format!("[{} items]", items.len()),
@@ -3071,16 +3071,16 @@ mod tests {
 
     #[test]
     fn render_property_value_renders_empty_collection_inline() {
-        // An empty array/object collapses to "(empty)" with no detail block, so
-        // a fuzzy hit on a property with no examples doesn't print the confusing
-        // "[0 items]" + "row N details: []" pair.
+        // An empty array/object collapses to "(no example value)" with no detail
+        // block, so a fuzzy hit on a property with no examples doesn't print the
+        // confusing "[0 items]" + "row N details: []" pair.
         assert_eq!(
             render_property_value(&json!([])),
-            ("(empty)".to_string(), None)
+            ("(no example value)".to_string(), None)
         );
         assert_eq!(
             render_property_value(&json!({})),
-            ("(empty)".to_string(), None)
+            ("(no example value)".to_string(), None)
         );
     }
     #[test]

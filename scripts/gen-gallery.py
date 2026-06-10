@@ -305,14 +305,14 @@ def _pick_property_with_moments(sn: Snouty, run: str, props: list[dict], status:
 _VALUE_ROW = re.compile(r"^(?:passing|failing|unreachable)\s+(.*)$", re.MULTILINE)
 
 # Rendered VALUE cells that aren't a usable single value: the synthetic
-# `unreachable  -` row and the `(empty)` rendering of an empty collection (see
+# `unreachable  -` row and the `(no example value)` rendering of an empty collection (see
 # render_property_value in src/runs.rs). "[0 items]" can no longer be emitted.
-_DEGENERATE_VALUES = ("-", "(empty)")
+_DEGENERATE_VALUES = ("-", "(no example value)")
 
 
 def _has_real_value(value) -> bool:
     """Whether a non-event example value renders as a usable single VALUE cell —
-    i.e. a scalar, not an empty collection (which renders as `(empty)`)."""
+    i.e. a scalar, not an empty collection (which renders as `(no example value)`)."""
     if isinstance(value, (list, dict)):
         return len(value) > 0
     return True  # scalars (incl. False/0) all render to a visible cell

@@ -223,6 +223,44 @@ snouty runs properties run-no-events
 stdout 'STATUS.*EXAMPLES.*NAME'
 stdout 'passing.*No events property'
 
+# A bad run id gives the same friendly "run not found" message across every
+# run-scoped subcommand, instead of leaking a raw "API error: 404 Not Found".
+# The run-scoped endpoints 404 for an unknown run; snouty probes the run and
+# reports it as missing rather than passing the bare API error through.
+mock-runs-server
+! snouty runs show no-such-run
+stderr '.*run not found: no-such-run.*'
+! stderr '.*API error.*'
+
+mock-runs-server
+! snouty runs properties no-such-run
+stderr '.*run not found: no-such-run.*'
+! stderr '.*API error.*'
+
+mock-runs-server
+! snouty runs build-logs no-such-run
+stderr '.*run not found: no-such-run.*'
+! stderr '.*API error.*'
+
+mock-runs-server
+! snouty runs events no-such-run --match anything
+stderr '.*run not found: no-such-run.*'
+! stderr '.*API error.*'
+
+mock-runs-server
+! snouty runs logs no-such-run -123 1.0
+stderr '.*run not found: no-such-run.*'
+! stderr '.*API error.*'
+
+# A real but incomplete run has no properties yet: explain that they're
+# generated on completion instead of reporting the run as missing. run-3 is the
+# incomplete fixture; its properties endpoint 404s like the real API.
+mock-runs-server
+! snouty runs properties run-3
+stderr '.*no properties for run run-3.*'
+stderr '.*this run is incomplete.*'
+! stderr '.*run not found.*'
+
 # `snouty runs properties` requires a run ID.
 ! snouty runs properties
 stderr '.*'

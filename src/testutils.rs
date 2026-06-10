@@ -273,6 +273,9 @@ fn directory_contains_binary(dir: &Path, binary: &str) -> bool {
 /// Handles:
 /// - `GET  /api/v0/runs` — paginated run listing
 /// - `GET  /api/v0/runs/{run_id}` — run detail (keyed by run id; 404 unknown)
+/// - `GET  /api/v0/runs/{run_id}/{properties,logs,events,build_logs}` — nested
+///   run resources (404 for an unknown run id, like the real API; properties
+///   additionally 404 for runs that aren't `completed`)
 /// - `POST /api/v1/launch/{launcher_name}` — returns a mock launch response
 pub struct MockApiServer {
     url: String,
@@ -515,11 +518,24 @@ fn mock_route_list_runs(query: Option<&str>, empty: bool) -> (u16, String) {
     )
 }
 
+/// Run ids that exist on the mock server. Nested endpoints (properties, logs,
+/// events, build logs) 404 for any other id, matching the real API and letting
+/// run-scoped commands disambiguate "run not found" from an empty resource.
+/// `run-empty` and `run-no-events` are properties-only fixtures and are
+/// recognised separately by `mock_route_list_run_properties`.
+fn mock_run_known(run_id: &str) -> bool {
+    MOCK_RUNS.iter().any(|(id, ..)| *id == run_id)
+}
+
+fn mock_run_not_found(run_id: &str) -> (u16, String) {
+    (404, format!(r#"{{"message":"run not found: {run_id}"}}"#))
+}
+
 fn mock_route_get_run(run_id: &str) -> (u16, String) {
     let Some(&(_, status, created, launcher, description)) =
         MOCK_RUNS.iter().find(|(id, ..)| *id == run_id)
     else {
-        return (404, format!(r#"{{"message":"run not found: {run_id}"}}"#));
+        return mock_run_not_found(run_id);
     };
 
     let mut fields = vec![
@@ -548,7 +564,10 @@ fn mock_route_get_run(run_id: &str) -> (u16, String) {
     (200, format!("{{{}}}", fields.join(",")))
 }
 
-fn mock_route_get_run_build_logs(_run_id: &str) -> (u16, String) {
+fn mock_route_get_run_build_logs(run_id: &str) -> (u16, String) {
+    if !mock_run_known(run_id) {
+        return mock_run_not_found(run_id);
+    }
     let lines = [
         r#"{"timestamp":"2025-03-20T02:01:12Z","stream":"stdout","text":"Building image payments-service..."}"#,
         r#"{"timestamp":"2025-03-20T02:01:15Z","stream":"stderr","text":"Warning: deprecated feature"}"#,
@@ -557,7 +576,10 @@ fn mock_route_get_run_build_logs(_run_id: &str) -> (u16, String) {
     (200, lines.join("\n") + "\n")
 }
 
-fn mock_route_get_run_logs(_run_id: &str) -> (u16, String) {
+fn mock_route_get_run_logs(run_id: &str) -> (u16, String) {
+    if !mock_run_known(run_id) {
+        return mock_run_not_found(run_id);
+    }
     let lines = [
         r#"{"output_text":"{\"level\":\"info\",\"msg\":\"starting\"}","source":{"container":"app","name":"app","stream":"out"},"moment":{"input_hash":"-123","vtime":"1.0","session_id":"sess-1"}}"#,
         r#"{"output_text":"{\"level\":\"warn\",\"msg\":\"slow request\"}","source":{"container":"app","name":"app","stream":"error"},"moment":{"input_hash":"-456","vtime":"2.0","session_id":"sess-1"}}"#,
@@ -588,6 +610,15 @@ fn mock_route_list_run_properties(run_id: &str, query: Option<&str>) -> (u16, St
         );
     }
 
+    // The properties endpoint 404s for an unknown run id and for a real run that
+    // isn't `completed` yet (its triage report hasn't been generated). Only
+    // completed runs return property data, matching the real API and exercising
+    // the "run not found" vs "this run is incomplete" disambiguation.
+    match MOCK_RUNS.iter().find(|(id, ..)| *id == run_id) {
+        Some(&(_, "completed", ..)) => {}
+        _ => return mock_run_not_found(run_id),
+    }
+
     let status = mock_query_param(query, "status");
     let after = mock_query_param(query, "after");
 
@@ -615,6 +646,9 @@ fn mock_route_list_run_properties(run_id: &str, query: Option<&str>) -> (u16, St
 }
 
 fn mock_route_search_run_events(run_id: &str, query: Option<&str>) -> (u16, String) {
+    if !mock_run_known(run_id) {
+        return mock_run_not_found(run_id);
+    }
     let Some(query) = mock_query_param(query, "q") else {
         return (400, r#"{"message":"missing q"}"#.to_string());
     };

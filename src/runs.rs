@@ -20,7 +20,7 @@ use crate::api::{
 #[cfg(test)]
 use crate::api::{Event, EventProperty, Moment, NonEventProperty};
 use crate::cli::{RunsCommands, RunsListArgs};
-use crate::error::user_error;
+use crate::error::{api_error_status, user_error};
 
 /// Event stream classification. Variants match the canonical values that
 /// appear in an event's `source.stream` field.
@@ -221,7 +221,12 @@ async fn cmd_runs_show(run_id: &str, web: bool, json: bool, verbose: bool) -> Re
     debug!("showing run: {}", run_id);
 
     let api = AntithesisApi::from_env(verbose)?;
-    let run = api.get_run(run_id).await?;
+    let run = match api.get_run(run_id).await {
+        Ok(run) => run,
+        // A 404 here is unambiguous: the run id is bad. Say so instead of leaking
+        // a bare "API error: 404 Not Found". Other errors pass through untouched.
+        Err(err) => return Err(explain_run_not_found(run_id, err)),
+    };
 
     if web {
         return open_run_report(&run, json);
@@ -333,32 +338,97 @@ async fn cmd_runs_properties(
     Ok(())
 }
 
+/// Outcome of probing a run-scoped 404 with `get_run`: does the run itself not
+/// exist, or does it exist (with a known status) but the nested endpoint has no
+/// data yet? Any non-404 `get_run` failure is reported as a propagating error
+/// rather than misattributed to a missing run.
+enum RunProbe {
+    /// The run id is bad: `get_run` also returned a structured 404.
+    NotFound,
+    /// The run exists; carries its status so the caller can tailor the message.
+    Exists(RunStatus),
+    /// `get_run` failed for some other reason (timeout, 502, auth). Propagate
+    /// this rather than claiming the run doesn't exist.
+    ProbeFailed(color_eyre::eyre::Report),
+}
+
+/// Probe a run-scoped 404 by fetching the run itself. Only a structured 404 from
+/// `get_run` means the run is missing; any other `get_run` error is returned as
+/// `ProbeFailed` so callers never misreport a timeout/5xx/auth failure as "run
+/// not found".
+async fn probe_run(api: &AntithesisApi, run_id: &str) -> RunProbe {
+    match api.get_run(run_id).await {
+        Ok(run) => RunProbe::Exists(run.status),
+        Err(err) if api_error_status(&err) == Some(404) => RunProbe::NotFound,
+        Err(err) => RunProbe::ProbeFailed(err),
+    }
+}
+
+/// Translate an error from a run-scoped endpoint (show/build-logs/events/logs)
+/// into the shared friendly "run not found: X" message when the failure is a
+/// 404 for a bad run id. Any non-404 error passes through untouched (full
+/// report), so genuine server faults are never masked.
+///
+/// `show` calls `get_run` directly, so its 404 is already unambiguous; the
+/// streaming endpoints get the same treatment so every run-scoped subcommand
+/// reports a bad run id identically.
+fn explain_run_not_found(run_id: &str, err: color_eyre::eyre::Report) -> color_eyre::eyre::Report {
+    if api_error_status(&err) == Some(404) {
+        user_error(format!("run not found: {run_id}"))
+    } else {
+        err
+    }
+}
+
+/// Like [`explain_run_not_found`] but for endpoints whose 404 is ambiguous: it
+/// can mean a bad run id *or* a real run whose nested resource isn't available
+/// yet. Probes the run with `get_run` to disambiguate, falling back to "run not
+/// found: X" when the run is genuinely missing and otherwise to the original
+/// error. Non-404 errors pass through untouched.
+async fn explain_run_scoped_error(
+    api: &AntithesisApi,
+    run_id: &str,
+    err: color_eyre::eyre::Report,
+) -> color_eyre::eyre::Report {
+    if api_error_status(&err) != Some(404) {
+        return err;
+    }
+    match probe_run(api, run_id).await {
+        RunProbe::NotFound => user_error(format!("run not found: {run_id}")),
+        RunProbe::ProbeFailed(probe_err) => probe_err,
+        // The run exists but the endpoint still 404'd — surface the original
+        // error rather than guessing why.
+        RunProbe::Exists(_) => err,
+    }
+}
+
 /// Turn a properties-endpoint failure into a message that explains *why* there
-/// are no properties. Only the "no report" 404 is rewritten; every other error
-/// (auth, network, 5xx) passes through untouched.
+/// are no properties. Only a 404 is rewritten; every other error (auth, network,
+/// 5xx) passes through untouched.
 async fn explain_properties_error(
     api: &AntithesisApi,
     run_id: &str,
     err: color_eyre::eyre::Report,
 ) -> color_eyre::eyre::Report {
-    if !format!("{err:#}").contains("404") {
+    if api_error_status(&err) != Some(404) {
         return err;
     }
     // A 404 here means either the run doesn't exist or it has no triage report.
-    // get_run tells them apart: it 404s for a missing run but succeeds (with a
-    // status) for a real run whose report isn't available.
-    match api.get_run(run_id).await {
-        Err(_) => user_error(format!("run not found: {run_id}")),
+    // Probe the run to tell them apart: a missing run 404s on `get_run` too,
+    // while a real run reports its status (its report just isn't available).
+    match probe_run(api, run_id).await {
+        RunProbe::NotFound => user_error(format!("run not found: {run_id}")),
+        RunProbe::ProbeFailed(probe_err) => probe_err,
         // Completed runs are expected to have properties; if one 404s anyway,
         // that's a genuine surprise — keep the original error.
-        Ok(run) if run.status == RunStatus::Completed => err,
-        Ok(run) => {
+        RunProbe::Exists(RunStatus::Completed) => err,
+        RunProbe::Exists(status) => {
             let mut msg = format!(
                 "no properties for run {run_id} — properties are generated when a run completes, \
                  and this run is {}",
-                status_label(run.status)
+                status_label(status)
             );
-            if run.status == RunStatus::Incomplete {
+            if status == RunStatus::Incomplete {
                 msg.push_str(&format!(
                     ". See the failure moment with `snouty runs show {run_id}`, \
                      then `snouty runs logs`/`runs events` around it"
@@ -790,7 +860,10 @@ async fn cmd_runs_build_logs(run_id: &str, json: bool, verbose: bool) -> Result<
     debug!("streaming build logs for run: {}", run_id);
 
     let api = AntithesisApi::from_env(verbose)?;
-    let stream = api.get_run_build_logs(run_id).await?.into_inner();
+    let stream = match api.get_run_build_logs(run_id).await {
+        Ok(stream) => stream.into_inner(),
+        Err(err) => return Err(explain_run_scoped_error(&api, run_id, err).await),
+    };
     let mut stdout = BufWriter::new(std::io::stdout().lock());
 
     let result = if json {
@@ -875,10 +948,10 @@ async fn cmd_runs_events(
         .unwrap_or_default();
 
     let api = AntithesisApi::from_env(verbose)?;
-    let stream = api
-        .search_run_events(run_id, &server_query)
-        .await?
-        .into_inner();
+    let stream = match api.search_run_events(run_id, &server_query).await {
+        Ok(stream) => stream.into_inner(),
+        Err(err) => return Err(explain_run_scoped_error(&api, run_id, err).await),
+    };
 
     let lowered_matches: Vec<String> = matches.iter().map(|m| m.to_lowercase()).collect();
 
@@ -992,10 +1065,13 @@ async fn cmd_runs_logs(
     debug!("streaming logs for run: {}", run_id);
 
     let api = AntithesisApi::from_env(verbose)?;
-    let stream = api
+    let stream = match api
         .get_run_logs(run_id, input_hash, vtime, begin_input_hash, begin_vtime)
-        .await?
-        .into_inner();
+        .await
+    {
+        Ok(stream) => stream.into_inner(),
+        Err(err) => return Err(explain_run_scoped_error(&api, run_id, err).await),
+    };
 
     let mut stdout = BufWriter::new(std::io::stdout().lock());
     let result = if json {
@@ -4055,5 +4131,166 @@ mod tests {
             "expected dash placeholder, got: {}",
             lines[1]
         );
+    }
+
+    mod run_scoped_errors {
+        use super::*;
+        use crate::api::{Auth, Config};
+        use crate::error::{ApiError, is_user_error};
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        fn api_error(status: u16, message: &str) -> color_eyre::eyre::Report {
+            color_eyre::eyre::Report::new(ApiError {
+                status,
+                message: message.to_string(),
+            })
+        }
+
+        fn test_api(base_url: &str) -> AntithesisApi {
+            let config = Config::new(
+                Auth::basic("user".to_string(), "pass".to_string()),
+                "tenant".to_string(),
+            );
+            AntithesisApi::with_base_url(config, base_url).unwrap()
+        }
+
+        async fn mock_get_run(run_id: &str, status: u16, body: serde_json::Value) -> MockServer {
+            let server = MockServer::start().await;
+            Mock::given(method("GET"))
+                .and(path(format!("/api/v0/runs/{run_id}")))
+                .respond_with(ResponseTemplate::new(status).set_body_json(body))
+                .mount(&server)
+                .await;
+            server
+        }
+
+        #[test]
+        fn run_not_found_rewrites_only_404() {
+            let rewritten = explain_run_not_found("BAD-ID", api_error(404, "API error: 404"));
+            let msg = format!("{rewritten:#}");
+            assert_eq!(msg, "run not found: BAD-ID");
+            assert!(is_user_error(&rewritten));
+        }
+
+        #[test]
+        fn run_not_found_passes_through_non_404() {
+            // A 500 whose body mentions 404 must NOT be rewritten — it's a real
+            // server fault, not a missing run.
+            let original = api_error(500, "API error: 500 — upstream 404 page");
+            let result = explain_run_not_found("run-1", original);
+            assert_eq!(api_error_status(&result), Some(500));
+            assert!(format!("{result:#}").contains("upstream 404 page"));
+        }
+
+        #[tokio::test]
+        async fn scoped_error_reports_missing_run_on_404_probe() {
+            let server = mock_get_run("BAD-ID", 404, json!({"message": "nope"})).await;
+            let api = test_api(&server.uri());
+            let result =
+                explain_run_scoped_error(&api, "BAD-ID", api_error(404, "API error: 404")).await;
+            assert_eq!(format!("{result:#}"), "run not found: BAD-ID");
+        }
+
+        #[tokio::test]
+        async fn scoped_error_keeps_original_when_run_exists() {
+            // Endpoint 404'd but the run is real — surface the original error
+            // rather than claiming the run is missing.
+            let server = mock_get_run(
+                "run-1",
+                200,
+                json!({
+                    "run_id": "run-1",
+                    "status": "in_progress",
+                    "created_at": "2025-03-20T02:00:00Z",
+                    "launcher": "nightly"
+                }),
+            )
+            .await;
+            let api = test_api(&server.uri());
+            let result =
+                explain_run_scoped_error(&api, "run-1", api_error(404, "endpoint 404")).await;
+            assert!(format!("{result:#}").contains("endpoint 404"));
+            assert!(!format!("{result:#}").contains("run not found"));
+        }
+
+        #[tokio::test]
+        async fn scoped_error_propagates_non_404_probe_failure() {
+            // get_run fails with a 502 (not a 404): the run-scoped error must NOT
+            // be misreported as "run not found"; the probe's own error wins.
+            let server = mock_get_run("run-1", 502, json!({"message": "bad gateway"})).await;
+            let api = test_api(&server.uri());
+            let result =
+                explain_run_scoped_error(&api, "run-1", api_error(404, "endpoint 404")).await;
+            assert!(!format!("{result:#}").contains("run not found"));
+            assert_eq!(api_error_status(&result), Some(502));
+        }
+
+        #[tokio::test]
+        async fn scoped_error_passes_through_non_404_without_probing() {
+            // A 500 from the endpoint never probes get_run and is surfaced as-is.
+            let server = MockServer::start().await;
+            // No mock mounted: a probe would 404 and wrongly say "run not found".
+            let api = test_api(&server.uri());
+            let result = explain_run_scoped_error(&api, "run-1", api_error(500, "boom 404")).await;
+            assert_eq!(api_error_status(&result), Some(500));
+            assert!(!format!("{result:#}").contains("run not found"));
+        }
+
+        #[tokio::test]
+        async fn properties_error_reports_missing_run_on_404_probe() {
+            let server = mock_get_run("BAD-ID", 404, json!({"message": "nope"})).await;
+            let api = test_api(&server.uri());
+            let result =
+                explain_properties_error(&api, "BAD-ID", api_error(404, "API error: 404")).await;
+            assert_eq!(format!("{result:#}"), "run not found: BAD-ID");
+        }
+
+        #[tokio::test]
+        async fn properties_error_explains_incomplete_run() {
+            let server = mock_get_run(
+                "run-3",
+                200,
+                json!({
+                    "run_id": "run-3",
+                    "status": "incomplete",
+                    "created_at": "2025-03-18T08:00:00Z",
+                    "launcher": "nightly"
+                }),
+            )
+            .await;
+            let api = test_api(&server.uri());
+            let result =
+                explain_properties_error(&api, "run-3", api_error(404, "API error: 404")).await;
+            let msg = format!("{result:#}");
+            assert!(msg.contains("no properties for run run-3"), "got: {msg}");
+            assert!(msg.contains("this run is incomplete"), "got: {msg}");
+            assert!(!msg.contains("run not found"), "got: {msg}");
+        }
+
+        #[tokio::test]
+        async fn properties_error_propagates_non_404_probe_failure() {
+            let server = mock_get_run("run-1", 502, json!({"message": "bad gateway"})).await;
+            let api = test_api(&server.uri());
+            let result =
+                explain_properties_error(&api, "run-1", api_error(404, "API error: 404")).await;
+            assert!(!format!("{result:#}").contains("run not found"));
+            assert_eq!(api_error_status(&result), Some(502));
+        }
+
+        #[tokio::test]
+        async fn properties_error_passes_through_500_with_404_in_body() {
+            let server = MockServer::start().await;
+            let api = test_api(&server.uri());
+            let result = explain_properties_error(
+                &api,
+                "run-1",
+                api_error(500, "API error: 500 — proxy 404 page"),
+            )
+            .await;
+            assert_eq!(api_error_status(&result), Some(500));
+            assert!(!format!("{result:#}").contains("run not found"));
+            assert!(!format!("{result:#}").contains("no properties for run"));
+        }
     }
 }

@@ -13,7 +13,7 @@ use reqwest::Client;
 use reqwest_middleware::ClientWithMiddleware;
 
 use crate::api_cache;
-use crate::error::user_error;
+use crate::error::{ApiError, user_error};
 use crate::params::Params;
 
 #[allow(dead_code, unused_imports, private_interfaces)]
@@ -812,14 +812,14 @@ fn format_api_error(status: u16, body: &str) -> Report {
              is set correctly and has access to this tenant.",
         );
     }
-    // 4xx responses are caused by the request the user made (bad credentials,
-    // unknown run id, invalid filter, …); surface them as clean user errors.
-    // 5xx and other failures are treated as internal faults.
-    if (400..500).contains(&status) {
-        user_error(msg)
-    } else {
-        eyre!("{msg}")
-    }
+    // Carry the HTTP status structurally so callers can classify the failure
+    // (e.g. "was this a 404?") without sniffing the rendered message string.
+    // `is_user_error` recognises 4xx `ApiError`s, so 4xx still prints as a clean
+    // user-facing message while 5xx and other statuses stay internal faults.
+    Report::new(ApiError {
+        status,
+        message: msg,
+    })
 }
 
 fn format_payload_snippet(body: &str, line: usize, column: usize) -> String {
@@ -1381,6 +1381,25 @@ mod tests {
         assert!(is_user_error(&format_api_error(400, "bad request")));
         // 5xx is an internal fault, not something the user can fix.
         assert!(!is_user_error(&format_api_error(500, "boom")));
+    }
+
+    #[test]
+    fn format_api_error_carries_structured_status() {
+        use crate::error::api_error_status;
+        // The status is read structurally, not sniffed from the message — so a
+        // 500 whose body mentions "404" still classifies as a 500.
+        assert_eq!(
+            api_error_status(&format_api_error(404, "run not found")),
+            Some(404)
+        );
+        assert_eq!(
+            api_error_status(&format_api_error(500, "upstream returned a 404 page")),
+            Some(500)
+        );
+        // And the rendered message still contains the body for the user.
+        let rendered = format!("{:#}", format_api_error(404, "run not found"));
+        assert!(rendered.contains("API error: 404"));
+        assert!(rendered.contains("run not found"));
     }
 
     #[tokio::test]

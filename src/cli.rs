@@ -399,9 +399,12 @@ pub enum RunsCommands {
         #[arg(long, allow_hyphen_values = true, requires = "begin_vtime")]
         begin_input_hash: Option<String>,
 
-        /// Whether to disable fault annotation (tracking of which faults are active for any given log line). Fault annotation only applies to NDJSON output, so this flag has no effect unless combined with `--json` (which annotates faults by default).
-        #[arg(long)]
-        disable_fault_annotation: bool,
+        /// Emit log lines without any post-processing: with `--json`, skips
+        /// fault annotation (raw NDJSON passthrough); otherwise renders the
+        /// text payload verbatim (ANSI colors and control bytes preserved
+        /// instead of stripped/escaped)
+        #[arg(short = 'r', long)]
+        raw: bool,
     },
 
     /// Search events in a run
@@ -529,6 +532,30 @@ mod tests {
         assert_eq!(vtime, "-2.0");
         assert_eq!(begin_vtime.as_deref(), Some("-2.0"));
         assert_eq!(begin_input_hash.as_deref(), Some("0"));
+    }
+
+    // `-r` is the short form of `--raw`; note `-r` must not swallow the
+    // hyphen-led positionals that follow it.
+    #[test]
+    fn logs_accepts_raw_short_flag() {
+        let cli = parse(&["snouty", "runs", "logs", "-r", "RUN", "-123", "-2.0"]);
+        let Commands::Runs {
+            command: Some(RunsCommands::Logs { raw, vtime, .. }),
+        } = cli.command
+        else {
+            panic!("expected `runs logs`");
+        };
+        assert!(raw);
+        assert_eq!(vtime, "-2.0");
+
+        let cli = parse(&["snouty", "runs", "logs", "RUN", "-123", "-2.0"]);
+        let Commands::Runs {
+            command: Some(RunsCommands::Logs { raw, .. }),
+        } = cli.command
+        else {
+            panic!("expected `runs logs`");
+        };
+        assert!(!raw);
     }
 
     // `runs events` accepts both the documented `-m/--match` form and a

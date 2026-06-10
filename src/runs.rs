@@ -97,7 +97,7 @@ pub async fn cmd_runs(command: Option<RunsCommands>, json: bool, verbose: bool) 
             vtime,
             begin_vtime,
             begin_input_hash,
-            disable_fault_annotation,
+            raw,
         }) => {
             cmd_runs_logs(
                 &run_id,
@@ -105,11 +105,7 @@ pub async fn cmd_runs(command: Option<RunsCommands>, json: bool, verbose: bool) 
                 &vtime,
                 begin_input_hash.as_deref(),
                 begin_vtime.as_deref(),
-                LogOutputOptions {
-                    json,
-                    verbose,
-                    annotate_faults: !disable_fault_annotation,
-                },
+                LogOutputOptions { json, verbose, raw },
             )
             .await
         }
@@ -963,7 +959,10 @@ fn render_runs_detail(runs: &[RunSummary]) -> String {
 struct LogOutputOptions {
     json: bool,
     verbose: bool,
-    annotate_faults: bool,
+    /// Skip all log post-processing: no fault annotation in JSON mode, and the
+    /// human payload is rendered verbatim (no ANSI stripping or control-byte
+    /// escaping).
+    raw: bool,
 }
 
 async fn cmd_runs_build_logs(run_id: &str, json: bool, verbose: bool) -> Result<()> {
@@ -1153,11 +1152,7 @@ async fn cmd_runs_logs(
     vtime: &str,
     begin_input_hash: Option<&str>,
     begin_vtime: Option<&str>,
-    LogOutputOptions {
-        json,
-        verbose,
-        annotate_faults,
-    }: LogOutputOptions,
+    LogOutputOptions { json, verbose, raw }: LogOutputOptions,
 ) -> Result<()> {
     debug!("streaming logs for run: {}", run_id);
 
@@ -1172,7 +1167,15 @@ async fn cmd_runs_logs(
 
     let mut stdout = BufWriter::new(std::io::stdout().lock());
     let result = if json {
-        if annotate_faults {
+        // Fault annotation is the default; `--raw` opts out into a verbatim
+        // NDJSON passthrough.
+        if raw {
+            stream_ndjson_lines(stream, NoOpTransformer {}, |line| {
+                writeln!(stdout, "{line}")?;
+                Ok(())
+            })
+            .await
+        } else {
             stream_ndjson_lines(
                 stream,
                 FaultAnnotator {
@@ -1185,17 +1188,11 @@ async fn cmd_runs_logs(
                 },
             )
             .await
-        } else {
-            stream_ndjson_lines(stream, NoOpTransformer {}, |line| {
-                writeln!(stdout, "{line}")?;
-                Ok(())
-            })
-            .await
         }
     } else {
         stream_ndjson_lines(stream, NoOpTransformer {}, |line| {
             if let Ok(entry) = serde_json::from_str::<Value>(line) {
-                writeln!(stdout, "{}", format_log_line(&entry))?;
+                writeln!(stdout, "{}", format_log_entry(&entry, raw))?;
             } else {
                 writeln!(stdout, "{line}")?;
             }
@@ -1211,7 +1208,7 @@ const LOG_SOURCE_MIN_WIDTH: usize = 20;
 const LOG_VTIME_WIDTH: usize = 14;
 const LOG_STREAM_WIDTH: usize = 3;
 
-fn format_log_line(entry: &Value) -> String {
+fn format_log_entry(entry: &Value, raw: bool) -> String {
     let vtime = format_log_vtime(entry);
     let container = entry["source"]["container"].as_str().unwrap_or("");
     let name = entry["source"]["name"].as_str().unwrap_or("");
@@ -1227,9 +1224,14 @@ fn format_log_line(entry: &Value) -> String {
     // JSON records get an extra " - " separator before the body.
     // Run the text payload through the shared terminal normalizer: strip ANSI
     // color codes, then escape any remaining control bytes so a stray `\r`/BEL
-    // in container output can't corrupt the rendered stream.
+    // in container output can't corrupt the rendered stream. `--raw` skips the
+    // normalizer so colors and control bytes reach the terminal verbatim.
     let payload = if let Some(text) = entry.get("output_text").and_then(Value::as_str) {
-        normalize_terminal_text(text)
+        if raw {
+            text.to_string()
+        } else {
+            normalize_terminal_text(text)
+        }
     } else {
         format!(" - {}", strip_log_envelope(entry))
     };
@@ -2872,7 +2874,7 @@ mod tests {
             "info": {"details": {"started": true}, "message": "status"}
         });
         assert_eq!(
-            format_log_line(&entry),
+            format_log_entry(&entry, false),
             "[         9.093] [      fault_injector] [   ]  - {\"info\":{\"details\":{\"started\":true},\"message\":\"status\"}}"
         );
     }
@@ -2885,7 +2887,7 @@ mod tests {
             "output_text": "NbmXgEki  INFO main lsm_tree::tree::ingest: Finished ingestion writer"
         });
         assert_eq!(
-            format_log_line(&entry),
+            format_log_entry(&entry, false),
             "[        15.174] [ bank/first_setup.sh] [inf] NbmXgEki  INFO main lsm_tree::tree::ingest: Finished ingestion writer"
         );
     }
@@ -2897,9 +2899,23 @@ mod tests {
             "source": {"name": "setup", "stream": "error"},
             "output_text": "\x1B[4m>>>> hello\x1B[0m"
         });
-        let rendered = format_log_line(&entry);
+        let rendered = format_log_entry(&entry, false);
         assert!(rendered.contains(">>>> hello"));
         assert!(!rendered.contains('\x1B'));
+        assert!(rendered.contains("[err]"));
+    }
+
+    #[test]
+    fn format_log_entry_raw_preserves_ansi_in_output_text() {
+        // `--raw` opts out of the terminal normalizer: ANSI colors (and any
+        // other control bytes) in the payload reach the terminal verbatim.
+        let entry = json!({
+            "moment": {"input_hash": "1", "vtime": "14.118"},
+            "source": {"name": "setup", "stream": "error"},
+            "output_text": "\x1B[4m>>>> hello\x1B[0m"
+        });
+        let rendered = format_log_entry(&entry, true);
+        assert!(rendered.contains("\x1B[4m>>>> hello\x1B[0m"));
         assert!(rendered.contains("[err]"));
     }
 
@@ -2910,7 +2926,7 @@ mod tests {
             "source": {"name": "client", "stream": "info"},
             "output_text": "hello"
         });
-        let rendered = format_log_line(&entry);
+        let rendered = format_log_entry(&entry, false);
         // Trimmed to 3 decimals so it fits the fixed vtime column and the
         // source column stays aligned across rows.
         assert!(rendered.starts_with("[        18.914] "), "got: {rendered}");
@@ -2924,7 +2940,7 @@ mod tests {
             "output_text": "hello"
         });
         // No `vtime` string: derive seconds from ticks (2^32 ticks = 1s).
-        assert!(format_log_line(&entry).starts_with("[             1] "));
+        assert!(format_log_entry(&entry, false).starts_with("[             1] "));
     }
 
     #[test]
@@ -2936,9 +2952,9 @@ mod tests {
             "output_text": "hello"
         });
         assert!(
-            format_log_line(&entry).starts_with("[          12.5] "),
+            format_log_entry(&entry, false).starts_with("[          12.5] "),
             "got: {}",
-            format_log_line(&entry)
+            format_log_entry(&entry, false)
         );
     }
 
@@ -2972,7 +2988,7 @@ mod tests {
             "antithesis_setup": {"details": null, "status": "complete"}
         });
         assert_eq!(
-            format_log_line(&entry),
+            format_log_entry(&entry, false),
             "[        14.284] [antithesis/pods/client/sdk.jsonl] [   ]  - {\"antithesis_setup\":{\"details\":null,\"status\":\"complete\"}}"
         );
     }

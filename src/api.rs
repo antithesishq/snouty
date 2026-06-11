@@ -1507,6 +1507,150 @@ mod tests {
         assert!(debug.contains("[REDACTED]"));
     }
 
+    mod from_env {
+        use super::super::*;
+        use std::sync::{Mutex, MutexGuard};
+
+        // Serializes tests that mutate the auth-related env vars so they
+        // don't race with one another or with code reading these vars
+        // elsewhere in this binary's test process.
+        static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+        const ENV_VARS: &[&str] = &[
+            "ANTITHESIS_API_KEY",
+            "ANTITHESIS_USERNAME",
+            "ANTITHESIS_PASSWORD",
+        ];
+
+        /// Holds ENV_LOCK and snapshots/clears the auth env vars on
+        /// construction, restoring them on drop.
+        struct EnvGuard {
+            _lock: MutexGuard<'static, ()>,
+            saved: Vec<(&'static str, Option<String>)>,
+        }
+
+        impl EnvGuard {
+            fn new() -> Self {
+                let lock = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+                let saved: Vec<_> = ENV_VARS.iter().map(|k| (*k, env::var(k).ok())).collect();
+                for (k, _) in &saved {
+                    // SAFETY: ENV_LOCK is held for the lifetime of this guard,
+                    // so no other test thread mutates or reads these env vars.
+                    unsafe { env::remove_var(k) };
+                }
+                Self { _lock: lock, saved }
+            }
+
+            fn set(&self, key: &str, value: &str) {
+                // SAFETY: ENV_LOCK held via self._lock.
+                unsafe { env::set_var(key, value) };
+            }
+        }
+
+        impl Drop for EnvGuard {
+            fn drop(&mut self) {
+                for (k, v) in &self.saved {
+                    // SAFETY: ENV_LOCK held until this Drop completes.
+                    match v {
+                        Some(value) => unsafe { env::set_var(k, value) },
+                        None => unsafe { env::remove_var(k) },
+                    }
+                }
+            }
+        }
+
+        #[test]
+        fn returns_bearer_when_api_key_is_set_and_basic_allowed() {
+            let env = EnvGuard::new();
+            env.set("ANTITHESIS_API_KEY", "key-123");
+            assert_eq!(
+                Auth::from_env(false).unwrap(),
+                Auth::bearer("key-123".to_string())
+            );
+        }
+
+        #[test]
+        fn returns_bearer_when_api_key_is_set_and_basic_disallowed() {
+            let env = EnvGuard::new();
+            env.set("ANTITHESIS_API_KEY", "key-123");
+            assert_eq!(
+                Auth::from_env(true).unwrap(),
+                Auth::bearer("key-123".to_string())
+            );
+        }
+
+        #[test]
+        fn api_key_takes_precedence_over_basic_credentials() {
+            // When both are set, bearer wins regardless of the policy flag.
+            let env = EnvGuard::new();
+            env.set("ANTITHESIS_API_KEY", "key-123");
+            env.set("ANTITHESIS_USERNAME", "user");
+            env.set("ANTITHESIS_PASSWORD", "pass");
+            for disallow in [false, true] {
+                assert_eq!(
+                    Auth::from_env(disallow).unwrap(),
+                    Auth::bearer("key-123".to_string()),
+                    "disallow_basic_auth = {disallow}"
+                );
+            }
+        }
+
+        #[test]
+        fn falls_back_to_basic_when_basic_is_allowed() {
+            let env = EnvGuard::new();
+            env.set("ANTITHESIS_USERNAME", "user");
+            env.set("ANTITHESIS_PASSWORD", "pass");
+            assert_eq!(
+                Auth::from_env(false).unwrap(),
+                Auth::basic("user".to_string(), "pass".to_string()),
+            );
+        }
+
+        #[test]
+        fn rejects_basic_credentials_when_disallowed() {
+            // The error message must point the user at ANTITHESIS_API_KEY and
+            // must NOT be the generic "missing env var ANTITHESIS_USERNAME"
+            // produced by the regular fallback — the credentials are present
+            // here, they're just not allowed for this command.
+            let env = EnvGuard::new();
+            env.set("ANTITHESIS_USERNAME", "user");
+            env.set("ANTITHESIS_PASSWORD", "pass");
+            let err = Auth::from_env(true).unwrap_err().to_string();
+            assert!(
+                err.contains("ANTITHESIS_API_KEY"),
+                "error must point users at ANTITHESIS_API_KEY, got: {err}"
+            );
+            assert!(
+                !err.contains("missing environment variable"),
+                "must not surface the generic missing-env-var message, got: {err}"
+            );
+        }
+
+        #[test]
+        fn rejects_with_clear_message_when_no_credentials_and_disallowed() {
+            // Even with no basic creds set, disallowed mode should mention
+            // the API key rather than complaining about missing username.
+            let _env = EnvGuard::new();
+            let err = Auth::from_env(true).unwrap_err().to_string();
+            assert!(
+                err.contains("ANTITHESIS_API_KEY"),
+                "error must point users at ANTITHESIS_API_KEY, got: {err}"
+            );
+        }
+
+        #[test]
+        fn errors_when_nothing_is_set_and_basic_allowed() {
+            // Falls through to the basic-auth path which then complains about
+            // the missing username env var.
+            let _env = EnvGuard::new();
+            let err = Auth::from_env(false).unwrap_err().to_string();
+            assert!(
+                err.contains("ANTITHESIS_USERNAME"),
+                "expected missing-USERNAME error, got: {err}"
+            );
+        }
+    }
+
     fn rid(version: u32) -> String {
         format!("e88ec3ec6cdb7b31ea08718616e04849-{version}-11")
     }

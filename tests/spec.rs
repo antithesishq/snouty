@@ -98,8 +98,15 @@ fn cmd_mock_server(
     env: &mut testscript_rs::TestEnvironment,
     args: &[String],
 ) -> testscript_rs::Result<()> {
-    // Usage: mock-server <status> <body>
+    // Usage: mock-server [--auth=basic|bearer] <status> <body>
     // Starts a TCP mock HTTP server, sets ANTITHESIS_BASE_URL and auth env vars.
+    // Default auth is basic; --auth=bearer sets ANTITHESIS_API_KEY instead, for
+    // commands that disallow basic credentials (debug, runs, ...).
+    let (auth_mode, args) = match args.first().and_then(|s| s.strip_prefix("--auth=")) {
+        Some(mode) => (mode.to_string(), &args[1..]),
+        None => ("basic".to_string(), args),
+    };
+
     if args.len() < 2 {
         return Err(err("mock-server requires <status> <body>".to_string()));
     }
@@ -136,8 +143,20 @@ fn cmd_mock_server(
     });
 
     env.set_env_var("ANTITHESIS_BASE_URL", &url);
-    env.set_env_var("ANTITHESIS_USERNAME", "testuser");
-    env.set_env_var("ANTITHESIS_PASSWORD", "testpass");
+    match auth_mode.as_str() {
+        "basic" => {
+            env.set_env_var("ANTITHESIS_USERNAME", "testuser");
+            env.set_env_var("ANTITHESIS_PASSWORD", "testpass");
+        }
+        "bearer" => {
+            env.set_env_var("ANTITHESIS_API_KEY", "testtoken");
+        }
+        other => {
+            return Err(err(format!(
+                "unknown --auth mode '{other}': expected 'basic' or 'bearer'"
+            )));
+        }
+    }
     env.set_env_var("ANTITHESIS_TENANT", "testtenant");
     Ok(())
 }

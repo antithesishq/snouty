@@ -12,9 +12,21 @@
 # command output or required arguments.
 
 # The command authenticates with the Antithesis API using
-#    ANTITHESIS_USERNAME, ANTITHESIS_PASSWORD, and ANTITHESIS_TENANT env vars.
+#    ANTITHESIS_API_KEY and ANTITHESIS_TENANT. Unlike `snouty launch`,
+#    username/password (basic) auth is rejected and the error points the
+#    user at ANTITHESIS_API_KEY rather than ANTITHESIS_USERNAME.
 ! snouty runs
-stderr 'missing environment variable.*'
+stderr 'Username/password authentication is not permitted'
+stderr 'ANTITHESIS_API_KEY'
+
+# Setting only basic-auth credentials does NOT satisfy the requirement —
+#    the user must provide an API key.
+set-env ANTITHESIS_USERNAME testuser
+set-env ANTITHESIS_PASSWORD testpass
+set-env ANTITHESIS_TENANT testtenant
+! snouty runs
+stderr 'Username/password authentication is not permitted'
+stderr 'ANTITHESIS_API_KEY'
 
 # On success, the command fetches all pages via next_cursor and prints a table.
 mock-runs-server
@@ -146,8 +158,9 @@ mock-runs-server empty
 snouty runs
 stdout 'No runs found\.'
 
-# API errors are reported with status code and body.
-mock-server 400 '{"message":"bad request"}'
+# API errors are reported with status code and body. `snouty runs` only
+# accepts API-key (bearer) auth, so the mock server must be set up that way.
+mock-server --auth=bearer 400 '{"message":"bad request"}'
 ! snouty runs
 stderr 'API error: 400.*'
 

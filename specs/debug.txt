@@ -11,15 +11,26 @@
 # mutating staging. Read-only checks (env-var and schema validation that
 # fail before any API call) run in both modes.
 
-# The command authenticates with the Antithesis API using either
-#    ANTITHESIS_API_KEY and ANTITHESIS_TENANT, or
-#    ANTITHESIS_USERNAME, ANTITHESIS_PASSWORD, and ANTITHESIS_TENANT.
+# The command authenticates with the Antithesis API using
+#    ANTITHESIS_API_KEY and ANTITHESIS_TENANT. Unlike `snouty launch`,
+#    username/password (basic) auth is rejected and the error points the
+#    user at ANTITHESIS_API_KEY rather than ANTITHESIS_USERNAME.
 ! snouty debug --input-hash abc --session-id sess --vtime 123
-stderr 'missing environment variable.*'
+stderr 'Username/password authentication is not permitted'
+stderr 'ANTITHESIS_API_KEY'
+
+# Setting only basic-auth credentials does NOT satisfy the requirement —
+#    the user must provide an API key.
+set-env ANTITHESIS_USERNAME testuser
+set-env ANTITHESIS_PASSWORD testpass
+set-env ANTITHESIS_TENANT testtenant
+! snouty debug --input-hash abc --session-id sess --vtime 123
+stderr 'Username/password authentication is not permitted'
+stderr 'ANTITHESIS_API_KEY'
 
 # Parameters are validated against the debuggingParams schema before
 #    making any API call. Required fields: session_id, input_hash, vtime.
-mock-server 200 '{}'
+mock-server --auth=bearer 200 '{}'
 ! snouty debug --input-hash abc
 stderr 'validation failed.*'
 
@@ -31,7 +42,7 @@ stderr 'unexpected argument.*'
 
 # Parameters are provided as typed flags. Before sending, the resolved
 #    parameters are printed to stderr with sensitive values redacted.
-mock-server 200 '{"runId":"run-123","statusCode":202}'
+mock-server --auth=bearer 200 '{"runId":"run-123","statusCode":202}'
 snouty debug --input-hash abc123 --session-id sess-456 --vtime 1234567890 --description 'debug this moment' --recipients team@example.com
 stderr '"antithesis.debugging.input_hash": "abc123"'
 stderr '"antithesis.debugging.session_id": "sess-456"'
@@ -44,7 +55,7 @@ stderr '"antithesis.report.recipients": "\[REDACTED\]"'
 #    (e.g. Moment.from({ session_id: "...", ... })) is auto-detected on
 #    stdin. Keys are mapped to antithesis.debugging.* and numeric values are
 #    converted to strings.
-mock-server 200 '{"runId":"run-123","statusCode":202}'
+mock-server --auth=bearer 200 '{"runId":"run-123","statusCode":202}'
 stdin moment_input.txt
 snouty debug --stdin
 stderr '"antithesis.debugging.session_id": "f89d5c11f5e3bf5e4bb3641809800cee-44-22"'
@@ -52,14 +63,14 @@ stderr '"antithesis.debugging.input_hash": "6057726200491963783"'
 stderr '"antithesis.debugging.vtime": "329.8037810830865"'
 
 # 3b. stdin as JSON
-mock-server 200 '{"runId":"run-123","statusCode":202}'
+mock-server --auth=bearer 200 '{"runId":"run-123","statusCode":202}'
 stdin debug_json.txt
 snouty debug --stdin
 stderr '"antithesis.debugging.input_hash": "abc"'
 
 # When both stdin and CLI args are provided, CLI args take priority over
 #    stdin values.
-mock-server 200 '{"runId":"run-123","statusCode":202}'
+mock-server --auth=bearer 200 '{"runId":"run-123","statusCode":202}'
 stdin moment_input.txt
 snouty debug --stdin --input-hash override --recipients team@example.com
 stderr '"antithesis.debugging.session_id": "f89d5c11f5e3bf5e4bb3641809800cee-44-22"'
@@ -68,20 +79,20 @@ stderr '"antithesis.debugging.vtime": "329.8037810830865"'
 stderr '"antithesis.report.recipients": "\[REDACTED\]"'
 
 # On success, a one-line confirmation with the run_id is printed to stdout.
-mock-server 200 '{"runId":"run-123","statusCode":202}'
+mock-server --auth=bearer 200 '{"runId":"run-123","statusCode":202}'
 stdin moment_input.txt
 snouty debug --stdin
 stdout 'Debugging session started: run_id run-123'
 
 # With --json, the full response body is printed as pretty JSON.
-mock-server 200 '{"runId":"run-123","statusCode":202}'
+mock-server --auth=bearer 200 '{"runId":"run-123","statusCode":202}'
 stdin moment_input.txt
 snouty --json debug --stdin
 stdout '\s*"runId": "run-123".*'
 
 # On API failure, the command exits with an error showing the HTTP status
 #    and response body.
-mock-server 401 '{"message": "unauthorized"}'
+mock-server --auth=bearer 401 '{"message": "unauthorized"}'
 ! snouty debug --input-hash abc123 --session-id sess-456 --vtime 1234567890
 stderr 'API error: 401.*'
 

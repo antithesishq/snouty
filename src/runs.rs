@@ -1,5 +1,5 @@
 use std::path::Path;
-use std::sync::OnceLock;
+use std::{io::Write, sync::OnceLock};
 
 use color_eyre::eyre::{Result, eyre};
 use futures_util::{StreamExt, TryStreamExt};
@@ -16,43 +16,6 @@ use crate::api::{
 #[cfg(test)]
 use crate::api::{Event, EventProperty, Moment, NonEventProperty};
 use crate::cli::{RunsCommands, RunsListArgs};
-
-/// A failed write to snouty's own stdout. Tagging these at the write site
-/// lets main distinguish "our stdout pipe closed" (a normal way for
-/// `snouty ... | head` to end) from io errors bubbling out of other layers,
-/// without relying on downcast semantics of a bare [`std::io::Error`].
-#[derive(Debug)]
-pub struct StdoutWriteError(pub std::io::Error);
-
-impl std::fmt::Display for StdoutWriteError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "failed to write to stdout: {}", self.0)
-    }
-}
-
-impl std::error::Error for StdoutWriteError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        Some(&self.0)
-    }
-}
-
-impl StdoutWriteError {
-    pub fn is_broken_pipe(&self) -> bool {
-        self.0.kind() == std::io::ErrorKind::BrokenPipe
-    }
-}
-
-/// `println!`, except write failures come back as a tagged
-/// [`StdoutWriteError`] instead of a panic. Evaluates to `Result<()>`, so
-/// call sites just append `?`. Locking per call is fine: `Stdout`'s lock is
-/// reentrant and this is exactly what `println!` does internally.
-macro_rules! outln {
-    ($($arg:tt)*) => {{
-        use std::io::Write as _;
-        writeln!(std::io::stdout().lock(), $($arg)*)
-            .map_err(|e| color_eyre::Report::new(StdoutWriteError(e)))
-    }};
-}
 
 pub async fn cmd_runs(command: Option<RunsCommands>, json: bool, verbose: bool) -> Result<()> {
     match command {
@@ -152,19 +115,20 @@ async fn cmd_runs_list(args: RunsListArgs, json: bool, verbose: bool) -> Result<
             .then(a.status.cmp(&b.status))
     });
 
+    let mut stdout = std::io::stdout().lock();
     if json {
         for run in &runs {
-            outln!("{}", serde_json::to_string(run)?)?;
+            writeln!(stdout, "{}", serde_json::to_string(run)?)?;
         }
         return Ok(());
     }
 
     if runs.is_empty() {
-        outln!("No runs found.")?;
+        writeln!(stdout, "No runs found.")?;
         return Ok(());
     }
 
-    outln!("{}", render_runs_table(&runs))?;
+    writeln!(stdout, "{}", render_runs_table(&runs))?;
     Ok(())
 }
 
@@ -174,10 +138,11 @@ async fn cmd_runs_show(run_id: &str, json: bool, verbose: bool) -> Result<()> {
     let api = AntithesisApi::from_env_requiring_api_key(verbose)?;
     let run = api.get_run(run_id).await?;
 
+    let mut stdout = std::io::stdout().lock();
     if json {
-        outln!("{}", serde_json::to_string_pretty(&run)?)?;
+        writeln!(stdout, "{}", serde_json::to_string_pretty(&run)?)?;
     } else {
-        print_run_detail(&run)?;
+        print_run_detail(&mut stdout, &run)?;
     }
 
     Ok(())
@@ -203,12 +168,13 @@ async fn cmd_runs_properties(
             .then(a.name().cmp(b.name()))
     });
 
+    let mut stdout = std::io::stdout().lock();
     if json {
         for property in &properties {
-            outln!("{}", serde_json::to_string(property)?)?;
+            writeln!(stdout, "{}", serde_json::to_string(property)?)?;
         }
     } else if properties.is_empty() {
-        outln!("No properties found.")?;
+        writeln!(stdout, "No properties found.")?;
     } else {
         let event_rows = flatten_property_events(&properties);
         let non_event_rows = flatten_non_event_property_values(&properties);
@@ -220,13 +186,13 @@ async fn cmd_runs_properties(
         if !non_event_rows.is_empty() {
             sections.push(render_property_values_table(&non_event_rows));
         }
-        outln!("{}", sections.join("\n\n"))?;
+        writeln!(stdout, "{}", sections.join("\n\n"))?;
     }
 
     Ok(())
 }
 
-fn print_run_detail(run: &RunDetail) -> Result<()> {
+fn print_run_detail(out: &mut impl Write, run: &RunDetail) -> Result<()> {
     let mut rows: Vec<(&str, String)> = vec![
         ("Run ID", run.run_id.clone()),
         ("Status", run.status.to_string()),
@@ -262,7 +228,7 @@ fn print_run_detail(run: &RunDetail) -> Result<()> {
 
     let label_width = rows.iter().map(|(label, _)| label.len()).max().unwrap_or(0);
     for (label, value) in &rows {
-        outln!("{label:label_width$}  {}", sanitize(value))?;
+        writeln!(out, "{label:label_width$}  {}", sanitize(value))?;
     }
     Ok(())
 }
@@ -278,10 +244,11 @@ async fn cmd_runs_build_logs(run_id: &str, json: bool, verbose: bool) -> Result<
 
     let api = AntithesisApi::from_env_requiring_api_key(verbose)?;
     let stream = api.get_run_build_logs(run_id).await?.into_inner();
+    let mut stdout = std::io::stdout().lock();
 
     if json {
         stream_ndjson_lines(stream, NoOpTransformer {}, |line| {
-            outln!("{line}")?;
+            writeln!(stdout, "{line}")?;
             Ok(())
         })
         .await
@@ -291,9 +258,9 @@ async fn cmd_runs_build_logs(run_id: &str, json: bool, verbose: bool) -> Result<
                 let ts = entry["timestamp"].as_str().unwrap_or("");
                 let stream = entry["stream"].as_str().unwrap_or("out");
                 let text = sanitize(entry["text"].as_str().unwrap_or(""));
-                outln!("{ts} [{stream}] {text}")?;
+                writeln!(stdout, "{ts} [{stream}] {text}")?;
             } else {
-                outln!("{line}")?;
+                writeln!(stdout, "{line}")?;
             }
             Ok(())
         })
@@ -310,14 +277,19 @@ async fn cmd_runs_events(run_id: &str, query: &[String], json: bool, verbose: bo
         .await?
         .into_inner();
 
+    let mut stdout = std::io::stdout().lock();
     if json {
         stream_ndjson_lines(stream, NoOpTransformer {}, |line| {
-            outln!("{line}")?;
+            writeln!(stdout, "{line}")?;
             Ok(())
         })
         .await
     } else {
-        outln!("{:<22}  {:<22}  {:<20}  OUTPUT", "HASH", "VTIME", "SOURCE")?;
+        writeln!(
+            stdout,
+            "{:<22}  {:<22}  {:<20}  OUTPUT",
+            "HASH", "VTIME", "SOURCE"
+        )?;
         stream_ndjson_lines(stream, NoOpTransformer {}, |line| {
             if let Ok(entry) = serde_json::from_str::<Value>(line) {
                 let rendered = render_event_entry(&entry);
@@ -325,9 +297,12 @@ async fn cmd_runs_events(run_id: &str, query: &[String], json: bool, verbose: bo
                 let vtime = rendered.vtime;
                 let source = rendered.source;
                 let output = rendered.output;
-                outln!("{input_hash:<22}  {vtime:<22}  {source:<20}  {output}")?;
+                writeln!(
+                    stdout,
+                    "{input_hash:<22}  {vtime:<22}  {source:<20}  {output}"
+                )?;
             } else {
-                outln!("{:<22}  {:<22}  {:<20}  {line}", "", "", "")?;
+                writeln!(stdout, "{:<22}  {:<22}  {:<20}  {line}", "", "", "")?;
             }
             Ok(())
         })
@@ -355,6 +330,7 @@ async fn cmd_runs_logs(
         .await?
         .into_inner();
 
+    let mut stdout = std::io::stdout().lock();
     if json {
         if annotate_faults {
             stream_ndjson_lines(
@@ -364,29 +340,29 @@ async fn cmd_runs_logs(
                     active_faults: json!({}),
                 },
                 |line| {
-                    outln!("{line}")?;
+                    writeln!(stdout, "{line}")?;
                     Ok(())
                 },
             )
             .await
         } else {
             stream_ndjson_lines(stream, NoOpTransformer {}, |line| {
-                outln!("{line}")?;
+                writeln!(stdout, "{line}")?;
                 Ok(())
             })
             .await
         }
     } else {
-        outln!("{:<22}  {:<20}  OUTPUT", "VTIME", "SOURCE")?;
+        writeln!(stdout, "{:<22}  {:<20}  OUTPUT", "VTIME", "SOURCE")?;
         stream_ndjson_lines(stream, NoOpTransformer {}, |line| {
             if let Ok(entry) = serde_json::from_str::<Value>(line) {
                 let rendered = render_event_entry(&entry);
                 let vtime = rendered.vtime;
                 let source = rendered.source;
                 let output = rendered.output;
-                outln!("{vtime:<22}  {source:<20}  {output}")?;
+                writeln!(stdout, "{vtime:<22}  {source:<20}  {output}")?;
             } else {
-                outln!("{line}")?;
+                writeln!(stdout, "{line}")?;
             }
             Ok(())
         })

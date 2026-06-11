@@ -12,7 +12,6 @@ use snouty::container;
 use snouty::docs;
 use snouty::moment;
 use snouty::params::Params;
-use snouty::runs::StdoutWriteError;
 use snouty::validate;
 
 fn read_stdin() -> Result<String> {
@@ -112,16 +111,21 @@ async fn main() -> Result<()> {
         Commands::Docs { offline, command } => docs::cmd_docs(command, offline, json).await,
     };
 
-    // When our output is piped into something that exits early (e.g. `snouty
-    // runs list | head`), writes to stdout fail with BrokenPipe. That's a
-    // normal way for a pipeline to end, not an error — exit quietly. Only
-    // errors explicitly tagged as stdout writes qualify, so io errors from
-    // other layers (e.g. inside reqwest) can never take this path.
+    suppress_broken_pipe(result)
+}
+
+/// When our output is piped into something that exits early (e.g. `snouty
+/// runs list | head`), writes to stdout fail with BrokenPipe. That's a
+/// normal way for a pipeline to end, not an error — exit quietly. Network
+/// errors don't take this path: they surface as reqwest errors, whose
+/// underlying io::Error sits in reqwest's source chain and is not
+/// downcastable from the report (see the tests below).
+fn suppress_broken_pipe(result: Result<()>) -> Result<()> {
     match result {
         Err(err)
             if err
-                .downcast_ref::<StdoutWriteError>()
-                .is_some_and(StdoutWriteError::is_broken_pipe) =>
+                .downcast_ref::<io::Error>()
+                .is_some_and(|e| e.kind() == ErrorKind::BrokenPipe) =>
         {
             Ok(())
         }
@@ -372,4 +376,61 @@ fn cmd_update() -> Result<()> {
         env!("CARGO_PKG_VERSION")
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use color_eyre::eyre::{Report, eyre};
+
+    #[test]
+    fn suppress_broken_pipe_swallows_stdout_pipe_errors() {
+        let err = io::Error::new(ErrorKind::BrokenPipe, "stdout closed");
+        assert!(suppress_broken_pipe(Err(Report::new(err))).is_ok());
+    }
+
+    #[test]
+    fn suppress_broken_pipe_passes_through_other_errors() {
+        let io_err = io::Error::other("disk on fire");
+        assert!(suppress_broken_pipe(Err(Report::new(io_err))).is_err());
+        assert!(suppress_broken_pipe(Err(eyre!("plain error"))).is_err());
+    }
+
+    /// A broken connection during an API call must not be mistaken for a
+    /// closed stdout pipe. reqwest wraps the socket-level io::Error in its
+    /// own error type, whose source chain eyre's downcast does not traverse —
+    /// so no io::Error (broken pipe or otherwise) is downcastable from an
+    /// API error report, and it can never be suppressed.
+    #[tokio::test]
+    async fn suppress_broken_pipe_ignores_network_socket_errors() {
+        // Grab a port that refuses connections by binding then dropping.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        drop(listener);
+
+        let reqwest_err = reqwest::get(format!("http://{addr}/api/v0/runs"))
+            .await
+            .unwrap_err();
+
+        // Sanity check: the socket failure really is an io::Error, buried in
+        // reqwest's source chain.
+        let mut source = std::error::Error::source(&reqwest_err);
+        let mut found_io = false;
+        while let Some(err) = source {
+            found_io |= err.downcast_ref::<io::Error>().is_some();
+            source = err.source();
+        }
+        assert!(
+            found_io,
+            "expected an io::Error in the reqwest source chain"
+        );
+
+        // Wrap it the way api.rs wraps communication errors.
+        let report = eyre!(reqwest_err).wrap_err("failed to contact API");
+
+        // The io::Error is not downcastable through reqwest's error...
+        assert!(report.downcast_ref::<io::Error>().is_none());
+        // ...so the report can never be suppressed.
+        assert!(suppress_broken_pipe(Err(report)).is_err());
+    }
 }

@@ -353,26 +353,59 @@ fn docs_show_partial_match_suggests() {
 }
 
 #[test]
-fn docs_show_generated_page_hints_live_url() {
+fn docs_show_generated_sdk_page_points_at_language_index() {
     snouty_docs()
         .args([
             "docs",
             "--offline",
             "show",
-            "/docs/generated/sdk/golang/assert/",
+            "/docs/generated/sdk/rust/antithesis_sdk/assert",
         ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "The rust SDK reference docs are not part of the offline docs.",
+        ))
+        .stderr(predicate::str::contains(
+            "https://antithesis.com/docs/generated/sdk/rust/antithesis_sdk/",
+        ))
+        // Only the requested language is shown, not every SDK.
+        .stderr(predicate::str::contains("golang").not());
+}
+
+#[test]
+fn docs_show_generated_sdk_resolves_go_alias_to_golang() {
+    // The human-facing SDK docs use `go`; the generated docs use `golang`.
+    snouty_docs()
+        .args(["docs", "--offline", "show", "generated/sdk/go/assert"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "The golang SDK reference docs are not part of the offline docs.",
+        ))
+        .stderr(predicate::str::contains(
+            "https://antithesis.com/docs/generated/sdk/golang/",
+        ));
+}
+
+#[test]
+fn docs_show_generated_sdk_unknown_language_uses_generic_hint() {
+    // An unrecognized language (the alias table may be out of date) falls back
+    // to the generic generated-page hint rather than a single SDK index.
+    snouty_docs()
+        .args(["docs", "--offline", "show", "generated/sdk/cpp/assert"])
         .assert()
         .failure()
         .stderr(predicate::str::contains(
             "generated pages (e.g. SDK references) are not included in the offline docs.",
         ))
         .stderr(predicate::str::contains(
-            "If this is a valid page, try: https://antithesis.com/docs/generated/sdk/golang/assert/",
+            "If this is a valid page, try: https://antithesis.com/docs/generated/sdk/cpp/assert/",
         ));
 }
 
 #[test]
-fn docs_show_generated_page_from_full_url_hints_live_url() {
+fn docs_show_generated_sdk_page_from_full_url_points_at_language_index() {
     snouty_docs()
         .args([
             "docs",
@@ -383,28 +416,23 @@ fn docs_show_generated_page_from_full_url_hints_live_url() {
         .assert()
         .failure()
         .stderr(predicate::str::contains(
-            "generated pages (e.g. SDK references) are not included in the offline docs.",
+            "The golang SDK reference docs are not part of the offline docs.",
         ))
         .stderr(predicate::str::contains(
-            "If this is a valid page, try: https://antithesis.com/docs/generated/sdk/golang/assert/",
+            "https://antithesis.com/docs/generated/sdk/golang/",
         ));
 }
 
 #[test]
-fn docs_show_generated_page_respects_custom_docs_url() {
+fn docs_show_generated_sdk_page_respects_custom_docs_url() {
     let mut cmd = snouty_docs();
     cmd.env("ANTITHESIS_DOCS_URL", "https://custom.example.com/docs");
-    cmd.args([
-        "docs",
-        "--offline",
-        "show",
-        "generated/sdk/golang/assert",
-    ])
-    .assert()
-    .failure()
-    .stderr(predicate::str::contains(
-        "If this is a valid page, try: https://custom.example.com/docs/generated/sdk/golang/assert/",
-    ));
+    cmd.args(["docs", "--offline", "show", "generated/sdk/golang/assert"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "https://custom.example.com/docs/generated/sdk/golang/",
+        ));
 }
 
 #[test]

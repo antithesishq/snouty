@@ -83,7 +83,6 @@ Snouty provides the following subcommands. Invoke `snouty <command> --help` to f
   - `snouty runs events <run_id> <query>`: search events in a run.
 - `snouty debug`: start a debug session.
 - `snouty validate`: locally run and validate your docker-compose.yaml setup.
-- `snouty api webhook`: send a raw request to an Antithesis webhook endpoint.
 - `snouty doctor`: check your environment is configured correctly.
 - `snouty docs`: fast, local search of the Antithesis documentation.
 - `snouty completions <shell>`: generate shell completion scripts.

@@ -7,7 +7,7 @@ use log::{debug, info};
 
 use color_eyre::eyre::{Context, Result, bail};
 use snouty::api::AntithesisApi;
-use snouty::cli::{ApiCommands, Cli, Commands, DebugArgs, LaunchArgs};
+use snouty::cli::{Cli, Commands, DebugArgs, LaunchArgs};
 use snouty::config;
 use snouty::container;
 use snouty::docs;
@@ -38,27 +38,6 @@ fn get_stdin_params(use_stdin: bool, support_moment: bool) -> Result<Option<Para
         }
     } else {
         Ok(None)
-    }
-}
-
-fn get_params(args: Vec<String>, use_stdin: bool, support_moment: bool) -> Result<Params> {
-    let stdin_params = get_stdin_params(use_stdin, support_moment)?;
-
-    let args_params = if !args.is_empty() {
-        Some(Params::from_args(&args)?)
-    } else {
-        None
-    };
-
-    // CLI args take priority over stdin
-    match (stdin_params, args_params) {
-        (Some(mut stdin), Some(args)) => {
-            stdin.merge(args);
-            Ok(stdin)
-        }
-        (Some(stdin), None) => Ok(stdin),
-        (None, Some(args)) => Ok(args),
-        (None, None) => bail!("invalid arguments: no parameters provided"),
     }
 }
 
@@ -103,14 +82,6 @@ async fn run(cli: Cli) -> Result<()> {
             cmd_launch(args, json, verbose).await
         }
         Commands::Runs { command } => snouty::runs::cmd_runs(command, json, verbose).await,
-        Commands::Api(ApiCommands::Webhook {
-            webhook,
-            stdin,
-            args,
-        }) => {
-            info!("running api webhook with webhook: {}", webhook);
-            cmd_api_webhook(webhook, args, stdin, verbose).await
-        }
         Commands::Debug(args) => {
             info!("starting debug session");
             cmd_debug(args, json, verbose).await
@@ -134,7 +105,6 @@ fn json_unaware_command_name(command: &Commands) -> Option<&'static str> {
         | Commands::Runs { .. }
         | Commands::Docs { .. }
         | Commands::Debug { .. } => None,
-        Commands::Api(ApiCommands::Webhook { .. }) => Some("api webhook"),
         Commands::Validate(_) => Some("validate"),
         Commands::Doctor => Some("doctor"),
         Commands::Completions { .. } => Some("completions"),
@@ -202,9 +172,7 @@ async fn cmd_launch(args: LaunchArgs, json: bool, verbose: bool) -> Result<()> {
     }
 
     if params.contains_key("antithesis.images") {
-        bail!(
-            "invalid argument: do not specify antithesis.images as --param, use api webhook instead"
-        );
+        bail!("invalid argument: antithesis.images cannot be set via --param");
     }
 
     if params.is_empty() {
@@ -250,18 +218,6 @@ async fn cmd_launch(args: LaunchArgs, json: bool, verbose: bool) -> Result<()> {
         println!("Test run started: run_id {}", response.run_id);
     }
 
-    Ok(())
-}
-
-async fn cmd_api_webhook(
-    webhook: String,
-    args: Vec<String>,
-    use_stdin: bool,
-    verbose: bool,
-) -> Result<()> {
-    let params = get_params(args, use_stdin, false)?;
-    let body = launch_webhook(&webhook, params, verbose).await?;
-    println!("{}", serde_json::to_string(&body)?);
     Ok(())
 }
 

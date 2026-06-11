@@ -693,10 +693,7 @@ pub struct TestConfig {
 }
 
 impl TestConfig {
-    pub fn for_base_url_and_maybe_cache_dir(
-        base_url: String,
-        cache_dir: Option<PathBuf>,
-    ) -> Self {
+    pub fn for_base_url_and_maybe_cache_dir(base_url: String, cache_dir: Option<PathBuf>) -> Self {
         Self {
             base_url: Some(base_url),
             cache_dir,

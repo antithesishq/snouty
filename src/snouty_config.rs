@@ -228,8 +228,8 @@ fn resolve_config_value_from_environment_or_project(
             let cached =
                 try_load_toml_file(cache, &project_dir.join(PROJECT_CONFIG_SETTINGS_FILENAME));
 
-            if let Some(value_from_project_profile) = cached
-                .and_then(|config| try_resolve_from_profile(config, config_key, profile_name))
+            if let Some(value_from_project_profile) =
+                cached.and_then(|config| try_resolve_from_profile(config, config_key, profile_name))
             {
                 return Some(value_from_project_profile);
             }
@@ -240,8 +240,8 @@ fn resolve_config_value_from_environment_or_project(
         {
             let cached = try_load_toml_file(cache, &global_config_path);
 
-            if let Some(value_from_global_profile) = cached
-                .and_then(|config| try_resolve_from_profile(config, config_key, profile_name))
+            if let Some(value_from_global_profile) =
+                cached.and_then(|config| try_resolve_from_profile(config, config_key, profile_name))
             {
                 return Some(value_from_global_profile);
             }

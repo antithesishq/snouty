@@ -16,8 +16,8 @@
 #    username/password (basic) auth is rejected and the error points the
 #    user at ANTITHESIS_API_KEY rather than ANTITHESIS_USERNAME.
 ! snouty runs
-stderr 'Username/password authentication is not permitted'
-stderr 'ANTITHESIS_API_KEY'
+stderr 'Username/password authentication is not permitted.*'
+stderr 'ANTITHESIS_API_KEY.*'
 
 # Setting only basic-auth credentials does NOT satisfy the requirement —
 #    the user must provide an API key.
@@ -25,8 +25,8 @@ set-env ANTITHESIS_USERNAME testuser
 set-env ANTITHESIS_PASSWORD testpass
 set-env ANTITHESIS_TENANT testtenant
 ! snouty runs
-stderr 'Username/password authentication is not permitted'
-stderr 'ANTITHESIS_API_KEY'
+stderr 'Username/password authentication is not permitted.*'
+stderr 'ANTITHESIS_API_KEY.*'
 
 # On success, the command fetches all pages via next_cursor and prints a table.
 mock-runs-server

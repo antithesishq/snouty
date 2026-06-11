@@ -16,8 +16,8 @@
 #    username/password (basic) auth is rejected and the error points the
 #    user at ANTITHESIS_API_KEY rather than ANTITHESIS_USERNAME.
 ! snouty debug --input-hash abc --session-id sess --vtime 123
-stderr 'Username/password authentication is not permitted'
-stderr 'ANTITHESIS_API_KEY'
+stderr 'Username/password authentication is not permitted.*'
+stderr 'ANTITHESIS_API_KEY.*'
 
 # Setting only basic-auth credentials does NOT satisfy the requirement —
 #    the user must provide an API key.
@@ -25,8 +25,8 @@ set-env ANTITHESIS_USERNAME testuser
 set-env ANTITHESIS_PASSWORD testpass
 set-env ANTITHESIS_TENANT testtenant
 ! snouty debug --input-hash abc --session-id sess --vtime 123
-stderr 'Username/password authentication is not permitted'
-stderr 'ANTITHESIS_API_KEY'
+stderr 'Username/password authentication is not permitted.*'
+stderr 'ANTITHESIS_API_KEY.*'
 
 # Parameters are validated against the debuggingParams schema before
 #    making any API call. Required fields: session_id, input_hash, vtime.

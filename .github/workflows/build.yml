@@ -64,6 +64,10 @@ jobs:
     runs-on: ${{ matrix.os }}
     needs: skip-check
     if: needs.skip-check.outputs.should_skip != 'true'
+    # Safety net: a wedged container op (e.g. a stuck image pull with no
+    # timeout) must not hang the runner for hours. Linux finishes in ~80s and
+    # macOS in well under 10m, so 20m is generous headroom.
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
@@ -116,10 +120,34 @@ jobs:
 
       - name: Install Podman + docker-compose (macOS)
         if: matrix.runtime == 'podman' && startsWith(matrix.os, 'macos')
+        shell: bash
         run: |
+          # Size the podman machine VM to the runner: all logical cores and
+          # 60% of physical memory, instead of the tiny (~2GB) default, so the
+          # parallel spec run has real CPU and RAM to work with. Not 100%: the
+          # VM's memory is effectively exclusive (vfkit grows into it and does
+          # not hand it back), and the test harness — cargo nextest and the
+          # snouty processes — runs on the host, so the host needs headroom.
+          cpus=$(sysctl -n hw.ncpu)
+          mem_mib=$(( $(sysctl -n hw.memsize) * 6 / 10 / 1024 / 1024 ))
+
+          # Time each portion so we can see where setup spends its time.
+          t=$SECONDS
           brew install podman docker-compose
-          podman machine init
+          brew_s=$(( SECONDS - t ))
+
+          echo "Provisioning podman machine: ${cpus} cpus, ${mem_mib} MiB memory"
+          t=$SECONDS
+          podman machine init --cpus "${cpus}" --memory "${mem_mib}"
+          init_s=$(( SECONDS - t ))
+
+          t=$SECONDS
           podman machine start
+          start_s=$(( SECONDS - t ))
+
+          printf '[timing] brew install: %ss | machine init: %ss | machine start: %ss\n' \
+            "$brew_s" "$init_s" "$start_s"
+          echo "::notice title=podman setup timing::brew install ${brew_s}s | machine init ${init_s}s | machine start ${start_s}s"
 
       - name: Runtime Info
         shell: bash
@@ -131,8 +159,34 @@ jobs:
           fi
           docker-compose version
 
+      # Cache the k8s-validator image as a tarball. `snouty validate` (k8s) does
+      # a `podman run` that implicitly pulls this remote image with no timeout;
+      # pulling it from Docker Hub costs ~2m and, under the parallel spec run,
+      # several tests can saturate the single VM's gvproxy network proxy at once
+      # and that pull wedges indefinitely. Caching the tarball turns the fetch
+      # into a local `podman load` — fast and offline.
+      # Bump the key's version suffix when K8S_VALIDATOR_IMAGE changes.
+      - name: Cache k8s-validator image (macOS)
+        if: matrix.runtime == 'podman' && startsWith(matrix.os, 'macos')
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ~/k8s-validator.tar
+          key: k8s-validator-image-1.0.0
+
+      - name: Load or pull k8s-validator image (macOS)
+        if: matrix.runtime == 'podman' && startsWith(matrix.os, 'macos')
+        run: |
+          if [ -f ~/k8s-validator.tar ]; then
+            echo "Loading k8s-validator from cache"
+            podman load -i ~/k8s-validator.tar
+          else
+            echo "Pulling k8s-validator and saving for cache"
+            podman pull docker.io/antithesishq/k8s-validator:1.0.0
+            podman save docker.io/antithesishq/k8s-validator:1.0.0 -o ~/k8s-validator.tar
+          fi
+
       - name: Test
-        run: cargo nextest run ${{ startsWith(matrix.os, 'macos') && '-j1' || '' }}
+        run: cargo nextest run
   tests-passed:
     runs-on: ubuntu-latest
     needs:

@@ -70,16 +70,10 @@ jobs:
         include:
           - os: ubuntu-latest
             runtime: docker
-            compose: docker-compose
           - os: ubuntu-latest
             runtime: podman
-            compose: podman-compose
-          - os: ubuntu-latest
-            runtime: podman
-            compose: docker-compose
           - os: macos-15-intel
             runtime: podman
-            compose: podman-compose
     env:
       SNOUTY_TEST_RUNTIME: ${{ matrix.runtime }}
     steps:
@@ -97,37 +91,33 @@ jobs:
       - name: Install Nextest
         uses: taiki-e/install-action@cargo-nextest
 
-      # The matrix tests three compose backend combinations:
-      #   docker  + docker-compose   (ubuntu)
-      #   podman  + podman-compose   (ubuntu + macOS)
-      #   podman  + docker-compose   (ubuntu)
-      #
-      # Each configure step removes the unwanted tools so the runtime
-      # and compose backend are deterministic.
+      # snouty always drives Docker Compose v2 via the `docker-compose` binary,
+      # independent of the image runtime. The matrix exercises that binary
+      # against both runtimes: docker on Ubuntu, and podman (which docker-compose
+      # reaches over podman's API socket via DOCKER_HOST) on Ubuntu and macOS.
+      # Each configure step pins the runtime and ensures `docker-compose` is on
+      # PATH.
       - name: Configure Docker (Ubuntu)
         if: matrix.runtime == 'docker' && startsWith(matrix.os, 'ubuntu')
         run: |
-          sudo rm -v -f "$(which podman)" "$(which podman-compose)"
+          sudo rm -v -f "$(which podman)"
+          sudo curl -fsSL https://github.com/docker/compose/releases/latest/download/docker-compose-linux-x86_64 -o /usr/local/bin/docker-compose
+          sudo chmod +x /usr/local/bin/docker-compose
 
-      - name: Configure Podman + podman-compose (Ubuntu)
-        if: matrix.runtime == 'podman' && matrix.compose == 'podman-compose' && startsWith(matrix.os, 'ubuntu')
+      - name: Configure Podman (Ubuntu)
+        if: matrix.runtime == 'podman' && startsWith(matrix.os, 'ubuntu')
         run: |
-          sudo apt install -y --no-install-recommends podman-compose
-          sudo rm -v -f "$(which docker)" /usr/libexec/docker/cli-plugins/docker-compose
-
-      - name: Configure Podman + docker-compose (Ubuntu)
-        if: matrix.runtime == 'podman' && matrix.compose == 'docker-compose' && startsWith(matrix.os, 'ubuntu')
-        run: |
-          # Remove docker binary so snouty auto-detects podman, but keep
-          # the docker-compose plugin at /usr/libexec/docker/cli-plugins/
-          # so podman compose dispatches to it.
+          # Remove docker so snouty auto-detects podman; docker-compose then
+          # reaches podman over its API socket via DOCKER_HOST.
           sudo rm -v -f "$(which docker)"
+          sudo curl -fsSL https://github.com/docker/compose/releases/latest/download/docker-compose-linux-x86_64 -o /usr/local/bin/docker-compose
+          sudo chmod +x /usr/local/bin/docker-compose
           systemctl --user start podman.socket
 
-      - name: Install Podman (macOS)
+      - name: Install Podman + docker-compose (macOS)
         if: matrix.runtime == 'podman' && startsWith(matrix.os, 'macos')
         run: |
-          brew install podman podman-compose
+          brew install podman docker-compose
           podman machine init
           podman machine start
 
@@ -139,7 +129,7 @@ jobs:
           else
             podman info
           fi
-          ${{ matrix.runtime }} compose version
+          docker-compose version
 
       - name: Test
         run: cargo nextest run ${{ startsWith(matrix.os, 'macos') && '-j1' || '' }}

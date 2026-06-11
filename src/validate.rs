@@ -148,7 +148,7 @@ fn mkdir_or_require_empty(path: &Path) -> Result<()> {
 }
 
 struct ComposeDownGuard<'a> {
-    compose: &'a dyn container::Compose,
+    compose: &'a container::DockerCompose<'a>,
     config: &'a ComposeConfig,
     overlay: Option<&'a Path>,
 }
@@ -196,17 +196,21 @@ async fn validate_compose(
     keep_running: bool,
     temp_dir: &Path,
 ) -> Result<()> {
-    let compose = rt.compose();
+    let compose = container::docker_compose(rt)?;
     let contents = compose.contents(&config, None)?;
-    container::validate_images_are_available(rt, &contents.services)?;
+    container::validate_images_are_available(rt, &contents)?;
     let override_path = generate_setup_override(&contents, temp_dir)?;
     let overlay = Some(override_path.as_path());
 
     if keep_running {
+        let docker_host_prefix = compose
+            .docker_host()
+            .map(|h| format!("DOCKER_HOST={h} "))
+            .unwrap_or_default();
         eprintln!(
             "Note: --keep-running is set. When done, bring containers down with:\n  \
-             {} compose -f {}/docker-compose.yaml -f {} down\n",
-            rt.name(),
+             {}docker-compose -f {}/docker-compose.yaml -f {} down\n",
+            docker_host_prefix,
             config.dir().display(),
             override_path.display(),
         );
@@ -220,7 +224,7 @@ async fn validate_compose(
         None
     } else {
         Some(ComposeDownGuard {
-            compose: &*compose,
+            compose: &compose,
             config: &config,
             overlay,
         })
@@ -246,11 +250,11 @@ async fn validate_compose(
 
     // Discover scripts early so we can use them for both the success path
     // and the timeout diagnostic.
-    let scripts = discover_scripts(&*compose, &config, overlay, temp_dir)?;
+    let scripts = discover_scripts(&compose, &config, overlay, temp_dir)?;
 
     // Reset the budget now that containers are up. `--timeout` bounds how long
     // we wait for the setup-complete event; slow container startup (e.g. several
-    // services, or a slow runtime like podman-on-macOS) shouldn't eat into it.
+    // services, or a slow engine like podman-on-macOS) shouldn't eat into it.
     let deadline = tokio::time::Instant::now() + Duration::from_secs(timeout);
 
     let mut logs_child = compose.logs_follow(&config, overlay)?;
@@ -270,7 +274,7 @@ async fn validate_compose(
     };
 
     // Stop the entire compose logs process group so child processes
-    // (e.g. per-service `podman logs`) don't keep writing to the terminal.
+    // (e.g. per-service log streamers) don't keep writing to the terminal.
     logs_child.kill_group().await.ok();
 
     let test_result = match result {
@@ -396,12 +400,12 @@ fn contains_setup_complete(reader: &mut (impl std::io::Read + std::io::Seek)) ->
 /// moves on. Only if every container failed (and no scripts were collected)
 /// does the function surface a combined error.
 fn discover_scripts(
-    compose: &dyn container::Compose,
+    compose: &container::DockerCompose,
     config: &ComposeConfig,
     overlay: Option<&Path>,
     temp_dir: &Path,
 ) -> Result<Vec<TestScript>> {
-    let listing = compose.ps(config, overlay)?;
+    let containers = compose.ps(config, overlay)?;
 
     let scripts_dir = temp_dir.join("scripts");
     std::fs::create_dir_all(&scripts_dir).wrap_err("failed to create scripts directory")?;
@@ -416,7 +420,7 @@ fn discover_scripts(
     let mut not_executable: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     let mut cp_failures: BTreeMap<String, color_eyre::Report> = BTreeMap::new();
 
-    for container in &listing.containers {
+    for container in &containers {
         let service_name = container.service.as_str();
         // Key per-container so scaled-replica containers don't collide on
         // disk. Short the id for readable warnings.
@@ -463,7 +467,7 @@ fn discover_scripts(
                 "Found {} test commands in service '{service_name}' (container {short_id})",
                 result.scripts.len()
             );
-            if container.stopped && listing.includes_stopped {
+            if container.stopped {
                 stopped_with_scripts.insert(service_name.to_string());
             }
             all_scripts.extend(result.scripts.into_iter().filter(|s| {
@@ -483,7 +487,7 @@ fn discover_scripts(
         && all_scripts.is_empty()
         && unrecognized.is_empty()
         && not_executable.is_empty()
-        && cp_failures.len() == listing.containers.len()
+        && cp_failures.len() == containers.len()
     {
         let mut err = eyre!("failed to extract test commands from every container");
         for (label, cause) in &cp_failures {

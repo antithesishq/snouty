@@ -221,17 +221,24 @@ async fn cmd_launch(args: LaunchArgs, json: bool, verbose: bool) -> Result<()> {
     if let Some((config, registry, config_image)) = config_image_ref {
         let rt = container::runtime()?;
 
-        // Compose configs reference local image tags that need to be pushed to
-        // the registry; k8s configs reference images by name in the manifests
-        // and the platform pulls them itself.
-        if let config::Config::Compose(compose_config) = &config {
-            let pinned_images = rt.push_compose_images(compose_config, &registry)?;
-            if !pinned_images.is_empty() {
-                params.insert("antithesis.images", pinned_images.join(";"));
+        // For compose configs, every service image is pinned to its local
+        // digest (snouty never pulls): served from a registry confirmed to
+        // already have it, or pushed to the Antithesis registry. The compose
+        // file is then canonicalized, digest-pinned, and baked into the
+        // config image, so the platform runs exactly what was resolved here.
+        // k8s configs reference images by name in the manifests and the
+        // platform pulls them itself.
+        let pinned_config = match &config {
+            config::Config::Compose(compose_config) => {
+                let compose = container::docker_compose(rt)?;
+                let pinned_yaml = compose.pin_images(compose_config, &registry)?;
+                let staged = container::stage_pinned_config(compose_config.dir(), &pinned_yaml)?;
+                rt.build_and_push_config_image(staged.path(), &config_image)?
             }
-        }
-
-        let pinned_config = rt.build_and_push_config_image(config.dir(), &config_image)?;
+            config::Config::Kubernetes(_) => {
+                rt.build_and_push_config_image(config.dir(), &config_image)?
+            }
+        };
         params.insert("antithesis.config_image", pinned_config);
     }
 

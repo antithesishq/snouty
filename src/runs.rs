@@ -1450,15 +1450,11 @@ impl LineTransformer for FaultAnnotator {
             }
 
             // Clear any expired faults
-            update_faults = self
-                .active_fault_windows
-                .clear_expired_faults(latest_vtime)
-                || update_faults;
+            update_faults =
+                self.active_fault_windows.clear_expired_faults(latest_vtime) || update_faults;
 
             if is_fault_injector && let Some(fault_name) = fault_name {
-                let max_duration = entry["fault"]["max_duration"]
-                    .as_f64()
-                    .filter(|d| *d > 0.0);
+                let max_duration = entry["fault"]["max_duration"].as_f64().filter(|d| *d > 0.0);
                 let end_vtime = max_duration.map(|duration| duration + latest_vtime);
                 let fault_type = entry["fault"]["type"].as_str().unwrap_or("");
 
@@ -1609,8 +1605,8 @@ impl ActiveFaultWindows {
 
         let mut dropped_categories_of_node_faults = false;
         for _ in self.node.extract_if(.., |_k, windows_by_container| {
-            for _ in windows_by_container
-                .extract_if(.., |_c, window| window.is_expired(&latest_vtime))
+            for _ in
+                windows_by_container.extract_if(.., |_c, window| window.is_expired(&latest_vtime))
             {
                 did_something = true;
             }
@@ -1691,10 +1687,8 @@ impl ActiveFaultWindows {
         for entry in &self.node {
             let mut node_fault_starts_by_container = Map::new();
             for entry in entry.1 {
-                node_fault_starts_by_container.insert(
-                    entry.0.to_string(),
-                    json!(entry.1.start_vtime),
-                );
+                node_fault_starts_by_container
+                    .insert(entry.0.to_string(), json!(entry.1.start_vtime));
             }
 
             result.insert(
@@ -1712,7 +1706,10 @@ impl ActiveFaultWindows {
                 max_clock_fault_start = max_clock_fault_start.max(entry.1.start_vtime);
             }
 
-            result.insert("clock_skip".to_string(), json!({"cumulative_offset": offset_sum, "vtime": max_clock_fault_start}));
+            result.insert(
+                "clock_skip".to_string(),
+                json!({"cumulative_offset": offset_sum, "vtime": max_clock_fault_start}),
+            );
         }
 
         Value::Object(result)
@@ -3202,10 +3199,7 @@ mod tests {
                     "foo": "bar"
                 })
             )),
-            Some(
-                "{\"moment\":{\"vtime\":11.5},\"foo\":\"bar\",\"active_faults\":{}}"
-                    .to_string()
-            )
+            Some("{\"moment\":{\"vtime\":11.5},\"foo\":\"bar\",\"active_faults\":{}}".to_string())
         );
     }
 
@@ -3659,20 +3653,26 @@ mod tests {
         };
 
         assert_eq!(
-            transformer.try_transform(&format!("{}", json!({
-                "moment": { "vtime": "1" },
-                "source": { "name": "some_other_source" },
-                "fault": {
-                    "name": "partition",
-                    "type": "network",
-                    "affected_nodes": ["ALL"]
-                }
-            }))),
-            Some(concat!(
-                r#"{"moment":{"vtime":1.0},"source":{"name":"some_other_source"},"#,
-                r#""fault":{"name":"partition","type":"network","affected_nodes":["ALL"]},"#,
-                r#""active_faults":{}}"#
-            ).to_string())
+            transformer.try_transform(&format!(
+                "{}",
+                json!({
+                    "moment": { "vtime": "1" },
+                    "source": { "name": "some_other_source" },
+                    "fault": {
+                        "name": "partition",
+                        "type": "network",
+                        "affected_nodes": ["ALL"]
+                    }
+                })
+            )),
+            Some(
+                concat!(
+                    r#"{"moment":{"vtime":1.0},"source":{"name":"some_other_source"},"#,
+                    r#""fault":{"name":"partition","type":"network","affected_nodes":["ALL"]},"#,
+                    r#""active_faults":{}}"#
+                )
+                .to_string()
+            )
         );
     }
 
@@ -4037,14 +4037,20 @@ mod tests {
 
         // At vtime 16: first window expired (15 < 16), second still alive (19 not < 16)
         assert_eq!(
-            transformer.try_transform(&format!("{}", json!({
-                "moment": { "vtime": "16" },
-                "output_text": "after first window expired"
-            }))),
-            Some(concat!(
-                r#"{"moment":{"vtime":16.0},"output_text":"after first window expired","#,
-                r#""active_faults":{"network_partition":{"vtime":10.0}}}"#
-            ).to_string())
+            transformer.try_transform(&format!(
+                "{}",
+                json!({
+                    "moment": { "vtime": "16" },
+                    "output_text": "after first window expired"
+                })
+            )),
+            Some(
+                concat!(
+                    r#"{"moment":{"vtime":16.0},"output_text":"after first window expired","#,
+                    r#""active_faults":{"network_partition":{"vtime":10.0}}}"#
+                )
+                .to_string()
+            )
         );
 
         // At vtime 20: second window also expired (19 < 20)

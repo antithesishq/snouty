@@ -159,10 +159,10 @@ pub fn skip_or_fail(msg: &str) {
     eprintln!("skipping: {msg}");
 }
 
-/// Check whether `{runtime} compose version` succeeds.
-pub fn has_compose(runtime: &str) -> bool {
-    Command::new(runtime)
-        .args(["compose", "version"])
+/// Check whether the `docker-compose` binary (Docker Compose v2) is available.
+pub fn has_compose() -> bool {
+    Command::new("docker-compose")
+        .arg("version")
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()
@@ -184,14 +184,10 @@ pub fn require_runtimes() -> Vec<Box<dyn ContainerRuntime>> {
 #[track_caller]
 pub fn require_runtimes_with_compose() -> Vec<Box<dyn ContainerRuntime>> {
     let runtimes = require_runtimes();
-    let with_compose: Vec<_> = runtimes
-        .into_iter()
-        .filter(|rt| has_compose(rt.name()))
-        .collect();
-    if with_compose.is_empty() {
-        skip_or_fail("no runtime has docker compose support");
+    if !has_compose() {
+        skip_or_fail("docker-compose (Docker Compose v2) is not available");
     }
-    with_compose
+    runtimes
 }
 
 fn reserve_local_port() -> u16 {

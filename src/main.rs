@@ -77,7 +77,7 @@ async fn main() -> Result<()> {
     if json && let Some(name) = json_unaware_command_name(&cli.command) {
         eprintln!("warning: --json has no effect for `snouty {name}`");
     }
-    match cli.command {
+    let result = match cli.command {
         Commands::Launch(args) => {
             info!("launching test with webhook: {}", args.webhook);
             cmd_launch(args, json, verbose).await
@@ -109,6 +109,22 @@ async fn main() -> Result<()> {
         }
         Commands::Update => cmd_update(),
         Commands::Docs { offline, command } => docs::cmd_docs(command, offline, json).await,
+    };
+
+    // When our output is piped into something that exits early (e.g. `snouty
+    // runs list | head`), writes to stdout fail with BrokenPipe. That's a
+    // normal way for a pipeline to end, not an error — exit quietly. Network
+    // errors don't take this path: they surface as reqwest errors, whose
+    // underlying io::Error is not downcastable from the report.
+    match result {
+        Err(err)
+            if err
+                .downcast_ref::<io::Error>()
+                .is_some_and(|e| e.kind() == ErrorKind::BrokenPipe) =>
+        {
+            Ok(())
+        }
+        other => other,
     }
 }
 

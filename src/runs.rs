@@ -70,7 +70,7 @@ pub async fn cmd_runs(command: Option<RunsCommands>, json: bool, verbose: bool) 
 async fn cmd_runs_list(args: RunsListArgs, json: bool, verbose: bool) -> Result<()> {
     debug!("listing runs");
 
-    let api = AntithesisApi::from_env(verbose)?;
+    let api = AntithesisApi::from_env_requiring_api_key(verbose)?;
 
     let status = args
         .status
@@ -115,32 +115,34 @@ async fn cmd_runs_list(args: RunsListArgs, json: bool, verbose: bool) -> Result<
             .then(a.status.cmp(&b.status))
     });
 
+    let mut stdout = std::io::stdout().lock();
     if json {
         for run in &runs {
-            println!("{}", serde_json::to_string(run)?);
+            writeln!(stdout, "{}", serde_json::to_string(run)?)?;
         }
         return Ok(());
     }
 
     if runs.is_empty() {
-        println!("No runs found.");
+        writeln!(stdout, "No runs found.")?;
         return Ok(());
     }
 
-    println!("{}", render_runs_table(&runs));
+    writeln!(stdout, "{}", render_runs_table(&runs))?;
     Ok(())
 }
 
 async fn cmd_runs_show(run_id: &str, json: bool, verbose: bool) -> Result<()> {
     debug!("showing run: {}", run_id);
 
-    let api = AntithesisApi::from_env(verbose)?;
+    let api = AntithesisApi::from_env_requiring_api_key(verbose)?;
     let run = api.get_run(run_id).await?;
 
+    let mut stdout = std::io::stdout().lock();
     if json {
-        println!("{}", serde_json::to_string_pretty(&run)?);
+        writeln!(stdout, "{}", serde_json::to_string_pretty(&run)?)?;
     } else {
-        print_run_detail(&run);
+        print_run_detail(&mut stdout, &run)?;
     }
 
     Ok(())
@@ -154,7 +156,7 @@ async fn cmd_runs_properties(
 ) -> Result<()> {
     debug!("listing properties for run: {}", run_id);
 
-    let api = AntithesisApi::from_env(verbose)?;
+    let api = AntithesisApi::from_env_requiring_api_key(verbose)?;
     let mut properties = api
         .stream_run_properties(run_id, status)
         .try_collect::<Vec<_>>()
@@ -166,12 +168,13 @@ async fn cmd_runs_properties(
             .then(a.name().cmp(b.name()))
     });
 
+    let mut stdout = std::io::stdout().lock();
     if json {
         for property in &properties {
-            println!("{}", serde_json::to_string(property)?);
+            writeln!(stdout, "{}", serde_json::to_string(property)?)?;
         }
     } else if properties.is_empty() {
-        println!("No properties found.");
+        writeln!(stdout, "No properties found.")?;
     } else {
         let event_rows = flatten_property_events(&properties);
         let non_event_rows = flatten_non_event_property_values(&properties);
@@ -183,13 +186,13 @@ async fn cmd_runs_properties(
         if !non_event_rows.is_empty() {
             sections.push(render_property_values_table(&non_event_rows));
         }
-        println!("{}", sections.join("\n\n"));
+        writeln!(stdout, "{}", sections.join("\n\n"))?;
     }
 
     Ok(())
 }
 
-fn print_run_detail(run: &RunDetail) {
+fn print_run_detail(out: &mut impl Write, run: &RunDetail) -> Result<()> {
     let mut rows: Vec<(&str, String)> = vec![
         ("Run ID", run.run_id.clone()),
         ("Status", run.status.to_string()),
@@ -225,8 +228,9 @@ fn print_run_detail(run: &RunDetail) {
 
     let label_width = rows.iter().map(|(label, _)| label.len()).max().unwrap_or(0);
     for (label, value) in &rows {
-        println!("{label:label_width$}  {}", sanitize(value));
+        writeln!(out, "{label:label_width$}  {}", sanitize(value))?;
     }
+    Ok(())
 }
 
 struct LogOutputOptions {
@@ -238,7 +242,7 @@ struct LogOutputOptions {
 async fn cmd_runs_build_logs(run_id: &str, json: bool, verbose: bool) -> Result<()> {
     debug!("streaming build logs for run: {}", run_id);
 
-    let api = AntithesisApi::from_env(verbose)?;
+    let api = AntithesisApi::from_env_requiring_api_key(verbose)?;
     let stream = api.get_run_build_logs(run_id).await?.into_inner();
     let mut stdout = std::io::stdout().lock();
 
@@ -267,7 +271,7 @@ async fn cmd_runs_build_logs(run_id: &str, json: bool, verbose: bool) -> Result<
 async fn cmd_runs_events(run_id: &str, query: &[String], json: bool, verbose: bool) -> Result<()> {
     debug!("searching events for run: {}", run_id);
 
-    let api = AntithesisApi::from_env(verbose)?;
+    let api = AntithesisApi::from_env_requiring_api_key(verbose)?;
     let stream = api
         .search_run_events(run_id, &query.join(" "))
         .await?
@@ -320,7 +324,7 @@ async fn cmd_runs_logs(
 ) -> Result<()> {
     debug!("streaming logs for run: {}", run_id);
 
-    let api = AntithesisApi::from_env(verbose)?;
+    let api = AntithesisApi::from_env_requiring_api_key(verbose)?;
     let stream = api
         .get_run_logs(run_id, input_hash, vtime, begin_input_hash, begin_vtime)
         .await?

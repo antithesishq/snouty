@@ -12,9 +12,20 @@
 # command output or required arguments.
 
 # The command authenticates with the Antithesis API using
-#    ANTITHESIS_USERNAME, ANTITHESIS_PASSWORD, and ANTITHESIS_TENANT env vars.
+#    ANTITHESIS_API_KEY and ANTITHESIS_TENANT env vars. Every endpoint other
+#    than launch requires an API key, so unlike the launch commands,
+#    username/password authentication is not supported.
 ! snouty runs
-stderr 'missing environment variable.*'
+stderr 'missing environment variable: ANTITHESIS_API_KEY.*'
+
+# With only username/password configured, the command fails fast with a clear
+# message instead of sending a request the API would reject with a 403.
+env ANTITHESIS_USERNAME=testuser
+env ANTITHESIS_PASSWORD=testpass
+env ANTITHESIS_TENANT=testtenant
+! snouty runs
+stderr 'missing environment variable: ANTITHESIS_API_KEY.*'
+stderr 'only accepts API key authentication.*'
 
 # On success, the command fetches all pages via next_cursor and prints a table.
 mock-runs-server

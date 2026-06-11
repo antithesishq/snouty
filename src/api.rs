@@ -13,6 +13,7 @@ use reqwest::Client;
 use reqwest_middleware::ClientWithMiddleware;
 
 use crate::api_cache;
+use crate::error::{ApiError, user_error};
 use crate::params::Params;
 
 #[allow(dead_code, unused_imports, private_interfaces)]
@@ -20,11 +21,47 @@ mod generated {
     include!(concat!(env!("OUT_DIR"), "/antithesis_api.rs"));
 }
 
+pub(crate) use generated::types::Params as RunParams;
 pub use generated::types::{
     BuildLogLine, Event, EventProperty, LaunchResponse, Moment, NonEventProperty, Property,
     PropertyStatus, RunDetail, RunStatus, RunSummary,
 };
 pub use progenitor_client::ByteStream;
+
+fn params_test_name(params: Option<&RunParams>) -> Option<&str> {
+    params.and_then(|p| p.extra.get("antithesis.test_name").map(String::as_str))
+}
+
+fn params_test_description(params: Option<&RunParams>) -> Option<&str> {
+    params.and_then(|p| p.antithesis_description.as_deref())
+}
+
+impl RunSummary {
+    pub(crate) fn test_name(&self) -> Option<&str> {
+        params_test_name(self.parameters.as_ref())
+    }
+
+    /// Human-readable description: prefer the server-provided top-level
+    /// `description` field, falling back to the `antithesis.description`
+    /// parameter for runs predating that field.
+    pub(crate) fn test_description(&self) -> Option<&str> {
+        self.description
+            .as_deref()
+            .or_else(|| params_test_description(self.parameters.as_ref()))
+    }
+}
+
+impl RunDetail {
+    pub(crate) fn test_name(&self) -> Option<&str> {
+        params_test_name(self.parameters.as_ref())
+    }
+
+    pub(crate) fn test_description(&self) -> Option<&str> {
+        self.description
+            .as_deref()
+            .or_else(|| params_test_description(self.parameters.as_ref()))
+    }
+}
 
 impl Property {
     pub fn name(&self) -> &str {
@@ -38,25 +75,6 @@ impl Property {
         match self {
             Self::EventProperty(p) => p.status,
             Self::NonEventProperty(p) => p.status,
-        }
-    }
-
-    /// Sampled example events for an event-based property. Returns an empty
-    /// slice for non-event properties, whose examples are arbitrary values
-    /// without a `moment`.
-    pub fn event_examples(&self) -> &[Event] {
-        match self {
-            Self::EventProperty(p) => &p.examples,
-            Self::NonEventProperty(_) => &[],
-        }
-    }
-
-    /// Sampled counterexample events for an event-based property. Returns an
-    /// empty slice for non-event properties.
-    pub fn event_counterexamples(&self) -> &[Event] {
-        match self {
-            Self::EventProperty(p) => &p.counterexamples,
-            Self::NonEventProperty(_) => &[],
         }
     }
 }
@@ -97,12 +115,12 @@ fn normalize_property(property: Property) -> Result<Property> {
     }
 }
 
-const CLIENT_TIMEOUT_SECS: u64 = 30;
+const CLIENT_TIMEOUT_SECS: u64 = 60;
 
 fn required_env(name: &'static str) -> Result<String> {
     env::var(name).map_err(|e| match e {
-        env::VarError::NotPresent => eyre!("missing environment variable: {name}"),
-        _ => eyre!(e).wrap_err(format!("invalid environment variable {name}")),
+        env::VarError::NotPresent => user_error(format!("missing environment variable: {name}")),
+        _ => user_error(format!("invalid environment variable {name}: {e}")),
     })
 }
 
@@ -110,7 +128,9 @@ fn optional_env(name: &'static str) -> Result<Option<String>> {
     match env::var(name) {
         Ok(value) => Ok(Some(value)),
         Err(env::VarError::NotPresent) => Ok(None),
-        Err(e) => Err(eyre!(e).wrap_err(format!("invalid environment variable {name}"))),
+        Err(e) => Err(user_error(format!(
+            "invalid environment variable {name}: {e}"
+        ))),
     }
 }
 
@@ -349,13 +369,14 @@ impl AntithesisApi {
     pub fn stream_runs_filtered(
         &self,
         opts: &RunsFilterOptions,
+        page_limit: u64,
     ) -> impl futures_util::Stream<Item = Result<RunSummary>> + '_ {
         let opts = opts.clone();
         paginate(move |after| {
             let opts = opts.clone();
             async move {
                 let page = self
-                    .fetch_runs_page_filtered(after.as_deref(), &opts)
+                    .fetch_runs_page_filtered(after.as_deref(), &opts, page_limit)
                     .await?;
                 let generated::types::RunListResponse { data, next_cursor } = page;
                 Ok((data, next_cursor))
@@ -367,8 +388,9 @@ impl AntithesisApi {
         &self,
         after: Option<&str>,
         opts: &RunsFilterOptions,
+        page_limit: u64,
     ) -> Result<generated::types::RunListResponse> {
-        let mut request = self.client.list_runs().limit(100_u64);
+        let mut request = self.client.list_runs().limit(page_limit);
         if let Some(cursor) = after {
             request = request.after(cursor);
         }
@@ -774,6 +796,16 @@ fn format_api_error(status: u16, body: &str) -> Report {
         .and_then(|s| s.canonical_reason())
         .unwrap_or("");
     let body = body.trim();
+    // Servers often echo the status reason at the front of the body
+    // ("Bad Request — Bad request: invalid vtime"); drop the redundant echo
+    // and keep only the informative remainder.
+    let body = match body.get(..reason.len()) {
+        Some(prefix) if !reason.is_empty() && prefix.eq_ignore_ascii_case(reason) => body
+            [reason.len()..]
+            .trim_start_matches([':', '-', ' '])
+            .trim_start(),
+        _ => body,
+    };
 
     let mut msg = format!("API error: {status}");
     if !reason.is_empty() {
@@ -790,7 +822,14 @@ fn format_api_error(status: u16, body: &str) -> Report {
              is set correctly and has access to this tenant.",
         );
     }
-    eyre!("{msg}")
+    // Carry the HTTP status structurally so callers can classify the failure
+    // (e.g. "was this a 404?") without sniffing the rendered message string.
+    // `is_user_error` recognises 4xx `ApiError`s, so 4xx still prints as a clean
+    // user-facing message while 5xx and other statuses stay internal faults.
+    Report::new(ApiError {
+        status,
+        message: msg,
+    })
 }
 
 fn format_payload_snippet(body: &str, line: usize, column: usize) -> String {
@@ -1279,7 +1318,7 @@ mod tests {
         let api = AntithesisApi::with_base_url(config, mock_server.uri()).unwrap();
 
         let runs = api
-            .stream_runs_filtered(&RunsFilterOptions::default())
+            .stream_runs_filtered(&RunsFilterOptions::default(), 100)
             .try_collect::<Vec<_>>()
             .await
             .unwrap();
@@ -1311,12 +1350,85 @@ mod tests {
         let api = AntithesisApi::with_base_url(config, mock_server.uri()).unwrap();
 
         let runs = api
-            .stream_runs_filtered(&RunsFilterOptions::default())
+            .stream_runs_filtered(&RunsFilterOptions::default(), 100)
             .try_collect::<Vec<_>>()
             .await
             .unwrap();
 
         assert!(runs.is_empty());
+    }
+
+    #[tokio::test]
+    async fn stream_runs_requests_the_supplied_page_limit() {
+        let mock_server = MockServer::start().await;
+
+        // The page limit is forwarded to the API rather than fetching 100 and
+        // trimming client-side.
+        Mock::given(method("GET"))
+            .and(path("/api/v0/runs"))
+            .and(query_param("limit", "5"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "data": [],
+                "next_cursor": null
+            })))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let api = AntithesisApi::with_base_url(test_config(), mock_server.uri()).unwrap();
+        let runs = api
+            .stream_runs_filtered(&RunsFilterOptions::default(), 5)
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        assert!(runs.is_empty());
+    }
+
+    #[test]
+    fn api_4xx_errors_are_tagged_user_facing() {
+        use crate::error::is_user_error;
+        assert!(is_user_error(&format_api_error(404, "run not found")));
+        assert!(is_user_error(&format_api_error(400, "bad request")));
+        // 5xx is an internal fault, not something the user can fix.
+        assert!(!is_user_error(&format_api_error(500, "boom")));
+    }
+
+    #[test]
+    fn format_api_error_carries_structured_status() {
+        use crate::error::api_error_status;
+        // The status is read structurally, not sniffed from the message — so a
+        // 500 whose body mentions "404" still classifies as a 500.
+        assert_eq!(
+            api_error_status(&format_api_error(404, "run not found")),
+            Some(404)
+        );
+        assert_eq!(
+            api_error_status(&format_api_error(500, "upstream returned a 404 page")),
+            Some(500)
+        );
+        // And the rendered message still contains the body for the user.
+        let rendered = format!("{:#}", format_api_error(404, "run not found"));
+        assert!(rendered.contains("API error: 404"));
+        assert!(rendered.contains("run not found"));
+    }
+
+    #[test]
+    fn format_api_error_dedupes_reason_echoed_in_body() {
+        // "Bad Request — Bad request: …" reads twice; the echo is dropped.
+        let rendered = format!(
+            "{:#}",
+            format_api_error(400, "Bad request: Invalid input_hash or vtime")
+        );
+        assert_eq!(
+            rendered,
+            "API error: 400 Bad Request — Invalid input_hash or vtime"
+        );
+        // A body that is nothing but the reason echo adds nothing.
+        let rendered = format!("{:#}", format_api_error(400, "Bad Request"));
+        assert_eq!(rendered, "API error: 400 Bad Request");
+        // Unrelated bodies pass through untouched.
+        let rendered = format!("{:#}", format_api_error(400, "vtime out of range"));
+        assert_eq!(rendered, "API error: 400 Bad Request — vtime out of range");
     }
 
     #[tokio::test]

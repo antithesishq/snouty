@@ -1,5 +1,6 @@
+use std::io::{BufWriter, Write};
 use std::path::Path;
-use std::{io::Write, sync::OnceLock};
+use std::sync::OnceLock;
 
 use color_eyre::eyre::{Result, eyre};
 use futures_util::{StreamExt, TryStreamExt};
@@ -10,18 +11,65 @@ use regex::Regex;
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
 
+use chrono::{DateTime, Local, Utc};
+
 use crate::api::{
-    AntithesisApi, Property, PropertyStatus, RunDetail, RunStatus, RunSummary, RunsFilterOptions,
+    AntithesisApi, Event, Property, PropertyStatus, RunDetail, RunStatus, RunSummary,
+    RunsFilterOptions,
 };
 #[cfg(test)]
-use crate::api::{Event, EventProperty, Moment, NonEventProperty};
+use crate::api::{EventProperty, Moment, NonEventProperty};
 use crate::cli::{RunsCommands, RunsListArgs};
+use crate::error::{api_error_status, user_error};
+
+/// Event stream classification. Variants match the canonical values that
+/// appear in an event's `source.stream` field.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Stream {
+    Stdout,
+    Stderr,
+    Info,
+    Error,
+}
+
+impl Stream {
+    /// Three-character display abbreviation used in the logs viewer.
+    pub fn abbreviated(self) -> &'static str {
+        match self {
+            Self::Stdout => "out",
+            Self::Stderr => "err",
+            Self::Info => "inf",
+            Self::Error => "err",
+        }
+    }
+}
+
+impl std::str::FromStr for Stream {
+    type Err = String;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        // Accept the short forms too: the events/logs API reports app
+        // stdout/stderr as `out`/`err` (see `abbreviated`), so the logs viewer
+        // can normalize either form when rendering a stream label.
+        match s {
+            "stdout" | "out" => Ok(Self::Stdout),
+            "stderr" | "err" => Ok(Self::Stderr),
+            "info" | "inf" => Ok(Self::Info),
+            "error" => Ok(Self::Error),
+            other => Err(format!(
+                "invalid stream '{other}' (expected one of: stdout, stderr, info, error)"
+            )),
+        }
+    }
+}
 
 pub async fn cmd_runs(command: Option<RunsCommands>, json: bool, verbose: bool) -> Result<()> {
     match command {
         None => cmd_runs_list(RunsListArgs::default(), json, verbose).await,
         Some(RunsCommands::List(args)) => cmd_runs_list(args, json, verbose).await,
-        Some(RunsCommands::Show { run_id }) => cmd_runs_show(&run_id, json, verbose).await,
+        Some(RunsCommands::Show { run_id, web }) => {
+            cmd_runs_show(&run_id, web, json, verbose).await
+        }
         Some(RunsCommands::Properties {
             run_id,
             passing,
@@ -36,6 +84,9 @@ pub async fn cmd_runs(command: Option<RunsCommands>, json: bool, verbose: bool) 
             };
             cmd_runs_properties(&run_id, status, json, verbose).await
         }
+        Some(RunsCommands::Property { run_id, name }) => {
+            cmd_runs_property(&run_id, &name, json, verbose).await
+        }
         Some(RunsCommands::BuildLogs { run_id }) => {
             cmd_runs_build_logs(&run_id, json, verbose).await
         }
@@ -45,7 +96,7 @@ pub async fn cmd_runs(command: Option<RunsCommands>, json: bool, verbose: bool) 
             vtime,
             begin_vtime,
             begin_input_hash,
-            disable_fault_annotation,
+            raw,
         }) => {
             cmd_runs_logs(
                 &run_id,
@@ -53,16 +104,20 @@ pub async fn cmd_runs(command: Option<RunsCommands>, json: bool, verbose: bool) 
                 &vtime,
                 begin_input_hash.as_deref(),
                 begin_vtime.as_deref(),
-                LogOutputOptions {
-                    json,
-                    verbose,
-                    annotate_faults: !disable_fault_annotation,
-                },
+                LogOutputOptions { json, verbose, raw },
             )
             .await
         }
-        Some(RunsCommands::Events { run_id, query }) => {
-            cmd_runs_events(&run_id, &query, json, verbose).await
+        Some(RunsCommands::Events {
+            run_id,
+            mut matches,
+            query,
+        }) => {
+            // `-m/--match` is the documented form; the trailing positional
+            // `query` is a backward-compatible alias whose terms are additional
+            // needles. Merge both into a single needle list.
+            matches.extend(query);
+            cmd_runs_events(&run_id, &matches, json, verbose).await
         }
     }
 }
@@ -72,39 +127,24 @@ async fn cmd_runs_list(args: RunsListArgs, json: bool, verbose: bool) -> Result<
 
     let api = AntithesisApi::from_env(verbose)?;
 
-    let status = args
-        .status
-        .as_deref()
-        .map(|s| s.parse::<RunStatus>())
-        .transpose()
-        .map_err(|_| {
-            eyre!(
-                "invalid status: '{}'\nvalid values: starting, in_progress, completed, cancelled, incomplete, unknown",
-                args.status.as_deref().unwrap_or_default()
-            )
-        })?;
-
+    // clap parsed and validated the filter flags into their real types, so the
+    // options struct is built directly with no further string parsing here.
     let opts = RunsFilterOptions {
-        status,
+        status: args.status,
         launcher: args.launcher,
-        created_after: args
-            .created_after
-            .as_deref()
-            .map(|s| s.parse())
-            .transpose()
-            .map_err(|e| eyre!("invalid --created-after timestamp: {e}"))?,
-        created_before: args
-            .created_before
-            .as_deref()
-            .map(|s| s.parse())
-            .transpose()
-            .map_err(|e| eyre!("invalid --created-before timestamp: {e}"))?,
+        created_after: args.created_after,
+        created_before: args.created_before,
     };
+
+    // The API caps `limit` at 100, so request only as many as we'll display and
+    // let the server do the trimming. For limits above 100 we still paginate,
+    // capping the total client-side with `.take(limit)`.
+    let page_limit = args.limit.clamp(1, 100) as u64;
 
     // Server returns runs newest-first; .take(limit) short-circuits pagination
     // so we don't materialise the entire run history just to drop most of it.
     let mut runs: Vec<RunSummary> = api
-        .stream_runs_filtered(&opts)
+        .stream_runs_filtered(&opts, page_limit)
         .take(args.limit)
         .try_collect::<Vec<_>>()
         .await?;
@@ -127,15 +167,84 @@ async fn cmd_runs_list(args: RunsListArgs, json: bool, verbose: bool) -> Result<
         return Ok(());
     }
 
-    println!("{}", render_runs_table(&runs));
+    if args.detail {
+        print!("{}", render_runs_detail(&runs));
+    } else {
+        let width = terminal_width();
+        println!("{}", render_runs_table(&runs, width));
+    }
     Ok(())
 }
 
-async fn cmd_runs_show(run_id: &str, json: bool, verbose: bool) -> Result<()> {
+/// Width budget for terminal-aware rendering. When stdout is a tty we use its
+/// real column count; otherwise (a pipe or file) we return `usize::MAX` so the
+/// truncating/wrapping call sites become no-ops and full cell content reaches
+/// the consumer — `snouty runs properties RUN | grep '<long name>'` must not
+/// silently miss a row whose NAME was wrapped or ellipsized to fit a screen.
+fn terminal_width() -> usize {
+    let term = console::Term::stdout();
+    if !term.is_term() {
+        return usize::MAX;
+    }
+    term.size().1 as usize
+}
+
+/// Short human-readable run status word (e.g. `completed`, `in_progress`),
+/// reusing the canonical `RunStatus` display string so the term matches the
+/// API and `snouty runs show`.
+fn status_label(status: RunStatus) -> String {
+    status.to_string()
+}
+
+/// Compact relative age for the runs table ("21h ago", "2d ago"), trading
+/// prose ("21 hours ago") for column width. Rough by design: largest whole
+/// unit only. Future timestamps (clock skew) clamp to "0s ago".
+fn relative_time(then: DateTime<Utc>) -> String {
+    let secs = (Utc::now() - then).num_seconds().max(0);
+    let (value, unit) = match secs {
+        s if s < 60 => (s, "s"),
+        s if s < 3600 => (s / 60, "m"),
+        s if s < 86_400 => (s / 3600, "h"),
+        s if s < 7 * 86_400 => (s / 86_400, "d"),
+        s if s < 30 * 86_400 => (s / (7 * 86_400), "w"),
+        s if s < 365 * 86_400 => (s / (30 * 86_400), "mo"),
+        s => (s / (365 * 86_400), "y"),
+    };
+    format!("{value}{unit} ago")
+}
+
+/// Format an absolute timestamp in the user's local timezone, without a
+/// timezone suffix (the times in snouty's output are always local, so showing
+/// the offset would just be noise). Example: `2026-05-27 08:25:13`.
+fn format_local(dt: DateTime<Utc>) -> String {
+    dt.with_timezone(&Local)
+        .format("%Y-%m-%d %H:%M:%S")
+        .to_string()
+}
+
+/// Reformat an RFC 3339 timestamp string into the local, suffix-less format.
+/// Falls back to the original string if it can't be parsed.
+fn format_local_str(raw: &str) -> String {
+    match DateTime::parse_from_rfc3339(raw) {
+        Ok(dt) => format_local(dt.with_timezone(&Utc)),
+        Err(_) => raw.to_string(),
+    }
+}
+
+async fn cmd_runs_show(run_id: &str, web: bool, json: bool, verbose: bool) -> Result<()> {
     debug!("showing run: {}", run_id);
 
     let api = AntithesisApi::from_env(verbose)?;
-    let run = api.get_run(run_id).await?;
+    let run = match api.get_run(run_id).await {
+        Ok(run) => run,
+        // A 404 here is unambiguous: the run id is bad. Say so instead of leaking
+        // a bare "API error: 404 Not Found". Other errors pass through untouched.
+        Err(err) => return Err(explain_run_not_found(run_id, err)),
+    };
+
+    if web {
+        return open_run_report(&run, json);
+    }
 
     if json {
         println!("{}", serde_json::to_string_pretty(&run)?);
@@ -144,6 +253,75 @@ async fn cmd_runs_show(run_id: &str, json: bool, verbose: bool) -> Result<()> {
     }
 
     Ok(())
+}
+
+/// `runs show --web`: open the run's triage report in a browser. With `--json`,
+/// emit the URL instead of launching anything so scripts can capture it.
+fn open_run_report(run: &RunDetail, json: bool) -> Result<()> {
+    let url = run
+        .links
+        .as_ref()
+        .and_then(|l| l.triage_report.as_deref())
+        .ok_or_else(|| {
+            user_error(format!(
+                "no report available for run {} with status {}",
+                run.run_id, run.status
+            ))
+        })?;
+
+    if json {
+        println!("{}", serde_json::json!({ "url": url }));
+        return Ok(());
+    }
+
+    let launched = launch_browser(url);
+    if launched {
+        println!("Opening report for run {}…", run.run_id);
+        println!("If your browser didn't open, manually visit:");
+        println!("  {url}");
+    } else {
+        println!("Open this URL to view the report:");
+        println!("  {url}");
+    }
+    Ok(())
+}
+
+fn launch_browser(url: &str) -> bool {
+    use std::process::{Command, Stdio};
+
+    #[cfg(target_os = "windows")]
+    let mut command = {
+        use std::os::windows::process::CommandExt;
+        // cmd.exe's `start` doesn't parse Rust's `\"`-style arg escaping, so build
+        // the command line verbatim with `raw_arg`. The first quoted token is the
+        // window title (kept empty), and the URL is the second quoted token — the
+        // quotes survive intact, so `&` inside the URL isn't treated as a command
+        // separator.
+        let mut command = Command::new("cmd");
+        command.raw_arg(format!("/C start \"\" \"{url}\""));
+        command
+    };
+
+    #[cfg(target_os = "macos")]
+    let mut command = {
+        let mut command = Command::new("open");
+        command.arg(url);
+        command
+    };
+
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    let mut command = {
+        let mut command = Command::new("xdg-open");
+        command.arg(url);
+        command
+    };
+
+    command
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
 }
 
 async fn cmd_runs_properties(
@@ -155,14 +333,22 @@ async fn cmd_runs_properties(
     debug!("listing properties for run: {}", run_id);
 
     let api = AntithesisApi::from_env(verbose)?;
-    let mut properties = api
+    let mut properties = match api
         .stream_run_properties(run_id, status)
         .try_collect::<Vec<_>>()
-        .await?;
+        .await
+    {
+        Ok(properties) => properties,
+        // The properties endpoint 404s both for a bogus run id and for a real
+        // run that simply has no triage report yet (only `completed` runs do).
+        // Fetch the run to say which, instead of leaking a bare "404 Not Found".
+        Err(err) => return Err(explain_properties_error(&api, run_id, err).await),
+    };
 
     properties.sort_by(|a, b| {
-        property_status_rank(a.status())
-            .cmp(&property_status_rank(b.status()))
+        property_group(a)
+            .unwrap_or("")
+            .cmp(property_group(b).unwrap_or(""))
             .then(a.name().cmp(b.name()))
     });
 
@@ -171,37 +357,504 @@ async fn cmd_runs_properties(
             println!("{}", serde_json::to_string(property)?);
         }
     } else if properties.is_empty() {
-        println!("No properties found.");
+        let message = match status {
+            Some(PropertyStatus::Passing) => "No passing properties found.",
+            Some(PropertyStatus::Failing) => "No failing properties found.",
+            None => "No properties found.",
+        };
+        println!("{message}");
     } else {
-        let event_rows = flatten_property_events(&properties);
-        let non_event_rows = flatten_non_event_property_values(&properties);
-
-        let mut sections = Vec::new();
-        if !event_rows.is_empty() {
-            sections.push(render_property_events_table(&event_rows));
-        }
-        if !non_event_rows.is_empty() {
-            sections.push(render_property_values_table(&non_event_rows));
-        }
-        println!("{}", sections.join("\n\n"));
+        println!("{}", render_properties_table(&properties));
     }
 
     Ok(())
 }
 
-fn print_run_detail(run: &RunDetail) {
-    let mut rows: Vec<(&str, String)> = vec![
-        ("Run ID", run.run_id.clone()),
-        ("Status", run.status.to_string()),
+/// Outcome of probing a run-scoped 404 with `get_run`: does the run itself not
+/// exist, or does it exist (with a known status) but the nested endpoint has no
+/// data yet? Any non-404 `get_run` failure is reported as a propagating error
+/// rather than misattributed to a missing run.
+enum RunProbe {
+    /// The run id is bad: `get_run` also returned a structured 404.
+    NotFound,
+    /// The run exists; carries its status so the caller can tailor the message.
+    Exists(RunStatus),
+    /// `get_run` failed for some other reason (timeout, 502, auth). Propagate
+    /// this rather than claiming the run doesn't exist.
+    ProbeFailed(color_eyre::eyre::Report),
+}
+
+/// Probe a run-scoped 404 by fetching the run itself. Only a structured 404 from
+/// `get_run` means the run is missing; any other `get_run` error is returned as
+/// `ProbeFailed` so callers never misreport a timeout/5xx/auth failure as "run
+/// not found".
+async fn probe_run(api: &AntithesisApi, run_id: &str) -> RunProbe {
+    match api.get_run(run_id).await {
+        Ok(run) => RunProbe::Exists(run.status),
+        Err(err) if api_error_status(&err) == Some(404) => RunProbe::NotFound,
+        Err(err) => RunProbe::ProbeFailed(err),
+    }
+}
+
+/// Translate an error from a run-scoped endpoint (show/build-logs/events/logs)
+/// into the shared friendly "run not found: X" message when the failure is a
+/// 404 for a bad run id. Any non-404 error passes through untouched (full
+/// report), so genuine server faults are never masked.
+///
+/// `show` calls `get_run` directly, so its 404 is already unambiguous; the
+/// streaming endpoints get the same treatment so every run-scoped subcommand
+/// reports a bad run id identically.
+fn explain_run_not_found(run_id: &str, err: color_eyre::eyre::Report) -> color_eyre::eyre::Report {
+    if api_error_status(&err) == Some(404) {
+        user_error(format!("run not found: {run_id}"))
+    } else {
+        err
+    }
+}
+
+/// Like [`explain_run_not_found`] but for endpoints whose 404 is ambiguous: it
+/// can mean a bad run id *or* a real run whose nested resource isn't available
+/// yet. Probes the run with `get_run` to disambiguate, falling back to "run not
+/// found: X" when the run is genuinely missing and otherwise to the original
+/// error. Non-404 errors pass through untouched.
+async fn explain_run_scoped_error(
+    api: &AntithesisApi,
+    run_id: &str,
+    err: color_eyre::eyre::Report,
+) -> color_eyre::eyre::Report {
+    if api_error_status(&err) != Some(404) {
+        return err;
+    }
+    match probe_run(api, run_id).await {
+        RunProbe::NotFound => user_error(format!("run not found: {run_id}")),
+        RunProbe::ProbeFailed(probe_err) => probe_err,
+        // The run exists but the endpoint still 404'd — surface the original
+        // error rather than guessing why.
+        RunProbe::Exists(_) => err,
+    }
+}
+
+/// Turn a properties-endpoint failure into a message that explains *why* there
+/// are no properties. Only a 404 is rewritten; every other error (auth, network,
+/// 5xx) passes through untouched.
+async fn explain_properties_error(
+    api: &AntithesisApi,
+    run_id: &str,
+    err: color_eyre::eyre::Report,
+) -> color_eyre::eyre::Report {
+    if api_error_status(&err) != Some(404) {
+        return err;
+    }
+    // A 404 here means either the run doesn't exist or it has no triage report.
+    // Probe the run to tell them apart: a missing run 404s on `get_run` too,
+    // while a real run reports its status (its report just isn't available).
+    match probe_run(api, run_id).await {
+        RunProbe::NotFound => user_error(format!("run not found: {run_id}")),
+        RunProbe::ProbeFailed(probe_err) => probe_err,
+        // Completed runs are expected to have properties; if one 404s anyway,
+        // that's a genuine surprise — keep the original error.
+        RunProbe::Exists(RunStatus::Completed) => err,
+        RunProbe::Exists(status) => {
+            let mut msg = format!(
+                "no properties for run {run_id} — properties are generated when a run completes, \
+                 and this run is {}",
+                status_label(status)
+            );
+            if status == RunStatus::Incomplete {
+                msg.push_str(&format!(
+                    ". See the failure moment with `snouty runs show {run_id}`, \
+                     then `snouty runs logs`/`runs events` around it"
+                ));
+            }
+            user_error(msg)
+        }
+    }
+}
+
+fn property_group(p: &Property) -> Option<&str> {
+    match p {
+        Property::EventProperty(p) => p.group.as_deref(),
+        Property::NonEventProperty(p) => p.group.as_deref(),
+    }
+}
+
+fn property_example_total(p: &Property) -> u64 {
+    let (ex, cex) = match p {
+        Property::EventProperty(p) => (p.example_count, p.counterexample_count),
+        Property::NonEventProperty(p) => (p.example_count, p.counterexample_count),
+    };
+    u64::from(ex.unwrap_or(0)) + u64::from(cex.unwrap_or(0))
+}
+
+fn property_status_label(status: PropertyStatus) -> &'static str {
+    match status {
+        PropertyStatus::Passing => "passing",
+        PropertyStatus::Failing => "failing",
+    }
+}
+
+async fn cmd_runs_property(run_id: &str, name: &str, json: bool, verbose: bool) -> Result<()> {
+    debug!("looking up property '{}' for run: {}", name, run_id);
+
+    let api = AntithesisApi::from_env(verbose)?;
+    let properties = match api
+        .stream_run_properties(run_id, None)
+        .try_collect::<Vec<_>>()
+        .await
+    {
+        Ok(properties) => properties,
+        // Same 404-on-incomplete-run contract as `cmd_runs_properties`: explain
+        // why there are no properties instead of leaking a bare "404 Not Found".
+        Err(err) => return Err(explain_properties_error(&api, run_id, err).await),
+    };
+
+    let resolved = resolve_property(&properties, name)?;
+    let property = match resolved {
+        Resolved::Exact(p) => p,
+        Resolved::Fuzzy(p) => {
+            // Always disclose the substitution, on stderr in both modes: a
+            // `--json` consumer otherwise silently receives a different property
+            // than it asked for, and stderr keeps it out of the JSON on stdout.
+            eprintln!(
+                "note: no exact match for '{}', using closest property: '{}'",
+                name,
+                p.name()
+            );
+            p
+        }
+    };
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(property)?);
+        return Ok(());
+    }
+
+    print_property_header(property);
+    println!("{}", render_property_examples(property));
+    Ok(())
+}
+
+#[derive(Debug)]
+enum Resolved<'a> {
+    Exact(&'a Property),
+    Fuzzy(&'a Property),
+}
+
+fn resolve_property<'a>(properties: &'a [Property], query: &str) -> Result<Resolved<'a>> {
+    // Match case-insensitively throughout: an exact name in any case is an
+    // exact hit (no "closest property" note), and the substring fallback
+    // ignores case too.
+    let needle = query.to_lowercase();
+
+    if let Some(p) = properties
+        .iter()
+        .find(|p| p.name().to_lowercase() == needle)
+    {
+        return Ok(Resolved::Exact(p));
+    }
+
+    let matches: Vec<&Property> = properties
+        .iter()
+        .filter(|p| p.name().to_lowercase().contains(&needle))
+        .collect();
+
+    match matches.as_slice() {
+        [] => Err(user_error(format!("no property matches '{query}'"))),
+        [only] => Ok(Resolved::Fuzzy(only)),
+        many => {
+            let names = many
+                .iter()
+                .map(|p| format!("  - {}", p.name()))
+                .collect::<Vec<_>>()
+                .join("\n");
+            Err(user_error(format!(
+                "multiple properties match '{query}', did you mean one of:\n{names}"
+            )))
+        }
+    }
+}
+
+/// How a wrapped free-text block lays its label out (see [`render_prose_block`]).
+enum ProseLayout {
+    /// Label sits in a fixed-width column; the first body line follows it and
+    /// continuation lines indent to the same column (hanging indent). The body
+    /// wraps to `terminal_width - label_col`, floored at `min_body_width`.
+    HangingIndent {
+        label_col: usize,
+        min_body_width: usize,
+    },
+    /// Label sits on its own line; the body follows at column 0 and wraps to the
+    /// full terminal width.
+    OwnLine,
+}
+
+/// Render a labelled block of free-form prose (e.g. a property/run description):
+/// sanitize while keeping real line breaks, drop stray leading/trailing blank
+/// lines, and wrap to the terminal so a long paragraph doesn't blow past the
+/// screen. Blank interior lines are emitted bare (no padding) in every layout.
+/// Returns the empty string when the text has no non-blank lines.
+fn render_prose_block(label: &str, text: &str, layout: ProseLayout) -> String {
+    let body_width = match layout {
+        ProseLayout::HangingIndent {
+            label_col,
+            min_body_width,
+        } => terminal_width()
+            .saturating_sub(label_col)
+            .max(min_body_width),
+        ProseLayout::OwnLine => terminal_width(),
+    };
+    let wrapped = wrap_text(&sanitize_multiline(text), body_width);
+    let lines = trim_blank_edges(&wrapped);
+    if lines.is_empty() {
+        return String::new();
+    }
+
+    let mut out = String::new();
+    match layout {
+        ProseLayout::HangingIndent { label_col, .. } => {
+            for (index, line) in lines.iter().enumerate() {
+                if line.is_empty() {
+                    out.push('\n');
+                } else if index == 0 {
+                    out.push_str(&format!("{label:<label_col$}{line}\n"));
+                } else {
+                    out.push_str(&format!("{:<label_col$}{line}\n", ""));
+                }
+            }
+        }
+        ProseLayout::OwnLine => {
+            out.push_str(label);
+            out.push('\n');
+            for line in lines {
+                out.push_str(line);
+                out.push('\n');
+            }
+        }
+    }
+    out
+}
+
+fn print_property_header(property: &Property) {
+    println!("Name      {}", sanitize(property.name()));
+    println!("Status    {}", property_status_label(property.status()));
+    if let Some(group) = property_group(property) {
+        println!("Group     {}", sanitize(group));
+    }
+    let description = match property {
+        Property::EventProperty(p) => p.description.as_deref(),
+        Property::NonEventProperty(p) => p.description.as_deref(),
+    };
+    if let Some(desc) = description {
+        // Details is free-form prose, wrapped under a 10-char label column so
+        // continuation lines hang-indent to match the value column above.
+        print!(
+            "{}",
+            render_prose_block(
+                "Details",
+                desc,
+                ProseLayout::HangingIndent {
+                    label_col: PROPERTY_LABEL_WIDTH,
+                    min_body_width: 20,
+                },
+            )
+        );
+    }
+    println!();
+}
+
+/// Width of the label column in `print_property_header` (`"Details   "`).
+const PROPERTY_LABEL_WIDTH: usize = 10;
+
+/// Drop leading and trailing blank lines, keeping interior ones.
+fn trim_blank_edges(lines: &[String]) -> &[String] {
+    let start = lines.iter().position(|l| !l.is_empty()).unwrap_or(0);
+    let end = lines
+        .iter()
+        .rposition(|l| !l.is_empty())
+        .map_or(0, |i| i + 1);
+    lines.get(start..end).unwrap_or(&[])
+}
+
+/// Return references to `events` ordered ascending by `moment.vtime` parsed as
+/// f64. Entries whose vtime doesn't parse as a number sort last, preserving
+/// their original relative order. The sort is stable, so events with equal
+/// vtimes keep their incoming order.
+fn sorted_by_vtime(events: &[Event]) -> Vec<&Event> {
+    let mut sorted: Vec<&Event> = events.iter().collect();
+    sorted.sort_by(|a, b| {
+        let av = a.moment.vtime.parse::<f64>().ok();
+        let bv = b.moment.vtime.parse::<f64>().ok();
+        match (av, bv) {
+            (Some(a), Some(b)) => a.total_cmp(&b),
+            // Numeric vtimes sort ahead of non-numeric/unparseable ones.
+            (Some(_), None) => std::cmp::Ordering::Less,
+            (None, Some(_)) => std::cmp::Ordering::Greater,
+            (None, None) => std::cmp::Ordering::Equal,
+        }
+    });
+    sorted
+}
+
+fn render_property_examples(property: &Property) -> String {
+    match property {
+        Property::EventProperty(p) => {
+            let mut rows: Vec<Vec<String>> = Vec::new();
+            // The API guarantees no ordering, so sort each group numerically by
+            // vtime (ascending) for a stable, readable timeline. Counterexamples
+            // (failing) come first, then examples (passing).
+            for event in sorted_by_vtime(&p.counterexamples) {
+                rows.push(vec![
+                    "failing".to_string(),
+                    sanitize(&event.moment.input_hash),
+                    sanitize(&event.moment.vtime),
+                ]);
+            }
+            for event in sorted_by_vtime(&p.examples) {
+                rows.push(vec![
+                    "passing".to_string(),
+                    sanitize(&event.moment.input_hash),
+                    sanitize(&event.moment.vtime),
+                ]);
+            }
+            if rows.is_empty() {
+                rows.push(vec![
+                    "unreachable".to_string(),
+                    "-".to_string(),
+                    "-".to_string(),
+                ]);
+            }
+            let headers = vec![
+                "STATUS".to_string(),
+                "HASH".to_string(),
+                "VTIME".to_string(),
+            ];
+            render_table(&headers, &rows)
+        }
+        Property::NonEventProperty(p) => {
+            let mut rows: Vec<Vec<String>> = Vec::new();
+            let mut detail_blocks: Vec<(usize, String)> = Vec::new();
+
+            for value in &p.counterexamples {
+                push_value_row(&mut rows, &mut detail_blocks, "failing", value);
+            }
+            for value in &p.examples {
+                push_value_row(&mut rows, &mut detail_blocks, "passing", value);
+            }
+            if rows.is_empty() {
+                rows.push(vec!["unreachable".to_string(), "-".to_string()]);
+            }
+            let headers = vec!["STATUS".to_string(), "VALUE".to_string()];
+            let mut out = render_table(&headers, &rows);
+            for (row_index, block) in detail_blocks {
+                out.push_str(&format!(
+                    "\n\nrow {} details:\n{}",
+                    row_index + 1,
+                    indent_lines(&block, "  ")
+                ));
+            }
+            out
+        }
+    }
+}
+
+fn push_value_row(
+    rows: &mut Vec<Vec<String>>,
+    detail_blocks: &mut Vec<(usize, String)>,
+    status: &str,
+    value: &Value,
+) {
+    let row_index = rows.len();
+    let (cell, detail) = render_property_value(value);
+    rows.push(vec![status.to_string(), cell]);
+    if let Some(detail) = detail {
+        detail_blocks.push((row_index, detail));
+    }
+}
+
+fn render_property_value(value: &Value) -> (String, Option<String>) {
+    match value {
+        Value::Null => ("null".to_string(), None),
+        Value::Bool(b) => (b.to_string(), None),
+        Value::Number(n) => (n.to_string(), None),
+        Value::String(s) => (sanitize(s), None),
+        // An empty collection has nothing to expand — render it inline rather
+        // than as a "[0 items]" summary trailed by an empty "row N details" block.
+        Value::Array(items) if items.is_empty() => ("(no example value)".to_string(), None),
+        Value::Object(map) if map.is_empty() => ("(no example value)".to_string(), None),
+        Value::Array(_) | Value::Object(_) => {
+            let summary = match value {
+                Value::Array(items) => format!("[{} items]", items.len()),
+                Value::Object(map) => format!("{{{} fields}}", map.len()),
+                _ => unreachable!(),
+            };
+            let pretty = serde_json::to_string_pretty(value).unwrap_or_default();
+            (summary, Some(pretty))
+        }
+    }
+}
+
+fn indent_lines(text: &str, prefix: &str) -> String {
+    text.lines()
+        .map(|line| format!("{prefix}{line}"))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn render_properties_table(properties: &[Property]) -> String {
+    // STATUS and EXAMPLES are narrow and fixed; NAME is the long, variable
+    // column and goes last so it can wrap to the terminal instead of one long
+    // name forcing the whole table wider than the screen. Full names are kept —
+    // `runs property` takes a name, so truncating would break the follow-up.
+    let headers = vec![
+        "STATUS".to_string(),
+        "EXAMPLES".to_string(),
+        "NAME".to_string(),
     ];
 
-    rows.push(("Created", run.created_at.to_rfc3339()));
+    // Failing properties first so triage doesn't require scanning the whole
+    // (otherwise alphabetical) list; relative order is otherwise preserved.
+    let mut ordered: Vec<&Property> = properties.iter().collect();
+    ordered.sort_by_key(|p| match p.status() {
+        PropertyStatus::Failing => 0,
+        _ => 1,
+    });
 
-    if let Some(ref t) = run.started_at {
-        rows.push(("Started", t.to_rfc3339()));
+    let rows = ordered
+        .iter()
+        .map(|p| {
+            // Fold the group into the name (`group ▸ detail`) instead of padding
+            // a mostly-empty GROUP column out to its widest label.
+            let name = match property_group(p) {
+                Some(group) => format!("{} ▸ {}", sanitize(group), sanitize(p.name())),
+                None => sanitize(p.name()),
+            };
+            vec![
+                property_status_label(p.status()).to_string(),
+                property_example_total(p).to_string(),
+                name,
+            ]
+        })
+        .collect::<Vec<_>>();
+    render_table_wrap_last(&headers, &rows, terminal_width())
+}
+
+fn print_run_detail(run: &RunDetail) {
+    let mut rows: Vec<(&str, String)> = Vec::new();
+
+    // Lead with the identifier; the human labels follow.
+    rows.push(("Run ID", run.run_id.clone()));
+    if let Some(name) = run.test_name() {
+        rows.push(("Test Name", name.to_string()));
     }
-    if let Some(ref t) = run.completed_at {
-        rows.push(("Completed", t.to_rfc3339()));
+
+    rows.push(("Status", status_label(run.status)));
+    rows.push(("Created", format_local(run.created_at)));
+
+    if let Some(t) = run.started_at {
+        rows.push(("Started", format_local(t)));
+    }
+    if let Some(t) = run.completed_at {
+        rows.push(("Completed", format_local(t)));
     }
 
     rows.push(("Launcher", run.launcher.clone()));
@@ -211,38 +864,130 @@ fn print_run_detail(run: &RunDetail) {
         rows.push(("Failure Hash", moment.input_hash.clone()));
     }
 
-    if let Some(ref links) = run.links
-        && let Some(ref url) = links.triage_report
-    {
-        rows.push(("Report", url.clone()));
-    }
-
     if let Some(ref creator) = run.creator
         && let Some(ref name) = creator.name
     {
         rows.push(("Creator", name.clone()));
     }
 
-    let label_width = rows.iter().map(|(label, _)| label.len()).max().unwrap_or(0);
-    for (label, value) in &rows {
-        println!("{label:label_width$}  {}", sanitize(value));
+    print!("{}", render_kv(&rows, 0));
+
+    // The description can be an enormous multi-paragraph blob, so it goes as its
+    // own block — wrapped to the terminal, with the label on its own line —
+    // rather than as a metadata row that would otherwise bury Status/timestamps
+    // below a wall of text. The leading blank line separates it from the block.
+    if let Some(desc) = run.test_description() {
+        let block = render_prose_block("Description", desc, ProseLayout::OwnLine);
+        if !block.is_empty() {
+            print!("\n{block}");
+        }
     }
+
+    // Point at the obvious next step instead of dumping the huge signed report
+    // URL into the metadata block — but only when a triage report actually
+    // exists, since `--web` errors out otherwise (e.g. for incomplete runs).
+    let has_report = run
+        .links
+        .as_ref()
+        .and_then(|l| l.triage_report.as_deref())
+        .is_some();
+    if has_report {
+        println!(
+            "\nview the report in your browser:\n  snouty runs show {} --web",
+            run.run_id
+        );
+    }
+}
+
+/// Render aligned `Label  value` lines, sqlite `.mode line`–style. Each line is
+/// terminated with a newline; values are sanitized. Labels are padded to the
+/// widest label, but never narrower than `min_label_width` so a caller that also
+/// renders a wider prose label below the block can keep every row aligned.
+fn render_kv(rows: &[(&str, String)], min_label_width: usize) -> String {
+    let label_width = rows
+        .iter()
+        .map(|(label, _)| label.len())
+        .chain(std::iter::once(min_label_width))
+        .max()
+        .unwrap_or(0);
+    let mut out = String::new();
+    for (label, value) in rows {
+        out.push_str(&format!("{label:label_width$}  {}\n", sanitize(value)));
+    }
+    out
+}
+
+/// `runs list --detail`: one aligned key-value block per run (no table),
+/// separated by blank lines. Empty optional fields are omitted.
+fn render_runs_detail(runs: &[RunSummary]) -> String {
+    let blocks: Vec<String> = runs
+        .iter()
+        .map(|run| {
+            let mut rows: Vec<(&str, String)> = vec![
+                ("Run ID", run.run_id.clone()),
+                ("Status", status_label(run.status)),
+                ("Created", format_local(run.created_at)),
+                ("Launcher", run.launcher.clone()),
+            ];
+            if let Some(name) = run.test_name() {
+                rows.push(("Test Name", name.to_string()));
+            }
+
+            // The description can be a multi-paragraph blob, so it wraps to the
+            // terminal with a hanging indent under the value column (matching
+            // `runs show`) instead of running off as one giant line. Include its
+            // label in the width so every key-value row stays aligned with it.
+            let description = run.test_description();
+            let min_label_width = description.map_or(0, |_| "Description".len());
+            let label_width = rows
+                .iter()
+                .map(|(label, _)| label.len())
+                .max()
+                .unwrap_or(0)
+                .max(min_label_width);
+
+            let mut out = render_kv(&rows, min_label_width);
+            if let Some(description) = description {
+                out.push_str(&render_prose_block(
+                    "Description",
+                    description,
+                    // The value column starts two spaces past the label column;
+                    // floored at one so the body never vanishes on a tiny term.
+                    ProseLayout::HangingIndent {
+                        label_col: label_width + 2,
+                        min_body_width: 1,
+                    },
+                ));
+            }
+            out
+        })
+        .collect();
+
+    // Each block already ends in a newline; joining with "\n" inserts one blank
+    // line between consecutive runs.
+    blocks.join("\n")
 }
 
 struct LogOutputOptions {
     json: bool,
     verbose: bool,
-    annotate_faults: bool,
+    /// Skip all log post-processing: no fault annotation in JSON mode, and the
+    /// human payload is rendered verbatim (no ANSI stripping or control-byte
+    /// escaping).
+    raw: bool,
 }
 
 async fn cmd_runs_build_logs(run_id: &str, json: bool, verbose: bool) -> Result<()> {
     debug!("streaming build logs for run: {}", run_id);
 
     let api = AntithesisApi::from_env(verbose)?;
-    let stream = api.get_run_build_logs(run_id).await?.into_inner();
-    let mut stdout = std::io::stdout().lock();
+    let stream = match api.get_run_build_logs(run_id).await {
+        Ok(stream) => stream.into_inner(),
+        Err(err) => return Err(explain_run_scoped_error(&api, run_id, err).await),
+    };
+    let mut stdout = BufWriter::new(std::io::stdout().lock());
 
-    if json {
+    let result = if json {
         stream_ndjson_lines(stream, NoOpTransformer {}, |line| {
             writeln!(stdout, "{line}")?;
             Ok(())
@@ -251,7 +996,7 @@ async fn cmd_runs_build_logs(run_id: &str, json: bool, verbose: bool) -> Result<
     } else {
         stream_ndjson_lines(stream, NoOpTransformer {}, |line| {
             if let Ok(entry) = serde_json::from_str::<serde_json::Value>(line) {
-                let ts = entry["timestamp"].as_str().unwrap_or("");
+                let ts = format_local_str(entry["timestamp"].as_str().unwrap_or(""));
                 let stream = entry["stream"].as_str().unwrap_or("out");
                 let text = sanitize(entry["text"].as_str().unwrap_or(""));
                 writeln!(stdout, "{ts} [{stream}] {text}")?;
@@ -261,49 +1006,156 @@ async fn cmd_runs_build_logs(run_id: &str, json: bool, verbose: bool) -> Result<
             Ok(())
         })
         .await
+    };
+
+    stdout.flush()?;
+    result
+}
+
+/// The text `runs events` searches a single NDJSON line against, built from the
+/// already-rendered event. We match the DECODED content the user actually sees
+/// in the table (input_hash, vtime, source, output), not the raw JSON-escaped
+/// line — so a needle containing quotes/backslashes copied from the OUTPUT
+/// column matches.
+///
+/// Client-side substring matching is the only filtering `runs events` does.
+/// Structural filters (source/stream/vtime) are intentionally unsupported: the
+/// server streams only a capped subset of matching events, so filtering it
+/// client-side would silently apply to that subset rather than to all of the
+/// run's events.
+fn event_haystack(rendered: &RenderedEventEntry) -> String {
+    format!(
+        "{} {} {} {}",
+        rendered.input_hash, rendered.vtime, rendered.source, rendered.output
+    )
+}
+
+/// Parse one NDJSON event line a single time and derive both its search haystack
+/// and (for the human table) its rendered row. A line that doesn't parse as JSON
+/// falls back to raw-line matching and a sanitized raw OUTPUT row.
+fn prepare_event_line(line: &str) -> (String, [String; 4]) {
+    match serde_json::from_str::<Value>(line) {
+        Ok(entry) => {
+            let rendered = render_event_entry(&entry);
+            let haystack = event_haystack(&rendered);
+            let row = [
+                rendered.input_hash,
+                rendered.vtime,
+                rendered.source,
+                rendered.output,
+            ];
+            (haystack, row)
+        }
+        // The line isn't valid JSON (a truncated final chunk, a proxy-injected
+        // error blob, …). Match against the raw line and surface it sanitized in
+        // the OUTPUT column rather than dropping it silently.
+        Err(_) => (
+            line.to_string(),
+            [String::new(), String::new(), String::new(), sanitize(line)],
+        ),
     }
 }
 
-async fn cmd_runs_events(run_id: &str, query: &[String], json: bool, verbose: bool) -> Result<()> {
+/// True when every needle (already lowercased) appears in `haystack`. Both sides
+/// are compared with Unicode `to_lowercase` so case-insensitivity holds for
+/// non-ASCII text the OUTPUT column may contain.
+fn haystack_matches_all_needles(haystack: &str, lowered_needles: &[String]) -> bool {
+    let haystack_lower = haystack.to_lowercase();
+    lowered_needles.iter().all(|n| haystack_lower.contains(n))
+}
+
+async fn cmd_runs_events(
+    run_id: &str,
+    matches: &[String],
+    json: bool,
+    verbose: bool,
+) -> Result<()> {
     debug!("searching events for run: {}", run_id);
 
-    let api = AntithesisApi::from_env(verbose)?;
-    let stream = api
-        .search_run_events(run_id, &query.join(" "))
-        .await?
-        .into_inner();
+    if matches.is_empty() {
+        return Err(user_error(
+            "no search term given: pass at least one needle via `-m/--match` or as a positional argument",
+        ));
+    }
 
-    let mut stdout = std::io::stdout().lock();
+    // The server endpoint takes a single `q` substring and streams only a capped
+    // subset of matching events. Send the LONGEST needle (a crude selectivity
+    // proxy) so the cap is most likely to retain rare matches; any additional
+    // needles are AND-filtered client-side over that capped server subset.
+    let server_query = matches
+        .iter()
+        .max_by_key(|m| m.chars().count())
+        .cloned()
+        .unwrap_or_default();
+
+    let api = AntithesisApi::from_env(verbose)?;
+    let stream = match api.search_run_events(run_id, &server_query).await {
+        Ok(stream) => stream.into_inner(),
+        Err(err) => return Err(explain_run_scoped_error(&api, run_id, err).await),
+    };
+
+    let lowered_matches: Vec<String> = matches.iter().map(|m| m.to_lowercase()).collect();
+
+    let mut stdout = BufWriter::new(std::io::stdout().lock());
+
+    // JSON mode emits the raw matching line, but matching itself runs against the
+    // DECODED fields (see `event_haystack`) so it agrees with what the table
+    // shows. Parse each line once to build the haystack, then stream the raw
+    // matching line as it arrives.
     if json {
-        stream_ndjson_lines(stream, NoOpTransformer {}, |line| {
+        let result = stream_ndjson_lines(stream, NoOpTransformer {}, |line| {
+            let (haystack, _) = prepare_event_line(line);
+            if !haystack_matches_all_needles(&haystack, &lowered_matches) {
+                return Ok(());
+            }
             writeln!(stdout, "{line}")?;
             Ok(())
         })
-        .await
-    } else {
-        writeln!(
-            stdout,
-            "{:<22}  {:<22}  {:<20}  OUTPUT",
-            "HASH", "VTIME", "SOURCE"
-        )?;
-        stream_ndjson_lines(stream, NoOpTransformer {}, |line| {
-            if let Ok(entry) = serde_json::from_str::<Value>(line) {
-                let rendered = render_event_entry(&entry);
-                let input_hash = rendered.input_hash;
-                let vtime = rendered.vtime;
-                let source = rendered.source;
-                let output = rendered.output;
-                writeln!(
-                    stdout,
-                    "{input_hash:<22}  {vtime:<22}  {source:<20}  {output}"
-                )?;
-            } else {
-                writeln!(stdout, "{:<22}  {:<22}  {:<20}  {line}", "", "", "")?;
-            }
-            Ok(())
-        })
-        .await
+        .await;
+        stdout.flush()?;
+        return result;
     }
+
+    // Human table: the event stream is small (the server already substring-
+    // filters), so buffer the matching rows and size the HASH/VTIME/SOURCE
+    // columns to the actual content rather than guessing fixed widths. Each line
+    // is parsed once into both its haystack and its row.
+    let mut rows: Vec<Vec<String>> = Vec::new();
+    let result = stream_ndjson_lines(stream, NoOpTransformer {}, |line| {
+        let (haystack, row) = prepare_event_line(line);
+        if !haystack_matches_all_needles(&haystack, &lowered_matches) {
+            return Ok(());
+        }
+        rows.push(row.to_vec());
+        Ok(())
+    })
+    .await;
+
+    // A mid-stream error must not discard rows we already buffered: render them
+    // first, then propagate the error. The clean-empty "No events matched"
+    // message is only for a successful stream that yielded nothing.
+    if rows.is_empty() {
+        result?;
+        let query = matches.join(" ");
+        writeln!(stdout, "No events matched \"{query}\".")?;
+        stdout.flush()?;
+        return Ok(());
+    }
+
+    // Auto-width HASH/VTIME/SOURCE columns with OUTPUT emitted verbatim as the
+    // final column — the shared renderer's `Raw` last-column policy.
+    let headers = [
+        "HASH".to_string(),
+        "VTIME".to_string(),
+        "SOURCE".to_string(),
+        "OUTPUT".to_string(),
+    ];
+    writeln!(stdout, "{}", render_table(&headers, &rows))?;
+    stdout.flush()?;
+
+    // Now that buffered rows are rendered, surface any mid-stream error.
+    result?;
+    Ok(())
 }
 
 async fn cmd_runs_logs(
@@ -312,23 +1164,30 @@ async fn cmd_runs_logs(
     vtime: &str,
     begin_input_hash: Option<&str>,
     begin_vtime: Option<&str>,
-    LogOutputOptions {
-        json,
-        verbose,
-        annotate_faults,
-    }: LogOutputOptions,
+    LogOutputOptions { json, verbose, raw }: LogOutputOptions,
 ) -> Result<()> {
     debug!("streaming logs for run: {}", run_id);
 
     let api = AntithesisApi::from_env(verbose)?;
-    let stream = api
+    let stream = match api
         .get_run_logs(run_id, input_hash, vtime, begin_input_hash, begin_vtime)
-        .await?
-        .into_inner();
+        .await
+    {
+        Ok(stream) => stream.into_inner(),
+        Err(err) => return Err(explain_run_scoped_error(&api, run_id, err).await),
+    };
 
-    let mut stdout = std::io::stdout().lock();
-    if json {
-        if annotate_faults {
+    let mut stdout = BufWriter::new(std::io::stdout().lock());
+    let result = if json {
+        // Fault annotation is the default; `--raw` opts out into a verbatim
+        // NDJSON passthrough.
+        if raw {
+            stream_ndjson_lines(stream, NoOpTransformer {}, |line| {
+                writeln!(stdout, "{line}")?;
+                Ok(())
+            })
+            .await
+        } else {
             stream_ndjson_lines(
                 stream,
                 FaultAnnotator {
@@ -341,32 +1200,157 @@ async fn cmd_runs_logs(
                 },
             )
             .await
-        } else {
-            stream_ndjson_lines(stream, NoOpTransformer {}, |line| {
-                writeln!(stdout, "{line}")?;
-                Ok(())
-            })
-            .await
         }
     } else {
-        writeln!(stdout, "{:<22}  {:<20}  OUTPUT", "VTIME", "SOURCE")?;
         stream_ndjson_lines(stream, NoOpTransformer {}, |line| {
             if let Ok(entry) = serde_json::from_str::<Value>(line) {
-                let rendered = render_event_entry(&entry);
-                let vtime = rendered.vtime;
-                let source = rendered.source;
-                let output = rendered.output;
-                writeln!(stdout, "{vtime:<22}  {source:<20}  {output}")?;
+                writeln!(stdout, "{}", format_log_entry(&entry, raw))?;
             } else {
                 writeln!(stdout, "{line}")?;
             }
             Ok(())
         })
         .await
+    };
+    stdout.flush()?;
+    result
+}
+
+const LOG_SOURCE_MIN_WIDTH: usize = 20;
+const LOG_VTIME_WIDTH: usize = 14;
+const LOG_STREAM_WIDTH: usize = 3;
+
+fn format_log_entry(entry: &Value, raw: bool) -> String {
+    let vtime = format_log_vtime(entry);
+    let container = entry["source"]["container"].as_str().unwrap_or("");
+    let name = entry["source"]["name"].as_str().unwrap_or("");
+    let source = if !container.is_empty() {
+        container
+    } else {
+        name
+    };
+    let stream_raw = entry["source"]["stream"].as_str().unwrap_or("");
+    let stream = abbreviate_stream(stream_raw);
+
+    // Web UI format: text records sit one space after the stream bracket.
+    // JSON records get an extra " - " separator before the body.
+    // Run the text payload through the shared terminal normalizer: strip ANSI
+    // color codes, then escape any remaining control bytes so a stray `\r`/BEL
+    // in container output can't corrupt the rendered stream. `--raw` skips the
+    // normalizer so colors and control bytes reach the terminal verbatim.
+    let payload = if let Some(text) = entry.get("output_text").and_then(Value::as_str) {
+        if raw {
+            text.to_string()
+        } else {
+            normalize_terminal_text(text)
+        }
+    } else {
+        format!(" - {}", strip_log_envelope(entry))
+    };
+
+    format!(
+        "[{vtime:>vw$}] [{source:>sw$}] [{stream:<stw$}] {payload}",
+        vw = LOG_VTIME_WIDTH,
+        sw = LOG_SOURCE_MIN_WIDTH,
+        stw = LOG_STREAM_WIDTH,
+    )
+}
+
+/// Parse a `moment`'s vtime to f64 seconds. The API sends `moment.vtime` as a
+/// seconds string (e.g. "398.4898"); accept a JSON number too, since the schema
+/// doesn't forbid one. Returns `None` when there's no parseable vtime.
+fn moment_vtime_seconds(entry: &Value) -> Option<f64> {
+    let vtime = &entry["moment"]["vtime"];
+    vtime
+        .as_str()
+        .and_then(|s| s.parse::<f64>().ok())
+        .or_else(|| vtime.as_f64())
+}
+
+/// Render a log line's vtime in seconds with at most 3 decimal places (trailing
+/// zeros trimmed). Full-precision vtimes overflow the fixed `LOG_VTIME_WIDTH`
+/// column and desync the source column; trimming keeps every row aligned.
+fn format_log_vtime(entry: &Value) -> String {
+    match moment_vtime_seconds(entry) {
+        Some(seconds) => trim_decimals(seconds, 3),
+        // Not a parseable number — show whatever the server sent rather than "".
+        None => entry["moment"]["vtime"].as_str().unwrap_or("").to_string(),
     }
 }
 
-const TICKS_PER_SECOND: f64 = (1u64 << 32) as f64;
+/// Format `value` with at most `max_decimals` decimal places, trimming trailing
+/// zeros and a dangling decimal point (e.g. `19.0` -> `19`, `18.9140` -> `18.914`).
+///
+/// A *nonzero* value too small to survive the trim (it would otherwise render as
+/// `0` or `-0`, losing the fact that something happened) renders as `<0.001` for
+/// positives and `>-0.001` for negatives — short, unambiguous, and the same
+/// width regardless of magnitude. An exact `0.0`/`-0.0` renders `0`.
+fn trim_decimals(value: f64, max_decimals: usize) -> String {
+    let mut s = format!("{value:.max_decimals$}");
+    if s.contains('.') {
+        let trimmed = s.trim_end_matches('0').trim_end_matches('.').len();
+        s.truncate(trimmed);
+    }
+    // A nonzero input that rounded to "0"/"-0" would misrepresent it as exactly
+    // zero; flag it as a below-threshold magnitude instead.
+    if (s == "0" || s == "-0") && value != 0.0 {
+        let threshold = format!("0.{}1", "0".repeat(max_decimals.saturating_sub(1)));
+        return if value < 0.0 {
+            format!(">-{threshold}")
+        } else {
+            format!("<{threshold}")
+        };
+    }
+    // Normalise an exact -0.0 (rounds to "-0") to plain "0".
+    if s == "-0" {
+        return "0".to_string();
+    }
+    s
+}
+
+fn abbreviate_stream(stream: &str) -> std::borrow::Cow<'static, str> {
+    if let Ok(s) = stream.parse::<Stream>() {
+        return std::borrow::Cow::Borrowed(s.abbreviated());
+    }
+    if stream.is_empty() {
+        return std::borrow::Cow::Borrowed("   ");
+    }
+    std::borrow::Cow::Owned(stream.chars().take(LOG_STREAM_WIDTH).collect())
+}
+
+/// Keys that wrap a log record's payload; dropped before rendering the body.
+const LOG_ENVELOPE_KEYS: [&str; 3] = ["moment", "source", "IPT_bytes_out"];
+
+/// Serialize-only view over a JSON object that emits every key except the
+/// envelope keys, borrowing the retained values rather than cloning them.
+struct StrippedEnvelope<'a>(&'a Map<String, Value>);
+
+impl serde::Serialize for StrippedEnvelope<'_> {
+    fn serialize<S: serde::Serializer>(
+        &self,
+        serializer: S,
+    ) -> std::result::Result<S::Ok, S::Error> {
+        use serde::ser::SerializeMap;
+        let mut map = serializer.serialize_map(None)?;
+        for (key, value) in self.0 {
+            if !LOG_ENVELOPE_KEYS.contains(&key.as_str()) {
+                map.serialize_entry(key, value)?;
+            }
+        }
+        map.end()
+    }
+}
+
+fn strip_log_envelope(entry: &Value) -> String {
+    // Serialize a borrowed, filtered view of the object rather than deep-cloning
+    // the whole Value just to drop three envelope keys — this runs per JSON log
+    // line. The view preserves the original key order (matching serde_json's
+    // preserve_order) without copying any of the retained subtrees.
+    match entry.as_object() {
+        Some(obj) => serde_json::to_string(&StrippedEnvelope(obj)).unwrap_or_default(),
+        None => serde_json::to_string(entry).unwrap_or_default(),
+    }
+}
 
 async fn stream_ndjson_lines<S, C>(
     mut stream: S,
@@ -435,14 +1419,11 @@ impl LineTransformer for FaultAnnotator {
         if let Ok(mut entry) = serde_json::from_str::<Value>(line) {
             let mut update_faults = false;
 
-            let vtime_ticks_node = entry["moment"]["_vtime_ticks"].as_u64();
-            let vtime_node = entry["moment"]["vtime"]
-                .as_str()
-                .and_then(|seconds_string| seconds_string.parse::<f64>().ok());
-            let event_vtime_ticks = vtime_node
-                .map(|seconds| (seconds * TICKS_PER_SECOND) as u64)
-                .or(vtime_ticks_node)
-                .unwrap_or(0);
+            // The API sends moment.vtime as seconds, so the fault-window math
+            // runs directly in seconds. Lines without a vtime fall back to 0.0,
+            // which never expires a window (expiry is strict less-than).
+            let event_vtime = moment_vtime_seconds(&entry);
+            let latest_vtime = event_vtime.unwrap_or(0.0);
             let fault_name = entry["fault"]["name"].as_str();
             let is_fault_injector = entry["source"]["name"]
                 .as_str()
@@ -469,17 +1450,12 @@ impl LineTransformer for FaultAnnotator {
             }
 
             // Clear any expired faults
-            update_faults = self
-                .active_fault_windows
-                .clear_expired_faults(event_vtime_ticks)
-                || update_faults;
+            update_faults =
+                self.active_fault_windows.clear_expired_faults(latest_vtime) || update_faults;
 
             if is_fault_injector && let Some(fault_name) = fault_name {
-                let max_duration_ticks = entry["fault"]["max_duration"]
-                    .as_f64()
-                    .filter(|d| *d > 0.0)
-                    .map(|d| (d * TICKS_PER_SECOND) as u64);
-                let end_vtime = max_duration_ticks.map(|duration| duration + event_vtime_ticks);
+                let max_duration = entry["fault"]["max_duration"].as_f64().filter(|d| *d > 0.0);
+                let end_vtime = max_duration.map(|duration| duration + latest_vtime);
                 let fault_type = entry["fault"]["type"].as_str().unwrap_or("");
 
                 if let Some(target) = entry["fault"]["affected_nodes"]
@@ -491,7 +1467,7 @@ impl LineTransformer for FaultAnnotator {
                         update_faults = self.active_fault_windows.add_network_fault(
                             fault_name.to_string(),
                             FaultWindowBounds {
-                                start_vtime: event_vtime_ticks,
+                                start_vtime: latest_vtime,
                                 end_vtime,
                             },
                         ) || update_faults;
@@ -504,7 +1480,7 @@ impl LineTransformer for FaultAnnotator {
                             fault_name.to_string(),
                             target.to_string(),
                             FaultWindowBounds {
-                                start_vtime: event_vtime_ticks,
+                                start_vtime: latest_vtime,
                                 end_vtime,
                             },
                         ) || update_faults;
@@ -518,7 +1494,7 @@ impl LineTransformer for FaultAnnotator {
                     update_faults = self.active_fault_windows.add_clock_fault(
                         offset,
                         FaultWindowBounds {
-                            start_vtime: event_vtime_ticks,
+                            start_vtime: latest_vtime,
                             end_vtime,
                         },
                     ) || update_faults;
@@ -532,8 +1508,10 @@ impl LineTransformer for FaultAnnotator {
             if let Some(output_text) = entry["output_text"].as_str() {
                 entry["output_text"] = Value::String(strip_ansi(output_text));
             }
-            if vtime_ticks_node.is_some() || vtime_node.is_some() {
-                entry["vtime_seconds"] = json!((event_vtime_ticks as f64) / TICKS_PER_SECOND);
+            // Replace the seconds string with its f64 form in place — the only
+            // processing snouty does to vtime.
+            if let Some(vtime) = event_vtime {
+                entry["moment"]["vtime"] = json!(vtime);
             }
 
             if entry.is_object() {
@@ -571,14 +1549,14 @@ fn strip_ansi(text: &str) -> String {
 }
 
 struct FaultWindowBounds {
-    start_vtime: u64,
-    end_vtime: Option<u64>,
+    start_vtime: f64,
+    end_vtime: Option<f64>,
 }
 
 impl FaultWindowBounds {
-    fn is_expired(&self, latest_vtime_ticks: &u64) -> bool {
+    fn is_expired(&self, latest_vtime: &f64) -> bool {
         self.end_vtime
-            .map(|expiry| expiry.lt(latest_vtime_ticks))
+            .map(|expiry| expiry.lt(latest_vtime))
             .unwrap_or(false)
     }
 }
@@ -610,25 +1588,25 @@ impl ActiveFaultWindows {
         did_something
     }
 
-    fn clear_expired_faults(&mut self, latest_vtime_ticks: u64) -> bool {
+    fn clear_expired_faults(&mut self, latest_vtime: f64) -> bool {
         let mut did_something;
 
         let clock_faults_length = self.clock.len();
         self.clock
-            .retain(|fault| !fault.1.is_expired(&latest_vtime_ticks));
+            .retain(|fault| !fault.1.is_expired(&latest_vtime));
         did_something = self.clock.len() != clock_faults_length;
 
         for _ in self
             .network
-            .extract_if(.., |_k, window| window.is_expired(&latest_vtime_ticks))
+            .extract_if(.., |_k, window| window.is_expired(&latest_vtime))
         {
             did_something = true;
         }
 
         let mut dropped_categories_of_node_faults = false;
         for _ in self.node.extract_if(.., |_k, windows_by_container| {
-            for _ in windows_by_container
-                .extract_if(.., |_c, window| window.is_expired(&latest_vtime_ticks))
+            for _ in
+                windows_by_container.extract_if(.., |_c, window| window.is_expired(&latest_vtime))
             {
                 did_something = true;
             }
@@ -702,17 +1680,15 @@ impl ActiveFaultWindows {
         for entry in &self.network {
             result.insert(
                 format!("network_{}", entry.0),
-                json!({"vtime": (entry.1.start_vtime as f64) / TICKS_PER_SECOND}),
+                json!({"vtime": entry.1.start_vtime}),
             );
         }
 
         for entry in &self.node {
             let mut node_fault_starts_by_container = Map::new();
             for entry in entry.1 {
-                node_fault_starts_by_container.insert(
-                    entry.0.to_string(),
-                    json!((entry.1.start_vtime as f64) / TICKS_PER_SECOND),
-                );
+                node_fault_starts_by_container
+                    .insert(entry.0.to_string(), json!(entry.1.start_vtime));
             }
 
             result.insert(
@@ -723,14 +1699,17 @@ impl ActiveFaultWindows {
 
         if !&self.clock.is_empty() {
             let mut offset_sum = 0f64;
-            let mut max_clock_fault_start = 0u64;
+            let mut max_clock_fault_start = 0f64;
 
             for entry in &self.clock {
                 offset_sum += entry.0;
                 max_clock_fault_start = max_clock_fault_start.max(entry.1.start_vtime);
             }
 
-            result.insert("clock_skip".to_string(), json!({"cumulative_offset": offset_sum, "vtime": (max_clock_fault_start as f64) / TICKS_PER_SECOND}));
+            result.insert(
+                "clock_skip".to_string(),
+                json!({"cumulative_offset": offset_sum, "vtime": max_clock_fault_start}),
+            );
         }
 
         Value::Object(result)
@@ -890,7 +1869,9 @@ fn render_event_output(entry: &Value) -> String {
         return rendered;
     }
     if let Some(output_text) = entry.get("output_text").and_then(Value::as_str) {
-        return sanitize(output_text);
+        // Strip ANSI color codes before escaping controls so colorized container
+        // output shows the plain text, not visible `\x1B[…` escape noise.
+        return normalize_terminal_text(output_text);
     }
     sanitize(&serde_json::to_string(entry).unwrap_or_default())
 }
@@ -983,7 +1964,7 @@ fn format_event_value(value: &Value) -> Option<String> {
 
 fn parse_assertion_summary(entry: &Value) -> Option<AssertionSummary> {
     let assertion = entry.get("antithesis_assert")?;
-    let payload: AssertionPayload = serde_json::from_value(assertion.clone()).ok()?;
+    let payload = AssertionPayload::deserialize(assertion).ok()?;
     AssertionSummary::try_from(payload).ok()
 }
 
@@ -1066,176 +2047,147 @@ fn file_basename(file: &str) -> Option<&str> {
         .or(Some(trimmed))
 }
 
-fn render_runs_table(runs: &[RunSummary]) -> String {
+/// How the final column of a table is laid out once the leading columns have
+/// been sized to their widest cell. The leading columns are always padded to
+/// their widest cell; only the final column's policy varies.
+enum LastColumn {
+    /// Emit the final column verbatim with no padding or width bound. The table
+    /// can grow as wide as its widest final cell.
+    Raw,
+    /// Bound the final column to whatever width remains after the leading columns
+    /// fit within `total_width`, truncating a too-long cell with an ellipsis.
+    Truncate { total_width: usize },
+    /// Bound the final column like [`Truncate`], but wrap a too-long cell across
+    /// multiple lines with a hanging indent under the column start (floored at a
+    /// readable minimum width).
+    Wrap { total_width: usize },
+}
+
+/// Shared column-sizing core for every table snouty renders. Leading columns are
+/// sized to their widest cell (header included, counted in chars); the final
+/// column follows `last_column`. Lines are right-trimmed, so a `Raw` final
+/// column never leaves trailing padding.
+fn render_columns(headers: &[String], rows: &[Vec<String>], last_column: LastColumn) -> String {
+    let last = headers.len() - 1;
+
+    // Size every leading column to the widest of its header and cells. The final
+    // column is sized below according to the policy.
+    let mut widths = headers
+        .iter()
+        .map(|header| header.chars().count())
+        .collect::<Vec<_>>();
+    for row in rows {
+        for (index, cell) in row.iter().enumerate().take(last) {
+            widths[index] = widths[index].max(cell.chars().count());
+        }
+    }
+
+    // Two-space separators between columns; the leading columns plus separators
+    // form the prefix a wrapped final column hangs under.
+    let prefix_width: usize = widths.iter().take(last).sum::<usize>() + 2 * last;
+
+    match &last_column {
+        LastColumn::Raw => {
+            // Final column unbounded: `push_table_row` emits it unpadded, so its
+            // width never matters — leave `widths[last]` at the header width.
+            let mut output = String::new();
+            push_table_row(&mut output, headers, &widths);
+            for row in rows {
+                push_table_row(&mut output, row, &widths);
+            }
+            output.trim_end().to_string()
+        }
+        LastColumn::Truncate { total_width } => {
+            let last_width = total_width
+                .saturating_sub(prefix_width)
+                .max(headers[last].chars().count());
+            widths[last] = last_width;
+
+            let mut output = String::new();
+            push_table_row(&mut output, headers, &widths);
+            for row in rows {
+                let mut row = row.clone();
+                row[last] = console::truncate_str(&row[last], last_width, "…").into_owned();
+                push_table_row(&mut output, &row, &widths);
+            }
+            output.trim_end().to_string()
+        }
+        LastColumn::Wrap { total_width } => {
+            let last_width = total_width
+                .saturating_sub(prefix_width)
+                .max(headers[last].chars().count())
+                .max(20);
+
+            let mut output = String::new();
+            push_table_row(&mut output, headers, &widths);
+            for row in rows {
+                let wrapped = wrap_text(&row[last], last_width);
+                let wrapped = if wrapped.is_empty() {
+                    vec![String::new()]
+                } else {
+                    wrapped
+                };
+                for (line_index, line) in wrapped.iter().enumerate() {
+                    if line_index == 0 {
+                        for index in 0..last {
+                            output.push_str(&format!(
+                                "{:<width$}  ",
+                                row[index],
+                                width = widths[index]
+                            ));
+                        }
+                        output.push_str(line);
+                    } else {
+                        output.push_str(&format!("{:prefix_width$}{line}", ""));
+                    }
+                    output.push('\n');
+                }
+            }
+            output.trim_end().to_string()
+        }
+    }
+}
+
+fn render_runs_table(runs: &[RunSummary], width: usize) -> String {
+    // The default view omits the description entirely — it never fit usefully
+    // beside the (necessarily full) run id, and `runs list --detail` shows it in
+    // full. Test name is the final, width-bounded column truncated with an
+    // ellipsis (a `runs show RUN` follow-up still works off the full id).
     let headers = vec![
         "RUN ID".to_string(),
         "STATUS".to_string(),
-        "CREATED AT".to_string(),
-        "LAUNCHER".to_string(),
+        "CREATED".to_string(),
+        "TEST NAME".to_string(),
     ];
-    let rows = runs
+
+    let rows: Vec<Vec<String>> = runs
         .iter()
         .map(|run| {
+            let test_name = run.test_name().map(sanitize).unwrap_or_else(|| "-".into());
             vec![
                 sanitize(&run.run_id),
-                run.status.to_string(),
-                run.created_at.to_rfc3339(),
-                sanitize(&run.launcher),
+                status_label(run.status),
+                relative_time(run.created_at),
+                test_name,
             ]
         })
-        .collect::<Vec<_>>();
+        .collect();
 
-    render_table(&headers, &rows)
+    render_columns(&headers, &rows, LastColumn::Truncate { total_width: width })
 }
 
-struct PropertyEventRow<'a> {
-    example: &'static str,
-    hash: &'a str,
-    vtime: &'a str,
-    name: &'a str,
-}
-
-struct PropertyValueRow<'a> {
-    example: &'static str,
-    name: &'a str,
-    value: String,
-}
-
-fn flatten_property_events(properties: &[Property]) -> Vec<PropertyEventRow<'_>> {
-    let mut rows = Vec::new();
-    for property in properties {
-        let start = rows.len();
-        for event in property.event_counterexamples() {
-            rows.push(PropertyEventRow {
-                example: "Failing",
-                hash: &event.moment.input_hash,
-                vtime: &event.moment.vtime,
-                name: property.name(),
-            });
-        }
-        for event in property.event_examples() {
-            rows.push(PropertyEventRow {
-                example: "Passing",
-                hash: &event.moment.input_hash,
-                vtime: &event.moment.vtime,
-                name: property.name(),
-            });
-        }
-        rows[start..].sort_by(|a, b| {
-            example_rank(a.example)
-                .cmp(&example_rank(b.example))
-                .then_with(|| compare_vtime(a.vtime, b.vtime))
-        });
-    }
-    rows
-}
-
-fn example_rank(example: &str) -> u8 {
-    match example {
-        "Failing" => 0,
-        _ => 1,
-    }
-}
-
-fn compare_vtime(a: &str, b: &str) -> std::cmp::Ordering {
-    match (a.parse::<f64>(), b.parse::<f64>()) {
-        (Ok(a), Ok(b)) => a.partial_cmp(&b).unwrap_or(std::cmp::Ordering::Equal),
-        _ => a.cmp(b),
-    }
-}
-
-fn render_property_events_table(rows: &[PropertyEventRow]) -> String {
-    let headers = vec![
-        "EXAMPLE".to_string(),
-        "HASH".to_string(),
-        "VTIME".to_string(),
-        "NAME".to_string(),
-    ];
-    let table_rows = rows
-        .iter()
-        .map(|row| {
-            vec![
-                row.example.to_string(),
-                sanitize(row.hash),
-                sanitize(row.vtime),
-                sanitize(row.name),
-            ]
-        })
-        .collect::<Vec<_>>();
-    render_table(&headers, &table_rows)
-}
-
-fn flatten_non_event_property_values(properties: &[Property]) -> Vec<PropertyValueRow<'_>> {
-    let mut rows = Vec::new();
-    for property in properties {
-        let Property::NonEventProperty(p) = property else {
-            continue;
-        };
-        let mut emitted = false;
-        for value in &p.counterexamples {
-            rows.push(PropertyValueRow {
-                example: "Failing",
-                name: &p.name,
-                value: serde_json::to_string(value).unwrap_or_default(),
-            });
-            emitted = true;
-        }
-        for value in &p.examples {
-            rows.push(PropertyValueRow {
-                example: "Passing",
-                name: &p.name,
-                value: serde_json::to_string(value).unwrap_or_default(),
-            });
-            emitted = true;
-        }
-        if !emitted {
-            rows.push(PropertyValueRow {
-                example: "-",
-                name: &p.name,
-                value: "-".to_string(),
-            });
-        }
-    }
-    rows
-}
-
-fn render_property_values_table(rows: &[PropertyValueRow]) -> String {
-    let headers = vec![
-        "EXAMPLE".to_string(),
-        "NAME".to_string(),
-        "VALUE".to_string(),
-    ];
-    let table_rows = rows
-        .iter()
-        .map(|row| {
-            vec![
-                row.example.to_string(),
-                sanitize(row.name),
-                sanitize(&row.value),
-            ]
-        })
-        .collect::<Vec<_>>();
-    render_table(&headers, &table_rows)
-}
-
+/// Auto-width table whose final column is emitted verbatim (no padding, no
+/// width bound).
 fn render_table(headers: &[String], rows: &[Vec<String>]) -> String {
-    let mut widths = headers
-        .iter()
-        .map(|header| header.len())
-        .collect::<Vec<_>>();
-    for row in rows {
-        for (index, cell) in row.iter().enumerate() {
-            widths[index] = widths[index].max(cell.len());
-        }
-    }
+    render_columns(headers, rows, LastColumn::Raw)
+}
 
-    let mut output = String::new();
-    push_table_row(&mut output, headers, &widths);
-    for row in rows {
-        push_table_row(&mut output, row, &widths);
-    }
-
-    output.trim_end().to_string()
+/// Like [`render_table`], but the final column wraps to whatever width is left
+/// over after the (fixed-width) leading columns, so a single long cell can't
+/// push the table past `total_width`. Continuation lines indent to the start of
+/// the final column. Leading columns are sized to their widest cell.
+fn render_table_wrap_last(headers: &[String], rows: &[Vec<String>], total_width: usize) -> String {
+    render_columns(headers, rows, LastColumn::Wrap { total_width })
 }
 
 fn push_table_row(output: &mut String, row: &[String], widths: &[usize]) {
@@ -1253,27 +2205,97 @@ fn push_table_row(output: &mut String, row: &[String], widths: &[usize]) {
     output.push('\n');
 }
 
-fn property_status_rank(status: PropertyStatus) -> u8 {
-    match status {
-        PropertyStatus::Failing => 0,
-        PropertyStatus::Passing => 1,
+/// Escape one character into `out`, sharing the control-char policy between
+/// [`sanitize`] and [`sanitize_multiline`]. `newline` decides how `\n`/`\r` are
+/// handled: single-line callers escape them to visible `\n`/`\r`, multi-line
+/// callers keep `\n` as a real break and drop `\r`. Everything else — tab passes
+/// through, other C0/DEL controls become `\xNN`, printable chars pass through —
+/// is identical for both.
+fn sanitize_char(out: &mut String, ch: char, newline: NewlinePolicy) {
+    match ch {
+        '\n' | '\r' => match newline {
+            NewlinePolicy::Escape => {
+                out.push_str(if ch == '\n' { "\\n" } else { "\\r" });
+            }
+            // Multi-line prose keeps real newlines and drops lone carriage
+            // returns (so `\r\n` collapses to `\n`).
+            NewlinePolicy::KeepNewlineDropReturn => {
+                if ch == '\n' {
+                    out.push('\n');
+                }
+            }
+        },
+        '\t' => out.push('\t'),
+        '\0'..='\u{08}' | '\u{0B}'..='\u{1F}' | '\u{7F}' => {
+            out.push_str(&format!(r"\x{:02X}", ch as u32));
+        }
+        _ => out.push(ch),
     }
+}
+
+#[derive(Clone, Copy)]
+enum NewlinePolicy {
+    /// Escape `\n`/`\r` to literal `\n`/`\r` (single-line table cells).
+    Escape,
+    /// Keep `\n` as a real break, drop `\r` (multi-line prose).
+    KeepNewlineDropReturn,
 }
 
 fn sanitize(s: &str) -> String {
     let mut escaped = String::new();
     for ch in s.chars() {
-        match ch {
-            '\n' => escaped.push_str("\\n"),
-            '\r' => escaped.push_str("\\r"),
-            '\t' => escaped.push('\t'),
-            '\0'..='\u{08}' | '\u{0B}'..='\u{1F}' | '\u{7F}' => {
-                escaped.push_str(&format!(r"\x{:02X}", ch as u32));
-            }
-            _ => escaped.push(ch),
-        }
+        sanitize_char(&mut escaped, ch, NewlinePolicy::Escape);
     }
     escaped
+}
+
+/// Like [`sanitize`] but preserves real newlines instead of escaping them to
+/// literal `\n`. For multi-line free text (e.g. property descriptions) that is
+/// meant to be read as prose, not as a single table cell.
+fn sanitize_multiline(s: &str) -> String {
+    let mut out = String::new();
+    for ch in s.chars() {
+        sanitize_char(&mut out, ch, NewlinePolicy::KeepNewlineDropReturn);
+    }
+    out
+}
+
+/// Single choke point for terminal-bound free text: strip ANSI escape sequences
+/// first, then escape any remaining control bytes so stray `\r`/`\x08`/BEL can't
+/// corrupt the terminal. Used by both the `runs logs` `output_text` path and the
+/// `runs events` OUTPUT column so the two render container output identically.
+fn normalize_terminal_text(text: &str) -> String {
+    sanitize(&strip_ansi(text))
+}
+
+/// Greedy word-wrap to `width` columns, preserving existing line breaks (each
+/// `\n` starts a new paragraph; blank lines are kept). Words longer than
+/// `width` are left intact rather than split mid-token.
+fn wrap_text(text: &str, width: usize) -> Vec<String> {
+    let width = width.max(1);
+    let mut lines = Vec::new();
+    for paragraph in text.split('\n') {
+        if paragraph.trim().is_empty() {
+            lines.push(String::new());
+            continue;
+        }
+        let mut current = String::new();
+        for word in paragraph.split_whitespace() {
+            if current.is_empty() {
+                current.push_str(word);
+            } else if current.chars().count() + 1 + word.chars().count() <= width {
+                current.push(' ');
+                current.push_str(word);
+            } else {
+                lines.push(std::mem::take(&mut current));
+                current.push_str(word);
+            }
+        }
+        if !current.is_empty() {
+            lines.push(current);
+        }
+    }
+    lines
 }
 
 #[cfg(test)]
@@ -1578,6 +2600,23 @@ mod tests {
         assert!(output.contains("antithesis_sdk"));
     }
 
+    #[test]
+    fn event_output_strips_ansi_and_escapes_remaining_controls() {
+        // The events OUTPUT column now runs through the shared terminal
+        // normalizer (item 7): ANSI color codes are stripped (no visible
+        // `\x1B[…` noise) and stray control bytes are escaped, not passed raw.
+        let entry = json!({
+            "output_text": "\x1B[4mhello\x1B[0m\u{0008}world\r\n",
+            "source": {"container": "app", "stream": "out"},
+            "moment": {"vtime": "1.0"}
+        });
+        let output = render_event_entry(&entry).output;
+        // ANSI sequences are gone, the backspace/CR are escaped, and the
+        // trailing newline is escaped as a single-line cell.
+        assert_eq!(output, r"hello\x08world\r\n");
+        assert!(!output.contains('\x1B'));
+    }
+
     fn event(input_hash: &str, vtime: &str) -> Event {
         Event {
             moment: Moment {
@@ -1587,93 +2626,352 @@ mod tests {
         }
     }
 
+    fn event_property(
+        name: &str,
+        status: PropertyStatus,
+        group: Option<&str>,
+        examples: Vec<Event>,
+        counterexamples: Vec<Event>,
+    ) -> Property {
+        let ex_count = examples.len() as u32;
+        let cex_count = counterexamples.len() as u32;
+        Property::EventProperty(EventProperty {
+            counterexample_count: Some(cex_count),
+            counterexamples,
+            description: None,
+            example_count: Some(ex_count),
+            examples,
+            group: group.map(str::to_string),
+            is_event: true,
+            is_group: None,
+            name: name.to_string(),
+            status,
+        })
+    }
+
+    fn non_event_property(
+        name: &str,
+        status: PropertyStatus,
+        examples: Vec<Value>,
+        counterexamples: Vec<Value>,
+    ) -> Property {
+        let ex_count = examples.len() as u32;
+        let cex_count = counterexamples.len() as u32;
+        Property::NonEventProperty(NonEventProperty {
+            counterexample_count: Some(cex_count),
+            counterexamples,
+            description: None,
+            example_count: Some(ex_count),
+            examples,
+            group: None,
+            is_event: false,
+            is_group: None,
+            name: name.to_string(),
+            status,
+        })
+    }
+
     #[test]
-    fn renders_flattened_property_events_table() {
+    fn properties_table_groups_status_word_and_totals() {
         let properties = vec![
-            Property::EventProperty(EventProperty {
-                counterexample_count: Some(3),
-                counterexamples: vec![event("-100", "5.0"), event("-200", "10.0")],
-                description: None,
-                example_count: Some(12),
-                examples: vec![event("-300", "15.0")],
-                group: Some("Safety".to_string()),
-                is_event: true,
-                is_group: None,
-                name: "Counter value stays below limit".to_string(),
-                status: PropertyStatus::Failing,
-            }),
-            Property::EventProperty(EventProperty {
-                counterexample_count: Some(0),
-                counterexamples: Vec::new(),
-                description: None,
-                example_count: Some(1),
-                examples: vec![event("-400", "1.0")],
-                group: None,
-                is_event: true,
-                is_group: None,
-                name: "Setup completes".to_string(),
-                status: PropertyStatus::Passing,
-            }),
+            event_property(
+                "Counter value stays below limit",
+                PropertyStatus::Failing,
+                Some("Safety"),
+                vec![event("-300", "15.0")],
+                vec![event("-100", "5.0"), event("-200", "10.0")],
+            ),
+            event_property(
+                "Setup completes",
+                PropertyStatus::Passing,
+                None,
+                vec![event("-400", "1.0")],
+                vec![],
+            ),
         ];
 
-        let rows = flatten_property_events(&properties);
-        let table = render_property_events_table(&rows);
-
-        assert!(table.contains("EXAMPLE"));
-        assert!(table.contains("HASH"));
-        assert!(table.contains("VTIME"));
-        assert!(table.contains("NAME"));
-
+        let table = render_properties_table(&properties);
         let lines: Vec<&str> = table.lines().collect();
-        // Header + 2 Failing rows + 2 Passing rows = 5 lines
-        assert_eq!(lines.len(), 5);
+        assert!(lines[0].contains("STATUS"));
+        assert!(lines[0].contains("NAME"));
+        assert!(lines[0].contains("EXAMPLES"));
+        // The GROUP column is gone — the group is folded into NAME instead.
+        assert!(!lines[0].contains("GROUP"));
 
-        // Failing rows come first, sorted by vtime numerically (5.0 < 10.0)
-        assert!(
-            lines[1].contains("Failing")
-                && lines[1].contains("-100")
-                && lines[1].contains("5.0")
-                && lines[1].contains("Counter value stays below limit")
-        );
-        assert!(
-            lines[2].contains("Failing")
-                && lines[2].contains("-200")
-                && lines[2].contains("10.0")
-                && lines[2].contains("Counter value stays below limit")
-        );
+        // Failing properties sort to the top, ahead of passing ones.
+        assert!(lines[1].contains("Counter value"));
 
-        // Passing rows come after, grouped by property (Counter value first, then Setup completes)
-        assert!(
-            lines[3].contains("Passing")
-                && lines[3].contains("-300")
-                && lines[3].contains("15.0")
-                && lines[3].contains("Counter value stays below limit")
+        // Two property rows. Counter property has 1 example + 2 counterexamples = 3 total.
+        // Its group is folded into the name as `group ▸ detail`.
+        let counter_row = lines.iter().find(|l| l.contains("Counter value")).unwrap();
+        assert!(counter_row.contains("failing"));
+        assert!(counter_row.contains("Safety ▸ Counter value stays below limit"));
+        assert!(counter_row.contains("3"));
+
+        let setup_row = lines
+            .iter()
+            .find(|l| l.contains("Setup completes"))
+            .unwrap();
+        assert!(setup_row.contains("passing"));
+        assert!(setup_row.contains("1"));
+    }
+
+    #[test]
+    fn resolve_property_prefers_exact_match() {
+        let properties = vec![
+            event_property("Setup ran", PropertyStatus::Passing, None, vec![], vec![]),
+            event_property(
+                "Setup completes",
+                PropertyStatus::Passing,
+                None,
+                vec![],
+                vec![],
+            ),
+        ];
+        let resolved = resolve_property(&properties, "Setup ran").unwrap();
+        assert!(matches!(resolved, Resolved::Exact(_)));
+    }
+
+    #[test]
+    fn resolve_property_exact_match_ignores_case() {
+        let properties = vec![
+            event_property("Setup ran", PropertyStatus::Passing, None, vec![], vec![]),
+            event_property(
+                "Counter limit",
+                PropertyStatus::Passing,
+                None,
+                vec![],
+                vec![],
+            ),
+        ];
+        // Differs only by case: still an exact hit, not a fuzzy "closest" match.
+        let resolved = resolve_property(&properties, "setup RAN").unwrap();
+        match resolved {
+            Resolved::Exact(p) => assert_eq!(p.name(), "Setup ran"),
+            other => panic!("expected exact match, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn resolve_property_falls_back_to_single_substring_match() {
+        let properties = vec![
+            event_property("Setup ran", PropertyStatus::Passing, None, vec![], vec![]),
+            event_property(
+                "Counter limit",
+                PropertyStatus::Passing,
+                None,
+                vec![],
+                vec![],
+            ),
+        ];
+        let resolved = resolve_property(&properties, "counter").unwrap();
+        match resolved {
+            Resolved::Fuzzy(p) => assert_eq!(p.name(), "Counter limit"),
+            _ => panic!("expected fuzzy match"),
+        }
+    }
+
+    #[test]
+    fn resolve_property_errors_on_multiple_substring_matches() {
+        let properties = vec![
+            event_property("Setup ran", PropertyStatus::Passing, None, vec![], vec![]),
+            event_property(
+                "Setup completes",
+                PropertyStatus::Passing,
+                None,
+                vec![],
+                vec![],
+            ),
+        ];
+        let err = resolve_property(&properties, "setup").unwrap_err();
+        let msg = format!("{err}");
+        assert!(msg.contains("did you mean"));
+        assert!(msg.contains("Setup ran"));
+        assert!(msg.contains("Setup completes"));
+    }
+
+    #[test]
+    fn render_event_property_examples_uses_status_column() {
+        let property = event_property(
+            "Counter",
+            PropertyStatus::Failing,
+            None,
+            vec![event("ex", "2.0")],
+            vec![event("cex", "1.0")],
         );
-        assert!(
-            lines[4].contains("Passing")
-                && lines[4].contains("-400")
-                && lines[4].contains("1.0")
-                && lines[4].contains("Setup completes")
+        let out = render_property_examples(&property);
+        assert!(out.contains("STATUS"));
+        assert!(out.contains("HASH"));
+        assert!(out.contains("VTIME"));
+        assert!(out.contains("passing"));
+        assert!(out.contains("failing"));
+    }
+
+    #[test]
+    fn render_event_property_examples_sorts_each_group_by_vtime() {
+        // API order is arbitrary; rows must come out failing-first, then passing,
+        // each ascending by vtime numerically (5.0 < 10.0, not lexically).
+        let property = event_property(
+            "Counter",
+            PropertyStatus::Failing,
+            None,
+            vec![event("ex-b", "20.0"), event("ex-a", "2.0")],
+            vec![event("cex-b", "10.0"), event("cex-a", "5.0")],
+        );
+        let out = render_property_examples(&property);
+        let rows: Vec<&str> = out
+            .lines()
+            .filter(|l| l.contains("failing") || l.contains("passing"))
+            .collect();
+        // Failing rows come first, sorted by vtime numerically (5.0 < 10.0).
+        assert!(rows[0].contains("failing") && rows[0].contains("cex-a"));
+        assert!(rows[1].contains("failing") && rows[1].contains("cex-b"));
+        // Passing rows follow, also ascending by vtime (2.0 < 20.0).
+        assert!(rows[2].contains("passing") && rows[2].contains("ex-a"));
+        assert!(rows[3].contains("passing") && rows[3].contains("ex-b"));
+    }
+
+    #[test]
+    fn render_non_event_property_examples_pretty_prints_objects() {
+        let property = non_event_property(
+            "Determinator Max Memory",
+            PropertyStatus::Passing,
+            vec![json!({
+                "maximum_used_bytes": 17012928512u64,
+                "percent_used": "0.04"
+            })],
+            vec![],
+        );
+        let out = render_property_examples(&property);
+        // Summary cell collapses the object…
+        assert!(out.contains("{2 fields}"));
+        // …with the full pretty body shown below.
+        assert!(out.contains("row 1 details:"));
+        assert!(out.contains("maximum_used_bytes"));
+    }
+
+    #[test]
+    fn format_log_line_renders_json_record_with_stripped_envelope() {
+        let entry = json!({
+            "moment": {"input_hash": "6409410329507290816", "vtime": "9.093"},
+            "IPT_bytes_out": 126952,
+            "source": {"name": "fault_injector", "pid": 924},
+            "info": {"details": {"started": true}, "message": "status"}
+        });
+        assert_eq!(
+            format_log_entry(&entry, false),
+            "[         9.093] [      fault_injector] [   ]  - {\"info\":{\"details\":{\"started\":true},\"message\":\"status\"}}"
         );
     }
 
     #[test]
-    fn flatten_returns_empty_when_no_sampled_events() {
-        let properties = vec![Property::NonEventProperty(NonEventProperty {
-            counterexample_count: Some(0),
-            counterexamples: Vec::new(),
-            description: None,
-            example_count: Some(0),
-            examples: Vec::new(),
-            group: None,
-            is_event: false,
-            is_group: None,
-            name: "No events property".to_string(),
-            status: PropertyStatus::Passing,
-        })];
+    fn format_log_line_renders_text_record_with_inf_stream() {
+        let entry = json!({
+            "moment": {"input_hash": "1", "vtime": "15.174"},
+            "source": {"container": "bank/first_setup.sh", "name": "bank/first_setup.sh", "stream": "info"},
+            "output_text": "NbmXgEki  INFO main lsm_tree::tree::ingest: Finished ingestion writer"
+        });
+        assert_eq!(
+            format_log_entry(&entry, false),
+            "[        15.174] [ bank/first_setup.sh] [inf] NbmXgEki  INFO main lsm_tree::tree::ingest: Finished ingestion writer"
+        );
+    }
 
-        let rows = flatten_property_events(&properties);
-        assert!(rows.is_empty());
+    #[test]
+    fn format_log_line_strips_ansi_from_output_text() {
+        let entry = json!({
+            "moment": {"input_hash": "1", "vtime": "14.118"},
+            "source": {"name": "setup", "stream": "error"},
+            "output_text": "\x1B[4m>>>> hello\x1B[0m"
+        });
+        let rendered = format_log_entry(&entry, false);
+        assert!(rendered.contains(">>>> hello"));
+        assert!(!rendered.contains('\x1B'));
+        assert!(rendered.contains("[err]"));
+    }
+
+    #[test]
+    fn format_log_entry_raw_preserves_ansi_in_output_text() {
+        // `--raw` opts out of the terminal normalizer: ANSI colors (and any
+        // other control bytes) in the payload reach the terminal verbatim.
+        let entry = json!({
+            "moment": {"input_hash": "1", "vtime": "14.118"},
+            "source": {"name": "setup", "stream": "error"},
+            "output_text": "\x1B[4m>>>> hello\x1B[0m"
+        });
+        let rendered = format_log_entry(&entry, true);
+        assert!(rendered.contains("\x1B[4m>>>> hello\x1B[0m"));
+        assert!(rendered.contains("[err]"));
+    }
+
+    #[test]
+    fn format_log_line_truncates_vtime_to_three_decimals() {
+        let entry = json!({
+            "moment": {"input_hash": "1", "vtime": "18.9141638034489"},
+            "source": {"name": "client", "stream": "info"},
+            "output_text": "hello"
+        });
+        let rendered = format_log_entry(&entry, false);
+        // Trimmed to 3 decimals so it fits the fixed vtime column and the
+        // source column stays aligned across rows.
+        assert!(rendered.starts_with("[        18.914] "), "got: {rendered}");
+    }
+
+    #[test]
+    fn format_log_line_accepts_numeric_vtime() {
+        // A JSON-number vtime (not a string) must still render, not blank out.
+        let entry = json!({
+            "moment": {"input_hash": "1", "vtime": 12.5},
+            "source": {"name": "client", "stream": "info"},
+            "output_text": "hello"
+        });
+        assert!(
+            format_log_entry(&entry, false).starts_with("[          12.5] "),
+            "got: {}",
+            format_log_entry(&entry, false)
+        );
+    }
+
+    #[test]
+    fn trim_decimals_trims_trailing_zeros_and_point() {
+        assert_eq!(trim_decimals(19.0, 3), "19");
+        assert_eq!(trim_decimals(18.5, 3), "18.5");
+        assert_eq!(trim_decimals(18.9141638, 3), "18.914");
+        assert_eq!(trim_decimals(1814.7135719, 3), "1814.714");
+    }
+
+    #[test]
+    fn trim_decimals_flags_subthreshold_nonzero_values() {
+        // A nonzero value smaller than the 3-decimal resolution must not be
+        // rendered as a bare "0"/"-0" (which would read as exactly zero).
+        assert_eq!(trim_decimals(0.0004, 3), "<0.001");
+        assert_eq!(trim_decimals(-0.0002, 3), ">-0.001");
+        // Exact zero (either sign) renders as plain "0".
+        assert_eq!(trim_decimals(0.0, 3), "0");
+        assert_eq!(trim_decimals(-0.0, 3), "0");
+    }
+
+    #[test]
+    fn format_log_line_overflows_source_column_when_too_long() {
+        let entry = json!({
+            "moment": {"vtime": "14.284"},
+            "source": {
+                "container": "antithesis/pods/client/sdk.jsonl",
+                "name": "antithesis/pods/client/sdk.jsonl"
+            },
+            "antithesis_setup": {"details": null, "status": "complete"}
+        });
+        assert_eq!(
+            format_log_entry(&entry, false),
+            "[        14.284] [antithesis/pods/client/sdk.jsonl] [   ]  - {\"antithesis_setup\":{\"details\":null,\"status\":\"complete\"}}"
+        );
+    }
+
+    #[test]
+    fn render_event_property_examples_marks_unreachable_when_empty() {
+        let property = event_property("Maybe ran", PropertyStatus::Passing, None, vec![], vec![]);
+        let out = render_property_examples(&property);
+        assert!(out.contains("unreachable"));
     }
 
     #[test]
@@ -1694,6 +2992,57 @@ mod tests {
         assert_eq!(
             sanitize("a\u{0001}b\u{000B}c\u{007F}d\te"),
             r"a\x01b\x0Bc\x7Fd	e"
+        );
+    }
+
+    #[test]
+    fn sanitize_multiline_keeps_newlines_but_escapes_other_controls() {
+        // Real newlines survive (so Details renders as prose), \r is dropped,
+        // and other control chars are still escaped.
+        assert_eq!(
+            sanitize_multiline("one\ntwo\r\nthree\u{0001}"),
+            "one\ntwo\nthree\\x01"
+        );
+    }
+
+    #[test]
+    fn wrap_text_wraps_words_and_preserves_blank_lines() {
+        let wrapped = wrap_text("the quick brown fox\n\njumps", 9);
+        assert_eq!(wrapped, vec!["the quick", "brown fox", "", "jumps"]);
+        // A word longer than the width is kept intact rather than split.
+        assert_eq!(
+            wrap_text("supercalifragilistic", 5),
+            vec!["supercalifragilistic"]
+        );
+    }
+
+    #[test]
+    fn trim_blank_edges_drops_only_outer_blanks() {
+        let lines = vec![
+            String::new(),
+            "a".to_string(),
+            String::new(),
+            "b".to_string(),
+            String::new(),
+        ];
+        assert_eq!(
+            trim_blank_edges(&lines),
+            &["a".to_string(), String::new(), "b".to_string()]
+        );
+    }
+
+    #[test]
+    fn render_property_value_renders_empty_collection_inline() {
+        // An empty array/object collapses to "(no example value)" with no detail
+        // block, so a fuzzy hit on a property with no examples doesn't print the
+        // confusing "[0 items]" + "row N details: []" pair.
+        assert_eq!(
+            render_property_value(&json!([])),
+            ("(no example value)".to_string(), None)
+        );
+        assert_eq!(
+            render_property_value(&json!({})),
+            ("(no example value)".to_string(), None)
         );
     }
     #[test]
@@ -1785,7 +3134,7 @@ mod tests {
         assert_eq!(
             transformer.try_transform(&format!("{}", json!({
                 "moment": {
-                    "_vtime_ticks": 1u64 << 32
+                    "vtime": "1"
                 },
                 "source": {
                     "name": "fault_injector"
@@ -1797,7 +3146,7 @@ mod tests {
                     "max_duration": 10
                 }
             }))),
-            Some("{\"moment\":{\"_vtime_ticks\":4294967296},\"source\":{\"name\":\"fault_injector\"},\"fault\":{\"name\":\"partition\",\"type\":\"network\",\"affected_nodes\":[\"a\",\"b\"],\"max_duration\":10},\"vtime_seconds\":1.0,\"active_faults\":{\"network_partition\":{\"vtime\":1.0}}}".to_string())
+            Some("{\"moment\":{\"vtime\":1.0},\"source\":{\"name\":\"fault_injector\"},\"fault\":{\"name\":\"partition\",\"type\":\"network\",\"affected_nodes\":[\"a\",\"b\"],\"max_duration\":10},\"active_faults\":{\"network_partition\":{\"vtime\":1.0}}}".to_string())
         );
 
         // Another log message; should retain active window state since the log message had no timestamp
@@ -1813,7 +3162,7 @@ mod tests {
         assert_eq!(
             transformer.try_transform(&format!("{}", json!({
                 "moment": {
-                    "_vtime_ticks": 2u64 << 32
+                    "vtime": "2"
                 },
                 "source": {
                     "name": "fault_injector"
@@ -1825,18 +3174,18 @@ mod tests {
                     "max_duration": 9
                 }
             }))),
-            Some("{\"moment\":{\"_vtime_ticks\":8589934592},\"source\":{\"name\":\"fault_injector\"},\"fault\":{\"name\":\"throttle\",\"type\":\"node\",\"affected_nodes\":[\"c\"],\"max_duration\":9},\"vtime_seconds\":2.0,\"active_faults\":{\"network_partition\":{\"vtime\":1.0},\"node_throttle\":{\"c\":2.0}}}".to_string())
+            Some("{\"moment\":{\"vtime\":2.0},\"source\":{\"name\":\"fault_injector\"},\"fault\":{\"name\":\"throttle\",\"type\":\"node\",\"affected_nodes\":[\"c\"],\"max_duration\":9},\"active_faults\":{\"network_partition\":{\"vtime\":1.0},\"node_throttle\":{\"c\":2.0}}}".to_string())
         );
 
         // Another non-fault injector message; should retain state
         assert_eq!(
             transformer.try_transform(&format!("{}", json!({
                 "moment": {
-                    "_vtime_ticks": 11u64 << 32
+                    "vtime": "11"
                 },
                 "foo": "bar"
             }))),
-            Some("{\"moment\":{\"_vtime_ticks\":47244640256},\"foo\":\"bar\",\"vtime_seconds\":11.0,\"active_faults\":{\"network_partition\":{\"vtime\":1.0},\"node_throttle\":{\"c\":2.0}}}".to_string())
+            Some("{\"moment\":{\"vtime\":11.0},\"foo\":\"bar\",\"active_faults\":{\"network_partition\":{\"vtime\":1.0},\"node_throttle\":{\"c\":2.0}}}".to_string())
         );
 
         // Expire both windows
@@ -1845,15 +3194,12 @@ mod tests {
                 "{}",
                 json!({
                     "moment": {
-                        "_vtime_ticks": (11u64 << 32) + 1
+                        "vtime": "11.5"
                     },
                     "foo": "bar"
                 })
             )),
-            Some(
-                "{\"moment\":{\"_vtime_ticks\":47244640257},\"foo\":\"bar\",\"vtime_seconds\":11.00000000023283,\"active_faults\":{}}"
-                    .to_string()
-            )
+            Some("{\"moment\":{\"vtime\":11.5},\"foo\":\"bar\",\"active_faults\":{}}".to_string())
         );
     }
 
@@ -1868,7 +3214,7 @@ mod tests {
         assert_eq!(
             transformer.try_transform(&format!("{}", json!({
                 "moment": {
-                    "_vtime_ticks": 1u64 << 32
+                    "vtime": "1"
                 },
                 "source": {
                     "name": "fault_injector"
@@ -1879,14 +3225,14 @@ mod tests {
                     "affected_nodes": ["a", "b"]
                 }
             }))),
-            Some("{\"moment\":{\"_vtime_ticks\":4294967296},\"source\":{\"name\":\"fault_injector\"},\"fault\":{\"name\":\"partition\",\"type\":\"network\",\"affected_nodes\":[\"a\",\"b\"]},\"vtime_seconds\":1.0,\"active_faults\":{\"network_partition\":{\"vtime\":1.0}}}".to_string())
+            Some("{\"moment\":{\"vtime\":1.0},\"source\":{\"name\":\"fault_injector\"},\"fault\":{\"name\":\"partition\",\"type\":\"network\",\"affected_nodes\":[\"a\",\"b\"]},\"active_faults\":{\"network_partition\":{\"vtime\":1.0}}}".to_string())
         );
 
         // Open a node throttled fault window
         assert_eq!(
             transformer.try_transform(&format!("{}", json!({
                 "moment": {
-                    "_vtime_ticks": 2u64 << 32
+                    "vtime": "2"
                 },
                 "source": {
                     "name": "fault_injector"
@@ -1897,14 +3243,14 @@ mod tests {
                     "affected_nodes": ["c"]
                 }
             }))),
-            Some("{\"moment\":{\"_vtime_ticks\":8589934592},\"source\":{\"name\":\"fault_injector\"},\"fault\":{\"name\":\"throttle\",\"type\":\"node\",\"affected_nodes\":[\"c\"]},\"vtime_seconds\":2.0,\"active_faults\":{\"network_partition\":{\"vtime\":1.0},\"node_throttle\":{\"c\":2.0}}}".to_string())
+            Some("{\"moment\":{\"vtime\":2.0},\"source\":{\"name\":\"fault_injector\"},\"fault\":{\"name\":\"throttle\",\"type\":\"node\",\"affected_nodes\":[\"c\"]},\"active_faults\":{\"network_partition\":{\"vtime\":1.0},\"node_throttle\":{\"c\":2.0}}}".to_string())
         );
 
         // Open a network clog fault window
         assert_eq!(
             transformer.try_transform(&format!("{}", json!({
                 "moment": {
-                    "_vtime_ticks": 3u64 << 32
+                    "vtime": "3"
                 },
                 "source": {
                     "name": "fault_injector"
@@ -1915,7 +3261,7 @@ mod tests {
                     "affected_nodes": ["b", "c"]
                 }
             }))),
-            Some("{\"moment\":{\"_vtime_ticks\":12884901888},\"source\":{\"name\":\"fault_injector\"},\"fault\":{\"name\":\"clog\",\"type\":\"network\",\"affected_nodes\":[\"b\",\"c\"]},\"vtime_seconds\":3.0,\"active_faults\":{\"network_partition\":{\"vtime\":1.0},\"network_clog\":{\"vtime\":3.0},\"node_throttle\":{\"c\":2.0}}}".to_string())
+            Some("{\"moment\":{\"vtime\":3.0},\"source\":{\"name\":\"fault_injector\"},\"fault\":{\"name\":\"clog\",\"type\":\"network\",\"affected_nodes\":[\"b\",\"c\"]},\"active_faults\":{\"network_partition\":{\"vtime\":1.0},\"network_clog\":{\"vtime\":3.0},\"node_throttle\":{\"c\":2.0}}}".to_string())
         );
 
         // Verify that state is retained for a non-control log message
@@ -1950,7 +3296,7 @@ mod tests {
         assert_eq!(
             transformer.try_transform(&format!("{}", json!({
                 "moment": {
-                    "_vtime_ticks": 1u64 << 32
+                    "vtime": "1"
                 },
                 "source": {
                     "name": "fault_injector"
@@ -1961,14 +3307,14 @@ mod tests {
                     "affected_nodes": ["a", "b"]
                 }
             }))),
-            Some("{\"moment\":{\"_vtime_ticks\":4294967296},\"source\":{\"name\":\"fault_injector\"},\"fault\":{\"name\":\"partition\",\"type\":\"network\",\"affected_nodes\":[\"a\",\"b\"]},\"vtime_seconds\":1.0,\"active_faults\":{\"network_partition\":{\"vtime\":1.0}}}".to_string())
+            Some("{\"moment\":{\"vtime\":1.0},\"source\":{\"name\":\"fault_injector\"},\"fault\":{\"name\":\"partition\",\"type\":\"network\",\"affected_nodes\":[\"a\",\"b\"]},\"active_faults\":{\"network_partition\":{\"vtime\":1.0}}}".to_string())
         );
 
         // Open a node throttled fault window
         assert_eq!(
             transformer.try_transform(&format!("{}", json!({
                 "moment": {
-                    "_vtime_ticks": 2u64 << 32
+                    "vtime": "2"
                 },
                 "source": {
                     "name": "fault_injector"
@@ -1979,14 +3325,14 @@ mod tests {
                     "affected_nodes": ["c"]
                 }
             }))),
-            Some("{\"moment\":{\"_vtime_ticks\":8589934592},\"source\":{\"name\":\"fault_injector\"},\"fault\":{\"name\":\"throttle\",\"type\":\"node\",\"affected_nodes\":[\"c\"]},\"vtime_seconds\":2.0,\"active_faults\":{\"network_partition\":{\"vtime\":1.0},\"node_throttle\":{\"c\":2.0}}}".to_string())
+            Some("{\"moment\":{\"vtime\":2.0},\"source\":{\"name\":\"fault_injector\"},\"fault\":{\"name\":\"throttle\",\"type\":\"node\",\"affected_nodes\":[\"c\"]},\"active_faults\":{\"network_partition\":{\"vtime\":1.0},\"node_throttle\":{\"c\":2.0}}}".to_string())
         );
 
         // Open a network clog fault window
         assert_eq!(
             transformer.try_transform(&format!("{}", json!({
                 "moment": {
-                    "_vtime_ticks": 3u64 << 32
+                    "vtime": "3"
                 },
                 "source": {
                     "name": "fault_injector"
@@ -1997,14 +3343,14 @@ mod tests {
                     "affected_nodes": ["b", "c"]
                 }
             }))),
-            Some("{\"moment\":{\"_vtime_ticks\":12884901888},\"source\":{\"name\":\"fault_injector\"},\"fault\":{\"name\":\"clog\",\"type\":\"network\",\"affected_nodes\":[\"b\",\"c\"]},\"vtime_seconds\":3.0,\"active_faults\":{\"network_partition\":{\"vtime\":1.0},\"network_clog\":{\"vtime\":3.0},\"node_throttle\":{\"c\":2.0}}}".to_string())
+            Some("{\"moment\":{\"vtime\":3.0},\"source\":{\"name\":\"fault_injector\"},\"fault\":{\"name\":\"clog\",\"type\":\"network\",\"affected_nodes\":[\"b\",\"c\"]},\"active_faults\":{\"network_partition\":{\"vtime\":1.0},\"network_clog\":{\"vtime\":3.0},\"node_throttle\":{\"c\":2.0}}}".to_string())
         );
 
         // Open a clock fault window
         assert_eq!(
             transformer.try_transform(&format!("{}", json!({
                 "moment": {
-                    "_vtime_ticks": 4u64 << 32
+                    "vtime": "4"
                 },
                 "source": {
                     "name": "fault_injector"
@@ -2017,7 +3363,7 @@ mod tests {
                     }
                 }
             }))),
-            Some("{\"moment\":{\"_vtime_ticks\":17179869184},\"source\":{\"name\":\"fault_injector\"},\"fault\":{\"name\":\"skip\",\"type\":\"clock\",\"details\":{\"offset\":10.5}},\"vtime_seconds\":4.0,\"active_faults\":{\"network_partition\":{\"vtime\":1.0},\"network_clog\":{\"vtime\":3.0},\"node_throttle\":{\"c\":2.0},\"clock_skip\":{\"cumulative_offset\":10.5,\"vtime\":4.0}}}".to_string())
+            Some("{\"moment\":{\"vtime\":4.0},\"source\":{\"name\":\"fault_injector\"},\"fault\":{\"name\":\"skip\",\"type\":\"clock\",\"details\":{\"offset\":10.5}},\"active_faults\":{\"network_partition\":{\"vtime\":1.0},\"network_clog\":{\"vtime\":3.0},\"node_throttle\":{\"c\":2.0},\"clock_skip\":{\"cumulative_offset\":10.5,\"vtime\":4.0}}}".to_string())
         );
 
         // Verify that state is retained for a non-control log message
@@ -2054,7 +3400,7 @@ mod tests {
         assert_eq!(
             transformer.try_transform(&format!("{}", json!({
                 "moment": {
-                    "_vtime_ticks": 1u64 << 32
+                    "vtime": "1"
                 },
                 "source": {
                     "name": "fault_injector"
@@ -2067,14 +3413,14 @@ mod tests {
                     }
                 }
             }))),
-            Some("{\"moment\":{\"_vtime_ticks\":4294967296},\"source\":{\"name\":\"fault_injector\"},\"fault\":{\"name\":\"skip\",\"type\":\"clock\",\"details\":{\"offset\":10.5}},\"vtime_seconds\":1.0,\"active_faults\":{\"clock_skip\":{\"cumulative_offset\":10.5,\"vtime\":1.0}}}".to_string())
+            Some("{\"moment\":{\"vtime\":1.0},\"source\":{\"name\":\"fault_injector\"},\"fault\":{\"name\":\"skip\",\"type\":\"clock\",\"details\":{\"offset\":10.5}},\"active_faults\":{\"clock_skip\":{\"cumulative_offset\":10.5,\"vtime\":1.0}}}".to_string())
         );
 
         // Open a node throttled fault window
         assert_eq!(
             transformer.try_transform(&format!("{}", json!({
                 "moment": {
-                    "_vtime_ticks": 2u64 << 32
+                    "vtime": "2"
                 },
                 "source": {
                     "name": "fault_injector"
@@ -2087,14 +3433,14 @@ mod tests {
                     }
                 }
             }))),
-            Some("{\"moment\":{\"_vtime_ticks\":8589934592},\"source\":{\"name\":\"fault_injector\"},\"fault\":{\"name\":\"skip\",\"type\":\"clock\",\"details\":{\"offset\":0.1}},\"vtime_seconds\":2.0,\"active_faults\":{\"clock_skip\":{\"cumulative_offset\":10.6,\"vtime\":2.0}}}".to_string())
+            Some("{\"moment\":{\"vtime\":2.0},\"source\":{\"name\":\"fault_injector\"},\"fault\":{\"name\":\"skip\",\"type\":\"clock\",\"details\":{\"offset\":0.1}},\"active_faults\":{\"clock_skip\":{\"cumulative_offset\":10.6,\"vtime\":2.0}}}".to_string())
         );
 
         // Open a network clog fault window
         assert_eq!(
             transformer.try_transform(&format!("{}", json!({
                 "moment": {
-                    "_vtime_ticks": 3u64 << 32
+                    "vtime": "3"
                 },
                 "source": {
                     "name": "fault_injector"
@@ -2107,7 +3453,7 @@ mod tests {
                     }
                 }
             }))),
-            Some("{\"moment\":{\"_vtime_ticks\":12884901888},\"source\":{\"name\":\"fault_injector\"},\"fault\":{\"name\":\"skip\",\"type\":\"clock\",\"details\":{\"offset\":-2.3}},\"vtime_seconds\":3.0,\"active_faults\":{\"clock_skip\":{\"cumulative_offset\":8.3,\"vtime\":3.0}}}".to_string())
+            Some("{\"moment\":{\"vtime\":3.0},\"source\":{\"name\":\"fault_injector\"},\"fault\":{\"name\":\"skip\",\"type\":\"clock\",\"details\":{\"offset\":-2.3}},\"active_faults\":{\"clock_skip\":{\"cumulative_offset\":8.3,\"vtime\":3.0}}}".to_string())
         );
     }
 
@@ -2122,7 +3468,7 @@ mod tests {
         transformer.try_transform(&format!(
             "{}",
             json!({
-                "moment": { "_vtime_ticks": 1u64 << 32 },
+                "moment": { "vtime": "1" },
                 "source": { "name": "fault_injector" },
                 "fault": {
                     "name": "clog",
@@ -2139,7 +3485,7 @@ mod tests {
             transformer.try_transform(&format!(
                 "{}",
                 json!({
-                    "moment": { "_vtime_ticks": 2u64 << 32 },
+                    "moment": { "vtime": "2" },
                     "source": { "name": "fault_injector" },
                     "fault": {
                         "name": "clog",
@@ -2150,9 +3496,9 @@ mod tests {
             )),
             Some(
                 concat!(
-                    r#"{"moment":{"_vtime_ticks":8589934592},"source":{"name":"fault_injector"},"#,
+                    r#"{"moment":{"vtime":2.0},"source":{"name":"fault_injector"},"#,
                     r#""fault":{"name":"clog","type":"network","affected_nodes":[]},"#,
-                    r#""vtime_seconds":2.0,"active_faults":{"network_clog":{"vtime":1.0}}}"#
+                    r#""active_faults":{"network_clog":{"vtime":1.0}}}"#
                 )
                 .to_string()
             )
@@ -2170,7 +3516,7 @@ mod tests {
         transformer.try_transform(&format!(
             "{}",
             json!({
-                "moment": { "_vtime_ticks": 1u64 << 32 },
+                "moment": { "vtime": "1" },
                 "source": { "name": "fault_injector" },
                 "fault": {
                     "name": "partition",
@@ -2186,7 +3532,7 @@ mod tests {
             transformer.try_transform(&format!(
                 "{}",
                 json!({
-                    "moment": { "_vtime_ticks": 2u64 << 32 },
+                    "moment": { "vtime": "2" },
                     "source": { "name": "fault_injector" },
                     "fault": {
                         "name": "partition",
@@ -2196,9 +3542,9 @@ mod tests {
             )),
             Some(
                 concat!(
-                    r#"{"moment":{"_vtime_ticks":8589934592},"source":{"name":"fault_injector"},"#,
+                    r#"{"moment":{"vtime":2.0},"source":{"name":"fault_injector"},"#,
                     r#""fault":{"name":"partition","type":"network"},"#,
-                    r#""vtime_seconds":2.0,"active_faults":{"network_partition":{"vtime":1.0}}}"#
+                    r#""active_faults":{"network_partition":{"vtime":1.0}}}"#
                 )
                 .to_string()
             )
@@ -2220,16 +3566,16 @@ mod tests {
             transformer.try_transform(&format!(
                 "{}",
                 json!({
-                    "moment": { "_vtime_ticks": 1u64 << 32 },
+                    "moment": { "vtime": "1" },
                     "source": { "name": "fault_injector" },
                     "fault": { "name": "kill" }
                 })
             )),
             Some(
                 concat!(
-                    r#"{"moment":{"_vtime_ticks":4294967296},"source":{"name":"fault_injector"},"#,
+                    r#"{"moment":{"vtime":1.0},"source":{"name":"fault_injector"},"#,
                     r#""fault":{"name":"kill"},"#,
-                    r#""vtime_seconds":1.0,"active_faults":{}}"#
+                    r#""active_faults":{}}"#
                 )
                 .to_string()
             )
@@ -2239,16 +3585,16 @@ mod tests {
             transformer.try_transform(&format!(
                 "{}",
                 json!({
-                    "moment": { "_vtime_ticks": 2u64 << 32 },
+                    "moment": { "vtime": "2" },
                     "source": { "name": "fault_injector" },
                     "fault": { "name": "stop" }
                 })
             )),
             Some(
                 concat!(
-                    r#"{"moment":{"_vtime_ticks":8589934592},"source":{"name":"fault_injector"},"#,
+                    r#"{"moment":{"vtime":2.0},"source":{"name":"fault_injector"},"#,
                     r#""fault":{"name":"stop"},"#,
-                    r#""vtime_seconds":2.0,"active_faults":{}}"#
+                    r#""active_faults":{}}"#
                 )
                 .to_string()
             )
@@ -2265,7 +3611,7 @@ mod tests {
         transformer.try_transform(&format!(
             "{}",
             json!({
-                "moment": { "_vtime_ticks": 1u64 << 32 },
+                "moment": { "vtime": "1" },
                 "source": { "name": "fault_injector" },
                 "fault": { "name": "kill" }
             })
@@ -2275,7 +3621,7 @@ mod tests {
             transformer.try_transform(&format!(
                 "{}",
                 json!({
-                    "moment": { "_vtime_ticks": 2u64 << 32 },
+                    "moment": { "vtime": "2" },
                     "source": { "name": "fault_injector" },
                     "fault": {
                         "name": "restore",
@@ -2286,9 +3632,9 @@ mod tests {
             )),
             Some(
                 concat!(
-                    r#"{"moment":{"_vtime_ticks":8589934592},"source":{"name":"fault_injector"},"#,
+                    r#"{"moment":{"vtime":2.0},"source":{"name":"fault_injector"},"#,
                     r#""fault":{"name":"restore","type":"network","affected_nodes":["ALL"]},"#,
-                    r#""vtime_seconds":2.0,"active_faults":{}}"#
+                    r#""active_faults":{}}"#
                 )
                 .to_string()
             )
@@ -2307,30 +3653,36 @@ mod tests {
         };
 
         assert_eq!(
-            transformer.try_transform(&format!("{}", json!({
-                "moment": { "_vtime_ticks": 1u64 << 32 },
-                "source": { "name": "some_other_source" },
-                "fault": {
-                    "name": "partition",
-                    "type": "network",
-                    "affected_nodes": ["ALL"]
-                }
-            }))),
-            Some(concat!(
-                r#"{"moment":{"_vtime_ticks":4294967296},"source":{"name":"some_other_source"},"#,
-                r#""fault":{"name":"partition","type":"network","affected_nodes":["ALL"]},"#,
-                r#""vtime_seconds":1.0,"active_faults":{}}"#
-            ).to_string())
+            transformer.try_transform(&format!(
+                "{}",
+                json!({
+                    "moment": { "vtime": "1" },
+                    "source": { "name": "some_other_source" },
+                    "fault": {
+                        "name": "partition",
+                        "type": "network",
+                        "affected_nodes": ["ALL"]
+                    }
+                })
+            )),
+            Some(
+                concat!(
+                    r#"{"moment":{"vtime":1.0},"source":{"name":"some_other_source"},"#,
+                    r#""fault":{"name":"partition","type":"network","affected_nodes":["ALL"]},"#,
+                    r#""active_faults":{}}"#
+                )
+                .to_string()
+            )
         );
     }
 
     // -----------------------------------------------------------------------
-    // active_faults: event without _vtime_ticks still gets active_faults
-    // (and does not get vtime_seconds)
+    // active_faults: event without a vtime still gets active_faults
+    // (and gets no vtime field added)
     // -----------------------------------------------------------------------
 
     #[test]
-    fn event_without_vtime_ticks_still_gets_active_faults() {
+    fn event_without_vtime_still_gets_active_faults() {
         let mut transformer = FaultAnnotator {
             active_fault_windows: ActiveFaultWindows::new(),
             active_faults: json!({}),
@@ -2340,7 +3692,7 @@ mod tests {
         transformer.try_transform(&format!(
             "{}",
             json!({
-                "moment": { "_vtime_ticks": 1u64 << 32 },
+                "moment": { "vtime": "1" },
                 "source": { "name": "fault_injector" },
                 "fault": {
                     "name": "partition",
@@ -2350,7 +3702,7 @@ mod tests {
             })
         ));
 
-        // Event with no moment at all: no expiry check, no vtime_seconds, but active_faults injected
+        // Event with no moment at all: no expiry check, no vtime added, but active_faults injected
         assert_eq!(
             transformer.try_transform(&format!("{}", json!({"output_text": "no moment here"}))),
             Some(
@@ -2367,22 +3719,22 @@ mod tests {
     // active_faults: natural expiration — boundary semantics
     //
     // is_expired uses strict less-than: end_vtime < latest_vtime.
-    // So at exactly end_vtime ticks the window is still active; it expires
-    // only when the next message arrives with a strictly greater vtime.
+    // So at exactly end_vtime the window is still active; it expires only when
+    // the next message arrives with a strictly greater vtime.
     // -----------------------------------------------------------------------
 
     #[test]
-    fn fault_window_active_at_exact_end_vtime_expires_one_tick_later() {
+    fn fault_window_active_at_exact_end_vtime_expires_just_past_end() {
         let mut transformer = FaultAnnotator {
             active_fault_windows: ActiveFaultWindows::new(),
             active_faults: json!({}),
         };
 
-        // partition at 5<<32, max_duration=5s → end_vtime = (5+5)<<32 = 10<<32
+        // partition at vtime 5, max_duration=5s → end_vtime = 5 + 5 = 10
         transformer.try_transform(&format!(
             "{}",
             json!({
-                "moment": { "_vtime_ticks": 5u64 << 32 },
+                "moment": { "vtime": "5" },
                 "source": { "name": "fault_injector" },
                 "fault": {
                     "name": "partition",
@@ -2393,37 +3745,37 @@ mod tests {
             })
         ));
 
-        // At exactly end_vtime (10<<32): window is still active (end < latest is false when equal)
+        // At exactly end_vtime (10): window is still active (end < latest is false when equal)
         assert_eq!(
             transformer.try_transform(&format!(
                 "{}",
                 json!({
-                    "moment": { "_vtime_ticks": 10u64 << 32 },
+                    "moment": { "vtime": "10" },
                     "output_text": "at exact end"
                 })
             )),
             Some(
                 concat!(
-                    r#"{"moment":{"_vtime_ticks":42949672960},"output_text":"at exact end","#,
-                    r#""vtime_seconds":10.0,"active_faults":{"network_partition":{"vtime":5.0}}}"#
+                    r#"{"moment":{"vtime":10.0},"output_text":"at exact end","#,
+                    r#""active_faults":{"network_partition":{"vtime":5.0}}}"#
                 )
                 .to_string()
             )
         );
 
-        // One tick past end_vtime: now expired
+        // Just past end_vtime: now expired
         assert_eq!(
             transformer.try_transform(&format!(
                 "{}",
                 json!({
-                    "moment": { "_vtime_ticks": (10u64 << 32) + 1 },
+                    "moment": { "vtime": "10.5" },
                     "output_text": "just past end"
                 })
             )),
             Some(
                 concat!(
-                    r#"{"moment":{"_vtime_ticks":42949672961},"output_text":"just past end","#,
-                    r#""vtime_seconds":10.00000000023283,"active_faults":{}}"#
+                    r#"{"moment":{"vtime":10.5},"output_text":"just past end","#,
+                    r#""active_faults":{}}"#
                 )
                 .to_string()
             )
@@ -2444,7 +3796,7 @@ mod tests {
         transformer.try_transform(&format!(
             "{}",
             json!({
-                "moment": { "_vtime_ticks": 1u64 << 32 },
+                "moment": { "vtime": "1" },
                 "source": { "name": "fault_injector" },
                 "fault": {
                     "name": "partition",
@@ -2459,14 +3811,14 @@ mod tests {
             transformer.try_transform(&format!(
                 "{}",
                 json!({
-                    "moment": { "_vtime_ticks": 1000u64 << 32 },
+                    "moment": { "vtime": "1000" },
                     "output_text": "much later"
                 })
             )),
             Some(
                 concat!(
-                    r#"{"moment":{"_vtime_ticks":4294967296000},"output_text":"much later","#,
-                    r#""vtime_seconds":1000.0,"active_faults":{"network_partition":{"vtime":1.0}}}"#
+                    r#"{"moment":{"vtime":1000.0},"output_text":"much later","#,
+                    r#""active_faults":{"network_partition":{"vtime":1.0}}}"#
                 )
                 .to_string()
             )
@@ -2487,7 +3839,7 @@ mod tests {
         transformer.try_transform(&format!(
             "{}",
             json!({
-                "moment": { "_vtime_ticks": 1u64 << 32 },
+                "moment": { "vtime": "1" },
                 "source": { "name": "fault_injector" },
                 "fault": {
                     "name": "partition",
@@ -2502,7 +3854,7 @@ mod tests {
             transformer.try_transform(&format!(
                 "{}",
                 json!({
-                    "moment": { "_vtime_ticks": 5u64 << 32 },
+                    "moment": { "vtime": "5" },
                     "source": { "name": "fault_injector" },
                     "fault": {
                         "name": "restore",
@@ -2513,9 +3865,9 @@ mod tests {
             )),
             Some(
                 concat!(
-                    r#"{"moment":{"_vtime_ticks":21474836480},"source":{"name":"fault_injector"},"#,
+                    r#"{"moment":{"vtime":5.0},"source":{"name":"fault_injector"},"#,
                     r#""fault":{"name":"restore","type":"network","affected_nodes":["ALL"]},"#,
-                    r#""vtime_seconds":5.0,"active_faults":{}}"#
+                    r#""active_faults":{}}"#
                 )
                 .to_string()
             )
@@ -2533,11 +3885,11 @@ mod tests {
             active_faults: json!({}),
         };
 
-        // Partition at vtime 5, max_duration=20 → expires after 25<<32
+        // Partition at vtime 5, max_duration=20 → expires after 25
         transformer.try_transform(&format!(
             "{}",
             json!({
-                "moment": { "_vtime_ticks": 5u64 << 32 },
+                "moment": { "vtime": "5" },
                 "source": { "name": "fault_injector" },
                 "fault": {
                     "name": "partition",
@@ -2548,11 +3900,11 @@ mod tests {
             })
         ));
 
-        // Clog at vtime 10, max_duration=3 → expires after 13<<32
+        // Clog at vtime 10, max_duration=3 → expires after 13
         transformer.try_transform(&format!(
             "{}",
             json!({
-                "moment": { "_vtime_ticks": 10u64 << 32 },
+                "moment": { "vtime": "10" },
                 "source": { "name": "fault_injector" },
                 "fault": {
                     "name": "clog",
@@ -2563,20 +3915,20 @@ mod tests {
             })
         ));
 
-        // At vtime 14: clog's end_vtime (13<<32) < 14<<32, so it expires; partition still active
+        // At vtime 14: clog's end_vtime (13) < 14, so it expires; partition still active
         assert_eq!(
             transformer.try_transform(&format!(
                 "{}",
                 json!({
-                    "moment": { "_vtime_ticks": 14u64 << 32 },
+                    "moment": { "vtime": "14" },
                     "output_text": "clog expired, partition still active"
                 })
             )),
             Some(
                 concat!(
-                    r#"{"moment":{"_vtime_ticks":60129542144},"#,
+                    r#"{"moment":{"vtime":14.0},"#,
                     r#""output_text":"clog expired, partition still active","#,
-                    r#""vtime_seconds":14.0,"active_faults":{"network_partition":{"vtime":5.0}}}"#
+                    r#""active_faults":{"network_partition":{"vtime":5.0}}}"#
                 )
                 .to_string()
             )
@@ -2595,10 +3947,10 @@ mod tests {
             active_faults: json!({}),
         };
 
-        // First window: vtime 1, max_duration=3 → expires after 4<<32
+        // First window: vtime 1, max_duration=3 → expires after 4
         assert_eq!(
             transformer.try_transform(&format!("{}", json!({
-                "moment": { "_vtime_ticks": 1u64 << 32 },
+                "moment": { "vtime": "1" },
                 "source": { "name": "fault_injector" },
                 "fault": {
                     "name": "partition",
@@ -2608,18 +3960,18 @@ mod tests {
                 }
             }))),
             Some(concat!(
-                r#"{"moment":{"_vtime_ticks":4294967296},"source":{"name":"fault_injector"},"#,
+                r#"{"moment":{"vtime":1.0},"source":{"name":"fault_injector"},"#,
                 r#""fault":{"name":"partition","type":"network","affected_nodes":["ALL"],"max_duration":3},"#,
-                r#""vtime_seconds":1.0,"active_faults":{"network_partition":{"vtime":1.0}}}"#
+                r#""active_faults":{"network_partition":{"vtime":1.0}}}"#
             ).to_string())
         );
 
-        // Second window at vtime 5, after the first has expired (5<<32 > 4<<32):
+        // Second window at vtime 5, after the first has expired (5 > 4):
         // the old window is pruned before the new one is pushed, so the snapshot
         // reflects only the new window's start_vtime.
         assert_eq!(
             transformer.try_transform(&format!("{}", json!({
-                "moment": { "_vtime_ticks": 5u64 << 32 },
+                "moment": { "vtime": "5" },
                 "source": { "name": "fault_injector" },
                 "fault": {
                     "name": "partition",
@@ -2629,9 +3981,9 @@ mod tests {
                 }
             }))),
             Some(concat!(
-                r#"{"moment":{"_vtime_ticks":21474836480},"source":{"name":"fault_injector"},"#,
+                r#"{"moment":{"vtime":5.0},"source":{"name":"fault_injector"},"#,
                 r#""fault":{"name":"partition","type":"network","affected_nodes":["ALL"],"max_duration":3},"#,
-                r#""vtime_seconds":5.0,"active_faults":{"network_partition":{"vtime":5.0}}}"#
+                r#""active_faults":{"network_partition":{"vtime":5.0}}}"#
             ).to_string())
         );
     }
@@ -2648,11 +4000,11 @@ mod tests {
             active_faults: json!({}),
         };
 
-        // First partition at vtime 10, max_duration=5 → expires after 15<<32
+        // First partition at vtime 10, max_duration=5 → expires after 15
         transformer.try_transform(&format!(
             "{}",
             json!({
-                "moment": { "_vtime_ticks": 10u64 << 32 },
+                "moment": { "vtime": "10" },
                 "source": { "name": "fault_injector" },
                 "fault": {
                     "name": "partition",
@@ -2663,11 +4015,11 @@ mod tests {
             })
         ));
 
-        // Second partition at vtime 14 (overlapping), max_duration=5 → expires after 19<<32
+        // Second partition at vtime 14 (overlapping), max_duration=5 → expires after 19
         // Both windows are alive; active_fault_dictionary picks the min start_vtime (10)
         assert_eq!(
             transformer.try_transform(&format!("{}", json!({
-                "moment": { "_vtime_ticks": 14u64 << 32 },
+                "moment": { "vtime": "14" },
                 "source": { "name": "fault_injector" },
                 "fault": {
                     "name": "partition",
@@ -2677,37 +4029,43 @@ mod tests {
                 }
             }))),
             Some(concat!(
-                r#"{"moment":{"_vtime_ticks":60129542144},"source":{"name":"fault_injector"},"#,
+                r#"{"moment":{"vtime":14.0},"source":{"name":"fault_injector"},"#,
                 r#""fault":{"name":"partition","type":"network","affected_nodes":["ALL"],"max_duration":5},"#,
-                r#""vtime_seconds":14.0,"active_faults":{"network_partition":{"vtime":10.0}}}"#
+                r#""active_faults":{"network_partition":{"vtime":10.0}}}"#
             ).to_string())
         );
 
-        // At vtime 16: first window expired (15<<32 < 16<<32), second still alive (19<<32 not < 16<<32)
-        assert_eq!(
-            transformer.try_transform(&format!("{}", json!({
-                "moment": { "_vtime_ticks": 16u64 << 32 },
-                "output_text": "after first window expired"
-            }))),
-            Some(concat!(
-                r#"{"moment":{"_vtime_ticks":68719476736},"output_text":"after first window expired","#,
-                r#""vtime_seconds":16.0,"active_faults":{"network_partition":{"vtime":10.0}}}"#
-            ).to_string())
-        );
-
-        // At vtime 20: second window also expired (19<<32 < 20<<32)
+        // At vtime 16: first window expired (15 < 16), second still alive (19 not < 16)
         assert_eq!(
             transformer.try_transform(&format!(
                 "{}",
                 json!({
-                    "moment": { "_vtime_ticks": 20u64 << 32 },
+                    "moment": { "vtime": "16" },
+                    "output_text": "after first window expired"
+                })
+            )),
+            Some(
+                concat!(
+                    r#"{"moment":{"vtime":16.0},"output_text":"after first window expired","#,
+                    r#""active_faults":{"network_partition":{"vtime":10.0}}}"#
+                )
+                .to_string()
+            )
+        );
+
+        // At vtime 20: second window also expired (19 < 20)
+        assert_eq!(
+            transformer.try_transform(&format!(
+                "{}",
+                json!({
+                    "moment": { "vtime": "20" },
                     "output_text": "after both expired"
                 })
             )),
             Some(
                 concat!(
-                    r#"{"moment":{"_vtime_ticks":85899345920},"output_text":"after both expired","#,
-                    r#""vtime_seconds":20.0,"active_faults":{}}"#
+                    r#"{"moment":{"vtime":20.0},"output_text":"after both expired","#,
+                    r#""active_faults":{}}"#
                 )
                 .to_string()
             )
@@ -2728,7 +4086,7 @@ mod tests {
         transformer.try_transform(&format!(
             "{}",
             json!({
-                "moment": { "_vtime_ticks": 1u64 << 32 },
+                "moment": { "vtime": "1" },
                 "source": { "name": "fault_injector" },
                 "fault": {
                     "name": "skip",
@@ -2741,7 +4099,7 @@ mod tests {
         transformer.try_transform(&format!(
             "{}",
             json!({
-                "moment": { "_vtime_ticks": 2u64 << 32 },
+                "moment": { "vtime": "2" },
                 "source": { "name": "fault_injector" },
                 "fault": {
                     "name": "partition",
@@ -2789,7 +4147,7 @@ mod tests {
         transformer.try_transform(&format!(
             "{}",
             json!({
-                "moment": { "_vtime_ticks": 1u64 << 32 },
+                "moment": { "vtime": "1" },
                 "source": { "name": "fault_injector" },
                 "fault": {
                     "name": "pause",
@@ -2802,7 +4160,7 @@ mod tests {
 
         assert_eq!(
             transformer.try_transform(&format!("{}", json!({
-                "moment": { "_vtime_ticks": 2u64 << 32 },
+                "moment": { "vtime": "2" },
                 "source": { "name": "fault_injector" },
                 "fault": {
                     "name": "pause",
@@ -2812,9 +4170,9 @@ mod tests {
                 }
             }))),
             Some(concat!(
-                r#"{"moment":{"_vtime_ticks":8589934592},"source":{"name":"fault_injector"},"#,
+                r#"{"moment":{"vtime":2.0},"source":{"name":"fault_injector"},"#,
                 r#""fault":{"name":"pause","type":"node","affected_nodes":["B"],"max_duration":100},"#,
-                r#""vtime_seconds":2.0,"active_faults":{"node_pause":{"A":1.0,"B":2.0}}}"#
+                r#""active_faults":{"node_pause":{"A":1.0,"B":2.0}}}"#
             ).to_string())
         );
     }
@@ -2830,7 +4188,7 @@ mod tests {
             active_faults: json!({}),
         };
 
-        // Throttle C at vtime 1, max_duration=5 → expires after 6<<32
+        // Throttle C at vtime 1, max_duration=5 → expires after 6
         transformer.try_transform(&format!(
             "{}",
             json!({
@@ -2856,29 +4214,408 @@ mod tests {
             )),
             Some(
                 concat!(
-                    r#"{"moment":{"vtime":"3.0"},"output_text":"mid-window","#,
-                    r#""vtime_seconds":3.0,"active_faults":{"node_throttle":{"C":1.0}}}"#
+                    r#"{"moment":{"vtime":3.0},"output_text":"mid-window","#,
+                    r#""active_faults":{"node_throttle":{"C":1.0}}}"#
                 )
                 .to_string()
             )
         );
 
-        // After expiry at vtime 7 (6<<32 < 7<<32): empty
+        // After expiry at vtime 7 (6 < 7): empty
         assert_eq!(
             transformer.try_transform(&format!(
                 "{}",
                 json!({
-                    "moment": { "_vtime_ticks": 7u64 << 32 },
+                    "moment": { "vtime": "7" },
                     "output_text": "after expiry"
                 })
             )),
             Some(
                 concat!(
-                    r#"{"moment":{"_vtime_ticks":30064771072},"output_text":"after expiry","#,
-                    r#""vtime_seconds":7.0,"active_faults":{}}"#
+                    r#"{"moment":{"vtime":7.0},"output_text":"after expiry","#,
+                    r#""active_faults":{}}"#
                 )
                 .to_string()
             )
         );
+    }
+
+    #[test]
+    fn status_label_covers_every_variant() {
+        assert_eq!(status_label(RunStatus::Completed), "completed");
+        assert_eq!(status_label(RunStatus::Incomplete), "incomplete");
+        assert_eq!(status_label(RunStatus::InProgress), "in_progress");
+        assert_eq!(status_label(RunStatus::Starting), "starting");
+        assert_eq!(status_label(RunStatus::Cancelled), "cancelled");
+        assert_eq!(status_label(RunStatus::Unknown), "unknown");
+    }
+
+    fn summary(
+        run_id: &str,
+        status: RunStatus,
+        created: &str,
+        launcher: &str,
+        test_name: Option<&str>,
+        description: Option<&str>,
+    ) -> RunSummary {
+        let parameters = if test_name.is_some() || description.is_some() {
+            let mut extra = std::collections::HashMap::new();
+            if let Some(name) = test_name {
+                extra.insert("antithesis.test_name".to_string(), name.to_string());
+            }
+            Some(crate::api::RunParams {
+                antithesis_config_image: None,
+                antithesis_description: description.map(str::to_string),
+                antithesis_duration: None,
+                antithesis_images: None,
+                antithesis_is_ephemeral: None,
+                antithesis_report_recipients: None,
+                antithesis_source: None,
+                extra,
+            })
+        } else {
+            None
+        };
+        RunSummary {
+            run_id: run_id.to_string(),
+            status,
+            created_at: created.parse().unwrap(),
+            started_at: None,
+            completed_at: None,
+            launcher: launcher.to_string(),
+            creator: None,
+            description: None,
+            parameters,
+            links: None,
+        }
+    }
+
+    #[test]
+    fn relative_time_is_compact() {
+        let now = Utc::now();
+        assert_eq!(relative_time(now - chrono::Duration::seconds(5)), "5s ago");
+        assert_eq!(relative_time(now - chrono::Duration::minutes(3)), "3m ago");
+        assert_eq!(relative_time(now - chrono::Duration::hours(21)), "21h ago");
+        assert_eq!(relative_time(now - chrono::Duration::days(2)), "2d ago");
+        assert_eq!(relative_time(now - chrono::Duration::days(8)), "1w ago");
+        assert_eq!(relative_time(now - chrono::Duration::days(45)), "1mo ago");
+        assert_eq!(relative_time(now - chrono::Duration::days(400)), "1y ago");
+        // Clock skew: a slightly-future timestamp clamps instead of rendering
+        // a negative age.
+        assert_eq!(relative_time(now + chrono::Duration::hours(1)), "0s ago");
+    }
+
+    #[test]
+    fn runs_table_default_view_omits_description_and_bounds_test_name() {
+        // Use a fixed past time so relative_time produces a stable-ish value.
+        let runs = vec![summary(
+            "abc-54-1",
+            RunStatus::Completed,
+            "2024-01-01T00:00:00Z",
+            "basic_test",
+            Some("a-very-long-test-name-that-should-be-truncated-on-a-narrow-terminal"),
+            Some("issue #91: probe Antithesis behavior with empty test template dir"),
+        )];
+
+        let width = 80;
+        let table = render_runs_table(&runs, width);
+        let lines: Vec<&str> = table.lines().collect();
+
+        assert!(lines[0].contains("RUN ID"));
+        assert!(lines[0].contains("STATUS"));
+        assert!(lines[0].contains("CREATED"));
+        assert!(lines[0].contains("TEST NAME"));
+        // The default view no longer shows DESCRIPTION (use `--detail` for that).
+        assert!(!lines[0].contains("DESCRIPTION"));
+        assert!(!lines[0].contains("LAUNCHER"));
+
+        assert!(lines[1].contains("abc-54-1"));
+        assert!(lines[1].contains("completed"));
+        // Test name is the final column, truncated with an ellipsis to fit, and
+        // every line stays within the terminal width.
+        assert!(lines[1].contains('…'));
+        for line in &lines {
+            assert!(
+                line.chars().count() <= width,
+                "line exceeds width {width}: {line}"
+            );
+        }
+    }
+
+    #[test]
+    fn runs_long_view_renders_aligned_key_value_block() {
+        let runs = vec![
+            summary(
+                "abc-54-1",
+                RunStatus::Completed,
+                "2024-01-01T00:00:00Z",
+                "basic_test",
+                Some("snouty-empty-tt"),
+                Some("full description goes here"),
+            ),
+            summary(
+                "def-54-2",
+                RunStatus::Incomplete,
+                "2024-01-02T00:00:00Z",
+                "spanner",
+                None,
+                None,
+            ),
+        ];
+
+        let out = render_runs_detail(&runs);
+        // No table header — each field sits on its own aligned line. Labels are
+        // padded to the widest label *within each block*, so the first block
+        // (which has a "Description" label) is wider than the second.
+        assert!(!out.contains("RUN ID  "));
+        assert!(out.contains("Run ID       abc-54-1"));
+        assert!(out.contains("Status       completed"));
+        assert!(out.contains("Test Name    snouty-empty-tt"));
+        assert!(out.contains("Description  full description goes here"));
+        // Second run omits the empty Test Name / Description fields.
+        assert!(out.contains("def-54-2"));
+        assert!(out.contains("incomplete"));
+        // A blank line separates the two run blocks.
+        assert!(out.contains("\n\n"));
+    }
+
+    #[test]
+    fn event_matches_anding_of_multiple_needles() {
+        // `--match` is case-insensitive and every needle must be present (AND).
+        let line = "fault_injector: network partition started";
+
+        let needles = ["Network".to_string(), "partition".to_string()];
+        let lowered: Vec<String> = needles.iter().map(|n| n.to_lowercase()).collect();
+        assert!(haystack_matches_all_needles(line, &lowered));
+
+        let missing = ["network".to_string(), "missing".to_string()];
+        assert!(!haystack_matches_all_needles(line, &missing));
+    }
+
+    #[test]
+    fn event_haystack_matches_decoded_output_with_quotes() {
+        // A needle copied from the OUTPUT column contains literal quotes. The
+        // decoded haystack carries them unescaped, so the match succeeds even
+        // though the raw NDJSON line escapes them as `\"`.
+        let line = r#"{"moment":{"input_hash":"42","vtime":"1.0"},"source":{"container":"app","name":"app","stream":"out"},"output_text":"msg \"starting\""}"#;
+        let (haystack, _row) = prepare_event_line(line);
+        assert!(haystack.contains(r#"msg "starting""#));
+
+        let needle = vec![r#""starting""#.to_lowercase()];
+        assert!(haystack_matches_all_needles(&haystack, &needle));
+        // The same needle does NOT match the raw escaped line.
+        assert!(!haystack_matches_all_needles(line, &needle));
+    }
+
+    #[test]
+    fn runs_table_does_not_truncate_test_name_when_piped() {
+        // `terminal_width()` returns usize::MAX for a non-tty so piped output
+        // keeps the full TEST NAME — `snouty runs | grep` must not miss a row.
+        let long = "a-very-long-test-name-that-would-be-truncated-on-a-narrow-terminal";
+        let runs = vec![summary(
+            "abc-54-1",
+            RunStatus::Completed,
+            "2024-01-01T00:00:00Z",
+            "basic_test",
+            Some(long),
+            None,
+        )];
+        let table = render_runs_table(&runs, usize::MAX);
+        assert!(table.contains(long), "name was truncated: {table}");
+        assert!(!table.contains('…'));
+    }
+
+    #[test]
+    fn wrap_last_does_not_wrap_when_piped() {
+        // With usize::MAX width the final column is emitted on a single line
+        // (no wrap), so a long NAME survives intact for piping/grep.
+        let long = "Safety ▸ a property name long enough to wrap on any real terminal width";
+        let headers = vec!["STATUS".to_string(), "NAME".to_string()];
+        let rows = vec![vec!["failing".to_string(), long.to_string()]];
+        let out = render_table_wrap_last(&headers, &rows, usize::MAX);
+        let row = out.lines().find(|l| l.contains("failing")).unwrap();
+        assert!(row.contains(long), "name was wrapped: {out}");
+    }
+
+    #[test]
+    fn runs_table_renders_dashes_when_test_name_and_description_missing() {
+        let runs = vec![summary(
+            "abc-54-1",
+            RunStatus::Incomplete,
+            "2024-01-01T00:00:00Z",
+            "basic_test",
+            None,
+            None,
+        )];
+        let table = render_runs_table(&runs, 100);
+        let lines: Vec<&str> = table.lines().collect();
+        assert!(lines[1].contains("incomplete"));
+        // A placeholder dash stands in for the missing test name (final column).
+        assert!(
+            lines[1].trim_end().ends_with('-'),
+            "expected dash placeholder, got: {}",
+            lines[1]
+        );
+    }
+
+    mod run_scoped_errors {
+        use super::*;
+        use crate::api::{Auth, Config};
+        use crate::error::{ApiError, is_user_error};
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        fn api_error(status: u16, message: &str) -> color_eyre::eyre::Report {
+            color_eyre::eyre::Report::new(ApiError {
+                status,
+                message: message.to_string(),
+            })
+        }
+
+        fn test_api(base_url: &str) -> AntithesisApi {
+            let config = Config::new(
+                Auth::basic("user".to_string(), "pass".to_string()),
+                "tenant".to_string(),
+            );
+            AntithesisApi::with_base_url(config, base_url).unwrap()
+        }
+
+        async fn mock_get_run(run_id: &str, status: u16, body: serde_json::Value) -> MockServer {
+            let server = MockServer::start().await;
+            Mock::given(method("GET"))
+                .and(path(format!("/api/v0/runs/{run_id}")))
+                .respond_with(ResponseTemplate::new(status).set_body_json(body))
+                .mount(&server)
+                .await;
+            server
+        }
+
+        #[test]
+        fn run_not_found_rewrites_only_404() {
+            let rewritten = explain_run_not_found("BAD-ID", api_error(404, "API error: 404"));
+            let msg = format!("{rewritten:#}");
+            assert_eq!(msg, "run not found: BAD-ID");
+            assert!(is_user_error(&rewritten));
+        }
+
+        #[test]
+        fn run_not_found_passes_through_non_404() {
+            // A 500 whose body mentions 404 must NOT be rewritten — it's a real
+            // server fault, not a missing run.
+            let original = api_error(500, "API error: 500 — upstream 404 page");
+            let result = explain_run_not_found("run-1", original);
+            assert_eq!(api_error_status(&result), Some(500));
+            assert!(format!("{result:#}").contains("upstream 404 page"));
+        }
+
+        #[tokio::test]
+        async fn scoped_error_reports_missing_run_on_404_probe() {
+            let server = mock_get_run("BAD-ID", 404, json!({"message": "nope"})).await;
+            let api = test_api(&server.uri());
+            let result =
+                explain_run_scoped_error(&api, "BAD-ID", api_error(404, "API error: 404")).await;
+            assert_eq!(format!("{result:#}"), "run not found: BAD-ID");
+        }
+
+        #[tokio::test]
+        async fn scoped_error_keeps_original_when_run_exists() {
+            // Endpoint 404'd but the run is real — surface the original error
+            // rather than claiming the run is missing.
+            let server = mock_get_run(
+                "run-1",
+                200,
+                json!({
+                    "run_id": "run-1",
+                    "status": "in_progress",
+                    "created_at": "2025-03-20T02:00:00Z",
+                    "launcher": "nightly"
+                }),
+            )
+            .await;
+            let api = test_api(&server.uri());
+            let result =
+                explain_run_scoped_error(&api, "run-1", api_error(404, "endpoint 404")).await;
+            assert!(format!("{result:#}").contains("endpoint 404"));
+            assert!(!format!("{result:#}").contains("run not found"));
+        }
+
+        #[tokio::test]
+        async fn scoped_error_propagates_non_404_probe_failure() {
+            // get_run fails with a 502 (not a 404): the run-scoped error must NOT
+            // be misreported as "run not found"; the probe's own error wins.
+            let server = mock_get_run("run-1", 502, json!({"message": "bad gateway"})).await;
+            let api = test_api(&server.uri());
+            let result =
+                explain_run_scoped_error(&api, "run-1", api_error(404, "endpoint 404")).await;
+            assert!(!format!("{result:#}").contains("run not found"));
+            assert_eq!(api_error_status(&result), Some(502));
+        }
+
+        #[tokio::test]
+        async fn scoped_error_passes_through_non_404_without_probing() {
+            // A 500 from the endpoint never probes get_run and is surfaced as-is.
+            let server = MockServer::start().await;
+            // No mock mounted: a probe would 404 and wrongly say "run not found".
+            let api = test_api(&server.uri());
+            let result = explain_run_scoped_error(&api, "run-1", api_error(500, "boom 404")).await;
+            assert_eq!(api_error_status(&result), Some(500));
+            assert!(!format!("{result:#}").contains("run not found"));
+        }
+
+        #[tokio::test]
+        async fn properties_error_reports_missing_run_on_404_probe() {
+            let server = mock_get_run("BAD-ID", 404, json!({"message": "nope"})).await;
+            let api = test_api(&server.uri());
+            let result =
+                explain_properties_error(&api, "BAD-ID", api_error(404, "API error: 404")).await;
+            assert_eq!(format!("{result:#}"), "run not found: BAD-ID");
+        }
+
+        #[tokio::test]
+        async fn properties_error_explains_incomplete_run() {
+            let server = mock_get_run(
+                "run-3",
+                200,
+                json!({
+                    "run_id": "run-3",
+                    "status": "incomplete",
+                    "created_at": "2025-03-18T08:00:00Z",
+                    "launcher": "nightly"
+                }),
+            )
+            .await;
+            let api = test_api(&server.uri());
+            let result =
+                explain_properties_error(&api, "run-3", api_error(404, "API error: 404")).await;
+            let msg = format!("{result:#}");
+            assert!(msg.contains("no properties for run run-3"), "got: {msg}");
+            assert!(msg.contains("this run is incomplete"), "got: {msg}");
+            assert!(!msg.contains("run not found"), "got: {msg}");
+        }
+
+        #[tokio::test]
+        async fn properties_error_propagates_non_404_probe_failure() {
+            let server = mock_get_run("run-1", 502, json!({"message": "bad gateway"})).await;
+            let api = test_api(&server.uri());
+            let result =
+                explain_properties_error(&api, "run-1", api_error(404, "API error: 404")).await;
+            assert!(!format!("{result:#}").contains("run not found"));
+            assert_eq!(api_error_status(&result), Some(502));
+        }
+
+        #[tokio::test]
+        async fn properties_error_passes_through_500_with_404_in_body() {
+            let server = MockServer::start().await;
+            let api = test_api(&server.uri());
+            let result = explain_properties_error(
+                &api,
+                "run-1",
+                api_error(500, "API error: 500 — proxy 404 page"),
+            )
+            .await;
+            assert_eq!(api_error_status(&result), Some(500));
+            assert!(!format!("{result:#}").contains("run not found"));
+            assert!(!format!("{result:#}").contains("no properties for run"));
+        }
     }
 }

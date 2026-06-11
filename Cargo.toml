@@ -11,6 +11,7 @@ default-run = "snouty"
 base64 = "0.22"
 chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4", features = ["derive"] }
+clap_complete = "4"
 getrandom = "0.3"
 env_logger = "0.11"
 form_urlencoded = "1"
@@ -43,8 +44,6 @@ name = "mock_api"
 path = "examples/mock_api.rs"
 
 [build-dependencies]
-clap = { version = "4", features = ["derive"] }
-clap_complete = "4"
 prettyplease = "0.2"
 progenitor = "0.14.0"
 quote = "1"

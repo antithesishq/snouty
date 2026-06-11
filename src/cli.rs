@@ -1,4 +1,18 @@
+use chrono::{DateTime, Utc};
 use clap::{Args, Parser, Subcommand};
+
+use crate::api::RunStatus;
+
+/// clap value parser for `--status` that keeps a friendly, enumerated error
+/// message (the generated `RunStatus::from_str` only says "invalid value").
+fn parse_run_status(value: &str) -> Result<RunStatus, String> {
+    value.parse::<RunStatus>().map_err(|_| {
+        format!(
+            "invalid status: '{value}'\n\
+             valid values: starting, in_progress, completed, cancelled, incomplete, unknown"
+        )
+    })
+}
 
 #[derive(Parser)]
 #[command(name = "snouty")]
@@ -73,7 +87,7 @@ Examples:
   snouty runs properties --passing <run_id>
   snouty runs build-logs <run_id>
   snouty runs logs <run_id> <hash> <vtime>
-  snouty runs events <run_id> <query>"#,
+  snouty runs events <run_id> -m <query>"#,
         subcommand_required = false
     )]
     Runs {
@@ -103,8 +117,8 @@ Using Moment.from (copy from triage report):
 
     /// Output shell completions
     Completions {
-        /// Shell to generate completions for (bash, zsh, fish, elvish)
-        shell: String,
+        /// Shell to generate completions for
+        shell: clap_complete::Shell,
     },
 
     /// Validate local Antithesis setup
@@ -334,6 +348,10 @@ pub enum RunsCommands {
     Show {
         /// Run ID
         run_id: String,
+
+        /// Open the run's triage report in a browser instead of printing details
+        #[arg(short = 'w', long)]
+        web: bool,
     },
 
     /// List property results for a run
@@ -348,6 +366,15 @@ pub enum RunsCommands {
         /// Show only failing properties
         #[arg(long)]
         failing: bool,
+    },
+
+    /// Show examples and counter-examples for a single property
+    Property {
+        /// Run ID
+        run_id: String,
+
+        /// Property name (exact match preferred; otherwise unique substring match)
+        name: String,
     },
 
     /// Stream build logs for a run
@@ -366,19 +393,23 @@ pub enum RunsCommands {
         input_hash: String,
 
         /// The virtual time value identifying the moment
+        #[arg(allow_hyphen_values = true)]
         vtime: String,
 
         /// Start streaming from this virtual time (defaults to the root)
-        #[arg(long)]
+        #[arg(long, allow_hyphen_values = true)]
         begin_vtime: Option<String>,
 
         /// Start streaming from this input hash (optimization; must be paired with --begin-vtime)
         #[arg(long, allow_hyphen_values = true, requires = "begin_vtime")]
         begin_input_hash: Option<String>,
 
-        /// Whether to disable fault annotation (tracking of which faults are active for any given log line). Fault annotation only applies to NDJSON output, so this flag has no effect unless combined with `--json` (which annotates faults by default).
-        #[arg(long)]
-        disable_fault_annotation: bool,
+        /// Emit log lines without any post-processing: with `--json`, skips
+        /// fault annotation (raw NDJSON passthrough); otherwise renders the
+        /// text payload verbatim (ANSI colors and control bytes preserved
+        /// instead of stripped/escaped)
+        #[arg(short = 'r', long)]
+        raw: bool,
     },
 
     /// Search events in a run
@@ -386,8 +417,12 @@ pub enum RunsCommands {
         /// Run ID
         run_id: String,
 
-        /// Search query
-        #[arg(required = true, num_args = 1..)]
+        /// Substring to search for (repeatable; all matches must be present)
+        #[arg(short = 'm', long = "match")]
+        matches: Vec<String>,
+
+        /// Additional substrings to search for (same effect as `-m`, which is
+        /// the primary form). At least one needle is required.
         query: Vec<String>,
     },
 }
@@ -395,8 +430,8 @@ pub enum RunsCommands {
 #[derive(Args)]
 pub struct RunsListArgs {
     /// Filter by status (starting, in_progress, completed, cancelled, incomplete, unknown)
-    #[arg(short, long)]
-    pub status: Option<String>,
+    #[arg(short, long, value_parser = parse_run_status)]
+    pub status: Option<RunStatus>,
 
     /// Filter by launcher name
     #[arg(short, long)]
@@ -404,15 +439,19 @@ pub struct RunsListArgs {
 
     /// Only show runs created after this timestamp (ISO 8601)
     #[arg(long)]
-    pub created_after: Option<String>,
+    pub created_after: Option<DateTime<Utc>>,
 
     /// Only show runs created before this timestamp (ISO 8601)
     #[arg(long)]
-    pub created_before: Option<String>,
+    pub created_before: Option<DateTime<Utc>>,
 
     /// Maximum number of runs to display
-    #[arg(short = 'n', long, default_value = "50")]
+    #[arg(short = 'n', long, default_value = "10")]
     pub limit: usize,
+
+    /// Show a detailed key-value block per run, including the full description
+    #[arg(short, long)]
+    pub detail: bool,
 }
 
 impl Default for RunsListArgs {
@@ -422,7 +461,8 @@ impl Default for RunsListArgs {
             launcher: None,
             created_after: None,
             created_before: None,
-            limit: 50,
+            limit: 10,
+            detail: false,
         }
     }
 }
@@ -453,4 +493,98 @@ Parameters can also be passed via stdin as JSON:
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse(args: &[&str]) -> Cli {
+        Cli::try_parse_from(args).expect("args should parse")
+    }
+
+    // The positional `input_hash`/`vtime` and the `--begin-*` flags must all
+    // accept hyphen-led values: moment coordinates are routinely negative
+    // (e.g. `snouty runs logs RUN -123 -2.0`).
+    #[test]
+    fn logs_accepts_negative_begin_vtime() {
+        let cli = parse(&[
+            "snouty",
+            "runs",
+            "logs",
+            "RUN",
+            "-123",
+            "-2.0",
+            "--begin-vtime",
+            "-2.0",
+            "--begin-input-hash",
+            "0",
+        ]);
+        let Commands::Runs {
+            command:
+                Some(RunsCommands::Logs {
+                    input_hash,
+                    vtime,
+                    begin_vtime,
+                    begin_input_hash,
+                    ..
+                }),
+        } = cli.command
+        else {
+            panic!("expected `runs logs`");
+        };
+        assert_eq!(input_hash, "-123");
+        assert_eq!(vtime, "-2.0");
+        assert_eq!(begin_vtime.as_deref(), Some("-2.0"));
+        assert_eq!(begin_input_hash.as_deref(), Some("0"));
+    }
+
+    // `-r` is the short form of `--raw`; note `-r` must not swallow the
+    // hyphen-led positionals that follow it.
+    #[test]
+    fn logs_accepts_raw_short_flag() {
+        let cli = parse(&["snouty", "runs", "logs", "-r", "RUN", "-123", "-2.0"]);
+        let Commands::Runs {
+            command: Some(RunsCommands::Logs { raw, vtime, .. }),
+        } = cli.command
+        else {
+            panic!("expected `runs logs`");
+        };
+        assert!(raw);
+        assert_eq!(vtime, "-2.0");
+
+        let cli = parse(&["snouty", "runs", "logs", "RUN", "-123", "-2.0"]);
+        let Commands::Runs {
+            command: Some(RunsCommands::Logs { raw, .. }),
+        } = cli.command
+        else {
+            panic!("expected `runs logs`");
+        };
+        assert!(!raw);
+    }
+
+    // `runs events` accepts both the documented `-m/--match` form and a
+    // backward-compatible trailing positional query; the two are merged.
+    #[test]
+    fn events_accepts_match_and_positional_query() {
+        let cli = parse(&["snouty", "runs", "events", "RUN", "-m", "request"]);
+        let Commands::Runs {
+            command: Some(RunsCommands::Events { matches, query, .. }),
+        } = cli.command
+        else {
+            panic!("expected `runs events`");
+        };
+        assert_eq!(matches, vec!["request".to_string()]);
+        assert!(query.is_empty());
+
+        let cli = parse(&["snouty", "runs", "events", "RUN", "request", "slow"]);
+        let Commands::Runs {
+            command: Some(RunsCommands::Events { matches, query, .. }),
+        } = cli.command
+        else {
+            panic!("expected `runs events`");
+        };
+        assert!(matches.is_empty());
+        assert_eq!(query, vec!["request".to_string(), "slow".to_string()]);
+    }
 }

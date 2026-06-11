@@ -6,6 +6,7 @@ pub mod config;
 pub mod container;
 pub mod docs;
 pub mod doctor;
+pub mod error;
 pub mod moment;
 pub mod params;
 pub mod runs;

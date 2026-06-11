@@ -95,10 +95,6 @@ Examples:
         command: Option<RunsCommands>,
     },
 
-    /// Access raw API endpoints
-    #[command(subcommand)]
-    Api(ApiCommands),
-
     /// Launch a debugging session
     #[command(long_about = r#"Launch a debugging session
 
@@ -465,34 +461,6 @@ impl Default for RunsListArgs {
             detail: false,
         }
     }
-}
-
-#[derive(Subcommand)]
-pub enum ApiCommands {
-    /// Send a raw webhook request
-    #[command(long_about = r#"Send a raw webhook request
-
-Example:
-  snouty api webhook -w basic_test \
-    --antithesis.config_image us-central1-docker.pkg.dev/proj/repo/config:latest \
-    --antithesis.test_name "my-test" \
-    --antithesis.duration 30
-
-Parameters can also be passed via stdin as JSON:
-  echo '{"antithesis.duration": "30"}' | snouty api webhook -w basic_test --stdin"#)]
-    Webhook {
-        /// Webhook endpoint name (e.g., basic_test, basic_k8s_test)
-        #[arg(short, long)]
-        webhook: String,
-
-        /// Read parameters from stdin (JSON or Moment.from format)
-        #[arg(long)]
-        stdin: bool,
-
-        /// Parameters as `--key value` pairs
-        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
-        args: Vec<String>,
-    },
 }
 
 #[cfg(test)]

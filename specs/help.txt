@@ -13,16 +13,11 @@ snouty --help
 stdout '.*debug.*'
 stdout '.*version.*'
 stdout '.*runs.*'
-stdout '.*api.*'
 stdout '.*docs.*'
 stdout '.*completions.*'
 stdout '.*update.*'
 stdout '.*validate.*'
 stdout '.*doctor.*'
-
-# api --help shows webhook subcommand.
-snouty api --help
-stdout '.*webhook.*'
 
 # validate --help documents both the compose and Kubernetes flows.
 snouty validate --help

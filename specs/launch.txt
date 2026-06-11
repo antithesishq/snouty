@@ -19,7 +19,7 @@ stderr '--webhook.*'
 ! snouty launch -w basic_test --duration abc
 stderr 'validation failed.*'
 
-# --stdin applies to `api webhook`, not `launch`.
+# `launch` does not accept --stdin.
 ! snouty launch -w basic_test --stdin --duration 30
 stderr 'unexpected argument.*'
 
@@ -43,10 +43,10 @@ mock-server 200 '{}'
 ! snouty launch -w basic_test
 stderr 'no parameters provided.*'
 
-# antithesis.images must not be passed via --param; use api webhook instead.
+# antithesis.images must not be passed via --param.
 mock-server 200 '{"runId":"run-123","statusCode":200}'
 ! snouty launch -w basic_test --duration 30 --param antithesis.images=app:latest
-stderr 'do not specify antithesis.images.*'
+stderr 'antithesis.images cannot be set via --param.*'
 
 [staging] skip
 

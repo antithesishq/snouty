@@ -436,6 +436,33 @@ fn open_db() -> Result<Connection> {
     )?)
 }
 
+/// Resolve a language segment from a `generated/sdk/{lang}` request to a
+/// canonical generated SDK and its entry-point index page (relative to
+/// `docs_url()`). Generated SDK reference docs are produced by language-specific
+/// tooling (godoc, rustdoc, pdoc, javadoc, docfx) rather than Eleventy, so they
+/// are not in the offline Markdown set; we point callers at the live HTML to
+/// crawl directly. Aliases such as `go` (the name used in the human-facing SDK
+/// docs) are mapped to their generated-docs spelling (`golang`). Returns `None`
+/// for languages without generated reference docs. Index paths were verified to
+/// resolve.
+fn generated_sdk_index(lang: &str) -> Option<(&'static str, &'static str)> {
+    let resolved = match lang.to_ascii_lowercase().as_str() {
+        "golang" | "go" => ("golang", "generated/sdk/golang/"),
+        "rust" | "rs" => ("rust", "generated/sdk/rust/antithesis_sdk/"),
+        // python's `python/` index is only a meta-refresh stub (not followed by
+        // curl/wget), so point straight at the real module index page.
+        "python" | "py" => ("python", "generated/sdk/python/antithesis.html"),
+        "java" => ("java", "generated/sdk/java/"),
+        // dotnet's `dotnet/` index is a meta-refresh stub (and points at a
+        // broken absolute path), so link the namespace page directly.
+        "dotnet" | "csharp" | "cs" | "c#" => {
+            ("dotnet", "generated/sdk/dotnet/api/Antithesis.SDK.html")
+        }
+        _ => return None,
+    };
+    Some(resolved)
+}
+
 fn show(path: &str) -> Result<()> {
     let conn = open_db()?;
 
@@ -464,7 +491,24 @@ fn show(path: &str) -> Result<()> {
         .collect::<std::result::Result<Vec<_>, _>>()?;
 
     let mut msg = format!("page not found: {}", db_path);
-    if path == "generated" || path.starts_with("generated/") {
+    let sdk_lang = path
+        .strip_prefix("generated/sdk/")
+        .and_then(|rest| rest.split('/').next())
+        .and_then(generated_sdk_index);
+    if let Some((lang, rel)) = sdk_lang {
+        // Recognized generated SDK language: point at its live HTML index to
+        // crawl directly. An unrecognized language falls through to the normal
+        // not-found suggestions below.
+        msg.push_str(&format!(
+            "\n\nThe {lang} SDK reference docs are not part of the offline docs. \
+             They are published as HTML and can be crawled directly over the network, \
+             starting from:\n  {}/{}",
+            docs_url(),
+            rel,
+        ));
+    } else if path == "generated" || path.starts_with("generated/") {
+        // Other generated pages, including SDK languages we don't recognize
+        // (our alias table may simply be out of date): point at the live docs.
         msg.push_str(
             "\n\nNote: generated pages (e.g. SDK references) are not included in the offline docs.",
         );
@@ -648,7 +692,33 @@ fn normalized_path(path: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::normalized_path;
+    use super::{generated_sdk_index, normalized_path};
+
+    #[test]
+    fn generated_sdk_index_resolves_go_alias() {
+        assert_eq!(
+            generated_sdk_index("go"),
+            Some(("golang", "generated/sdk/golang/"))
+        );
+        assert_eq!(
+            generated_sdk_index("golang"),
+            Some(("golang", "generated/sdk/golang/"))
+        );
+    }
+
+    #[test]
+    fn generated_sdk_index_is_case_insensitive() {
+        assert_eq!(
+            generated_sdk_index("Rust").map(|(lang, _)| lang),
+            Some("rust")
+        );
+    }
+
+    #[test]
+    fn generated_sdk_index_unknown_language_is_none() {
+        assert_eq!(generated_sdk_index("cpp"), None);
+        assert_eq!(generated_sdk_index(""), None);
+    }
 
     #[test]
     fn normalized_path_strips_docs_prefix() {

@@ -22,6 +22,18 @@ use crate::api::{EventProperty, Moment, NonEventProperty};
 use crate::cli::{RunsCommands, RunsListArgs};
 use crate::error::{api_error_status, user_error};
 
+/// `print!`/`println!`, but routed through `write!`/`writeln!` to stdout so a
+/// closed pipe (e.g. `snouty runs list | head`) surfaces as an `io::Error` the
+/// caller propagates with `?` — `println!` would panic instead. Each call
+/// evaluates to an `io::Result<()>`, so every use must be `?`-ed.
+macro_rules! out {
+    ($($arg:tt)*) => {{ write!(std::io::stdout(), $($arg)*) }};
+}
+macro_rules! outln {
+    () => {{ writeln!(std::io::stdout()) }};
+    ($($arg:tt)*) => {{ writeln!(std::io::stdout(), $($arg)*) }};
+}
+
 /// Event stream classification. Variants match the canonical values that
 /// appear in an event's `source.stream` field.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -155,24 +167,23 @@ async fn cmd_runs_list(args: RunsListArgs, json: bool, verbose: bool) -> Result<
             .then(a.status.cmp(&b.status))
     });
 
-    let mut stdout = std::io::stdout().lock();
     if json {
         for run in &runs {
-            writeln!(stdout, "{}", serde_json::to_string(run)?)?;
+            outln!("{}", serde_json::to_string(run)?)?;
         }
         return Ok(());
     }
 
     if runs.is_empty() {
-        writeln!(stdout, "No runs found.")?;
+        outln!("No runs found.")?;
         return Ok(());
     }
 
     if args.detail {
-        write!(stdout, "{}", render_runs_detail(&runs))?;
+        out!("{}", render_runs_detail(&runs))?;
     } else {
         let width = terminal_width();
-        writeln!(stdout, "{}", render_runs_table(&runs, width))?;
+        outln!("{}", render_runs_table(&runs, width))?;
     }
     Ok(())
 }
@@ -247,11 +258,10 @@ async fn cmd_runs_show(run_id: &str, web: bool, json: bool, verbose: bool) -> Re
         return open_run_report(&run, json);
     }
 
-    let mut stdout = std::io::stdout().lock();
     if json {
-        writeln!(stdout, "{}", serde_json::to_string_pretty(&run)?)?;
+        outln!("{}", serde_json::to_string_pretty(&run)?)?;
     } else {
-        print_run_detail(&mut stdout, &run)?;
+        print_run_detail(&run)?;
     }
 
     Ok(())
@@ -271,20 +281,19 @@ fn open_run_report(run: &RunDetail, json: bool) -> Result<()> {
             ))
         })?;
 
-    let mut stdout = std::io::stdout().lock();
     if json {
-        writeln!(stdout, "{}", serde_json::json!({ "url": url }))?;
+        outln!("{}", serde_json::json!({ "url": url }))?;
         return Ok(());
     }
 
     let launched = launch_browser(url);
     if launched {
-        writeln!(stdout, "Opening report for run {}…", run.run_id)?;
-        writeln!(stdout, "If your browser didn't open, manually visit:")?;
-        writeln!(stdout, "  {url}")?;
+        outln!("Opening report for run {}…", run.run_id)?;
+        outln!("If your browser didn't open, manually visit:")?;
+        outln!("  {url}")?;
     } else {
-        writeln!(stdout, "Open this URL to view the report:")?;
-        writeln!(stdout, "  {url}")?;
+        outln!("Open this URL to view the report:")?;
+        outln!("  {url}")?;
     }
     Ok(())
 }
@@ -355,10 +364,9 @@ async fn cmd_runs_properties(
             .then(a.name().cmp(b.name()))
     });
 
-    let mut stdout = std::io::stdout().lock();
     if json {
         for property in &properties {
-            writeln!(stdout, "{}", serde_json::to_string(property)?)?;
+            outln!("{}", serde_json::to_string(property)?)?;
         }
     } else if properties.is_empty() {
         let message = match status {
@@ -366,9 +374,9 @@ async fn cmd_runs_properties(
             Some(PropertyStatus::Failing) => "No failing properties found.",
             None => "No properties found.",
         };
-        writeln!(stdout, "{message}")?;
+        outln!("{message}")?;
     } else {
-        writeln!(stdout, "{}", render_properties_table(&properties))?;
+        outln!("{}", render_properties_table(&properties))?;
     }
 
     Ok(())
@@ -528,14 +536,13 @@ async fn cmd_runs_property(run_id: &str, name: &str, json: bool, verbose: bool) 
         }
     };
 
-    let mut stdout = std::io::stdout().lock();
     if json {
-        writeln!(stdout, "{}", serde_json::to_string_pretty(property)?)?;
+        outln!("{}", serde_json::to_string_pretty(property)?)?;
         return Ok(());
     }
 
-    print_property_header(&mut stdout, property)?;
-    writeln!(stdout, "{}", render_property_examples(property))?;
+    print_property_header(property)?;
+    outln!("{}", render_property_examples(property))?;
     Ok(())
 }
 
@@ -639,15 +646,11 @@ fn render_prose_block(label: &str, text: &str, layout: ProseLayout) -> String {
     out
 }
 
-fn print_property_header(out: &mut impl Write, property: &Property) -> Result<()> {
-    writeln!(out, "Name      {}", sanitize(property.name()))?;
-    writeln!(
-        out,
-        "Status    {}",
-        property_status_label(property.status())
-    )?;
+fn print_property_header(property: &Property) -> Result<()> {
+    outln!("Name      {}", sanitize(property.name()))?;
+    outln!("Status    {}", property_status_label(property.status()))?;
     if let Some(group) = property_group(property) {
-        writeln!(out, "Group     {}", sanitize(group))?;
+        outln!("Group     {}", sanitize(group))?;
     }
     let description = match property {
         Property::EventProperty(p) => p.description.as_deref(),
@@ -656,8 +659,7 @@ fn print_property_header(out: &mut impl Write, property: &Property) -> Result<()
     if let Some(desc) = description {
         // Details is free-form prose, wrapped under a 10-char label column so
         // continuation lines hang-indent to match the value column above.
-        write!(
-            out,
+        out!(
             "{}",
             render_prose_block(
                 "Details",
@@ -669,7 +671,7 @@ fn print_property_header(out: &mut impl Write, property: &Property) -> Result<()
             )
         )?;
     }
-    writeln!(out)?;
+    outln!()?;
     Ok(())
 }
 
@@ -849,7 +851,7 @@ fn render_properties_table(properties: &[Property]) -> String {
     render_table_wrap_last(&headers, &rows, terminal_width())
 }
 
-fn print_run_detail(out: &mut impl Write, run: &RunDetail) -> Result<()> {
+fn print_run_detail(run: &RunDetail) -> Result<()> {
     let mut rows: Vec<(&str, String)> = Vec::new();
 
     // Lead with the identifier; the human labels follow.
@@ -881,7 +883,7 @@ fn print_run_detail(out: &mut impl Write, run: &RunDetail) -> Result<()> {
         rows.push(("Creator", name.clone()));
     }
 
-    write!(out, "{}", render_kv(&rows, 0))?;
+    out!("{}", render_kv(&rows, 0))?;
 
     // The description can be an enormous multi-paragraph blob, so it goes as its
     // own block — wrapped to the terminal, with the label on its own line —
@@ -890,7 +892,7 @@ fn print_run_detail(out: &mut impl Write, run: &RunDetail) -> Result<()> {
     if let Some(desc) = run.test_description() {
         let block = render_prose_block("Description", desc, ProseLayout::OwnLine);
         if !block.is_empty() {
-            write!(out, "\n{block}")?;
+            out!("\n{block}")?;
         }
     }
 
@@ -903,8 +905,7 @@ fn print_run_detail(out: &mut impl Write, run: &RunDetail) -> Result<()> {
         .and_then(|l| l.triage_report.as_deref())
         .is_some();
     if has_report {
-        writeln!(
-            out,
+        outln!(
             "\nview the report in your browser:\n  snouty runs show {} --web",
             run.run_id
         )?;

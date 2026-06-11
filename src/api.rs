@@ -145,10 +145,15 @@ impl Auth {
         Self::Bearer { api_key }
     }
 
-    fn from_env() -> Result<Self> {
+    fn from_env(disallow_basic_auth: bool) -> Result<Self> {
         if let Some(api_key) = optional_env("ANTITHESIS_API_KEY")? {
             return Ok(Self::bearer(api_key));
         }
+
+        if disallow_basic_auth {
+            return Err(eyre!("Username/password authentication is not permitted for this operation. Please provide an API key via ANTITHESIS_API_KEY instead."));
+        }
+
         Ok(Self::basic(
             required_env("ANTITHESIS_USERNAME")?,
             required_env("ANTITHESIS_PASSWORD")?,
@@ -172,10 +177,10 @@ impl Config {
         }
     }
 
-    pub fn from_env() -> Result<Self> {
+    pub fn from_env(disallow_basic_auth: bool) -> Result<Self> {
         debug!("loading config from environment");
         Ok(Self {
-            auth: Auth::from_env()?,
+            auth: Auth::from_env(disallow_basic_auth)?,
             tenant: required_env("ANTITHESIS_TENANT")?,
             verbose: false,
         })
@@ -194,8 +199,8 @@ impl AntithesisApi {
         Self::with_base_url(config, base_url)
     }
 
-    pub fn from_env(verbose: bool) -> Result<Self> {
-        let mut config = Config::from_env()?;
+    pub fn from_env(verbose: bool, disallow_basic_auth: bool) -> Result<Self> {
+        let mut config = Config::from_env(disallow_basic_auth)?;
         config.verbose = verbose;
         if let Ok(base_url) = env::var("ANTITHESIS_BASE_URL") {
             debug!("using ANTITHESIS_BASE_URL override: {}", base_url);

@@ -255,7 +255,7 @@ async fn launch_webhook(
         serde_json::to_string_pretty(&params.to_redacted_map())?
     );
 
-    let api = AntithesisApi::from_env(verbose)?;
+    let api = AntithesisApi::from_env(verbose, false)?;
     api.launch_test(webhook, &params).await
 }
 
@@ -301,7 +301,7 @@ async fn cmd_debug(args: DebugArgs, json: bool, verbose: bool) -> Result<()> {
         serde_json::to_string_pretty(&params.to_redacted_map())?
     );
 
-    let api = AntithesisApi::from_env(verbose)?;
+    let api = AntithesisApi::from_env(verbose, true)?;
     let response = api.launch_debugging(&params).await?;
 
     if json {

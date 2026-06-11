@@ -1,0 +1,19 @@
+{
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "cargo fmt; out=$(cargo check --all-targets --quiet --color never 2>&1) || { echo \"$out\"; exit 2; }",
+            "asyncRewake": true,
+            "timeout": 600,
+            "statusMessage": "cargo fmt + check",
+            "rewakeSummary": "cargo check found errors",
+            "rewakeMessage": "cargo check reported errors. Fix them before finishing:"
+          }
+        ]
+      }
+    ]
+  }
+}

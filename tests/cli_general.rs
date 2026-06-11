@@ -805,7 +805,7 @@ fn completions_unsupported_shell_fails() {
         .args(["completions", "nushell"])
         .assert()
         .failure()
-        .stderr(predicate::str::contains("unsupported shell: nushell"));
+        .stderr(predicate::str::contains("invalid value 'nushell'"));
 }
 
 #[test]

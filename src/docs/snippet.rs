@@ -121,10 +121,8 @@ fn flatten_markdown(content: &str) -> String {
             Event::Text(ref text) | Event::Code(ref text) if depth > 0 => {
                 result.push_str(text);
             }
-            Event::SoftBreak | Event::HardBreak if depth > 0 => {
-                if !result.ends_with(' ') {
-                    result.push(' ');
-                }
+            Event::SoftBreak | Event::HardBreak if depth > 0 && !result.ends_with(' ') => {
+                result.push(' ');
             }
             _ => {}
         }

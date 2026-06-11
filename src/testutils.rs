@@ -159,10 +159,10 @@ pub fn skip_or_fail(msg: &str) {
     eprintln!("skipping: {msg}");
 }
 
-/// Check whether `{runtime} compose version` succeeds.
-pub fn has_compose(runtime: &str) -> bool {
-    Command::new(runtime)
-        .args(["compose", "version"])
+/// Check whether the `docker-compose` binary (Docker Compose v2) is available.
+pub fn has_compose() -> bool {
+    Command::new("docker-compose")
+        .arg("version")
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()
@@ -184,14 +184,10 @@ pub fn require_runtimes() -> Vec<Box<dyn ContainerRuntime>> {
 #[track_caller]
 pub fn require_runtimes_with_compose() -> Vec<Box<dyn ContainerRuntime>> {
     let runtimes = require_runtimes();
-    let with_compose: Vec<_> = runtimes
-        .into_iter()
-        .filter(|rt| has_compose(rt.name()))
-        .collect();
-    if with_compose.is_empty() {
-        skip_or_fail("no runtime has docker compose support");
+    if !has_compose() {
+        skip_or_fail("docker-compose (Docker Compose v2) is not available");
     }
-    with_compose
+    runtimes
 }
 
 fn reserve_local_port() -> u16 {
@@ -273,6 +269,9 @@ fn directory_contains_binary(dir: &Path, binary: &str) -> bool {
 /// Handles:
 /// - `GET  /api/v0/runs` — paginated run listing
 /// - `GET  /api/v0/runs/{run_id}` — run detail (keyed by run id; 404 unknown)
+/// - `GET  /api/v0/runs/{run_id}/{properties,logs,events,build_logs}` — nested
+///   run resources (404 for an unknown run id, like the real API; properties
+///   additionally 404 for runs that aren't `completed`)
 /// - `POST /api/v1/launch/{launcher_name}` — returns a mock launch response
 pub struct MockApiServer {
     url: String,
@@ -439,10 +438,24 @@ fn mock_query_param(query: Option<&str>, key: &str) -> Option<String> {
         .map(|(_, v)| v.into_owned())
 }
 
-const MOCK_RUNS: &[(&str, &str, &str, &str)] = &[
-    ("run-1", "completed", "2025-03-20T02:00:00Z", "nightly"),
-    ("run-2", "in_progress", "2025-03-19T14:00:00Z", "debug"),
-    ("run-3", "incomplete", "2025-03-18T08:00:00Z", "nightly"),
+// (run_id, status, created_at, launcher, description). An empty description
+// stands in for a run with no description (the field is omitted from the JSON).
+const MOCK_RUNS: &[(&str, &str, &str, &str, &str)] = &[
+    (
+        "run-1",
+        "completed",
+        "2025-03-20T02:00:00Z",
+        "nightly",
+        "nightly smoke on main",
+    ),
+    ("run-2", "in_progress", "2025-03-19T14:00:00Z", "debug", ""),
+    (
+        "run-3",
+        "incomplete",
+        "2025-03-18T08:00:00Z",
+        "nightly",
+        "incomplete recovery test",
+    ),
 ];
 
 fn mock_route_list_runs(query: Option<&str>, empty: bool) -> (u16, String) {
@@ -461,7 +474,7 @@ fn mock_route_list_runs(query: Option<&str>, empty: bool) -> (u16, String) {
     };
 
     let mut runs = Vec::new();
-    for &(id, status, created, launcher) in &MOCK_RUNS[start..] {
+    for &(id, status, created, launcher, description) in &MOCK_RUNS[start..] {
         if let Some(f) = status_filter.as_deref()
             && status != f
         {
@@ -472,8 +485,13 @@ fn mock_route_list_runs(query: Option<&str>, empty: bool) -> (u16, String) {
         {
             continue;
         }
+        let description_field = if description.is_empty() {
+            String::new()
+        } else {
+            format!(r#","description":"{description}""#)
+        };
         runs.push(format!(
-            r#"{{"run_id":"{id}","status":"{status}","created_at":"{created}","launcher":"{launcher}"}}"#,
+            r#"{{"run_id":"{id}","status":"{status}","created_at":"{created}","launcher":"{launcher}"{description_field}}}"#,
         ));
     }
 
@@ -496,10 +514,24 @@ fn mock_route_list_runs(query: Option<&str>, empty: bool) -> (u16, String) {
     )
 }
 
+/// Run ids that exist on the mock server. Nested endpoints (properties, logs,
+/// events, build logs) 404 for any other id, matching the real API and letting
+/// run-scoped commands disambiguate "run not found" from an empty resource.
+/// `run-empty` and `run-no-events` are properties-only fixtures and are
+/// recognised separately by `mock_route_list_run_properties`.
+fn mock_run_known(run_id: &str) -> bool {
+    MOCK_RUNS.iter().any(|(id, ..)| *id == run_id)
+}
+
+fn mock_run_not_found(run_id: &str) -> (u16, String) {
+    (404, format!(r#"{{"message":"run not found: {run_id}"}}"#))
+}
+
 fn mock_route_get_run(run_id: &str) -> (u16, String) {
-    let Some(&(_, status, created, launcher)) = MOCK_RUNS.iter().find(|(id, ..)| *id == run_id)
+    let Some(&(_, status, created, launcher, description)) =
+        MOCK_RUNS.iter().find(|(id, ..)| *id == run_id)
     else {
-        return (404, format!(r#"{{"message":"run not found: {run_id}"}}"#));
+        return mock_run_not_found(run_id);
     };
 
     let mut fields = vec![
@@ -507,6 +539,9 @@ fn mock_route_get_run(run_id: &str) -> (u16, String) {
         format!(r#""status":"{status}""#),
         format!(r#""created_at":"{created}""#),
     ];
+    if !description.is_empty() {
+        fields.push(format!(r#""description":"{description}""#));
+    }
     if status == "completed" || status == "incomplete" {
         fields.push(r#""started_at":"2025-03-20T02:01:12Z""#.to_string());
         fields.push(r#""completed_at":"2025-03-20T02:31:45Z""#.to_string());
@@ -525,7 +560,10 @@ fn mock_route_get_run(run_id: &str) -> (u16, String) {
     (200, format!("{{{}}}", fields.join(",")))
 }
 
-fn mock_route_get_run_build_logs(_run_id: &str) -> (u16, String) {
+fn mock_route_get_run_build_logs(run_id: &str) -> (u16, String) {
+    if !mock_run_known(run_id) {
+        return mock_run_not_found(run_id);
+    }
     let lines = [
         r#"{"timestamp":"2025-03-20T02:01:12Z","stream":"stdout","text":"Building image payments-service..."}"#,
         r#"{"timestamp":"2025-03-20T02:01:15Z","stream":"stderr","text":"Warning: deprecated feature"}"#,
@@ -534,7 +572,10 @@ fn mock_route_get_run_build_logs(_run_id: &str) -> (u16, String) {
     (200, lines.join("\n") + "\n")
 }
 
-fn mock_route_get_run_logs(_run_id: &str) -> (u16, String) {
+fn mock_route_get_run_logs(run_id: &str) -> (u16, String) {
+    if !mock_run_known(run_id) {
+        return mock_run_not_found(run_id);
+    }
     let lines = [
         r#"{"output_text":"{\"level\":\"info\",\"msg\":\"starting\"}","source":{"container":"app","name":"app","stream":"out"},"moment":{"input_hash":"-123","vtime":"1.0","session_id":"sess-1"}}"#,
         r#"{"output_text":"{\"level\":\"warn\",\"msg\":\"slow request\"}","source":{"container":"app","name":"app","stream":"error"},"moment":{"input_hash":"-456","vtime":"2.0","session_id":"sess-1"}}"#,
@@ -565,10 +606,19 @@ fn mock_route_list_run_properties(run_id: &str, query: Option<&str>) -> (u16, St
         );
     }
 
+    // The properties endpoint 404s for an unknown run id and for a real run that
+    // isn't `completed` yet (its triage report hasn't been generated). Only
+    // completed runs return property data, matching the real API and exercising
+    // the "run not found" vs "this run is incomplete" disambiguation.
+    match MOCK_RUNS.iter().find(|(id, ..)| *id == run_id) {
+        Some(&(_, "completed", ..)) => {}
+        _ => return mock_run_not_found(run_id),
+    }
+
     let status = mock_query_param(query, "status");
     let after = mock_query_param(query, "after");
 
-    let failing = r#"{"name":"Counter value stays below limit","description":"Counter stays within safe bounds","status":"Failing","is_event":true,"group":"Safety","example_count":12,"counterexample_count":3,"examples":[{"moment":{"input_hash":"-300","vtime":"15.0"}}],"counterexamples":[{"moment":{"input_hash":"-100","vtime":"5.0"}},{"moment":{"input_hash":"-200","vtime":"10.0"}}]}"#.to_string();
+    let failing = r#"{"name":"Counter value stays below limit","description":"Counter stays within safe bounds","status":"Failing","is_event":true,"group":"Safety","example_count":12,"counterexample_count":3,"examples":[{"moment":{"input_hash":"-300","vtime":"15.0"}}],"counterexamples":[{"moment":{"input_hash":"-200","vtime":"10.0"}},{"moment":{"input_hash":"-100","vtime":"5.0"}}]}"#.to_string();
     let passing = r#"{"name":"Setup completes","description":"Setup eventually succeeds","status":"Passing","is_event":false,"example_count":1,"counterexample_count":0,"examples":[{"final_counter":42}]}"#.to_string();
 
     let (data, next_cursor) = match (status.as_deref(), after.as_deref()) {
@@ -592,6 +642,9 @@ fn mock_route_list_run_properties(run_id: &str, query: Option<&str>) -> (u16, St
 }
 
 fn mock_route_search_run_events(run_id: &str, query: Option<&str>) -> (u16, String) {
+    if !mock_run_known(run_id) {
+        return mock_run_not_found(run_id);
+    }
     let Some(query) = mock_query_param(query, "q") else {
         return (400, r#"{"message":"missing q"}"#.to_string());
     };

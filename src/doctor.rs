@@ -33,7 +33,7 @@ impl Check {
 pub fn cmd_doctor() -> Result<()> {
     let mut checks: Vec<Check> = Vec::new();
 
-    // Container runtime
+    // Container runtime (for building/pushing images)
     match container::runtime() {
         Ok(rt) => checks.push(Check {
             name: "Container runtime",
@@ -42,6 +42,20 @@ pub fn cmd_doctor() -> Result<()> {
         }),
         Err(e) => checks.push(Check {
             name: "Container runtime",
+            passed: false,
+            message: e.to_string(),
+        }),
+    }
+
+    // Docker Compose v2 (required for compose configs)
+    match container::docker_compose_version() {
+        Ok(version) => checks.push(Check {
+            name: "docker-compose",
+            passed: true,
+            message: version,
+        }),
+        Err(e) => checks.push(Check {
+            name: "docker-compose",
             passed: false,
             message: e.to_string(),
         }),

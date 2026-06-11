@@ -1,7 +1,8 @@
 use std::io::{self, ErrorKind, Read};
 use std::process::Command;
 
-use clap::Parser;
+use clap::{CommandFactory, Parser};
+use clap_complete::Shell;
 use log::{debug, info};
 
 use color_eyre::eyre::{Context, Result, bail};
@@ -62,7 +63,7 @@ fn get_params(args: Vec<String>, use_stdin: bool, support_moment: bool) -> Resul
 }
 
 #[tokio::main(flavor = "current_thread")]
-async fn main() -> Result<()> {
+async fn main() {
     color_eyre::install().unwrap();
     env_logger::Builder::from_default_env()
         .format(|buf, record| {
@@ -72,6 +73,20 @@ async fn main() -> Result<()> {
         .init();
     let cli = Cli::parse();
 
+    if let Err(report) = run(cli).await {
+        if snouty::error::is_user_error(&report) {
+            // User-facing problem (bad flag, missing env var, 4xx). Print the
+            // message chain only — no backtrace footer or internal noise.
+            eprintln!("error: {report:#}");
+        } else {
+            // Genuine internal fault: keep the full color_eyre report.
+            eprintln!("Error: {report:?}");
+        }
+        std::process::exit(1);
+    }
+}
+
+async fn run(cli: Cli) -> Result<()> {
     let json = cli.json;
     let verbose = cli.verbose;
     if json && let Some(name) = json_unaware_command_name(&cli.command) {
@@ -227,17 +242,24 @@ async fn cmd_launch(args: LaunchArgs, json: bool, verbose: bool) -> Result<()> {
     if let Some((config, registry, config_image)) = config_image_ref {
         let rt = container::runtime()?;
 
-        // Compose configs reference local image tags that need to be pushed to
-        // the registry; k8s configs reference images by name in the manifests
-        // and the platform pulls them itself.
-        if let config::Config::Compose(compose_config) = &config {
-            let pinned_images = rt.push_compose_images(compose_config, &registry)?;
-            if !pinned_images.is_empty() {
-                params.insert("antithesis.images", pinned_images.join(";"));
+        // For compose configs, every service image is pinned to its local
+        // digest (snouty never pulls): served from a registry confirmed to
+        // already have it, or pushed to the Antithesis registry. The compose
+        // file is then canonicalized, digest-pinned, and baked into the
+        // config image, so the platform runs exactly what was resolved here.
+        // k8s configs reference images by name in the manifests and the
+        // platform pulls them itself.
+        let pinned_config = match &config {
+            config::Config::Compose(compose_config) => {
+                let compose = container::docker_compose(rt)?;
+                let pinned_yaml = compose.pin_images(compose_config, &registry)?;
+                let staged = container::stage_pinned_config(compose_config.dir(), &pinned_yaml)?;
+                rt.build_and_push_config_image(staged.path(), &config_image)?
             }
-        }
-
-        let pinned_config = rt.build_and_push_config_image(config.dir(), &config_image)?;
+            config::Config::Kubernetes(_) => {
+                rt.build_and_push_config_image(config.dir(), &config_image)?
+            }
+        };
         params.insert("antithesis.config_image", pinned_config);
     }
 
@@ -334,19 +356,10 @@ async fn cmd_debug(args: DebugArgs, json: bool, verbose: bool) -> Result<()> {
     Ok(())
 }
 
-fn cmd_completions(shell: String) -> Result<()> {
-    let output = match shell.as_str() {
-        "bash" => include_str!(concat!(env!("OUT_DIR"), "/snouty.bash")),
-        "zsh" => include_str!(concat!(env!("OUT_DIR"), "/_snouty")),
-        "fish" => include_str!(concat!(env!("OUT_DIR"), "/snouty.fish")),
-        "elvish" => include_str!(concat!(env!("OUT_DIR"), "/snouty.elv")),
-        _ => {
-            bail!(
-                "invalid arguments: unsupported shell: {shell}\nsupported: bash, zsh, fish, elvish"
-            );
-        }
-    };
-    print!("{output}");
+fn cmd_completions(shell: Shell) -> Result<()> {
+    let mut cmd = Cli::command();
+    let bin_name = cmd.get_name().to_string();
+    clap_complete::generate(shell, &mut cmd, bin_name, &mut io::stdout());
     Ok(())
 }
 

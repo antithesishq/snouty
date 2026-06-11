@@ -199,11 +199,11 @@
                       "started_at": "2025-03-20T02:01:12Z",
                       "completed_at": "2025-03-20T02:31:45Z",
                       "launcher": "Payments Nightly",
+                      "description": "basic_test on main",
                       "links": {
                         "triage_report": "https://demo.antithesis.com/report/dBDNYWsHWywLBl1mtobJjjuB/dw8bjBJES6HzQ9iw8PSlGUXNnraLuWpLlbavyABg_R0.html"
                       },
-                      "results": {
-                      }
+                      "results": {}
                     }
                   }
                 }
@@ -655,8 +655,7 @@
         "summary": "Launch a debugging session",
         "description": "Kicks off a multiverse debugging session that'll be available for six hours. Returns an HTTP status code indicating whether the debugging session request was successfully accepted and the session is getting ready.",
         "tags": ["Launch"],
-        "parameters": [
-        ],
+        "parameters": [],
         "requestBody": {
           "required": true,
           "content": {
@@ -782,6 +781,12 @@
             "type": "string",
             "description": "The name of the launcher that kicked off this run.",
             "example": "Payments Nightly"
+          },
+          "description": {
+            "type": "string",
+            "nullable": true,
+            "description": "A human-readable description of the run. Null if no description was provided.",
+            "example": "basic_test on main"
           },
           "parameters": {
             "type": "object",
@@ -1145,7 +1150,14 @@
       },
       "Run_Status": {
         "type": "string",
-        "enum": ["starting", "in_progress", "completed", "cancelled", "incomplete", "unknown"],
+        "enum": [
+          "starting",
+          "in_progress",
+          "completed",
+          "cancelled",
+          "incomplete",
+          "unknown"
+        ],
         "description": "Current lifecycle status of a run. `starting` — the run is being set up. `in_progress` — the run is actively running. `completed` — the run finished successfully. `cancelled` — the run was cancelled before completion. `incomplete` — the run did not complete successfully. `unknown` — the status of the run is unknown."
       },
       "Creator_Info": {
@@ -1190,7 +1202,7 @@
               "message": "limit must be between 1 and 100"
             }
           }
-        }   
+        }
       },
       "Unauthorized": {
         "description": "Unauthorized — invalid or missing authentication credentials.",

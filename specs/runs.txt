@@ -157,8 +157,12 @@ mock-runs-server empty
 snouty runs
 stdout 'No runs found\.'
 
-# API errors are reported with status code and body.
+# API errors are reported with status code and body. The generic mock-server
+# directive only sets username/password, which `snouty runs` rejects before
+# making a request, so set an API key explicitly rather than relying on one
+# leaking from an earlier mock-runs-server block.
 mock-server 400 '{"message":"bad request"}'
+env ANTITHESIS_API_KEY=test-api-key
 ! snouty runs
 stderr 'API error: 400.*'
 

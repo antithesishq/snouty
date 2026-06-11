@@ -1256,39 +1256,22 @@ fn format_log_entry(entry: &Value, raw: bool) -> String {
     )
 }
 
-/// The two ways a `moment`'s vtime can be expressed, resolved once so both the
-/// log renderer and the fault annotator agree on precedence. `seconds` is the
-/// `moment.vtime` seconds string parsed as f64 (the canonical form); `ticks` is
-/// the `moment._vtime_ticks` integer fallback. Either, both, or neither may be
-/// present. Callers pick whichever representation they need with the precedence
-/// they require (seconds-first for display, ticks-exact for fault windows).
-struct MomentVtime {
-    seconds: Option<f64>,
-    ticks: Option<u64>,
-}
-
-fn resolve_moment_vtime(entry: &Value) -> MomentVtime {
-    let seconds = entry["moment"]["vtime"]
+/// Parse a `moment`'s vtime to f64 seconds. The API sends `moment.vtime` as a
+/// seconds string (e.g. "398.4898"); accept a JSON number too, since the schema
+/// doesn't forbid one. Returns `None` when there's no parseable vtime.
+fn moment_vtime_seconds(entry: &Value) -> Option<f64> {
+    let vtime = &entry["moment"]["vtime"];
+    vtime
         .as_str()
-        .and_then(|s| s.parse::<f64>().ok());
-    let ticks = entry["moment"]["_vtime_ticks"].as_u64();
-    MomentVtime { seconds, ticks }
+        .and_then(|s| s.parse::<f64>().ok())
+        .or_else(|| vtime.as_f64())
 }
 
 /// Render a log line's vtime in seconds with at most 3 decimal places (trailing
 /// zeros trimmed). Full-precision vtimes overflow the fixed `LOG_VTIME_WIDTH`
 /// column and desync the source column; trimming keeps every row aligned.
-/// Prefers the `vtime` seconds string and falls back to `_vtime_ticks`.
 fn format_log_vtime(entry: &Value) -> String {
-    let resolved = resolve_moment_vtime(entry);
-    // `vtime` is usually a seconds string, but the API doesn't forbid a JSON
-    // number — accept both (string-then-parse, else `as_f64`) so a numeric vtime
-    // doesn't render as an empty column. Fall back to ticks, then the raw value.
-    let seconds = resolved
-        .seconds
-        .or_else(|| entry["moment"]["vtime"].as_f64())
-        .or_else(|| resolved.ticks.map(|ticks| ticks as f64 / TICKS_PER_SECOND));
-    match seconds {
+    match moment_vtime_seconds(entry) {
         Some(seconds) => trim_decimals(seconds, 3),
         // Not a parseable number — show whatever the server sent rather than "".
         None => entry["moment"]["vtime"].as_str().unwrap_or("").to_string(),
@@ -1369,8 +1352,6 @@ fn strip_log_envelope(entry: &Value) -> String {
     }
 }
 
-const TICKS_PER_SECOND: f64 = (1u64 << 32) as f64;
-
 async fn stream_ndjson_lines<S, C>(
     mut stream: S,
     mut line_transformer: impl LineTransformer,
@@ -1438,17 +1419,11 @@ impl LineTransformer for FaultAnnotator {
         if let Ok(mut entry) = serde_json::from_str::<Value>(line) {
             let mut update_faults = false;
 
-            // Resolve the moment's vtime with the same precedence as the log
-            // renderer, but keep ticks exact: prefer the seconds string (scaled
-            // to ticks) and fall back to the raw `_vtime_ticks` integer.
-            let MomentVtime {
-                seconds: vtime_node,
-                ticks: vtime_ticks_node,
-            } = resolve_moment_vtime(&entry);
-            let event_vtime_ticks = vtime_node
-                .map(|seconds| (seconds * TICKS_PER_SECOND) as u64)
-                .or(vtime_ticks_node)
-                .unwrap_or(0);
+            // The API sends moment.vtime as seconds, so the fault-window math
+            // runs directly in seconds. Lines without a vtime fall back to 0.0,
+            // which never expires a window (expiry is strict less-than).
+            let event_vtime = moment_vtime_seconds(&entry);
+            let latest_vtime = event_vtime.unwrap_or(0.0);
             let fault_name = entry["fault"]["name"].as_str();
             let is_fault_injector = entry["source"]["name"]
                 .as_str()
@@ -1477,15 +1452,14 @@ impl LineTransformer for FaultAnnotator {
             // Clear any expired faults
             update_faults = self
                 .active_fault_windows
-                .clear_expired_faults(event_vtime_ticks)
+                .clear_expired_faults(latest_vtime)
                 || update_faults;
 
             if is_fault_injector && let Some(fault_name) = fault_name {
-                let max_duration_ticks = entry["fault"]["max_duration"]
+                let max_duration = entry["fault"]["max_duration"]
                     .as_f64()
-                    .filter(|d| *d > 0.0)
-                    .map(|d| (d * TICKS_PER_SECOND) as u64);
-                let end_vtime = max_duration_ticks.map(|duration| duration + event_vtime_ticks);
+                    .filter(|d| *d > 0.0);
+                let end_vtime = max_duration.map(|duration| duration + latest_vtime);
                 let fault_type = entry["fault"]["type"].as_str().unwrap_or("");
 
                 if let Some(target) = entry["fault"]["affected_nodes"]
@@ -1497,7 +1471,7 @@ impl LineTransformer for FaultAnnotator {
                         update_faults = self.active_fault_windows.add_network_fault(
                             fault_name.to_string(),
                             FaultWindowBounds {
-                                start_vtime: event_vtime_ticks,
+                                start_vtime: latest_vtime,
                                 end_vtime,
                             },
                         ) || update_faults;
@@ -1510,7 +1484,7 @@ impl LineTransformer for FaultAnnotator {
                             fault_name.to_string(),
                             target.to_string(),
                             FaultWindowBounds {
-                                start_vtime: event_vtime_ticks,
+                                start_vtime: latest_vtime,
                                 end_vtime,
                             },
                         ) || update_faults;
@@ -1524,7 +1498,7 @@ impl LineTransformer for FaultAnnotator {
                     update_faults = self.active_fault_windows.add_clock_fault(
                         offset,
                         FaultWindowBounds {
-                            start_vtime: event_vtime_ticks,
+                            start_vtime: latest_vtime,
                             end_vtime,
                         },
                     ) || update_faults;
@@ -1538,8 +1512,10 @@ impl LineTransformer for FaultAnnotator {
             if let Some(output_text) = entry["output_text"].as_str() {
                 entry["output_text"] = Value::String(strip_ansi(output_text));
             }
-            if vtime_ticks_node.is_some() || vtime_node.is_some() {
-                entry["vtime_seconds"] = json!((event_vtime_ticks as f64) / TICKS_PER_SECOND);
+            // Replace the seconds string with its f64 form in place — the only
+            // processing snouty does to vtime.
+            if let Some(vtime) = event_vtime {
+                entry["moment"]["vtime"] = json!(vtime);
             }
 
             if entry.is_object() {
@@ -1577,14 +1553,14 @@ fn strip_ansi(text: &str) -> String {
 }
 
 struct FaultWindowBounds {
-    start_vtime: u64,
-    end_vtime: Option<u64>,
+    start_vtime: f64,
+    end_vtime: Option<f64>,
 }
 
 impl FaultWindowBounds {
-    fn is_expired(&self, latest_vtime_ticks: &u64) -> bool {
+    fn is_expired(&self, latest_vtime: &f64) -> bool {
         self.end_vtime
-            .map(|expiry| expiry.lt(latest_vtime_ticks))
+            .map(|expiry| expiry.lt(latest_vtime))
             .unwrap_or(false)
     }
 }
@@ -1616,17 +1592,17 @@ impl ActiveFaultWindows {
         did_something
     }
 
-    fn clear_expired_faults(&mut self, latest_vtime_ticks: u64) -> bool {
+    fn clear_expired_faults(&mut self, latest_vtime: f64) -> bool {
         let mut did_something;
 
         let clock_faults_length = self.clock.len();
         self.clock
-            .retain(|fault| !fault.1.is_expired(&latest_vtime_ticks));
+            .retain(|fault| !fault.1.is_expired(&latest_vtime));
         did_something = self.clock.len() != clock_faults_length;
 
         for _ in self
             .network
-            .extract_if(.., |_k, window| window.is_expired(&latest_vtime_ticks))
+            .extract_if(.., |_k, window| window.is_expired(&latest_vtime))
         {
             did_something = true;
         }
@@ -1634,7 +1610,7 @@ impl ActiveFaultWindows {
         let mut dropped_categories_of_node_faults = false;
         for _ in self.node.extract_if(.., |_k, windows_by_container| {
             for _ in windows_by_container
-                .extract_if(.., |_c, window| window.is_expired(&latest_vtime_ticks))
+                .extract_if(.., |_c, window| window.is_expired(&latest_vtime))
             {
                 did_something = true;
             }
@@ -1708,7 +1684,7 @@ impl ActiveFaultWindows {
         for entry in &self.network {
             result.insert(
                 format!("network_{}", entry.0),
-                json!({"vtime": (entry.1.start_vtime as f64) / TICKS_PER_SECOND}),
+                json!({"vtime": entry.1.start_vtime}),
             );
         }
 
@@ -1717,7 +1693,7 @@ impl ActiveFaultWindows {
             for entry in entry.1 {
                 node_fault_starts_by_container.insert(
                     entry.0.to_string(),
-                    json!((entry.1.start_vtime as f64) / TICKS_PER_SECOND),
+                    json!(entry.1.start_vtime),
                 );
             }
 
@@ -1729,14 +1705,14 @@ impl ActiveFaultWindows {
 
         if !&self.clock.is_empty() {
             let mut offset_sum = 0f64;
-            let mut max_clock_fault_start = 0u64;
+            let mut max_clock_fault_start = 0f64;
 
             for entry in &self.clock {
                 offset_sum += entry.0;
                 max_clock_fault_start = max_clock_fault_start.max(entry.1.start_vtime);
             }
 
-            result.insert("clock_skip".to_string(), json!({"cumulative_offset": offset_sum, "vtime": (max_clock_fault_start as f64) / TICKS_PER_SECOND}));
+            result.insert("clock_skip".to_string(), json!({"cumulative_offset": offset_sum, "vtime": max_clock_fault_start}));
         }
 
         Value::Object(result)
@@ -2945,17 +2921,6 @@ mod tests {
     }
 
     #[test]
-    fn format_log_line_falls_back_to_vtime_ticks() {
-        let entry = json!({
-            "moment": {"_vtime_ticks": 1u64 << 32},
-            "source": {"name": "client", "stream": "info"},
-            "output_text": "hello"
-        });
-        // No `vtime` string: derive seconds from ticks (2^32 ticks = 1s).
-        assert!(format_log_entry(&entry, false).starts_with("[             1] "));
-    }
-
-    #[test]
     fn format_log_line_accepts_numeric_vtime() {
         // A JSON-number vtime (not a string) must still render, not blank out.
         let entry = json!({
@@ -3172,7 +3137,7 @@ mod tests {
         assert_eq!(
             transformer.try_transform(&format!("{}", json!({
                 "moment": {
-                    "_vtime_ticks": 1u64 << 32
+                    "vtime": "1"
                 },
                 "source": {
                     "name": "fault_injector"
@@ -3184,7 +3149,7 @@ mod tests {
                     "max_duration": 10
                 }
             }))),
-            Some("{\"moment\":{\"_vtime_ticks\":4294967296},\"source\":{\"name\":\"fault_injector\"},\"fault\":{\"name\":\"partition\",\"type\":\"network\",\"affected_nodes\":[\"a\",\"b\"],\"max_duration\":10},\"vtime_seconds\":1.0,\"active_faults\":{\"network_partition\":{\"vtime\":1.0}}}".to_string())
+            Some("{\"moment\":{\"vtime\":1.0},\"source\":{\"name\":\"fault_injector\"},\"fault\":{\"name\":\"partition\",\"type\":\"network\",\"affected_nodes\":[\"a\",\"b\"],\"max_duration\":10},\"active_faults\":{\"network_partition\":{\"vtime\":1.0}}}".to_string())
         );
 
         // Another log message; should retain active window state since the log message had no timestamp
@@ -3200,7 +3165,7 @@ mod tests {
         assert_eq!(
             transformer.try_transform(&format!("{}", json!({
                 "moment": {
-                    "_vtime_ticks": 2u64 << 32
+                    "vtime": "2"
                 },
                 "source": {
                     "name": "fault_injector"
@@ -3212,18 +3177,18 @@ mod tests {
                     "max_duration": 9
                 }
             }))),
-            Some("{\"moment\":{\"_vtime_ticks\":8589934592},\"source\":{\"name\":\"fault_injector\"},\"fault\":{\"name\":\"throttle\",\"type\":\"node\",\"affected_nodes\":[\"c\"],\"max_duration\":9},\"vtime_seconds\":2.0,\"active_faults\":{\"network_partition\":{\"vtime\":1.0},\"node_throttle\":{\"c\":2.0}}}".to_string())
+            Some("{\"moment\":{\"vtime\":2.0},\"source\":{\"name\":\"fault_injector\"},\"fault\":{\"name\":\"throttle\",\"type\":\"node\",\"affected_nodes\":[\"c\"],\"max_duration\":9},\"active_faults\":{\"network_partition\":{\"vtime\":1.0},\"node_throttle\":{\"c\":2.0}}}".to_string())
         );
 
         // Another non-fault injector message; should retain state
         assert_eq!(
             transformer.try_transform(&format!("{}", json!({
                 "moment": {
-                    "_vtime_ticks": 11u64 << 32
+                    "vtime": "11"
                 },
                 "foo": "bar"
             }))),
-            Some("{\"moment\":{\"_vtime_ticks\":47244640256},\"foo\":\"bar\",\"vtime_seconds\":11.0,\"active_faults\":{\"network_partition\":{\"vtime\":1.0},\"node_throttle\":{\"c\":2.0}}}".to_string())
+            Some("{\"moment\":{\"vtime\":11.0},\"foo\":\"bar\",\"active_faults\":{\"network_partition\":{\"vtime\":1.0},\"node_throttle\":{\"c\":2.0}}}".to_string())
         );
 
         // Expire both windows
@@ -3232,13 +3197,13 @@ mod tests {
                 "{}",
                 json!({
                     "moment": {
-                        "_vtime_ticks": (11u64 << 32) + 1
+                        "vtime": "11.5"
                     },
                     "foo": "bar"
                 })
             )),
             Some(
-                "{\"moment\":{\"_vtime_ticks\":47244640257},\"foo\":\"bar\",\"vtime_seconds\":11.00000000023283,\"active_faults\":{}}"
+                "{\"moment\":{\"vtime\":11.5},\"foo\":\"bar\",\"active_faults\":{}}"
                     .to_string()
             )
         );
@@ -3255,7 +3220,7 @@ mod tests {
         assert_eq!(
             transformer.try_transform(&format!("{}", json!({
                 "moment": {
-                    "_vtime_ticks": 1u64 << 32
+                    "vtime": "1"
                 },
                 "source": {
                     "name": "fault_injector"
@@ -3266,14 +3231,14 @@ mod tests {
                     "affected_nodes": ["a", "b"]
                 }
             }))),
-            Some("{\"moment\":{\"_vtime_ticks\":4294967296},\"source\":{\"name\":\"fault_injector\"},\"fault\":{\"name\":\"partition\",\"type\":\"network\",\"affected_nodes\":[\"a\",\"b\"]},\"vtime_seconds\":1.0,\"active_faults\":{\"network_partition\":{\"vtime\":1.0}}}".to_string())
+            Some("{\"moment\":{\"vtime\":1.0},\"source\":{\"name\":\"fault_injector\"},\"fault\":{\"name\":\"partition\",\"type\":\"network\",\"affected_nodes\":[\"a\",\"b\"]},\"active_faults\":{\"network_partition\":{\"vtime\":1.0}}}".to_string())
         );
 
         // Open a node throttled fault window
         assert_eq!(
             transformer.try_transform(&format!("{}", json!({
                 "moment": {
-                    "_vtime_ticks": 2u64 << 32
+                    "vtime": "2"
                 },
                 "source": {
                     "name": "fault_injector"
@@ -3284,14 +3249,14 @@ mod tests {
                     "affected_nodes": ["c"]
                 }
             }))),
-            Some("{\"moment\":{\"_vtime_ticks\":8589934592},\"source\":{\"name\":\"fault_injector\"},\"fault\":{\"name\":\"throttle\",\"type\":\"node\",\"affected_nodes\":[\"c\"]},\"vtime_seconds\":2.0,\"active_faults\":{\"network_partition\":{\"vtime\":1.0},\"node_throttle\":{\"c\":2.0}}}".to_string())
+            Some("{\"moment\":{\"vtime\":2.0},\"source\":{\"name\":\"fault_injector\"},\"fault\":{\"name\":\"throttle\",\"type\":\"node\",\"affected_nodes\":[\"c\"]},\"active_faults\":{\"network_partition\":{\"vtime\":1.0},\"node_throttle\":{\"c\":2.0}}}".to_string())
         );
 
         // Open a network clog fault window
         assert_eq!(
             transformer.try_transform(&format!("{}", json!({
                 "moment": {
-                    "_vtime_ticks": 3u64 << 32
+                    "vtime": "3"
                 },
                 "source": {
                     "name": "fault_injector"
@@ -3302,7 +3267,7 @@ mod tests {
                     "affected_nodes": ["b", "c"]
                 }
             }))),
-            Some("{\"moment\":{\"_vtime_ticks\":12884901888},\"source\":{\"name\":\"fault_injector\"},\"fault\":{\"name\":\"clog\",\"type\":\"network\",\"affected_nodes\":[\"b\",\"c\"]},\"vtime_seconds\":3.0,\"active_faults\":{\"network_partition\":{\"vtime\":1.0},\"network_clog\":{\"vtime\":3.0},\"node_throttle\":{\"c\":2.0}}}".to_string())
+            Some("{\"moment\":{\"vtime\":3.0},\"source\":{\"name\":\"fault_injector\"},\"fault\":{\"name\":\"clog\",\"type\":\"network\",\"affected_nodes\":[\"b\",\"c\"]},\"active_faults\":{\"network_partition\":{\"vtime\":1.0},\"network_clog\":{\"vtime\":3.0},\"node_throttle\":{\"c\":2.0}}}".to_string())
         );
 
         // Verify that state is retained for a non-control log message
@@ -3337,7 +3302,7 @@ mod tests {
         assert_eq!(
             transformer.try_transform(&format!("{}", json!({
                 "moment": {
-                    "_vtime_ticks": 1u64 << 32
+                    "vtime": "1"
                 },
                 "source": {
                     "name": "fault_injector"
@@ -3348,14 +3313,14 @@ mod tests {
                     "affected_nodes": ["a", "b"]
                 }
             }))),
-            Some("{\"moment\":{\"_vtime_ticks\":4294967296},\"source\":{\"name\":\"fault_injector\"},\"fault\":{\"name\":\"partition\",\"type\":\"network\",\"affected_nodes\":[\"a\",\"b\"]},\"vtime_seconds\":1.0,\"active_faults\":{\"network_partition\":{\"vtime\":1.0}}}".to_string())
+            Some("{\"moment\":{\"vtime\":1.0},\"source\":{\"name\":\"fault_injector\"},\"fault\":{\"name\":\"partition\",\"type\":\"network\",\"affected_nodes\":[\"a\",\"b\"]},\"active_faults\":{\"network_partition\":{\"vtime\":1.0}}}".to_string())
         );
 
         // Open a node throttled fault window
         assert_eq!(
             transformer.try_transform(&format!("{}", json!({
                 "moment": {
-                    "_vtime_ticks": 2u64 << 32
+                    "vtime": "2"
                 },
                 "source": {
                     "name": "fault_injector"
@@ -3366,14 +3331,14 @@ mod tests {
                     "affected_nodes": ["c"]
                 }
             }))),
-            Some("{\"moment\":{\"_vtime_ticks\":8589934592},\"source\":{\"name\":\"fault_injector\"},\"fault\":{\"name\":\"throttle\",\"type\":\"node\",\"affected_nodes\":[\"c\"]},\"vtime_seconds\":2.0,\"active_faults\":{\"network_partition\":{\"vtime\":1.0},\"node_throttle\":{\"c\":2.0}}}".to_string())
+            Some("{\"moment\":{\"vtime\":2.0},\"source\":{\"name\":\"fault_injector\"},\"fault\":{\"name\":\"throttle\",\"type\":\"node\",\"affected_nodes\":[\"c\"]},\"active_faults\":{\"network_partition\":{\"vtime\":1.0},\"node_throttle\":{\"c\":2.0}}}".to_string())
         );
 
         // Open a network clog fault window
         assert_eq!(
             transformer.try_transform(&format!("{}", json!({
                 "moment": {
-                    "_vtime_ticks": 3u64 << 32
+                    "vtime": "3"
                 },
                 "source": {
                     "name": "fault_injector"
@@ -3384,14 +3349,14 @@ mod tests {
                     "affected_nodes": ["b", "c"]
                 }
             }))),
-            Some("{\"moment\":{\"_vtime_ticks\":12884901888},\"source\":{\"name\":\"fault_injector\"},\"fault\":{\"name\":\"clog\",\"type\":\"network\",\"affected_nodes\":[\"b\",\"c\"]},\"vtime_seconds\":3.0,\"active_faults\":{\"network_partition\":{\"vtime\":1.0},\"network_clog\":{\"vtime\":3.0},\"node_throttle\":{\"c\":2.0}}}".to_string())
+            Some("{\"moment\":{\"vtime\":3.0},\"source\":{\"name\":\"fault_injector\"},\"fault\":{\"name\":\"clog\",\"type\":\"network\",\"affected_nodes\":[\"b\",\"c\"]},\"active_faults\":{\"network_partition\":{\"vtime\":1.0},\"network_clog\":{\"vtime\":3.0},\"node_throttle\":{\"c\":2.0}}}".to_string())
         );
 
         // Open a clock fault window
         assert_eq!(
             transformer.try_transform(&format!("{}", json!({
                 "moment": {
-                    "_vtime_ticks": 4u64 << 32
+                    "vtime": "4"
                 },
                 "source": {
                     "name": "fault_injector"
@@ -3404,7 +3369,7 @@ mod tests {
                     }
                 }
             }))),
-            Some("{\"moment\":{\"_vtime_ticks\":17179869184},\"source\":{\"name\":\"fault_injector\"},\"fault\":{\"name\":\"skip\",\"type\":\"clock\",\"details\":{\"offset\":10.5}},\"vtime_seconds\":4.0,\"active_faults\":{\"network_partition\":{\"vtime\":1.0},\"network_clog\":{\"vtime\":3.0},\"node_throttle\":{\"c\":2.0},\"clock_skip\":{\"cumulative_offset\":10.5,\"vtime\":4.0}}}".to_string())
+            Some("{\"moment\":{\"vtime\":4.0},\"source\":{\"name\":\"fault_injector\"},\"fault\":{\"name\":\"skip\",\"type\":\"clock\",\"details\":{\"offset\":10.5}},\"active_faults\":{\"network_partition\":{\"vtime\":1.0},\"network_clog\":{\"vtime\":3.0},\"node_throttle\":{\"c\":2.0},\"clock_skip\":{\"cumulative_offset\":10.5,\"vtime\":4.0}}}".to_string())
         );
 
         // Verify that state is retained for a non-control log message
@@ -3441,7 +3406,7 @@ mod tests {
         assert_eq!(
             transformer.try_transform(&format!("{}", json!({
                 "moment": {
-                    "_vtime_ticks": 1u64 << 32
+                    "vtime": "1"
                 },
                 "source": {
                     "name": "fault_injector"
@@ -3454,14 +3419,14 @@ mod tests {
                     }
                 }
             }))),
-            Some("{\"moment\":{\"_vtime_ticks\":4294967296},\"source\":{\"name\":\"fault_injector\"},\"fault\":{\"name\":\"skip\",\"type\":\"clock\",\"details\":{\"offset\":10.5}},\"vtime_seconds\":1.0,\"active_faults\":{\"clock_skip\":{\"cumulative_offset\":10.5,\"vtime\":1.0}}}".to_string())
+            Some("{\"moment\":{\"vtime\":1.0},\"source\":{\"name\":\"fault_injector\"},\"fault\":{\"name\":\"skip\",\"type\":\"clock\",\"details\":{\"offset\":10.5}},\"active_faults\":{\"clock_skip\":{\"cumulative_offset\":10.5,\"vtime\":1.0}}}".to_string())
         );
 
         // Open a node throttled fault window
         assert_eq!(
             transformer.try_transform(&format!("{}", json!({
                 "moment": {
-                    "_vtime_ticks": 2u64 << 32
+                    "vtime": "2"
                 },
                 "source": {
                     "name": "fault_injector"
@@ -3474,14 +3439,14 @@ mod tests {
                     }
                 }
             }))),
-            Some("{\"moment\":{\"_vtime_ticks\":8589934592},\"source\":{\"name\":\"fault_injector\"},\"fault\":{\"name\":\"skip\",\"type\":\"clock\",\"details\":{\"offset\":0.1}},\"vtime_seconds\":2.0,\"active_faults\":{\"clock_skip\":{\"cumulative_offset\":10.6,\"vtime\":2.0}}}".to_string())
+            Some("{\"moment\":{\"vtime\":2.0},\"source\":{\"name\":\"fault_injector\"},\"fault\":{\"name\":\"skip\",\"type\":\"clock\",\"details\":{\"offset\":0.1}},\"active_faults\":{\"clock_skip\":{\"cumulative_offset\":10.6,\"vtime\":2.0}}}".to_string())
         );
 
         // Open a network clog fault window
         assert_eq!(
             transformer.try_transform(&format!("{}", json!({
                 "moment": {
-                    "_vtime_ticks": 3u64 << 32
+                    "vtime": "3"
                 },
                 "source": {
                     "name": "fault_injector"
@@ -3494,7 +3459,7 @@ mod tests {
                     }
                 }
             }))),
-            Some("{\"moment\":{\"_vtime_ticks\":12884901888},\"source\":{\"name\":\"fault_injector\"},\"fault\":{\"name\":\"skip\",\"type\":\"clock\",\"details\":{\"offset\":-2.3}},\"vtime_seconds\":3.0,\"active_faults\":{\"clock_skip\":{\"cumulative_offset\":8.3,\"vtime\":3.0}}}".to_string())
+            Some("{\"moment\":{\"vtime\":3.0},\"source\":{\"name\":\"fault_injector\"},\"fault\":{\"name\":\"skip\",\"type\":\"clock\",\"details\":{\"offset\":-2.3}},\"active_faults\":{\"clock_skip\":{\"cumulative_offset\":8.3,\"vtime\":3.0}}}".to_string())
         );
     }
 
@@ -3509,7 +3474,7 @@ mod tests {
         transformer.try_transform(&format!(
             "{}",
             json!({
-                "moment": { "_vtime_ticks": 1u64 << 32 },
+                "moment": { "vtime": "1" },
                 "source": { "name": "fault_injector" },
                 "fault": {
                     "name": "clog",
@@ -3526,7 +3491,7 @@ mod tests {
             transformer.try_transform(&format!(
                 "{}",
                 json!({
-                    "moment": { "_vtime_ticks": 2u64 << 32 },
+                    "moment": { "vtime": "2" },
                     "source": { "name": "fault_injector" },
                     "fault": {
                         "name": "clog",
@@ -3537,9 +3502,9 @@ mod tests {
             )),
             Some(
                 concat!(
-                    r#"{"moment":{"_vtime_ticks":8589934592},"source":{"name":"fault_injector"},"#,
+                    r#"{"moment":{"vtime":2.0},"source":{"name":"fault_injector"},"#,
                     r#""fault":{"name":"clog","type":"network","affected_nodes":[]},"#,
-                    r#""vtime_seconds":2.0,"active_faults":{"network_clog":{"vtime":1.0}}}"#
+                    r#""active_faults":{"network_clog":{"vtime":1.0}}}"#
                 )
                 .to_string()
             )
@@ -3557,7 +3522,7 @@ mod tests {
         transformer.try_transform(&format!(
             "{}",
             json!({
-                "moment": { "_vtime_ticks": 1u64 << 32 },
+                "moment": { "vtime": "1" },
                 "source": { "name": "fault_injector" },
                 "fault": {
                     "name": "partition",
@@ -3573,7 +3538,7 @@ mod tests {
             transformer.try_transform(&format!(
                 "{}",
                 json!({
-                    "moment": { "_vtime_ticks": 2u64 << 32 },
+                    "moment": { "vtime": "2" },
                     "source": { "name": "fault_injector" },
                     "fault": {
                         "name": "partition",
@@ -3583,9 +3548,9 @@ mod tests {
             )),
             Some(
                 concat!(
-                    r#"{"moment":{"_vtime_ticks":8589934592},"source":{"name":"fault_injector"},"#,
+                    r#"{"moment":{"vtime":2.0},"source":{"name":"fault_injector"},"#,
                     r#""fault":{"name":"partition","type":"network"},"#,
-                    r#""vtime_seconds":2.0,"active_faults":{"network_partition":{"vtime":1.0}}}"#
+                    r#""active_faults":{"network_partition":{"vtime":1.0}}}"#
                 )
                 .to_string()
             )
@@ -3607,16 +3572,16 @@ mod tests {
             transformer.try_transform(&format!(
                 "{}",
                 json!({
-                    "moment": { "_vtime_ticks": 1u64 << 32 },
+                    "moment": { "vtime": "1" },
                     "source": { "name": "fault_injector" },
                     "fault": { "name": "kill" }
                 })
             )),
             Some(
                 concat!(
-                    r#"{"moment":{"_vtime_ticks":4294967296},"source":{"name":"fault_injector"},"#,
+                    r#"{"moment":{"vtime":1.0},"source":{"name":"fault_injector"},"#,
                     r#""fault":{"name":"kill"},"#,
-                    r#""vtime_seconds":1.0,"active_faults":{}}"#
+                    r#""active_faults":{}}"#
                 )
                 .to_string()
             )
@@ -3626,16 +3591,16 @@ mod tests {
             transformer.try_transform(&format!(
                 "{}",
                 json!({
-                    "moment": { "_vtime_ticks": 2u64 << 32 },
+                    "moment": { "vtime": "2" },
                     "source": { "name": "fault_injector" },
                     "fault": { "name": "stop" }
                 })
             )),
             Some(
                 concat!(
-                    r#"{"moment":{"_vtime_ticks":8589934592},"source":{"name":"fault_injector"},"#,
+                    r#"{"moment":{"vtime":2.0},"source":{"name":"fault_injector"},"#,
                     r#""fault":{"name":"stop"},"#,
-                    r#""vtime_seconds":2.0,"active_faults":{}}"#
+                    r#""active_faults":{}}"#
                 )
                 .to_string()
             )
@@ -3652,7 +3617,7 @@ mod tests {
         transformer.try_transform(&format!(
             "{}",
             json!({
-                "moment": { "_vtime_ticks": 1u64 << 32 },
+                "moment": { "vtime": "1" },
                 "source": { "name": "fault_injector" },
                 "fault": { "name": "kill" }
             })
@@ -3662,7 +3627,7 @@ mod tests {
             transformer.try_transform(&format!(
                 "{}",
                 json!({
-                    "moment": { "_vtime_ticks": 2u64 << 32 },
+                    "moment": { "vtime": "2" },
                     "source": { "name": "fault_injector" },
                     "fault": {
                         "name": "restore",
@@ -3673,9 +3638,9 @@ mod tests {
             )),
             Some(
                 concat!(
-                    r#"{"moment":{"_vtime_ticks":8589934592},"source":{"name":"fault_injector"},"#,
+                    r#"{"moment":{"vtime":2.0},"source":{"name":"fault_injector"},"#,
                     r#""fault":{"name":"restore","type":"network","affected_nodes":["ALL"]},"#,
-                    r#""vtime_seconds":2.0,"active_faults":{}}"#
+                    r#""active_faults":{}}"#
                 )
                 .to_string()
             )
@@ -3695,7 +3660,7 @@ mod tests {
 
         assert_eq!(
             transformer.try_transform(&format!("{}", json!({
-                "moment": { "_vtime_ticks": 1u64 << 32 },
+                "moment": { "vtime": "1" },
                 "source": { "name": "some_other_source" },
                 "fault": {
                     "name": "partition",
@@ -3704,20 +3669,20 @@ mod tests {
                 }
             }))),
             Some(concat!(
-                r#"{"moment":{"_vtime_ticks":4294967296},"source":{"name":"some_other_source"},"#,
+                r#"{"moment":{"vtime":1.0},"source":{"name":"some_other_source"},"#,
                 r#""fault":{"name":"partition","type":"network","affected_nodes":["ALL"]},"#,
-                r#""vtime_seconds":1.0,"active_faults":{}}"#
+                r#""active_faults":{}}"#
             ).to_string())
         );
     }
 
     // -----------------------------------------------------------------------
-    // active_faults: event without _vtime_ticks still gets active_faults
-    // (and does not get vtime_seconds)
+    // active_faults: event without a vtime still gets active_faults
+    // (and gets no vtime field added)
     // -----------------------------------------------------------------------
 
     #[test]
-    fn event_without_vtime_ticks_still_gets_active_faults() {
+    fn event_without_vtime_still_gets_active_faults() {
         let mut transformer = FaultAnnotator {
             active_fault_windows: ActiveFaultWindows::new(),
             active_faults: json!({}),
@@ -3727,7 +3692,7 @@ mod tests {
         transformer.try_transform(&format!(
             "{}",
             json!({
-                "moment": { "_vtime_ticks": 1u64 << 32 },
+                "moment": { "vtime": "1" },
                 "source": { "name": "fault_injector" },
                 "fault": {
                     "name": "partition",
@@ -3737,7 +3702,7 @@ mod tests {
             })
         ));
 
-        // Event with no moment at all: no expiry check, no vtime_seconds, but active_faults injected
+        // Event with no moment at all: no expiry check, no vtime added, but active_faults injected
         assert_eq!(
             transformer.try_transform(&format!("{}", json!({"output_text": "no moment here"}))),
             Some(
@@ -3754,22 +3719,22 @@ mod tests {
     // active_faults: natural expiration — boundary semantics
     //
     // is_expired uses strict less-than: end_vtime < latest_vtime.
-    // So at exactly end_vtime ticks the window is still active; it expires
-    // only when the next message arrives with a strictly greater vtime.
+    // So at exactly end_vtime the window is still active; it expires only when
+    // the next message arrives with a strictly greater vtime.
     // -----------------------------------------------------------------------
 
     #[test]
-    fn fault_window_active_at_exact_end_vtime_expires_one_tick_later() {
+    fn fault_window_active_at_exact_end_vtime_expires_just_past_end() {
         let mut transformer = FaultAnnotator {
             active_fault_windows: ActiveFaultWindows::new(),
             active_faults: json!({}),
         };
 
-        // partition at 5<<32, max_duration=5s → end_vtime = (5+5)<<32 = 10<<32
+        // partition at vtime 5, max_duration=5s → end_vtime = 5 + 5 = 10
         transformer.try_transform(&format!(
             "{}",
             json!({
-                "moment": { "_vtime_ticks": 5u64 << 32 },
+                "moment": { "vtime": "5" },
                 "source": { "name": "fault_injector" },
                 "fault": {
                     "name": "partition",
@@ -3780,37 +3745,37 @@ mod tests {
             })
         ));
 
-        // At exactly end_vtime (10<<32): window is still active (end < latest is false when equal)
+        // At exactly end_vtime (10): window is still active (end < latest is false when equal)
         assert_eq!(
             transformer.try_transform(&format!(
                 "{}",
                 json!({
-                    "moment": { "_vtime_ticks": 10u64 << 32 },
+                    "moment": { "vtime": "10" },
                     "output_text": "at exact end"
                 })
             )),
             Some(
                 concat!(
-                    r#"{"moment":{"_vtime_ticks":42949672960},"output_text":"at exact end","#,
-                    r#""vtime_seconds":10.0,"active_faults":{"network_partition":{"vtime":5.0}}}"#
+                    r#"{"moment":{"vtime":10.0},"output_text":"at exact end","#,
+                    r#""active_faults":{"network_partition":{"vtime":5.0}}}"#
                 )
                 .to_string()
             )
         );
 
-        // One tick past end_vtime: now expired
+        // Just past end_vtime: now expired
         assert_eq!(
             transformer.try_transform(&format!(
                 "{}",
                 json!({
-                    "moment": { "_vtime_ticks": (10u64 << 32) + 1 },
+                    "moment": { "vtime": "10.5" },
                     "output_text": "just past end"
                 })
             )),
             Some(
                 concat!(
-                    r#"{"moment":{"_vtime_ticks":42949672961},"output_text":"just past end","#,
-                    r#""vtime_seconds":10.00000000023283,"active_faults":{}}"#
+                    r#"{"moment":{"vtime":10.5},"output_text":"just past end","#,
+                    r#""active_faults":{}}"#
                 )
                 .to_string()
             )
@@ -3831,7 +3796,7 @@ mod tests {
         transformer.try_transform(&format!(
             "{}",
             json!({
-                "moment": { "_vtime_ticks": 1u64 << 32 },
+                "moment": { "vtime": "1" },
                 "source": { "name": "fault_injector" },
                 "fault": {
                     "name": "partition",
@@ -3846,14 +3811,14 @@ mod tests {
             transformer.try_transform(&format!(
                 "{}",
                 json!({
-                    "moment": { "_vtime_ticks": 1000u64 << 32 },
+                    "moment": { "vtime": "1000" },
                     "output_text": "much later"
                 })
             )),
             Some(
                 concat!(
-                    r#"{"moment":{"_vtime_ticks":4294967296000},"output_text":"much later","#,
-                    r#""vtime_seconds":1000.0,"active_faults":{"network_partition":{"vtime":1.0}}}"#
+                    r#"{"moment":{"vtime":1000.0},"output_text":"much later","#,
+                    r#""active_faults":{"network_partition":{"vtime":1.0}}}"#
                 )
                 .to_string()
             )
@@ -3874,7 +3839,7 @@ mod tests {
         transformer.try_transform(&format!(
             "{}",
             json!({
-                "moment": { "_vtime_ticks": 1u64 << 32 },
+                "moment": { "vtime": "1" },
                 "source": { "name": "fault_injector" },
                 "fault": {
                     "name": "partition",
@@ -3889,7 +3854,7 @@ mod tests {
             transformer.try_transform(&format!(
                 "{}",
                 json!({
-                    "moment": { "_vtime_ticks": 5u64 << 32 },
+                    "moment": { "vtime": "5" },
                     "source": { "name": "fault_injector" },
                     "fault": {
                         "name": "restore",
@@ -3900,9 +3865,9 @@ mod tests {
             )),
             Some(
                 concat!(
-                    r#"{"moment":{"_vtime_ticks":21474836480},"source":{"name":"fault_injector"},"#,
+                    r#"{"moment":{"vtime":5.0},"source":{"name":"fault_injector"},"#,
                     r#""fault":{"name":"restore","type":"network","affected_nodes":["ALL"]},"#,
-                    r#""vtime_seconds":5.0,"active_faults":{}}"#
+                    r#""active_faults":{}}"#
                 )
                 .to_string()
             )
@@ -3920,11 +3885,11 @@ mod tests {
             active_faults: json!({}),
         };
 
-        // Partition at vtime 5, max_duration=20 → expires after 25<<32
+        // Partition at vtime 5, max_duration=20 → expires after 25
         transformer.try_transform(&format!(
             "{}",
             json!({
-                "moment": { "_vtime_ticks": 5u64 << 32 },
+                "moment": { "vtime": "5" },
                 "source": { "name": "fault_injector" },
                 "fault": {
                     "name": "partition",
@@ -3935,11 +3900,11 @@ mod tests {
             })
         ));
 
-        // Clog at vtime 10, max_duration=3 → expires after 13<<32
+        // Clog at vtime 10, max_duration=3 → expires after 13
         transformer.try_transform(&format!(
             "{}",
             json!({
-                "moment": { "_vtime_ticks": 10u64 << 32 },
+                "moment": { "vtime": "10" },
                 "source": { "name": "fault_injector" },
                 "fault": {
                     "name": "clog",
@@ -3950,20 +3915,20 @@ mod tests {
             })
         ));
 
-        // At vtime 14: clog's end_vtime (13<<32) < 14<<32, so it expires; partition still active
+        // At vtime 14: clog's end_vtime (13) < 14, so it expires; partition still active
         assert_eq!(
             transformer.try_transform(&format!(
                 "{}",
                 json!({
-                    "moment": { "_vtime_ticks": 14u64 << 32 },
+                    "moment": { "vtime": "14" },
                     "output_text": "clog expired, partition still active"
                 })
             )),
             Some(
                 concat!(
-                    r#"{"moment":{"_vtime_ticks":60129542144},"#,
+                    r#"{"moment":{"vtime":14.0},"#,
                     r#""output_text":"clog expired, partition still active","#,
-                    r#""vtime_seconds":14.0,"active_faults":{"network_partition":{"vtime":5.0}}}"#
+                    r#""active_faults":{"network_partition":{"vtime":5.0}}}"#
                 )
                 .to_string()
             )
@@ -3982,10 +3947,10 @@ mod tests {
             active_faults: json!({}),
         };
 
-        // First window: vtime 1, max_duration=3 → expires after 4<<32
+        // First window: vtime 1, max_duration=3 → expires after 4
         assert_eq!(
             transformer.try_transform(&format!("{}", json!({
-                "moment": { "_vtime_ticks": 1u64 << 32 },
+                "moment": { "vtime": "1" },
                 "source": { "name": "fault_injector" },
                 "fault": {
                     "name": "partition",
@@ -3995,18 +3960,18 @@ mod tests {
                 }
             }))),
             Some(concat!(
-                r#"{"moment":{"_vtime_ticks":4294967296},"source":{"name":"fault_injector"},"#,
+                r#"{"moment":{"vtime":1.0},"source":{"name":"fault_injector"},"#,
                 r#""fault":{"name":"partition","type":"network","affected_nodes":["ALL"],"max_duration":3},"#,
-                r#""vtime_seconds":1.0,"active_faults":{"network_partition":{"vtime":1.0}}}"#
+                r#""active_faults":{"network_partition":{"vtime":1.0}}}"#
             ).to_string())
         );
 
-        // Second window at vtime 5, after the first has expired (5<<32 > 4<<32):
+        // Second window at vtime 5, after the first has expired (5 > 4):
         // the old window is pruned before the new one is pushed, so the snapshot
         // reflects only the new window's start_vtime.
         assert_eq!(
             transformer.try_transform(&format!("{}", json!({
-                "moment": { "_vtime_ticks": 5u64 << 32 },
+                "moment": { "vtime": "5" },
                 "source": { "name": "fault_injector" },
                 "fault": {
                     "name": "partition",
@@ -4016,9 +3981,9 @@ mod tests {
                 }
             }))),
             Some(concat!(
-                r#"{"moment":{"_vtime_ticks":21474836480},"source":{"name":"fault_injector"},"#,
+                r#"{"moment":{"vtime":5.0},"source":{"name":"fault_injector"},"#,
                 r#""fault":{"name":"partition","type":"network","affected_nodes":["ALL"],"max_duration":3},"#,
-                r#""vtime_seconds":5.0,"active_faults":{"network_partition":{"vtime":5.0}}}"#
+                r#""active_faults":{"network_partition":{"vtime":5.0}}}"#
             ).to_string())
         );
     }
@@ -4035,11 +4000,11 @@ mod tests {
             active_faults: json!({}),
         };
 
-        // First partition at vtime 10, max_duration=5 → expires after 15<<32
+        // First partition at vtime 10, max_duration=5 → expires after 15
         transformer.try_transform(&format!(
             "{}",
             json!({
-                "moment": { "_vtime_ticks": 10u64 << 32 },
+                "moment": { "vtime": "10" },
                 "source": { "name": "fault_injector" },
                 "fault": {
                     "name": "partition",
@@ -4050,11 +4015,11 @@ mod tests {
             })
         ));
 
-        // Second partition at vtime 14 (overlapping), max_duration=5 → expires after 19<<32
+        // Second partition at vtime 14 (overlapping), max_duration=5 → expires after 19
         // Both windows are alive; active_fault_dictionary picks the min start_vtime (10)
         assert_eq!(
             transformer.try_transform(&format!("{}", json!({
-                "moment": { "_vtime_ticks": 14u64 << 32 },
+                "moment": { "vtime": "14" },
                 "source": { "name": "fault_injector" },
                 "fault": {
                     "name": "partition",
@@ -4064,37 +4029,37 @@ mod tests {
                 }
             }))),
             Some(concat!(
-                r#"{"moment":{"_vtime_ticks":60129542144},"source":{"name":"fault_injector"},"#,
+                r#"{"moment":{"vtime":14.0},"source":{"name":"fault_injector"},"#,
                 r#""fault":{"name":"partition","type":"network","affected_nodes":["ALL"],"max_duration":5},"#,
-                r#""vtime_seconds":14.0,"active_faults":{"network_partition":{"vtime":10.0}}}"#
+                r#""active_faults":{"network_partition":{"vtime":10.0}}}"#
             ).to_string())
         );
 
-        // At vtime 16: first window expired (15<<32 < 16<<32), second still alive (19<<32 not < 16<<32)
+        // At vtime 16: first window expired (15 < 16), second still alive (19 not < 16)
         assert_eq!(
             transformer.try_transform(&format!("{}", json!({
-                "moment": { "_vtime_ticks": 16u64 << 32 },
+                "moment": { "vtime": "16" },
                 "output_text": "after first window expired"
             }))),
             Some(concat!(
-                r#"{"moment":{"_vtime_ticks":68719476736},"output_text":"after first window expired","#,
-                r#""vtime_seconds":16.0,"active_faults":{"network_partition":{"vtime":10.0}}}"#
+                r#"{"moment":{"vtime":16.0},"output_text":"after first window expired","#,
+                r#""active_faults":{"network_partition":{"vtime":10.0}}}"#
             ).to_string())
         );
 
-        // At vtime 20: second window also expired (19<<32 < 20<<32)
+        // At vtime 20: second window also expired (19 < 20)
         assert_eq!(
             transformer.try_transform(&format!(
                 "{}",
                 json!({
-                    "moment": { "_vtime_ticks": 20u64 << 32 },
+                    "moment": { "vtime": "20" },
                     "output_text": "after both expired"
                 })
             )),
             Some(
                 concat!(
-                    r#"{"moment":{"_vtime_ticks":85899345920},"output_text":"after both expired","#,
-                    r#""vtime_seconds":20.0,"active_faults":{}}"#
+                    r#"{"moment":{"vtime":20.0},"output_text":"after both expired","#,
+                    r#""active_faults":{}}"#
                 )
                 .to_string()
             )
@@ -4115,7 +4080,7 @@ mod tests {
         transformer.try_transform(&format!(
             "{}",
             json!({
-                "moment": { "_vtime_ticks": 1u64 << 32 },
+                "moment": { "vtime": "1" },
                 "source": { "name": "fault_injector" },
                 "fault": {
                     "name": "skip",
@@ -4128,7 +4093,7 @@ mod tests {
         transformer.try_transform(&format!(
             "{}",
             json!({
-                "moment": { "_vtime_ticks": 2u64 << 32 },
+                "moment": { "vtime": "2" },
                 "source": { "name": "fault_injector" },
                 "fault": {
                     "name": "partition",
@@ -4176,7 +4141,7 @@ mod tests {
         transformer.try_transform(&format!(
             "{}",
             json!({
-                "moment": { "_vtime_ticks": 1u64 << 32 },
+                "moment": { "vtime": "1" },
                 "source": { "name": "fault_injector" },
                 "fault": {
                     "name": "pause",
@@ -4189,7 +4154,7 @@ mod tests {
 
         assert_eq!(
             transformer.try_transform(&format!("{}", json!({
-                "moment": { "_vtime_ticks": 2u64 << 32 },
+                "moment": { "vtime": "2" },
                 "source": { "name": "fault_injector" },
                 "fault": {
                     "name": "pause",
@@ -4199,9 +4164,9 @@ mod tests {
                 }
             }))),
             Some(concat!(
-                r#"{"moment":{"_vtime_ticks":8589934592},"source":{"name":"fault_injector"},"#,
+                r#"{"moment":{"vtime":2.0},"source":{"name":"fault_injector"},"#,
                 r#""fault":{"name":"pause","type":"node","affected_nodes":["B"],"max_duration":100},"#,
-                r#""vtime_seconds":2.0,"active_faults":{"node_pause":{"A":1.0,"B":2.0}}}"#
+                r#""active_faults":{"node_pause":{"A":1.0,"B":2.0}}}"#
             ).to_string())
         );
     }
@@ -4217,7 +4182,7 @@ mod tests {
             active_faults: json!({}),
         };
 
-        // Throttle C at vtime 1, max_duration=5 → expires after 6<<32
+        // Throttle C at vtime 1, max_duration=5 → expires after 6
         transformer.try_transform(&format!(
             "{}",
             json!({
@@ -4243,26 +4208,26 @@ mod tests {
             )),
             Some(
                 concat!(
-                    r#"{"moment":{"vtime":"3.0"},"output_text":"mid-window","#,
-                    r#""vtime_seconds":3.0,"active_faults":{"node_throttle":{"C":1.0}}}"#
+                    r#"{"moment":{"vtime":3.0},"output_text":"mid-window","#,
+                    r#""active_faults":{"node_throttle":{"C":1.0}}}"#
                 )
                 .to_string()
             )
         );
 
-        // After expiry at vtime 7 (6<<32 < 7<<32): empty
+        // After expiry at vtime 7 (6 < 7): empty
         assert_eq!(
             transformer.try_transform(&format!(
                 "{}",
                 json!({
-                    "moment": { "_vtime_ticks": 7u64 << 32 },
+                    "moment": { "vtime": "7" },
                     "output_text": "after expiry"
                 })
             )),
             Some(
                 concat!(
-                    r#"{"moment":{"_vtime_ticks":30064771072},"output_text":"after expiry","#,
-                    r#""vtime_seconds":7.0,"active_faults":{}}"#
+                    r#"{"moment":{"vtime":7.0},"output_text":"after expiry","#,
+                    r#""active_faults":{}}"#
                 )
                 .to_string()
             )

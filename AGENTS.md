@@ -46,6 +46,8 @@ SNOUTY_STAGING=1 cargo nextest run spec_tests
 
 Required env in staging mode: `ANTITHESIS_TENANT` plus either
 `ANTITHESIS_API_KEY` or `ANTITHESIS_USERNAME`+`ANTITHESIS_PASSWORD`.
+The `runs` specs require `ANTITHESIS_API_KEY` (every endpoint other than
+launch only accepts API key authentication).
 `ANTITHESIS_BASE_URL` is optional (defaults to `https://<tenant>.antithesis.com`).
 
 When `SNOUTY_STAGING` is set, the `mock-runs-server` directive becomes a

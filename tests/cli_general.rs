@@ -508,3 +508,45 @@ fn validate_help_shows_keep_running() {
         .success()
         .stdout(predicate::str::contains("--keep-running"));
 }
+
+// `snouty runs list | head` closes stdout before snouty finishes writing;
+// snouty must exit cleanly instead of panicking on the broken pipe (#121).
+#[test]
+fn runs_list_exits_cleanly_when_stdout_closes_early() {
+    let mock = start_runs_server(false);
+
+    let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_snouty"));
+    for env_var in [
+        "ANTITHESIS_API_KEY",
+        "ANTITHESIS_USERNAME",
+        "ANTITHESIS_PASSWORD",
+        "ANTITHESIS_TENANT",
+        "ANTITHESIS_BASE_URL",
+        "ANTITHESIS_REPOSITORY",
+    ] {
+        cmd.env_remove(env_var);
+    }
+    // Hand snouty a pipe whose read end is already closed before it spawns,
+    // so its very first stdout write deterministically hits a broken pipe.
+    let (reader, writer) = std::io::pipe().unwrap();
+    drop(reader);
+
+    let child = cmd
+        .env("ANTITHESIS_API_KEY", &mock.token)
+        .env("ANTITHESIS_TENANT", "testtenant")
+        .env("ANTITHESIS_BASE_URL", &mock.url)
+        .args(["runs", "list"])
+        .stdout(writer)
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+
+    let output = child.wait_with_output().unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "expected clean exit on broken pipe, got {:?}; stderr:\n{stderr}",
+        output.status
+    );
+    assert!(!stderr.contains("panicked"), "stderr:\n{stderr}");
+}

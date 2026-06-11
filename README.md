@@ -56,18 +56,20 @@ export ANTITHESIS_TENANT="your-tenant"
 export ANTITHESIS_REPOSITORY="us-central1-docker.pkg.dev/your-project/your-repo"
 ```
 
-Antithesis supports two forms of authentication. Some tenants have API keys, which you can specify like so:
+Antithesis supports two forms of authentication. An API key works with every command and is the recommended option:
 
 ```sh
 export ANTITHESIS_API_KEY="your-api-key"
 ```
 
-Other tenants use username/password authentication, which you can specify like so:
+Username/password authentication is only supported when launching runs (`snouty launch`, `snouty debug`, and `snouty api webhook`). All other commands that talk to the API — such as `snouty runs` — require an API key.
 
 ```sh
 export ANTITHESIS_USERNAME="your-username"
 export ANTITHESIS_PASSWORD="your-password"
 ```
+
+If you don't have an API key, ask Antithesis support for one.
 
 ## Usage
 

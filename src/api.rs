@@ -174,6 +174,31 @@ impl Auth {
             required_env("ANTITHESIS_PASSWORD")?,
         ))
     }
+
+    /// Like [`Auth::from_env`], but only accepts an API key. The API rejects
+    /// basic auth everywhere except the launch endpoints, so commands that hit
+    /// other endpoints should fail fast with a clear message instead of
+    /// sending a request destined for a 403.
+    fn api_key_from_env() -> Result<Self> {
+        if let Some(api_key) = optional_env("ANTITHESIS_API_KEY")? {
+            return Ok(Self::bearer(api_key));
+        }
+        let has_basic = optional_env("ANTITHESIS_USERNAME")?.is_some()
+            || optional_env("ANTITHESIS_PASSWORD")?.is_some();
+        let mut err = eyre!("missing environment variable: ANTITHESIS_API_KEY");
+        if has_basic {
+            err = err.note(
+                "ANTITHESIS_USERNAME/ANTITHESIS_PASSWORD are set, but this command only \
+                 accepts API key authentication; username/password authentication is only \
+                 supported when launching runs (`snouty launch`, `snouty debug`, \
+                 `snouty api webhook`)",
+            );
+        }
+        Err(err.suggestion(
+            "set ANTITHESIS_API_KEY; ask Antithesis support for an API key if you \
+             don't have one",
+        ))
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -200,6 +225,16 @@ impl Config {
             verbose: false,
         })
     }
+
+    /// Like [`Config::from_env`], but only accepts API key authentication.
+    pub fn from_env_requiring_api_key() -> Result<Self> {
+        debug!("loading config from environment (API key required)");
+        Ok(Self {
+            auth: Auth::api_key_from_env()?,
+            tenant: required_env("ANTITHESIS_TENANT")?,
+            verbose: false,
+        })
+    }
 }
 
 pub struct AntithesisApi {
@@ -215,7 +250,16 @@ impl AntithesisApi {
     }
 
     pub fn from_env(verbose: bool) -> Result<Self> {
-        let mut config = Config::from_env()?;
+        Self::from_config(Config::from_env()?, verbose)
+    }
+
+    /// Like [`AntithesisApi::from_env`], but fails fast unless an API key is
+    /// configured. Every endpoint other than launch requires one.
+    pub fn from_env_requiring_api_key(verbose: bool) -> Result<Self> {
+        Self::from_config(Config::from_env_requiring_api_key()?, verbose)
+    }
+
+    fn from_config(mut config: Config, verbose: bool) -> Result<Self> {
         config.verbose = verbose;
         if let Ok(base_url) = env::var("ANTITHESIS_BASE_URL") {
             debug!("using ANTITHESIS_BASE_URL override: {}", base_url);
@@ -1325,6 +1369,64 @@ mod tests {
 
         let run_ids = runs.into_iter().map(|run| run.run_id).collect::<Vec<_>>();
         assert_eq!(run_ids, vec!["run-1", "run-2"]);
+    }
+
+    // Some historical run data stored is_ephemeral as "on"/"off" instead of
+    // "true"/"false"; parsing must accept those as aliases (#122).
+    #[tokio::test]
+    async fn stream_runs_accepts_on_off_booleans_in_parameters() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/api/v0/runs"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "data": [
+                    {
+                        "run_id": "run-on",
+                        "status": "completed",
+                        "created_at": "2025-03-20T02:00:00Z",
+                        "launcher": "nightly",
+                        "parameters": {"antithesis.is_ephemeral": "on"}
+                    },
+                    {
+                        "run_id": "run-off",
+                        "status": "completed",
+                        "created_at": "2025-03-19T02:00:00Z",
+                        "launcher": "nightly",
+                        "parameters": {"antithesis.is_ephemeral": "off"}
+                    }
+                ],
+                "next_cursor": null
+            })))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let api = AntithesisApi::with_base_url(test_config(), mock_server.uri()).unwrap();
+
+        let runs = api
+            .stream_runs_filtered(&RunsFilterOptions::default(), 100)
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+
+        let is_ephemeral = runs
+            .iter()
+            .map(|run| {
+                run.parameters
+                    .as_ref()
+                    .unwrap()
+                    .antithesis_is_ephemeral
+                    .unwrap()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            is_ephemeral,
+            vec![
+                generated::types::ParamsAntithesisIsEphemeral::True,
+                generated::types::ParamsAntithesisIsEphemeral::False,
+            ]
+        );
     }
 
     #[tokio::test]

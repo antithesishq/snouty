@@ -22,6 +22,18 @@ use crate::api::{EventProperty, Moment, NonEventProperty};
 use crate::cli::{RunsCommands, RunsListArgs};
 use crate::error::{api_error_status, user_error};
 
+/// `print!`/`println!`, but routed through `write!`/`writeln!` to stdout so a
+/// closed pipe (e.g. `snouty runs list | head`) surfaces as an `io::Error` the
+/// caller propagates with `?` — `println!` would panic instead. Each call
+/// evaluates to an `io::Result<()>`, so every use must be `?`-ed.
+macro_rules! out {
+    ($($arg:tt)*) => {{ write!(std::io::stdout(), $($arg)*) }};
+}
+macro_rules! outln {
+    () => {{ writeln!(std::io::stdout()) }};
+    ($($arg:tt)*) => {{ writeln!(std::io::stdout(), $($arg)*) }};
+}
+
 /// Event stream classification. Variants match the canonical values that
 /// appear in an event's `source.stream` field.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -125,7 +137,7 @@ pub async fn cmd_runs(command: Option<RunsCommands>, json: bool, verbose: bool) 
 async fn cmd_runs_list(args: RunsListArgs, json: bool, verbose: bool) -> Result<()> {
     debug!("listing runs");
 
-    let api = AntithesisApi::from_env(verbose)?;
+    let api = AntithesisApi::from_env_requiring_api_key(verbose)?;
 
     // clap parsed and validated the filter flags into their real types, so the
     // options struct is built directly with no further string parsing here.
@@ -157,21 +169,21 @@ async fn cmd_runs_list(args: RunsListArgs, json: bool, verbose: bool) -> Result<
 
     if json {
         for run in &runs {
-            println!("{}", serde_json::to_string(run)?);
+            outln!("{}", serde_json::to_string(run)?)?;
         }
         return Ok(());
     }
 
     if runs.is_empty() {
-        println!("No runs found.");
+        outln!("No runs found.")?;
         return Ok(());
     }
 
     if args.detail {
-        print!("{}", render_runs_detail(&runs));
+        out!("{}", render_runs_detail(&runs))?;
     } else {
         let width = terminal_width();
-        println!("{}", render_runs_table(&runs, width));
+        outln!("{}", render_runs_table(&runs, width))?;
     }
     Ok(())
 }
@@ -234,7 +246,7 @@ fn format_local_str(raw: &str) -> String {
 async fn cmd_runs_show(run_id: &str, web: bool, json: bool, verbose: bool) -> Result<()> {
     debug!("showing run: {}", run_id);
 
-    let api = AntithesisApi::from_env(verbose)?;
+    let api = AntithesisApi::from_env_requiring_api_key(verbose)?;
     let run = match api.get_run(run_id).await {
         Ok(run) => run,
         // A 404 here is unambiguous: the run id is bad. Say so instead of leaking
@@ -247,9 +259,9 @@ async fn cmd_runs_show(run_id: &str, web: bool, json: bool, verbose: bool) -> Re
     }
 
     if json {
-        println!("{}", serde_json::to_string_pretty(&run)?);
+        outln!("{}", serde_json::to_string_pretty(&run)?)?;
     } else {
-        print_run_detail(&run);
+        print_run_detail(&run)?;
     }
 
     Ok(())
@@ -270,18 +282,18 @@ fn open_run_report(run: &RunDetail, json: bool) -> Result<()> {
         })?;
 
     if json {
-        println!("{}", serde_json::json!({ "url": url }));
+        outln!("{}", serde_json::json!({ "url": url }))?;
         return Ok(());
     }
 
     let launched = launch_browser(url);
     if launched {
-        println!("Opening report for run {}…", run.run_id);
-        println!("If your browser didn't open, manually visit:");
-        println!("  {url}");
+        outln!("Opening report for run {}…", run.run_id)?;
+        outln!("If your browser didn't open, manually visit:")?;
+        outln!("  {url}")?;
     } else {
-        println!("Open this URL to view the report:");
-        println!("  {url}");
+        outln!("Open this URL to view the report:")?;
+        outln!("  {url}")?;
     }
     Ok(())
 }
@@ -332,7 +344,7 @@ async fn cmd_runs_properties(
 ) -> Result<()> {
     debug!("listing properties for run: {}", run_id);
 
-    let api = AntithesisApi::from_env(verbose)?;
+    let api = AntithesisApi::from_env_requiring_api_key(verbose)?;
     let mut properties = match api
         .stream_run_properties(run_id, status)
         .try_collect::<Vec<_>>()
@@ -354,7 +366,7 @@ async fn cmd_runs_properties(
 
     if json {
         for property in &properties {
-            println!("{}", serde_json::to_string(property)?);
+            outln!("{}", serde_json::to_string(property)?)?;
         }
     } else if properties.is_empty() {
         let message = match status {
@@ -362,9 +374,9 @@ async fn cmd_runs_properties(
             Some(PropertyStatus::Failing) => "No failing properties found.",
             None => "No properties found.",
         };
-        println!("{message}");
+        outln!("{message}")?;
     } else {
-        println!("{}", render_properties_table(&properties));
+        outln!("{}", render_properties_table(&properties))?;
     }
 
     Ok(())
@@ -496,7 +508,7 @@ fn property_status_label(status: PropertyStatus) -> &'static str {
 async fn cmd_runs_property(run_id: &str, name: &str, json: bool, verbose: bool) -> Result<()> {
     debug!("looking up property '{}' for run: {}", name, run_id);
 
-    let api = AntithesisApi::from_env(verbose)?;
+    let api = AntithesisApi::from_env_requiring_api_key(verbose)?;
     let properties = match api
         .stream_run_properties(run_id, None)
         .try_collect::<Vec<_>>()
@@ -525,12 +537,12 @@ async fn cmd_runs_property(run_id: &str, name: &str, json: bool, verbose: bool) 
     };
 
     if json {
-        println!("{}", serde_json::to_string_pretty(property)?);
+        outln!("{}", serde_json::to_string_pretty(property)?)?;
         return Ok(());
     }
 
-    print_property_header(property);
-    println!("{}", render_property_examples(property));
+    print_property_header(property)?;
+    outln!("{}", render_property_examples(property))?;
     Ok(())
 }
 
@@ -634,11 +646,11 @@ fn render_prose_block(label: &str, text: &str, layout: ProseLayout) -> String {
     out
 }
 
-fn print_property_header(property: &Property) {
-    println!("Name      {}", sanitize(property.name()));
-    println!("Status    {}", property_status_label(property.status()));
+fn print_property_header(property: &Property) -> Result<()> {
+    outln!("Name      {}", sanitize(property.name()))?;
+    outln!("Status    {}", property_status_label(property.status()))?;
     if let Some(group) = property_group(property) {
-        println!("Group     {}", sanitize(group));
+        outln!("Group     {}", sanitize(group))?;
     }
     let description = match property {
         Property::EventProperty(p) => p.description.as_deref(),
@@ -647,7 +659,7 @@ fn print_property_header(property: &Property) {
     if let Some(desc) = description {
         // Details is free-form prose, wrapped under a 10-char label column so
         // continuation lines hang-indent to match the value column above.
-        print!(
+        out!(
             "{}",
             render_prose_block(
                 "Details",
@@ -657,9 +669,10 @@ fn print_property_header(property: &Property) {
                     min_body_width: 20,
                 },
             )
-        );
+        )?;
     }
-    println!();
+    outln!()?;
+    Ok(())
 }
 
 /// Width of the label column in `print_property_header` (`"Details   "`).
@@ -838,7 +851,7 @@ fn render_properties_table(properties: &[Property]) -> String {
     render_table_wrap_last(&headers, &rows, terminal_width())
 }
 
-fn print_run_detail(run: &RunDetail) {
+fn print_run_detail(run: &RunDetail) -> Result<()> {
     let mut rows: Vec<(&str, String)> = Vec::new();
 
     // Lead with the identifier; the human labels follow.
@@ -870,7 +883,7 @@ fn print_run_detail(run: &RunDetail) {
         rows.push(("Creator", name.clone()));
     }
 
-    print!("{}", render_kv(&rows, 0));
+    out!("{}", render_kv(&rows, 0))?;
 
     // The description can be an enormous multi-paragraph blob, so it goes as its
     // own block — wrapped to the terminal, with the label on its own line —
@@ -879,7 +892,7 @@ fn print_run_detail(run: &RunDetail) {
     if let Some(desc) = run.test_description() {
         let block = render_prose_block("Description", desc, ProseLayout::OwnLine);
         if !block.is_empty() {
-            print!("\n{block}");
+            out!("\n{block}")?;
         }
     }
 
@@ -892,11 +905,12 @@ fn print_run_detail(run: &RunDetail) {
         .and_then(|l| l.triage_report.as_deref())
         .is_some();
     if has_report {
-        println!(
+        outln!(
             "\nview the report in your browser:\n  snouty runs show {} --web",
             run.run_id
-        );
+        )?;
     }
+    Ok(())
 }
 
 /// Render aligned `Label  value` lines, sqlite `.mode line`–style. Each line is
@@ -980,7 +994,7 @@ struct LogOutputOptions {
 async fn cmd_runs_build_logs(run_id: &str, json: bool, verbose: bool) -> Result<()> {
     debug!("streaming build logs for run: {}", run_id);
 
-    let api = AntithesisApi::from_env(verbose)?;
+    let api = AntithesisApi::from_env_requiring_api_key(verbose)?;
     let stream = match api.get_run_build_logs(run_id).await {
         Ok(stream) => stream.into_inner(),
         Err(err) => return Err(explain_run_scoped_error(&api, run_id, err).await),
@@ -1088,7 +1102,7 @@ async fn cmd_runs_events(
         .cloned()
         .unwrap_or_default();
 
-    let api = AntithesisApi::from_env(verbose)?;
+    let api = AntithesisApi::from_env_requiring_api_key(verbose)?;
     let stream = match api.search_run_events(run_id, &server_query).await {
         Ok(stream) => stream.into_inner(),
         Err(err) => return Err(explain_run_scoped_error(&api, run_id, err).await),
@@ -1168,7 +1182,7 @@ async fn cmd_runs_logs(
 ) -> Result<()> {
     debug!("streaming logs for run: {}", run_id);
 
-    let api = AntithesisApi::from_env(verbose)?;
+    let api = AntithesisApi::from_env_requiring_api_key(verbose)?;
     let stream = match api
         .get_run_logs(run_id, input_hash, vtime, begin_input_hash, begin_vtime)
         .await

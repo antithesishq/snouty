@@ -69,7 +69,7 @@ export ANTITHESIS_USERNAME="your-username"
 export ANTITHESIS_PASSWORD="your-password"
 ```
 
-If you don't have an API key, ask your Antithesis contact for one.
+If you don't have an API key, ask Antithesis support for one.
 
 ## Usage
 

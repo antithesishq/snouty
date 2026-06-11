@@ -884,18 +884,20 @@ fn runs_list_exits_cleanly_when_stdout_closes_early() {
     ] {
         cmd.env_remove(env_var);
     }
-    let mut child = cmd
+    // Hand snouty a pipe whose read end is already closed before it spawns,
+    // so its very first stdout write deterministically hits a broken pipe.
+    let (reader, writer) = std::io::pipe().unwrap();
+    drop(reader);
+
+    let child = cmd
         .env("ANTITHESIS_API_KEY", &mock.token)
         .env("ANTITHESIS_TENANT", "testtenant")
         .env("ANTITHESIS_BASE_URL", &mock.url)
         .args(["runs", "list"])
-        .stdout(std::process::Stdio::piped())
+        .stdout(writer)
         .stderr(std::process::Stdio::piped())
         .spawn()
         .unwrap();
-
-    // Close the read end of stdout so snouty's writes hit a broken pipe.
-    drop(child.stdout.take());
 
     let output = child.wait_with_output().unwrap();
     let stderr = String::from_utf8_lossy(&output.stderr);

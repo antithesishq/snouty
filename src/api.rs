@@ -175,7 +175,7 @@ impl Auth {
             );
         }
         Err(err.suggestion(
-            "set ANTITHESIS_API_KEY; ask your Antithesis contact for an API key if you \
+            "set ANTITHESIS_API_KEY; ask Antithesis support for an API key if you \
              don't have one",
         ))
     }

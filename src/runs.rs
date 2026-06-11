@@ -17,6 +17,43 @@ use crate::api::{
 use crate::api::{Event, EventProperty, Moment, NonEventProperty};
 use crate::cli::{RunsCommands, RunsListArgs};
 
+/// A failed write to snouty's own stdout. Tagging these at the write site
+/// lets main distinguish "our stdout pipe closed" (a normal way for
+/// `snouty ... | head` to end) from io errors bubbling out of other layers,
+/// without relying on downcast semantics of a bare [`std::io::Error`].
+#[derive(Debug)]
+pub struct StdoutWriteError(pub std::io::Error);
+
+impl std::fmt::Display for StdoutWriteError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "failed to write to stdout: {}", self.0)
+    }
+}
+
+impl std::error::Error for StdoutWriteError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.0)
+    }
+}
+
+impl StdoutWriteError {
+    pub fn is_broken_pipe(&self) -> bool {
+        self.0.kind() == std::io::ErrorKind::BrokenPipe
+    }
+}
+
+trait WriteResultExt<T> {
+    /// Tag the io::Result of a stdout write so [`StdoutWriteError`] is
+    /// downcastable from the resulting report.
+    fn stdout_err(self) -> Result<T>;
+}
+
+impl<T> WriteResultExt<T> for std::io::Result<T> {
+    fn stdout_err(self) -> Result<T> {
+        self.map_err(|e| color_eyre::Report::new(StdoutWriteError(e)))
+    }
+}
+
 pub async fn cmd_runs(command: Option<RunsCommands>, json: bool, verbose: bool) -> Result<()> {
     match command {
         None => cmd_runs_list(RunsListArgs::default(), json, verbose).await,
@@ -118,17 +155,17 @@ async fn cmd_runs_list(args: RunsListArgs, json: bool, verbose: bool) -> Result<
     let mut stdout = std::io::stdout().lock();
     if json {
         for run in &runs {
-            writeln!(stdout, "{}", serde_json::to_string(run)?)?;
+            writeln!(stdout, "{}", serde_json::to_string(run)?).stdout_err()?;
         }
         return Ok(());
     }
 
     if runs.is_empty() {
-        writeln!(stdout, "No runs found.")?;
+        writeln!(stdout, "No runs found.").stdout_err()?;
         return Ok(());
     }
 
-    writeln!(stdout, "{}", render_runs_table(&runs))?;
+    writeln!(stdout, "{}", render_runs_table(&runs)).stdout_err()?;
     Ok(())
 }
 
@@ -140,7 +177,7 @@ async fn cmd_runs_show(run_id: &str, json: bool, verbose: bool) -> Result<()> {
 
     let mut stdout = std::io::stdout().lock();
     if json {
-        writeln!(stdout, "{}", serde_json::to_string_pretty(&run)?)?;
+        writeln!(stdout, "{}", serde_json::to_string_pretty(&run)?).stdout_err()?;
     } else {
         print_run_detail(&mut stdout, &run)?;
     }
@@ -171,10 +208,10 @@ async fn cmd_runs_properties(
     let mut stdout = std::io::stdout().lock();
     if json {
         for property in &properties {
-            writeln!(stdout, "{}", serde_json::to_string(property)?)?;
+            writeln!(stdout, "{}", serde_json::to_string(property)?).stdout_err()?;
         }
     } else if properties.is_empty() {
-        writeln!(stdout, "No properties found.")?;
+        writeln!(stdout, "No properties found.").stdout_err()?;
     } else {
         let event_rows = flatten_property_events(&properties);
         let non_event_rows = flatten_non_event_property_values(&properties);
@@ -186,7 +223,7 @@ async fn cmd_runs_properties(
         if !non_event_rows.is_empty() {
             sections.push(render_property_values_table(&non_event_rows));
         }
-        writeln!(stdout, "{}", sections.join("\n\n"))?;
+        writeln!(stdout, "{}", sections.join("\n\n")).stdout_err()?;
     }
 
     Ok(())
@@ -228,7 +265,7 @@ fn print_run_detail(out: &mut impl Write, run: &RunDetail) -> Result<()> {
 
     let label_width = rows.iter().map(|(label, _)| label.len()).max().unwrap_or(0);
     for (label, value) in &rows {
-        writeln!(out, "{label:label_width$}  {}", sanitize(value))?;
+        writeln!(out, "{label:label_width$}  {}", sanitize(value)).stdout_err()?;
     }
     Ok(())
 }
@@ -248,7 +285,7 @@ async fn cmd_runs_build_logs(run_id: &str, json: bool, verbose: bool) -> Result<
 
     if json {
         stream_ndjson_lines(stream, NoOpTransformer {}, |line| {
-            writeln!(stdout, "{line}")?;
+            writeln!(stdout, "{line}").stdout_err()?;
             Ok(())
         })
         .await
@@ -258,9 +295,9 @@ async fn cmd_runs_build_logs(run_id: &str, json: bool, verbose: bool) -> Result<
                 let ts = entry["timestamp"].as_str().unwrap_or("");
                 let stream = entry["stream"].as_str().unwrap_or("out");
                 let text = sanitize(entry["text"].as_str().unwrap_or(""));
-                writeln!(stdout, "{ts} [{stream}] {text}")?;
+                writeln!(stdout, "{ts} [{stream}] {text}").stdout_err()?;
             } else {
-                writeln!(stdout, "{line}")?;
+                writeln!(stdout, "{line}").stdout_err()?;
             }
             Ok(())
         })
@@ -280,7 +317,7 @@ async fn cmd_runs_events(run_id: &str, query: &[String], json: bool, verbose: bo
     let mut stdout = std::io::stdout().lock();
     if json {
         stream_ndjson_lines(stream, NoOpTransformer {}, |line| {
-            writeln!(stdout, "{line}")?;
+            writeln!(stdout, "{line}").stdout_err()?;
             Ok(())
         })
         .await
@@ -289,7 +326,8 @@ async fn cmd_runs_events(run_id: &str, query: &[String], json: bool, verbose: bo
             stdout,
             "{:<22}  {:<22}  {:<20}  OUTPUT",
             "HASH", "VTIME", "SOURCE"
-        )?;
+        )
+        .stdout_err()?;
         stream_ndjson_lines(stream, NoOpTransformer {}, |line| {
             if let Ok(entry) = serde_json::from_str::<Value>(line) {
                 let rendered = render_event_entry(&entry);
@@ -300,9 +338,10 @@ async fn cmd_runs_events(run_id: &str, query: &[String], json: bool, verbose: bo
                 writeln!(
                     stdout,
                     "{input_hash:<22}  {vtime:<22}  {source:<20}  {output}"
-                )?;
+                )
+                .stdout_err()?;
             } else {
-                writeln!(stdout, "{:<22}  {:<22}  {:<20}  {line}", "", "", "")?;
+                writeln!(stdout, "{:<22}  {:<22}  {:<20}  {line}", "", "", "").stdout_err()?;
             }
             Ok(())
         })
@@ -340,29 +379,29 @@ async fn cmd_runs_logs(
                     active_faults: json!({}),
                 },
                 |line| {
-                    writeln!(stdout, "{line}")?;
+                    writeln!(stdout, "{line}").stdout_err()?;
                     Ok(())
                 },
             )
             .await
         } else {
             stream_ndjson_lines(stream, NoOpTransformer {}, |line| {
-                writeln!(stdout, "{line}")?;
+                writeln!(stdout, "{line}").stdout_err()?;
                 Ok(())
             })
             .await
         }
     } else {
-        writeln!(stdout, "{:<22}  {:<20}  OUTPUT", "VTIME", "SOURCE")?;
+        writeln!(stdout, "{:<22}  {:<20}  OUTPUT", "VTIME", "SOURCE").stdout_err()?;
         stream_ndjson_lines(stream, NoOpTransformer {}, |line| {
             if let Ok(entry) = serde_json::from_str::<Value>(line) {
                 let rendered = render_event_entry(&entry);
                 let vtime = rendered.vtime;
                 let source = rendered.source;
                 let output = rendered.output;
-                writeln!(stdout, "{vtime:<22}  {source:<20}  {output}")?;
+                writeln!(stdout, "{vtime:<22}  {source:<20}  {output}").stdout_err()?;
             } else {
-                writeln!(stdout, "{line}")?;
+                writeln!(stdout, "{line}").stdout_err()?;
             }
             Ok(())
         })

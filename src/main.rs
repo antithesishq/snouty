@@ -12,6 +12,7 @@ use snouty::container;
 use snouty::docs;
 use snouty::moment;
 use snouty::params::Params;
+use snouty::runs::StdoutWriteError;
 use snouty::validate;
 
 fn read_stdin() -> Result<String> {
@@ -113,14 +114,14 @@ async fn main() -> Result<()> {
 
     // When our output is piped into something that exits early (e.g. `snouty
     // runs list | head`), writes to stdout fail with BrokenPipe. That's a
-    // normal way for a pipeline to end, not an error — exit quietly. Network
-    // errors don't take this path: they surface as reqwest errors, whose
-    // underlying io::Error is not downcastable from the report.
+    // normal way for a pipeline to end, not an error — exit quietly. Only
+    // errors explicitly tagged as stdout writes qualify, so io errors from
+    // other layers (e.g. inside reqwest) can never take this path.
     match result {
         Err(err)
             if err
-                .downcast_ref::<io::Error>()
-                .is_some_and(|e| e.kind() == ErrorKind::BrokenPipe) =>
+                .downcast_ref::<StdoutWriteError>()
+                .is_some_and(StdoutWriteError::is_broken_pipe) =>
         {
             Ok(())
         }

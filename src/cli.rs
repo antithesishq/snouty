@@ -245,10 +245,15 @@ pub struct LaunchArgs {
     /// Path to a local config directory containing either docker-compose.yaml
     /// or a manifests/ subdirectory (Kubernetes manifests). Builds and pushes
     /// a config image automatically, setting antithesis.config_image. For
-    /// docker-compose configs, locally-built service images are also pushed
-    /// and exposed via antithesis.images. For Kubernetes configs, images are
-    /// pulled by the platform from the references in the manifests.
-    /// Requires ANTITHESIS_REPOSITORY environment variable.
+    /// docker-compose configs, every service image must be present in the
+    /// local image store (snouty never pulls); each one is pinned to its
+    /// local digest — served from a registry that already has it, or pushed —
+    /// and the compose file is rewritten with the digest-pinned images before
+    /// being baked into the config image, so the platform runs exactly what
+    /// was on this machine. For Kubernetes configs, images are pulled by the
+    /// platform from the references in the manifests. Requires the
+    /// docker-compose binary (Docker Compose v2) and the ANTITHESIS_REPOSITORY
+    /// environment variable.
     #[arg(short, long, conflicts_with = "config_image")]
     pub config: Option<std::path::PathBuf>,
 

@@ -1,38 +1,86 @@
-# snouty launch --config — image push and pinning
+# snouty launch --config — image push and digest pinning
 #
-# When --config is used, snouty detects local build images, tags them
-# with the ANTITHESIS_REPOSITORY prefix, and pushes them alongside a
-# config image.
-# Both get pinned references (name@sha256:digest) in the webhook params.
+# When --config is used with a docker-compose config, the local image store is
+# the single source of truth: snouty never pulls. Every service image must be
+# present locally and is pinned to its local digest — served from a registry
+# that verifiably already has that digest (a manifest-only round trip, no
+# pull/push), or tagged with the ANTITHESIS_REPOSITORY prefix and pushed. The
+# compose file is then canonicalized and rewritten with digest-pinned image
+# references and baked into the config image. The config image itself is
+# pinned (name@sha256:digest) in the webhook params. snouty no longer sets
+# antithesis.images — the pinned compose file is the source of truth.
 
-# Local build images are tagged with registry prefix, pushed and pinned.
+# Local build images are tagged with the registry prefix and pushed; the
+# config image is pinned. antithesis.images is never set.
 mock-server 200 '{"runId":"run-123","statusCode":200}'
 build-image myapp:latest images/myapp
 build-image sidecar:v1 images/sidecar
 snouty launch -w basic_test -c push_config --duration 30
-stderr '"antithesis.config_image":.*@sha256:'
-stderr '"antithesis.images":.*myapp@sha256:'
-stderr '"antithesis.images":.*sidecar@sha256:'
-
-# No compose images match the registry — only config image is pinned.
-mock-server 200 '{"runId":"run-123","statusCode":200}'
-snouty launch -w basic_test -c external_config --duration 30
+stderr 'Pushing image:.*myapp'
+stderr 'Pushing image:.*sidecar'
 stderr '"antithesis.config_image":.*@sha256:'
 ! stderr '"antithesis.images"'
 
-# Mixed: local build image is tagged+pushed, external image is skipped.
+# Relaunching after a successful push skips re-pushing: the registry round
+# trip confirms the pushed digest is already there. docker-only — podman's
+# push digest differs from its local digest (recompression), so podman
+# re-pushes by design. (No negated assertions here: testscript-rs applies `!`
+# to a condition-skipped command and fails it, so `[docker] ! stderr` can't
+# skip. The positive skip lines below cover both service images anyway.)
+[docker] mock-server 200 '{"runId":"run-123","statusCode":200}'
+[docker] snouty launch -w basic_test -c push_config --duration 30
+[docker] stderr 'Image already in a registry, skipping push:.*myapp'
+[docker] stderr 'Image already in a registry, skipping push:.*sidecar'
+[docker] stderr '"antithesis.config_image":.*@sha256:'
+
+# A registry-qualified third-party image that is NOT in the local store fails
+# fast — snouty never pulls, so the user must pull it themselves first.
+mock-server 200 '{"runId":"run-123","statusCode":200}'
+! snouty launch -w basic_test -c external_config --duration 30
+stderr '.*some images are not available locally.*'
+stderr '.*image: docker.io/library/nginx-snouty-absent:latest.*'
+stderr '.*pull or build the missing images, then retry.*'
+! stderr 'Pushing image:'
+
+# Mixed: even though the build image is present, a missing remote image fails
+# the launch before anything is pushed.
 mock-server 200 '{"runId":"run-123","statusCode":200}'
 build-image myapp:latest images/myapp
-snouty launch -w basic_test -c mixed_config --duration 30
-stderr '"antithesis.images":.*myapp@sha256:'
-! stderr 'nginx.*@sha256:'
-stderr '"antithesis.config_image":.*@sha256:'
+! snouty launch -w basic_test -c mixed_config --duration 30
+stderr '.*image: docker.io/library/nginx-snouty-absent:latest.*'
+! stderr 'Pushing image:'
 
-# Local image without build stanza is not pushed.
+# A local image referenced WITHOUT a build stanza, but built before launch, is
+# pushed and pinned anyway — local availability is enough.
 mock-server 200 '{"runId":"run-123","statusCode":200}'
-snouty launch -w basic_test -c local_no_build_config --duration 30
+build-image snouty-prebuilt-xyz:latest images/myapp
+snouty launch -w basic_test -c prebuilt_config --duration 30
+stderr 'Pushing image:.*snouty-prebuilt-xyz'
 stderr '"antithesis.config_image":.*@sha256:'
 ! stderr '"antithesis.images"'
+
+# A bare local image that is not in the local store fails fast, rather than
+# letting Antithesis fail to pull it partway into a run.
+mock-server 200 '{"runId":"run-123","statusCode":200}'
+! snouty launch -w basic_test -c local_no_build_config --duration 30
+stderr '.*image: localapp:latest.*'
+! stderr 'Pushing image:'
+
+# A build-only service without an explicit image: resolves to compose's
+# default build tag (<project>-<service>:latest). Built beforehand, it's
+# pushed and pinned like any other local image.
+mock-server 200 '{"runId":"run-123","statusCode":200}'
+build-image buildonly_config-app:latest images/myapp
+snouty launch -w basic_test -c buildonly_config --duration 30
+stderr 'Pushing image:.*buildonly_config-app'
+stderr '"antithesis.config_image":.*@sha256:'
+
+# The same service without the build is rejected with guidance naming the
+# default tag, before anything is pushed.
+mock-server 200 '{"runId":"run-123","statusCode":200}'
+! snouty launch -w basic_test -c buildonly_missing_config --duration 30
+stderr '.*image: buildonly_missing_config-app:latest .compose.s default build tag for service .app..*'
+! stderr 'Pushing image:'
 
 # A non-amd64 image scheduled for push is rejected before any push happens.
 mock-server 200 '{"runId":"run-123","statusCode":200}'
@@ -41,14 +89,6 @@ build-image --platform linux/arm64 arm-launch:latest images/arm_launch
 stderr 'x86-64 \(amd64\).*'
 stderr 'image '\''.*arm-launch:latest'\'' has architecture '\''arm64'\''.*'
 ! stderr 'Pushing image:'
-
-# A non-amd64 image that is NOT pushed (no registry prefix, no build) does
-# not trigger the architecture check.
-mock-server 200 '{"runId":"run-123","statusCode":200}'
-build-image --platform linux/arm64 arm-external:latest images/arm_launch
-snouty launch -w basic_test -c arm_external_config --duration 30
-stderr '"antithesis.config_image":.*@sha256:'
-! stderr '"antithesis.images"'
 
 # Kubernetes config: builds and pushes the config image, never sets
 # antithesis.images (the platform pulls images from the manifests).
@@ -74,27 +114,35 @@ services:
 -- external_config/docker-compose.yaml --
 services:
   app:
-    image: docker.io/library/nginx:latest
+    image: docker.io/library/nginx-snouty-absent:latest
 -- mixed_config/docker-compose.yaml --
 services:
   app:
     build: .
     image: myapp:latest
   nginx:
-    image: docker.io/library/nginx:latest
+    image: docker.io/library/nginx-snouty-absent:latest
+-- prebuilt_config/docker-compose.yaml --
+services:
+  app:
+    image: snouty-prebuilt-xyz:latest
 -- local_no_build_config/docker-compose.yaml --
 services:
   app:
     image: localapp:latest
+-- buildonly_config/docker-compose.yaml --
+services:
+  app:
+    build: .
+-- buildonly_missing_config/docker-compose.yaml --
+services:
+  app:
+    build: .
 -- arm_push_config/docker-compose.yaml --
 services:
   app:
     build: .
     image: arm-launch:latest
--- arm_external_config/docker-compose.yaml --
-services:
-  app:
-    image: arm-external:latest
 -- k8s_config/manifests/ns.yaml --
 apiVersion: v1
 kind: Namespace

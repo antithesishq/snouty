@@ -10,6 +10,8 @@ pkgs.mkShell {
     nixfmt
     openssl
     pkg-config
+    # snouty drives Docker Compose v2 via the `docker-compose` binary.
+    docker-compose
   ];
 
   env.OPENSSL_NO_VENDOR = true;

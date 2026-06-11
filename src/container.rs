@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::io::Write;
 use std::path::Path;
 use std::process::Command;
@@ -104,8 +104,13 @@ pub trait ContainerRuntime: Send + Sync {
         cmd
     }
 
-    /// Return a compose backend appropriate for this runtime.
-    fn compose(&self) -> Box<dyn Compose + '_>;
+    /// The `DOCKER_HOST` value `docker-compose` should use to drive this
+    /// runtime's container engine, or `None` to use docker-compose's default
+    /// (the Docker daemon). Returns `Err` when the engine's API socket is
+    /// required but unavailable. The default targets the Docker daemon.
+    fn engine_docker_host(&self) -> Result<Option<String>> {
+        Ok(None)
+    }
 
     /// Push the image to the registry, returning the pinned image reference
     /// (e.g. `example.com/foo/image@sha256:...`).
@@ -157,6 +162,52 @@ pub trait ContainerRuntime: Send + Sync {
 
         Ok(architecture.to_string())
     }
+
+    /// Read the `repo@sha256:...` digest references the local store associates
+    /// with an image.
+    ///
+    /// Entries recorded by pulls are ground truth (the digest the registry
+    /// actually served), but both podman and docker (containerd store) also
+    /// synthesize entries for names an image was merely tagged with — so an
+    /// entry does NOT prove the named registry serves the digest. Verify with
+    /// [`remote_manifest`](Self::remote_manifest) before relying on one.
+    fn image_repo_digests(&self, image_ref: &str) -> Result<Vec<String>> {
+        let runtime = self.name();
+        let output = Command::new(runtime)
+            .args(["image", "inspect", image_ref])
+            .output()
+            .wrap_err_with(|| format!("failed to run '{runtime} image inspect'"))?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(eyre!("'{runtime} image inspect {image_ref}' failed"))
+                .with_section(move || stderr.trim().to_string().header("Stderr:"));
+        }
+        let parsed: serde_json::Value = serde_json::from_slice(&output.stdout)
+            .wrap_err_with(|| format!("failed to parse '{runtime} image inspect' output"))?;
+        Ok(parsed
+            .get(0)
+            .and_then(|img| img.get("RepoDigests"))
+            .and_then(|d| d.as_array())
+            .map(|entries| {
+                entries
+                    .iter()
+                    .filter_map(|v| v.as_str().map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default())
+    }
+
+    /// Ask the registry named by `image_ref` (typically `repo@sha256:...`)
+    /// whether it serves that manifest — a manifest-only API round trip via
+    /// `{runtime} manifest inspect`, using the runtime's own auth and TLS
+    /// configuration. Never pulls or pushes anything.
+    ///
+    /// Every failure (missing manifest, auth, unreachable registry, or a
+    /// runtime that can't inspect this manifest kind — podman errors on
+    /// single-platform manifests) maps to [`RemoteManifest::NotFound`]:
+    /// callers fall back to pushing, so degraded networks or runtime quirks
+    /// can only cause extra uploads, never a bad pin.
+    fn remote_manifest(&self, image_ref: &str) -> RemoteManifest;
 
     /// Tag an image with a new reference.
     fn image_tag(&self, src: &str, dst: &str) -> Result<()> {
@@ -247,46 +298,6 @@ pub trait ContainerRuntime: Send + Sync {
         eprintln!("Pushing config image: {}", image_ref);
         let pinned = self.image_push(image_ref)?;
         eprintln!("Config image pushed successfully: {pinned}");
-        Ok(pinned)
-    }
-
-    /// Push compose images that match the registry.
-    /// Returns the pinned image reference for each pushed image.
-    fn push_compose_images(&self, config: &ComposeConfig, registry: &str) -> Result<Vec<String>> {
-        let compose = self.compose();
-        let contents = compose.contents(config, None)?;
-        let registry_trimmed = registry.trim_end_matches('/');
-        let prefix = format!("{registry_trimmed}/");
-
-        // Phase 1: Build the image list. Local build images get tagged with
-        // the registry prefix so they become pushable.
-        let mut tagged = HashSet::new();
-        let mut images = Vec::new();
-        for service in &contents.services {
-            if contents.build_services.contains(&service.name)
-                && is_local_image(&service.image)
-                && !service.image.starts_with(&prefix)
-            {
-                let dest = format!("{prefix}{}", service.image);
-                if tagged.insert(service.image.clone()) {
-                    self.image_tag(&service.image, &dest)?;
-                }
-                images.push(dest);
-            } else {
-                images.push(service.image.clone());
-            }
-        }
-
-        // Phase 2: arch-check, then push images matching the registry prefix.
-        let pushable = filter_pushable_images(&images, registry);
-        validate_image_architectures(self, &pushable)?;
-        let mut pinned = Vec::new();
-        for image in pushable {
-            eprintln!("Pushing image: {image}");
-            let p = self.image_push(image)?;
-            eprintln!("Image pushed: {p}");
-            pinned.push(p);
-        }
         Ok(pinned)
     }
 
@@ -393,69 +404,133 @@ fn stderr_indicates_missing_source(stderr: &str) -> bool {
         || s.contains("could not be found on container")
 }
 
-/// Compose backend abstraction.
+/// The `docker-compose` (Docker Compose v2) binary. snouty always drives
+/// Compose through this binary, independent of the image runtime, pointing it
+/// at the right engine via `DOCKER_HOST`.
+const DOCKER_COMPOSE: &str = "docker-compose";
+
+/// Build a [`DockerCompose`] handle targeting `rt`'s container engine.
 ///
-/// Implementations customize behavior via hook methods (`up_extra_args`,
-/// `logs_extra_args`, `ps_extra_args`). The default method implementations
-/// build commands using `self.runtime().command()`.
-pub trait Compose: Send + Sync {
-    /// Access the underlying container runtime.
-    fn runtime(&self) -> &dyn ContainerRuntime;
+/// Verifies the `docker-compose` binary is installed (Docker Compose v2) with a
+/// clear error otherwise. An explicit `DOCKER_HOST` already set in the
+/// environment is always respected; otherwise, for a podman runtime,
+/// docker-compose is pointed at podman's API socket so podman backs Compose.
+pub fn docker_compose(rt: &dyn ContainerRuntime) -> Result<DockerCompose<'_>> {
+    ensure_docker_compose()?;
+    let docker_host = if std::env::var_os("DOCKER_HOST").is_some() {
+        None
+    } else {
+        rt.engine_docker_host()?
+    };
+    Ok(DockerCompose { rt, docker_host })
+}
 
-    // --- customization hooks (override per-backend) ---
+/// Verify the `docker-compose` binary is present and is Docker Compose v2.
+fn ensure_docker_compose() -> Result<()> {
+    docker_compose_version().map(|_| ())
+}
 
-    /// Extra arguments for `compose up`.
-    /// Returns `(pre_args, post_args)` — pre_args go before the `up` subcommand,
-    /// post_args go after it.
-    fn up_extra_args(&self) -> (&[&str], &[&str]) {
-        (&[], &[])
+/// Return the `docker-compose` version banner, with a clear error when the
+/// binary is missing or is not Docker Compose v2.
+pub fn docker_compose_version() -> Result<String> {
+    match Command::new(DOCKER_COMPOSE).arg("version").output() {
+        Ok(o) if o.status.success() => {
+            let version = String::from_utf8_lossy(&o.stdout).trim().to_string();
+            if is_compose_v2_version(&version) {
+                Ok(version)
+            } else {
+                Err(eyre!(
+                    "snouty requires Docker Compose v2 (the `docker-compose` binary)"
+                ))
+                .with_section(move || version.header("docker-compose version:"))
+                .with_suggestion(|| {
+                    "install Docker Compose v2: https://docs.docker.com/compose/install/"
+                })
+            }
+        }
+        Ok(o) => {
+            let stderr = String::from_utf8_lossy(&o.stderr);
+            Err(eyre!(
+                "`docker-compose version` failed; snouty requires the `docker-compose` binary (Docker Compose v2)"
+            ))
+            .with_section(move || stderr.trim().to_string().header("Stderr:"))
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Err(eyre!(
+            "snouty requires the `docker-compose` binary (Docker Compose v2), but it was not found on PATH"
+        ))
+        .with_suggestion(|| "install Docker Compose v2: https://docs.docker.com/compose/install/"),
+        Err(e) => Err(eyre!("failed to run `docker-compose version`: {e}")),
+    }
+}
+
+/// Whether `docker-compose version` output identifies Docker Compose v2.
+fn is_compose_v2_version(output: &str) -> bool {
+    output.to_lowercase().contains("docker compose")
+}
+
+/// Drives Docker Compose v2 via the `docker-compose` binary.
+///
+/// All compose operations go through `docker-compose`, independent of which
+/// runtime built or pushed the images. `docker_host`, when set, points
+/// docker-compose at a specific engine (e.g. podman's API socket); when `None`,
+/// docker-compose uses its default (the Docker daemon, or an explicit
+/// `DOCKER_HOST` inherited from the environment).
+pub struct DockerCompose<'a> {
+    rt: &'a dyn ContainerRuntime,
+    docker_host: Option<String>,
+}
+
+impl DockerCompose<'_> {
+    /// The container runtime that owns the compose containers (used for
+    /// container-level operations such as `cp`/`exec`).
+    pub fn runtime(&self) -> &dyn ContainerRuntime {
+        self.rt
     }
 
-    /// Extra arguments for `compose logs`.
-    /// Returns `(pre_args, post_args)` — pre_args go before the `logs` subcommand,
-    /// post_args go after it.
-    fn logs_extra_args(&self) -> (&[&str], &[&str]) {
-        (&[], &[])
+    /// The `DOCKER_HOST` docker-compose is wired to, if any. Used to reproduce
+    /// the compose invocation in user-facing hints.
+    pub fn docker_host(&self) -> Option<&str> {
+        self.docker_host.as_deref()
     }
 
-    /// Arguments to get JSON output from `compose ps`.
-    /// Returns `(pre_args, post_args)` — pre_args go before the `ps` subcommand,
-    /// post_args go after it.
-    fn ps_extra_args(&self) -> (&[&str], &[&str]) {
-        (&[], &["--format", "json"])
-    }
-
-    /// Whether `compose ps -a` is safe to use on this backend. When false,
-    /// `ps()` omits `-a` and the returned listing reports
-    /// `includes_stopped = false` so callers can suppress diagnostics that
-    /// depend on seeing stopped containers.
-    ///
-    /// Older `podman-compose` rejects `-a`, and even where it's accepted it
-    /// has been observed to dispatch to `podman ps -a` and leak containers
-    /// from unrelated projects.
-    fn supports_ps_all(&self) -> bool {
-        true
-    }
-
-    // --- default implementations ---
-
-    /// Run `compose config` to resolve the compose file with env substitutions,
-    /// returning the resolved YAML as a string.
-    fn raw_contents(&self, config: &ComposeConfig, overlay: Option<&Path>) -> Result<String> {
-        let runtime = self.runtime().name();
-        let mut cmd = self.runtime().command(&["compose"]);
-        cmd.env("COMPOSE_PROJECT_NAME", "snouty");
+    /// Base `docker-compose` command with engine wiring applied.
+    fn command(&self, config: &ComposeConfig) -> Command {
+        let mut cmd = Command::new(DOCKER_COMPOSE);
         cmd.current_dir(config.dir());
+        if let Some(host) = &self.docker_host {
+            cmd.env("DOCKER_HOST", host);
+        }
+        cmd
+    }
+
+    /// Async variant of [`command`](Self::command).
+    fn tokio_command(&self, config: &ComposeConfig) -> tokio::process::Command {
+        self.command(config).into()
+    }
+
+    /// Run `docker-compose config [extra_args]`, returning the resolved YAML
+    /// as a string.
+    fn config_yaml(
+        &self,
+        config: &ComposeConfig,
+        overlay: Option<&Path>,
+        extra_args: &[&str],
+    ) -> Result<String> {
+        // No COMPOSE_PROJECT_NAME override: the project name must resolve
+        // exactly as it does when the user runs `docker compose` in the
+        // config dir, because default build tags are derived from it.
+        let mut cmd = self.command(config);
         cmd.args(compose_file_args(overlay));
         cmd.arg("config");
+        cmd.args(extra_args);
         let output = cmd
             .output()
-            .wrap_err(format!("failed to run '{runtime} compose config'"))?;
+            .wrap_err("failed to run 'docker-compose config'")?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
             let stdout = String::from_utf8_lossy(&output.stdout);
-            return Err(eyre!("'{runtime} compose config' failed"))
+            return Err(eyre!("'docker-compose config' failed"))
                 .with_section(move || stdout.trim().to_string().header("Stdout:"))
                 .with_section(move || stderr.trim().to_string().header("Stderr:"));
         }
@@ -464,58 +539,58 @@ pub trait Compose: Send + Sync {
     }
 
     /// Resolve and parse a compose config into structured contents.
-    fn contents(&self, config: &ComposeConfig, overlay: Option<&Path>) -> Result<ComposeContents> {
-        let yaml = self.raw_contents(config, overlay)?;
+    pub fn contents(
+        &self,
+        config: &ComposeConfig,
+        overlay: Option<&Path>,
+    ) -> Result<ComposeContents> {
+        let yaml = self.config_yaml(config, overlay, &[])?;
         parse_compose_config(&yaml)
     }
 
-    /// Parse `compose ps [-a] --format json` into a [`PsListing`].
+    /// Canonicalized compose file for baking into the config image.
     ///
-    /// Passes `-a` only when [`supports_ps_all`](Self::supports_ps_all) is
-    /// true, so stopped/exited containers are included alongside running
-    /// ones. Callers can then check [`ComposeContainer::stopped`] to decide
-    /// what to do with them. The returned listing's `includes_stopped`
-    /// indicates whether the backend was queried with `-a`.
-    fn ps(&self, config: &ComposeConfig, overlay: Option<&Path>) -> Result<PsListing> {
-        let runtime = self.runtime().name();
-        let includes_stopped = self.supports_ps_all();
-        let mut cmd = self.runtime().command(&["compose"]);
-        cmd.current_dir(config.dir());
-        let (pre, post) = self.ps_extra_args();
-        cmd.args(compose_file_args(overlay));
-        cmd.args(pre);
-        if includes_stopped {
-            cmd.args(["ps", "-a"]);
-        } else {
-            cmd.arg("ps");
-        }
-        cmd.args(post);
+    /// `docker-compose config` itself does the canonicalization: anchors,
+    /// aliases, and merge keys are inlined, and the structure is normalized.
+    /// `--no-interpolate` keeps `${VAR}` references for the platform to
+    /// resolve in its own environment, and `--no-path-resolution` keeps
+    /// relative paths relative — both would otherwise be baked with values
+    /// from this machine.
+    fn canonical_contents(&self, config: &ComposeConfig) -> Result<String> {
+        self.config_yaml(config, None, &["--no-interpolate", "--no-path-resolution"])
+    }
 
-        let output = cmd
-            .output()
-            .wrap_err_with(|| format!("failed to run '{runtime} compose ps'"))?;
+    /// Parse `docker-compose ps -a --format json` into the list of containers,
+    /// including stopped/exited ones so callers can flag stranded test
+    /// commands. Inspect [`ComposeContainer::stopped`] to tell them apart.
+    pub fn ps(
+        &self,
+        config: &ComposeConfig,
+        overlay: Option<&Path>,
+    ) -> Result<Vec<ComposeContainer>> {
+        let mut cmd = self.command(config);
+        cmd.args(compose_file_args(overlay));
+        cmd.args(["ps", "-a", "--format", "json"]);
+
+        let output = cmd.output().wrap_err("failed to run 'docker-compose ps'")?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(eyre!("'{runtime} compose ps' failed"))
+            return Err(eyre!("'docker-compose ps' failed"))
                 .with_section(move || stderr.trim().to_string().header("Stderr:"));
         }
 
         let stdout = String::from_utf8_lossy(&output.stdout);
-        let containers = parse_compose_ps(&stdout)?;
-        Ok(PsListing {
-            containers,
-            includes_stopped,
-        })
+        parse_compose_ps(&stdout)
     }
 
     /// Run a command inside a running compose service container.
     ///
-    /// Runs `{runtime} compose exec -T [--workdir workdir] {service} {cmd...}`.
-    /// The `-T` flag disables TTY allocation for non-interactive use.
-    /// If `workdir` is `Some`, sets the working directory inside the container.
+    /// Runs `docker-compose exec -T [--workdir workdir] {service} {cmd...}`.
+    /// The `-T` flag disables TTY allocation for non-interactive use. If
+    /// `workdir` is `Some`, sets the working directory inside the container.
     /// Stdout and stderr are captured in the returned `Output`.
-    fn exec(
+    pub fn exec(
         &self,
         config: &ComposeConfig,
         overlay: Option<&Path>,
@@ -524,9 +599,7 @@ pub trait Compose: Send + Sync {
         env: &[(&str, &str)],
         cmd: &[&str],
     ) -> Result<std::process::Output> {
-        let runtime = self.runtime().name();
-        let mut command = self.runtime().command(&["compose"]);
-        command.current_dir(config.dir());
+        let mut command = self.command(config);
         command.args(compose_file_args(overlay));
         command.args(["exec", "-T"]);
         for (k, v) in env {
@@ -540,28 +613,22 @@ pub trait Compose: Send + Sync {
 
         command
             .output()
-            .wrap_err_with(|| format!("failed to run '{runtime} compose exec'"))
+            .wrap_err("failed to run 'docker-compose exec'")
     }
 
-    /// Spawn `compose up --detach` and return the child process.
+    /// Spawn `docker-compose up --detach` and return the child process.
     ///
-    /// stdout and stderr are inherited so progress is visible during pulls.
-    /// The caller is responsible for awaiting the child and checking its exit
-    /// status. Uses `process_group(0)` so the whole group can be killed on
-    /// timeout.
-    fn up_detached(
+    /// stdout and stderr are inherited so progress is visible during pulls. The
+    /// caller awaits the child and checks its exit status. Uses
+    /// `process_group(0)` so the whole group can be killed on timeout.
+    pub fn up_detached(
         &self,
         config: &ComposeConfig,
         overlay: Option<&Path>,
     ) -> Result<ProcessGroupChild> {
-        let runtime = self.runtime().name();
-        let mut cmd = self.runtime().tokio_command(&["compose"]);
-        cmd.current_dir(config.dir());
-        let (pre, post) = self.up_extra_args();
+        let mut cmd = self.tokio_command(config);
         cmd.args(compose_file_args(overlay));
-        cmd.args(pre);
-        cmd.args(["up", "--detach", "--no-build"]);
-        cmd.args(post);
+        cmd.args(["up", "--detach", "--no-build", "--pull=never"]);
         cmd.stdin(std::process::Stdio::null());
         cmd.stdout(std::process::Stdio::inherit());
         cmd.stderr(std::process::Stdio::inherit());
@@ -569,27 +636,21 @@ pub trait Compose: Send + Sync {
 
         cmd.spawn()
             .map(ProcessGroupChild::new)
-            .wrap_err_with(|| format!("failed to start '{runtime} compose up --detach'"))
+            .wrap_err("failed to start 'docker-compose up --detach'")
     }
 
-    /// Spawn `compose logs --follow` and return the child process.
+    /// Spawn `docker-compose logs --follow` and return the child process.
     ///
-    /// stdout and stderr are inherited so compose log output goes straight
-    /// to the terminal. stdin is null. The process exits when all
-    /// containers stop.
-    fn logs_follow(
+    /// stdout and stderr are inherited so log output goes straight to the
+    /// terminal. stdin is null. The process exits when all containers stop.
+    pub fn logs_follow(
         &self,
         config: &ComposeConfig,
         overlay: Option<&Path>,
     ) -> Result<ProcessGroupChild> {
-        let runtime = self.runtime().name();
-        let mut cmd = self.runtime().tokio_command(&["compose"]);
-        cmd.current_dir(config.dir());
-        let (pre, post) = self.logs_extra_args();
+        let mut cmd = self.tokio_command(config);
         cmd.args(compose_file_args(overlay));
-        cmd.args(pre);
         cmd.args(["logs", "--follow"]);
-        cmd.args(post);
         cmd.stdin(std::process::Stdio::null());
         cmd.stdout(std::process::Stdio::inherit());
         cmd.stderr(std::process::Stdio::inherit());
@@ -597,13 +658,12 @@ pub trait Compose: Send + Sync {
 
         cmd.spawn()
             .map(ProcessGroupChild::new)
-            .wrap_err_with(|| format!("failed to start '{runtime} compose logs --follow'"))
+            .wrap_err("failed to start 'docker-compose logs --follow'")
     }
 
-    /// Run `compose down` for cleanup. Best-effort, ignores errors.
-    fn down(&self, config: &ComposeConfig, overlay: Option<&Path>) {
-        let mut cmd = self.runtime().command(&["compose"]);
-        cmd.current_dir(config.dir());
+    /// Run `docker-compose down` for cleanup. Best-effort, ignores errors.
+    pub fn down(&self, config: &ComposeConfig, overlay: Option<&Path>) {
+        let mut cmd = self.command(config);
         cmd.args(compose_file_args(overlay));
         cmd.args(["down", "--timeout", "0"]);
         cmd.stdin(std::process::Stdio::null());
@@ -611,102 +671,285 @@ pub trait Compose: Send + Sync {
         cmd.stderr(std::process::Stdio::null());
         let _ = cmd.status();
     }
+
+    /// Resolve every compose service image to a digest-pinned reference and
+    /// return the `docker-compose.yaml` contents canonicalized and rewritten
+    /// with those pins (`name:tag@sha256:...`).
+    ///
+    /// The local image store is the single source of truth for what a launch
+    /// runs — snouty never pulls. Every service must resolve to an image that
+    /// is present locally (built via its `build:` stanza, built or loaded out
+    /// of band, or previously pulled). Each image is then pinned to its local
+    /// digest in a registry confirmed to serve it ([`Self::find_remote_pin`]),
+    /// or — when no registry has it — tagged with the `registry` prefix and
+    /// pushed, so the platform always pulls exactly what was resolved here.
+    pub fn pin_images(&self, config: &ComposeConfig, registry: &str) -> Result<String> {
+        let contents = self.contents(config, None)?;
+        validate_images_are_available(self.rt, &contents)?;
+
+        let prefix = format!("{}/", registry.trim_end_matches('/'));
+
+        // Resolve each distinct image once: pin it from a registry that
+        // already serves the local digest, or schedule it for push.
+        let mut resolution: BTreeMap<&str, Option<String>> = BTreeMap::new();
+        for service in &contents.services {
+            let image = service.image.as_str();
+            if !resolution.contains_key(image) {
+                let pin = self.find_remote_pin(image, &prefix)?;
+                if let Some(pinned_ref) = &pin {
+                    eprintln!("Image already in a registry, skipping push: {pinned_ref}");
+                }
+                resolution.insert(image, pin);
+            }
+        }
+
+        // service name -> final pinned reference (filled in for push targets
+        // after their pushes complete).
+        let mut pinned: BTreeMap<String, String> = BTreeMap::new();
+        // (service name, registry reference) for images we push ourselves.
+        let mut push_targets: Vec<(String, String)> = Vec::new();
+        let mut tagged: HashSet<&str> = HashSet::new();
+        for service in &contents.services {
+            let image = service.image.as_str();
+            if let Some(remote) = &resolution[image] {
+                pinned.insert(service.name.clone(), remote.clone());
+                continue;
+            }
+            let dest = if image.starts_with(&prefix) {
+                image.to_string()
+            } else {
+                format!("{prefix}{image}")
+            };
+            if dest != image && tagged.insert(image) {
+                self.rt.image_tag(image, &dest)?;
+            }
+            push_targets.push((service.name.clone(), dest));
+        }
+
+        // Arch-check and push each distinct image, pinning every service to
+        // its push digest (the push already reports the digest). The local
+        // architecture check applies exactly to the images whose local bytes
+        // we upload; remote pins were already amd64-verified.
+        let mut seen = HashSet::new();
+        let dests: Vec<&str> = push_targets
+            .iter()
+            .map(|(_, dest)| dest.as_str())
+            .filter(|dest| seen.insert(*dest))
+            .collect();
+        validate_image_architectures(self.rt, &dests)?;
+        let mut digests: BTreeMap<&str, String> = BTreeMap::new();
+        for dest in &dests {
+            eprintln!("Pushing image: {dest}");
+            let pinned_ref = self.rt.image_push(dest)?;
+            eprintln!("Image pushed: {pinned_ref}");
+            digests.insert(dest, pinned_ref);
+        }
+        for (name, dest) in &push_targets {
+            pinned.insert(name.clone(), digests[dest.as_str()].clone());
+        }
+
+        rewrite_compose_images(&self.canonical_contents(config)?, &pinned)
+    }
+
+    /// Find a registry that already serves `image`'s local bytes, returning
+    /// the digest-pinned reference to use, or `None` when the image must be
+    /// pushed.
+    ///
+    /// Candidate digests come from the local store's repo digests, for two
+    /// repositories: the image's own (e.g. `docker.io/library/redis` for
+    /// `redis:7`) and its `prefix`ed name from a previous snouty push. A
+    /// candidate counts only when the registry confirms it serves the digest
+    /// (a manifest-only round trip — never a pull or push) AND the platform
+    /// can run amd64 from it: a manifest list must offer an amd64 entry,
+    /// while a single manifest shares the local image's architecture, so the
+    /// local image must be amd64.
+    fn find_remote_pin(&self, image: &str, prefix: &str) -> Result<Option<String>> {
+        let repo_digests = self.rt.image_repo_digests(image)?;
+        let tag = image_ref_tag(image);
+
+        let mut repos = vec![normalize_repo(image_repo(image))];
+        if !image.starts_with(prefix) {
+            repos.push(normalize_repo(image_repo(&format!("{prefix}{image}"))));
+        }
+
+        for repo in &repos {
+            // A pull typically records several digests per repo (the
+            // per-arch manifest and the manifest list) — try them all.
+            for digest in digests_for_repo(repo, &repo_digests) {
+                let amd64_ok = match self.rt.remote_manifest(&format!("{repo}@{digest}")) {
+                    RemoteManifest::NotFound => continue,
+                    RemoteManifest::List { has_amd64 } => has_amd64,
+                    RemoteManifest::Single => self.rt.image_architecture(image)? == "amd64",
+                };
+                if amd64_ok {
+                    return Ok(Some(format!("{repo}:{tag}@{digest}")));
+                }
+                // Served, but not runnable as amd64 — keep looking; the push
+                // path's local arch check produces the actionable error.
+            }
+        }
+        Ok(None)
+    }
 }
 
-struct DockerCompose<'a> {
-    rt: &'a dyn ContainerRuntime,
-}
-
-impl Compose for DockerCompose<'_> {
-    fn runtime(&self) -> &dyn ContainerRuntime {
-        self.rt
-    }
-
-    fn up_extra_args(&self) -> (&[&str], &[&str]) {
-        (&[], &["--pull=never"])
-    }
-}
-
-struct PodmanCompose<'a> {
-    rt: &'a dyn ContainerRuntime,
-}
-
-impl Compose for PodmanCompose<'_> {
-    fn runtime(&self) -> &dyn ContainerRuntime {
-        self.rt
-    }
-
-    fn up_extra_args(&self) -> (&[&str], &[&str]) {
-        (&["--podman-run-args=--pull=never"], &[])
-    }
-
-    fn logs_extra_args(&self) -> (&[&str], &[&str]) {
-        (&[], &["--names"])
-    }
-
-    fn ps_extra_args(&self) -> (&[&str], &[&str]) {
-        (&["--podman-args=--format=json"], &[])
-    }
-
-    fn supports_ps_all(&self) -> bool {
-        // podman-compose's `ps` rejects `-a` in older releases, and where it
-        // is accepted the call has been observed to dispatch to `podman ps -a`
-        // (returning containers from all projects). Skip `-a` here, which also
-        // means the stranded-test-commands diagnostic doesn't fire on native
-        // podman-compose.
-        false
-    }
-}
-
-/// Which compose implementation podman dispatches to.
-#[derive(Clone, Copy)]
-enum ComposeFlavor {
-    /// Podman dispatches to `docker-compose` (standalone binary).
-    DockerCompose,
-    /// Podman dispatches to native `podman-compose`.
-    PodmanCompose,
-}
-
-/// Parse `compose version` output to detect which compose backend is in use.
+/// Rewrite each service's `image:` field to its pinned digest reference.
 ///
-/// Returns `DockerCompose` when the output contains "docker compose"
-/// (case-insensitive), otherwise returns `PodmanCompose` as the conservative
-/// fallback.
-fn parse_compose_version(output: &str) -> ComposeFlavor {
-    if output.to_lowercase().contains("docker compose") {
-        ComposeFlavor::DockerCompose
-    } else {
-        ComposeFlavor::PodmanCompose
+/// Every service in the document must have an entry in `pinned` — the whole
+/// point of the rewrite is that the platform runs only digest-pinned images,
+/// so a service this function can't pin means pinning lost track of it
+/// somewhere upstream, which is a bug.
+fn rewrite_compose_images(yaml: &str, pinned: &BTreeMap<String, String>) -> Result<String> {
+    let mut doc: serde_yaml::Value =
+        serde_yaml::from_str(yaml).wrap_err("failed to parse docker-compose.yaml")?;
+    let services = doc
+        .get_mut("services")
+        .and_then(|s| s.as_mapping_mut())
+        .ok_or_else(|| eyre!("compose config has no services — this is a bug in snouty"))?;
+    for (name, svc) in services.iter_mut() {
+        let name = name
+            .as_str()
+            .ok_or_else(|| eyre!("compose config has a non-string service name: {name:?}"))?;
+        let pinned_ref = pinned.get(name).ok_or_else(|| {
+            eyre!("service '{name}' did not resolve to a pinned image reference — this is a bug in snouty")
+        })?;
+        let svc_map = svc
+            .as_mapping_mut()
+            .ok_or_else(|| eyre!("compose service '{name}' is not a mapping"))?;
+        svc_map.insert(
+            serde_yaml::Value::String("image".to_string()),
+            serde_yaml::Value::String(pinned_ref.clone()),
+        );
     }
+    serde_yaml::to_string(&doc).wrap_err("failed to serialize pinned docker-compose.yaml")
+}
+
+/// Every compose service must carry an explicit `image:` reference; pinning
+/// (and the Antithesis platform) addresses services by image. In particular a
+/// `build:`-only service would otherwise silently run under a compose-generated
+/// default name that snouty never pushed.
+fn ensure_services_have_images(contents: &ComposeContents) -> Result<()> {
+    if contents.services_without_image.is_empty() {
+        return Ok(());
+    }
+    let mut err = eyre!("every compose service needs an explicit `image:` reference");
+    for name in &contents.services_without_image {
+        err = err.with_note(|| format!("service '{name}' has no `image:` field"));
+    }
+    Err(err.with_suggestion(|| {
+        "add an `image:` field to each service (for `build:` services, the tag the build produces)"
+    }))
+}
+
+/// Stage a copy of `config_dir` with `docker-compose.yaml` replaced by
+/// `pinned_yaml`, so the config image is built from the digest-pinned compose.
+/// The returned [`tempfile::TempDir`] must be kept alive until the image build
+/// completes.
+///
+/// Symlinks are recreated as-is (not dereferenced): a `docker build` context
+/// tars symlinks verbatim too, so the staged tree produces the same image
+/// content as building from `config_dir` directly.
+pub fn stage_pinned_config(config_dir: &Path, pinned_yaml: &str) -> Result<tempfile::TempDir> {
+    let staged = tempfile::tempdir().wrap_err("failed to create config staging directory")?;
+    copy_dir_recursive(config_dir, staged.path())?;
+    std::fs::write(staged.path().join("docker-compose.yaml"), pinned_yaml)
+        .wrap_err("failed to write pinned docker-compose.yaml")?;
+    Ok(staged)
+}
+
+/// Recursively copy the contents of `src` into `dst` (which must already exist).
+fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<()> {
+    for entry in
+        std::fs::read_dir(src).wrap_err_with(|| format!("failed to read {}", src.display()))?
+    {
+        let entry = entry.wrap_err_with(|| format!("failed to read entry in {}", src.display()))?;
+        let file_type = entry.file_type().wrap_err("failed to read file type")?;
+        let from = entry.path();
+        let to = dst.join(entry.file_name());
+        if file_type.is_dir() {
+            std::fs::create_dir_all(&to)
+                .wrap_err_with(|| format!("failed to create {}", to.display()))?;
+            copy_dir_recursive(&from, &to)?;
+        } else if file_type.is_symlink() {
+            let target = std::fs::read_link(&from)
+                .wrap_err_with(|| format!("failed to read symlink {}", from.display()))?;
+            std::os::unix::fs::symlink(&target, &to)
+                .wrap_err_with(|| format!("failed to create symlink {}", to.display()))?;
+        } else {
+            std::fs::copy(&from, &to).wrap_err_with(|| {
+                format!("failed to copy {} to {}", from.display(), to.display())
+            })?;
+        }
+    }
+    Ok(())
 }
 
 #[derive(Clone)]
 pub struct PodmanRuntime {
     cmd: String,
-    compose_flavor: ComposeFlavor,
 }
 
 impl PodmanRuntime {
     pub(crate) fn new(cmd: impl Into<String>) -> Self {
-        let cmd = cmd.into();
-        let compose_flavor = Command::new(&cmd)
-            .args(["compose", "version"])
+        Self { cmd: cmd.into() }
+    }
+
+    /// The host-side path of the podman machine's forwarded API socket, or
+    /// `None` when there's no machine (e.g. native Linux podman). Used on macOS,
+    /// where podman runs in a VM and the host can't reach the in-VM socket.
+    fn podman_machine_socket(&self) -> Option<String> {
+        let output = Command::new(&self.cmd)
+            .args([
+                "machine",
+                "inspect",
+                "--format",
+                "{{.ConnectionInfo.PodmanSocket.Path}}",
+            ])
             .output()
-            .ok()
-            .and_then(|o| {
-                if o.status.success() {
-                    String::from_utf8(o.stdout).ok()
-                } else {
-                    None
-                }
-            })
-            .map(|s| parse_compose_version(&s))
-            .unwrap_or(ComposeFlavor::PodmanCompose);
-        Self {
-            cmd,
-            compose_flavor,
+            .ok()?;
+        if !output.status.success() {
+            return None;
+        }
+        let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if path.is_empty() || path == "<no value>" {
+            None
+        } else {
+            Some(resolve_machine_socket_path(path))
         }
     }
+}
+
+/// Resolve the podman machine API socket path to one that actually exists.
+///
+/// podman recomputes this path from the current `TMPDIR` on every invocation
+/// (falling back to `/tmp` when unset), while the socket itself was bound
+/// under the `TMPDIR` in effect at `podman machine start`. When those
+/// environments differ, the reported path doesn't exist — probe the sibling
+/// locations the path is derived from before giving up. If no candidate
+/// exists, return the reported path unchanged and let docker-compose surface
+/// its connection error naming it.
+fn resolve_machine_socket_path(reported: String) -> String {
+    let reported_path = Path::new(&reported);
+    if reported_path.exists() {
+        return reported;
+    }
+    let Some(file_name) = reported_path.file_name() else {
+        return reported;
+    };
+    let mut candidates = Vec::new();
+    if let Some(tmpdir) = std::env::var_os("TMPDIR") {
+        candidates.push(
+            std::path::PathBuf::from(tmpdir)
+                .join("podman")
+                .join(file_name),
+        );
+    }
+    candidates.push(std::path::PathBuf::from("/tmp/podman").join(file_name));
+    for candidate in candidates {
+        if candidate.exists() {
+            return candidate.to_string_lossy().into_owned();
+        }
+    }
+    reported
 }
 
 impl ContainerRuntime for PodmanRuntime {
@@ -718,11 +961,45 @@ impl ContainerRuntime for PodmanRuntime {
         Box::new(self.clone())
     }
 
-    fn compose(&self) -> Box<dyn Compose + '_> {
-        match self.compose_flavor {
-            ComposeFlavor::DockerCompose => Box::new(DockerCompose { rt: self }),
-            ComposeFlavor::PodmanCompose => Box::new(PodmanCompose { rt: self }),
+    /// Point docker-compose at podman's Docker-compatible API socket so podman
+    /// backs Compose. Only the socket path is needed here; if the socket isn't
+    /// actually listening, docker-compose surfaces its own clear, platform-
+    /// agnostic connection error naming the path.
+    fn engine_docker_host(&self) -> Result<Option<String>> {
+        // On macOS, podman runs inside a VM. `podman info` reports the
+        // in-VM socket path, which the host can't reach — the host-forwarded
+        // socket comes from `podman machine inspect` instead.
+        if cfg!(target_os = "macos")
+            && let Some(path) = self.podman_machine_socket()
+        {
+            return Ok(Some(format!("unix://{path}")));
         }
+
+        let output = Command::new(&self.cmd)
+            .args(["info", "--format", "{{.Host.RemoteSocket.Path}}"])
+            .output()
+            .wrap_err_with(|| format!("failed to run '{} info'", self.cmd))?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(eyre!(
+                "'{} info' failed while detecting the podman API socket",
+                self.cmd
+            ))
+            .with_section(move || stderr.trim().to_string().header("Stderr:"));
+        }
+
+        let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if path.is_empty() {
+            return Err(eyre!(
+                "could not determine podman's API socket path; set DOCKER_HOST to a reachable container engine"
+            ));
+        }
+        Ok(Some(format!("unix://{path}")))
+    }
+
+    fn remote_manifest(&self, image_ref: &str) -> RemoteManifest {
+        remote_manifest_via_cli(&self.cmd, "--tls-verify=false", image_ref)
     }
 
     fn image_push(&self, image_ref: &str) -> Result<String> {
@@ -781,8 +1058,8 @@ impl ContainerRuntime for DockerRuntime {
         &self.cmd
     }
 
-    fn compose(&self) -> Box<dyn Compose + '_> {
-        Box::new(DockerCompose { rt: self })
+    fn remote_manifest(&self, image_ref: &str) -> RemoteManifest {
+        remote_manifest_via_cli(&self.cmd, "--insecure", image_ref)
     }
 
     fn image_push(&self, image_ref: &str) -> Result<String> {
@@ -909,26 +1186,140 @@ pub fn available_engines() -> Vec<Box<dyn ContainerRuntime>> {
     engines
 }
 
-/// Build a pinned image reference (`name@digest`) from a tagged ref and a digest.
-/// Strips the tag (`:tag`) if present, keeping the repository name.
+/// Build a pinned image reference (`name:tag@digest`) from a tagged ref and a
+/// digest. The tag is kept as human-readable provenance — when inspecting an
+/// Antithesis run, the reference still shows which tag the digest came from.
+/// If the ref already carries a digest, it's replaced.
 fn pinned_image_ref(image_ref: &str, digest: &str) -> String {
-    if let Some(at) = image_ref.rfind('@') {
-        return format!("{}@{}", &image_ref[..at], digest);
+    match image_ref.rfind('@') {
+        Some(at) => format!("{}@{}", &image_ref[..at], digest),
+        None => format!("{image_ref}@{digest}"),
     }
+}
 
-    // A colon is a tag separator only if it appears after the last `/`.
-    // Any colon before or without a `/` is a host:port separator.
-    let name = match image_ref.rfind('/') {
-        Some(slash) => match image_ref[slash..].rfind(':') {
-            Some(offset) => &image_ref[..slash + offset],
-            None => image_ref,
-        },
-        None => match image_ref.rfind(':') {
-            Some(colon) => &image_ref[..colon],
-            None => image_ref,
-        },
+/// Result of [`ContainerRuntime::remote_manifest`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RemoteManifest {
+    /// The registry doesn't serve this manifest, or it couldn't be checked.
+    NotFound,
+    /// A multi-platform manifest list. `has_amd64` reports whether it offers
+    /// an amd64 entry for the platform to pull.
+    List { has_amd64: bool },
+    /// A single-platform manifest. Its architecture is the architecture of
+    /// the local image carrying the same digest.
+    Single,
+}
+
+/// Run `{runtime} manifest inspect` and classify the result. `insecure_flag`
+/// is the runtime's spelling for plain-HTTP registries (`--insecure` for
+/// docker, `--tls-verify=false` for podman), applied only to local registries.
+fn remote_manifest_via_cli(runtime: &str, insecure_flag: &str, image_ref: &str) -> RemoteManifest {
+    let mut args = vec!["manifest", "inspect"];
+    if image_ref.starts_with("localhost") || image_ref.starts_with("127.0.0.1") {
+        args.push(insecure_flag);
+    }
+    args.push(image_ref);
+    match Command::new(runtime).args(&args).output() {
+        Ok(output) if output.status.success() => classify_manifest_json(&output.stdout),
+        _ => RemoteManifest::NotFound,
+    }
+}
+
+/// Classify `manifest inspect` JSON output: a `manifests` array marks a
+/// manifest list (scan its platforms for amd64); any other valid manifest
+/// JSON is a single-platform manifest.
+fn classify_manifest_json(stdout: &[u8]) -> RemoteManifest {
+    let Ok(doc) = serde_json::from_slice::<serde_json::Value>(stdout) else {
+        return RemoteManifest::NotFound;
     };
-    format!("{name}@{digest}")
+    match doc.get("manifests").and_then(|m| m.as_array()) {
+        Some(entries) => RemoteManifest::List {
+            has_amd64: entries.iter().any(|entry| {
+                entry
+                    .get("platform")
+                    .and_then(|p| p.get("architecture"))
+                    .and_then(|a| a.as_str())
+                    == Some("amd64")
+            }),
+        },
+        None => RemoteManifest::Single,
+    }
+}
+
+/// The repository part of an image reference: strips any `@digest` suffix and
+/// any `:tag` (a colon counts as a tag separator only after the last `/`;
+/// before it, it's a registry port).
+fn image_repo(image_ref: &str) -> &str {
+    let no_digest = match image_ref.rfind('@') {
+        Some(at) => &image_ref[..at],
+        None => image_ref,
+    };
+    match no_digest.rfind('/') {
+        Some(slash) => match no_digest[slash..].rfind(':') {
+            Some(colon) => &no_digest[..slash + colon],
+            None => no_digest,
+        },
+        None => match no_digest.rfind(':') {
+            Some(colon) => &no_digest[..colon],
+            None => no_digest,
+        },
+    }
+}
+
+/// The tag of an image reference, or `latest` when untagged.
+fn image_ref_tag(image_ref: &str) -> &str {
+    let no_digest = match image_ref.rfind('@') {
+        Some(at) => &image_ref[..at],
+        None => image_ref,
+    };
+    let repo = image_repo(image_ref);
+    if no_digest.len() > repo.len() {
+        &no_digest[repo.len() + 1..]
+    } else {
+        "latest"
+    }
+}
+
+/// Expand Docker Hub shorthand so repository names compare reliably across
+/// runtimes and reference styles: `nginx` → `docker.io/library/nginx`,
+/// `user/app` → `docker.io/user/app`, `index.docker.io/...` → `docker.io/...`.
+/// Repositories naming any other registry (first component with a dot, a
+/// port, or `localhost`) pass through unchanged.
+fn normalize_repo(repo: &str) -> String {
+    let (registry, rest) = match repo.split_once('/') {
+        Some((first, rest))
+            if first.contains('.') || first.contains(':') || first == "localhost" =>
+        {
+            let registry = if first == "index.docker.io" {
+                "docker.io"
+            } else {
+                first
+            };
+            (registry, rest)
+        }
+        _ => ("docker.io", repo),
+    };
+    if registry == "docker.io" && !rest.contains('/') {
+        format!("{registry}/library/{rest}")
+    } else {
+        format!("{registry}/{rest}")
+    }
+}
+
+/// All digests the local store records for `repo` among `repo_digests`
+/// entries, comparing normalized repository names. Multiple entries per repo
+/// are common — a pull records both the per-arch manifest digest and the
+/// manifest-list digest.
+fn digests_for_repo(repo: &str, repo_digests: &[String]) -> Vec<String> {
+    let want = normalize_repo(repo);
+    repo_digests
+        .iter()
+        .filter_map(|entry| {
+            let (entry_repo, digest) = entry.rsplit_once('@')?;
+            (digest.starts_with("sha256:") && normalize_repo(entry_repo) == want)
+                .then(|| digest.to_string())
+        })
+        .collect()
 }
 
 /// Parse the image digest from `docker push` stdout.
@@ -960,13 +1351,25 @@ fn parse_docker_push_digest(stdout: &str) -> Result<String> {
 pub struct ComposeService {
     pub name: String,
     pub image: String,
+    /// True when `image` is the compose-generated default build tag
+    /// (`<project>-<service>:latest`) synthesized for a `build:`-only
+    /// service, rather than an explicit `image:` value.
+    pub default_image: bool,
 }
 
 /// Parsed contents of a compose config file.
 #[derive(Debug)]
 pub struct ComposeContents {
-    /// Services with an explicit `image:` value. Services without `image` are omitted.
+    /// One entry per service, each resolved to an image reference: the
+    /// explicit `image:` value, or for `build:`-only services the
+    /// compose-default build tag (`<project>-<service>:latest`, flagged via
+    /// [`ComposeService::default_image`]).
     pub services: Vec<ComposeService>,
+    /// Names of services whose image reference couldn't be resolved — no
+    /// explicit `image:` and no way to derive compose's default name. A
+    /// backstop: compose itself rejects services with neither `image` nor
+    /// `build`, and `docker-compose config` always reports a project `name`.
+    pub services_without_image: Vec<String>,
     /// Service names that have a `build:` stanza.
     pub build_services: HashSet<String>,
     /// Explicitly declared network names (from the top-level `networks` key).
@@ -974,24 +1377,43 @@ pub struct ComposeContents {
 }
 
 /// Parse services and networks from resolved compose config YAML.
-/// Services without an `image` key are omitted.
 pub fn parse_compose_config(yaml: &str) -> Result<ComposeContents> {
     let doc: serde_yaml::Value =
         serde_yaml::from_str(yaml).wrap_err("failed to parse docker-compose.yaml")?;
 
+    // `docker-compose config` resolves the project name (file `name:`, else
+    // the config directory's basename) and reports it at the top level. It's
+    // what compose prefixes onto default build tags, so resolution here
+    // matches what `docker compose build` produced — provided nothing
+    // overrides the project name out from under us.
+    let project_name = doc.get("name").and_then(|n| n.as_str());
+
     let mut services = Vec::new();
+    let mut services_without_image = Vec::new();
     let mut build_services = HashSet::new();
     if let Some(svc_map) = doc.get("services").and_then(|s| s.as_mapping()) {
         for (name, service) in svc_map {
             if let Some(name_str) = name.as_str() {
-                if service.get("build").is_some() {
+                let has_build = service.get("build").is_some();
+                if has_build {
                     build_services.insert(name_str.to_string());
                 }
                 if let Some(image) = service.get("image").and_then(|i| i.as_str()) {
                     services.push(ComposeService {
                         name: name_str.to_string(),
                         image: image.to_string(),
+                        default_image: false,
                     });
+                } else if has_build && let Some(project) = project_name {
+                    // `docker compose build` tags a build-only service as
+                    // `<project>-<service>` (implicitly `:latest`).
+                    services.push(ComposeService {
+                        name: name_str.to_string(),
+                        image: format!("{project}-{name_str}:latest"),
+                        default_image: true,
+                    });
+                } else {
+                    services_without_image.push(name_str.to_string());
                 }
             }
         }
@@ -1016,26 +1438,43 @@ pub fn parse_compose_config(yaml: &str) -> Result<ComposeContents> {
 
     Ok(ComposeContents {
         services,
+        services_without_image,
         build_services,
         networks,
     })
 }
 
 /// Ensure the referenced images are available in the local image store.
+/// snouty never pulls — what runs (validate) and what gets pushed (launch)
+/// is exactly what's in the local store.
 pub fn validate_images_are_available(
     runtime: &dyn ContainerRuntime,
-    services: &[ComposeService],
+    contents: &ComposeContents,
 ) -> Result<()> {
+    ensure_services_have_images(contents)?;
+
     let mut seen = HashSet::new();
     let mut missing = Vec::new();
 
-    for service in services {
+    for service in &contents.services {
         if !seen.insert(service.image.as_str()) {
             continue;
         }
 
         if !runtime.image_exists(&service.image)? {
-            missing.push(service.image.clone());
+            let hint = if service.default_image {
+                format!(
+                    " (compose's default build tag for service '{}' — run `docker compose build`, \
+                     or add an explicit `image:` if it was built under another name)",
+                    service.name
+                )
+            } else if contents.build_services.contains(&service.name) {
+                " (service has a `build:` stanza — build it first; snouty doesn't build)"
+                    .to_string()
+            } else {
+                String::new()
+            };
+            missing.push(format!("image: {}{hint}", service.image));
         }
     }
 
@@ -1044,8 +1483,8 @@ pub fn validate_images_are_available(
     }
 
     let mut err = eyre!("some images are not available locally");
-    for image in missing {
-        err = err.with_note(|| format!("image: {image}"));
+    for note in missing {
+        err = err.with_note(|| note);
     }
     err = err.with_suggestion(|| "pull or build the missing images, then retry");
     Err(err)
@@ -1082,35 +1521,6 @@ where
     Err(err)
 }
 
-/// Filter images to only those that should be pushed: images whose name
-/// starts with the given registry prefix. Bare images (no `/`) are skipped.
-fn filter_pushable_images<'a>(images: &'a [String], registry: &str) -> Vec<&'a str> {
-    let registry = registry.trim_end_matches('/');
-    let prefix = format!("{registry}/");
-    let mut seen = HashSet::new();
-    images
-        .iter()
-        .filter(|img| img.starts_with(&prefix) && seen.insert(img.as_str()))
-        .map(|s| s.as_str())
-        .collect()
-}
-
-/// Check whether an image reference is "local" (not from a remote registry).
-///
-/// An image is local if its first path component has no dots, no colons, and
-/// is not literally "localhost". Examples:
-/// - `myapp:latest` -> local
-/// - `org/myapp:latest` -> local
-/// - `docker.io/library/nginx:latest` -> not local
-/// - `localhost/myapp:latest` -> not local
-/// - `registry:5000/myapp:latest` -> not local
-fn is_local_image(image: &str) -> bool {
-    match image.split_once('/') {
-        None => true,
-        Some((first, _)) => !(first.contains('.') || first.contains(':') || first == "localhost"),
-    }
-}
-
 /// A container reported by `compose ps`, with just the fields snouty needs.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ComposeContainer {
@@ -1127,17 +1537,6 @@ pub struct ComposeContainer {
     pub stopped: bool,
 }
 
-/// Result of [`Compose::ps`].
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PsListing {
-    /// Containers reported by `compose ps`.
-    pub containers: Vec<ComposeContainer>,
-    /// Whether the listing included stopped containers (i.e. whether `-a`
-    /// was supported and passed). When false, callers must not rely on the
-    /// absence of a service in the listing to mean it isn't stopped.
-    pub includes_stopped: bool,
-}
-
 /// Determine whether a `State` field value reports a stopped container.
 /// Only `exited` and `dead` qualify — every other value (including missing
 /// `State`, transient `created`/`restarting`/`paused`, and human-readable
@@ -1149,13 +1548,10 @@ fn state_is_stopped(state: Option<&str>) -> bool {
     }
 }
 
-/// Parse the JSON output of `compose ps --format json`.
+/// Parse the JSON output of `docker-compose ps --format json`.
 ///
-/// Handles both NDJSON (one object per line) and JSON array formats.
-///
-/// Two schemas are supported:
-/// - **docker compose**: `{"Service": "...", "ID": "...", "State": "running"}`
-/// - **podman-compose** (native podman ps): `{"Id": "...", "State": "running", "Labels": {"com.docker.compose.service": "..."}}`
+/// Handles both NDJSON (one object per line) and JSON array formats. The
+/// schema is Docker Compose v2: `{"Service": "...", "ID": "...", "State": "running"}`.
 fn parse_compose_ps(stdout: &str) -> Result<Vec<ComposeContainer>> {
     let stdout = stdout.trim();
     if stdout.is_empty() {
@@ -1178,25 +1574,15 @@ fn parse_compose_ps(stdout: &str) -> Result<Vec<ComposeContainer>> {
         .map(|v| {
             let id = v
                 .get("ID")
-                .or_else(|| v.get("Id"))
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| eyre!("missing container ID in compose ps output"))?;
 
             let service = v
                 .get("Service")
-                .or_else(|| v.get("service"))
                 .and_then(|v| v.as_str())
-                .or_else(|| {
-                    v.get("Labels")
-                        .and_then(|l| l.get("com.docker.compose.service"))
-                        .and_then(|s| s.as_str())
-                })
                 .ok_or_else(|| eyre!("missing service name in compose ps output"))?;
 
-            let state = v
-                .get("State")
-                .or_else(|| v.get("state"))
-                .and_then(|v| v.as_str());
+            let state = v.get("State").and_then(|v| v.as_str());
 
             Ok(ComposeContainer {
                 service: service.to_string(),
@@ -1253,10 +1639,6 @@ mod tests {
 
         for rt in &runtimes {
             eprintln!("testing with runtime: {}", rt.name());
-            if !has_compose(rt.name()) {
-                skip_or_fail(&format!("{}: no compose support", rt.name()));
-                continue;
-            }
             let registry = match OCIRegistry::start(rt.as_ref()) {
                 Some(r) => r,
                 None => continue,
@@ -1322,29 +1704,6 @@ mod tests {
     fn parse_compose_ps_empty() {
         let result = parse_compose_ps("").unwrap();
         assert!(result.is_empty());
-    }
-
-    #[test]
-    fn parse_compose_ps_podman_format() {
-        let stdout = r#"[
-            {
-                "Id": "abc123",
-                "Names": ["project-app-1"],
-                "State": "running",
-                "Labels": {"com.docker.compose.service": "app"}
-            },
-            {
-                "Id": "def456",
-                "Names": ["project-sidecar-1"],
-                "State": "exited",
-                "Labels": {"com.docker.compose.service": "sidecar"}
-            }
-        ]"#;
-        let result = parse_compose_ps(stdout).unwrap();
-        assert_eq!(
-            result,
-            vec![cc("app", "abc123", false), cc("sidecar", "def456", true)]
-        );
     }
 
     #[test]
@@ -1474,10 +1833,12 @@ services:
                 ComposeService {
                     name: "app".to_string(),
                     image: "us-central1-docker.pkg.dev/proj/repo/app:v1".to_string(),
+                    default_image: false,
                 },
                 ComposeService {
                     name: "sidecar".to_string(),
                     image: "us-central1-docker.pkg.dev/proj/repo/sidecar:latest".to_string(),
+                    default_image: false,
                 },
             ]
         );
@@ -1485,7 +1846,43 @@ services:
             contents.build_services,
             HashSet::from(["builder".to_string()])
         );
+        // No top-level `name:` → the builder service can't be resolved to
+        // compose's default build tag.
+        assert_eq!(contents.services_without_image, vec!["builder".to_string()]);
         assert!(contents.networks.is_empty());
+    }
+
+    #[test]
+    fn parse_compose_config_synthesizes_default_build_tags() {
+        // `docker-compose config` output always carries the resolved project
+        // name; build-only services resolve to `<project>-<service>:latest`,
+        // exactly the tag `docker compose build` produces.
+        let yaml = "\
+name: myproj
+services:
+  app:
+    image: myapp:latest
+  builder:
+    build:
+      context: ./builder
+";
+        let contents = parse_compose_config(yaml).unwrap();
+        assert_eq!(
+            contents.services,
+            vec![
+                ComposeService {
+                    name: "app".to_string(),
+                    image: "myapp:latest".to_string(),
+                    default_image: false,
+                },
+                ComposeService {
+                    name: "builder".to_string(),
+                    image: "myproj-builder:latest".to_string(),
+                    default_image: true,
+                },
+            ]
+        );
+        assert!(contents.services_without_image.is_empty());
     }
 
     #[test]
@@ -1557,7 +1954,7 @@ services:
             )
             .unwrap();
 
-            let compose = rt.compose();
+            let compose = docker_compose(rt.as_ref()).unwrap();
             let config = match crate::config::detect_config(dir.path()).unwrap() {
                 crate::config::Config::Compose(c) => c,
                 other => panic!("expected Compose, got {other:?}"),
@@ -1610,12 +2007,12 @@ services:
             )
             .unwrap();
 
-            let compose = rt.compose();
+            let compose = docker_compose(rt.as_ref()).unwrap();
             let config = match crate::config::detect_config(dir.path()).unwrap() {
                 crate::config::Config::Compose(c) => c,
                 other => panic!("expected Compose, got {other:?}"),
             };
-            let yaml = compose.raw_contents(&config, Some(&overlay)).unwrap();
+            let yaml = compose.config_yaml(&config, Some(&overlay), &[]).unwrap();
             let contents = compose.contents(&config, Some(&overlay)).unwrap();
 
             assert!(
@@ -1628,10 +2025,441 @@ services:
         }
     }
 
-    #[derive(Clone)]
+    #[test]
+    fn rewrite_compose_images_pins_every_service() {
+        // Input mirrors `docker-compose config --no-interpolate` output:
+        // machine-generated YAML where every service must end up pinned.
+        // Non-image fields (build, volumes, environment) are preserved.
+        let yaml = "\
+services:
+  app:
+    build:
+      context: .
+    image: ${REPO}/app:${TAG}
+    volumes:
+      - ./data:/data
+  nginx:
+    image: docker.io/library/nginx:latest
+    environment:
+      FOO: bar
+";
+        let pinned = BTreeMap::from([
+            (
+                "app".to_string(),
+                "reg.example.com/app:v1@sha256:aaa".to_string(),
+            ),
+            (
+                "nginx".to_string(),
+                "docker.io/library/nginx:latest@sha256:bbb".to_string(),
+            ),
+        ]);
+
+        let out = rewrite_compose_images(yaml, &pinned).unwrap();
+        let doc: serde_yaml::Value = serde_yaml::from_str(&out).unwrap();
+        let services = doc.get("services").unwrap();
+
+        let image = |svc: &str| {
+            services
+                .get(svc)
+                .and_then(|s| s.get("image"))
+                .and_then(|i| i.as_str())
+                .unwrap()
+                .to_string()
+        };
+        assert_eq!(image("app"), "reg.example.com/app:v1@sha256:aaa");
+        assert_eq!(image("nginx"), "docker.io/library/nginx:latest@sha256:bbb");
+        // Surrounding structure is preserved.
+        assert!(services.get("app").unwrap().get("build").is_some());
+        assert!(services.get("app").unwrap().get("volumes").is_some());
+        assert!(services.get("nginx").unwrap().get("environment").is_some());
+    }
+
+    #[test]
+    fn rewrite_compose_images_rejects_unpinned_service() {
+        // A service the pinning pass lost track of must fail loudly instead of
+        // shipping an unpinned image reference to the platform.
+        let yaml = "\
+services:
+  app:
+    image: app:latest
+  forgotten:
+    image: forgotten:latest
+";
+        let pinned = BTreeMap::from([(
+            "app".to_string(),
+            "reg.example.com/app:latest@sha256:aaa".to_string(),
+        )]);
+
+        let err = rewrite_compose_images(yaml, &pinned).unwrap_err();
+        let msg = format!("{err:?}");
+        assert!(
+            msg.contains("'forgotten'") && msg.contains("bug in snouty"),
+            "expected the unpinned service to be flagged as a bug, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn normalize_repo_expands_docker_hub_shorthand() {
+        assert_eq!(normalize_repo("nginx"), "docker.io/library/nginx");
+        assert_eq!(normalize_repo("user/app"), "docker.io/user/app");
+        assert_eq!(normalize_repo("docker.io/nginx"), "docker.io/library/nginx");
+        assert_eq!(
+            normalize_repo("index.docker.io/library/nginx"),
+            "docker.io/library/nginx"
+        );
+        assert_eq!(normalize_repo("localhost:5000/app"), "localhost:5000/app");
+        assert_eq!(normalize_repo("ghcr.io/org/app"), "ghcr.io/org/app");
+    }
+
+    #[test]
+    fn image_repo_and_tag_split_references() {
+        assert_eq!(image_repo("redis:7"), "redis");
+        assert_eq!(image_ref_tag("redis:7"), "7");
+        assert_eq!(image_repo("nginx"), "nginx");
+        assert_eq!(image_ref_tag("nginx"), "latest");
+        assert_eq!(image_repo("localhost:5000/app:v1"), "localhost:5000/app");
+        assert_eq!(image_ref_tag("localhost:5000/app:v1"), "v1");
+        assert_eq!(image_repo("localhost:5000/app"), "localhost:5000/app");
+        assert_eq!(image_ref_tag("localhost:5000/app"), "latest");
+        assert_eq!(
+            image_repo("ghcr.io/org/app:v2@sha256:abc"),
+            "ghcr.io/org/app"
+        );
+        assert_eq!(image_ref_tag("ghcr.io/org/app:v2@sha256:abc"), "v2");
+    }
+
+    #[test]
+    fn digests_for_repo_matches_normalized_repos() {
+        let entries = vec![
+            "redis@sha256:child".to_string(),
+            "docker.io/library/redis@sha256:list".to_string(),
+            "mirror.example.com/redis@sha256:other".to_string(),
+        ];
+        // Both Hub spellings match each other; the mirror doesn't.
+        assert_eq!(
+            digests_for_repo("docker.io/library/redis", &entries),
+            vec!["sha256:child".to_string(), "sha256:list".to_string()]
+        );
+        assert_eq!(
+            digests_for_repo("mirror.example.com/redis", &entries),
+            vec!["sha256:other".to_string()]
+        );
+        assert!(digests_for_repo("ghcr.io/redis", &entries).is_empty());
+    }
+
+    #[test]
+    fn classify_manifest_json_shapes() {
+        let list_amd64 = br#"{"manifests": [{"platform": {"architecture": "arm64"}}, {"platform": {"architecture": "amd64"}}]}"#;
+        assert_eq!(
+            classify_manifest_json(list_amd64),
+            RemoteManifest::List { has_amd64: true }
+        );
+        let list_arm = br#"{"manifests": [{"platform": {"architecture": "arm64"}}]}"#;
+        assert_eq!(
+            classify_manifest_json(list_arm),
+            RemoteManifest::List { has_amd64: false }
+        );
+        let single = br#"{"schemaVersion": 2, "config": {}, "layers": []}"#;
+        assert_eq!(classify_manifest_json(single), RemoteManifest::Single);
+        assert_eq!(
+            classify_manifest_json(b"not json"),
+            RemoteManifest::NotFound
+        );
+    }
+
+    /// Run pin_images over `yaml` with a [`FakeRuntime`] (real docker-compose
+    /// binary for config resolution, fake image/registry operations).
+    fn pin_with_fake(rt: &FakeRuntime, yaml: &str, registry: &str) -> Result<String> {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("docker-compose.yaml"), yaml).unwrap();
+        let config = match crate::config::detect_config(dir.path()).unwrap() {
+            crate::config::Config::Compose(c) => c,
+            other => panic!("expected Compose, got {other:?}"),
+        };
+        let compose = docker_compose(rt).unwrap();
+        compose.pin_images(&config, registry)
+    }
+
+    #[test]
+    fn pin_images_skips_push_when_registry_serves_digest() {
+        if !has_compose() {
+            // Loud in CI (skip_or_fail panics there) so a runner missing
+            // docker-compose can't silently drop this coverage.
+            skip_or_fail("docker-compose (Docker Compose v2) is not available");
+            return;
+        }
+        // A pulled third-party image: the registry confirms the local digest
+        // (a multi-arch list with amd64), so it's pinned there without a push.
+        let rt = FakeRuntime {
+            available_images: BTreeMap::from([("redis:7".to_string(), true)]),
+            repo_digests: BTreeMap::from([(
+                "redis:7".to_string(),
+                vec![
+                    // The per-arch entry can't be verified (podman can't
+                    // inspect single manifests) — the list entry can.
+                    "docker.io/library/redis@sha256:child".to_string(),
+                    "docker.io/library/redis@sha256:list".to_string(),
+                ],
+            )]),
+            remote_manifests: BTreeMap::from([(
+                "docker.io/library/redis@sha256:list".to_string(),
+                RemoteManifest::List { has_amd64: true },
+            )]),
+            ..Default::default()
+        };
+        let out = pin_with_fake(
+            &rt,
+            "services:\n  app:\n    image: redis:7\n",
+            "reg.example.com",
+        )
+        .unwrap();
+        assert!(
+            out.contains("docker.io/library/redis:7@sha256:list"),
+            "expected the verified list digest pin, got: {out}"
+        );
+        assert!(
+            rt.pushed.lock().unwrap().is_empty(),
+            "nothing should be pushed"
+        );
+    }
+
+    #[test]
+    fn pin_images_pushes_when_no_registry_serves_digest() {
+        if !has_compose() {
+            // Loud in CI (skip_or_fail panics there) so a runner missing
+            // docker-compose can't silently drop this coverage.
+            skip_or_fail("docker-compose (Docker Compose v2) is not available");
+            return;
+        }
+        // The local store fabricates digest entries for registry-qualified
+        // tags that were never pushed; the registry round trip rejects them
+        // (NotFound) and the image is pushed to our registry instead.
+        let rt = FakeRuntime {
+            available_images: BTreeMap::from([("ghcr.io/org/app:v1".to_string(), true)]),
+            architectures: BTreeMap::from([(
+                "reg.example.com/ghcr.io/org/app:v1".to_string(),
+                "amd64".to_string(),
+            )]),
+            repo_digests: BTreeMap::from([(
+                "ghcr.io/org/app:v1".to_string(),
+                vec!["ghcr.io/org/app@sha256:fabricated".to_string()],
+            )]),
+            ..Default::default()
+        };
+        let out = pin_with_fake(
+            &rt,
+            "services:\n  app:\n    image: ghcr.io/org/app:v1\n",
+            "reg.example.com",
+        )
+        .unwrap();
+        assert!(
+            out.contains("reg.example.com/ghcr.io/org/app:v1@sha256:fakepushdigest"),
+            "expected push-pinned reference, got: {out}"
+        );
+        assert_eq!(
+            *rt.pushed.lock().unwrap(),
+            vec!["reg.example.com/ghcr.io/org/app:v1".to_string()]
+        );
+    }
+
+    #[test]
+    fn pin_images_skips_push_for_previously_pushed_image() {
+        if !has_compose() {
+            // Loud in CI (skip_or_fail panics there) so a runner missing
+            // docker-compose can't silently drop this coverage.
+            skip_or_fail("docker-compose (Docker Compose v2) is not available");
+            return;
+        }
+        // A bare local image pushed by an earlier launch: the
+        // registry-prefixed candidate verifies, so no re-push. The manifest
+        // is single-platform, so the local architecture must be amd64.
+        let rt = FakeRuntime {
+            available_images: BTreeMap::from([("myapp:latest".to_string(), true)]),
+            architectures: BTreeMap::from([("myapp:latest".to_string(), "amd64".to_string())]),
+            repo_digests: BTreeMap::from([(
+                "myapp:latest".to_string(),
+                vec!["reg.example.com/myapp@sha256:pushedearlier".to_string()],
+            )]),
+            remote_manifests: BTreeMap::from([(
+                "reg.example.com/myapp@sha256:pushedearlier".to_string(),
+                RemoteManifest::Single,
+            )]),
+            ..Default::default()
+        };
+        let out = pin_with_fake(
+            &rt,
+            "services:\n  app:\n    image: myapp:latest\n",
+            "reg.example.com",
+        )
+        .unwrap();
+        assert!(
+            out.contains("reg.example.com/myapp:latest@sha256:pushedearlier"),
+            "expected pin to the previously pushed digest, got: {out}"
+        );
+        assert!(
+            rt.pushed.lock().unwrap().is_empty(),
+            "nothing should be pushed"
+        );
+    }
+
+    #[test]
+    fn pin_images_rejects_arm_only_images() {
+        if !has_compose() {
+            // Loud in CI (skip_or_fail panics there) so a runner missing
+            // docker-compose can't silently drop this coverage.
+            skip_or_fail("docker-compose (Docker Compose v2) is not available");
+            return;
+        }
+        // The registry serves the digest, but only as arm (a list without an
+        // amd64 entry). The pin is refused and the push path's local arch
+        // check produces the amd64 guidance before anything is pushed.
+        let rt = FakeRuntime {
+            available_images: BTreeMap::from([("armthing:latest".to_string(), true)]),
+            architectures: BTreeMap::from([
+                ("armthing:latest".to_string(), "arm64".to_string()),
+                (
+                    "reg.example.com/armthing:latest".to_string(),
+                    "arm64".to_string(),
+                ),
+            ]),
+            repo_digests: BTreeMap::from([(
+                "armthing:latest".to_string(),
+                vec!["docker.io/library/armthing@sha256:armlist".to_string()],
+            )]),
+            remote_manifests: BTreeMap::from([(
+                "docker.io/library/armthing@sha256:armlist".to_string(),
+                RemoteManifest::List { has_amd64: false },
+            )]),
+            ..Default::default()
+        };
+        let err = pin_with_fake(
+            &rt,
+            "services:\n  app:\n    image: armthing:latest\n",
+            "reg.example.com",
+        )
+        .unwrap_err();
+        let debug = format!("{err:?}");
+        assert!(
+            debug.contains("amd64"),
+            "expected amd64 guidance, got: {debug}"
+        );
+        assert!(
+            rt.pushed.lock().unwrap().is_empty(),
+            "nothing should be pushed"
+        );
+    }
+
+    #[test]
+    fn pin_images_pushes_every_local_image() {
+        let runtimes = require_runtimes_with_compose();
+        if runtimes.is_empty() {
+            return;
+        }
+
+        for rt in &runtimes {
+            eprintln!("testing with runtime: {}", rt.name());
+            let registry = match OCIRegistry::start(rt.as_ref()) {
+                Some(r) => r,
+                None => continue,
+            };
+            let addr = registry.host_port();
+            let compose = docker_compose(rt.as_ref())
+                .unwrap_or_else(|e| panic!("{}: docker_compose: {e:?}", rt.name()));
+
+            // Build a purely-local image (present locally, in no registry).
+            let img_dir = tempfile::tempdir().unwrap();
+            std::fs::write(
+                img_dir.path().join("Dockerfile"),
+                "FROM scratch\nCOPY . /\n",
+            )
+            .unwrap();
+            std::fs::write(img_dir.path().join("file"), "x").unwrap();
+            let local = "snouty-pin-test:latest";
+            rt.build_image(img_dir.path(), local, None, Some("linux/amd64"))
+                .unwrap_or_else(|e| panic!("{}: build: {e:?}", rt.name()));
+
+            // Resolve `app`'s pinned image after running pin_images over `yaml`.
+            let pinned_app = |yaml: &str| -> Result<String> {
+                let dir = tempfile::tempdir().unwrap();
+                std::fs::write(dir.path().join("docker-compose.yaml"), yaml).unwrap();
+                let config = match crate::config::detect_config(dir.path()).unwrap() {
+                    crate::config::Config::Compose(c) => c,
+                    other => panic!("expected Compose, got {other:?}"),
+                };
+                let out = compose.pin_images(&config, &addr)?;
+                Ok(serde_yaml::from_str::<serde_yaml::Value>(&out)
+                    .unwrap()
+                    .get("services")
+                    .and_then(|s| s.get("app"))
+                    .and_then(|s| s.get("image"))
+                    .and_then(|i| i.as_str())
+                    .unwrap()
+                    .to_string())
+            };
+            let pushed_prefix = format!("{addr}/snouty-pin-test:latest@sha256:");
+
+            // Case 1 — build stanza: the local build is pushed and pinned.
+            let built = pinned_app(&format!(
+                "services:\n  app:\n    build: .\n    image: {local}\n"
+            ))
+            .unwrap_or_else(|e| panic!("{}: build case: {e:?}", rt.name()));
+            assert!(
+                built.starts_with(&pushed_prefix),
+                "{}: build image should be pushed, got: {built}",
+                rt.name()
+            );
+
+            // Case 2 — local without a build stanza (prebuilt/loaded out of
+            // band): local availability is enough; pushed and pinned the same.
+            let local_only = pinned_app(&format!("services:\n  app:\n    image: {local}\n"))
+                .unwrap_or_else(|e| panic!("{}: local-only case: {e:?}", rt.name()));
+            assert!(
+                local_only.starts_with(&pushed_prefix),
+                "{}: local-only image should be pushed, got: {local_only}",
+                rt.name()
+            );
+
+            // Case 3 — not present locally: hard error before anything is
+            // pushed. snouty never pulls, even for registry-qualified refs.
+            let err = pinned_app("services:\n  app:\n    image: snouty-bare-local-xyz:latest\n")
+                .expect_err(&format!("{}: expected pin_images to fail", rt.name()));
+            let debug = format!("{err:?}");
+            assert!(
+                debug.contains("snouty-bare-local-xyz:latest")
+                    && debug.contains("not available locally"),
+                "{}: error should name the missing image, got: {debug}",
+                rt.name()
+            );
+
+            // Case 4 — `build:`-only service with no `image:` resolves to
+            // compose's default build tag (`<project>-<service>:latest`);
+            // when that tag was never built, the error names it with
+            // guidance instead of silently launching an image the platform
+            // can't pull.
+            let err = pinned_app("services:\n  app:\n    build: .\n").expect_err(&format!(
+                "{}: expected unbuilt default-tag service to fail",
+                rt.name()
+            ));
+            let debug = format!("{err:?}");
+            assert!(
+                debug.contains("-app:latest") && debug.contains("default build tag"),
+                "{}: error should name the default build tag, got: {debug}",
+                rt.name()
+            );
+
+            let _ = Command::new(rt.name())
+                .args(["rmi", local, &format!("{addr}/{local}")])
+                .output();
+        }
+    }
+
+    #[derive(Clone, Default)]
     struct FakeRuntime {
         available_images: BTreeMap<String, bool>,
         architectures: BTreeMap<String, String>,
+        repo_digests: BTreeMap<String, Vec<String>>,
+        remote_manifests: BTreeMap<String, RemoteManifest>,
+        pushed: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
     }
 
     impl ContainerRuntime for FakeRuntime {
@@ -1643,12 +2471,9 @@ services:
             Box::new(self.clone())
         }
 
-        fn compose(&self) -> Box<dyn Compose + '_> {
-            panic!("compose() not used in this test");
-        }
-
-        fn image_push(&self, _image_ref: &str) -> Result<String> {
-            panic!("image_push() not used in this test");
+        fn image_push(&self, image_ref: &str) -> Result<String> {
+            self.pushed.lock().unwrap().push(image_ref.to_string());
+            Ok(pinned_image_ref(image_ref, "sha256:fakepushdigest"))
         }
 
         fn image_exists(&self, image_ref: &str) -> Result<bool> {
@@ -1661,6 +2486,25 @@ services:
                 .cloned()
                 .ok_or_else(|| eyre!("missing fake architecture for {image_ref}"))
         }
+
+        fn image_repo_digests(&self, image_ref: &str) -> Result<Vec<String>> {
+            Ok(self
+                .repo_digests
+                .get(image_ref)
+                .cloned()
+                .unwrap_or_default())
+        }
+
+        fn image_tag(&self, _src: &str, _dst: &str) -> Result<()> {
+            Ok(())
+        }
+
+        fn remote_manifest(&self, image_ref: &str) -> RemoteManifest {
+            self.remote_manifests
+                .get(image_ref)
+                .cloned()
+                .unwrap_or(RemoteManifest::NotFound)
+        }
     }
 
     #[test]
@@ -1671,6 +2515,7 @@ services:
                 ("app:latest".to_string(), "amd64".to_string()),
                 ("sidecar:latest".to_string(), "amd64".to_string()),
             ]),
+            ..Default::default()
         };
 
         validate_image_architectures(&runtime, &["app:latest", "sidecar:latest"]).unwrap();
@@ -1684,6 +2529,7 @@ services:
                 ("app:latest".to_string(), "arm64".to_string()),
                 ("sidecar:latest".to_string(), "amd64".to_string()),
             ]),
+            ..Default::default()
         };
 
         let err =
@@ -1701,59 +2547,22 @@ services:
         );
     }
 
-    #[test]
-    fn pushable_filter_skips_arch_check_for_non_pushable_images() {
-        // Mirrors how push_compose_images wires filter + arch check together:
-        // bare (non-pushable) images with a non-amd64 arch must not fail the
-        // check, because we never push them.
-        let runtime = FakeRuntime {
-            available_images: BTreeMap::new(),
-            architectures: BTreeMap::from([
-                ("nginx:latest".to_string(), "arm64".to_string()),
-                (
-                    "registry.example.com/app:latest".to_string(),
-                    "amd64".to_string(),
-                ),
-            ]),
-        };
-
-        let images = vec![
-            "nginx:latest".to_string(),
-            "registry.example.com/app:latest".to_string(),
-        ];
-        let pushable = filter_pushable_images(&images, "registry.example.com");
-        validate_image_architectures(&runtime, &pushable).unwrap();
-    }
-
-    #[test]
-    fn pushable_filter_flags_arch_for_pushable_images() {
-        let runtime = FakeRuntime {
-            available_images: BTreeMap::new(),
-            architectures: BTreeMap::from([
-                ("nginx:latest".to_string(), "amd64".to_string()),
-                (
-                    "registry.example.com/app:latest".to_string(),
-                    "arm64".to_string(),
-                ),
-            ]),
-        };
-
-        let images = vec![
-            "nginx:latest".to_string(),
-            "registry.example.com/app:latest".to_string(),
-        ];
-        let pushable = filter_pushable_images(&images, "registry.example.com");
-        let err = validate_image_architectures(&runtime, &pushable).unwrap_err();
-
-        let debug = format!("{err:?}");
-        assert!(
-            debug.contains("image 'registry.example.com/app:latest' has architecture 'arm64'"),
-            "expected pushable image to be flagged, got: {debug}"
-        );
-        assert!(
-            !debug.contains("nginx:latest"),
-            "non-pushable image should not appear in error, got: {debug}"
-        );
+    /// Build a [`ComposeContents`] from `(service, image)` pairs and the names
+    /// of services that have a `build:` stanza.
+    fn contents_of(services: &[(&str, &str)], build_services: &[&str]) -> ComposeContents {
+        ComposeContents {
+            services: services
+                .iter()
+                .map(|(name, image)| ComposeService {
+                    name: name.to_string(),
+                    image: image.to_string(),
+                    default_image: false,
+                })
+                .collect(),
+            services_without_image: Vec::new(),
+            build_services: build_services.iter().map(|s| s.to_string()).collect(),
+            networks: Vec::new(),
+        }
     }
 
     #[test]
@@ -1764,20 +2573,12 @@ services:
                 ("sidecar:latest".to_string(), true),
             ]),
             architectures: BTreeMap::new(),
+            ..Default::default()
         };
 
         validate_images_are_available(
             &runtime,
-            &[
-                ComposeService {
-                    name: "app".to_string(),
-                    image: "app:latest".to_string(),
-                },
-                ComposeService {
-                    name: "sidecar".to_string(),
-                    image: "sidecar:latest".to_string(),
-                },
-            ],
+            &contents_of(&[("app", "app:latest"), ("sidecar", "sidecar:latest")], &[]),
         )
         .unwrap();
     }
@@ -1791,24 +2592,19 @@ services:
                 ("missing-b:latest".to_string(), false),
             ]),
             architectures: BTreeMap::new(),
+            ..Default::default()
         };
 
         let err = validate_images_are_available(
             &runtime,
-            &[
-                ComposeService {
-                    name: "present".to_string(),
-                    image: "present:latest".to_string(),
-                },
-                ComposeService {
-                    name: "app".to_string(),
-                    image: "missing-a:latest".to_string(),
-                },
-                ComposeService {
-                    name: "sidecar".to_string(),
-                    image: "missing-b:latest".to_string(),
-                },
-            ],
+            &contents_of(
+                &[
+                    ("present", "present:latest"),
+                    ("app", "missing-a:latest"),
+                    ("sidecar", "missing-b:latest"),
+                ],
+                &["sidecar"],
+            ),
         )
         .unwrap_err();
 
@@ -1823,8 +2619,27 @@ services:
             "expected first missing image details, got: {debug}"
         );
         assert!(
-            debug.contains("image: missing-b:latest"),
-            "expected second missing image details, got: {debug}"
+            debug.contains("image: missing-b:latest (service has a `build:` stanza"),
+            "expected build-stanza hint on the second missing image, got: {debug}"
+        );
+    }
+
+    #[test]
+    fn validate_images_are_available_rejects_imageless_services() {
+        let runtime = FakeRuntime {
+            available_images: BTreeMap::new(),
+            architectures: BTreeMap::new(),
+            ..Default::default()
+        };
+
+        let mut contents = contents_of(&[], &["app"]);
+        contents.services_without_image = vec!["app".to_string()];
+
+        let err = validate_images_are_available(&runtime, &contents).unwrap_err();
+        let debug = format!("{err:?}");
+        assert!(
+            debug.contains("service 'app' has no `image:` field"),
+            "expected imageless-service guidance, got: {debug}"
         );
     }
 
@@ -1867,10 +2682,10 @@ tag2: digest: sha256:bbb222 size: 200
     }
 
     #[test]
-    fn pinned_image_ref_with_tag() {
+    fn pinned_image_ref_keeps_tag() {
         assert_eq!(
             pinned_image_ref("example.com/foo/image:v1", "sha256:abc123"),
-            "example.com/foo/image@sha256:abc123"
+            "example.com/foo/image:v1@sha256:abc123"
         );
     }
 
@@ -1883,10 +2698,10 @@ tag2: digest: sha256:bbb222 size: 200
     }
 
     #[test]
-    fn pinned_image_ref_with_port() {
+    fn pinned_image_ref_with_port_keeps_tag() {
         assert_eq!(
             pinned_image_ref("localhost:5000/image:latest", "sha256:abc123"),
-            "localhost:5000/image@sha256:abc123"
+            "localhost:5000/image:latest@sha256:abc123"
         );
     }
 
@@ -1899,10 +2714,10 @@ tag2: digest: sha256:bbb222 size: 200
     }
 
     #[test]
-    fn pinned_image_ref_host_port_nested_path() {
+    fn pinned_image_ref_host_port_nested_path_keeps_tag() {
         assert_eq!(
             pinned_image_ref("myregistry:5000/org/repo/image:v2", "sha256:abc123"),
-            "myregistry:5000/org/repo/image@sha256:abc123"
+            "myregistry:5000/org/repo/image:v2@sha256:abc123"
         );
     }
 
@@ -1992,10 +2807,12 @@ services:
                 ComposeService {
                     name: "app".to_string(),
                     image: "myapp:latest".to_string(),
+                    default_image: false,
                 },
                 ComposeService {
                     name: "sidecar".to_string(),
                     image: "docker.io/library/nginx:latest".to_string(),
+                    default_image: false,
                 },
             ]
         );
@@ -2003,27 +2820,15 @@ services:
     }
 
     #[test]
-    fn parse_compose_version_docker() {
-        assert!(matches!(
-            parse_compose_version("Docker Compose version v2.24.5"),
-            ComposeFlavor::DockerCompose
-        ));
+    fn is_compose_v2_version_accepts_docker_compose() {
+        assert!(is_compose_v2_version("Docker Compose version v2.24.5"));
+        assert!(is_compose_v2_version("docker compose version 5.1.4"));
     }
 
     #[test]
-    fn parse_compose_version_podman() {
-        assert!(matches!(
-            parse_compose_version("podman-compose version 1.0.6"),
-            ComposeFlavor::PodmanCompose
-        ));
-    }
-
-    #[test]
-    fn parse_compose_version_unknown() {
-        assert!(matches!(
-            parse_compose_version(""),
-            ComposeFlavor::PodmanCompose
-        ));
+    fn is_compose_v2_version_rejects_others() {
+        assert!(!is_compose_v2_version("podman-compose version 1.0.6"));
+        assert!(!is_compose_v2_version(""));
     }
 
     #[test]

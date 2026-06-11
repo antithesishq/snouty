@@ -32,7 +32,11 @@ thread_local! {
 // --- Shared command handlers (function pointers for testscript CommandFn) ---
 
 /// System env vars forwarded to child processes (container tools, coverage).
-const FORWARDED_ENV_VARS: &[&str] = &["PATH", "HOME", "LLVM_PROFILE_FILE"];
+///
+/// `TMPDIR` matters on macOS: podman recomputes the machine API socket path
+/// from it on every invocation, so dropping it makes `podman machine inspect`
+/// report a `/tmp` fallback path the socket was never bound at.
+const FORWARDED_ENV_VARS: &[&str] = &["PATH", "HOME", "LLVM_PROFILE_FILE", "TMPDIR"];
 
 /// Build a `Command` for the snouty binary with a clean environment.
 ///
@@ -381,9 +385,11 @@ fn run_engine_spec_case(runtime_name: &'static str, case: EngineSpecCase) {
 
     let name = runtime_name.to_string();
     let registry_addr_for_setup = registry_addr.clone();
+    let is_docker = runtime_name == "docker";
 
     let result = testscript::run("specs_engine")
         .files([case.file])
+        .condition("docker", is_docker)
         .setup(move |env| {
             env.set_env_var("RUST_LOG", "debug");
             env.set_env_var("SNOUTY_CONTAINER_ENGINE", &name);

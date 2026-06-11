@@ -1,5 +1,5 @@
 use std::path::Path;
-use std::{io::Write, sync::OnceLock};
+use std::sync::OnceLock;
 
 use color_eyre::eyre::{Result, eyre};
 use futures_util::{StreamExt, TryStreamExt};
@@ -42,16 +42,16 @@ impl StdoutWriteError {
     }
 }
 
-trait WriteResultExt<T> {
-    /// Tag the io::Result of a stdout write so [`StdoutWriteError`] is
-    /// downcastable from the resulting report.
-    fn stdout_err(self) -> Result<T>;
-}
-
-impl<T> WriteResultExt<T> for std::io::Result<T> {
-    fn stdout_err(self) -> Result<T> {
-        self.map_err(|e| color_eyre::Report::new(StdoutWriteError(e)))
-    }
+/// `println!`, except write failures come back as a tagged
+/// [`StdoutWriteError`] instead of a panic. Evaluates to `Result<()>`, so
+/// call sites just append `?`. Locking per call is fine: `Stdout`'s lock is
+/// reentrant and this is exactly what `println!` does internally.
+macro_rules! outln {
+    ($($arg:tt)*) => {{
+        use std::io::Write as _;
+        writeln!(std::io::stdout().lock(), $($arg)*)
+            .map_err(|e| color_eyre::Report::new(StdoutWriteError(e)))
+    }};
 }
 
 pub async fn cmd_runs(command: Option<RunsCommands>, json: bool, verbose: bool) -> Result<()> {
@@ -152,20 +152,19 @@ async fn cmd_runs_list(args: RunsListArgs, json: bool, verbose: bool) -> Result<
             .then(a.status.cmp(&b.status))
     });
 
-    let mut stdout = std::io::stdout().lock();
     if json {
         for run in &runs {
-            writeln!(stdout, "{}", serde_json::to_string(run)?).stdout_err()?;
+            outln!("{}", serde_json::to_string(run)?)?;
         }
         return Ok(());
     }
 
     if runs.is_empty() {
-        writeln!(stdout, "No runs found.").stdout_err()?;
+        outln!("No runs found.")?;
         return Ok(());
     }
 
-    writeln!(stdout, "{}", render_runs_table(&runs)).stdout_err()?;
+    outln!("{}", render_runs_table(&runs))?;
     Ok(())
 }
 
@@ -175,11 +174,10 @@ async fn cmd_runs_show(run_id: &str, json: bool, verbose: bool) -> Result<()> {
     let api = AntithesisApi::from_env_requiring_api_key(verbose)?;
     let run = api.get_run(run_id).await?;
 
-    let mut stdout = std::io::stdout().lock();
     if json {
-        writeln!(stdout, "{}", serde_json::to_string_pretty(&run)?).stdout_err()?;
+        outln!("{}", serde_json::to_string_pretty(&run)?)?;
     } else {
-        print_run_detail(&mut stdout, &run)?;
+        print_run_detail(&run)?;
     }
 
     Ok(())
@@ -205,13 +203,12 @@ async fn cmd_runs_properties(
             .then(a.name().cmp(b.name()))
     });
 
-    let mut stdout = std::io::stdout().lock();
     if json {
         for property in &properties {
-            writeln!(stdout, "{}", serde_json::to_string(property)?).stdout_err()?;
+            outln!("{}", serde_json::to_string(property)?)?;
         }
     } else if properties.is_empty() {
-        writeln!(stdout, "No properties found.").stdout_err()?;
+        outln!("No properties found.")?;
     } else {
         let event_rows = flatten_property_events(&properties);
         let non_event_rows = flatten_non_event_property_values(&properties);
@@ -223,13 +220,13 @@ async fn cmd_runs_properties(
         if !non_event_rows.is_empty() {
             sections.push(render_property_values_table(&non_event_rows));
         }
-        writeln!(stdout, "{}", sections.join("\n\n")).stdout_err()?;
+        outln!("{}", sections.join("\n\n"))?;
     }
 
     Ok(())
 }
 
-fn print_run_detail(out: &mut impl Write, run: &RunDetail) -> Result<()> {
+fn print_run_detail(run: &RunDetail) -> Result<()> {
     let mut rows: Vec<(&str, String)> = vec![
         ("Run ID", run.run_id.clone()),
         ("Status", run.status.to_string()),
@@ -265,7 +262,7 @@ fn print_run_detail(out: &mut impl Write, run: &RunDetail) -> Result<()> {
 
     let label_width = rows.iter().map(|(label, _)| label.len()).max().unwrap_or(0);
     for (label, value) in &rows {
-        writeln!(out, "{label:label_width$}  {}", sanitize(value)).stdout_err()?;
+        outln!("{label:label_width$}  {}", sanitize(value))?;
     }
     Ok(())
 }
@@ -281,11 +278,10 @@ async fn cmd_runs_build_logs(run_id: &str, json: bool, verbose: bool) -> Result<
 
     let api = AntithesisApi::from_env_requiring_api_key(verbose)?;
     let stream = api.get_run_build_logs(run_id).await?.into_inner();
-    let mut stdout = std::io::stdout().lock();
 
     if json {
         stream_ndjson_lines(stream, NoOpTransformer {}, |line| {
-            writeln!(stdout, "{line}").stdout_err()?;
+            outln!("{line}")?;
             Ok(())
         })
         .await
@@ -295,9 +291,9 @@ async fn cmd_runs_build_logs(run_id: &str, json: bool, verbose: bool) -> Result<
                 let ts = entry["timestamp"].as_str().unwrap_or("");
                 let stream = entry["stream"].as_str().unwrap_or("out");
                 let text = sanitize(entry["text"].as_str().unwrap_or(""));
-                writeln!(stdout, "{ts} [{stream}] {text}").stdout_err()?;
+                outln!("{ts} [{stream}] {text}")?;
             } else {
-                writeln!(stdout, "{line}").stdout_err()?;
+                outln!("{line}")?;
             }
             Ok(())
         })
@@ -314,20 +310,14 @@ async fn cmd_runs_events(run_id: &str, query: &[String], json: bool, verbose: bo
         .await?
         .into_inner();
 
-    let mut stdout = std::io::stdout().lock();
     if json {
         stream_ndjson_lines(stream, NoOpTransformer {}, |line| {
-            writeln!(stdout, "{line}").stdout_err()?;
+            outln!("{line}")?;
             Ok(())
         })
         .await
     } else {
-        writeln!(
-            stdout,
-            "{:<22}  {:<22}  {:<20}  OUTPUT",
-            "HASH", "VTIME", "SOURCE"
-        )
-        .stdout_err()?;
+        outln!("{:<22}  {:<22}  {:<20}  OUTPUT", "HASH", "VTIME", "SOURCE")?;
         stream_ndjson_lines(stream, NoOpTransformer {}, |line| {
             if let Ok(entry) = serde_json::from_str::<Value>(line) {
                 let rendered = render_event_entry(&entry);
@@ -335,13 +325,9 @@ async fn cmd_runs_events(run_id: &str, query: &[String], json: bool, verbose: bo
                 let vtime = rendered.vtime;
                 let source = rendered.source;
                 let output = rendered.output;
-                writeln!(
-                    stdout,
-                    "{input_hash:<22}  {vtime:<22}  {source:<20}  {output}"
-                )
-                .stdout_err()?;
+                outln!("{input_hash:<22}  {vtime:<22}  {source:<20}  {output}")?;
             } else {
-                writeln!(stdout, "{:<22}  {:<22}  {:<20}  {line}", "", "", "").stdout_err()?;
+                outln!("{:<22}  {:<22}  {:<20}  {line}", "", "", "")?;
             }
             Ok(())
         })
@@ -369,7 +355,6 @@ async fn cmd_runs_logs(
         .await?
         .into_inner();
 
-    let mut stdout = std::io::stdout().lock();
     if json {
         if annotate_faults {
             stream_ndjson_lines(
@@ -379,29 +364,29 @@ async fn cmd_runs_logs(
                     active_faults: json!({}),
                 },
                 |line| {
-                    writeln!(stdout, "{line}").stdout_err()?;
+                    outln!("{line}")?;
                     Ok(())
                 },
             )
             .await
         } else {
             stream_ndjson_lines(stream, NoOpTransformer {}, |line| {
-                writeln!(stdout, "{line}").stdout_err()?;
+                outln!("{line}")?;
                 Ok(())
             })
             .await
         }
     } else {
-        writeln!(stdout, "{:<22}  {:<20}  OUTPUT", "VTIME", "SOURCE").stdout_err()?;
+        outln!("{:<22}  {:<20}  OUTPUT", "VTIME", "SOURCE")?;
         stream_ndjson_lines(stream, NoOpTransformer {}, |line| {
             if let Ok(entry) = serde_json::from_str::<Value>(line) {
                 let rendered = render_event_entry(&entry);
                 let vtime = rendered.vtime;
                 let source = rendered.source;
                 let output = rendered.output;
-                writeln!(stdout, "{vtime:<22}  {source:<20}  {output}").stdout_err()?;
+                outln!("{vtime:<22}  {source:<20}  {output}")?;
             } else {
-                writeln!(stdout, "{line}").stdout_err()?;
+                outln!("{line}")?;
             }
             Ok(())
         })

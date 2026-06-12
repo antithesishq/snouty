@@ -490,12 +490,47 @@ fn property_group(p: &Property) -> Option<&str> {
     }
 }
 
-fn property_example_total(p: &Property) -> u64 {
+/// `(examples, counterexamples)` for a property, defaulting a missing count to 0.
+fn property_example_counts(p: &Property) -> (u64, u64) {
     let (ex, cex) = match p {
         Property::EventProperty(p) => (p.example_count, p.counterexample_count),
         Property::NonEventProperty(p) => (p.example_count, p.counterexample_count),
     };
-    u64::from(ex.unwrap_or(0)) + u64::from(cex.unwrap_or(0))
+    (u64::from(ex.unwrap_or(0)), u64::from(cex.unwrap_or(0)))
+}
+
+/// Format a count in short SI-style notation so the EXAMPLES column stays narrow
+/// and scannable: values under 1000 print exactly (`0`, `20`, `885`); larger
+/// ones use ~3 significant figures with a k/M/G/T suffix (`2.3k`, `13k`, `18M`).
+fn format_count_si(n: u64) -> String {
+    if n < 1000 {
+        return n.to_string();
+    }
+    const UNITS: [&str; 4] = ["k", "M", "G", "T"];
+    let mut value = n as f64;
+    let mut unit = 0;
+    while value >= 1000.0 && unit < UNITS.len() {
+        value /= 1000.0;
+        unit += 1;
+    }
+    // `value` is now in [1, 1000). One decimal below 10 (`2.3k`), none at/above
+    // (`13k`). If rounding tips it over a boundary, step up a unit / drop the
+    // decimal so we never emit `10.0k` or `1000k`.
+    if value < 10.0 {
+        let rounded = (value * 10.0).round() / 10.0;
+        if rounded >= 10.0 {
+            format!("{:.0}{}", rounded, UNITS[unit - 1])
+        } else {
+            format!("{rounded:.1}{}", UNITS[unit - 1])
+        }
+    } else {
+        let rounded = value.round();
+        if rounded >= 1000.0 && unit < UNITS.len() {
+            format!("{:.1}{}", rounded / 1000.0, UNITS[unit])
+        } else {
+            format!("{rounded:.0}{}", UNITS[unit - 1])
+        }
+    }
 }
 
 fn property_status_label(status: PropertyStatus) -> &'static str {
@@ -520,7 +555,7 @@ async fn cmd_runs_property(run_id: &str, name: &str, json: bool, verbose: bool) 
         Err(err) => return Err(explain_properties_error(&api, run_id, err).await),
     };
 
-    let resolved = resolve_property(&properties, name)?;
+    let resolved = resolve_property(&properties, name, run_id)?;
     let property = match resolved {
         Resolved::Exact(p) => p,
         Resolved::Fuzzy(p) => {
@@ -552,7 +587,11 @@ enum Resolved<'a> {
     Fuzzy(&'a Property),
 }
 
-fn resolve_property<'a>(properties: &'a [Property], query: &str) -> Result<Resolved<'a>> {
+fn resolve_property<'a>(
+    properties: &'a [Property],
+    query: &str,
+    run_id: &str,
+) -> Result<Resolved<'a>> {
     // Match case-insensitively throughout: an exact name in any case is an
     // exact hit (no "closest property" note), and the substring fallback
     // ignores case too.
@@ -571,7 +610,12 @@ fn resolve_property<'a>(properties: &'a [Property], query: &str) -> Result<Resol
         .collect();
 
     match matches.as_slice() {
-        [] => Err(user_error(format!("no property matches '{query}'"))),
+        // No hit at all: point at the full list so the user can find the real
+        // name rather than hitting a dead end (the closest-match note only fires
+        // on a *single* substring hit, above).
+        [] => Err(user_error(format!(
+            "no property matches '{query}'\nrun 'snouty runs properties {run_id}' to see the available properties"
+        ))),
         [only] => Ok(Resolved::Fuzzy(only)),
         many => {
             let names = many
@@ -841,14 +885,31 @@ fn render_properties_table(properties: &[Property]) -> String {
                 Some(group) => format!("{} ▸ {}", sanitize(group), sanitize(p.name())),
                 None => sanitize(p.name()),
             };
+            // Show the example count, SI-shortened so big counts stay narrow
+            // (`18496678` -> `18M`). Surface counterexamples inline only when a
+            // property actually has some (`examples/counterexamples`), so the
+            // common all-zero-counterexample rows aren't cluttered with `/0`.
+            let (examples, counters) = property_example_counts(p);
+            let examples_cell = if counters == 0 {
+                format_count_si(examples)
+            } else {
+                format!(
+                    "{}/{}",
+                    format_count_si(examples),
+                    format_count_si(counters)
+                )
+            };
             vec![
                 property_status_label(p.status()).to_string(),
-                property_example_total(p).to_string(),
+                examples_cell,
                 name,
             ]
         })
         .collect::<Vec<_>>();
-    render_table_wrap_last(&headers, &rows, terminal_width())
+    // Right-align the numeric EXAMPLES column so magnitudes line up; STATUS and
+    // the wrapped NAME column stay left-aligned.
+    let aligns = [Align::Left, Align::Right, Align::Left];
+    render_table_wrap_last(&headers, &rows, terminal_width(), &aligns)
 }
 
 fn print_run_detail(run: &RunDetail) -> Result<()> {
@@ -1281,45 +1342,58 @@ fn moment_vtime_seconds(entry: &Value) -> Option<f64> {
         .or_else(|| vtime.as_f64())
 }
 
-/// Render a log line's vtime in seconds with at most 3 decimal places (trailing
-/// zeros trimmed). Full-precision vtimes overflow the fixed `LOG_VTIME_WIDTH`
-/// column and desync the source column; trimming keeps every row aligned.
+/// Render a log line's vtime in seconds with exactly 3 decimal places,
+/// truncated — never rounded. Fixed precision keeps the decimal point and right
+/// edge aligned down the fixed `LOG_VTIME_WIDTH` column (full-precision vtimes
+/// would overflow it and desync the source column). Truncating rather than
+/// rounding means a vtime copied off the screen and pasted back as
+/// `--begin-vtime` lands on — never just past — the line you saw.
 fn format_log_vtime(entry: &Value) -> String {
-    match moment_vtime_seconds(entry) {
-        Some(seconds) => trim_decimals(seconds, 3),
-        // Not a parseable number — show whatever the server sent rather than "".
-        None => entry["moment"]["vtime"].as_str().unwrap_or("").to_string(),
+    let raw = &entry["moment"]["vtime"];
+    match raw.as_str() {
+        // The API sends vtime as a seconds string; truncate it directly so f64
+        // round-trips can't nudge the displayed value.
+        Some(s) => truncate_decimals(s, 3),
+        // A JSON-number vtime: format with surplus precision, then truncate the
+        // string, so the kept 3 decimals are never perturbed by rounding.
+        None => match raw.as_f64() {
+            Some(v) => truncate_decimals(&format!("{v:.9}"), 3),
+            None => String::new(),
+        },
     }
 }
 
-/// Format `value` with at most `max_decimals` decimal places, trimming trailing
-/// zeros and a dangling decimal point (e.g. `19.0` -> `19`, `18.9140` -> `18.914`).
-///
-/// A *nonzero* value too small to survive the trim (it would otherwise render as
-/// `0` or `-0`, losing the fact that something happened) renders as `<0.001` for
-/// positives and `>-0.001` for negatives — short, unambiguous, and the same
-/// width regardless of magnitude. An exact `0.0`/`-0.0` renders `0`.
-fn trim_decimals(value: f64, max_decimals: usize) -> String {
-    let mut s = format!("{value:.max_decimals$}");
-    if s.contains('.') {
-        let trimmed = s.trim_end_matches('0').trim_end_matches('.').len();
-        s.truncate(trimmed);
-    }
-    // A nonzero input that rounded to "0"/"-0" would misrepresent it as exactly
-    // zero; flag it as a below-threshold magnitude instead.
-    if (s == "0" || s == "-0") && value != 0.0 {
-        let threshold = format!("0.{}1", "0".repeat(max_decimals.saturating_sub(1)));
-        return if value < 0.0 {
-            format!(">-{threshold}")
-        } else {
-            format!("<{threshold}")
+/// Truncate (never round) the decimal string `s` to exactly `decimals`
+/// fractional digits, zero-padding a short or missing fraction (`"19"` ->
+/// `"19.000"`, `"14.78"` -> `"14.780"`, `"1814.71357"` -> `"1814.713"`). Fixed
+/// width keeps a column of these aligned on the decimal point. Only a plain
+/// decimal string is sliced; anything else (scientific notation) falls back to
+/// rounded fixed-point, and a non-number is passed through verbatim.
+fn truncate_decimals(s: &str, decimals: usize) -> String {
+    let t = s.trim();
+    let (int_part, frac_part) = match t.split_once('.') {
+        Some((i, f)) => (i, f),
+        None => (t, ""),
+    };
+    let is_plain = !int_part.is_empty()
+        && int_part
+            .char_indices()
+            .all(|(i, c)| c.is_ascii_digit() || (i == 0 && (c == '-' || c == '+')))
+        && frac_part.chars().all(|c| c.is_ascii_digit());
+    if !is_plain {
+        return match t.parse::<f64>() {
+            Ok(v) => format!("{v:.decimals$}"),
+            Err(_) => t.to_string(),
         };
     }
-    // Normalise an exact -0.0 (rounds to "-0") to plain "0".
-    if s == "-0" {
-        return "0".to_string();
+    if decimals == 0 {
+        return int_part.to_string();
     }
-    s
+    let mut frac: String = frac_part.chars().take(decimals).collect();
+    while frac.len() < decimals {
+        frac.push('0');
+    }
+    format!("{int_part}.{frac}")
 }
 
 fn abbreviate_stream(stream: &str) -> std::borrow::Cow<'static, str> {
@@ -2077,11 +2151,33 @@ enum LastColumn {
     Wrap { total_width: usize },
 }
 
+/// Per-column horizontal alignment for the leading (fixed-width) columns. The
+/// final column is never padded, so its alignment is ignored.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Align {
+    Left,
+    Right,
+}
+
+/// Pad `cell` to `width` columns on the side dictated by `align`.
+fn pad_cell(cell: &str, width: usize, align: Align) -> String {
+    match align {
+        Align::Left => format!("{cell:<width$}"),
+        Align::Right => format!("{cell:>width$}"),
+    }
+}
+
 /// Shared column-sizing core for every table snouty renders. Leading columns are
-/// sized to their widest cell (header included, counted in chars); the final
-/// column follows `last_column`. Lines are right-trimmed, so a `Raw` final
-/// column never leaves trailing padding.
-fn render_columns(headers: &[String], rows: &[Vec<String>], last_column: LastColumn) -> String {
+/// sized to their widest cell (header included, counted in chars) and aligned per
+/// `aligns`; the final column follows `last_column`. Lines are right-trimmed, so
+/// a `Raw` final column never leaves trailing padding. `aligns` must have one
+/// entry per header (the last entry is ignored — the final column isn't padded).
+fn render_columns(
+    headers: &[String],
+    rows: &[Vec<String>],
+    last_column: LastColumn,
+    aligns: &[Align],
+) -> String {
     let last = headers.len() - 1;
 
     // Size every leading column to the widest of its header and cells. The final
@@ -2105,9 +2201,9 @@ fn render_columns(headers: &[String], rows: &[Vec<String>], last_column: LastCol
             // Final column unbounded: `push_table_row` emits it unpadded, so its
             // width never matters — leave `widths[last]` at the header width.
             let mut output = String::new();
-            push_table_row(&mut output, headers, &widths);
+            push_table_row(&mut output, headers, &widths, aligns);
             for row in rows {
-                push_table_row(&mut output, row, &widths);
+                push_table_row(&mut output, row, &widths, aligns);
             }
             output.trim_end().to_string()
         }
@@ -2118,11 +2214,11 @@ fn render_columns(headers: &[String], rows: &[Vec<String>], last_column: LastCol
             widths[last] = last_width;
 
             let mut output = String::new();
-            push_table_row(&mut output, headers, &widths);
+            push_table_row(&mut output, headers, &widths, aligns);
             for row in rows {
                 let mut row = row.clone();
                 row[last] = console::truncate_str(&row[last], last_width, "…").into_owned();
-                push_table_row(&mut output, &row, &widths);
+                push_table_row(&mut output, &row, &widths, aligns);
             }
             output.trim_end().to_string()
         }
@@ -2133,7 +2229,7 @@ fn render_columns(headers: &[String], rows: &[Vec<String>], last_column: LastCol
                 .max(20);
 
             let mut output = String::new();
-            push_table_row(&mut output, headers, &widths);
+            push_table_row(&mut output, headers, &widths, aligns);
             for row in rows {
                 let wrapped = wrap_text(&row[last], last_width);
                 let wrapped = if wrapped.is_empty() {
@@ -2144,11 +2240,8 @@ fn render_columns(headers: &[String], rows: &[Vec<String>], last_column: LastCol
                 for (line_index, line) in wrapped.iter().enumerate() {
                     if line_index == 0 {
                         for index in 0..last {
-                            output.push_str(&format!(
-                                "{:<width$}  ",
-                                row[index],
-                                width = widths[index]
-                            ));
+                            output.push_str(&pad_cell(&row[index], widths[index], aligns[index]));
+                            output.push_str("  ");
                         }
                         output.push_str(line);
                     } else {
@@ -2166,7 +2259,9 @@ fn render_runs_table(runs: &[RunSummary], width: usize) -> String {
     // The default view omits the description entirely — it never fit usefully
     // beside the (necessarily full) run id, and `runs list --detail` shows it in
     // full. Test name is the final, width-bounded column truncated with an
-    // ellipsis (a `runs show RUN` follow-up still works off the full id).
+    // ellipsis (a `runs show RUN` follow-up still works off the full id). A
+    // launcher filter doesn't add a column — every row would carry the same
+    // value; `--detail`/`--json` surface the launcher when it's actually wanted.
     let headers = vec![
         "RUN ID".to_string(),
         "STATUS".to_string(),
@@ -2187,24 +2282,41 @@ fn render_runs_table(runs: &[RunSummary], width: usize) -> String {
         })
         .collect();
 
-    render_columns(&headers, &rows, LastColumn::Truncate { total_width: width })
+    render_columns(
+        &headers,
+        &rows,
+        LastColumn::Truncate { total_width: width },
+        &left_aligned(headers.len()),
+    )
+}
+
+/// All-left-aligned alignment vector for a table with `n` columns — the default
+/// for tables that don't right-align any column.
+fn left_aligned(n: usize) -> Vec<Align> {
+    vec![Align::Left; n]
 }
 
 /// Auto-width table whose final column is emitted verbatim (no padding, no
-/// width bound).
+/// width bound). All leading columns are left-aligned.
 fn render_table(headers: &[String], rows: &[Vec<String>]) -> String {
-    render_columns(headers, rows, LastColumn::Raw)
+    render_columns(headers, rows, LastColumn::Raw, &left_aligned(headers.len()))
 }
 
 /// Like [`render_table`], but the final column wraps to whatever width is left
 /// over after the (fixed-width) leading columns, so a single long cell can't
 /// push the table past `total_width`. Continuation lines indent to the start of
-/// the final column. Leading columns are sized to their widest cell.
-fn render_table_wrap_last(headers: &[String], rows: &[Vec<String>], total_width: usize) -> String {
-    render_columns(headers, rows, LastColumn::Wrap { total_width })
+/// the final column. Leading columns are sized to their widest cell and aligned
+/// per `aligns` (one entry per header; the final, wrapped column isn't padded).
+fn render_table_wrap_last(
+    headers: &[String],
+    rows: &[Vec<String>],
+    total_width: usize,
+    aligns: &[Align],
+) -> String {
+    render_columns(headers, rows, LastColumn::Wrap { total_width }, aligns)
 }
 
-fn push_table_row(output: &mut String, row: &[String], widths: &[usize]) {
+fn push_table_row(output: &mut String, row: &[String], widths: &[usize], aligns: &[Align]) {
     let last = row.len().saturating_sub(1);
     for (index, cell) in row.iter().enumerate() {
         if index > 0 {
@@ -2213,7 +2325,7 @@ fn push_table_row(output: &mut String, row: &[String], widths: &[usize]) {
         if index == last {
             output.push_str(cell);
         } else {
-            output.push_str(&format!("{cell:<width$}", width = widths[index]));
+            output.push_str(&pad_cell(cell, widths[index], aligns[index]));
         }
     }
     output.push('\n');
@@ -2715,12 +2827,13 @@ mod tests {
         // Failing properties sort to the top, ahead of passing ones.
         assert!(lines[1].contains("Counter value"));
 
-        // Two property rows. Counter property has 1 example + 2 counterexamples = 3 total.
-        // Its group is folded into the name as `group ▸ detail`.
+        // Two property rows. Counter property has 1 example + 2 counterexamples,
+        // rendered inline as `examples/counterexamples` (`1/2`). Its group is
+        // folded into the name as `group ▸ detail`.
         let counter_row = lines.iter().find(|l| l.contains("Counter value")).unwrap();
         assert!(counter_row.contains("failing"));
         assert!(counter_row.contains("Safety ▸ Counter value stays below limit"));
-        assert!(counter_row.contains("3"));
+        assert!(counter_row.contains("1/2"));
 
         let setup_row = lines
             .iter()
@@ -2742,7 +2855,7 @@ mod tests {
                 vec![],
             ),
         ];
-        let resolved = resolve_property(&properties, "Setup ran").unwrap();
+        let resolved = resolve_property(&properties, "Setup ran", "run-54-8").unwrap();
         assert!(matches!(resolved, Resolved::Exact(_)));
     }
 
@@ -2759,7 +2872,7 @@ mod tests {
             ),
         ];
         // Differs only by case: still an exact hit, not a fuzzy "closest" match.
-        let resolved = resolve_property(&properties, "setup RAN").unwrap();
+        let resolved = resolve_property(&properties, "setup RAN", "run-54-8").unwrap();
         match resolved {
             Resolved::Exact(p) => assert_eq!(p.name(), "Setup ran"),
             other => panic!("expected exact match, got {other:?}"),
@@ -2778,7 +2891,7 @@ mod tests {
                 vec![],
             ),
         ];
-        let resolved = resolve_property(&properties, "counter").unwrap();
+        let resolved = resolve_property(&properties, "counter", "run-54-8").unwrap();
         match resolved {
             Resolved::Fuzzy(p) => assert_eq!(p.name(), "Counter limit"),
             _ => panic!("expected fuzzy match"),
@@ -2797,11 +2910,49 @@ mod tests {
                 vec![],
             ),
         ];
-        let err = resolve_property(&properties, "setup").unwrap_err();
+        let err = resolve_property(&properties, "setup", "run-54-8").unwrap_err();
         let msg = format!("{err}");
         assert!(msg.contains("did you mean"));
         assert!(msg.contains("Setup ran"));
         assert!(msg.contains("Setup completes"));
+    }
+
+    #[test]
+    fn format_count_si_shortens_large_counts() {
+        // Under 1000: exact.
+        assert_eq!(format_count_si(0), "0");
+        assert_eq!(format_count_si(20), "20");
+        assert_eq!(format_count_si(885), "885");
+        // One decimal below 10k, none above.
+        assert_eq!(format_count_si(1000), "1.0k");
+        assert_eq!(format_count_si(2323), "2.3k");
+        assert_eq!(format_count_si(13396), "13k");
+        assert_eq!(format_count_si(74843), "75k");
+        assert_eq!(format_count_si(278493), "278k");
+        // Millions.
+        assert_eq!(format_count_si(18496678), "18M");
+        // Rounding that tips a boundary steps up cleanly (never "10.0k"/"1000k").
+        assert_eq!(format_count_si(9950), "10k");
+        assert_eq!(format_count_si(999999), "1.0M");
+    }
+
+    #[test]
+    fn resolve_property_not_found_points_at_the_full_list() {
+        let properties = vec![event_property(
+            "Setup ran",
+            PropertyStatus::Passing,
+            None,
+            vec![],
+            vec![],
+        )];
+        let err = resolve_property(&properties, "nonexistent", "run-54-8").unwrap_err();
+        let msg = format!("{err}");
+        assert!(msg.contains("no property matches 'nonexistent'"));
+        // The dead-end error points the user at the full property list.
+        assert!(
+            msg.contains("snouty runs properties run-54-8"),
+            "got: {msg}"
+        );
     }
 
     #[test]
@@ -2921,48 +3072,45 @@ mod tests {
     #[test]
     fn format_log_line_truncates_vtime_to_three_decimals() {
         let entry = json!({
-            "moment": {"input_hash": "1", "vtime": "18.9141638034489"},
+            "moment": {"input_hash": "1", "vtime": "18.9148034489"},
             "source": {"name": "client", "stream": "info"},
             "output_text": "hello"
         });
         let rendered = format_log_entry(&entry, false);
-        // Trimmed to 3 decimals so it fits the fixed vtime column and the
-        // source column stays aligned across rows.
+        // Fixed 3 decimals (so the column stays aligned), truncated not rounded:
+        // 18.9148… -> 18.914 (rounding would give 18.915).
         assert!(rendered.starts_with("[        18.914] "), "got: {rendered}");
     }
 
     #[test]
     fn format_log_line_accepts_numeric_vtime() {
-        // A JSON-number vtime (not a string) must still render, not blank out.
+        // A JSON-number vtime (not a string) must still render, not blank out,
+        // and gets the same fixed-3-decimal treatment (12.5 -> 12.500).
         let entry = json!({
             "moment": {"input_hash": "1", "vtime": 12.5},
             "source": {"name": "client", "stream": "info"},
             "output_text": "hello"
         });
         assert!(
-            format_log_entry(&entry, false).starts_with("[          12.5] "),
+            format_log_entry(&entry, false).starts_with("[        12.500] "),
             "got: {}",
             format_log_entry(&entry, false)
         );
     }
 
     #[test]
-    fn trim_decimals_trims_trailing_zeros_and_point() {
-        assert_eq!(trim_decimals(19.0, 3), "19");
-        assert_eq!(trim_decimals(18.5, 3), "18.5");
-        assert_eq!(trim_decimals(18.9141638, 3), "18.914");
-        assert_eq!(trim_decimals(1814.7135719, 3), "1814.714");
-    }
-
-    #[test]
-    fn trim_decimals_flags_subthreshold_nonzero_values() {
-        // A nonzero value smaller than the 3-decimal resolution must not be
-        // rendered as a bare "0"/"-0" (which would read as exactly zero).
-        assert_eq!(trim_decimals(0.0004, 3), "<0.001");
-        assert_eq!(trim_decimals(-0.0002, 3), ">-0.001");
-        // Exact zero (either sign) renders as plain "0".
-        assert_eq!(trim_decimals(0.0, 3), "0");
-        assert_eq!(trim_decimals(-0.0, 3), "0");
+    fn truncate_decimals_keeps_fixed_precision_without_rounding() {
+        // Always exactly 3 decimals, zero-padded, so a column aligns.
+        assert_eq!(truncate_decimals("19", 3), "19.000");
+        assert_eq!(truncate_decimals("19.0", 3), "19.000");
+        assert_eq!(truncate_decimals("14.78", 3), "14.780");
+        // Truncates, never rounds: 1814.7135… -> .713 (rounding would give .714).
+        assert_eq!(truncate_decimals("1814.7135719023645", 3), "1814.713");
+        assert_eq!(truncate_decimals("18.9148034489", 3), "18.914");
+        // Non-plain input: scientific notation falls back to fixed-point, and a
+        // non-number is passed through untouched.
+        assert_eq!(truncate_decimals("1e3", 3), "1000.000");
+        assert_eq!(truncate_decimals("n/a", 3), "n/a");
     }
 
     #[test]
@@ -4446,7 +4594,7 @@ mod tests {
         let long = "Safety ▸ a property name long enough to wrap on any real terminal width";
         let headers = vec!["STATUS".to_string(), "NAME".to_string()];
         let rows = vec![vec!["failing".to_string(), long.to_string()]];
-        let out = render_table_wrap_last(&headers, &rows, usize::MAX);
+        let out = render_table_wrap_last(&headers, &rows, usize::MAX, &[Align::Left, Align::Left]);
         let row = out.lines().find(|l| l.contains("failing")).unwrap();
         assert!(row.contains(long), "name was wrapped: {out}");
     }

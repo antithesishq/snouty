@@ -100,13 +100,15 @@ snouty --json runs show $R_run_id
 stdout '"run_id".*"$R_run_id"'
 [!staging] stdout '"status".*"completed"'
 
-# `snouty runs properties` renders one row per property with a status word,
-# total example count, and name (the group is folded into the name as
-# `group ▸ name`).
+# `snouty runs properties` renders one row per property with a status word, the
+# example count (with counterexamples shown inline as `examples/counterexamples`
+# when a property has any), and name (the group is folded into the name as
+# `group ▸ name`). Counts are SI-shortened (e.g. `2.3k`) and right-aligned.
 mock-runs-server
 snouty runs properties $R_run_id
 [!staging] stdout 'STATUS.*EXAMPLES.*NAME'
-[!staging] stdout 'failing.*Counter value stays below limit'
+# Counter has 12 examples and 3 counterexamples -> `12/3`.
+[!staging] stdout 'failing.*12/3.*Counter value stays below limit'
 [!staging] stdout 'passing.*Setup completes'
 
 # `snouty runs properties --failing` shows only failing properties.
@@ -157,10 +159,12 @@ snouty runs property $R_run_id 'Setup completes'
 [!staging] stdout 'STATUS.*VALUE'
 [!staging] stdout 'passing.*'
 
-# An unknown property errors clearly.
+# An unknown property errors clearly, and points at the full list so the user
+# isn't left at a dead end.
 mock-runs-server
 ! snouty runs property $R_run_id no-such-property
 stderr 'no property matches.*no-such-property'
+[!staging] stderr 'runs properties.*to see the available'
 
 # `snouty runs build-logs` streams formatted build log lines. Timestamps are
 # reformatted into the local timezone without a tz suffix; TZ is pinned to UTC
@@ -299,9 +303,9 @@ stderr '.*'
 # moment/source/IPT_bytes_out envelope stripped.
 mock-runs-server
 snouty runs logs run-1 -123 1.0
-stdout '\[\s*1\] \[\s*app\] \[out\] \{"level":"info","msg":"starting"\}'
-stdout '\[\s*2\] \[\s*app\] \[err\] \{"level":"warn","msg":"slow request"\}'
-stdout '\[\s*311\.849\] \[\s*control\] \[\s*\] +- \{"antithesis_assert"'
+stdout '\[\s*1\.000\] \[\s*app\] \[out\] \{"level":"info","msg":"starting"\}'
+stdout '\[\s*2\.000\] \[\s*app\] \[err\] \{"level":"warn","msg":"slow request"\}'
+stdout '\[\s*311\.848\] \[\s*control\] \[\s*\] +- \{"antithesis_assert"'
 
 # `snouty --json runs logs` outputs NDJSON with faults annotated.
 mock-runs-server
@@ -327,7 +331,7 @@ stdout 'output_text.*starting'
 # or control-byte escaping); the line prefix is still formatted.
 mock-runs-server
 snouty runs logs --raw run-1 -123 1.0
-stdout '\[\s*1\] \[\s*app\] \[out\] \{"level":"info","msg":"starting"\}'
+stdout '\[\s*1\.000\] \[\s*app\] \[out\] \{"level":"info","msg":"starting"\}'
 
 # `snouty --json runs logs` emits a record whose output_text contains
 # a JSON-escaped newline on a single output line.

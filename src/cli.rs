@@ -20,11 +20,13 @@ fn parse_run_status(value: &str) -> Result<RunStatus, String> {
 #[command(version)]
 pub struct Cli {
     /// Output JSON where supported (NDJSON for list/stream commands, pretty JSON otherwise)
-    #[arg(long, global = true)]
+    // High display_order so the two global flags sort to the bottom of every
+    // command's option list instead of wedging between that command's own flags.
+    #[arg(long, global = true, display_order = 1000)]
     pub json: bool,
 
     /// Log API requests to stderr (authentication tokens redacted)
-    #[arg(long, global = true)]
+    #[arg(long, global = true, display_order = 1001)]
     pub verbose: bool,
 
     #[command(subcommand)]
@@ -126,7 +128,6 @@ Compose configs:
   discovers test commands from /opt/antithesis/test/v1 inside the
   running containers and validates their structure.
 
-
   Test commands are discovered by scanning /opt/antithesis/test/v1 from each
   running container for {test_name}/{command} entries. Test commands are
   validated to have recognized prefixes and at least one driver or anytime
@@ -178,6 +179,9 @@ pub enum DocsCommands {
 
 Uses full-text search across the Antithesis documentation database.
 The database is automatically updated before each search unless --offline is passed to the docs command.
+
+Prints ranked matches (title and page path); pass a path to `snouty docs show`.
+Use --list to print only the paths.
 
 Examples:
   snouty docs search fault injection
@@ -252,18 +256,9 @@ pub struct LaunchArgs {
     #[arg(short, long)]
     pub webhook: String,
 
-    /// Path to a local config directory containing either docker-compose.yaml
-    /// or a manifests/ subdirectory (Kubernetes manifests). Builds and pushes
-    /// a config image automatically, setting antithesis.config_image. For
-    /// docker-compose configs, every service image must be present in the
-    /// local image store (snouty never pulls); each one is pinned to its
-    /// local digest — served from a registry that already has it, or pushed —
-    /// and the compose file is rewritten with the digest-pinned images before
-    /// being baked into the config image, so the platform runs exactly what
-    /// was on this machine. For Kubernetes configs, images are pulled by the
-    /// platform from the references in the manifests. Requires the
-    /// docker-compose binary (Docker Compose v2) and the ANTITHESIS_REPOSITORY
-    /// environment variable.
+    /// Local config dir (docker-compose.yaml or a manifests/ subdir), auto-built
+    /// and pushed as the config image. Compose service images must already exist
+    /// locally — snouty never pulls.
     #[arg(short, long, conflicts_with = "config_image")]
     pub config: Option<std::path::PathBuf>,
 
@@ -291,11 +286,8 @@ pub struct LaunchArgs {
     #[arg(long)]
     pub ephemeral: bool,
 
-    /// An optional identifier to separate property history in reports.
-    ///
-    /// In the resulting report, each property’s history is generated from all
-    /// previous runs with the same antithesis.source parameter. This allows you
-    /// to (for example) easily see the history of tests on a single branch.
+    /// Identifier that groups property history in reports — runs sharing a
+    /// --source share history (e.g. per-branch)
     #[arg(long)]
     pub source: Option<String>,
 
@@ -338,9 +330,21 @@ pub struct DebugArgs {
 #[derive(Subcommand)]
 pub enum RunsCommands {
     /// List all runs
+    #[command(
+        long_about = r#"List recent runs (the default when `snouty runs` runs with no subcommand).
+
+Columns: RUN ID, STATUS, CREATED, TEST NAME. Use --detail or --json for the
+full description and launcher."#
+    )]
     List(RunsListArgs),
 
     /// Show details of a specific run
+    #[command(
+        long_about = r#"Show a run's metadata: id, status, timestamps, launcher, and description.
+
+Incomplete runs also show the failure moment (Failure Hash/VTime) to pass to
+`runs logs`. Use --web to open the triage report in a browser."#
+    )]
     Show {
         /// Run ID
         run_id: String,
@@ -351,6 +355,11 @@ pub enum RunsCommands {
     },
 
     /// List property results for a run
+    #[command(long_about = r#"List a run's property (assertion) results.
+
+Columns: STATUS, EXAMPLES, NAME (failing first). EXAMPLES is the example count,
+shown as examples/counterexamples when a property has counterexamples. Pass a
+NAME to `runs property` to see its example moments."#)]
     Properties {
         /// Run ID
         run_id: String,
@@ -365,6 +374,12 @@ pub enum RunsCommands {
     },
 
     /// Show examples and counter-examples for a single property
+    #[command(
+        long_about = r#"Show one property's example and counter-example moments.
+
+Columns: STATUS, HASH, VTIME (a non-event property shows VALUE instead). Feed a
+HASH and VTIME into `runs logs` to see what happened at that moment."#
+    )]
     Property {
         /// Run ID
         run_id: String,
@@ -374,41 +389,55 @@ pub enum RunsCommands {
     },
 
     /// Stream build logs for a run
+    #[command(long_about = "Stream a run's build and setup logs.\n\n\
+        Output: `timestamp [stream] line`.")]
     BuildLogs {
         /// Run ID
         run_id: String,
     },
 
     /// Stream moment logs for a run
+    #[command(long_about = r#"Stream a timeline's logs up to a moment.
+
+INPUT_HASH and VTIME identify the moment and its timeline; logs are streamed up
+to that moment. Without --begin-vtime, streaming starts at the timeline's
+earliest log entry.
+
+Output: `[vtime] [source] [stream] message`. A moment (HASH/VTIME) comes from
+`runs property` or `runs events`."#)]
     Logs {
         /// Run ID
         run_id: String,
 
-        /// The input hash value identifying the moment
+        /// Input hash of the moment to stream up to (with VTIME, picks the timeline)
         #[arg(allow_hyphen_values = true)]
         input_hash: String,
 
-        /// The virtual time value identifying the moment
+        /// Virtual time of the moment to stream up to
         #[arg(allow_hyphen_values = true)]
         vtime: String,
 
-        /// Start streaming from this virtual time (defaults to the root)
+        /// Start from this virtual time instead of the timeline's earliest log entry
         #[arg(long, allow_hyphen_values = true)]
         begin_vtime: Option<String>,
 
-        /// Start streaming from this input hash (optimization; must be paired with --begin-vtime)
+        /// Start from this input hash (optimization; must be paired with --begin-vtime)
         #[arg(long, allow_hyphen_values = true, requires = "begin_vtime")]
         begin_input_hash: Option<String>,
 
-        /// Emit log lines without any post-processing: with `--json`, skips
-        /// fault annotation (raw NDJSON passthrough); otherwise renders the
-        /// text payload verbatim (ANSI colors and control bytes preserved
-        /// instead of stripped/escaped)
+        /// Skip post-processing: with --json, pass NDJSON through unannotated;
+        /// otherwise print the text payload verbatim (keep ANSI/control bytes)
         #[arg(short = 'r', long)]
         raw: bool,
     },
 
     /// Search events in a run
+    #[command(
+        long_about = r#"Search a run's events for one or more substrings (all must match).
+
+Columns: HASH, VTIME, SOURCE ([container:stream]), OUTPUT. Feed a row's HASH
+and VTIME into `runs logs` to see the surrounding logs."#
+    )]
     Events {
         /// Run ID
         run_id: String,
@@ -417,8 +446,8 @@ pub enum RunsCommands {
         #[arg(short = 'm', long = "match")]
         matches: Vec<String>,
 
-        /// Additional substrings to search for (same effect as `-m`, which is
-        /// the primary form). At least one needle is required.
+        /// Substrings to match, as a positional alias for `-m` (all must match).
+        /// At least one needle (via `-m` or here) is required.
         query: Vec<String>,
     },
 }

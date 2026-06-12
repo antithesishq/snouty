@@ -137,7 +137,7 @@ pub async fn cmd_runs(command: Option<RunsCommands>, json: bool, verbose: bool) 
 async fn cmd_runs_list(args: RunsListArgs, json: bool, verbose: bool) -> Result<()> {
     debug!("listing runs");
 
-    let api = AntithesisApi::from_env_requiring_api_key(verbose)?;
+    let api = AntithesisApi::from_env_requiring_api_key(verbose, None)?;
 
     // clap parsed and validated the filter flags into their real types, so the
     // options struct is built directly with no further string parsing here.
@@ -246,7 +246,7 @@ fn format_local_str(raw: &str) -> String {
 async fn cmd_runs_show(run_id: &str, web: bool, json: bool, verbose: bool) -> Result<()> {
     debug!("showing run: {}", run_id);
 
-    let api = AntithesisApi::from_env_requiring_api_key(verbose)?;
+    let api = AntithesisApi::from_env_requiring_api_key(verbose, None)?;
     let run = match api.get_run(run_id).await {
         Ok(run) => run,
         // A 404 here is unambiguous: the run id is bad. Say so instead of leaking
@@ -344,7 +344,7 @@ async fn cmd_runs_properties(
 ) -> Result<()> {
     debug!("listing properties for run: {}", run_id);
 
-    let api = AntithesisApi::from_env_requiring_api_key(verbose)?;
+    let api = AntithesisApi::from_env_requiring_api_key(verbose, None)?;
     let mut properties = match api
         .stream_run_properties(run_id, status)
         .try_collect::<Vec<_>>()
@@ -508,7 +508,7 @@ fn property_status_label(status: PropertyStatus) -> &'static str {
 async fn cmd_runs_property(run_id: &str, name: &str, json: bool, verbose: bool) -> Result<()> {
     debug!("looking up property '{}' for run: {}", name, run_id);
 
-    let api = AntithesisApi::from_env_requiring_api_key(verbose)?;
+    let api = AntithesisApi::from_env_requiring_api_key(verbose, None)?;
     let properties = match api
         .stream_run_properties(run_id, None)
         .try_collect::<Vec<_>>()
@@ -994,7 +994,7 @@ struct LogOutputOptions {
 async fn cmd_runs_build_logs(run_id: &str, json: bool, verbose: bool) -> Result<()> {
     debug!("streaming build logs for run: {}", run_id);
 
-    let api = AntithesisApi::from_env_requiring_api_key(verbose)?;
+    let api = AntithesisApi::from_env_requiring_api_key(verbose, None)?;
     let stream = match api.get_run_build_logs(run_id).await {
         Ok(stream) => stream.into_inner(),
         Err(err) => return Err(explain_run_scoped_error(&api, run_id, err).await),
@@ -1102,7 +1102,7 @@ async fn cmd_runs_events(
         .cloned()
         .unwrap_or_default();
 
-    let api = AntithesisApi::from_env_requiring_api_key(verbose)?;
+    let api = AntithesisApi::from_env_requiring_api_key(verbose, None)?;
     let stream = match api.search_run_events(run_id, &server_query).await {
         Ok(stream) => stream.into_inner(),
         Err(err) => return Err(explain_run_scoped_error(&api, run_id, err).await),
@@ -1182,7 +1182,7 @@ async fn cmd_runs_logs(
 ) -> Result<()> {
     debug!("streaming logs for run: {}", run_id);
 
-    let api = AntithesisApi::from_env_requiring_api_key(verbose)?;
+    let api = AntithesisApi::from_env_requiring_api_key(verbose, None)?;
     let stream = match api
         .get_run_logs(run_id, input_hash, vtime, begin_input_hash, begin_vtime)
         .await
@@ -4474,8 +4474,9 @@ mod tests {
 
     mod run_scoped_errors {
         use super::*;
-        use crate::api::{Auth, Config};
+        use crate::api::Auth;
         use crate::error::{ApiError, is_user_error};
+        use crate::testutils::TestConfig;
         use wiremock::matchers::{method, path};
         use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -4487,11 +4488,12 @@ mod tests {
         }
 
         fn test_api(base_url: &str) -> AntithesisApi {
-            let config = Config::new(
-                Auth::basic("user".to_string(), "pass".to_string()),
-                "tenant".to_string(),
-            );
-            AntithesisApi::with_base_url(config, base_url).unwrap()
+            AntithesisApi::build(
+                TestConfig::for_base_url_and_maybe_cache_dir(base_url.to_owned(), None),
+                &Auth::basic("user".to_string(), "pass".to_string()),
+                false,
+            )
+            .unwrap()
         }
 
         async fn mock_get_run(run_id: &str, status: u16, body: serde_json::Value) -> MockServer {

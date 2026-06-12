@@ -13,6 +13,7 @@ use snouty::container;
 use snouty::docs;
 use snouty::moment;
 use snouty::params::Params;
+use snouty::snouty_config::{self, SnoutyConfig};
 use snouty::validate;
 
 fn read_stdin() -> Result<String> {
@@ -165,13 +166,13 @@ async fn cmd_launch(args: LaunchArgs, json: bool, verbose: bool) -> Result<()> {
 
     let config_image_ref = if let Some(config_dir) = args.config {
         let config = config::detect_config(&config_dir)?;
+        let sn_cfg = snouty_config::default_config(Some(config_dir));
 
-        let registry = std::env::var("ANTITHESIS_REPOSITORY")
-            .wrap_err("missing environment variable: ANTITHESIS_REPOSITORY")?;
+        let registry = sn_cfg.repository()?;
 
-        let image_ref = container::generate_image_ref(&registry);
+        let image_ref = container::generate_image_ref(registry);
         params.insert("antithesis.config_image", &image_ref);
-        Some((config, registry, image_ref))
+        Some((config, registry.to_owned(), image_ref))
     } else {
         None
     };
@@ -254,7 +255,7 @@ async fn launch_webhook(
         serde_json::to_string_pretty(&params.to_redacted_map())?
     );
 
-    let api = AntithesisApi::from_env(verbose)?;
+    let api = AntithesisApi::from_env(verbose, None)?;
     api.launch_test(webhook, &params).await
 }
 
@@ -300,7 +301,7 @@ async fn cmd_debug(args: DebugArgs, json: bool, verbose: bool) -> Result<()> {
         serde_json::to_string_pretty(&params.to_redacted_map())?
     );
 
-    let api = AntithesisApi::from_env(verbose)?;
+    let api = AntithesisApi::from_env(verbose, None)?;
     let response = api.launch_debugging(&params).await?;
 
     if json {

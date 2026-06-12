@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::fs;
 use std::io::Write as _;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use color_eyre::eyre::{OptionExt, Result, bail};
 use ptree::print_config::UTF_CHARS_BOLD;
@@ -12,70 +12,67 @@ use tempfile::NamedTempFile;
 mod snippet;
 
 use crate::cli::DocsCommands;
+use crate::snouty_config::{self, SnoutyConfig};
 
 const DEFAULT_DOCS_URL: &str = "https://antithesis.com/docs";
 const SEARCH_STOPWORDS: &[&str] = &[
     "a", "an", "and", "are", "does", "how", "in", "is", "of", "or", "the", "to", "what",
 ];
 
-fn docs_url() -> String {
-    let mut base =
-        std::env::var("ANTITHESIS_DOCS_URL").unwrap_or_else(|_| DEFAULT_DOCS_URL.to_string());
+fn docs_url(config: &impl SnoutyConfig) -> String {
+    let mut base = config.docs_url().unwrap_or(DEFAULT_DOCS_URL).to_string();
     while base.ends_with('/') {
         base.pop();
     }
     base
 }
 
-fn cache_dir() -> Result<PathBuf> {
-    let dir = if let Some(dir) = std::env::var_os("SNOUTY_TEST_CACHE_DIR") {
-        PathBuf::from(dir)
-    } else {
-        dirs::cache_dir().ok_or_eyre("could not determine cache directory")?
-    }
-    .join("snouty");
-    fs::create_dir_all(&dir)?;
+fn cache_dir(config: &impl SnoutyConfig) -> Result<&Path> {
+    let dir = config
+        .cache_dir()
+        .ok_or_eyre("could not determine cache directory")?;
+    fs::create_dir_all(dir)?;
     Ok(dir)
 }
 
-fn db_path() -> Result<PathBuf> {
-    if let Ok(p) = std::env::var("ANTITHESIS_DOCS_DB_PATH") {
+fn db_path(config: &impl SnoutyConfig) -> Result<PathBuf> {
+    if let Some(p) = config.docs_db_path() {
         return Ok(PathBuf::from(p));
     }
-    Ok(cache_dir()?.join("docs.db"))
+    Ok(cache_dir(config)?.join("docs.db"))
 }
 
-fn env_db_path_is_set() -> bool {
-    std::env::var_os("ANTITHESIS_DOCS_DB_PATH").is_some()
-}
-
-fn etag_path() -> Result<PathBuf> {
-    Ok(cache_dir()?.join("docs.db.etag"))
+fn etag_path(config: &impl SnoutyConfig) -> Result<PathBuf> {
+    Ok(cache_dir(config)?.join("docs.db.etag"))
 }
 
 pub async fn cmd_docs(command: DocsCommands, offline: bool, json: bool) -> Result<()> {
-    if !(offline || env_db_path_is_set()) {
-        update_with_fallback().await?;
+    let config = snouty_config::default_config(None);
+
+    if !(offline || config.docs_db_path().is_some()) {
+        update_with_fallback(&config).await?;
     }
 
-    ensure_docs_db_available(offline)?;
+    ensure_docs_db_available(&config, offline)?;
 
     match command {
         DocsCommands::Search { query, list, limit } => {
             if query.is_empty() {
                 bail!("search query required");
             }
-            search(&query.join(" "), json, list, limit)
+            search(&config, &query.join(" "), json, list, limit)
         }
-        DocsCommands::Sqlite => sqlite_path(),
-        DocsCommands::Tree { depth, filter } => tree(depth.map(|d| d.get()), filter.as_deref()),
-        DocsCommands::Show { path } => show(&path),
+        DocsCommands::Sqlite => sqlite_path(&config),
+        DocsCommands::Tree { depth, filter } => {
+            tree(&config, depth.map(|d| d.get()), filter.as_deref())
+        }
+        DocsCommands::Show { path } => show(&config, &path),
     }
 }
 
-async fn update_with_fallback() -> Result<()> {
-    if let Err(e) = download_and_cache_db().await {
-        if db_path()?.exists() {
+async fn update_with_fallback(config: &impl SnoutyConfig) -> Result<()> {
+    if let Err(e) = download_and_cache_db(config).await {
+        if db_path(config)?.exists() {
             eprintln!("Warning: failed to update docs, falling back to cached docs\n    {e}\n");
         } else {
             return Err(e);
@@ -85,13 +82,13 @@ async fn update_with_fallback() -> Result<()> {
     Ok(())
 }
 
-fn ensure_docs_db_available(offline: bool) -> Result<()> {
-    let db = db_path()?;
+fn ensure_docs_db_available(config: &impl SnoutyConfig, offline: bool) -> Result<()> {
+    let db = db_path(config)?;
     if db.exists() {
         return Ok(());
     }
 
-    if env_db_path_is_set() {
+    if config.docs_db_path().is_some() {
         bail!(
             "Documentation database not found at {}. Point ANTITHESIS_DOCS_DB_PATH at an existing file.",
             db.display()
@@ -105,23 +102,23 @@ fn ensure_docs_db_available(offline: bool) -> Result<()> {
     bail!("Documentation database not found at {}.", db.display());
 }
 
-async fn download_and_cache_db() -> Result<()> {
-    if let Some((bytes, etag)) = fetch_db_if_changed().await? {
-        atomic_write_db(&bytes)?;
-        fs::write(etag_path()?, etag)?;
+async fn download_and_cache_db(config: &impl SnoutyConfig) -> Result<()> {
+    if let Some((bytes, etag)) = fetch_db_if_changed(config).await? {
+        atomic_write_db(config, &bytes)?;
+        fs::write(etag_path(config)?, etag)?;
     }
     Ok(())
 }
 
 /// fetch_db_if_changed returns Ok(None) if the server indicates the database
 /// has not changed (304 Not Modified).
-async fn fetch_db_if_changed() -> Result<Option<(Vec<u8>, String)>> {
+async fn fetch_db_if_changed(config: &impl SnoutyConfig) -> Result<Option<(Vec<u8>, String)>> {
     let client = reqwest::Client::builder()
         .user_agent(crate::user_agent())
         .build()?;
-    let mut request = client.get(format!("{}/sqlite.db", docs_url()));
+    let mut request = client.get(format!("{}/sqlite.db", docs_url(config)));
 
-    if let Ok(etag) = fs::read_to_string(etag_path()?) {
+    if let Ok(etag) = fs::read_to_string(etag_path(config)?) {
         request = request.header("If-None-Match", etag.trim());
     }
 
@@ -151,12 +148,12 @@ async fn fetch_db_if_changed() -> Result<Option<(Vec<u8>, String)>> {
     Ok(Some((bytes, etag)))
 }
 
-fn atomic_write_db(bytes: &[u8]) -> Result<()> {
-    let cache = cache_dir()?;
-    let mut tmp = NamedTempFile::new_in(&cache)?;
+fn atomic_write_db(config: &impl SnoutyConfig, bytes: &[u8]) -> Result<()> {
+    let cache = cache_dir(config)?;
+    let mut tmp = NamedTempFile::new_in(cache)?;
     std::io::Write::write_all(&mut tmp, bytes)?;
 
-    let db_path = db_path()?;
+    let db_path = db_path(config)?;
 
     tmp.persist(&db_path).map_err(|e| e.error)?;
 
@@ -217,8 +214,14 @@ fn title_match_query(query: &str) -> Option<String> {
     )
 }
 
-fn search(query: &str, json: bool, list: bool, limit: usize) -> Result<()> {
-    let conn = open_db()?;
+fn search(
+    config: &impl SnoutyConfig,
+    query: &str,
+    json: bool,
+    list: bool,
+    limit: usize,
+) -> Result<()> {
+    let conn = open_db(config)?;
     let normalized_query = normalized_query(query);
 
     let title_query = title_match_query(&normalized_query);
@@ -428,8 +431,8 @@ fn print_results(results: &[(String, String, String)]) {
     }
 }
 
-fn open_db() -> Result<Connection> {
-    let db = db_path()?;
+fn open_db(config: &impl SnoutyConfig) -> Result<Connection> {
+    let db = db_path(config)?;
     Ok(Connection::open_with_flags(
         &db,
         OpenFlags::SQLITE_OPEN_READ_ONLY,
@@ -463,8 +466,8 @@ fn generated_sdk_index(lang: &str) -> Option<(&'static str, &'static str)> {
     Some(resolved)
 }
 
-fn show(path: &str) -> Result<()> {
-    let conn = open_db()?;
+fn show(config: &impl SnoutyConfig, path: &str) -> Result<()> {
+    let conn = open_db(config)?;
 
     let path = normalized_path(path);
     let db_path = format!("docs/{}", path);
@@ -503,7 +506,7 @@ fn show(path: &str) -> Result<()> {
             "\n\nThe {lang} SDK reference docs are not part of the offline docs. \
              They are published as HTML and can be crawled directly over the network, \
              starting from:\n  {}/{}",
-            docs_url(),
+            docs_url(config),
             rel,
         ));
     } else if path == "generated" || path.starts_with("generated/") {
@@ -514,7 +517,7 @@ fn show(path: &str) -> Result<()> {
         );
         msg.push_str(&format!(
             "\nIf this is a valid page, try: {}/{}/",
-            docs_url(),
+            docs_url(config),
             path
         ));
     }
@@ -527,8 +530,8 @@ fn show(path: &str) -> Result<()> {
     bail!("{}", msg)
 }
 
-fn sqlite_path() -> Result<()> {
-    println!("{}", db_path()?.display());
+fn sqlite_path(config: &impl SnoutyConfig) -> Result<()> {
+    println!("{}", db_path(config)?.display());
     Ok(())
 }
 
@@ -555,8 +558,8 @@ impl TreeNode {
 
 /// Load documentation pages from SQLite, optionally filter the tree, and print
 /// a Unicode-rendered view of the remaining paths.
-fn tree(depth: Option<usize>, filter: Option<&str>) -> Result<()> {
-    let conn = open_db()?;
+fn tree(config: &impl SnoutyConfig, depth: Option<usize>, filter: Option<&str>) -> Result<()> {
+    let conn = open_db(config)?;
     let mut stmt = conn.prepare("SELECT path, title FROM pages ORDER BY path")?;
     let mut root = TreeNode::default();
     for page in stmt.query_map([], |row| {

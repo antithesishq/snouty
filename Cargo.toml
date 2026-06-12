@@ -38,6 +38,10 @@ libc = "0.2"
 regex = "1"
 ptree = { version = "0.5.2", default-features = false }
 serde_yaml = "0.9"
+directories-next = "2.0.0"
+toml = "1.1.2"
+http = "1.4.2"
+async-trait = "0.1.89"
 
 [[example]]
 name = "mock_api"

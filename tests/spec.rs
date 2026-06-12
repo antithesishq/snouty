@@ -338,6 +338,22 @@ fn find_runtime(runtime_name: &str) -> Option<Box<dyn snouty::container::Contain
 }
 
 fn cleanup_engine_images(runtime_name: &str, built_images: &[String], registry_addr: Option<&str>) {
+    // The engine spec cases run as separate `#[test]` processes in parallel and
+    // share one local `containers/storage`. A forced image removal here mutates
+    // that store's layer database while a sibling test's `podman build` is
+    // enumerating images for its build-cache check ("getting top layer info"),
+    // intermittently yielding `layer not known` (issue #136). On CI the runner
+    // is ephemeral and thrown away after the job, so there is nothing to clean
+    // up — skip the `rmi` entirely there to remove the writer that races those
+    // concurrent builds. Locally we still clean up so a dev's image store does
+    // not accumulate junk across runs.
+    if std::env::var_os("CI").is_some() {
+        eprintln!(
+            "CI is set: skipping {} image cleanup (ephemeral runner; avoids racing concurrent builds, issue #136)",
+            runtime_name
+        );
+        return;
+    }
     for image in built_images {
         let _ = std::process::Command::new(runtime_name)
             .args(["rmi", "-f", image])

@@ -857,59 +857,94 @@ fn indent_lines(text: &str, prefix: &str) -> String {
         .join("\n")
 }
 
+fn is_failing(p: &Property) -> bool {
+    matches!(p.status(), PropertyStatus::Failing)
+}
+
+/// The EXAMPLES cell for a property: the example count, SI-shortened so big
+/// counts stay narrow (`18496678` -> `18M`), with counterexamples appended
+/// inline (`examples/counterexamples`) only when a property actually has some —
+/// so the common all-zero-counterexample rows aren't cluttered with `/0`.
+fn property_examples_cell(p: &Property) -> String {
+    let (examples, counters) = property_example_counts(p);
+    if counters == 0 {
+        format_count_si(examples)
+    } else {
+        format!("{}/{}", format_count_si(examples), format_count_si(counters))
+    }
+}
+
 fn render_properties_table(properties: &[Property]) -> String {
-    // STATUS and EXAMPLES are narrow and fixed; NAME is the long, variable
-    // column and goes last so it can wrap to the terminal instead of one long
-    // name forcing the whole table wider than the screen. Full names are kept —
-    // `runs property` takes a name, so truncating would break the follow-up.
+    // One table per group — far more scannable than a single flat table, and it
+    // mirrors the report UI. The group is the section heading, so the NAME column
+    // shows just the property's own name (the exact string `runs property`
+    // resolves); folding the group into NAME would have made the displayed name
+    // un-copyable. Properties with no group go in a final "(ungrouped)" section.
+    // This is human-facing output; use `--json` for automation.
     let headers = vec![
         "STATUS".to_string(),
         "EXAMPLES".to_string(),
         "NAME".to_string(),
     ];
-
-    // Failing properties first so triage doesn't require scanning the whole
-    // (otherwise alphabetical) list; relative order is otherwise preserved.
-    let mut ordered: Vec<&Property> = properties.iter().collect();
-    ordered.sort_by_key(|p| match p.status() {
-        PropertyStatus::Failing => 0,
-        _ => 1,
-    });
-
-    let rows = ordered
-        .iter()
-        .map(|p| {
-            // Fold the group into the name (`group ▸ detail`) instead of padding
-            // a mostly-empty GROUP column out to its widest label.
-            let name = match property_group(p) {
-                Some(group) => format!("{} ▸ {}", sanitize(group), sanitize(p.name())),
-                None => sanitize(p.name()),
-            };
-            // Show the example count, SI-shortened so big counts stay narrow
-            // (`18496678` -> `18M`). Surface counterexamples inline only when a
-            // property actually has some (`examples/counterexamples`), so the
-            // common all-zero-counterexample rows aren't cluttered with `/0`.
-            let (examples, counters) = property_example_counts(p);
-            let examples_cell = if counters == 0 {
-                format_count_si(examples)
-            } else {
-                format!(
-                    "{}/{}",
-                    format_count_si(examples),
-                    format_count_si(counters)
-                )
-            };
-            vec![
-                property_status_label(p.status()).to_string(),
-                examples_cell,
-                name,
-            ]
-        })
-        .collect::<Vec<_>>();
     // Right-align the numeric EXAMPLES column so magnitudes line up; STATUS and
     // the wrapped NAME column stay left-aligned.
     let aligns = [Align::Left, Align::Right, Align::Left];
-    render_table_wrap_last(&headers, &rows, terminal_width(), &aligns)
+    let width = terminal_width();
+
+    // Bucket into named groups (alphabetical via BTreeMap) and an ungrouped pile.
+    // An empty-string group is treated as no group.
+    let mut grouped: std::collections::BTreeMap<&str, Vec<&Property>> = Default::default();
+    let mut ungrouped: Vec<&Property> = Vec::new();
+    for p in properties {
+        match property_group(p).filter(|g| !g.is_empty()) {
+            Some(g) => grouped.entry(g).or_default().push(p),
+            None => ungrouped.push(p),
+        }
+    }
+
+    // Named groups containing a failing property sort first (so triage surfaces
+    // broken assertion groups), then the rest; alphabetical within each tier.
+    let mut named: Vec<(&str, Vec<&Property>)> = grouped.into_iter().collect();
+    named.sort_by(|(a, aps), (b, bps)| {
+        bps.iter()
+            .any(|p| is_failing(p))
+            .cmp(&aps.iter().any(|p| is_failing(p)))
+            .then_with(|| a.cmp(b))
+    });
+
+    let render_section = |title: &str, props: &[&Property]| -> String {
+        // Failing rows first within a section, then alphabetical by name.
+        let mut ps: Vec<&Property> = props.to_vec();
+        ps.sort_by(|a, b| {
+            is_failing(b)
+                .cmp(&is_failing(a))
+                .then_with(|| a.name().cmp(b.name()))
+        });
+        let rows: Vec<Vec<String>> = ps
+            .iter()
+            .map(|p| {
+                vec![
+                    property_status_label(p.status()).to_string(),
+                    property_examples_cell(p),
+                    sanitize(p.name()),
+                ]
+            })
+            .collect();
+        format!(
+            "{}\n{}",
+            sanitize(title),
+            render_table_wrap_last(&headers, &rows, width, &aligns)
+        )
+    };
+
+    let mut sections: Vec<String> = named
+        .iter()
+        .map(|(name, props)| render_section(name, props))
+        .collect();
+    if !ungrouped.is_empty() {
+        sections.push(render_section("(ungrouped)", &ungrouped));
+    }
+    sections.join("\n\n")
 }
 
 fn print_run_detail(run: &RunDetail) -> Result<()> {
@@ -934,8 +969,10 @@ fn print_run_detail(run: &RunDetail) -> Result<()> {
     rows.push(("Launcher", run.launcher.clone()));
 
     if let Some(ref moment) = run.failure_moment {
-        rows.push(("Failure VTime", moment.vtime.clone()));
+        // Hash before VTime to match the `runs logs <hash> <vtime>` argument
+        // order, so the values read top-to-bottom in the order you paste them.
         rows.push(("Failure Hash", moment.input_hash.clone()));
+        rows.push(("Failure VTime", moment.vtime.clone()));
     }
 
     if let Some(ref creator) = run.creator
@@ -955,6 +992,18 @@ fn print_run_detail(run: &RunDetail) -> Result<()> {
         if !block.is_empty() {
             out!("\n{block}")?;
         }
+    }
+
+    // Hand the user the exact command to read logs at the failure moment, the
+    // same way the `--web` hint below hands over the report link. Both can fire
+    // when an incomplete run still has a report — they're complementary.
+    if let Some(ref moment) = run.failure_moment {
+        outln!(
+            "\nview logs at the failure moment:\n  snouty runs logs {} {} {}",
+            run.run_id,
+            moment.input_hash,
+            moment.vtime
+        )?;
     }
 
     // Point at the obvious next step instead of dumping the huge signed report
@@ -2798,7 +2847,7 @@ mod tests {
     }
 
     #[test]
-    fn properties_table_groups_status_word_and_totals() {
+    fn properties_table_renders_one_table_per_group() {
         let properties = vec![
             event_property(
                 "Counter value stays below limit",
@@ -2818,27 +2867,27 @@ mod tests {
 
         let table = render_properties_table(&properties);
         let lines: Vec<&str> = table.lines().collect();
-        assert!(lines[0].contains("STATUS"));
-        assert!(lines[0].contains("NAME"));
-        assert!(lines[0].contains("EXAMPLES"));
-        // The GROUP column is gone — the group is folded into NAME instead.
-        assert!(!lines[0].contains("GROUP"));
 
-        // Failing properties sort to the top, ahead of passing ones.
-        assert!(lines[1].contains("Counter value"));
+        // One table per group: the failing "Safety" group leads with its name as
+        // a heading, followed by a STATUS/EXAMPLES/NAME table.
+        assert_eq!(lines[0], "Safety");
+        assert!(table.contains("\nSTATUS"), "expected a column header\n{table}");
+        assert!(table.contains("EXAMPLES"));
+        assert!(table.contains("NAME"));
+        assert!(!table.contains("GROUP"));
+        // The group is the heading, not folded into NAME — so the displayed name
+        // is exactly what `runs property` resolves.
+        assert!(!table.contains('▸'), "group should not be folded into NAME\n{table}");
 
-        // Two property rows. Counter property has 1 example + 2 counterexamples,
-        // rendered inline as `examples/counterexamples` (`1/2`). Its group is
-        // folded into the name as `group ▸ detail`.
+        // Counter property: 1 example + 2 counterexamples -> `1/2`, name only.
         let counter_row = lines.iter().find(|l| l.contains("Counter value")).unwrap();
         assert!(counter_row.contains("failing"));
-        assert!(counter_row.contains("Safety ▸ Counter value stays below limit"));
         assert!(counter_row.contains("1/2"));
+        assert!(counter_row.trim_end().ends_with("Counter value stays below limit"));
 
-        let setup_row = lines
-            .iter()
-            .find(|l| l.contains("Setup completes"))
-            .unwrap();
+        // Ungrouped properties land in a trailing "(ungrouped)" section.
+        assert!(table.contains("(ungrouped)"), "expected an ungrouped section\n{table}");
+        let setup_row = lines.iter().find(|l| l.contains("Setup completes")).unwrap();
         assert!(setup_row.contains("passing"));
         assert!(setup_row.contains("1"));
     }

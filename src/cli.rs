@@ -114,6 +114,12 @@ Using Moment.from (copy from triage report):
     Debug(DebugArgs),
 
     /// Output shell completions
+    #[command(long_about = r#"Output shell completions
+
+Writes a completion script for SHELL to stdout; install it by sourcing it from
+your shell config, e.g.:
+  snouty completions zsh > ~/.zfunc/_snouty
+  snouty completions bash | sudo tee /etc/bash_completion.d/snouty"#)]
     Completions {
         /// Shell to generate completions for
         shell: clap_complete::Shell,
@@ -159,9 +165,23 @@ Example:
     Version,
 
     /// Check for and install updates
+    #[command(long_about = r#"Check for and install updates
+
+Runs the bundled `snouty-update` helper, which checks for a newer release and
+replaces the snouty binary in place. Does nothing if `snouty-update` is not
+installed alongside snouty."#)]
     Update,
 
     /// Search Antithesis documentation
+    #[command(long_about = r#"Search Antithesis documentation
+
+Full-text search over a local copy of the Antithesis docs, auto-updated before
+each use unless --offline. Subcommands: search, tree, show, sqlite.
+
+Examples:
+  snouty docs search fault injection
+  snouty docs tree sdk
+  snouty docs show getting_started"#)]
     Docs {
         /// Don't check for documentation updates
         #[arg(long)]
@@ -355,11 +375,12 @@ Incomplete runs also show the failure moment (Failure Hash/VTime) to pass to
     },
 
     /// List property results for a run
-    #[command(long_about = r#"List a run's property (assertion) results.
+    #[command(long_about = r#"List a run's property (assertion) results, one table per group.
 
-Columns: STATUS, EXAMPLES, NAME (failing first). EXAMPLES is the example count,
-shown as examples/counterexamples when a property has counterexamples. Pass a
-NAME to `runs property` to see its example moments."#)]
+Each table is headed by its group; columns are STATUS, EXAMPLES, NAME (failing
+first). EXAMPLES is the example count, shown as examples/counterexamples when a
+property has counterexamples. Pass a NAME to `runs property`, or use --json for
+automation."#)]
     Properties {
         /// Run ID
         run_id: String,

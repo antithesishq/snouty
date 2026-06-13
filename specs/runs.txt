@@ -100,10 +100,11 @@ snouty --json runs show $R_run_id
 stdout '"run_id".*"$R_run_id"'
 [!staging] stdout '"status".*"completed"'
 
-# `snouty runs properties` renders one row per property with a status word, the
-# example count (with counterexamples shown inline as `examples/counterexamples`
-# when a property has any), and name (the group is folded into the name as
-# `group ▸ name`). Counts are SI-shortened (e.g. `2.3k`) and right-aligned.
+# `snouty runs properties` renders one table per group (the group is the section
+# heading), each with STATUS, the example count (counterexamples shown inline as
+# `examples/counterexamples` when a property has any, SI-shortened and
+# right-aligned), and the property NAME. Ungrouped properties go in a trailing
+# "(ungrouped)" section.
 mock-runs-server
 snouty runs properties $R_run_id
 [!staging] stdout 'STATUS.*EXAMPLES.*NAME'

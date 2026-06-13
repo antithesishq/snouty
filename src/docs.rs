@@ -3,6 +3,7 @@ use std::fs;
 use std::io::Write as _;
 use std::path::PathBuf;
 
+use color_eyre::Section;
 use color_eyre::eyre::{OptionExt, Result, bail};
 use ptree::print_config::UTF_CHARS_BOLD;
 use ptree::{PrintConfig, write_tree_with};
@@ -12,6 +13,7 @@ use tempfile::NamedTempFile;
 mod snippet;
 
 use crate::cli::DocsCommands;
+use crate::error::user_error;
 
 const DEFAULT_DOCS_URL: &str = "https://antithesis.com/docs";
 const SEARCH_STOPWORDS: &[&str] = &[
@@ -63,7 +65,7 @@ pub async fn cmd_docs(command: DocsCommands, offline: bool, json: bool) -> Resul
     match command {
         DocsCommands::Search { query, list, limit } => {
             if query.is_empty() {
-                bail!("search query required");
+                return Err(user_error("search query required"));
             }
             search(&query.join(" "), json, list, limit)
         }
@@ -92,17 +94,22 @@ fn ensure_docs_db_available(offline: bool) -> Result<()> {
     }
 
     if env_db_path_is_set() {
-        bail!(
-            "Documentation database not found at {}. Point ANTITHESIS_DOCS_DB_PATH at an existing file.",
+        return Err(user_error(format!(
+            "Documentation database not found at {}",
             db.display()
-        );
+        ))
+        .suggestion("point ANTITHESIS_DOCS_DB_PATH at an existing file"));
     }
 
     if offline {
-        bail!("Documentation database not found. Remove --offline to download it.");
+        return Err(user_error("Documentation database not found")
+            .suggestion("remove --offline to download it"));
     }
 
-    bail!("Documentation database not found at {}.", db.display());
+    Err(user_error(format!(
+        "Documentation database not found at {}",
+        db.display()
+    )))
 }
 
 async fn download_and_cache_db() -> Result<()> {
@@ -490,7 +497,9 @@ fn show(path: &str) -> Result<()> {
         .query_map([&path], |row| row.get(0))?
         .collect::<std::result::Result<Vec<_>, _>>()?;
 
-    let mut msg = format!("page not found: {}", db_path);
+    // The message states the error; the live-docs pointer and the close-match
+    // candidates are guidance, so they ride along as notes.
+    let mut report = user_error(format!("page not found: {db_path}"));
     let sdk_lang = path
         .strip_prefix("generated/sdk/")
         .and_then(|rest| rest.split('/').next())
@@ -499,32 +508,30 @@ fn show(path: &str) -> Result<()> {
         // Recognized generated SDK language: point at its live HTML index to
         // crawl directly. An unrecognized language falls through to the normal
         // not-found suggestions below.
-        msg.push_str(&format!(
-            "\n\nThe {lang} SDK reference docs are not part of the offline docs. \
-             They are published as HTML and can be crawled directly over the network, \
-             starting from:\n  {}/{}",
+        report = report.note(format!(
+            "the {lang} SDK reference docs are not part of the offline docs; they are \
+             published as HTML and can be crawled directly over the network, starting from {}/{}",
             docs_url(),
             rel,
         ));
     } else if path == "generated" || path.starts_with("generated/") {
         // Other generated pages, including SDK languages we don't recognize
         // (our alias table may simply be out of date): point at the live docs.
-        msg.push_str(
-            "\n\nNote: generated pages (e.g. SDK references) are not included in the offline docs.",
-        );
-        msg.push_str(&format!(
-            "\nIf this is a valid page, try: {}/{}/",
-            docs_url(),
-            path
-        ));
+        report = report
+            .note("generated pages (e.g. SDK references) are not included in the offline docs")
+            .note(format!(
+                "if this is a valid page, try {}/{}/",
+                docs_url(),
+                path
+            ));
     }
     if !suggestions.is_empty() {
-        msg.push_str("\n\nDid you mean one of these?");
-        for s in &suggestions {
-            msg.push_str(&format!("\n  {}", s));
-        }
+        report = report.suggestion(format!(
+            "did you mean one of these?\n  {}",
+            suggestions.join("\n  ")
+        ));
     }
-    bail!("{}", msg)
+    Err(report)
 }
 
 fn sqlite_path() -> Result<()> {

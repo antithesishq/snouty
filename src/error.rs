@@ -1,16 +1,18 @@
-//! User-facing error tagging.
+//! User-facing errors.
 //!
 //! Most failures snouty hits are the user's to fix: a bad flag, a missing
 //! environment variable, a 4xx from the API. Those should print as a clean
-//! message, not a color_eyre report with a "Backtrace omitted" footer. Wrapping
-//! such errors in [`UserError`] lets `main` tell them apart from genuine
-//! internal faults (which still get the full report).
+//! message, not a color_eyre report with a backtrace footer. We mark such
+//! errors with [`Report::suppress_backtrace`] at the point they're built, so
+//! `main` can render every error the same way and the report itself carries
+//! whether it's worth a backtrace — no out-of-band classification needed.
 
+use color_eyre::Section;
 use color_eyre::eyre::Report;
 
 /// Marker error wrapping a user-facing message.
 ///
-/// Construct reports with [`user_error`] and detect them with [`is_user_error`].
+/// Construct reports with [`user_error`].
 #[derive(Debug)]
 pub struct UserError(pub String);
 
@@ -22,25 +24,12 @@ impl std::fmt::Display for UserError {
 
 impl std::error::Error for UserError {}
 
-/// Build an `eyre` report that `main` will print as a clean user-facing message.
+/// Build an `eyre` report that prints as a clean user-facing message — no
+/// backtrace, even under `RUST_BACKTRACE`. Attach `.note(...)`/`.suggestion(...)`
+/// (the [`color_eyre::Section`] API) for follow-up hints; they render below the
+/// message automatically.
 pub fn user_error(message: impl Into<String>) -> Report {
-    Report::new(UserError(message.into()))
-}
-
-/// Returns `true` when any link in the report's chain is a [`UserError`].
-///
-/// Works through `wrap_err` context so callers can add context to a user error
-/// without losing the tag.
-pub fn is_user_error(report: &Report) -> bool {
-    report.chain().any(|cause| {
-        cause.is::<UserError>()
-            // A 4xx API failure is the user's to fix (bad credentials, unknown
-            // run id, invalid filter, …), so it prints as a clean message just
-            // like an explicit `UserError`. 5xx and other statuses stay internal.
-            || cause
-                .downcast_ref::<ApiError>()
-                .is_some_and(|e| (400..500).contains(&e.status))
-    })
+    Report::new(UserError(message.into())).suppress_backtrace(true)
 }
 
 /// Error carrying the HTTP status of a failed API call structurally, so callers
@@ -62,8 +51,8 @@ impl std::fmt::Display for ApiError {
 impl std::error::Error for ApiError {}
 
 /// Returns the HTTP status of the first [`ApiError`] in the report's chain, if
-/// any. Works through `wrap_err` context like [`is_user_error`], so callers can
-/// add context without losing the structured status.
+/// any. Works through `wrap_err` context, so callers can add context without
+/// losing the structured status.
 pub fn api_error_status(report: &Report) -> Option<u16> {
     report
         .chain()
@@ -75,25 +64,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn tagged_report_is_detected() {
-        let report = user_error("missing environment variable: ANTITHESIS_TENANT");
-        assert!(is_user_error(&report));
-    }
-
-    #[test]
-    fn tag_survives_added_context() {
+    fn user_error_message_survives_added_context() {
         let report = user_error("API error: 400").wrap_err("while listing runs");
-        assert!(is_user_error(&report));
         // Alternate Display renders the full chain without a backtrace footer.
         let rendered = format!("{report:#}");
         assert!(rendered.contains("while listing runs"));
         assert!(rendered.contains("API error: 400"));
-    }
-
-    #[test]
-    fn plain_report_is_not_user_error() {
-        let report = color_eyre::eyre::eyre!("internal explosion");
-        assert!(!is_user_error(&report));
     }
 
     fn api_error(status: u16, message: &str) -> Report {
@@ -127,13 +103,5 @@ mod tests {
     fn api_error_status_is_none_for_plain_report() {
         let report = color_eyre::eyre::eyre!("internal explosion");
         assert_eq!(api_error_status(&report), None);
-    }
-
-    #[test]
-    fn api_4xx_is_user_facing_but_5xx_is_not() {
-        assert!(is_user_error(&api_error(404, "not found")));
-        assert!(is_user_error(&api_error(400, "bad request")));
-        // A 5xx is an internal fault even when its body mentions a 404.
-        assert!(!is_user_error(&api_error(500, "upstream 404 page")));
     }
 }

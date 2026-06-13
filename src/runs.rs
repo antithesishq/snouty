@@ -2,6 +2,7 @@ use std::io::{BufWriter, Write};
 use std::path::Path;
 use std::sync::OnceLock;
 
+use color_eyre::Section;
 use color_eyre::eyre::{Result, eyre};
 use futures_util::{StreamExt, TryStreamExt};
 use indexmap::IndexMap;
@@ -281,9 +282,9 @@ fn open_run_report(run: &RunDetail, json: bool) -> Result<()> {
         .as_ref()
         .and_then(|l| l.triage_report.as_deref())
         .ok_or_else(|| {
-            user_error(format!(
-                "no report available for run {} with status {}",
-                run.run_id, run.status
+            user_error(format!("no report available for run {}", run.run_id)).note(format!(
+                "reports are generated when a run completes; this run is {}",
+                run.status
             ))
         })?;
 
@@ -356,9 +357,8 @@ struct PropertyFilter<'a> {
 /// `runs list`, which both carry `--detail`.
 fn reject_detail_with_json(json: bool, detail: bool) -> Result<()> {
     if json && detail {
-        return Err(user_error(
-            "--detail and --json cannot be combined: --json already emits the full data",
-        ));
+        return Err(user_error("--detail and --json cannot be combined")
+            .note("--json already emits the full data"));
     }
     Ok(())
 }
@@ -448,8 +448,10 @@ fn no_properties_message(filter: &PropertyFilter) -> String {
 enum RunProbe {
     /// The run id is bad: `get_run` also returned a structured 404.
     NotFound,
-    /// The run exists; carries its status so the caller can tailor the message.
-    Exists(RunStatus),
+    /// The run exists; carries its full detail so callers can tailor the message
+    /// (status, and the failure moment for incomplete runs). Boxed to keep the
+    /// enum small.
+    Exists(Box<RunDetail>),
     /// `get_run` failed for some other reason (timeout, 502, auth). Propagate
     /// this rather than claiming the run doesn't exist.
     ProbeFailed(color_eyre::eyre::Report),
@@ -461,7 +463,7 @@ enum RunProbe {
 /// not found".
 async fn probe_run(api: &AntithesisApi, run_id: &str) -> RunProbe {
     match api.get_run(run_id).await {
-        Ok(run) => RunProbe::Exists(run.status),
+        Ok(run) => RunProbe::Exists(Box::new(run)),
         Err(err) if api_error_status(&err) == Some(404) => RunProbe::NotFound,
         Err(err) => RunProbe::ProbeFailed(err),
     }
@@ -524,20 +526,24 @@ async fn explain_properties_error(
         RunProbe::ProbeFailed(probe_err) => probe_err,
         // Completed runs are expected to have properties; if one 404s anyway,
         // that's a genuine surprise — keep the original error.
-        RunProbe::Exists(RunStatus::Completed) => err,
-        RunProbe::Exists(status) => {
-            let mut msg = format!(
-                "no properties for run {run_id} — properties are generated when a run completes, \
-                 and this run is {}",
-                status_label(status)
-            );
-            if status == RunStatus::Incomplete {
-                msg.push_str(&format!(
-                    ". See the failure moment with `snouty runs show {run_id}`, \
-                     then `snouty runs logs`/`runs events` around it"
-                ));
+        RunProbe::Exists(run) if run.status == RunStatus::Completed => err,
+        RunProbe::Exists(run) => {
+            // The message states the error; the *why* and the concrete next steps
+            // hang off it as notes. For an incomplete run we already fetched the
+            // failure moment while probing, so prefill it into the `runs logs` hint.
+            let report = user_error(format!("no properties for run {run_id}"))
+                .note(format!(
+                    "properties are generated when a run completes; this run is {}",
+                    status_label(run.status)
+                ))
+                .note(format!("inspect the run with `snouty runs show {run_id}`"));
+            match run.failure_moment.as_ref() {
+                Some(moment) => report.note(format!(
+                    "view logs at the failure with `snouty runs logs {run_id} {} {}`",
+                    moment.input_hash, moment.vtime
+                )),
+                None => report,
             }
-            user_error(msg)
         }
     }
 }
@@ -1185,9 +1191,8 @@ async fn cmd_runs_events(
     debug!("searching events for run: {}", run_id);
 
     if matches.is_empty() {
-        return Err(user_error(
-            "no search term given: pass at least one needle via `-m/--match` or as a positional argument",
-        ));
+        return Err(user_error("no search term given")
+            .suggestion("pass at least one needle via `-m/--match` or as a positional argument"));
     }
 
     // The server endpoint takes a single `q` substring and streams only a capped
@@ -4860,7 +4865,7 @@ mod tests {
     mod run_scoped_errors {
         use super::*;
         use crate::api::{Auth, Config};
-        use crate::error::{ApiError, is_user_error};
+        use crate::error::ApiError;
         use wiremock::matchers::{method, path};
         use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -4894,7 +4899,6 @@ mod tests {
             let rewritten = explain_run_not_found("BAD-ID", api_error(404, "API error: 404"));
             let msg = format!("{rewritten:#}");
             assert_eq!(msg, "run not found: BAD-ID");
-            assert!(is_user_error(&rewritten));
         }
 
         #[test]
@@ -4986,10 +4990,14 @@ mod tests {
             let api = test_api(&server.uri());
             let result =
                 explain_properties_error(&api, "run-3", api_error(404, "API error: 404")).await;
+            // The message is a clean statement of the error …
             let msg = format!("{result:#}");
-            assert!(msg.contains("no properties for run run-3"), "got: {msg}");
-            assert!(msg.contains("this run is incomplete"), "got: {msg}");
-            assert!(!msg.contains("run not found"), "got: {msg}");
+            assert_eq!(msg, "no properties for run run-3", "got: {msg}");
+            // … while the *why* and the next step ride along as notes (rendered by
+            // the full report, not the message chain).
+            let report = format!("{result:?}");
+            assert!(report.contains("this run is incomplete"), "got: {report}");
+            assert!(report.contains("snouty runs show run-3"), "got: {report}");
         }
 
         #[tokio::test]

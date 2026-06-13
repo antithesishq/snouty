@@ -13,6 +13,17 @@ story is also gated by a programmatic check; a degenerate example (an empty
 table, an unintended error, a filter that didn't narrow) fails the run rather
 than being silently emitted.
 
+There are two kinds of story:
+
+  * goal stories — capture one command's output and judge it against a user goal
+    (the bulk of the gallery; slugs like `runs-events-single`).
+  * help stories — capture `snouty <cmd> --help` next to that command's default
+    output (slugs like `help-runs-properties`) and judge whether the help is
+    informative, clear, concise, consistent, and *aligned* with what the command
+    prints. Commands that mutate state or need an interactive arg (launch,
+    debug, validate, update, completions) are help-only. An automated check
+    verifies any column/field the help names actually appears in the output.
+
 Credentials come from the usual ANTITHESIS_* environment variables (snouty reads
 them). Behaviour is controlled with flags, not env vars:
 
@@ -441,6 +452,21 @@ class Story:
     args: list[str]
     check: Callable[["StoryRun", "Registry"], tuple[bool, str]]
     json_capable: bool = True  # can we re-run with --json for structured rows?
+    # -- help stories ------------------------------------------------------
+    # When `help_cmd` is set the story is a "help story": it captures
+    # `snouty <help_cmd> --help` and renders it next to the command's default
+    # output (`args`, plus any `samples`), so a reviewer can judge whether the
+    # help is informative/clear/concise/consistent *and* matches what the
+    # command actually prints. `args` may be empty (help-only, for commands we
+    # must not run because they mutate state, e.g. launch/debug).
+    help_cmd: list[str] | None = None
+    # Extra labelled default-output captures shown after the primary one
+    # (e.g. `runs list --detail`): list of (label, args).
+    samples: list[tuple[str, list[str]]] | None = None
+    # Tokens that must appear in BOTH the help text and the default output —
+    # an automated "help aligns with output" gate (e.g. column headers the help
+    # promises). Only enforced when there is default output to compare against.
+    align_tokens: tuple[str, ...] = ()
 
 
 @dataclass
@@ -448,6 +474,8 @@ class StoryRun:
     story: Story
     result: Result
     rows: list[dict] | None  # structured rows from the --json variant, if any
+    help_result: Result | None = None  # `<help_cmd> --help` capture, for help stories
+    sample_results: list[tuple[str, Result]] | None = None  # extra labelled captures
 
 
 class Registry:
@@ -615,6 +643,37 @@ def logs_begin_at(begin: str):
     return chk
 
 
+def help_story_check(sr: StoryRun, reg: Registry) -> tuple[bool, str]:
+    """Gate a help story: the `--help` must be well-formed (exit 0, has a Usage
+    line), any documented `align_tokens` must appear in BOTH the help and the
+    default output (the "help matches output" guarantee), and a command that is
+    supposed to print default output must actually print something. The
+    subjective judgment — is the help clear/concise/consistent? — is left to the
+    reviewer; this only stops a degenerate help/output pair from passing."""
+    h = sr.help_result
+    if h is None or not h.ok or "Usage:" not in h.combined:
+        rc = "none" if h is None else h.returncode
+        return (False, f"help missing or malformed (exit {rc})")
+    help_text = h.combined
+    story = sr.story
+
+    # Help-only story (mutating command we don't run): just the help is enough.
+    if not story.args:
+        return (True, "help only")
+
+    out = sr.result.combined
+    if not out.strip():
+        return (False, "default output is empty")
+
+    if story.align_tokens:
+        miss_help = [t for t in story.align_tokens if t not in help_text]
+        miss_out = [t for t in story.align_tokens if t not in out]
+        if miss_help or miss_out:
+            return (False, f"misaligned — absent from help={miss_help} output={miss_out}")
+        return (True, f"help + output aligned on {list(story.align_tokens)}")
+    return (True, "help + default output present")
+
+
 # ---------------------------------------------------------------------------
 # Story definitions
 # ---------------------------------------------------------------------------
@@ -624,7 +683,7 @@ def build_stories(d: Discovery) -> list[Story]:
     kw, kw2 = d.event_keyword, d.event_kw2
     # `--begin-vtime` for the logs skip-ahead story: just before the sampled moment.
     vmin = f"{max(0.0, d.event_vtime - 0.5):.3f}"
-    return [
+    stories = [
         # -- listing --------------------------------------------------------
         Story(
             "runs",
@@ -944,6 +1003,227 @@ def build_stories(d: Discovery) -> list[Story]:
             json_capable=False,
         ),
     ]
+    return stories + build_help_stories(d)
+
+
+# ---------------------------------------------------------------------------
+# Help stories: render each command's `--help` next to its default output, with
+# rubrics that ask whether the help is informative, clear, concise, consistent,
+# and aligned with what the command actually prints. Commands that mutate state
+# (launch, debug, validate, update) or need an interactive arg (completions) are
+# help-only — `args=[]` so nothing is executed.
+# ---------------------------------------------------------------------------
+
+
+# How a reviewer should judge every help story (shared rubric, kept in one place
+# so the bar is consistent across commands).
+HELP_RUBRIC = (
+    "The `--help` should be **informative** (says what the command does and, for "
+    "read commands, how to read the output and the obvious next command), "
+    "**clear**, **concise** (no wall of text), and **consistent** with the other "
+    "commands' help in tone, layout, and flag ordering. Where default output is "
+    "shown, the help must **align** with it: any columns/fields the help names "
+    "must actually appear, and nothing in the output should be unexplained."
+)
+
+_OUTPUT_RUBRIC = (
+    " Compare the help against the default output shown below it."
+)
+_HELP_ONLY_RUBRIC = (
+    " This command mutates state or needs an interactive argument, so only its "
+    "help is shown — judge the help text on its own merits and for consistency "
+    "with its siblings."
+)
+
+
+def _help_story(
+    slug: str,
+    title: str,
+    goal: str,
+    help_cmd: list[str],
+    args: list[str] | None = None,
+    *,
+    samples: list[tuple[str, list[str]]] | None = None,
+    align: tuple[str, ...] = (),
+) -> Story:
+    args = args or []
+    judge = HELP_RUBRIC + (_OUTPUT_RUBRIC if args else _HELP_ONLY_RUBRIC)
+    return Story(
+        slug=slug,
+        title=title,
+        goal=goal,
+        judge=judge,
+        args=args,
+        check=help_story_check,
+        json_capable=False,
+        help_cmd=help_cmd,
+        samples=samples,
+        align_tokens=align,
+    )
+
+
+def build_help_stories(d: Discovery) -> list[Story]:
+    s = d.success
+    return [
+        # -- top level + read commands with default output ------------------
+        _help_story(
+            "help-root",
+            "Discover what snouty can do",
+            "I just installed snouty and run `snouty --help` to see what's available.",
+            [],
+        ),
+        _help_story(
+            # The parent help is an overview/index of subcommands, not a column
+            # legend (it points at `runs list` for the table), so no align tokens.
+            "help-runs",
+            "Understand the runs command group",
+            "I run `snouty runs --help` to learn how to work with test runs.",
+            ["runs"],
+            ["runs"],
+        ),
+        _help_story(
+            "help-runs-list",
+            "Learn to list runs, including the detailed view",
+            "I want to know what `runs list` shows and how the columns map to the output, "
+            "including the fuller `--detail` view.",
+            ["runs", "list"],
+            ["runs", "list", "-n", "6"],
+            samples=[("with --detail", ["runs", "list", "-n", "3", "--detail"])],
+            align=("RUN ID", "STATUS", "CREATED", "TEST NAME"),
+        ),
+        _help_story(
+            "help-runs-show",
+            "Learn what `runs show` reports",
+            "I want to confirm the help explains the metadata fields and the failure "
+            "moment shown for incomplete runs.",
+            ["runs", "show"],
+            ["runs", "show", s],
+            samples=[("an incomplete run (shows the failure moment)", ["runs", "show", d.fail])],
+            # show prints a key/value card (prose help vs Title-Case labels), not a
+            # columnar table — no strict token alignment; the reviewer compares the
+            # prose field list and the failure-moment claim against the two samples.
+        ),
+        _help_story(
+            "help-runs-properties",
+            "Learn to read the properties table",
+            "I want the help to explain the STATUS/EXAMPLES/NAME columns and the "
+            "examples/counterexamples count, and to match the table.",
+            ["runs", "properties"],
+            ["runs", "properties", s],
+            samples=[("--failing only", ["runs", "properties", s, "--failing"])],
+            align=("STATUS", "EXAMPLES", "NAME"),
+        ),
+        _help_story(
+            "help-runs-property",
+            "Learn to read a single property's moments",
+            "I want the help to explain the moment table (and the VALUE form for "
+            "non-event properties) and how to feed a moment into `runs logs`.",
+            ["runs", "property"],
+            ["runs", "property", s, d.pass_event_prop],
+            samples=[("a non-event property (VALUE form)", ["runs", "property", s, d.nonevent_prop])],
+            align=("HASH", "VTIME"),
+        ),
+        _help_story(
+            "help-runs-events",
+            "Learn to search events and chain into logs",
+            "I want the help to explain the HASH/VTIME/SOURCE/OUTPUT columns and that "
+            "a moment feeds `runs logs`.",
+            ["runs", "events"],
+            ["runs", "events", s, "--match", d.event_keyword],
+            align=("HASH", "VTIME", "SOURCE", "OUTPUT"),
+        ),
+        _help_story(
+            "help-runs-logs",
+            "Learn what the positional moment vs --begin-vtime do",
+            "I want the help to make clear that the positional moment streams logs up to "
+            "it and --begin-vtime sets the start, and to describe the line format.",
+            ["runs", "logs"],
+            ["runs", "logs", s, d.event_hash, f"{d.event_vtime}"],
+        ),
+        _help_story(
+            "help-runs-build-logs",
+            "Learn what build-logs streams",
+            "I want the help to tell me this is the build/setup log and the line format.",
+            ["runs", "build-logs"],
+            ["runs", "build-logs", s],
+        ),
+        _help_story(
+            "help-doctor",
+            "Learn what doctor checks",
+            "I run `snouty doctor --help` to see what it verifies, then run it.",
+            ["doctor"],
+            ["doctor"],
+        ),
+        _help_story(
+            "help-version",
+            "Check the version command's help",
+            "I want `version --help` to be a clear, minimal description.",
+            ["version"],
+            ["version"],
+        ),
+        # -- help-only (mutating / interactive) -----------------------------
+        _help_story(
+            "help-launch",
+            "Understand how to launch a run",
+            "I run `snouty launch --help` to learn how to start a test run.",
+            ["launch"],
+        ),
+        _help_story(
+            "help-debug",
+            "Understand how to open a debugging session",
+            "I run `snouty debug --help` to learn how to debug a moment.",
+            ["debug"],
+        ),
+        _help_story(
+            "help-validate",
+            "Understand local validation",
+            "I run `snouty validate --help` to learn how to validate my config.",
+            ["validate"],
+        ),
+        _help_story(
+            "help-completions",
+            "Generate shell completions",
+            "I run `snouty completions --help` to learn how to install completions.",
+            ["completions"],
+        ),
+        _help_story(
+            "help-update",
+            "Check for updates",
+            "I run `snouty update --help` to understand what updating does.",
+            ["update"],
+        ),
+        # -- docs (help-only: output depends on a downloaded docs DB) --------
+        _help_story(
+            "help-docs",
+            "Understand the docs command group",
+            "I run `snouty docs --help` to see how to search the documentation.",
+            ["docs"],
+        ),
+        _help_story(
+            "help-docs-search",
+            "Learn to search the docs",
+            "I run `snouty docs search --help` to learn the search syntax and output.",
+            ["docs", "search"],
+        ),
+        _help_story(
+            "help-docs-tree",
+            "Learn to browse the docs tree",
+            "I run `snouty docs tree --help` to learn how to browse documentation paths.",
+            ["docs", "tree"],
+        ),
+        _help_story(
+            "help-docs-show",
+            "Learn to show a docs page",
+            "I run `snouty docs show --help` to learn how to read a page.",
+            ["docs", "show"],
+        ),
+        _help_story(
+            "help-docs-sqlite",
+            "Locate the docs database",
+            "I run `snouty docs sqlite --help` to find the cached documentation DB.",
+            ["docs", "sqlite"],
+        ),
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -951,8 +1231,47 @@ def build_stories(d: Discovery) -> list[Story]:
 # ---------------------------------------------------------------------------
 
 
+# Default-output samples in a help story are capped — the point there is to see
+# the *shape* of the output next to the help, not the full stream. The
+# goal-based stories (above) still capture full, untruncated output.
+HELP_SAMPLE_MAX_LINES = 18
+
+
+def _capped_block(args: list[str], text: str) -> str:
+    """A ```shell block showing `$ snouty <args>` and its output, truncated to
+    `HELP_SAMPLE_MAX_LINES` with a marker so help stories stay focused."""
+    lines = text.rstrip("\n").split("\n")
+    if len(lines) > HELP_SAMPLE_MAX_LINES:
+        hidden = len(lines) - HELP_SAMPLE_MAX_LINES
+        lines = lines[:HELP_SAMPLE_MAX_LINES] + [f"… ({hidden} more lines)"]
+    body = "\n".join(lines)
+    return f"```shell\n$ snouty {' '.join(args)}\n{body}\n```"
+
+
+def _write_help_story(out_dir: Path, story: Story, sr: StoryRun, verdict: str, detail: str) -> None:
+    help_text = (sr.help_result.combined if sr.help_result else "").rstrip("\n")
+    parts = [
+        f"# {story.title}",
+        f"**User goal:** {story.goal}",
+        f"**Judge satisfaction by:** {story.judge}",
+        "## Help text",
+        f"```shell\n$ snouty {' '.join(story.help_cmd)} --help\n{help_text}\n```",
+    ]
+    if story.args:
+        parts.append("## Default output")
+        parts.append(_capped_block(story.args, sr.result.combined))
+        for label, res in sr.sample_results or []:
+            parts.append(f"### Variant: {label}")
+            parts.append(_capped_block(res.args, res.combined))
+    parts.append(f"_Automated check: {verdict} — {detail}_")
+    (out_dir / f"{story.slug}.md").write_text("\n\n".join(parts) + "\n")
+
+
 def write_story(out_dir: Path, story: Story, sr: StoryRun, passed: bool, detail: str) -> None:
     verdict = "PASS" if passed else "FAIL"
+    if story.help_cmd is not None:
+        _write_help_story(out_dir, story, sr, verdict, detail)
+        return
     body = sr.result.combined.rstrip("\n")
     md = (
         f"# {story.title}\n\n"
@@ -965,14 +1284,22 @@ def write_story(out_dir: Path, story: Story, sr: StoryRun, passed: bool, detail:
 
 
 def run_story(sn: Snouty, story: Story) -> StoryRun:
-    result = sn.run(story.args)
+    # Help-only stories pass no `args`; don't invoke a bare `snouty`.
+    result = sn.run(story.args) if story.args else Result([], "", "", 0)
     rows = None
-    if story.json_capable:
+    if story.json_capable and story.args:
         try:
             rows = sn.json_lines(story.args)
         except (GalleryError, json.JSONDecodeError):
             rows = None  # error stories are validated on rendered text instead
-    return StoryRun(story, result, rows)
+
+    help_result = None
+    sample_results = None
+    if story.help_cmd is not None:
+        help_result = sn.run([*story.help_cmd, "--help"])
+        if story.samples:
+            sample_results = [(label, sn.run(a)) for label, a in story.samples]
+    return StoryRun(story, result, rows, help_result, sample_results)
 
 
 def main() -> int:

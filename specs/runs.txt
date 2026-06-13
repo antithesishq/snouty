@@ -155,11 +155,11 @@ snouty runs properties $R_run_id --group safety
 [!staging] stdout 'failing.*Counter value stays below limit'
 [!staging] stdout -count=0 'Setup completes'
 
-# A non-event property's --detail renders each example value as a labelled block
-# under an "Examples:" header (no per-moment HASH/VTIME table).
+# A non-event ("system") property's --detail shows its value under a `Result`
+# label — a single object renders as indented JSON, no moment table or Examples.
 mock-runs-server
 snouty runs properties $R_run_id --name 'Setup completes' --detail
-[!staging] stdout 'Examples:.*passing:'
+[!staging] stdout 'Result:.*final_counter'
 [!staging] stdout '"final_counter".*42'
 
 # A filter that matches nothing prints a friendly empty-state, not an error.

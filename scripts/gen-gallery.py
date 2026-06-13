@@ -314,11 +314,10 @@ def _pick_property_with_moments(sn: Snouty, run: str, props: list[dict], status:
     )
 
 
-# A non-event example renders either as an indented `passing:`/`failing:`
-# labelled block or, for a lone number, as an inline `Example   <n>` line (see
-# render_property_detail / render_value_example in src/runs.rs) — never as a
-# moment HASH/VTIME row. Leading whitespace allows for the --detail indent.
-_NONEVENT_EXAMPLE = re.compile(r"^\s*(?:(?:passing|failing):|Example\s)", re.MULTILINE)
+# A non-event ("system") property renders its value under a `Result` label
+# (see render_result in src/runs.rs) — `Result   <scalar>` inline or `Result:`
+# above indented JSON — never as a moment HASH/VTIME row.
+_NONEVENT_RESULT = re.compile(r"^\s*Result[: ]", re.MULTILINE)
 
 
 def _has_real_value(value) -> bool:
@@ -344,7 +343,7 @@ def _pick_nonevent_property(sn: Snouty, run: str, props: list[dict]) -> str:
         rendered = _render_property(sn, run, p["name"])
         # Confirm it renders the non-event shape: a labelled example block and no
         # moment rows (which would mean we misclassified an event property).
-        if _NONEVENT_EXAMPLE.search(rendered) and not _has_moment_rows(rendered):
+        if _NONEVENT_RESULT.search(rendered) and not _has_moment_rows(rendered):
             return p["name"]
         break  # chosen candidate didn't render a usable value — bail
     raise GalleryError(f"no non-event property on {run} renders a usable value")
@@ -584,15 +583,14 @@ def property_has_examples(sr: StoryRun, reg: Registry) -> tuple[bool, str]:
     return (ok, "shows example moments" if ok else "no example moments (degenerate)")
 
 
-def property_non_event_examples(sr: StoryRun, reg: Registry) -> tuple[bool, str]:
-    """A non-event property renders each example as a labelled `passing:`/
-    `failing:` block under an `Examples:` header, with no per-moment rows."""
+def property_non_event_result(sr: StoryRun, reg: Registry) -> tuple[bool, str]:
+    """A non-event property shows its value(s) under a `Result` label, with no
+    per-moment HASH/VTIME rows (those belong to event properties' Examples)."""
     text = sr.result.combined
-    has_header = "Examples:" in text
-    has_value = _NONEVENT_EXAMPLE.search(text) is not None
+    has_result = _NONEVENT_RESULT.search(text) is not None
     no_moments = not _has_moment_rows(text)
-    ok = has_header and has_value and no_moments
-    return (ok, f"header={has_header}, labelled value={has_value}, no moments={no_moments}")
+    ok = has_result and no_moments
+    return (ok, f"result={has_result}, no moments={no_moments}")
 
 
 def succeeds_with(*needles: str):
@@ -850,11 +848,11 @@ def build_stories(d: Discovery) -> list[Story]:
         ),
         Story(
             "runs-properties-detail-non-event",
-            "Detail a non-event property — example values",
-            "I want to inspect a non-event property, whose examples are values (objects) rather than moments.",
-            "Renders each example value under an 'Examples:' header (labelled passing/failing), with no per-moment hash/vtime rows.",
+            "Detail a non-event property — its result value",
+            "I want to inspect a non-event ('system') property, whose value is data rather than moments.",
+            "Shows the value under a 'Result' label (scalar inline, or JSON for an object/array), with no per-moment hash/vtime rows.",
             ["runs", "properties", d.success, "--name", d.nonevent_prop, "--detail"],
-            property_non_event_examples,
+            property_non_event_result,
             json_capable=False,
         ),
         Story(

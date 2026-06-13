@@ -13,12 +13,12 @@ use serde_json::{Map, Value, json};
 
 use chrono::{DateTime, Local, Utc};
 
-use crate::api::{
-    AntithesisApi, Event, Property, PropertyStatus, RunDetail, RunStatus, RunSummary,
-    RunsFilterOptions,
-};
 #[cfg(test)]
-use crate::api::{EventProperty, Moment, NonEventProperty};
+use crate::api::Moment;
+use crate::api::{
+    AntithesisApi, Event, EventProperty, NonEventProperty, Property, PropertyStatus, RunDetail,
+    RunStatus, RunSummary, RunsFilterOptions,
+};
 use crate::cli::{RunsCommands, RunsListArgs};
 use crate::error::{api_error_status, user_error};
 
@@ -390,7 +390,8 @@ async fn cmd_runs_properties(
     // substring matches.
     if let Some(group) = filter.group {
         let needle = group.to_lowercase();
-        properties.retain(|p| property_group(p).is_some_and(|g| g.to_lowercase().contains(&needle)));
+        properties
+            .retain(|p| property_group(p).is_some_and(|g| g.to_lowercase().contains(&needle)));
     }
     if let Some(name) = filter.name {
         let needle = name.to_lowercase();
@@ -699,31 +700,87 @@ fn render_property_detail(property: &Property) -> String {
             },
         ));
     }
-    if let Some(value) = single_numeric_value(property) {
-        // A single-metric property (e.g. "Total non-blank lines") — show the
-        // number inline rather than a whole Examples section.
-        out.push_str(&format!("Example   {value}"));
-    } else {
-        out.push('\n');
-        out.push_str(&indent_lines(&render_property_examples(property), "  "));
+    match property {
+        // Event properties have moments — the user feeds a HASH/VTIME into
+        // `runs logs`, so they get an `Examples:` table.
+        Property::EventProperty(p) => {
+            out.push_str("Examples:\n");
+            out.push_str(&indent_lines(&render_moments_table(p), "  "));
+        }
+        // Non-event "system" properties have no moments; their examples chunk
+        // just carries detail values, so show them under a `Result` label rather
+        // than conflating with examples/counter-examples.
+        Property::NonEventProperty(p) => out.push_str(&render_result(p)),
     }
     out
 }
 
-/// The lone numeric value of a non-event property, when its examples and
-/// counterexamples together are exactly one number.
-fn single_numeric_value(property: &Property) -> Option<String> {
-    let Property::NonEventProperty(p) = property else {
-        return None;
-    };
-    let mut values = p.examples.iter().chain(p.counterexamples.iter());
-    let first = values.next()?;
-    if values.next().is_some() {
-        return None;
+/// The STATUS/HASH/VTIME table for an event property's moments: counterexamples
+/// (failing) first, then examples (passing), each ascending by vtime.
+fn render_moments_table(p: &EventProperty) -> String {
+    let mut rows: Vec<Vec<String>> = Vec::new();
+    for event in sorted_by_vtime(&p.counterexamples) {
+        rows.push(vec![
+            "failing".to_string(),
+            sanitize(&event.moment.input_hash),
+            sanitize(&event.moment.vtime),
+        ]);
     }
-    match first {
-        Value::Number(n) => Some(n.to_string()),
-        _ => None,
+    for event in sorted_by_vtime(&p.examples) {
+        rows.push(vec![
+            "passing".to_string(),
+            sanitize(&event.moment.input_hash),
+            sanitize(&event.moment.vtime),
+        ]);
+    }
+    if rows.is_empty() {
+        return "(none — property was unreachable)".to_string();
+    }
+    let headers = vec![
+        "STATUS".to_string(),
+        "HASH".to_string(),
+        "VTIME".to_string(),
+    ];
+    render_table(&headers, &rows)
+}
+
+/// The `Result` for a non-event property — its example values. A lone value is
+/// rendered directly (scalar inline, object/array as indented JSON); multiple
+/// values are rendered as a single indented JSON array.
+fn render_result(p: &NonEventProperty) -> String {
+    let values: Vec<&Value> = p.examples.iter().chain(p.counterexamples.iter()).collect();
+    match values.as_slice() {
+        [] => "Result    (none)".to_string(),
+        [one] => render_single_result(one),
+        // Multiple values are collapsed into a single JSON array.
+        many => render_json_result(&Value::Array(many.iter().map(|v| (*v).clone()).collect())),
+    }
+}
+
+/// A single `Result` value: a scalar inline next to an aligned `Result` label, an
+/// object/array via [`render_json_result`].
+fn render_single_result(value: &Value) -> String {
+    match value {
+        Value::Array(_) | Value::Object(_) => render_json_result(value),
+        Value::String(s) => format!("Result    {}", sanitize(s)),
+        Value::Number(n) => format!("Result    {n}"),
+        Value::Bool(b) => format!("Result    {b}"),
+        Value::Null => "Result    null".to_string(),
+    }
+}
+
+/// Render a JSON object/array `Result`: inline (`Result: {...}`) when its compact
+/// one-line form fits the terminal (capped at 100 cols, so piped output where the
+/// width is unbounded still inlines only genuinely small values), otherwise as an
+/// indented pretty-printed block under `Result:`.
+fn render_json_result(value: &Value) -> String {
+    let compact = serde_json::to_string(value).unwrap_or_default();
+    let inline = format!("Result: {compact}");
+    if inline.chars().count() <= terminal_width().min(100) {
+        inline
+    } else {
+        let pretty = serde_json::to_string_pretty(value).unwrap_or_default();
+        format!("Result:\n{}", indent_lines(&pretty, "  "))
     }
 }
 
@@ -758,73 +815,6 @@ fn sorted_by_vtime(events: &[Event]) -> Vec<&Event> {
         }
     });
     sorted
-}
-
-fn render_property_examples(property: &Property) -> String {
-    match property {
-        // Event properties are moments — a STATUS/HASH/VTIME table (the API
-        // guarantees no ordering, so sort each group numerically by vtime;
-        // counterexamples first, then examples). A moment feeds `runs logs`.
-        Property::EventProperty(p) => {
-            let mut rows: Vec<Vec<String>> = Vec::new();
-            for event in sorted_by_vtime(&p.counterexamples) {
-                rows.push(vec![
-                    "failing".to_string(),
-                    sanitize(&event.moment.input_hash),
-                    sanitize(&event.moment.vtime),
-                ]);
-            }
-            for event in sorted_by_vtime(&p.examples) {
-                rows.push(vec![
-                    "passing".to_string(),
-                    sanitize(&event.moment.input_hash),
-                    sanitize(&event.moment.vtime),
-                ]);
-            }
-            if rows.is_empty() {
-                return "Examples:\n  (none — property was unreachable)".to_string();
-            }
-            let headers = vec![
-                "STATUS".to_string(),
-                "HASH".to_string(),
-                "VTIME".to_string(),
-            ];
-            format!("Examples:\n{}", render_table(&headers, &rows))
-        }
-        // Non-event properties carry arbitrary JSON values, so render each
-        // example/counterexample as its own labelled block — the values *are*
-        // the content, and a `{N fields}` placeholder table only hid them.
-        Property::NonEventProperty(p) => {
-            let mut blocks: Vec<String> = Vec::new();
-            for value in &p.counterexamples {
-                blocks.push(render_value_example("failing", value));
-            }
-            for value in &p.examples {
-                blocks.push(render_value_example("passing", value));
-            }
-            if blocks.is_empty() {
-                return "Examples:\n  (none — property was unreachable)".to_string();
-            }
-            format!("Examples:\n\n{}", blocks.join("\n\n"))
-        }
-    }
-}
-
-/// Render one non-event example/counterexample: a `<status>:` label followed by
-/// its value — a scalar inline, an object/array as indented pretty JSON.
-fn render_value_example(status: &str, value: &Value) -> String {
-    match value {
-        Value::Array(items) if items.is_empty() => format!("{status}: (no value)"),
-        Value::Object(map) if map.is_empty() => format!("{status}: (no value)"),
-        Value::Array(_) | Value::Object(_) => {
-            let pretty = serde_json::to_string_pretty(value).unwrap_or_default();
-            format!("{status}:\n{}", indent_lines(&pretty, "  "))
-        }
-        Value::Null => format!("{status}: null"),
-        Value::Bool(b) => format!("{status}: {b}"),
-        Value::Number(n) => format!("{status}: {n}"),
-        Value::String(s) => format!("{status}: {}", sanitize(s)),
-    }
 }
 
 fn indent_lines(text: &str, prefix: &str) -> String {
@@ -2925,16 +2915,25 @@ mod tests {
         assert_eq!(format_count_si(999999), "1.0M");
     }
 
+    fn event_prop(
+        status: PropertyStatus,
+        examples: Vec<Event>,
+        counterexamples: Vec<Event>,
+    ) -> EventProperty {
+        match event_property("Counter", status, None, examples, counterexamples) {
+            Property::EventProperty(p) => p,
+            _ => unreachable!(),
+        }
+    }
+
     #[test]
-    fn render_event_property_examples_uses_status_column() {
-        let property = event_property(
-            "Counter",
+    fn render_moments_table_uses_status_column() {
+        let p = event_prop(
             PropertyStatus::Failing,
-            None,
             vec![event("ex", "2.0")],
             vec![event("cex", "1.0")],
         );
-        let out = render_property_examples(&property);
+        let out = render_moments_table(&p);
         assert!(out.contains("STATUS"));
         assert!(out.contains("HASH"));
         assert!(out.contains("VTIME"));
@@ -2943,17 +2942,15 @@ mod tests {
     }
 
     #[test]
-    fn render_event_property_examples_sorts_each_group_by_vtime() {
+    fn render_moments_table_sorts_each_group_by_vtime() {
         // API order is arbitrary; rows must come out failing-first, then passing,
         // each ascending by vtime numerically (5.0 < 10.0, not lexically).
-        let property = event_property(
-            "Counter",
+        let p = event_prop(
             PropertyStatus::Failing,
-            None,
             vec![event("ex-b", "20.0"), event("ex-a", "2.0")],
             vec![event("cex-b", "10.0"), event("cex-a", "5.0")],
         );
-        let out = render_property_examples(&property);
+        let out = render_moments_table(&p);
         let rows: Vec<&str> = out
             .lines()
             .filter(|l| l.contains("failing") || l.contains("passing"))
@@ -2967,7 +2964,7 @@ mod tests {
     }
 
     #[test]
-    fn render_non_event_property_examples_pretty_prints_objects() {
+    fn render_non_event_detail_shows_result_not_examples() {
         let property = non_event_property(
             "Determinator Max Memory",
             PropertyStatus::Passing,
@@ -2977,14 +2974,13 @@ mod tests {
             })],
             vec![],
         );
-        let out = render_property_examples(&property);
-        // No placeholder table — each example renders as its own labelled block
-        // under an "Examples:" header, with the object shown as pretty JSON.
-        assert!(out.contains("Examples:"), "got: {out}");
-        assert!(out.contains("passing:"));
+        let out = render_property_detail(&property);
+        // A non-event property's value shows under a `Result:` label as pretty
+        // JSON — never the moment-oriented `Examples:`/`passing:` machinery.
+        assert!(out.contains("Result:"), "got: {out}");
         assert!(out.contains("maximum_used_bytes"));
-        assert!(!out.contains("{2 fields}"));
-        assert!(!out.contains("row 1 details:"));
+        assert!(!out.contains("Examples:"));
+        assert!(!out.contains("passing:"));
     }
 
     #[test]
@@ -3012,32 +3008,72 @@ mod tests {
         // No Group key/value line (the heading carries it) and no rule separator.
         assert!(!out.contains("Group     Safety"));
         assert!(!out.contains('─'));
-        // Each property keeps its header and an Examples section, indented.
+        // Each property keeps its header and an Examples section whose table is
+        // indented beneath the (column-0) "Examples:" label.
         assert!(out.contains("Name      First"));
         assert_eq!(out.matches("Examples:").count(), 2);
-        assert!(out.contains("  Examples:"), "examples should be indented\n{out}");
+        assert!(
+            out.contains("Examples:\n  STATUS"),
+            "examples table should be indented\n{out}"
+        );
     }
 
     #[test]
-    fn render_property_detail_inlines_a_single_numeric_value() {
-        let property = non_event_property(
-            "Total non-blank lines in notebook file",
+    fn render_property_detail_result_forms() {
+        // A lone scalar sits inline next to an aligned `Result` label.
+        for (value, expected) in [
+            (json!(1234), "Result    1234"),
+            (json!("n2-standard-4"), "Result    n2-standard-4"),
+            (json!(true), "Result    true"),
+        ] {
+            let p = non_event_property("Metric", PropertyStatus::Passing, vec![value], vec![]);
+            let out = render_property_detail(&p);
+            assert!(out.contains(expected), "got: {out}");
+            assert!(!out.contains("Examples:"));
+        }
+
+        // Tiny objects/arrays are inlined after `Result:` (compact one-line JSON).
+        let empty = non_event_property("E", PropertyStatus::Passing, vec![json!([])], vec![]);
+        assert!(
+            render_property_detail(&empty).contains("Result: []"),
+            "empty array"
+        );
+        let tiny = non_event_property("T", PropertyStatus::Passing, vec![json!({"k": 1})], vec![]);
+        assert!(
+            render_property_detail(&tiny).contains(r#"Result: {"k":1}"#),
+            "tiny object"
+        );
+
+        // A large object spills to an indented pretty-printed block.
+        let big = non_event_property(
+            "Big",
             PropertyStatus::Passing,
-            vec![json!(1234)],
+            vec![json!({
+                "session_id": "dfa97857ebbbc219f543e423fea597fd-54-8",
+                "total_output_mb": 11773,
+                "total_output_rate": "35.05274518966351"
+            })],
             vec![],
         );
-        let out = render_property_detail(&property);
-        // A lone numeric value is shown inline after the header, no Examples block.
-        assert!(out.contains("Example   1234"), "got: {out}");
+        let out = render_property_detail(&big);
+        assert!(
+            out.contains("Result:\n  {"),
+            "big object should be a block\n{out}"
+        );
+        assert!(out.contains("total_output_mb"));
         assert!(!out.contains("Examples:"));
-        // An object value still renders as an Examples block.
-        let obj = non_event_property(
-            "Build did not exceed expected limit",
+
+        // Several small values collapse into one inline JSON array.
+        let multi = non_event_property(
+            "Two values",
             PropertyStatus::Passing,
-            vec![json!({"target": "x", "kb": 0})],
+            vec![json!(1), json!(2)],
             vec![],
         );
-        assert!(render_property_detail(&obj).contains("Examples:"));
+        assert!(
+            render_property_detail(&multi).contains("Result: [1,2]"),
+            "multi inline"
+        );
     }
 
     #[test]
@@ -3155,10 +3191,9 @@ mod tests {
     }
 
     #[test]
-    fn render_event_property_examples_marks_unreachable_when_empty() {
-        let property = event_property("Maybe ran", PropertyStatus::Passing, None, vec![], vec![]);
-        let out = render_property_examples(&property);
-        assert!(out.contains("unreachable"));
+    fn render_moments_table_marks_unreachable_when_empty() {
+        let p = event_prop(PropertyStatus::Passing, vec![], vec![]);
+        assert!(render_moments_table(&p).contains("unreachable"));
     }
 
     #[test]
@@ -3219,20 +3254,12 @@ mod tests {
     }
 
     #[test]
-    fn render_non_event_example_renders_empty_collection_inline() {
-        // An empty array/object renders as "(no value)" rather than an empty
-        // pretty-printed block.
-        assert_eq!(
-            render_value_example("passing", &json!([])),
-            "passing: (no value)"
-        );
-        assert_eq!(
-            render_value_example("passing", &json!({})),
-            "passing: (no value)"
-        );
-        // A scalar renders inline; an object renders as an indented JSON block.
-        assert_eq!(render_value_example("failing", &json!(42)), "failing: 42");
-        assert!(render_value_example("passing", &json!({"k": 1})).starts_with("passing:\n  {"));
+    fn render_result_handles_no_values() {
+        // A non-event property with no values at all -> "(none)".
+        let empty = non_event_property("Empty", PropertyStatus::Passing, vec![], vec![]);
+        let out = render_property_detail(&empty);
+        assert!(out.contains("Result    (none)"), "got: {out}");
+        assert!(!out.contains("Examples:"));
     }
 
     #[test]

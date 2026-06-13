@@ -314,9 +314,11 @@ def _pick_property_with_moments(sn: Snouty, run: str, props: list[dict], status:
     )
 
 
-# A non-event example renders as a `passing:`/`failing:` labelled block (see
-# render_value_example in src/runs.rs), never as a moment HASH/VTIME row.
-_NONEVENT_EXAMPLE = re.compile(r"^(?:passing|failing):", re.MULTILINE)
+# A non-event example renders either as an indented `passing:`/`failing:`
+# labelled block or, for a lone number, as an inline `Example   <n>` line (see
+# render_property_detail / render_value_example in src/runs.rs) — never as a
+# moment HASH/VTIME row. Leading whitespace allows for the --detail indent.
+_NONEVENT_EXAMPLE = re.compile(r"^\s*(?:(?:passing|failing):|Example\s)", re.MULTILINE)
 
 
 def _has_real_value(value) -> bool:

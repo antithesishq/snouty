@@ -149,7 +149,7 @@ snouty runs properties $R_run_id --name counter
 [!staging] stdout 'failing.*Counter value stays below limit'
 [!staging] stdout -count=0 'Setup completes'
 
-# --group is an exact, case-insensitive group filter ('safety' matches 'Safety').
+# --group is a case-insensitive substring group filter ('safety' matches 'Safety').
 mock-runs-server
 snouty runs properties $R_run_id --group safety
 [!staging] stdout 'failing.*Counter value stays below limit'

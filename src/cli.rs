@@ -86,7 +86,7 @@ Examples:
   snouty runs show <run_id>
   snouty runs properties <run_id>
   snouty runs properties --failing <run_id>
-  snouty runs properties --passing <run_id>
+  snouty runs properties <run_id> --name <substring> --detail
   snouty runs build-logs <run_id>
   snouty runs logs <run_id> <hash> <vtime>
   snouty runs events <run_id> -m <query>"#,
@@ -380,14 +380,15 @@ Each table is headed by its group; columns are STATUS, EXAMPLES, NAME (failing
 first). EXAMPLES is the example count, shown as examples/counterexamples when a
 property has counterexamples.
 
-Narrow with --name (substring) and/or --group (exact); add --detail to expand
-the matches into their examples and counter-example moments instead of the
-table. Use --json for automation (it always emits the full data).
+Narrow with --name and/or --group (both case-insensitive substring matches);
+add --detail to expand the matches into their examples and counter-example
+moments instead of the table. Use --json for automation (it always emits the
+full data).
 
 Examples:
   snouty runs properties <run_id> --failing
   snouty runs properties <run_id> --name eventually_validate --detail
-  snouty runs properties <run_id> --group 'Always: Unreachable' --detail"#
+  snouty runs properties <run_id> --group Unreachable --detail"#
     )]
     Properties {
         /// Run ID
@@ -405,7 +406,7 @@ Examples:
         #[arg(long)]
         name: Option<String>,
 
-        /// Only properties in this group (exact, case-insensitive)
+        /// Only properties whose group contains this substring (case-insensitive)
         #[arg(long)]
         group: Option<String>,
 

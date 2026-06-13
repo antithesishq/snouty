@@ -342,9 +342,8 @@ fn launch_browser(url: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// Filters applied to `runs properties`. `status` is served by the API;
-/// `name` (substring) and `group` (exact) are applied client-side. All
-/// case-insensitive.
+/// Filters applied to `runs properties`. `status` is served by the API; `name`
+/// and `group` are case-insensitive substring matches applied client-side.
 struct PropertyFilter<'a> {
     status: Option<PropertyStatus>,
     name: Option<&'a str>,
@@ -387,11 +386,11 @@ async fn cmd_runs_properties(
         Err(err) => return Err(explain_properties_error(&api, run_id, err).await),
     };
 
-    // Apply the client-side filters: group is an exact (case-insensitive) match,
-    // name a (case-insensitive) substring.
+    // Apply the client-side filters: both group and name are (case-insensitive)
+    // substring matches.
     if let Some(group) = filter.group {
         let needle = group.to_lowercase();
-        properties.retain(|p| property_group(p).is_some_and(|g| g.to_lowercase() == needle));
+        properties.retain(|p| property_group(p).is_some_and(|g| g.to_lowercase().contains(&needle)));
     }
     if let Some(name) = filter.name {
         let needle = name.to_lowercase();
@@ -659,18 +658,24 @@ fn render_prose_block(label: &str, text: &str, layout: ProseLayout) -> String {
     out
 }
 
-/// `runs properties --detail`: render each matched property's full detail —
-/// header (name/status/group/details) plus its examples — separated by a rule
-/// so multiple properties read as distinct blocks.
+/// `runs properties --detail`: the same per-group sections as the summary table,
+/// but each property is expanded into its examples (indented beneath it) rather
+/// than a one-line row. The group heading is shown once per section, separate
+/// from the property details.
 fn render_properties_detail(properties: &[Property]) -> String {
-    let blocks: Vec<String> = properties.iter().map(render_property_detail).collect();
-    // A modest rule between blocks; capped so piped output (terminal_width =
-    // usize::MAX) doesn't try to draw an enormous line.
-    let rule = "─".repeat(terminal_width().min(72));
-    blocks.join(&format!("\n\n{rule}\n\n"))
+    group_property_sections(properties)
+        .iter()
+        .map(|(title, props)| {
+            let blocks: Vec<String> = props.iter().map(|p| render_property_detail(p)).collect();
+            format!("{}\n\n{}", sanitize(title), blocks.join("\n\n"))
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n")
 }
 
-/// One property's detail block: a key/value header followed by its examples.
+/// One property's detail within a group section: a key/value header (no Group
+/// line — the section heading carries it) and, indented beneath it, its examples.
+/// A property whose only example is a single number renders that inline instead.
 fn render_property_detail(property: &Property) -> String {
     let mut out = String::new();
     out.push_str(&format!("Name      {}\n", sanitize(property.name())));
@@ -678,9 +683,6 @@ fn render_property_detail(property: &Property) -> String {
         "Status    {}\n",
         property_status_label(property.status())
     ));
-    if let Some(group) = property_group(property) {
-        out.push_str(&format!("Group     {}\n", sanitize(group)));
-    }
     let description = match property {
         Property::EventProperty(p) => p.description.as_deref(),
         Property::NonEventProperty(p) => p.description.as_deref(),
@@ -697,9 +699,32 @@ fn render_property_detail(property: &Property) -> String {
             },
         ));
     }
-    out.push('\n');
-    out.push_str(&render_property_examples(property));
+    if let Some(value) = single_numeric_value(property) {
+        // A single-metric property (e.g. "Total non-blank lines") — show the
+        // number inline rather than a whole Examples section.
+        out.push_str(&format!("Example   {value}"));
+    } else {
+        out.push('\n');
+        out.push_str(&indent_lines(&render_property_examples(property), "  "));
+    }
     out
+}
+
+/// The lone numeric value of a non-event property, when its examples and
+/// counterexamples together are exactly one number.
+fn single_numeric_value(property: &Property) -> Option<String> {
+    let Property::NonEventProperty(p) = property else {
+        return None;
+    };
+    let mut values = p.examples.iter().chain(p.counterexamples.iter());
+    let first = values.next()?;
+    if values.next().is_some() {
+        return None;
+    }
+    match first {
+        Value::Number(n) => Some(n.to_string()),
+        _ => None,
+    }
 }
 
 /// Width of the label column in `render_property_detail` (`"Details   "`).
@@ -804,7 +829,14 @@ fn render_value_example(status: &str, value: &Value) -> String {
 
 fn indent_lines(text: &str, prefix: &str) -> String {
     text.lines()
-        .map(|line| format!("{prefix}{line}"))
+        .map(|line| {
+            // Don't indent blank lines — that would leave trailing whitespace.
+            if line.is_empty() {
+                String::new()
+            } else {
+                format!("{prefix}{line}")
+            }
+        })
         .collect::<Vec<_>>()
         .join("\n")
 }
@@ -830,13 +862,56 @@ fn property_examples_cell(p: &Property) -> String {
     }
 }
 
+/// Order properties into display sections shared by the table and `--detail`
+/// views: named groups containing a failing property first (then the rest,
+/// alphabetical), with ungrouped properties in a final "(ungrouped)" section.
+/// Within each section, failing entries sort first, then by name. An
+/// empty-string group counts as no group.
+fn group_property_sections(properties: &[Property]) -> Vec<(String, Vec<&Property>)> {
+    fn sort_section(props: &mut [&Property]) {
+        props.sort_by(|a, b| {
+            is_failing(b)
+                .cmp(&is_failing(a))
+                .then_with(|| a.name().cmp(b.name()))
+        });
+    }
+
+    // BTreeMap keeps named groups alphabetical before the failing-first re-sort.
+    let mut grouped: std::collections::BTreeMap<&str, Vec<&Property>> = Default::default();
+    let mut ungrouped: Vec<&Property> = Vec::new();
+    for p in properties {
+        match property_group(p).filter(|g| !g.is_empty()) {
+            Some(g) => grouped.entry(g).or_default().push(p),
+            None => ungrouped.push(p),
+        }
+    }
+
+    let mut named: Vec<(&str, Vec<&Property>)> = grouped.into_iter().collect();
+    named.sort_by(|(a, aps), (b, bps)| {
+        bps.iter()
+            .any(|p| is_failing(p))
+            .cmp(&aps.iter().any(|p| is_failing(p)))
+            .then_with(|| a.cmp(b))
+    });
+
+    let mut sections: Vec<(String, Vec<&Property>)> = Vec::new();
+    for (name, mut props) in named {
+        sort_section(&mut props);
+        sections.push((name.to_string(), props));
+    }
+    if !ungrouped.is_empty() {
+        sort_section(&mut ungrouped);
+        sections.push(("(ungrouped)".to_string(), ungrouped));
+    }
+    sections
+}
+
 fn render_properties_table(properties: &[Property]) -> String {
     // One table per group — far more scannable than a single flat table, and it
     // mirrors the report UI. The group is the section heading, so the NAME column
     // shows just the property's own name (the string a `--name`/`--detail` filter
     // matches); folding the group into NAME would have made the displayed name
-    // un-copyable. Properties with no group go in a final "(ungrouped)" section.
-    // This is human-facing output; use `--json` for automation.
+    // un-copyable. This is human-facing output; use `--json` for automation.
     let headers = vec![
         "STATUS".to_string(),
         "EXAMPLES".to_string(),
@@ -847,60 +922,27 @@ fn render_properties_table(properties: &[Property]) -> String {
     let aligns = [Align::Left, Align::Right, Align::Left];
     let width = terminal_width();
 
-    // Bucket into named groups (alphabetical via BTreeMap) and an ungrouped pile.
-    // An empty-string group is treated as no group.
-    let mut grouped: std::collections::BTreeMap<&str, Vec<&Property>> = Default::default();
-    let mut ungrouped: Vec<&Property> = Vec::new();
-    for p in properties {
-        match property_group(p).filter(|g| !g.is_empty()) {
-            Some(g) => grouped.entry(g).or_default().push(p),
-            None => ungrouped.push(p),
-        }
-    }
-
-    // Named groups containing a failing property sort first (so triage surfaces
-    // broken assertion groups), then the rest; alphabetical within each tier.
-    let mut named: Vec<(&str, Vec<&Property>)> = grouped.into_iter().collect();
-    named.sort_by(|(a, aps), (b, bps)| {
-        bps.iter()
-            .any(|p| is_failing(p))
-            .cmp(&aps.iter().any(|p| is_failing(p)))
-            .then_with(|| a.cmp(b))
-    });
-
-    let render_section = |title: &str, props: &[&Property]| -> String {
-        // Failing rows first within a section, then alphabetical by name.
-        let mut ps: Vec<&Property> = props.to_vec();
-        ps.sort_by(|a, b| {
-            is_failing(b)
-                .cmp(&is_failing(a))
-                .then_with(|| a.name().cmp(b.name()))
-        });
-        let rows: Vec<Vec<String>> = ps
-            .iter()
-            .map(|p| {
-                vec![
-                    property_status_label(p.status()).to_string(),
-                    property_examples_cell(p),
-                    sanitize(p.name()),
-                ]
-            })
-            .collect();
-        format!(
-            "{}\n{}",
-            sanitize(title),
-            render_table_wrap_last(&headers, &rows, width, &aligns)
-        )
-    };
-
-    let mut sections: Vec<String> = named
+    group_property_sections(properties)
         .iter()
-        .map(|(name, props)| render_section(name, props))
-        .collect();
-    if !ungrouped.is_empty() {
-        sections.push(render_section("(ungrouped)", &ungrouped));
-    }
-    sections.join("\n\n")
+        .map(|(title, props)| {
+            let rows: Vec<Vec<String>> = props
+                .iter()
+                .map(|p| {
+                    vec![
+                        property_status_label(p.status()).to_string(),
+                        property_examples_cell(p),
+                        sanitize(p.name()),
+                    ]
+                })
+                .collect();
+            format!(
+                "{}\n{}",
+                sanitize(title),
+                render_table_wrap_last(&headers, &rows, width, &aligns)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n")
 }
 
 fn print_run_detail(run: &RunDetail) -> Result<()> {
@@ -2946,22 +2988,56 @@ mod tests {
     }
 
     #[test]
-    fn render_properties_detail_separates_multiple_with_a_rule() {
+    fn render_properties_detail_groups_and_indents_examples() {
         let properties = vec![
-            event_property("First", PropertyStatus::Failing, Some("G"), vec![], vec![event("h", "1.0")]),
-            event_property("Second", PropertyStatus::Passing, None, vec![event("h2", "2.0")], vec![]),
+            event_property(
+                "First",
+                PropertyStatus::Failing,
+                Some("Safety"),
+                vec![],
+                vec![event("h", "1.0")],
+            ),
+            event_property(
+                "Second",
+                PropertyStatus::Passing,
+                None,
+                vec![event("h2", "2.0")],
+                vec![],
+            ),
         ];
         let out = render_properties_detail(&properties);
-        // Both property headers render, each with its own Examples section…
-        assert!(out.contains("Name      First"), "got: {out}");
-        assert!(out.contains("Name      Second"));
+        // Grouped: the "Safety" group heads its section, ungrouped trails.
+        assert!(out.contains("Safety"), "got: {out}");
+        assert!(out.contains("(ungrouped)"));
+        // No Group key/value line (the heading carries it) and no rule separator.
+        assert!(!out.contains("Group     Safety"));
+        assert!(!out.contains('─'));
+        // Each property keeps its header and an Examples section, indented.
+        assert!(out.contains("Name      First"));
         assert_eq!(out.matches("Examples:").count(), 2);
-        // …separated by a horizontal rule so they read as distinct blocks.
-        assert!(out.contains('─'), "expected a rule separator\n{out}");
+        assert!(out.contains("  Examples:"), "examples should be indented\n{out}");
+    }
 
-        // A single property gets no separator rule.
-        let one = render_properties_detail(&properties[..1]);
-        assert!(!one.contains('─'));
+    #[test]
+    fn render_property_detail_inlines_a_single_numeric_value() {
+        let property = non_event_property(
+            "Total non-blank lines in notebook file",
+            PropertyStatus::Passing,
+            vec![json!(1234)],
+            vec![],
+        );
+        let out = render_property_detail(&property);
+        // A lone numeric value is shown inline after the header, no Examples block.
+        assert!(out.contains("Example   1234"), "got: {out}");
+        assert!(!out.contains("Examples:"));
+        // An object value still renders as an Examples block.
+        let obj = non_event_property(
+            "Build did not exceed expected limit",
+            PropertyStatus::Passing,
+            vec![json!({"target": "x", "kb": 0})],
+            vec![],
+        );
+        assert!(render_property_detail(&obj).contains("Examples:"));
     }
 
     #[test]

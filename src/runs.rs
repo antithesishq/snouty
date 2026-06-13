@@ -2,6 +2,7 @@ use std::io::{BufWriter, Write};
 use std::path::Path;
 use std::sync::OnceLock;
 
+use color_eyre::Section;
 use color_eyre::eyre::{Result, eyre};
 use futures_util::{StreamExt, TryStreamExt};
 use indexmap::IndexMap;
@@ -13,12 +14,12 @@ use serde_json::{Map, Value, json};
 
 use chrono::{DateTime, Local, Utc};
 
-use crate::api::{
-    AntithesisApi, Event, Property, PropertyStatus, RunDetail, RunStatus, RunSummary,
-    RunsFilterOptions,
-};
 #[cfg(test)]
-use crate::api::{EventProperty, Moment, NonEventProperty};
+use crate::api::Moment;
+use crate::api::{
+    AntithesisApi, Event, EventProperty, NonEventProperty, Property, PropertyStatus, RunDetail,
+    RunStatus, RunSummary, RunsFilterOptions,
+};
 use crate::cli::{RunsCommands, RunsListArgs};
 use crate::error::{api_error_status, user_error};
 
@@ -86,6 +87,9 @@ pub async fn cmd_runs(command: Option<RunsCommands>, json: bool, verbose: bool) 
             run_id,
             passing,
             failing,
+            name,
+            group,
+            detail,
         }) => {
             let status = if passing {
                 Some(PropertyStatus::Passing)
@@ -94,10 +98,12 @@ pub async fn cmd_runs(command: Option<RunsCommands>, json: bool, verbose: bool) 
             } else {
                 None
             };
-            cmd_runs_properties(&run_id, status, json, verbose).await
-        }
-        Some(RunsCommands::Property { run_id, name }) => {
-            cmd_runs_property(&run_id, &name, json, verbose).await
+            let filter = PropertyFilter {
+                status,
+                name: name.as_deref(),
+                group: group.as_deref(),
+            };
+            cmd_runs_properties(&run_id, filter, detail, json, verbose).await
         }
         Some(RunsCommands::BuildLogs { run_id }) => {
             cmd_runs_build_logs(&run_id, json, verbose).await
@@ -135,6 +141,7 @@ pub async fn cmd_runs(command: Option<RunsCommands>, json: bool, verbose: bool) 
 }
 
 async fn cmd_runs_list(args: RunsListArgs, json: bool, verbose: bool) -> Result<()> {
+    reject_detail_with_json(json, args.detail)?;
     debug!("listing runs");
 
     let api = AntithesisApi::from_env_requiring_api_key(verbose)?;
@@ -275,9 +282,9 @@ fn open_run_report(run: &RunDetail, json: bool) -> Result<()> {
         .as_ref()
         .and_then(|l| l.triage_report.as_deref())
         .ok_or_else(|| {
-            user_error(format!(
-                "no report available for run {} with status {}",
-                run.run_id, run.status
+            user_error(format!("no report available for run {}", run.run_id)).note(format!(
+                "reports are generated when a run completes; this run is {}",
+                run.status
             ))
         })?;
 
@@ -336,17 +343,39 @@ fn launch_browser(url: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// Filters applied to `runs properties`. `status` is served by the API; `name`
+/// and `group` are case-insensitive substring matches applied client-side.
+struct PropertyFilter<'a> {
+    status: Option<PropertyStatus>,
+    name: Option<&'a str>,
+    group: Option<&'a str>,
+}
+
+/// `--detail` formats human output, so it conflicts with `--json` (which always
+/// emits the full structured data). Reject the combination with a clear error
+/// rather than silently ignoring one. Shared by `runs properties` and
+/// `runs list`, which both carry `--detail`.
+fn reject_detail_with_json(json: bool, detail: bool) -> Result<()> {
+    if json && detail {
+        return Err(user_error("--detail and --json cannot be combined")
+            .note("--json already emits the full data"));
+    }
+    Ok(())
+}
+
 async fn cmd_runs_properties(
     run_id: &str,
-    status: Option<PropertyStatus>,
+    filter: PropertyFilter<'_>,
+    detail: bool,
     json: bool,
     verbose: bool,
 ) -> Result<()> {
+    reject_detail_with_json(json, detail)?;
     debug!("listing properties for run: {}", run_id);
 
     let api = AntithesisApi::from_env_requiring_api_key(verbose)?;
     let mut properties = match api
-        .stream_run_properties(run_id, status)
+        .stream_run_properties(run_id, filter.status)
         .try_collect::<Vec<_>>()
         .await
     {
@@ -356,6 +385,18 @@ async fn cmd_runs_properties(
         // Fetch the run to say which, instead of leaking a bare "404 Not Found".
         Err(err) => return Err(explain_properties_error(&api, run_id, err).await),
     };
+
+    // Apply the client-side filters: both group and name are (case-insensitive)
+    // substring matches.
+    if let Some(group) = filter.group {
+        let needle = group.to_lowercase();
+        properties
+            .retain(|p| property_group(p).is_some_and(|g| g.to_lowercase().contains(&needle)));
+    }
+    if let Some(name) = filter.name {
+        let needle = name.to_lowercase();
+        properties.retain(|p| p.name().to_lowercase().contains(&needle));
+    }
 
     properties.sort_by(|a, b| {
         property_group(a)
@@ -369,17 +410,35 @@ async fn cmd_runs_properties(
             outln!("{}", serde_json::to_string(property)?)?;
         }
     } else if properties.is_empty() {
-        let message = match status {
-            Some(PropertyStatus::Passing) => "No passing properties found.",
-            Some(PropertyStatus::Failing) => "No failing properties found.",
-            None => "No properties found.",
-        };
-        outln!("{message}")?;
+        outln!("{}", no_properties_message(&filter))?;
+    } else if detail {
+        outln!("{}", render_properties_detail(&properties))?;
     } else {
         outln!("{}", render_properties_table(&properties))?;
     }
 
     Ok(())
+}
+
+/// The empty-result message, naming whichever filters were active.
+fn no_properties_message(filter: &PropertyFilter) -> String {
+    let mut parts = Vec::new();
+    match filter.status {
+        Some(PropertyStatus::Passing) => parts.push("passing".to_string()),
+        Some(PropertyStatus::Failing) => parts.push("failing".to_string()),
+        None => {}
+    }
+    if let Some(name) = filter.name {
+        parts.push(format!("name containing '{name}'"));
+    }
+    if let Some(group) = filter.group {
+        parts.push(format!("group '{group}'"));
+    }
+    if parts.is_empty() {
+        "No properties found.".to_string()
+    } else {
+        format!("No properties match ({}).", parts.join(", "))
+    }
 }
 
 /// Outcome of probing a run-scoped 404 with `get_run`: does the run itself not
@@ -389,8 +448,10 @@ async fn cmd_runs_properties(
 enum RunProbe {
     /// The run id is bad: `get_run` also returned a structured 404.
     NotFound,
-    /// The run exists; carries its status so the caller can tailor the message.
-    Exists(RunStatus),
+    /// The run exists; carries its full detail so callers can tailor the message
+    /// (status, and the failure moment for incomplete runs). Boxed to keep the
+    /// enum small.
+    Exists(Box<RunDetail>),
     /// `get_run` failed for some other reason (timeout, 502, auth). Propagate
     /// this rather than claiming the run doesn't exist.
     ProbeFailed(color_eyre::eyre::Report),
@@ -402,7 +463,7 @@ enum RunProbe {
 /// not found".
 async fn probe_run(api: &AntithesisApi, run_id: &str) -> RunProbe {
     match api.get_run(run_id).await {
-        Ok(run) => RunProbe::Exists(run.status),
+        Ok(run) => RunProbe::Exists(Box::new(run)),
         Err(err) if api_error_status(&err) == Some(404) => RunProbe::NotFound,
         Err(err) => RunProbe::ProbeFailed(err),
     }
@@ -465,20 +526,24 @@ async fn explain_properties_error(
         RunProbe::ProbeFailed(probe_err) => probe_err,
         // Completed runs are expected to have properties; if one 404s anyway,
         // that's a genuine surprise — keep the original error.
-        RunProbe::Exists(RunStatus::Completed) => err,
-        RunProbe::Exists(status) => {
-            let mut msg = format!(
-                "no properties for run {run_id} — properties are generated when a run completes, \
-                 and this run is {}",
-                status_label(status)
-            );
-            if status == RunStatus::Incomplete {
-                msg.push_str(&format!(
-                    ". See the failure moment with `snouty runs show {run_id}`, \
-                     then `snouty runs logs`/`runs events` around it"
-                ));
+        RunProbe::Exists(run) if run.status == RunStatus::Completed => err,
+        RunProbe::Exists(run) => {
+            // The message states the error; the *why* and the concrete next steps
+            // hang off it as notes. For an incomplete run we already fetched the
+            // failure moment while probing, so prefill it into the `runs logs` hint.
+            let report = user_error(format!("no properties for run {run_id}"))
+                .note(format!(
+                    "properties are generated when a run completes; this run is {}",
+                    status_label(run.status)
+                ))
+                .note(format!("inspect the run with `snouty runs show {run_id}`"));
+            match run.failure_moment.as_ref() {
+                Some(moment) => report.note(format!(
+                    "view logs at the failure with `snouty runs logs {run_id} {} {}`",
+                    moment.input_hash, moment.vtime
+                )),
+                None => report,
             }
-            user_error(msg)
         }
     }
 }
@@ -490,99 +555,53 @@ fn property_group(p: &Property) -> Option<&str> {
     }
 }
 
-fn property_example_total(p: &Property) -> u64 {
+/// `(examples, counterexamples)` for a property, defaulting a missing count to 0.
+fn property_example_counts(p: &Property) -> (u64, u64) {
     let (ex, cex) = match p {
         Property::EventProperty(p) => (p.example_count, p.counterexample_count),
         Property::NonEventProperty(p) => (p.example_count, p.counterexample_count),
     };
-    u64::from(ex.unwrap_or(0)) + u64::from(cex.unwrap_or(0))
+    (u64::from(ex.unwrap_or(0)), u64::from(cex.unwrap_or(0)))
+}
+
+/// Format a count in short SI-style notation so the EXAMPLES column stays narrow
+/// and scannable: values under 1000 print exactly (`0`, `20`, `885`); larger
+/// ones use ~3 significant figures with a k/M/G/T suffix (`2.3k`, `13k`, `18M`).
+fn format_count_si(n: u64) -> String {
+    if n < 1000 {
+        return n.to_string();
+    }
+    const UNITS: [&str; 4] = ["k", "M", "G", "T"];
+    let mut value = n as f64;
+    let mut unit = 0;
+    while value >= 1000.0 && unit < UNITS.len() {
+        value /= 1000.0;
+        unit += 1;
+    }
+    // `value` is now in [1, 1000). One decimal below 10 (`2.3k`), none at/above
+    // (`13k`). If rounding tips it over a boundary, step up a unit / drop the
+    // decimal so we never emit `10.0k` or `1000k`.
+    if value < 10.0 {
+        let rounded = (value * 10.0).round() / 10.0;
+        if rounded >= 10.0 {
+            format!("{:.0}{}", rounded, UNITS[unit - 1])
+        } else {
+            format!("{rounded:.1}{}", UNITS[unit - 1])
+        }
+    } else {
+        let rounded = value.round();
+        if rounded >= 1000.0 && unit < UNITS.len() {
+            format!("{:.1}{}", rounded / 1000.0, UNITS[unit])
+        } else {
+            format!("{rounded:.0}{}", UNITS[unit - 1])
+        }
+    }
 }
 
 fn property_status_label(status: PropertyStatus) -> &'static str {
     match status {
         PropertyStatus::Passing => "passing",
         PropertyStatus::Failing => "failing",
-    }
-}
-
-async fn cmd_runs_property(run_id: &str, name: &str, json: bool, verbose: bool) -> Result<()> {
-    debug!("looking up property '{}' for run: {}", name, run_id);
-
-    let api = AntithesisApi::from_env_requiring_api_key(verbose)?;
-    let properties = match api
-        .stream_run_properties(run_id, None)
-        .try_collect::<Vec<_>>()
-        .await
-    {
-        Ok(properties) => properties,
-        // Same 404-on-incomplete-run contract as `cmd_runs_properties`: explain
-        // why there are no properties instead of leaking a bare "404 Not Found".
-        Err(err) => return Err(explain_properties_error(&api, run_id, err).await),
-    };
-
-    let resolved = resolve_property(&properties, name)?;
-    let property = match resolved {
-        Resolved::Exact(p) => p,
-        Resolved::Fuzzy(p) => {
-            // Always disclose the substitution, on stderr in both modes: a
-            // `--json` consumer otherwise silently receives a different property
-            // than it asked for, and stderr keeps it out of the JSON on stdout.
-            eprintln!(
-                "note: no exact match for '{}', using closest property: '{}'",
-                name,
-                p.name()
-            );
-            p
-        }
-    };
-
-    if json {
-        outln!("{}", serde_json::to_string_pretty(property)?)?;
-        return Ok(());
-    }
-
-    print_property_header(property)?;
-    outln!("{}", render_property_examples(property))?;
-    Ok(())
-}
-
-#[derive(Debug)]
-enum Resolved<'a> {
-    Exact(&'a Property),
-    Fuzzy(&'a Property),
-}
-
-fn resolve_property<'a>(properties: &'a [Property], query: &str) -> Result<Resolved<'a>> {
-    // Match case-insensitively throughout: an exact name in any case is an
-    // exact hit (no "closest property" note), and the substring fallback
-    // ignores case too.
-    let needle = query.to_lowercase();
-
-    if let Some(p) = properties
-        .iter()
-        .find(|p| p.name().to_lowercase() == needle)
-    {
-        return Ok(Resolved::Exact(p));
-    }
-
-    let matches: Vec<&Property> = properties
-        .iter()
-        .filter(|p| p.name().to_lowercase().contains(&needle))
-        .collect();
-
-    match matches.as_slice() {
-        [] => Err(user_error(format!("no property matches '{query}'"))),
-        [only] => Ok(Resolved::Fuzzy(only)),
-        many => {
-            let names = many
-                .iter()
-                .map(|p| format!("  - {}", p.name()))
-                .collect::<Vec<_>>()
-                .join("\n");
-            Err(user_error(format!(
-                "multiple properties match '{query}', did you mean one of:\n{names}"
-            )))
-        }
     }
 }
 
@@ -646,12 +665,31 @@ fn render_prose_block(label: &str, text: &str, layout: ProseLayout) -> String {
     out
 }
 
-fn print_property_header(property: &Property) -> Result<()> {
-    outln!("Name      {}", sanitize(property.name()))?;
-    outln!("Status    {}", property_status_label(property.status()))?;
-    if let Some(group) = property_group(property) {
-        outln!("Group     {}", sanitize(group))?;
-    }
+/// `runs properties --detail`: the same per-group sections as the summary table,
+/// but each property is expanded into its examples (indented beneath it) rather
+/// than a one-line row. The group heading is shown once per section, separate
+/// from the property details.
+fn render_properties_detail(properties: &[Property]) -> String {
+    group_property_sections(properties)
+        .iter()
+        .map(|(title, props)| {
+            let blocks: Vec<String> = props.iter().map(|p| render_property_detail(p)).collect();
+            format!("{}\n\n{}", sanitize(title), blocks.join("\n\n"))
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n")
+}
+
+/// One property's detail within a group section: a key/value header (no Group
+/// line — the section heading carries it) and, indented beneath it, its examples.
+/// A property whose only example is a single number renders that inline instead.
+fn render_property_detail(property: &Property) -> String {
+    let mut out = String::new();
+    out.push_str(&format!("Name      {}\n", sanitize(property.name())));
+    out.push_str(&format!(
+        "Status    {}\n",
+        property_status_label(property.status())
+    ));
     let description = match property {
         Property::EventProperty(p) => p.description.as_deref(),
         Property::NonEventProperty(p) => p.description.as_deref(),
@@ -659,23 +697,100 @@ fn print_property_header(property: &Property) -> Result<()> {
     if let Some(desc) = description {
         // Details is free-form prose, wrapped under a 10-char label column so
         // continuation lines hang-indent to match the value column above.
-        out!(
-            "{}",
-            render_prose_block(
-                "Details",
-                desc,
-                ProseLayout::HangingIndent {
-                    label_col: PROPERTY_LABEL_WIDTH,
-                    min_body_width: 20,
-                },
-            )
-        )?;
+        out.push_str(&render_prose_block(
+            "Details",
+            desc,
+            ProseLayout::HangingIndent {
+                label_col: PROPERTY_LABEL_WIDTH,
+                min_body_width: 20,
+            },
+        ));
     }
-    outln!()?;
-    Ok(())
+    match property {
+        // Event properties have moments — the user feeds a HASH/VTIME into
+        // `runs logs`, so they get an `Examples:` table.
+        Property::EventProperty(p) => {
+            out.push_str("Examples:\n");
+            out.push_str(&indent_lines(&render_moments_table(p), "  "));
+        }
+        // Non-event "system" properties have no moments; their examples chunk
+        // just carries detail values, so show them under a `Result` label rather
+        // than conflating with examples/counter-examples.
+        Property::NonEventProperty(p) => out.push_str(&render_result(p)),
+    }
+    out
 }
 
-/// Width of the label column in `print_property_header` (`"Details   "`).
+/// The STATUS/HASH/VTIME table for an event property's moments: counterexamples
+/// (failing) first, then examples (passing), each ascending by vtime.
+fn render_moments_table(p: &EventProperty) -> String {
+    let mut rows: Vec<Vec<String>> = Vec::new();
+    for event in sorted_by_vtime(&p.counterexamples) {
+        rows.push(vec![
+            "failing".to_string(),
+            sanitize(&event.moment.input_hash),
+            sanitize(&event.moment.vtime),
+        ]);
+    }
+    for event in sorted_by_vtime(&p.examples) {
+        rows.push(vec![
+            "passing".to_string(),
+            sanitize(&event.moment.input_hash),
+            sanitize(&event.moment.vtime),
+        ]);
+    }
+    if rows.is_empty() {
+        return "(none — property was unreachable)".to_string();
+    }
+    let headers = vec![
+        "STATUS".to_string(),
+        "HASH".to_string(),
+        "VTIME".to_string(),
+    ];
+    render_table(&headers, &rows)
+}
+
+/// The `Result` for a non-event property — its example values. A lone value is
+/// rendered directly (scalar inline, object/array as indented JSON); multiple
+/// values are rendered as a single indented JSON array.
+fn render_result(p: &NonEventProperty) -> String {
+    let values: Vec<&Value> = p.examples.iter().chain(p.counterexamples.iter()).collect();
+    match values.as_slice() {
+        [] => "Result    (none)".to_string(),
+        [one] => render_single_result(one),
+        // Multiple values are collapsed into a single JSON array.
+        many => render_json_result(&Value::Array(many.iter().map(|v| (*v).clone()).collect())),
+    }
+}
+
+/// A single `Result` value: a scalar inline next to an aligned `Result` label, an
+/// object/array via [`render_json_result`].
+fn render_single_result(value: &Value) -> String {
+    match value {
+        Value::Array(_) | Value::Object(_) => render_json_result(value),
+        Value::String(s) => format!("Result    {}", sanitize(s)),
+        Value::Number(n) => format!("Result    {n}"),
+        Value::Bool(b) => format!("Result    {b}"),
+        Value::Null => "Result    null".to_string(),
+    }
+}
+
+/// Render a JSON object/array `Result`: inline (`Result: {...}`) when its compact
+/// one-line form fits the terminal (capped at 100 cols, so piped output where the
+/// width is unbounded still inlines only genuinely small values), otherwise as an
+/// indented pretty-printed block under `Result:`.
+fn render_json_result(value: &Value) -> String {
+    let compact = serde_json::to_string(value).unwrap_or_default();
+    let inline = format!("Result: {compact}");
+    if inline.chars().count() <= terminal_width().min(100) {
+        inline
+    } else {
+        let pretty = serde_json::to_string_pretty(value).unwrap_or_default();
+        format!("Result:\n{}", indent_lines(&pretty, "  "))
+    }
+}
+
+/// Width of the label column in `render_property_detail` (`"Details   "`).
 const PROPERTY_LABEL_WIDTH: usize = 10;
 
 /// Drop leading and trailing blank lines, keeping interior ones.
@@ -708,147 +823,122 @@ fn sorted_by_vtime(events: &[Event]) -> Vec<&Event> {
     sorted
 }
 
-fn render_property_examples(property: &Property) -> String {
-    match property {
-        Property::EventProperty(p) => {
-            let mut rows: Vec<Vec<String>> = Vec::new();
-            // The API guarantees no ordering, so sort each group numerically by
-            // vtime (ascending) for a stable, readable timeline. Counterexamples
-            // (failing) come first, then examples (passing).
-            for event in sorted_by_vtime(&p.counterexamples) {
-                rows.push(vec![
-                    "failing".to_string(),
-                    sanitize(&event.moment.input_hash),
-                    sanitize(&event.moment.vtime),
-                ]);
-            }
-            for event in sorted_by_vtime(&p.examples) {
-                rows.push(vec![
-                    "passing".to_string(),
-                    sanitize(&event.moment.input_hash),
-                    sanitize(&event.moment.vtime),
-                ]);
-            }
-            if rows.is_empty() {
-                rows.push(vec![
-                    "unreachable".to_string(),
-                    "-".to_string(),
-                    "-".to_string(),
-                ]);
-            }
-            let headers = vec![
-                "STATUS".to_string(),
-                "HASH".to_string(),
-                "VTIME".to_string(),
-            ];
-            render_table(&headers, &rows)
-        }
-        Property::NonEventProperty(p) => {
-            let mut rows: Vec<Vec<String>> = Vec::new();
-            let mut detail_blocks: Vec<(usize, String)> = Vec::new();
-
-            for value in &p.counterexamples {
-                push_value_row(&mut rows, &mut detail_blocks, "failing", value);
-            }
-            for value in &p.examples {
-                push_value_row(&mut rows, &mut detail_blocks, "passing", value);
-            }
-            if rows.is_empty() {
-                rows.push(vec!["unreachable".to_string(), "-".to_string()]);
-            }
-            let headers = vec!["STATUS".to_string(), "VALUE".to_string()];
-            let mut out = render_table(&headers, &rows);
-            for (row_index, block) in detail_blocks {
-                out.push_str(&format!(
-                    "\n\nrow {} details:\n{}",
-                    row_index + 1,
-                    indent_lines(&block, "  ")
-                ));
-            }
-            out
-        }
-    }
-}
-
-fn push_value_row(
-    rows: &mut Vec<Vec<String>>,
-    detail_blocks: &mut Vec<(usize, String)>,
-    status: &str,
-    value: &Value,
-) {
-    let row_index = rows.len();
-    let (cell, detail) = render_property_value(value);
-    rows.push(vec![status.to_string(), cell]);
-    if let Some(detail) = detail {
-        detail_blocks.push((row_index, detail));
-    }
-}
-
-fn render_property_value(value: &Value) -> (String, Option<String>) {
-    match value {
-        Value::Null => ("null".to_string(), None),
-        Value::Bool(b) => (b.to_string(), None),
-        Value::Number(n) => (n.to_string(), None),
-        Value::String(s) => (sanitize(s), None),
-        // An empty collection has nothing to expand — render it inline rather
-        // than as a "[0 items]" summary trailed by an empty "row N details" block.
-        Value::Array(items) if items.is_empty() => ("(no example value)".to_string(), None),
-        Value::Object(map) if map.is_empty() => ("(no example value)".to_string(), None),
-        Value::Array(_) | Value::Object(_) => {
-            let summary = match value {
-                Value::Array(items) => format!("[{} items]", items.len()),
-                Value::Object(map) => format!("{{{} fields}}", map.len()),
-                _ => unreachable!(),
-            };
-            let pretty = serde_json::to_string_pretty(value).unwrap_or_default();
-            (summary, Some(pretty))
-        }
-    }
-}
-
 fn indent_lines(text: &str, prefix: &str) -> String {
     text.lines()
-        .map(|line| format!("{prefix}{line}"))
+        .map(|line| {
+            // Don't indent blank lines — that would leave trailing whitespace.
+            if line.is_empty() {
+                String::new()
+            } else {
+                format!("{prefix}{line}")
+            }
+        })
         .collect::<Vec<_>>()
         .join("\n")
 }
 
+fn is_failing(p: &Property) -> bool {
+    matches!(p.status(), PropertyStatus::Failing)
+}
+
+/// The EXAMPLES cell for a property: the example count, SI-shortened so big
+/// counts stay narrow (`18496678` -> `18M`), with counterexamples appended
+/// inline (`examples/counterexamples`) only when a property actually has some —
+/// so the common all-zero-counterexample rows aren't cluttered with `/0`.
+fn property_examples_cell(p: &Property) -> String {
+    let (examples, counters) = property_example_counts(p);
+    if counters == 0 {
+        format_count_si(examples)
+    } else {
+        format!(
+            "{}/{}",
+            format_count_si(examples),
+            format_count_si(counters)
+        )
+    }
+}
+
+/// Order properties into display sections shared by the table and `--detail`
+/// views: named groups containing a failing property first (then the rest,
+/// alphabetical), with ungrouped properties in a final "(ungrouped)" section.
+/// Within each section, failing entries sort first, then by name. An
+/// empty-string group counts as no group.
+fn group_property_sections(properties: &[Property]) -> Vec<(String, Vec<&Property>)> {
+    fn sort_section(props: &mut [&Property]) {
+        props.sort_by(|a, b| {
+            is_failing(b)
+                .cmp(&is_failing(a))
+                .then_with(|| a.name().cmp(b.name()))
+        });
+    }
+
+    // BTreeMap keeps named groups alphabetical before the failing-first re-sort.
+    let mut grouped: std::collections::BTreeMap<&str, Vec<&Property>> = Default::default();
+    let mut ungrouped: Vec<&Property> = Vec::new();
+    for p in properties {
+        match property_group(p).filter(|g| !g.is_empty()) {
+            Some(g) => grouped.entry(g).or_default().push(p),
+            None => ungrouped.push(p),
+        }
+    }
+
+    let mut named: Vec<(&str, Vec<&Property>)> = grouped.into_iter().collect();
+    named.sort_by(|(a, aps), (b, bps)| {
+        bps.iter()
+            .any(|p| is_failing(p))
+            .cmp(&aps.iter().any(|p| is_failing(p)))
+            .then_with(|| a.cmp(b))
+    });
+
+    let mut sections: Vec<(String, Vec<&Property>)> = Vec::new();
+    for (name, mut props) in named {
+        sort_section(&mut props);
+        sections.push((name.to_string(), props));
+    }
+    if !ungrouped.is_empty() {
+        sort_section(&mut ungrouped);
+        sections.push(("(ungrouped)".to_string(), ungrouped));
+    }
+    sections
+}
+
 fn render_properties_table(properties: &[Property]) -> String {
-    // STATUS and EXAMPLES are narrow and fixed; NAME is the long, variable
-    // column and goes last so it can wrap to the terminal instead of one long
-    // name forcing the whole table wider than the screen. Full names are kept —
-    // `runs property` takes a name, so truncating would break the follow-up.
+    // One table per group — far more scannable than a single flat table, and it
+    // mirrors the report UI. The group is the section heading, so the NAME column
+    // shows just the property's own name (the string a `--name`/`--detail` filter
+    // matches); folding the group into NAME would have made the displayed name
+    // un-copyable. This is human-facing output; use `--json` for automation.
     let headers = vec![
         "STATUS".to_string(),
         "EXAMPLES".to_string(),
         "NAME".to_string(),
     ];
+    // Right-align the numeric EXAMPLES column so magnitudes line up; STATUS and
+    // the wrapped NAME column stay left-aligned.
+    let aligns = [Align::Left, Align::Right, Align::Left];
+    let width = terminal_width();
 
-    // Failing properties first so triage doesn't require scanning the whole
-    // (otherwise alphabetical) list; relative order is otherwise preserved.
-    let mut ordered: Vec<&Property> = properties.iter().collect();
-    ordered.sort_by_key(|p| match p.status() {
-        PropertyStatus::Failing => 0,
-        _ => 1,
-    });
-
-    let rows = ordered
+    group_property_sections(properties)
         .iter()
-        .map(|p| {
-            // Fold the group into the name (`group ▸ detail`) instead of padding
-            // a mostly-empty GROUP column out to its widest label.
-            let name = match property_group(p) {
-                Some(group) => format!("{} ▸ {}", sanitize(group), sanitize(p.name())),
-                None => sanitize(p.name()),
-            };
-            vec![
-                property_status_label(p.status()).to_string(),
-                property_example_total(p).to_string(),
-                name,
-            ]
+        .map(|(title, props)| {
+            let rows: Vec<Vec<String>> = props
+                .iter()
+                .map(|p| {
+                    vec![
+                        property_status_label(p.status()).to_string(),
+                        property_examples_cell(p),
+                        sanitize(p.name()),
+                    ]
+                })
+                .collect();
+            format!(
+                "{}\n{}",
+                sanitize(title),
+                render_table_wrap_last(&headers, &rows, width, &aligns)
+            )
         })
-        .collect::<Vec<_>>();
-    render_table_wrap_last(&headers, &rows, terminal_width())
+        .collect::<Vec<_>>()
+        .join("\n\n")
 }
 
 fn print_run_detail(run: &RunDetail) -> Result<()> {
@@ -873,8 +963,10 @@ fn print_run_detail(run: &RunDetail) -> Result<()> {
     rows.push(("Launcher", run.launcher.clone()));
 
     if let Some(ref moment) = run.failure_moment {
-        rows.push(("Failure VTime", moment.vtime.clone()));
+        // Hash before VTime to match the `runs logs <hash> <vtime>` argument
+        // order, so the values read top-to-bottom in the order you paste them.
         rows.push(("Failure Hash", moment.input_hash.clone()));
+        rows.push(("Failure VTime", moment.vtime.clone()));
     }
 
     if let Some(ref creator) = run.creator
@@ -894,6 +986,18 @@ fn print_run_detail(run: &RunDetail) -> Result<()> {
         if !block.is_empty() {
             out!("\n{block}")?;
         }
+    }
+
+    // Hand the user the exact command to read logs at the failure moment, the
+    // same way the `--web` hint below hands over the report link. Both can fire
+    // when an incomplete run still has a report — they're complementary.
+    if let Some(ref moment) = run.failure_moment {
+        outln!(
+            "\nview logs at the failure moment:\n  snouty runs logs {} {} {}",
+            run.run_id,
+            moment.input_hash,
+            moment.vtime
+        )?;
     }
 
     // Point at the obvious next step instead of dumping the huge signed report
@@ -1087,9 +1191,8 @@ async fn cmd_runs_events(
     debug!("searching events for run: {}", run_id);
 
     if matches.is_empty() {
-        return Err(user_error(
-            "no search term given: pass at least one needle via `-m/--match` or as a positional argument",
-        ));
+        return Err(user_error("no search term given")
+            .suggestion("pass at least one needle via `-m/--match` or as a positional argument"));
     }
 
     // The server endpoint takes a single `q` substring and streams only a capped
@@ -1156,15 +1259,25 @@ async fn cmd_runs_events(
         return Ok(());
     }
 
-    // Auto-width HASH/VTIME/SOURCE columns with OUTPUT emitted verbatim as the
-    // final column — the shared renderer's `Raw` last-column policy.
+    // Auto-width HASH/VTIME/SOURCE columns; OUTPUT is the final column, windowed
+    // around the matched needle so the hit stays visible on a narrow terminal. On
+    // a non-tty `terminal_width()` is `usize::MAX`, so piped output isn't truncated.
     let headers = [
         "HASH".to_string(),
         "VTIME".to_string(),
         "SOURCE".to_string(),
         "OUTPUT".to_string(),
     ];
-    writeln!(stdout, "{}", render_table(&headers, &rows))?;
+    let table = render_columns(
+        &headers,
+        &rows,
+        LastColumn::TruncateAround {
+            total_width: terminal_width(),
+            needles: matches.to_vec(),
+        },
+        &left_aligned(headers.len()),
+    );
+    writeln!(stdout, "{table}")?;
     stdout.flush()?;
 
     // Now that buffered rows are rendered, surface any mid-stream error.
@@ -1281,45 +1394,58 @@ fn moment_vtime_seconds(entry: &Value) -> Option<f64> {
         .or_else(|| vtime.as_f64())
 }
 
-/// Render a log line's vtime in seconds with at most 3 decimal places (trailing
-/// zeros trimmed). Full-precision vtimes overflow the fixed `LOG_VTIME_WIDTH`
-/// column and desync the source column; trimming keeps every row aligned.
+/// Render a log line's vtime in seconds with exactly 3 decimal places,
+/// truncated — never rounded. Fixed precision keeps the decimal point and right
+/// edge aligned down the fixed `LOG_VTIME_WIDTH` column (full-precision vtimes
+/// would overflow it and desync the source column). Truncating rather than
+/// rounding means a vtime copied off the screen and pasted back as
+/// `--begin-vtime` lands on — never just past — the line you saw.
 fn format_log_vtime(entry: &Value) -> String {
-    match moment_vtime_seconds(entry) {
-        Some(seconds) => trim_decimals(seconds, 3),
-        // Not a parseable number — show whatever the server sent rather than "".
-        None => entry["moment"]["vtime"].as_str().unwrap_or("").to_string(),
+    let raw = &entry["moment"]["vtime"];
+    match raw.as_str() {
+        // The API sends vtime as a seconds string; truncate it directly so f64
+        // round-trips can't nudge the displayed value.
+        Some(s) => truncate_decimals(s, 3),
+        // A JSON-number vtime: format with surplus precision, then truncate the
+        // string, so the kept 3 decimals are never perturbed by rounding.
+        None => match raw.as_f64() {
+            Some(v) => truncate_decimals(&format!("{v:.9}"), 3),
+            None => String::new(),
+        },
     }
 }
 
-/// Format `value` with at most `max_decimals` decimal places, trimming trailing
-/// zeros and a dangling decimal point (e.g. `19.0` -> `19`, `18.9140` -> `18.914`).
-///
-/// A *nonzero* value too small to survive the trim (it would otherwise render as
-/// `0` or `-0`, losing the fact that something happened) renders as `<0.001` for
-/// positives and `>-0.001` for negatives — short, unambiguous, and the same
-/// width regardless of magnitude. An exact `0.0`/`-0.0` renders `0`.
-fn trim_decimals(value: f64, max_decimals: usize) -> String {
-    let mut s = format!("{value:.max_decimals$}");
-    if s.contains('.') {
-        let trimmed = s.trim_end_matches('0').trim_end_matches('.').len();
-        s.truncate(trimmed);
-    }
-    // A nonzero input that rounded to "0"/"-0" would misrepresent it as exactly
-    // zero; flag it as a below-threshold magnitude instead.
-    if (s == "0" || s == "-0") && value != 0.0 {
-        let threshold = format!("0.{}1", "0".repeat(max_decimals.saturating_sub(1)));
-        return if value < 0.0 {
-            format!(">-{threshold}")
-        } else {
-            format!("<{threshold}")
+/// Truncate (never round) the decimal string `s` to exactly `decimals`
+/// fractional digits, zero-padding a short or missing fraction (`"19"` ->
+/// `"19.000"`, `"14.78"` -> `"14.780"`, `"1814.71357"` -> `"1814.713"`). Fixed
+/// width keeps a column of these aligned on the decimal point. Only a plain
+/// decimal string is sliced; anything else (scientific notation) falls back to
+/// rounded fixed-point, and a non-number is passed through verbatim.
+fn truncate_decimals(s: &str, decimals: usize) -> String {
+    let t = s.trim();
+    let (int_part, frac_part) = match t.split_once('.') {
+        Some((i, f)) => (i, f),
+        None => (t, ""),
+    };
+    let is_plain = !int_part.is_empty()
+        && int_part
+            .char_indices()
+            .all(|(i, c)| c.is_ascii_digit() || (i == 0 && (c == '-' || c == '+')))
+        && frac_part.chars().all(|c| c.is_ascii_digit());
+    if !is_plain {
+        return match t.parse::<f64>() {
+            Ok(v) => format!("{v:.decimals$}"),
+            Err(_) => t.to_string(),
         };
     }
-    // Normalise an exact -0.0 (rounds to "-0") to plain "0".
-    if s == "-0" {
-        return "0".to_string();
+    if decimals == 0 {
+        return int_part.to_string();
     }
-    s
+    let mut frac: String = frac_part.chars().take(decimals).collect();
+    while frac.len() < decimals {
+        frac.push('0');
+    }
+    format!("{int_part}.{frac}")
 }
 
 fn abbreviate_stream(stream: &str) -> std::borrow::Cow<'static, str> {
@@ -1861,12 +1987,14 @@ fn render_event_entry(entry: &Value) -> RenderedEventEntry {
     let name = entry["source"]["name"].as_str().unwrap_or("");
     let stream = entry["source"]["stream"].as_str().unwrap_or("");
 
+    // Trim the OUTPUT cell: container log lines often carry leading indentation
+    // (e.g. `    GORACE: …`) that would ragged-align the column against neighbours.
     if let Some(summary) = parse_assertion_summary(entry) {
         return RenderedEventEntry {
             input_hash,
             vtime,
             source: render_source(container, name, Some("assert")),
-            output: render_assertion_summary(&summary),
+            output: render_assertion_summary(&summary).trim().to_string(),
         };
     }
 
@@ -1874,7 +2002,7 @@ fn render_event_entry(entry: &Value) -> RenderedEventEntry {
         input_hash,
         vtime,
         source: render_source(container, name, (!stream.is_empty()).then_some(stream)),
-        output: render_event_output(entry),
+        output: render_event_output(entry).trim().to_string(),
     }
 }
 
@@ -2075,13 +2203,43 @@ enum LastColumn {
     /// multiple lines with a hanging indent under the column start (floored at a
     /// readable minimum width).
     Wrap { total_width: usize },
+    /// Bound the final column like [`Truncate`], but window a too-long cell
+    /// *around* the first matching needle (centering on the match) rather than
+    /// always keeping the head — so the user sees the substring they searched for.
+    /// `needles` are the raw search terms, matched case-insensitively.
+    TruncateAround {
+        total_width: usize,
+        needles: Vec<String>,
+    },
+}
+
+/// Per-column horizontal alignment for the leading (fixed-width) columns. The
+/// final column is never padded, so its alignment is ignored.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Align {
+    Left,
+    Right,
+}
+
+/// Pad `cell` to `width` columns on the side dictated by `align`.
+fn pad_cell(cell: &str, width: usize, align: Align) -> String {
+    match align {
+        Align::Left => format!("{cell:<width$}"),
+        Align::Right => format!("{cell:>width$}"),
+    }
 }
 
 /// Shared column-sizing core for every table snouty renders. Leading columns are
-/// sized to their widest cell (header included, counted in chars); the final
-/// column follows `last_column`. Lines are right-trimmed, so a `Raw` final
-/// column never leaves trailing padding.
-fn render_columns(headers: &[String], rows: &[Vec<String>], last_column: LastColumn) -> String {
+/// sized to their widest cell (header included, counted in chars) and aligned per
+/// `aligns`; the final column follows `last_column`. Lines are right-trimmed, so
+/// a `Raw` final column never leaves trailing padding. `aligns` must have one
+/// entry per header (the last entry is ignored — the final column isn't padded).
+fn render_columns(
+    headers: &[String],
+    rows: &[Vec<String>],
+    last_column: LastColumn,
+    aligns: &[Align],
+) -> String {
     let last = headers.len() - 1;
 
     // Size every leading column to the widest of its header and cells. The final
@@ -2105,9 +2263,9 @@ fn render_columns(headers: &[String], rows: &[Vec<String>], last_column: LastCol
             // Final column unbounded: `push_table_row` emits it unpadded, so its
             // width never matters — leave `widths[last]` at the header width.
             let mut output = String::new();
-            push_table_row(&mut output, headers, &widths);
+            push_table_row(&mut output, headers, &widths, aligns);
             for row in rows {
-                push_table_row(&mut output, row, &widths);
+                push_table_row(&mut output, row, &widths, aligns);
             }
             output.trim_end().to_string()
         }
@@ -2118,11 +2276,11 @@ fn render_columns(headers: &[String], rows: &[Vec<String>], last_column: LastCol
             widths[last] = last_width;
 
             let mut output = String::new();
-            push_table_row(&mut output, headers, &widths);
+            push_table_row(&mut output, headers, &widths, aligns);
             for row in rows {
                 let mut row = row.clone();
                 row[last] = console::truncate_str(&row[last], last_width, "…").into_owned();
-                push_table_row(&mut output, &row, &widths);
+                push_table_row(&mut output, &row, &widths, aligns);
             }
             output.trim_end().to_string()
         }
@@ -2133,7 +2291,7 @@ fn render_columns(headers: &[String], rows: &[Vec<String>], last_column: LastCol
                 .max(20);
 
             let mut output = String::new();
-            push_table_row(&mut output, headers, &widths);
+            push_table_row(&mut output, headers, &widths, aligns);
             for row in rows {
                 let wrapped = wrap_text(&row[last], last_width);
                 let wrapped = if wrapped.is_empty() {
@@ -2144,11 +2302,8 @@ fn render_columns(headers: &[String], rows: &[Vec<String>], last_column: LastCol
                 for (line_index, line) in wrapped.iter().enumerate() {
                     if line_index == 0 {
                         for index in 0..last {
-                            output.push_str(&format!(
-                                "{:<width$}  ",
-                                row[index],
-                                width = widths[index]
-                            ));
+                            output.push_str(&pad_cell(&row[index], widths[index], aligns[index]));
+                            output.push_str("  ");
                         }
                         output.push_str(line);
                     } else {
@@ -2159,14 +2314,102 @@ fn render_columns(headers: &[String], rows: &[Vec<String>], last_column: LastCol
             }
             output.trim_end().to_string()
         }
+        LastColumn::TruncateAround {
+            total_width,
+            needles,
+        } => {
+            let last_width = total_width
+                .saturating_sub(prefix_width)
+                .max(headers[last].chars().count());
+            widths[last] = last_width;
+
+            let mut output = String::new();
+            push_table_row(&mut output, headers, &widths, aligns);
+            for row in rows {
+                let mut row = row.clone();
+                row[last] = truncate_around(&row[last], needles, last_width);
+                push_table_row(&mut output, &row, &widths, aligns);
+            }
+            output.trim_end().to_string()
+        }
     }
+}
+
+/// Earliest case-insensitive occurrence of any needle in `text`, as the
+/// `(char_start, char_len)` of the match. Used to keep a search hit visible when
+/// a cell is windowed.
+fn first_needle_span(text: &str, needles: &[String]) -> Option<(usize, usize)> {
+    let lower = text.to_lowercase();
+    needles
+        .iter()
+        .filter(|n| !n.is_empty())
+        .filter_map(|n| {
+            let needle = n.to_lowercase();
+            lower.find(&needle).map(|byte| {
+                let start = lower[..byte].chars().count();
+                (start, needle.chars().count())
+            })
+        })
+        .min_by_key(|(start, _)| *start)
+}
+
+/// Truncate `text` to at most `width` display columns, keeping the region around
+/// the first matching needle in view. A too-long cell is windowed and centered on
+/// the match, with `…` marking each truncated edge; when no needle lands in this
+/// cell (it matched another column) the head is kept instead. Returns `text`
+/// unchanged when it already fits.
+fn truncate_around(text: &str, needles: &[String], width: usize) -> String {
+    const ELL: char = '…';
+    let chars: Vec<char> = text.chars().collect();
+    let len = chars.len();
+    if len <= width {
+        return text.to_string();
+    }
+    // Too narrow to fit an ellipsis beside content: just clip the head.
+    if width <= 1 {
+        return chars[..width].iter().collect();
+    }
+    let Some((m, mlen)) = first_needle_span(text, needles) else {
+        // No hit in this cell — keep the head, like a plain truncation.
+        let head: String = chars[..width - 1].iter().collect();
+        return format!("{head}{ELL}");
+    };
+
+    // Center an inner window on the match midpoint, reserving a column for an
+    // ellipsis on each (initially assumed) truncated edge.
+    let inner = width - 2;
+    let center = (m + mlen / 2).min(len - 1);
+    let mut start = center.saturating_sub(inner / 2);
+    if start + inner > len {
+        start = len - inner;
+    }
+    let mut end = start + inner;
+    // Reclaim the reserved ellipsis column on any edge that isn't truncated after
+    // all (the window reached the start or end of the text).
+    if start == 0 && end < len {
+        end = (end + 1).min(len);
+    } else if end == len && start > 0 {
+        start -= 1;
+    }
+
+    let mut out = String::new();
+    if start > 0 {
+        out.push(ELL);
+    }
+    out.extend(chars[start..end].iter());
+    if end < len {
+        out.push(ELL);
+    }
+    out
 }
 
 fn render_runs_table(runs: &[RunSummary], width: usize) -> String {
     // The default view omits the description entirely — it never fit usefully
     // beside the (necessarily full) run id, and `runs list --detail` shows it in
     // full. Test name is the final, width-bounded column truncated with an
-    // ellipsis (a `runs show RUN` follow-up still works off the full id).
+    // ellipsis (a `runs show RUN` follow-up still works off the full id). A
+    // launcher filter doesn't add a column — every row would carry the same
+    // value; `--detail`/`--json` surface the launcher when it's actually wanted.
     let headers = vec![
         "RUN ID".to_string(),
         "STATUS".to_string(),
@@ -2187,24 +2430,41 @@ fn render_runs_table(runs: &[RunSummary], width: usize) -> String {
         })
         .collect();
 
-    render_columns(&headers, &rows, LastColumn::Truncate { total_width: width })
+    render_columns(
+        &headers,
+        &rows,
+        LastColumn::Truncate { total_width: width },
+        &left_aligned(headers.len()),
+    )
+}
+
+/// All-left-aligned alignment vector for a table with `n` columns — the default
+/// for tables that don't right-align any column.
+fn left_aligned(n: usize) -> Vec<Align> {
+    vec![Align::Left; n]
 }
 
 /// Auto-width table whose final column is emitted verbatim (no padding, no
-/// width bound).
+/// width bound). All leading columns are left-aligned.
 fn render_table(headers: &[String], rows: &[Vec<String>]) -> String {
-    render_columns(headers, rows, LastColumn::Raw)
+    render_columns(headers, rows, LastColumn::Raw, &left_aligned(headers.len()))
 }
 
 /// Like [`render_table`], but the final column wraps to whatever width is left
 /// over after the (fixed-width) leading columns, so a single long cell can't
 /// push the table past `total_width`. Continuation lines indent to the start of
-/// the final column. Leading columns are sized to their widest cell.
-fn render_table_wrap_last(headers: &[String], rows: &[Vec<String>], total_width: usize) -> String {
-    render_columns(headers, rows, LastColumn::Wrap { total_width })
+/// the final column. Leading columns are sized to their widest cell and aligned
+/// per `aligns` (one entry per header; the final, wrapped column isn't padded).
+fn render_table_wrap_last(
+    headers: &[String],
+    rows: &[Vec<String>],
+    total_width: usize,
+    aligns: &[Align],
+) -> String {
+    render_columns(headers, rows, LastColumn::Wrap { total_width }, aligns)
 }
 
-fn push_table_row(output: &mut String, row: &[String], widths: &[usize]) {
+fn push_table_row(output: &mut String, row: &[String], widths: &[usize], aligns: &[Align]) {
     let last = row.len().saturating_sub(1);
     for (index, cell) in row.iter().enumerate() {
         if index > 0 {
@@ -2213,7 +2473,7 @@ fn push_table_row(output: &mut String, row: &[String], widths: &[usize]) {
         if index == last {
             output.push_str(cell);
         } else {
-            output.push_str(&format!("{cell:<width$}", width = widths[index]));
+            output.push_str(&pad_cell(cell, widths[index], aligns[index]));
         }
     }
     output.push('\n');
@@ -2686,7 +2946,7 @@ mod tests {
     }
 
     #[test]
-    fn properties_table_groups_status_word_and_totals() {
+    fn properties_table_renders_one_table_per_group() {
         let properties = vec![
             event_property(
                 "Counter value stays below limit",
@@ -2706,22 +2966,39 @@ mod tests {
 
         let table = render_properties_table(&properties);
         let lines: Vec<&str> = table.lines().collect();
-        assert!(lines[0].contains("STATUS"));
-        assert!(lines[0].contains("NAME"));
-        assert!(lines[0].contains("EXAMPLES"));
-        // The GROUP column is gone — the group is folded into NAME instead.
-        assert!(!lines[0].contains("GROUP"));
 
-        // Failing properties sort to the top, ahead of passing ones.
-        assert!(lines[1].contains("Counter value"));
+        // One table per group: the failing "Safety" group leads with its name as
+        // a heading, followed by a STATUS/EXAMPLES/NAME table.
+        assert_eq!(lines[0], "Safety");
+        assert!(
+            table.contains("\nSTATUS"),
+            "expected a column header\n{table}"
+        );
+        assert!(table.contains("EXAMPLES"));
+        assert!(table.contains("NAME"));
+        assert!(!table.contains("GROUP"));
+        // The group is the heading, not folded into NAME — so the displayed name
+        // is exactly what a `--name` filter matches.
+        assert!(
+            !table.contains('▸'),
+            "group should not be folded into NAME\n{table}"
+        );
 
-        // Two property rows. Counter property has 1 example + 2 counterexamples = 3 total.
-        // Its group is folded into the name as `group ▸ detail`.
+        // Counter property: 1 example + 2 counterexamples -> `1/2`, name only.
         let counter_row = lines.iter().find(|l| l.contains("Counter value")).unwrap();
         assert!(counter_row.contains("failing"));
-        assert!(counter_row.contains("Safety ▸ Counter value stays below limit"));
-        assert!(counter_row.contains("3"));
+        assert!(counter_row.contains("1/2"));
+        assert!(
+            counter_row
+                .trim_end()
+                .ends_with("Counter value stays below limit")
+        );
 
+        // Ungrouped properties land in a trailing "(ungrouped)" section.
+        assert!(
+            table.contains("(ungrouped)"),
+            "expected an ungrouped section\n{table}"
+        );
         let setup_row = lines
             .iter()
             .find(|l| l.contains("Setup completes"))
@@ -2731,89 +3008,43 @@ mod tests {
     }
 
     #[test]
-    fn resolve_property_prefers_exact_match() {
-        let properties = vec![
-            event_property("Setup ran", PropertyStatus::Passing, None, vec![], vec![]),
-            event_property(
-                "Setup completes",
-                PropertyStatus::Passing,
-                None,
-                vec![],
-                vec![],
-            ),
-        ];
-        let resolved = resolve_property(&properties, "Setup ran").unwrap();
-        assert!(matches!(resolved, Resolved::Exact(_)));
+    fn format_count_si_shortens_large_counts() {
+        // Under 1000: exact.
+        assert_eq!(format_count_si(0), "0");
+        assert_eq!(format_count_si(20), "20");
+        assert_eq!(format_count_si(885), "885");
+        // One decimal below 10k, none above.
+        assert_eq!(format_count_si(1000), "1.0k");
+        assert_eq!(format_count_si(2323), "2.3k");
+        assert_eq!(format_count_si(13396), "13k");
+        assert_eq!(format_count_si(74843), "75k");
+        assert_eq!(format_count_si(278493), "278k");
+        // Millions.
+        assert_eq!(format_count_si(18496678), "18M");
+        // Rounding that tips a boundary steps up cleanly (never "10.0k"/"1000k").
+        assert_eq!(format_count_si(9950), "10k");
+        assert_eq!(format_count_si(999999), "1.0M");
     }
 
-    #[test]
-    fn resolve_property_exact_match_ignores_case() {
-        let properties = vec![
-            event_property("Setup ran", PropertyStatus::Passing, None, vec![], vec![]),
-            event_property(
-                "Counter limit",
-                PropertyStatus::Passing,
-                None,
-                vec![],
-                vec![],
-            ),
-        ];
-        // Differs only by case: still an exact hit, not a fuzzy "closest" match.
-        let resolved = resolve_property(&properties, "setup RAN").unwrap();
-        match resolved {
-            Resolved::Exact(p) => assert_eq!(p.name(), "Setup ran"),
-            other => panic!("expected exact match, got {other:?}"),
+    fn event_prop(
+        status: PropertyStatus,
+        examples: Vec<Event>,
+        counterexamples: Vec<Event>,
+    ) -> EventProperty {
+        match event_property("Counter", status, None, examples, counterexamples) {
+            Property::EventProperty(p) => p,
+            _ => unreachable!(),
         }
     }
 
     #[test]
-    fn resolve_property_falls_back_to_single_substring_match() {
-        let properties = vec![
-            event_property("Setup ran", PropertyStatus::Passing, None, vec![], vec![]),
-            event_property(
-                "Counter limit",
-                PropertyStatus::Passing,
-                None,
-                vec![],
-                vec![],
-            ),
-        ];
-        let resolved = resolve_property(&properties, "counter").unwrap();
-        match resolved {
-            Resolved::Fuzzy(p) => assert_eq!(p.name(), "Counter limit"),
-            _ => panic!("expected fuzzy match"),
-        }
-    }
-
-    #[test]
-    fn resolve_property_errors_on_multiple_substring_matches() {
-        let properties = vec![
-            event_property("Setup ran", PropertyStatus::Passing, None, vec![], vec![]),
-            event_property(
-                "Setup completes",
-                PropertyStatus::Passing,
-                None,
-                vec![],
-                vec![],
-            ),
-        ];
-        let err = resolve_property(&properties, "setup").unwrap_err();
-        let msg = format!("{err}");
-        assert!(msg.contains("did you mean"));
-        assert!(msg.contains("Setup ran"));
-        assert!(msg.contains("Setup completes"));
-    }
-
-    #[test]
-    fn render_event_property_examples_uses_status_column() {
-        let property = event_property(
-            "Counter",
+    fn render_moments_table_uses_status_column() {
+        let p = event_prop(
             PropertyStatus::Failing,
-            None,
             vec![event("ex", "2.0")],
             vec![event("cex", "1.0")],
         );
-        let out = render_property_examples(&property);
+        let out = render_moments_table(&p);
         assert!(out.contains("STATUS"));
         assert!(out.contains("HASH"));
         assert!(out.contains("VTIME"));
@@ -2822,17 +3053,15 @@ mod tests {
     }
 
     #[test]
-    fn render_event_property_examples_sorts_each_group_by_vtime() {
+    fn render_moments_table_sorts_each_group_by_vtime() {
         // API order is arbitrary; rows must come out failing-first, then passing,
         // each ascending by vtime numerically (5.0 < 10.0, not lexically).
-        let property = event_property(
-            "Counter",
+        let p = event_prop(
             PropertyStatus::Failing,
-            None,
             vec![event("ex-b", "20.0"), event("ex-a", "2.0")],
             vec![event("cex-b", "10.0"), event("cex-a", "5.0")],
         );
-        let out = render_property_examples(&property);
+        let out = render_moments_table(&p);
         let rows: Vec<&str> = out
             .lines()
             .filter(|l| l.contains("failing") || l.contains("passing"))
@@ -2846,7 +3075,7 @@ mod tests {
     }
 
     #[test]
-    fn render_non_event_property_examples_pretty_prints_objects() {
+    fn render_non_event_detail_shows_result_not_examples() {
         let property = non_event_property(
             "Determinator Max Memory",
             PropertyStatus::Passing,
@@ -2856,12 +3085,106 @@ mod tests {
             })],
             vec![],
         );
-        let out = render_property_examples(&property);
-        // Summary cell collapses the object…
-        assert!(out.contains("{2 fields}"));
-        // …with the full pretty body shown below.
-        assert!(out.contains("row 1 details:"));
+        let out = render_property_detail(&property);
+        // A non-event property's value shows under a `Result:` label as pretty
+        // JSON — never the moment-oriented `Examples:`/`passing:` machinery.
+        assert!(out.contains("Result:"), "got: {out}");
         assert!(out.contains("maximum_used_bytes"));
+        assert!(!out.contains("Examples:"));
+        assert!(!out.contains("passing:"));
+    }
+
+    #[test]
+    fn render_properties_detail_groups_and_indents_examples() {
+        let properties = vec![
+            event_property(
+                "First",
+                PropertyStatus::Failing,
+                Some("Safety"),
+                vec![],
+                vec![event("h", "1.0")],
+            ),
+            event_property(
+                "Second",
+                PropertyStatus::Passing,
+                None,
+                vec![event("h2", "2.0")],
+                vec![],
+            ),
+        ];
+        let out = render_properties_detail(&properties);
+        // Grouped: the "Safety" group heads its section, ungrouped trails.
+        assert!(out.contains("Safety"), "got: {out}");
+        assert!(out.contains("(ungrouped)"));
+        // No Group key/value line (the heading carries it) and no rule separator.
+        assert!(!out.contains("Group     Safety"));
+        assert!(!out.contains('─'));
+        // Each property keeps its header and an Examples section whose table is
+        // indented beneath the (column-0) "Examples:" label.
+        assert!(out.contains("Name      First"));
+        assert_eq!(out.matches("Examples:").count(), 2);
+        assert!(
+            out.contains("Examples:\n  STATUS"),
+            "examples table should be indented\n{out}"
+        );
+    }
+
+    #[test]
+    fn render_property_detail_result_forms() {
+        // A lone scalar sits inline next to an aligned `Result` label.
+        for (value, expected) in [
+            (json!(1234), "Result    1234"),
+            (json!("n2-standard-4"), "Result    n2-standard-4"),
+            (json!(true), "Result    true"),
+        ] {
+            let p = non_event_property("Metric", PropertyStatus::Passing, vec![value], vec![]);
+            let out = render_property_detail(&p);
+            assert!(out.contains(expected), "got: {out}");
+            assert!(!out.contains("Examples:"));
+        }
+
+        // Tiny objects/arrays are inlined after `Result:` (compact one-line JSON).
+        let empty = non_event_property("E", PropertyStatus::Passing, vec![json!([])], vec![]);
+        assert!(
+            render_property_detail(&empty).contains("Result: []"),
+            "empty array"
+        );
+        let tiny = non_event_property("T", PropertyStatus::Passing, vec![json!({"k": 1})], vec![]);
+        assert!(
+            render_property_detail(&tiny).contains(r#"Result: {"k":1}"#),
+            "tiny object"
+        );
+
+        // A large object spills to an indented pretty-printed block.
+        let big = non_event_property(
+            "Big",
+            PropertyStatus::Passing,
+            vec![json!({
+                "session_id": "dfa97857ebbbc219f543e423fea597fd-54-8",
+                "total_output_mb": 11773,
+                "total_output_rate": "35.05274518966351"
+            })],
+            vec![],
+        );
+        let out = render_property_detail(&big);
+        assert!(
+            out.contains("Result:\n  {"),
+            "big object should be a block\n{out}"
+        );
+        assert!(out.contains("total_output_mb"));
+        assert!(!out.contains("Examples:"));
+
+        // Several small values collapse into one inline JSON array.
+        let multi = non_event_property(
+            "Two values",
+            PropertyStatus::Passing,
+            vec![json!(1), json!(2)],
+            vec![],
+        );
+        assert!(
+            render_property_detail(&multi).contains("Result: [1,2]"),
+            "multi inline"
+        );
     }
 
     #[test]
@@ -2921,48 +3244,45 @@ mod tests {
     #[test]
     fn format_log_line_truncates_vtime_to_three_decimals() {
         let entry = json!({
-            "moment": {"input_hash": "1", "vtime": "18.9141638034489"},
+            "moment": {"input_hash": "1", "vtime": "18.9148034489"},
             "source": {"name": "client", "stream": "info"},
             "output_text": "hello"
         });
         let rendered = format_log_entry(&entry, false);
-        // Trimmed to 3 decimals so it fits the fixed vtime column and the
-        // source column stays aligned across rows.
+        // Fixed 3 decimals (so the column stays aligned), truncated not rounded:
+        // 18.9148… -> 18.914 (rounding would give 18.915).
         assert!(rendered.starts_with("[        18.914] "), "got: {rendered}");
     }
 
     #[test]
     fn format_log_line_accepts_numeric_vtime() {
-        // A JSON-number vtime (not a string) must still render, not blank out.
+        // A JSON-number vtime (not a string) must still render, not blank out,
+        // and gets the same fixed-3-decimal treatment (12.5 -> 12.500).
         let entry = json!({
             "moment": {"input_hash": "1", "vtime": 12.5},
             "source": {"name": "client", "stream": "info"},
             "output_text": "hello"
         });
         assert!(
-            format_log_entry(&entry, false).starts_with("[          12.5] "),
+            format_log_entry(&entry, false).starts_with("[        12.500] "),
             "got: {}",
             format_log_entry(&entry, false)
         );
     }
 
     #[test]
-    fn trim_decimals_trims_trailing_zeros_and_point() {
-        assert_eq!(trim_decimals(19.0, 3), "19");
-        assert_eq!(trim_decimals(18.5, 3), "18.5");
-        assert_eq!(trim_decimals(18.9141638, 3), "18.914");
-        assert_eq!(trim_decimals(1814.7135719, 3), "1814.714");
-    }
-
-    #[test]
-    fn trim_decimals_flags_subthreshold_nonzero_values() {
-        // A nonzero value smaller than the 3-decimal resolution must not be
-        // rendered as a bare "0"/"-0" (which would read as exactly zero).
-        assert_eq!(trim_decimals(0.0004, 3), "<0.001");
-        assert_eq!(trim_decimals(-0.0002, 3), ">-0.001");
-        // Exact zero (either sign) renders as plain "0".
-        assert_eq!(trim_decimals(0.0, 3), "0");
-        assert_eq!(trim_decimals(-0.0, 3), "0");
+    fn truncate_decimals_keeps_fixed_precision_without_rounding() {
+        // Always exactly 3 decimals, zero-padded, so a column aligns.
+        assert_eq!(truncate_decimals("19", 3), "19.000");
+        assert_eq!(truncate_decimals("19.0", 3), "19.000");
+        assert_eq!(truncate_decimals("14.78", 3), "14.780");
+        // Truncates, never rounds: 1814.7135… -> .713 (rounding would give .714).
+        assert_eq!(truncate_decimals("1814.7135719023645", 3), "1814.713");
+        assert_eq!(truncate_decimals("18.9148034489", 3), "18.914");
+        // Non-plain input: scientific notation falls back to fixed-point, and a
+        // non-number is passed through untouched.
+        assert_eq!(truncate_decimals("1e3", 3), "1000.000");
+        assert_eq!(truncate_decimals("n/a", 3), "n/a");
     }
 
     #[test]
@@ -2982,10 +3302,9 @@ mod tests {
     }
 
     #[test]
-    fn render_event_property_examples_marks_unreachable_when_empty() {
-        let property = event_property("Maybe ran", PropertyStatus::Passing, None, vec![], vec![]);
-        let out = render_property_examples(&property);
-        assert!(out.contains("unreachable"));
+    fn render_moments_table_marks_unreachable_when_empty() {
+        let p = event_prop(PropertyStatus::Passing, vec![], vec![]);
+        assert!(render_moments_table(&p).contains("unreachable"));
     }
 
     #[test]
@@ -3046,19 +3365,14 @@ mod tests {
     }
 
     #[test]
-    fn render_property_value_renders_empty_collection_inline() {
-        // An empty array/object collapses to "(no example value)" with no detail
-        // block, so a fuzzy hit on a property with no examples doesn't print the
-        // confusing "[0 items]" + "row N details: []" pair.
-        assert_eq!(
-            render_property_value(&json!([])),
-            ("(no example value)".to_string(), None)
-        );
-        assert_eq!(
-            render_property_value(&json!({})),
-            ("(no example value)".to_string(), None)
-        );
+    fn render_result_handles_no_values() {
+        // A non-event property with no values at all -> "(none)".
+        let empty = non_event_property("Empty", PropertyStatus::Passing, vec![], vec![]);
+        let out = render_property_detail(&empty);
+        assert!(out.contains("Result    (none)"), "got: {out}");
+        assert!(!out.contains("Examples:"));
     }
+
     #[test]
     fn ansi_sgr() {
         assert_eq!(strip_ansi("\x1b[1mbold\x1b[0m"), "bold");
@@ -4357,6 +4671,82 @@ mod tests {
     }
 
     #[test]
+    fn truncate_around_returns_short_text_unchanged() {
+        let n = vec!["err".to_string()];
+        assert_eq!(
+            truncate_around("short error here", &n, 80),
+            "short error here"
+        );
+        // Exactly at the width bound: still unchanged, no ellipsis.
+        assert_eq!(truncate_around("abcdef", &n, 6), "abcdef");
+    }
+
+    #[test]
+    fn truncate_around_centers_on_a_mid_string_match() {
+        let needles = vec!["NEEDLE".to_string()];
+        let text = "xxxxxxxxxxxxxxxxxxxxxxxxx NEEDLE yyyyyyyyyyyyyyyyyyyyyyyyy";
+        let out = truncate_around(text, &needles, 20);
+        // Windowed on both sides and the match stays visible.
+        assert!(out.starts_with('…'), "want leading ellipsis: {out:?}");
+        assert!(out.ends_with('…'), "want trailing ellipsis: {out:?}");
+        assert!(out.contains("NEEDLE"), "match must remain visible: {out:?}");
+        assert_eq!(out.chars().count(), 20);
+    }
+
+    #[test]
+    fn truncate_around_keeps_head_when_match_is_near_the_start() {
+        let needles = vec!["abc".to_string()];
+        let text = "abc def ghi jkl mno pqr stu vwx yz0 123 456 789";
+        let out = truncate_around(text, &needles, 20);
+        // No leading ellipsis (window reached the start); trailing edge truncated.
+        assert!(
+            !out.starts_with('…'),
+            "no leading ellipsis expected: {out:?}"
+        );
+        assert!(out.starts_with("abc"), "head retained: {out:?}");
+        assert!(out.ends_with('…'), "trailing ellipsis expected: {out:?}");
+        assert_eq!(out.chars().count(), 20);
+    }
+
+    #[test]
+    fn truncate_around_keeps_tail_when_match_is_near_the_end() {
+        let needles = vec!["xyz".to_string()];
+        let text = "000 111 222 333 444 555 666 777 888 999 last xyz";
+        let out = truncate_around(text, &needles, 20);
+        assert!(out.starts_with('…'), "leading ellipsis expected: {out:?}");
+        assert!(
+            !out.ends_with('…'),
+            "no trailing ellipsis expected: {out:?}"
+        );
+        assert!(out.ends_with("xyz"), "tail retained: {out:?}");
+        assert_eq!(out.chars().count(), 20);
+    }
+
+    #[test]
+    fn truncate_around_head_truncates_when_no_needle_in_cell() {
+        // The needle matched another column, so this cell has no hit — keep the
+        // head, like a plain ellipsis truncation.
+        let needles = vec!["error".to_string()];
+        let text = "[raft] failed to get previous log: previous-index=1 last-index=0";
+        let out = truncate_around(text, &needles, 24);
+        assert!(out.starts_with("[raft]"), "head retained: {out:?}");
+        assert!(out.ends_with('…'), "trailing ellipsis expected: {out:?}");
+        assert_eq!(out.chars().count(), 24);
+    }
+
+    #[test]
+    fn truncate_around_is_case_insensitive() {
+        let needles = vec!["ERROR".to_string()];
+        let text = "aaaaaaaaaaaaaaaaaaaaaaaaa fatal error occurred bbbbbbbbbbbbbbbbbbbbbbbbb";
+        let out = truncate_around(text, &needles, 24);
+        assert!(
+            out.to_lowercase().contains("error"),
+            "match visible: {out:?}"
+        );
+        assert_eq!(out.chars().count(), 24);
+    }
+
+    #[test]
     fn runs_long_view_renders_aligned_key_value_block() {
         let runs = vec![
             summary(
@@ -4446,7 +4836,7 @@ mod tests {
         let long = "Safety ▸ a property name long enough to wrap on any real terminal width";
         let headers = vec!["STATUS".to_string(), "NAME".to_string()];
         let rows = vec![vec!["failing".to_string(), long.to_string()]];
-        let out = render_table_wrap_last(&headers, &rows, usize::MAX);
+        let out = render_table_wrap_last(&headers, &rows, usize::MAX, &[Align::Left, Align::Left]);
         let row = out.lines().find(|l| l.contains("failing")).unwrap();
         assert!(row.contains(long), "name was wrapped: {out}");
     }
@@ -4475,7 +4865,7 @@ mod tests {
     mod run_scoped_errors {
         use super::*;
         use crate::api::{Auth, Config};
-        use crate::error::{ApiError, is_user_error};
+        use crate::error::ApiError;
         use wiremock::matchers::{method, path};
         use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -4509,7 +4899,6 @@ mod tests {
             let rewritten = explain_run_not_found("BAD-ID", api_error(404, "API error: 404"));
             let msg = format!("{rewritten:#}");
             assert_eq!(msg, "run not found: BAD-ID");
-            assert!(is_user_error(&rewritten));
         }
 
         #[test]
@@ -4601,10 +4990,14 @@ mod tests {
             let api = test_api(&server.uri());
             let result =
                 explain_properties_error(&api, "run-3", api_error(404, "API error: 404")).await;
+            // The message is a clean statement of the error …
             let msg = format!("{result:#}");
-            assert!(msg.contains("no properties for run run-3"), "got: {msg}");
-            assert!(msg.contains("this run is incomplete"), "got: {msg}");
-            assert!(!msg.contains("run not found"), "got: {msg}");
+            assert_eq!(msg, "no properties for run run-3", "got: {msg}");
+            // … while the *why* and the next step ride along as notes (rendered by
+            // the full report, not the message chain).
+            let report = format!("{result:?}");
+            assert!(report.contains("this run is incomplete"), "got: {report}");
+            assert!(report.contains("snouty runs show run-3"), "got: {report}");
         }
 
         #[tokio::test]

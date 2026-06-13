@@ -33,5 +33,5 @@ stderr 'page not found.*nonexistent_page'
 
 # 3b. Partial match suggests similar pages.
 ! snouty docs --offline show sdk
-stderr 'Did you mean.*'
+stderr 'did you mean.*'
 stderr '/docs/sdk/python_sdk/.*'

@@ -28,7 +28,7 @@ stderr '.*does not contain.*docker-compose.yaml.*manifests/.*'
 
 # Rejects docker-compose.yml (wrong extension).
 ! snouty launch -w basic_test -c yml_dir --duration 30
-stderr '.*requires docker-compose.yaml.*'
+stderr '.*rename it to docker-compose.yaml.*'
 
 # Rejects an ambiguous directory containing both compose and manifests/.
 ! snouty launch -w basic_test -c ambiguous --duration 30

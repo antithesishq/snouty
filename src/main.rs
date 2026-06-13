@@ -1,16 +1,18 @@
-use std::io::{self, ErrorKind, Read};
+use std::io::{self, ErrorKind, IsTerminal, Read};
 use std::process::Command;
 
 use clap::{CommandFactory, Parser};
 use clap_complete::Shell;
 use log::{debug, info};
 
-use color_eyre::eyre::{Context, Result, bail};
+use color_eyre::Section;
+use color_eyre::eyre::{Context, Result};
 use snouty::api::AntithesisApi;
 use snouty::cli::{Cli, Commands, DebugArgs, LaunchArgs};
 use snouty::config;
 use snouty::container;
 use snouty::docs;
+use snouty::error::user_error;
 use snouty::moment;
 use snouty::params::Params;
 use snouty::validate;
@@ -43,7 +45,23 @@ fn get_stdin_params(use_stdin: bool, support_moment: bool) -> Result<Option<Para
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() {
-    color_eyre::install().unwrap();
+    // Drop the "Backtrace omitted. Run with RUST_BACKTRACE=1…" footer: it's noise
+    // on every error, and outright misleading on user errors built with
+    // `suppress_backtrace` (where RUST_BACKTRACE does nothing). A genuine fault
+    // still prints its backtrace when RUST_BACKTRACE is set.
+    //
+    // Color the report only on a real terminal — piped/redirected stderr (and the
+    // test/gallery captures) gets plain text, not ANSI escapes.
+    let theme = if std::io::stderr().is_terminal() {
+        color_eyre::config::Theme::dark()
+    } else {
+        color_eyre::config::Theme::new()
+    };
+    color_eyre::config::HookBuilder::default()
+        .theme(theme)
+        .display_env_section(false)
+        .install()
+        .unwrap();
     env_logger::Builder::from_default_env()
         .format(|buf, record| {
             use std::io::Write;
@@ -53,14 +71,11 @@ async fn main() {
     let cli = Cli::parse();
 
     if let Err(report) = run(cli).await {
-        if snouty::error::is_user_error(&report) {
-            // User-facing problem (bad flag, missing env var, 4xx). Print the
-            // message chain only — no backtrace footer or internal noise.
-            eprintln!("error: {report:#}");
-        } else {
-            // Genuine internal fault: keep the full color_eyre report.
-            eprintln!("Error: {report:?}");
-        }
+        // One rendering for every error: color_eyre's report format. User-facing
+        // failures are built with `user_error`/4xx `suppress_backtrace`, so they
+        // print message + any `.note()`/`.suggestion()` hints with no backtrace;
+        // genuine internal faults keep theirs.
+        eprintln!("Error: {report:?}");
         std::process::exit(1);
     }
 }
@@ -167,7 +182,7 @@ async fn cmd_launch(args: LaunchArgs, json: bool, verbose: bool) -> Result<()> {
         let config = config::detect_config(&config_dir)?;
 
         let registry = std::env::var("ANTITHESIS_REPOSITORY")
-            .wrap_err("missing environment variable: ANTITHESIS_REPOSITORY")?;
+            .map_err(|_| user_error("missing environment variable: ANTITHESIS_REPOSITORY"))?;
 
         let image_ref = container::generate_image_ref(&registry);
         params.insert("antithesis.config_image", &image_ref);
@@ -182,10 +197,10 @@ async fn cmd_launch(args: LaunchArgs, json: bool, verbose: bool) -> Result<()> {
         // Check for conflicts with typed flags already set in params
         for key in extra.as_map().keys() {
             if params.contains_key(key) {
-                bail!(
-                    "invalid arguments: '{}' cannot be overridden via --param (use the dedicated flag instead)",
-                    key
-                );
+                return Err(user_error(format!(
+                    "invalid arguments: '{key}' cannot be overridden via --param"
+                ))
+                .suggestion("use the dedicated flag instead"));
             }
         }
 
@@ -193,11 +208,13 @@ async fn cmd_launch(args: LaunchArgs, json: bool, verbose: bool) -> Result<()> {
     }
 
     if params.contains_key("antithesis.images") {
-        bail!("invalid argument: antithesis.images cannot be set via --param");
+        return Err(user_error(
+            "invalid argument: antithesis.images cannot be set via --param",
+        ));
     }
 
     if params.is_empty() {
-        bail!("invalid arguments: no parameters provided");
+        return Err(user_error("invalid arguments: no parameters provided"));
     }
 
     if !has_source {
@@ -285,7 +302,7 @@ fn debug_params(args: DebugArgs) -> Result<Params> {
     params.merge(debug_typed_params(&args));
 
     if params.is_empty() {
-        bail!("invalid arguments: no parameters provided");
+        return Err(user_error("invalid arguments: no parameters provided"));
     }
 
     Ok(params)

@@ -1,6 +1,9 @@
 use std::path::{Path, PathBuf};
 
-use color_eyre::eyre::{Context, Result, bail};
+use color_eyre::Section;
+use color_eyre::eyre::{Context, Result};
+
+use crate::error::user_error;
 
 /// A docker-compose config directory.
 ///
@@ -66,14 +69,18 @@ impl Config {
 /// - `docker-compose.yml` (lowercase `.yml`) → rename hint.
 pub fn detect_config(config_dir: &Path) -> Result<Config> {
     if !config_dir.is_dir() {
-        bail!("'{}' is not a directory", config_dir.display());
+        return Err(user_error(format!(
+            "'{}' is not a directory",
+            config_dir.display()
+        )));
     }
 
     if config_dir.join("docker-compose.yml").is_file() {
-        bail!(
-            "directory '{}' contains docker-compose.yml, but Antithesis requires docker-compose.yaml (rename the file)",
+        return Err(user_error(format!(
+            "directory '{}' contains docker-compose.yml, not the required docker-compose.yaml",
             config_dir.display()
-        );
+        ))
+        .suggestion("rename it to docker-compose.yaml"));
     }
 
     let has_compose = config_dir.join("docker-compose.yaml").is_file();
@@ -81,10 +88,11 @@ pub fn detect_config(config_dir: &Path) -> Result<Config> {
     let has_manifests_dir = manifests_dir.is_dir();
 
     if has_compose && has_manifests_dir {
-        bail!(
-            "directory '{}' contains both docker-compose.yaml and a manifests/ subdirectory; pick one",
+        return Err(user_error(format!(
+            "directory '{}' contains both docker-compose.yaml and a manifests/ subdirectory",
             config_dir.display()
-        );
+        ))
+        .suggestion("provide one or the other, not both"));
     }
 
     if has_compose {
@@ -100,20 +108,20 @@ pub fn detect_config(config_dir: &Path) -> Result<Config> {
             .next()
             .is_some();
         if !is_non_empty {
-            bail!(
+            return Err(user_error(format!(
                 "directory '{}' contains an empty manifests/ subdirectory",
                 config_dir.display()
-            );
+            )));
         }
         return Ok(Config::Kubernetes(KubernetesConfig {
             dir: config_dir.to_path_buf(),
         }));
     }
 
-    bail!(
+    Err(user_error(format!(
         "directory '{}' does not contain a docker-compose.yaml file or a manifests/ subdirectory",
         config_dir.display()
-    );
+    )))
 }
 
 #[cfg(test)]

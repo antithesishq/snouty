@@ -691,7 +691,10 @@ def build_stories(d: Discovery) -> list[Story]:
             "Default titles are truncated; I want to read the full descriptions.",
             "Descriptions are shown in full (longer than the default view), one row per run.",
             ["runs", "list", "-n", "6", "--detail"],
-            non_empty_table,
+            # --detail can't be combined with --json, so validate the rendered
+            # key-value blocks directly rather than re-running for JSON rows.
+            contains_all("Run ID", "Description"),
+            json_capable=False,
         ),
         Story(
             "runs-list--status-completed",

@@ -86,6 +86,9 @@ pub async fn cmd_runs(command: Option<RunsCommands>, json: bool, verbose: bool) 
             run_id,
             passing,
             failing,
+            name,
+            group,
+            detail,
         }) => {
             let status = if passing {
                 Some(PropertyStatus::Passing)
@@ -94,10 +97,12 @@ pub async fn cmd_runs(command: Option<RunsCommands>, json: bool, verbose: bool) 
             } else {
                 None
             };
-            cmd_runs_properties(&run_id, status, json, verbose).await
-        }
-        Some(RunsCommands::Property { run_id, name }) => {
-            cmd_runs_property(&run_id, &name, json, verbose).await
+            let filter = PropertyFilter {
+                status,
+                name: name.as_deref(),
+                group: group.as_deref(),
+            };
+            cmd_runs_properties(&run_id, filter, detail, json, verbose).await
         }
         Some(RunsCommands::BuildLogs { run_id }) => {
             cmd_runs_build_logs(&run_id, json, verbose).await
@@ -135,6 +140,7 @@ pub async fn cmd_runs(command: Option<RunsCommands>, json: bool, verbose: bool) 
 }
 
 async fn cmd_runs_list(args: RunsListArgs, json: bool, verbose: bool) -> Result<()> {
+    reject_detail_with_json(json, args.detail)?;
     debug!("listing runs");
 
     let api = AntithesisApi::from_env_requiring_api_key(verbose)?;
@@ -336,17 +342,41 @@ fn launch_browser(url: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// Filters applied to `runs properties`. `status` is served by the API;
+/// `name` (substring) and `group` (exact) are applied client-side. All
+/// case-insensitive.
+struct PropertyFilter<'a> {
+    status: Option<PropertyStatus>,
+    name: Option<&'a str>,
+    group: Option<&'a str>,
+}
+
+/// `--detail` formats human output, so it conflicts with `--json` (which always
+/// emits the full structured data). Reject the combination with a clear error
+/// rather than silently ignoring one. Shared by `runs properties` and
+/// `runs list`, which both carry `--detail`.
+fn reject_detail_with_json(json: bool, detail: bool) -> Result<()> {
+    if json && detail {
+        return Err(user_error(
+            "--detail and --json cannot be combined: --json already emits the full data",
+        ));
+    }
+    Ok(())
+}
+
 async fn cmd_runs_properties(
     run_id: &str,
-    status: Option<PropertyStatus>,
+    filter: PropertyFilter<'_>,
+    detail: bool,
     json: bool,
     verbose: bool,
 ) -> Result<()> {
+    reject_detail_with_json(json, detail)?;
     debug!("listing properties for run: {}", run_id);
 
     let api = AntithesisApi::from_env_requiring_api_key(verbose)?;
     let mut properties = match api
-        .stream_run_properties(run_id, status)
+        .stream_run_properties(run_id, filter.status)
         .try_collect::<Vec<_>>()
         .await
     {
@@ -356,6 +386,17 @@ async fn cmd_runs_properties(
         // Fetch the run to say which, instead of leaking a bare "404 Not Found".
         Err(err) => return Err(explain_properties_error(&api, run_id, err).await),
     };
+
+    // Apply the client-side filters: group is an exact (case-insensitive) match,
+    // name a (case-insensitive) substring.
+    if let Some(group) = filter.group {
+        let needle = group.to_lowercase();
+        properties.retain(|p| property_group(p).is_some_and(|g| g.to_lowercase() == needle));
+    }
+    if let Some(name) = filter.name {
+        let needle = name.to_lowercase();
+        properties.retain(|p| p.name().to_lowercase().contains(&needle));
+    }
 
     properties.sort_by(|a, b| {
         property_group(a)
@@ -369,17 +410,35 @@ async fn cmd_runs_properties(
             outln!("{}", serde_json::to_string(property)?)?;
         }
     } else if properties.is_empty() {
-        let message = match status {
-            Some(PropertyStatus::Passing) => "No passing properties found.",
-            Some(PropertyStatus::Failing) => "No failing properties found.",
-            None => "No properties found.",
-        };
-        outln!("{message}")?;
+        outln!("{}", no_properties_message(&filter))?;
+    } else if detail {
+        outln!("{}", render_properties_detail(&properties))?;
     } else {
         outln!("{}", render_properties_table(&properties))?;
     }
 
     Ok(())
+}
+
+/// The empty-result message, naming whichever filters were active.
+fn no_properties_message(filter: &PropertyFilter) -> String {
+    let mut parts = Vec::new();
+    match filter.status {
+        Some(PropertyStatus::Passing) => parts.push("passing".to_string()),
+        Some(PropertyStatus::Failing) => parts.push("failing".to_string()),
+        None => {}
+    }
+    if let Some(name) = filter.name {
+        parts.push(format!("name containing '{name}'"));
+    }
+    if let Some(group) = filter.group {
+        parts.push(format!("group '{group}'"));
+    }
+    if parts.is_empty() {
+        "No properties found.".to_string()
+    } else {
+        format!("No properties match ({}).", parts.join(", "))
+    }
 }
 
 /// Outcome of probing a run-scoped 404 with `get_run`: does the run itself not
@@ -540,102 +599,6 @@ fn property_status_label(status: PropertyStatus) -> &'static str {
     }
 }
 
-async fn cmd_runs_property(run_id: &str, name: &str, json: bool, verbose: bool) -> Result<()> {
-    debug!("looking up property '{}' for run: {}", name, run_id);
-
-    let api = AntithesisApi::from_env_requiring_api_key(verbose)?;
-    let properties = match api
-        .stream_run_properties(run_id, None)
-        .try_collect::<Vec<_>>()
-        .await
-    {
-        Ok(properties) => properties,
-        // Same 404-on-incomplete-run contract as `cmd_runs_properties`: explain
-        // why there are no properties instead of leaking a bare "404 Not Found".
-        Err(err) => return Err(explain_properties_error(&api, run_id, err).await),
-    };
-
-    let resolved = resolve_property(&properties, name, run_id)?;
-    let (property, fuzzy_note) = match resolved {
-        Resolved::Exact(p) => (p, None),
-        Resolved::Fuzzy(p) => (
-            p,
-            Some(format!(
-                "note: no exact match for '{name}', using closest property: '{}'",
-                p.name()
-            )),
-        ),
-    };
-
-    if json {
-        // Disclose the substitution on stderr so a `--json` consumer isn't
-        // silently handed a different property, while stdout stays clean JSON.
-        if let Some(note) = &fuzzy_note {
-            eprintln!("{note}");
-        }
-        outln!("{}", serde_json::to_string_pretty(property)?)?;
-        return Ok(());
-    }
-
-    // Human mode: print the note first, on stdout, so it reads in order *above*
-    // the property it resolved to (rather than stranded after the table).
-    if let Some(note) = &fuzzy_note {
-        outln!("{note}")?;
-    }
-    print_property_header(property)?;
-    outln!("{}", render_property_examples(property))?;
-    Ok(())
-}
-
-#[derive(Debug)]
-enum Resolved<'a> {
-    Exact(&'a Property),
-    Fuzzy(&'a Property),
-}
-
-fn resolve_property<'a>(
-    properties: &'a [Property],
-    query: &str,
-    run_id: &str,
-) -> Result<Resolved<'a>> {
-    // Match case-insensitively throughout: an exact name in any case is an
-    // exact hit (no "closest property" note), and the substring fallback
-    // ignores case too.
-    let needle = query.to_lowercase();
-
-    if let Some(p) = properties
-        .iter()
-        .find(|p| p.name().to_lowercase() == needle)
-    {
-        return Ok(Resolved::Exact(p));
-    }
-
-    let matches: Vec<&Property> = properties
-        .iter()
-        .filter(|p| p.name().to_lowercase().contains(&needle))
-        .collect();
-
-    match matches.as_slice() {
-        // No hit at all: point at the full list so the user can find the real
-        // name rather than hitting a dead end (the closest-match note only fires
-        // on a *single* substring hit, above).
-        [] => Err(user_error(format!(
-            "no property matches '{query}'\nrun 'snouty runs properties {run_id}' to see the available properties"
-        ))),
-        [only] => Ok(Resolved::Fuzzy(only)),
-        many => {
-            let names = many
-                .iter()
-                .map(|p| format!("  - {}", p.name()))
-                .collect::<Vec<_>>()
-                .join("\n");
-            Err(user_error(format!(
-                "multiple properties match '{query}', did you mean one of:\n{names}"
-            )))
-        }
-    }
-}
-
 /// How a wrapped free-text block lays its label out (see [`render_prose_block`]).
 enum ProseLayout {
     /// Label sits in a fixed-width column; the first body line follows it and
@@ -696,11 +659,27 @@ fn render_prose_block(label: &str, text: &str, layout: ProseLayout) -> String {
     out
 }
 
-fn print_property_header(property: &Property) -> Result<()> {
-    outln!("Name      {}", sanitize(property.name()))?;
-    outln!("Status    {}", property_status_label(property.status()))?;
+/// `runs properties --detail`: render each matched property's full detail —
+/// header (name/status/group/details) plus its examples — separated by a rule
+/// so multiple properties read as distinct blocks.
+fn render_properties_detail(properties: &[Property]) -> String {
+    let blocks: Vec<String> = properties.iter().map(render_property_detail).collect();
+    // A modest rule between blocks; capped so piped output (terminal_width =
+    // usize::MAX) doesn't try to draw an enormous line.
+    let rule = "─".repeat(terminal_width().min(72));
+    blocks.join(&format!("\n\n{rule}\n\n"))
+}
+
+/// One property's detail block: a key/value header followed by its examples.
+fn render_property_detail(property: &Property) -> String {
+    let mut out = String::new();
+    out.push_str(&format!("Name      {}\n", sanitize(property.name())));
+    out.push_str(&format!(
+        "Status    {}\n",
+        property_status_label(property.status())
+    ));
     if let Some(group) = property_group(property) {
-        outln!("Group     {}", sanitize(group))?;
+        out.push_str(&format!("Group     {}\n", sanitize(group)));
     }
     let description = match property {
         Property::EventProperty(p) => p.description.as_deref(),
@@ -709,23 +688,21 @@ fn print_property_header(property: &Property) -> Result<()> {
     if let Some(desc) = description {
         // Details is free-form prose, wrapped under a 10-char label column so
         // continuation lines hang-indent to match the value column above.
-        out!(
-            "{}",
-            render_prose_block(
-                "Details",
-                desc,
-                ProseLayout::HangingIndent {
-                    label_col: PROPERTY_LABEL_WIDTH,
-                    min_body_width: 20,
-                },
-            )
-        )?;
+        out.push_str(&render_prose_block(
+            "Details",
+            desc,
+            ProseLayout::HangingIndent {
+                label_col: PROPERTY_LABEL_WIDTH,
+                min_body_width: 20,
+            },
+        ));
     }
-    outln!()?;
-    Ok(())
+    out.push('\n');
+    out.push_str(&render_property_examples(property));
+    out
 }
 
-/// Width of the label column in `print_property_header` (`"Details   "`).
+/// Width of the label column in `render_property_detail` (`"Details   "`).
 const PROPERTY_LABEL_WIDTH: usize = 10;
 
 /// Drop leading and trailing blank lines, keeping interior ones.
@@ -856,8 +833,8 @@ fn property_examples_cell(p: &Property) -> String {
 fn render_properties_table(properties: &[Property]) -> String {
     // One table per group — far more scannable than a single flat table, and it
     // mirrors the report UI. The group is the section heading, so the NAME column
-    // shows just the property's own name (the exact string `runs property`
-    // resolves); folding the group into NAME would have made the displayed name
+    // shows just the property's own name (the string a `--name`/`--detail` filter
+    // matches); folding the group into NAME would have made the displayed name
     // un-copyable. Properties with no group go in a final "(ungrouped)" section.
     // This is human-facing output; use `--json` for automation.
     let headers = vec![
@@ -2858,7 +2835,7 @@ mod tests {
         assert!(table.contains("NAME"));
         assert!(!table.contains("GROUP"));
         // The group is the heading, not folded into NAME — so the displayed name
-        // is exactly what `runs property` resolves.
+        // is exactly what a `--name` filter matches.
         assert!(
             !table.contains('▸'),
             "group should not be folded into NAME\n{table}"
@@ -2888,80 +2865,6 @@ mod tests {
     }
 
     #[test]
-    fn resolve_property_prefers_exact_match() {
-        let properties = vec![
-            event_property("Setup ran", PropertyStatus::Passing, None, vec![], vec![]),
-            event_property(
-                "Setup completes",
-                PropertyStatus::Passing,
-                None,
-                vec![],
-                vec![],
-            ),
-        ];
-        let resolved = resolve_property(&properties, "Setup ran", "run-54-8").unwrap();
-        assert!(matches!(resolved, Resolved::Exact(_)));
-    }
-
-    #[test]
-    fn resolve_property_exact_match_ignores_case() {
-        let properties = vec![
-            event_property("Setup ran", PropertyStatus::Passing, None, vec![], vec![]),
-            event_property(
-                "Counter limit",
-                PropertyStatus::Passing,
-                None,
-                vec![],
-                vec![],
-            ),
-        ];
-        // Differs only by case: still an exact hit, not a fuzzy "closest" match.
-        let resolved = resolve_property(&properties, "setup RAN", "run-54-8").unwrap();
-        match resolved {
-            Resolved::Exact(p) => assert_eq!(p.name(), "Setup ran"),
-            other => panic!("expected exact match, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn resolve_property_falls_back_to_single_substring_match() {
-        let properties = vec![
-            event_property("Setup ran", PropertyStatus::Passing, None, vec![], vec![]),
-            event_property(
-                "Counter limit",
-                PropertyStatus::Passing,
-                None,
-                vec![],
-                vec![],
-            ),
-        ];
-        let resolved = resolve_property(&properties, "counter", "run-54-8").unwrap();
-        match resolved {
-            Resolved::Fuzzy(p) => assert_eq!(p.name(), "Counter limit"),
-            _ => panic!("expected fuzzy match"),
-        }
-    }
-
-    #[test]
-    fn resolve_property_errors_on_multiple_substring_matches() {
-        let properties = vec![
-            event_property("Setup ran", PropertyStatus::Passing, None, vec![], vec![]),
-            event_property(
-                "Setup completes",
-                PropertyStatus::Passing,
-                None,
-                vec![],
-                vec![],
-            ),
-        ];
-        let err = resolve_property(&properties, "setup", "run-54-8").unwrap_err();
-        let msg = format!("{err}");
-        assert!(msg.contains("did you mean"));
-        assert!(msg.contains("Setup ran"));
-        assert!(msg.contains("Setup completes"));
-    }
-
-    #[test]
     fn format_count_si_shortens_large_counts() {
         // Under 1000: exact.
         assert_eq!(format_count_si(0), "0");
@@ -2978,25 +2881,6 @@ mod tests {
         // Rounding that tips a boundary steps up cleanly (never "10.0k"/"1000k").
         assert_eq!(format_count_si(9950), "10k");
         assert_eq!(format_count_si(999999), "1.0M");
-    }
-
-    #[test]
-    fn resolve_property_not_found_points_at_the_full_list() {
-        let properties = vec![event_property(
-            "Setup ran",
-            PropertyStatus::Passing,
-            None,
-            vec![],
-            vec![],
-        )];
-        let err = resolve_property(&properties, "nonexistent", "run-54-8").unwrap_err();
-        let msg = format!("{err}");
-        assert!(msg.contains("no property matches 'nonexistent'"));
-        // The dead-end error points the user at the full property list.
-        assert!(
-            msg.contains("snouty runs properties run-54-8"),
-            "got: {msg}"
-        );
     }
 
     #[test]
@@ -3059,6 +2943,25 @@ mod tests {
         assert!(out.contains("maximum_used_bytes"));
         assert!(!out.contains("{2 fields}"));
         assert!(!out.contains("row 1 details:"));
+    }
+
+    #[test]
+    fn render_properties_detail_separates_multiple_with_a_rule() {
+        let properties = vec![
+            event_property("First", PropertyStatus::Failing, Some("G"), vec![], vec![event("h", "1.0")]),
+            event_property("Second", PropertyStatus::Passing, None, vec![event("h2", "2.0")], vec![]),
+        ];
+        let out = render_properties_detail(&properties);
+        // Both property headers render, each with its own Examples section…
+        assert!(out.contains("Name      First"), "got: {out}");
+        assert!(out.contains("Name      Second"));
+        assert_eq!(out.matches("Examples:").count(), 2);
+        // …separated by a horizontal rule so they read as distinct blocks.
+        assert!(out.contains('─'), "expected a rule separator\n{out}");
+
+        // A single property gets no separator rule.
+        let one = render_properties_detail(&properties[..1]);
+        assert!(!one.contains('─'));
     }
 
     #[test]
@@ -3243,8 +3146,14 @@ mod tests {
     fn render_non_event_example_renders_empty_collection_inline() {
         // An empty array/object renders as "(no value)" rather than an empty
         // pretty-printed block.
-        assert_eq!(render_value_example("passing", &json!([])), "passing: (no value)");
-        assert_eq!(render_value_example("passing", &json!({})), "passing: (no value)");
+        assert_eq!(
+            render_value_example("passing", &json!([])),
+            "passing: (no value)"
+        );
+        assert_eq!(
+            render_value_example("passing", &json!({})),
+            "passing: (no value)"
+        );
         // A scalar renders inline; an object renders as an indented JSON block.
         assert_eq!(render_value_example("failing", &json!(42)), "failing: 42");
         assert!(render_value_example("passing", &json!({"k": 1})).starts_with("passing:\n  {"));

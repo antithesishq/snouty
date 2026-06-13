@@ -378,8 +378,16 @@ Incomplete runs also show the failure moment (Failure Hash/VTime) to pass to
 
 Each table is headed by its group; columns are STATUS, EXAMPLES, NAME (failing
 first). EXAMPLES is the example count, shown as examples/counterexamples when a
-property has counterexamples. Pass a NAME to `runs property`, or use --json for
-automation."#
+property has counterexamples.
+
+Narrow with --name (substring) and/or --group (exact); add --detail to expand
+the matches into their examples and counter-example moments instead of the
+table. Use --json for automation (it always emits the full data).
+
+Examples:
+  snouty runs properties <run_id> --failing
+  snouty runs properties <run_id> --name eventually_validate --detail
+  snouty runs properties <run_id> --group 'Always: Unreachable' --detail"#
     )]
     Properties {
         /// Run ID
@@ -392,22 +400,19 @@ automation."#
         /// Show only failing properties
         #[arg(long)]
         failing: bool,
-    },
 
-    /// Show examples and counter-examples for a single property
-    #[command(
-        long_about = r#"Show a property's examples and counter-examples.
+        /// Only properties whose name contains this substring (case-insensitive)
+        #[arg(long)]
+        name: Option<String>,
 
-For an event property these are moments — a STATUS/HASH/VTIME table; feed a HASH
-and VTIME into `runs logs` to see what happened then. A non-event property lists
-its example values instead."#
-    )]
-    Property {
-        /// Run ID
-        run_id: String,
+        /// Only properties in this group (exact, case-insensitive)
+        #[arg(long)]
+        group: Option<String>,
 
-        /// Property name (exact match preferred; otherwise unique substring match)
-        name: String,
+        /// Expand each matching property into its examples / counter-example
+        /// moments, instead of the summary table
+        #[arg(short = 'd', long)]
+        detail: bool,
     },
 
     /// Stream build logs for a run
@@ -426,7 +431,7 @@ to that moment. Without --begin-vtime, streaming starts at the timeline's
 earliest log entry.
 
 Output: `[vtime] [source] [stream] message`. A moment (HASH/VTIME) comes from
-`runs property` or `runs events`."#)]
+`runs properties --detail` or `runs events`."#)]
     Logs {
         /// Run ID
         run_id: String,

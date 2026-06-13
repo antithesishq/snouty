@@ -174,8 +174,7 @@ class Discovery:
     fail_prop: str = ""  # failing event property whose detail shows counter-examples
     pass_event_prop: str = ""  # passing event property whose detail shows examples
     nonevent_prop: str = ""  # non-event property whose detail shows a real value
-    fuzzy: str = ""  # substring that resolves to exactly one property
-    ambiguous: str = ""  # substring shared by >= 2 property names
+    name_filter: str = ""  # substring matching exactly one property name
     fail_hash: str = ""
     fail_vtime: str = ""
 
@@ -270,7 +269,9 @@ def _pick_second_needle(event: dict, keyword: str) -> str | None:
 
 
 def _render_property(sn: Snouty, run: str, name: str) -> str:
-    return sn.run(["runs", "property", run, name]).combined
+    # `--name` is a substring filter; passing the exact name selects it (plus any
+    # other name it's a substring of, which is fine for these render probes).
+    return sn.run(["runs", "properties", run, "--name", name, "--detail"]).combined
 
 
 _MOMENT_ROW = re.compile(r"-?\d{6,}\s+\d+\.\d+")  # long hash + float vtime
@@ -347,28 +348,16 @@ def _pick_nonevent_property(sn: Snouty, run: str, props: list[dict]) -> str:
     raise GalleryError(f"no non-event property on {run} renders a usable value")
 
 
-def _pick_fuzzy(prop_names: list[str]) -> str:
-    """A case-insensitive substring contained in exactly one property name — so
-    snouty resolves it to a single property instead of erroring."""
+def _pick_name_filter(prop_names: list[str]) -> str:
+    """A case-insensitive word contained in exactly one property name — so the
+    `--name` filter story narrows the list to a single, predictable property."""
     lower = [n.lower() for n in prop_names]
-    # Try whole words first (read naturally), then fall back to any substring.
     for name in prop_names:
         for word in re.findall(r"[A-Za-z]{4,}", name):
             w = word.lower()
             if sum(w in n for n in lower) == 1:
                 return word
-    raise GalleryError("no substring resolves to exactly one property")
-
-
-def _pick_ambiguous(prop_names: list[str]) -> str:
-    counts: dict[str, int] = {}
-    for name in prop_names:
-        for word in {w.lower() for w in re.findall(r"[A-Za-z]{5,}", name)}:
-            counts[word] = counts.get(word, 0) + 1
-    shared = sorted((w for w, c in counts.items() if c > 1), key=len, reverse=True)
-    if shared:
-        return shared[0]
-    raise GalleryError("no substring is shared by >= 2 properties")
+    raise GalleryError("no substring matches exactly one property")
 
 
 def discover(sn: Snouty, scan: int) -> Discovery:
@@ -423,8 +412,7 @@ def discover(sn: Snouty, scan: int) -> Discovery:
         fail_prop=_pick_property_with_moments(sn, success, props, "Failing"),
         pass_event_prop=_pick_property_with_moments(sn, success, props, "Passing"),
         nonevent_prop=_pick_nonevent_property(sn, success, props),
-        fuzzy=_pick_fuzzy(prop_names),
-        ambiguous=_pick_ambiguous(prop_names),
+        name_filter=_pick_name_filter(prop_names),
         fail_hash=fail_moment.get("input_hash", ""),
         fail_vtime=fail_moment.get("vtime", ""),
     )
@@ -603,17 +591,6 @@ def property_non_event_examples(sr: StoryRun, reg: Registry) -> tuple[bool, str]
     no_moments = not _has_moment_rows(text)
     ok = has_header and has_value and no_moments
     return (ok, f"header={has_header}, labelled value={has_value}, no moments={no_moments}")
-
-
-def resolves_single_property(sr: StoryRun, reg: Registry) -> tuple[bool, str]:
-    text = sr.result.combined
-    ok = sr.result.ok and "multiple properties match" not in text.lower() and "Name" in text
-    return (ok, "resolved to one property" if ok else "did not resolve to a single property")
-
-
-def shows_ambiguity(sr: StoryRun, reg: Registry) -> tuple[bool, str]:
-    ok = "multiple properties match" in sr.result.combined.lower()
-    return (ok, "listed candidates" if ok else "did not show the ambiguity prompt")
 
 
 def succeeds_with(*needles: str):
@@ -850,59 +827,49 @@ def build_stories(d: Discovery) -> list[Story]:
             expect_message("incomplete"),
             json_capable=False,
         ),
-        # -- property detail ------------------------------------------------
+        # -- property detail (`properties --name <x> --detail`) -------------
         Story(
-            "runs-property-failing",
+            "runs-properties-detail-failing",
             "Drill into a failing property's counter-examples",
             "A property failed; I want to see concrete counter-examples I can debug.",
             "Shows the property plus at least one counter-example with a moment (hash/vtime) — not an empty `unreachable`.",
-            ["runs", "property", d.success, d.fail_prop],
+            ["runs", "properties", d.success, "--name", d.fail_prop, "--detail"],
             property_has_examples,
             json_capable=False,
         ),
         Story(
-            "runs-property-passing",
+            "runs-properties-detail-passing",
             "Look at the examples behind a passing property",
             "A property passed; I want to see example moments that satisfied it.",
             "Shows at least one example with a moment (hash/vtime).",
-            ["runs", "property", d.success, d.pass_event_prop],
+            ["runs", "properties", d.success, "--name", d.pass_event_prop, "--detail"],
             property_has_examples,
             json_capable=False,
         ),
         Story(
-            "runs-property-non-event",
-            "View a non-event property — example values",
+            "runs-properties-detail-non-event",
+            "Detail a non-event property — example values",
             "I want to inspect a non-event property, whose examples are values (objects) rather than moments.",
             "Renders each example value under an 'Examples:' header (labelled passing/failing), with no per-moment hash/vtime rows.",
-            ["runs", "property", d.success, d.nonevent_prop],
+            ["runs", "properties", d.success, "--name", d.nonevent_prop, "--detail"],
             property_non_event_examples,
             json_capable=False,
         ),
         Story(
-            "runs-property-fuzzy",
-            "Substring match — let snouty figure out which property",
-            "I type part of a property name and expect snouty to find the one I meant.",
-            "Resolves to exactly one property and shows it; does NOT print 'multiple properties match'.",
-            ["runs", "property", d.success, d.fuzzy],
-            resolves_single_property,
-            json_capable=False,
+            "runs-properties--name",
+            "Filter the property list by name substring",
+            "I want to narrow the property list to ones whose name matches a substring.",
+            "Non-empty: every shown property's name contains the substring (case-insensitive).",
+            ["runs", "properties", d.success, "--name", d.name_filter],
+            non_empty_table,
         ),
         Story(
-            "runs-property-ambiguous",
-            "Substring matches multiple properties",
-            "I type an ambiguous substring; I want to understand how snouty responds.",
-            "Lists the candidate properties and asks me to disambiguate.",
-            ["runs", "property", d.success, d.ambiguous],
-            shows_ambiguity,
-            json_capable=False,
-        ),
-        Story(
-            "runs-property-not-found",
-            "Typo'd a property name — get a clean error",
-            "I mistyped a property name and want a helpful error.",
-            "A clear 'no property matches' message, not a stack trace.",
-            ["runs", "property", d.success, "this property does not exist"],
-            expect_message("no property matches"),
+            "runs-properties--name-no-match",
+            "A name filter that matches nothing",
+            "I filter on a substring no property has; I want a friendly empty result.",
+            "A clear 'No properties match' message — not an error or a crash.",
+            ["runs", "properties", d.success, "--name", "this property does not exist"],
+            expect_message("No properties match"),
             json_capable=False,
         ),
         # -- events ---------------------------------------------------------
@@ -1104,23 +1071,20 @@ def build_help_stories(d: Discovery) -> list[Story]:
         ),
         _help_story(
             "help-runs-properties",
-            "Learn to read the properties table",
+            "Learn the properties table, filters, and --detail",
             "I want the help to explain the STATUS/EXAMPLES/NAME columns and the "
-            "examples/counterexamples count, and to match the table.",
+            "examples/counterexamples count, and the --name/--group/--detail flags "
+            "(including how --detail feeds a moment into `runs logs`).",
             ["runs", "properties"],
             ["runs", "properties", s],
-            samples=[("--failing only", ["runs", "properties", s, "--failing"])],
+            samples=[
+                ("--failing only", ["runs", "properties", s, "--failing"]),
+                (
+                    "--name <x> --detail (one property's moments)",
+                    ["runs", "properties", s, "--name", d.pass_event_prop, "--detail"],
+                ),
+            ],
             align=("STATUS", "EXAMPLES", "NAME"),
-        ),
-        _help_story(
-            "help-runs-property",
-            "Learn to read a single property's moments",
-            "I want the help to explain the moment table (and the value-example form "
-            "for non-event properties) and how to feed a moment into `runs logs`.",
-            ["runs", "property"],
-            ["runs", "property", s, d.pass_event_prop],
-            samples=[("a non-event property (value examples)", ["runs", "property", s, d.nonevent_prop])],
-            align=("HASH", "VTIME"),
         ),
         _help_story(
             "help-runs-events",

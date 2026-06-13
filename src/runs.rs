@@ -1254,15 +1254,25 @@ async fn cmd_runs_events(
         return Ok(());
     }
 
-    // Auto-width HASH/VTIME/SOURCE columns with OUTPUT emitted verbatim as the
-    // final column — the shared renderer's `Raw` last-column policy.
+    // Auto-width HASH/VTIME/SOURCE columns; OUTPUT is the final column, windowed
+    // around the matched needle so the hit stays visible on a narrow terminal. On
+    // a non-tty `terminal_width()` is `usize::MAX`, so piped output isn't truncated.
     let headers = [
         "HASH".to_string(),
         "VTIME".to_string(),
         "SOURCE".to_string(),
         "OUTPUT".to_string(),
     ];
-    writeln!(stdout, "{}", render_table(&headers, &rows))?;
+    let table = render_columns(
+        &headers,
+        &rows,
+        LastColumn::TruncateAround {
+            total_width: terminal_width(),
+            needles: matches.to_vec(),
+        },
+        &left_aligned(headers.len()),
+    );
+    writeln!(stdout, "{table}")?;
     stdout.flush()?;
 
     // Now that buffered rows are rendered, surface any mid-stream error.
@@ -1972,12 +1982,14 @@ fn render_event_entry(entry: &Value) -> RenderedEventEntry {
     let name = entry["source"]["name"].as_str().unwrap_or("");
     let stream = entry["source"]["stream"].as_str().unwrap_or("");
 
+    // Trim the OUTPUT cell: container log lines often carry leading indentation
+    // (e.g. `    GORACE: …`) that would ragged-align the column against neighbours.
     if let Some(summary) = parse_assertion_summary(entry) {
         return RenderedEventEntry {
             input_hash,
             vtime,
             source: render_source(container, name, Some("assert")),
-            output: render_assertion_summary(&summary),
+            output: render_assertion_summary(&summary).trim().to_string(),
         };
     }
 
@@ -1985,7 +1997,7 @@ fn render_event_entry(entry: &Value) -> RenderedEventEntry {
         input_hash,
         vtime,
         source: render_source(container, name, (!stream.is_empty()).then_some(stream)),
-        output: render_event_output(entry),
+        output: render_event_output(entry).trim().to_string(),
     }
 }
 
@@ -2186,6 +2198,14 @@ enum LastColumn {
     /// multiple lines with a hanging indent under the column start (floored at a
     /// readable minimum width).
     Wrap { total_width: usize },
+    /// Bound the final column like [`Truncate`], but window a too-long cell
+    /// *around* the first matching needle (centering on the match) rather than
+    /// always keeping the head — so the user sees the substring they searched for.
+    /// `needles` are the raw search terms, matched case-insensitively.
+    TruncateAround {
+        total_width: usize,
+        needles: Vec<String>,
+    },
 }
 
 /// Per-column horizontal alignment for the leading (fixed-width) columns. The
@@ -2289,7 +2309,93 @@ fn render_columns(
             }
             output.trim_end().to_string()
         }
+        LastColumn::TruncateAround {
+            total_width,
+            needles,
+        } => {
+            let last_width = total_width
+                .saturating_sub(prefix_width)
+                .max(headers[last].chars().count());
+            widths[last] = last_width;
+
+            let mut output = String::new();
+            push_table_row(&mut output, headers, &widths, aligns);
+            for row in rows {
+                let mut row = row.clone();
+                row[last] = truncate_around(&row[last], needles, last_width);
+                push_table_row(&mut output, &row, &widths, aligns);
+            }
+            output.trim_end().to_string()
+        }
     }
+}
+
+/// Earliest case-insensitive occurrence of any needle in `text`, as the
+/// `(char_start, char_len)` of the match. Used to keep a search hit visible when
+/// a cell is windowed.
+fn first_needle_span(text: &str, needles: &[String]) -> Option<(usize, usize)> {
+    let lower = text.to_lowercase();
+    needles
+        .iter()
+        .filter(|n| !n.is_empty())
+        .filter_map(|n| {
+            let needle = n.to_lowercase();
+            lower.find(&needle).map(|byte| {
+                let start = lower[..byte].chars().count();
+                (start, needle.chars().count())
+            })
+        })
+        .min_by_key(|(start, _)| *start)
+}
+
+/// Truncate `text` to at most `width` display columns, keeping the region around
+/// the first matching needle in view. A too-long cell is windowed and centered on
+/// the match, with `…` marking each truncated edge; when no needle lands in this
+/// cell (it matched another column) the head is kept instead. Returns `text`
+/// unchanged when it already fits.
+fn truncate_around(text: &str, needles: &[String], width: usize) -> String {
+    const ELL: char = '…';
+    let chars: Vec<char> = text.chars().collect();
+    let len = chars.len();
+    if len <= width {
+        return text.to_string();
+    }
+    // Too narrow to fit an ellipsis beside content: just clip the head.
+    if width <= 1 {
+        return chars[..width].iter().collect();
+    }
+    let Some((m, mlen)) = first_needle_span(text, needles) else {
+        // No hit in this cell — keep the head, like a plain truncation.
+        let head: String = chars[..width - 1].iter().collect();
+        return format!("{head}{ELL}");
+    };
+
+    // Center an inner window on the match midpoint, reserving a column for an
+    // ellipsis on each (initially assumed) truncated edge.
+    let inner = width - 2;
+    let center = (m + mlen / 2).min(len - 1);
+    let mut start = center.saturating_sub(inner / 2);
+    if start + inner > len {
+        start = len - inner;
+    }
+    let mut end = start + inner;
+    // Reclaim the reserved ellipsis column on any edge that isn't truncated after
+    // all (the window reached the start or end of the text).
+    if start == 0 && end < len {
+        end = (end + 1).min(len);
+    } else if end == len && start > 0 {
+        start -= 1;
+    }
+
+    let mut out = String::new();
+    if start > 0 {
+        out.push(ELL);
+    }
+    out.extend(chars[start..end].iter());
+    if end < len {
+        out.push(ELL);
+    }
+    out
 }
 
 fn render_runs_table(runs: &[RunSummary], width: usize) -> String {
@@ -4557,6 +4663,82 @@ mod tests {
                 "line exceeds width {width}: {line}"
             );
         }
+    }
+
+    #[test]
+    fn truncate_around_returns_short_text_unchanged() {
+        let n = vec!["err".to_string()];
+        assert_eq!(
+            truncate_around("short error here", &n, 80),
+            "short error here"
+        );
+        // Exactly at the width bound: still unchanged, no ellipsis.
+        assert_eq!(truncate_around("abcdef", &n, 6), "abcdef");
+    }
+
+    #[test]
+    fn truncate_around_centers_on_a_mid_string_match() {
+        let needles = vec!["NEEDLE".to_string()];
+        let text = "xxxxxxxxxxxxxxxxxxxxxxxxx NEEDLE yyyyyyyyyyyyyyyyyyyyyyyyy";
+        let out = truncate_around(text, &needles, 20);
+        // Windowed on both sides and the match stays visible.
+        assert!(out.starts_with('…'), "want leading ellipsis: {out:?}");
+        assert!(out.ends_with('…'), "want trailing ellipsis: {out:?}");
+        assert!(out.contains("NEEDLE"), "match must remain visible: {out:?}");
+        assert_eq!(out.chars().count(), 20);
+    }
+
+    #[test]
+    fn truncate_around_keeps_head_when_match_is_near_the_start() {
+        let needles = vec!["abc".to_string()];
+        let text = "abc def ghi jkl mno pqr stu vwx yz0 123 456 789";
+        let out = truncate_around(text, &needles, 20);
+        // No leading ellipsis (window reached the start); trailing edge truncated.
+        assert!(
+            !out.starts_with('…'),
+            "no leading ellipsis expected: {out:?}"
+        );
+        assert!(out.starts_with("abc"), "head retained: {out:?}");
+        assert!(out.ends_with('…'), "trailing ellipsis expected: {out:?}");
+        assert_eq!(out.chars().count(), 20);
+    }
+
+    #[test]
+    fn truncate_around_keeps_tail_when_match_is_near_the_end() {
+        let needles = vec!["xyz".to_string()];
+        let text = "000 111 222 333 444 555 666 777 888 999 last xyz";
+        let out = truncate_around(text, &needles, 20);
+        assert!(out.starts_with('…'), "leading ellipsis expected: {out:?}");
+        assert!(
+            !out.ends_with('…'),
+            "no trailing ellipsis expected: {out:?}"
+        );
+        assert!(out.ends_with("xyz"), "tail retained: {out:?}");
+        assert_eq!(out.chars().count(), 20);
+    }
+
+    #[test]
+    fn truncate_around_head_truncates_when_no_needle_in_cell() {
+        // The needle matched another column, so this cell has no hit — keep the
+        // head, like a plain ellipsis truncation.
+        let needles = vec!["error".to_string()];
+        let text = "[raft] failed to get previous log: previous-index=1 last-index=0";
+        let out = truncate_around(text, &needles, 24);
+        assert!(out.starts_with("[raft]"), "head retained: {out:?}");
+        assert!(out.ends_with('…'), "trailing ellipsis expected: {out:?}");
+        assert_eq!(out.chars().count(), 24);
+    }
+
+    #[test]
+    fn truncate_around_is_case_insensitive() {
+        let needles = vec!["ERROR".to_string()];
+        let text = "aaaaaaaaaaaaaaaaaaaaaaaaa fatal error occurred bbbbbbbbbbbbbbbbbbbbbbbbb";
+        let out = truncate_around(text, &needles, 24);
+        assert!(
+            out.to_lowercase().contains("error"),
+            "match visible: {out:?}"
+        );
+        assert_eq!(out.chars().count(), 24);
     }
 
     #[test]

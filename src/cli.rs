@@ -294,11 +294,9 @@ pub struct LaunchArgs {
     #[arg(long)]
     pub description: Option<String>,
 
-    /// Test duration
-    // The unit is determined by the webhook configuration on the platform side,
-    // so snouty intentionally stays unit-agnostic. A string lets callers pass
-    // fractional values when the unit is something coarse like minutes; the
-    // numeric format is enforced by the params schema.
+    /// Test duration, in minutes
+    // A string (not a number) lets callers pass fractional minutes; the numeric
+    // format is enforced by the params schema.
     #[arg(long)]
     pub duration: Option<String>,
 
@@ -375,12 +373,14 @@ Incomplete runs also show the failure moment (Failure Hash/VTime) to pass to
     },
 
     /// List property results for a run
-    #[command(long_about = r#"List a run's property (assertion) results, one table per group.
+    #[command(
+        long_about = r#"List a run's property (assertion) results, one table per group.
 
 Each table is headed by its group; columns are STATUS, EXAMPLES, NAME (failing
 first). EXAMPLES is the example count, shown as examples/counterexamples when a
 property has counterexamples. Pass a NAME to `runs property`, or use --json for
-automation."#)]
+automation."#
+    )]
     Properties {
         /// Run ID
         run_id: String,
@@ -396,10 +396,11 @@ automation."#)]
 
     /// Show examples and counter-examples for a single property
     #[command(
-        long_about = r#"Show one property's example and counter-example moments.
+        long_about = r#"Show a property's examples and counter-examples.
 
-Columns: STATUS, HASH, VTIME (a non-event property shows VALUE instead). Feed a
-HASH and VTIME into `runs logs` to see what happened at that moment."#
+For an event property these are moments — a STATUS/HASH/VTIME table; feed a HASH
+and VTIME into `runs logs` to see what happened then. A non-event property lists
+its example values instead."#
     )]
     Property {
         /// Run ID

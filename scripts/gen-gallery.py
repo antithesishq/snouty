@@ -313,24 +313,21 @@ def _pick_property_with_moments(sn: Snouty, run: str, props: list[dict], status:
     )
 
 
-_VALUE_ROW = re.compile(r"^(?:passing|failing|unreachable)\s+(.*)$", re.MULTILINE)
-
-# Rendered VALUE cells that aren't a usable single value: the synthetic
-# `unreachable  -` row and the `(no example value)` rendering of an empty collection (see
-# render_property_value in src/runs.rs). "[0 items]" can no longer be emitted.
-_DEGENERATE_VALUES = ("-", "(no example value)")
+# A non-event example renders as a `passing:`/`failing:` labelled block (see
+# render_value_example in src/runs.rs), never as a moment HASH/VTIME row.
+_NONEVENT_EXAMPLE = re.compile(r"^(?:passing|failing):", re.MULTILINE)
 
 
 def _has_real_value(value) -> bool:
-    """Whether a non-event example value renders as a usable single VALUE cell —
-    i.e. a scalar, not an empty collection (which renders as `(no example value)`)."""
+    """Whether a non-event example renders as a usable value — i.e. a scalar or a
+    non-empty collection (an empty one renders as the `(no value)` placeholder)."""
     if isinstance(value, (list, dict)):
         return len(value) > 0
-    return True  # scalars (incl. False/0) all render to a visible cell
+    return True  # scalars (incl. False/0) all render to a visible block
 
 
 def _pick_nonevent_property(sn: Snouty, run: str, props: list[dict]) -> str:
-    """Pick a non-event property that shows a real single value. We read the
+    """Pick a non-event property that renders a real example value. We read the
     example arrays straight from the JSON and only render-probe the chosen one."""
     candidates = []
     for p in props:
@@ -342,11 +339,10 @@ def _pick_nonevent_property(sn: Snouty, run: str, props: list[dict]) -> str:
     candidates.sort(key=lambda p: p.get("example_count") or 0, reverse=True)
     for p in candidates:
         rendered = _render_property(sn, run, p["name"])
-        m = _VALUE_ROW.search(rendered)
-        if m:
-            value = m.group(1).strip()
-            if value and value not in _DEGENERATE_VALUES:
-                return p["name"]
+        # Confirm it renders the non-event shape: a labelled example block and no
+        # moment rows (which would mean we misclassified an event property).
+        if _NONEVENT_EXAMPLE.search(rendered) and not _has_moment_rows(rendered):
+            return p["name"]
         break  # chosen candidate didn't render a usable value — bail
     raise GalleryError(f"no non-event property on {run} renders a usable value")
 
@@ -598,12 +594,15 @@ def property_has_examples(sr: StoryRun, reg: Registry) -> tuple[bool, str]:
     return (ok, "shows example moments" if ok else "no example moments (degenerate)")
 
 
-def property_single_value(sr: StoryRun, reg: Registry) -> tuple[bool, str]:
+def property_non_event_examples(sr: StoryRun, reg: Registry) -> tuple[bool, str]:
+    """A non-event property renders each example as a labelled `passing:`/
+    `failing:` block under an `Examples:` header, with no per-moment rows."""
     text = sr.result.combined
-    m = _VALUE_ROW.search(text)
-    value = m.group(1).strip() if m else ""
-    ok = bool(value) and value not in _DEGENERATE_VALUES and not _has_moment_rows(text)
-    return (ok, f"value={value!r}, no moments")
+    has_header = "Examples:" in text
+    has_value = _NONEVENT_EXAMPLE.search(text) is not None
+    no_moments = not _has_moment_rows(text)
+    ok = has_header and has_value and no_moments
+    return (ok, f"header={has_header}, labelled value={has_value}, no moments={no_moments}")
 
 
 def resolves_single_property(sr: StoryRun, reg: Registry) -> tuple[bool, str]:
@@ -872,11 +871,11 @@ def build_stories(d: Discovery) -> list[Story]:
         ),
         Story(
             "runs-property-non-event",
-            "View a non-event property — a single value",
-            "I want to inspect a non-event property, which is a single value rather than moments.",
-            "Shows the property's value and has no per-moment rows.",
+            "View a non-event property — example values",
+            "I want to inspect a non-event property, whose examples are values (objects) rather than moments.",
+            "Renders each example value under an 'Examples:' header (labelled passing/failing), with no per-moment hash/vtime rows.",
             ["runs", "property", d.success, d.nonevent_prop],
-            property_single_value,
+            property_non_event_examples,
             json_capable=False,
         ),
         Story(
@@ -1116,11 +1115,11 @@ def build_help_stories(d: Discovery) -> list[Story]:
         _help_story(
             "help-runs-property",
             "Learn to read a single property's moments",
-            "I want the help to explain the moment table (and the VALUE form for "
-            "non-event properties) and how to feed a moment into `runs logs`.",
+            "I want the help to explain the moment table (and the value-example form "
+            "for non-event properties) and how to feed a moment into `runs logs`.",
             ["runs", "property"],
             ["runs", "property", s, d.pass_event_prop],
-            samples=[("a non-event property (VALUE form)", ["runs", "property", s, d.nonevent_prop])],
+            samples=[("a non-event property (value examples)", ["runs", "property", s, d.nonevent_prop])],
             align=("HASH", "VTIME"),
         ),
         _help_story(

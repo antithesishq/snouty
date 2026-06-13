@@ -143,22 +143,25 @@ snouty runs property $R_run_id 'Counter value stays below limit'
 # even though the API returns them 10.0-then-5.0), failing before passing.
 [!staging] stdout '(?s)failing.*-100.*5\.0.*failing.*-200.*10\.0.*passing.*-300.*15\.0'
 
-# A fuzzy (substring) match discloses the substitution on stderr, in both human
-# and --json modes, so a JSON consumer never silently gets a different property.
+# A fuzzy (substring) match discloses the substitution. In human mode the note
+# is printed first on stdout (so it reads above the resolved property); in --json
+# mode it goes to stderr so stdout stays clean JSON.
 mock-runs-server
 snouty runs property $R_run_id counter
-[!staging] stderr 'no exact match for .counter., using closest property: .Counter value stays below limit.'
+[!staging] stdout 'no exact match for .counter., using closest property: .Counter value stays below limit.'
 
 mock-runs-server
 snouty --json runs property $R_run_id counter
 [!staging] stderr 'no exact match for .counter., using closest property: .Counter value stays below limit.'
 [!staging] stdout '"name".*"Counter value stays below limit"'
 
-# Non-event properties drill into a STATUS/VALUE table.
+# Non-event properties render each example value as its own labelled block under
+# an "Examples:" header (no per-moment HASH/VTIME table). Patterns include a
+# regex metacharacter so testscript matches them as a substring search.
 mock-runs-server
 snouty runs property $R_run_id 'Setup completes'
-[!staging] stdout 'STATUS.*VALUE'
-[!staging] stdout 'passing.*'
+[!staging] stdout 'Examples:.*passing:'
+[!staging] stdout '"final_counter".*42'
 
 # An unknown property errors clearly, and points at the full list so the user
 # isn't left at a dead end.

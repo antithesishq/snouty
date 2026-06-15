@@ -1,9 +1,11 @@
-use std::env;
-
 use color_eyre::eyre::Result;
 
-use crate::container;
-use crate::error::user_error;
+use crate::{
+    api::Auth,
+    container,
+    error::user_error,
+    snouty_config::{self, SnoutyConfig},
+};
 
 struct Check {
     name: &'static str,
@@ -12,12 +14,14 @@ struct Check {
 }
 
 impl Check {
-    fn env(name: &'static str) -> Self {
-        let set = env::var(name).is_ok_and(|v| !v.is_empty());
+    fn for_result<T>(name: &'static str, result: Result<T>) -> Self {
         Self {
             name,
-            passed: set,
-            message: if set { "is set" } else { "is not set" }.into(),
+            passed: result.is_ok(),
+            message: match result {
+                Ok(_) => "found".to_owned(),
+                Err(err) => format!("error: {err}"),
+            },
         }
     }
 
@@ -33,6 +37,7 @@ impl Check {
 
 pub fn cmd_doctor() -> Result<()> {
     let mut checks: Vec<Check> = Vec::new();
+    let config = snouty_config::default_config(None);
 
     // Container runtime (for building/pushing images)
     match container::runtime() {
@@ -62,18 +67,22 @@ pub fn cmd_doctor() -> Result<()> {
         }),
     }
 
-    // Environment variables
-    checks.push(Check::env("ANTITHESIS_TENANT"));
-    checks.push(Check::env("ANTITHESIS_REPOSITORY"));
+    // required configuration
+    checks.push(Check::for_result("tenant", config.tenant()));
+    checks.push(Check::for_result("repository", config.repository()));
 
     // Auth: api key OR both username and password
-    let api_key = Check::env("ANTITHESIS_API_KEY");
-    if api_key.passed {
-        checks.push(api_key);
-    } else {
-        checks.push(Check::env("ANTITHESIS_USERNAME"));
-        checks.push(Check::env("ANTITHESIS_PASSWORD"));
-    }
+    let auth = Auth::from_env();
+    checks.push(Check {
+        name: "auth",
+        passed: auth.is_ok(),
+        message: match auth {
+            Ok(Auth::Bearer { api_key: _ }) => "API key configured".to_owned(),
+            Ok(_) => "Basic authentication configured. This is only valid for the `launch` command"
+                .to_owned(),
+            Err(err) => format!("error: {err}"),
+        },
+    });
 
     // Print all checks and check for failures
     for check in &checks {

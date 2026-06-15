@@ -315,9 +315,10 @@ def _pick_property_with_moments(sn: Snouty, run: str, props: list[dict], status:
 
 
 # A non-event ("system") property renders its value under a `Result` label
-# (see render_result in src/runs.rs) — `Result   <scalar>` inline or `Result:`
-# above indented JSON — never as a moment HASH/VTIME row.
-_NONEVENT_RESULT = re.compile(r"^\s*Result[: ]", re.MULTILINE)
+# (see render_result in src/runs.rs) — `Result   <scalar>` inline, or a bare
+# `Result` label line above indented JSON (no colon) for an object/array —
+# never as a moment HASH/VTIME row.
+_NONEVENT_RESULT = re.compile(r"^\s*Result\b", re.MULTILINE)
 
 
 def _has_real_value(value) -> bool:
@@ -346,13 +347,14 @@ def _pick_nonevent_property(sn: Snouty, run: str, props: list[dict]) -> str:
         if any(_has_real_value(v) for v in values):
             candidates.append(p)
     candidates.sort(key=lambda p: p.get("example_count") or 0, reverse=True)
-    for p in candidates:
+    # Render-probe candidates (most examples first) until one renders the
+    # non-event shape: a `Result` label block and no moment rows (which would mean
+    # we misclassified an event property). Try several rather than bailing on the
+    # first miss, so one oddly-rendering top candidate can't sink the whole story.
+    for p in candidates[:8]:
         rendered = _render_property(sn, run, p["name"])
-        # Confirm it renders the non-event shape: a labelled example block and no
-        # moment rows (which would mean we misclassified an event property).
         if _NONEVENT_RESULT.search(rendered) and not _has_moment_rows(rendered):
             return p["name"]
-        break  # chosen candidate didn't render a usable value — bail
     raise GalleryError(f"no non-event property on {run} renders a usable value")
 
 

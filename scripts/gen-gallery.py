@@ -331,9 +331,16 @@ def _has_real_value(value) -> bool:
 def _pick_nonevent_property(sn: Snouty, run: str, props: list[dict]) -> str:
     """Pick a non-event property that renders a real example value. We read the
     example arrays straight from the JSON and only render-probe the chosen one."""
+    # `--name` is a substring filter, so the chosen name must not be a substring
+    # of any *other* property's name — otherwise the --detail probe would also
+    # expand that other property, and an event sibling's moment rows would make us
+    # think we'd misclassified. Require the name to match only itself.
+    lower_names = [p["name"].lower() for p in props]
     candidates = []
     for p in props:
         if p.get("is_event") is not False:
+            continue
+        if sum(p["name"].lower() in n for n in lower_names) != 1:
             continue
         values = (p.get("examples") or []) + (p.get("counterexamples") or [])
         if any(_has_real_value(v) for v in values):
@@ -452,6 +459,10 @@ class Story:
     # an automated "help aligns with output" gate (e.g. column headers the help
     # promises). Only enforced when there is default output to compare against.
     align_tokens: tuple[str, ...] = ()
+    # Whether the default-output command is expected to exit 0. True for read
+    # commands; set False for a command that legitimately exits non-zero while
+    # still printing representative output (e.g. `doctor` when a check fails).
+    expect_ok: bool = True
 
 
 @dataclass
@@ -641,6 +652,13 @@ def help_story_check(sr: StoryRun, reg: Registry) -> tuple[bool, str]:
     if not out.strip():
         return (False, "default output is empty")
 
+    # A non-zero exit means `out` is probably an error (auth/API failure) captured
+    # as if it were the command's normal output — don't pass it off as a sample.
+    # `doctor` opts out (expect_ok=False): it exits non-zero on a failed check yet
+    # still prints representative output.
+    if story.expect_ok and not sr.result.ok:
+        return (False, f"default command failed (exit {sr.result.returncode})")
+
     if story.align_tokens:
         miss_help = [t for t in story.align_tokens if t not in help_text]
         miss_out = [t for t in story.align_tokens if t not in out]
@@ -692,8 +710,12 @@ def build_stories(d: Discovery) -> list[Story]:
             "Descriptions are shown in full (longer than the default view), one row per run.",
             ["runs", "list", "-n", "6", "--detail"],
             # --detail can't be combined with --json, so validate the rendered
-            # key-value blocks directly rather than re-running for JSON rows.
-            contains_all("Run ID", "Description"),
+            # key-value blocks directly rather than re-running for JSON rows. Check
+            # the always-present title-case labels (the default table uses
+            # UPPERCASE headers and no "Launcher"); "Description" is omitted when a
+            # run has none, so requiring it would falsely fail on description-less
+            # runs even though the detailed view rendered correctly.
+            contains_all("Run ID", "Created", "Launcher"),
             json_capable=False,
         ),
         Story(
@@ -1014,6 +1036,7 @@ def _help_story(
     *,
     samples: list[tuple[str, list[str]]] | None = None,
     align: tuple[str, ...] = (),
+    expect_ok: bool = True,
 ) -> Story:
     args = args or []
     judge = HELP_RUBRIC + (_OUTPUT_RUBRIC if args else _HELP_ONLY_RUBRIC)
@@ -1028,6 +1051,7 @@ def _help_story(
         help_cmd=help_cmd,
         samples=samples,
         align_tokens=align,
+        expect_ok=expect_ok,
     )
 
 
@@ -1119,6 +1143,9 @@ def build_help_stories(d: Discovery) -> list[Story]:
             "I run `snouty doctor --help` to see what it verifies, then run it.",
             ["doctor"],
             ["doctor"],
+            # `doctor` exits non-zero when a check fails but still prints its
+            # findings — that output is exactly what we want to show.
+            expect_ok=False,
         ),
         _help_story(
             "help-version",
@@ -1221,7 +1248,7 @@ def _write_help_story(out_dir: Path, story: Story, sr: StoryRun, verdict: str, d
         f"**User goal:** {story.goal}",
         f"**Judge satisfaction by:** {story.judge}",
         "## Help text",
-        f"```shell\n$ snouty {' '.join(story.help_cmd)} --help\n{help_text}\n```",
+        f"```shell\n$ snouty {' '.join(story.help_cmd or [])} --help\n{help_text}\n```",
     ]
     if story.args:
         parts.append("## Default output")

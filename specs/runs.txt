@@ -156,11 +156,19 @@ snouty runs properties $R_run_id --group safety
 [!staging] stdout -count=0 'Setup completes'
 
 # A non-event ("system") property's --detail shows its value under a `Result`
-# label — a single object renders as indented JSON, no moment table or Examples.
+# label (no `:`, like the other labels). A small object inlines as compact JSON
+# against the value column; there's no moment table or Examples.
 mock-runs-server
 snouty runs properties $R_run_id --name 'Setup completes' --detail
-[!staging] stdout 'Result:.*final_counter'
+[!staging] stdout 'Result.*final_counter'
 [!staging] stdout '"final_counter".*42'
+
+# A *failing* non-event property carries its violating value in counterexamples;
+# --detail labels those under `Counter-examples` (shown first), distinct from the
+# satisfying `Examples`, so the offending value isn't lost in an unlabelled list.
+mock-runs-server
+snouty runs properties $R_run_id --name 'Peak memory' --detail
+[!staging] stdout '(?s)Counter-examples.*1340.*Examples.*820'
 
 # A filter that matches nothing prints a friendly empty-state, not an error.
 mock-runs-server

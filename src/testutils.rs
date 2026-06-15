@@ -619,12 +619,16 @@ fn mock_route_list_run_properties(run_id: &str, query: Option<&str>) -> (u16, St
     let after = mock_query_param(query, "after");
 
     let failing = r#"{"name":"Counter value stays below limit","description":"Counter stays within safe bounds","status":"Failing","is_event":true,"group":"Safety","example_count":12,"counterexample_count":3,"examples":[{"moment":{"input_hash":"-300","vtime":"15.0"}}],"counterexamples":[{"moment":{"input_hash":"-200","vtime":"10.0"}},{"moment":{"input_hash":"-100","vtime":"5.0"}}]}"#.to_string();
+    // A failing non-event ("system") property: the violating value lives in
+    // `counterexamples`, so `--detail` must label it apart from the satisfying
+    // `examples`.
+    let failing_nonevent = r#"{"name":"Peak memory stays below cap","description":"Peak memory never exceeds the configured limit","status":"Failing","is_event":false,"group":"Resources","example_count":2,"counterexample_count":1,"examples":[820,910],"counterexamples":[1340]}"#.to_string();
     let passing = r#"{"name":"Setup completes","description":"Setup eventually succeeds","status":"Passing","is_event":false,"example_count":1,"counterexample_count":0,"examples":[{"final_counter":42}]}"#.to_string();
 
     let (data, next_cursor) = match (status.as_deref(), after.as_deref()) {
-        (Some("Failing"), _) => (vec![failing], None),
+        (Some("Failing"), _) => (vec![failing, failing_nonevent], None),
         (Some("Passing"), _) => (vec![passing], None),
-        (None, None) => (vec![failing], Some("props-cursor-1")),
+        (None, None) => (vec![failing, failing_nonevent], Some("props-cursor-1")),
         (None, Some("props-cursor-1")) => (vec![passing], None),
         (None, _) => (vec![], None),
         _ => (vec![], None),

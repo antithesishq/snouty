@@ -77,6 +77,17 @@ impl std::str::FromStr for Stream {
 }
 
 pub async fn cmd_runs(command: Option<RunsCommands>, json: bool, verbose: bool) -> Result<()> {
+    // `--detail` produces human formatting, so it can't combine with `--json`.
+    // It rides on more than one subcommand (`runs list`, `runs properties`), so
+    // the conflict is checked once here — a global `--json` vs a per-subcommand
+    // flag can't be expressed with clap's `conflicts_with`.
+    let detail = match &command {
+        Some(RunsCommands::List(args)) => args.detail,
+        Some(RunsCommands::Properties { detail, .. }) => *detail,
+        _ => false,
+    };
+    reject_detail_with_json(json, detail)?;
+
     match command {
         None => cmd_runs_list(RunsListArgs::default(), json, verbose).await,
         Some(RunsCommands::List(args)) => cmd_runs_list(args, json, verbose).await,
@@ -141,7 +152,6 @@ pub async fn cmd_runs(command: Option<RunsCommands>, json: bool, verbose: bool) 
 }
 
 async fn cmd_runs_list(args: RunsListArgs, json: bool, verbose: bool) -> Result<()> {
-    reject_detail_with_json(json, args.detail)?;
     debug!("listing runs");
 
     let api = AntithesisApi::from_env_requiring_api_key(verbose)?;
@@ -353,8 +363,8 @@ struct PropertyFilter<'a> {
 
 /// `--detail` formats human output, so it conflicts with `--json` (which always
 /// emits the full structured data). Reject the combination with a clear error
-/// rather than silently ignoring one. Shared by `runs properties` and
-/// `runs list`, which both carry `--detail`.
+/// rather than silently ignoring one. Called once from [`cmd_runs`] for whichever
+/// subcommand carries `--detail` (`runs list`, `runs properties`).
 fn reject_detail_with_json(json: bool, detail: bool) -> Result<()> {
     if json && detail {
         return Err(user_error("--detail and --json cannot be combined")
@@ -370,7 +380,6 @@ async fn cmd_runs_properties(
     json: bool,
     verbose: bool,
 ) -> Result<()> {
-    reject_detail_with_json(json, detail)?;
     debug!("listing properties for run: {}", run_id);
 
     let api = AntithesisApi::from_env_requiring_api_key(verbose)?;
@@ -680,23 +689,27 @@ fn render_properties_detail(properties: &[Property]) -> String {
         .join("\n\n")
 }
 
-/// One property's detail within a group section: a key/value header (no Group
-/// line — the section heading carries it) and, indented beneath it, its examples.
-/// A property whose only example is a single number renders that inline instead.
+/// One property's detail within a group section: a `Name`/`Status`/`Details`
+/// header (no `Group` line — the section heading carries it) followed by its
+/// examples. Every field goes through [`render_field`], so a short value sits
+/// inline against the value column while a long or multi-line one drops to an
+/// indented block beneath its label.
 fn render_property_detail(property: &Property) -> String {
     let mut out = String::new();
-    out.push_str(&format!("Name      {}\n", sanitize(property.name())));
-    out.push_str(&format!(
-        "Status    {}\n",
-        property_status_label(property.status())
+    out.push_str(&render_field("Name", &sanitize(property.name())));
+    out.push('\n');
+    out.push_str(&render_field(
+        "Status",
+        property_status_label(property.status()),
     ));
+    out.push('\n');
     let description = match property {
         Property::EventProperty(p) => p.description.as_deref(),
         Property::NonEventProperty(p) => p.description.as_deref(),
     };
     if let Some(desc) = description {
-        // Details is free-form prose, wrapped under a 10-char label column so
-        // continuation lines hang-indent to match the value column above.
+        // Details is free-form prose, wrapped under the value column so
+        // continuation lines hang-indent to match the values above.
         out.push_str(&render_prose_block(
             "Details",
             desc,
@@ -708,14 +721,13 @@ fn render_property_detail(property: &Property) -> String {
     }
     match property {
         // Event properties have moments — the user feeds a HASH/VTIME into
-        // `runs logs`, so they get an `Examples:` table.
+        // `runs logs` — so the `Examples` field holds a STATUS/HASH/VTIME table
+        // (or, when there are none, the inline "unreachable" note).
         Property::EventProperty(p) => {
-            out.push_str("Examples:\n");
-            out.push_str(&indent_lines(&render_moments_table(p), "  "));
+            out.push_str(&render_field("Examples", &render_moments_table(p)));
         }
-        // Non-event "system" properties have no moments; their examples chunk
-        // just carries detail values, so show them under a `Result` label rather
-        // than conflating with examples/counter-examples.
+        // Non-event "system" properties have no moments; their values show under
+        // a `Result` (or, when failing, labelled Counter-examples/Examples).
         Property::NonEventProperty(p) => out.push_str(&render_result(p)),
     }
     out
@@ -750,44 +762,107 @@ fn render_moments_table(p: &EventProperty) -> String {
     render_table(&headers, &rows)
 }
 
-/// The `Result` for a non-event property — its example values. A lone value is
-/// rendered directly (scalar inline, object/array as indented JSON); multiple
-/// values are rendered as a single indented JSON array.
+/// The values of a non-event ("system") property under a `Result` label. A
+/// passing property has only example values, shown directly. A failing property
+/// also has counterexamples — the values that violated it — so those are
+/// labelled and shown first (mirroring the event table's failing-first order)
+/// instead of being merged into one unlabelled list where the offending value
+/// can't be told from the rest.
 fn render_result(p: &NonEventProperty) -> String {
-    let values: Vec<&Value> = p.examples.iter().chain(p.counterexamples.iter()).collect();
-    match values.as_slice() {
-        [] => "Result    (none)".to_string(),
-        [one] => render_single_result(one),
-        // Multiple values are collapsed into a single JSON array.
-        many => render_json_result(&Value::Array(many.iter().map(|v| (*v).clone()).collect())),
+    if p.counterexamples.is_empty() {
+        return render_result_values(&p.examples);
+    }
+    let mut out = render_value_group("Counter-examples", &p.counterexamples);
+    if !p.examples.is_empty() {
+        out.push('\n');
+        out.push_str(&render_value_group("Examples", &p.examples));
+    }
+    out
+}
+
+/// The example values of a passing non-event property under a single `Result`
+/// field: a lone scalar (or small object) inline, several values (or a large one)
+/// as a block, none as a placeholder.
+fn render_result_values(values: &[Value]) -> String {
+    match values {
+        [] => render_field("Result", "(none)"),
+        [one] => render_result_value("Result", one),
+        // Several values render as one JSON array; serialize the slice of
+        // references directly rather than cloning into an owned `Value::Array`.
+        many => render_json_field("Result", &many),
     }
 }
 
-/// A single `Result` value: a scalar inline next to an aligned `Result` label, an
-/// object/array via [`render_json_result`].
-fn render_single_result(value: &Value) -> String {
+/// A labelled group of non-event values for the failing case — the `label` on its
+/// own line with each value indented beneath. Always a block (never inline) so the
+/// violating counterexamples and the satisfying examples read consistently.
+/// Scalars print verbatim; objects/arrays as compact one-line JSON.
+fn render_value_group(label: &str, values: &[Value]) -> String {
+    let body = values
+        .iter()
+        .map(value_token)
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!("{label}\n{}", indent_lines(&body, "  "))
+}
+
+/// A single non-event value under `label`: a scalar (or small object/array)
+/// inline, a large object/array as a pretty-printed block.
+fn render_result_value(label: &str, value: &Value) -> String {
     match value {
-        Value::Array(_) | Value::Object(_) => render_json_result(value),
-        Value::String(s) => format!("Result    {}", sanitize(s)),
-        Value::Number(n) => format!("Result    {n}"),
-        Value::Bool(b) => format!("Result    {b}"),
-        Value::Null => "Result    null".to_string(),
+        Value::Array(_) | Value::Object(_) => render_json_field(label, value),
+        scalar => render_field(label, &value_token(scalar)),
     }
 }
 
-/// Render a JSON object/array `Result`: inline (`Result: {...}`) when its compact
-/// one-line form fits the terminal (capped at 100 cols, so piped output where the
-/// width is unbounded still inlines only genuinely small values), otherwise as an
-/// indented pretty-printed block under `Result:`.
-fn render_json_result(value: &Value) -> String {
-    let compact = serde_json::to_string(value).unwrap_or_default();
-    let inline = format!("Result: {compact}");
-    if inline.chars().count() <= terminal_width().min(100) {
-        inline
-    } else {
-        let pretty = serde_json::to_string_pretty(value).unwrap_or_default();
-        format!("Result:\n{}", indent_lines(&pretty, "  "))
+/// A non-event value as a single inline token: a string sanitised, other scalars
+/// via their `Display`, an object/array as compact one-line JSON.
+fn value_token(value: &Value) -> String {
+    match value {
+        Value::String(s) => sanitize(s),
+        Value::Number(n) => n.to_string(),
+        Value::Bool(b) => b.to_string(),
+        Value::Null => "null".to_string(),
+        Value::Array(_) | Value::Object(_) => serde_json::to_string(value).unwrap_or_default(),
     }
+}
+
+/// Render a JSON object/array (or a slice of values) under `label`: inline when
+/// its compact one-line form fits the value column, otherwise pretty-printed as an
+/// indented block. The inline-vs-block layout is delegated to [`render_field`].
+fn render_json_field<T: serde::Serialize>(label: &str, value: &T) -> String {
+    let compact = serde_json::to_string(value).unwrap_or_default();
+    if fits_inline(label, &compact) {
+        render_field(label, &compact)
+    } else {
+        render_field(
+            label,
+            &serde_json::to_string_pretty(value).unwrap_or_default(),
+        )
+    }
+}
+
+/// Render a `label` + `value` field in a property detail block. A single-line
+/// value that fits sits inline, aligned to the [`PROPERTY_LABEL_WIDTH`] value
+/// column (like `Name`/`Status`); a taller or wider value goes on the lines below
+/// the label, indented. No trailing `:` — the column does the separating, matching
+/// every other field.
+fn render_field(label: &str, value: &str) -> String {
+    if fits_inline(label, value) {
+        format!("{label:<width$}{value}", width = PROPERTY_LABEL_WIDTH)
+    } else {
+        format!("{label}\n{}", indent_lines(value, "  "))
+    }
+}
+
+/// Whether `value` can sit inline after `label` in the value column: it must be a
+/// single line, the label must leave at least one space before the column, and the
+/// whole line must fit (capped at 100 cols so piped output — where the width is
+/// unbounded — still inlines only genuinely short values).
+fn fits_inline(label: &str, value: &str) -> bool {
+    !value.contains('\n')
+        && label.chars().count() < PROPERTY_LABEL_WIDTH
+        && PROPERTY_LABEL_WIDTH + value.chars().count() <= terminal_width().min(100)
 }
 
 /// Width of the label column in `render_property_detail` (`"Details   "`).
@@ -942,6 +1017,9 @@ fn render_properties_table(properties: &[Property]) -> String {
 }
 
 fn print_run_detail(run: &RunDetail) -> Result<()> {
+    // Bound once and reused for both the Failure Hash/VTime rows and the deferred
+    // "view logs" hint below, so the two can't drift apart.
+    let failure = run.failure_moment.as_ref();
     let mut rows: Vec<(&str, String)> = Vec::new();
 
     // Lead with the identifier; the human labels follow.
@@ -962,7 +1040,7 @@ fn print_run_detail(run: &RunDetail) -> Result<()> {
 
     rows.push(("Launcher", run.launcher.clone()));
 
-    if let Some(ref moment) = run.failure_moment {
+    if let Some(moment) = failure {
         // Hash before VTime to match the `runs logs <hash> <vtime>` argument
         // order, so the values read top-to-bottom in the order you paste them.
         rows.push(("Failure Hash", moment.input_hash.clone()));
@@ -991,7 +1069,7 @@ fn print_run_detail(run: &RunDetail) -> Result<()> {
     // Hand the user the exact command to read logs at the failure moment, the
     // same way the `--web` hint below hands over the report link. Both can fire
     // when an incomplete run still has a report — they're complementary.
-    if let Some(ref moment) = run.failure_moment {
+    if let Some(moment) = failure {
         outln!(
             "\nview logs at the failure moment:\n  snouty runs logs {} {} {}",
             run.run_id,
@@ -1343,8 +1421,15 @@ async fn cmd_runs_logs(
     result
 }
 
-const LOG_SOURCE_MIN_WIDTH: usize = 20;
-const LOG_VTIME_WIDTH: usize = 14;
+/// The source column is sized to fit `antithesis_test_composer` — the built-in
+/// test-composer source present in nearly every run's logs — so those lines align
+/// instead of overflowing. Longer sources still overflow on their own lines
+/// rather than widening the column for everyone.
+const LOG_SOURCE_MIN_WIDTH: usize = "antithesis_test_composer".len();
+/// vtime is shown truncated to 3 decimals. Sized for runs up to ~9999 vsec
+/// (`"9999.999"`, 8 chars), which covers the vast majority; longer runs overflow
+/// this width on their lines rather than padding every shorter line to match.
+const LOG_VTIME_WIDTH: usize = 8;
 const LOG_STREAM_WIDTH: usize = 3;
 
 fn format_log_entry(entry: &Value, raw: bool) -> String {
@@ -2338,26 +2423,46 @@ fn render_columns(
 /// Earliest case-insensitive occurrence of any needle in `text`, as the
 /// `(char_start, char_len)` of the match. Used to keep a search hit visible when
 /// a cell is windowed.
+///
+/// The scan runs in the original text's char space — comparing char-by-char
+/// case-insensitively — so the returned index is always a valid offset into the
+/// same `chars()` vec the caller windows. (Searching a `to_lowercase()` copy and
+/// reusing its offsets would drift for the few characters whose lowercase form
+/// has a different char count, e.g. `İ` → `i` + a combining dot.)
 fn first_needle_span(text: &str, needles: &[String]) -> Option<(usize, usize)> {
-    let lower = text.to_lowercase();
+    let chars: Vec<char> = text.chars().collect();
     needles
         .iter()
-        .filter(|n| !n.is_empty())
         .filter_map(|n| {
-            let needle = n.to_lowercase();
-            lower.find(&needle).map(|byte| {
-                let start = lower[..byte].chars().count();
-                (start, needle.chars().count())
-            })
+            let needle: Vec<char> = n.chars().collect();
+            if needle.is_empty() || needle.len() > chars.len() {
+                return None;
+            }
+            (0..=chars.len() - needle.len())
+                .find(|&i| {
+                    chars[i..i + needle.len()]
+                        .iter()
+                        .zip(&needle)
+                        .all(|(a, b)| chars_eq_ignore_case(*a, *b))
+                })
+                .map(|start| (start, needle.len()))
         })
         .min_by_key(|(start, _)| *start)
 }
 
-/// Truncate `text` to at most `width` display columns, keeping the region around
-/// the first matching needle in view. A too-long cell is windowed and centered on
-/// the match, with `…` marking each truncated edge; when no needle lands in this
-/// cell (it matched another column) the head is kept instead. Returns `text`
-/// unchanged when it already fits.
+/// Case-insensitive comparison of two characters, comparing their full lowercase
+/// mappings (so it works beyond ASCII).
+fn chars_eq_ignore_case(a: char, b: char) -> bool {
+    a == b || a.to_lowercase().eq(b.to_lowercase())
+}
+
+/// Truncate `text` to at most `width` characters, keeping the region around the
+/// first matching needle in view. A too-long cell is windowed and centered on the
+/// match, with `…` marking each truncated edge; when no needle lands in this cell
+/// (it matched another column) the head is kept instead. Returns `text` unchanged
+/// when it already fits. (Width is counted in characters, not display columns, so
+/// a cell of double-width glyphs can render wider — acceptable for the ASCII log
+/// output this serves.)
 fn truncate_around(text: &str, needles: &[String], width: usize) -> String {
     const ELL: char = '…';
     let chars: Vec<char> = text.chars().collect();
@@ -3086,12 +3191,13 @@ mod tests {
             vec![],
         );
         let out = render_property_detail(&property);
-        // A non-event property's value shows under a `Result:` label as pretty
-        // JSON — never the moment-oriented `Examples:`/`passing:` machinery.
-        assert!(out.contains("Result:"), "got: {out}");
+        // A non-event property's value shows under a `Result` label (no `:`) —
+        // never the moment-oriented `Examples` table.
+        assert!(out.contains("Result"), "got: {out}");
         assert!(out.contains("maximum_used_bytes"));
-        assert!(!out.contains("Examples:"));
-        assert!(!out.contains("passing:"));
+        assert!(!out.contains("Examples"));
+        // The label carries no colon, matching Name/Status/Details.
+        assert!(!out.contains("Result:"), "got: {out}");
     }
 
     #[test]
@@ -3120,11 +3226,11 @@ mod tests {
         assert!(!out.contains("Group     Safety"));
         assert!(!out.contains('─'));
         // Each property keeps its header and an Examples section whose table is
-        // indented beneath the (column-0) "Examples:" label.
+        // indented beneath the (column-0) "Examples" label (no `:`).
         assert!(out.contains("Name      First"));
-        assert_eq!(out.matches("Examples:").count(), 2);
+        assert_eq!(out.matches("Examples\n").count(), 2);
         assert!(
-            out.contains("Examples:\n  STATUS"),
+            out.contains("Examples\n  STATUS"),
             "examples table should be indented\n{out}"
         );
     }
@@ -3140,22 +3246,23 @@ mod tests {
             let p = non_event_property("Metric", PropertyStatus::Passing, vec![value], vec![]);
             let out = render_property_detail(&p);
             assert!(out.contains(expected), "got: {out}");
-            assert!(!out.contains("Examples:"));
+            assert!(!out.contains("Examples"));
         }
 
-        // Tiny objects/arrays are inlined after `Result:` (compact one-line JSON).
+        // Tiny objects/arrays inline against the `Result` column (compact JSON,
+        // no `:` — same value column as a scalar).
         let empty = non_event_property("E", PropertyStatus::Passing, vec![json!([])], vec![]);
         assert!(
-            render_property_detail(&empty).contains("Result: []"),
+            render_property_detail(&empty).contains("Result    []"),
             "empty array"
         );
         let tiny = non_event_property("T", PropertyStatus::Passing, vec![json!({"k": 1})], vec![]);
         assert!(
-            render_property_detail(&tiny).contains(r#"Result: {"k":1}"#),
+            render_property_detail(&tiny).contains(r#"Result    {"k":1}"#),
             "tiny object"
         );
 
-        // A large object spills to an indented pretty-printed block.
+        // A large object spills to an indented pretty-printed block under `Result`.
         let big = non_event_property(
             "Big",
             PropertyStatus::Passing,
@@ -3168,11 +3275,11 @@ mod tests {
         );
         let out = render_property_detail(&big);
         assert!(
-            out.contains("Result:\n  {"),
+            out.contains("Result\n  {"),
             "big object should be a block\n{out}"
         );
         assert!(out.contains("total_output_mb"));
-        assert!(!out.contains("Examples:"));
+        assert!(!out.contains("Examples"));
 
         // Several small values collapse into one inline JSON array.
         let multi = non_event_property(
@@ -3182,7 +3289,7 @@ mod tests {
             vec![],
         );
         assert!(
-            render_property_detail(&multi).contains("Result: [1,2]"),
+            render_property_detail(&multi).contains("Result    [1,2]"),
             "multi inline"
         );
     }
@@ -3197,7 +3304,7 @@ mod tests {
         });
         assert_eq!(
             format_log_entry(&entry, false),
-            "[         9.093] [      fault_injector] [   ]  - {\"info\":{\"details\":{\"started\":true},\"message\":\"status\"}}"
+            "[   9.093] [          fault_injector] [   ]  - {\"info\":{\"details\":{\"started\":true},\"message\":\"status\"}}"
         );
     }
 
@@ -3210,7 +3317,7 @@ mod tests {
         });
         assert_eq!(
             format_log_entry(&entry, false),
-            "[        15.174] [ bank/first_setup.sh] [inf] NbmXgEki  INFO main lsm_tree::tree::ingest: Finished ingestion writer"
+            "[  15.174] [     bank/first_setup.sh] [inf] NbmXgEki  INFO main lsm_tree::tree::ingest: Finished ingestion writer"
         );
     }
 
@@ -3251,7 +3358,7 @@ mod tests {
         let rendered = format_log_entry(&entry, false);
         // Fixed 3 decimals (so the column stays aligned), truncated not rounded:
         // 18.9148… -> 18.914 (rounding would give 18.915).
-        assert!(rendered.starts_with("[        18.914] "), "got: {rendered}");
+        assert!(rendered.starts_with("[  18.914] "), "got: {rendered}");
     }
 
     #[test]
@@ -3264,7 +3371,7 @@ mod tests {
             "output_text": "hello"
         });
         assert!(
-            format_log_entry(&entry, false).starts_with("[        12.500] "),
+            format_log_entry(&entry, false).starts_with("[  12.500] "),
             "got: {}",
             format_log_entry(&entry, false)
         );
@@ -3297,7 +3404,23 @@ mod tests {
         });
         assert_eq!(
             format_log_entry(&entry, false),
-            "[        14.284] [antithesis/pods/client/sdk.jsonl] [   ]  - {\"antithesis_setup\":{\"details\":null,\"status\":\"complete\"}}"
+            "[  14.284] [antithesis/pods/client/sdk.jsonl] [   ]  - {\"antithesis_setup\":{\"details\":null,\"status\":\"complete\"}}"
+        );
+    }
+
+    #[test]
+    fn format_log_line_fits_test_composer_source_exactly() {
+        // The source column is sized to `antithesis_test_composer`, a built-in
+        // source in nearly every run, so it fills the column exactly — no leading
+        // pad before it and no overflow past it.
+        let entry = json!({
+            "moment": {"vtime": "401.500"},
+            "source": {"name": "antithesis_test_composer"},
+            "output_text": "started"
+        });
+        assert_eq!(
+            format_log_entry(&entry, false),
+            "[ 401.500] [antithesis_test_composer] [   ] started"
         );
     }
 
@@ -3370,7 +3493,51 @@ mod tests {
         let empty = non_event_property("Empty", PropertyStatus::Passing, vec![], vec![]);
         let out = render_property_detail(&empty);
         assert!(out.contains("Result    (none)"), "got: {out}");
-        assert!(!out.contains("Examples:"));
+        assert!(!out.contains("Examples"));
+    }
+
+    #[test]
+    fn render_result_labels_failing_non_event_counterexamples() {
+        // A failing non-event property carries the violating value(s) in
+        // `counterexamples`. They must be labelled and shown first, so the
+        // offending value isn't lost among the satisfying `examples`.
+        let p = non_event_property(
+            "Peak memory below limit",
+            PropertyStatus::Failing,
+            vec![json!(720), json!(880)], // satisfying
+            vec![json!(1340)],            // violating
+        );
+        let out = render_property_detail(&p);
+        // Both groups are labelled (no `:`), with counterexamples first.
+        let cex = out
+            .find("Counter-examples\n")
+            .expect("counter-examples label");
+        let ex = out.find("\nExamples\n").expect("examples label");
+        assert!(cex < ex, "counterexamples should come first\n{out}");
+        // The violating value sits under the Counter-examples heading, the
+        // satisfying ones under Examples — not merged into one unlabelled list.
+        assert!(out.contains("Counter-examples\n  1340"), "got: {out}");
+        assert!(out.contains("Examples\n  720\n  880"), "got: {out}");
+        // No anonymous `Result` blob in the failing case.
+        assert!(!out.contains("Result"), "got: {out}");
+    }
+
+    #[test]
+    fn render_result_failing_non_event_without_examples_only_shows_counterexamples() {
+        let p = non_event_property(
+            "Invariant held",
+            PropertyStatus::Failing,
+            vec![],
+            vec![json!("n2-standard-4")],
+        );
+        let out = render_property_detail(&p);
+        assert!(
+            out.contains("Counter-examples\n  n2-standard-4"),
+            "got: {out}"
+        );
+        // No standalone Examples group (there are no satisfying examples). Guard
+        // against the "Examples" inside "Counter-examples" by anchoring on `\n`.
+        assert!(!out.contains("\nExamples"), "got: {out}");
     }
 
     #[test]

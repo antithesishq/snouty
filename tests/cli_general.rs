@@ -496,8 +496,8 @@ fn doctor_reports_missing_env_vars() {
         .arg("doctor")
         .assert()
         .failure()
-        .stderr(predicate::str::contains("ANTITHESIS_TENANT"))
-        .stderr(predicate::str::contains("ANTITHESIS_REPOSITORY"));
+        .stderr(predicate::str::contains("tenant"))
+        .stderr(predicate::str::contains("repository"));
 }
 
 #[test]

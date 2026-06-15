@@ -168,7 +168,7 @@ impl Auth {
         Self::Bearer { api_key }
     }
 
-    fn from_env() -> Result<Self> {
+    pub(crate) fn from_env() -> Result<Self> {
         if let Some(api_key) = optional_env("ANTITHESIS_API_KEY")? {
             return Ok(Self::bearer(api_key));
         }

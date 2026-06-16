@@ -9,7 +9,6 @@ use std::{
 };
 
 use color_eyre::eyre::{Report, Result, eyre};
-use directories_next::ProjectDirs;
 use toml::Table;
 
 pub const ANTITHESIS_PROFILE_ENV_VAR_NAME: &str = "ANTITHESIS_PROFILE";
@@ -50,7 +49,6 @@ pub trait SnoutyConfig {
 
 pub fn default_config(project_config_location: Option<PathBuf>) -> impl SnoutyConfig {
     DefaultSnoutyConfig {
-        project_dirs: ProjectDirs::from("com", "Antithesis", "Snouty"),
         profile: env::var(ANTITHESIS_PROFILE_ENV_VAR_NAME).ok(),
         project_config_location,
         cache: RefCell::new(HashMap::new()),
@@ -67,7 +65,6 @@ pub fn default_config(project_config_location: Option<PathBuf>) -> impl SnoutyCo
 }
 
 struct DefaultSnoutyConfig {
-    project_dirs: Option<ProjectDirs>,
     profile: Option<String>,
     project_config_location: Option<PathBuf>,
     cache: RefCell<HashMap<PathBuf, Option<Table>>>,
@@ -82,6 +79,30 @@ struct DefaultSnoutyConfig {
     temp_dir: OnceCell<Option<PathBuf>>,
 }
 
+fn global_config_dir() -> Option<PathBuf> {
+    let base_dir = if let Ok(xdg_config_home) = env::var("XDG_CONFIG_HOME") {
+        Some(PathBuf::from(xdg_config_home))
+    } else if let Ok(home) = env::var("HOME") {
+        Some(PathBuf::from(home).join(".config"))
+    } else {
+        None // No global config for Windows users :(
+    };
+
+    base_dir.map(|dir| dir.join("snouty"))
+}
+
+fn default_cache_dir() -> Option<PathBuf> {
+    let base_dir = if let Ok(xdg_config_home) = env::var("XDG_CACHE_HOME") {
+        Some(PathBuf::from(xdg_config_home))
+    } else if let Ok(home) = env::var("HOME") {
+        Some(PathBuf::from(home).join(".cache"))
+    } else {
+        None // No cache for Windows users :(
+    };
+
+    base_dir.map(|dir| dir.join("snouty"))
+}
+
 impl SnoutyConfig for DefaultSnoutyConfig {
     fn tenant(&self) -> Result<&str> {
         self.tenant
@@ -90,7 +111,7 @@ impl SnoutyConfig for DefaultSnoutyConfig {
                     "tenant",
                     Some(ANTITHESIS_TENANT_VAR_NAME),
                     &self.profile,
-                    self.project_dirs.as_ref().map(|pd| pd.config_dir()),
+                    global_config_dir(),
                     self.project_config_location.as_ref(),
                     &mut self.cache.borrow_mut(),
                 )
@@ -107,7 +128,7 @@ impl SnoutyConfig for DefaultSnoutyConfig {
                     "repository",
                     Some(ANTITHESIS_REPOSITORY_VAR_NAME),
                     &self.profile,
-                    self.project_dirs.as_ref().map(|pd| pd.config_dir()),
+                    global_config_dir(),
                     self.project_config_location.as_ref(),
                     &mut self.cache.borrow_mut(),
                 )
@@ -153,11 +174,7 @@ impl SnoutyConfig for DefaultSnoutyConfig {
                 env::var(CACHE_DIR_VAR_NAME)
                     .ok()
                     .map(PathBuf::from)
-                    .or_else(|| {
-                        self.project_dirs
-                            .as_ref()
-                            .map(|pd| pd.cache_dir().to_path_buf())
-                    })
+                    .or_else(default_cache_dir)
             })
             .as_deref()
     }
@@ -188,7 +205,7 @@ fn resolve_required_config_value_from_environment_or_project(
     config_key: &str,
     environment_variable_name: Option<&str>,
     profile: &Option<String>,
-    global_config_location: Option<&Path>,
+    global_config_location: Option<PathBuf>,
     project_config_location: Option<&PathBuf>,
     cache: &mut HashMap<PathBuf, Option<Table>>,
 ) -> Result<String> {
@@ -210,7 +227,7 @@ fn resolve_config_value_from_environment_or_project(
     config_key: &str,
     environment_variable_name: Option<&str>,
     profile: &Option<String>,
-    global_config_location: Option<&Path>,
+    global_config_location: Option<PathBuf>,
     project_config_location: Option<&PathBuf>,
     cache: &mut HashMap<PathBuf, Option<Table>>,
 ) -> Option<String> {
@@ -235,8 +252,9 @@ fn resolve_config_value_from_environment_or_project(
             }
         }
 
-        if let Some(global_config_path) =
-            global_config_location.map(|dir| dir.join(GLOBAL_CONFIG_SETTINGS_FILENAME))
+        if let Some(global_config_path) = global_config_location
+            .as_ref()
+            .map(|dir| dir.join(GLOBAL_CONFIG_SETTINGS_FILENAME))
         {
             let cached = try_load_toml_file(cache, &global_config_path);
 
@@ -261,8 +279,9 @@ fn resolve_config_value_from_environment_or_project(
         }
     }
 
-    if let Some(global_config_path) =
-        global_config_location.map(|dir| dir.join(GLOBAL_CONFIG_SETTINGS_FILENAME))
+    if let Some(global_config_path) = global_config_location
+        .as_ref()
+        .map(|dir| dir.join(GLOBAL_CONFIG_SETTINGS_FILENAME))
     {
         let cached = try_load_toml_file(cache, &global_config_path);
 

@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::io::{BufWriter, Write};
 use std::path::Path;
 use std::sync::OnceLock;
@@ -1807,14 +1808,23 @@ impl LineTransformer for FaultAnnotator {
                 let end_vtime = max_duration.map(|duration| duration + latest_vtime);
                 let fault_type = entry["fault"]["type"].as_str().unwrap_or("");
 
-                if let Some(target) = entry["fault"]["affected_nodes"]
+                let targets = entry["fault"]["affected_nodes"]
                     .as_array()
-                    .and_then(|arr| arr.first())
-                    .and_then(|first| first.as_str())
+                    .map(|arr| arr.iter().filter_map(|v| v.as_str()).collect::<Vec<&str>>());
+
+                if let Some(targets) = targets
+                    && let Some(target) = targets.first()
                 {
                     if fault_name.eq("partition") || fault_name.eq("clog") {
                         update_faults = self.active_fault_windows.add_network_fault(
                             fault_name.to_string(),
+                            entry["fault"]["details"]["disruption_type"]
+                                .as_str()
+                                .map(|borrowed| borrowed.to_owned()),
+                            targets
+                                .iter()
+                                .map(|str| str.to_owned().to_owned())
+                                .collect(),
                             FaultWindowBounds {
                                 start_vtime: latest_vtime,
                                 end_vtime,
@@ -1897,6 +1907,7 @@ fn strip_ansi(text: &str) -> String {
     ansi_re().replace_all(text, "").to_string()
 }
 
+#[derive(Clone, Copy)]
 struct FaultWindowBounds {
     start_vtime: f64,
     end_vtime: Option<f64>,
@@ -1910,8 +1921,57 @@ impl FaultWindowBounds {
     }
 }
 
+#[derive(Clone)]
+struct NetworkFaultWindow {
+    bounds: FaultWindowBounds,
+    affected_nodes: Vec<String>,
+}
+
+struct NetworkFaultWindows {
+    start_time: f64,
+    windows: Vec<NetworkFaultWindow>,
+}
+
+impl NetworkFaultWindows {
+    fn is_expired(&self, latest_vtime: &f64) -> bool {
+        for window in &self.windows {
+            if !window.bounds.is_expired(latest_vtime) {
+                return false;
+            }
+        }
+
+        true
+    }
+
+    fn actively_affected_nodes(&self) -> HashSet<String> {
+        let mut affectees = HashSet::new();
+        for shadowed in self.windows.iter().flat_map(|s| &s.affected_nodes) {
+            if shadowed == "ALL" {
+                return HashSet::from([shadowed.clone()]);
+            }
+
+            affectees.insert(shadowed.clone());
+        }
+
+        affectees
+    }
+
+    fn compact(&mut self, latest_vtime: &f64) -> bool {
+        let mut changed = false;
+
+        self.windows.retain(|e| {
+            let should_drop = e.bounds.is_expired(latest_vtime);
+            changed = should_drop || changed;
+
+            !should_drop
+        });
+
+        changed
+    }
+}
+
 struct ActiveFaultWindows {
-    network: IndexMap<String, FaultWindowBounds>,
+    network: IndexMap<String, IndexMap<Option<String>, NetworkFaultWindows>>,
     node: IndexMap<String, IndexMap<String, FaultWindowBounds>>,
     clock: Vec<(f64, FaultWindowBounds)>,
 }
@@ -1945,12 +2005,19 @@ impl ActiveFaultWindows {
             .retain(|fault| !fault.1.is_expired(&latest_vtime));
         did_something = self.clock.len() != clock_faults_length;
 
-        for _ in self
-            .network
-            .extract_if(.., |_k, window| window.is_expired(&latest_vtime))
-        {
-            did_something = true;
-        }
+        self.network.retain(|_, v| {
+            let len_prior = v.len();
+
+            v.retain(|_, v| {
+                did_something = v.compact(&latest_vtime) || did_something;
+
+                !v.is_expired(&latest_vtime)
+            });
+
+            did_something = did_something || len_prior != v.len();
+
+            !v.is_empty()
+        });
 
         let mut dropped_categories_of_node_faults = false;
         for _ in self.node.extract_if(.., |_k, windows_by_container| {
@@ -1969,20 +2036,48 @@ impl ActiveFaultWindows {
         did_something
     }
 
-    fn add_network_fault(&mut self, name: String, window: FaultWindowBounds) -> bool {
+    fn add_network_fault(
+        &mut self,
+        name: String,
+        disruption_type: Option<String>,
+        affected_nodes: Vec<String>,
+        window: FaultWindowBounds,
+    ) -> bool {
         match self.network.entry(name) {
             Entry::Vacant(entry) => {
-                entry.insert(window);
+                let mut by_disruption_type = IndexMap::new();
+                by_disruption_type.insert(
+                    disruption_type,
+                    NetworkFaultWindows {
+                        start_time: window.start_vtime,
+                        windows: vec![NetworkFaultWindow {
+                            bounds: window,
+                            affected_nodes,
+                        }],
+                    },
+                );
+                entry.insert(by_disruption_type);
                 true
             }
-            Entry::Occupied(mut entry) => {
-                if let Some(updated) = merge_fault_windows(entry.get(), window) {
-                    entry.insert(updated);
-                    return true;
+            Entry::Occupied(mut entry) => match entry.get_mut().entry(disruption_type) {
+                Entry::Vacant(e) => {
+                    e.insert(NetworkFaultWindows {
+                        start_time: window.start_vtime,
+                        windows: vec![NetworkFaultWindow {
+                            bounds: window,
+                            affected_nodes,
+                        }],
+                    });
+                    true
                 }
-
-                false
-            }
+                Entry::Occupied(mut e) => {
+                    e.get_mut().windows.push(NetworkFaultWindow {
+                        bounds: window,
+                        affected_nodes,
+                    });
+                    true
+                }
+            },
         }
     }
 
@@ -2027,10 +2122,28 @@ impl ActiveFaultWindows {
         let mut result = Map::new();
 
         for entry in &self.network {
-            result.insert(
-                format!("network_{}", entry.0),
-                json!({"vtime": entry.1.start_vtime}),
-            );
+            let mut by_disruption_type = Map::new();
+
+            for entry in entry.1 {
+                let mut affected_nodes: Vec<String> =
+                    entry.1.actively_affected_nodes().into_iter().collect();
+                affected_nodes.sort_unstable();
+                by_disruption_type.insert(
+                    entry
+                        .0
+                        .as_deref()
+                        .unwrap_or("<no disruption type specified>")
+                        .to_string(),
+                    json!({"vtime": entry.1.start_time, "affected_nodes": affected_nodes}),
+                );
+            }
+
+            if !by_disruption_type.is_empty() {
+                result.insert(
+                    format!("network_{}", entry.0),
+                    Value::Object(by_disruption_type),
+                );
+            }
         }
 
         for entry in &self.node {
@@ -3793,17 +3906,21 @@ mod tests {
                     "name": "partition",
                     "type": "network",
                     "affected_nodes": ["a", "b"],
+                    "details": {
+                        "disruption_type": "Slowed",
+                        "partitions": [["a"], ["b"]]
+                    },
                     "max_duration": 10
                 }
             }))),
-            Some("{\"moment\":{\"vtime\":1.0},\"source\":{\"name\":\"fault_injector\"},\"fault\":{\"name\":\"partition\",\"type\":\"network\",\"affected_nodes\":[\"a\",\"b\"],\"max_duration\":10},\"active_faults\":{\"network_partition\":{\"vtime\":1.0}}}".to_string())
+            Some("{\"moment\":{\"vtime\":1.0},\"source\":{\"name\":\"fault_injector\"},\"fault\":{\"name\":\"partition\",\"type\":\"network\",\"affected_nodes\":[\"a\",\"b\"],\"details\":{\"disruption_type\":\"Slowed\",\"partitions\":[[\"a\"],[\"b\"]]},\"max_duration\":10},\"active_faults\":{\"network_partition\":{\"Slowed\":{\"vtime\":1.0,\"affected_nodes\":[\"a\",\"b\"]}}}}".to_string())
         );
 
         // Another log message; should retain active window state since the log message had no timestamp
         assert_eq!(
             transformer.try_transform("{\"foo\":\"bar\"}"),
             Some(
-                "{\"foo\":\"bar\",\"active_faults\":{\"network_partition\":{\"vtime\":1.0}}}"
+                "{\"foo\":\"bar\",\"active_faults\":{\"network_partition\":{\"Slowed\":{\"vtime\":1.0,\"affected_nodes\":[\"a\",\"b\"]}}}}"
                     .to_string()
             )
         );
@@ -3824,7 +3941,7 @@ mod tests {
                     "max_duration": 9
                 }
             }))),
-            Some("{\"moment\":{\"vtime\":2.0},\"source\":{\"name\":\"fault_injector\"},\"fault\":{\"name\":\"throttle\",\"type\":\"node\",\"affected_nodes\":[\"c\"],\"max_duration\":9},\"active_faults\":{\"network_partition\":{\"vtime\":1.0},\"node_throttle\":{\"c\":2.0}}}".to_string())
+            Some("{\"moment\":{\"vtime\":2.0},\"source\":{\"name\":\"fault_injector\"},\"fault\":{\"name\":\"throttle\",\"type\":\"node\",\"affected_nodes\":[\"c\"],\"max_duration\":9},\"active_faults\":{\"network_partition\":{\"Slowed\":{\"vtime\":1.0,\"affected_nodes\":[\"a\",\"b\"]}},\"node_throttle\":{\"c\":2.0}}}".to_string())
         );
 
         // Another non-fault injector message; should retain state
@@ -3835,7 +3952,7 @@ mod tests {
                 },
                 "foo": "bar"
             }))),
-            Some("{\"moment\":{\"vtime\":11.0},\"foo\":\"bar\",\"active_faults\":{\"network_partition\":{\"vtime\":1.0},\"node_throttle\":{\"c\":2.0}}}".to_string())
+            Some("{\"moment\":{\"vtime\":11.0},\"foo\":\"bar\",\"active_faults\":{\"network_partition\":{\"Slowed\":{\"vtime\":1.0,\"affected_nodes\":[\"a\",\"b\"]}},\"node_throttle\":{\"c\":2.0}}}".to_string())
         );
 
         // Expire both windows
@@ -3872,10 +3989,13 @@ mod tests {
                 "fault": {
                     "name": "partition",
                     "type": "network",
-                    "affected_nodes": ["a", "b"]
+                    "affected_nodes": ["a", "b"],
+                    "details": {
+                        "disruption_type": "Slowed"
+                    }
                 }
             }))),
-            Some("{\"moment\":{\"vtime\":1.0},\"source\":{\"name\":\"fault_injector\"},\"fault\":{\"name\":\"partition\",\"type\":\"network\",\"affected_nodes\":[\"a\",\"b\"]},\"active_faults\":{\"network_partition\":{\"vtime\":1.0}}}".to_string())
+            Some("{\"moment\":{\"vtime\":1.0},\"source\":{\"name\":\"fault_injector\"},\"fault\":{\"name\":\"partition\",\"type\":\"network\",\"affected_nodes\":[\"a\",\"b\"],\"details\":{\"disruption_type\":\"Slowed\"}},\"active_faults\":{\"network_partition\":{\"Slowed\":{\"vtime\":1.0,\"affected_nodes\":[\"a\",\"b\"]}}}}".to_string())
         );
 
         // Open a node throttled fault window
@@ -3893,7 +4013,7 @@ mod tests {
                     "affected_nodes": ["c"]
                 }
             }))),
-            Some("{\"moment\":{\"vtime\":2.0},\"source\":{\"name\":\"fault_injector\"},\"fault\":{\"name\":\"throttle\",\"type\":\"node\",\"affected_nodes\":[\"c\"]},\"active_faults\":{\"network_partition\":{\"vtime\":1.0},\"node_throttle\":{\"c\":2.0}}}".to_string())
+            Some("{\"moment\":{\"vtime\":2.0},\"source\":{\"name\":\"fault_injector\"},\"fault\":{\"name\":\"throttle\",\"type\":\"node\",\"affected_nodes\":[\"c\"]},\"active_faults\":{\"network_partition\":{\"Slowed\":{\"vtime\":1.0,\"affected_nodes\":[\"a\",\"b\"]}},\"node_throttle\":{\"c\":2.0}}}".to_string())
         );
 
         // Open a network clog fault window
@@ -3908,16 +4028,19 @@ mod tests {
                 "fault": {
                     "name": "clog",
                     "type": "network",
-                    "affected_nodes": ["b", "c"]
+                    "affected_nodes": ["b", "c"],
+                    "details": {
+                        "disruption_type": "Jammed"
+                    }
                 }
             }))),
-            Some("{\"moment\":{\"vtime\":3.0},\"source\":{\"name\":\"fault_injector\"},\"fault\":{\"name\":\"clog\",\"type\":\"network\",\"affected_nodes\":[\"b\",\"c\"]},\"active_faults\":{\"network_partition\":{\"vtime\":1.0},\"network_clog\":{\"vtime\":3.0},\"node_throttle\":{\"c\":2.0}}}".to_string())
+            Some("{\"moment\":{\"vtime\":3.0},\"source\":{\"name\":\"fault_injector\"},\"fault\":{\"name\":\"clog\",\"type\":\"network\",\"affected_nodes\":[\"b\",\"c\"],\"details\":{\"disruption_type\":\"Jammed\"}},\"active_faults\":{\"network_partition\":{\"Slowed\":{\"vtime\":1.0,\"affected_nodes\":[\"a\",\"b\"]}},\"network_clog\":{\"Jammed\":{\"vtime\":3.0,\"affected_nodes\":[\"b\",\"c\"]}},\"node_throttle\":{\"c\":2.0}}}".to_string())
         );
 
         // Verify that state is retained for a non-control log message
         assert_eq!(
             transformer.try_transform(&format!("{}", json!({"foo": "bar"}))),
-            Some("{\"foo\":\"bar\",\"active_faults\":{\"network_partition\":{\"vtime\":1.0},\"network_clog\":{\"vtime\":3.0},\"node_throttle\":{\"c\":2.0}}}".to_string())
+            Some("{\"foo\":\"bar\",\"active_faults\":{\"network_partition\":{\"Slowed\":{\"vtime\":1.0,\"affected_nodes\":[\"a\",\"b\"]}},\"network_clog\":{\"Jammed\":{\"vtime\":3.0,\"affected_nodes\":[\"b\",\"c\"]}},\"node_throttle\":{\"c\":2.0}}}".to_string())
         );
 
         // Send a network restore message
@@ -3954,10 +4077,13 @@ mod tests {
                 "fault": {
                     "name": "partition",
                     "type": "network",
-                    "affected_nodes": ["a", "b"]
+                    "affected_nodes": ["b", "a"],
+                    "details": {
+                        "disruption_type": "Slowed"
+                    }
                 }
             }))),
-            Some("{\"moment\":{\"vtime\":1.0},\"source\":{\"name\":\"fault_injector\"},\"fault\":{\"name\":\"partition\",\"type\":\"network\",\"affected_nodes\":[\"a\",\"b\"]},\"active_faults\":{\"network_partition\":{\"vtime\":1.0}}}".to_string())
+            Some("{\"moment\":{\"vtime\":1.0},\"source\":{\"name\":\"fault_injector\"},\"fault\":{\"name\":\"partition\",\"type\":\"network\",\"affected_nodes\":[\"b\",\"a\"],\"details\":{\"disruption_type\":\"Slowed\"}},\"active_faults\":{\"network_partition\":{\"Slowed\":{\"vtime\":1.0,\"affected_nodes\":[\"a\",\"b\"]}}}}".to_string())
         );
 
         // Open a node throttled fault window
@@ -3975,7 +4101,7 @@ mod tests {
                     "affected_nodes": ["c"]
                 }
             }))),
-            Some("{\"moment\":{\"vtime\":2.0},\"source\":{\"name\":\"fault_injector\"},\"fault\":{\"name\":\"throttle\",\"type\":\"node\",\"affected_nodes\":[\"c\"]},\"active_faults\":{\"network_partition\":{\"vtime\":1.0},\"node_throttle\":{\"c\":2.0}}}".to_string())
+            Some("{\"moment\":{\"vtime\":2.0},\"source\":{\"name\":\"fault_injector\"},\"fault\":{\"name\":\"throttle\",\"type\":\"node\",\"affected_nodes\":[\"c\"]},\"active_faults\":{\"network_partition\":{\"Slowed\":{\"vtime\":1.0,\"affected_nodes\":[\"a\",\"b\"]}},\"node_throttle\":{\"c\":2.0}}}".to_string())
         );
 
         // Open a network clog fault window
@@ -3990,10 +4116,13 @@ mod tests {
                 "fault": {
                     "name": "clog",
                     "type": "network",
-                    "affected_nodes": ["b", "c"]
+                    "affected_nodes": ["b", "c"],
+                    "details": {
+                        "disruption_type": "Slowed"
+                    }
                 }
             }))),
-            Some("{\"moment\":{\"vtime\":3.0},\"source\":{\"name\":\"fault_injector\"},\"fault\":{\"name\":\"clog\",\"type\":\"network\",\"affected_nodes\":[\"b\",\"c\"]},\"active_faults\":{\"network_partition\":{\"vtime\":1.0},\"network_clog\":{\"vtime\":3.0},\"node_throttle\":{\"c\":2.0}}}".to_string())
+            Some("{\"moment\":{\"vtime\":3.0},\"source\":{\"name\":\"fault_injector\"},\"fault\":{\"name\":\"clog\",\"type\":\"network\",\"affected_nodes\":[\"b\",\"c\"],\"details\":{\"disruption_type\":\"Slowed\"}},\"active_faults\":{\"network_partition\":{\"Slowed\":{\"vtime\":1.0,\"affected_nodes\":[\"a\",\"b\"]}},\"network_clog\":{\"Slowed\":{\"vtime\":3.0,\"affected_nodes\":[\"b\",\"c\"]}},\"node_throttle\":{\"c\":2.0}}}".to_string())
         );
 
         // Open a clock fault window
@@ -4013,13 +4142,13 @@ mod tests {
                     }
                 }
             }))),
-            Some("{\"moment\":{\"vtime\":4.0},\"source\":{\"name\":\"fault_injector\"},\"fault\":{\"name\":\"skip\",\"type\":\"clock\",\"details\":{\"offset\":10.5}},\"active_faults\":{\"network_partition\":{\"vtime\":1.0},\"network_clog\":{\"vtime\":3.0},\"node_throttle\":{\"c\":2.0},\"clock_skip\":{\"cumulative_offset\":10.5,\"vtime\":4.0}}}".to_string())
+            Some("{\"moment\":{\"vtime\":4.0},\"source\":{\"name\":\"fault_injector\"},\"fault\":{\"name\":\"skip\",\"type\":\"clock\",\"details\":{\"offset\":10.5}},\"active_faults\":{\"network_partition\":{\"Slowed\":{\"vtime\":1.0,\"affected_nodes\":[\"a\",\"b\"]}},\"network_clog\":{\"Slowed\":{\"vtime\":3.0,\"affected_nodes\":[\"b\",\"c\"]}},\"node_throttle\":{\"c\":2.0},\"clock_skip\":{\"cumulative_offset\":10.5,\"vtime\":4.0}}}".to_string())
         );
 
         // Verify that state is retained for a non-control log message
         assert_eq!(
             transformer.try_transform(&format!("{}", json!({"foo": "bar"}))),
-            Some("{\"foo\":\"bar\",\"active_faults\":{\"network_partition\":{\"vtime\":1.0},\"network_clog\":{\"vtime\":3.0},\"node_throttle\":{\"c\":2.0},\"clock_skip\":{\"cumulative_offset\":10.5,\"vtime\":4.0}}}".to_string())
+            Some("{\"foo\":\"bar\",\"active_faults\":{\"network_partition\":{\"Slowed\":{\"vtime\":1.0,\"affected_nodes\":[\"a\",\"b\"]}},\"network_clog\":{\"Slowed\":{\"vtime\":3.0,\"affected_nodes\":[\"b\",\"c\"]}},\"node_throttle\":{\"c\":2.0},\"clock_skip\":{\"cumulative_offset\":10.5,\"vtime\":4.0}}}".to_string())
         );
 
         // Send a fault injector pause message
@@ -4124,6 +4253,9 @@ mod tests {
                     "name": "clog",
                     "type": "network",
                     "affected_nodes": ["node-1"],
+                    "details": {
+                        "disruption_type": "Jammed"
+                    },
                     "max_duration": 100
                 }
             })
@@ -4148,7 +4280,7 @@ mod tests {
                 concat!(
                     r#"{"moment":{"vtime":2.0},"source":{"name":"fault_injector"},"#,
                     r#""fault":{"name":"clog","type":"network","affected_nodes":[]},"#,
-                    r#""active_faults":{"network_clog":{"vtime":1.0}}}"#
+                    r#""active_faults":{"network_clog":{"Jammed":{"vtime":1.0,"affected_nodes":["node-1"]}}}}"#
                 )
                 .to_string()
             )
@@ -4172,7 +4304,10 @@ mod tests {
                     "name": "partition",
                     "type": "network",
                     "affected_nodes": ["ALL"],
-                    "max_duration": 100
+                    "max_duration": 100,
+                    "details": {
+                        "disruption_type": "Stopped"
+                    }
                 }
             })
         ));
@@ -4194,7 +4329,7 @@ mod tests {
                 concat!(
                     r#"{"moment":{"vtime":2.0},"source":{"name":"fault_injector"},"#,
                     r#""fault":{"name":"partition","type":"network"},"#,
-                    r#""active_faults":{"network_partition":{"vtime":1.0}}}"#
+                    r#""active_faults":{"network_partition":{"Stopped":{"vtime":1.0,"affected_nodes":["ALL"]}}}}"#
                 )
                 .to_string()
             )
@@ -4347,7 +4482,10 @@ mod tests {
                 "fault": {
                     "name": "partition",
                     "type": "network",
-                    "affected_nodes": ["ALL"]
+                    "affected_nodes": ["ALL"],
+                    "details": {
+                        "disruption_type": "Stopped"
+                    }
                 }
             })
         ));
@@ -4358,7 +4496,7 @@ mod tests {
             Some(
                 concat!(
                     r#"{"output_text":"no moment here","#,
-                    r#""active_faults":{"network_partition":{"vtime":1.0}}}"#
+                    r#""active_faults":{"network_partition":{"Stopped":{"vtime":1.0,"affected_nodes":["ALL"]}}}}"#
                 )
                 .to_string()
             )
@@ -4390,7 +4528,10 @@ mod tests {
                     "name": "partition",
                     "type": "network",
                     "affected_nodes": ["ALL"],
-                    "max_duration": 5
+                    "max_duration": 5,
+                    "details": {
+                        "disruption_type": "Jammed"
+                    }
                 }
             })
         ));
@@ -4407,7 +4548,7 @@ mod tests {
             Some(
                 concat!(
                     r#"{"moment":{"vtime":10.0},"output_text":"at exact end","#,
-                    r#""active_faults":{"network_partition":{"vtime":5.0}}}"#
+                    r#""active_faults":{"network_partition":{"Jammed":{"vtime":5.0,"affected_nodes":["ALL"]}}}}"#
                 )
                 .to_string()
             )
@@ -4451,7 +4592,10 @@ mod tests {
                 "fault": {
                     "name": "partition",
                     "type": "network",
-                    "affected_nodes": ["ALL"]
+                    "affected_nodes": ["ALL"],
+                    "details": {
+                        "disruption_type": "Jammed"
+                    }
                     // no max_duration → end_vtime = None → is_expired always false
                 }
             })
@@ -4468,7 +4612,7 @@ mod tests {
             Some(
                 concat!(
                     r#"{"moment":{"vtime":1000.0},"output_text":"much later","#,
-                    r#""active_faults":{"network_partition":{"vtime":1.0}}}"#
+                    r#""active_faults":{"network_partition":{"Jammed":{"vtime":1.0,"affected_nodes":["ALL"]}}}}"#
                 )
                 .to_string()
             )
@@ -4545,7 +4689,10 @@ mod tests {
                     "name": "partition",
                     "type": "network",
                     "affected_nodes": ["ALL"],
-                    "max_duration": 20
+                    "max_duration": 20,
+                    "details": {
+                        "disruption_type": "Slowed"
+                    }
                 }
             })
         ));
@@ -4560,7 +4707,10 @@ mod tests {
                     "name": "clog",
                     "type": "network",
                     "affected_nodes": ["A"],
-                    "max_duration": 3
+                    "max_duration": 3,
+                    "details": {
+                        "disruption_type": "Slowed"
+                    }
                 }
             })
         ));
@@ -4578,7 +4728,7 @@ mod tests {
                 concat!(
                     r#"{"moment":{"vtime":14.0},"#,
                     r#""output_text":"clog expired, partition still active","#,
-                    r#""active_faults":{"network_partition":{"vtime":5.0}}}"#
+                    r#""active_faults":{"network_partition":{"Slowed":{"vtime":5.0,"affected_nodes":["ALL"]}}}}"#
                 )
                 .to_string()
             )
@@ -4606,13 +4756,16 @@ mod tests {
                     "name": "partition",
                     "type": "network",
                     "affected_nodes": ["ALL"],
-                    "max_duration": 3
+                    "max_duration": 3,
+                    "details": {
+                        "disruption_type": "Slowed"
+                    }
                 }
             }))),
             Some(concat!(
                 r#"{"moment":{"vtime":1.0},"source":{"name":"fault_injector"},"#,
-                r#""fault":{"name":"partition","type":"network","affected_nodes":["ALL"],"max_duration":3},"#,
-                r#""active_faults":{"network_partition":{"vtime":1.0}}}"#
+                r#""fault":{"name":"partition","type":"network","affected_nodes":["ALL"],"max_duration":3,"details":{"disruption_type":"Slowed"}},"#,
+                r#""active_faults":{"network_partition":{"Slowed":{"vtime":1.0,"affected_nodes":["ALL"]}}}}"#
             ).to_string())
         );
 
@@ -4627,13 +4780,16 @@ mod tests {
                     "name": "partition",
                     "type": "network",
                     "affected_nodes": ["ALL"],
-                    "max_duration": 3
+                    "max_duration": 3,
+                    "details": {
+                        "disruption_type": "Slowed"
+                    }
                 }
             }))),
             Some(concat!(
                 r#"{"moment":{"vtime":5.0},"source":{"name":"fault_injector"},"#,
-                r#""fault":{"name":"partition","type":"network","affected_nodes":["ALL"],"max_duration":3},"#,
-                r#""active_faults":{"network_partition":{"vtime":5.0}}}"#
+                r#""fault":{"name":"partition","type":"network","affected_nodes":["ALL"],"max_duration":3,"details":{"disruption_type":"Slowed"}},"#,
+                r#""active_faults":{"network_partition":{"Slowed":{"vtime":5.0,"affected_nodes":["ALL"]}}}}"#
             ).to_string())
         );
     }
@@ -4660,7 +4816,10 @@ mod tests {
                     "name": "partition",
                     "type": "network",
                     "affected_nodes": ["ALL"],
-                    "max_duration": 5
+                    "max_duration": 5,
+                    "details": {
+                        "disruption_type": "Slowed"
+                    }
                 }
             })
         ));
@@ -4675,13 +4834,16 @@ mod tests {
                     "name": "partition",
                     "type": "network",
                     "affected_nodes": ["ALL"],
-                    "max_duration": 5
+                    "max_duration": 5,
+                    "details": {
+                        "disruption_type": "Slowed"
+                    }
                 }
             }))),
             Some(concat!(
                 r#"{"moment":{"vtime":14.0},"source":{"name":"fault_injector"},"#,
-                r#""fault":{"name":"partition","type":"network","affected_nodes":["ALL"],"max_duration":5},"#,
-                r#""active_faults":{"network_partition":{"vtime":10.0}}}"#
+                r#""fault":{"name":"partition","type":"network","affected_nodes":["ALL"],"max_duration":5,"details":{"disruption_type":"Slowed"}},"#,
+                r#""active_faults":{"network_partition":{"Slowed":{"vtime":10.0,"affected_nodes":["ALL"]}}}}"#
             ).to_string())
         );
 
@@ -4697,7 +4859,7 @@ mod tests {
             Some(
                 concat!(
                     r#"{"moment":{"vtime":16.0},"output_text":"after first window expired","#,
-                    r#""active_faults":{"network_partition":{"vtime":10.0}}}"#
+                    r#""active_faults":{"network_partition":{"Slowed":{"vtime":10.0,"affected_nodes":["ALL"]}}}}"#
                 )
                 .to_string()
             )

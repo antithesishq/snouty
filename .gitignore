@@ -1,2 +1,6 @@
 /target
 .claude/settings.local.json
+
+# Python bytecode cache (e.g. from running scripts/gen-gallery.py)
+__pycache__/
+*.pyc

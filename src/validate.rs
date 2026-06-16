@@ -12,6 +12,7 @@ use tokio::time::{Duration, sleep};
 use crate::cli::ValidateArgs;
 use crate::config::{self, ComposeConfig, Config, KubernetesConfig};
 use crate::container;
+use crate::error::user_error;
 use crate::scripts::{ScriptType, TestScript, scan_scripts};
 
 const K8S_VALIDATOR_IMAGE: &str = "docker.io/antithesishq/k8s-validator:1.0.0";
@@ -45,7 +46,7 @@ fn generate_setup_override(
     temp_dir: &Path,
 ) -> Result<PathBuf> {
     if contents.services.is_empty() {
-        bail!("no services found in docker-compose.yaml");
+        return Err(user_error("no services found in docker-compose.yaml"));
     }
 
     let antithesis_dir = temp_dir.join("antithesis");
@@ -133,12 +134,18 @@ fn generate_setup_override(
 fn mkdir_or_require_empty(path: &Path) -> Result<()> {
     if path.exists() {
         if !path.is_dir() {
-            bail!("{} exists but is not a directory", path.display());
+            return Err(user_error(format!(
+                "{} exists but is not a directory",
+                path.display()
+            )));
         }
         let mut entries = std::fs::read_dir(path)
             .wrap_err_with(|| format!("failed to read directory {}", path.display()))?;
         if entries.next().is_some() {
-            bail!("{} exists but is not empty", path.display());
+            return Err(user_error(format!(
+                "{} exists but is not empty",
+                path.display()
+            )));
         }
         Ok(())
     } else {
@@ -489,7 +496,7 @@ fn discover_scripts(
         && not_executable.is_empty()
         && cp_failures.len() == containers.len()
     {
-        let mut err = eyre!("failed to extract test commands from every container");
+        let mut err = user_error("failed to extract test commands from every container");
         for (label, cause) in &cp_failures {
             err = err.with_section(|| format!("{label}: {cause:?}").header("Container:"));
         }
@@ -515,7 +522,7 @@ fn combined_discovery_error(
     not_executable: BTreeMap<String, BTreeSet<String>>,
     stopped_with_scripts: BTreeSet<String>,
 ) -> color_eyre::Report {
-    let mut err = eyre!("test command discovery failed");
+    let mut err = user_error("test command discovery failed");
 
     for (service, commands) in &unrecognized {
         let listing = commands

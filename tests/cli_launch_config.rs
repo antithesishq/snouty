@@ -68,7 +68,7 @@ fn launch_config_rejects_yml_extension() {
         ])
         .assert()
         .failure()
-        .stderr(predicate::str::contains("requires docker-compose.yaml"));
+        .stderr(predicate::str::contains("rename it to docker-compose.yaml"));
 }
 
 #[test]

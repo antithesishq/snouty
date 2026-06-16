@@ -100,13 +100,16 @@ snouty --json runs show $R_run_id
 stdout '"run_id".*"$R_run_id"'
 [!staging] stdout '"status".*"completed"'
 
-# `snouty runs properties` renders one row per property with a status word,
-# total example count, and name (the group is folded into the name as
-# `group ▸ name`).
+# `snouty runs properties` renders one table per group (the group is the section
+# heading), each with STATUS, the example count (counterexamples shown inline as
+# `examples/counterexamples` when a property has any, SI-shortened and
+# right-aligned), and the property NAME. Ungrouped properties go in a trailing
+# "(ungrouped)" section.
 mock-runs-server
 snouty runs properties $R_run_id
 [!staging] stdout 'STATUS.*EXAMPLES.*NAME'
-[!staging] stdout 'failing.*Counter value stays below limit'
+# Counter has 12 examples and 3 counterexamples -> `12/3`.
+[!staging] stdout 'failing.*12/3.*Counter value stays below limit'
 [!staging] stdout 'passing.*Setup completes'
 
 # `snouty runs properties --failing` shows only failing properties.
@@ -131,36 +134,53 @@ snouty --json runs properties $R_run_id
 [!staging] stdout '"name".*"Counter value stays below limit"'
 [!staging] stdout '"status".*"Failing"'
 
-# `snouty runs property` drills in on a single property and shows its examples
-# with a status column (passing/failing/unreachable).
+# `--name <substr> --detail` expands the matching property into its examples.
+# For the Counter event property that's a STATUS/HASH/VTIME table, sorted
+# numerically by vtime (5.0 before 10.0), failing before passing.
 mock-runs-server
-snouty runs property $R_run_id 'Counter value stays below limit'
+snouty runs properties $R_run_id --name 'Counter value' --detail
 [!staging] stdout 'STATUS.*HASH.*VTIME'
-# Rows within each group are sorted numerically by vtime (5.0 before 10.0,
-# even though the API returns them 10.0-then-5.0), failing before passing.
 [!staging] stdout '(?s)failing.*-100.*5\.0.*failing.*-200.*10\.0.*passing.*-300.*15\.0'
 
-# A fuzzy (substring) match discloses the substitution on stderr, in both human
-# and --json modes, so a JSON consumer never silently gets a different property.
+# --name is a case-insensitive substring filter over property names; without
+# --detail it just narrows the (grouped) table.
 mock-runs-server
-snouty runs property $R_run_id counter
-[!staging] stderr 'no exact match for .counter., using closest property: .Counter value stays below limit.'
+snouty runs properties $R_run_id --name counter
+[!staging] stdout 'failing.*Counter value stays below limit'
+[!staging] stdout -count=0 'Setup completes'
 
+# --group is a case-insensitive substring group filter ('safety' matches 'Safety').
 mock-runs-server
-snouty --json runs property $R_run_id counter
-[!staging] stderr 'no exact match for .counter., using closest property: .Counter value stays below limit.'
-[!staging] stdout '"name".*"Counter value stays below limit"'
+snouty runs properties $R_run_id --group safety
+[!staging] stdout 'failing.*Counter value stays below limit'
+[!staging] stdout -count=0 'Setup completes'
 
-# Non-event properties drill into a STATUS/VALUE table.
+# A non-event ("system") property's --detail shows its value under a `Result`
+# label (no `:`, like the other labels). A small object inlines as compact JSON
+# against the value column; there's no moment table or Examples.
 mock-runs-server
-snouty runs property $R_run_id 'Setup completes'
-[!staging] stdout 'STATUS.*VALUE'
-[!staging] stdout 'passing.*'
+snouty runs properties $R_run_id --name 'Setup completes' --detail
+[!staging] stdout 'Result.*final_counter'
+[!staging] stdout '"final_counter".*42'
 
-# An unknown property errors clearly.
+# A *failing* non-event property carries its violating value in counterexamples;
+# --detail labels those under `Counter-examples` (shown first), distinct from the
+# satisfying `Examples`, so the offending value isn't lost in an unlabelled list.
 mock-runs-server
-! snouty runs property $R_run_id no-such-property
-stderr 'no property matches.*no-such-property'
+snouty runs properties $R_run_id --name 'Peak memory' --detail
+[!staging] stdout '(?s)Counter-examples.*1340.*Examples.*820'
+
+# A filter that matches nothing prints a friendly empty-state, not an error.
+mock-runs-server
+snouty runs properties $R_run_id --name no-such-property
+[!staging] stdout 'No properties match.*no-such-property'
+
+# --detail conflicts with --json (which already emits the full data), for both
+# `runs properties` and `runs list`.
+! snouty --json runs properties $R_run_id --detail
+stderr 'detail.*json'
+! snouty --json runs list --detail
+stderr 'detail.*json'
 
 # `snouty runs build-logs` streams formatted build log lines. Timestamps are
 # reformatted into the local timezone without a tz suffix; TZ is pinned to UTC
@@ -299,9 +319,9 @@ stderr '.*'
 # moment/source/IPT_bytes_out envelope stripped.
 mock-runs-server
 snouty runs logs run-1 -123 1.0
-stdout '\[\s*1\] \[\s*app\] \[out\] \{"level":"info","msg":"starting"\}'
-stdout '\[\s*2\] \[\s*app\] \[err\] \{"level":"warn","msg":"slow request"\}'
-stdout '\[\s*311\.849\] \[\s*control\] \[\s*\] +- \{"antithesis_assert"'
+stdout '\[\s*1\.000\] \[\s*app\] \[out\] \{"level":"info","msg":"starting"\}'
+stdout '\[\s*2\.000\] \[\s*app\] \[err\] \{"level":"warn","msg":"slow request"\}'
+stdout '\[\s*311\.848\] \[\s*control\] \[\s*\] +- \{"antithesis_assert"'
 
 # `snouty --json runs logs` outputs NDJSON with faults annotated.
 mock-runs-server
@@ -327,7 +347,7 @@ stdout 'output_text.*starting'
 # or control-byte escaping); the line prefix is still formatted.
 mock-runs-server
 snouty runs logs --raw run-1 -123 1.0
-stdout '\[\s*1\] \[\s*app\] \[out\] \{"level":"info","msg":"starting"\}'
+stdout '\[\s*1\.000\] \[\s*app\] \[out\] \{"level":"info","msg":"starting"\}'
 
 # `snouty --json runs logs` emits a record whose output_text contains
 # a JSON-escaped newline on a single output line.

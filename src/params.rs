@@ -2,7 +2,10 @@ use jsonschema::Validator;
 use log::debug;
 use serde_json::{Map, Value};
 
-use color_eyre::eyre::{OptionExt, Result, bail, eyre};
+use color_eyre::Section;
+use color_eyre::eyre::Result;
+
+use crate::error::user_error;
 
 const SCHEMA: &str = include_str!("params_schema.json");
 
@@ -42,11 +45,15 @@ impl Params {
         let mut inner = Map::new();
         for pair in pairs {
             let pair = pair.as_ref();
-            let (key, value) = pair
-                .split_once('=')
-                .ok_or_else(|| eyre!("invalid parameter: expected key=value, got: {}", pair))?;
+            let (key, value) = pair.split_once('=').ok_or_else(|| {
+                user_error(format!(
+                    "invalid parameter: expected key=value, got: {pair}"
+                ))
+            })?;
             if key.is_empty() {
-                bail!("invalid parameter: empty key in: {}", pair);
+                return Err(user_error(format!(
+                    "invalid parameter: empty key in: {pair}"
+                )));
             }
             inner.insert(key.to_string(), Value::String(value.to_string()));
         }
@@ -61,7 +68,7 @@ impl Params {
     pub fn from_json(value: &Value) -> Result<Self> {
         let obj = value
             .as_object()
-            .ok_or_eyre("invalid arguments: expected JSON object")?;
+            .ok_or_else(|| user_error("invalid arguments: expected JSON object"))?;
 
         let inner = if obj.len() == 1
             && let Some(Value::Object(nested)) = obj.get("params")
@@ -153,16 +160,18 @@ where
 
         if let Some(key) = arg.strip_prefix("--") {
             if key.is_empty() {
-                bail!("invalid arguments: empty key after --");
+                return Err(user_error("invalid arguments: empty key after --"));
             }
 
-            let value = iter
-                .next()
-                .ok_or_else(|| eyre!("invalid arguments: missing value for --{}", key))?;
+            let value = iter.next().ok_or_else(|| {
+                user_error(format!("invalid arguments: missing value for --{key}"))
+            })?;
 
             map.insert(key.to_string(), Value::String(value.as_ref().to_string()));
         } else {
-            bail!("invalid arguments: unexpected argument: {}", arg);
+            return Err(user_error(format!(
+                "invalid arguments: unexpected argument: {arg}"
+            )));
         }
     }
 
@@ -188,10 +197,13 @@ fn validate_against_def(params: &Map<String, Value>, def_name: &str) -> Result<(
 
     if !errors.is_empty() {
         debug!("validation failed with {} errors", errors.len());
+        // The message states the failure; each schema violation is its own note.
+        let mut report = user_error("validation failed");
         for err in &errors {
             debug!("  - {}", err);
+            report = report.note(err.clone());
         }
-        bail!("validation failed:\n  {}", errors.join("\n  "));
+        return Err(report);
     }
 
     debug!("validation passed");

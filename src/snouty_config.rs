@@ -22,7 +22,7 @@ pub const CONTAINER_ENGINE_VAR_NAME: &str = "SNOUTY_CONTAINER_ENGINE";
 pub const TEST_RUNTIME_VAR_NAME: &str = "SNOUTY_TEST_RUNTIME";
 pub const CACHE_DIR_VAR_NAME: &str = "SNOUTY_TEST_CACHE_DIR";
 pub const TEMP_DIR_VAR_NAME: &str = "SNOUTY_TEMP_DIR";
-const PROJECT_CONFIG_SETTINGS_FILENAME: &str = "snoutyconfig.toml";
+const PROJECT_CONFIG_SETTINGS_FILENAME: &str = ".snouty.toml";
 const GLOBAL_CONFIG_SETTINGS_FILENAME: &str = "settings.toml";
 const PROFILES_KEY: &str = "profiles";
 

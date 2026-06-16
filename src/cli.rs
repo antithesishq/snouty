@@ -169,8 +169,16 @@ Example:
 
 Runs the bundled `snouty-update` helper, which checks for a newer release and
 replaces the snouty binary in place. Does nothing if `snouty-update` is not
-installed alongside snouty."#)]
-    Update,
+installed alongside snouty.
+
+Pass a version to install a specific release instead of the latest, including
+pre-releases:
+  snouty update 0.6.0
+  snouty update 0.6.0-rc.1
+
+Installing a version older than the one you're running is a downgrade and
+requires --force."#)]
+    Update(UpdateArgs),
 
     /// Search Antithesis documentation
     #[command(long_about = r#"Search Antithesis documentation
@@ -253,6 +261,16 @@ If the exact path is not found, suggests similar pages."#)]
         /// Page path (e.g. "getting_started/overview")
         path: String,
     },
+}
+
+#[derive(Args)]
+pub struct UpdateArgs {
+    /// Release to install (e.g. 0.6.0 or 0.6.0-rc.1). Defaults to the latest release.
+    pub version: Option<String>,
+
+    /// Install the requested version even if it is older than the current one (a downgrade)
+    #[arg(long)]
+    pub force: bool,
 }
 
 #[derive(Args)]

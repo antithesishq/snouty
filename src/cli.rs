@@ -400,8 +400,8 @@ property has counterexamples.
 
 Narrow with --name and/or --group (both case-insensitive substring matches);
 add --detail to expand the matches into their examples and counter-example
-moments instead of the table. Use --json for automation (it always emits the
-full data).
+moments instead of the table. Use --json for automation. --json is mutually
+exclusive with --detail.
 
 Examples:
   snouty runs properties <run_id> --failing

@@ -1,11 +1,6 @@
 use color_eyre::eyre::Result;
 
-use crate::{
-    api::Auth,
-    container,
-    error::user_error,
-    snouty_config::{self, SnoutyConfig},
-};
+use crate::{api::Auth, container, error::user_error, settings::Settings};
 
 struct Check {
     name: &'static str,
@@ -14,14 +9,24 @@ struct Check {
 }
 
 impl Check {
-    fn for_result<T>(name: &'static str, result: Result<T>) -> Self {
+    /// A pass/fail check whose message is the resolved value (or the error).
+    fn for_value(name: &'static str, result: Result<&str>) -> Self {
         Self {
             name,
             passed: result.is_ok(),
             message: match result {
-                Ok(_) => "found".to_owned(),
+                Ok(value) => value.to_owned(),
                 Err(err) => format!("error: {err}"),
             },
+        }
+    }
+
+    /// An informational row that always passes; `message` is the resolved value.
+    fn info(name: &'static str, message: String) -> Self {
+        Self {
+            name,
+            passed: true,
+            message,
         }
     }
 
@@ -31,16 +36,15 @@ impl Check {
         } else {
             console::style("✗").red()
         };
-        eprintln!("  {} {} {}", icon, self.name, self.message);
+        eprintln!("  {} {}: {}", icon, self.name, self.message);
     }
 }
 
-pub fn cmd_doctor() -> Result<()> {
+pub fn cmd_doctor(settings: &Settings) -> Result<()> {
     let mut checks: Vec<Check> = Vec::new();
-    let config = snouty_config::default_config(None);
 
     // Container runtime (for building/pushing images)
-    match container::runtime() {
+    match container::runtime(settings) {
         Ok(rt) => checks.push(Check {
             name: "Container runtime",
             passed: true,
@@ -67,9 +71,24 @@ pub fn cmd_doctor() -> Result<()> {
         }),
     }
 
-    // required configuration
-    checks.push(Check::for_result("tenant", config.tenant()));
-    checks.push(Check::for_result("repository", config.repository()));
+    // Resolved settings. tenant and repository are required, so a miss is a
+    // failed check; base url and container engine are informational. These rows
+    // print the fully-resolved values (env > profile > settings file).
+    checks.push(Check::for_value("tenant", settings.tenant()));
+    checks.push(Check::for_value("repository", settings.repository()));
+    checks.push(Check::info(
+        "base url",
+        settings
+            .resolve_base_url()
+            .unwrap_or_else(|_| "(unset: provide tenant or base_url)".to_owned()),
+    ));
+    checks.push(Check::info(
+        "container engine",
+        settings
+            .container_engine()
+            .map(str::to_owned)
+            .unwrap_or_else(|| "(auto-detected)".to_owned()),
+    ));
 
     // Auth: api key OR both username and password
     let auth = Auth::from_env();

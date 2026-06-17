@@ -1,0 +1,61 @@
+# Settings resolution
+#
+# Snouty resolves each setting with precedence: environment variable, then the
+# active profile, then top-level defaults — checking the project settings file
+# (.snouty.toml) before the global one. `snouty doctor` prints the fully
+# resolved values, so we drive resolution by setting env/flags/files and reading
+# the table back.
+#
+# doctor exits non-zero here (no auth or container runtime is configured), so
+# each step uses `! snouty doctor`; the resolved-settings rows are printed
+# regardless of the exit status.
+
+# Isolate the global settings file — the test runner forwards HOME, which would
+# otherwise let a real ~/.config/snouty/settings.toml leak in.
+env XDG_CONFIG_HOME=$WORK/empty-config
+
+# 1. tenant/repository (and the derived base url) come from the project
+#    .snouty.toml in the working directory.
+! snouty doctor
+stderr 'tenant: acme.*'
+stderr 'repository: acme/repo.*'
+stderr 'base url: https://acme\.antithesis\.com.*'
+
+# 2. A profile selected with --profile overrides the top-level default.
+! snouty --profile staging doctor
+stderr 'tenant: staging-tenant.*'
+
+# 3. An explicit --settings file is read instead of ./.snouty.toml.
+! snouty --settings other.toml doctor
+stderr 'tenant: other-tenant.*'
+
+# 4. ANTITHESIS_PROFILE wins over the --profile flag.
+env ANTITHESIS_PROFILE=prod
+! snouty --profile staging doctor
+stderr 'tenant: prod-tenant.*'
+
+# 5. An environment variable overrides everything else (profile prod is still
+#    set, but the env var wins).
+env ANTITHESIS_TENANT=from-env
+! snouty doctor
+stderr 'tenant: from-env.*'
+
+# 6. An explicit base url is used verbatim; the container engine is reported.
+env ANTITHESIS_BASE_URL=https://custom.example
+env SNOUTY_CONTAINER_ENGINE=podman
+! snouty doctor
+stderr 'base url: https://custom\.example.*'
+stderr 'container engine: podman.*'
+
+-- .snouty.toml --
+tenant = "acme"
+repository = "acme/repo"
+
+[profile.staging]
+tenant = "staging-tenant"
+
+[profile.prod]
+tenant = "prod-tenant"
+-- other.toml --
+tenant = "other-tenant"
+repository = "other/repo"

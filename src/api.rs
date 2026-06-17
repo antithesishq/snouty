@@ -1,6 +1,6 @@
 use std::collections::{HashMap, VecDeque};
 use std::env;
-use std::path::PathBuf;
+use std::path::Path;
 use std::time::Duration;
 
 use base64::Engine;
@@ -17,7 +17,7 @@ use reqwest_middleware::ClientWithMiddleware;
 use crate::api_cache;
 use crate::error::{ApiError, user_error};
 use crate::params::Params;
-use crate::snouty_config::{SnoutyConfig, default_config};
+use crate::settings::Settings;
 
 #[allow(dead_code, unused_imports, private_interfaces)]
 mod generated {
@@ -210,30 +210,37 @@ pub struct AntithesisApi {
 }
 
 impl AntithesisApi {
-    pub fn from_env(verbose: bool, project_config_location: Option<PathBuf>) -> Result<Self> {
-        let config = default_config(project_config_location);
-        let auth = Auth::from_env()?;
-        Self::build(config, &auth, verbose)
+    pub fn new(settings: &Settings, verbose: bool) -> Result<Self> {
+        let cache_dir = crate::settings::cache_dir();
+        Self::build(settings, &Auth::from_env()?, verbose, cache_dir.as_deref())
     }
 
-    /// Like [`AntithesisApi::from_env`], but fails fast unless an API key is
+    /// Like [`AntithesisApi::new`], but fails fast unless an API key is
     /// configured. Every endpoint other than launch requires one.
-    pub fn from_env_requiring_api_key(
-        verbose: bool,
-        project_config_location: Option<PathBuf>,
-    ) -> Result<Self> {
-        let config = default_config(project_config_location);
-        let auth = Auth::api_key_from_env()?;
-        Self::build(config, &auth, verbose)
+    pub fn new_requiring_api_key(settings: &Settings, verbose: bool) -> Result<Self> {
+        let cache_dir = crate::settings::cache_dir();
+        Self::build(
+            settings,
+            &Auth::api_key_from_env()?,
+            verbose,
+            cache_dir.as_deref(),
+        )
     }
 
-    pub(crate) fn build(config: impl SnoutyConfig, auth: &Auth, verbose: bool) -> Result<Self> {
-        let base_url = normalize_base_url(config.resolve_base_url()?);
+    /// The response cache lives at `cache_dir`/api-cache-v1 when `Some`; pass
+    /// `None` to disable caching (used by tests that don't exercise it).
+    pub(crate) fn build(
+        settings: &Settings,
+        auth: &Auth,
+        verbose: bool,
+        cache_dir: Option<&Path>,
+    ) -> Result<Self> {
+        let base_url = normalize_base_url(settings.resolve_base_url()?);
         debug!("initializing API client for {}", base_url);
 
         let default_headers = default_request_headers(auth)?;
         let http_client = build_http_client(default_headers.clone())?;
-        let cached = api_cache::build_cached_client(http_client.clone(), config.cache_dir());
+        let cached = api_cache::build_cached_client(http_client.clone(), cache_dir);
         let state = ClientState {
             cached,
             default_headers: verbose.then_some(default_headers),
@@ -1053,8 +1060,6 @@ async fn format_launch_client_error(err: ClientError<generated::types::ErrorResp
 
 #[cfg(test)]
 mod tests {
-    use crate::testutils::TestConfig;
-
     use super::*;
     use futures_util::TryStreamExt;
     use tempfile::TempDir;
@@ -1066,15 +1071,13 @@ mod tests {
         cache_dir: Option<&TempDir>,
     ) -> AntithesisApi {
         AntithesisApi::build(
-            TestConfig::for_base_url_and_maybe_cache_dir(
-                mock_server.uri(),
-                cache_dir.map(|d| d.path().to_path_buf()),
-            ),
+            &Settings::for_test_base_url(mock_server.uri()),
             &Auth::Basic {
                 username: "user".to_owned(),
                 password: "pass".to_owned(),
             },
             false,
+            cache_dir.map(|d| d.path()),
         )
         .unwrap()
     }
@@ -1303,9 +1306,10 @@ mod tests {
     #[test]
     fn with_base_url_trims_trailing_slash() {
         let api = AntithesisApi::build(
-            TestConfig::for_base_url_and_maybe_cache_dir("http://example.com/".to_owned(), None),
+            &Settings::for_test_base_url("http://example.com/".to_owned()),
             &Auth::basic("user".to_string(), "pass".to_string()),
             true,
+            None,
         )
         .unwrap();
         assert_eq!(api.base_url, "http://example.com");
@@ -1314,12 +1318,10 @@ mod tests {
     #[test]
     fn with_base_url_strips_legacy_api_suffix() {
         let api = AntithesisApi::build(
-            TestConfig::for_base_url_and_maybe_cache_dir(
-                "http://example.com/api/v1/".to_owned(),
-                None,
-            ),
+            &Settings::for_test_base_url("http://example.com/api/v1/".to_owned()),
             &Auth::basic("user".to_string(), "pass".to_string()),
             true,
+            None,
         )
         .unwrap();
         assert_eq!(api.base_url, "http://example.com");

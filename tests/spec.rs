@@ -477,20 +477,20 @@ fn spec_tests() {
                 env.background_processes.insert("snouty".to_string(), child);
                 Ok(())
             })
-            .command("setup-docs-db", |env, args| {
+            .command("setup-docs-db", |env, _args| {
                 // Usage: setup-docs-db
-                // Copies the fixture docs.db into the workdir and sets ANTITHESIS_DOCS_DB_PATH.
+                // Seeds an isolated cache home with the fixture docs.db and points
+                // the binary at it via XDG_CACHE_HOME (snouty reads the DB from
+                // <cache home>/snouty/docs.db).
                 let fixture =
                     std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/docs.db");
-                let dest = env.work_dir.join("docs.db");
-                std::fs::copy(&fixture, &dest)
+                let cache_home = env.work_dir.join("cache");
+                let snouty_dir = cache_home.join("snouty");
+                std::fs::create_dir_all(&snouty_dir)
+                    .map_err(|e| err(format!("failed to create cache dir: {e}")))?;
+                std::fs::copy(&fixture, snouty_dir.join("docs.db"))
                     .map_err(|e| err(format!("failed to copy fixture docs.db: {e}")))?;
-                let var_name = if args.is_empty() {
-                    "ANTITHESIS_DOCS_DB_PATH"
-                } else {
-                    &args[0]
-                };
-                env.set_env_var(var_name, dest.to_str().unwrap());
+                env.set_env_var("XDG_CACHE_HOME", cache_home.to_str().unwrap());
                 Ok(())
             })
             .execute();

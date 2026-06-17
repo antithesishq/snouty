@@ -104,7 +104,7 @@ stdout 'Debugging session started: run_id run-123'
 mock-server 200 '{"statusCode":202,"runId":"run-123"}'
 stdin moment_run_input.txt
 snouty --json debug --stdin
-stdout '\s*"run_id": "run-123".*'
+stdout '\s*"runId": "run-123".*'
 
 # On API failure, the command exits with an error showing the HTTP status
 #    and response body.

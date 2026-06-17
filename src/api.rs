@@ -323,20 +323,23 @@ impl AntithesisApi {
         .await
     }
 
-    pub async fn launch_debugging(&self, params: &Params) -> Result<LaunchMvdResponse> {
+    pub async fn launch_debugging(&self, params: &Params) -> Result<LaunchResponse> {
         let body = launch_mvd_request(params)?;
-        let result = self.client.launch_mvd().body(body).send().await;
-        finish_launch(result, |body| {
-            // Tolerate either `run_id` (spec) or `runId` (live webhook envelope).
-            let run_id = body
-                .get("run_id")
-                .or_else(|| body.get("runId"))
-                .and_then(serde_json::Value::as_str)
-                .ok_or_else(|| eyre!("launch response missing run_id/runId"))?
-                .to_string();
-            Ok(LaunchMvdResponse { run_id })
-        })
-        .await
+        match self.client.launch_mvd().body(body).send().await {
+            // Documented 202 path: the generated type is `LaunchMvdResponse { run_id }`.
+            // Normalize to the `runId`/`statusCode` envelope the live API actually
+            // returns (and that `snouty launch` emits) so `--json` output is consistent.
+            Ok(response) => Ok(LaunchResponse {
+                run_id: response.into_inner().run_id,
+                status_code: 202,
+            }),
+            // Live path: HTTP 200 webhook envelope, body is the LaunchResponse shape.
+            Err(ClientError::UnexpectedResponse(resp)) if resp.status().is_success() => resp
+                .json::<LaunchResponse>()
+                .await
+                .wrap_err("parsing debug launch response"),
+            Err(err) => Err(format_launch_client_error(err).await),
+        }
     }
 
     pub async fn get_run(&self, run_id: &str) -> Result<RunDetail> {

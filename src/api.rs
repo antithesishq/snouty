@@ -310,25 +310,33 @@ impl AntithesisApi {
 
     pub async fn launch_test(&self, launcher: &str, params: &Params) -> Result<LaunchResponse> {
         let body = launch_request(params)?;
-        match self
+        let result = self
             .client
             .launch_test()
             .launcher_name(launcher)
             .body(body)
             .send()
-            .await
-        {
-            Ok(response) => Ok(response.into_inner()),
-            Err(err) => Err(format_launch_client_error(err).await),
-        }
+            .await;
+        finish_launch(result, |body| {
+            serde_json::from_value(body).wrap_err("unexpected launch response shape")
+        })
+        .await
     }
 
     pub async fn launch_debugging(&self, params: &Params) -> Result<LaunchMvdResponse> {
         let body = launch_mvd_request(params)?;
-        match self.client.launch_mvd().body(body).send().await {
-            Ok(response) => Ok(response.into_inner()),
-            Err(err) => Err(format_launch_client_error(err).await),
-        }
+        let result = self.client.launch_mvd().body(body).send().await;
+        finish_launch(result, |body| {
+            // Tolerate either `run_id` (spec) or `runId` (live webhook envelope).
+            let run_id = body
+                .get("run_id")
+                .or_else(|| body.get("runId"))
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| eyre!("launch response missing run_id/runId"))?
+                .to_string();
+            Ok(LaunchMvdResponse { run_id })
+        })
+        .await
     }
 
     pub async fn get_run(&self, run_id: &str) -> Result<RunDetail> {
@@ -750,6 +758,36 @@ fn launch_request(params: &Params) -> Result<generated::types::LaunchRequest> {
         generated::types::builder::LaunchRequest::default().params(typed_params),
     )
     .wrap_err("failed to build launch request")
+}
+
+/// Resolve a launch / debugging-launch webhook response, tolerating spec drift
+/// on the success status code.
+///
+/// These webhooks report their real status in the response *body* and return an
+/// HTTP status the OpenAPI spec under-documents (it lists a single 2xx). The
+/// generated client only accepts the documented code and surfaces any other 2xx
+/// as `UnexpectedResponse`. We treat **any** 2xx as success: on the documented
+/// code we use the client's already-parsed value; on any other 2xx we read the
+/// body and build the response via `from_body`. Genuine failures (4xx/5xx) are
+/// still formatted as errors.
+async fn finish_launch<T>(
+    result: std::result::Result<
+        progenitor_client::ResponseValue<T>,
+        ClientError<generated::types::ErrorResponse>,
+    >,
+    from_body: impl FnOnce(serde_json::Value) -> Result<T>,
+) -> Result<T> {
+    match result {
+        Ok(response) => Ok(response.into_inner()),
+        Err(ClientError::UnexpectedResponse(resp)) if resp.status().is_success() => {
+            let body = resp
+                .json::<serde_json::Value>()
+                .await
+                .wrap_err("parsing launch response body")?;
+            from_body(body)
+        }
+        Err(err) => Err(format_launch_client_error(err).await),
+    }
 }
 
 fn launch_mvd_request(params: &Params) -> Result<generated::types::LaunchMvdRequest> {
@@ -1329,6 +1367,81 @@ mod tests {
                 }
             })
         );
+    }
+
+    // The launch webhooks return HTTP 200 with the real status in the body,
+    // even though the spec documents 202. snouty accepts any 2xx as success.
+    #[tokio::test]
+    async fn launch_test_accepts_200_webhook_envelope() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/api/v1/launch/basic_test"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "runId": "run-123",
+                "statusCode": 202
+            })))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let api = AntithesisApi::with_base_url(test_config(), mock_server.uri()).unwrap();
+        let params = Params::from_key_value_pairs(["antithesis.duration=30"]).unwrap();
+
+        let response = api.launch_test("basic_test", &params).await.unwrap();
+        assert_eq!(response.run_id, "run-123");
+        assert_eq!(response.status_code, 202);
+    }
+
+    #[tokio::test]
+    async fn launch_debugging_accepts_200_webhook_envelope() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/api/v1/launch/debugging"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "statusCode": 202,
+                "runId": "debug-run-123"
+            })))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let api = AntithesisApi::with_base_url(test_config(), mock_server.uri()).unwrap();
+        let params = Params::from_key_value_pairs([
+            "antithesis.debugging.run_id=a2a4-53-1",
+            "antithesis.debugging.input_hash=-1",
+            "antithesis.debugging.vtime=1.0",
+        ])
+        .unwrap();
+
+        let response = api.launch_debugging(&params).await.unwrap();
+        assert_eq!(response.run_id, "debug-run-123");
+    }
+
+    #[tokio::test]
+    async fn launch_debugging_accepts_202_documented() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/api/v1/launch/debugging"))
+            .respond_with(ResponseTemplate::new(202).set_body_json(serde_json::json!({
+                "run_id": "debug-run-456"
+            })))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let api = AntithesisApi::with_base_url(test_config(), mock_server.uri()).unwrap();
+        let params = Params::from_key_value_pairs([
+            "antithesis.debugging.run_id=a2a4-53-1",
+            "antithesis.debugging.input_hash=-1",
+            "antithesis.debugging.vtime=1.0",
+        ])
+        .unwrap();
+
+        let response = api.launch_debugging(&params).await.unwrap();
+        assert_eq!(response.run_id, "debug-run-456");
     }
 
     #[tokio::test]

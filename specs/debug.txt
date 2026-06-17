@@ -43,7 +43,7 @@ stderr 'specify --run-id or --session-id.*'
 # Parameters are provided as typed flags. Before sending, the resolved
 #    parameters are printed to stderr with sensitive values redacted. The
 #    target run is identified by --run-id (preferred for new integrations).
-mock-server 202 '{"run_id":"run-123"}'
+mock-server 200 '{"statusCode":202,"runId":"run-123"}'
 snouty debug --input-hash abc123 --run-id 9043254f65c9c65d63fe043a0abfc7fc-53-1 --vtime 1234567890 --description 'debug this moment' --recipients team@example.com
 stderr '"antithesis.debugging.input_hash": "abc123"'
 stderr '"antithesis.debugging.run_id": "9043254f65c9c65d63fe043a0abfc7fc-53-1"'
@@ -52,7 +52,7 @@ stderr '"antithesis.event_description": "debug this moment"'
 stderr '"antithesis.report.recipients": "\[REDACTED\]"'
 
 # --session-id remains supported for backwards compatibility.
-mock-server 202 '{"run_id":"run-123"}'
+mock-server 200 '{"statusCode":202,"runId":"run-123"}'
 snouty debug --input-hash abc123 --session-id d5d1c9cf0e64b5dd69b00e97b07fe3f4-18-1 --vtime 1234567890
 stderr '"antithesis.debugging.session_id": "d5d1c9cf0e64b5dd69b00e97b07fe3f4-18-1"'
 
@@ -63,7 +63,7 @@ stderr '"antithesis.debugging.session_id": "d5d1c9cf0e64b5dd69b00e97b07fe3f4-18-
 #    converted to strings. The moment carries whichever identifier the triage
 #    report provides (session_id today, run_id going forward) and is passed
 #    through unchanged.
-mock-server 202 '{"run_id":"run-123"}'
+mock-server 200 '{"statusCode":202,"runId":"run-123"}'
 stdin moment_run_input.txt
 snouty debug --stdin
 stderr '"antithesis.debugging.run_id": "9043254f65c9c65d63fe043a0abfc7fc-53-1"'
@@ -71,7 +71,7 @@ stderr '"antithesis.debugging.input_hash": "6057726200491963783"'
 stderr '"antithesis.debugging.vtime": "329.8037810830865"'
 
 # A session-id moment (today's triage report format) still works.
-mock-server 202 '{"run_id":"run-123"}'
+mock-server 200 '{"statusCode":202,"runId":"run-123"}'
 stdin moment_input.txt
 snouty debug --stdin
 stderr '"antithesis.debugging.session_id": "f89d5c11f5e3bf5e4bb3641809800cee-44-22"'
@@ -79,14 +79,14 @@ stderr '"antithesis.debugging.input_hash": "6057726200491963783"'
 stderr '"antithesis.debugging.vtime": "329.8037810830865"'
 
 # 3b. stdin as JSON
-mock-server 202 '{"run_id":"run-123"}'
+mock-server 200 '{"statusCode":202,"runId":"run-123"}'
 stdin debug_json.txt
 snouty debug --stdin
 stderr '"antithesis.debugging.input_hash": "abc"'
 
 # When both stdin and CLI args are provided, CLI args take priority over
 #    stdin values.
-mock-server 202 '{"run_id":"run-123"}'
+mock-server 200 '{"statusCode":202,"runId":"run-123"}'
 stdin moment_run_input.txt
 snouty debug --stdin --input-hash override --recipients team@example.com
 stderr '"antithesis.debugging.run_id": "9043254f65c9c65d63fe043a0abfc7fc-53-1"'
@@ -95,13 +95,13 @@ stderr '"antithesis.debugging.vtime": "329.8037810830865"'
 stderr '"antithesis.report.recipients": "\[REDACTED\]"'
 
 # On success, a one-line confirmation with the run_id is printed to stdout.
-mock-server 202 '{"run_id":"run-123"}'
+mock-server 200 '{"statusCode":202,"runId":"run-123"}'
 stdin moment_run_input.txt
 snouty debug --stdin
 stdout 'Debugging session started: run_id run-123'
 
 # With --json, the full response body is printed as pretty JSON.
-mock-server 202 '{"run_id":"run-123"}'
+mock-server 200 '{"statusCode":202,"runId":"run-123"}'
 stdin moment_run_input.txt
 snouty --json debug --stdin
 stdout '\s*"run_id": "run-123".*'

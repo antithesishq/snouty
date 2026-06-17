@@ -86,6 +86,24 @@ impl Params {
         validate_against_def(&self.inner, "debuggingParams")
     }
 
+    /// Ensure the debugging target run is identified by exactly one of
+    /// `antithesis.debugging.run_id` (preferred) or
+    /// `antithesis.debugging.session_id`.
+    ///
+    /// The MVD launch API models its params as a `oneOf` over these two
+    /// identifiers, so supplying both — or neither — is an error. This is
+    /// checked here, after schema validation, so a missing `input_hash`/`vtime`
+    /// surfaces first and the identifier error gets a tailored message.
+    pub fn ensure_single_debug_target(&self) -> Result<()> {
+        let has_run_id = self.inner.contains_key("antithesis.debugging.run_id");
+        let has_session_id = self.inner.contains_key("antithesis.debugging.session_id");
+        match (has_run_id, has_session_id) {
+            (true, false) | (false, true) => Ok(()),
+            (true, true) => bail!("specify exactly one of --run-id / --session-id"),
+            (false, false) => bail!("specify --run-id or --session-id"),
+        }
+    }
+
     /// Check if the params are empty.
     pub fn is_empty(&self) -> bool {
         self.inner.is_empty()
@@ -332,6 +350,65 @@ mod tests {
         ];
         let params = Params::from_args(args).unwrap();
         assert!(params.validate_debugging_params().is_err());
+    }
+
+    #[test]
+    fn validate_debugging_params_run_id_success() {
+        let args = [
+            "--antithesis.debugging.input_hash",
+            "abc123",
+            "--antithesis.debugging.run_id",
+            "9043254f65c9c65d63fe043a0abfc7fc-53-1",
+            "--antithesis.debugging.vtime",
+            "1234567890",
+        ];
+        let params = Params::from_args(args).unwrap();
+        assert!(params.validate_debugging_params().is_ok());
+    }
+
+    #[test]
+    fn validate_debugging_params_does_not_require_an_identifier() {
+        // The exactly-one-of rule is enforced by ensure_single_debug_target, not
+        // the schema: schema validation only requires input_hash + vtime.
+        let args = [
+            "--antithesis.debugging.input_hash",
+            "abc123",
+            "--antithesis.debugging.vtime",
+            "1234567890",
+        ];
+        let params = Params::from_args(args).unwrap();
+        assert!(params.validate_debugging_params().is_ok());
+    }
+
+    #[test]
+    fn ensure_single_debug_target_accepts_run_id_only() {
+        let mut params = Params::new();
+        params.insert("antithesis.debugging.run_id", "run-1");
+        assert!(params.ensure_single_debug_target().is_ok());
+    }
+
+    #[test]
+    fn ensure_single_debug_target_accepts_session_id_only() {
+        let mut params = Params::new();
+        params.insert("antithesis.debugging.session_id", "sess-1");
+        assert!(params.ensure_single_debug_target().is_ok());
+    }
+
+    #[test]
+    fn ensure_single_debug_target_rejects_both() {
+        let mut params = Params::new();
+        params.insert("antithesis.debugging.run_id", "run-1");
+        params.insert("antithesis.debugging.session_id", "sess-1");
+        let err = params.ensure_single_debug_target().unwrap_err().to_string();
+        assert!(err.contains("specify exactly one of --run-id / --session-id"));
+    }
+
+    #[test]
+    fn ensure_single_debug_target_rejects_neither() {
+        let mut params = Params::new();
+        params.insert("antithesis.debugging.input_hash", "abc");
+        let err = params.ensure_single_debug_target().unwrap_err().to_string();
+        assert!(err.contains("specify --run-id or --session-id"));
     }
 
     #[test]

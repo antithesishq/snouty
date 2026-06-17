@@ -8,43 +8,70 @@
 #
 # Each successful invocation actually starts a debugging session against the
 # API, so the bulk of this file is gated behind `[staging] skip` to avoid
-# mutating staging. Read-only checks (env-var and schema validation that
-# fail before any API call) run in both modes.
+# mutating staging. Read-only checks (env-var, schema validation, and the
+# run-id/session-id requirement that fail before any API call) run in both
+# modes.
 
 # The command authenticates with the Antithesis API using either
 #    ANTITHESIS_API_KEY and ANTITHESIS_TENANT, or
 #    ANTITHESIS_USERNAME, ANTITHESIS_PASSWORD, and ANTITHESIS_TENANT.
-! snouty debug --input-hash abc --session-id sess --vtime 123
+! snouty debug --input-hash abc --run-id run-123 --vtime 123
 stderr 'missing environment variable.*'
 
 # Parameters are validated against the debuggingParams schema before
-#    making any API call. Required fields: session_id, input_hash, vtime.
+#    making any API call. Required fields: input_hash, vtime, and exactly
+#    one of run_id or session_id.
 mock-server 200 '{}'
 ! snouty debug --input-hash abc
 stderr 'validation failed.*'
 
 # Old-style raw --antithesis.* args are not accepted by `debug`.
-! snouty debug --antithesis.debugging.input_hash abc --antithesis.debugging.session_id sess --antithesis.debugging.vtime 123
+! snouty debug --antithesis.debugging.input_hash abc --antithesis.debugging.run_id run --antithesis.debugging.vtime 123
 stderr 'unexpected argument.*'
+
+# The target run must be identified by exactly one of --run-id or
+#    --session-id. Supplying both, or neither, is an error caught before any
+#    API call (so it is exercised in both mock and staging modes).
+! snouty debug --input-hash abc --vtime 1 --run-id r-1 --session-id s-1
+stderr 'specify exactly one of --run-id / --session-id.*'
+
+! snouty debug --input-hash abc --vtime 1
+stderr 'specify --run-id or --session-id.*'
 
 [staging] skip
 
 # Parameters are provided as typed flags. Before sending, the resolved
-#    parameters are printed to stderr with sensitive values redacted.
-mock-server 200 '{"runId":"run-123","statusCode":202}'
-snouty debug --input-hash abc123 --session-id sess-456 --vtime 1234567890 --description 'debug this moment' --recipients team@example.com
+#    parameters are printed to stderr with sensitive values redacted. The
+#    target run is identified by --run-id (preferred for new integrations).
+mock-server 202 '{"run_id":"run-123"}'
+snouty debug --input-hash abc123 --run-id 9043254f65c9c65d63fe043a0abfc7fc-53-1 --vtime 1234567890 --description 'debug this moment' --recipients team@example.com
 stderr '"antithesis.debugging.input_hash": "abc123"'
-stderr '"antithesis.debugging.session_id": "sess-456"'
+stderr '"antithesis.debugging.run_id": "9043254f65c9c65d63fe043a0abfc7fc-53-1"'
 stderr '"antithesis.debugging.vtime": "1234567890"'
 stderr '"antithesis.event_description": "debug this moment"'
 stderr '"antithesis.report.recipients": "\[REDACTED\]"'
 
+# --session-id remains supported for backwards compatibility.
+mock-server 202 '{"run_id":"run-123"}'
+snouty debug --input-hash abc123 --session-id d5d1c9cf0e64b5dd69b00e97b07fe3f4-18-1 --vtime 1234567890
+stderr '"antithesis.debugging.session_id": "d5d1c9cf0e64b5dd69b00e97b07fe3f4-18-1"'
+
 # Parameters can alternatively be read from stdin via --stdin, as JSON,
 #    JSON5, or Moment.from format. Moment.from format
-#    (e.g. Moment.from({ session_id: "...", ... })) is auto-detected on
-#    stdin. Keys are mapped to antithesis.debugging.* and numeric values are
-#    converted to strings.
-mock-server 200 '{"runId":"run-123","statusCode":202}'
+#    (e.g. Moment.from({ run_id: "...", ... })) is auto-detected on stdin.
+#    Keys are mapped to antithesis.debugging.* and numeric values are
+#    converted to strings. The moment carries whichever identifier the triage
+#    report provides (session_id today, run_id going forward) and is passed
+#    through unchanged.
+mock-server 202 '{"run_id":"run-123"}'
+stdin moment_run_input.txt
+snouty debug --stdin
+stderr '"antithesis.debugging.run_id": "9043254f65c9c65d63fe043a0abfc7fc-53-1"'
+stderr '"antithesis.debugging.input_hash": "6057726200491963783"'
+stderr '"antithesis.debugging.vtime": "329.8037810830865"'
+
+# A session-id moment (today's triage report format) still works.
+mock-server 202 '{"run_id":"run-123"}'
 stdin moment_input.txt
 snouty debug --stdin
 stderr '"antithesis.debugging.session_id": "f89d5c11f5e3bf5e4bb3641809800cee-44-22"'
@@ -52,41 +79,43 @@ stderr '"antithesis.debugging.input_hash": "6057726200491963783"'
 stderr '"antithesis.debugging.vtime": "329.8037810830865"'
 
 # 3b. stdin as JSON
-mock-server 200 '{"runId":"run-123","statusCode":202}'
+mock-server 202 '{"run_id":"run-123"}'
 stdin debug_json.txt
 snouty debug --stdin
 stderr '"antithesis.debugging.input_hash": "abc"'
 
 # When both stdin and CLI args are provided, CLI args take priority over
 #    stdin values.
-mock-server 200 '{"runId":"run-123","statusCode":202}'
-stdin moment_input.txt
+mock-server 202 '{"run_id":"run-123"}'
+stdin moment_run_input.txt
 snouty debug --stdin --input-hash override --recipients team@example.com
-stderr '"antithesis.debugging.session_id": "f89d5c11f5e3bf5e4bb3641809800cee-44-22"'
+stderr '"antithesis.debugging.run_id": "9043254f65c9c65d63fe043a0abfc7fc-53-1"'
 stderr '"antithesis.debugging.input_hash": "override"'
 stderr '"antithesis.debugging.vtime": "329.8037810830865"'
 stderr '"antithesis.report.recipients": "\[REDACTED\]"'
 
 # On success, a one-line confirmation with the run_id is printed to stdout.
-mock-server 200 '{"runId":"run-123","statusCode":202}'
-stdin moment_input.txt
+mock-server 202 '{"run_id":"run-123"}'
+stdin moment_run_input.txt
 snouty debug --stdin
 stdout 'Debugging session started: run_id run-123'
 
 # With --json, the full response body is printed as pretty JSON.
-mock-server 200 '{"runId":"run-123","statusCode":202}'
-stdin moment_input.txt
+mock-server 202 '{"run_id":"run-123"}'
+stdin moment_run_input.txt
 snouty --json debug --stdin
-stdout '\s*"runId": "run-123".*'
+stdout '\s*"run_id": "run-123".*'
 
 # On API failure, the command exits with an error showing the HTTP status
 #    and response body.
 mock-server 401 '{"message": "unauthorized"}'
-! snouty debug --input-hash abc123 --session-id sess-456 --vtime 1234567890
+! snouty debug --input-hash abc123 --run-id 9043254f65c9c65d63fe043a0abfc7fc-53-1 --vtime 1234567890
 stderr 'API error: 401.*'
 
 -- moment_input.txt --
 Moment.from({ session_id: "f89d5c11f5e3bf5e4bb3641809800cee-44-22", input_hash: "6057726200491963783", vtime: 329.8037810830865 })
+-- moment_run_input.txt --
+Moment.from({ run_id: "9043254f65c9c65d63fe043a0abfc7fc-53-1", input_hash: "6057726200491963783", vtime: 329.8037810830865 })
 -- debug_json.txt --
 {
     "antithesis.debugging.input_hash": "abc",

@@ -23,8 +23,8 @@ mod generated {
 
 pub(crate) use generated::types::Params as RunParams;
 pub use generated::types::{
-    BuildLogLine, Event, EventProperty, LaunchResponse, Moment, NonEventProperty, Property,
-    PropertyStatus, RunDetail, RunStatus, RunSummary,
+    BuildLogLine, Event, EventProperty, LaunchMvdResponse, LaunchResponse, Moment,
+    NonEventProperty, Property, PropertyStatus, RunDetail, RunStatus, RunSummary,
 };
 pub use progenitor_client::ByteStream;
 
@@ -323,7 +323,7 @@ impl AntithesisApi {
         }
     }
 
-    pub async fn launch_debugging(&self, params: &Params) -> Result<LaunchResponse> {
+    pub async fn launch_debugging(&self, params: &Params) -> Result<LaunchMvdResponse> {
         let body = launch_mvd_request(params)?;
         match self.client.launch_mvd().body(body).send().await {
             Ok(response) => Ok(response.into_inner()),
@@ -753,33 +753,51 @@ fn launch_request(params: &Params) -> Result<generated::types::LaunchRequest> {
 }
 
 fn launch_mvd_request(params: &Params) -> Result<generated::types::LaunchMvdRequest> {
-    let mut builder = generated::types::builder::MvdParams::default();
+    use generated::types::MvdParams;
 
-    for (key, value) in params.as_map() {
-        let value = value
-            .as_str()
-            .ok_or_else(|| eyre!("debugging params must be strings: {key}"))?;
+    let map = params.as_map();
+    let get = |key: &str| -> Result<Option<String>> {
+        match map.get(key) {
+            None => Ok(None),
+            Some(value) => value
+                .as_str()
+                .map(|s| Some(s.to_string()))
+                .ok_or_else(|| eyre!("debugging params must be strings: {key}")),
+        }
+    };
 
-        builder = match key.as_str() {
-            "antithesis.debugging.input_hash" => {
-                builder.antithesis_debugging_input_hash(value.to_string())
-            }
-            "antithesis.debugging.session_id" => {
-                builder.antithesis_debugging_session_id(value.to_string())
-            }
-            "antithesis.debugging.vtime" => builder.antithesis_debugging_vtime(value.to_string()),
-            "antithesis.event_description" => {
-                builder.antithesis_event_description(Some(value.to_string()))
-            }
-            "antithesis.report.recipients" => {
-                builder.antithesis_report_recipients(Some(value.to_string()))
-            }
-            _ => return Err(eyre!("unknown debugging param: {key}")),
-        };
-    }
+    let input_hash = get("antithesis.debugging.input_hash")?
+        .ok_or_else(|| eyre!("missing antithesis.debugging.input_hash"))?;
+    let vtime = get("antithesis.debugging.vtime")?
+        .ok_or_else(|| eyre!("missing antithesis.debugging.vtime"))?;
+    let event_description = get("antithesis.event_description")?;
+    let recipients = get("antithesis.report.recipients")?;
+    let run_id = get("antithesis.debugging.run_id")?;
+    let session_id = get("antithesis.debugging.session_id")?;
 
-    let typed_params = generated::types::MvdParams::try_from(builder)
-        .wrap_err("failed to build debugging params")?;
+    // The MVD_Params schema is a oneOf, so the target run is identified by
+    // exactly one of run_id or session_id. cmd_debug enforces this with a
+    // friendly message before we get here; the both/neither arms below are a
+    // defensive backstop.
+    let typed_params = match (run_id, session_id) {
+        (Some(run_id), None) => MvdParams::RunId {
+            antithesis_debugging_input_hash: input_hash,
+            antithesis_debugging_run_id: run_id,
+            antithesis_debugging_vtime: vtime,
+            antithesis_event_description: event_description,
+            antithesis_report_recipients: recipients,
+        },
+        (None, Some(session_id)) => MvdParams::SessionId {
+            antithesis_debugging_input_hash: input_hash,
+            antithesis_debugging_session_id: session_id,
+            antithesis_debugging_vtime: vtime,
+            antithesis_event_description: event_description,
+            antithesis_report_recipients: recipients,
+        },
+        (Some(_), Some(_)) => return Err(eyre!("specify exactly one of --run-id / --session-id")),
+        (None, None) => return Err(eyre!("specify --run-id or --session-id")),
+    };
+
     generated::types::LaunchMvdRequest::try_from(
         generated::types::builder::LaunchMvdRequest::default().params(typed_params),
     )
@@ -1242,9 +1260,9 @@ mod tests {
 
         Mock::given(method("POST"))
             .and(path("/api/v1/launch/basic_test"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            .respond_with(ResponseTemplate::new(202).set_body_json(serde_json::json!({
                 "runId": "run-123",
-                "statusCode": 200
+                "statusCode": 202
             })))
             .expect(1)
             .mount(&mock_server)
@@ -1271,9 +1289,9 @@ mod tests {
 
         Mock::given(method("POST"))
             .and(path("/api/v1/launch/basic_test"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            .respond_with(ResponseTemplate::new(202).set_body_json(serde_json::json!({
                 "runId": "run-123",
-                "statusCode": 200
+                "statusCode": 202
             })))
             .expect(1)
             .mount(&mock_server)
@@ -1290,7 +1308,7 @@ mod tests {
         let requests = mock_server.received_requests().await.unwrap();
 
         assert_eq!(response.run_id, "run-123");
-        assert_eq!(response.status_code, 200);
+        assert_eq!(response.status_code, 202);
         assert_eq!(requests.len(), 1);
         assert_eq!(requests[0].url.path(), "/api/v1/launch/basic_test");
         assert_eq!(requests[0].method, reqwest::Method::POST);

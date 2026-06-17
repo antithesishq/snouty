@@ -3,7 +3,7 @@
   "info": {
     "title": "Antithesis API",
     "version": "1.0.0",
-    "description": "The Antithesis API enables programmatic access to the Antithesis autonomous testing environments. List runs, inspect run details and retrieve logs.\n\n### Authentication\n\nAll endpoints require an API key. Pass it in the `Authorization` header as `Authorization: Bearer <api_key>`. To obtain an API key, please contact support at support@antithesis.com.\n\n### Versioning\n\nPublic API endpoints are versioned via a path prefix:\n\n- `/api/v0/...` — **Preview.** APIs accessed from the `v0` route are in preview. They may change or be removed.\n- `/api/v1/...` — **Stable.** The first generally-available version with a compatibility commitment.\n\nIn the future only breaking changes trigger a new major version (e.g., `v2`). When that happens the previous version (`v1`) remains available, and preview APIs restart under `v0`.",
+    "description": "The Antithesis API enables programmatic access to the Antithesis autonomous testing environments. List runs, inspect run details, and retrieve logs.\n\n### Authentication\n\nPass the API key in the `Authorization` header as `Authorization: Bearer <api_key>`. To obtain an API key, please email us at [support@antithesis.com](mailto:support@antithesis.com) or talk to your forward deployed engineer.\n\n### Versioning\n\nAll endpoints are versioned via a path prefix:\n\n- `/api/v0/...` **Preview.** APIs accessed from the `v0` route are in preview. They may change or be removed.\n- `/api/v1/...` **Stable.** The first version with a compatibility commitment.\n\nIn the future only breaking changes trigger a new major version (e.g., `v2`). When that happens the previous version (`v1`) remains available, and preview APIs restart under `v0`.",
     "contact": {
       "name": "Antithesis Team",
       "url": "https://www.antithesis.com",
@@ -35,14 +35,19 @@
     {
       "name": "Launch",
       "description": "Launch a test run or debugging session."
+    },
+    {
+      "name": "Version",
+      "description": "API and release version information."
     }
   ],
   "paths": {
     "/api/v0/runs": {
+      "parameters": [],
       "get": {
         "operationId": "listRuns",
-        "summary": "List all runs",
-        "description": "Returns a paginated list of runs for your organization. Results are ordered by creation time, newest first.",
+        "summary": "List all test runs",
+        "description": "Returns a paginated list of test runs. Results are ordered by creation time, newest first.",
         "tags": ["Test runs"],
         "parameters": [
           {
@@ -69,7 +74,7 @@
           {
             "name": "status",
             "in": "query",
-            "description": "Filter runs by status.",
+            "description": "Filter test runs by status.",
             "required": false,
             "schema": {
               "$ref": "#/components/schemas/Run_Status"
@@ -78,7 +83,7 @@
           {
             "name": "created_after",
             "in": "query",
-            "description": "Only return runs created after this timestamp (ISO 8601).",
+            "description": "Only return test runs created after this timestamp (ISO 8601).",
             "required": false,
             "schema": {
               "type": "string",
@@ -88,7 +93,7 @@
           {
             "name": "created_before",
             "in": "query",
-            "description": "Only return runs created before this timestamp (ISO 8601).",
+            "description": "Only return test runs created before this timestamp (ISO 8601).",
             "required": false,
             "schema": {
               "type": "string",
@@ -98,7 +103,7 @@
           {
             "name": "launcher",
             "in": "query",
-            "description": "Filter by the launcher that kicked off the run.",
+            "description": "Filter by the launcher that kicked off the test run.",
             "required": false,
             "schema": {
               "type": "string"
@@ -107,7 +112,7 @@
         ],
         "responses": {
           "200": {
-            "description": "A paginated list of runs.",
+            "description": "A paginated list of test runs.",
             "content": {
               "application/json": {
                 "schema": {
@@ -116,23 +121,47 @@
                 "example": {
                   "data": [
                     {
-                      "run_id": "9325f006ffd3a399a8497bc888878b97-50-1",
+                      "run_id": "9043254f65c9c65d63fe043a0abfc7fc-53-1",
                       "status": "completed",
-                      "created_at": "2025-03-20T02:00:00Z",
-                      "started_at": "2025-03-20T02:01:12Z",
-                      "completed_at": "2025-03-20T02:31:45Z",
-                      "launcher": "Payments Nightly"
+                      "created_at": "2026-04-28T13:49:49Z",
+                      "launcher": "Research Nightly",
+                      "started_at": "2026-04-28T13:49:49Z",
+                      "completed_at": "2026-04-28T14:14:07Z",
+                      "creator": {
+                        "name": "abc.xyz",
+                        "type": "user"
+                      },
+                      "parameters": {
+                        "antithesis.description": "Placeholder description",
+                        "antithesis.integrations.type": "none",
+                        "antithesis.is_ephemeral": "false"
+                      },
+                      "links": {
+                        "triage_report": "https://antithesis-dev.antithesis.com/report/VQ81z_5My-BjOmj6uFNKqVPq/Pv_GDPOCDEer8yk3Tf90Twj-83iedGwTgf60FyOYtA8.html?auth=v2.public.eyJuYmYiOiIyMDI2LTA0LTI4VDEzOjE0OjA1LjY3NTMyMTY1N1oiLCJzY29wZSI6eyJSZXBvcnRTY29wZVYxIjp7ImFzc2V0IjoiUHZfR0RQT0NERWVyOHlrM1RmOTBUd2otODNpZWRHd1RnZjYwRnlPWXRBOC5odG1sIiwicmVwb3J0X2lkIjoiVlE4MXpfNU15LUJqT21qNnVGTktxVlBxIn19fTuj6S2XLg2SC-7dhP7H4CNTV5WZME2xiXlmReHLchLERjHxLXaOVxnkkv2Li5VF_4MLtIxunbBl_4gOwNJE3gY&debug=true"
+                      }
                     },
                     {
-                      "run_id": "a1c4e7f2b5d8039c6e9f1a4b7d0e3f68-50-1",
+                      "run_id": "ced73597f5f6499a6041f4c7f2329cf1-53-1",
                       "status": "completed",
-                      "created_at": "2025-03-19T14:00:00Z",
-                      "started_at": "2025-03-19T14:00:32Z",
-                      "completed_at": "2025-03-19T14:45:10Z",
-                      "launcher": "Debug Runner"
+                      "created_at": "2026-04-28T13:49:49Z",
+                      "launcher": "Thesis",
+                      "started_at": "2026-04-28T13:49:49Z",
+                      "completed_at": "2026-04-28T14:07:36Z",
+                      "creator": {
+                        "name": "abc.xyz",
+                        "type": "user"
+                      },
+                      "parameters": {
+                        "antithesis.description": "Placeholder description",
+                        "antithesis.integrations.type": "none",
+                        "antithesis.is_ephemeral": "true"
+                      },
+                      "links": {
+                        "triage_report": "https://antithesis-dev.antithesis.com/report/upBLS-4SrdaVqSi7tv5IbF38/Fqt1GZOTLPd978JxmCxAY-fXoUWvnqDjaTOmRM2g_g4.html?auth=v2.public.eyJzY29wZSI6eyJSZXBvcnRTY29wZVYxIjp7ImFzc2V0IjoiRnF0MUdaT1RMUGQ5NzhKeG1DeEFZLWZYb1VXdm5xRGphVE9tUk0yZ19nNC5odG1sIiwicmVwb3J0X2lkIjoidXBCTFMtNFNyZGFWcVNpN3R2NUliRjM4In19LCJuYmYiOiIyMDI2LTA0LTI4VDEzOjA3OjI1LjcwMDgzODkwM1oifVZW5_voXDGIhlndVP0FXfpDpBhUyYPbm99Zl7DlSzO38NSGXVU4_hKliNLgMGz1SXP9VW4NJLwDcEGetW224gY&debug=true"
+                      }
                     }
                   ],
-                  "next_cursor": "eyJjcmVhdGVkX2F0IjoiMjAyNS0wMy0xOVQxNDowMDowMFoiLCJydW5faWQiOiJiN2YzYTFlOWQwNDg0N2ExYjJjM2Q0ZTVmNmE3YjhjOSJ9"
+                  "next_cursor": "MjAyNi0wNC0yOFQxMzo0OTo0NVosMDM2MDc0MjdmMDg0NmE0OGE3ZjY2ZTQyYTUxOTY3ODktNTMtMQ=="
                 }
               }
             }
@@ -167,14 +196,14 @@
     "/api/v0/runs/{run_id}": {
       "get": {
         "operationId": "getRun",
-        "summary": "Get run details",
-        "description": "Returns the full details of a single run, including results.",
+        "summary": "Get test run details",
+        "description": "Returns the full details of a single test run, including results.",
         "tags": ["Test runs"],
         "parameters": [
           {
             "name": "run_id",
             "in": "path",
-            "description": "Unique identifier of the run to retrieve.",
+            "description": "Unique identifier of the test run to retrieve.",
             "required": true,
             "schema": {
               "type": "string"
@@ -183,27 +212,70 @@
         ],
         "responses": {
           "200": {
-            "description": "Full details of the requested run.",
+            "description": "Full details of the requested test run.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Run_Detail"
                 },
-                "examples": {
-                  "test_run": {
-                    "summary": "A completed test run",
-                    "value": {
-                      "run_id": "9325f006ffd3a399a8497bc888878b97-50-1",
-                      "status": "completed",
-                      "created_at": "2025-03-20T02:00:00Z",
-                      "started_at": "2025-03-20T02:01:12Z",
-                      "completed_at": "2025-03-20T02:31:45Z",
-                      "launcher": "Payments Nightly",
-                      "description": "basic_test on main",
-                      "links": {
-                        "triage_report": "https://demo.antithesis.com/report/dBDNYWsHWywLBl1mtobJjjuB/dw8bjBJES6HzQ9iw8PSlGUXNnraLuWpLlbavyABg_R0.html"
-                      },
-                      "results": {}
+                "example": {
+                  "run_id": "ff0192ee9607f8ffa39187731d359c43-54-0",
+                  "status": "completed",
+                  "created_at": "2026-05-14T03:01:27Z",
+                  "launcher": "basic_k8s_test",
+                  "started_at": "2026-05-14T03:01:27Z",
+                  "completed_at": "2026-05-14T03:29:04Z",
+                  "creator": {
+                    "name": "antithesis_pdev",
+                    "type": "antithesis_scheduler"
+                  },
+                  "parameters": {
+                    "antithesis.config_image": "etcd-config-k8s:latest",
+                    "antithesis.description": "Nightly: Basic K8s test (etcd)",
+                    "antithesis.duration": "15",
+                    "antithesis.integrations.type": "none",
+                    "antithesis.is_ephemeral": "false",
+                    "antithesis.report.recipients": "foo.bar@antithesis.com"
+                  },
+                  "links": {
+                    "triage_report": "https://antithesis-dev.antithesis.com/report/mj9kKGUQwD-NuB5MKdvoBbUs/hHB2tlELW0k2fysU3tEHMyluQqqzBhspg2JalbFl3tQ.html?auth=v2.public.eyJzY29wZSI6eyJSZXBvcnRTY29wZVYxIjp7ImFzc2V0IjoiaEhCMnRsRUxXMGsyZnlzVTN0RUhNeWx1UXFxekJoc3BnMkphbGJGbDN0US5odG1sIiwicmVwb3J0X2lkIjoibWo5a0tHVVF3RC1OdUI1TUtkdm9CYlVzIn19LCJuYmYiOiIyMDI2LTA1LTE0VDAyOjI5OjAyLjY1MTUxNzIyMloifetWU3K1qICy8CzM5VzyveqhPMgpKgej_FOogxKqyfG9r16HsGjbAEKoiXXIIl6pi6_hvgIduzAgroEoNigj3wo"
+                  },
+                  "results": {
+                    "environment": {
+                      "antithesis_version": "v54-0",
+                      "images": [
+                        {
+                          "name": "etcd-config-k8s",
+                          "image": "us-central1-docker.pkg.dev/molten-verve-216720/antithesis-pdev-repository/etcd-config-k8s@sha256:16f57a2ec79c0d61886c28774264ab1d027e51a9301e014941404a35dcf8c631",
+                          "tag": "latest"
+                        },
+                        {
+                          "name": "mirrored-coredns-coredns",
+                          "image": "docker.io/rancher/mirrored-coredns-coredns@sha256:4f7a57135719628cf2070c5e3cbde64b013e90d4c560c5ecbf14004181f91998"
+                        },
+                        {
+                          "name": "etcd",
+                          "image": "docker.io/bitnamilegacy/etcd@sha256:4abe38869d5919c9ec70b2008713c2eb90c1b26d9e6700e126875894681b5b99",
+                          "tag": "3.5"
+                        },
+                        {
+                          "name": "local-path-provisioner",
+                          "image": "docker.io/rancher/local-path-provisioner@sha256:5fb0394abf87407a27cc56db94334eb0c92d0b5de2636683a7ec51f38143dfc9"
+                        },
+                        {
+                          "name": "busybox",
+                          "image": "docker.io/library/busybox@sha256:e56bc0f7fc7d4452b17eb4ac0a9261ff4c9a469afa45d2b673e03650716d095d"
+                        },
+                        {
+                          "name": "mirrored-pause",
+                          "image": "docker.io/rancher/mirrored-pause@sha256:7c38f24774e3cbd906d2d33c38354ccf787635581c122965132c9bd309754d4a"
+                        },
+                        {
+                          "name": "etcd-client-k8s",
+                          "image": "us-central1-docker.pkg.dev/molten-verve-216720/antithesis-pdev-repository/etcd-client-k8s@sha256:112394d9bacd070df4a8d18db3b7575d6e314220ee2462a31dc24df2e98373cc",
+                          "tag": "latest"
+                        }
+                      ]
                     }
                   }
                 }
@@ -241,13 +313,13 @@
       "get": {
         "operationId": "getRunLogs",
         "summary": "Get logs for a specific moment",
-        "description": "Streams the logs for a moment in the run as newline-delimited JSON (NDJSON) in chronological order. Each line is a self-contained JSON object. The response is streamed — the connection remains open until all matching log lines have been sent.",
+        "description": "Streams the logs for a moment in the test run as newline-delimited JSON (NDJSON) in chronological order. Each line is a self-contained JSON object. The response is streamed and the connection remains open until all matching log lines have been sent.",
         "tags": ["Test runs"],
         "parameters": [
           {
             "name": "run_id",
             "in": "path",
-            "description": "Unique identifier of the run to retrieve logs for.",
+            "description": "Unique identifier of the test run to retrieve logs for.",
             "required": true,
             "schema": {
               "type": "string"
@@ -275,7 +347,7 @@
           {
             "name": "begin_vtime",
             "in": "query",
-            "description": "Start streaming logs from this virtual time instead of from the beginning of the run.",
+            "description": "Start streaming logs from this virtual time instead of from the beginning of the test run.",
             "required": false,
             "schema": {
               "type": "string",
@@ -305,15 +377,15 @@
                   "raft_vote_log": {
                     "summary": "A raft pre-vote request log line",
                     "value": {
+                      "moment": {
+                        "input_hash": "-3625518438076122494",
+                        "vtime": "398.4898056755774"
+                      },
                       "output_text": "{\"level\":\"info\",\"ts\":\"2026-03-26T01:42:55.628233Z\",\"logger\":\"raft\",\"caller\":\"v3@v3.6.0/raft.go:1064\",\"msg\":\"2c6c7b8d0d0933f7 [logterm: 78, index: 436] sent MsgPreVote request to dcb68c82481661be at term 79\"}",
                       "source": {
                         "container": "etcd0",
                         "name": "etcd0",
                         "stream": "error"
-                      },
-                      "moment": {
-                        "input_hash": "-3625518438076122494",
-                        "vtime": "398.4898056755774"
                       }
                     }
                   },
@@ -383,13 +455,13 @@
       "get": {
         "operationId": "getRunBuildLogs",
         "summary": "Stream build logs",
-        "description": "Streams the build logs for a run as newline-delimited JSON (NDJSON). Each line contains a timestamp, a stream indicator, and the log text. The response is streamed — the connection remains open until all matching log lines have been sent.",
+        "description": "Streams the build logs for a test run as newline-delimited JSON (NDJSON). Each line contains a timestamp, a stream indicator, and the log text. The response is streamed and the connection remains open until all matching log lines have been sent.\n\n**Known limitation:** Build logs are not available for test runs created before Antithesis version 54.5. Requests for such runs return `404 Not Found`.",
         "tags": ["Test runs"],
         "parameters": [
           {
             "name": "run_id",
             "in": "path",
-            "description": "Unique identifier of the run to retrieve build logs for.",
+            "description": "Unique identifier of the test run to retrieve build logs for.",
             "required": true,
             "schema": {
               "type": "string"
@@ -403,7 +475,8 @@
               "application/x-ndjson": {
                 "schema": {
                   "$ref": "#/components/schemas/Build_Log_Line"
-                }
+                },
+                "example": "{\"timestamp\":\"2026-05-14T03:03:23.481Z\",\"text\":\"\",\"stream\":\"stdout\"}\n{\"timestamp\":\"2026-05-14T03:03:24.668Z\",\"text\":\"About to wait for the flock. If the script is hanging here, somebody else is doing a build.\",\"stream\":\"stdout\"}"
               }
             }
           },
@@ -437,14 +510,14 @@
     "/api/v0/runs/{run_id}/properties": {
       "get": {
         "operationId": "listRunProperties",
-        "summary": "List run properties",
-        "description": "Returns a paginated list of property results for a run, including both passing and failing properties by default. Use the `status` parameter to filter by a specific status.",
+        "summary": "List test run properties",
+        "description": "Returns a paginated list of property results for a test run, including both passing and failing properties by default. Use the `status` parameter to filter by a specific status.\n\n**Known limitation:** Property results are not available for test runs created before Antithesis version 54.5. Requests for such runs return `404 Not Found`.",
         "tags": ["Test runs"],
         "parameters": [
           {
             "name": "run_id",
             "in": "path",
-            "description": "Unique identifier of the run to retrieve properties for.",
+            "description": "Unique identifier of the test run to retrieve properties for.",
             "required": true,
             "schema": {
               "type": "string"
@@ -488,6 +561,45 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Property_List_Response"
+                },
+                "example": {
+                  "data": [
+                    {
+                      "name": "Sometimes: Root moments",
+                      "description": null,
+                      "status": "Passing",
+                      "is_event": true,
+                      "is_group": false,
+                      "example_count": 1,
+                      "counterexample_count": 0,
+                      "examples": [
+                        {
+                          "env_setup": "complete",
+                          "source": {
+                            "name": "env_root"
+                          },
+                          "moment": {
+                            "input_hash": "-363173456058459333",
+                            "vtime": "22.475549569819123"
+                          }
+                        }
+                      ],
+                      "counterexamples": []
+                    },
+                    {
+                        "name": "Input count",
+                        "description": null,
+                        "status": "Passing",
+                        "is_event": false,
+                        "is_group": false,
+                        "example_count": 1,
+                        "counterexample_count": 0,
+                        "examples": [
+                            318446
+                        ],
+                        "counterexamples": []
+                    }
+                  ]
                 }
               }
             }
@@ -523,13 +635,13 @@
       "get": {
         "operationId": "searchRunEvents",
         "summary": "Search run events",
-        "description": "Searches events in a run for the given query string. The search matches against output text, assertion messages, function names, and test composer commands. Results are streamed as newline-delimited JSON (NDJSON). Each line is a self-contained JSON object representing an event.",
+        "description": "Searches events in a test run for the given query string. The search matches against output text, assertion messages, function names, and test composer commands. Results are streamed as newline-delimited JSON (NDJSON). Each line is a self-contained JSON object representing an event.",
         "tags": ["Test runs"],
         "parameters": [
           {
             "name": "run_id",
             "in": "path",
-            "description": "Unique identifier of the run to search.",
+            "description": "Unique identifier of the test run to search.",
             "required": true,
             "schema": {
               "type": "string"
@@ -538,7 +650,7 @@
           {
             "name": "q",
             "in": "query",
-            "description": "The search term. Matches events where this string is contained in the output text, assertion message, function name, or test composer command.",
+            "description": "The search term. Matches events where this string is contained in the output text, assertion message, function name, or test command.",
             "required": true,
             "schema": {
               "type": "string"
@@ -552,7 +664,8 @@
               "application/x-ndjson": {
                 "schema": {
                   "$ref": "#/components/schemas/Event"
-                }
+                },
+                "example": "{\"moment\":{\"input_hash\":\"-2978388909754056022\",\"vtime\":22.66615231265314},\"IPT_bytes_out\":1073904,\"source\":{\"command_id\":\"BSPID1ERCnmoGEnk6WjwIZ4o3TM\",\"name\":\"setup\",\"stream\":\"info\"},\"output_text\":\"3:08:17AM:     ^ Pending: ContainerCreating\"}\n{\"moment\":{\"input_hash\":\"-2978388909754056022\",\"vtime\":22.6661523131188},\"IPT_bytes_out\":1074064,\"source\":{\"command_id\":\"BSPID1ERCnmoGEnk6WjwIZ4o3TM\",\"name\":\"setup\",\"stream\":\"info\"},\"output_text\":\"3:08:17AM:     ^ Pending: ContainerCreating\"}"
               }
             }
           },
@@ -612,12 +725,16 @@
           }
         },
         "responses": {
-          "200": {
+          "202": {
             "description": "Test successfully launched.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Launch_Response"
+                },
+                "example": {
+                  "statusCode": 202,
+                  "runId": "0e62aa320a60967967096401ce826bd5-54-1"
                 }
               }
             }
@@ -649,30 +766,84 @@
         }
       }
     },
+    "/api/version": {
+      "get": {
+        "tags": ["Version"],
+        "operationId": "getVersion",
+        "summary": "Get API and release version",
+        "description": "Returns the latest supported API version and the current Antithesis release version for the tenant.",
+        "responses": {
+          "200": {
+            "description": "Version information.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Version_Response"
+                },
+                "example": {
+                  "latest_api_version": "v1",
+                  "release_version": "56.0"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/launch/debugging": {
+      "parameters": [],
       "post": {
         "operationId": "launchMvd",
         "summary": "Launch a debugging session",
-        "description": "Kicks off a multiverse debugging session that'll be available for six hours. Returns an HTTP status code indicating whether the debugging session request was successfully accepted and the session is getting ready.",
+        "description": "Kicks off a multiverse debugging session that'll be available for six hours. Returns an HTTP status code indicating whether the debugging session request was successfully accepted and the session is getting ready.\n\nThe target test run is identified by `antithesis.debugging.run_id`. For backwards compatibility, `antithesis.debugging.session_id` is also accepted — prefer `run_id` for new integrations.",
         "tags": ["Launch"],
-        "parameters": [],
+        "parameters": [
+        ],
         "requestBody": {
           "required": true,
           "content": {
             "application/json": {
               "schema": {
                 "$ref": "#/components/schemas/Launch_MVD_Request"
+              },
+              "examples": {
+                "by_run_id": {
+                  "summary": "Identified by run ID (preferred)",
+                  "value": {
+                    "params": {
+                      "antithesis.debugging.run_id": "9043254f65c9c65d63fe043a0abfc7fc-56-1",
+                      "antithesis.debugging.input_hash": "-9067336385060865277",
+                      "antithesis.debugging.vtime": "45.334635781589895",
+                      "antithesis.report.recipients": "user1@example.com; user2@example.com"
+                    }
+                  }
+                },
+                "by_session_id": {
+                  "summary": "Identified by session ID",
+                  "value": {
+                    "params": {
+                      "antithesis.debugging.session_id": "d5d1c9cf0e64b5dd69b00e97b07fe3f4-18-1",
+                      "antithesis.debugging.input_hash": "-9067336385060865277",
+                      "antithesis.debugging.vtime": "45.334635781589895",
+                      "antithesis.report.recipients": "user1@example.com; user2@example.com"
+                    }
+                  }
+                }
               }
             }
           }
         },
         "responses": {
-          "200": {
+          "202": {
             "description": "Debugging session launcher successfully started.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Launch_Response"
+                  "$ref": "#/components/schemas/Launch_MVD_Response"
+                },
+                "example": {
+                  "statusCode": 202,
+                  "runId": "633c43d99162a42d8c6b784751802f30-54-1"
                 }
               }
             }
@@ -706,6 +877,20 @@
     }
   },
   "components": {
+    "parameters": {
+      "Version": {
+        "name": "version",
+        "in": "path",
+        "description": "API version identifier. Use `v0` for preview APIs (may change without notice) or `v1` for the stable, compatibility-committed version. See the [Versioning section](/docs/rest_api/#versioning) for the full policy.",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "enum": ["v0", "v1"],
+          "default": "v1",
+          "example": "v1"
+        }
+      }
+    },
     "schemas": {
       "Error_Response": {
         "type": "object",
@@ -744,7 +929,7 @@
         "properties": {
           "run_id": {
             "type": "string",
-            "description": "Unique identifier for the run.",
+            "description": "Unique identifier for the test run.",
             "example": "9325f006ffd3a399a8497bc888878b97-50-1"
           },
           "status": {
@@ -753,24 +938,24 @@
           "created_at": {
             "type": "string",
             "format": "date-time",
-            "description": "Timestamp when the run was created (ISO 8601)."
+            "description": "Timestamp when the test run was created (ISO 8601)."
           },
           "started_at": {
             "type": "string",
             "format": "date-time",
             "nullable": true,
-            "description": "Timestamp when the run started executing. Null if the run has not yet started."
+            "description": "Timestamp when the test run started executing. Null if the run has not yet started."
           },
           "completed_at": {
             "type": "string",
             "format": "date-time",
             "nullable": true,
-            "description": "Timestamp when the run finished. Null if the run is still in progress or has not started."
+            "description": "Timestamp when the test run finished. Null if the run is still in progress or has not started."
           },
           "creator": {
             "type": "object",
             "nullable": true,
-            "description": "Information about who or what created this run. Null if the creator is unknown.",
+            "description": "Information about who or what created this test run. Null if the creator is unknown.",
             "allOf": [
               {
                 "$ref": "#/components/schemas/Creator_Info"
@@ -779,7 +964,7 @@
           },
           "launcher": {
             "type": "string",
-            "description": "The name of the launcher that kicked off this run.",
+            "description": "The name of the launcher that kicked off this test run.",
             "example": "Payments Nightly"
           },
           "description": {
@@ -791,7 +976,7 @@
           "parameters": {
             "type": "object",
             "nullable": true,
-            "description": "Run parameters. Null if no parameters were specified.",
+            "description": "Test run parameters. Null if no parameters were specified.",
             "allOf": [
               {
                 "$ref": "#/components/schemas/Params"
@@ -801,7 +986,7 @@
           "links": {
             "type": "object",
             "nullable": true,
-            "description": "Relevant links for this run. Null if no links are available yet.",
+            "description": "Relevant links for this test run. Null if no links are available yet.",
             "allOf": [
               {
                 "$ref": "#/components/schemas/Run_Links"
@@ -822,7 +1007,7 @@
               "results": {
                 "type": "object",
                 "additionalProperties": true,
-                "description": "Aggregate results for the run. Structure varies by run type. May be absent or partial for runs that have not yet completed."
+                "description": "Aggregate results for the test run. Structure varies by run type. May be absent or partial for runs that have not yet completed."
               },
               "failure_moment": {
                 "type": "object",
@@ -855,6 +1040,37 @@
           }
         },
         "additionalProperties": false
+      },
+      "Version_Response": {
+        "type": "object",
+        "description": "Version information returned by the version endpoint.",
+        "required": ["latest_api_version", "release_version"],
+        "properties": {
+          "latest_api_version": {
+            "type": "string",
+            "description": "The API version exposed by this server.",
+            "example": "v1"
+          },
+          "release_version": {
+            "type": "string",
+            "description": "The underlying Antithesis release version.",
+            "example": "56.0"
+          }
+        },
+        "additionalProperties": false
+      },
+      "Launch_MVD_Response": {
+        "type": "object",
+        "description": "Response returned when a debugging session request is successfully accepted.",
+        "required": ["run_id"],
+        "properties": {
+          "run_id": {
+            "type": "string",
+            "description": "Unique identifier for the launched debugging session.",
+            "example": "c8d2f4a6e0b3197d5f8a2c4e6b0d3f79-49-1"
+          }
+        },
+        "additionalProperties": true
       },
       "Launch_Request": {
         "type": "object",
@@ -935,40 +1151,81 @@
         }
       },
       "MVD_Params": {
-        "type": "object",
-        "description": "Key-value pairs of multiverse debugging session parameters. Used when launching a debugging session.",
-        "required": [
-          "antithesis.debugging.input_hash",
-          "antithesis.debugging.session_id",
-          "antithesis.debugging.vtime"
-        ],
-        "properties": {
-          "antithesis.debugging.session_id": {
-            "type": "string",
-            "description": "The session ID of the test run you want to start debugging. Obtain it from the [copy moment button](/docs/reports/properties/#copy-moment) in the triage report.",
-            "example": "d5d1c9cf0e64b5dd69b00e97b07fe3f4-18-1"
+        "description": "Key-value pairs of multiverse debugging session parameters. Used when launching a debugging session. The target test run must be identified by exactly one of `antithesis.debugging.run_id` (preferred) or `antithesis.debugging.session_id`.",
+        "oneOf": [
+          {
+            "title": "Identified by run ID",
+            "type": "object",
+            "required": [
+              "antithesis.debugging.input_hash",
+              "antithesis.debugging.run_id",
+              "antithesis.debugging.vtime"
+            ],
+            "properties": {
+              "antithesis.debugging.run_id": {
+                "type": "string",
+                "description": "The run ID of the test run you want to start debugging.",
+                "example": "9043254f65c9c65d63fe043a0abfc7fc-53-1"
+              },
+              "antithesis.debugging.input_hash": {
+                "type": "string",
+                "description": "Obtain it from the [copy moment button](/docs/reports/properties/#copy-moment) in the triage report.",
+                "example": "-9067336385060865277"
+              },
+              "antithesis.debugging.vtime": {
+                "type": "string",
+                "description": "The virtual time at which you want to start debugging. Obtain it from the [copy moment button](/docs/reports/properties/#copy-moment) in the triage report.",
+                "example": "45.334635781589895"
+              },
+              "antithesis.event_description": {
+                "type": "string",
+                "description": "A description of the debugging event or session.",
+                "example": "Investigate the failed assertion at this moment"
+              },
+              "antithesis.report.recipients": {
+                "type": "string",
+                "description": "A semicolon-delimited list of email addresses that receive the link to the debugging session when ready. If not specified, emails are sent to the default users configured for the endpoint.",
+                "example": "user1@example.com; user2@example.com"
+              }
+            }
           },
-          "antithesis.debugging.input_hash": {
-            "type": "string",
-            "description": "Obtain it from the [copy moment button](/docs/reports/properties/#copy-moment) in the triage report.",
-            "example": "-9067336385060865277"
-          },
-          "antithesis.debugging.vtime": {
-            "type": "string",
-            "description": "The virtual time at which you want to start debugging. Obtain it from the [copy moment button](/docs/reports/properties/#copy-moment) in the triage report.",
-            "example": "45.334635781589895"
-          },
-          "antithesis.event_description": {
-            "type": "string",
-            "description": "A description of the debugging event or session.",
-            "example": "Investigate the failed assertion at this moment"
-          },
-          "antithesis.report.recipients": {
-            "type": "string",
-            "description": "A semicolon-delimited list of email addresses that receive the link to the debugging session when ready. If not specified, emails are sent to the default users configured for the endpoint.",
-            "example": "user1@example.com; user2@example.com"
+          {
+            "title": "Identified by session ID",
+            "type": "object",
+            "required": [
+              "antithesis.debugging.input_hash",
+              "antithesis.debugging.session_id",
+              "antithesis.debugging.vtime"
+            ],
+            "properties": {
+              "antithesis.debugging.session_id": {
+                "type": "string",
+                "description": "Identifies the test run you want to start debugging. Prefer `antithesis.debugging.run_id` for new integrations.",
+                "example": "d5d1c9cf0e64b5dd69b00e97b07fe3f4-18-1"
+              },
+              "antithesis.debugging.input_hash": {
+                "type": "string",
+                "description": "Obtain it from the [copy moment button](/docs/reports/properties/#copy-moment) in the triage report.",
+                "example": "-9067336385060865277"
+              },
+              "antithesis.debugging.vtime": {
+                "type": "string",
+                "description": "The virtual time at which you want to start debugging. Obtain it from the [copy moment button](/docs/reports/properties/#copy-moment) in the triage report.",
+                "example": "45.334635781589895"
+              },
+              "antithesis.event_description": {
+                "type": "string",
+                "description": "A description of the debugging event or session.",
+                "example": "Investigate the failed assertion at this moment"
+              },
+              "antithesis.report.recipients": {
+                "type": "string",
+                "description": "A semicolon-delimited list of email addresses that receive the link to the debugging session when ready. If not specified, emails are sent to the default users configured for the endpoint.",
+                "example": "user1@example.com; user2@example.com"
+              }
+            }
           }
-        }
+        ]
       },
       "Event": {
         "type": "object",
@@ -1052,6 +1309,7 @@
           },
           "description": {
             "type": "string",
+            "nullable": true,
             "description": "A human-readable description of the property."
           },
           "status": {
@@ -1059,7 +1317,7 @@
           },
           "is_event": {
             "type": "boolean",
-            "description": "Whether this property is event-based. When true, examples and counterexamples are Event objects; when false, they may have any shape."
+            "description": "Whether this property is an event-based property. When true, examples and counterexamples are Event objects; when false, they may have any shape. If `is_event` is false, it's evaluated at the level of a whole test rather than a specific branch of execution, e.g., 'Recent version of software was provided' is evaluated at a whole test level and is independent of a branch of execution."
           },
           "is_group": {
             "type": "boolean",
@@ -1072,11 +1330,13 @@
           "example_count": {
             "type": "integer",
             "format": "uint32",
+            "nullable": true,
             "description": "Total number of examples observed."
           },
           "counterexample_count": {
             "type": "integer",
             "format": "uint32",
+            "nullable": true,
             "description": "Total number of counterexamples observed."
           }
         },
@@ -1150,19 +1410,12 @@
       },
       "Run_Status": {
         "type": "string",
-        "enum": [
-          "starting",
-          "in_progress",
-          "completed",
-          "cancelled",
-          "incomplete",
-          "unknown"
-        ],
-        "description": "Current lifecycle status of a run. `starting` — the run is being set up. `in_progress` — the run is actively running. `completed` — the run finished successfully. `cancelled` — the run was cancelled before completion. `incomplete` — the run did not complete successfully. `unknown` — the status of the run is unknown."
+        "enum": ["starting", "in_progress", "completed", "cancelled", "incomplete", "unknown"],
+        "description": "Current lifecycle status of a test run. `starting`: the run is being set up. `in_progress`: the run is actively running. `completed`: the run finished successfully. `cancelled`: the run was cancelled before completion. `incomplete`: the run did not complete successfully. `unknown`: the status of the run is unknown."
       },
       "Creator_Info": {
         "type": "object",
-        "description": "Information about who or what created this run. Distinguishes between CI-triggered runs, manual user-initiated runs, and agent-driven runs.",
+        "description": "Information about who or what created this test run. Distinguishes between CI-triggered test runs, manual user-initiated test runs, and agent-driven test runs.",
         "properties": {
           "name": {
             "type": "string",
@@ -1179,12 +1432,12 @@
       },
       "Run_Links": {
         "type": "object",
-        "description": "Relevant links for this run, providing direct access to the triage report.",
+        "description": "Relevant links for this test run, providing direct access to the triage report.",
         "properties": {
           "triage_report": {
             "type": "string",
             "format": "uri",
-            "description": "URL to the triage report for this run."
+            "description": "URL to the triage report for this test run."
           }
         },
         "additionalProperties": false
@@ -1202,7 +1455,7 @@
               "message": "limit must be between 1 and 100"
             }
           }
-        }
+        }   
       },
       "Unauthorized": {
         "description": "Unauthorized — invalid or missing authentication credentials.",
@@ -1310,7 +1563,7 @@
       "BearerAuth": {
         "type": "http",
         "scheme": "bearer",
-        "description": "API key provided by your Antithesis forward deployment engineer. Pass the key in the Authorization header as `Authorization: Bearer <api_key>`."
+        "description": "All endpoints require an API key. Pass it in the Authorization header as Authorization: Bearer <api_key>. To obtain an API key, please contact support at support@antithesis.com or talk to our forward deployed engineers."
       }
     }
   }

@@ -8,10 +8,13 @@ use color_eyre::eyre::{Context, OptionExt, Result, bail};
 
 /// Parse a Moment.from format string into Params.
 ///
-/// The format is: `Moment.from({ session_id: "...", input_hash: "...", vtime: 123.456 })`
+/// The format is: `Moment.from({ run_id: "...", input_hash: "...", vtime: 123.456 })`
+/// (older triage reports use `session_id` in place of `run_id`).
 ///
 /// This is JSON5 object syntax with unquoted keys. The keys are converted
 /// to `antithesis.debugging.*` format and numeric values are converted to strings.
+/// The parser is identifier-agnostic: whichever of `run_id` / `session_id` the
+/// moment carries is passed through unchanged.
 pub fn parse(input: &str) -> Result<Params> {
     let input = input.trim();
 
@@ -95,6 +98,29 @@ mod tests {
             Some(&Value::String("6057726200491963783".to_string()))
         );
         // Numbers are converted to strings
+        assert_eq!(
+            params.as_map().get("antithesis.debugging.vtime"),
+            Some(&Value::String("329.8037810830865".to_string()))
+        );
+    }
+
+    #[test]
+    fn parse_run_id_moment() {
+        // The triage report's copy-moment payload will carry run_id instead of
+        // session_id going forward; the parser passes it through unchanged.
+        let input = r#"Moment.from({ run_id: "9043254f65c9c65d63fe043a0abfc7fc-53-1", input_hash: "6057726200491963783", vtime: 329.8037810830865 })"#;
+        let params = parse(input).unwrap();
+
+        assert_eq!(
+            params.as_map().get("antithesis.debugging.run_id"),
+            Some(&Value::String(
+                "9043254f65c9c65d63fe043a0abfc7fc-53-1".to_string()
+            ))
+        );
+        assert_eq!(
+            params.as_map().get("antithesis.debugging.input_hash"),
+            Some(&Value::String("6057726200491963783".to_string()))
+        );
         assert_eq!(
             params.as_map().get("antithesis.debugging.vtime"),
             Some(&Value::String("329.8037810830865".to_string()))

@@ -33,18 +33,18 @@ stderr 'unexpected argument.*'
 stderr 'missing environment variable.*'
 
 # --param cannot override typed flag values.
-mock-server 200 '{"runId":"run-123","statusCode":200}'
+mock-server 202 '{"runId":"run-123","statusCode":202}'
 ! snouty launch -w basic_test --duration 30 --param antithesis.duration=60
 stderr 'cannot be overridden via --param.*'
 
 # At least one source of parameters must be provided; otherwise the
 #    command fails.
-mock-server 200 '{}'
+mock-server 202 '{}'
 ! snouty launch -w basic_test
 stderr 'no parameters provided.*'
 
 # antithesis.images must not be passed via --param.
-mock-server 200 '{"runId":"run-123","statusCode":200}'
+mock-server 202 '{"runId":"run-123","statusCode":202}'
 ! snouty launch -w basic_test --duration 30 --param antithesis.images=app:latest
 stderr 'antithesis.images cannot be set via --param.*'
 
@@ -55,7 +55,7 @@ stderr 'antithesis.images cannot be set via --param.*'
 #    parameters are printed to stderr with sensitive values (tokens, email
 #    recipients) redacted. On success, a one-line confirmation with the
 #    run_id is printed to stdout.
-mock-server 200 '{"runId":"run-123","statusCode":200}'
+mock-server 202 '{"runId":"run-123","statusCode":202}'
 snouty launch -w basic_test --test-name my-test --description 'nightly test run' --config-image config:latest --duration 30 --recipients team@example.com --source ci-pipeline
 stderr '"antithesis.test_name": "my-test"'
 stderr '"antithesis.description": "nightly test run"'
@@ -66,30 +66,30 @@ stderr '"antithesis.source": "ci-pipeline"'
 stdout 'Test run started: run_id run-123'
 
 # With --json, the full response body is printed as pretty JSON.
-mock-server 200 '{"runId":"run-123","statusCode":200}'
+mock-server 202 '{"runId":"run-123","statusCode":202}'
 snouty --json launch -w basic_test --config-image config:latest --duration 30 --source ci-pipeline
 stdout '\s*"runId": "run-123".*'
 ! stdout 'Test run started.*'
 
 # 6b. --ephemeral flag sets antithesis.is_ephemeral to "true".
-mock-server 200 '{"runId":"run-123","statusCode":200}'
+mock-server 202 '{"runId":"run-123","statusCode":202}'
 snouty launch -w basic_test --duration 30 --ephemeral
 stderr '"antithesis.is_ephemeral": "true"'
 
 # 6c. Without --source, is_ephemeral is set automatically and an info message is shown.
-mock-server 200 '{"runId":"run-123","statusCode":200}'
+mock-server 202 '{"runId":"run-123","statusCode":202}'
 snouty launch -w basic_test --duration 30
 stderr '"antithesis.is_ephemeral": "true"'
 stderr 'Starting ephemeral run, Findings will not be available \(provide --source\)'
 
 # 6c2. With --source, is_ephemeral is not set unless --ephemeral is passed.
-mock-server 200 '{"runId":"run-123","statusCode":200}'
+mock-server 202 '{"runId":"run-123","statusCode":202}'
 snouty launch -w basic_test --duration 30 --source ci-pipeline
 ! stderr 'is_ephemeral.*'
 ! stderr 'Starting ephemeral run.*'
 
 # 6d. --param flag passes custom properties.
-mock-server 200 '{"runId":"run-123","statusCode":200}'
+mock-server 202 '{"runId":"run-123","statusCode":202}'
 snouty launch -w basic_test --duration 30 --param my.custom.prop=value --param antithesis.integrations.github.callback_url=https://example.com/cb
 stderr '"my.custom.prop": "value"'
 stderr '"antithesis.integrations.github.callback_url": "https://example.com/cb"'
@@ -101,6 +101,6 @@ mock-server 400 '{"message":"bad request"}'
 stderr 'API error: 400.*'
 
 # `snouty run` still works but prints a deprecation warning.
-mock-server 200 '{"runId":"run-123","statusCode":200}'
+mock-server 202 '{"runId":"run-123","statusCode":202}'
 snouty run -w basic_test --duration 30
 stderr 'snouty run.*is deprecated.*snouty launch'

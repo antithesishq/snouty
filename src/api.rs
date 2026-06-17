@@ -4,8 +4,8 @@ use std::time::Duration;
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
-use color_eyre::Section;
 use color_eyre::eyre::{Context, Report, Result, eyre};
+use color_eyre::{Section, SectionExt};
 use futures_util::stream;
 use log::debug;
 use progenitor_client::{ClientHooks, ClientInfo, Error as ClientError, OperationInfo};
@@ -185,7 +185,7 @@ impl Auth {
         }
         let has_basic = optional_env("ANTITHESIS_USERNAME")?.is_some()
             || optional_env("ANTITHESIS_PASSWORD")?.is_some();
-        let mut err = eyre!("missing environment variable: ANTITHESIS_API_KEY");
+        let mut err = user_error("missing environment variable: ANTITHESIS_API_KEY");
         if has_basic {
             err = err.note(
                 "ANTITHESIS_USERNAME/ANTITHESIS_PASSWORD are set, but this command only \
@@ -730,7 +730,7 @@ fn launch_request(params: &Params) -> Result<generated::types::LaunchRequest> {
     for (key, value) in params.as_map() {
         let value = value
             .as_str()
-            .ok_or_else(|| eyre!("launch params must be strings: {key}"))?;
+            .ok_or_else(|| user_error(format!("launch params must be strings: {key}")))?;
 
         builder = match key.as_str() {
             "antithesis.config_image" => builder.antithesis_config_image(Some(value.to_string())),
@@ -868,9 +868,16 @@ fn ensure_resource_supported(run_id: &str, min_version: u32, resource: &str) -> 
     if let Some(version) = run_version(run_id)
         && version < min_version
     {
-        return Err(eyre!(
-            "run {run_id} was generated on a tenant before v{min_version}, which introduced the {resource} API being used. Re-run {run_id} on a more recent version to access {resource}."
-        ));
+        return Err(
+            user_error(format!("{resource} is not available for run {run_id}"))
+                .note(format!(
+                    "the {resource} API was introduced in tenant version v{min_version}; \
+                 run {run_id} was generated on an earlier version"
+                ))
+                .suggestion(format!(
+                    "re-run {run_id} on a more recent version to access {resource}"
+                )),
+        );
     }
     Ok(())
 }
@@ -916,20 +923,30 @@ fn format_api_error(status: u16, body: &str) -> Report {
         msg.push_str(" — ");
         msg.push_str(body);
     }
-    if matches!(status, 401 | 403) {
-        msg.push_str(
-            "\n\nCheck that ANTITHESIS_API_KEY (or ANTITHESIS_USERNAME/ANTITHESIS_PASSWORD) \
-             is set correctly and has access to this tenant.",
-        );
-    }
     // Carry the HTTP status structurally so callers can classify the failure
     // (e.g. "was this a 404?") without sniffing the rendered message string.
-    // `is_user_error` recognises 4xx `ApiError`s, so 4xx still prints as a clean
-    // user-facing message while 5xx and other statuses stay internal faults.
-    Report::new(ApiError {
+    let report = Report::new(ApiError {
         status,
         message: msg,
-    })
+    });
+    // The "what to check" for an auth failure is guidance, not part of the error
+    // statement, so it rides along as a suggestion note.
+    let report = if matches!(status, 401 | 403) {
+        report.suggestion(
+            "check that ANTITHESIS_API_KEY (or ANTITHESIS_USERNAME/ANTITHESIS_PASSWORD) \
+             is set correctly and has access to this tenant",
+        )
+    } else {
+        report
+    };
+    // A 4xx is the user's to fix (bad credentials, unknown run id, invalid
+    // filter, …), so it prints as a clean message — no backtrace, even under
+    // `RUST_BACKTRACE`. 5xx and other statuses are genuine faults and keep theirs.
+    if (400..500).contains(&status) {
+        report.suppress_backtrace(true)
+    } else {
+        report
+    }
 }
 
 fn format_payload_snippet(body: &str, line: usize, column: usize) -> String {
@@ -1003,7 +1020,7 @@ async fn format_api_client_error(err: ClientError<generated::types::ErrorRespons
                 eyre!("API returned an empty response body where a JSON payload was expected")
             } else {
                 let snippet = format_payload_snippet(&body, err.line(), err.column());
-                eyre!("invalid API response payload: {err}\n{snippet}")
+                eyre!("invalid API response payload: {err}").section(snippet.header("payload:"))
             }
         }
         ClientError::Custom(message) => eyre!(message),
@@ -1222,11 +1239,14 @@ mod tests {
         );
 
         let report = format_api_client_error(err).await;
+        // The message is the bare statement …
         let message = format!("{report}");
-
         assert!(message.starts_with("invalid API response payload: "));
-        assert!(message.contains("not json"));
-        assert!(message.contains('^'));
+        // … and the payload snippet (with its caret) rides along as a section,
+        // rendered by the full report rather than the message.
+        let full = format!("{report:?}");
+        assert!(full.contains("not json"), "got: {full}");
+        assert!(full.contains('^'), "got: {full}");
     }
 
     #[tokio::test]
@@ -1618,15 +1638,6 @@ mod tests {
     }
 
     #[test]
-    fn api_4xx_errors_are_tagged_user_facing() {
-        use crate::error::is_user_error;
-        assert!(is_user_error(&format_api_error(404, "run not found")));
-        assert!(is_user_error(&format_api_error(400, "bad request")));
-        // 5xx is an internal fault, not something the user can fix.
-        assert!(!is_user_error(&format_api_error(500, "boom")));
-    }
-
-    #[test]
     fn format_api_error_carries_structured_status() {
         use crate::error::api_error_status;
         // The status is read structurally, not sniffed from the message — so a
@@ -1853,12 +1864,20 @@ mod tests {
 
     #[test]
     fn properties_rejected_before_v52() {
-        let err = ensure_resource_supported(&rid(40), MIN_PROPERTIES_VERSION, "run properties")
-            .unwrap_err()
-            .to_string();
-        assert!(err.contains("before v52"));
-        assert!(err.contains("run properties"));
-        assert!(err.contains("Re-run") && err.contains("more recent version"));
+        let report = ensure_resource_supported(&rid(40), MIN_PROPERTIES_VERSION, "run properties")
+            .unwrap_err();
+        // The message states the error; the version detail + remediation are notes.
+        let msg = format!("{report}");
+        assert!(
+            msg.contains("run properties") && msg.contains("not available"),
+            "got: {msg}"
+        );
+        let full = format!("{report:?}");
+        assert!(full.contains("v52"), "got: {full}");
+        assert!(
+            full.contains("re-run") && full.contains("more recent version"),
+            "got: {full}"
+        );
         // v51 is the last version without properties.
         assert!(
             ensure_resource_supported(&rid(51), MIN_PROPERTIES_VERSION, "run properties").is_err()
@@ -1875,11 +1894,14 @@ mod tests {
     fn build_logs_rejected_before_v54() {
         // build logs arrive two versions after properties, so v52/v53 are still rejected.
         assert!(ensure_resource_supported(&rid(52), MIN_BUILD_LOGS_VERSION, "build logs").is_err());
-        let err = ensure_resource_supported(&rid(53), MIN_BUILD_LOGS_VERSION, "build logs")
-            .unwrap_err()
-            .to_string();
-        assert!(err.contains("before v54"));
-        assert!(err.contains("build logs"));
+        let report =
+            ensure_resource_supported(&rid(53), MIN_BUILD_LOGS_VERSION, "build logs").unwrap_err();
+        let msg = format!("{report}");
+        assert!(
+            msg.contains("build logs") && msg.contains("not available"),
+            "got: {msg}"
+        );
+        assert!(format!("{report:?}").contains("v54"), "got: {report:?}");
     }
 
     #[test]

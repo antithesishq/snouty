@@ -258,9 +258,8 @@ fn docs_search_missing_db_with_offline_tells_user_to_remove_offline() {
         .args(["docs", "--offline", "search", "docker"])
         .assert()
         .failure()
-        .stderr(predicate::str::contains(
-            "Documentation database not found. Remove --offline to download it.",
-        ));
+        .stderr(predicate::str::contains("Documentation database not found"))
+        .stderr(predicate::str::contains("remove --offline to download it"));
 }
 
 #[test]
@@ -271,7 +270,10 @@ fn docs_sqlite_missing_db_with_env_path_tells_user_to_fix_path() {
         .assert()
         .failure()
         .stderr(predicate::str::contains(
-            "Documentation database not found at /tmp/does-not-exist-docs.db. Point ANTITHESIS_DOCS_DB_PATH at an existing file.",
+            "Documentation database not found at /tmp/does-not-exist-docs.db",
+        ))
+        .stderr(predicate::str::contains(
+            "point ANTITHESIS_DOCS_DB_PATH at an existing file",
         ));
 }
 
@@ -348,7 +350,7 @@ fn docs_show_partial_match_suggests() {
         .args(["docs", "--offline", "show", "sdk"])
         .assert()
         .failure()
-        .stderr(predicate::str::contains("Did you mean"))
+        .stderr(predicate::str::contains("did you mean"))
         .stderr(predicate::str::contains("/docs/sdk/python_sdk/"));
 }
 
@@ -364,7 +366,7 @@ fn docs_show_generated_sdk_page_points_at_language_index() {
         .assert()
         .failure()
         .stderr(predicate::str::contains(
-            "The rust SDK reference docs are not part of the offline docs.",
+            "the rust SDK reference docs are not part of the offline docs",
         ))
         .stderr(predicate::str::contains(
             "https://antithesis.com/docs/generated/sdk/rust/antithesis_sdk/",
@@ -381,7 +383,7 @@ fn docs_show_generated_sdk_resolves_go_alias_to_golang() {
         .assert()
         .failure()
         .stderr(predicate::str::contains(
-            "The golang SDK reference docs are not part of the offline docs.",
+            "the golang SDK reference docs are not part of the offline docs",
         ))
         .stderr(predicate::str::contains(
             "https://antithesis.com/docs/generated/sdk/golang/",
@@ -397,10 +399,10 @@ fn docs_show_generated_sdk_unknown_language_uses_generic_hint() {
         .assert()
         .failure()
         .stderr(predicate::str::contains(
-            "generated pages (e.g. SDK references) are not included in the offline docs.",
+            "generated pages (e.g. SDK references) are not included in the offline docs",
         ))
         .stderr(predicate::str::contains(
-            "If this is a valid page, try: https://antithesis.com/docs/generated/sdk/cpp/assert/",
+            "if this is a valid page, try https://antithesis.com/docs/generated/sdk/cpp/assert/",
         ));
 }
 
@@ -416,7 +418,7 @@ fn docs_show_generated_sdk_page_from_full_url_points_at_language_index() {
         .assert()
         .failure()
         .stderr(predicate::str::contains(
-            "The golang SDK reference docs are not part of the offline docs.",
+            "the golang SDK reference docs are not part of the offline docs",
         ))
         .stderr(predicate::str::contains(
             "https://antithesis.com/docs/generated/sdk/golang/",
@@ -442,10 +444,10 @@ fn docs_show_generated_root_hints_live_url() {
         .assert()
         .failure()
         .stderr(predicate::str::contains(
-            "generated pages (e.g. SDK references) are not included in the offline docs.",
+            "generated pages (e.g. SDK references) are not included in the offline docs",
         ))
         .stderr(predicate::str::contains(
-            "If this is a valid page, try: https://antithesis.com/docs/generated/",
+            "if this is a valid page, try https://antithesis.com/docs/generated/",
         ));
 }
 

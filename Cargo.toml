@@ -36,6 +36,7 @@ tempfile = "3"
 pulldown-cmark = "0.13"
 libc = "0.2"
 regex = "1"
+semver = "1"
 ptree = { version = "0.5.2", default-features = false }
 serde_yaml = "0.9"
 

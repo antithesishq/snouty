@@ -1,8 +1,9 @@
 use std::env;
 
-use color_eyre::eyre::{Result, bail};
+use color_eyre::eyre::Result;
 
 use crate::container;
+use crate::error::user_error;
 
 struct Check {
     name: &'static str,
@@ -81,7 +82,7 @@ pub fn cmd_doctor() -> Result<()> {
 
     eprintln!();
     if checks.iter().any(|c| !c.passed) {
-        bail!("doctor found problems");
+        return Err(user_error("doctor found problems"));
     }
     eprintln!("All checks passed");
 

@@ -296,7 +296,10 @@ pub trait ContainerRuntime: Send + Sync {
         self.build_image(config_dir, image_ref, None, Some("linux/amd64"))?;
 
         eprintln!("Pushing config image: {}", image_ref);
-        let pinned = self.image_push(image_ref)?;
+        // image_push pins to `name:tag@digest`, but Antithesis's config-image
+        // validator rejects a reference carrying both a :tag and an @digest
+        // (a bug in the validator), so identify the image by digest alone.
+        let pinned = digest_only_ref(&self.image_push(image_ref)?);
         eprintln!("Config image pushed successfully: {pinned}");
         Ok(pinned)
     }
@@ -1194,6 +1197,16 @@ fn pinned_image_ref(image_ref: &str, digest: &str) -> String {
     match image_ref.rfind('@') {
         Some(at) => format!("{}@{}", &image_ref[..at], digest),
         None => format!("{image_ref}@{digest}"),
+    }
+}
+
+/// Drop the `:tag` from a digest-pinned reference, leaving `name@digest`.
+/// The digest fully identifies the image, and Antithesis's config-image
+/// validator rejects a reference that carries both a tag and a digest.
+fn digest_only_ref(image_ref: &str) -> String {
+    match image_ref.rfind('@') {
+        Some(at) => format!("{}{}", image_repo(image_ref), &image_ref[at..]),
+        None => image_ref.to_string(),
     }
 }
 
@@ -2734,6 +2747,38 @@ tag2: digest: sha256:bbb222 size: 200
         assert_eq!(
             pinned_image_ref("registry.example.com/team/service@sha256:old", "sha256:new"),
             "registry.example.com/team/service@sha256:new"
+        );
+    }
+
+    #[test]
+    fn digest_only_ref_strips_tag() {
+        assert_eq!(
+            digest_only_ref("example.com/foo/snouty-config:20260615-abcd@sha256:abc123"),
+            "example.com/foo/snouty-config@sha256:abc123"
+        );
+    }
+
+    #[test]
+    fn digest_only_ref_with_port_strips_tag() {
+        assert_eq!(
+            digest_only_ref("localhost:5000/snouty-config:latest@sha256:abc123"),
+            "localhost:5000/snouty-config@sha256:abc123"
+        );
+    }
+
+    #[test]
+    fn digest_only_ref_already_digest_only() {
+        assert_eq!(
+            digest_only_ref("example.com/foo/snouty-config@sha256:abc123"),
+            "example.com/foo/snouty-config@sha256:abc123"
+        );
+    }
+
+    #[test]
+    fn digest_only_ref_no_digest_unchanged() {
+        assert_eq!(
+            digest_only_ref("example.com/foo/snouty-config:v1"),
+            "example.com/foo/snouty-config:v1"
         );
     }
 

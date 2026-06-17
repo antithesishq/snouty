@@ -7,3 +7,18 @@
 snouty update
 stderr 'snouty \d+\.\d+\.\d+'
 stderr 'https://github.com/antithesishq/snouty/releases'
+
+# A non-semver version argument is rejected before anything is spawned.
+! snouty update not-a-version
+stderr '.*invalid version.*'
+
+# Installing a version older than the current one is a downgrade, refused
+# without --force. The hint points at the flag.
+! snouty update 0.0.1
+stderr '.*downgrade.*'
+stderr '.*--force.*'
+
+# --force allows the downgrade; with no helper installed it then falls back to
+# the manual update instructions.
+snouty update 0.0.1 --force
+stderr '.*https://github.com/antithesishq/snouty/releases.*'

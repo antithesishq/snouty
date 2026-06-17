@@ -1,16 +1,19 @@
-use std::io::{self, ErrorKind, Read};
+use std::io::{self, ErrorKind, IsTerminal, Read};
 use std::process::Command;
 
 use clap::{CommandFactory, Parser};
 use clap_complete::Shell;
 use log::{debug, info};
 
-use color_eyre::eyre::{Context, Result, bail};
+use color_eyre::Section;
+use color_eyre::eyre::{Context, Result};
+use semver::Version;
 use snouty::api::AntithesisApi;
-use snouty::cli::{Cli, Commands, DebugArgs, LaunchArgs};
+use snouty::cli::{Cli, Commands, DebugArgs, LaunchArgs, UpdateArgs};
 use snouty::config;
 use snouty::container;
 use snouty::docs;
+use snouty::error::user_error;
 use snouty::moment;
 use snouty::params::Params;
 use snouty::validate;
@@ -43,7 +46,23 @@ fn get_stdin_params(use_stdin: bool, support_moment: bool) -> Result<Option<Para
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() {
-    color_eyre::install().unwrap();
+    // Drop the "Backtrace omitted. Run with RUST_BACKTRACE=1…" footer: it's noise
+    // on every error, and outright misleading on user errors built with
+    // `suppress_backtrace` (where RUST_BACKTRACE does nothing). A genuine fault
+    // still prints its backtrace when RUST_BACKTRACE is set.
+    //
+    // Color the report only on a real terminal — piped/redirected stderr (and the
+    // test/gallery captures) gets plain text, not ANSI escapes.
+    let theme = if std::io::stderr().is_terminal() {
+        color_eyre::config::Theme::dark()
+    } else {
+        color_eyre::config::Theme::new()
+    };
+    color_eyre::config::HookBuilder::default()
+        .theme(theme)
+        .display_env_section(false)
+        .install()
+        .unwrap();
     env_logger::Builder::from_default_env()
         .format(|buf, record| {
             use std::io::Write;
@@ -53,14 +72,11 @@ async fn main() {
     let cli = Cli::parse();
 
     if let Err(report) = run(cli).await {
-        if snouty::error::is_user_error(&report) {
-            // User-facing problem (bad flag, missing env var, 4xx). Print the
-            // message chain only — no backtrace footer or internal noise.
-            eprintln!("error: {report:#}");
-        } else {
-            // Genuine internal fault: keep the full color_eyre report.
-            eprintln!("Error: {report:?}");
-        }
+        // One rendering for every error: color_eyre's report format. User-facing
+        // failures are built with `user_error`/4xx `suppress_backtrace`, so they
+        // print message + any `.note()`/`.suggestion()` hints with no backtrace;
+        // genuine internal faults keep theirs.
+        eprintln!("Error: {report:?}");
         std::process::exit(1);
     }
 }
@@ -93,7 +109,7 @@ async fn run(cli: Cli) -> Result<()> {
             println!("snouty {}", env!("CARGO_PKG_VERSION"));
             Ok(())
         }
-        Commands::Update => cmd_update(),
+        Commands::Update(args) => cmd_update(args),
         Commands::Docs { offline, command } => docs::cmd_docs(command, offline, json).await,
     };
 
@@ -130,7 +146,7 @@ fn json_unaware_command_name(command: &Commands) -> Option<&'static str> {
         Commands::Doctor => Some("doctor"),
         Commands::Completions { .. } => Some("completions"),
         Commands::Version => Some("version"),
-        Commands::Update => Some("update"),
+        Commands::Update(_) => Some("update"),
     }
 }
 
@@ -167,7 +183,7 @@ async fn cmd_launch(args: LaunchArgs, json: bool, verbose: bool) -> Result<()> {
         let config = config::detect_config(&config_dir)?;
 
         let registry = std::env::var("ANTITHESIS_REPOSITORY")
-            .wrap_err("missing environment variable: ANTITHESIS_REPOSITORY")?;
+            .map_err(|_| user_error("missing environment variable: ANTITHESIS_REPOSITORY"))?;
 
         let image_ref = container::generate_image_ref(&registry);
         params.insert("antithesis.config_image", &image_ref);
@@ -182,10 +198,10 @@ async fn cmd_launch(args: LaunchArgs, json: bool, verbose: bool) -> Result<()> {
         // Check for conflicts with typed flags already set in params
         for key in extra.as_map().keys() {
             if params.contains_key(key) {
-                bail!(
-                    "invalid arguments: '{}' cannot be overridden via --param (use the dedicated flag instead)",
-                    key
-                );
+                return Err(user_error(format!(
+                    "invalid arguments: '{key}' cannot be overridden via --param"
+                ))
+                .suggestion("use the dedicated flag instead"));
             }
         }
 
@@ -193,11 +209,13 @@ async fn cmd_launch(args: LaunchArgs, json: bool, verbose: bool) -> Result<()> {
     }
 
     if params.contains_key("antithesis.images") {
-        bail!("invalid argument: antithesis.images cannot be set via --param");
+        return Err(user_error(
+            "invalid argument: antithesis.images cannot be set via --param",
+        ));
     }
 
     if params.is_empty() {
-        bail!("invalid arguments: no parameters provided");
+        return Err(user_error("invalid arguments: no parameters provided"));
     }
 
     if !has_source {
@@ -288,7 +306,7 @@ fn debug_params(args: DebugArgs) -> Result<Params> {
     params.merge(debug_typed_params(&args));
 
     if params.is_empty() {
-        bail!("invalid arguments: no parameters provided");
+        return Err(user_error("invalid arguments: no parameters provided"));
     }
 
     Ok(params)
@@ -323,9 +341,43 @@ fn cmd_completions(shell: Shell) -> Result<()> {
     Ok(())
 }
 
-fn cmd_update() -> Result<()> {
-    // Attempt to spawn snouty-update and wait for it to finish
-    match Command::new("snouty-update").status() {
+/// Validate a requested update target against the running version.
+///
+/// Errors if `requested` isn't valid semver, or if it's older than `current`
+/// and the downgrade wasn't forced. `current` is snouty's own
+/// `CARGO_PKG_VERSION`, which is always valid semver. Semver pre-release
+/// ordering applies, so e.g. `0.6.0-rc.1` is a downgrade from `0.6.0`.
+fn check_update_target(requested: &str, current: &str, force: bool) -> Result<()> {
+    let target = Version::parse(requested).map_err(|_| {
+        user_error(format!(
+            "invalid version `{requested}`: expected a semver release like 0.6.0 or 0.6.0-rc.1"
+        ))
+    })?;
+    let current = Version::parse(current).expect("snouty's own version is always valid semver");
+    if target < current && !force {
+        return Err(user_error(format!(
+            "{requested} is older than the installed snouty {current}; this would be a downgrade"
+        ))
+        .suggestion("re-run with --force to install an older version"));
+    }
+    Ok(())
+}
+
+fn cmd_update(args: UpdateArgs) -> Result<()> {
+    // When a specific version is requested, validate it and refuse an unforced
+    // downgrade up front, before bothering to spawn the helper.
+    if let Some(version) = &args.version {
+        check_update_target(version, env!("CARGO_PKG_VERSION"), args.force)?;
+    }
+
+    // Attempt to spawn snouty-update and wait for it to finish. An explicit
+    // version is forwarded via --version; the helper installs it directly
+    // (pre-releases included), so we never need --prerelease here.
+    let mut updater = Command::new("snouty-update");
+    if let Some(version) = &args.version {
+        updater.arg("--version").arg(version);
+    }
+    match updater.status() {
         Ok(status) if status.success() => {
             std::process::exit(0);
         }
@@ -405,5 +457,46 @@ mod tests {
         assert!(report.downcast_ref::<io::Error>().is_none());
         // ...so the report can never be suppressed.
         assert!(suppress_broken_pipe(Err(report)).is_err());
+    }
+
+    #[test]
+    fn check_update_target_allows_upgrade() {
+        assert!(check_update_target("0.6.0", "0.5.0", false).is_ok());
+    }
+
+    #[test]
+    fn check_update_target_allows_reinstalling_same_version() {
+        assert!(check_update_target("0.5.0", "0.5.0", false).is_ok());
+    }
+
+    #[test]
+    fn check_update_target_blocks_unforced_downgrade() {
+        let err = check_update_target("0.4.0", "0.5.0", false).unwrap_err();
+        let rendered = format!("{err}");
+        assert!(rendered.contains("downgrade"), "got: {rendered}");
+    }
+
+    #[test]
+    fn check_update_target_allows_forced_downgrade() {
+        assert!(check_update_target("0.4.0", "0.5.0", true).is_ok());
+    }
+
+    #[test]
+    fn check_update_target_treats_prerelease_as_downgrade_of_release() {
+        // Semver orders 0.6.0-rc.1 before the final 0.6.0, so installing the rc
+        // over the release is a downgrade.
+        let err = check_update_target("0.6.0-rc.1", "0.6.0", false).unwrap_err();
+        assert!(format!("{err}").contains("downgrade"));
+    }
+
+    #[test]
+    fn check_update_target_allows_prerelease_above_current() {
+        assert!(check_update_target("0.6.0-rc.1", "0.5.0", false).is_ok());
+    }
+
+    #[test]
+    fn check_update_target_rejects_invalid_version() {
+        let err = check_update_target("not-a-version", "0.5.0", false).unwrap_err();
+        assert!(format!("{err}").contains("invalid version"));
     }
 }

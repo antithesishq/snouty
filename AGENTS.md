@@ -7,6 +7,7 @@ CLI tool for the Antithesis API. Written in Rust.
 - `specs/` — feature specs
 - `src/` — all source code
 - `tests/` — integration tests
+- `scripts/` — maintenance/dev scripts (Python, run via `uv`)
 - `.github/workflows/` — CI/CD
 
 ## Specs
@@ -56,6 +57,16 @@ lines prefixed with `[!staging]` are skipped (those assert on hardcoded
 mock data); unprefixed lines still run and hit staging. Only read-oriented
 checks run against staging — any spec that would mutate state is gated
 `[!staging]`.
+
+## Scripts
+
+The `scripts/` directory holds Python helpers run via `uv` (each has an inline
+`# /// script` dependency header). After changing `gen-gallery.py`, type-check it
+with pyright and confirm it reports 0 errors before considering the change done:
+
+```
+uvx pyright scripts/gen-gallery.py
+```
 
 ## AI Coding Workflow
 

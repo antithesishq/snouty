@@ -23,7 +23,8 @@
 #    set), the command tells the user to remove --offline.
 env HOME=$WORK/empty-home
 ! snouty docs --offline search docker
-stderr 'Documentation database not found. Remove --offline to download it.'
+stderr 'Documentation database not found.*'
+stderr 'remove --offline to download it.*'
 
 # The command is exposed as `snouty docs` with search, show, tree, and
 #    sqlite subcommands.

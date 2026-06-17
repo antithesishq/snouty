@@ -15,17 +15,6 @@ fn docs_search_returns_results() {
 }
 
 #[test]
-fn docs_env_db_path_implies_offline() {
-    snouty_docs()
-        .env("ANTITHESIS_DOCS_URL", "http://127.0.0.1:1")
-        .args(["docs", "search", "docker"])
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("/docs/guides/docker_basics/"))
-        .stderr(predicate::str::contains("failed to update docs").not());
-}
-
-#[test]
 fn docs_update_sets_custom_user_agent() {
     let cache_dir = TempDir::new().unwrap();
     let mock_server = MockDocsServer::start();
@@ -103,7 +92,7 @@ fn docs_auto_update_reuses_cached_db_until_etag_changes() {
         ]
     );
 
-    let etag_path = cache_dir.path().join("docs.db.etag");
+    let etag_path = cache_dir.path().join("snouty").join("docs.db.etag");
     assert_eq!(std::fs::read_to_string(etag_path).unwrap(), "test-etag-2");
 }
 
@@ -260,21 +249,6 @@ fn docs_search_missing_db_with_offline_tells_user_to_remove_offline() {
         .failure()
         .stderr(predicate::str::contains("Documentation database not found"))
         .stderr(predicate::str::contains("remove --offline to download it"));
-}
-
-#[test]
-fn docs_sqlite_missing_db_with_env_path_tells_user_to_fix_path() {
-    snouty()
-        .env("ANTITHESIS_DOCS_DB_PATH", "/tmp/does-not-exist-docs.db")
-        .args(["docs", "sqlite"])
-        .assert()
-        .failure()
-        .stderr(predicate::str::contains(
-            "Documentation database not found at /tmp/does-not-exist-docs.db",
-        ))
-        .stderr(predicate::str::contains(
-            "point ANTITHESIS_DOCS_DB_PATH at an existing file",
-        ));
 }
 
 #[test]
@@ -544,7 +518,9 @@ fn docs_sqlite_prints_path() {
         .args(["docs", "--offline", "sqlite"])
         .assert()
         .success()
-        .stdout(predicate::str::contains(fixture_db()));
+        .stdout(predicate::str::contains(
+            docs_fixture_db_path().to_str().unwrap(),
+        ));
 }
 
 #[test]

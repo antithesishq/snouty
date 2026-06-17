@@ -22,6 +22,7 @@ use crate::api::{
 };
 use crate::cli::{RunsCommands, RunsListArgs};
 use crate::error::{api_error_status, user_error};
+use crate::settings::Settings;
 
 /// `print!`/`println!`, but routed through `write!`/`writeln!` to stdout so a
 /// closed pipe (e.g. `snouty runs list | head`) surfaces as an `io::Error` the
@@ -76,7 +77,12 @@ impl std::str::FromStr for Stream {
     }
 }
 
-pub async fn cmd_runs(command: Option<RunsCommands>, json: bool, verbose: bool) -> Result<()> {
+pub async fn cmd_runs(
+    command: Option<RunsCommands>,
+    settings: &Settings,
+    json: bool,
+    verbose: bool,
+) -> Result<()> {
     // `--detail` produces human formatting, so it can't combine with `--json`.
     // It rides on more than one subcommand (`runs list`, `runs properties`), so
     // the conflict is checked once here — a global `--json` vs a per-subcommand
@@ -89,10 +95,10 @@ pub async fn cmd_runs(command: Option<RunsCommands>, json: bool, verbose: bool) 
     reject_detail_with_json(json, detail)?;
 
     match command {
-        None => cmd_runs_list(RunsListArgs::default(), json, verbose).await,
-        Some(RunsCommands::List(args)) => cmd_runs_list(args, json, verbose).await,
+        None => cmd_runs_list(RunsListArgs::default(), settings, json, verbose).await,
+        Some(RunsCommands::List(args)) => cmd_runs_list(args, settings, json, verbose).await,
         Some(RunsCommands::Show { run_id, web }) => {
-            cmd_runs_show(&run_id, web, json, verbose).await
+            cmd_runs_show(&run_id, web, settings, json, verbose).await
         }
         Some(RunsCommands::Properties {
             run_id,
@@ -114,10 +120,10 @@ pub async fn cmd_runs(command: Option<RunsCommands>, json: bool, verbose: bool) 
                 name: name.as_deref(),
                 group: group.as_deref(),
             };
-            cmd_runs_properties(&run_id, filter, detail, json, verbose).await
+            cmd_runs_properties(&run_id, filter, detail, settings, json, verbose).await
         }
         Some(RunsCommands::BuildLogs { run_id }) => {
-            cmd_runs_build_logs(&run_id, json, verbose).await
+            cmd_runs_build_logs(&run_id, settings, json, verbose).await
         }
         Some(RunsCommands::Logs {
             run_id,
@@ -133,6 +139,7 @@ pub async fn cmd_runs(command: Option<RunsCommands>, json: bool, verbose: bool) 
                 &vtime,
                 begin_input_hash.as_deref(),
                 begin_vtime.as_deref(),
+                settings,
                 LogOutputOptions { json, verbose, raw },
             )
             .await
@@ -146,15 +153,20 @@ pub async fn cmd_runs(command: Option<RunsCommands>, json: bool, verbose: bool) 
             // `query` is a backward-compatible alias whose terms are additional
             // needles. Merge both into a single needle list.
             matches.extend(query);
-            cmd_runs_events(&run_id, &matches, json, verbose).await
+            cmd_runs_events(&run_id, &matches, settings, json, verbose).await
         }
     }
 }
 
-async fn cmd_runs_list(args: RunsListArgs, json: bool, verbose: bool) -> Result<()> {
+async fn cmd_runs_list(
+    args: RunsListArgs,
+    settings: &Settings,
+    json: bool,
+    verbose: bool,
+) -> Result<()> {
     debug!("listing runs");
 
-    let api = AntithesisApi::from_env_requiring_api_key(verbose, None)?;
+    let api = AntithesisApi::new_requiring_api_key(settings, verbose)?;
 
     // clap parsed and validated the filter flags into their real types, so the
     // options struct is built directly with no further string parsing here.
@@ -260,10 +272,16 @@ fn format_local_str(raw: &str) -> String {
     }
 }
 
-async fn cmd_runs_show(run_id: &str, web: bool, json: bool, verbose: bool) -> Result<()> {
+async fn cmd_runs_show(
+    run_id: &str,
+    web: bool,
+    settings: &Settings,
+    json: bool,
+    verbose: bool,
+) -> Result<()> {
     debug!("showing run: {}", run_id);
 
-    let api = AntithesisApi::from_env_requiring_api_key(verbose, None)?;
+    let api = AntithesisApi::new_requiring_api_key(settings, verbose)?;
     let run = match api.get_run(run_id).await {
         Ok(run) => run,
         // A 404 here is unambiguous: the run id is bad. Say so instead of leaking
@@ -377,12 +395,13 @@ async fn cmd_runs_properties(
     run_id: &str,
     filter: PropertyFilter<'_>,
     detail: bool,
+    settings: &Settings,
     json: bool,
     verbose: bool,
 ) -> Result<()> {
     debug!("listing properties for run: {}", run_id);
 
-    let api = AntithesisApi::from_env_requiring_api_key(verbose, None)?;
+    let api = AntithesisApi::new_requiring_api_key(settings, verbose)?;
     let mut properties = match api
         .stream_run_properties(run_id, filter.status)
         .try_collect::<Vec<_>>()
@@ -1173,10 +1192,15 @@ struct LogOutputOptions {
     raw: bool,
 }
 
-async fn cmd_runs_build_logs(run_id: &str, json: bool, verbose: bool) -> Result<()> {
+async fn cmd_runs_build_logs(
+    run_id: &str,
+    settings: &Settings,
+    json: bool,
+    verbose: bool,
+) -> Result<()> {
     debug!("streaming build logs for run: {}", run_id);
 
-    let api = AntithesisApi::from_env_requiring_api_key(verbose, None)?;
+    let api = AntithesisApi::new_requiring_api_key(settings, verbose)?;
     let stream = match api.get_run_build_logs(run_id).await {
         Ok(stream) => stream.into_inner(),
         Err(err) => return Err(explain_run_scoped_error(&api, run_id, err).await),
@@ -1263,6 +1287,7 @@ fn haystack_matches_all_needles(haystack: &str, lowered_needles: &[String]) -> b
 async fn cmd_runs_events(
     run_id: &str,
     matches: &[String],
+    settings: &Settings,
     json: bool,
     verbose: bool,
 ) -> Result<()> {
@@ -1283,7 +1308,7 @@ async fn cmd_runs_events(
         .cloned()
         .unwrap_or_default();
 
-    let api = AntithesisApi::from_env_requiring_api_key(verbose, None)?;
+    let api = AntithesisApi::new_requiring_api_key(settings, verbose)?;
     let stream = match api.search_run_events(run_id, &server_query).await {
         Ok(stream) => stream.into_inner(),
         Err(err) => return Err(explain_run_scoped_error(&api, run_id, err).await),
@@ -1369,11 +1394,12 @@ async fn cmd_runs_logs(
     vtime: &str,
     begin_input_hash: Option<&str>,
     begin_vtime: Option<&str>,
+    settings: &Settings,
     LogOutputOptions { json, verbose, raw }: LogOutputOptions,
 ) -> Result<()> {
     debug!("streaming logs for run: {}", run_id);
 
-    let api = AntithesisApi::from_env_requiring_api_key(verbose, None)?;
+    let api = AntithesisApi::new_requiring_api_key(settings, verbose)?;
     let stream = match api
         .get_run_logs(run_id, input_hash, vtime, begin_input_hash, begin_vtime)
         .await
@@ -3584,7 +3610,7 @@ mod tests {
             r#"{"key": "value", "nested": {"a": [1,2,3]}}"#,
             r#"{"url": "http://example.com/path?q=1&r=2", "count": 42}"#,
             r#"Options { address: Some(0.0.0.0:3307), deployment: "mydb", mode: Standalone }"#,
-            r#"Config { inner: Inner { values: [1, 2, 3] }, name: "test" }"#,
+            r#"Settings { inner: Inner { values: [1, 2, 3] }, name: "test" }"#,
             "[2026-04-03] [INFO] [main] started",
             r#"path: "/nix/store/abc-pkg/bin/cmd""#,
             r#"{"msg": "he said \"hello\""}"#,
@@ -5033,7 +5059,7 @@ mod tests {
         use super::*;
         use crate::api::Auth;
         use crate::error::ApiError;
-        use crate::testutils::TestConfig;
+        use crate::settings::Settings;
         use wiremock::matchers::{method, path};
         use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -5046,9 +5072,10 @@ mod tests {
 
         fn test_api(base_url: &str) -> AntithesisApi {
             AntithesisApi::build(
-                TestConfig::for_base_url_and_maybe_cache_dir(base_url.to_owned(), None),
+                &Settings::for_test_base_url(base_url.to_owned()),
                 &Auth::basic("user".to_string(), "pass".to_string()),
                 false,
+                None,
             )
             .unwrap()
         }

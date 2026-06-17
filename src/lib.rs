@@ -12,7 +12,7 @@ pub mod params;
 pub mod runs;
 pub mod scripts;
 #[doc(hidden)]
-pub mod snouty_config;
+pub mod settings;
 #[doc(hidden)]
 pub mod testutils;
 pub mod validate;

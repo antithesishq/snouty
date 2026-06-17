@@ -45,18 +45,72 @@ cargo uninstall snouty || rm -f "$(which snouty)" "$(which snouty-update)"
 
 Commands that work with `docker-compose.yaml` files (e.g. `launch --config`, `validate`) require Docker or Podman.
 
-If both are installed, Podman is preferred. You can override via environment `SNOUTY_CONTAINER_ENGINE=docker`.
+If both are installed, Podman is preferred. You can override via the environment (`SNOUTY_CONTAINER_ENGINE=docker`) or with `container_engine` in a settings file (see below).
 
 ## Configuration
 
-At a minimum Snouty requires tenant and repository to be provided as environment variables when using the API. Docs commands require no configuration at the moment.
+Using the API requires at least a **tenant** and a **repository**. These (and other settings) can be supplied via environment variables or a TOML settings file; environment variables always take precedence. Docs commands require no configuration at the moment.
+
+The quickest way is environment variables:
 
 ```sh
 export ANTITHESIS_TENANT="your-tenant"
 export ANTITHESIS_REPOSITORY="us-central1-docker.pkg.dev/your-project/your-repo"
 ```
 
-Antithesis supports two forms of authentication. An API key works with every command and is the recommended option:
+### Settings files
+
+Settings can instead live in a TOML file. Snouty reads two, the first taking precedence:
+
+1. A **project** settings file — `./.snouty.toml` by default. Point elsewhere with the global `--settings <path>` flag or the `SNOUTY_SETTINGS_PATH` environment variable. (This is unrelated to `launch --config`, which is the docker-compose directory.)
+2. A **global** settings file — `settings.toml` under `$XDG_CONFIG_HOME/snouty/` (falling back to `$HOME/.config/snouty/`).
+
+```toml
+# .snouty.toml
+tenant = "your-tenant"
+repository = "us-central1-docker.pkg.dev/your-project/your-repo"
+```
+
+A matching environment variable always overrides the file. The supported keys and their environment-variable equivalents are:
+
+| Settings key       | Environment variable      |
+| ------------------ | ------------------------- |
+| `tenant`           | `ANTITHESIS_TENANT`       |
+| `repository`       | `ANTITHESIS_REPOSITORY`   |
+| `base_url`         | `ANTITHESIS_BASE_URL`     |
+| `container_engine` | `SNOUTY_CONTAINER_ENGINE` |
+
+Authentication (below) is read from the environment only, never from a settings file.
+
+### Profiles
+
+A settings file can define named profiles for switching between environments. Select one with the global `--profile <name>` flag or the `ANTITHESIS_PROFILE` environment variable (the environment variable wins):
+
+```toml
+# .snouty.toml
+tenant = "default-tenant"
+repository = "registry.example.com/default"
+
+[profile.staging]
+tenant = "staging-tenant"
+repository = "registry.example.com/staging"
+```
+
+```sh
+snouty --profile staging runs list
+```
+
+For any one setting, snouty uses the first value it finds, highest precedence first:
+
+1. environment variable
+2. the selected profile in the project settings file
+3. the selected profile in the global settings file
+4. the top-level default in the project settings file
+5. the top-level default in the global settings file
+
+### Authentication
+
+Antithesis supports two forms of authentication, supplied via environment variables only. An API key works with every command and is the recommended option:
 
 ```sh
 export ANTITHESIS_API_KEY="your-api-key"

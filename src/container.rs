@@ -12,7 +12,7 @@ use color_eyre::{
 use tokio::process::Child;
 
 use crate::config::ComposeConfig;
-use crate::snouty_config::{self, SnoutyConfig};
+use crate::settings::Settings;
 
 /// RAII wrapper around a [`Child`] spawned with `process_group(0)`.
 ///
@@ -1115,12 +1115,14 @@ pub(crate) fn is_podman_in_disguise(cmd: &str) -> bool {
 /// The result is cached so detection only runs once.
 ///
 /// Set `SNOUTY_CONTAINER_ENGINE=podman` or `=docker` to force a specific runtime.
-pub fn runtime() -> Result<&'static dyn ContainerRuntime> {
+pub fn runtime(settings: &Settings) -> Result<&'static dyn ContainerRuntime> {
     static INSTANCE: OnceLock<Result<Box<dyn ContainerRuntime>, String>> = OnceLock::new();
 
     INSTANCE
         .get_or_init(|| {
-            if let Some(engine) = snouty_config::default_config(None).container_engine() {
+            // Detection is cached process-wide on first call, so the engine
+            // override is read from the settings passed to that first call.
+            if let Some(engine) = settings.container_engine() {
                 return match engine {
                     "podman" => Ok(Box::new(PodmanRuntime::new("podman"))),
                     "docker" => Ok(Box::new(DockerRuntime::new("docker"))),

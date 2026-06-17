@@ -11,10 +11,10 @@ use tokio::time::{Duration, sleep};
 
 use crate::cli::ValidateArgs;
 use crate::config::{self, ComposeConfig, Config, KubernetesConfig};
+use crate::container;
 use crate::error::user_error;
 use crate::scripts::{ScriptType, TestScript, scan_scripts};
-use crate::snouty_config::SnoutyConfig;
-use crate::{container, snouty_config};
+use crate::settings::Settings;
 
 const K8S_VALIDATOR_IMAGE: &str = "docker.io/antithesishq/k8s-validator:1.0.0";
 
@@ -167,29 +167,37 @@ impl Drop for ComposeDownGuard<'_> {
     }
 }
 
-pub async fn cmd_validate(args: ValidateArgs) -> Result<()> {
-    match snouty_config::default_config(None).temp_dir() {
-        Some(temp_dir) => {
+pub async fn cmd_validate(args: ValidateArgs, settings: &Settings) -> Result<()> {
+    // SNOUTY_TEMP_DIR is an env-only operational knob (not a setting): it pins
+    // the working directory so validate output can be inspected across runs.
+    // Unset, we use a fresh system temp dir.
+    match std::env::var_os("SNOUTY_TEMP_DIR") {
+        Some(out_dir) => {
+            let temp_dir = Path::new(&out_dir);
             // To avoid conflating results of subsequent runs, we require that the provided
             // SNOUTY_TEMP_DIR is empty or non-existent
             mkdir_or_require_empty(temp_dir)?;
-            validate_with_temp_dir(args, temp_dir).await
+            validate_with_temp_dir(args, settings, temp_dir).await
         }
-        _ => {
+        None => {
             let mut temp_dir = tempfile::tempdir()?;
             temp_dir.disable_cleanup(args.keep_running);
-            validate_with_temp_dir(args, temp_dir.path()).await
+            validate_with_temp_dir(args, settings, temp_dir.path()).await
         }
     }
 }
 
-async fn validate_with_temp_dir(args: ValidateArgs, temp_dir: &Path) -> Result<()> {
+async fn validate_with_temp_dir(
+    args: ValidateArgs,
+    settings: &Settings,
+    temp_dir: &Path,
+) -> Result<()> {
     let ValidateArgs {
         config: config_path,
         timeout,
         keep_running,
     } = args;
-    let rt = container::runtime()?;
+    let rt = container::runtime(settings)?;
     match config::detect_config(&config_path)? {
         Config::Compose(cfg) => validate_compose(rt, cfg, timeout, keep_running, temp_dir).await,
         Config::Kubernetes(cfg) => validate_kubernetes(rt, &cfg, keep_running).await,

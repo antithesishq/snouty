@@ -267,7 +267,7 @@ async fn cmd_launch(
         // platform pulls them itself.
         let pinned_config = match &detected {
             config::Config::Compose(compose_config) => {
-                let compose = container::docker_compose(rt)?;
+                let compose = container::docker_compose(rt.as_ref())?;
                 let pinned_yaml = compose.pin_images(compose_config, &registry)?;
                 let staged = container::stage_pinned_config(compose_config.dir(), &pinned_yaml)?;
                 rt.build_and_push_config_image(staged.path(), &config_image)?

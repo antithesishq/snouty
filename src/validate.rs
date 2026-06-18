@@ -199,8 +199,10 @@ async fn validate_with_temp_dir(
     } = args;
     let rt = container::runtime(settings)?;
     match config::detect_config(&config_path)? {
-        Config::Compose(cfg) => validate_compose(rt, cfg, timeout, keep_running, temp_dir).await,
-        Config::Kubernetes(cfg) => validate_kubernetes(rt, &cfg, keep_running).await,
+        Config::Compose(cfg) => {
+            validate_compose(rt.as_ref(), cfg, timeout, keep_running, temp_dir).await
+        }
+        Config::Kubernetes(cfg) => validate_kubernetes(rt.as_ref(), &cfg, keep_running).await,
     }
 }
 

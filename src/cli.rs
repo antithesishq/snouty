@@ -160,8 +160,15 @@ Example:
 Verifies that your environment is properly configured for Antithesis testing.
 Checks container runtime availability and required environment variables.
 
+snouty prefers an API key (full API access); a username and password is legacy
+auth, accepted only by `snouty launch` and `snouty debug`.
+
+Exits non-zero if any required check fails. Pass --json for a machine-readable
+report (e.g. to gate CI).
+
 Example:
-  snouty doctor"#)]
+  snouty doctor
+  snouty doctor --json"#)]
     Doctor,
 
     /// Print version information

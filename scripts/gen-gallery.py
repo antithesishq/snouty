@@ -608,6 +608,29 @@ def doctor_check(
     return chk
 
 
+def doctor_json_check(sr: StoryRun, reg: Registry) -> tuple[bool, str]:
+    """Gate the `doctor --json` story: stdout must be a parseable report with a
+    boolean `ok` and a non-empty `checks` array of well-formed records (name,
+    status, message), it must include the api_key check, and a missing required
+    credential must drive `ok` false."""
+    try:
+        data = json.loads(sr.result.stdout)
+    except json.JSONDecodeError as e:
+        return (False, f"stdout is not valid JSON: {e}")
+    checks = data.get("checks")
+    if not isinstance(data.get("ok"), bool) or not isinstance(checks, list) or not checks:
+        return (False, f"missing ok/checks ({data!r:.80})")
+    well_formed = all(
+        isinstance(c.get("name"), str)
+        and c.get("status") in ("ok", "warn", "error")
+        and isinstance(c.get("message"), str)
+        for c in checks
+    )
+    names = {c.get("name") for c in checks}
+    passed = well_formed and "api_key" in names and data["ok"] is False
+    return (passed, f"ok={data['ok']}, {len(checks)} checks, well_formed={well_formed}")
+
+
 def verbose_api_calls(sr: StoryRun, reg: Registry) -> tuple[bool, str]:
     has_get = "> GET" in sr.result.stderr or "> GET" in sr.result.stdout
     has_table = "STATUS" in sr.result.combined or "RUN" in sr.result.combined.upper()
@@ -1070,8 +1093,8 @@ def build_stories(d: Discovery) -> list[Story]:
             "doctor-api-key",
             "Confirm my environment is ready with an API key",
             "I've configured snouty with an API key and want doctor to confirm I'm set up.",
-            "doctor recognises the API key as full access and reports it with a single green check; "
-            "it does not mention username/password at all.",
+            "doctor reports the API key as set with a single green check and does not mention "
+            "username/password at all.",
             ["doctor"],
             doctor_check(
                 contains=("ANTITHESIS_API_KEY is set",),
@@ -1081,6 +1104,21 @@ def build_stories(d: Discovery) -> list[Story]:
             env=_doctor_env(api_key=True, username=False, password=False, tenant=True, repo=True),
         ),
         Story(
+            "doctor-api-key-and-legacy",
+            "Both an API key and leftover username/password are set",
+            "I have an API key but also still have ANTITHESIS_USERNAME/PASSWORD exported; "
+            "I want to know which one snouty uses.",
+            "doctor reports only the API key (it takes precedence) and does not mention the "
+            "legacy username/password at all.",
+            ["doctor"],
+            doctor_check(
+                contains=("ANTITHESIS_API_KEY is set",),
+                absent=("ANTITHESIS_USERNAME", "ANTITHESIS_PASSWORD"),
+            ),
+            json_capable=False,
+            env=_doctor_env(api_key=True, username=True, password=True, tenant=True, repo=True),
+        ),
+        Story(
             "doctor-no-auth",
             "Fresh install — doctor tells me what to configure",
             "I just installed snouty and haven't set any credentials; I want doctor to tell me what I need.",
@@ -1088,7 +1126,11 @@ def build_stories(d: Discovery) -> list[Story]:
             "steer me toward username/password, which is legacy auth (issue #145).",
             ["doctor"],
             doctor_check(
-                contains=("ANTITHESIS_API_KEY is not set", "requires an API key"),
+                contains=(
+                    "ANTITHESIS_API_KEY is not set",
+                    "requires an API key",
+                    "ask Antithesis support",
+                ),
                 absent=("ANTITHESIS_USERNAME", "ANTITHESIS_PASSWORD"),
                 ok=False,
             ),
@@ -1111,10 +1153,26 @@ def build_stories(d: Discovery) -> list[Story]:
                     "ANTITHESIS_USERNAME",
                     "legacy",
                     "snouty launch",
+                    "ask Antithesis support",
                 ),
             ),
             json_capable=False,
             env=_doctor_env(api_key=False, username=True, password=True, tenant=True, repo=True),
+        ),
+        Story(
+            "doctor-json",
+            "Gate CI on a ready environment with --json",
+            "I want to check my environment in a script/CI step and parse the result, "
+            "not scrape human text.",
+            "`doctor --json` prints a structured report — a top-level `ok` boolean and a `checks` "
+            "array, each with name/status/message and any notes — and exits non-zero when a required "
+            "check fails, so CI can gate on it.",
+            ["doctor", "--json"],
+            doctor_json_check,
+            json_capable=False,
+            env=_doctor_env(
+                api_key=False, username=False, password=False, tenant=False, repo=False
+            ),
         ),
     ]
     return stories + build_help_stories(d)
@@ -1353,32 +1411,40 @@ def build_help_stories(d: Discovery) -> list[Story]:
 HELP_SAMPLE_MAX_LINES = 18
 
 
-def _capped_block(args: list[str], text: str) -> str:
-    """A ```shell block showing `$ snouty <args>` and its output, truncated to
-    `HELP_SAMPLE_MAX_LINES` with a marker so help stories stay focused."""
+def _shell_block(args: list[str], text: str, returncode: int, cap: int | None = None) -> str:
+    """A ```shell block showing `$ snouty <args>`, its output, and the exit code
+    on the line below — so a reviewer can judge whether the return code makes
+    sense given the output (e.g. a clean error should be non-zero; a healthy
+    listing should be zero). When `cap` is set the output is truncated to that
+    many lines with a marker (help-story samples cap; full goal output does not)."""
     lines = text.rstrip("\n").split("\n")
-    if len(lines) > HELP_SAMPLE_MAX_LINES:
-        hidden = len(lines) - HELP_SAMPLE_MAX_LINES
-        lines = lines[:HELP_SAMPLE_MAX_LINES] + [f"… ({hidden} more lines)"]
+    if cap is not None and len(lines) > cap:
+        hidden = len(lines) - cap
+        lines = lines[:cap] + [f"… ({hidden} more lines)"]
     body = "\n".join(lines)
-    return f"```shell\n$ snouty {' '.join(args)}\n{body}\n```"
+    return f"```shell\n$ snouty {' '.join(args)}\n{body}\n```\nExit code: `{returncode}`"
 
 
 def _write_help_story(out_dir: Path, story: Story, sr: StoryRun, verdict: str, detail: str) -> None:
     help_text = (sr.help_result.combined if sr.help_result else "").rstrip("\n")
+    help_rc = sr.help_result.returncode if sr.help_result else 0
     parts = [
         f"# {story.title}",
         f"**User goal:** {story.goal}",
         f"**Judge satisfaction by:** {story.judge}",
         "## Help text",
-        f"```shell\n$ snouty {' '.join(story.help_cmd or [])} --help\n{help_text}\n```",
+        _shell_block([*(story.help_cmd or []), "--help"], help_text, help_rc),
     ]
     if story.args:
         parts.append("## Default output")
-        parts.append(_capped_block(story.args, sr.result.combined))
+        parts.append(
+            _shell_block(
+                story.args, sr.result.combined, sr.result.returncode, cap=HELP_SAMPLE_MAX_LINES
+            )
+        )
         for label, res in sr.sample_results or []:
             parts.append(f"### Variant: {label}")
-            parts.append(_capped_block(res.args, res.combined))
+            parts.append(_shell_block(res.args, res.combined, res.returncode, cap=HELP_SAMPLE_MAX_LINES))
     parts.append(f"_Automated check: {verdict} — {detail}_")
     (out_dir / f"{story.slug}.md").write_text("\n\n".join(parts) + "\n")
 
@@ -1388,12 +1454,11 @@ def write_story(out_dir: Path, story: Story, sr: StoryRun, passed: bool, detail:
     if story.help_cmd is not None:
         _write_help_story(out_dir, story, sr, verdict, detail)
         return
-    body = sr.result.combined.rstrip("\n")
     md = (
         f"# {story.title}\n\n"
         f"**User goal:** {story.goal}\n\n"
         f"**Judge satisfaction by:** {story.judge}\n\n"
-        f"```shell\n$ snouty {' '.join(story.args)}\n{body}\n```\n\n"
+        f"{_shell_block(story.args, sr.result.combined, sr.result.returncode)}\n\n"
         f"_Automated check: {verdict} — {detail}_\n"
     )
     (out_dir / f"{story.slug}.md").write_text(md)

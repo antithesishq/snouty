@@ -64,8 +64,12 @@ Each `*.md` file has this shape:
 $ snouty <args>
 <captured output>
 ```
+Exit code: `<n>`
 _Automated check: PASS|FAIL — <detail>_
 ```
+
+(Help stories show an `Exit code:` line under each command block — the `--help`,
+the default output, and every variant.)
 
 Read every story file. For the **large** outputs (e.g. `runs-build-logs`,
 `runs-logs-incomplete` can be tens/hundreds of KB) do **not** read the whole
@@ -84,6 +88,13 @@ a human with this goal feel the question was actually answered? Is anything
 misleading, redundant, mis-sorted, or missing context that the goal implies?
 For error stories: is the message clear about *what went wrong* and ideally
 *what to do next*, not just technically non-crashing?
+
+Also check the **exit code** (the `Exit code:` line under each command block)
+makes sense given the output: a clean error or a "not found" should be non-zero;
+a healthy listing, report, or "all passed" should be zero; a warning-only state
+is a judgement call (e.g. `doctor` exits zero with warnings). Flag mismatches —
+an error printed but exit 0, or a success-looking result that exited non-zero —
+as a correctness problem even if the text reads fine.
 
 ### Axis B — Follow-up readiness
 Does the output give the user what they need to run the **obvious next

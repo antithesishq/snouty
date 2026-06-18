@@ -8,7 +8,7 @@ use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
-use tempfile::TempDir;
+use tempfile::{NamedTempFile, TempDir};
 
 #[derive(Debug, Default)]
 struct MockDocsServerState {
@@ -201,9 +201,16 @@ pub(crate) fn fixture_db() -> String {
 }
 
 /// A shared, read-only cache home seeded with the fixture docs database, exposed
-/// to the binary via `XDG_CACHE_HOME`. Built exactly once (the copy completes
-/// before any caller reads the path), so the parallel `--offline` docs tests can
-/// safely share it.
+/// to the binary via `XDG_CACHE_HOME`, so the parallel `--offline` docs tests can
+/// share it.
+///
+/// The `OnceLock` only dedupes within a process, but `cargo nextest` runs every
+/// test in its own process, so many processes seed the same fixed path
+/// concurrently. The seeding must therefore be safe under concurrent writers:
+/// we copy into a process-unique temp file and atomically rename it into place,
+/// so a reader always observes a complete database, never a half-written one.
+/// Every writer produces byte-identical content, so the racing renames are
+/// harmless.
 fn docs_fixture_cache_home() -> &'static Path {
     static CACHE_HOME: OnceLock<PathBuf> = OnceLock::new();
     CACHE_HOME
@@ -211,7 +218,13 @@ fn docs_fixture_cache_home() -> &'static Path {
             let home = Path::new(env!("CARGO_TARGET_TMPDIR")).join("docs-fixture-cache");
             let snouty_dir = home.join("snouty");
             std::fs::create_dir_all(&snouty_dir).unwrap();
-            std::fs::copy(fixture_db(), snouty_dir.join("docs.db")).unwrap();
+
+            let tmp = NamedTempFile::new_in(&snouty_dir).unwrap();
+            std::fs::copy(fixture_db(), tmp.path()).unwrap();
+            // Atomic rename: replaces the destination in one step, so concurrent
+            // readers never see a truncated or partially-copied database.
+            tmp.persist(snouty_dir.join("docs.db")).unwrap();
+
             home
         })
         .as_path()

@@ -94,10 +94,11 @@ async fn run(cli: Cli) -> Result<()> {
         eprintln!("warning: --json has no effect for `snouty {name}`");
     }
 
+    // Settings are resolved lazily, so calling `Settings::new` here incurs a minimal penalty: no disk I/O is triggered
+    // until a method is called. Resolving upfront even though some commands don't use settings in order to avoid
+    // needing to use multiple matches and unreachable!(..) macros
+    let settings = Settings::new(settings_path, profile);
     let result = match command {
-        // Commands that never read snouty settings; resolve nothing for them so
-        // an unrelated or corrupt ./.snouty.toml can't break, say, `snouty
-        // version`, shell-completion generation, or offline docs.
         Commands::Completions { shell } => cmd_completions(shell),
         Commands::Version => {
             println!("snouty {}", env!("CARGO_PKG_VERSION"));
@@ -105,39 +106,24 @@ async fn run(cli: Cli) -> Result<()> {
         }
         Commands::Update(args) => cmd_update(args),
         Commands::Docs { offline, command } => docs::cmd_docs(command, offline, json).await,
-
-        // Everything else shares one settings context, resolved once up front
-        // from --settings/SNOUTY_SETTINGS_PATH (default ./.snouty.toml) and the
-        // global settings.toml.
-        command => {
-            let settings = Settings::new(settings_path, profile);
-            match command {
-                Commands::Launch(args) => {
-                    info!("launching test with webhook: {}", args.webhook);
-                    cmd_launch(args, &settings, json, verbose).await
-                }
-                Commands::Run(args) => {
-                    eprintln!("warning: `snouty run` is deprecated, use `snouty launch` instead");
-                    info!("launching test with webhook: {}", args.webhook);
-                    cmd_launch(args, &settings, json, verbose).await
-                }
-                Commands::Runs { command } => {
-                    snouty::runs::cmd_runs(command, &settings, json, verbose).await
-                }
-                Commands::Debug(args) => {
-                    info!("starting debug session");
-                    cmd_debug(args, &settings, json, verbose).await
-                }
-                Commands::Validate(args) => validate::cmd_validate(args, &settings).await,
-                Commands::Doctor => snouty::doctor::cmd_doctor(&settings),
-                Commands::Completions { .. }
-                | Commands::Version
-                | Commands::Update(_)
-                | Commands::Docs { .. } => {
-                    unreachable!("handled before settings resolution")
-                }
-            }
+        Commands::Launch(args) => {
+            info!("launching test with webhook: {}", args.webhook);
+            cmd_launch(args, &settings, json, verbose).await
         }
+        Commands::Run(args) => {
+            eprintln!("warning: `snouty run` is deprecated, use `snouty launch` instead");
+            info!("launching test with webhook: {}", args.webhook);
+            cmd_launch(args, &settings, json, verbose).await
+        }
+        Commands::Runs { command } => {
+            snouty::runs::cmd_runs(command, &settings, json, verbose).await
+        }
+        Commands::Debug(args) => {
+            info!("starting debug session");
+            cmd_debug(args, &settings, json, verbose).await
+        }
+        Commands::Validate(args) => validate::cmd_validate(args, &settings).await,
+        Commands::Doctor => snouty::doctor::cmd_doctor(&settings),
     };
 
     suppress_broken_pipe(result)

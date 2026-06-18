@@ -23,8 +23,8 @@ mod generated {
 
 pub(crate) use generated::types::Params as RunParams;
 pub use generated::types::{
-    BuildLogLine, Event, EventProperty, LaunchResponse, Moment, NonEventProperty, Property,
-    PropertyStatus, RunDetail, RunStatus, RunSummary,
+    BuildLogLine, Event, EventProperty, LaunchMvdResponse, LaunchResponse, Moment,
+    NonEventProperty, Property, PropertyStatus, RunDetail, RunStatus, RunSummary,
 };
 pub use progenitor_client::ByteStream;
 
@@ -310,23 +310,34 @@ impl AntithesisApi {
 
     pub async fn launch_test(&self, launcher: &str, params: &Params) -> Result<LaunchResponse> {
         let body = launch_request(params)?;
-        match self
+        let result = self
             .client
             .launch_test()
             .launcher_name(launcher)
             .body(body)
             .send()
-            .await
-        {
-            Ok(response) => Ok(response.into_inner()),
-            Err(err) => Err(format_launch_client_error(err).await),
-        }
+            .await;
+        finish_launch(result, |body| {
+            serde_json::from_value(body).wrap_err("unexpected launch response shape")
+        })
+        .await
     }
 
     pub async fn launch_debugging(&self, params: &Params) -> Result<LaunchResponse> {
         let body = launch_mvd_request(params)?;
         match self.client.launch_mvd().body(body).send().await {
-            Ok(response) => Ok(response.into_inner()),
+            // Documented 202 path: the generated type is `LaunchMvdResponse { run_id }`.
+            // Normalize to the `runId`/`statusCode` envelope the live API actually
+            // returns (and that `snouty launch` emits) so `--json` output is consistent.
+            Ok(response) => Ok(LaunchResponse {
+                run_id: response.into_inner().run_id,
+                status_code: 202,
+            }),
+            // Live path: HTTP 200 webhook envelope, body is the LaunchResponse shape.
+            Err(ClientError::UnexpectedResponse(resp)) if resp.status().is_success() => resp
+                .json::<LaunchResponse>()
+                .await
+                .wrap_err("parsing debug launch response"),
             Err(err) => Err(format_launch_client_error(err).await),
         }
     }
@@ -752,34 +763,82 @@ fn launch_request(params: &Params) -> Result<generated::types::LaunchRequest> {
     .wrap_err("failed to build launch request")
 }
 
-fn launch_mvd_request(params: &Params) -> Result<generated::types::LaunchMvdRequest> {
-    let mut builder = generated::types::builder::MvdParams::default();
-
-    for (key, value) in params.as_map() {
-        let value = value
-            .as_str()
-            .ok_or_else(|| user_error(format!("debugging params must be strings: {key}")))?;
-
-        builder = match key.as_str() {
-            "antithesis.debugging.input_hash" => {
-                builder.antithesis_debugging_input_hash(value.to_string())
-            }
-            "antithesis.debugging.session_id" => {
-                builder.antithesis_debugging_session_id(value.to_string())
-            }
-            "antithesis.debugging.vtime" => builder.antithesis_debugging_vtime(value.to_string()),
-            "antithesis.event_description" => {
-                builder.antithesis_event_description(Some(value.to_string()))
-            }
-            "antithesis.report.recipients" => {
-                builder.antithesis_report_recipients(Some(value.to_string()))
-            }
-            _ => return Err(user_error(format!("unknown debugging param: {key}"))),
-        };
+/// Resolve a launch / debugging-launch webhook response, tolerating spec drift
+/// on the success status code.
+///
+/// These webhooks report their real status in the response *body* and return an
+/// HTTP status the OpenAPI spec under-documents (it lists a single 2xx). The
+/// generated client only accepts the documented code and surfaces any other 2xx
+/// as `UnexpectedResponse`. We treat **any** 2xx as success: on the documented
+/// code we use the client's already-parsed value; on any other 2xx we read the
+/// body and build the response via `from_body`. Genuine failures (4xx/5xx) are
+/// still formatted as errors.
+async fn finish_launch<T>(
+    result: std::result::Result<
+        progenitor_client::ResponseValue<T>,
+        ClientError<generated::types::ErrorResponse>,
+    >,
+    from_body: impl FnOnce(serde_json::Value) -> Result<T>,
+) -> Result<T> {
+    match result {
+        Ok(response) => Ok(response.into_inner()),
+        Err(ClientError::UnexpectedResponse(resp)) if resp.status().is_success() => {
+            let body = resp
+                .json::<serde_json::Value>()
+                .await
+                .wrap_err("parsing launch response body")?;
+            from_body(body)
+        }
+        Err(err) => Err(format_launch_client_error(err).await),
     }
+}
 
-    let typed_params = generated::types::MvdParams::try_from(builder)
-        .wrap_err("failed to build debugging params")?;
+fn launch_mvd_request(params: &Params) -> Result<generated::types::LaunchMvdRequest> {
+    use generated::types::MvdParams;
+
+    let map = params.as_map();
+    let get = |key: &str| -> Result<Option<String>> {
+        match map.get(key) {
+            None => Ok(None),
+            Some(value) => value
+                .as_str()
+                .map(|s| Some(s.to_string()))
+                .ok_or_else(|| eyre!("debugging params must be strings: {key}")),
+        }
+    };
+
+    let input_hash = get("antithesis.debugging.input_hash")?
+        .ok_or_else(|| eyre!("missing antithesis.debugging.input_hash"))?;
+    let vtime = get("antithesis.debugging.vtime")?
+        .ok_or_else(|| eyre!("missing antithesis.debugging.vtime"))?;
+    let event_description = get("antithesis.event_description")?;
+    let recipients = get("antithesis.report.recipients")?;
+    let run_id = get("antithesis.debugging.run_id")?;
+    let session_id = get("antithesis.debugging.session_id")?;
+
+    // The MVD_Params schema is a oneOf, so the target run is identified by
+    // exactly one of run_id or session_id. cmd_debug enforces this with a
+    // friendly message before we get here; the both/neither arms below are a
+    // defensive backstop.
+    let typed_params = match (run_id, session_id) {
+        (Some(run_id), None) => MvdParams::RunId {
+            antithesis_debugging_input_hash: input_hash,
+            antithesis_debugging_run_id: run_id,
+            antithesis_debugging_vtime: vtime,
+            antithesis_event_description: event_description,
+            antithesis_report_recipients: recipients,
+        },
+        (None, Some(session_id)) => MvdParams::SessionId {
+            antithesis_debugging_input_hash: input_hash,
+            antithesis_debugging_session_id: session_id,
+            antithesis_debugging_vtime: vtime,
+            antithesis_event_description: event_description,
+            antithesis_report_recipients: recipients,
+        },
+        (Some(_), Some(_)) => return Err(eyre!("specify exactly one of --run-id / --session-id")),
+        (None, None) => return Err(eyre!("specify --run-id or --session-id")),
+    };
+
     generated::types::LaunchMvdRequest::try_from(
         generated::types::builder::LaunchMvdRequest::default().params(typed_params),
     )
@@ -1262,9 +1321,9 @@ mod tests {
 
         Mock::given(method("POST"))
             .and(path("/api/v1/launch/basic_test"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            .respond_with(ResponseTemplate::new(202).set_body_json(serde_json::json!({
                 "runId": "run-123",
-                "statusCode": 200
+                "statusCode": 202
             })))
             .expect(1)
             .mount(&mock_server)
@@ -1291,9 +1350,9 @@ mod tests {
 
         Mock::given(method("POST"))
             .and(path("/api/v1/launch/basic_test"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            .respond_with(ResponseTemplate::new(202).set_body_json(serde_json::json!({
                 "runId": "run-123",
-                "statusCode": 200
+                "statusCode": 202
             })))
             .expect(1)
             .mount(&mock_server)
@@ -1310,7 +1369,7 @@ mod tests {
         let requests = mock_server.received_requests().await.unwrap();
 
         assert_eq!(response.run_id, "run-123");
-        assert_eq!(response.status_code, 200);
+        assert_eq!(response.status_code, 202);
         assert_eq!(requests.len(), 1);
         assert_eq!(requests[0].url.path(), "/api/v1/launch/basic_test");
         assert_eq!(requests[0].method, reqwest::Method::POST);
@@ -1331,6 +1390,81 @@ mod tests {
                 }
             })
         );
+    }
+
+    // The launch webhooks return HTTP 200 with the real status in the body,
+    // even though the spec documents 202. snouty accepts any 2xx as success.
+    #[tokio::test]
+    async fn launch_test_accepts_200_webhook_envelope() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/api/v1/launch/basic_test"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "runId": "run-123",
+                "statusCode": 202
+            })))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let api = AntithesisApi::with_base_url(test_config(), mock_server.uri()).unwrap();
+        let params = Params::from_key_value_pairs(["antithesis.duration=30"]).unwrap();
+
+        let response = api.launch_test("basic_test", &params).await.unwrap();
+        assert_eq!(response.run_id, "run-123");
+        assert_eq!(response.status_code, 202);
+    }
+
+    #[tokio::test]
+    async fn launch_debugging_accepts_200_webhook_envelope() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/api/v1/launch/debugging"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "statusCode": 202,
+                "runId": "debug-run-123"
+            })))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let api = AntithesisApi::with_base_url(test_config(), mock_server.uri()).unwrap();
+        let params = Params::from_key_value_pairs([
+            "antithesis.debugging.run_id=a2a4-53-1",
+            "antithesis.debugging.input_hash=-1",
+            "antithesis.debugging.vtime=1.0",
+        ])
+        .unwrap();
+
+        let response = api.launch_debugging(&params).await.unwrap();
+        assert_eq!(response.run_id, "debug-run-123");
+    }
+
+    #[tokio::test]
+    async fn launch_debugging_accepts_202_documented() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/api/v1/launch/debugging"))
+            .respond_with(ResponseTemplate::new(202).set_body_json(serde_json::json!({
+                "run_id": "debug-run-456"
+            })))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let api = AntithesisApi::with_base_url(test_config(), mock_server.uri()).unwrap();
+        let params = Params::from_key_value_pairs([
+            "antithesis.debugging.run_id=a2a4-53-1",
+            "antithesis.debugging.input_hash=-1",
+            "antithesis.debugging.vtime=1.0",
+        ])
+        .unwrap();
+
+        let response = api.launch_debugging(&params).await.unwrap();
+        assert_eq!(response.run_id, "debug-run-456");
     }
 
     #[tokio::test]

@@ -100,16 +100,19 @@ Examples:
     /// Launch a debugging session
     #[command(long_about = r#"Launch a debugging session
 
+Identify the target run with exactly one of --run-id (preferred) or
+--session-id.
+
 Using CLI arguments:
   snouty debug \
-    --session-id f89d5c11f5e3bf5e4bb3641809800cee-44-22 \
+    --run-id 9043254f65c9c65d63fe043a0abfc7fc-53-1 \
     --input-hash 6057726200491963783 \
     --vtime 329.8037810830865 \
     --description "debug this moment" \
     --recipients "team@example.com"
 
 Using Moment.from (copy from triage report):
-  echo 'Moment.from({ session_id: "...", input_hash: "...", vtime: ... })' | \
+  echo 'Moment.from({ run_id: "...", input_hash: "...", vtime: ... })' | \
     snouty debug --stdin --recipients "team@example.com""#)]
     Debug(DebugArgs),
 
@@ -342,7 +345,11 @@ pub struct DebugArgs {
     #[arg(long)]
     pub stdin: bool,
 
-    /// Session ID of the test run to debug
+    /// Run ID of the test run to debug (preferred; mutually exclusive with --session-id)
+    #[arg(long)]
+    pub run_id: Option<String>,
+
+    /// Session ID of the test run to debug (mutually exclusive with --run-id)
     #[arg(long)]
     pub session_id: Option<String>,
 

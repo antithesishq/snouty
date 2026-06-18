@@ -80,9 +80,13 @@
           "type": "string",
           "description": "Input hash obtained from the copy moment button in the triage report"
         },
+        "antithesis.debugging.run_id": {
+          "type": "string",
+          "description": "Run ID of the test run to debug (preferred). Exactly one of run_id or session_id must be supplied."
+        },
         "antithesis.debugging.session_id": {
           "type": "string",
-          "description": "Session ID of the test run to debug, from the copy moment button in triage report"
+          "description": "Session ID of the test run to debug, from the copy moment button in triage report. Exactly one of run_id or session_id must be supplied."
         },
         "antithesis.debugging.vtime": {
           "type": "string",
@@ -95,7 +99,6 @@
       },
       "required": [
         "antithesis.debugging.input_hash",
-        "antithesis.debugging.session_id",
         "antithesis.debugging.vtime"
       ]
     },

@@ -279,6 +279,9 @@ async fn launch_webhook(
 fn debug_typed_params(args: &DebugArgs) -> Params {
     let mut params = Params::new();
 
+    if let Some(run_id) = &args.run_id {
+        params.insert("antithesis.debugging.run_id", run_id.as_str());
+    }
     if let Some(session_id) = &args.session_id {
         params.insert("antithesis.debugging.session_id", session_id.as_str());
     }
@@ -312,6 +315,7 @@ fn debug_params(args: DebugArgs) -> Result<Params> {
 async fn cmd_debug(args: DebugArgs, json: bool, verbose: bool) -> Result<()> {
     let params = debug_params(args)?;
     params.validate_debugging_params()?;
+    params.ensure_single_debug_target()?;
 
     eprintln!(
         "\nRequesting the Antithesis multiverse debugger with params:\n{}",

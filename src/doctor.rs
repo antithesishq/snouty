@@ -220,3 +220,86 @@ pub fn cmd_doctor(settings: &Settings) -> Result<()> {
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use color_eyre::eyre::eyre;
+
+    #[test]
+    fn check_strings_cover_every_value_source() {
+        assert_eq!(
+            to_check_string(&ValueSource::EnvironmentVariable),
+            "environment variable"
+        );
+        assert_eq!(
+            to_check_string(&ValueSource::ProjectProfile),
+            "settings profile in project configuration file"
+        );
+        assert_eq!(
+            to_check_string(&ValueSource::GlobalProfile),
+            "settings profile in global configuration file"
+        );
+        assert_eq!(
+            to_check_string(&ValueSource::ProjectDefault),
+            "default setting in project configuration file"
+        );
+        assert_eq!(
+            to_check_string(&ValueSource::GlobalDefault),
+            "default setting in global configuration file"
+        );
+    }
+
+    #[test]
+    fn for_value_ok_passes_with_value_as_message() {
+        let check = Check::for_value("base url", Ok("https://acme.antithesis.com"));
+        assert!(check.passed == CheckResult::Pass);
+        assert_eq!(check.message, "https://acme.antithesis.com");
+    }
+
+    #[test]
+    fn for_value_err_fails_with_prefixed_message() {
+        let check = Check::for_value("base url", Err(eyre!("boom")));
+        assert!(check.passed == CheckResult::Fail);
+        assert_eq!(check.message, "error: boom");
+    }
+
+    #[test]
+    fn for_setting_some_passes_with_attribution() {
+        let value = "acme".to_string();
+        let result = Ok(Some(AttributedValue {
+            value: &value,
+            attribution: ValueSource::ProjectProfile,
+        }));
+        let check = Check::for_setting("tenant", &result, true);
+        assert!(check.passed == CheckResult::Pass);
+        assert_eq!(
+            check.message,
+            "acme (from settings profile in project configuration file)"
+        );
+    }
+
+    #[test]
+    fn for_setting_missing_required_fails() {
+        let result = Ok(None);
+        let check = Check::for_setting("tenant", &result, true);
+        assert!(check.passed == CheckResult::Fail);
+        assert_eq!(check.message, "<Not found>");
+    }
+
+    #[test]
+    fn for_setting_missing_optional_is_inconclusive() {
+        let result = Ok(None);
+        let check = Check::for_setting("container engine", &result, false);
+        assert!(check.passed == CheckResult::Inconclusive);
+        assert_eq!(check.message, "<Not found>");
+    }
+
+    #[test]
+    fn for_setting_error_fails_with_prefixed_message() {
+        let result = Err(SharedReport::for_test("could not read config"));
+        let check = Check::for_setting("tenant", &result, true);
+        assert!(check.passed == CheckResult::Fail);
+        assert_eq!(check.message, "error: could not read config");
+    }
+}

@@ -59,6 +59,14 @@ impl std::error::Error for SharedReport {
     }
 }
 
+#[cfg(test)]
+impl SharedReport {
+    pub(crate) fn for_test(message: &str) -> Self {
+        SharedReport(Arc::new(eyre!("{message}")))
+    }
+}
+
+#[derive(Debug)]
 pub(crate) enum ValueSource {
     EnvironmentVariable,
     ProjectProfile,
@@ -67,6 +75,7 @@ pub(crate) enum ValueSource {
     GlobalDefault,
 }
 
+#[derive(Debug)]
 pub(crate) struct AttributedValue<T> {
     pub(crate) value: T,
     pub(crate) attribution: ValueSource,
@@ -76,6 +85,7 @@ fn attribute<T>(value: T, attribution: ValueSource) -> AttributedValue<T> {
     AttributedValue { value, attribution }
 }
 
+#[derive(Debug)]
 pub(crate) struct LoadedSettings {
     tenant: Result<Option<String>, SharedReport>,
     repository: Result<Option<String>, SharedReport>,
@@ -83,6 +93,7 @@ pub(crate) struct LoadedSettings {
     container_engine: Result<Option<String>, SharedReport>,
 }
 
+#[derive(Debug)]
 pub(crate) struct SettingsFromFile {
     pub(crate) resolved_path: PathBuf,
     for_profile: Option<LoadedSettings>,
@@ -398,6 +409,29 @@ impl Settings {
         self.profile.as_deref()
     }
 
+    /// Build a [`Settings`] with the environment, project, and global config
+    /// layers pre-resolved, so that calls into the resolution chain perform no
+    /// environment or filesystem IO. This keeps tests deterministic and safe to
+    /// run in parallel (the real constructor reads process-global env vars).
+    #[cfg(test)]
+    pub(crate) fn for_test(
+        env: LoadedSettings,
+        project: Result<Option<SettingsFromFile>, SharedReport>,
+        global: Result<Option<SettingsFromFile>, SharedReport>,
+    ) -> Self {
+        Self {
+            profile: None,
+            project_settings_path: None,
+            settings_from_environment: OnceCell::from(env),
+            settings_from_project_config: OnceCell::from(project),
+            settings_from_global_config: OnceCell::from(global),
+            tenant: OnceCell::new(),
+            repository: OnceCell::new(),
+            base_url: OnceCell::new(),
+            container_engine: OnceCell::new(),
+        }
+    }
+
     #[cfg(test)]
     pub(crate) fn for_test_base_url(base_url: String) -> Self {
         let error = SharedReport(Arc::new(eyre!("Shouldn't have read from me!")));
@@ -436,4 +470,271 @@ fn try_resolve_from_defaults(config: &Table, key: &str) -> Option<String> {
         .get(key)
         .and_then(|profile_tenant| profile_tenant.as_str())
         .map(|value| value.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A `LoadedSettings` with every field resolved to `Ok(None)`, i.e. nothing
+    /// configured in this layer.
+    fn empty_layer() -> LoadedSettings {
+        LoadedSettings {
+            tenant: Ok(None),
+            repository: Ok(None),
+            base_url: Ok(None),
+            container_engine: Ok(None),
+        }
+    }
+
+    /// A `LoadedSettings` whose `tenant` is the only populated field.
+    fn env_tenant(tenant: Option<&str>) -> LoadedSettings {
+        LoadedSettings {
+            tenant: Ok(tenant.map(str::to_string)),
+            ..empty_layer()
+        }
+    }
+
+    /// Parse TOML into a `SettingsFromFile` the same way the real loader does.
+    fn file(contents: &str, profile: Option<&str>) -> SettingsFromFile {
+        load_settings_from_toml(
+            contents.to_string(),
+            Path::new("/test/.snouty.toml"),
+            profile,
+        )
+        .expect("test TOML should parse")
+    }
+
+    fn source_name(source: &ValueSource) -> &'static str {
+        match source {
+            ValueSource::EnvironmentVariable => "env",
+            ValueSource::ProjectProfile => "project-profile",
+            ValueSource::GlobalProfile => "global-profile",
+            ValueSource::ProjectDefault => "project-default",
+            ValueSource::GlobalDefault => "global-default",
+        }
+    }
+
+    // ---- load_environment_variable -------------------------------------
+
+    #[test]
+    fn missing_environment_variable_resolves_to_none() {
+        // A variable that is guaranteed not to be set; this is a read-only
+        // check, so it stays deterministic under parallel execution.
+        let result = load_environment_variable("SNOUTY_DEFINITELY_NOT_SET_98f3a");
+        assert!(matches!(result, Ok(None)));
+    }
+
+    // ---- load_settings_from_toml ---------------------------------------
+
+    #[test]
+    fn invalid_toml_is_reported_with_path() {
+        let err = load_settings_from_toml(
+            "this is = = not toml".to_string(),
+            Path::new("/some/.snouty.toml"),
+            None,
+        )
+        .unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("not valid TOML"), "unexpected error: {msg}");
+        assert!(msg.contains(".snouty.toml"), "unexpected error: {msg}");
+    }
+
+    #[test]
+    fn valid_toml_with_no_profile_has_no_profile_layer() {
+        let settings = file("tenant = \"acme\"\n", None);
+        assert!(settings.for_profile.is_none());
+        assert_eq!(
+            settings.defaults.tenant.as_ref().unwrap().as_deref(),
+            Some("acme")
+        );
+    }
+
+    // ---- try_resolve_from_profile / try_resolve_from_defaults ----------
+
+    #[test]
+    fn resolve_from_profile_reads_nested_table() {
+        let table: Table = "[profile.staging]\ntenant = \"staging-tenant\"\n"
+            .parse()
+            .unwrap();
+        assert_eq!(
+            try_resolve_from_profile(&table, "tenant", "staging").as_deref(),
+            Some("staging-tenant")
+        );
+        // missing profile and missing key both resolve to None
+        assert_eq!(try_resolve_from_profile(&table, "tenant", "prod"), None);
+        assert_eq!(
+            try_resolve_from_profile(&table, "repository", "staging"),
+            None
+        );
+    }
+
+    #[test]
+    fn resolve_from_defaults_reads_top_level_key() {
+        let table: Table = "tenant = \"acme\"\n".parse().unwrap();
+        assert_eq!(
+            try_resolve_from_defaults(&table, "tenant").as_deref(),
+            Some("acme")
+        );
+        assert_eq!(try_resolve_from_defaults(&table, "missing"), None);
+    }
+
+    // ---- try_resolve precedence ----------------------------------------
+
+    fn resolved_tenant(settings: &Settings) -> Option<(String, &'static str)> {
+        settings.try_resolve_tenant().unwrap().map(|attributed| {
+            (
+                attributed.value.clone(),
+                source_name(&attributed.attribution),
+            )
+        })
+    }
+
+    #[test]
+    fn environment_variable_wins_over_everything() {
+        let settings = Settings::for_test(
+            env_tenant(Some("env-tenant")),
+            Ok(Some(file("tenant = \"proj-default\"\n", None))),
+            Ok(Some(file("tenant = \"global-default\"\n", None))),
+        );
+        assert_eq!(
+            resolved_tenant(&settings),
+            Some(("env-tenant".to_string(), "env"))
+        );
+    }
+
+    #[test]
+    fn project_profile_beats_global_profile_and_defaults() {
+        let project = file(
+            "tenant = \"proj-default\"\n[profile.p]\ntenant = \"proj-profile\"\n",
+            Some("p"),
+        );
+        let global = file(
+            "tenant = \"global-default\"\n[profile.p]\ntenant = \"global-profile\"\n",
+            Some("p"),
+        );
+        let settings = Settings::for_test(empty_layer(), Ok(Some(project)), Ok(Some(global)));
+        assert_eq!(
+            resolved_tenant(&settings),
+            Some(("proj-profile".to_string(), "project-profile"))
+        );
+    }
+
+    #[test]
+    fn global_profile_beats_project_default() {
+        // Project has only a default; global has a matching profile. The global
+        // profile is higher priority than the project default.
+        let project = file("tenant = \"proj-default\"\n", None);
+        let global = file("[profile.p]\ntenant = \"global-profile\"\n", Some("p"));
+        let settings = Settings::for_test(empty_layer(), Ok(Some(project)), Ok(Some(global)));
+        assert_eq!(
+            resolved_tenant(&settings),
+            Some(("global-profile".to_string(), "global-profile"))
+        );
+    }
+
+    #[test]
+    fn project_default_beats_global_default() {
+        let project = file("tenant = \"proj-default\"\n", None);
+        let global = file("tenant = \"global-default\"\n", None);
+        let settings = Settings::for_test(empty_layer(), Ok(Some(project)), Ok(Some(global)));
+        assert_eq!(
+            resolved_tenant(&settings),
+            Some(("proj-default".to_string(), "project-default"))
+        );
+    }
+
+    #[test]
+    fn global_default_is_the_last_resort() {
+        let global = file("tenant = \"global-default\"\n", None);
+        let settings = Settings::for_test(empty_layer(), Ok(None), Ok(Some(global)));
+        assert_eq!(
+            resolved_tenant(&settings),
+            Some(("global-default".to_string(), "global-default"))
+        );
+    }
+
+    #[test]
+    fn nothing_configured_resolves_to_none() {
+        let settings = Settings::for_test(empty_layer(), Ok(None), Ok(None));
+        assert!(resolved_tenant(&settings).is_none());
+    }
+
+    #[test]
+    fn environment_error_propagates() {
+        let env = LoadedSettings {
+            tenant: Err(SharedReport::for_test("bad env")),
+            ..empty_layer()
+        };
+        let settings = Settings::for_test(env, Ok(None), Ok(None));
+        let err = settings.try_resolve_tenant().unwrap_err();
+        assert!(err.to_string().contains("bad env"));
+    }
+
+    #[test]
+    fn project_file_error_propagates() {
+        let settings = Settings::for_test(
+            empty_layer(),
+            Err(SharedReport::for_test("bad file")),
+            Ok(None),
+        );
+        let err = settings.try_resolve_tenant().unwrap_err();
+        assert!(err.to_string().contains("bad file"));
+    }
+
+    // ---- public accessors ----------------------------------------------
+
+    #[test]
+    fn tenant_accessor_errors_point_at_doctor() {
+        let settings = Settings::for_test(empty_layer(), Ok(None), Ok(None));
+        let err = settings.tenant().unwrap_err();
+        assert!(err.to_string().contains("snouty doctor"));
+    }
+
+    #[test]
+    fn base_url_falls_back_to_tenant_host() {
+        let settings = Settings::for_test(env_tenant(Some("acme")), Ok(None), Ok(None));
+        assert_eq!(settings.base_url().unwrap(), "https://acme.antithesis.com");
+    }
+
+    #[test]
+    fn explicit_base_url_overrides_tenant_host() {
+        let env = LoadedSettings {
+            tenant: Ok(Some("acme".to_string())),
+            base_url: Ok(Some("https://example.test".to_string())),
+            ..empty_layer()
+        };
+        let settings = Settings::for_test(env, Ok(None), Ok(None));
+        assert_eq!(settings.base_url().unwrap(), "https://example.test");
+    }
+
+    #[test]
+    fn base_url_without_tenant_is_an_error() {
+        let settings = Settings::for_test(empty_layer(), Ok(None), Ok(None));
+        assert!(settings.base_url().is_err());
+    }
+
+    #[test]
+    fn container_engine_absent_resolves_to_none() {
+        let settings = Settings::for_test(empty_layer(), Ok(None), Ok(None));
+        assert_eq!(settings.container_engine().unwrap(), None);
+    }
+
+    #[test]
+    fn container_engine_resolves_from_environment() {
+        let env = LoadedSettings {
+            container_engine: Ok(Some("podman".to_string())),
+            ..empty_layer()
+        };
+        let settings = Settings::for_test(env, Ok(None), Ok(None));
+        assert_eq!(settings.container_engine().unwrap(), Some("podman"));
+    }
+
+    // ---- SharedReport --------------------------------------------------
+
+    #[test]
+    fn shared_report_displays_underlying_message() {
+        let report = SharedReport::for_test("something broke");
+        assert_eq!(report.to_string(), "something broke");
+    }
 }

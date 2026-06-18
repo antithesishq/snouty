@@ -29,12 +29,11 @@ pub struct Cli {
     #[arg(long, global = true, display_order = 1001)]
     pub verbose: bool,
 
-    /// Path to the snouty settings file (default: ./.snouty.toml; overridden by
-    /// SNOUTY_SETTINGS_PATH)
+    /// Path to the snouty settings file (default: ./.snouty.toml; overrides SNOUTY_SETTINGS_PATH)
     #[arg(long, global = true, display_order = 1002)]
     pub settings: Option<std::path::PathBuf>,
 
-    /// Settings profile to select (overridden by ANTITHESIS_PROFILE)
+    /// Settings profile to select (overrides ANTITHESIS_PROFILE)
     #[arg(long, global = true, display_order = 1003)]
     pub profile: Option<String>,
 

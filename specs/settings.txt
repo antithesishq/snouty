@@ -29,9 +29,9 @@ stderr 'tenant: staging-tenant.*'
 ! snouty --settings other.toml doctor
 stderr 'tenant: other-tenant.*'
 
-# 4. ANTITHESIS_PROFILE wins over the --profile flag.
-env ANTITHESIS_PROFILE=prod
-! snouty --profile staging doctor
+# 4. The --profile flag wins over ANTITHESIS_PROFILE.
+env ANTITHESIS_PROFILE=staging
+! snouty --profile prod doctor
 stderr 'tenant: prod-tenant.*'
 
 # 5. An environment variable overrides everything else (profile prod is still

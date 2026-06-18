@@ -110,7 +110,7 @@ async fn run(cli: Cli) -> Result<()> {
         // from --settings/SNOUTY_SETTINGS_PATH (default ./.snouty.toml) and the
         // global settings.toml.
         command => {
-            let settings = Settings::resolve(settings_path, profile)?;
+            let settings = Settings::new(settings_path, profile);
             match command {
                 Commands::Launch(args) => {
                     info!("launching test with webhook: {}", args.webhook);

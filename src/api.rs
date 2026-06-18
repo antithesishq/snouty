@@ -235,7 +235,7 @@ impl AntithesisApi {
         verbose: bool,
         cache_dir: Option<&Path>,
     ) -> Result<Self> {
-        let base_url = normalize_base_url(settings.resolve_base_url()?);
+        let base_url = normalize_base_url(settings.base_url()?);
         debug!("initializing API client for {}", base_url);
 
         let default_headers = default_request_headers(auth)?;
@@ -1416,7 +1416,7 @@ mod tests {
             .mount(&mock_server)
             .await;
 
-        let api = AntithesisApi::with_base_url(test_config(), mock_server.uri()).unwrap();
+        let api = test_api_optionally_with_cache(&mock_server, None);
         let params = Params::from_key_value_pairs(["antithesis.duration=30"]).unwrap();
 
         let response = api.launch_test("basic_test", &params).await.unwrap();
@@ -1438,7 +1438,7 @@ mod tests {
             .mount(&mock_server)
             .await;
 
-        let api = AntithesisApi::with_base_url(test_config(), mock_server.uri()).unwrap();
+        let api = test_api_optionally_with_cache(&mock_server, None);
         let params = Params::from_key_value_pairs([
             "antithesis.debugging.run_id=a2a4-53-1",
             "antithesis.debugging.input_hash=-1",
@@ -1463,7 +1463,7 @@ mod tests {
             .mount(&mock_server)
             .await;
 
-        let api = AntithesisApi::with_base_url(test_config(), mock_server.uri()).unwrap();
+        let api = test_api_optionally_with_cache(&mock_server, None);
         let params = Params::from_key_value_pairs([
             "antithesis.debugging.run_id=a2a4-53-1",
             "antithesis.debugging.input_hash=-1",
@@ -1492,7 +1492,7 @@ mod tests {
             .mount(&mock_server)
             .await;
 
-        let api = AntithesisApi::with_base_url(test_config(), mock_server.uri()).unwrap();
+        let api = test_api_optionally_with_cache(&mock_server, None);
         let params = Params::from_key_value_pairs([
             "antithesis.debugging.run_id=a2a4-53-1",
             "antithesis.debugging.input_hash=-1",
@@ -1524,7 +1524,7 @@ mod tests {
             .mount(&mock_server)
             .await;
 
-        let api = AntithesisApi::with_base_url(test_config(), mock_server.uri()).unwrap();
+        let api = test_api_optionally_with_cache(&mock_server, None);
         let params = Params::from_key_value_pairs([
             "antithesis.debugging.run_id=a2a4-53-1",
             "antithesis.debugging.input_hash=-1",

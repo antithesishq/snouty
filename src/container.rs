@@ -1125,7 +1125,7 @@ pub fn runtime(settings: &Settings) -> Result<&'static dyn ContainerRuntime> {
         .get_or_init(|| {
             // Detection is cached process-wide on first call, so the engine
             // override is read from the settings passed to that first call.
-            if let Some(engine) = settings.container_engine() {
+            if let Ok(Some(engine)) = settings.container_engine() {
                 return match engine {
                     "podman" => Ok(Box::new(PodmanRuntime::new("podman"))),
                     "docker" => Ok(Box::new(DockerRuntime::new("docker"))),

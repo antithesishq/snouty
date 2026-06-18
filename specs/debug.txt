@@ -51,6 +51,13 @@ stderr '"antithesis.debugging.vtime": "1234567890"'
 stderr '"antithesis.event_description": "debug this moment"'
 stderr '"antithesis.report.recipients": "\[REDACTED\]"'
 
+# The webhook reports success as an under-documented HTTP status (the live API
+#    answers 200), but a real, spec-conformant 202 carrying the same
+#    runId/statusCode envelope is also accepted.
+mock-server 202 '{"statusCode":202,"runId":"run-123"}'
+snouty debug --input-hash abc123 --run-id 9043254f65c9c65d63fe043a0abfc7fc-53-1 --vtime 1234567890
+stdout 'Debugging session started: run_id run-123'
+
 # --session-id remains supported for backwards compatibility.
 mock-server 200 '{"statusCode":202,"runId":"run-123"}'
 snouty debug --input-hash abc123 --session-id d5d1c9cf0e64b5dd69b00e97b07fe3f4-18-1 --vtime 1234567890

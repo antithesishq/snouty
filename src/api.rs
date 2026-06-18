@@ -326,18 +326,57 @@ impl AntithesisApi {
     pub async fn launch_debugging(&self, params: &Params) -> Result<LaunchResponse> {
         let body = launch_mvd_request(params)?;
         match self.client.launch_mvd().body(body).send().await {
-            // Documented 202 path: the generated type is `LaunchMvdResponse { run_id }`.
-            // Normalize to the `runId`/`statusCode` envelope the live API actually
-            // returns (and that `snouty launch` emits) so `--json` output is consistent.
+            // Documented 202 whose body is the spec shape (`{ "run_id": ... }`):
+            // the generated client parsed it into `LaunchMvdResponse` for us.
+            // Normalize to the `runId`/`statusCode` envelope the live API uses
+            // (and that `snouty launch` emits) so `--json` output is consistent.
             Ok(response) => Ok(LaunchResponse {
                 run_id: response.into_inner().run_id,
                 status_code: 202,
             }),
-            // Live path: HTTP 200 webhook envelope, body is the LaunchResponse shape.
-            Err(ClientError::UnexpectedResponse(resp)) if resp.status().is_success() => resp
-                .json::<LaunchResponse>()
-                .await
-                .wrap_err("parsing debug launch response"),
+            // Documented 202 whose body is the live `{ "runId", "statusCode" }`
+            // envelope: the generated client expected the spec's snake_case
+            // `run_id` and rejected the camelCase body as an invalid payload.
+            //
+            // Unlike `UnexpectedResponse` below, this variant carries no HTTP
+            // status (`ClientError::status()` is `None`), so we can't gate on
+            // `is_success()`. A documented *error* whose body fails `ErrorResponse`
+            // parsing (e.g. a 4xx that omits the required `message`) also lands
+            // here, so blindly trusting it would let an error masquerade as
+            // success. Lean on this webhook reporting its real status in the
+            // body: recover only when the body itself reports a 2xx, and fall
+            // back to the standard error path otherwise.
+            Err(ClientError::InvalidResponsePayload(body, source)) => {
+                match parse_debug_launch_body(&body) {
+                    Ok((run_id, Some(status_code))) if (200..300).contains(&status_code) => {
+                        Ok(LaunchResponse {
+                            run_id,
+                            status_code,
+                        })
+                    }
+                    _ => Err(
+                        format_launch_client_error(ClientError::InvalidResponsePayload(
+                            body, source,
+                        ))
+                        .await,
+                    ),
+                }
+            }
+            // Undocumented 2xx: the live API currently answers this webhook with
+            // HTTP 200 carrying the same envelope. The transport status already
+            // confirms success here, so a body without a `statusCode` defaults to
+            // 202 Accepted.
+            Err(ClientError::UnexpectedResponse(resp)) if resp.status().is_success() => {
+                let body = resp
+                    .bytes()
+                    .await
+                    .wrap_err("reading debug launch response")?;
+                let (run_id, status_code) = parse_debug_launch_body(&body)?;
+                Ok(LaunchResponse {
+                    run_id,
+                    status_code: status_code.unwrap_or(202),
+                })
+            }
             Err(err) => Err(format_launch_client_error(err).await),
         }
     }
@@ -791,6 +830,27 @@ async fn finish_launch<T>(
         }
         Err(err) => Err(format_launch_client_error(err).await),
     }
+}
+
+/// Parse a debug-launch response body into `(run_id, status_code)`, tolerating
+/// either the spec's snake_case `run_id` or the live API's camelCase `runId`.
+///
+/// `status_code` is the body's own `statusCode`, if present. This webhook family
+/// reports its real status in the body rather than (only) the HTTP status line,
+/// which lets a caller that has lost the transport status still tell a success
+/// envelope from an error one. Errors if the body isn't JSON or carries no run
+/// id.
+fn parse_debug_launch_body(body: &[u8]) -> Result<(String, Option<i64>)> {
+    let value: serde_json::Value =
+        serde_json::from_slice(body).wrap_err("parsing debug launch response")?;
+    let run_id = value
+        .get("run_id")
+        .or_else(|| value.get("runId"))
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| eyre!("debug launch response missing run_id/runId: {value}"))?
+        .to_string();
+    let status_code = value.get("statusCode").and_then(serde_json::Value::as_i64);
+    Ok((run_id, status_code))
 }
 
 fn launch_mvd_request(params: &Params) -> Result<generated::types::LaunchMvdRequest> {
@@ -1465,6 +1525,70 @@ mod tests {
 
         let response = api.launch_debugging(&params).await.unwrap();
         assert_eq!(response.run_id, "debug-run-456");
+    }
+
+    // If the webhook is corrected to return the documented 202 while keeping the
+    // live `{ runId, statusCode }` envelope, the generated client rejects the
+    // camelCase body as an invalid payload. We must still recover the run id.
+    #[tokio::test]
+    async fn launch_debugging_accepts_202_live_envelope() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/api/v1/launch/debugging"))
+            .respond_with(ResponseTemplate::new(202).set_body_json(serde_json::json!({
+                "statusCode": 202,
+                "runId": "debug-run-789"
+            })))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let api = AntithesisApi::with_base_url(test_config(), mock_server.uri()).unwrap();
+        let params = Params::from_key_value_pairs([
+            "antithesis.debugging.run_id=a2a4-53-1",
+            "antithesis.debugging.input_hash=-1",
+            "antithesis.debugging.vtime=1.0",
+        ])
+        .unwrap();
+
+        let response = api.launch_debugging(&params).await.unwrap();
+        assert_eq!(response.run_id, "debug-run-789");
+        assert_eq!(response.status_code, 202);
+    }
+
+    // A documented error status whose body fails `ErrorResponse` parsing (here a
+    // 403 that omits the required `message`) also surfaces as
+    // `InvalidResponsePayload` — which carries no HTTP status. An error body that
+    // happens to carry a runId must not be mistaken for success: the body's own
+    // statusCode gates it, so this stays an error.
+    #[tokio::test]
+    async fn launch_debugging_rejects_error_body_carrying_run_id() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/api/v1/launch/debugging"))
+            .respond_with(ResponseTemplate::new(403).set_body_json(serde_json::json!({
+                "statusCode": 403,
+                "runId": "should-not-be-reported"
+            })))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let api = AntithesisApi::with_base_url(test_config(), mock_server.uri()).unwrap();
+        let params = Params::from_key_value_pairs([
+            "antithesis.debugging.run_id=a2a4-53-1",
+            "antithesis.debugging.input_hash=-1",
+            "antithesis.debugging.vtime=1.0",
+        ])
+        .unwrap();
+
+        let err = api.launch_debugging(&params).await.unwrap_err().to_string();
+        assert!(
+            !err.contains("should-not-be-reported"),
+            "a 403 error body must not be reported as a successful launch: {err}"
+        );
     }
 
     #[tokio::test]

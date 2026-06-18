@@ -113,12 +113,23 @@ class Snouty:
     def cleanup(self) -> None:
         shutil.rmtree(self._shim, ignore_errors=True)
 
-    def run(self, args: list[str]) -> Result:
+    def run(self, args: list[str], env: dict[str, str | None] | None = None) -> Result:
+        # `env` overrides individual vars for this call only: a string sets the
+        # var, None unsets it (so a story can model an environment missing some
+        # credential). Everything else inherits the live ANTITHESIS_* env.
+        run_env = self._env
+        if env is not None:
+            run_env = dict(self._env)
+            for key, value in env.items():
+                if value is None:
+                    run_env.pop(key, None)
+                else:
+                    run_env[key] = value
         proc = subprocess.run(
             [str(self.binary), *args],
             capture_output=True,
             text=True,
-            env=self._env,
+            env=run_env,
         )
         return Result(args, proc.stdout, proc.stderr, proc.returncode)
 
@@ -465,6 +476,10 @@ class Story:
     # commands; set False for a command that legitimately exits non-zero while
     # still printing representative output (e.g. `doctor` when a check fails).
     expect_ok: bool = True
+    # Per-story ANTITHESIS_* env overrides for the default-output command: a
+    # string sets a var, None unsets it. Used by the doctor stories to model a
+    # specific credential setup regardless of the operator's real environment.
+    env: dict[str, str | None] | None = None
 
 
 @dataclass
@@ -559,6 +574,36 @@ def contains_all(*needles: str):
         text = sr.result.combined
         missing = [n for n in needles if n not in text]
         return (not missing, "all present" if not missing else f"missing {missing!r}")
+
+    return chk
+
+
+def doctor_check(
+    *,
+    contains: tuple[str, ...],
+    absent: tuple[str, ...] = (),
+    ok: bool | None = None,
+):
+    """Gate a doctor story: every `contains` needle must appear, no `absent`
+    needle may, and (when `ok` is given) the exit status must match. `ok` is left
+    None for the api-key/legacy stories because their overall pass/fail also
+    depends on the machine's container runtime — only the auth lines, which this
+    asserts on, are deterministic."""
+
+    def chk(sr: StoryRun, reg: Registry) -> tuple[bool, str]:
+        text = sr.result.combined
+        missing = [n for n in contains if n not in text]
+        unexpected = [n for n in absent if n in text]
+        exit_matches = ok is None or sr.result.ok == ok
+        passed = not missing and not unexpected and exit_matches
+        bits = []
+        if missing:
+            bits.append(f"missing={missing!r}")
+        if unexpected:
+            bits.append(f"unexpected={unexpected!r}")
+        if not exit_matches:
+            bits.append(f"exit_ok={sr.result.ok} (want {ok})")
+        return (passed, "; ".join(bits) or "auth output as expected")
 
     return chk
 
@@ -673,6 +718,31 @@ def help_story_check(sr: StoryRun, reg: Registry) -> tuple[bool, str]:
 # ---------------------------------------------------------------------------
 # Story definitions
 # ---------------------------------------------------------------------------
+
+
+# `doctor` never calls the API, so each doctor story drives one specific output
+# with a controlled ANTITHESIS_* env, independent of the operator's shell. Each
+# flag says whether that var should be *set* for the story: a set var inherits
+# the operator's real value when present (so the stories reflect the real
+# environment) and falls back to a placeholder otherwise, so the state still
+# holds on a machine missing that credential. doctor only checks presence, never
+# the value, so an inherited secret is never printed and a placeholder is purely
+# a stand-in.
+def _doctor_env(
+    *, api_key: bool, username: bool, password: bool, tenant: bool, repo: bool
+) -> dict[str, str | None]:
+    def want(name: str, set_it: bool, placeholder: str) -> str | None:
+        return (os.environ.get(name) or placeholder) if set_it else None
+
+    return {
+        "ANTITHESIS_API_KEY": want("ANTITHESIS_API_KEY", api_key, "demo-api-key"),
+        "ANTITHESIS_USERNAME": want("ANTITHESIS_USERNAME", username, "demo-user"),
+        "ANTITHESIS_PASSWORD": want("ANTITHESIS_PASSWORD", password, "demo-pass"),
+        "ANTITHESIS_TENANT": want("ANTITHESIS_TENANT", tenant, "demo-tenant"),
+        "ANTITHESIS_REPOSITORY": want(
+            "ANTITHESIS_REPOSITORY", repo, "registry.example.com/acme/demo"
+        ),
+    }
 
 
 def build_stories(d: Discovery) -> list[Story]:
@@ -995,6 +1065,57 @@ def build_stories(d: Discovery) -> list[Story]:
             expect_message("error", "not found", "no ", "invalid"),
             json_capable=False,
         ),
+        # -- doctor (one story per distinct auth output) --------------------
+        Story(
+            "doctor-api-key",
+            "Confirm my environment is ready with an API key",
+            "I've configured snouty with an API key and want doctor to confirm I'm set up.",
+            "doctor recognises the API key as full access and reports it with a single green check; "
+            "it does not mention username/password at all.",
+            ["doctor"],
+            doctor_check(
+                contains=("ANTITHESIS_API_KEY is set",),
+                absent=("ANTITHESIS_USERNAME", "ANTITHESIS_PASSWORD"),
+            ),
+            json_capable=False,
+            env=_doctor_env(api_key=True, username=False, password=False, tenant=True, repo=True),
+        ),
+        Story(
+            "doctor-no-auth",
+            "Fresh install — doctor tells me what to configure",
+            "I just installed snouty and haven't set any credentials; I want doctor to tell me what I need.",
+            "doctor states an API key is required and points ONLY at ANTITHESIS_API_KEY — it must not "
+            "steer me toward username/password, which is legacy auth (issue #145).",
+            ["doctor"],
+            doctor_check(
+                contains=("ANTITHESIS_API_KEY is not set", "requires an API key"),
+                absent=("ANTITHESIS_USERNAME", "ANTITHESIS_PASSWORD"),
+                ok=False,
+            ),
+            json_capable=False,
+            env=_doctor_env(
+                api_key=False, username=False, password=False, tenant=False, repo=False
+            ),
+        ),
+        Story(
+            "doctor-legacy-auth",
+            "I only have a legacy username and password",
+            "I authenticate with a username/password and no API key; I want doctor to tell me whether that's enough.",
+            "doctor warns the API key is missing (so `snouty runs` and other API commands won't work), "
+            "flags username/password as legacy auth limited to `snouty launch`/`snouty debug`, and steers "
+            "me toward setting an API key.",
+            ["doctor"],
+            doctor_check(
+                contains=(
+                    "ANTITHESIS_API_KEY is not set",
+                    "ANTITHESIS_USERNAME",
+                    "legacy",
+                    "snouty launch",
+                ),
+            ),
+            json_capable=False,
+            env=_doctor_env(api_key=False, username=True, password=True, tenant=True, repo=True),
+        ),
     ]
     return stories + build_help_stories(d)
 
@@ -1280,7 +1401,7 @@ def write_story(out_dir: Path, story: Story, sr: StoryRun, passed: bool, detail:
 
 def run_story(sn: Snouty, story: Story) -> StoryRun:
     # Help-only stories pass no `args`; don't invoke a bare `snouty`.
-    result = sn.run(story.args) if story.args else Result([], "", "", 0)
+    result = sn.run(story.args, story.env) if story.args else Result([], "", "", 0)
     rows = None
     if story.json_capable and story.args:
         try:

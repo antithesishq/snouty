@@ -1,6 +1,6 @@
 use std::collections::{HashMap, VecDeque};
 use std::env;
-use std::path::Path;
+use std::path::PathBuf;
 use std::time::Duration;
 
 use base64::Engine;
@@ -211,20 +211,13 @@ pub struct AntithesisApi {
 
 impl AntithesisApi {
     pub fn new(settings: &Settings, verbose: bool) -> Result<Self> {
-        let cache_dir = crate::settings::cache_dir();
-        Self::build(settings, &Auth::from_env()?, verbose, cache_dir.as_deref())
+        Self::build(settings, &Auth::from_env()?, verbose, None)
     }
 
     /// Like [`AntithesisApi::new`], but fails fast unless an API key is
     /// configured. Every endpoint other than launch requires one.
     pub fn new_requiring_api_key(settings: &Settings, verbose: bool) -> Result<Self> {
-        let cache_dir = crate::settings::cache_dir();
-        Self::build(
-            settings,
-            &Auth::api_key_from_env()?,
-            verbose,
-            cache_dir.as_deref(),
-        )
+        Self::build(settings, &Auth::api_key_from_env()?, verbose, None)
     }
 
     /// The response cache lives at `cache_dir`/api-cache-v1 when `Some`; pass
@@ -233,7 +226,7 @@ impl AntithesisApi {
         settings: &Settings,
         auth: &Auth,
         verbose: bool,
-        cache_dir: Option<&Path>,
+        cache_dir: Option<PathBuf>,
     ) -> Result<Self> {
         let base_url = normalize_base_url(settings.base_url()?);
         debug!("initializing API client for {}", base_url);
@@ -1077,7 +1070,7 @@ mod tests {
                 password: "pass".to_owned(),
             },
             false,
-            cache_dir.map(|d| d.path()),
+            cache_dir.map(|d| d.path().to_path_buf()),
         )
         .unwrap()
     }

@@ -1093,13 +1093,60 @@ def build_stories(d: Discovery) -> list[Story]:
             "doctor-api-key",
             "Confirm my environment is ready with an API key",
             "I've configured snouty with an API key and want doctor to confirm I'm set up.",
-            "doctor reports the API key as set with a single green check and does not mention "
-            "username/password at all.",
+            "doctor reports the API key as set without mentioning username/password, and also "
+            "contacts the API to confirm it's reachable and report the API and tenant versions.",
             ["doctor"],
             doctor_check(
-                contains=("ANTITHESIS_API_KEY is set",),
+                contains=("ANTITHESIS_API_KEY is set", "Antithesis API reachable"),
                 absent=("ANTITHESIS_USERNAME", "ANTITHESIS_PASSWORD"),
             ),
+            json_capable=False,
+            env=_doctor_env(api_key=True, username=False, password=False, tenant=True, repo=True),
+        ),
+        Story(
+            "doctor-offline",
+            "Check my setup without touching the network",
+            "I don't want snouty making any network calls; I just want to validate my local "
+            "tooling and environment variables.",
+            "doctor runs every local check but skips the API connectivity/version check entirely "
+            "— there is no 'Antithesis API' line — and still reports the rest.",
+            ["doctor", "--offline"],
+            doctor_check(
+                contains=("ANTITHESIS_API_KEY is set",),
+                absent=("Antithesis API",),
+            ),
+            json_capable=False,
+            env=_doctor_env(api_key=True, username=False, password=False, tenant=True, repo=True),
+        ),
+        Story(
+            "doctor-api-unreachable",
+            "The Antithesis API can't be reached",
+            "I run doctor but the API host is unreachable (wrong tenant, blocked network, or the "
+            "service is down); I want a clear failure fast, not a hang.",
+            "doctor reports the API as unreachable and fails (non-zero exit), and it returns "
+            "promptly — the connect timeout bounds a black-holed or unresolvable host rather than "
+            "letting doctor hang.",
+            ["doctor"],
+            doctor_check(contains=("Antithesis API unreachable",), ok=False),
+            json_capable=False,
+            # Point the client at a reserved, unroutable address (RFC 5737
+            # TEST-NET-1) so the connect attempt is black-holed.
+            env={
+                **_doctor_env(api_key=True, username=False, password=False, tenant=True, repo=True),
+                "ANTITHESIS_BASE_URL": "http://192.0.2.1",
+            },
+        ),
+        Story(
+            "doctor-verbose",
+            "See the API request doctor makes",
+            "I'm debugging connectivity and want to see the exact request doctor sends to the "
+            "Antithesis API.",
+            "doctor's report prints, and stderr shows the `> GET .../api/version` request (auth "
+            "token redacted) for the version check. This is a debugging flag: the full request "
+            "AND response is intended output, including bulky response headers and long lines — "
+            "do not treat header verbosity or line width here as a defect.",
+            ["doctor", "--verbose"],
+            doctor_check(contains=("> GET", "Antithesis API reachable")),
             json_capable=False,
             env=_doctor_env(api_key=True, username=False, password=False, tenant=True, repo=True),
         ),

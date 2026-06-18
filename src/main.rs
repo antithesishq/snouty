@@ -103,7 +103,7 @@ async fn run(cli: Cli) -> Result<()> {
             cmd_debug(args, json, verbose).await
         }
         Commands::Validate(args) => validate::cmd_validate(args).await,
-        Commands::Doctor => snouty::doctor::cmd_doctor(json),
+        Commands::Doctor(args) => snouty::doctor::cmd_doctor(json, verbose, args.offline).await,
         Commands::Completions { shell } => cmd_completions(shell),
         Commands::Version => {
             println!("snouty {}", env!("CARGO_PKG_VERSION"));
@@ -142,7 +142,7 @@ fn json_unaware_command_name(command: &Commands) -> Option<&'static str> {
         | Commands::Runs { .. }
         | Commands::Docs { .. }
         | Commands::Debug { .. }
-        | Commands::Doctor => None,
+        | Commands::Doctor(_) => None,
         Commands::Validate(_) => Some("validate"),
         Commands::Completions { .. } => Some("completions"),
         Commands::Version => Some("version"),

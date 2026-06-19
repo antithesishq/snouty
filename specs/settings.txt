@@ -15,37 +15,42 @@
 env XDG_CONFIG_HOME=$WORK/empty-config
 
 # 1. tenant/repository (and the derived base url) come from the project
-#    .snouty.toml in the working directory.
+#    .snouty.toml in the working directory. The source column reads "default"
+#    for top-level config values and "derived" for the tenant-derived base url.
+# The resolved-settings table columns are SETTING, SOURCE, VALUE (in that
+# order), so each assertion reads name, then source, then value.
 ! snouty doctor
-stderr 'tenant: acme.*'
-stderr 'repository: acme/repo.*'
-stderr 'base url: https://acme\.antithesis\.com.*'
+stderr 'tenant.*default.*acme'
+stderr 'repository.*default.*acme/repo'
+stderr 'base url.*derived.*https://acme.antithesis.com'
 
-# 2. A profile selected with --profile overrides the top-level default.
+# 2. A profile selected with --profile overrides the top-level default; the
+#    profile is named in its own row and as the resolved value's source.
 ! snouty --profile staging doctor
-stderr 'tenant: staging-tenant.*'
+stderr 'profile.*staging'
+stderr 'tenant.*staging.*staging-tenant'
 
 # 3. An explicit --settings file is read instead of ./.snouty.toml.
 ! snouty --settings other.toml doctor
-stderr 'tenant: other-tenant.*'
+stderr 'tenant.*default.*other-tenant'
 
 # 4. The --profile flag wins over ANTITHESIS_PROFILE.
 env ANTITHESIS_PROFILE=staging
 ! snouty --profile prod doctor
-stderr 'tenant: prod-tenant.*'
+stderr 'tenant.*prod.*prod-tenant'
 
 # 5. An environment variable overrides everything else (profile prod is still
-#    set, but the env var wins).
+#    set, but the env var wins), and its source reads "env".
 env ANTITHESIS_TENANT=from-env
 ! snouty doctor
-stderr 'tenant: from-env.*'
+stderr 'tenant.*env.*from-env'
 
 # 6. An explicit base url is used verbatim; the container engine is reported.
 env ANTITHESIS_BASE_URL=https://custom.example
 env SNOUTY_CONTAINER_ENGINE=podman
 ! snouty doctor
-stderr 'base url: https://custom\.example.*'
-stderr 'container engine: podman.*'
+stderr 'base url.*env.*https://custom.example'
+stderr 'container engine.*env.*podman'
 
 -- .snouty.toml --
 tenant = "acme"

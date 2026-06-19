@@ -93,6 +93,27 @@ pub(crate) struct LoadedSettings {
     container_engine: Result<Option<String>, SharedReport>,
 }
 
+#[cfg(test)]
+impl LoadedSettings {
+    /// A layer with nothing configured.
+    pub(crate) fn empty() -> Self {
+        Self {
+            tenant: Ok(None),
+            repository: Ok(None),
+            base_url: Ok(None),
+            container_engine: Ok(None),
+        }
+    }
+
+    /// A layer whose only populated field is the tenant.
+    pub(crate) fn for_test_tenant(tenant: &str) -> Self {
+        Self {
+            tenant: Ok(Some(tenant.to_string())),
+            ..Self::empty()
+        }
+    }
+}
+
 #[derive(Debug)]
 pub(crate) struct SettingsFromFile {
     pub(crate) resolved_path: PathBuf,

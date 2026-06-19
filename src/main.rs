@@ -123,7 +123,9 @@ async fn run(cli: Cli) -> Result<()> {
             cmd_debug(args, &settings, json, verbose).await
         }
         Commands::Validate(args) => validate::cmd_validate(args, &settings).await,
-        Commands::Doctor => snouty::doctor::cmd_doctor(&settings),
+        Commands::Doctor(args) => {
+            snouty::doctor::cmd_doctor(&settings, json, verbose, args.offline).await
+        }
     };
 
     suppress_broken_pipe(result)
@@ -154,9 +156,9 @@ fn json_unaware_command_name(command: &Commands) -> Option<&'static str> {
         | Commands::Run(_)
         | Commands::Runs { .. }
         | Commands::Docs { .. }
-        | Commands::Debug { .. } => None,
+        | Commands::Debug { .. }
+        | Commands::Doctor(_) => None,
         Commands::Validate(_) => Some("validate"),
-        Commands::Doctor => Some("doctor"),
         Commands::Completions { .. } => Some("completions"),
         Commands::Version => Some("version"),
         Commands::Update(_) => Some("update"),

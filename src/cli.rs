@@ -171,11 +171,27 @@ Example:
     #[command(long_about = r#"Check environment configuration
 
 Verifies that your environment is properly configured for Antithesis testing.
-Checks container runtime availability and required environment variables.
+Runs health checks — container runtime, docker compose, the ANTITHESIS_*
+environment variables for authentication, and API connectivity — then prints
+the resolved settings (tenant, repository, base url, container engine) with
+where each value came from: an environment variable, a settings profile, or a
+config file.
+
+snouty prefers an API key (full API access); a username and password is legacy
+auth, accepted only by `snouty launch` and `snouty debug`.
+
+When credentials are configured, doctor also contacts the Antithesis API to
+report the API and tenant versions and confirm connectivity. Pass --offline to
+skip that network call.
+
+Exits non-zero if any required check fails. Pass --json for a machine-readable
+report (e.g. to gate CI).
 
 Example:
-  snouty doctor"#)]
-    Doctor,
+  snouty doctor
+  snouty doctor --json
+  snouty doctor --offline"#)]
+    Doctor(DoctorArgs),
 
     /// Print version information
     Version,
@@ -302,6 +318,13 @@ pub struct ValidateArgs {
     /// Leave containers running after validation for manual inspection
     #[arg(long)]
     pub keep_running: bool,
+}
+
+#[derive(Args)]
+pub struct DoctorArgs {
+    /// Skip the network check (don't contact the Antithesis API for versions)
+    #[arg(long)]
+    pub offline: bool,
 }
 
 #[derive(Args)]

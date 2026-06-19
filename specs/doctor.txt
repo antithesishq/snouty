@@ -7,3 +7,76 @@ snouty doctor --help
 stdout '.*Check environment configuration.*'
 stdout '.*container runtime.*'
 stdout '.*environment variables.*'
+stdout '.*--json.*'
+
+# doctor now resolves tenant/repository from config files too, so isolate the
+# global config dir — the test runner forwards HOME, which would otherwise let a
+# real ~/.config/snouty/settings.toml leak in and change the checks below.
+env XDG_CONFIG_HOME=$WORK/empty-config
+
+# With nothing configured, doctor steers the user to an API key only — it must
+# not suggest username/password, which is legacy auth (issue #145). The headline
+# states the bare problem; notes explain it and say where to get a key.
+! snouty doctor
+stderr '.*ANTITHESIS_API_KEY is not set.*'
+stderr '.*requires an API key.*'
+stderr '.*ask Antithesis support.*'
+! stderr '.*ANTITHESIS_USERNAME.*'
+
+# --json emits a structured report on stdout and still exits non-zero when a
+# required credential is missing (so CI can gate on it).
+! snouty doctor --json
+stdout '.*"ok": false.*'
+stdout '.*"name": "api_key".*'
+stdout '.*"status": "error".*'
+stdout '.*"level": "error".*'
+
+# With only username/password set, the missing API key downgrades to a warning
+# and the legacy creds are flagged as launch/debug-only.
+env ANTITHESIS_USERNAME=testuser
+env ANTITHESIS_PASSWORD=testpass
+! snouty doctor
+stderr '.*ANTITHESIS_API_KEY is not set.*'
+stderr '.*legacy.*'
+stderr '.*snouty launch.*'
+
+# --- API connectivity + version check (issue #146) ---
+# Cases that inject a status via mock-server are [!staging]-gated: under
+# SNOUTY_STAGING, mock-server passes through to the real API where fabricated
+# responses don't hold. The --offline and unreachable cases use a controlled
+# local setup and run in both modes. The mock + --offline cases assume a
+# container runtime (CI provisions one); the unreachable case is robust either way.
+
+# 2xx: doctor reports the live API and tenant release versions. The check runs
+# only with an API key (the endpoint rejects basic auth), so set one on top of
+# the basic creds mock-server configures.
+[!staging] mock-server 200 '{"latest_api_version":"v1","release_version":"56.0"}'
+[!staging] env ANTITHESIS_API_KEY=testkey
+[!staging] snouty doctor
+[!staging] stderr '.*Antithesis API reachable.*'
+[!staging] stderr '.*latest API version: v1.*'
+[!staging] stderr '.*tenant release version: 56.0.*'
+
+# 404: an older tenant predating the version endpoint — still reachable and
+# authenticated, so doctor stays green and warns the tenant release is old.
+[!staging] mock-server 404 '{}'
+[!staging] env ANTITHESIS_API_KEY=testkey
+[!staging] snouty doctor
+[!staging] stderr '.*Antithesis API reachable.*'
+[!staging] stderr '.*older than v56.*'
+[!staging] stderr '.*upgrade recommended.*'
+
+# --offline skips the network check entirely: no version line, no API contact.
+env ANTITHESIS_API_KEY=testkey
+env ANTITHESIS_TENANT=testtenant
+snouty doctor --offline
+! stderr '.*Antithesis API.*'
+
+# Connection failure: the check fails (non-zero) with a host-named note (the raw
+# error detail follows it; its exact text is reqwest's and unit-tested instead).
+env ANTITHESIS_API_KEY=testkey
+env ANTITHESIS_TENANT=testtenant
+env ANTITHESIS_BASE_URL=http://127.0.0.1:1
+! snouty doctor
+stderr '.*Antithesis API unreachable.*'
+stderr '.*could not connect to 127.0.0.1.*'

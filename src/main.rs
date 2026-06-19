@@ -94,10 +94,10 @@ async fn run(cli: Cli) -> Result<()> {
         eprintln!("warning: --json has no effect for `snouty {name}`");
     }
 
-    // Settings are resolved lazily, so calling `Settings::new` here incurs a minimal penalty: no disk I/O is triggered
-    // until a method is called. Resolving upfront even though some commands don't use settings in order to avoid
-    // needing to use multiple matches and unreachable!(..) macros
-    let settings = Settings::new(settings_path, profile);
+    // Resolve all settings up front. A broken/unreadable settings file fails
+    // here, cleanly and once, before any command runs — including commands that
+    // don't read settings. That keeps dispatch a single flat match.
+    let settings = Settings::resolve(settings_path, profile)?;
     let result = match command {
         Commands::Completions { shell } => cmd_completions(shell),
         Commands::Version => {

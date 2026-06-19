@@ -1120,7 +1120,7 @@ pub(crate) fn is_podman_in_disguise(cmd: &str) -> bool {
 pub fn runtime(settings: &Settings) -> Result<Box<dyn ContainerRuntime>> {
     // Detection is cached process-wide on first call, so the engine
     // override is read from the settings passed to that first call.
-    if let Ok(Some(engine)) = settings.container_engine() {
+    if let Some(engine) = settings.container_engine() {
         return match engine {
             "podman" => Ok(Box::new(PodmanRuntime::new("podman"))),
             "docker" => Ok(Box::new(DockerRuntime::new("docker"))),

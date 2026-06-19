@@ -5,7 +5,7 @@ use serde::Serialize;
 
 use crate::api::{AntithesisApi, ApiVersion, VersionError};
 use crate::container;
-use crate::settings::{AttributedValue, Settings, SharedReport, ValueSource};
+use crate::settings::{Resolved, Settings, ValueSource};
 
 /// Outcome of a single health check. Only `Error` fails doctor; `Warn` is
 /// surfaced but the run still passes.
@@ -63,7 +63,7 @@ fn print_notes(notes: &[Note]) {
     }
 }
 
-/// One health check: local tooling, configuration validity, authentication, and
+/// One health check: local tooling, settings validity, authentication, and
 /// API connectivity. The headline `message` states the bare fact; the `notes`
 /// carry explanations and how-tos. `name` is a stable machine key for `--json`.
 /// Checks own all of doctor's pass/warn/fail semantics — the settings table is
@@ -164,7 +164,8 @@ fn presence(var: &str, set: bool) -> String {
 }
 
 /// Human-readable source for a resolved setting: `env`, the active profile name
-/// (when it came from a profile), or `default` (a top-level config-file value).
+/// (when it came from a profile), `default` (a top-level settings-file value), or
+/// `derived` (a `base_url` synthesized from the tenant).
 fn source_label(source: &ValueSource, profile: Option<&str>) -> String {
     match source {
         ValueSource::EnvironmentVariable => "env".to_string(),
@@ -172,34 +173,31 @@ fn source_label(source: &ValueSource, profile: Option<&str>) -> String {
             profile.unwrap_or("profile").to_string()
         }
         ValueSource::ProjectDefault | ValueSource::GlobalDefault => "default".to_string(),
+        ValueSource::Derived => "derived".to_string(),
     }
 }
 
 /// The tenant is required by every command, so a missing one fails doctor.
-fn tenant_check(resolved: &Result<Option<AttributedValue<&String>>, SharedReport>) -> Check {
+/// (A broken settings file never reaches here — it fails at startup, before
+/// doctor runs — so the resolved value is simply present or absent.)
+fn tenant_check(resolved: Option<&Resolved>) -> Check {
     match resolved {
-        Ok(Some(_)) => Check::ok("tenant", "tenant is set"),
-        Ok(None) => Check::fail("tenant", "tenant is not set").note(
+        Some(_) => Check::ok("tenant", "tenant is set"),
+        None => Check::fail("tenant", "tenant is not set").note(
             Level::Note,
-            "required by every command — set ANTITHESIS_TENANT or add it to a config file",
+            "set ANTITHESIS_TENANT or add it to a settings file",
         ),
-        Err(err) => Check::fail("tenant", "tenant could not be resolved")
-            .note(Level::Error, err.to_string()),
     }
 }
 
 /// The repository (a container registry) is only needed to build and push a
 /// config image (`snouty launch --config`), so a missing one is a warning, not
 /// a failure — read-only use (`snouty runs`, `snouty debug`) doesn't need it.
-fn repository_check(resolved: &Result<Option<AttributedValue<&String>>, SharedReport>) -> Check {
+fn repository_check(resolved: Option<&Resolved>) -> Check {
     match resolved {
-        Ok(Some(_)) => Check::ok("repository", "repository is set"),
-        Ok(None) => Check::warn("repository", "repository is not set").note(
-            Level::Note,
-            "only needed to build and push a config image (snouty launch --config)",
-        ),
-        Err(err) => Check::fail("repository", "repository could not be resolved")
-            .note(Level::Error, err.to_string()),
+        Some(_) => Check::ok("repository", "repository is set"),
+        None => Check::warn("repository", "repository is not set")
+            .note(Level::Warning, "repository is needed for `snouty launch`"),
     }
 }
 
@@ -209,7 +207,7 @@ fn repository_check(resolved: &Result<Option<AttributedValue<&String>>, SharedRe
 /// key — it only softens the missing-key failure into a warning.
 ///
 /// Authentication is intentionally environment-only: secrets never live in a
-/// config file. Pure over the three booleans so it can be unit-tested without
+/// settings file. Pure over the three booleans so it can be unit-tested without
 /// touching the environment.
 fn auth_checks(api_key: bool, username: bool, password: bool) -> Vec<Check> {
     if api_key {
@@ -235,10 +233,6 @@ fn auth_checks(api_key: bool, username: bool, password: bool) -> Vec<Check> {
             .note(
                 Level::Warning,
                 "legacy authentication method, set ANTITHESIS_API_KEY for full API access",
-            )
-            .note(
-                Level::Note,
-                "only `snouty launch` and `snouty debug` accept it",
             ),
         ];
     }
@@ -256,9 +250,9 @@ fn auth_checks(api_key: bool, username: bool, password: bool) -> Vec<Check> {
     ]
 }
 
-/// Binary health checks: local tooling, config-file validity, the required
-/// configuration (tenant/repository), and authentication. The resolved values
-/// themselves are reported separately by [`resolve_settings`].
+/// Binary health checks: local tooling, the required settings
+/// (tenant/repository), and authentication. The resolved values themselves are
+/// reported separately by [`resolve_settings`].
 fn collect_checks(settings: &Settings) -> Vec<Check> {
     let mut checks: Vec<Check> = Vec::new();
 
@@ -283,36 +277,10 @@ fn collect_checks(settings: &Settings) -> Vec<Check> {
         ),
     }
 
-    // Config files: report the file in use, or flag one that exists but can't be
-    // read or parsed. A missing file is normal (settings can come entirely from
-    // the environment), so it produces no row.
-    match settings.load_project_settings() {
-        Ok(Some(file)) => checks.push(Check::ok(
-            "project_config",
-            format!("project config file: {}", file.resolved_path.display()),
-        )),
-        Ok(None) => {}
-        Err(err) => checks.push(
-            Check::fail("project_config", "project config file could not be read")
-                .note(Level::Error, err.to_string()),
-        ),
-    }
-    match settings.load_global_settings() {
-        Ok(Some(file)) => checks.push(Check::ok(
-            "global_config",
-            format!("global config file: {}", file.resolved_path.display()),
-        )),
-        Ok(None) => {}
-        Err(err) => checks.push(
-            Check::fail("global_config", "global config file could not be read")
-                .note(Level::Error, err.to_string()),
-        ),
-    }
-
-    // Required configuration. tenant is needed by every command; repository is
+    // Required settings. tenant is needed by every command; repository is
     // launch-only, so a missing one is a warning.
-    checks.push(tenant_check(&settings.try_resolve_tenant()));
-    checks.push(repository_check(&settings.try_resolve_repository()));
+    checks.push(tenant_check(settings.tenant_setting()));
+    checks.push(repository_check(settings.repository_setting()));
 
     // Authentication (environment-only by design).
     checks.extend(auth_checks(
@@ -330,47 +298,40 @@ fn collect_checks(settings: &Settings) -> Vec<Check> {
 fn resolve_settings(settings: &Settings) -> Vec<Setting> {
     let profile = settings.settings_profile();
 
-    let resolved = |name: &'static str,
-                    value: Result<Option<AttributedValue<&String>>, SharedReport>|
-     -> Setting {
+    let resolved = |name: &'static str, value: Option<&Resolved>| -> Setting {
         match value {
-            Ok(Some(av)) => Setting::sourced(
+            Some(resolved) => Setting::sourced(
                 name,
-                av.value.clone(),
-                source_label(&av.attribution, profile),
+                resolved.value.clone(),
+                source_label(&resolved.source, profile),
             ),
-            Ok(None) => Setting::plain(name, "not set"),
-            Err(_) => Setting::plain(name, "error"),
+            None => Setting::plain(name, "not set"),
         }
     };
 
     vec![
         // Active profile.
         Setting::plain("profile", profile.unwrap_or("(none)")),
-        resolved("tenant", settings.try_resolve_tenant()),
-        resolved("repository", settings.try_resolve_repository()),
-        // base url: the explicit value if set, otherwise derived from the tenant.
-        match settings.try_resolve_base_url() {
-            Ok(Some(av)) => Setting::sourced(
+        resolved("tenant", settings.tenant_setting()),
+        resolved("repository", settings.repository_setting()),
+        // base url: the explicit value if set, otherwise derived from the tenant
+        // (source `derived`), otherwise absent because no tenant is set.
+        match settings.base_url_setting() {
+            Some(resolved) => Setting::sourced(
                 "base url",
-                av.value.clone(),
-                source_label(&av.attribution, profile),
+                resolved.value.clone(),
+                source_label(&resolved.source, profile),
             ),
-            Ok(None) => match settings.base_url() {
-                Ok(url) => Setting::sourced("base url", url.to_string(), "derived"),
-                Err(_) => Setting::plain("base url", "derives from tenant"),
-            },
-            Err(_) => Setting::plain("base url", "error"),
+            None => Setting::plain("base url", "derives from tenant"),
         },
         // container engine: explicit value, otherwise auto-detected.
-        match settings.try_resolve_container_engine() {
-            Ok(Some(av)) => Setting::sourced(
+        match settings.container_engine_setting() {
+            Some(resolved) => Setting::sourced(
                 "container engine",
-                av.value.clone(),
-                source_label(&av.attribution, profile),
+                resolved.value.clone(),
+                source_label(&resolved.source, profile),
             ),
-            Ok(None) => Setting::plain("container engine", "auto-detect"),
-            Err(_) => Setting::plain("container engine", "error"),
+            None => Setting::plain("container engine", "auto-detect"),
         },
     ]
 }
@@ -562,17 +523,10 @@ mod tests {
                 .any(|n| n.text.contains("ask Antithesis support"))
         );
         assert_eq!(checks[1].status, Status::Ok);
-        assert_eq!(checks[1].notes.len(), 2);
+        assert_eq!(checks[1].notes.len(), 1);
         assert!(checks[1].notes.iter().any(|n| n.level == Level::Warning
             && n.text.contains("legacy authentication method")
             && n.text.contains("ANTITHESIS_API_KEY")));
-        let notes = checks[1]
-            .notes
-            .iter()
-            .map(|n| n.text.as_str())
-            .collect::<Vec<_>>()
-            .join(" ");
-        assert!(notes.contains("snouty launch"));
     }
 
     #[test]
@@ -611,33 +565,36 @@ mod tests {
         }
     }
 
-    // ---- required-configuration checks ---------------------------------
+    // ---- required-settings checks --------------------------------------
 
-    fn attributed(
-        value: &String,
-        attribution: ValueSource,
-    ) -> Result<Option<AttributedValue<&String>>, SharedReport> {
-        Ok(Some(AttributedValue { value, attribution }))
+    fn resolved(value: &str, source: ValueSource) -> Resolved {
+        Resolved {
+            value: value.to_string(),
+            source,
+        }
     }
 
     #[test]
     fn tenant_check_is_ok_when_resolved() {
-        let value = "acme".to_string();
-        let check = tenant_check(&attributed(&value, ValueSource::EnvironmentVariable));
+        let check = tenant_check(Some(&resolved("acme", ValueSource::EnvironmentVariable)));
         assert_eq!(check.status, Status::Ok);
     }
 
     #[test]
     fn tenant_check_fails_when_missing() {
-        let check = tenant_check(&Ok(None));
+        let check = tenant_check(None);
         assert_eq!(check.status, Status::Error);
-        assert!(check.notes.iter().any(|n| n.text.contains("required")));
+        assert!(
+            check
+                .notes
+                .iter()
+                .any(|n| n.text.contains("ANTITHESIS_TENANT"))
+        );
     }
 
     #[test]
     fn repository_check_is_ok_when_resolved() {
-        let value = "acme/repo".to_string();
-        let check = repository_check(&attributed(&value, ValueSource::ProjectDefault));
+        let check = repository_check(Some(&resolved("acme/repo", ValueSource::ProjectDefault)));
         assert_eq!(check.status, Status::Ok);
     }
 
@@ -645,9 +602,9 @@ mod tests {
     fn repository_check_only_warns_when_missing() {
         // Following main's #147 decision: repository is launch-only, so a missing
         // one is a warning, not a failure.
-        let check = repository_check(&Ok(None));
+        let check = repository_check(None);
         assert_eq!(check.status, Status::Warn);
-        assert!(check.notes.iter().any(|n| n.text.contains("--config")));
+        assert!(check.notes.iter().any(|n| n.text.contains("snouty launch")));
     }
 
     // ---- source_label --------------------------------------------------
@@ -665,6 +622,7 @@ mod tests {
         );
         assert_eq!(source_label(&ValueSource::ProjectDefault, None), "default");
         assert_eq!(source_label(&ValueSource::GlobalDefault, None), "default");
+        assert_eq!(source_label(&ValueSource::Derived, None), "derived");
     }
 
     // ---- resolved-settings table (informational, no status) ------------
@@ -675,8 +633,14 @@ mod tests {
 
     #[test]
     fn tenant_row_shows_value_and_source() {
-        let env = crate::settings::LoadedSettings::for_test_tenant("acme");
-        let rows = resolve_settings(&Settings::for_test(env, Ok(None), Ok(None)));
+        let settings = Settings::for_test(
+            None,
+            Some(("acme", ValueSource::EnvironmentVariable)),
+            None,
+            None,
+            None,
+        );
+        let rows = resolve_settings(&settings);
         let tenant = row(&rows, "tenant");
         assert_eq!(tenant.value, "acme");
         assert_eq!(tenant.source.as_deref(), Some("env"));
@@ -684,11 +648,7 @@ mod tests {
 
     #[test]
     fn missing_settings_render_as_not_set_without_a_source() {
-        let rows = resolve_settings(&Settings::for_test(
-            crate::settings::LoadedSettings::empty(),
-            Ok(None),
-            Ok(None),
-        ));
+        let rows = resolve_settings(&Settings::for_test(None, None, None, None, None));
         let tenant = row(&rows, "tenant");
         assert_eq!(tenant.value, "not set");
         assert_eq!(tenant.source, None);
@@ -696,8 +656,14 @@ mod tests {
 
     #[test]
     fn base_url_row_derives_from_tenant_when_unset() {
-        let env = crate::settings::LoadedSettings::for_test_tenant("acme");
-        let rows = resolve_settings(&Settings::for_test(env, Ok(None), Ok(None)));
+        let settings = Settings::for_test(
+            None,
+            Some(("acme", ValueSource::EnvironmentVariable)),
+            None,
+            None,
+            None,
+        );
+        let rows = resolve_settings(&settings);
         let base_url = row(&rows, "base url");
         assert_eq!(base_url.value, "https://acme.antithesis.com");
         assert_eq!(base_url.source.as_deref(), Some("derived"));
@@ -705,8 +671,14 @@ mod tests {
 
     #[test]
     fn container_engine_row_auto_detects_when_unset() {
-        let env = crate::settings::LoadedSettings::for_test_tenant("acme");
-        let rows = resolve_settings(&Settings::for_test(env, Ok(None), Ok(None)));
+        let settings = Settings::for_test(
+            None,
+            Some(("acme", ValueSource::EnvironmentVariable)),
+            None,
+            None,
+            None,
+        );
+        let rows = resolve_settings(&settings);
         let engine = row(&rows, "container engine");
         assert_eq!(engine.value, "auto-detect");
         assert_eq!(engine.source, None);
@@ -714,11 +686,7 @@ mod tests {
 
     #[test]
     fn profile_row_reflects_no_active_profile() {
-        let rows = resolve_settings(&Settings::for_test(
-            crate::settings::LoadedSettings::empty(),
-            Ok(None),
-            Ok(None),
-        ));
+        let rows = resolve_settings(&Settings::for_test(None, None, None, None, None));
         assert_eq!(row(&rows, "profile").value, "(none)");
     }
 

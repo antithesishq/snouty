@@ -175,7 +175,7 @@ Runs health checks — container runtime, docker compose, the ANTITHESIS_*
 environment variables for authentication, and API connectivity — then prints
 the resolved settings (tenant, repository, base url, container engine) with
 where each value came from: an environment variable, a settings profile, or a
-config file.
+settings file.
 
 snouty prefers an API key (full API access); a username and password is legacy
 auth, accepted only by `snouty launch` and `snouty debug`.

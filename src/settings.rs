@@ -1,13 +1,9 @@
 use std::{
-    cell::OnceCell,
-    env,
-    fmt::Display,
-    fs,
+    env, fs,
     path::{Path, PathBuf},
-    sync::Arc,
 };
 
-use color_eyre::eyre::{Report, Result, eyre};
+use color_eyre::eyre::{Result, eyre};
 use toml::Table;
 
 pub const ANTITHESIS_PROFILE_ENV_VAR_NAME: &str = "ANTITHESIS_PROFILE";
@@ -17,24 +13,27 @@ pub const ANTITHESIS_REPOSITORY_VAR_NAME: &str = "ANTITHESIS_REPOSITORY";
 pub const ANTITHESIS_BASE_URL_VAR_NAME: &str = "ANTITHESIS_BASE_URL";
 pub const CONTAINER_ENGINE_VAR_NAME: &str = "SNOUTY_CONTAINER_ENGINE";
 const PROJECT_SETTINGS_FILENAME: &str = ".snouty.toml";
-const GLOBAL_CONFIG_SETTINGS_FILENAME: &str = "settings.toml";
+const GLOBAL_SETTINGS_FILENAME: &str = "settings.toml";
 const PROFILE_KEY: &str = "profile";
 
-fn global_config_dir() -> Option<PathBuf> {
+/// Directory holding the global settings file: `$XDG_CONFIG_HOME/snouty`,
+/// falling back to `$HOME/.config/snouty`. `None` only when neither
+/// `XDG_CONFIG_HOME` nor `HOME` is set (e.g. Windows).
+fn global_settings_dir() -> Option<PathBuf> {
     let base_dir = if let Ok(xdg_config_home) = env::var("XDG_CONFIG_HOME") {
         Some(PathBuf::from(xdg_config_home))
     } else if let Ok(home) = env::var("HOME") {
         Some(PathBuf::from(home).join(".config"))
     } else {
-        None // No global config for Windows users :(
+        None // No global settings for Windows users :(
     };
 
     base_dir.map(|dir| dir.join("snouty"))
 }
 
 pub fn cache_dir() -> Option<PathBuf> {
-    let base_dir = if let Ok(xdg_config_home) = env::var("XDG_CACHE_HOME") {
-        Some(PathBuf::from(xdg_config_home))
+    let base_dir = if let Ok(xdg_cache_home) = env::var("XDG_CACHE_HOME") {
+        Some(PathBuf::from(xdg_cache_home))
     } else if let Ok(home) = env::var("HOME") {
         Some(PathBuf::from(home).join(".cache"))
     } else {
@@ -44,452 +43,346 @@ pub fn cache_dir() -> Option<PathBuf> {
     base_dir.map(|dir| dir.join("snouty"))
 }
 
-#[derive(Debug, Clone)]
-pub(crate) struct SharedReport(Arc<Report>);
-
-impl Display for SharedReport {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        Display::fmt(&*self.0, f)
-    }
-}
-
-impl std::error::Error for SharedReport {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        self.0.chain().nth(1)
-    }
-}
-
-#[cfg(test)]
-impl SharedReport {
-    pub(crate) fn for_test(message: &str) -> Self {
-        SharedReport(Arc::new(eyre!("{message}")))
-    }
-}
-
-#[derive(Debug)]
+/// Where a resolved setting came from, in descending precedence. Reported by
+/// `snouty doctor` so users can see which layer won.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ValueSource {
     EnvironmentVariable,
     ProjectProfile,
     GlobalProfile,
     ProjectDefault,
     GlobalDefault,
+    /// `base_url` synthesized from the tenant (no explicit value was set).
+    Derived,
 }
 
-#[derive(Debug)]
-pub(crate) struct AttributedValue<T> {
-    pub(crate) value: T,
-    pub(crate) attribution: ValueSource,
+/// A setting value together with the layer it was resolved from.
+#[derive(Debug, Clone)]
+pub(crate) struct Resolved {
+    pub(crate) value: String,
+    pub(crate) source: ValueSource,
 }
 
-fn attribute<T>(value: T, attribution: ValueSource) -> AttributedValue<T> {
-    AttributedValue { value, attribution }
-}
-
-#[derive(Debug)]
-pub(crate) struct LoadedSettings {
-    tenant: Result<Option<String>, SharedReport>,
-    repository: Result<Option<String>, SharedReport>,
-    base_url: Result<Option<String>, SharedReport>,
-    container_engine: Result<Option<String>, SharedReport>,
-}
-
-#[cfg(test)]
-impl LoadedSettings {
-    /// A layer with nothing configured.
-    pub(crate) fn empty() -> Self {
-        Self {
-            tenant: Ok(None),
-            repository: Ok(None),
-            base_url: Ok(None),
-            container_engine: Ok(None),
-        }
-    }
-
-    /// A layer whose only populated field is the tenant.
-    pub(crate) fn for_test_tenant(tenant: &str) -> Self {
-        Self {
-            tenant: Ok(Some(tenant.to_string())),
-            ..Self::empty()
-        }
-    }
-}
-
-#[derive(Debug)]
-pub(crate) struct SettingsFromFile {
-    pub(crate) resolved_path: PathBuf,
-    for_profile: Option<LoadedSettings>,
-    defaults: LoadedSettings,
-}
-
+/// snouty's resolved settings.
+///
+/// Everything is resolved eagerly in [`Settings::resolve`]: the environment,
+/// the project settings file (`.snouty.toml`), and the global `settings.toml`
+/// are read once, each setting is resolved through the precedence chain, and
+/// the result is plain owned data. A settings file that exists but can't be read
+/// or parsed is a hard error at construction — so by the time a `Settings`
+/// exists, every value is either resolved (with a known source) or simply
+/// absent. No value is recomputed and nothing fails later, which is what lets
+/// the accessors hand out `&str`/`Option<&str>` instead of cached `Result`s.
+///
+/// Every command shares the same resolved instance (threaded by reference), so a
+/// value resolves identically no matter which code path reads it.
 pub struct Settings {
     profile: Option<String>,
-    project_settings_path: Option<PathBuf>,
-    settings_from_environment: OnceCell<LoadedSettings>,
-    settings_from_project_config: OnceCell<Result<Option<SettingsFromFile>, SharedReport>>,
-    settings_from_global_config: OnceCell<Result<Option<SettingsFromFile>, SharedReport>>,
-    tenant: OnceCell<Result<String, SharedReport>>,
-    repository: OnceCell<Result<String, SharedReport>>,
-    base_url: OnceCell<Result<String, SharedReport>>,
-    container_engine: OnceCell<Result<Option<String>, SharedReport>>,
-}
-
-fn load_environment_variable(key: &str) -> Result<Option<String>, SharedReport> {
-    match env::var(key) {
-        Ok(value) => Ok(if value.is_empty() { None } else { Some(value) }),
-        Err(env::VarError::NotPresent) => Ok(None),
-        Err(env::VarError::NotUnicode(_)) => Err(SharedReport(Arc::new(eyre!(
-            "The value of environment variable [{key}] was not valid unicode"
-        )))),
-    }
-}
-
-fn load_settings_from_toml(
-    contents: String,
-    path: &Path,
-    profile: Option<&str>,
-) -> Result<SettingsFromFile, SharedReport> {
-    match contents.parse::<Table>() {
-        Ok(parsed) => Ok(SettingsFromFile {
-            resolved_path: path.to_path_buf(),
-            for_profile: profile.map(|profile| LoadedSettings {
-                tenant: Ok(try_resolve_from_profile(&parsed, "tenant", profile)),
-                repository: Ok(try_resolve_from_profile(&parsed, "repository", profile)),
-                base_url: Ok(try_resolve_from_profile(&parsed, "base_url", profile)),
-                container_engine: Ok(try_resolve_from_profile(
-                    &parsed,
-                    "container_engine",
-                    profile,
-                )),
-            }),
-            defaults: LoadedSettings {
-                tenant: Ok(try_resolve_from_defaults(&parsed, "tenant")),
-                repository: Ok(try_resolve_from_defaults(&parsed, "repository")),
-                base_url: Ok(try_resolve_from_defaults(&parsed, "base_url")),
-                container_engine: Ok(try_resolve_from_defaults(&parsed, "container_engine")),
-            },
-        }),
-        Err(err) => Err(SharedReport(Arc::new(eyre!(
-            "Config file at {:?} was not valid TOML: {err:#}",
-            path
-        )))),
-    }
-}
-
-fn load_settings_from_config_file(
-    path: &Path,
-    profile: Option<&str>,
-) -> Result<SettingsFromFile, SharedReport> {
-    match fs::read_to_string(path) {
-        Ok(contents) => load_settings_from_toml(contents, path, profile),
-        Err(err) => Err(SharedReport(Arc::new(eyre!(
-            "Config file at {:?} could not be found or failed to be read: {err:#}",
-            path
-        )))),
-    }
-}
-
-fn try_load_file_contents(path: &Path) -> Result<Option<String>, SharedReport> {
-    match fs::read_to_string(path) {
-        Ok(contents) => Ok(Some(contents)),
-        Err(err) => match err.kind() {
-            std::io::ErrorKind::NotFound => Ok(None),
-            _ => Err(SharedReport(Arc::new(eyre!(
-                "File at {:?} could not be read: {err:#}",
-                path
-            )))),
-        },
-    }
-}
-
-fn try_unwrap<F, F1, T>(
-    all_settings: &Result<Option<SettingsFromFile>, SharedReport>,
-    deref_settings: F1,
-    deref_setting: F,
-) -> Result<Option<&T>, SharedReport>
-where
-    F1: Fn(&SettingsFromFile) -> Option<&LoadedSettings>,
-    F: Fn(&LoadedSettings) -> &Result<Option<T>, SharedReport>,
-{
-    match all_settings {
-        Err(err) => Err(err.clone()),
-        Ok(None) => Ok(None),
-        Ok(Some(settings)) => match deref_settings(settings) {
-            None => Ok(None),
-            Some(settings) => match deref_setting(settings) {
-                Err(err) => Err(err.clone()),
-                Ok(None) => Ok(None),
-                Ok(Some(value)) => Ok(Some(value)),
-            },
-        },
-    }
+    tenant: Option<Resolved>,
+    repository: Option<Resolved>,
+    base_url: Option<Resolved>,
+    container_engine: Option<Resolved>,
 }
 
 impl Settings {
-    pub fn new(project_settings_path: Option<PathBuf>, profile: Option<String>) -> Self {
+    /// Resolve settings from the environment, the project settings file, and the
+    /// global `settings.toml`.
+    ///
+    /// The project settings file is located by, in descending precedence:
+    /// `SNOUTY_SETTINGS_PATH`, the `--settings` flag (`project_settings_path`),
+    /// then `./.snouty.toml` in the current working directory. The active profile
+    /// is the `--profile` flag if set, otherwise `ANTITHESIS_PROFILE`.
+    ///
+    /// A settings file that exists but cannot be read or parsed is a hard error,
+    /// as is an explicitly-requested file (via flag or env var) that is missing:
+    /// silently ignoring it would resurface later as a confusing "tenant not
+    /// set". A missing *default* `./.snouty.toml` is fine.
+    pub fn resolve(
+        project_settings_path: Option<PathBuf>,
+        profile: Option<String>,
+    ) -> Result<Self> {
+        // An empty value means "unset", not "a profile named the empty string".
+        let profile = profile
+            .or_else(|| env::var(ANTITHESIS_PROFILE_ENV_VAR_NAME).ok())
+            .filter(|profile| !profile.is_empty());
+
+        let project_settings_path = project_settings_path.or_else(|| {
+            env::var(SNOUTY_SETTINGS_PATH_VAR_NAME)
+                .ok()
+                .map(PathBuf::from)
+        });
+
+        // An explicitly-requested project file must exist; the default
+        // `./.snouty.toml` is optional. (Climbing the directory tree, if ever
+        // wanted, would go here.)
+        let project = match &project_settings_path {
+            Some(path) => load_settings_file(path, true)?,
+            None => load_settings_file(Path::new(PROJECT_SETTINGS_FILENAME), false)?,
+        };
+        let global = match global_settings_dir() {
+            Some(dir) => load_settings_file(&dir.join(GLOBAL_SETTINGS_FILENAME), false)?,
+            None => None,
+        };
+
+        let resolve = |key: &str, env_var: &str| {
+            resolve_value(
+                key,
+                env_var,
+                profile.as_deref(),
+                project.as_ref(),
+                global.as_ref(),
+            )
+        };
+
+        let tenant = resolve("tenant", ANTITHESIS_TENANT_VAR_NAME)?;
+        let repository = resolve("repository", ANTITHESIS_REPOSITORY_VAR_NAME)?;
+        let base_url = resolve("base_url", ANTITHESIS_BASE_URL_VAR_NAME)?;
+        let container_engine = resolve("container_engine", CONTAINER_ENGINE_VAR_NAME)?;
+
+        Ok(Self::assemble(
+            profile,
+            tenant,
+            repository,
+            base_url,
+            container_engine,
+        ))
+    }
+
+    /// Assemble the final `Settings` from already-resolved layers, applying the
+    /// one derived value: `base_url` falls back to a tenant-derived host. Shared
+    /// by [`Settings::resolve`] and the test constructors so the derivation is
+    /// exercised the same way everywhere.
+    fn assemble(
+        profile: Option<String>,
+        tenant: Option<Resolved>,
+        repository: Option<Resolved>,
+        base_url: Option<Resolved>,
+        container_engine: Option<Resolved>,
+    ) -> Self {
+        let base_url = base_url.or_else(|| {
+            tenant.as_ref().map(|tenant| Resolved {
+                value: format!("https://{}.antithesis.com", tenant.value),
+                source: ValueSource::Derived,
+            })
+        });
+
         Self {
-            profile: profile.or_else(|| env::var(ANTITHESIS_PROFILE_ENV_VAR_NAME).ok()),
-            project_settings_path: project_settings_path.or_else(|| {
-                env::var(SNOUTY_SETTINGS_PATH_VAR_NAME)
-                    .ok()
-                    .map(PathBuf::from)
-            }),
-            settings_from_environment: OnceCell::new(),
-            settings_from_project_config: OnceCell::new(),
-            settings_from_global_config: OnceCell::new(),
-            tenant: OnceCell::new(),
-            repository: OnceCell::new(),
-            base_url: OnceCell::new(),
-            container_engine: OnceCell::new(),
+            profile,
+            tenant,
+            repository,
+            base_url,
+            container_engine,
         }
     }
 
     pub fn tenant(&self) -> Result<&str> {
-        self.tenant_with_shared_error()
-            .map_err(|err| Report::new(err.clone()))
-    }
-
-    fn tenant_with_shared_error(&self) -> Result<&str, &SharedReport> {
         self.tenant
-            .get_or_init(|| match self.try_resolve_tenant() {
-                Ok(Some(tenant)) => Ok(tenant.value.clone()),
-                Ok(None) => Err(SharedReport(Arc::new(eyre!(
-                    "Could not resolve Antithesis tenant. Run snouty doctor to debug."
-                )))),
-                Err(err) => Err(SharedReport(Arc::new(eyre!(
-                    "Error reading configuration for [tenant]: {err:#}"
-                )))),
+            .as_ref()
+            .map(|resolved| resolved.value.as_str())
+            .ok_or_else(|| {
+                eyre!("Could not resolve Antithesis tenant. Run snouty doctor to debug.")
             })
-            .as_deref()
-    }
-
-    pub(crate) fn try_resolve_tenant(
-        &self,
-    ) -> Result<Option<AttributedValue<&String>>, SharedReport> {
-        self.try_resolve(|settings| &settings.tenant)
     }
 
     pub fn repository(&self) -> Result<&str> {
         self.repository
-            .get_or_init(|| match self.try_resolve_repository() {
-                Ok(Some(repository)) => Ok(repository.value.clone()),
-                Ok(None) => Err(SharedReport(Arc::new(eyre!(
-                    "Could not resolve Antithesis repository. Run snouty doctor to debug."
-                )))),
-                Err(err) => Err(SharedReport(Arc::new(eyre!(
-                    "Error reading configuration for [repository]: {err:#}"
-                )))),
+            .as_ref()
+            .map(|resolved| resolved.value.as_str())
+            .ok_or_else(|| {
+                eyre!("Could not resolve Antithesis repository. Run snouty doctor to debug.")
             })
-            .as_deref()
-            .map_err(|err| Report::new(err.clone()))
     }
 
-    pub(crate) fn try_resolve_repository(
-        &self,
-    ) -> Result<Option<AttributedValue<&String>>, SharedReport> {
-        self.try_resolve(|settings| &settings.repository)
-    }
-
+    /// The base URL to talk to: an explicit `base_url` if set, otherwise one
+    /// derived from the tenant. Errors with the tenant's diagnostic when neither
+    /// exists (a derived `base_url` is present exactly when the tenant is).
     pub fn base_url(&self) -> Result<&str> {
         self.base_url
-            .get_or_init(|| match &self.try_resolve_base_url() {
-                Ok(Some(ok)) => Ok(ok.value.clone()),
-                Err(err) => Err(err.clone()),
-                Ok(None) => match self.tenant_with_shared_error() {
-                    Ok(tenant) => Ok(format!("https://{}.antithesis.com", tenant)),
-                    Err(err) => Err(err.clone()),
-                },
-            })
-            .as_deref()
-            .map_err(|err| Report::new(err.clone()))
-    }
-
-    pub(crate) fn try_resolve_base_url(
-        &self,
-    ) -> Result<Option<AttributedValue<&String>>, SharedReport> {
-        self.try_resolve(|settings| &settings.base_url)
-    }
-
-    pub fn container_engine(&self) -> Result<Option<&str>> {
-        self.container_engine
-            .get_or_init(|| match self.try_resolve_container_engine() {
-                Ok(Some(container_engine)) => Ok(Some(container_engine.value.clone())),
-                Ok(None) => Ok(None),
-                Err(err) => Err(err),
-            })
             .as_ref()
-            .map(|o| o.as_deref())
-            .map_err(|err| Report::new(err.clone()))
-    }
-
-    pub(crate) fn try_resolve_container_engine(
-        &self,
-    ) -> Result<Option<AttributedValue<&String>>, SharedReport> {
-        self.try_resolve(|settings| &settings.container_engine)
-    }
-
-    fn try_resolve<F, T>(&self, deref_fn: F) -> Result<Option<AttributedValue<&T>>, SharedReport>
-    where
-        F: Fn(&LoadedSettings) -> &Result<Option<T>, SharedReport>,
-    {
-        match deref_fn(self.load_settings_from_env()) {
-            Ok(Some(found)) => Ok(Some(attribute(found, ValueSource::EnvironmentVariable))),
-            Err(err) => Err(err.clone()),
-            // not found on the environment; moving on to project profile settings
-            Ok(None) => match try_unwrap(
-                self.load_project_settings(),
-                |project_settings| project_settings.for_profile.as_ref(),
-                &deref_fn,
-            ) {
-                Ok(Some(found)) => Ok(Some(attribute(found, ValueSource::ProjectProfile))),
-                Err(err) => Err(err.clone()),
-                // Not found in project profile; moving on to global profile
-                Ok(None) => match try_unwrap(
-                    self.load_global_settings(),
-                    |global_settings| global_settings.for_profile.as_ref(),
-                    &deref_fn,
-                ) {
-                    Ok(Some(found)) => Ok(Some(attribute(found, ValueSource::GlobalProfile))),
-                    Err(err) => Err(err.clone()),
-                    // Not found in global profile; moving on to project defaults
-                    Ok(None) => match try_unwrap(
-                        self.load_project_settings(),
-                        |project_settings| Some(&project_settings.defaults),
-                        &deref_fn,
-                    ) {
-                        Ok(Some(found)) => Ok(Some(attribute(found, ValueSource::ProjectDefault))),
-                        Err(err) => Err(err.clone()),
-                        // Not found in project defaults; falling back to global defaults
-                        Ok(None) => match try_unwrap(
-                            self.load_global_settings(),
-                            |global_settings| Some(&global_settings.defaults),
-                            &deref_fn,
-                        ) {
-                            Ok(Some(found)) => {
-                                Ok(Some(attribute(found, ValueSource::GlobalDefault)))
-                            }
-                            Ok(None) => Ok(None),
-                            Err(err) => Err(err.clone()),
-                        },
-                    },
-                },
-            },
-        }
-    }
-
-    fn load_settings_from_env(&self) -> &LoadedSettings {
-        self.settings_from_environment
-            .get_or_init(|| LoadedSettings {
-                tenant: load_environment_variable(ANTITHESIS_TENANT_VAR_NAME),
-                repository: load_environment_variable(ANTITHESIS_REPOSITORY_VAR_NAME),
-                base_url: load_environment_variable(ANTITHESIS_BASE_URL_VAR_NAME),
-                container_engine: load_environment_variable(CONTAINER_ENGINE_VAR_NAME),
+            .map(|resolved| resolved.value.as_str())
+            .ok_or_else(|| {
+                eyre!("Could not resolve Antithesis tenant. Run snouty doctor to debug.")
             })
     }
 
-    pub(crate) fn load_project_settings(&self) -> &Result<Option<SettingsFromFile>, SharedReport> {
-        self.settings_from_project_config.get_or_init(|| {
-            if let Some(project_settings_path) = &self.project_settings_path {
-                return load_settings_from_config_file(
-                    project_settings_path,
-                    self.profile.as_deref(),
-                )
-                .map(Some);
-            }
-
-            // check the current directory. If we want to climb the directory tree in the future, this would be where to do it
-            let default_path = PathBuf::from(PROJECT_SETTINGS_FILENAME);
-            match try_load_file_contents(&default_path) {
-                Ok(Some(contents)) => {
-                    load_settings_from_toml(contents, &default_path, self.profile.as_deref())
-                        .map(Some)
-                }
-                Ok(None) => Ok(None),
-                Err(err) => Err(err),
-            }
-        })
-    }
-
-    pub(crate) fn load_global_settings(&self) -> &Result<Option<SettingsFromFile>, SharedReport> {
-        self.settings_from_global_config.get_or_init(|| {
-            if let Some(config_dir) = global_config_dir() {
-                let path = config_dir.join(GLOBAL_CONFIG_SETTINGS_FILENAME);
-                match try_load_file_contents(&path) {
-                    Ok(Some(contents)) => {
-                        load_settings_from_toml(contents, &path, self.profile.as_deref()).map(Some)
-                    }
-                    Ok(None) => Ok(None),
-                    Err(err) => Err(err),
-                }
-            } else {
-                Ok(None)
-            }
-        })
+    pub fn container_engine(&self) -> Option<&str> {
+        self.container_engine
+            .as_ref()
+            .map(|resolved| resolved.value.as_str())
     }
 
     pub(crate) fn settings_profile(&self) -> Option<&str> {
         self.profile.as_deref()
     }
 
-    /// Build a [`Settings`] with the environment, project, and global config
-    /// layers pre-resolved, so that calls into the resolution chain perform no
-    /// environment or filesystem IO. This keeps tests deterministic and safe to
-    /// run in parallel (the real constructor reads process-global env vars).
-    #[cfg(test)]
-    pub(crate) fn for_test(
-        env: LoadedSettings,
-        project: Result<Option<SettingsFromFile>, SharedReport>,
-        global: Result<Option<SettingsFromFile>, SharedReport>,
-    ) -> Self {
-        Self {
-            profile: None,
-            project_settings_path: None,
-            settings_from_environment: OnceCell::from(env),
-            settings_from_project_config: OnceCell::from(project),
-            settings_from_global_config: OnceCell::from(global),
-            tenant: OnceCell::new(),
-            repository: OnceCell::new(),
-            base_url: OnceCell::new(),
-            container_engine: OnceCell::new(),
-        }
+    pub(crate) fn tenant_setting(&self) -> Option<&Resolved> {
+        self.tenant.as_ref()
     }
 
+    pub(crate) fn repository_setting(&self) -> Option<&Resolved> {
+        self.repository.as_ref()
+    }
+
+    pub(crate) fn base_url_setting(&self) -> Option<&Resolved> {
+        self.base_url.as_ref()
+    }
+
+    pub(crate) fn container_engine_setting(&self) -> Option<&Resolved> {
+        self.container_engine.as_ref()
+    }
+
+    /// Test-only: a `Settings` built from explicit resolved values, with no
+    /// environment or filesystem IO. Each setting is `Some((value, source))`
+    /// when present. `base_url` still derives from the tenant when left `None`.
+    #[cfg(test)]
+    pub(crate) fn for_test(
+        profile: Option<&str>,
+        tenant: Option<(&str, ValueSource)>,
+        repository: Option<(&str, ValueSource)>,
+        base_url: Option<(&str, ValueSource)>,
+        container_engine: Option<(&str, ValueSource)>,
+    ) -> Self {
+        let resolved = |setting: Option<(&str, ValueSource)>| {
+            setting.map(|(value, source)| Resolved {
+                value: value.to_string(),
+                source,
+            })
+        };
+        Self::assemble(
+            profile.map(str::to_string),
+            resolved(tenant),
+            resolved(repository),
+            resolved(base_url),
+            resolved(container_engine),
+        )
+    }
+
+    /// Test-only: a `Settings` with an explicit base URL and everything else
+    /// unset, for driving [`crate::api::AntithesisApi`] against a mock server
+    /// without touching the environment.
     #[cfg(test)]
     pub(crate) fn for_test_base_url(base_url: String) -> Self {
-        let error = SharedReport(Arc::new(eyre!("Shouldn't have read from me!")));
-        Self {
-            profile: None,
-            project_settings_path: None,
-            base_url: OnceCell::from(Ok(base_url)),
-            tenant: OnceCell::from(Err(error.clone())),
-            repository: OnceCell::from(Err(error.clone())),
-            container_engine: OnceCell::from(Err(error.clone())),
-            settings_from_environment: OnceCell::from(LoadedSettings {
-                tenant: Err(error.clone()),
-                repository: Err(error.clone()),
-                base_url: Err(error.clone()),
-                container_engine: Err(error.clone()),
-            }),
-            settings_from_project_config: OnceCell::from(Ok(None)),
-            settings_from_global_config: OnceCell::from(Ok(None)),
-        }
+        Self::for_test(
+            None,
+            None,
+            None,
+            Some((&base_url, ValueSource::EnvironmentVariable)),
+            None,
+        )
     }
 }
 
-fn try_resolve_from_profile(config: &Table, key: &str, profile: &str) -> Option<String> {
-    config
+/// Read an environment variable, treating an exported-but-empty value as unset
+/// (common in CI / wrapper shells, where it would otherwise mask a real
+/// settings-file value). A non-unicode value is an error.
+fn load_env_var(key: &str) -> Result<Option<String>> {
+    match env::var(key) {
+        Ok(value) if value.is_empty() => Ok(None),
+        Ok(value) => Ok(Some(value)),
+        Err(env::VarError::NotPresent) => Ok(None),
+        Err(env::VarError::NotUnicode(_)) => Err(eyre!(
+            "The value of environment variable [{key}] was not valid unicode"
+        )),
+    }
+}
+
+/// Parse settings-file contents into a TOML table, attributing parse errors to
+/// the file's path.
+fn parse_settings(contents: &str, path: &Path) -> Result<Table> {
+    contents
+        .parse::<Table>()
+        .map_err(|err| eyre!("Settings file at {:?} was not valid TOML: {err:#}", path))
+}
+
+/// Load and parse a settings file. `Ok(None)` when the file simply does not
+/// exist and was not explicitly requested; an error when it exists but cannot be
+/// read or parsed, or when an explicitly-`required` file is missing.
+fn load_settings_file(path: &Path, required: bool) -> Result<Option<Table>> {
+    let contents = match fs::read_to_string(path) {
+        Ok(contents) => contents,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound && !required => return Ok(None),
+        Err(err) if required => {
+            return Err(eyre!(
+                "Settings file at {:?} could not be found or failed to be read: {err:#}",
+                path
+            ));
+        }
+        Err(err) => {
+            return Err(eyre!("File at {:?} could not be read: {err:#}", path));
+        }
+    };
+    parse_settings(&contents, path).map(Some)
+}
+
+/// Resolve a single setting with the precedence: environment variable, then the
+/// active profile (project file before global file), then top-level defaults
+/// (project file before global file). The first layer that has the key wins,
+/// and the returned [`Resolved`] records which one it was.
+fn resolve_value(
+    key: &str,
+    env_var: &str,
+    profile: Option<&str>,
+    project: Option<&Table>,
+    global: Option<&Table>,
+) -> Result<Option<Resolved>> {
+    // The environment variable always has highest precedence.
+    if let Some(value) = load_env_var(env_var)? {
+        return Ok(Some(Resolved {
+            value,
+            source: ValueSource::EnvironmentVariable,
+        }));
+    }
+
+    // A named profile is consulted before defaults, project before global.
+    if let Some(profile) = profile {
+        if let Some(value) = project.and_then(|table| profile_value(table, profile, key)) {
+            return Ok(Some(Resolved {
+                value,
+                source: ValueSource::ProjectProfile,
+            }));
+        }
+        if let Some(value) = global.and_then(|table| profile_value(table, profile, key)) {
+            return Ok(Some(Resolved {
+                value,
+                source: ValueSource::GlobalProfile,
+            }));
+        }
+    }
+
+    // Finally fall back to top-level defaults, project before global.
+    if let Some(value) = project.and_then(|table| default_value(table, key)) {
+        return Ok(Some(Resolved {
+            value,
+            source: ValueSource::ProjectDefault,
+        }));
+    }
+    if let Some(value) = global.and_then(|table| default_value(table, key)) {
+        return Ok(Some(Resolved {
+            value,
+            source: ValueSource::GlobalDefault,
+        }));
+    }
+
+    Ok(None)
+}
+
+/// A `[profile.<name>]` value: `profile.<profile>.<key>`.
+fn profile_value(table: &Table, profile: &str, key: &str) -> Option<String> {
+    table
         .get(PROFILE_KEY)
         .and_then(|profiles| profiles.as_table())
-        .and_then(|profiles_table| profiles_table.get(profile))
-        .and_then(|profile_value| profile_value.as_table())
-        .and_then(|profile_table| profile_table.get(key))
-        .and_then(|profile_tenant| profile_tenant.as_str())
+        .and_then(|profiles| profiles.get(profile))
+        .and_then(|profile| profile.as_table())
+        .and_then(|profile| profile.get(key))
+        .and_then(|value| value.as_str())
         .map(|value| value.to_string())
 }
 
-fn try_resolve_from_defaults(config: &Table, key: &str) -> Option<String> {
-    config
+/// A top-level default value: `<key>`.
+fn default_value(table: &Table, key: &str) -> Option<String> {
+    table
         .get(key)
-        .and_then(|profile_tenant| profile_tenant.as_str())
+        .and_then(|value| value.as_str())
         .map(|value| value.to_string())
 }
 
@@ -497,265 +390,202 @@ fn try_resolve_from_defaults(config: &Table, key: &str) -> Option<String> {
 mod tests {
     use super::*;
 
-    /// A `LoadedSettings` with every field resolved to `Ok(None)`, i.e. nothing
-    /// configured in this layer.
-    fn empty_layer() -> LoadedSettings {
-        LoadedSettings {
-            tenant: Ok(None),
-            repository: Ok(None),
-            base_url: Ok(None),
-            container_engine: Ok(None),
-        }
+    /// An env var name guaranteed not to be set, so `resolve_value` exercises
+    /// the file layers deterministically under parallel execution (the
+    /// environment-wins case is covered end-to-end by `specs/settings.txt`).
+    const UNSET_ENV: &str = "SNOUTY_DEFINITELY_NOT_SET_ENV_VAR_98f3a";
+
+    fn settings_file(contents: &str) -> Table {
+        contents.parse().expect("test TOML should parse")
     }
 
-    /// A `LoadedSettings` whose `tenant` is the only populated field.
-    fn env_tenant(tenant: Option<&str>) -> LoadedSettings {
-        LoadedSettings {
-            tenant: Ok(tenant.map(str::to_string)),
-            ..empty_layer()
-        }
+    fn resolved(value: Option<Resolved>) -> Option<(String, ValueSource)> {
+        value.map(|resolved| (resolved.value, resolved.source))
     }
 
-    /// Parse TOML into a `SettingsFromFile` the same way the real loader does.
-    fn file(contents: &str, profile: Option<&str>) -> SettingsFromFile {
-        load_settings_from_toml(
-            contents.to_string(),
-            Path::new("/test/.snouty.toml"),
-            profile,
-        )
-        .expect("test TOML should parse")
+    fn resolve_tenant(
+        profile: Option<&str>,
+        project: Option<&Table>,
+        global: Option<&Table>,
+    ) -> Option<(String, ValueSource)> {
+        resolved(resolve_value("tenant", UNSET_ENV, profile, project, global).unwrap())
     }
 
-    fn source_name(source: &ValueSource) -> &'static str {
-        match source {
-            ValueSource::EnvironmentVariable => "env",
-            ValueSource::ProjectProfile => "project-profile",
-            ValueSource::GlobalProfile => "global-profile",
-            ValueSource::ProjectDefault => "project-default",
-            ValueSource::GlobalDefault => "global-default",
-        }
-    }
-
-    // ---- load_environment_variable -------------------------------------
+    // ---- load_env_var --------------------------------------------------
 
     #[test]
     fn missing_environment_variable_resolves_to_none() {
-        // A variable that is guaranteed not to be set; this is a read-only
-        // check, so it stays deterministic under parallel execution.
-        let result = load_environment_variable("SNOUTY_DEFINITELY_NOT_SET_98f3a");
-        assert!(matches!(result, Ok(None)));
+        assert!(matches!(load_env_var(UNSET_ENV), Ok(None)));
     }
 
-    // ---- load_settings_from_toml ---------------------------------------
+    // ---- parse_settings ------------------------------------------------
 
     #[test]
     fn invalid_toml_is_reported_with_path() {
-        let err = load_settings_from_toml(
-            "this is = = not toml".to_string(),
-            Path::new("/some/.snouty.toml"),
-            None,
-        )
-        .unwrap_err();
+        let err =
+            parse_settings("this is = = not toml", Path::new("/some/.snouty.toml")).unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("not valid TOML"), "unexpected error: {msg}");
         assert!(msg.contains(".snouty.toml"), "unexpected error: {msg}");
     }
 
+    // ---- load_settings_file (filesystem) -------------------------------
+
     #[test]
-    fn valid_toml_with_no_profile_has_no_profile_layer() {
-        let settings = file("tenant = \"acme\"\n", None);
-        assert!(settings.for_profile.is_none());
-        assert_eq!(
-            settings.defaults.tenant.as_ref().unwrap().as_deref(),
-            Some("acme")
-        );
+    fn missing_default_file_is_ok() {
+        let result = load_settings_file(Path::new("/no/such/.snouty.toml"), false).unwrap();
+        assert!(result.is_none());
     }
 
-    // ---- try_resolve_from_profile / try_resolve_from_defaults ----------
+    #[test]
+    fn missing_required_file_is_an_error() {
+        let err = load_settings_file(Path::new("/no/such/.snouty.toml"), true).unwrap_err();
+        assert!(err.to_string().contains("could not be found"));
+    }
+
+    // ---- profile_value / default_value ---------------------------------
 
     #[test]
-    fn resolve_from_profile_reads_nested_table() {
+    fn profile_value_reads_nested_table() {
         let table: Table = "[profile.staging]\ntenant = \"staging-tenant\"\n"
             .parse()
             .unwrap();
         assert_eq!(
-            try_resolve_from_profile(&table, "tenant", "staging").as_deref(),
+            profile_value(&table, "staging", "tenant").as_deref(),
             Some("staging-tenant")
         );
         // missing profile and missing key both resolve to None
-        assert_eq!(try_resolve_from_profile(&table, "tenant", "prod"), None);
-        assert_eq!(
-            try_resolve_from_profile(&table, "repository", "staging"),
-            None
-        );
+        assert_eq!(profile_value(&table, "prod", "tenant"), None);
+        assert_eq!(profile_value(&table, "staging", "repository"), None);
     }
 
     #[test]
-    fn resolve_from_defaults_reads_top_level_key() {
+    fn default_value_reads_top_level_key() {
         let table: Table = "tenant = \"acme\"\n".parse().unwrap();
-        assert_eq!(
-            try_resolve_from_defaults(&table, "tenant").as_deref(),
-            Some("acme")
-        );
-        assert_eq!(try_resolve_from_defaults(&table, "missing"), None);
+        assert_eq!(default_value(&table, "tenant").as_deref(), Some("acme"));
+        assert_eq!(default_value(&table, "missing"), None);
     }
 
-    // ---- try_resolve precedence ----------------------------------------
-
-    fn resolved_tenant(settings: &Settings) -> Option<(String, &'static str)> {
-        settings.try_resolve_tenant().unwrap().map(|attributed| {
-            (
-                attributed.value.clone(),
-                source_name(&attributed.attribution),
-            )
-        })
-    }
+    // ---- resolve_value precedence --------------------------------------
 
     #[test]
-    fn environment_variable_wins_over_everything() {
-        let settings = Settings::for_test(
-            env_tenant(Some("env-tenant")),
-            Ok(Some(file("tenant = \"proj-default\"\n", None))),
-            Ok(Some(file("tenant = \"global-default\"\n", None))),
-        );
-        assert_eq!(
-            resolved_tenant(&settings),
-            Some(("env-tenant".to_string(), "env"))
-        );
-    }
-
-    #[test]
-    fn project_profile_beats_global_profile_and_defaults() {
-        let project = file(
-            "tenant = \"proj-default\"\n[profile.p]\ntenant = \"proj-profile\"\n",
-            Some("p"),
-        );
-        let global = file(
+    fn project_profile_beats_global_profile_and_all_defaults() {
+        let project =
+            settings_file("tenant = \"proj-default\"\n[profile.p]\ntenant = \"proj-profile\"\n");
+        let global = settings_file(
             "tenant = \"global-default\"\n[profile.p]\ntenant = \"global-profile\"\n",
-            Some("p"),
         );
-        let settings = Settings::for_test(empty_layer(), Ok(Some(project)), Ok(Some(global)));
         assert_eq!(
-            resolved_tenant(&settings),
-            Some(("proj-profile".to_string(), "project-profile"))
+            resolve_tenant(Some("p"), Some(&project), Some(&global)),
+            Some(("proj-profile".to_string(), ValueSource::ProjectProfile))
         );
     }
 
     #[test]
     fn global_profile_beats_project_default() {
-        // Project has only a default; global has a matching profile. The global
-        // profile is higher priority than the project default.
-        let project = file("tenant = \"proj-default\"\n", None);
-        let global = file("[profile.p]\ntenant = \"global-profile\"\n", Some("p"));
-        let settings = Settings::for_test(empty_layer(), Ok(Some(project)), Ok(Some(global)));
+        let project = settings_file("tenant = \"proj-default\"\n");
+        let global = settings_file("[profile.p]\ntenant = \"global-profile\"\n");
         assert_eq!(
-            resolved_tenant(&settings),
-            Some(("global-profile".to_string(), "global-profile"))
+            resolve_tenant(Some("p"), Some(&project), Some(&global)),
+            Some(("global-profile".to_string(), ValueSource::GlobalProfile))
         );
     }
 
     #[test]
     fn project_default_beats_global_default() {
-        let project = file("tenant = \"proj-default\"\n", None);
-        let global = file("tenant = \"global-default\"\n", None);
-        let settings = Settings::for_test(empty_layer(), Ok(Some(project)), Ok(Some(global)));
+        let project = settings_file("tenant = \"proj-default\"\n");
+        let global = settings_file("tenant = \"global-default\"\n");
         assert_eq!(
-            resolved_tenant(&settings),
-            Some(("proj-default".to_string(), "project-default"))
+            resolve_tenant(None, Some(&project), Some(&global)),
+            Some(("proj-default".to_string(), ValueSource::ProjectDefault))
         );
     }
 
     #[test]
     fn global_default_is_the_last_resort() {
-        let global = file("tenant = \"global-default\"\n", None);
-        let settings = Settings::for_test(empty_layer(), Ok(None), Ok(Some(global)));
+        let global = settings_file("tenant = \"global-default\"\n");
         assert_eq!(
-            resolved_tenant(&settings),
-            Some(("global-default".to_string(), "global-default"))
+            resolve_tenant(None, None, Some(&global)),
+            Some(("global-default".to_string(), ValueSource::GlobalDefault))
         );
     }
 
     #[test]
-    fn nothing_configured_resolves_to_none() {
-        let settings = Settings::for_test(empty_layer(), Ok(None), Ok(None));
-        assert!(resolved_tenant(&settings).is_none());
+    fn nothing_set_resolves_to_none() {
+        assert!(resolve_tenant(None, None, None).is_none());
     }
 
     #[test]
-    fn environment_error_propagates() {
-        let env = LoadedSettings {
-            tenant: Err(SharedReport::for_test("bad env")),
-            ..empty_layer()
-        };
-        let settings = Settings::for_test(env, Ok(None), Ok(None));
-        let err = settings.try_resolve_tenant().unwrap_err();
-        assert!(err.to_string().contains("bad env"));
-    }
-
-    #[test]
-    fn project_file_error_propagates() {
-        let settings = Settings::for_test(
-            empty_layer(),
-            Err(SharedReport::for_test("bad file")),
-            Ok(None),
+    fn an_unselected_profile_falls_back_to_defaults() {
+        // No `--profile`, so a `[profile.p]` value is ignored in favor of the
+        // top-level default.
+        let project =
+            settings_file("tenant = \"proj-default\"\n[profile.p]\ntenant = \"proj-profile\"\n");
+        assert_eq!(
+            resolve_tenant(None, Some(&project), None),
+            Some(("proj-default".to_string(), ValueSource::ProjectDefault))
         );
-        let err = settings.try_resolve_tenant().unwrap_err();
-        assert!(err.to_string().contains("bad file"));
     }
 
-    // ---- public accessors ----------------------------------------------
+    // ---- accessors -----------------------------------------------------
 
     #[test]
     fn tenant_accessor_errors_point_at_doctor() {
-        let settings = Settings::for_test(empty_layer(), Ok(None), Ok(None));
+        let settings = Settings::for_test(None, None, None, None, None);
         let err = settings.tenant().unwrap_err();
         assert!(err.to_string().contains("snouty doctor"));
     }
 
     #[test]
     fn base_url_falls_back_to_tenant_host() {
-        let settings = Settings::for_test(env_tenant(Some("acme")), Ok(None), Ok(None));
+        let settings = Settings::for_test(
+            None,
+            Some(("acme", ValueSource::EnvironmentVariable)),
+            None,
+            None,
+            None,
+        );
         assert_eq!(settings.base_url().unwrap(), "https://acme.antithesis.com");
+        // The derived value is attributed as derived for doctor.
+        assert_eq!(
+            settings.base_url_setting().map(|r| r.source),
+            Some(ValueSource::Derived)
+        );
     }
 
     #[test]
     fn explicit_base_url_overrides_tenant_host() {
-        let env = LoadedSettings {
-            tenant: Ok(Some("acme".to_string())),
-            base_url: Ok(Some("https://example.test".to_string())),
-            ..empty_layer()
-        };
-        let settings = Settings::for_test(env, Ok(None), Ok(None));
+        let settings = Settings::for_test(
+            None,
+            Some(("acme", ValueSource::EnvironmentVariable)),
+            None,
+            Some(("https://example.test", ValueSource::EnvironmentVariable)),
+            None,
+        );
         assert_eq!(settings.base_url().unwrap(), "https://example.test");
     }
 
     #[test]
     fn base_url_without_tenant_is_an_error() {
-        let settings = Settings::for_test(empty_layer(), Ok(None), Ok(None));
+        let settings = Settings::for_test(None, None, None, None, None);
         assert!(settings.base_url().is_err());
     }
 
     #[test]
     fn container_engine_absent_resolves_to_none() {
-        let settings = Settings::for_test(empty_layer(), Ok(None), Ok(None));
-        assert_eq!(settings.container_engine().unwrap(), None);
+        let settings = Settings::for_test(None, None, None, None, None);
+        assert_eq!(settings.container_engine(), None);
     }
 
     #[test]
-    fn container_engine_resolves_from_environment() {
-        let env = LoadedSettings {
-            container_engine: Ok(Some("podman".to_string())),
-            ..empty_layer()
-        };
-        let settings = Settings::for_test(env, Ok(None), Ok(None));
-        assert_eq!(settings.container_engine().unwrap(), Some("podman"));
-    }
-
-    // ---- SharedReport --------------------------------------------------
-
-    #[test]
-    fn shared_report_displays_underlying_message() {
-        let report = SharedReport::for_test("something broke");
-        assert_eq!(report.to_string(), "something broke");
+    fn container_engine_resolves_when_set() {
+        let settings = Settings::for_test(
+            None,
+            None,
+            None,
+            None,
+            Some(("podman", ValueSource::EnvironmentVariable)),
+        );
+        assert_eq!(settings.container_engine(), Some("podman"));
     }
 }

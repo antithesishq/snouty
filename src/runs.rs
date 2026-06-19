@@ -438,7 +438,7 @@ async fn cmd_runs_properties(
             outln!("{}", serde_json::to_string(property)?)?;
         }
     } else if properties.is_empty() {
-        outln!("{}", no_properties_message(&filter))?;
+        outln!("{}", explain_empty_properties(&api, run_id, &filter).await)?;
     } else if detail {
         outln!("{}", render_properties_detail(&properties))?;
     } else {
@@ -467,6 +467,28 @@ fn no_properties_message(filter: &PropertyFilter) -> String {
     } else {
         format!("No properties match ({}).", parts.join(", "))
     }
+}
+
+/// The message for an empty (non-JSON) properties result. A *filtered* empty is
+/// genuinely "nothing matched"; an *unfiltered* empty often just means the run
+/// is incomplete (no triage report yet), so probe the run to say so rather than
+/// implying no properties exist.
+async fn explain_empty_properties(
+    api: &AntithesisApi,
+    run_id: &str,
+    filter: &PropertyFilter<'_>,
+) -> String {
+    let unfiltered = filter.status.is_none() && filter.name.is_none() && filter.group.is_none();
+    if unfiltered
+        && let RunProbe::Exists(run) = probe_run(api, run_id).await
+        && run.status != RunStatus::Completed
+    {
+        return format!(
+            "No properties found — this run is {}; properties are generated when a run completes.",
+            status_label(run.status)
+        );
+    }
+    no_properties_message(filter)
 }
 
 /// Outcome of probing a run-scoped 404 with `get_run`: does the run itself not
@@ -565,7 +587,11 @@ async fn explain_properties_error(
                     status_label(run.status)
                 ))
                 .note(format!("inspect the run with `snouty runs show {run_id}`"));
-            match run.failure_moment.as_ref() {
+            match run
+                .failure_moment
+                .as_ref()
+                .filter(|m| m.input_hash != "0" || m.vtime != "0")
+            {
                 Some(moment) => report.note(format!(
                     "view logs at the failure with `snouty runs logs {run_id} {} {}`",
                     moment.input_hash, moment.vtime
@@ -1037,8 +1063,14 @@ fn render_properties_table(properties: &[Property]) -> String {
 
 fn print_run_detail(run: &RunDetail) -> Result<()> {
     // Bound once and reused for both the Failure Hash/VTime rows and the deferred
-    // "view logs" hint below, so the two can't drift apart.
-    let failure = run.failure_moment.as_ref();
+    // "view logs" hint below, so the two can't drift apart. A run that ended
+    // without a recorded failure reports a placeholder 0/0 moment — that's not a
+    // real point to inspect, so treat it as "no moment" and surface neither the
+    // rows nor the hint (which would otherwise point at empty logs).
+    let failure = run
+        .failure_moment
+        .as_ref()
+        .filter(|m| m.input_hash != "0" || m.vtime != "0");
     let mut rows: Vec<(&str, String)> = Vec::new();
 
     // Lead with the identifier; the human labels follow.
@@ -1409,11 +1441,13 @@ async fn cmd_runs_logs(
     };
 
     let mut stdout = BufWriter::new(std::io::stdout().lock());
+    let mut wrote_any = false;
     let result = if json {
         // Fault annotation is the default; `--raw` opts out into a verbatim
         // NDJSON passthrough.
         if raw {
             stream_ndjson_lines(stream, NoOpTransformer {}, |line| {
+                wrote_any = true;
                 writeln!(stdout, "{line}")?;
                 Ok(())
             })
@@ -1426,6 +1460,7 @@ async fn cmd_runs_logs(
                     active_faults: json!({}),
                 },
                 |line| {
+                    wrote_any = true;
                     writeln!(stdout, "{line}")?;
                     Ok(())
                 },
@@ -1434,6 +1469,7 @@ async fn cmd_runs_logs(
         }
     } else {
         stream_ndjson_lines(stream, NoOpTransformer {}, |line| {
+            wrote_any = true;
             if let Ok(entry) = serde_json::from_str::<Value>(line) {
                 writeln!(stdout, "{}", format_log_entry(&entry, raw))?;
             } else {
@@ -1444,6 +1480,12 @@ async fn cmd_runs_logs(
         .await
     };
     stdout.flush()?;
+    // A moment with no logs (e.g. an incomplete run's placeholder 0/0 moment)
+    // yields an empty stream; say so in human mode rather than printing nothing.
+    // In --json mode an empty stream is the correct machine answer, so stay quiet.
+    if result.is_ok() && !json && !wrote_any {
+        eprintln!("No log lines at this moment.");
+    }
     result
 }
 

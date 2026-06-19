@@ -7,3 +7,30 @@ snouty doctor --help
 stdout '.*Check environment configuration.*'
 stdout '.*container runtime.*'
 stdout '.*environment variables.*'
+stdout '.*--json.*'
+
+# With nothing configured, doctor steers the user to an API key only — it must
+# not suggest username/password, which is legacy auth (issue #145). The headline
+# states the bare problem; notes explain it and say where to get a key.
+! snouty doctor
+stderr '.*ANTITHESIS_API_KEY is not set.*'
+stderr '.*requires an API key.*'
+stderr '.*ask Antithesis support.*'
+! stderr '.*ANTITHESIS_USERNAME.*'
+
+# --json emits a structured report on stdout and still exits non-zero when a
+# required credential is missing (so CI can gate on it).
+! snouty doctor --json
+stdout '.*"ok": false.*'
+stdout '.*"name": "api_key".*'
+stdout '.*"status": "error".*'
+stdout '.*"level": "error".*'
+
+# With only username/password set, the missing API key downgrades to a warning
+# and the legacy creds are flagged as launch/debug-only.
+env ANTITHESIS_USERNAME=testuser
+env ANTITHESIS_PASSWORD=testpass
+! snouty doctor
+stderr '.*ANTITHESIS_API_KEY is not set.*'
+stderr '.*legacy.*'
+stderr '.*snouty launch.*'

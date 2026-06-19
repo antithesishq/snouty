@@ -28,6 +28,23 @@ pub use generated::types::{
 };
 pub use progenitor_client::ByteStream;
 
+/// API and tenant release version, from `GET /api/version`.
+#[derive(Debug, Clone)]
+pub struct ApiVersion {
+    pub latest_api_version: String,
+    pub release_version: String,
+}
+
+/// Why a `/api/version` probe failed, classified for `snouty doctor`.
+#[derive(Debug)]
+pub enum VersionError {
+    /// The server replied with a non-success HTTP status (e.g. 404 when the
+    /// endpoint is missing on an older backend, or 401/403 when auth is rejected).
+    Http(u16),
+    /// The API could not be reached at all (DNS, connection, TLS, timeout).
+    Unreachable(String),
+}
+
 fn params_test_name(params: Option<&RunParams>) -> Option<&str> {
     params.and_then(|p| p.extra.get("antithesis.test_name").map(String::as_str))
 }
@@ -116,6 +133,12 @@ fn normalize_property(property: Property) -> Result<Property> {
 }
 
 const CLIENT_TIMEOUT_SECS: u64 = 60;
+
+/// Aggressive connect-phase cap (DNS + TCP + TLS). The `/api/version` probe in
+/// `snouty doctor` is expected to be fast, and no command should hang on a
+/// black-holed or unresolvable host; this bounds connection setup without
+/// limiting long streaming responses (governed by the total timeout above).
+const CONNECT_TIMEOUT_SECS: u64 = 5;
 
 fn required_env(name: &'static str) -> Result<String> {
     env::var(name).map_err(|e| match e {
@@ -308,6 +331,15 @@ impl AntithesisApi {
         &self.base_url
     }
 
+    /// The host of the configured base URL (no scheme, port, or path), for
+    /// user-facing messages. Falls back to the full base URL if it won't parse.
+    pub fn host(&self) -> String {
+        reqwest::Url::parse(&self.base_url)
+            .ok()
+            .and_then(|url| url.host_str().map(str::to_string))
+            .unwrap_or_else(|| self.base_url.clone())
+    }
+
     pub async fn launch_test(&self, launcher: &str, params: &Params) -> Result<LaunchResponse> {
         let body = launch_request(params)?;
         let result = self
@@ -385,6 +417,29 @@ impl AntithesisApi {
         match self.client.get_run().run_id(run_id).send().await {
             Ok(response) => Ok(response.into_inner()),
             Err(err) => Err(format_api_client_error(err).await),
+        }
+    }
+
+    /// Probe `GET /api/version` for the API and tenant release versions. The
+    /// endpoint is unauthenticated, so a success doubles as proof the API is
+    /// reachable; `snouty doctor` uses it as a connectivity check. Errors are
+    /// classified (HTTP status vs unreachable) rather than rendered, so the
+    /// caller can decide how to present each case.
+    pub async fn get_version(&self) -> std::result::Result<ApiVersion, VersionError> {
+        // The connect-phase timeout on the client (CONNECT_TIMEOUT_SECS) keeps a
+        // black-holed or unresolvable host from hanging this probe.
+        match self.client.get_version().send().await {
+            Ok(response) => {
+                let v = response.into_inner();
+                Ok(ApiVersion {
+                    latest_api_version: v.latest_api_version,
+                    release_version: v.release_version,
+                })
+            }
+            Err(err) => Err(match err.status() {
+                Some(code) => VersionError::Http(code.as_u16()),
+                None => VersionError::Unreachable(err.to_string()),
+            }),
         }
     }
 
@@ -749,6 +804,7 @@ fn build_http_client(default_headers: reqwest::header::HeaderMap) -> Result<Clie
     Client::builder()
         .default_headers(default_headers)
         .timeout(Duration::from_secs(CLIENT_TIMEOUT_SECS))
+        .connect_timeout(Duration::from_secs(CONNECT_TIMEOUT_SECS))
         .build()
         .wrap_err("failed to build API client")
 }

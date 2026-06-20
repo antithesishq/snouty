@@ -6,9 +6,11 @@ pub mod config;
 pub mod container;
 pub mod docs;
 pub mod doctor;
+pub(crate) mod env;
 pub mod error;
 pub mod moment;
 pub mod params;
+pub(crate) mod render;
 pub mod runs;
 pub mod scripts;
 #[doc(hidden)]

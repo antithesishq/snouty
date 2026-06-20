@@ -1,10 +1,10 @@
-use std::env;
-
 use color_eyre::eyre::Result;
 use serde::Serialize;
 
 use crate::api::{AntithesisApi, ApiVersion, VersionError};
 use crate::container;
+use crate::env;
+use crate::render::render_kv;
 use crate::settings::Settings;
 
 /// Outcome of a single health check. Only `Error` fails doctor; `Warn` is
@@ -142,8 +142,11 @@ struct Report<'a> {
     settings: &'a [Setting],
 }
 
+/// Whether an auth env var is set (empty counts as unset, matching how the rest
+/// of snouty reads the environment — see [`crate::env::var`]). A non-Unicode
+/// value is reported as not set here rather than failing the whole report.
 fn env_set(name: &str) -> bool {
-    env::var(name).is_ok_and(|v| !v.is_empty())
+    matches!(env::var(name), Ok(Some(_)))
 }
 
 fn presence(var: &str, set: bool) -> String {
@@ -256,8 +259,8 @@ fn collect_checks(settings: &Settings) -> Vec<Check> {
 
     // Required settings. tenant is needed by every command; repository is
     // launch-only, so a missing one is a warning.
-    checks.push(tenant_check(settings.tenant_setting()));
-    checks.push(repository_check(settings.repository_setting()));
+    checks.push(tenant_check(settings.tenant()));
+    checks.push(repository_check(settings.repository()));
 
     // Authentication (environment-only by design).
     checks.extend(auth_checks(
@@ -274,12 +277,9 @@ fn collect_checks(settings: &Settings) -> Vec<Check> {
 /// informational — required/optional semantics are reported by [`collect_checks`].
 fn resolve_settings(settings: &Settings) -> Vec<Setting> {
     vec![
-        Setting::new("profile", settings.settings_profile().unwrap_or("(none)")),
-        Setting::new("tenant", settings.tenant_setting().unwrap_or("not set")),
-        Setting::new(
-            "repository",
-            settings.repository_setting().unwrap_or("not set"),
-        ),
+        Setting::new("profile", settings.profile().unwrap_or("(none)")),
+        Setting::new("tenant", settings.tenant().unwrap_or("not set")),
+        Setting::new("repository", settings.repository().unwrap_or("not set")),
         // The explicit override, otherwise auto-detected.
         Setting::new(
             "container engine",
@@ -288,20 +288,14 @@ fn resolve_settings(settings: &Settings) -> Vec<Setting> {
     ]
 }
 
-/// Print the resolved-settings table with `SETTING / VALUE` headers, columns
-/// aligned. No status icons — the checks above own pass/warn/fail; this table
-/// just reports what snouty resolved. The value is last (and unpadded) so long
-/// values don't push the layout around.
+/// Print the resolved-settings table, aligned via the shared [`render_kv`] helper
+/// (which also sanitizes the values). No status icons — the checks above own
+/// pass/warn/fail; this table just reports what snouty resolved, indented to sit
+/// under the "Resolved settings" heading.
 fn print_settings(settings: &[Setting]) {
-    let name_w = settings
-        .iter()
-        .map(|s| s.name.len())
-        .chain(["SETTING".len()])
-        .max()
-        .unwrap_or(0);
-    eprintln!("  {:<name_w$}  VALUE", "SETTING");
-    for s in settings {
-        eprintln!("  {:<name_w$}  {}", s.name, s.value);
+    let rows: Vec<(&str, String)> = settings.iter().map(|s| (s.name, s.value.clone())).collect();
+    for line in render_kv(&rows, 0).lines() {
+        eprintln!("  {line}");
     }
 }
 

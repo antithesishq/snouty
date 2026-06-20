@@ -22,6 +22,7 @@ use crate::api::{
 };
 use crate::cli::{RunsCommands, RunsListArgs};
 use crate::error::{api_error_status, user_error};
+use crate::render::{render_kv, sanitize, sanitize_multiline};
 use crate::settings::Settings;
 
 /// `print!`/`println!`, but routed through `write!`/`writeln!` to stdout so a
@@ -587,14 +588,9 @@ async fn explain_properties_error(
                     status_label(run.status)
                 ))
                 .note(format!("inspect the run with `snouty runs show {run_id}`"));
-            // A timed-out or killed run has no moment-pinned failure, so the API
-            // reports a placeholder 0/0 moment that streams no logs; skip the
-            // "view logs" hint there rather than point at an empty stream.
-            match run
-                .failure_moment
-                .as_ref()
-                .filter(|m| m.input_hash != "0" || m.vtime != "0")
-            {
+            // A placeholder 0/0 moment streams no logs, so skip the "view logs"
+            // hint there rather than point at an empty stream.
+            match run.real_failure_moment() {
                 Some(moment) => report.note(format!(
                     "view logs at the failure with `snouty runs logs {run_id} {} {}`",
                     moment.input_hash, moment.vtime
@@ -730,8 +726,15 @@ fn render_properties_detail(properties: &[Property]) -> String {
     group_property_sections(properties)
         .iter()
         .map(|(title, props)| {
-            let blocks: Vec<String> = props.iter().map(|p| render_property_detail(p)).collect();
-            format!("{}\n\n{}", sanitize(title), blocks.join("\n\n"))
+            let blocks = props
+                .iter()
+                .map(|p| render_property_detail(p))
+                .collect::<Vec<_>>()
+                .join("\n\n");
+            match title {
+                Some(title) => format!("{}\n\n{}", sanitize(title), blocks),
+                None => blocks,
+            }
         })
         .collect::<Vec<_>>()
         .join("\n\n")
@@ -986,7 +989,11 @@ fn property_examples_cell(p: &Property) -> String {
 /// alphabetical), with ungrouped properties in a final "(ungrouped)" section.
 /// Within each section, failing entries sort first, then by name. An
 /// empty-string group counts as no group.
-fn group_property_sections(properties: &[Property]) -> Vec<(String, Vec<&Property>)> {
+///
+/// Each section's heading is `Some(name)`, except the ungrouped section's, which
+/// is `None` when there are no named groups to contrast it against — a lone
+/// "(ungrouped)" heading over every property is just noise.
+fn group_property_sections(properties: &[Property]) -> Vec<(Option<String>, Vec<&Property>)> {
     fn sort_section(props: &mut [&Property]) {
         props.sort_by(|a, b| {
             is_failing(b)
@@ -1013,14 +1020,17 @@ fn group_property_sections(properties: &[Property]) -> Vec<(String, Vec<&Propert
             .then_with(|| a.cmp(b))
     });
 
-    let mut sections: Vec<(String, Vec<&Property>)> = Vec::new();
+    let mut sections: Vec<(Option<String>, Vec<&Property>)> = Vec::new();
     for (name, mut props) in named {
         sort_section(&mut props);
-        sections.push((name.to_string(), props));
+        sections.push((Some(name.to_string()), props));
     }
     if !ungrouped.is_empty() {
         sort_section(&mut ungrouped);
-        sections.push(("(ungrouped)".to_string(), ungrouped));
+        // Only label the ungrouped section when named groups precede it; with no
+        // named groups a "(ungrouped)" heading over everything carries no signal.
+        let heading = (!sections.is_empty()).then(|| "(ungrouped)".to_string());
+        sections.push((heading, ungrouped));
     }
     sections
 }
@@ -1054,11 +1064,11 @@ fn render_properties_table(properties: &[Property]) -> String {
                     ]
                 })
                 .collect();
-            format!(
-                "{}\n{}",
-                sanitize(title),
-                render_table_wrap_last(&headers, &rows, width, &aligns)
-            )
+            let table = render_table_wrap_last(&headers, &rows, width, &aligns);
+            match title {
+                Some(title) => format!("{}\n{}", sanitize(title), table),
+                None => table,
+            }
         })
         .collect::<Vec<_>>()
         .join("\n\n")
@@ -1066,14 +1076,9 @@ fn render_properties_table(properties: &[Property]) -> String {
 
 fn print_run_detail(run: &RunDetail) -> Result<()> {
     // Bound once and reused for both the Failure Hash/VTime rows and the deferred
-    // "view logs" hint below, so the two can't drift apart. A timed-out or killed
-    // run has no moment-pinned failure, so the API reports a placeholder 0/0
-    // moment that streams no logs — treat it as "no moment" and surface neither
-    // the rows nor a hint that would point at an empty stream.
-    let failure = run
-        .failure_moment
-        .as_ref()
-        .filter(|m| m.input_hash != "0" || m.vtime != "0");
+    // "view logs" hint below, so the two can't drift apart (a placeholder 0/0
+    // moment is treated as no moment — see `RunDetail::real_failure_moment`).
+    let failure = run.real_failure_moment();
     let mut rows: Vec<(&str, String)> = Vec::new();
 
     // Lead with the identifier; the human labels follow.
@@ -1147,24 +1152,6 @@ fn print_run_detail(run: &RunDetail) -> Result<()> {
         )?;
     }
     Ok(())
-}
-
-/// Render aligned `Label  value` lines, sqlite `.mode line`–style. Each line is
-/// terminated with a newline; values are sanitized. Labels are padded to the
-/// widest label, but never narrower than `min_label_width` so a caller that also
-/// renders a wider prose label below the block can keep every row aligned.
-fn render_kv(rows: &[(&str, String)], min_label_width: usize) -> String {
-    let label_width = rows
-        .iter()
-        .map(|(label, _)| label.len())
-        .chain(std::iter::once(min_label_width))
-        .max()
-        .unwrap_or(0);
-    let mut out = String::new();
-    for (label, value) in rows {
-        out.push_str(&format!("{label:label_width$}  {}\n", sanitize(value)));
-    }
-    out
 }
 
 /// `runs list --detail`: one aligned key-value block per run (no table),
@@ -2655,61 +2642,6 @@ fn push_table_row(output: &mut String, row: &[String], widths: &[usize], aligns:
     output.push('\n');
 }
 
-/// Escape one character into `out`, sharing the control-char policy between
-/// [`sanitize`] and [`sanitize_multiline`]. `newline` decides how `\n`/`\r` are
-/// handled: single-line callers escape them to visible `\n`/`\r`, multi-line
-/// callers keep `\n` as a real break and drop `\r`. Everything else — tab passes
-/// through, other C0/DEL controls become `\xNN`, printable chars pass through —
-/// is identical for both.
-fn sanitize_char(out: &mut String, ch: char, newline: NewlinePolicy) {
-    match ch {
-        '\n' | '\r' => match newline {
-            NewlinePolicy::Escape => {
-                out.push_str(if ch == '\n' { "\\n" } else { "\\r" });
-            }
-            // Multi-line prose keeps real newlines and drops lone carriage
-            // returns (so `\r\n` collapses to `\n`).
-            NewlinePolicy::KeepNewlineDropReturn => {
-                if ch == '\n' {
-                    out.push('\n');
-                }
-            }
-        },
-        '\t' => out.push('\t'),
-        '\0'..='\u{08}' | '\u{0B}'..='\u{1F}' | '\u{7F}' => {
-            out.push_str(&format!(r"\x{:02X}", ch as u32));
-        }
-        _ => out.push(ch),
-    }
-}
-
-#[derive(Clone, Copy)]
-enum NewlinePolicy {
-    /// Escape `\n`/`\r` to literal `\n`/`\r` (single-line table cells).
-    Escape,
-    /// Keep `\n` as a real break, drop `\r` (multi-line prose).
-    KeepNewlineDropReturn,
-}
-
-fn sanitize(s: &str) -> String {
-    let mut escaped = String::new();
-    for ch in s.chars() {
-        sanitize_char(&mut escaped, ch, NewlinePolicy::Escape);
-    }
-    escaped
-}
-
-/// Like [`sanitize`] but preserves real newlines instead of escaping them to
-/// literal `\n`. For multi-line free text (e.g. property descriptions) that is
-/// meant to be read as prose, not as a single table cell.
-fn sanitize_multiline(s: &str) -> String {
-    let mut out = String::new();
-    for ch in s.chars() {
-        sanitize_char(&mut out, ch, NewlinePolicy::KeepNewlineDropReturn);
-    }
-    out
-}
-
 /// Single choke point for terminal-bound free text: strip ANSI escape sequences
 /// first, then escape any remaining control bytes so stray `\r`/`\x08`/BEL can't
 /// corrupt the terminal. Used by both the `runs logs` `output_text` path and the
@@ -3184,6 +3116,57 @@ mod tests {
     }
 
     #[test]
+    fn all_ungrouped_properties_omit_the_ungrouped_heading() {
+        // With no named groups, the lone "(ungrouped)" heading is just noise, so
+        // it's omitted — the table is shown bare.
+        let properties = vec![
+            event_property(
+                "Setup completes",
+                PropertyStatus::Passing,
+                None,
+                vec![event("-400", "1.0")],
+                vec![],
+            ),
+            event_property(
+                "Teardown completes",
+                PropertyStatus::Passing,
+                None,
+                vec![event("-401", "2.0")],
+                vec![],
+            ),
+        ];
+
+        let table = render_properties_table(&properties);
+        assert!(
+            !table.contains("(ungrouped)"),
+            "all-ungrouped output should omit the heading\n{table}"
+        );
+        // The properties themselves still render.
+        assert!(table.contains("Setup completes"), "{table}");
+        assert!(table.contains("Teardown completes"), "{table}");
+
+        // ...but a single named group brings the "(ungrouped)" heading back, to
+        // distinguish the two sections.
+        let mixed = vec![
+            event_property(
+                "Counter stays low",
+                PropertyStatus::Failing,
+                Some("Safety"),
+                vec![],
+                vec![event("-1", "1.0")],
+            ),
+            event_property(
+                "Setup completes",
+                PropertyStatus::Passing,
+                None,
+                vec![event("-400", "1.0")],
+                vec![],
+            ),
+        ];
+        assert!(render_properties_table(&mixed).contains("(ungrouped)"));
+    }
+
+    #[test]
     fn format_count_si_shortens_large_counts() {
         // Under 1000: exact.
         assert_eq!(format_count_si(0), "0");
@@ -3499,37 +3482,6 @@ mod tests {
     fn render_moments_table_marks_unreachable_when_empty() {
         let p = event_prop(PropertyStatus::Passing, vec![], vec![]);
         assert!(render_moments_table(&p).contains("unreachable"));
-    }
-
-    #[test]
-    fn sanitize_preserves_printable_unicode_and_punctuation() {
-        assert_eq!(
-            sanitize("Grüße λ 😸 \"quoted\" C:\\temp\tok"),
-            "Grüße λ 😸 \"quoted\" C:\\temp\tok"
-        );
-    }
-
-    #[test]
-    fn sanitize_escapes_newline_and_carriage_return() {
-        assert_eq!(sanitize("one\ntwo\rthree"), "one\\ntwo\\rthree");
-    }
-
-    #[test]
-    fn sanitize_escapes_non_printable_ascii_except_tab() {
-        assert_eq!(
-            sanitize("a\u{0001}b\u{000B}c\u{007F}d\te"),
-            r"a\x01b\x0Bc\x7Fd	e"
-        );
-    }
-
-    #[test]
-    fn sanitize_multiline_keeps_newlines_but_escapes_other_controls() {
-        // Real newlines survive (so Details renders as prose), \r is dropped,
-        // and other control chars are still escaped.
-        assert_eq!(
-            sanitize_multiline("one\ntwo\r\nthree\u{0001}"),
-            "one\ntwo\nthree\\x01"
-        );
     }
 
     #[test]

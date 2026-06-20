@@ -1,5 +1,4 @@
 use std::collections::{HashMap, VecDeque};
-use std::env;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -15,6 +14,7 @@ use reqwest::Client;
 use reqwest_middleware::ClientWithMiddleware;
 
 use crate::api_cache;
+use crate::env;
 use crate::error::{ApiError, user_error};
 use crate::params::Params;
 use crate::settings::Settings;
@@ -81,6 +81,18 @@ impl RunDetail {
             .as_deref()
             .or_else(|| params_test_description(self.parameters.as_ref()))
     }
+
+    /// The failure moment if it pins a real point in the run, otherwise `None`.
+    ///
+    /// A timed-out or killed run has no moment-pinned failure, so the API reports
+    /// a placeholder `0/0` moment that streams no logs. Treat that placeholder as
+    /// "no moment" so callers neither show empty Failure Hash/VTime rows nor a
+    /// `runs logs` hint that would point at an empty stream.
+    pub(crate) fn real_failure_moment(&self) -> Option<&Moment> {
+        self.failure_moment
+            .as_ref()
+            .filter(|m| m.input_hash != "0" || m.vtime != "0")
+    }
 }
 
 impl Property {
@@ -143,21 +155,11 @@ const CLIENT_TIMEOUT_SECS: u64 = 60;
 /// limiting long streaming responses (governed by the total timeout above).
 const CONNECT_TIMEOUT_SECS: u64 = 5;
 
+/// A required credential env var. Reads through [`crate::env::var`], so an
+/// exported-but-empty value counts as missing (the same empty-means-unset policy
+/// as every other snouty env var) rather than producing an empty credential.
 fn required_env(name: &'static str) -> Result<String> {
-    env::var(name).map_err(|e| match e {
-        env::VarError::NotPresent => user_error(format!("missing environment variable: {name}")),
-        _ => user_error(format!("invalid environment variable {name}: {e}")),
-    })
-}
-
-fn optional_env(name: &'static str) -> Result<Option<String>> {
-    match env::var(name) {
-        Ok(value) => Ok(Some(value)),
-        Err(env::VarError::NotPresent) => Ok(None),
-        Err(e) => Err(user_error(format!(
-            "invalid environment variable {name}: {e}"
-        ))),
-    }
+    env::var(name)?.ok_or_else(|| user_error(format!("missing environment variable: {name}")))
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -192,7 +194,7 @@ impl Auth {
     }
 
     pub(crate) fn from_env() -> Result<Self> {
-        if let Some(api_key) = optional_env("ANTITHESIS_API_KEY")? {
+        if let Some(api_key) = env::var("ANTITHESIS_API_KEY")? {
             return Ok(Self::bearer(api_key));
         }
         Ok(Self::basic(
@@ -206,11 +208,11 @@ impl Auth {
     /// other endpoints should fail fast with a clear message instead of
     /// sending a request destined for a 403.
     fn api_key_from_env() -> Result<Self> {
-        if let Some(api_key) = optional_env("ANTITHESIS_API_KEY")? {
+        if let Some(api_key) = env::var("ANTITHESIS_API_KEY")? {
             return Ok(Self::bearer(api_key));
         }
-        let has_basic = optional_env("ANTITHESIS_USERNAME")?.is_some()
-            || optional_env("ANTITHESIS_PASSWORD")?.is_some();
+        let has_basic = env::var("ANTITHESIS_USERNAME")?.is_some()
+            || env::var("ANTITHESIS_PASSWORD")?.is_some();
         let mut err = user_error("missing environment variable: ANTITHESIS_API_KEY");
         if has_basic {
             err = err.note(
@@ -251,7 +253,10 @@ impl AntithesisApi {
         verbose: bool,
         cache_dir: Option<PathBuf>,
     ) -> Result<Self> {
-        let base_url = normalize_base_url(settings.base_url()?);
+        // base_url() is None exactly when neither an explicit base_url nor a
+        // tenant resolved; surface the tenant diagnostic, since that's what a
+        // user normally sets.
+        let base_url = normalize_base_url(crate::settings::require(settings.base_url(), "tenant")?);
         debug!("initializing API client for {}", base_url);
 
         let default_headers = default_request_headers(auth)?;

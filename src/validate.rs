@@ -170,8 +170,9 @@ impl Drop for ComposeDownGuard<'_> {
 pub async fn cmd_validate(args: ValidateArgs, settings: &Settings) -> Result<()> {
     // SNOUTY_TEMP_DIR is an env-only operational knob (not a setting): it pins
     // the working directory so validate output can be inspected across runs.
-    // Unset, we use a fresh system temp dir.
-    match std::env::var_os("SNOUTY_TEMP_DIR") {
+    // Unset (or exported-but-empty / non-Unicode, all collapsed by
+    // `crate::env::var`/`.ok().flatten()`), we use a fresh system temp dir.
+    match crate::env::var("SNOUTY_TEMP_DIR").ok().flatten() {
         Some(out_dir) => {
             let temp_dir = Path::new(&out_dir);
             // To avoid conflating results of subsequent runs, we require that the provided

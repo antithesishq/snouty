@@ -9,7 +9,7 @@
 #
 # doctor exits non-zero here (no auth or container runtime is configured), so
 # each step uses `! snouty doctor`; the resolved-settings rows are printed
-# regardless of the exit status. The table columns are SETTING, VALUE.
+# regardless of the exit status. Each row is `<setting>  <value>`.
 
 # 1. tenant/repository come from the project .snouty.toml in the working
 #    directory (top-level defaults).
@@ -43,6 +43,17 @@ env SNOUTY_CONTAINER_ENGINE=podman
 ! snouty doctor
 stderr 'container engine.*podman'
 
+# 7. SNOUTY_SETTINGS_PATH selects the project file in place of ./.snouty.toml.
+#    Observed via repository, since no earlier step set ANTITHESIS_REPOSITORY
+#    (ANTITHESIS_TENANT is already pinned from step 5, so tenant won't show it).
+env SNOUTY_SETTINGS_PATH=env-settings.toml
+! snouty doctor
+stderr 'repository.*env-path-repo'
+
+# 8. The --settings flag wins over SNOUTY_SETTINGS_PATH.
+! snouty --settings other.toml doctor
+stderr 'repository.*other/repo'
+
 -- .snouty.toml --
 tenant = "acme"
 repository = "acme/repo"
@@ -55,3 +66,5 @@ tenant = "prod-tenant"
 -- other.toml --
 tenant = "other-tenant"
 repository = "other/repo"
+-- env-settings.toml --
+repository = "env-path-repo"

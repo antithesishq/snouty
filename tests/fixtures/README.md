@@ -22,9 +22,13 @@ Each markdown file becomes one page:
 
 # Manually testing the docs fixture
 
-You can point Snouty at the docs fixture to manually test it by exporting the environment variable `ANTITHESIS_DOCS_DB_PATH`.
+`snouty docs` reads its database from `<XDG_CACHE_HOME>/snouty/docs.db` (falling
+back to `$HOME/.cache/snouty/docs.db`). To exercise the fixture without touching
+the network, seed a throwaway cache home with it and run with `--offline`:
 
-```
-export ANTITHESIS_DOCS_DB_PATH=$PWD/tests/fixtures/docs.db
-snouty docs search ...
+```sh
+export XDG_CACHE_HOME=$(mktemp -d)
+mkdir -p "$XDG_CACHE_HOME/snouty"
+cp tests/fixtures/docs.db "$XDG_CACHE_HOME/snouty/docs.db"
+snouty docs --offline search ...
 ```

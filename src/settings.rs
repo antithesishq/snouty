@@ -1,10 +1,12 @@
 use std::{
-    env, fs,
+    fs,
     path::{Path, PathBuf},
 };
 
 use color_eyre::eyre::{Result, eyre};
 use toml::Table;
+
+use crate::env;
 
 pub const ANTITHESIS_PROFILE_ENV_VAR_NAME: &str = "ANTITHESIS_PROFILE";
 pub const SNOUTY_SETTINGS_PATH_VAR_NAME: &str = "SNOUTY_SETTINGS_PATH";
@@ -20,11 +22,27 @@ const PROFILE_KEY: &str = "profile";
 /// back to `$HOME/<home_subdir>/snouty`. `None` when neither is set (e.g.
 /// Windows). Deliberately hand-rolled rather than via the `dirs` crate, which on
 /// macOS resolves to `~/Library/...` instead of the XDG layout snouty wants.
+///
+/// Reads through [`env::var`], so an exported-but-empty `XDG_*`/`HOME` is treated
+/// as unset (per the XDG spec) rather than yielding a bogus relative path; a
+/// non-Unicode value is likewise treated as unset here rather than aborting the
+/// command.
 fn xdg_snouty_dir(xdg_var: &str, home_subdir: &str) -> Option<PathBuf> {
-    let base = if let Ok(dir) = env::var(xdg_var) {
-        PathBuf::from(dir)
-    } else {
-        PathBuf::from(env::var("HOME").ok()?).join(home_subdir)
+    xdg_base(
+        env::var(xdg_var).ok().flatten(),
+        env::var("HOME").ok().flatten(),
+        home_subdir,
+    )
+}
+
+/// The `$base/snouty` directory given already-resolved (empty-collapsed) env
+/// values: the XDG dir if set, else `$HOME/<home_subdir>`; `None` when neither
+/// is set. Pure, so the XDG-vs-`HOME` fallback is unit-testable without touching
+/// the process environment.
+fn xdg_base(xdg_dir: Option<String>, home: Option<String>, home_subdir: &str) -> Option<PathBuf> {
+    let base = match xdg_dir {
+        Some(dir) => PathBuf::from(dir),
+        None => PathBuf::from(home?).join(home_subdir),
     };
     Some(base.join("snouty"))
 }
@@ -79,15 +97,20 @@ impl Settings {
         profile: Option<String>,
     ) -> Result<Self> {
         // An empty value means "unset", not "a profile named the empty string".
-        let profile = profile
-            .or_else(|| env::var(ANTITHESIS_PROFILE_ENV_VAR_NAME).ok())
-            .filter(|profile| !profile.is_empty());
+        // `env::var` already collapses an empty env var to `None`; the trailing
+        // filter also covers an explicitly-empty `--profile ""` flag.
+        let profile = match profile {
+            Some(flag) => Some(flag),
+            None => env::var(ANTITHESIS_PROFILE_ENV_VAR_NAME)?,
+        }
+        .filter(|profile| !profile.is_empty());
 
-        let project_settings_path = project_settings_path.or_else(|| {
-            env::var(SNOUTY_SETTINGS_PATH_VAR_NAME)
-                .ok()
-                .map(PathBuf::from)
-        });
+        // Likewise an empty `SNOUTY_SETTINGS_PATH` is "unset" (it would otherwise
+        // become an explicitly-requested empty path that must — and can't — exist).
+        let project_settings_path = match project_settings_path {
+            Some(path) => Some(path),
+            None => env::var(SNOUTY_SETTINGS_PATH_VAR_NAME)?.map(PathBuf::from),
+        };
 
         // An explicitly-requested project file must exist; the default
         // `./.snouty.toml` is optional. (Climbing the directory tree, if ever
@@ -151,41 +174,30 @@ impl Settings {
         }
     }
 
-    pub fn tenant(&self) -> Result<&str> {
-        self.tenant.as_deref().ok_or_else(|| {
-            eyre!("Could not resolve Antithesis tenant. Run snouty doctor to debug.")
-        })
+    /// The resolved tenant, or `None` if unset. Call sites that require it turn
+    /// the `None` into an error (see [`require`]); doctor reports it as-is.
+    pub fn tenant(&self) -> Option<&str> {
+        self.tenant.as_deref()
     }
 
-    pub fn repository(&self) -> Result<&str> {
-        self.repository.as_deref().ok_or_else(|| {
-            eyre!("Could not resolve Antithesis repository. Run snouty doctor to debug.")
-        })
+    /// The resolved container registry, or `None` if unset.
+    pub fn repository(&self) -> Option<&str> {
+        self.repository.as_deref()
     }
 
     /// The base URL to talk to: an explicit `base_url` if set, otherwise one
-    /// derived from the tenant. Errors with the tenant's diagnostic when neither
-    /// exists (a derived `base_url` is present exactly when the tenant is).
-    pub fn base_url(&self) -> Result<&str> {
-        self.base_url.as_deref().ok_or_else(|| {
-            eyre!("Could not resolve Antithesis tenant. Run snouty doctor to debug.")
-        })
+    /// derived from the tenant; `None` when neither exists (a derived `base_url`
+    /// is present exactly when the tenant is).
+    pub fn base_url(&self) -> Option<&str> {
+        self.base_url.as_deref()
     }
 
     pub fn container_engine(&self) -> Option<&str> {
         self.container_engine.as_deref()
     }
 
-    pub(crate) fn settings_profile(&self) -> Option<&str> {
+    pub(crate) fn profile(&self) -> Option<&str> {
         self.profile.as_deref()
-    }
-
-    pub(crate) fn tenant_setting(&self) -> Option<&str> {
-        self.tenant.as_deref()
-    }
-
-    pub(crate) fn repository_setting(&self) -> Option<&str> {
-        self.repository.as_deref()
     }
 
     /// Test-only: a `Settings` built from explicit values, with no environment or
@@ -216,18 +228,13 @@ impl Settings {
     }
 }
 
-/// Read an environment variable, treating an exported-but-empty value as unset
-/// (common in CI / wrapper shells, where it would otherwise mask a real
-/// settings-file value). A non-unicode value is an error.
-fn load_env_var(key: &str) -> Result<Option<String>> {
-    match env::var(key) {
-        Ok(value) if value.is_empty() => Ok(None),
-        Ok(value) => Ok(Some(value)),
-        Err(env::VarError::NotPresent) => Ok(None),
-        Err(env::VarError::NotUnicode(_)) => Err(eyre!(
-            "The value of environment variable [{key}] was not valid unicode"
-        )),
-    }
+/// Turn a missing required setting into snouty's standard "run doctor" error.
+/// The `Option` accessors stay the single source of truth; the few call sites
+/// that cannot proceed without a value funnel the `None` through here, so the
+/// message lives in one place instead of being duplicated per accessor.
+pub fn require<'a>(value: Option<&'a str>, setting: &str) -> Result<&'a str> {
+    value
+        .ok_or_else(|| eyre!("Could not resolve Antithesis {setting}. Run snouty doctor to debug."))
 }
 
 /// Parse settings-file contents into a TOML table, attributing parse errors to
@@ -261,6 +268,11 @@ fn load_settings_file(path: &Path, required: bool) -> Result<Option<Table>> {
 /// Resolve a single setting with the precedence: environment variable, then the
 /// active profile (project file before global file), then top-level defaults
 /// (project file before global file). The first layer that has the key wins.
+///
+/// A layer that *has* the key but with a non-string value (or a malformed
+/// `profile` section) is a hard error rather than a silent skip — a typo like
+/// `tenant = 123` should be reported, not quietly ignored in favour of a
+/// lower-precedence value.
 fn resolve_value(
     key: &str,
     env_var: &str,
@@ -269,49 +281,69 @@ fn resolve_value(
     global: Option<&Table>,
 ) -> Result<Option<String>> {
     // The environment variable always has highest precedence.
-    if let Some(value) = load_env_var(env_var)? {
+    if let Some(value) = env::var(env_var)? {
         return Ok(Some(value));
     }
 
     // A named profile is consulted before defaults, project before global.
     if let Some(profile) = profile {
-        if let Some(value) = project.and_then(|table| profile_value(table, profile, key)) {
-            return Ok(Some(value));
-        }
-        if let Some(value) = global.and_then(|table| profile_value(table, profile, key)) {
-            return Ok(Some(value));
+        for table in [project, global].into_iter().flatten() {
+            if let Some(value) = profile_value(table, profile, key)? {
+                return Ok(Some(value));
+            }
         }
     }
 
     // Finally fall back to top-level defaults, project before global.
-    if let Some(value) = project.and_then(|table| default_value(table, key)) {
-        return Ok(Some(value));
-    }
-    if let Some(value) = global.and_then(|table| default_value(table, key)) {
-        return Ok(Some(value));
+    for table in [project, global].into_iter().flatten() {
+        if let Some(value) = default_value(table, key)? {
+            return Ok(Some(value));
+        }
     }
 
     Ok(None)
 }
 
-/// A `[profile.<name>]` value: `profile.<profile>.<key>`.
-fn profile_value(table: &Table, profile: &str, key: &str) -> Option<String> {
-    table
-        .get(PROFILE_KEY)
-        .and_then(|profiles| profiles.as_table())
-        .and_then(|profiles| profiles.get(profile))
-        .and_then(|profile| profile.as_table())
-        .and_then(|profile| profile.get(key))
-        .and_then(|value| value.as_str())
-        .map(|value| value.to_string())
+/// A `[profile.<name>]` value: `profile.<profile>.<key>`. `Ok(None)` when the
+/// `profile` section, the named profile, or the key is absent; an error when
+/// `profile`/`profile.<name>` is present but not a table, or the value is
+/// present but not a string.
+fn profile_value(table: &Table, profile: &str, key: &str) -> Result<Option<String>> {
+    let Some(profiles) = table.get(PROFILE_KEY) else {
+        return Ok(None);
+    };
+    let profiles = profiles
+        .as_table()
+        .ok_or_else(|| eyre!("`{PROFILE_KEY}` must be a table of profiles"))?;
+    let Some(selected) = profiles.get(profile) else {
+        return Ok(None);
+    };
+    let selected = selected
+        .as_table()
+        .ok_or_else(|| eyre!("profile `{profile}` must be a table"))?;
+    string_value(selected, key, &format!("{PROFILE_KEY}.{profile}.{key}"))
 }
 
-/// A top-level default value: `<key>`.
-fn default_value(table: &Table, key: &str) -> Option<String> {
-    table
-        .get(key)
-        .and_then(|value| value.as_str())
-        .map(|value| value.to_string())
+/// A top-level default value: `<key>`. `Ok(None)` when absent; an error when
+/// present but not a string.
+fn default_value(table: &Table, key: &str) -> Result<Option<String>> {
+    string_value(table, key, key)
+}
+
+/// Read `key` from `table` as a string, naming the offending value `display` in
+/// the error. `Ok(None)` when the key is absent; an error when it is present but
+/// holds a non-string TOML value.
+fn string_value(table: &Table, key: &str, display: &str) -> Result<Option<String>> {
+    match table.get(key) {
+        None => Ok(None),
+        Some(value) => match value.as_str() {
+            Some(value) => Ok(Some(value.to_string())),
+            None => Err(eyre!(
+                "setting `{display}` must be a string, but found {}",
+                value.type_str()
+            )),
+        },
+    }
 }
 
 #[cfg(test)]
@@ -336,13 +368,6 @@ mod tests {
         global: Option<&Table>,
     ) -> Option<String> {
         resolve_value("tenant", UNSET_ENV, profile, project, global).unwrap()
-    }
-
-    // ---- load_env_var --------------------------------------------------
-
-    #[test]
-    fn missing_environment_variable_resolves_to_none() {
-        assert!(matches!(load_env_var(UNSET_ENV), Ok(None)));
     }
 
     // ---- parse_settings ------------------------------------------------
@@ -378,19 +403,86 @@ mod tests {
             .parse()
             .unwrap();
         assert_eq!(
-            profile_value(&table, "staging", "tenant").as_deref(),
+            profile_value(&table, "staging", "tenant")
+                .unwrap()
+                .as_deref(),
             Some("staging-tenant")
         );
         // missing profile and missing key both resolve to None
-        assert_eq!(profile_value(&table, "prod", "tenant"), None);
-        assert_eq!(profile_value(&table, "staging", "repository"), None);
+        assert_eq!(profile_value(&table, "prod", "tenant").unwrap(), None);
+        assert_eq!(
+            profile_value(&table, "staging", "repository").unwrap(),
+            None
+        );
     }
 
     #[test]
     fn default_value_reads_top_level_key() {
         let table: Table = "tenant = \"acme\"\n".parse().unwrap();
-        assert_eq!(default_value(&table, "tenant").as_deref(), Some("acme"));
-        assert_eq!(default_value(&table, "missing"), None);
+        assert_eq!(
+            default_value(&table, "tenant").unwrap().as_deref(),
+            Some("acme")
+        );
+        assert_eq!(default_value(&table, "missing").unwrap(), None);
+    }
+
+    // ---- strict TOML typing --------------------------------------------
+
+    #[test]
+    fn non_string_default_value_is_an_error() {
+        let table: Table = "tenant = 123\n".parse().unwrap();
+        let err = default_value(&table, "tenant").unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("tenant"), "unexpected error: {msg}");
+        assert!(msg.contains("must be a string"), "unexpected error: {msg}");
+    }
+
+    #[test]
+    fn non_string_profile_value_is_an_error() {
+        let table: Table = "[profile.p]\ntenant = true\n".parse().unwrap();
+        let err = profile_value(&table, "p", "tenant").unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("profile.p.tenant"), "unexpected error: {msg}");
+        assert!(msg.contains("must be a string"), "unexpected error: {msg}");
+    }
+
+    #[test]
+    fn malformed_profile_section_is_an_error() {
+        // `profile` present but not a table of profiles.
+        let table: Table = "profile = \"oops\"\n".parse().unwrap();
+        let err = profile_value(&table, "p", "tenant").unwrap_err();
+        assert!(err.to_string().contains("table of profiles"));
+    }
+
+    #[test]
+    fn non_table_profile_is_an_error() {
+        // The named profile exists but isn't a table.
+        let table: Table = "[profile]\np = \"oops\"\n".parse().unwrap();
+        let err = profile_value(&table, "p", "tenant").unwrap_err();
+        assert!(err.to_string().contains("profile `p` must be a table"));
+    }
+
+    // ---- xdg_base (path resolution) ------------------------------------
+
+    #[test]
+    fn xdg_base_prefers_the_xdg_dir() {
+        let dir = xdg_base(
+            Some("/xdg".to_string()),
+            Some("/home/u".to_string()),
+            ".config",
+        );
+        assert_eq!(dir, Some(PathBuf::from("/xdg/snouty")));
+    }
+
+    #[test]
+    fn xdg_base_falls_back_to_home_subdir() {
+        let dir = xdg_base(None, Some("/home/u".to_string()), ".config");
+        assert_eq!(dir, Some(PathBuf::from("/home/u/.config/snouty")));
+    }
+
+    #[test]
+    fn xdg_base_is_none_without_xdg_or_home() {
+        assert_eq!(xdg_base(None, None, ".config"), None);
     }
 
     // ---- resolve_value precedence --------------------------------------
@@ -457,29 +549,35 @@ mod tests {
     // ---- accessors -----------------------------------------------------
 
     #[test]
-    fn tenant_accessor_errors_point_at_doctor() {
-        let settings = Settings::for_test(None, None, None, None, None);
-        let err = settings.tenant().unwrap_err();
-        assert!(err.to_string().contains("snouty doctor"));
+    fn require_missing_setting_points_at_doctor() {
+        let err = require(None, "tenant").unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("tenant"), "unexpected error: {msg}");
+        assert!(msg.contains("snouty doctor"), "unexpected error: {msg}");
+    }
+
+    #[test]
+    fn require_passes_a_present_setting_through() {
+        assert_eq!(require(Some("acme"), "tenant").unwrap(), "acme");
     }
 
     #[test]
     fn base_url_falls_back_to_tenant_host() {
         let settings = Settings::for_test(None, Some("acme"), None, None, None);
-        assert_eq!(settings.base_url().unwrap(), "https://acme.antithesis.com");
+        assert_eq!(settings.base_url(), Some("https://acme.antithesis.com"));
     }
 
     #[test]
     fn explicit_base_url_overrides_tenant_host() {
         let settings =
             Settings::for_test(None, Some("acme"), None, Some("https://example.test"), None);
-        assert_eq!(settings.base_url().unwrap(), "https://example.test");
+        assert_eq!(settings.base_url(), Some("https://example.test"));
     }
 
     #[test]
-    fn base_url_without_tenant_is_an_error() {
+    fn base_url_without_tenant_is_none() {
         let settings = Settings::for_test(None, None, None, None, None);
-        assert!(settings.base_url().is_err());
+        assert_eq!(settings.base_url(), None);
     }
 
     #[test]

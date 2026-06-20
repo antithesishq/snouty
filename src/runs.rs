@@ -587,6 +587,9 @@ async fn explain_properties_error(
                     status_label(run.status)
                 ))
                 .note(format!("inspect the run with `snouty runs show {run_id}`"));
+            // A timed-out or killed run has no moment-pinned failure, so the API
+            // reports a placeholder 0/0 moment that streams no logs; skip the
+            // "view logs" hint there rather than point at an empty stream.
             match run
                 .failure_moment
                 .as_ref()
@@ -1063,10 +1066,10 @@ fn render_properties_table(properties: &[Property]) -> String {
 
 fn print_run_detail(run: &RunDetail) -> Result<()> {
     // Bound once and reused for both the Failure Hash/VTime rows and the deferred
-    // "view logs" hint below, so the two can't drift apart. A run that ended
-    // without a recorded failure reports a placeholder 0/0 moment — that's not a
-    // real point to inspect, so treat it as "no moment" and surface neither the
-    // rows nor the hint (which would otherwise point at empty logs).
+    // "view logs" hint below, so the two can't drift apart. A timed-out or killed
+    // run has no moment-pinned failure, so the API reports a placeholder 0/0
+    // moment that streams no logs — treat it as "no moment" and surface neither
+    // the rows nor a hint that would point at an empty stream.
     let failure = run
         .failure_moment
         .as_ref()
@@ -1480,9 +1483,9 @@ async fn cmd_runs_logs(
         .await
     };
     stdout.flush()?;
-    // A moment with no logs (e.g. an incomplete run's placeholder 0/0 moment)
-    // yields an empty stream; say so in human mode rather than printing nothing.
-    // In --json mode an empty stream is the correct machine answer, so stay quiet.
+    // A moment with no logs (e.g. a manually-supplied 0/0 placeholder) yields an
+    // empty stream; say so in human mode rather than printing nothing. In --json
+    // mode an empty stream is the correct machine answer, so stay quiet.
     if result.is_ok() && !json && !wrote_any {
         eprintln!("No log lines at this moment.");
     }

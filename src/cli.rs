@@ -173,9 +173,8 @@ Example:
 Verifies that your environment is properly configured for Antithesis testing.
 Runs health checks — container runtime, docker compose, the ANTITHESIS_*
 environment variables for authentication, and API connectivity — then prints
-the resolved settings (tenant, repository, base url, container engine) with
-where each value came from: an environment variable, a settings profile, or a
-settings file.
+the resolved settings (tenant, repository, container engine) so you can confirm
+what snouty will use.
 
 snouty prefers an API key (full API access); a username and password is legacy
 auth, accepted only by `snouty launch` and `snouty debug`.

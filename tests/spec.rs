@@ -55,6 +55,17 @@ fn snouty_cmd(env: &testscript_rs::TestEnvironment, args: &[String]) -> std::pro
             cmd.env(var, v);
         }
     }
+    // Isolate the global settings dir. HOME is forwarded (podman/macOS need it),
+    // and snouty reads `$HOME/.config/snouty/settings.toml` when XDG_CONFIG_HOME
+    // is unset — so without this a developer's or CI's real settings file would
+    // leak in and change resolved tenant/repository/etc. Point XDG_CONFIG_HOME at
+    // a dir with no snouty config; a spec can still override it. The project file
+    // is already isolated: each spec runs in its own work dir, so `./.snouty.toml`
+    // doesn't exist unless the spec creates it.
+    cmd.env(
+        "XDG_CONFIG_HOME",
+        env.current_dir.join("xdg-config-isolation"),
+    );
     for (k, v) in &env.env_vars {
         cmd.env(k, v);
     }

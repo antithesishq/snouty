@@ -65,6 +65,10 @@ CAPTURE_WORKERS = 6
 # single probe per run before falling back to narrower terms.
 EVENT_KEYWORDS = ["the", "info", "test", "start", "error", "client", "setup"]
 
+# Keyword order probed for an incomplete run's events story: its narrative is
+# "events around the failure", so try "error" before the general needles.
+INCOMPLETE_EVENT_KEYWORDS = ["error", *EVENT_KEYWORDS]
+
 
 class GalleryError(Exception):
     """A precondition could not be met; refuse to emit a partial gallery."""
@@ -188,6 +192,7 @@ class Discovery:
     name_filter: str = ""  # substring matching exactly one property name
     fail_hash: str = ""
     fail_vtime: str = ""
+    fail_event_kw: str = "error"  # keyword the incomplete run's events story matches on
 
 
 def _first_run(sn: Snouty, *filters: str) -> str | None:
@@ -240,6 +245,65 @@ def _pick_event_completed_run(sn: Snouty, scan: int) -> tuple[str, dict]:
         f"none of the {len(runs)} most recent completed runs returned events "
         "(all unreachable or empty) — refusing to write a gallery with the "
         "event/logs stories skipped"
+    )
+
+
+def _real_failure_moment(moment: dict) -> bool:
+    """Whether a run's failure moment is a real, streamable coordinate. The API
+    returns the sentinel `input_hash="0", vtime="0"` for an incomplete run with no
+    specific failure point (a timeout or kill, not a moment-pinned failure) and
+    omits the fields for some runs; neither yields any logs."""
+    h, v = moment.get("input_hash"), moment.get("vtime")
+    if not h or not v:
+        return False
+    return not (str(h) == "0" and str(v) == "0")
+
+
+def _pick_incomplete_run(sn: Snouty, scan: int) -> tuple[str, dict, str]:
+    """Pick an incomplete run that makes the incomplete-run stories meaningful,
+    scanning the recent ones rather than blindly taking the first — which is
+    routinely a timeout with a 0/0 failure moment and no error events, leaving the
+    logs/events stories empty. The chosen run must have a real failure moment whose
+    logs are non-empty (so runs-logs-incomplete streams lines and runs-show-incomplete
+    renders a moment) AND events matching a probe keyword (for runs-events-incomplete).
+    Returns (run_id, failure_moment, event_keyword)."""
+    runs = sn.json_lines(["runs", "list", "--status", "incomplete", "-n", str(scan)])
+    if not runs:
+        raise GalleryError("no incomplete run found — incomplete stories cannot run")
+    for r in runs:
+        run = r["run_id"]
+        moment = sn.json_obj(["runs", "show", run]).get("failure_moment") or {}
+        if not _real_failure_moment(moment):
+            print(f"  skip {run}: no real failure moment (0/0 sentinel)", file=sys.stderr)
+            continue
+        h, v = str(moment["input_hash"]), str(moment["vtime"])
+        try:
+            logs = sn.json_lines(["runs", "logs", run, h, v])
+        except GalleryError:
+            logs = []
+        if not logs:
+            print(f"  skip {run}: no logs at the failure moment", file=sys.stderr)
+            continue
+        kw = None
+        for k in INCOMPLETE_EVENT_KEYWORDS:
+            try:
+                if sn.json_lines(["runs", "events", run, "--match", k]):
+                    kw = k
+                    break
+            except GalleryError:
+                break  # events endpoint unreachable for this run; move on
+        if kw is None:
+            print(f"  skip {run}: no events match a probe keyword", file=sys.stderr)
+            continue
+        print(
+            f"  incomplete run: {run} (logs at failure moment; events match '{kw}')",
+            file=sys.stderr,
+        )
+        return run, moment, kw
+    raise GalleryError(
+        f"none of the {len(runs)} most recent incomplete runs has a real failure "
+        "moment with logs and matching events — refusing to write a gallery with "
+        "the incomplete event/logs stories degenerate"
     )
 
 
@@ -386,13 +450,10 @@ def discover(sn: Snouty, scan: int) -> Discovery:
 
     success, event = _pick_event_completed_run(sn, scan)
 
-    fail = _first_run(sn, "--status", "incomplete")
+    fail, fail_moment, fail_event_kw = _pick_incomplete_run(sn, scan)
     cancelled = _first_run(sn, "--status", "cancelled")
-    if not fail:
-        raise GalleryError("no incomplete run found — incomplete stories cannot run")
     if not cancelled:
         raise GalleryError("no cancelled run found — the cancelled story cannot run")
-    print(f"  incomplete run: {fail}", file=sys.stderr)
     print(f"  cancelled run : {cancelled}", file=sys.stderr)
 
     # Dynamic listing params from real runs, so listing stories aren't empty.
@@ -411,9 +472,6 @@ def discover(sn: Snouty, scan: int) -> Discovery:
 
     keyword = event["_keyword"]
     moment = event["moment"]
-
-    fail_show = sn.json_obj(["runs", "show", fail])
-    fail_moment = fail_show.get("failure_moment") or {}
 
     props = sn.json_lines(["runs", "properties", success])
     prop_names = [p["name"] for p in props]
@@ -434,11 +492,11 @@ def discover(sn: Snouty, scan: int) -> Discovery:
         pass_event_prop=_pick_property_with_moments(sn, success, props, "Passing"),
         nonevent_prop=_pick_nonevent_property(sn, success, props),
         name_filter=_pick_name_filter(prop_names),
-        fail_hash=fail_moment.get("input_hash", ""),
-        fail_vtime=fail_moment.get("vtime", ""),
+        # _pick_incomplete_run guarantees a real (non-0/0) failure moment.
+        fail_hash=str(fail_moment["input_hash"]),
+        fail_vtime=str(fail_moment["vtime"]),
+        fail_event_kw=fail_event_kw,
     )
-    if not disc.fail_hash or not disc.fail_vtime:
-        raise GalleryError(f"incomplete run {fail} has no failure moment")
     return disc
 
 
@@ -896,7 +954,9 @@ def build_stories(d: Discovery) -> list[Story]:
             "A run ended incomplete; I want to see where it died (failure vtime/hash).",
             "Status is incomplete and the failure moment (vtime/hash) is shown.",
             ["runs", "show", d.fail],
-            contains_all("incomplete"),
+            # The rubric promises a failure moment; assert the real hash renders so
+            # a run without one (the 0/0 sentinel) can't pass silently.
+            contains_all("incomplete", d.fail_hash),
             json_capable=False,
         ),
         Story(
@@ -1022,8 +1082,8 @@ def build_stories(d: Discovery) -> list[Story]:
             "runs-events-incomplete",
             "Search events on an incomplete run for failure context",
             "An incomplete run failed; I want events around the failure.",
-            "At least one matching event row from the incomplete run.",
-            ["runs", "events", d.fail, "--match", "error"],
+            f"At least one event row matching '{d.fail_event_kw}' from the incomplete run.",
+            ["runs", "events", d.fail, "--match", d.fail_event_kw],
             non_empty_table,
         ),
         # -- logs -----------------------------------------------------------

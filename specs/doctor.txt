@@ -9,11 +9,6 @@ stdout '.*container runtime.*'
 stdout '.*environment variables.*'
 stdout '.*--json.*'
 
-# doctor now resolves tenant/repository from config files too, so isolate the
-# global config dir — the test runner forwards HOME, which would otherwise let a
-# real ~/.config/snouty/settings.toml leak in and change the checks below.
-env XDG_CONFIG_HOME=$WORK/empty-config
-
 # With nothing configured, doctor steers the user to an API key only — it must
 # not suggest username/password, which is legacy auth (issue #145). The headline
 # states the bare problem; notes explain it and say where to get a key.

@@ -5,7 +5,7 @@ use serde::Serialize;
 
 use crate::api::{AntithesisApi, ApiVersion, VersionError};
 use crate::container;
-use crate::settings::{Resolved, Settings, ValueSource};
+use crate::settings::Settings;
 
 /// Outcome of a single health check. Only `Error` fails doctor; `Warn` is
 /// surfaced but the run still passes.
@@ -116,32 +116,19 @@ impl Check {
 }
 
 /// One row of the resolved-settings table: a setting and the value snouty
-/// resolved for it, plus where it came from. Purely informational — it carries
-/// no status; whether a value is required or optional is a [`Check`] concern.
+/// resolved for it. Purely informational — it carries no status; whether a value
+/// is required or optional is a [`Check`] concern.
 #[derive(Serialize)]
 struct Setting {
     name: &'static str,
     value: String,
-    /// Where the value came from: `env`, a profile name, `default`, or
-    /// `derived`. `None` when there's nothing to attribute (unset / auto).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    source: Option<String>,
 }
 
 impl Setting {
-    fn sourced(name: &'static str, value: impl Into<String>, source: impl Into<String>) -> Self {
+    fn new(name: &'static str, value: impl Into<String>) -> Self {
         Self {
             name,
             value: value.into(),
-            source: Some(source.into()),
-        }
-    }
-
-    fn plain(name: &'static str, value: impl Into<String>) -> Self {
-        Self {
-            name,
-            value: value.into(),
-            source: None,
         }
     }
 }
@@ -163,25 +150,11 @@ fn presence(var: &str, set: bool) -> String {
     format!("{var} {}", if set { "is set" } else { "is not set" })
 }
 
-/// Human-readable source for a resolved setting: `env`, the active profile name
-/// (when it came from a profile), `default` (a top-level settings-file value), or
-/// `derived` (a `base_url` synthesized from the tenant).
-fn source_label(source: &ValueSource, profile: Option<&str>) -> String {
-    match source {
-        ValueSource::EnvironmentVariable => "env".to_string(),
-        ValueSource::ProjectProfile | ValueSource::GlobalProfile => {
-            profile.unwrap_or("profile").to_string()
-        }
-        ValueSource::ProjectDefault | ValueSource::GlobalDefault => "default".to_string(),
-        ValueSource::Derived => "derived".to_string(),
-    }
-}
-
 /// The tenant is required by every command, so a missing one fails doctor.
 /// (A broken settings file never reaches here — it fails at startup, before
 /// doctor runs — so the resolved value is simply present or absent.)
-fn tenant_check(resolved: Option<&Resolved>) -> Check {
-    match resolved {
+fn tenant_check(tenant: Option<&str>) -> Check {
+    match tenant {
         Some(_) => Check::ok("tenant", "tenant is set"),
         None => Check::fail("tenant", "tenant is not set").note(
             Level::Note,
@@ -193,8 +166,8 @@ fn tenant_check(resolved: Option<&Resolved>) -> Check {
 /// The repository (a container registry) is only needed to build and push a
 /// config image (`snouty launch --config`), so a missing one is a warning, not
 /// a failure — read-only use (`snouty runs`, `snouty debug`) doesn't need it.
-fn repository_check(resolved: Option<&Resolved>) -> Check {
-    match resolved {
+fn repository_check(repository: Option<&str>) -> Check {
+    match repository {
         Some(_) => Check::ok("repository", "repository is set"),
         None => Check::warn("repository", "repository is not set")
             .note(Level::Warning, "repository is needed for `snouty launch`"),
@@ -233,6 +206,10 @@ fn auth_checks(api_key: bool, username: bool, password: bool) -> Vec<Check> {
             .note(
                 Level::Warning,
                 "legacy authentication method, set ANTITHESIS_API_KEY for full API access",
+            )
+            .note(
+                Level::Note,
+                "username/password only enables `snouty launch` and `snouty debug`",
             ),
         ];
     }
@@ -296,74 +273,35 @@ fn collect_checks(settings: &Settings) -> Vec<Check> {
 /// where it came from (env > profile > project/global file). Purely
 /// informational — required/optional semantics are reported by [`collect_checks`].
 fn resolve_settings(settings: &Settings) -> Vec<Setting> {
-    let profile = settings.settings_profile();
-
-    let resolved = |name: &'static str, value: Option<&Resolved>| -> Setting {
-        match value {
-            Some(resolved) => Setting::sourced(
-                name,
-                resolved.value.clone(),
-                source_label(&resolved.source, profile),
-            ),
-            None => Setting::plain(name, "not set"),
-        }
-    };
-
     vec![
-        // Active profile.
-        Setting::plain("profile", profile.unwrap_or("(none)")),
-        resolved("tenant", settings.tenant_setting()),
-        resolved("repository", settings.repository_setting()),
-        // base url: the explicit value if set, otherwise derived from the tenant
-        // (source `derived`), otherwise absent because no tenant is set.
-        match settings.base_url_setting() {
-            Some(resolved) => Setting::sourced(
-                "base url",
-                resolved.value.clone(),
-                source_label(&resolved.source, profile),
-            ),
-            None => Setting::plain("base url", "derives from tenant"),
-        },
-        // container engine: explicit value, otherwise auto-detected.
-        match settings.container_engine_setting() {
-            Some(resolved) => Setting::sourced(
-                "container engine",
-                resolved.value.clone(),
-                source_label(&resolved.source, profile),
-            ),
-            None => Setting::plain("container engine", "auto-detect"),
-        },
+        Setting::new("profile", settings.settings_profile().unwrap_or("(none)")),
+        Setting::new("tenant", settings.tenant_setting().unwrap_or("not set")),
+        Setting::new(
+            "repository",
+            settings.repository_setting().unwrap_or("not set"),
+        ),
+        // The explicit override, otherwise auto-detected.
+        Setting::new(
+            "container engine",
+            settings.container_engine().unwrap_or("auto-detect"),
+        ),
     ]
 }
 
-/// Print the resolved-settings table with `SETTING / SOURCE / VALUE` headers,
-/// columns aligned. No status icons — the checks above own pass/warn/fail; this
-/// table just reports what snouty resolved and where from. The value is last
-/// (and unpadded) so long URLs don't push later columns out of alignment.
+/// Print the resolved-settings table with `SETTING / VALUE` headers, columns
+/// aligned. No status icons — the checks above own pass/warn/fail; this table
+/// just reports what snouty resolved. The value is last (and unpadded) so long
+/// values don't push the layout around.
 fn print_settings(settings: &[Setting]) {
-    fn source_col(s: &Setting) -> &str {
-        s.source.as_deref().unwrap_or("-")
-    }
     let name_w = settings
         .iter()
         .map(|s| s.name.len())
         .chain(["SETTING".len()])
         .max()
         .unwrap_or(0);
-    let source_w = settings
-        .iter()
-        .map(|s| source_col(s).len())
-        .chain(["SOURCE".len()])
-        .max()
-        .unwrap_or(0);
-    eprintln!("  {:<name_w$}  {:<source_w$}  VALUE", "SETTING", "SOURCE");
+    eprintln!("  {:<name_w$}  VALUE", "SETTING");
     for s in settings {
-        eprintln!(
-            "  {:<name_w$}  {:<source_w$}  {}",
-            s.name,
-            source_col(s),
-            s.value
-        );
+        eprintln!("  {:<name_w$}  {}", s.name, s.value);
     }
 }
 
@@ -523,10 +461,14 @@ mod tests {
                 .any(|n| n.text.contains("ask Antithesis support"))
         );
         assert_eq!(checks[1].status, Status::Ok);
-        assert_eq!(checks[1].notes.len(), 1);
+        assert_eq!(checks[1].notes.len(), 2);
         assert!(checks[1].notes.iter().any(|n| n.level == Level::Warning
             && n.text.contains("legacy authentication method")
             && n.text.contains("ANTITHESIS_API_KEY")));
+        // The legacy creds steer the user to the only commands they unlock.
+        assert!(checks[1].notes.iter().any(|n| n.level == Level::Note
+            && n.text.contains("snouty launch")
+            && n.text.contains("snouty debug")));
     }
 
     #[test]
@@ -567,16 +509,9 @@ mod tests {
 
     // ---- required-settings checks --------------------------------------
 
-    fn resolved(value: &str, source: ValueSource) -> Resolved {
-        Resolved {
-            value: value.to_string(),
-            source,
-        }
-    }
-
     #[test]
     fn tenant_check_is_ok_when_resolved() {
-        let check = tenant_check(Some(&resolved("acme", ValueSource::EnvironmentVariable)));
+        let check = tenant_check(Some("acme"));
         assert_eq!(check.status, Status::Ok);
     }
 
@@ -594,7 +529,7 @@ mod tests {
 
     #[test]
     fn repository_check_is_ok_when_resolved() {
-        let check = repository_check(Some(&resolved("acme/repo", ValueSource::ProjectDefault)));
+        let check = repository_check(Some("acme/repo"));
         assert_eq!(check.status, Status::Ok);
     }
 
@@ -607,24 +542,6 @@ mod tests {
         assert!(check.notes.iter().any(|n| n.text.contains("snouty launch")));
     }
 
-    // ---- source_label --------------------------------------------------
-
-    #[test]
-    fn source_label_maps_every_value_source() {
-        assert_eq!(source_label(&ValueSource::EnvironmentVariable, None), "env");
-        assert_eq!(
-            source_label(&ValueSource::ProjectProfile, Some("staging")),
-            "staging"
-        );
-        assert_eq!(
-            source_label(&ValueSource::GlobalProfile, Some("staging")),
-            "staging"
-        );
-        assert_eq!(source_label(&ValueSource::ProjectDefault, None), "default");
-        assert_eq!(source_label(&ValueSource::GlobalDefault, None), "default");
-        assert_eq!(source_label(&ValueSource::Derived, None), "derived");
-    }
-
     // ---- resolved-settings table (informational, no status) ------------
 
     fn row<'a>(rows: &'a [Setting], name: &str) -> &'a Setting {
@@ -632,56 +549,23 @@ mod tests {
     }
 
     #[test]
-    fn tenant_row_shows_value_and_source() {
-        let settings = Settings::for_test(
-            None,
-            Some(("acme", ValueSource::EnvironmentVariable)),
-            None,
-            None,
-            None,
-        );
+    fn tenant_row_shows_value() {
+        let settings = Settings::for_test(None, Some("acme"), None, None, None);
         let rows = resolve_settings(&settings);
-        let tenant = row(&rows, "tenant");
-        assert_eq!(tenant.value, "acme");
-        assert_eq!(tenant.source.as_deref(), Some("env"));
+        assert_eq!(row(&rows, "tenant").value, "acme");
     }
 
     #[test]
-    fn missing_settings_render_as_not_set_without_a_source() {
+    fn missing_settings_render_as_not_set() {
         let rows = resolve_settings(&Settings::for_test(None, None, None, None, None));
-        let tenant = row(&rows, "tenant");
-        assert_eq!(tenant.value, "not set");
-        assert_eq!(tenant.source, None);
-    }
-
-    #[test]
-    fn base_url_row_derives_from_tenant_when_unset() {
-        let settings = Settings::for_test(
-            None,
-            Some(("acme", ValueSource::EnvironmentVariable)),
-            None,
-            None,
-            None,
-        );
-        let rows = resolve_settings(&settings);
-        let base_url = row(&rows, "base url");
-        assert_eq!(base_url.value, "https://acme.antithesis.com");
-        assert_eq!(base_url.source.as_deref(), Some("derived"));
+        assert_eq!(row(&rows, "tenant").value, "not set");
     }
 
     #[test]
     fn container_engine_row_auto_detects_when_unset() {
-        let settings = Settings::for_test(
-            None,
-            Some(("acme", ValueSource::EnvironmentVariable)),
-            None,
-            None,
-            None,
-        );
+        let settings = Settings::for_test(None, Some("acme"), None, None, None);
         let rows = resolve_settings(&settings);
-        let engine = row(&rows, "container engine");
-        assert_eq!(engine.value, "auto-detect");
-        assert_eq!(engine.source, None);
+        assert_eq!(row(&rows, "container engine").value, "auto-detect");
     }
 
     #[test]
@@ -785,7 +669,7 @@ mod tests {
     #[test]
     fn json_report_carries_checks_and_informational_settings() {
         let checks = auth_checks(false, false, false);
-        let settings = vec![Setting::sourced("tenant", "acme", "env")];
+        let settings = vec![Setting::new("tenant", "acme")];
         let report = Report {
             ok: false,
             checks: &checks,
@@ -796,17 +680,9 @@ mod tests {
         assert_eq!(value["checks"][0]["name"], "api_key");
         assert_eq!(value["checks"][0]["status"], "error");
         assert_eq!(value["checks"][0]["notes"][0]["level"], "error");
-        // Settings rows are informational: a value and a source, no status.
+        // Settings rows are informational: a name and a value, no status.
         assert_eq!(value["settings"][0]["name"], "tenant");
         assert_eq!(value["settings"][0]["value"], "acme");
-        assert_eq!(value["settings"][0]["source"], "env");
         assert!(value["settings"][0].get("status").is_none());
-    }
-
-    #[test]
-    fn json_setting_omits_source_when_absent() {
-        let setting = Setting::plain("profile", "(none)");
-        let value = serde_json::to_value(&setting).unwrap();
-        assert!(value.get("source").is_none());
     }
 }

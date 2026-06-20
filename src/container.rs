@@ -1118,14 +1118,14 @@ pub(crate) fn is_podman_in_disguise(cmd: &str) -> bool {
 ///
 /// Set `SNOUTY_CONTAINER_ENGINE=podman` or `=docker` to force a specific runtime.
 pub fn runtime(settings: &Settings) -> Result<Box<dyn ContainerRuntime>> {
-    // Detection is cached process-wide on first call, so the engine
-    // override is read from the settings passed to that first call.
+    // An explicit engine setting (from SNOUTY_CONTAINER_ENGINE or a settings
+    // file) short-circuits auto-detection.
     if let Some(engine) = settings.container_engine() {
         return match engine {
             "podman" => Ok(Box::new(PodmanRuntime::new("podman"))),
             "docker" => Ok(Box::new(DockerRuntime::new("docker"))),
             other => Err(eyre!(
-                "SNOUTY_CONTAINER_ENGINE={other}: expected 'podman' or 'docker'"
+                "unsupported container engine '{other}': expected 'podman' or 'docker'"
             )),
         };
     }

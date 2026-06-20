@@ -62,7 +62,7 @@ export ANTITHESIS_REPOSITORY="us-central1-docker.pkg.dev/your-project/your-repo"
 
 Settings can instead live in a TOML file. Snouty reads two, the first taking precedence:
 
-1. A **project** settings file — `./.snouty.toml` by default. Point elsewhere with the global `--settings <path>` flag or the `SNOUTY_SETTINGS_PATH` environment variable. (This is unrelated to `launch --config`, which is the docker-compose directory.)
+1. A **project** settings file — `./.snouty.toml` by default. Point elsewhere with the global `--settings <path>` flag or the `SNOUTY_SETTINGS_PATH` environment variable.
 2. A **global** settings file — `settings.toml` under `$XDG_CONFIG_HOME/snouty/` (falling back to `$HOME/.config/snouty/`).
 
 ```toml
@@ -84,7 +84,7 @@ Authentication (below) is read from the environment only, never from a settings 
 
 ### Profiles
 
-A settings file can define named profiles for switching between environments. Select one with the global `--profile <name>` flag or the `ANTITHESIS_PROFILE` environment variable (the environment variable wins):
+A settings file can define named profiles for switching between environments. Select one with the global `--profile <name>` flag or the `ANTITHESIS_PROFILE` environment variable (the flag wins):
 
 ```toml
 # .snouty.toml

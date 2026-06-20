@@ -1115,6 +1115,31 @@ mod tests {
     use wiremock::matchers::{method, path, query_param, query_param_is_missing};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
+    #[test]
+    fn parse_debug_launch_body_reads_snake_case_run_id() {
+        let (run_id, status) = parse_debug_launch_body(br#"{"run_id":"abc-1"}"#).unwrap();
+        assert_eq!(run_id, "abc-1");
+        assert_eq!(status, None);
+    }
+
+    #[test]
+    fn parse_debug_launch_body_reads_camel_case_run_id_and_status_code() {
+        let (run_id, status) =
+            parse_debug_launch_body(br#"{"runId":"xyz-2","statusCode":202}"#).unwrap();
+        assert_eq!(run_id, "xyz-2");
+        assert_eq!(status, Some(202));
+    }
+
+    #[test]
+    fn parse_debug_launch_body_errors_without_a_run_id() {
+        assert!(parse_debug_launch_body(br#"{"statusCode":200}"#).is_err());
+    }
+
+    #[test]
+    fn parse_debug_launch_body_errors_on_non_json() {
+        assert!(parse_debug_launch_body(b"not json").is_err());
+    }
+
     fn test_api_optionally_with_cache(
         mock_server: &MockServer,
         cache_dir: Option<&TempDir>,

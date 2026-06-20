@@ -147,13 +147,11 @@ fn normalize_property(property: Property) -> Result<Property> {
     }
 }
 
-const CLIENT_TIMEOUT_SECS: u64 = 60;
-
-/// Aggressive connect-phase cap (DNS + TCP + TLS). The `/api/version` probe in
-/// `snouty doctor` is expected to be fast, and no command should hang on a
-/// black-holed or unresolvable host; this bounds connection setup without
-/// limiting long streaming responses (governed by the total timeout above).
-const CONNECT_TIMEOUT_SECS: u64 = 5;
+/// Connect-phase cap (DNS + TCP + TLS). Bounds connection setup so no command
+/// hangs on a black-holed or unresolvable host. There is deliberately no read or
+/// total timeout: once connected, an Antithesis request may take a truly long time
+/// to return (e.g. massive log files) and must not be aborted — the user can ctrl-c.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// A required credential env var. Reads through [`crate::env::var`], so an
 /// exported-but-empty value counts as missing (the same empty-means-unset policy
@@ -370,8 +368,8 @@ impl AntithesisApi {
     /// classified (HTTP status vs unreachable) rather than rendered, so the
     /// caller can decide how to present each case.
     pub async fn get_version(&self) -> std::result::Result<ApiVersion, VersionError> {
-        // The connect-phase timeout on the client (CONNECT_TIMEOUT_SECS) keeps a
-        // black-holed or unresolvable host from hanging this probe.
+        // The client's connect timeout (CONNECT_TIMEOUT) keeps a black-holed or
+        // unresolvable host from hanging this probe.
         match self.client.get_version().send().await {
             Ok(response) => {
                 let v = response.into_inner();
@@ -745,10 +743,11 @@ fn default_request_headers(auth: &Auth) -> Result<reqwest::header::HeaderMap> {
 }
 
 fn build_http_client(default_headers: reqwest::header::HeaderMap) -> Result<Client> {
+    // Only a connect timeout (see CONNECT_TIMEOUT): no read or total timeout, so a
+    // slow-but-alive Antithesis request is never aborted no matter how long it runs.
     Client::builder()
         .default_headers(default_headers)
-        .timeout(Duration::from_secs(CLIENT_TIMEOUT_SECS))
-        .connect_timeout(Duration::from_secs(CONNECT_TIMEOUT_SECS))
+        .connect_timeout(CONNECT_TIMEOUT)
         .build()
         .wrap_err("failed to build API client")
 }

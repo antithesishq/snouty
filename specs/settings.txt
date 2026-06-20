@@ -1,0 +1,70 @@
+# Settings resolution
+#
+# Snouty resolves each setting with precedence: environment variable, then the
+# active profile, then top-level defaults — checking the project settings file
+# (.snouty.toml) before the global one. `snouty doctor` prints the fully
+# resolved values, so we drive resolution by setting env/flags/files and reading
+# the table back. Each layer below uses a distinct value, so the resolved value
+# alone proves which layer won.
+#
+# doctor exits non-zero here (no auth or container runtime is configured), so
+# each step uses `! snouty doctor`; the resolved-settings rows are printed
+# regardless of the exit status. Each row is `<setting>  <value>`.
+
+# 1. tenant/repository come from the project .snouty.toml in the working
+#    directory (top-level defaults).
+! snouty doctor
+stderr 'tenant.*acme'
+stderr 'repository.*acme/repo'
+
+# 2. A profile selected with --profile overrides the top-level default; the
+#    active profile is also named in its own row.
+! snouty --profile staging doctor
+stderr 'profile.*staging'
+stderr 'tenant.*staging-tenant'
+
+# 3. An explicit --settings file is read instead of ./.snouty.toml.
+! snouty --settings other.toml doctor
+stderr 'tenant.*other-tenant'
+
+# 4. The --profile flag wins over ANTITHESIS_PROFILE.
+env ANTITHESIS_PROFILE=staging
+! snouty --profile prod doctor
+stderr 'tenant.*prod-tenant'
+
+# 5. An environment variable overrides everything else (profile prod is still
+#    set, but the env var wins).
+env ANTITHESIS_TENANT=from-env
+! snouty doctor
+stderr 'tenant.*from-env'
+
+# 6. The container engine override is reported in the table.
+env SNOUTY_CONTAINER_ENGINE=podman
+! snouty doctor
+stderr 'container engine.*podman'
+
+# 7. SNOUTY_SETTINGS_PATH selects the project file in place of ./.snouty.toml.
+#    Observed via repository, since no earlier step set ANTITHESIS_REPOSITORY
+#    (ANTITHESIS_TENANT is already pinned from step 5, so tenant won't show it).
+env SNOUTY_SETTINGS_PATH=env-settings.toml
+! snouty doctor
+stderr 'repository.*env-path-repo'
+
+# 8. The --settings flag wins over SNOUTY_SETTINGS_PATH.
+! snouty --settings other.toml doctor
+stderr 'repository.*other/repo'
+
+-- .snouty.toml --
+tenant = "acme"
+repository = "acme/repo"
+
+[profile.staging]
+tenant = "staging-tenant"
+
+[profile.prod]
+tenant = "prod-tenant"
+-- other.toml --
+tenant = "other-tenant"
+repository = "other/repo"
+-- env-settings.toml --
+repository = "env-path-repo"

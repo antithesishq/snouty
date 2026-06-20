@@ -10,6 +10,7 @@ use crate::container::{ContainerRuntime, DockerRuntime, PodmanRuntime, is_podman
 /// Return all container runtimes that are actually usable on this machine.
 /// Skips `docker` if it is actually podman in disguise.
 pub fn available_runtimes() -> Vec<Box<dyn ContainerRuntime>> {
+    // A pure test-harness knob (selects podman vs docker), never a setting.
     let requested = std::env::var("SNOUTY_TEST_RUNTIME").ok();
     let mut runtimes: Vec<Box<dyn ContainerRuntime>> = Vec::new();
     let want_podman = requested.as_deref().is_none_or(|r| r == "podman");

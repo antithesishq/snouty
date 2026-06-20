@@ -1,13 +1,14 @@
-use std::env;
-
 use color_eyre::eyre::Result;
 use serde::Serialize;
 
 use crate::api::{AntithesisApi, ApiVersion, VersionError};
 use crate::container;
+use crate::env;
+use crate::render::render_kv;
+use crate::settings::Settings;
 
-/// Outcome of a single check. Only `Error` fails doctor; `Warn` is surfaced but
-/// the run still passes.
+/// Outcome of a single health check. Only `Error` fails doctor; `Warn` is
+/// surfaced but the run still passes.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize)]
 #[serde(rename_all = "lowercase")]
 enum Status {
@@ -43,10 +44,30 @@ struct Note {
     text: String,
 }
 
-/// One line in the doctor report. The headline `message` states the bare fact
-/// ("ANTITHESIS_API_KEY is not set"); the `notes` carry every explanation of
-/// what the variable does, what it's required for, and what to do about it. The
-/// `name` is a stable machine key for `--json` consumers.
+fn status_icon(status: Status) -> console::StyledObject<&'static str> {
+    match status {
+        Status::Ok => console::style("✓").green(),
+        Status::Warn => console::style("⚠").yellow(),
+        Status::Error => console::style("✗").red(),
+    }
+}
+
+fn print_notes(notes: &[Note]) {
+    for note in notes {
+        let label = match note.level {
+            Level::Note => console::style(note.level.label()).dim(),
+            Level::Warning => console::style(note.level.label()).yellow(),
+            Level::Error => console::style(note.level.label()).red(),
+        };
+        eprintln!("      {}: {}", label, note.text);
+    }
+}
+
+/// One health check: local tooling, settings validity, authentication, and
+/// API connectivity. The headline `message` states the bare fact; the `notes`
+/// carry explanations and how-tos. `name` is a stable machine key for `--json`.
+/// Checks own all of doctor's pass/warn/fail semantics — the settings table is
+/// purely informational.
 #[derive(Serialize)]
 struct Check {
     name: &'static str,
@@ -89,63 +110,70 @@ impl Check {
     }
 
     fn print(&self) {
-        let icon = match self.status {
-            Status::Ok => console::style("✓").green(),
-            Status::Warn => console::style("⚠").yellow(),
-            Status::Error => console::style("✗").red(),
-        };
-        eprintln!("  {} {}", icon, self.message);
-        for note in &self.notes {
-            let label = match note.level {
-                Level::Note => console::style(note.level.label()).dim(),
-                Level::Warning => console::style(note.level.label()).yellow(),
-                Level::Error => console::style(note.level.label()).red(),
-            };
-            eprintln!("      {}: {}", label, note.text);
+        eprintln!("  {} {}", status_icon(self.status), self.message);
+        print_notes(&self.notes);
+    }
+}
+
+/// One row of the resolved-settings table: a setting and the value snouty
+/// resolved for it. Purely informational — it carries no status; whether a value
+/// is required or optional is a [`Check`] concern.
+#[derive(Serialize)]
+struct Setting {
+    name: &'static str,
+    value: String,
+}
+
+impl Setting {
+    fn new(name: &'static str, value: impl Into<String>) -> Self {
+        Self {
+            name,
+            value: value.into(),
         }
     }
 }
 
-/// The full doctor report, as emitted by `--json`.
+/// The full doctor report, as emitted by `--json`: the binary `checks` and the
+/// informational `settings` table snouty resolved.
 #[derive(Serialize)]
 struct Report<'a> {
     ok: bool,
     checks: &'a [Check],
+    settings: &'a [Setting],
 }
 
+/// Whether an auth env var is set (empty counts as unset, matching how the rest
+/// of snouty reads the environment — see [`crate::env::var`]). A non-Unicode
+/// value is reported as not set here rather than failing the whole report.
 fn env_set(name: &str) -> bool {
-    env::var(name).is_ok_and(|v| !v.is_empty())
+    matches!(env::var(name), Ok(Some(_)))
 }
 
 fn presence(var: &str, set: bool) -> String {
     format!("{var} {}", if set { "is set" } else { "is not set" })
 }
 
-/// `ANTITHESIS_TENANT` is required by every command, so a missing one is a hard
-/// failure.
-fn tenant_check(set: bool) -> Check {
-    let message = presence("ANTITHESIS_TENANT", set);
-    if set {
-        Check::ok("tenant", message)
-    } else {
-        Check::fail("tenant", message).note(
+/// The tenant is required by every command, so a missing one fails doctor.
+/// (A broken settings file never reaches here — it fails at startup, before
+/// doctor runs — so the resolved value is simply present or absent.)
+fn tenant_check(tenant: Option<&str>) -> Check {
+    match tenant {
+        Some(_) => Check::ok("tenant", "tenant is set"),
+        None => Check::fail("tenant", "tenant is not set").note(
             Level::Note,
-            "your Antithesis tenant, required by every command",
-        )
+            "set ANTITHESIS_TENANT or add it to a settings file",
+        ),
     }
 }
 
-/// `ANTITHESIS_REPOSITORY` is only needed to build and push a config image
-/// (`snouty launch --config`), so a missing one is a warning, not a failure —
-/// read-only use (`snouty runs`, `snouty debug`) doesn't need it.
-fn repository_check(set: bool) -> Check {
-    let message = presence("ANTITHESIS_REPOSITORY", set);
-    if set {
-        Check::ok("repository", message)
-    } else {
-        Check::warn("repository", message)
-            .note(Level::Note, "container registry for pushing images")
-            .note(Level::Note, "only required to launch with --config")
+/// The repository (a container registry) is only needed to build and push a
+/// config image (`snouty launch --config`), so a missing one is a warning, not
+/// a failure — read-only use (`snouty runs`, `snouty debug`) doesn't need it.
+fn repository_check(repository: Option<&str>) -> Check {
+    match repository {
+        Some(_) => Check::ok("repository", "repository is set"),
+        None => Check::warn("repository", "repository is not set")
+            .note(Level::Warning, "repository is needed for `snouty launch`"),
     }
 }
 
@@ -154,8 +182,9 @@ fn repository_check(set: bool) -> Check {
 /// `snouty launch` and `snouty debug`, so it never stands in for a missing API
 /// key — it only softens the missing-key failure into a warning.
 ///
-/// Pure over the three booleans so it can be unit-tested without touching the
-/// environment.
+/// Authentication is intentionally environment-only: secrets never live in a
+/// settings file. Pure over the three booleans so it can be unit-tested without
+/// touching the environment.
 fn auth_checks(api_key: bool, username: bool, password: bool) -> Vec<Check> {
     if api_key {
         return vec![Check::ok("api_key", presence("ANTITHESIS_API_KEY", true))];
@@ -183,7 +212,7 @@ fn auth_checks(api_key: bool, username: bool, password: bool) -> Vec<Check> {
             )
             .note(
                 Level::Note,
-                "only `snouty launch` and `snouty debug` accept it",
+                "username/password only enables `snouty launch` and `snouty debug`",
             ),
         ];
     }
@@ -201,11 +230,14 @@ fn auth_checks(api_key: bool, username: bool, password: bool) -> Vec<Check> {
     ]
 }
 
-fn collect_checks() -> Vec<Check> {
+/// Binary health checks: local tooling, the required settings
+/// (tenant/repository), and authentication. The resolved values themselves are
+/// reported separately by [`resolve_settings`].
+fn collect_checks(settings: &Settings) -> Vec<Check> {
     let mut checks: Vec<Check> = Vec::new();
 
     // Container runtime (for building/pushing images)
-    match container::runtime() {
+    match container::runtime(settings) {
         Ok(rt) => checks.push(Check::ok(
             "container_runtime",
             format!("Container runtime: {} detected", rt.name()),
@@ -225,9 +257,12 @@ fn collect_checks() -> Vec<Check> {
         ),
     }
 
-    // Required environment + authentication
-    checks.push(tenant_check(env_set("ANTITHESIS_TENANT")));
-    checks.push(repository_check(env_set("ANTITHESIS_REPOSITORY")));
+    // Required settings. tenant is needed by every command; repository is
+    // launch-only, so a missing one is a warning.
+    checks.push(tenant_check(settings.tenant()));
+    checks.push(repository_check(settings.repository()));
+
+    // Authentication (environment-only by design).
     checks.extend(auth_checks(
         env_set("ANTITHESIS_API_KEY"),
         env_set("ANTITHESIS_USERNAME"),
@@ -235,6 +270,33 @@ fn collect_checks() -> Vec<Check> {
     ));
 
     checks
+}
+
+/// The resolved-settings table: the value snouty resolved for each setting and
+/// where it came from (env > profile > project/global file). Purely
+/// informational — required/optional semantics are reported by [`collect_checks`].
+fn resolve_settings(settings: &Settings) -> Vec<Setting> {
+    vec![
+        Setting::new("profile", settings.profile().unwrap_or("(none)")),
+        Setting::new("tenant", settings.tenant().unwrap_or("not set")),
+        Setting::new("repository", settings.repository().unwrap_or("not set")),
+        // The explicit override, otherwise auto-detected.
+        Setting::new(
+            "container engine",
+            settings.container_engine().unwrap_or("auto-detect"),
+        ),
+    ]
+}
+
+/// Print the resolved-settings table, aligned via the shared [`render_kv`] helper
+/// (which also sanitizes the values). No status icons — the checks above own
+/// pass/warn/fail; this table just reports what snouty resolved, indented to sit
+/// under the "Resolved settings" heading.
+fn print_settings(settings: &[Setting]) {
+    let rows: Vec<(&str, String)> = settings.iter().map(|s| (s.name, s.value.clone())).collect();
+    for line in render_kv(&rows, 0).lines() {
+        eprintln!("  {line}");
+    }
 }
 
 /// Map a `GET /api/version` probe into a check. Reaching the endpoint at all —
@@ -287,19 +349,28 @@ fn version_check(host: &str, result: std::result::Result<ApiVersion, VersionErro
     }
 }
 
-pub async fn cmd_doctor(json: bool, verbose: bool, offline: bool) -> Result<()> {
-    let mut checks = collect_checks();
+pub async fn cmd_doctor(
+    settings: &Settings,
+    json: bool,
+    verbose: bool,
+    offline: bool,
+) -> Result<()> {
+    let mut checks = collect_checks(settings);
 
     // Connectivity + version check (network). Skipped with --offline. Only runs
     // with an API key: /api/version, like every endpoint but launch, rejects
     // basic auth, so probing it under username/password would only yield a
     // misleading 403 — and the auth checks above already tell legacy and
-    // unauthenticated users to set a key. `verbose` logs the request/response.
-    if !offline && let Ok(api) = AntithesisApi::from_env_requiring_api_key(verbose) {
+    // unauthenticated users to set a key. The client is built from the resolved
+    // settings (base url / tenant), and `verbose` logs the request/response.
+    if !offline && let Ok(api) = AntithesisApi::new_requiring_api_key(settings, verbose) {
         let host = api.host();
         checks.push(version_check(&host, api.get_version().await));
     }
 
+    let settings_rows = resolve_settings(settings);
+
+    // Only the checks carry pass/warn/fail; the settings table is informational.
     let errors = checks.iter().filter(|c| c.status == Status::Error).count();
     let warnings = checks.iter().filter(|c| c.status == Status::Warn).count();
 
@@ -307,13 +378,19 @@ pub async fn cmd_doctor(json: bool, verbose: bool, offline: bool) -> Result<()> 
         let report = Report {
             ok: errors == 0,
             checks: &checks,
+            settings: &settings_rows,
         };
         println!("{}", serde_json::to_string_pretty(&report)?);
     } else {
+        eprintln!("Checks");
         for check in &checks {
             check.print();
         }
         eprintln!();
+        eprintln!("Resolved settings");
+        print_settings(&settings_rows);
+        eprintln!();
+
         let wp = if warnings == 1 { "" } else { "s" };
         if errors > 0 {
             let ep = if errors == 1 { "" } else { "s" };
@@ -345,13 +422,14 @@ pub async fn cmd_doctor(json: bool, verbose: bool, offline: bool) -> Result<()> 
 mod tests {
     use super::*;
 
+    // ---- auth_checks (env-only auth) -----------------------------------
+
     #[test]
     fn auth_api_key_set_is_a_single_bare_ok_check() {
         let checks = auth_checks(true, false, false);
         assert_eq!(checks.len(), 1);
         assert_eq!(checks[0].status, Status::Ok);
         assert!(checks[0].message.contains("ANTITHESIS_API_KEY is set"));
-        // A configured key needs no explanation — keep the happy path quiet.
         assert!(checks[0].notes.is_empty());
     }
 
@@ -367,8 +445,6 @@ mod tests {
     fn auth_legacy_basic_warns_on_key_and_notes_legacy() {
         let checks = auth_checks(false, true, true);
         assert_eq!(checks.len(), 2);
-
-        // Missing API key is a warning, with a how-to-get-one note (issue #2).
         assert_eq!(checks[0].status, Status::Warn);
         assert!(checks[0].message.contains("ANTITHESIS_API_KEY is not set"));
         assert!(checks[0].notes.iter().any(|n| n.level == Level::Warning));
@@ -378,21 +454,15 @@ mod tests {
                 .iter()
                 .any(|n| n.text.contains("ask Antithesis support"))
         );
-
-        // The legacy creds get their own passing check: a WARNING that flags the
-        // legacy method and points at the API key, plus a NOTE on its scope.
         assert_eq!(checks[1].status, Status::Ok);
         assert_eq!(checks[1].notes.len(), 2);
         assert!(checks[1].notes.iter().any(|n| n.level == Level::Warning
             && n.text.contains("legacy authentication method")
             && n.text.contains("ANTITHESIS_API_KEY")));
-        let notes = checks[1]
-            .notes
-            .iter()
-            .map(|n| n.text.as_str())
-            .collect::<Vec<_>>()
-            .join(" ");
-        assert!(notes.contains("snouty launch"));
+        // The legacy creds steer the user to the only commands they unlock.
+        assert!(checks[1].notes.iter().any(|n| n.level == Level::Note
+            && n.text.contains("snouty launch")
+            && n.text.contains("snouty debug")));
     }
 
     #[test]
@@ -402,14 +472,12 @@ mod tests {
         assert_eq!(checks[0].status, Status::Error);
         assert!(checks[0].message.contains("ANTITHESIS_API_KEY is not set"));
         assert!(checks[0].notes.iter().any(|n| n.level == Level::Error));
-        // Issue #2: tell the user where to get a key.
         assert!(
             checks[0]
                 .notes
                 .iter()
                 .any(|n| n.text.contains("ask Antithesis support"))
         );
-        // Nothing-set must steer to the API key only — no username/password noise.
         let all = format!(
             "{} {}",
             checks[0].message,
@@ -433,21 +501,74 @@ mod tests {
         }
     }
 
+    // ---- required-settings checks --------------------------------------
+
     #[test]
-    fn tenant_missing_is_an_error_with_a_note() {
-        let check = tenant_check(false);
-        assert_eq!(check.status, Status::Error);
-        assert!(!check.notes.is_empty());
-        assert!(check.notes.iter().any(|n| n.text.contains("required")));
+    fn tenant_check_is_ok_when_resolved() {
+        let check = tenant_check(Some("acme"));
+        assert_eq!(check.status, Status::Ok);
     }
 
     #[test]
-    fn repository_missing_is_only_a_warning() {
-        // Issue #3: REPOSITORY is launch-only, so a missing one must not fail doctor.
-        let check = repository_check(false);
-        assert_eq!(check.status, Status::Warn);
-        assert!(check.notes.iter().any(|n| n.text.contains("--config")));
+    fn tenant_check_fails_when_missing() {
+        let check = tenant_check(None);
+        assert_eq!(check.status, Status::Error);
+        assert!(
+            check
+                .notes
+                .iter()
+                .any(|n| n.text.contains("ANTITHESIS_TENANT"))
+        );
     }
+
+    #[test]
+    fn repository_check_is_ok_when_resolved() {
+        let check = repository_check(Some("acme/repo"));
+        assert_eq!(check.status, Status::Ok);
+    }
+
+    #[test]
+    fn repository_check_only_warns_when_missing() {
+        // Following main's #147 decision: repository is launch-only, so a missing
+        // one is a warning, not a failure.
+        let check = repository_check(None);
+        assert_eq!(check.status, Status::Warn);
+        assert!(check.notes.iter().any(|n| n.text.contains("snouty launch")));
+    }
+
+    // ---- resolved-settings table (informational, no status) ------------
+
+    fn row<'a>(rows: &'a [Setting], name: &str) -> &'a Setting {
+        rows.iter().find(|s| s.name == name).expect("row present")
+    }
+
+    #[test]
+    fn tenant_row_shows_value() {
+        let settings = Settings::for_test(None, Some("acme"), None, None, None);
+        let rows = resolve_settings(&settings);
+        assert_eq!(row(&rows, "tenant").value, "acme");
+    }
+
+    #[test]
+    fn missing_settings_render_as_not_set() {
+        let rows = resolve_settings(&Settings::for_test(None, None, None, None, None));
+        assert_eq!(row(&rows, "tenant").value, "not set");
+    }
+
+    #[test]
+    fn container_engine_row_auto_detects_when_unset() {
+        let settings = Settings::for_test(None, Some("acme"), None, None, None);
+        let rows = resolve_settings(&settings);
+        assert_eq!(row(&rows, "container engine").value, "auto-detect");
+    }
+
+    #[test]
+    fn profile_row_reflects_no_active_profile() {
+        let rows = resolve_settings(&Settings::for_test(None, None, None, None, None));
+        assert_eq!(row(&rows, "profile").value, "(none)");
+    }
+
+    // ---- version_check (network probe) ---------------------------------
 
     #[test]
     fn version_ok_reports_both_versions() {
@@ -471,9 +592,6 @@ mod tests {
 
     #[test]
     fn version_404_is_reachable_but_warns_an_old_tenant() {
-        // 404 means an older tenant that predates the endpoint, but the request
-        // was served — so connectivity and auth are fine; doctor stays green and
-        // warns that the tenant release is old.
         let check = version_check("tenant.antithesis.com", Err(VersionError::Http(404)));
         assert_eq!(check.status, Status::Ok);
         assert!(check.message.contains("reachable"));
@@ -513,7 +631,6 @@ mod tests {
         );
         assert_eq!(check.status, Status::Error);
         assert!(check.message.contains("unreachable"));
-        // A clean host-named note, plus the raw error for debugging.
         assert!(check.notes.iter().any(|n| {
             n.text
                 .contains("could not connect to tenant.antithesis.com")
@@ -528,7 +645,6 @@ mod tests {
 
     #[test]
     fn version_5xx_is_unavailable_with_status() {
-        // 5xx is connectivity broken by a server error (auth unknown).
         let check = version_check("tenant.antithesis.com", Err(VersionError::Http(503)));
         assert_eq!(check.status, Status::Error);
         assert!(check.message.contains("unavailable"));
@@ -542,34 +658,25 @@ mod tests {
         assert!(check.notes.iter().any(|n| n.text.contains("429")));
     }
 
+    // ---- JSON report ----------------------------------------------------
+
     #[test]
-    fn json_report_carries_structured_status_levels_and_notes() {
+    fn json_report_carries_checks_and_informational_settings() {
         let checks = auth_checks(false, false, false);
+        let settings = vec![Setting::new("tenant", "acme")];
         let report = Report {
             ok: false,
             checks: &checks,
+            settings: &settings,
         };
         let value = serde_json::to_value(&report).unwrap();
         assert_eq!(value["ok"], false);
         assert_eq!(value["checks"][0]["name"], "api_key");
         assert_eq!(value["checks"][0]["status"], "error");
-        assert_eq!(
-            value["checks"][0]["message"],
-            "ANTITHESIS_API_KEY is not set"
-        );
         assert_eq!(value["checks"][0]["notes"][0]["level"], "error");
-        assert!(
-            value["checks"][0]["notes"][0]["text"]
-                .as_str()
-                .unwrap()
-                .contains("requires an API key")
-        );
-    }
-
-    #[test]
-    fn json_omits_notes_when_empty() {
-        let check = Check::ok("docker_compose", "docker-compose: v2.0.0");
-        let value = serde_json::to_value(&check).unwrap();
-        assert!(value.get("notes").is_none());
+        // Settings rows are informational: a name and a value, no status.
+        assert_eq!(value["settings"][0]["name"], "tenant");
+        assert_eq!(value["settings"][0]["value"], "acme");
+        assert!(value["settings"][0].get("status").is_none());
     }
 }

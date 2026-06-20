@@ -1,5 +1,5 @@
 use std::collections::{HashMap, VecDeque};
-use std::env;
+use std::path::PathBuf;
 use std::time::Duration;
 
 use base64::Engine;
@@ -7,14 +7,17 @@ use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use color_eyre::eyre::{Context, Report, Result, eyre};
 use color_eyre::{Section, SectionExt};
 use futures_util::stream;
+use http::HeaderValue;
 use log::debug;
 use progenitor_client::{ClientHooks, ClientInfo, Error as ClientError, OperationInfo};
 use reqwest::Client;
 use reqwest_middleware::ClientWithMiddleware;
 
 use crate::api_cache;
+use crate::env;
 use crate::error::{ApiError, user_error};
 use crate::params::Params;
+use crate::settings::Settings;
 
 #[allow(dead_code, unused_imports, private_interfaces)]
 mod generated {
@@ -78,6 +81,18 @@ impl RunDetail {
             .as_deref()
             .or_else(|| params_test_description(self.parameters.as_ref()))
     }
+
+    /// The failure moment if it pins a real point in the run, otherwise `None`.
+    ///
+    /// A timed-out or killed run has no moment-pinned failure, so the API reports
+    /// a placeholder `0/0` moment that streams no logs. Treat that placeholder as
+    /// "no moment" so callers neither show empty Failure Hash/VTime rows nor a
+    /// `runs logs` hint that would point at an empty stream.
+    pub(crate) fn real_failure_moment(&self) -> Option<&Moment> {
+        self.failure_moment
+            .as_ref()
+            .filter(|m| m.input_hash != "0" || m.vtime != "0")
+    }
 }
 
 impl Property {
@@ -138,21 +153,11 @@ fn normalize_property(property: Property) -> Result<Property> {
 /// to return (e.g. massive log files) and must not be aborted — the user can ctrl-c.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// A required credential env var. Reads through [`crate::env::var`], so an
+/// exported-but-empty value counts as missing (the same empty-means-unset policy
+/// as every other snouty env var) rather than producing an empty credential.
 fn required_env(name: &'static str) -> Result<String> {
-    env::var(name).map_err(|e| match e {
-        env::VarError::NotPresent => user_error(format!("missing environment variable: {name}")),
-        _ => user_error(format!("invalid environment variable {name}: {e}")),
-    })
-}
-
-fn optional_env(name: &'static str) -> Result<Option<String>> {
-    match env::var(name) {
-        Ok(value) => Ok(Some(value)),
-        Err(env::VarError::NotPresent) => Ok(None),
-        Err(e) => Err(user_error(format!(
-            "invalid environment variable {name}: {e}"
-        ))),
-    }
+    env::var(name)?.ok_or_else(|| user_error(format!("missing environment variable: {name}")))
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -186,8 +191,8 @@ impl Auth {
         Self::Bearer { api_key }
     }
 
-    fn from_env() -> Result<Self> {
-        if let Some(api_key) = optional_env("ANTITHESIS_API_KEY")? {
+    pub(crate) fn from_env() -> Result<Self> {
+        if let Some(api_key) = env::var("ANTITHESIS_API_KEY")? {
             return Ok(Self::bearer(api_key));
         }
         Ok(Self::basic(
@@ -201,11 +206,11 @@ impl Auth {
     /// other endpoints should fail fast with a clear message instead of
     /// sending a request destined for a 403.
     fn api_key_from_env() -> Result<Self> {
-        if let Some(api_key) = optional_env("ANTITHESIS_API_KEY")? {
+        if let Some(api_key) = env::var("ANTITHESIS_API_KEY")? {
             return Ok(Self::bearer(api_key));
         }
-        let has_basic = optional_env("ANTITHESIS_USERNAME")?.is_some()
-            || optional_env("ANTITHESIS_PASSWORD")?.is_some();
+        let has_basic = env::var("ANTITHESIS_USERNAME")?.is_some()
+            || env::var("ANTITHESIS_PASSWORD")?.is_some();
         let mut err = user_error("missing environment variable: ANTITHESIS_API_KEY");
         if has_basic {
             err = err.note(
@@ -222,103 +227,42 @@ impl Auth {
     }
 }
 
-#[derive(Clone, Debug)]
-pub struct Config {
-    pub auth: Auth,
-    pub tenant: String,
-    pub verbose: bool,
-}
-
-impl Config {
-    pub fn new(auth: Auth, tenant: String) -> Self {
-        Self {
-            auth,
-            tenant,
-            verbose: false,
-        }
-    }
-
-    pub fn from_env() -> Result<Self> {
-        debug!("loading config from environment");
-        Ok(Self {
-            auth: Auth::from_env()?,
-            tenant: required_env("ANTITHESIS_TENANT")?,
-            verbose: false,
-        })
-    }
-
-    /// Like [`Config::from_env`], but only accepts API key authentication.
-    pub fn from_env_requiring_api_key() -> Result<Self> {
-        debug!("loading config from environment (API key required)");
-        Ok(Self {
-            auth: Auth::api_key_from_env()?,
-            tenant: required_env("ANTITHESIS_TENANT")?,
-            verbose: false,
-        })
-    }
-}
-
 pub struct AntithesisApi {
     client: generated::Client,
     base_url: String,
 }
 
 impl AntithesisApi {
-    pub fn new(config: Config) -> Result<Self> {
-        let base_url = format!("https://{}.antithesis.com", config.tenant);
-        debug!("using default base URL: {}", base_url);
-        Self::with_base_url(config, base_url)
+    pub fn new(settings: &Settings, verbose: bool) -> Result<Self> {
+        Self::build(settings, &Auth::from_env()?, verbose, None)
     }
 
-    pub fn from_env(verbose: bool) -> Result<Self> {
-        Self::from_config(Config::from_env()?, verbose)
-    }
-
-    /// Like [`AntithesisApi::from_env`], but fails fast unless an API key is
+    /// Like [`AntithesisApi::new`], but fails fast unless an API key is
     /// configured. Every endpoint other than launch requires one.
-    pub fn from_env_requiring_api_key(verbose: bool) -> Result<Self> {
-        Self::from_config(Config::from_env_requiring_api_key()?, verbose)
+    pub fn new_requiring_api_key(settings: &Settings, verbose: bool) -> Result<Self> {
+        Self::build(settings, &Auth::api_key_from_env()?, verbose, None)
     }
 
-    fn from_config(mut config: Config, verbose: bool) -> Result<Self> {
-        config.verbose = verbose;
-        if let Ok(base_url) = env::var("ANTITHESIS_BASE_URL") {
-            debug!("using ANTITHESIS_BASE_URL override: {}", base_url);
-            Self::with_base_url(config, base_url)
-        } else {
-            Self::new(config)
-        }
-    }
-
-    pub fn with_base_url(config: Config, base_url: impl Into<String>) -> Result<Self> {
-        Self::build(config, base_url, api_cache::build_cached_client)
-    }
-
-    #[cfg(test)]
-    fn with_base_url_and_cache_dir(
-        config: Config,
-        base_url: impl Into<String>,
-        cache_dir: std::path::PathBuf,
+    /// The response cache lives at `cache_dir`/api-cache-v1 when `Some`; pass
+    /// `None` to disable caching (used by tests that don't exercise it).
+    pub(crate) fn build(
+        settings: &Settings,
+        auth: &Auth,
+        verbose: bool,
+        cache_dir: Option<PathBuf>,
     ) -> Result<Self> {
-        Self::build(config, base_url, move |client| {
-            Some(api_cache::build_cached_client_at(client, cache_dir))
-        })
-    }
-
-    fn build(
-        config: Config,
-        base_url: impl Into<String>,
-        build_cache: impl FnOnce(Client) -> Option<ClientWithMiddleware>,
-    ) -> Result<Self> {
-        let base_url = normalize_base_url(base_url);
+        // base_url() is None exactly when neither an explicit base_url nor a
+        // tenant resolved; surface the tenant diagnostic, since that's what a
+        // user normally sets.
+        let base_url = normalize_base_url(crate::settings::require(settings.base_url(), "tenant")?);
         debug!("initializing API client for {}", base_url);
 
-        let default_headers = default_request_headers(&config)?;
+        let default_headers = default_request_headers(auth)?;
         let http_client = build_http_client(default_headers.clone())?;
-        let cached = build_cache(http_client.clone());
+        let cached = api_cache::build_cached_client(http_client.clone(), cache_dir);
         let state = ClientState {
             cached,
-            default_headers: config.verbose.then_some(default_headers),
+            default_headers: verbose.then_some(default_headers),
         };
         let client = generated::Client::new_with_client(&base_url, http_client, state);
 
@@ -787,9 +731,9 @@ fn normalize_base_url(base_url: impl Into<String>) -> String {
         .to_string()
 }
 
-fn default_request_headers(config: &Config) -> Result<reqwest::header::HeaderMap> {
+fn default_request_headers(auth: &Auth) -> Result<reqwest::header::HeaderMap> {
     let mut headers = reqwest::header::HeaderMap::new();
-    headers.insert(reqwest::header::AUTHORIZATION, auth_header(&config.auth)?);
+    headers.insert(reqwest::header::AUTHORIZATION, auth_header(auth)?);
     headers.insert(
         reqwest::header::USER_AGENT,
         reqwest::header::HeaderValue::from_str(&crate::user_agent())
@@ -817,7 +761,9 @@ fn auth_header(auth: &Auth) -> Result<reqwest::header::HeaderValue> {
         }
         Auth::Bearer { api_key } => format!("Bearer {api_key}"),
     };
-    reqwest::header::HeaderValue::from_str(&value).wrap_err("failed to build Authorization header")
+    let mut hv = HeaderValue::from_str(&value).wrap_err("failed to build Authorization header")?;
+    hv.set_sensitive(true);
+    Ok(hv)
 }
 
 fn launch_request(params: &Params) -> Result<generated::types::LaunchRequest> {
@@ -1173,18 +1119,43 @@ mod tests {
     use wiremock::matchers::{method, path, query_param, query_param_is_missing};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
-    fn test_config() -> Config {
-        Config::new(
-            Auth::basic("user".to_string(), "pass".to_string()),
-            "tenant".to_string(),
-        )
+    #[test]
+    fn parse_debug_launch_body_reads_snake_case_run_id() {
+        let (run_id, status) = parse_debug_launch_body(br#"{"run_id":"abc-1"}"#).unwrap();
+        assert_eq!(run_id, "abc-1");
+        assert_eq!(status, None);
     }
 
-    fn test_api_with_cache(mock_server: &MockServer, cache_dir: &TempDir) -> AntithesisApi {
-        AntithesisApi::with_base_url_and_cache_dir(
-            test_config(),
-            mock_server.uri(),
-            cache_dir.path().join("api-cache"),
+    #[test]
+    fn parse_debug_launch_body_reads_camel_case_run_id_and_status_code() {
+        let (run_id, status) =
+            parse_debug_launch_body(br#"{"runId":"xyz-2","statusCode":202}"#).unwrap();
+        assert_eq!(run_id, "xyz-2");
+        assert_eq!(status, Some(202));
+    }
+
+    #[test]
+    fn parse_debug_launch_body_errors_without_a_run_id() {
+        assert!(parse_debug_launch_body(br#"{"statusCode":200}"#).is_err());
+    }
+
+    #[test]
+    fn parse_debug_launch_body_errors_on_non_json() {
+        assert!(parse_debug_launch_body(b"not json").is_err());
+    }
+
+    fn test_api_optionally_with_cache(
+        mock_server: &MockServer,
+        cache_dir: Option<&TempDir>,
+    ) -> AntithesisApi {
+        AntithesisApi::build(
+            &Settings::for_test_base_url(mock_server.uri()),
+            &Auth::Basic {
+                username: "user".to_owned(),
+                password: "pass".to_owned(),
+            },
+            false,
+            cache_dir.map(|d| d.path().to_path_buf()),
         )
         .unwrap()
     }
@@ -1412,22 +1383,26 @@ mod tests {
 
     #[test]
     fn with_base_url_trims_trailing_slash() {
-        let config = Config::new(
-            Auth::basic("user".to_string(), "pass".to_string()),
-            "tenant".to_string(),
-        );
-        let api = AntithesisApi::with_base_url(config, "http://example.com/").unwrap();
-        assert_eq!(api.base_url(), "http://example.com");
+        let api = AntithesisApi::build(
+            &Settings::for_test_base_url("http://example.com/".to_owned()),
+            &Auth::basic("user".to_string(), "pass".to_string()),
+            true,
+            None,
+        )
+        .unwrap();
+        assert_eq!(api.base_url, "http://example.com");
     }
 
     #[test]
     fn with_base_url_strips_legacy_api_suffix() {
-        let config = Config::new(
-            Auth::basic("user".to_string(), "pass".to_string()),
-            "tenant".to_string(),
-        );
-        let api = AntithesisApi::with_base_url(config, "http://example.com/api/v1/").unwrap();
-        assert_eq!(api.base_url(), "http://example.com");
+        let api = AntithesisApi::build(
+            &Settings::for_test_base_url("http://example.com/api/v1/".to_owned()),
+            &Auth::basic("user".to_string(), "pass".to_string()),
+            true,
+            None,
+        )
+        .unwrap();
+        assert_eq!(api.base_url, "http://example.com");
     }
 
     #[tokio::test]
@@ -1444,7 +1419,7 @@ mod tests {
             .mount(&mock_server)
             .await;
 
-        let api = AntithesisApi::with_base_url(test_config(), mock_server.uri()).unwrap();
+        let api = test_api_optionally_with_cache(&mock_server, None);
         let params = Params::from_key_value_pairs(["antithesis.duration=30"]).unwrap();
         api.launch_test("basic_test", &params).await.unwrap();
 
@@ -1473,11 +1448,7 @@ mod tests {
             .mount(&mock_server)
             .await;
 
-        let config = Config::new(
-            Auth::basic("user".to_string(), "pass".to_string()),
-            "tenant".to_string(),
-        );
-        let api = AntithesisApi::with_base_url(config, mock_server.uri()).unwrap();
+        let api = test_api_optionally_with_cache(&mock_server, None);
         let params = Params::from_key_value_pairs(["antithesis.duration=30"]).unwrap();
 
         let response = api.launch_test("basic_test", &params).await.unwrap();
@@ -1523,7 +1494,7 @@ mod tests {
             .mount(&mock_server)
             .await;
 
-        let api = AntithesisApi::with_base_url(test_config(), mock_server.uri()).unwrap();
+        let api = test_api_optionally_with_cache(&mock_server, None);
         let params = Params::from_key_value_pairs(["antithesis.duration=30"]).unwrap();
 
         let response = api.launch_test("basic_test", &params).await.unwrap();
@@ -1545,7 +1516,7 @@ mod tests {
             .mount(&mock_server)
             .await;
 
-        let api = AntithesisApi::with_base_url(test_config(), mock_server.uri()).unwrap();
+        let api = test_api_optionally_with_cache(&mock_server, None);
         let params = Params::from_key_value_pairs([
             "antithesis.debugging.run_id=a2a4-53-1",
             "antithesis.debugging.input_hash=-1",
@@ -1570,7 +1541,7 @@ mod tests {
             .mount(&mock_server)
             .await;
 
-        let api = AntithesisApi::with_base_url(test_config(), mock_server.uri()).unwrap();
+        let api = test_api_optionally_with_cache(&mock_server, None);
         let params = Params::from_key_value_pairs([
             "antithesis.debugging.run_id=a2a4-53-1",
             "antithesis.debugging.input_hash=-1",
@@ -1599,7 +1570,7 @@ mod tests {
             .mount(&mock_server)
             .await;
 
-        let api = AntithesisApi::with_base_url(test_config(), mock_server.uri()).unwrap();
+        let api = test_api_optionally_with_cache(&mock_server, None);
         let params = Params::from_key_value_pairs([
             "antithesis.debugging.run_id=a2a4-53-1",
             "antithesis.debugging.input_hash=-1",
@@ -1631,7 +1602,7 @@ mod tests {
             .mount(&mock_server)
             .await;
 
-        let api = AntithesisApi::with_base_url(test_config(), mock_server.uri()).unwrap();
+        let api = test_api_optionally_with_cache(&mock_server, None);
         let params = Params::from_key_value_pairs([
             "antithesis.debugging.run_id=a2a4-53-1",
             "antithesis.debugging.input_hash=-1",
@@ -1688,11 +1659,7 @@ mod tests {
             .mount(&mock_server)
             .await;
 
-        let config = Config::new(
-            Auth::basic("user".to_string(), "pass".to_string()),
-            "tenant".to_string(),
-        );
-        let api = AntithesisApi::with_base_url(config, mock_server.uri()).unwrap();
+        let api = test_api_optionally_with_cache(&mock_server, None);
 
         let runs = api
             .stream_runs_filtered(&RunsFilterOptions::default(), 100)
@@ -1735,7 +1702,7 @@ mod tests {
             .mount(&mock_server)
             .await;
 
-        let api = AntithesisApi::with_base_url(test_config(), mock_server.uri()).unwrap();
+        let api = test_api_optionally_with_cache(&mock_server, None);
 
         let runs = api
             .stream_runs_filtered(&RunsFilterOptions::default(), 100)
@@ -1778,11 +1745,7 @@ mod tests {
             .mount(&mock_server)
             .await;
 
-        let config = Config::new(
-            Auth::basic("user".to_string(), "pass".to_string()),
-            "tenant".to_string(),
-        );
-        let api = AntithesisApi::with_base_url(config, mock_server.uri()).unwrap();
+        let api = test_api_optionally_with_cache(&mock_server, None);
 
         let runs = api
             .stream_runs_filtered(&RunsFilterOptions::default(), 100)
@@ -1810,7 +1773,7 @@ mod tests {
             .mount(&mock_server)
             .await;
 
-        let api = AntithesisApi::with_base_url(test_config(), mock_server.uri()).unwrap();
+        let api = test_api_optionally_with_cache(&mock_server, None);
         let runs = api
             .stream_runs_filtered(&RunsFilterOptions::default(), 5)
             .try_collect::<Vec<_>>()
@@ -1878,7 +1841,7 @@ mod tests {
             .await;
 
         let cache_dir = TempDir::new().unwrap();
-        let api = test_api_with_cache(&mock_server, &cache_dir);
+        let api = test_api_optionally_with_cache(&mock_server, Some(&cache_dir));
 
         let first = api.get_run("run-1").await.unwrap();
         let second = api.get_run("run-1").await.unwrap();
@@ -1933,11 +1896,7 @@ mod tests {
             .mount(&mock_server)
             .await;
 
-        let config = Config::new(
-            Auth::basic("user".to_string(), "pass".to_string()),
-            "tenant".to_string(),
-        );
-        let api = AntithesisApi::with_base_url(config, mock_server.uri()).unwrap();
+        let api = test_api_optionally_with_cache(&mock_server, None);
 
         let properties = api
             .stream_run_properties("run-1", None)
@@ -1974,11 +1933,7 @@ mod tests {
             .mount(&mock_server)
             .await;
 
-        let config = Config::new(
-            Auth::basic("user".to_string(), "pass".to_string()),
-            "tenant".to_string(),
-        );
-        let api = AntithesisApi::with_base_url(config, mock_server.uri()).unwrap();
+        let api = test_api_optionally_with_cache(&mock_server, None);
 
         let properties = api
             .stream_run_properties("run-1", Some(PropertyStatus::Failing))
@@ -2003,11 +1958,7 @@ mod tests {
             .mount(&mock_server)
             .await;
 
-        let config = Config::new(
-            Auth::basic("user".to_string(), "pass".to_string()),
-            "tenant".to_string(),
-        );
-        let api = AntithesisApi::with_base_url(config, mock_server.uri()).unwrap();
+        let api = test_api_optionally_with_cache(&mock_server, None);
 
         let mut stream = api
             .search_run_events("run-1", "slow request")

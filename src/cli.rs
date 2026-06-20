@@ -29,6 +29,14 @@ pub struct Cli {
     #[arg(long, global = true, display_order = 1001)]
     pub verbose: bool,
 
+    /// Path to the snouty settings file (default: ./.snouty.toml; overrides SNOUTY_SETTINGS_PATH)
+    #[arg(long, global = true, display_order = 1002)]
+    pub settings: Option<std::path::PathBuf>,
+
+    /// Settings profile to select (overrides ANTITHESIS_PROFILE)
+    #[arg(long, global = true, display_order = 1003)]
+    pub profile: Option<String>,
+
     #[command(subcommand)]
     pub command: Commands,
 }
@@ -45,7 +53,8 @@ Example:
     --duration 30 \
     --recipients "team@example.com"
 
-The -c/--config flag points at a local directory containing docker-compose.yaml.
+The -c/--config flag points at a local directory containing docker-compose.yaml
+(this is the config image source, unrelated to snouty's own settings file).
 Images required for the run need to have been built already. Pushing happens
 automatically.
 
@@ -59,7 +68,11 @@ Extra parameters can be passed with --param:
     --param antithesis.integrations.github.token=TOKEN \
     --param my.custom.property=value
 
-Environment variables:
+Tenant and repository may be set via the environment variables below, or in a
+settings file (./.snouty.toml by default; see the global --settings/--profile
+flags and the README). Environment variables take precedence.
+
+Environment variables (override any settings file):
   ANTITHESIS_TENANT       Your Antithesis tenant name (required).
   ANTITHESIS_API_KEY      API key authentication (preferred).
   ANTITHESIS_USERNAME     Username (required when API key is not set).
@@ -158,7 +171,10 @@ Example:
     #[command(long_about = r#"Check environment configuration
 
 Verifies that your environment is properly configured for Antithesis testing.
-Checks container runtime availability and required environment variables.
+Runs health checks — container runtime, docker compose, the ANTITHESIS_*
+environment variables for authentication, and API connectivity — then prints
+the resolved settings (tenant, repository, container engine) so you can confirm
+what snouty will use.
 
 snouty prefers an API key (full API access); a username and password is legacy
 auth, accepted only by `snouty launch` and `snouty debug`.

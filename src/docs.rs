@@ -16,13 +16,15 @@ use crate::cli::DocsCommands;
 use crate::error::user_error;
 
 const DEFAULT_DOCS_URL: &str = "https://antithesis.com/docs";
+/// Env-only override for the docs site (mainly a test seam pointing at a mock);
+/// not a setting.
+const DOCS_URL_ENV_VAR: &str = "ANTITHESIS_DOCS_URL";
 const SEARCH_STOPWORDS: &[&str] = &[
     "a", "an", "and", "are", "does", "how", "in", "is", "of", "or", "the", "to", "what",
 ];
 
 fn docs_url() -> String {
-    let mut base =
-        std::env::var("ANTITHESIS_DOCS_URL").unwrap_or_else(|_| DEFAULT_DOCS_URL.to_string());
+    let mut base = std::env::var(DOCS_URL_ENV_VAR).unwrap_or_else(|_| DEFAULT_DOCS_URL.to_string());
     while base.ends_with('/') {
         base.pop();
     }
@@ -30,25 +32,15 @@ fn docs_url() -> String {
 }
 
 fn cache_dir() -> Result<PathBuf> {
-    let dir = if let Some(dir) = std::env::var_os("SNOUTY_TEST_CACHE_DIR") {
-        PathBuf::from(dir)
-    } else {
-        dirs::cache_dir().ok_or_eyre("could not determine cache directory")?
-    }
-    .join("snouty");
+    let dir = crate::settings::cache_dir().ok_or_eyre("could not determine cache directory")?;
     fs::create_dir_all(&dir)?;
     Ok(dir)
 }
 
+/// The docs database lives at `<cache dir>/docs.db`. Relocate it by pointing
+/// `XDG_CACHE_HOME` elsewhere; there is no per-file override.
 fn db_path() -> Result<PathBuf> {
-    if let Ok(p) = std::env::var("ANTITHESIS_DOCS_DB_PATH") {
-        return Ok(PathBuf::from(p));
-    }
     Ok(cache_dir()?.join("docs.db"))
-}
-
-fn env_db_path_is_set() -> bool {
-    std::env::var_os("ANTITHESIS_DOCS_DB_PATH").is_some()
 }
 
 fn etag_path() -> Result<PathBuf> {
@@ -56,7 +48,7 @@ fn etag_path() -> Result<PathBuf> {
 }
 
 pub async fn cmd_docs(command: DocsCommands, offline: bool, json: bool) -> Result<()> {
-    if !(offline || env_db_path_is_set()) {
+    if !offline {
         update_with_fallback().await?;
     }
 
@@ -91,14 +83,6 @@ fn ensure_docs_db_available(offline: bool) -> Result<()> {
     let db = db_path()?;
     if db.exists() {
         return Ok(());
-    }
-
-    if env_db_path_is_set() {
-        return Err(user_error(format!(
-            "Documentation database not found at {}",
-            db.display()
-        ))
-        .suggestion("point ANTITHESIS_DOCS_DB_PATH at an existing file"));
     }
 
     if offline {
@@ -598,7 +582,7 @@ fn render_forest(root: &TreeNode, max_depth: Option<usize>) -> Result<String> {
         return Ok(String::new());
     }
 
-    let config = PrintConfig {
+    let settings = PrintConfig {
         indent: 4,
         characters: UTF_CHARS_BOLD.into(),
         ..PrintConfig::default()
@@ -608,7 +592,7 @@ fn render_forest(root: &TreeNode, max_depth: Option<usize>) -> Result<String> {
 
     for (index, (name, child)) in root.children.iter().enumerate() {
         let tree = render_tree(name, child, 1, max_depth);
-        write_tree_with(&tree, &mut rendered, &config)?;
+        write_tree_with(&tree, &mut rendered, &settings)?;
         if index + 1 != child_count {
             rendered.write_all(b"\n")?;
         }

@@ -22,6 +22,8 @@ use crate::api::{
 };
 use crate::cli::{RunsCommands, RunsListArgs};
 use crate::error::{api_error_status, user_error};
+use crate::render::{render_kv, sanitize, sanitize_multiline};
+use crate::settings::Settings;
 
 /// `print!`/`println!`, but routed through `write!`/`writeln!` to stdout so a
 /// closed pipe (e.g. `snouty runs list | head`) surfaces as an `io::Error` the
@@ -76,7 +78,12 @@ impl std::str::FromStr for Stream {
     }
 }
 
-pub async fn cmd_runs(command: Option<RunsCommands>, json: bool, verbose: bool) -> Result<()> {
+pub async fn cmd_runs(
+    command: Option<RunsCommands>,
+    settings: &Settings,
+    json: bool,
+    verbose: bool,
+) -> Result<()> {
     // `--detail` produces human formatting, so it can't combine with `--json`.
     // It rides on more than one subcommand (`runs list`, `runs properties`), so
     // the conflict is checked once here — a global `--json` vs a per-subcommand
@@ -89,10 +96,10 @@ pub async fn cmd_runs(command: Option<RunsCommands>, json: bool, verbose: bool) 
     reject_detail_with_json(json, detail)?;
 
     match command {
-        None => cmd_runs_list(RunsListArgs::default(), json, verbose).await,
-        Some(RunsCommands::List(args)) => cmd_runs_list(args, json, verbose).await,
+        None => cmd_runs_list(RunsListArgs::default(), settings, json, verbose).await,
+        Some(RunsCommands::List(args)) => cmd_runs_list(args, settings, json, verbose).await,
         Some(RunsCommands::Show { run_id, web }) => {
-            cmd_runs_show(&run_id, web, json, verbose).await
+            cmd_runs_show(&run_id, web, settings, json, verbose).await
         }
         Some(RunsCommands::Properties {
             run_id,
@@ -114,10 +121,10 @@ pub async fn cmd_runs(command: Option<RunsCommands>, json: bool, verbose: bool) 
                 name: name.as_deref(),
                 group: group.as_deref(),
             };
-            cmd_runs_properties(&run_id, filter, detail, json, verbose).await
+            cmd_runs_properties(&run_id, filter, detail, settings, json, verbose).await
         }
         Some(RunsCommands::BuildLogs { run_id }) => {
-            cmd_runs_build_logs(&run_id, json, verbose).await
+            cmd_runs_build_logs(&run_id, settings, json, verbose).await
         }
         Some(RunsCommands::Logs {
             run_id,
@@ -133,6 +140,7 @@ pub async fn cmd_runs(command: Option<RunsCommands>, json: bool, verbose: bool) 
                 &vtime,
                 begin_input_hash.as_deref(),
                 begin_vtime.as_deref(),
+                settings,
                 LogOutputOptions { json, verbose, raw },
             )
             .await
@@ -146,15 +154,20 @@ pub async fn cmd_runs(command: Option<RunsCommands>, json: bool, verbose: bool) 
             // `query` is a backward-compatible alias whose terms are additional
             // needles. Merge both into a single needle list.
             matches.extend(query);
-            cmd_runs_events(&run_id, &matches, json, verbose).await
+            cmd_runs_events(&run_id, &matches, settings, json, verbose).await
         }
     }
 }
 
-async fn cmd_runs_list(args: RunsListArgs, json: bool, verbose: bool) -> Result<()> {
+async fn cmd_runs_list(
+    args: RunsListArgs,
+    settings: &Settings,
+    json: bool,
+    verbose: bool,
+) -> Result<()> {
     debug!("listing runs");
 
-    let api = AntithesisApi::from_env_requiring_api_key(verbose)?;
+    let api = AntithesisApi::new_requiring_api_key(settings, verbose)?;
 
     // clap parsed and validated the filter flags into their real types, so the
     // options struct is built directly with no further string parsing here.
@@ -260,10 +273,16 @@ fn format_local_str(raw: &str) -> String {
     }
 }
 
-async fn cmd_runs_show(run_id: &str, web: bool, json: bool, verbose: bool) -> Result<()> {
+async fn cmd_runs_show(
+    run_id: &str,
+    web: bool,
+    settings: &Settings,
+    json: bool,
+    verbose: bool,
+) -> Result<()> {
     debug!("showing run: {}", run_id);
 
-    let api = AntithesisApi::from_env_requiring_api_key(verbose)?;
+    let api = AntithesisApi::new_requiring_api_key(settings, verbose)?;
     let run = match api.get_run(run_id).await {
         Ok(run) => run,
         // A 404 here is unambiguous: the run id is bad. Say so instead of leaking
@@ -377,12 +396,13 @@ async fn cmd_runs_properties(
     run_id: &str,
     filter: PropertyFilter<'_>,
     detail: bool,
+    settings: &Settings,
     json: bool,
     verbose: bool,
 ) -> Result<()> {
     debug!("listing properties for run: {}", run_id);
 
-    let api = AntithesisApi::from_env_requiring_api_key(verbose)?;
+    let api = AntithesisApi::new_requiring_api_key(settings, verbose)?;
     let mut properties = match api
         .stream_run_properties(run_id, filter.status)
         .try_collect::<Vec<_>>()
@@ -419,7 +439,7 @@ async fn cmd_runs_properties(
             outln!("{}", serde_json::to_string(property)?)?;
         }
     } else if properties.is_empty() {
-        outln!("{}", no_properties_message(&filter))?;
+        outln!("{}", explain_empty_properties(&api, run_id, &filter).await)?;
     } else if detail {
         outln!("{}", render_properties_detail(&properties))?;
     } else {
@@ -448,6 +468,28 @@ fn no_properties_message(filter: &PropertyFilter) -> String {
     } else {
         format!("No properties match ({}).", parts.join(", "))
     }
+}
+
+/// The message for an empty (non-JSON) properties result. A *filtered* empty is
+/// genuinely "nothing matched"; an *unfiltered* empty often just means the run
+/// is incomplete (no triage report yet), so probe the run to say so rather than
+/// implying no properties exist.
+async fn explain_empty_properties(
+    api: &AntithesisApi,
+    run_id: &str,
+    filter: &PropertyFilter<'_>,
+) -> String {
+    let unfiltered = filter.status.is_none() && filter.name.is_none() && filter.group.is_none();
+    if unfiltered
+        && let RunProbe::Exists(run) = probe_run(api, run_id).await
+        && run.status != RunStatus::Completed
+    {
+        return format!(
+            "No properties found — this run is {}; properties are generated when a run completes.",
+            status_label(run.status)
+        );
+    }
+    no_properties_message(filter)
 }
 
 /// Outcome of probing a run-scoped 404 with `get_run`: does the run itself not
@@ -546,7 +588,9 @@ async fn explain_properties_error(
                     status_label(run.status)
                 ))
                 .note(format!("inspect the run with `snouty runs show {run_id}`"));
-            match run.failure_moment.as_ref() {
+            // A placeholder 0/0 moment streams no logs, so skip the "view logs"
+            // hint there rather than point at an empty stream.
+            match run.real_failure_moment() {
                 Some(moment) => report.note(format!(
                     "view logs at the failure with `snouty runs logs {run_id} {} {}`",
                     moment.input_hash, moment.vtime
@@ -682,8 +726,15 @@ fn render_properties_detail(properties: &[Property]) -> String {
     group_property_sections(properties)
         .iter()
         .map(|(title, props)| {
-            let blocks: Vec<String> = props.iter().map(|p| render_property_detail(p)).collect();
-            format!("{}\n\n{}", sanitize(title), blocks.join("\n\n"))
+            let blocks = props
+                .iter()
+                .map(|p| render_property_detail(p))
+                .collect::<Vec<_>>()
+                .join("\n\n");
+            match title {
+                Some(title) => format!("{}\n\n{}", sanitize(title), blocks),
+                None => blocks,
+            }
         })
         .collect::<Vec<_>>()
         .join("\n\n")
@@ -938,7 +989,11 @@ fn property_examples_cell(p: &Property) -> String {
 /// alphabetical), with ungrouped properties in a final "(ungrouped)" section.
 /// Within each section, failing entries sort first, then by name. An
 /// empty-string group counts as no group.
-fn group_property_sections(properties: &[Property]) -> Vec<(String, Vec<&Property>)> {
+///
+/// Each section's heading is `Some(name)`, except the ungrouped section's, which
+/// is `None` when there are no named groups to contrast it against — a lone
+/// "(ungrouped)" heading over every property is just noise.
+fn group_property_sections(properties: &[Property]) -> Vec<(Option<String>, Vec<&Property>)> {
     fn sort_section(props: &mut [&Property]) {
         props.sort_by(|a, b| {
             is_failing(b)
@@ -965,14 +1020,17 @@ fn group_property_sections(properties: &[Property]) -> Vec<(String, Vec<&Propert
             .then_with(|| a.cmp(b))
     });
 
-    let mut sections: Vec<(String, Vec<&Property>)> = Vec::new();
+    let mut sections: Vec<(Option<String>, Vec<&Property>)> = Vec::new();
     for (name, mut props) in named {
         sort_section(&mut props);
-        sections.push((name.to_string(), props));
+        sections.push((Some(name.to_string()), props));
     }
     if !ungrouped.is_empty() {
         sort_section(&mut ungrouped);
-        sections.push(("(ungrouped)".to_string(), ungrouped));
+        // Only label the ungrouped section when named groups precede it; with no
+        // named groups a "(ungrouped)" heading over everything carries no signal.
+        let heading = (!sections.is_empty()).then(|| "(ungrouped)".to_string());
+        sections.push((heading, ungrouped));
     }
     sections
 }
@@ -1006,11 +1064,11 @@ fn render_properties_table(properties: &[Property]) -> String {
                     ]
                 })
                 .collect();
-            format!(
-                "{}\n{}",
-                sanitize(title),
-                render_table_wrap_last(&headers, &rows, width, &aligns)
-            )
+            let table = render_table_wrap_last(&headers, &rows, width, &aligns);
+            match title {
+                Some(title) => format!("{}\n{}", sanitize(title), table),
+                None => table,
+            }
         })
         .collect::<Vec<_>>()
         .join("\n\n")
@@ -1018,8 +1076,9 @@ fn render_properties_table(properties: &[Property]) -> String {
 
 fn print_run_detail(run: &RunDetail) -> Result<()> {
     // Bound once and reused for both the Failure Hash/VTime rows and the deferred
-    // "view logs" hint below, so the two can't drift apart.
-    let failure = run.failure_moment.as_ref();
+    // "view logs" hint below, so the two can't drift apart (a placeholder 0/0
+    // moment is treated as no moment — see `RunDetail::real_failure_moment`).
+    let failure = run.real_failure_moment();
     let mut rows: Vec<(&str, String)> = Vec::new();
 
     // Lead with the identifier; the human labels follow.
@@ -1095,24 +1154,6 @@ fn print_run_detail(run: &RunDetail) -> Result<()> {
     Ok(())
 }
 
-/// Render aligned `Label  value` lines, sqlite `.mode line`–style. Each line is
-/// terminated with a newline; values are sanitized. Labels are padded to the
-/// widest label, but never narrower than `min_label_width` so a caller that also
-/// renders a wider prose label below the block can keep every row aligned.
-fn render_kv(rows: &[(&str, String)], min_label_width: usize) -> String {
-    let label_width = rows
-        .iter()
-        .map(|(label, _)| label.len())
-        .chain(std::iter::once(min_label_width))
-        .max()
-        .unwrap_or(0);
-    let mut out = String::new();
-    for (label, value) in rows {
-        out.push_str(&format!("{label:label_width$}  {}\n", sanitize(value)));
-    }
-    out
-}
-
 /// `runs list --detail`: one aligned key-value block per run (no table),
 /// separated by blank lines. Empty optional fields are omitted.
 fn render_runs_detail(runs: &[RunSummary]) -> String {
@@ -1173,10 +1214,15 @@ struct LogOutputOptions {
     raw: bool,
 }
 
-async fn cmd_runs_build_logs(run_id: &str, json: bool, verbose: bool) -> Result<()> {
+async fn cmd_runs_build_logs(
+    run_id: &str,
+    settings: &Settings,
+    json: bool,
+    verbose: bool,
+) -> Result<()> {
     debug!("streaming build logs for run: {}", run_id);
 
-    let api = AntithesisApi::from_env_requiring_api_key(verbose)?;
+    let api = AntithesisApi::new_requiring_api_key(settings, verbose)?;
     let stream = match api.get_run_build_logs(run_id).await {
         Ok(stream) => stream.into_inner(),
         Err(err) => return Err(explain_run_scoped_error(&api, run_id, err).await),
@@ -1263,6 +1309,7 @@ fn haystack_matches_all_needles(haystack: &str, lowered_needles: &[String]) -> b
 async fn cmd_runs_events(
     run_id: &str,
     matches: &[String],
+    settings: &Settings,
     json: bool,
     verbose: bool,
 ) -> Result<()> {
@@ -1283,7 +1330,7 @@ async fn cmd_runs_events(
         .cloned()
         .unwrap_or_default();
 
-    let api = AntithesisApi::from_env_requiring_api_key(verbose)?;
+    let api = AntithesisApi::new_requiring_api_key(settings, verbose)?;
     let stream = match api.search_run_events(run_id, &server_query).await {
         Ok(stream) => stream.into_inner(),
         Err(err) => return Err(explain_run_scoped_error(&api, run_id, err).await),
@@ -1369,11 +1416,12 @@ async fn cmd_runs_logs(
     vtime: &str,
     begin_input_hash: Option<&str>,
     begin_vtime: Option<&str>,
+    settings: &Settings,
     LogOutputOptions { json, verbose, raw }: LogOutputOptions,
 ) -> Result<()> {
     debug!("streaming logs for run: {}", run_id);
 
-    let api = AntithesisApi::from_env_requiring_api_key(verbose)?;
+    let api = AntithesisApi::new_requiring_api_key(settings, verbose)?;
     let stream = match api
         .get_run_logs(run_id, input_hash, vtime, begin_input_hash, begin_vtime)
         .await
@@ -1383,11 +1431,13 @@ async fn cmd_runs_logs(
     };
 
     let mut stdout = BufWriter::new(std::io::stdout().lock());
+    let mut wrote_any = false;
     let result = if json {
         // Fault annotation is the default; `--raw` opts out into a verbatim
         // NDJSON passthrough.
         if raw {
             stream_ndjson_lines(stream, NoOpTransformer {}, |line| {
+                wrote_any = true;
                 writeln!(stdout, "{line}")?;
                 Ok(())
             })
@@ -1400,6 +1450,7 @@ async fn cmd_runs_logs(
                     active_faults: json!({}),
                 },
                 |line| {
+                    wrote_any = true;
                     writeln!(stdout, "{line}")?;
                     Ok(())
                 },
@@ -1408,6 +1459,7 @@ async fn cmd_runs_logs(
         }
     } else {
         stream_ndjson_lines(stream, NoOpTransformer {}, |line| {
+            wrote_any = true;
             if let Ok(entry) = serde_json::from_str::<Value>(line) {
                 writeln!(stdout, "{}", format_log_entry(&entry, raw))?;
             } else {
@@ -1418,6 +1470,12 @@ async fn cmd_runs_logs(
         .await
     };
     stdout.flush()?;
+    // A moment with no logs (e.g. a manually-supplied 0/0 placeholder) yields an
+    // empty stream; say so in human mode rather than printing nothing. In --json
+    // mode an empty stream is the correct machine answer, so stay quiet.
+    if result.is_ok() && !json && !wrote_any {
+        eprintln!("No log lines at this moment.");
+    }
     result
 }
 
@@ -2584,61 +2642,6 @@ fn push_table_row(output: &mut String, row: &[String], widths: &[usize], aligns:
     output.push('\n');
 }
 
-/// Escape one character into `out`, sharing the control-char policy between
-/// [`sanitize`] and [`sanitize_multiline`]. `newline` decides how `\n`/`\r` are
-/// handled: single-line callers escape them to visible `\n`/`\r`, multi-line
-/// callers keep `\n` as a real break and drop `\r`. Everything else — tab passes
-/// through, other C0/DEL controls become `\xNN`, printable chars pass through —
-/// is identical for both.
-fn sanitize_char(out: &mut String, ch: char, newline: NewlinePolicy) {
-    match ch {
-        '\n' | '\r' => match newline {
-            NewlinePolicy::Escape => {
-                out.push_str(if ch == '\n' { "\\n" } else { "\\r" });
-            }
-            // Multi-line prose keeps real newlines and drops lone carriage
-            // returns (so `\r\n` collapses to `\n`).
-            NewlinePolicy::KeepNewlineDropReturn => {
-                if ch == '\n' {
-                    out.push('\n');
-                }
-            }
-        },
-        '\t' => out.push('\t'),
-        '\0'..='\u{08}' | '\u{0B}'..='\u{1F}' | '\u{7F}' => {
-            out.push_str(&format!(r"\x{:02X}", ch as u32));
-        }
-        _ => out.push(ch),
-    }
-}
-
-#[derive(Clone, Copy)]
-enum NewlinePolicy {
-    /// Escape `\n`/`\r` to literal `\n`/`\r` (single-line table cells).
-    Escape,
-    /// Keep `\n` as a real break, drop `\r` (multi-line prose).
-    KeepNewlineDropReturn,
-}
-
-fn sanitize(s: &str) -> String {
-    let mut escaped = String::new();
-    for ch in s.chars() {
-        sanitize_char(&mut escaped, ch, NewlinePolicy::Escape);
-    }
-    escaped
-}
-
-/// Like [`sanitize`] but preserves real newlines instead of escaping them to
-/// literal `\n`. For multi-line free text (e.g. property descriptions) that is
-/// meant to be read as prose, not as a single table cell.
-fn sanitize_multiline(s: &str) -> String {
-    let mut out = String::new();
-    for ch in s.chars() {
-        sanitize_char(&mut out, ch, NewlinePolicy::KeepNewlineDropReturn);
-    }
-    out
-}
-
 /// Single choke point for terminal-bound free text: strip ANSI escape sequences
 /// first, then escape any remaining control bytes so stray `\r`/`\x08`/BEL can't
 /// corrupt the terminal. Used by both the `runs logs` `output_text` path and the
@@ -3113,6 +3116,57 @@ mod tests {
     }
 
     #[test]
+    fn all_ungrouped_properties_omit_the_ungrouped_heading() {
+        // With no named groups, the lone "(ungrouped)" heading is just noise, so
+        // it's omitted — the table is shown bare.
+        let properties = vec![
+            event_property(
+                "Setup completes",
+                PropertyStatus::Passing,
+                None,
+                vec![event("-400", "1.0")],
+                vec![],
+            ),
+            event_property(
+                "Teardown completes",
+                PropertyStatus::Passing,
+                None,
+                vec![event("-401", "2.0")],
+                vec![],
+            ),
+        ];
+
+        let table = render_properties_table(&properties);
+        assert!(
+            !table.contains("(ungrouped)"),
+            "all-ungrouped output should omit the heading\n{table}"
+        );
+        // The properties themselves still render.
+        assert!(table.contains("Setup completes"), "{table}");
+        assert!(table.contains("Teardown completes"), "{table}");
+
+        // ...but a single named group brings the "(ungrouped)" heading back, to
+        // distinguish the two sections.
+        let mixed = vec![
+            event_property(
+                "Counter stays low",
+                PropertyStatus::Failing,
+                Some("Safety"),
+                vec![],
+                vec![event("-1", "1.0")],
+            ),
+            event_property(
+                "Setup completes",
+                PropertyStatus::Passing,
+                None,
+                vec![event("-400", "1.0")],
+                vec![],
+            ),
+        ];
+        assert!(render_properties_table(&mixed).contains("(ungrouped)"));
+    }
+
+    #[test]
     fn format_count_si_shortens_large_counts() {
         // Under 1000: exact.
         assert_eq!(format_count_si(0), "0");
@@ -3431,37 +3485,6 @@ mod tests {
     }
 
     #[test]
-    fn sanitize_preserves_printable_unicode_and_punctuation() {
-        assert_eq!(
-            sanitize("Grüße λ 😸 \"quoted\" C:\\temp\tok"),
-            "Grüße λ 😸 \"quoted\" C:\\temp\tok"
-        );
-    }
-
-    #[test]
-    fn sanitize_escapes_newline_and_carriage_return() {
-        assert_eq!(sanitize("one\ntwo\rthree"), "one\\ntwo\\rthree");
-    }
-
-    #[test]
-    fn sanitize_escapes_non_printable_ascii_except_tab() {
-        assert_eq!(
-            sanitize("a\u{0001}b\u{000B}c\u{007F}d\te"),
-            r"a\x01b\x0Bc\x7Fd	e"
-        );
-    }
-
-    #[test]
-    fn sanitize_multiline_keeps_newlines_but_escapes_other_controls() {
-        // Real newlines survive (so Details renders as prose), \r is dropped,
-        // and other control chars are still escaped.
-        assert_eq!(
-            sanitize_multiline("one\ntwo\r\nthree\u{0001}"),
-            "one\ntwo\nthree\\x01"
-        );
-    }
-
-    #[test]
     fn wrap_text_wraps_words_and_preserves_blank_lines() {
         let wrapped = wrap_text("the quick brown fox\n\njumps", 9);
         assert_eq!(wrapped, vec!["the quick", "brown fox", "", "jumps"]);
@@ -3584,7 +3607,7 @@ mod tests {
             r#"{"key": "value", "nested": {"a": [1,2,3]}}"#,
             r#"{"url": "http://example.com/path?q=1&r=2", "count": 42}"#,
             r#"Options { address: Some(0.0.0.0:3307), deployment: "mydb", mode: Standalone }"#,
-            r#"Config { inner: Inner { values: [1, 2, 3] }, name: "test" }"#,
+            r#"Settings { inner: Inner { values: [1, 2, 3] }, name: "test" }"#,
             "[2026-04-03] [INFO] [main] started",
             r#"path: "/nix/store/abc-pkg/bin/cmd""#,
             r#"{"msg": "he said \"hello\""}"#,
@@ -5031,8 +5054,9 @@ mod tests {
 
     mod run_scoped_errors {
         use super::*;
-        use crate::api::{Auth, Config};
+        use crate::api::Auth;
         use crate::error::ApiError;
+        use crate::settings::Settings;
         use wiremock::matchers::{method, path};
         use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -5044,11 +5068,13 @@ mod tests {
         }
 
         fn test_api(base_url: &str) -> AntithesisApi {
-            let config = Config::new(
-                Auth::basic("user".to_string(), "pass".to_string()),
-                "tenant".to_string(),
-            );
-            AntithesisApi::with_base_url(config, base_url).unwrap()
+            AntithesisApi::build(
+                &Settings::for_test_base_url(base_url.to_owned()),
+                &Auth::basic("user".to_string(), "pass".to_string()),
+                false,
+                None,
+            )
+            .unwrap()
         }
 
         async fn mock_get_run(run_id: &str, status: u16, body: serde_json::Value) -> MockServer {

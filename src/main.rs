@@ -16,6 +16,7 @@ use snouty::docs;
 use snouty::error::user_error;
 use snouty::moment;
 use snouty::params::Params;
+use snouty::settings::Settings;
 use snouty::validate;
 
 fn read_stdin() -> Result<String> {
@@ -82,28 +83,22 @@ async fn main() {
 }
 
 async fn run(cli: Cli) -> Result<()> {
-    let json = cli.json;
-    let verbose = cli.verbose;
-    if json && let Some(name) = json_unaware_command_name(&cli.command) {
+    let Cli {
+        json,
+        verbose,
+        settings: settings_path,
+        profile,
+        command,
+    } = cli;
+    if json && let Some(name) = json_unaware_command_name(&command) {
         eprintln!("warning: --json has no effect for `snouty {name}`");
     }
-    let result = match cli.command {
-        Commands::Launch(args) => {
-            info!("launching test with webhook: {}", args.webhook);
-            cmd_launch(args, json, verbose).await
-        }
-        Commands::Run(args) => {
-            eprintln!("warning: `snouty run` is deprecated, use `snouty launch` instead");
-            info!("launching test with webhook: {}", args.webhook);
-            cmd_launch(args, json, verbose).await
-        }
-        Commands::Runs { command } => snouty::runs::cmd_runs(command, json, verbose).await,
-        Commands::Debug(args) => {
-            info!("starting debug session");
-            cmd_debug(args, json, verbose).await
-        }
-        Commands::Validate(args) => validate::cmd_validate(args).await,
-        Commands::Doctor(args) => snouty::doctor::cmd_doctor(json, verbose, args.offline).await,
+
+    // Resolve all settings up front. A broken/unreadable settings file fails
+    // here, cleanly and once, before any command runs — including commands that
+    // don't read settings. That keeps dispatch a single flat match.
+    let settings = Settings::resolve(settings_path, profile)?;
+    let result = match command {
         Commands::Completions { shell } => cmd_completions(shell),
         Commands::Version => {
             println!("snouty {}", env!("CARGO_PKG_VERSION"));
@@ -111,6 +106,26 @@ async fn run(cli: Cli) -> Result<()> {
         }
         Commands::Update(args) => cmd_update(args),
         Commands::Docs { offline, command } => docs::cmd_docs(command, offline, json).await,
+        Commands::Launch(args) => {
+            info!("launching test with webhook: {}", args.webhook);
+            cmd_launch(args, &settings, json, verbose).await
+        }
+        Commands::Run(args) => {
+            eprintln!("warning: `snouty run` is deprecated, use `snouty launch` instead");
+            info!("launching test with webhook: {}", args.webhook);
+            cmd_launch(args, &settings, json, verbose).await
+        }
+        Commands::Runs { command } => {
+            snouty::runs::cmd_runs(command, &settings, json, verbose).await
+        }
+        Commands::Debug(args) => {
+            info!("starting debug session");
+            cmd_debug(args, &settings, json, verbose).await
+        }
+        Commands::Validate(args) => validate::cmd_validate(args, &settings).await,
+        Commands::Doctor(args) => {
+            snouty::doctor::cmd_doctor(&settings, json, verbose, args.offline).await
+        }
     };
 
     suppress_broken_pipe(result)
@@ -150,7 +165,12 @@ fn json_unaware_command_name(command: &Commands) -> Option<&'static str> {
     }
 }
 
-async fn cmd_launch(args: LaunchArgs, json: bool, verbose: bool) -> Result<()> {
+async fn cmd_launch(
+    args: LaunchArgs,
+    settings: &Settings,
+    json: bool,
+    verbose: bool,
+) -> Result<()> {
     let mut params = Params::new();
 
     if let Some(test_name) = args.test_name {
@@ -180,14 +200,12 @@ async fn cmd_launch(args: LaunchArgs, json: bool, verbose: bool) -> Result<()> {
     }
 
     let config_image_ref = if let Some(config_dir) = args.config {
-        let config = config::detect_config(&config_dir)?;
+        let detected = config::detect_config(&config_dir)?;
+        let registry = snouty::settings::require(settings.repository(), "repository")?;
 
-        let registry = std::env::var("ANTITHESIS_REPOSITORY")
-            .map_err(|_| user_error("missing environment variable: ANTITHESIS_REPOSITORY"))?;
-
-        let image_ref = container::generate_image_ref(&registry);
+        let image_ref = container::generate_image_ref(registry);
         params.insert("antithesis.config_image", &image_ref);
-        Some((config, registry, image_ref))
+        Some((detected, registry.to_owned(), image_ref))
     } else {
         None
     };
@@ -225,8 +243,8 @@ async fn cmd_launch(args: LaunchArgs, json: bool, verbose: bool) -> Result<()> {
 
     params.validate_test_params()?;
 
-    if let Some((config, registry, config_image)) = config_image_ref {
-        let rt = container::runtime()?;
+    if let Some((detected, registry, config_image)) = config_image_ref {
+        let rt = container::runtime(settings)?;
 
         // For compose configs, every service image is pinned to its local
         // digest (snouty never pulls): served from a registry confirmed to
@@ -235,21 +253,21 @@ async fn cmd_launch(args: LaunchArgs, json: bool, verbose: bool) -> Result<()> {
         // config image, so the platform runs exactly what was resolved here.
         // k8s configs reference images by name in the manifests and the
         // platform pulls them itself.
-        let pinned_config = match &config {
+        let pinned_config = match &detected {
             config::Config::Compose(compose_config) => {
-                let compose = container::docker_compose(rt)?;
+                let compose = container::docker_compose(rt.as_ref())?;
                 let pinned_yaml = compose.pin_images(compose_config, &registry)?;
                 let staged = container::stage_pinned_config(compose_config.dir(), &pinned_yaml)?;
                 rt.build_and_push_config_image(staged.path(), &config_image)?
             }
             config::Config::Kubernetes(_) => {
-                rt.build_and_push_config_image(config.dir(), &config_image)?
+                rt.build_and_push_config_image(detected.dir(), &config_image)?
             }
         };
         params.insert("antithesis.config_image", pinned_config);
     }
 
-    let response = launch_webhook(&args.webhook, params, verbose).await?;
+    let response = launch_webhook(&args.webhook, params, settings, verbose).await?;
 
     if json {
         println!("{}", serde_json::to_string_pretty(&response)?);
@@ -263,6 +281,7 @@ async fn cmd_launch(args: LaunchArgs, json: bool, verbose: bool) -> Result<()> {
 async fn launch_webhook(
     webhook: &str,
     params: Params,
+    settings: &Settings,
     verbose: bool,
 ) -> Result<snouty::api::LaunchResponse> {
     params.validate_test_params()?;
@@ -272,7 +291,7 @@ async fn launch_webhook(
         serde_json::to_string_pretty(&params.to_redacted_map())?
     );
 
-    let api = AntithesisApi::from_env(verbose)?;
+    let api = AntithesisApi::new(settings, verbose)?;
     api.launch_test(webhook, &params).await
 }
 
@@ -312,7 +331,7 @@ fn debug_params(args: DebugArgs) -> Result<Params> {
     Ok(params)
 }
 
-async fn cmd_debug(args: DebugArgs, json: bool, verbose: bool) -> Result<()> {
+async fn cmd_debug(args: DebugArgs, settings: &Settings, json: bool, verbose: bool) -> Result<()> {
     let params = debug_params(args)?;
     params.validate_debugging_params()?;
     params.ensure_single_debug_target()?;
@@ -322,7 +341,7 @@ async fn cmd_debug(args: DebugArgs, json: bool, verbose: bool) -> Result<()> {
         serde_json::to_string_pretty(&params.to_redacted_map())?
     );
 
-    let api = AntithesisApi::from_env(verbose)?;
+    let api = AntithesisApi::new(settings, verbose)?;
     let response = api.launch_debugging(&params).await?;
 
     if json {

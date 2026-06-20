@@ -55,10 +55,48 @@ fn snouty_cmd(env: &testscript_rs::TestEnvironment, args: &[String]) -> std::pro
             cmd.env(var, v);
         }
     }
+    cmd.env(
+        "XDG_CONFIG_HOME",
+        isolated_xdg_config_home(&env.current_dir),
+    );
     for (k, v) in &env.env_vars {
         cmd.env(k, v);
     }
     cmd
+}
+
+/// The isolated `XDG_CONFIG_HOME` for a spec's snouty subprocess: a per-spec dir
+/// with no `snouty/` subdir, so a developer's or CI's real
+/// `~/.config/snouty/settings.toml` can't leak in and change resolved
+/// tenant/repository/etc. (The project file is already isolated — each spec runs
+/// in its own work dir, so `./.snouty.toml` doesn't exist unless the spec makes
+/// it.)
+///
+/// `XDG_CONFIG_HOME` is shared, though: on macOS, podman keeps its *machine
+/// connection* under `$XDG_CONFIG_HOME/containers`, so an empty dir makes the
+/// subprocess's `podman info` lose the VM and fail with a bogus local-socket
+/// path — breaking the podman engine specs. So we re-expose the real podman
+/// config (written under `$HOME/.config/containers` at machine-init, before this
+/// override takes effect) via a symlink: podman still resolves its connection
+/// while snouty stays isolated. Harmless on Linux, where podman reaches its
+/// socket via `XDG_RUNTIME_DIR` and never consults this directory.
+fn isolated_xdg_config_home(current_dir: &std::path::Path) -> std::path::PathBuf {
+    let dir = current_dir.join("xdg-config-isolation");
+    std::fs::create_dir_all(&dir).expect("create XDG_CONFIG_HOME isolation dir");
+
+    if let Some(home) = std::env::var_os("HOME") {
+        let real_containers = std::path::PathBuf::from(home)
+            .join(".config")
+            .join("containers");
+        let link = dir.join("containers");
+        // `symlink_metadata` (unlike `exists`) detects an existing link even if
+        // its target is gone, so repeated calls within one spec don't re-link.
+        if real_containers.is_dir() && link.symlink_metadata().is_err() {
+            std::os::unix::fs::symlink(&real_containers, &link)
+                .expect("symlink podman containers config into isolated XDG_CONFIG_HOME");
+        }
+    }
+    dir
 }
 
 fn cmd_snouty(
@@ -477,20 +515,20 @@ fn spec_tests() {
                 env.background_processes.insert("snouty".to_string(), child);
                 Ok(())
             })
-            .command("setup-docs-db", |env, args| {
+            .command("setup-docs-db", |env, _args| {
                 // Usage: setup-docs-db
-                // Copies the fixture docs.db into the workdir and sets ANTITHESIS_DOCS_DB_PATH.
+                // Seeds an isolated cache home with the fixture docs.db and points
+                // the binary at it via XDG_CACHE_HOME (snouty reads the DB from
+                // <cache home>/snouty/docs.db).
                 let fixture =
                     std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/docs.db");
-                let dest = env.work_dir.join("docs.db");
-                std::fs::copy(&fixture, &dest)
+                let cache_home = env.work_dir.join("cache");
+                let snouty_dir = cache_home.join("snouty");
+                std::fs::create_dir_all(&snouty_dir)
+                    .map_err(|e| err(format!("failed to create cache dir: {e}")))?;
+                std::fs::copy(&fixture, snouty_dir.join("docs.db"))
                     .map_err(|e| err(format!("failed to copy fixture docs.db: {e}")))?;
-                let var_name = if args.is_empty() {
-                    "ANTITHESIS_DOCS_DB_PATH"
-                } else {
-                    &args[0]
-                };
-                env.set_env_var(var_name, dest.to_str().unwrap());
+                env.set_env_var("XDG_CACHE_HOME", cache_home.to_str().unwrap());
                 Ok(())
             })
             .execute();

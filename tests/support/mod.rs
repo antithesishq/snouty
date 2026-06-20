@@ -5,10 +5,10 @@ use assert_cmd::cargo::cargo_bin_cmd;
 use std::io::Read;
 use std::io::Write;
 use std::net::TcpListener;
-use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
-use tempfile::TempDir;
+use tempfile::{NamedTempFile, TempDir};
 
 #[derive(Debug, Default)]
 struct MockDocsServerState {
@@ -127,21 +127,39 @@ impl MockDocsServer {
     }
 }
 
+/// System environment variables forwarded to the snouty binary under test.
+///
+/// We start every command from an empty environment and add back only these,
+/// rather than inheriting the parent env and blacklisting known config vars.
+/// A whitelist can't drift: anything snouty reads as configuration
+/// (`ANTITHESIS_*`, `SNOUTY_*`) — and the `HOME`/`XDG_*` vars that locate the
+/// global settings file and caches — is withheld by construction, so no host
+/// configuration can leak into a test. A test that needs a setting provides it
+/// explicitly (see [`snouty_with_mock`], [`snouty_docs`], [`set_docs_cache_env`]).
+///
+/// `PATH` lets the binary find `podman`/`docker`; `TMPDIR`/`LLVM_PROFILE_FILE`
+/// keep macOS temp handling and coverage instrumentation working.
+const FORWARDED_ENV_VARS: &[&str] = &["PATH", "TMPDIR", "LLVM_PROFILE_FILE"];
+
 pub(crate) fn snouty() -> Command {
     let mut cmd = cargo_bin_cmd!("snouty");
-    cmd.env("RUST_LOG", "debug");
-    for env_var in [
-        "ANTITHESIS_API_KEY",
-        "ANTITHESIS_USERNAME",
-        "ANTITHESIS_PASSWORD",
-        "ANTITHESIS_TENANT",
-        "ANTITHESIS_BASE_URL",
-        "ANTITHESIS_REPOSITORY",
-        "ANTITHESIS_DOCS_URL",
-        "ANTITHESIS_DOCS_DB_PATH",
-    ] {
-        cmd.env_remove(env_var);
+    cmd.env_clear();
+    for var in FORWARDED_ENV_VARS {
+        if let Ok(value) = std::env::var(var) {
+            cmd.env(var, value);
+        }
     }
+    cmd.env("RUST_LOG", "debug");
+
+    // Global settings can't leak (HOME/XDG_CONFIG_HOME aren't forwarded, so the
+    // lookup resolves to nothing). Pin the project settings file to an empty
+    // but existing file so a ./.snouty.toml in the working tree can't leak in
+    // either — empty so it contributes no values, existing so the explicit-path
+    // resolution doesn't error. A test wanting project settings overrides it.
+    let empty_settings =
+        std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("empty.snouty.toml");
+    let _ = std::fs::write(&empty_settings, "");
+    cmd.env("SNOUTY_SETTINGS_PATH", &empty_settings);
     cmd
 }
 
@@ -168,26 +186,67 @@ pub(crate) fn start_mock_server(response_body: &'static str, status: u16) -> Str
     url
 }
 
-pub(crate) fn cached_docs_db_path(cache_dir: &TempDir) -> PathBuf {
-    cache_dir.path().join("snouty").join("docs.db")
+/// The docs DB the binary resolves under a given cache home: `<dir>/snouty/docs.db`
+/// (snouty appends `snouty` to `$XDG_CACHE_HOME`).
+pub(crate) fn cached_docs_db_path(cache_home: &TempDir) -> PathBuf {
+    cache_home.path().join("snouty").join("docs.db")
 }
 
 pub(crate) fn fixture_db() -> String {
-    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+    Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests/fixtures/docs.db")
         .to_str()
         .unwrap()
         .to_string()
 }
 
+/// A shared, read-only cache home seeded with the fixture docs database, exposed
+/// to the binary via `XDG_CACHE_HOME`, so the parallel `--offline` docs tests can
+/// share it.
+///
+/// The `OnceLock` only dedupes within a process, but `cargo nextest` runs every
+/// test in its own process, so many processes seed the same fixed path
+/// concurrently. The seeding must therefore be safe under concurrent writers:
+/// we copy into a process-unique temp file and atomically rename it into place,
+/// so a reader always observes a complete database, never a half-written one.
+/// Every writer produces byte-identical content, so the racing renames are
+/// harmless.
+fn docs_fixture_cache_home() -> &'static Path {
+    static CACHE_HOME: OnceLock<PathBuf> = OnceLock::new();
+    CACHE_HOME
+        .get_or_init(|| {
+            let home = Path::new(env!("CARGO_TARGET_TMPDIR")).join("docs-fixture-cache");
+            let snouty_dir = home.join("snouty");
+            std::fs::create_dir_all(&snouty_dir).unwrap();
+
+            let tmp = NamedTempFile::new_in(&snouty_dir).unwrap();
+            std::fs::copy(fixture_db(), tmp.path()).unwrap();
+            // Atomic rename: replaces the destination in one step, so concurrent
+            // readers never see a truncated or partially-copied database.
+            tmp.persist(snouty_dir.join("docs.db")).unwrap();
+
+            home
+        })
+        .as_path()
+}
+
+/// The docs DB path inside [`docs_fixture_cache_home`], for asserting on
+/// `docs sqlite` output.
+pub(crate) fn docs_fixture_db_path() -> PathBuf {
+    docs_fixture_cache_home().join("snouty").join("docs.db")
+}
+
 pub(crate) fn snouty_docs() -> Command {
     let mut cmd = snouty();
-    cmd.env("ANTITHESIS_DOCS_DB_PATH", fixture_db());
+    cmd.env("XDG_CACHE_HOME", docs_fixture_cache_home());
     cmd
 }
 
-pub(crate) fn set_docs_cache_env<'a>(cmd: &'a mut Command, cache_dir: &TempDir) -> &'a mut Command {
-    cmd.env("SNOUTY_TEST_CACHE_DIR", cache_dir.path());
+pub(crate) fn set_docs_cache_env<'a>(
+    cmd: &'a mut Command,
+    cache_home: &TempDir,
+) -> &'a mut Command {
+    cmd.env("XDG_CACHE_HOME", cache_home.path());
     cmd
 }
 

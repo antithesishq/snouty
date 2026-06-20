@@ -2,7 +2,6 @@ use std::collections::{BTreeMap, HashSet};
 use std::io::Write;
 use std::path::Path;
 use std::process::Command;
-use std::sync::OnceLock;
 
 use chrono::Utc;
 use color_eyre::{
@@ -12,6 +11,7 @@ use color_eyre::{
 use tokio::process::Child;
 
 use crate::config::ComposeConfig;
+use crate::settings::Settings;
 
 /// RAII wrapper around a [`Child`] spawned with `process_group(0)`.
 ///
@@ -1114,57 +1114,50 @@ pub(crate) fn is_podman_in_disguise(cmd: &str) -> bool {
 
 /// Return the auto-detected global container runtime, preferring podman over docker.
 ///
-/// The result is cached so detection only runs once.
+/// The result is NOT cached, so make sure you hold on to the result if you need to use it more than once
 ///
 /// Set `SNOUTY_CONTAINER_ENGINE=podman` or `=docker` to force a specific runtime.
-pub fn runtime() -> Result<&'static dyn ContainerRuntime> {
-    static INSTANCE: OnceLock<Result<Box<dyn ContainerRuntime>, String>> = OnceLock::new();
+pub fn runtime(settings: &Settings) -> Result<Box<dyn ContainerRuntime>> {
+    // An explicit engine setting (from SNOUTY_CONTAINER_ENGINE or a settings
+    // file) short-circuits auto-detection.
+    if let Some(engine) = settings.container_engine() {
+        return match engine {
+            "podman" => Ok(Box::new(PodmanRuntime::new("podman"))),
+            "docker" => Ok(Box::new(DockerRuntime::new("docker"))),
+            other => Err(eyre!(
+                "unsupported container engine '{other}': expected 'podman' or 'docker'"
+            )),
+        };
+    }
 
-    INSTANCE
-        .get_or_init(|| {
-            if let Ok(engine) = std::env::var("SNOUTY_CONTAINER_ENGINE") {
-                return match engine.as_str() {
-                    "podman" => Ok(Box::new(PodmanRuntime::new("podman"))),
-                    "docker" => Ok(Box::new(DockerRuntime::new("docker"))),
-                    other => Err(format!(
-                        "SNOUTY_CONTAINER_ENGINE={other}: expected 'podman' or 'docker'"
-                    )),
-                };
-            }
+    // Try podman first
+    match Command::new("podman").arg("--version").output() {
+        Ok(output) if output.status.success() => {
+            return Ok(Box::new(PodmanRuntime::new("podman")));
+        }
+        Ok(_) => {} // podman found but failed, try docker
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {} // not installed
+        Err(e) => return Err(eyre!("failed to check podman: {e}")),
+    }
 
-            // Try podman first
-            match Command::new("podman").arg("--version").output() {
-                Ok(output) if output.status.success() => {
-                    return Ok(Box::new(PodmanRuntime::new("podman")));
-                }
-                Ok(_) => {} // podman found but failed, try docker
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {} // not installed
-                Err(e) => return Err(format!("failed to check podman: {e}")),
+    // Fall back to docker
+    match Command::new("docker").arg("--version").output() {
+        Ok(output) if output.status.success() => {
+            if is_podman_in_disguise("docker") {
+                log::warn!("podman not found as 'podman', but 'docker' is podman");
+                return Ok(Box::new(PodmanRuntime::new("docker")));
             }
-
-            // Fall back to docker
-            match Command::new("docker").arg("--version").output() {
-                Ok(output) if output.status.success() => {
-                    if is_podman_in_disguise("docker") {
-                        log::warn!("podman not found as 'podman', but 'docker' is podman");
-                        return Ok(Box::new(PodmanRuntime::new("docker")));
-                    }
-                    log::warn!("podman not found, falling back to docker");
-                    Ok(Box::new(DockerRuntime::new("docker")))
-                }
-                Ok(_) => Err(
-                    "'docker --version' failed; unable to find working container runtime"
-                        .to_string(),
-                ),
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                    Err("neither podman nor docker is installed".to_string())
-                }
-                Err(e) => Err(format!("failed to check docker: {e}")),
-            }
-        })
-        .as_ref()
-        .map(|b| b.as_ref())
-        .map_err(|e| eyre!("{e}"))
+            log::warn!("podman not found, falling back to docker");
+            Ok(Box::new(DockerRuntime::new("docker")))
+        }
+        Ok(_) => Err(eyre!(
+            "'docker --version' failed; unable to find working container runtime"
+        )),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            Err(eyre!("neither podman nor docker is installed"))
+        }
+        Err(e) => Err(eyre!("failed to check docker: {e}")),
+    }
 }
 
 /// Return all container runtimes available on this machine.

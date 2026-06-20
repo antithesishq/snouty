@@ -1,0 +1,12 @@
+# Strict settings-file typing
+#
+# A settings value of the wrong TOML type is a hard error at startup (every
+# command resolves settings up front), naming the offending key — rather than
+# being silently dropped and resurfacing later as a confusing "not set".
+
+# A non-string top-level value is rejected, naming the key.
+! snouty doctor
+stderr 'tenant.*must be a string'
+
+-- .snouty.toml --
+tenant = 123

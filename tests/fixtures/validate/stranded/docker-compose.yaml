@@ -1,0 +1,29 @@
+# Demonstrates the "stranded test commands" warning on an otherwise successful
+# validation.
+#
+# `init` bakes Antithesis test commands into its image (see Dockerfile) but
+# exits immediately — a common setup/migration pattern. Antithesis can't run
+# test commands in a stopped container, so snouty warns about it; this is
+# advisory, not fatal. `app` is the long-running service that emits the
+# setup-complete event, so validation still succeeds overall (exit 0).
+#
+# depends_on/service_completed_successfully makes `up` wait for init to exit
+# before app starts, so init is reliably stopped (and flagged) by the time
+# snouty discovers test commands.
+#
+# Run scripts/build-validate-samples.sh to build the init image — `snouty
+# validate` never builds or pulls; `app` uses the stock glibc base.
+services:
+  init:
+    image: snouty-sample-stranded-init:latest
+    build: .
+    command: ["true"]
+  app:
+    image: debian:bookworm-slim
+    depends_on:
+      init:
+        condition: service_completed_successfully
+    command:
+      - sh
+      - -c
+      - "echo '{\"antithesis_setup\": {\"status\": \"complete\"}}' >> \"$$ANTITHESIS_OUTPUT_DIR/sdk.jsonl\"; exec tail -f /dev/null"

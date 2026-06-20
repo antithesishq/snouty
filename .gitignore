@@ -4,3 +4,6 @@
 # Python bytecode cache (e.g. from running scripts/gen-gallery.py)
 __pycache__/
 *.pyc
+
+# uv project virtualenv (created when running scripts via `uv run`)
+.venv/

@@ -1,8 +1,4 @@
-#!/usr/bin/env -S uv run --script
-# /// script
-# requires-python = ">=3.11"
-# dependencies = []
-# ///
+#!/usr/bin/env -S uv run
 """Regenerate the snouty "gallery" against fresh, live run IDs.
 
 The gallery is a set of Markdown files, one per "story". Each story models a
@@ -58,6 +54,16 @@ UNKNOWN_RUN = "ffffffffffffffffffffffffffffffff-54-5"
 # Stories are captured concurrently (each is one or two snouty subprocesses that
 # can each block on snouty's 60s timeout); checks are then evaluated serially.
 CAPTURE_WORKERS = 6
+
+# Committed `snouty validate` sample projects (their goal is documented in the
+# comment atop each docker-compose.yaml). The validate stories run `snouty
+# validate` against these.
+SAMPLES_DIR = Path(__file__).resolve().parent.parent / "tests" / "fixtures" / "validate"
+
+# The live samples bake their test commands into images; `snouty validate`
+# never builds or pulls, so the images must exist first. This script builds
+# them (and pulls the glibc base) and is run before the live validate stories.
+BUILD_SAMPLES_SCRIPT = Path(__file__).resolve().parent / "build-validate-samples.sh"
 
 # Keywords probed (in order) to sample a real event from a run. --match is
 # required, so a truly unfiltered call isn't possible; ordering broadest-first
@@ -223,10 +229,31 @@ def _sample_event(sn: Snouty, run: str) -> dict | None:
     return None
 
 
-def _pick_event_completed_run(sn: Snouty, scan: int) -> tuple[str, dict]:
+@dataclass
+class CompletedPick:
+    """A completed run that can drive *every* completed-run story, plus the
+    per-story selections derived from it (so discovery doesn't re-derive them)."""
+
+    run: str
+    event: dict
+    fail_prop: str
+    pass_prop: str
+    nonevent_prop: str
+    name_filter: str
+
+
+def _pick_completed_run(sn: Snouty, scan: int) -> CompletedPick:
+    """Pick a completed run that can drive *all* the completed-run stories, not
+    just the event/logs ones. Earlier this committed to the first run with
+    sampleable events, then `discover` separately demanded that same run also
+    render failing/passing/non-event property moments — so a run with events but
+    no failing-property moments (the first completed run on a tenant routinely is
+    one) sank the whole gallery. Instead, scan recent completed runs and take the
+    first that satisfies every requirement at once."""
     runs = sn.json_lines(["runs", "list", "--status", "completed", "-n", str(scan)])
     if not runs:
         raise GalleryError("no completed runs found on this tenant")
+    last_reason = "none had sampleable events"
     for r in runs:
         run = r["run_id"]
         try:
@@ -234,17 +261,34 @@ def _pick_event_completed_run(sn: Snouty, scan: int) -> tuple[str, dict]:
         except GalleryError:
             print(f"  skip {run}: events endpoint unreachable", file=sys.stderr)
             continue
-        if event is not None:
-            print(
-                f"  completed run : {run} (events matched '{event['_keyword']}')",
-                file=sys.stderr,
-            )
-            return run, event
-        print(f"  skip {run}: no sampleable events", file=sys.stderr)
+        if event is None:
+            print(f"  skip {run}: no sampleable events", file=sys.stderr)
+            continue
+        # Has events; now require it to drive the property stories too. Each
+        # picker raises GalleryError if this run can't satisfy its story — catch
+        # it and move on rather than committing to a run that fails downstream.
+        props = sn.json_lines(["runs", "properties", run])
+        try:
+            fail_prop = _pick_property_with_moments(sn, run, props, "Failing")
+            pass_prop = _pick_property_with_moments(sn, run, props, "Passing")
+            nonevent_prop = _pick_nonevent_property(sn, run, props)
+            name_filter = _pick_name_filter([p["name"] for p in props])
+        except GalleryError as e:
+            print(f"  skip {run}: {e}", file=sys.stderr)
+            last_reason = str(e)
+            continue
+        print(
+            f"  completed run : {run} (events matched '{event['_keyword']}')",
+            file=sys.stderr,
+        )
+        return CompletedPick(
+            run, event, fail_prop, pass_prop, nonevent_prop, name_filter
+        )
     raise GalleryError(
-        f"none of the {len(runs)} most recent completed runs returned events "
-        "(all unreachable or empty) — refusing to write a gallery with the "
-        "event/logs stories skipped"
+        f"none of the {len(runs)} most recent completed runs can drive every "
+        f"completed-run story (need sampleable events plus failing/passing/"
+        f"non-event property moments and a unique name filter); last reason: "
+        f"{last_reason}"
     )
 
 
@@ -448,7 +492,8 @@ def _pick_name_filter(prop_names: list[str]) -> str:
 def discover(sn: Snouty, scan: int) -> Discovery:
     print("discovering runs via the live API…", file=sys.stderr)
 
-    success, event = _pick_event_completed_run(sn, scan)
+    pick = _pick_completed_run(sn, scan)
+    success, event = pick.run, pick.event
 
     fail, fail_moment, fail_event_kw = _pick_incomplete_run(sn, scan)
     cancelled = _first_run(sn, "--status", "cancelled")
@@ -473,9 +518,6 @@ def discover(sn: Snouty, scan: int) -> Discovery:
     keyword = event["_keyword"]
     moment = event["moment"]
 
-    props = sn.json_lines(["runs", "properties", success])
-    prop_names = [p["name"] for p in props]
-
     disc = Discovery(
         success=success,
         fail=fail,
@@ -488,10 +530,12 @@ def discover(sn: Snouty, scan: int) -> Discovery:
         event_kw2=event["_second_needle"],
         event_hash=moment["input_hash"],
         event_vtime=float(moment["vtime"]),
-        fail_prop=_pick_property_with_moments(sn, success, props, "Failing"),
-        pass_event_prop=_pick_property_with_moments(sn, success, props, "Passing"),
-        nonevent_prop=_pick_nonevent_property(sn, success, props),
-        name_filter=_pick_name_filter(prop_names),
+        # Property-story selections were derived against `success` during the
+        # holistic run pick, so reuse them rather than re-probing the API.
+        fail_prop=pick.fail_prop,
+        pass_event_prop=pick.pass_prop,
+        nonevent_prop=pick.nonevent_prop,
+        name_filter=pick.name_filter,
         # _pick_incomplete_run guarantees a real (non-0/0) failure moment.
         fail_hash=str(fail_moment["input_hash"]),
         fail_vtime=str(fail_moment["vtime"]),
@@ -538,6 +582,11 @@ class Story:
     # string sets a var, None unsets it. Used by the doctor stories to model a
     # specific credential setup regardless of the operator's real environment.
     env: dict[str, str | None] | None = None
+    # The story starts real containers (a live `snouty validate` sample), as
+    # opposed to the static checks that fail before any container starts. All
+    # validate stories require a container runtime (see `ensure_validate_runtime`);
+    # this flag just documents which ones spin up live containers.
+    needs_docker: bool = False
 
 
 @dataclass
@@ -732,13 +781,29 @@ def property_non_event_result(sr: StoryRun, reg: Registry) -> tuple[bool, str]:
     return (ok, f"result={has_result}, no moments={no_moments}")
 
 
-def succeeds_with(*needles: str):
+def _exit_with(*needles: str, want_ok: bool):
+    """Story check: the command must exit with the expected success/failure AND
+    every needle must appear in its output. Requiring the exit polarity stops a
+    command that merely prints a needle (while exiting the other way) from
+    passing as the wrong kind of story."""
+
     def chk(sr: StoryRun, reg: Registry) -> tuple[bool, str]:
         text = sr.result.combined
         missing = [n for n in needles if n not in text]
-        return (sr.result.ok and not missing, f"exit ok, missing={missing!r}")
+        ok = (sr.result.ok == want_ok) and not missing
+        return (ok, f"exit={sr.result.returncode}, missing={missing!r}")
 
     return chk
+
+
+def succeeds_with(*needles: str):
+    """A clean-success story: exit zero AND every needle appears in the output."""
+    return _exit_with(*needles, want_ok=True)
+
+
+def fails_with(*needles: str):
+    """A clean-error story: exit non-zero AND every needle appears in the output."""
+    return _exit_with(*needles, want_ok=False)
 
 
 def logs_non_empty(sr: StoryRun, reg: Registry) -> tuple[bool, str]:
@@ -1507,6 +1572,199 @@ def build_help_stories(d: Discovery) -> list[Story]:
     ]
 
 
+def ensure_validate_runtime() -> None:
+    """Verify a container runtime is ready for the validate stories and build the
+    sample images, raising GalleryError if anything is missing.
+
+    gen-gallery is a developer tool, so a container runtime is required — not
+    optional. `snouty validate` resolves docker/podman before it even inspects a
+    config, so *every* validate story (including the static misconfiguration
+    checks) needs the runtime, and the live samples additionally need a running
+    daemon to start containers. The live samples bake their test commands into
+    images and `snouty validate` never builds or pulls, so the images must exist
+    first — built here via scripts/build-validate-samples.sh."""
+    try:
+        if subprocess.run(["docker", "info"], capture_output=True).returncode != 0:
+            raise GalleryError(
+                "Docker daemon not reachable (`docker info` failed). gen-gallery "
+                "is a developer tool and requires a running container runtime — "
+                "start Docker and retry."
+            )
+        ver = subprocess.run(["docker-compose", "version"], capture_output=True, text=True)
+        if ver.returncode != 0 or "docker compose" not in ver.stdout.lower():
+            raise GalleryError(
+                "docker-compose (Compose v2) not available (`docker-compose version` "
+                "failed or is not v2). Install the docker-compose v2 binary and retry."
+            )
+    except FileNotFoundError as e:
+        raise GalleryError(
+            f"container runtime not found ({e.filename}): gen-gallery requires "
+            "docker and the docker-compose v2 binary on PATH."
+        ) from e
+    print("building validate sample images…", file=sys.stderr)
+    build = subprocess.run(
+        ["bash", str(BUILD_SAMPLES_SCRIPT)], capture_output=True, text=True
+    )
+    if build.returncode != 0:
+        tail = (build.stderr or build.stdout).strip()
+        raise GalleryError(f"validate sample image build failed:\n{tail}")
+
+
+def build_validate_stories(ephemeral: Path | None) -> list[Story]:
+    """`snouty validate` stories, run against the committed sample projects under
+    tests/fixtures/validate (each sample has its own README). The static
+    misconfiguration samples fail fast (but still need the runtime resolved); the
+    live ones (`needs_docker`) start real containers. All require a container
+    runtime — `ensure_validate_runtime` enforces that before these run.
+
+    Two degenerate inputs can't be committed — a non-existent directory and an
+    empty `manifests/` dir (git can't track an empty directory) — so they're
+    synthesized under `ephemeral` at run time. In `--list` mode `ephemeral` is
+    None and they fall back to placeholder paths (their args are never run)."""
+    s = SAMPLES_DIR
+    missing_dir = s / "does-not-exist"  # deliberately never created
+    if ephemeral is not None:
+        empty_manifests = ephemeral / "empty-manifests"
+        (empty_manifests / "manifests").mkdir(parents=True, exist_ok=True)
+    else:
+        empty_manifests = s / "empty-manifests"  # placeholder; not run for --list
+
+    def v(slug, title, goal, judge, sample_args, check, *, needs_docker=False):
+        return Story(
+            slug=slug,
+            title=title,
+            goal=goal,
+            judge=judge,
+            args=["validate", *sample_args],
+            check=check,
+            json_capable=False,  # validate isn't a list/stream command
+            needs_docker=needs_docker,
+        )
+
+    return [
+        # -- static misconfigurations (detected before any container starts) --
+        v(
+            "validate-not-a-config",
+            "Validate a directory that isn't a config",
+            "I point validate at a directory with no compose file or manifests/.",
+            "The error says no docker-compose.yaml or manifests/ was found, so I know what's missing.",
+            [str(s / "neither")],
+            fails_with("does not contain a docker-compose.yaml file or a manifests/ subdirectory"),
+        ),
+        v(
+            "validate-missing-dir",
+            "Validate a path that doesn't exist",
+            "I mistype the path to my config directory.",
+            "The error says the path is not a directory, rather than something cryptic.",
+            [str(missing_dir)],
+            fails_with("is not a directory"),
+        ),
+        v(
+            "validate-wrong-extension",
+            "Validate a .yml compose file",
+            "My compose file is named docker-compose.yml instead of .yaml.",
+            "The error names the wrong filename and suggests the exact rename.",
+            [str(s / "wrong-extension")],
+            fails_with("not the required docker-compose.yaml", "rename it to docker-compose.yaml"),
+        ),
+        v(
+            "validate-ambiguous",
+            "Validate a dir with both compose and manifests",
+            "My directory has both a docker-compose.yaml and a manifests/ subdirectory.",
+            "The error explains the ambiguity and says to provide one or the other.",
+            [str(s / "ambiguous")],
+            fails_with("contains both docker-compose.yaml and a manifests/ subdirectory"),
+        ),
+        v(
+            "validate-empty-manifests",
+            "Validate an empty manifests/ directory",
+            "My manifests/ directory is empty.",
+            "The error says the manifests/ dir is empty, not something obscure further along.",
+            [str(empty_manifests)],
+            fails_with("empty manifests/ subdirectory"),
+        ),
+        v(
+            "validate-malformed-compose",
+            "Validate a broken compose file",
+            "My docker-compose.yaml has a YAML syntax error.",
+            "The error shows docker-compose config failed and includes the parser's message.",
+            [str(s / "malformed-compose")],
+            fails_with("'docker-compose config' failed"),
+        ),
+        v(
+            "validate-no-services",
+            "Validate a compose file with no services",
+            "My compose file declares no services.",
+            "The error states plainly that no services were found.",
+            [str(s / "no-services")],
+            fails_with("no services found in docker-compose.yaml"),
+        ),
+        v(
+            "validate-external-network",
+            "Validate a compose file with an external network",
+            "My compose file references an external network.",
+            "The error explains an external network can't work on Antithesis.",
+            [str(s / "external-network")],
+            fails_with("declared as external"),
+        ),
+        v(
+            "validate-missing-image",
+            "Validate when a service image is missing locally",
+            "A service references an image I haven't built or pulled.",
+            "The error lists the missing image and reminds me snouty never pulls.",
+            [str(s / "missing-image")],
+            fails_with("some images are not available locally"),
+            needs_docker=True,
+        ),
+        # -- live container runs (require a Docker daemon) --------------------
+        v(
+            "validate-valid",
+            "Validate a correct harness",
+            "I validate a well-formed harness before launching it.",
+            "Setup-complete is detected and the discovered test commands are summarized; exit is clean.",
+            [str(s / "valid")],
+            succeeds_with("Setup-complete event detected", "Setup validation successful"),
+            needs_docker=True,
+        ),
+        v(
+            "validate-timeout",
+            "Validate a harness that never signals setup-complete",
+            "My harness never emits the setup-complete event.",
+            "snouty waits up to --timeout and then fails with a clear timeout message.",
+            [str(s / "timeout"), "--timeout", "5"],
+            fails_with("timed out waiting for setup-complete event"),
+            needs_docker=True,
+        ),
+        v(
+            "validate-unrecognized-command",
+            "Validate a harness with an unknown test command",
+            "One of my test commands has a name with no recognized prefix.",
+            "Discovery fails and the offending command is named.",
+            [str(s / "unrecognized-command")],
+            fails_with("test command discovery failed", "Unrecognized command names"),
+            needs_docker=True,
+        ),
+        v(
+            "validate-non-executable-command",
+            "Validate a harness with a non-executable test command",
+            "One of my test commands is missing its executable bit.",
+            "Discovery fails and the non-executable command is named.",
+            [str(s / "non-executable-command")],
+            fails_with("test command discovery failed", "are not executable"),
+            needs_docker=True,
+        ),
+        v(
+            "validate-stranded",
+            "Validate a harness whose init container exits",
+            "A one-shot container holds test commands but exits during startup.",
+            "snouty warns those commands are stranded but still validates successfully.",
+            [str(s / "stranded")],
+            succeeds_with("their containers exited", "Setup validation successful"),
+            needs_docker=True,
+        ),
+    ]
+
+
 # ---------------------------------------------------------------------------
 # Rendering + main
 # ---------------------------------------------------------------------------
@@ -1617,6 +1875,8 @@ def main() -> int:
         # only reads a few fields, and event_vtime defaults to a real float).
         for s in build_stories(Discovery()):
             print(s.slug)
+        for s in build_validate_stories(None):
+            print(s.slug)
         return 0
 
     snouty_bin = args.snouty
@@ -1636,11 +1896,31 @@ def main() -> int:
     out_dir = args.out or Path(tempfile.mkdtemp(prefix="snouty-gallery."))
     out_dir.mkdir(parents=True, exist_ok=True)
 
+    # The uncommittable validate fixtures (a non-existent dir, an empty
+    # manifests/ dir) are synthesized here for this run only.
+    fixtures_dir = Path(tempfile.mkdtemp(prefix="snouty-gallery-fixtures."))
+
     sn = Snouty(snouty_bin)
     failures: list[tuple[str, str]] = []
     try:
         disc = discover(sn, args.runs_to_scan)
         stories = build_stories(disc)
+
+        # Validate stories run against the committed sample projects, all of
+        # which require a container runtime (`snouty validate` resolves
+        # docker/podman before inspecting any config). gen-gallery is a developer
+        # tool, so the runtime is mandatory: build the sample images and hard-fail
+        # if it isn't available, rather than silently dropping stories.
+        ensure_validate_runtime()
+        validate_stories = build_validate_stories(fixtures_dir)
+        n_live = sum(s.needs_docker for s in validate_stories)
+        print(
+            f"including all {len(validate_stories)} validate stories "
+            f"({n_live} start live containers)",
+            file=sys.stderr,
+        )
+        stories += validate_stories
+
         if args.only:
             wanted = set(args.only)
             stories = [s for s in stories if s.slug in wanted]
@@ -1678,6 +1958,7 @@ def main() -> int:
         return 1
     finally:
         sn.cleanup()
+        shutil.rmtree(fixtures_dir, ignore_errors=True)
 
     print(file=sys.stderr)
     if failures:

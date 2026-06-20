@@ -116,7 +116,7 @@ Antithesis supports two forms of authentication, supplied via environment variab
 export ANTITHESIS_API_KEY="your-api-key"
 ```
 
-Username/password authentication is only supported when launching runs (`snouty launch`, `snouty debug`, and `snouty api webhook`). All other commands that talk to the API — such as `snouty runs` — require an API key.
+Username/password authentication is only supported when launching runs (`snouty launch` and `snouty debug`). All other commands that talk to the API — such as `snouty runs` — require an API key.
 
 ```sh
 export ANTITHESIS_USERNAME="your-username"
@@ -140,8 +140,9 @@ Snouty provides the following subcommands. Invoke `snouty <command> --help` to f
 - `snouty debug`: start a debug session.
 - `snouty validate`: locally run and validate your docker-compose.yaml setup.
 - `snouty doctor`: check your environment is configured correctly.
-- `snouty docs`: fast, local search of the Antithesis documentation.
+- `snouty docs`: search the Antithesis documentation locally (auto-refreshes the local copy over the network; pass `--offline` to skip).
 - `snouty completions <shell>`: generate shell completion scripts.
+- `snouty version`: print version and build information.
 - `snouty update`: install the latest version.
 
 ## Shell Completions

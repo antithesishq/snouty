@@ -146,7 +146,7 @@ fn launch_without_source_sets_ephemeral() {
             r#""antithesis.is_ephemeral": "true""#,
         ))
         .stderr(predicate::str::contains(
-            "Starting ephemeral run, Findings will not be available (provide --source)",
+            "Starting an ephemeral run; its findings will not be retained",
         ));
 }
 
@@ -167,7 +167,7 @@ fn launch_with_source_omits_ephemeral() {
         .assert()
         .success()
         .stderr(predicate::str::contains("is_ephemeral").not())
-        .stderr(predicate::str::contains("Starting ephemeral run").not());
+        .stderr(predicate::str::contains("Starting an ephemeral run").not());
 }
 
 #[test]

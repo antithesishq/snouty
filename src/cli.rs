@@ -17,7 +17,9 @@ fn parse_run_status(value: &str) -> Result<RunStatus, String> {
 #[derive(Parser)]
 #[command(name = "snouty")]
 #[command(about = "CLI for the Antithesis API", long_about = None)]
-#[command(version)]
+// SNOUTY_VERSION (from build.rs) is the crate version plus the build's git sha
+// when known, so `--version` and the `version` subcommand print the same string.
+#[command(version = env!("SNOUTY_VERSION"))]
 pub struct Cli {
     /// Output JSON where supported (NDJSON for list/stream commands, pretty JSON otherwise)
     // High display_order so the two global flags sort to the bottom of every

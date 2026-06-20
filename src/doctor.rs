@@ -315,19 +315,26 @@ fn version_check(host: &str, result: std::result::Result<ApiVersion, VersionErro
                 format!("tenant release version: {}", v.release_version),
             ),
         // 404: the version endpoint was added in release 56, so an older tenant
-        // 404s — but the request was served, so auth and connectivity are fine
-        // and the API is the stable v1.
+        // 404s — but the request was served, so auth and connectivity are fine.
+        // A 404 can also come from a proxy/route in front of the tenant, so we
+        // name that possibility rather than asserting the tenant is old.
         Err(VersionError::Http(404)) => Check::ok("api", "Antithesis API reachable").note(
             Level::Warning,
-            "tenant release version: older than v56; upgrade recommended",
+            "GET /api/version returned 404 — your tenant likely predates version \
+             reporting (added in release 56); if you expect a current tenant, a \
+             proxy or route may be intercepting the request",
         ),
-        // 401/403: the request was rejected — authentication is broken.
-        // Connectivity is only probably ok (a proxy can reject before the
-        // request reaches the API), so we don't claim it.
+        // 401/403: the request was rejected. Most often the API key is wrong,
+        // but a proxy can also reject before the request reaches the API, so we
+        // name both rather than blaming the key outright.
         Err(VersionError::Http(status @ (401 | 403))) => {
             Check::fail("api", "Antithesis API rejected authentication")
                 .note(Level::Error, format!("the API returned HTTP {status}"))
-                .note(Level::Note, "check ANTITHESIS_API_KEY")
+                .note(
+                    Level::Note,
+                    "verify ANTITHESIS_API_KEY is valid; if it is, a proxy may be \
+                     rejecting the request before it reaches Antithesis",
+                )
         }
         // 5xx: we reached something, but it's erroring — connectivity is broken
         // by a server error and auth status is unknown.
@@ -591,16 +598,19 @@ mod tests {
     }
 
     #[test]
-    fn version_404_is_reachable_but_warns_an_old_tenant() {
+    fn version_404_is_reachable_but_warns() {
         let check = version_check("tenant.antithesis.com", Err(VersionError::Http(404)));
         assert_eq!(check.status, Status::Ok);
         assert!(check.message.contains("reachable"));
-        assert!(
-            check
-                .notes
-                .iter()
-                .any(|n| n.level == Level::Warning && n.text.contains("older than v56"))
-        );
+        // The warning explains the 404 without definitively blaming an old
+        // tenant — it names both the old-tenant and proxy possibilities.
+        let warning = check
+            .notes
+            .iter()
+            .find(|n| n.level == Level::Warning)
+            .expect("a 404 should attach a warning note");
+        assert!(warning.text.contains("404"));
+        assert!(warning.text.contains("proxy"));
     }
 
     #[test]

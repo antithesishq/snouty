@@ -52,14 +52,15 @@ stderr '.*snouty launch.*'
 [!staging] stderr '.*latest API version: v1.*'
 [!staging] stderr '.*tenant release version: 56.0.*'
 
-# 404: an older tenant predating the version endpoint — still reachable and
-# authenticated, so doctor stays green and warns the tenant release is old.
+# 404: typically an older tenant predating the version endpoint, but possibly a
+# proxy/route intercepting the request — either way it's still reachable and
+# authenticated, so doctor stays green and warns without blaming the tenant.
 [!staging] mock-server 404 '{}'
 [!staging] env ANTITHESIS_API_KEY=testkey
 [!staging] snouty doctor
 [!staging] stderr '.*Antithesis API reachable.*'
-[!staging] stderr '.*older than v56.*'
-[!staging] stderr '.*upgrade recommended.*'
+[!staging] stderr '.*returned 404.*'
+[!staging] stderr '.*proxy.*'
 
 # --offline skips the network check entirely: no version line, no API contact.
 env ANTITHESIS_API_KEY=testkey

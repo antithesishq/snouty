@@ -1,0 +1,16 @@
+# Declares an external network, which snouty rejects. The concrete reason is
+# `validate`-specific: validate wraps every network in a generated isolation
+# override (internal: true), and docker-compose won't allow a network that is
+# both external and internal — so snouty errors early with a clear message
+# instead of surfacing docker-compose's confusing one. (An external network
+# would also have nothing to attach to in Antithesis' fresh, air-gapped
+# environment, which is built from your config alone.)
+services:
+  app:
+    image: debian:bookworm-slim
+    command: ["tail", "-f", "/dev/null"]
+    networks:
+      - corp
+networks:
+  corp:
+    external: true

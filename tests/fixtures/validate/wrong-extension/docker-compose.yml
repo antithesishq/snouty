@@ -1,0 +1,6 @@
+# Intentionally named docker-compose.yml (.yml) instead of the required
+# docker-compose.yaml, so `snouty validate` emits its rename hint.
+services:
+  app:
+    image: debian:bookworm-slim
+    command: ["tail", "-f", "/dev/null"]

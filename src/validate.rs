@@ -514,31 +514,39 @@ fn discover_scripts(
         return Err(err);
     }
 
-    if !unrecognized.is_empty() || !not_executable.is_empty() || !stopped_with_scripts.is_empty() {
-        return Err(combined_discovery_error(
-            unrecognized,
-            not_executable,
-            stopped_with_scripts,
-        ));
+    // A service carrying test commands whose container has exited is, for this
+    // release, only a warning: a one-shot setup/init container that exits 0 is a
+    // legitimate compose pattern (e.g. `depends_on: service_completed_successfully`),
+    // and an unexpected non-zero exit surfaces as a property failure during the
+    // run itself. We can promote this to a hard error later if it proves noisy.
+    if !stopped_with_scripts.is_empty() {
+        eprintln!("{}", stranded_scripts_warning(&stopped_with_scripts));
+    }
+
+    // Genuine misconfigurations — unknown command prefixes or non-executable
+    // commands — remain hard errors: those scripts can never run.
+    if !unrecognized.is_empty() || !not_executable.is_empty() {
+        return Err(combined_discovery_error(unrecognized, not_executable));
     }
 
     Ok(all_scripts)
 }
 
-/// Build a single error report covering every category of discovery problem
-/// found across all containers. Sections are sorted by service name for
-/// deterministic output.
+/// Build a single error report covering every hard discovery failure found
+/// across all containers — unknown command prefixes and non-executable test
+/// commands. Sections are sorted by service name for deterministic output.
+/// (A test-bearing container that merely exited is handled separately as a
+/// warning; see [`stranded_scripts_warning`].)
 fn combined_discovery_error(
     unrecognized: BTreeMap<String, BTreeSet<String>>,
     not_executable: BTreeMap<String, BTreeSet<String>>,
-    stopped_with_scripts: BTreeSet<String>,
 ) -> color_eyre::Report {
     let mut err = user_error("test command discovery failed");
 
     for (service, commands) in &unrecognized {
         let listing = commands
             .iter()
-            .map(|c| format!("  {c}"))
+            .map(|c| format!("  {}/{c}", container::TEST_TEMPLATES_PATH))
             .collect::<Vec<_>>()
             .join("\n");
         err = err.with_section(|| {
@@ -551,7 +559,7 @@ fn combined_discovery_error(
     for (service, commands) in &not_executable {
         let listing = commands
             .iter()
-            .map(|c| format!("  {c}"))
+            .map(|c| format!("  {}/{c}", container::TEST_TEMPLATES_PATH))
             .collect::<Vec<_>>()
             .join("\n");
         err = err.with_section(|| {
@@ -561,24 +569,27 @@ fn combined_discovery_error(
         });
     }
 
-    if !stopped_with_scripts.is_empty() {
-        let listing = stopped_with_scripts
-            .iter()
-            .map(|s| format!("  {s}"))
-            .collect::<Vec<_>>()
-            .join("\n");
-        err = err.with_section(|| {
-            listing.header(
-                "Services contain Antithesis test commands but their containers exited. \
-                 Antithesis cannot run test commands in stopped containers:",
-            )
-        });
-        err = err.with_suggestion(|| {
-            "set the service's command/entrypoint to a long-running process (for example `sleep infinity`, or `tail -f /dev/null`) so the container stays alive for the duration of the test"
-        });
-    }
-
     err
+}
+
+/// Advisory warning that services carrying Antithesis test commands have exited.
+/// This is intentionally not an error: a one-shot setup/init container that
+/// exits 0 is a legitimate compose pattern. Antithesis still cannot run test
+/// commands in a stopped container, so we surface it; an unexpected non-zero
+/// exit is caught as a property failure during the run itself.
+fn stranded_scripts_warning(stopped_with_scripts: &BTreeSet<String>) -> String {
+    let listing = stopped_with_scripts
+        .iter()
+        .map(|s| format!("  {s}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!(
+        "Warning: these services contain Antithesis test commands but their containers \
+         exited; Antithesis cannot run test commands in a stopped container:\n{listing}\n\
+         If a container should stay up for the test, set its command/entrypoint to a \
+         long-running process (for example `sleep infinity` or `tail -f /dev/null`). A \
+         one-shot setup/init container that exits 0 can be left as-is."
+    )
 }
 
 /// Validate the structure of discovered test commands without executing them.
@@ -1070,5 +1081,33 @@ services:
             format!("{err}").contains("not a directory"),
             "expected 'not a directory' error, got: {err}"
         );
+    }
+
+    #[test]
+    fn stranded_scripts_warning_lists_services_and_stays_advisory() {
+        let mut stopped = BTreeSet::new();
+        stopped.insert("init".to_string());
+        stopped.insert("migrate".to_string());
+        let msg = stranded_scripts_warning(&stopped);
+        // Advisory, not a failure: it warns and names every affected service,
+        // and explicitly blesses a one-shot container that exits 0.
+        assert!(msg.starts_with("Warning:"));
+        assert!(msg.contains("  init"));
+        assert!(msg.contains("  migrate"));
+        assert!(msg.contains("exits 0"));
+    }
+
+    #[test]
+    fn combined_discovery_error_covers_only_hard_failures() {
+        let mut unrecognized = BTreeMap::new();
+        unrecognized.insert("app".to_string(), BTreeSet::from(["bogus_cmd".to_string()]));
+        let not_executable = BTreeMap::new();
+        let err = combined_discovery_error(unrecognized, not_executable);
+        let rendered = format!("{err:?}");
+        assert!(rendered.contains("test command discovery failed"));
+        // Test commands are referenced by their full in-container path.
+        assert!(rendered.contains("/opt/antithesis/test/v1/bogus_cmd"));
+        // The stranded-container case is no longer part of the hard error.
+        assert!(!rendered.contains("containers exited"));
     }
 }

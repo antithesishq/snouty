@@ -1,0 +1,13 @@
+# Bakes a recognized test command (test/quickstart/first_setup) that is missing
+# its executable bit into the image. Antithesis could never run it, so snouty
+# fails discovery during `validate` and names the offending command. Like the
+# unrecognized-command sample, this fails during discovery, so the service only
+# needs to stay up.
+#
+# Run scripts/build-validate-samples.sh to build the image — `snouty validate`
+# never builds or pulls.
+services:
+  app:
+    image: snouty-sample-non-executable-command:latest
+    build: .
+    command: ["tail", "-f", "/dev/null"]

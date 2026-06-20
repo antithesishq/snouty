@@ -1,0 +1,3 @@
+# A syntactically valid compose file that declares no services at all.
+# snouty has nothing to instrument and refuses it.
+services: {}

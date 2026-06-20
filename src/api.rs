@@ -216,8 +216,7 @@ impl Auth {
             err = err.note(
                 "ANTITHESIS_USERNAME/ANTITHESIS_PASSWORD are set, but this command only \
                  accepts API key authentication; username/password authentication is only \
-                 supported when launching runs (`snouty launch`, `snouty debug`, \
-                 `snouty api webhook`)",
+                 supported when launching runs (`snouty launch`, `snouty debug`)",
             );
         }
         Err(err.suggestion(
@@ -363,10 +362,12 @@ impl AntithesisApi {
     }
 
     /// Probe `GET /api/version` for the API and tenant release versions. The
-    /// endpoint is unauthenticated, so a success doubles as proof the API is
-    /// reachable; `snouty doctor` uses it as a connectivity check. Errors are
-    /// classified (HTTP status vs unreachable) rather than rendered, so the
-    /// caller can decide how to present each case.
+    /// endpoint authenticates like every endpoint other than launch, so the
+    /// probe runs only when an API key is configured; receiving any HTTP
+    /// response (success or error) doubles as proof the API is reachable, and
+    /// `snouty doctor` uses it as a connectivity check. Errors are classified
+    /// (HTTP status vs unreachable) rather than rendered, so the caller can
+    /// decide how to present each case.
     pub async fn get_version(&self) -> std::result::Result<ApiVersion, VersionError> {
         // The client's connect timeout (CONNECT_TIMEOUT) keeps a black-holed or
         // unresolvable host from hanging this probe.

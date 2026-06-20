@@ -1214,6 +1214,17 @@ struct LogOutputOptions {
     raw: bool,
 }
 
+/// After streaming a log/event stream in human mode, print `empty_note` when the
+/// stream completed successfully but produced no lines, so the user isn't left
+/// wondering whether anything happened. In `--json` mode an empty stream is the
+/// correct machine answer, so stay quiet. Shared by `cmd_runs_logs` and
+/// `cmd_runs_build_logs`, which track `wrote_any` the same way.
+fn note_if_empty(result: &Result<()>, json: bool, wrote_any: bool, empty_note: &str) {
+    if result.is_ok() && !json && !wrote_any {
+        eprintln!("{empty_note}");
+    }
+}
+
 async fn cmd_runs_build_logs(
     run_id: &str,
     settings: &Settings,
@@ -1229,14 +1240,17 @@ async fn cmd_runs_build_logs(
     };
     let mut stdout = BufWriter::new(std::io::stdout().lock());
 
+    let mut wrote_any = false;
     let result = if json {
         stream_ndjson_lines(stream, NoOpTransformer {}, |line| {
+            wrote_any = true;
             writeln!(stdout, "{line}")?;
             Ok(())
         })
         .await
     } else {
         stream_ndjson_lines(stream, NoOpTransformer {}, |line| {
+            wrote_any = true;
             if let Ok(entry) = serde_json::from_str::<serde_json::Value>(line) {
                 let ts = format_local_str(entry["timestamp"].as_str().unwrap_or(""));
                 let stream = entry["stream"].as_str().unwrap_or("out");
@@ -1251,6 +1265,7 @@ async fn cmd_runs_build_logs(
     };
 
     stdout.flush()?;
+    note_if_empty(&result, json, wrote_any, "No build logs for this run.");
     result
 }
 
@@ -1319,6 +1334,13 @@ async fn cmd_runs_events(
         return Err(user_error("no search term given")
             .suggestion("pass at least one needle via `-m/--match` or as a positional argument"));
     }
+    // An empty needle matches every line (`contains("")` is always true), which
+    // would silently disable filtering, so reject it rather than dump the whole
+    // stream as if no filter were given.
+    if matches.iter().any(|m| m.is_empty()) {
+        return Err(user_error("empty search term")
+            .suggestion("each `-m/--match` needle must be a non-empty substring"));
+    }
 
     // The server endpoint takes a single `q` substring and streams only a capped
     // subset of matching events. Send the LONGEST needle (a crude selectivity
@@ -1329,6 +1351,18 @@ async fn cmd_runs_events(
         .max_by_key(|m| m.chars().count())
         .cloned()
         .unwrap_or_default();
+
+    // With more than one needle only `server_query` is filtered server-side, and
+    // the server caps how many events it returns; the remaining needles filter
+    // that capped subset locally. A true match the cap evicted would otherwise
+    // vanish silently, so make the limitation visible.
+    if matches.len() > 1 {
+        eprintln!(
+            "Note: only \"{server_query}\" is matched on the server (which returns a capped \
+             subset of events); the other terms filter that subset locally, so some matching \
+             events may not appear. Search a single, more specific term to be exhaustive."
+        );
+    }
 
     let api = AntithesisApi::new_requiring_api_key(settings, verbose)?;
     let stream = match api.search_run_events(run_id, &server_query).await {
@@ -1471,11 +1505,8 @@ async fn cmd_runs_logs(
     };
     stdout.flush()?;
     // A moment with no logs (e.g. a manually-supplied 0/0 placeholder) yields an
-    // empty stream; say so in human mode rather than printing nothing. In --json
-    // mode an empty stream is the correct machine answer, so stay quiet.
-    if result.is_ok() && !json && !wrote_any {
-        eprintln!("No log lines at this moment.");
-    }
+    // empty stream; say so in human mode rather than printing nothing.
+    note_if_empty(&result, json, wrote_any, "No log lines at this moment.");
     result
 }
 

@@ -60,9 +60,11 @@ checks run against staging — any spec that would mutate state is gated
 
 ## Scripts
 
-The `scripts/` directory holds Python helpers run via `uv` (each has an inline
-`# /// script` dependency header). After changing `gen-gallery.py`, type-check it
-with pyright and confirm it reports 0 errors before considering the change done:
+The `scripts/` directory holds Python helpers run via `uv` (e.g.
+`uv run scripts/gen-gallery.py`). The Python version and dependencies are
+managed centrally in the top-level `pyproject.toml` rather than per-script.
+After changing `gen-gallery.py`, type-check it with pyright and confirm it
+reports 0 errors before considering the change done:
 
 ```
 uvx pyright scripts/gen-gallery.py

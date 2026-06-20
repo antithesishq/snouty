@@ -562,6 +562,11 @@ fn mock_route_get_run(run_id: &str) -> (u16, String) {
 }
 
 fn mock_route_get_run_build_logs(run_id: &str) -> (u16, String) {
+    // `run-empty` models a completed run with no build logs: a successful but
+    // empty stream, which exercises the "No build logs for this run." note.
+    if run_id == "run-empty" {
+        return (200, String::new());
+    }
     if !mock_run_known(run_id) {
         return mock_run_not_found(run_id);
     }

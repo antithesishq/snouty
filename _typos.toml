@@ -1,0 +1,7 @@
+# Spell-checker config, read by both CI (crate-ci/typos) and the local Stop hook.
+#
+# openapi.json is fetched from the Antithesis API, not hand-edited, so it
+# shouldn't be spell-checked — its identifiers (base64-ish command ids, etc.)
+# trip the dictionary with corrections we can't act on.
+[files]
+extend-exclude = ["src/openapi.json"]

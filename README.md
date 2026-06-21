@@ -43,9 +43,14 @@ cargo uninstall snouty || rm -f "$(which snouty)" "$(which snouty-update)"
 
 ## Requirements
 
-Commands that work with `docker-compose.yaml` files (e.g. `launch --config`, `validate`) require Docker or Podman.
+Commands that work with `docker-compose.yaml` files (e.g. `launch`, `validate`) require:
 
-If both are installed, Podman is preferred. You can override via the environment (`SNOUTY_CONTAINER_ENGINE=docker`) or with `container_engine` in a settings file (see below).
+- **Docker Compose v2** — snouty drives the `docker-compose` binary directly, so it must be on your `PATH`. podman-compose is no longer supported.
+  - Linux: [Install Docker Compose](https://docs.docker.com/compose/install/standalone/) or check your package manager.
+  - macOS: [Install Docker Desktop](https://docs.docker.com/desktop/setup/install/mac-install/) (includes Compose v2) or `brew install docker-compose`.
+- **A container engine** — Docker or Podman, used to build and push images.
+
+If both engines are installed, Podman is preferred. Override the engine with `SNOUTY_CONTAINER_ENGINE=docker` or `container_engine` in a settings file (see below); an explicit `DOCKER_HOST` in your environment is always respected.
 
 ## Configuration
 

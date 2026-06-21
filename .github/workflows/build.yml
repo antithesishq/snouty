@@ -59,7 +59,7 @@ jobs:
           token: ${{secrets.GITHUB_TOKEN}}
 
       - name: Spell Check Repo
-        uses: crate-ci/typos@2d0ce569feab1f8752f1dde43cc2f2aa53236e06 # v1.40.0
+        uses: crate-ci/typos@37bb98842b0d8c4ffebdb75301a13db0267cef89 # v1.47.2
   test:
     runs-on: ${{ matrix.os }}
     needs: skip-check

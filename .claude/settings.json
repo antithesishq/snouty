@@ -13,6 +13,19 @@
             "rewakeMessage": "cargo check reported errors. Fix them before finishing:"
           }
         ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "command -v typos >/dev/null 2>&1 || exit 0; out=$(typos --color never 2>&1) || { echo \"$out\"; exit 2; }",
+            "asyncRewake": true,
+            "timeout": 60,
+            "statusMessage": "typos spell check",
+            "rewakeSummary": "typos found spelling mistakes",
+            "rewakeMessage": "typos found spelling mistakes. Fix them, or add legitimate words to _typos.toml, before finishing:"
+          }
+        ]
       }
     ]
   }

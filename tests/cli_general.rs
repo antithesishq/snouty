@@ -215,22 +215,38 @@ fn launch_param_cannot_override_typed_flag() {
 
 #[test]
 fn launch_duration_rejects_non_numeric() {
+    // Invalid durations now fail at flag-parse time with a message attributed to
+    // --duration, instead of a deep schema "validation failed" cascade.
     snouty()
         .args(["launch", "-w", "basic_test", "--duration", "abc"])
         .assert()
         .failure()
-        .stderr(predicate::str::contains("validation failed"));
+        .stderr(predicate::str::contains("--duration"))
+        .stderr(predicate::str::contains("number of minutes"));
 }
 
 #[test]
 fn launch_duration_accepts_fractional() {
     let mock_url = start_mock_server(r#"{"runId":"run-123","statusCode":200}"#, 200);
 
+    // Fractional minutes are kept for backwards compatibility (0.05 -> 3s).
     snouty_with_mock(&mock_url)
         .args(["launch", "-w", "basic_test", "--duration", "0.05"])
         .assert()
         .success()
         .stderr(predicate::str::contains(r#""antithesis.duration": "0.05""#));
+}
+
+#[test]
+fn launch_duration_accepts_unit_suffixes() {
+    let mock_url = start_mock_server(r#"{"runId":"run-123","statusCode":200}"#, 200);
+
+    // 1h30m is sent to the API as a bare 90 minutes.
+    snouty_with_mock(&mock_url)
+        .args(["launch", "-w", "basic_test", "--duration", "1h30m"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains(r#""antithesis.duration": "90""#));
 }
 
 #[test]

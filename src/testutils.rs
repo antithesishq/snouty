@@ -548,6 +548,15 @@ fn mock_route_get_run(run_id: &str) -> (u16, String) {
         fields.push(r#""completed_at":"2025-03-20T02:31:45Z""#.to_string());
     }
     fields.push(format!(r#""launcher":"{launcher}""#));
+    // run-1 carries launch parameters so `runs show` can surface the requested
+    // Duration and Source alongside the timestamp-derived Elapsed; other runs
+    // omit them, exercising the "field absent" path.
+    if run_id == "run-1" {
+        fields.push(
+            r#""parameters":{"antithesis.duration":"30","antithesis.source":"demo-harness"}"#
+                .to_string(),
+        );
+    }
     fields.push(format!(
         r#""links":{{"triage_report":"https://demo.antithesis.com/reports/{run_id}"}}"#
     ));

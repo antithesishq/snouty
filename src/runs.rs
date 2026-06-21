@@ -24,6 +24,7 @@ use crate::cli::{RunsCommands, RunsListArgs};
 use crate::error::{api_error_status, user_error};
 use crate::render::{render_kv, sanitize, sanitize_multiline};
 use crate::settings::Settings;
+use crate::time::ReportDuration;
 
 /// `print!`/`println!`, but routed through `write!`/`writeln!` to stdout so a
 /// closed pipe (e.g. `snouty runs list | head`) surfaces as an `io::Error` the
@@ -271,6 +272,25 @@ fn format_local_str(raw: &str) -> String {
         Ok(dt) => format_local(dt.with_timezone(&Utc)),
         Err(_) => raw.to_string(),
     }
+}
+
+/// The requested run duration (`antithesis.duration`, a count of minutes),
+/// rendered in the same `1h30m` vocabulary the launcher accepts via
+/// [`ReportDuration`]. A value the backend somehow stored in a form we can't
+/// parse falls back to the raw string, so it still shows something truthful
+/// rather than vanishing.
+fn format_requested_duration(raw: &str) -> String {
+    raw.parse::<ReportDuration>()
+        .map_or_else(|_| raw.to_string(), |d| d.to_string())
+}
+
+/// Wall-clock time the run was (or has been) active, rendered through
+/// [`ReportDuration`] in the same `h`/`m`/`s` units as the requested duration
+/// beside it. A still-running run counts up to `end` (`Utc::now()` at the call
+/// site). Returns `None` on clock skew (a negative span).
+fn elapsed_duration(started: DateTime<Utc>, end: DateTime<Utc>) -> Option<ReportDuration> {
+    let secs = (end - started).num_seconds();
+    (secs >= 0).then(|| ReportDuration::from_seconds(secs as u64))
 }
 
 async fn cmd_runs_show(
@@ -1097,7 +1117,22 @@ fn print_run_detail(run: &RunDetail) -> Result<()> {
         rows.push(("Completed", format_local(t)));
     }
 
+    // Requested vs. actual run time. "Duration" is the configured workload
+    // length; "Elapsed" is wall-clock (which also spans provisioning, setup and
+    // teardown), so the two legitimately differ — they aren't a mismatch.
+    if let Some(raw) = run.requested_duration() {
+        rows.push(("Duration", format_requested_duration(raw)));
+    }
+    if let Some(started) = run.started_at
+        && let Some(elapsed) = elapsed_duration(started, run.completed_at.unwrap_or_else(Utc::now))
+    {
+        rows.push(("Elapsed", elapsed.to_string()));
+    }
+
     rows.push(("Launcher", run.launcher.clone()));
+    if let Some(source) = run.source() {
+        rows.push(("Source", source.to_string()));
+    }
 
     if let Some(moment) = failure {
         // Hash before VTime to match the `runs logs <hash> <vtime>` argument
@@ -4852,6 +4887,30 @@ mod tests {
         // Clock skew: a slightly-future timestamp clamps instead of rendering
         // a negative age.
         assert_eq!(relative_time(now + chrono::Duration::hours(1)), "0s ago");
+    }
+
+    #[test]
+    fn requested_duration_renders_via_report_duration() {
+        // Whole minutes, the launcher's h/m vocabulary, and a fractional minute
+        // count from older runs all render through ReportDuration.
+        assert_eq!(format_requested_duration("30"), "30m");
+        assert_eq!(format_requested_duration("90"), "1h30m");
+        assert_eq!(format_requested_duration("15.5"), "15m30s");
+        // A value we can't parse falls back to the raw string rather than
+        // dropping the row entirely.
+        assert_eq!(format_requested_duration("soon"), "soon");
+    }
+
+    #[test]
+    fn elapsed_is_wall_clock_with_second_precision() {
+        let started: DateTime<Utc> = "2025-03-20T02:01:12Z".parse().unwrap();
+        let end: DateTime<Utc> = "2025-03-20T02:31:45Z".parse().unwrap();
+        assert_eq!(
+            elapsed_duration(started, end).unwrap().to_string(),
+            "30m33s"
+        );
+        // Clock skew (end before start) yields no elapsed rather than a negative.
+        assert!(elapsed_duration(end, started).is_none());
     }
 
     #[test]

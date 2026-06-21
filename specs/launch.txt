@@ -14,10 +14,21 @@
 ! snouty launch --duration 30
 stderr '--webhook.*'
 
-# Parameters are validated against the testParams schema before making
-#    any API call.
+# An invalid --duration fails at flag-parse time with a message attributed to
+#    the flag, not an opaque schema regex.
 ! snouty launch -w basic_test --duration abc
+stderr 'invalid value .abc. for .--duration'
+stderr 'number of minutes.*'
+
+# Parameters are validated against the testParams schema before making
+#    any API call. A bad antithesis.* value (here via the raw --param escape
+#    hatch) reports only the real error, attributed to the offending field,
+#    not a misleading "unevaluated properties" cascade that names its valid
+#    siblings.
+! snouty launch -w basic_test --param antithesis.duration=asdf --param antithesis.source=ci
 stderr 'validation failed.*'
+stderr 'antithesis\.duration: .*'
+! stderr 'Unevaluated properties.*'
 
 # `launch` does not accept --stdin.
 ! snouty launch -w basic_test --stdin --duration 30
@@ -87,6 +98,12 @@ mock-server 200 '{"runId":"run-123","statusCode":202}'
 snouty launch -w basic_test --duration 30 --source ci-pipeline
 ! stderr 'is_ephemeral.*'
 ! stderr 'Starting an ephemeral run.*'
+
+# 6c3. --duration accepts h/m unit suffixes, normalized to bare minutes for the
+#    API (1h30m -> 90).
+mock-server 200 '{"runId":"run-123","statusCode":202}'
+snouty launch -w basic_test --duration 1h30m --source ci-pipeline
+stderr '"antithesis.duration": "90"'
 
 # 6d. --param flag passes custom properties.
 mock-server 200 '{"runId":"run-123","statusCode":202}'

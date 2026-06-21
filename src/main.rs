@@ -183,7 +183,8 @@ async fn cmd_launch(
         params.insert("antithesis.description", description);
     }
     if let Some(duration) = args.duration {
-        params.insert("antithesis.duration", duration);
+        // The API wants a bare minute count, not the human `1h30m` Display form.
+        params.insert("antithesis.duration", duration.minutes().to_string());
     }
     let has_source = if let Some(source) = args.source {
         params.insert("antithesis.source", source);
@@ -239,14 +240,6 @@ async fn cmd_launch(
         return Err(user_error("invalid arguments: no parameters provided"));
     }
 
-    if !has_source {
-        params.insert("antithesis.is_ephemeral", "true");
-        eprintln!(
-            "Starting an ephemeral run; its findings will not be retained as historic \
-             results. Pass --source to record property history across runs."
-        );
-    }
-
     params.validate_test_params()?;
 
     if let Some((detected, registry, config_image)) = config_image_ref {
@@ -271,6 +264,18 @@ async fn cmd_launch(
             }
         };
         params.insert("antithesis.config_image", pinned_config);
+    }
+
+    // No --source means the run is ephemeral. Set the flag and tell the user
+    // now — after validation and the config image build have succeeded — so the
+    // notice lands right before the run is sent rather than ahead of work that
+    // might still fail.
+    if !has_source {
+        params.insert("antithesis.is_ephemeral", "true");
+        eprintln!(
+            "Starting an ephemeral run; its findings will not be retained as historic \
+             results. Pass --source to record property history across runs."
+        );
     }
 
     let response = launch_webhook(&args.webhook, params, settings, verbose).await?;

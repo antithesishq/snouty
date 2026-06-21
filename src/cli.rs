@@ -2,6 +2,7 @@ use chrono::{DateTime, Utc};
 use clap::{Args, Parser, Subcommand};
 
 use crate::api::RunStatus;
+use crate::time::ReportDuration;
 
 /// clap value parser for `--status` that keeps a friendly, enumerated error
 /// message (the generated `RunStatus::from_str` only says "invalid value").
@@ -352,11 +353,11 @@ pub struct LaunchArgs {
     #[arg(long)]
     pub description: Option<String>,
 
-    /// Test duration, in minutes
-    // A string (not a number) lets callers pass fractional minutes; the numeric
-    // format is enforced by the params schema.
+    /// Test duration in minutes, or h/m units (e.g. 90m, 2h, 1h30m)
+    // `ReportDuration: FromStr` gives clap the parser; we send it to the API as
+    // `.minutes().to_string()`, the (possibly fractional) minute count it wants.
     #[arg(long)]
-    pub duration: Option<String>,
+    pub duration: Option<ReportDuration>,
 
     /// Mark the test run as ephemeral. Ephemeral runs will not appear in future reports as a historic result.
     #[arg(long)]
@@ -588,6 +589,36 @@ mod tests {
 
     fn parse(args: &[&str]) -> Cli {
         Cli::try_parse_from(args).expect("args should parse")
+    }
+
+    #[test]
+    fn duration_flag_parses_into_report_duration() {
+        // Parsing/validation lives in `crate::time`; here we just confirm clap
+        // wires `--duration` through `ReportDuration: FromStr`.
+        let cli = parse(&[
+            "snouty",
+            "launch",
+            "-w",
+            "basic_test",
+            "--duration",
+            "1h30m",
+        ]);
+        let Commands::Launch(args) = cli.command else {
+            panic!("expected launch command");
+        };
+        assert_eq!(args.duration.unwrap().minutes(), 90.0);
+    }
+
+    #[test]
+    fn duration_flag_rejects_invalid_value() {
+        // `.err()` avoids requiring `Cli: Debug` (which `unwrap_err` would).
+        let err =
+            Cli::try_parse_from(["snouty", "launch", "-w", "basic_test", "--duration", "1.5h"])
+                .err()
+                .expect("invalid duration should fail to parse")
+                .to_string();
+        assert!(err.contains("--duration"), "got: {err}");
+        assert!(err.contains("number of minutes"), "got: {err}");
     }
 
     // The positional `input_hash`/`vtime` and the `--begin-*` flags must all

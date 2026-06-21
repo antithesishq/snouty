@@ -72,12 +72,19 @@ snouty --json runs list --status completed
 [!staging] stdout '"run_id":"run-.*'
 env_from_json 0 run_id
 
-# `snouty runs show` displays run details in key-value format.
+# `snouty runs show` displays run details in key-value format. The requested
+# Duration (from antithesis.duration) and the wall-clock Elapsed (derived from
+# the start/complete timestamps) sit beside each other — they legitimately
+# differ, since Elapsed also spans provisioning/setup/teardown — and Source
+# reports where the run was launched from.
 mock-runs-server
 snouty runs show $R_run_id
 stdout 'Run ID.*$R_run_id'
 [!staging] stdout 'Status.*completed'
+[!staging] stdout 'Duration.*30m'
+[!staging] stdout 'Elapsed.*30m33s'
 [!staging] stdout 'Launcher.*nightly'
+[!staging] stdout 'Source.*demo-harness'
 
 # `snouty runs show` doesn't print the raw report URL — `snouty runs show --web`
 # is the way to follow that link. The hint is shown only when a report link

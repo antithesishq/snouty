@@ -1,4 +1,5 @@
 use jsonschema::Validator;
+use jsonschema::error::ValidationErrorKind;
 use log::debug;
 use serde_json::{Map, Value};
 
@@ -197,6 +198,34 @@ where
 }
 
 fn validate_against_def(params: &Map<String, Value>, def_name: &str) -> Result<()> {
+    let notes = collect_validation_notes(params, def_name);
+    if notes.is_empty() {
+        debug!("validation passed");
+        return Ok(());
+    }
+
+    debug!("validation failed with {} notes", notes.len());
+    // The message states the failure; each schema violation is its own note.
+    let mut report = user_error("validation failed");
+    for note in notes {
+        debug!("  - {}", note);
+        report = report.note(note);
+    }
+    Err(report)
+}
+
+/// Collect the human-readable notes for every validation error, with the
+/// misleading `unevaluatedProperties` cascade filtered out. Returns an empty
+/// vec when the params are valid.
+///
+/// `unevaluatedProperties: false` reports every sibling property as
+/// "unexpected" whenever a more specific subschema (e.g. the `duration`
+/// pattern) fails: once the failing subschema is dropped, its properties are
+/// left unevaluated and the catch-all fires on all of them. Those properties
+/// are usually valid and required, so the note sends readers chasing fields
+/// that aren't actually wrong. When a more specific violation already fired,
+/// we drop the cascade and surface only the real error(s).
+fn collect_validation_notes(params: &Map<String, Value>, def_name: &str) -> Vec<String> {
     let schema: Value = serde_json::from_str(SCHEMA).expect("valid schema");
 
     // Build a schema that references the specific definition
@@ -208,24 +237,44 @@ fn validate_against_def(params: &Map<String, Value>, def_name: &str) -> Result<(
     let validator = Validator::new(&def_schema).expect("valid schema");
     let instance = Value::Object(params.clone());
 
-    let errors: Vec<String> = validator
-        .iter_errors(&instance)
-        .map(|e| e.to_string())
-        .collect();
+    let errors: Vec<_> = validator.iter_errors(&instance).collect();
+    let is_cascade = |e: &jsonschema::ValidationError| {
+        matches!(e.kind(), ValidationErrorKind::UnevaluatedProperties { .. })
+    };
+    let has_specific_error = errors.iter().any(|e| !is_cascade(e));
 
-    if !errors.is_empty() {
-        debug!("validation failed with {} errors", errors.len());
-        // The message states the failure; each schema violation is its own note.
-        let mut report = user_error("validation failed");
-        for err in &errors {
-            debug!("  - {}", err);
-            report = report.note(err.clone());
+    errors
+        .iter()
+        .filter(|e| !(has_specific_error && is_cascade(e)))
+        .map(note_for_error)
+        .collect()
+}
+
+/// Render a single validation error as a note, prefixed with the offending
+/// field name when the error is attributable to a specific property.
+///
+/// The jsonschema messages describe only the value and the violated
+/// constraint (e.g. `"asdf" does not match "^[0-9]+(\.[0-9]+)?$"`); they never
+/// name the field. The field lives in the error's instance path, so we pull it
+/// from there and put it up front. Object-level errors (e.g. unevaluated
+/// properties) carry an empty instance path and already name the property in
+/// their message, so they pass through unprefixed.
+fn note_for_error(error: &jsonschema::ValidationError) -> String {
+    let pointer = error.instance_path().as_str();
+    match pointer.strip_prefix('/') {
+        Some(field) if !field.is_empty() => {
+            format!("{}: {error}", unescape_pointer_token(field))
         }
-        return Err(report);
+        _ => error.to_string(),
     }
+}
 
-    debug!("validation passed");
-    Ok(())
+/// Decode a JSON Pointer reference token back into the raw property name,
+/// reversing the `~1`/`~0` escapes for `/` and `~` (RFC 6901). Param keys are
+/// flat dotted strings that rarely need this, but keys carrying a literal `/`
+/// or `~` would otherwise surface mangled.
+fn unescape_pointer_token(token: &str) -> String {
+    token.replace("~1", "/").replace("~0", "~")
 }
 
 #[cfg(test)]
@@ -313,6 +362,83 @@ mod tests {
         ];
         let params = Params::from_args(args).unwrap();
         assert!(params.validate_test_params().is_ok());
+    }
+
+    #[test]
+    fn invalid_duration_does_not_cascade_into_unevaluated_properties() {
+        // A bad `antithesis.duration` value used to drag every sibling property
+        // into a misleading "Unevaluated properties are not allowed" note. The
+        // only real error is the duration pattern; the siblings are valid.
+        let params = Params::from_args([
+            "--antithesis.duration",
+            "15m",
+            "--antithesis.test_name",
+            "my-test",
+            "--antithesis.source",
+            "my-source",
+        ])
+        .unwrap();
+
+        // The cascade is surfaced as color_eyre notes, not in the report's
+        // Display, so assert on the collected notes directly.
+        let notes = collect_validation_notes(params.as_map(), "testParams");
+        assert_eq!(
+            notes.len(),
+            1,
+            "exactly one real error expected, got: {notes:?}"
+        );
+        // The real, specific failure is reported, and the note names the
+        // offending field so the reader knows where to look.
+        assert!(
+            notes[0].contains("antithesis.duration") && notes[0].contains("15m"),
+            "expected field-attributed duration note, got: {notes:?}"
+        );
+        // ...but no cascade naming the valid siblings.
+        assert!(
+            notes.iter().all(|n| !n.contains("Unevaluated properties")),
+            "cascade should be suppressed, got: {notes:?}"
+        );
+    }
+
+    #[test]
+    fn genuinely_unexpected_property_is_still_reported() {
+        // When nothing more specific fails, a truly unexpected property must
+        // still surface via the unevaluated-properties check.
+        let params =
+            Params::from_args(["--antithesis.duration", "30", "--antithesis.bogus", "x"]).unwrap();
+
+        let notes = collect_validation_notes(params.as_map(), "testParams");
+        assert!(
+            notes
+                .iter()
+                .any(|n| n.contains("Unevaluated properties") && n.contains("antithesis.bogus")),
+            "expected unexpected-property note, got: {notes:?}"
+        );
+    }
+
+    #[test]
+    fn pattern_violation_note_names_the_field() {
+        // The jsonschema message only describes the value and the pattern; the
+        // note must prepend the field name so the user can find the culprit.
+        let params = Params::from_args(["--antithesis.duration", "asdf"]).unwrap();
+        let notes = collect_validation_notes(params.as_map(), "testParams");
+        assert_eq!(notes.len(), 1, "expected one error, got: {notes:?}");
+        assert!(
+            notes[0].starts_with("antithesis.duration: "),
+            "note should be attributed to the field, got: {notes:?}"
+        );
+    }
+
+    #[test]
+    fn unescape_pointer_token_reverses_rfc6901_escapes() {
+        assert_eq!(
+            unescape_pointer_token("antithesis.duration"),
+            "antithesis.duration"
+        );
+        assert_eq!(unescape_pointer_token("a~1b"), "a/b");
+        assert_eq!(unescape_pointer_token("a~0b"), "a~b");
+        // A literal "~1" is encoded as "~01" and must round-trip, not collapse.
+        assert_eq!(unescape_pointer_token("~01"), "~1");
     }
 
     #[test]

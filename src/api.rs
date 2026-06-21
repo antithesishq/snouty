@@ -82,6 +82,18 @@ impl RunDetail {
             .or_else(|| params_test_description(self.parameters.as_ref()))
     }
 
+    /// The requested run duration as launched (`antithesis.duration`, a count of
+    /// minutes), if the run recorded one. This is the configured workload length,
+    /// distinct from the wall-clock time derived from the run's timestamps.
+    pub(crate) fn requested_duration(&self) -> Option<&str> {
+        self.parameters.as_ref()?.antithesis_duration.as_deref()
+    }
+
+    /// The source the run was launched from (`antithesis.source`), if recorded.
+    pub(crate) fn source(&self) -> Option<&str> {
+        self.parameters.as_ref()?.antithesis_source.as_deref()
+    }
+
     /// The failure moment if it pins a real point in the run, otherwise `None`.
     ///
     /// A timed-out or killed run has no moment-pinned failure, so the API reports

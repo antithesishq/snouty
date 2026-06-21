@@ -1,0 +1,6 @@
+# This directory holds BOTH a docker-compose.yaml and a manifests/ subdirectory,
+# so snouty can't tell whether it's a Compose or a Kubernetes config.
+services:
+  app:
+    image: debian:bookworm-slim
+    command: ["tail", "-f", "/dev/null"]

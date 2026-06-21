@@ -1,0 +1,3 @@
+#!/bin/sh
+# Antithesis discovers this command by name; validate never executes it.
+exit 0

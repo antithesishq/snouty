@@ -1,0 +1,24 @@
+# The happy path: a correct harness with no issues.
+#
+# The test commands are baked into the image (see Dockerfile) at the
+# conventional /opt/antithesis/test/v1 path, so they travel with the image — no
+# host bind mount. The service emits the Antithesis setup-complete event to
+# $ANTITHESIS_OUTPUT_DIR/sdk.jsonl — the SDK output path that both `validate`
+# and the real Antithesis platform read — then stays up; snouty discovers the
+# test commands, checks their structure, and never runs them. Expected:
+# validation succeeds (exit 0).
+#
+# `image:` + `build:` means `snouty launch` can build and push this image, while
+# `snouty validate` uses the pre-built image — it never builds or pulls, so run
+# scripts/build-validate-samples.sh first.
+#
+# `$$` escapes the dollar sign so docker-compose passes $ANTITHESIS_OUTPUT_DIR
+# through to the container shell instead of interpolating it at config time.
+services:
+  app:
+    image: snouty-sample-valid:latest
+    build: .
+    command:
+      - sh
+      - -c
+      - "echo '{\"antithesis_setup\": {\"status\": \"complete\"}}' >> \"$$ANTITHESIS_OUTPUT_DIR/sdk.jsonl\"; exec tail -f /dev/null"

@@ -290,6 +290,17 @@ mock-runs-server
 stderr '.*run not found: no-such-run.*'
 ! stderr '.*API error.*'
 
+# A successful but empty build-logs stream prints an explicit note in human
+# mode, so the user isn't left wondering whether anything happened.
+mock-runs-server
+snouty runs build-logs run-empty
+stderr 'No build logs for this run\.'
+
+# In --json mode an empty stream is the correct machine answer, so no note.
+mock-runs-server
+snouty --json runs build-logs run-empty
+! stderr 'No build logs for this run\.'
+
 mock-runs-server
 ! snouty runs events no-such-run --match anything
 stderr '.*run not found: no-such-run.*'
@@ -371,6 +382,11 @@ stdout 'No events matched "nomatch"\.'
 mock-runs-server
 ! snouty runs events run-1
 stderr '.*no search term given.*'
+
+# `snouty runs events` rejects an empty needle rather than matching every line.
+mock-runs-server
+! snouty runs events run-1 --match ''
+stderr '.*empty search term.*'
 
 # `snouty runs events` also accepts a backward-compatible positional query
 # whose terms are treated as additional needles.

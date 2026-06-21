@@ -1,0 +1,16 @@
+# Tenant host validation
+#
+# A derived base URL interpolates the tenant into the request host
+# (https://{tenant}.antithesis.com), and snouty attaches the API key to that
+# host. A tenant carrying URL-significant characters (a path separator, '#',
+# whitespace, ...) would silently redirect those credentialed requests to an
+# unintended endpoint, so it is rejected up front when the base URL is derived.
+# An explicit ANTITHESIS_BASE_URL bypasses the tenant and this check (covered by
+# the validate_tenant_host unit tests).
+
+# A tenant with a path separator would mangle the derived host; reject it.
+! snouty doctor
+stderr '.*invalid tenant.*'
+
+-- .snouty.toml --
+tenant = "evil.com/x"

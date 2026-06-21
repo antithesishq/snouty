@@ -1,0 +1,14 @@
+# Bakes a test command (test/quickstart/run_workload) whose name has no
+# recognized Antithesis prefix (first_, parallel_driver_, serial_driver_,
+# singleton_driver_, anytime_, eventually_, finally_, or helper_) into the
+# image. snouty discovers it during `validate`, can't classify it, and fails —
+# caught during discovery, before the setup-complete wait, so the service only
+# needs to stay up. Expected: validation fails naming the unrecognized command.
+#
+# Run scripts/build-validate-samples.sh to build the image — `snouty validate`
+# never builds or pulls.
+services:
+  app:
+    image: snouty-sample-unrecognized-command:latest
+    build: .
+    command: ["tail", "-f", "/dev/null"]

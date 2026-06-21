@@ -1,0 +1,16 @@
+# Central configuration for the Python helper scripts in `scripts/`.
+#
+# These scripts are run with `uv` (e.g. `uv run scripts/gen-gallery.py`), which
+# uses this file to pin a consistent Python version and to manage dependencies
+# in one place rather than per-script inline metadata. No third-party
+# dependencies are needed today; add them to `dependencies` below as required.
+[project]
+name = "snouty-scripts"
+version = "0.0.0"
+description = "Python helper scripts for snouty, run via uv."
+requires-python = ">=3.11"
+dependencies = []
+
+[tool.uv]
+# Scripts only — there is no installable package to build here.
+package = false

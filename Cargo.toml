@@ -46,6 +46,9 @@ name = "mock_api"
 path = "examples/mock_api.rs"
 
 [build-dependencies]
+# Same openapiv3 version progenitor resolves; build.rs preprocesses the spec
+# through this type before handing it to the generator.
+openapiv3 = "2"
 prettyplease = "0.2"
 progenitor = "0.14.0"
 quote = "1"

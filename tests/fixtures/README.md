@@ -5,7 +5,7 @@
 Rebuild it with:
 
 ```sh
-./tests/fixtures/build_docs_fixture.py
+uv run scripts/build_docs_fixture.py
 ```
 
 The generator creates the minimal schema expected by `snouty docs`:

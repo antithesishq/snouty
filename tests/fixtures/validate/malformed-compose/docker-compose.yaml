@@ -1,0 +1,8 @@
+# Intentionally malformed YAML (an unterminated flow sequence) so that
+# `docker-compose config` — which snouty shells out to — fails to parse it.
+services:
+  app:
+    image: debian:bookworm-slim
+    command: ["tail", "-f", "/dev/null"
+    ports:
+      - "8080:8080

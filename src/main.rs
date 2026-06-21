@@ -101,7 +101,10 @@ async fn run(cli: Cli) -> Result<()> {
     let result = match command {
         Commands::Completions { shell } => cmd_completions(shell),
         Commands::Version => {
-            println!("snouty {}", env!("CARGO_PKG_VERSION"));
+            // SNOUTY_VERSION (set by build.rs) is the crate version plus the
+            // build's git sha when known — the same string clap's --version
+            // prints, so the two stay consistent.
+            println!("snouty {}", env!("SNOUTY_VERSION"));
             Ok(())
         }
         Commands::Update(args) => cmd_update(args),
@@ -238,7 +241,10 @@ async fn cmd_launch(
 
     if !has_source {
         params.insert("antithesis.is_ephemeral", "true");
-        eprintln!("Starting ephemeral run, Findings will not be available (provide --source)");
+        eprintln!(
+            "Starting an ephemeral run; its findings will not be retained as historic \
+             results. Pass --source to record property history across runs."
+        );
     }
 
     params.validate_test_params()?;

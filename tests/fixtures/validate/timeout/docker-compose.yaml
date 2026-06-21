@@ -1,0 +1,8 @@
+# The service comes up and stays up but never emits the setup-complete event
+# (no Antithesis SDK is wired in). snouty waits for the event until --timeout
+# elapses and then fails. The gallery runs this with a deliberately short
+# --timeout so it doesn't stall.
+services:
+  app:
+    image: debian:bookworm-slim
+    command: ["tail", "-f", "/dev/null"]

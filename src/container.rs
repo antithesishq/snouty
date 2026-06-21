@@ -1,7 +1,9 @@
 use std::collections::{BTreeMap, HashSet};
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::Path;
-use std::process::Command;
+use std::process::{Command, Output, Stdio};
+use std::thread;
+use std::time::{Duration, Instant};
 
 use chrono::Utc;
 use color_eyre::{
@@ -12,6 +14,78 @@ use tokio::process::Child;
 
 use crate::config::ComposeConfig;
 use crate::settings::Settings;
+
+/// Wall-clock budget for each synchronous docker/podman call made while
+/// discovering test commands (`ps`, `exec test -d`, `cp`). Discovery runs on
+/// the current-thread runtime between the two `validate` timeout windows, so a
+/// wedged daemon or a flapping container could otherwise block it — and the
+/// whole CLI — forever, with neither `--timeout` nor ctrl+c able to interrupt a
+/// blocking `Command`. These calls are normally sub-second; the generous bound
+/// only exists to convert an indefinite hang into a clear error.
+const DISCOVERY_COMMAND_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// Run a command to completion with a wall-clock timeout, killing it (and
+/// returning an error) if it overruns. Reader threads drain stdout/stderr so a
+/// chatty child can't deadlock on a full pipe while we wait. Used for the
+/// synchronous discovery commands, which would otherwise be uninterruptible.
+///
+/// Deliberately kills only the leader process — not the process group — so it
+/// needs no `libc::kill(-pid, …)` `unsafe`, unlike [`ProcessGroupChild`]. That
+/// wrapper exists for the long-running `docker-compose up`/`logs` commands,
+/// which fork and manage a tree of children that must all die on timeout. The
+/// callers here are one-shot docker/podman *client* invocations (`cp`,
+/// `exec test -d`, `ps`) whose only child is the client itself: killing it
+/// closes the pipes (so the reader threads finish) and the work we were waiting
+/// on ends. The daemon-side operation is intentionally not ours to kill.
+fn output_with_timeout(mut cmd: Command, timeout: Duration) -> Result<Output> {
+    cmd.stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = cmd.spawn().wrap_err("failed to spawn command")?;
+
+    // Drain both pipes on their own threads; otherwise a child that fills a pipe
+    // buffer would block on write while we block on wait — a deadlock.
+    let mut stdout_pipe = child.stdout.take().expect("stdout piped");
+    let mut stderr_pipe = child.stderr.take().expect("stderr piped");
+    let stdout_reader = thread::spawn(move || {
+        let mut buf = Vec::new();
+        let _ = stdout_pipe.read_to_end(&mut buf);
+        buf
+    });
+    let stderr_reader = thread::spawn(move || {
+        let mut buf = Vec::new();
+        let _ = stderr_pipe.read_to_end(&mut buf);
+        buf
+    });
+
+    let deadline = Instant::now() + timeout;
+    let status = loop {
+        if let Some(status) = child.try_wait().wrap_err("failed to wait for command")? {
+            break status;
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            // The killed leader's pipe write-ends are now closed, so the reader
+            // threads hit EOF and finish; join them rather than detaching them.
+            let _ = stdout_reader.join();
+            let _ = stderr_reader.join();
+            return Err(eyre!(
+                "command timed out after {}s (the container runtime may be unresponsive)",
+                timeout.as_secs()
+            ));
+        }
+        thread::sleep(Duration::from_millis(50));
+    };
+
+    let stdout = stdout_reader.join().unwrap_or_default();
+    let stderr = stderr_reader.join().unwrap_or_default();
+    Ok(Output {
+        status,
+        stdout,
+        stderr,
+    })
+}
 
 /// RAII wrapper around a [`Child`] spawned with `process_group(0)`.
 ///
@@ -335,9 +409,9 @@ pub trait ContainerRuntime: Send + Sync {
 
         let runtime = self.name();
         let src_arg = format!("{container_id}:{TEST_TEMPLATES_PATH}");
-        let output = Command::new(runtime)
-            .args(["cp", &src_arg, &dst.display().to_string()])
-            .output()
+        let mut cp_cmd = Command::new(runtime);
+        cp_cmd.args(["cp", &src_arg, &dst.display().to_string()]);
+        let output = output_with_timeout(cp_cmd, DISCOVERY_COMMAND_TIMEOUT)
             .wrap_err_with(|| format!("failed to run '{runtime} cp'"))?;
 
         if !output.status.success() {
@@ -358,9 +432,9 @@ pub trait ContainerRuntime: Send + Sync {
     /// OtherOrUnknown so callers fall back to cp.
     fn container_path_kind(&self, container_id: &str, path: &str) -> Result<PathKind> {
         let runtime = self.name();
-        let output = Command::new(runtime)
-            .args(["exec", container_id, "test", "-d", path])
-            .output()
+        let mut exec_cmd = Command::new(runtime);
+        exec_cmd.args(["exec", container_id, "test", "-d", path]);
+        let output = output_with_timeout(exec_cmd, DISCOVERY_COMMAND_TIMEOUT)
             .wrap_err_with(|| format!("failed to run '{runtime} exec'"))?;
         match output.status.code() {
             Some(0) => Ok(PathKind::Directory),
@@ -382,7 +456,7 @@ pub enum PathKind {
 }
 
 /// Standard path inside a container where Antithesis test templates live.
-const TEST_TEMPLATES_PATH: &str = "/opt/antithesis/test/v1";
+pub const TEST_TEMPLATES_PATH: &str = "/opt/antithesis/test/v1";
 
 /// Result of [`ContainerRuntime::extract_test_templates`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -575,7 +649,8 @@ impl DockerCompose<'_> {
         cmd.args(compose_file_args(overlay));
         cmd.args(["ps", "-a", "--format", "json"]);
 
-        let output = cmd.output().wrap_err("failed to run 'docker-compose ps'")?;
+        let output = output_with_timeout(cmd, DISCOVERY_COMMAND_TIMEOUT)
+            .wrap_err("failed to run 'docker-compose ps'")?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -2888,6 +2963,27 @@ services:
                 "-f".to_string(),
                 "/tmp/override.yaml".to_string(),
             ]
+        );
+    }
+
+    #[test]
+    fn output_with_timeout_returns_quick_command_output() {
+        let mut cmd = Command::new("sh");
+        cmd.args(["-c", "printf hi; printf oops 1>&2; exit 3"]);
+        let out = output_with_timeout(cmd, Duration::from_secs(10)).unwrap();
+        assert_eq!(out.status.code(), Some(3));
+        assert_eq!(out.stdout, b"hi");
+        assert_eq!(out.stderr, b"oops");
+    }
+
+    #[test]
+    fn output_with_timeout_kills_and_errors_on_overrun() {
+        let mut cmd = Command::new("sh");
+        cmd.args(["-c", "sleep 30"]);
+        let err = output_with_timeout(cmd, Duration::from_millis(150)).unwrap_err();
+        assert!(
+            format!("{err}").contains("timed out"),
+            "expected a timeout error, got: {err}"
         );
     }
 }

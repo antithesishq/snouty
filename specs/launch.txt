@@ -80,13 +80,13 @@ stderr '"antithesis.is_ephemeral": "true"'
 mock-server 200 '{"runId":"run-123","statusCode":202}'
 snouty launch -w basic_test --duration 30
 stderr '"antithesis.is_ephemeral": "true"'
-stderr 'Starting ephemeral run, Findings will not be available \(provide --source\)'
+stderr 'Starting an ephemeral run; its findings will not be retained.*'
 
 # 6c2. With --source, is_ephemeral is not set unless --ephemeral is passed.
 mock-server 200 '{"runId":"run-123","statusCode":202}'
 snouty launch -w basic_test --duration 30 --source ci-pipeline
 ! stderr 'is_ephemeral.*'
-! stderr 'Starting ephemeral run.*'
+! stderr 'Starting an ephemeral run.*'
 
 # 6d. --param flag passes custom properties.
 mock-server 200 '{"runId":"run-123","statusCode":202}'

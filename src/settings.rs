@@ -52,7 +52,7 @@ fn xdg_base(xdg_dir: Option<String>, home: Option<String>, home_subdir: &str) ->
 /// Directory holding the global settings file: `$XDG_CONFIG_HOME/snouty`,
 /// falling back to `$HOME/.config/snouty`. `None` only when neither
 /// `XDG_CONFIG_HOME` nor `HOME` is set (e.g. Windows).
-fn global_settings_dir() -> Option<PathBuf> {
+pub fn global_settings_dir() -> Option<PathBuf> {
     xdg_snouty_dir("XDG_CONFIG_HOME", ".config")
 }
 

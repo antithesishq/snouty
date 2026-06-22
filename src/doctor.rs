@@ -2,8 +2,9 @@ use color_eyre::eyre::Result;
 use serde::Serialize;
 
 use crate::api::{AntithesisApi, ApiVersion, VersionError};
+use crate::attributed_value::AttributedValue;
 use crate::container;
-use crate::env;
+use crate::credentials::{Credentials, PasswordCredentials};
 use crate::render::render_kv;
 use crate::settings::Settings;
 
@@ -142,17 +143,6 @@ struct Report<'a> {
     settings: &'a [Setting],
 }
 
-/// Whether an auth env var is set (empty counts as unset, matching how the rest
-/// of snouty reads the environment — see [`crate::env::var`]). A non-Unicode
-/// value is reported as not set here rather than failing the whole report.
-fn env_set(name: &str) -> bool {
-    matches!(env::var(name), Ok(Some(_)))
-}
-
-fn presence(var: &str, set: bool) -> String {
-    format!("{var} {}", if set { "is set" } else { "is not set" })
-}
-
 /// The tenant is required by every command, so a missing one fails doctor.
 /// (A broken settings file never reaches here — it fails at startup, before
 /// doctor runs — so the resolved value is simply present or absent.)
@@ -177,57 +167,78 @@ fn repository_check(repository: Option<&str>) -> Check {
     }
 }
 
-/// Authentication checks. snouty authenticates with an API key, which grants
-/// the full Antithesis API. Username/password is legacy auth accepted only by
-/// `snouty launch` and `snouty debug`, so it never stands in for a missing API
-/// key — it only softens the missing-key failure into a warning.
-///
-/// Authentication is intentionally environment-only: secrets never live in a
-/// settings file. Pure over the three booleans so it can be unit-tested without
-/// touching the environment.
-fn auth_checks(api_key: bool, username: bool, password: bool) -> Vec<Check> {
-    if api_key {
-        return vec![Check::ok("api_key", presence("ANTITHESIS_API_KEY", true))];
-    }
-
-    // Legacy auth needs BOTH halves; a lone username or password is not usable.
-    if username && password {
-        return vec![
-            Check::warn("api_key", presence("ANTITHESIS_API_KEY", false))
+fn authn_checks(credentials: Result<AttributedValue<Credentials>>) -> Vec<Check> {
+    match credentials {
+        Ok(credentials) => match credentials.unwrap() {
+            Credentials::ApiKey(_) => {
+                vec![enrich(Check::ok("api_key", "API key provided"), credentials)]
+            }
+            Credentials::Password(PasswordCredentials { username, .. }) => vec![
+                Check::warn("api_key", "API key not provided")
+                    .note(
+                        Level::Warning,
+                        "`snouty runs` and other API commands require an API key",
+                    )
+                    .note(
+                        Level::Note,
+                        "ask Antithesis support for an API key if you don't have one",
+                    ),
+                enrich(
+                    Check::ok(
+                        "basic_auth",
+                        format!("Using password credentials for user [{username}]"),
+                    )
+                    .note(
+                        Level::Warning,
+                        "legacy authentication method, set ANTITHESIS_API_KEY for full API access",
+                    )
+                    .note(
+                        Level::Note,
+                        "username/password only enables `snouty launch` and `snouty debug`",
+                    ),
+                    credentials,
+                ),
+            ],
+        },
+        Err(err) => vec![
+            Check::fail("api_key", err.to_string())
                 .note(
-                    Level::Warning,
-                    "`snouty runs` and other API commands require an API key",
+                    Level::Error,
+                    "snouty requires an API key to authenticate with Antithesis",
                 )
                 .note(
                     Level::Note,
                     "ask Antithesis support for an API key if you don't have one",
                 ),
-            Check::ok(
-                "basic_auth",
-                "ANTITHESIS_USERNAME & ANTITHESIS_PASSWORD are set",
-            )
-            .note(
-                Level::Warning,
-                "legacy authentication method, set ANTITHESIS_API_KEY for full API access",
-            )
-            .note(
-                Level::Note,
-                "username/password only enables `snouty launch` and `snouty debug`",
-            ),
-        ];
+        ],
     }
+}
 
-    vec![
-        Check::fail("api_key", presence("ANTITHESIS_API_KEY", false))
-            .note(
-                Level::Error,
-                "snouty requires an API key to authenticate with Antithesis",
-            )
-            .note(
-                Level::Note,
-                "ask Antithesis support for an API key if you don't have one",
+fn enrich<T>(check: Check, attribution: AttributedValue<T>) -> Check {
+    match attribution {
+        AttributedValue::FromEnvironmentVariable {
+            value: _,
+            environment_variable_name,
+        } => check.note(
+            Level::Note,
+            format!("read from the [{environment_variable_name}] environment variable"),
+        ),
+        AttributedValue::FromSettingsFile {
+            value: _,
+            settings_file_path,
+            profile,
+        } => check.note(
+            Level::Note,
+            format!(
+                "read from settings file at [{:?}] {}",
+                settings_file_path,
+                match profile {
+                    Some(profile_name) => format!("under the [{profile_name}] profile"),
+                    None => "defaults".to_owned(),
+                }
             ),
-    ]
+        ),
+    }
 }
 
 /// Binary health checks: local tooling, the required settings
@@ -263,10 +274,8 @@ fn collect_checks(settings: &Settings) -> Vec<Check> {
     checks.push(repository_check(settings.repository()));
 
     // Authentication (environment-only by design).
-    checks.extend(auth_checks(
-        env_set("ANTITHESIS_API_KEY"),
-        env_set("ANTITHESIS_USERNAME"),
-        env_set("ANTITHESIS_PASSWORD"),
+    checks.extend(authn_checks(
+        Credentials::for_ambient_credentials_with_attribution(settings, true),
     ));
 
     checks
@@ -427,33 +436,28 @@ pub async fn cmd_doctor(
 
 #[cfg(test)]
 mod tests {
+    use color_eyre::eyre::eyre;
+
+    use crate::credentials::{API_KEY_VAR_NAME, PASSWORD_VAR_NAME};
+
     use super::*;
 
     // ---- auth_checks (env-only auth) -----------------------------------
 
     #[test]
     fn auth_api_key_set_is_a_single_bare_ok_check() {
-        let checks = auth_checks(true, false, false);
+        let checks = authn_checks(Ok(AttributedValue::FromEnvironmentVariable { value: Credentials::for_api_key("api_key".to_owned()), environment_variable_name: API_KEY_VAR_NAME }));
         assert_eq!(checks.len(), 1);
         assert_eq!(checks[0].status, Status::Ok);
-        assert!(checks[0].message.contains("ANTITHESIS_API_KEY is set"));
-        assert!(checks[0].notes.is_empty());
-    }
-
-    #[test]
-    fn auth_api_key_wins_and_ignores_basic_creds() {
-        let checks = auth_checks(true, true, true);
-        assert_eq!(checks.len(), 1);
-        assert_eq!(checks[0].status, Status::Ok);
-        assert!(!checks[0].message.contains("USERNAME"));
+        assert!(checks[0].message.contains("API key provided"));
     }
 
     #[test]
     fn auth_legacy_basic_warns_on_key_and_notes_legacy() {
-        let checks = auth_checks(false, true, true);
+        let checks = authn_checks(Ok(AttributedValue::FromEnvironmentVariable { value: Credentials::for_password("user".to_owned(), "pass".to_owned()), environment_variable_name: PASSWORD_VAR_NAME }));
         assert_eq!(checks.len(), 2);
         assert_eq!(checks[0].status, Status::Warn);
-        assert!(checks[0].message.contains("ANTITHESIS_API_KEY is not set"));
+        assert!(checks[0].message.contains("API key not provided"));
         assert!(checks[0].notes.iter().any(|n| n.level == Level::Warning));
         assert!(
             checks[0]
@@ -462,7 +466,7 @@ mod tests {
                 .any(|n| n.text.contains("ask Antithesis support"))
         );
         assert_eq!(checks[1].status, Status::Ok);
-        assert_eq!(checks[1].notes.len(), 2);
+        assert_eq!(checks[1].notes.len(), 3);
         assert!(checks[1].notes.iter().any(|n| n.level == Level::Warning
             && n.text.contains("legacy authentication method")
             && n.text.contains("ANTITHESIS_API_KEY")));
@@ -474,10 +478,10 @@ mod tests {
 
     #[test]
     fn auth_nothing_set_errors_and_only_mentions_api_key() {
-        let checks = auth_checks(false, false, false);
+        let checks = authn_checks(Err(eyre!("PANIC PANIC PANIC")));
         assert_eq!(checks.len(), 1);
         assert_eq!(checks[0].status, Status::Error);
-        assert!(checks[0].message.contains("ANTITHESIS_API_KEY is not set"));
+        assert!(checks[0].message.contains("PANIC PANIC PANIC"));
         assert!(checks[0].notes.iter().any(|n| n.level == Level::Error));
         assert!(
             checks[0]
@@ -497,15 +501,6 @@ mod tests {
         );
         assert!(!all.contains("USERNAME"));
         assert!(!all.contains("PASSWORD"));
-    }
-
-    #[test]
-    fn auth_partial_basic_errors_like_nothing_set() {
-        for (username, password) in [(true, false), (false, true)] {
-            let checks = auth_checks(false, username, password);
-            assert_eq!(checks.len(), 1);
-            assert_eq!(checks[0].status, Status::Error);
-        }
     }
 
     // ---- required-settings checks --------------------------------------
@@ -672,7 +667,7 @@ mod tests {
 
     #[test]
     fn json_report_carries_checks_and_informational_settings() {
-        let checks = auth_checks(false, false, false);
+        let checks = authn_checks(Err(eyre!("PANIC PANIC PANIC")));
         let settings = vec![Setting::new("tenant", "acme")];
         let report = Report {
             ok: false,

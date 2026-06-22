@@ -63,6 +63,7 @@ tempfile = "3"
 testscript-rs = "0.2"
 ctor = "0.4"
 wiremock = "0.6"
+hegeltest = "0.21.2"
 
 # The profile that 'dist' will build with
 [profile.dist]

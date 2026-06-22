@@ -692,6 +692,107 @@ mod tests {
         assert!(params.as_map().contains_key("antithesis.source"));
     }
 
+    use hegel::generators::{self, Generator};
+
+    /// `unescape_pointer_token` is the exact inverse of RFC 6901 escaping
+    /// (`~` → `~0`, `/` → `~1`). For *any* string — including ones already
+    /// containing `~0`/`~1` sequences, the case the order-sensitive replacement
+    /// is most likely to mangle — escaping then unescaping is the identity.
+    #[hegel::test]
+    fn unescape_reverses_rfc6901_escaping(tc: hegel::TestCase) {
+        let raw = tc.draw(generators::text());
+        // RFC 6901: `~` must be escaped before `/`, so a literal `/` doesn't
+        // collide with the `~1` it produces.
+        let escaped = raw.replace('~', "~0").replace('/', "~1");
+        assert_eq!(unescape_pointer_token(&escaped), raw);
+    }
+
+    /// `merge` is a right-biased union: the result agrees, key for key, with a
+    /// reference `HashMap` extended by the overlay. This is the model test for
+    /// the merge operation — the overlay wins on conflicts, base-only keys
+    /// survive, and no key is invented or dropped.
+    #[hegel::test]
+    fn merge_agrees_with_map_union(tc: hegel::TestCase) {
+        let kv = || {
+            generators::hashmaps(
+                generators::text().max_size(12),
+                generators::text().max_size(12),
+            )
+            .max_size(8)
+        };
+        let base_model = tc.draw(kv());
+        let overlay_model = tc.draw(kv());
+
+        let mut base = Params::new();
+        for (k, v) in &base_model {
+            base.insert(k.clone(), v.clone());
+        }
+        let mut overlay = Params::new();
+        for (k, v) in &overlay_model {
+            overlay.insert(k.clone(), v.clone());
+        }
+        base.merge(overlay);
+
+        // Reference: a plain right-biased union.
+        let mut model = base_model;
+        model.extend(overlay_model);
+
+        assert_eq!(base.as_map().len(), model.len());
+        for (k, v) in &model {
+            assert_eq!(
+                base.as_map().get(k).and_then(Value::as_str),
+                Some(v.as_str())
+            );
+        }
+    }
+
+    /// `from_key_value_pairs` splits on the *first* `=` only, so the value may
+    /// itself contain `=` and must come back verbatim. For any non-empty key
+    /// without `=` and any value, the parsed pair round-trips exactly.
+    #[hegel::test]
+    fn key_value_pair_round_trips(tc: hegel::TestCase) {
+        let key = tc.draw(generators::text().min_size(1).filter(|k| !k.contains('=')));
+        let value = tc.draw(generators::text());
+        let params = Params::from_key_value_pairs([format!("{key}={value}")])
+            .expect("a non-empty key with a value must parse");
+        assert_eq!(params.as_map().len(), 1);
+        assert_eq!(
+            params.as_map().get(&key).and_then(Value::as_str),
+            Some(value.as_str())
+        );
+    }
+
+    /// Redaction preserves the exact key set and leaves every value either
+    /// untouched or replaced by the marker — it never drops, adds, or reorders
+    /// keys, and only the documented sensitive keys are masked.
+    #[hegel::test]
+    fn redaction_preserves_keys_and_masks_only_sensitive(tc: hegel::TestCase) {
+        let model = tc.draw(
+            generators::hashmaps(
+                generators::text().max_size(20),
+                generators::text().max_size(20),
+            )
+            .max_size(8),
+        );
+        let mut params = Params::new();
+        for (k, v) in &model {
+            params.insert(k.clone(), v.clone());
+        }
+        let redacted = params.to_redacted_map();
+
+        assert_eq!(redacted.len(), model.len());
+        for (k, original) in &model {
+            // Oracle for sensitivity, kept independent of `is_sensitive_key`.
+            let sensitive = k.ends_with(".token") || k == "antithesis.report.recipients";
+            let expected = if sensitive {
+                "[REDACTED]"
+            } else {
+                original.as_str()
+            };
+            assert_eq!(redacted.get(k).and_then(Value::as_str), Some(expected));
+        }
+    }
+
     #[test]
     fn redacted_map_hides_sensitive_values() {
         let args = [

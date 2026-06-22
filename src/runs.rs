@@ -5210,7 +5210,7 @@ mod tests {
 
     mod run_scoped_errors {
         use super::*;
-        use crate::api::Auth;
+        use crate::credentials::Credentials;
         use crate::error::ApiError;
         use crate::settings::Settings;
         use wiremock::matchers::{method, path};
@@ -5226,7 +5226,7 @@ mod tests {
         fn test_api(base_url: &str) -> AntithesisApi {
             AntithesisApi::build(
                 &Settings::for_test_base_url(base_url.to_owned()),
-                &Auth::basic("user".to_string(), "pass".to_string()),
+                &Credentials::for_password("user".to_string(), "pass".to_string()),
                 false,
                 None,
             )

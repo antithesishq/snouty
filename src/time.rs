@@ -302,4 +302,62 @@ mod tests {
         assert_eq!(Duration::from(d), Duration::from_secs(5400));
         assert_eq!(d.as_ref(), &Duration::from_secs(5400));
     }
+
+    use hegel::generators;
+
+    /// The minimized `h`/`m`/`s` `Display` form parses back to the same value,
+    /// for *every* whole-second duration the type can hold. (The hand-written
+    /// `display_round_trips_by_value` checks a handful of literals; this checks
+    /// the whole `u64`-seconds domain, including `0` and `u64::MAX`, where the
+    /// component arithmetic in `parse_units` is most likely to misbehave.)
+    #[hegel::test]
+    fn display_round_trips_for_all_durations(tc: hegel::TestCase) {
+        let seconds = tc.draw(generators::integers::<u64>());
+        let d = ReportDuration::from_seconds(seconds);
+        let reparsed = d
+            .to_string()
+            .parse::<ReportDuration>()
+            .expect("Display output must re-parse");
+        assert_eq!(d, reparsed);
+    }
+
+    /// Parsing arbitrary text must never panic — it returns `Ok` or
+    /// `ParseDurationError`, but the `from_str`/`from_minutes`/`parse_units`
+    /// path (with its `as u64` casts and `checked_*` arithmetic) is the kind of
+    /// code that overflows or indexes out of bounds on hostile input.
+    #[hegel::test]
+    fn parse_never_panics(tc: hegel::TestCase) {
+        let s = tc.draw(generators::text());
+        let _ = s.parse::<ReportDuration>();
+    }
+
+    /// `from_minutes` is `Some` exactly for finite, non-negative inputs, and
+    /// when it succeeds the stored seconds are the minutes scaled by 60 and
+    /// rounded (saturating, never panicking, on absurd values). Drawn from the
+    /// full `f64` domain so NaN, infinities, negatives, and huge magnitudes are
+    /// all exercised.
+    #[hegel::test]
+    fn from_minutes_matches_contract(tc: hegel::TestCase) {
+        let minutes = tc.draw(generators::floats::<f64>());
+        match ReportDuration::from_minutes(minutes) {
+            Some(d) => {
+                assert!(minutes.is_finite() && minutes >= 0.0);
+                assert_eq!(d.seconds(), (minutes * 60.0).round() as u64);
+            }
+            None => assert!(!minutes.is_finite() || minutes < 0.0),
+        }
+    }
+
+    /// `minutes()` is the documented integer-space rounding of the second
+    /// count to hundredths of a minute — no float drift, no long decimals.
+    /// Bounded to `u32`-range seconds (~136 years) so the `* 100.0` round-trip
+    /// stays exactly representable in `f64`; the integer arithmetic the test
+    /// mirrors is what actually runs in production.
+    #[hegel::test]
+    fn minutes_is_integer_space_rounding(tc: hegel::TestCase) {
+        let seconds = tc.draw(generators::integers::<u32>()) as u64;
+        let d = ReportDuration::from_seconds(seconds);
+        let expected_hundredths = (seconds as u128 * 100 + 30) / 60;
+        assert_eq!((d.minutes() * 100.0).round() as u128, expected_hundredths);
+    }
 }

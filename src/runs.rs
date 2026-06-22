@@ -2749,7 +2749,73 @@ fn wrap_text(text: &str, width: usize) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use hegel::generators;
     use serde_json::json;
+
+    /// `wrap_text` preserves the exact sequence of words — wrapping only inserts
+    /// line breaks, it never drops, splits, reorders, or invents a word.
+    #[hegel::test]
+    fn wrap_text_preserves_word_sequence(tc: hegel::TestCase) {
+        let text = tc.draw(generators::text());
+        let width = tc.draw(generators::integers::<usize>().min_value(1).max_value(40));
+        let lines = wrap_text(&text, width);
+        let words_in: Vec<&str> = text.split_whitespace().collect();
+        let words_out: Vec<&str> = lines.iter().flat_map(|l| l.split_whitespace()).collect();
+        assert_eq!(words_in, words_out);
+    }
+
+    /// Every wrapped line fits within `width` columns, with the one documented
+    /// exception: a single word longer than `width` is kept intact rather than
+    /// split mid-token (such a line has no internal space).
+    #[hegel::test]
+    fn wrap_text_respects_width(tc: hegel::TestCase) {
+        let text = tc.draw(generators::text());
+        // Include 0 to exercise the `width.max(1)` clamp.
+        let width = tc.draw(generators::integers::<usize>().max_value(40));
+        let effective = width.max(1);
+        for line in wrap_text(&text, width) {
+            assert!(
+                line.chars().count() <= effective || !line.contains(' '),
+                "line {line:?} exceeds width {effective} but contains a space",
+            );
+        }
+    }
+
+    /// `truncate_around` never returns more than `width` characters (the `…`
+    /// markers are counted), and returns text unchanged when it already fits.
+    #[hegel::test]
+    fn truncate_around_stays_within_width(tc: hegel::TestCase) {
+        let text = tc.draw(generators::text());
+        let needles = tc.draw(generators::vecs(generators::text().max_size(6)).max_size(3));
+        let width = tc.draw(generators::integers::<usize>().max_value(50));
+        let out = truncate_around(&text, &needles, width);
+        assert!(
+            out.chars().count() <= width,
+            "output {out:?} ({} chars) exceeds width {width}",
+            out.chars().count()
+        );
+        if text.chars().count() <= width {
+            assert_eq!(
+                out, text,
+                "text that already fits must pass through unchanged"
+            );
+        }
+    }
+
+    /// `first_needle_span` returns a span that is a valid window into the text's
+    /// char vector — the returned `(start, len)` never runs off the end.
+    #[hegel::test]
+    fn first_needle_span_is_in_bounds(tc: hegel::TestCase) {
+        let text = tc.draw(generators::text());
+        let needles = tc.draw(generators::vecs(generators::text().max_size(6)).max_size(3));
+        let char_count = text.chars().count();
+        if let Some((start, len)) = first_needle_span(&text, &needles) {
+            assert!(
+                start + len <= char_count,
+                "span {start}+{len} > {char_count}"
+            );
+        }
+    }
 
     #[test]
     fn renders_assertion_records_in_compact_form() {

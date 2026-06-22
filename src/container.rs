@@ -1707,9 +1707,81 @@ mod tests {
     use crate::testutils::{
         OCIRegistry, has_compose, require_runtimes, require_runtimes_with_compose, skip_or_fail,
     };
+    use hegel::generators::{self, Generator};
     use std::collections::BTreeMap;
     use std::os::unix::process::ExitStatusExt;
     use std::path::PathBuf;
+
+    /// A text generator whose output never contains `@` — for digest values,
+    /// which never carry an `@` in practice (`sha256:...`), so the
+    /// re-pinning/idempotence reasoning holds.
+    fn no_at() -> impl Generator<String> {
+        generators::text().filter(|s: &String| !s.contains('@'))
+    }
+
+    /// Expanding a repository to its canonical `registry/path` form is stable:
+    /// normalizing an already-normalized repo is a no-op. Run over arbitrary
+    /// text so odd inputs (empty, leading slash, multi-byte) are covered too.
+    #[hegel::test]
+    fn normalize_repo_is_idempotent(tc: hegel::TestCase) {
+        let repo = tc.draw(generators::text());
+        let once = normalize_repo(&repo);
+        let twice = normalize_repo(&once);
+        assert_eq!(once, twice);
+    }
+
+    /// `image_repo` and `image_ref_tag` slice on byte offsets found with
+    /// `rfind`; on arbitrary (multi-byte) input they must never panic on a
+    /// non-char-boundary, and the repo must always be a prefix of the input.
+    #[hegel::test]
+    fn image_repo_is_a_prefix_and_never_panics(tc: hegel::TestCase) {
+        let image_ref = tc.draw(generators::text());
+        let repo = image_repo(&image_ref);
+        assert!(
+            image_ref.starts_with(repo),
+            "repo {repo:?} is not a prefix of {image_ref:?}"
+        );
+        // Just exercising the slicing — the assertion is "it returned".
+        let _ = image_ref_tag(&image_ref);
+    }
+
+    /// Re-pinning replaces the digest rather than appending a second one:
+    /// pinning to `d1` then `d2` is the same as pinning to `d2` directly, and
+    /// the result always ends with `@{d2}`.
+    #[hegel::test]
+    fn pinned_image_ref_replaces_digest(tc: hegel::TestCase) {
+        let image_ref = tc.draw(no_at());
+        let d1 = tc.draw(no_at());
+        let d2 = tc.draw(no_at());
+        let repinned = pinned_image_ref(&pinned_image_ref(&image_ref, &d1), &d2);
+        assert_eq!(repinned, pinned_image_ref(&image_ref, &d2));
+        assert!(repinned.ends_with(&format!("@{d2}")));
+    }
+
+    /// Stripping the tag from a digest-pinned reference is stable: a reference
+    /// already in `name@digest` form is left unchanged by a second pass.
+    #[hegel::test]
+    fn digest_only_ref_is_idempotent(tc: hegel::TestCase) {
+        let image_ref = tc.draw(generators::text());
+        let once = digest_only_ref(&image_ref);
+        assert_eq!(digest_only_ref(&once), once);
+    }
+
+    /// Classifying `manifest inspect` output must never panic on arbitrary
+    /// bytes — malformed JSON classifies as `NotFound`, never a crash.
+    #[hegel::test]
+    fn classify_manifest_json_never_panics(tc: hegel::TestCase) {
+        let bytes = tc.draw(generators::binary());
+        let _ = classify_manifest_json(&bytes);
+    }
+
+    /// Parsing a `docker push` digest line must never panic on arbitrary text —
+    /// it returns an error when no `sha256:` digest is present, never a crash.
+    #[hegel::test]
+    fn parse_docker_push_digest_never_panics(tc: hegel::TestCase) {
+        let stdout = tc.draw(generators::text());
+        let _ = parse_docker_push_digest(&stdout);
+    }
 
     #[tokio::test]
     async fn build_and_push_to_mock_registry() {

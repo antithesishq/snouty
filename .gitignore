@@ -7,3 +7,6 @@ __pycache__/
 
 # uv project virtualenv (created when running scripts via `uv run`)
 .venv/
+
+# hegel property-testing server cache + failure database
+.hegel/

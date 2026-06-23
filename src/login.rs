@@ -1,4 +1,4 @@
-use std::io;
+use std::io::{self, IsTerminal, Write};
 
 use color_eyre::eyre::{Context, Result, eyre};
 
@@ -126,11 +126,10 @@ fn prompt_for_sensitive_value(value_name: &str, previous_value: Option<&str>) ->
         Some(prev) if !prev.is_empty() => {
             format!("Please enter your {value_name} (leave blank to use previous value): ")
         }
-        Some(_) | None => format!("Please enter you {value_name}: "),
+        Some(_) | None => format!("Please enter your {value_name}: "),
     };
 
-    let entered =
-        rpassword::prompt_password(&prompt_str).wrap_err(format!("Unable to read {value_name}"))?;
+    let entered = read_secret(value_name, &prompt_str)?;
     if entered.is_empty() {
         match previous_value {
             Some(prev) if !prev.is_empty() => Ok(prev.to_owned()),
@@ -139,6 +138,32 @@ fn prompt_for_sensitive_value(value_name: &str, previous_value: Option<&str>) ->
     } else {
         Ok(entered)
     }
+}
+
+/// Read a secret, hiding it from the terminal when one is attached.
+///
+/// Interactively (stdin is a TTY) the value is read with [`rpassword`] so it is
+/// never echoed. When stdin is *not* a terminal — piped input from a script or
+/// the spec tests — `rpassword` would try to open `/dev/tty` (failing, or
+/// blocking on the real terminal) instead of reading the pipe, so we read the
+/// secret as an ordinary line from stdin. There is no terminal echo to suppress
+/// in that case, so nothing is lost.
+fn read_secret(value_name: &str, prompt: &str) -> Result<String> {
+    if io::stdin().is_terminal() {
+        return rpassword::prompt_password(prompt)
+            .wrap_err(format!("Unable to read {value_name}"));
+    }
+
+    print!("{prompt}");
+    io::stdout().flush().ok();
+
+    let mut line = String::new();
+    io::stdin()
+        .read_line(&mut line)
+        .wrap_err(format!("Unable to read {value_name}"))?;
+    // Strip only the line terminator; a secret may legitimately contain
+    // surrounding whitespace.
+    Ok(line.trim_end_matches(['\r', '\n']).to_owned())
 }
 
 fn prompt_for_username_password(

@@ -171,7 +171,10 @@ fn authn_checks(credentials: Result<AttributedValue<Credentials>>) -> Vec<Check>
     match credentials {
         Ok(credentials) => match credentials.unwrap() {
             Credentials::ApiKey(_) => {
-                vec![enrich(Check::ok("api_key", "API key provided"), credentials)]
+                vec![enrich(
+                    Check::ok("api_key", "API key provided"),
+                    credentials,
+                )]
             }
             Credentials::Password(PasswordCredentials { username, .. }) => vec![
                 Check::warn("api_key", "API key not provided")
@@ -275,7 +278,7 @@ fn collect_checks(settings: &Settings) -> Vec<Check> {
 
     // Authentication (environment-only by design).
     checks.extend(authn_checks(
-        Credentials::for_ambient_credentials_with_attribution(settings, true),
+        Credentials::for_ambient_credentials_with_attribution(settings.profile(), true),
     ));
 
     checks
@@ -447,7 +450,10 @@ mod tests {
 
     #[test]
     fn auth_api_key_set_is_a_single_bare_ok_check() {
-        let checks = authn_checks(Ok(AttributedValue::FromEnvironmentVariable { value: Credentials::for_api_key("api_key".to_owned()), environment_variable_name: API_KEY_VAR_NAME }));
+        let checks = authn_checks(Ok(AttributedValue::FromEnvironmentVariable {
+            value: Credentials::for_api_key("api_key".to_owned()),
+            environment_variable_name: API_KEY_VAR_NAME,
+        }));
         assert_eq!(checks.len(), 1);
         assert_eq!(checks[0].status, Status::Ok);
         assert!(checks[0].message.contains("API key provided"));
@@ -455,7 +461,10 @@ mod tests {
 
     #[test]
     fn auth_legacy_basic_warns_on_key_and_notes_legacy() {
-        let checks = authn_checks(Ok(AttributedValue::FromEnvironmentVariable { value: Credentials::for_password("user".to_owned(), "pass".to_owned()), environment_variable_name: PASSWORD_VAR_NAME }));
+        let checks = authn_checks(Ok(AttributedValue::FromEnvironmentVariable {
+            value: Credentials::for_password("user".to_owned(), "pass".to_owned()),
+            environment_variable_name: PASSWORD_VAR_NAME,
+        }));
         assert_eq!(checks.len(), 2);
         assert_eq!(checks[0].status, Status::Warn);
         assert!(checks[0].message.contains("API key not provided"));

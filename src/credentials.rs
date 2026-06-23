@@ -1,18 +1,19 @@
-use std::{collections::HashMap, fs, io::ErrorKind, path::Path};
+use std::{collections::HashMap, fs, io::Write, path::Path};
 
 use base64::{Engine, prelude::BASE64_STANDARD};
 use color_eyre::{
     Section,
-    eyre::{Context, Result, eyre},
+    eyre::{Context, OptionExt, Result, eyre},
 };
 use http::HeaderValue;
 use serde::{Deserialize, Serialize};
+use tempfile::NamedTempFile;
 
 use crate::{
     attributed_value::AttributedValue,
     env,
     error::user_error,
-    settings::{Settings, global_settings_dir},
+    settings::{global_settings_dir, read_to_string_if_file_exists},
 };
 
 pub(crate) const API_KEY_VAR_NAME: &str = "ANTITHESIS_API_KEY";
@@ -22,7 +23,7 @@ const CREDENTIALS_FILENAME: &str = "credentials.toml";
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct ApiKeyCredentials {
-    api_key: String,
+    pub(crate) api_key: String,
 }
 
 impl std::fmt::Debug for ApiKeyCredentials {
@@ -36,7 +37,7 @@ impl std::fmt::Debug for ApiKeyCredentials {
 #[derive(Clone, Serialize, Deserialize)]
 pub struct PasswordCredentials {
     pub username: String,
-    password: String,
+    pub(crate) password: String,
 }
 
 impl std::fmt::Debug for PasswordCredentials {
@@ -84,18 +85,13 @@ impl Credentials {
         Ok(None)
     }
 
-    fn try_from_credentials_file(settings: &Settings) -> Result<Option<AttributedValue<Self>>> {
+    fn try_from_credentials_file(profile: Option<&str>) -> Result<Option<AttributedValue<Self>>> {
         if let Some(snouty_settings_dir) = global_settings_dir() {
             let path = snouty_settings_dir.join(CREDENTIALS_FILENAME);
-            return match fs::read_to_string(&path) {
-                Ok(contents) => Ok(Self::try_from_credentials_file_toml(
-                    contents,
-                    &path,
-                    settings.profile(),
-                )?),
-                Err(err) if err.kind() == ErrorKind::NotFound => Ok(None),
-                Err(err) => Err(eyre!("File at {:?} could not be read: {err:#}", &path)),
-            };
+            return Ok(match read_to_string_if_file_exists(&path)? {
+                Some(contents) => Self::try_from_credentials_file_toml(contents, &path, profile)?,
+                None => None,
+            });
         }
 
         Ok(None)
@@ -106,10 +102,7 @@ impl Credentials {
         path: &Path,
         profile: Option<&str>,
     ) -> Result<Option<AttributedValue<Self>>> {
-        let parsed = toml::from_str::<CredentialsFile>(&contents).wrap_err(format!(
-            "{:?} is not valid TOML or cannot be parsed as a Snouty credentials file.",
-            path
-        ))?;
+        let parsed = parse_credentials_file_toml(contents, path)?;
 
         if let Some(requested_profile) = profile
             && let Some(credentials_for_profile) = parsed
@@ -136,7 +129,7 @@ impl Credentials {
     }
 
     pub(crate) fn for_ambient_credentials_with_attribution(
-        settings: &Settings,
+        profile: Option<&str>,
         allow_basic: bool,
     ) -> Result<AttributedValue<Self>> {
         if let Some(from_env) = Self::try_from_env()? {
@@ -147,7 +140,7 @@ impl Credentials {
             });
         }
 
-        if let Some(from_credentials_file) = Self::try_from_credentials_file(settings)? {
+        if let Some(from_credentials_file) = Self::try_from_credentials_file(profile)? {
             return Ok(if allow_basic {
                 from_credentials_file
             } else {
@@ -160,17 +153,13 @@ impl Credentials {
         ))
     }
 
-    pub(crate) fn for_ambient_credentials(settings: &Settings, allow_basic: bool) -> Result<Self> {
-        match Self::for_ambient_credentials_with_attribution(settings, allow_basic)? {
-            AttributedValue::FromEnvironmentVariable {
-                value,
-                environment_variable_name: _,
-            } => Ok(value),
-            AttributedValue::FromSettingsFile {
-                value,
-                settings_file_path: _,
-                profile: _,
-            } => Ok(value),
+    pub(crate) fn for_ambient_credentials(
+        profile: Option<&str>,
+        allow_basic: bool,
+    ) -> Result<Self> {
+        match Self::for_ambient_credentials_with_attribution(profile, allow_basic)? {
+            AttributedValue::FromEnvironmentVariable { value, .. } => Ok(value),
+            AttributedValue::FromSettingsFile { value, .. } => Ok(value),
         }
     }
 
@@ -188,6 +177,51 @@ impl Credentials {
         hv.set_sensitive(true);
         Ok(hv)
     }
+}
+
+pub(crate) fn persist(credentials: Credentials, profile: Option<&str>) -> Result<Option<String>> {
+    let settings_dir = global_settings_dir().ok_or_eyre(eyre!(
+        "Could not determine settings directory. Please ensure $XDG_CONFIG_DIR or $HOME is set"
+    ))?;
+    let path = settings_dir.join(CREDENTIALS_FILENAME);
+    let mut current_contents = match read_to_string_if_file_exists(&path)? {
+        Some(contents) => parse_credentials_file_toml(contents, &path)?,
+        None => CredentialsFile {
+            default: None,
+            profile: None,
+        },
+    };
+
+    if let Some(profile) = profile {
+        if current_contents.profile.is_none() {
+            current_contents.profile = Some(HashMap::new());
+        }
+
+        current_contents
+            .profile
+            .as_mut()
+            .unwrap()
+            .insert(profile.to_owned(), credentials);
+    } else {
+        current_contents.default = Some(credentials);
+    }
+
+    fs::DirBuilder::new()
+        .recursive(true)
+        .create(&settings_dir)?;
+    let mut temp = NamedTempFile::new_in(&settings_dir)?;
+    temp.write_all(toml::to_string_pretty(&current_contents)?.as_bytes())?;
+
+    temp.persist(&path)?;
+
+    Ok(None)
+}
+
+fn parse_credentials_file_toml(contents: String, path: &Path) -> Result<CredentialsFile> {
+    toml::from_str::<CredentialsFile>(&contents).wrap_err(format!(
+        "{:?} is not valid TOML or cannot be parsed as a Snouty credentials file.",
+        path
+    ))
 }
 
 fn ensure_non_password_credentials(

@@ -239,6 +239,25 @@ Examples:
         #[command(subcommand)]
         command: DocsCommands,
     },
+
+    /// Initialize Snouty configuration
+    #[command(long_about = r#"Initialize Snouty configuration and authentication
+
+Provide configuration and authentication information to persist in the global 
+Snouty settings file, optionally under a named profile. Sensitive information and
+information not provided via args will be queried over stdin.
+
+Examples:
+  snouty login
+  snouty login --tenant "mytenant" --repository "repository"
+  snouty login --profile "profile""#)]
+    Login {
+        #[arg(long)]
+        tenant: Option<String>,
+
+        #[arg(long)]
+        repository: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]

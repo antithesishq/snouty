@@ -205,7 +205,7 @@ impl AntithesisApi {
     pub fn new(settings: &Settings, verbose: bool) -> Result<Self> {
         Self::build(
             settings,
-            &Credentials::for_ambient_credentials(settings, true)?,
+            &Credentials::for_ambient_credentials(settings.profile(), true)?,
             verbose,
             None,
         )
@@ -216,7 +216,7 @@ impl AntithesisApi {
     pub fn new_requiring_api_key(settings: &Settings, verbose: bool) -> Result<Self> {
         Self::build(
             settings,
-            &Credentials::for_ambient_credentials(settings, false)?,
+            &Credentials::for_ambient_credentials(settings.profile(), false)?,
             verbose,
             None,
         )

@@ -646,6 +646,30 @@ fn spec_tests() {
                 env.background_processes.insert("snouty".to_string(), child);
                 Ok(())
             })
+            .command("isolate-home", |env, args| {
+                // Usage: isolate-home <name>
+                //
+                // `snouty login` persists credentials.toml and settings.toml
+                // under the global settings dir, which is `$XDG_CONFIG_HOME/snouty`
+                // when that var is set and otherwise `$HOME/.config/snouty`. The
+                // shared spec setup pins an isolated XDG_CONFIG_HOME, so here we
+                // point HOME at a fresh per-section temp dir and clear
+                // XDG_CONFIG_HOME (snouty treats an empty value as unset) so the
+                // login writes land under — and are read back from — that HOME.
+                // Each <name> gives a section of the spec its own home, keeping its
+                // writes isolated from sibling sections and from the developer's
+                // real ~/.config.
+                let name = args.first().map(String::as_str).unwrap_or("home");
+                let home = env.work_dir.join(name);
+                std::fs::create_dir_all(&home)
+                    .map_err(|e| err(format!("failed to create isolated HOME: {e}")))?;
+                let home = home
+                    .to_str()
+                    .ok_or_else(|| err("isolated HOME path is not valid UTF-8".to_string()))?;
+                env.set_env_var("HOME", home);
+                env.set_env_var("XDG_CONFIG_HOME", "");
+                Ok(())
+            })
             .command("setup-docs-db", |env, _args| {
                 // Usage: setup-docs-db
                 // Seeds an isolated cache home with the fixture docs.db and points

@@ -1,0 +1,152 @@
+use std::io;
+
+use color_eyre::eyre::{Context, Result, eyre};
+
+use crate::{
+    credentials::{Credentials, persist},
+    settings::{Settings, update_settings_in_global_file, validate_tenant_host},
+};
+
+pub fn cmd_login(
+    tenant: Option<String>,
+    repository: Option<String>,
+    current_settings: Result<Settings>,
+) -> Result<()> {
+    let profile = current_settings.as_ref().ok().and_then(|s| s.profile());
+
+    let tenant_to_use = match tenant {
+        Some(arg_value) if !arg_value.is_empty() => arg_value,
+        Some(_) | None => prompt_for_value(
+            "Antithesis tenant",
+            current_settings.as_ref().ok().and_then(|s| s.tenant()),
+        )?,
+    };
+    validate_tenant_host(&tenant_to_use)?;
+
+    let repository_to_use = match repository {
+        Some(arg_value) if !arg_value.is_empty() => arg_value,
+        Some(_) | None => prompt_for_value(
+            "container repository",
+            current_settings.as_ref().ok().and_then(|s| s.repository()),
+        )?,
+    };
+
+    persist(prompt_for_auth(profile)?, profile)?;
+
+    update_settings_in_global_file(
+        Some(tenant_to_use),
+        Some(repository_to_use),
+        None,
+        None,
+        profile,
+    )?;
+
+    Ok(())
+}
+
+fn prompt_for_value(value_name: &str, previous_value: Option<&str>) -> Result<String> {
+    println!("What {value_name} would you like to use?");
+    if let Some(prev) = previous_value
+        && !prev.is_empty()
+    {
+        println!("(Hit enter to use the previous value of [{prev}])");
+    }
+
+    let mut input = String::new();
+    while input.is_empty() {
+        io::stdin().read_line(&mut input)?;
+        input = input.trim().to_owned();
+
+        if input.is_empty()
+            && let Some(prev) = previous_value
+        {
+            input.push_str(prev);
+        }
+    }
+
+    Ok(input)
+}
+
+enum AuthType {
+    ApiKey,
+    Password,
+}
+
+impl AuthType {
+    fn try_from_str(to_parse: &str) -> Option<Self> {
+        match to_parse {
+            "1" => Some(AuthType::ApiKey),
+            "2" => Some(AuthType::Password),
+            _ => None,
+        }
+    }
+}
+
+fn prompt_for_auth(profile: Option<&str>) -> Result<Credentials> {
+    let previous_value = Credentials::for_ambient_credentials(profile, true);
+
+    println!("What kind of credentials would you like to use?");
+    println!("1. API key");
+    println!("2. Username/password");
+    println!("(Hit enter to use the default value of [1])");
+
+    let mut input = String::new();
+    while AuthType::try_from_str(&input).is_none() {
+        io::stdin().read_line(&mut input)?;
+        input = input.trim().to_owned();
+
+        if input.is_empty() {
+            input.push('1');
+        }
+    }
+
+    match AuthType::try_from_str(&input).unwrap_or(AuthType::ApiKey) {
+        AuthType::ApiKey => match previous_value {
+            Ok(Credentials::ApiKey(creds)) => prompt_for_api_key(Some(&creds.api_key)),
+            _ => prompt_for_api_key(None),
+        },
+        AuthType::Password => match previous_value {
+            Ok(Credentials::Password(creds)) => {
+                prompt_for_username_password(Some(&creds.username), Some(&creds.password))
+            }
+            _ => prompt_for_username_password(None, None),
+        },
+    }
+}
+
+fn prompt_for_api_key(previous_api_key: Option<&str>) -> Result<Credentials> {
+    Ok(Credentials::for_api_key(prompt_for_sensitive_value(
+        "API key",
+        previous_api_key,
+    )?))
+}
+
+fn prompt_for_sensitive_value(value_name: &str, previous_value: Option<&str>) -> Result<String> {
+    let prompt_str = match previous_value {
+        Some(prev) if !prev.is_empty() => {
+            format!("Please enter your {value_name} (leave blank to use previous value): ")
+        }
+        Some(_) | None => format!("Please enter you {value_name}: "),
+    };
+
+    let entered =
+        rpassword::prompt_password(&prompt_str).wrap_err(format!("Unable to read {value_name}"))?;
+    if entered.is_empty() {
+        match previous_value {
+            Some(prev) if !prev.is_empty() => Ok(prev.to_owned()),
+            Some(_) | None => Err(eyre!("{value_name} cannot be empty")),
+        }
+    } else {
+        Ok(entered)
+    }
+}
+
+fn prompt_for_username_password(
+    previous_username: Option<&str>,
+    previous_password: Option<&str>,
+) -> Result<Credentials> {
+    Ok(Credentials::for_password(
+        prompt_for_value("username", previous_username)?,
+        prompt_for_sensitive_value("password", previous_password)?,
+    ))
+}

@@ -10,6 +10,7 @@ pub mod docs;
 pub mod doctor;
 pub(crate) mod env;
 pub mod error;
+pub mod login;
 pub mod moment;
 pub mod params;
 pub(crate) mod render;

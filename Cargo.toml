@@ -40,6 +40,7 @@ ptree = { version = "0.5.2", default-features = false }
 serde_yaml = "0.9"
 toml = "1.1.2"
 http = "1.4.2"
+rpassword = "7.5.4"
 
 [[example]]
 name = "mock_api"

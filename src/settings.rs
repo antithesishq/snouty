@@ -1,10 +1,12 @@
 use std::{
     fs,
+    io::{ErrorKind, Write},
     path::{Path, PathBuf},
 };
 
-use color_eyre::eyre::{Result, eyre};
-use toml::Table;
+use color_eyre::eyre::{OptionExt, Result, eyre};
+use tempfile::NamedTempFile;
+use toml::{Table, Value, map::Entry};
 
 use crate::env;
 use crate::error::user_error;
@@ -240,6 +242,84 @@ impl Settings {
     }
 }
 
+pub(crate) fn update_settings_in_global_file(
+    tenant: Option<String>,
+    repository: Option<String>,
+    base_url: Option<String>,
+    container_engine: Option<String>,
+    profile_to_update: Option<&str>,
+) -> Result<()> {
+    let settings_dir = global_settings_dir().ok_or_eyre("Could not determine global settings directory. Ensure either $XDG_CONFIG_DIR or $HOME is set.")?;
+    let path = settings_dir.join(GLOBAL_SETTINGS_FILENAME);
+    let mut contents = match read_to_string_if_file_exists(&path)? {
+        Some(contents) => parse_settings(&contents, &path)?,
+        None => Table::new(),
+    };
+
+    if let Some(profile) = profile_to_update {
+        let mut target = Table::new();
+        update_table(&mut target, tenant, repository, base_url, container_engine);
+        let profile_value = Value::Table(target);
+
+        match contents.entry(PROFILE_KEY) {
+            Entry::Vacant(vacant) => {
+                let mut outer = Table::new();
+                outer.insert(profile.to_owned(), profile_value);
+                vacant.insert(Value::Table(outer));
+            }
+            Entry::Occupied(mut occupied) => {
+                let outer = occupied.get_mut().as_table_mut().ok_or_eyre(eyre!("The settings file at {:?} is malformed: `profile` should be a table of named profiles", &path))?;
+                outer.insert(profile.to_owned(), profile_value);
+            }
+        }
+    } else {
+        update_table(
+            &mut contents,
+            tenant,
+            repository,
+            base_url,
+            container_engine,
+        );
+    }
+
+    fs::DirBuilder::new()
+        .recursive(true)
+        .create(&settings_dir)?;
+    let mut temp = NamedTempFile::new_in(&settings_dir)?;
+    temp.write_all(toml::to_string_pretty(&contents)?.as_bytes())?;
+
+    temp.persist(&path)?;
+
+    Ok(())
+}
+
+fn update_table(
+    target: &mut Table,
+    tenant: Option<String>,
+    repository: Option<String>,
+    base_url: Option<String>,
+    container_engine: Option<String>,
+) {
+    if let Some(tenant) = tenant {
+        target.insert("tenant".to_owned(), Value::String(tenant));
+    }
+
+    if let Some(repository) = repository {
+        target.insert("repository".to_owned(), Value::String(repository));
+    }
+
+    if let Some(base_url) = base_url {
+        target.insert("base_url".to_owned(), Value::String(base_url));
+    }
+
+    if let Some(container_engine) = container_engine {
+        target.insert(
+            "container_engine".to_owned(),
+            Value::String(container_engine),
+        );
+    }
+}
+
 /// Validate that `tenant` is safe to interpolate into the derived base URL
 /// `https://{tenant}.antithesis.com`. The tenant becomes the request host, so
 /// it must be a valid DNS hostname — one or more labels of ASCII letters,
@@ -248,7 +328,7 @@ impl Settings {
 /// …) that would otherwise redirect requests — with the API key attached — to
 /// an unintended host. Dots are allowed so a multi-label tenant still works;
 /// set `ANTITHESIS_BASE_URL` directly for any URL this rejects.
-fn validate_tenant_host(tenant: &str) -> Result<()> {
+pub(crate) fn validate_tenant_host(tenant: &str) -> Result<()> {
     fn is_valid_label(label: &str) -> bool {
         !label.is_empty()
             && label.len() <= 63
@@ -292,18 +372,10 @@ fn parse_settings(contents: &str, path: &Path) -> Result<Table> {
 /// exist and was not explicitly requested; an error when it exists but cannot be
 /// read or parsed, or when an explicitly-`required` file is missing.
 fn load_settings_file(path: &Path, required: bool) -> Result<Option<Table>> {
-    let contents = match fs::read_to_string(path) {
-        Ok(contents) => contents,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound && !required => return Ok(None),
-        Err(err) if required => {
-            return Err(eyre!(
-                "Settings file at {:?} could not be found or failed to be read: {err:#}",
-                path
-            ));
-        }
-        Err(err) => {
-            return Err(eyre!("File at {:?} could not be read: {err:#}", path));
-        }
+    let contents = match read_to_string_if_file_exists(path)? {
+        Some(contents) => contents,
+        None if !required => return Ok(None),
+        None => return Err(eyre!("Settings file at {:?} was not found", path)),
     };
     parse_settings(&contents, path).map(Some)
 }
@@ -389,6 +461,14 @@ fn string_value(table: &Table, key: &str, display: &str) -> Result<Option<String
     }
 }
 
+pub(crate) fn read_to_string_if_file_exists(path: &Path) -> Result<Option<String>> {
+    match fs::read_to_string(path) {
+        Ok(contents) => Ok(Some(contents)),
+        Err(err) if err.kind() == ErrorKind::NotFound => Ok(None),
+        Err(err) => Err(eyre!("File at {:?} could not be read: {err:#}", path)),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -435,7 +515,7 @@ mod tests {
     #[test]
     fn missing_required_file_is_an_error() {
         let err = load_settings_file(Path::new("/no/such/.snouty.toml"), true).unwrap_err();
-        assert!(err.to_string().contains("could not be found"));
+        assert!(err.to_string().contains("was not found"));
     }
 
     // ---- profile_value / default_value ---------------------------------

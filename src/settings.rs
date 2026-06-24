@@ -1,6 +1,7 @@
 use std::{
     fs,
     io::{ErrorKind, Write},
+    os::unix::fs::DirBuilderExt,
     path::{Path, PathBuf},
 };
 
@@ -295,6 +296,7 @@ pub(crate) fn update_settings_in_global_file(
     }
 
     fs::DirBuilder::new()
+        .mode(0o700)
         .recursive(true)
         .create(&settings_dir)?;
     let mut temp = NamedTempFile::new_in(&settings_dir)?;

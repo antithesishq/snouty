@@ -1,4 +1,6 @@
-use std::{collections::HashMap, fs, io::Write, path::Path, time::Duration};
+use std::{
+    collections::HashMap, fs, io::Write, os::unix::fs::DirBuilderExt, path::Path, time::Duration,
+};
 
 use base64::{Engine, prelude::BASE64_STANDARD};
 use color_eyre::{
@@ -403,6 +405,7 @@ fn persist_to_file(credentials: PersistableCredentials, profile: Option<&str>) -
     }
 
     fs::DirBuilder::new()
+        .mode(0o700)
         .recursive(true)
         .create(&settings_dir)?;
     let mut temp = NamedTempFile::new_in(&settings_dir)?;

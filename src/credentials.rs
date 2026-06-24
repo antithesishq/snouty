@@ -1,6 +1,4 @@
-use std::{
-    collections::HashMap, fs, io::Write, os::unix::fs::DirBuilderExt, path::Path, time::Duration,
-};
+use std::{collections::HashMap, io::Write, path::Path, time::Duration};
 
 use base64::{Engine, prelude::BASE64_STANDARD};
 use color_eyre::{
@@ -16,7 +14,7 @@ use crate::{
     attributed_value::AttributedValue,
     env,
     error::user_error,
-    settings::{global_settings_dir, read_to_string_if_file_exists},
+    settings::{global_settings_dir, mkdir, read_to_string_if_file_exists},
 };
 
 pub(crate) const API_KEY_VAR_NAME: &str = "ANTITHESIS_API_KEY";
@@ -404,10 +402,7 @@ fn persist_to_file(credentials: PersistableCredentials, profile: Option<&str>) -
         current_contents.default = Some(credentials);
     }
 
-    fs::DirBuilder::new()
-        .mode(0o700)
-        .recursive(true)
-        .create(&settings_dir)?;
+    mkdir(&settings_dir, true, 0o700)?;
     let mut temp = NamedTempFile::new_in(&settings_dir)?;
     temp.write_all(toml::to_string_pretty(&current_contents)?.as_bytes())?;
 

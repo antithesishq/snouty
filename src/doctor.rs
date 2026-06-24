@@ -170,6 +170,15 @@ fn repository_check(repository: Option<&str>) -> Check {
 fn authn_checks(credentials: Result<AttributedValue<Credentials>>) -> Vec<Check> {
     match credentials {
         Ok(credentials) => match credentials.unwrap() {
+            Credentials::GithubActionsOidc(_) => {
+                vec![enrich(
+                    Check::ok(
+                        "github_actions_oidc_token",
+                        "Github Actions OIDC token provided",
+                    ),
+                    credentials,
+                )]
+            }
             Credentials::ApiKey(_) => {
                 vec![enrich(
                     Check::ok("api_key", "API key provided"),
@@ -221,10 +230,18 @@ fn enrich<T>(check: Check, attribution: AttributedValue<T>) -> Check {
     match attribution {
         AttributedValue::EnvironmentVariable {
             value: _,
-            environment_variable_name,
+            environment_variable_names,
         } => check.note(
             Level::Note,
-            format!("read from the [{environment_variable_name}] environment variable"),
+            format!(
+                "read from the [{}] environment variable{}",
+                environment_variable_names.join(", "),
+                if environment_variable_names.len() == 1 {
+                    ""
+                } else {
+                    "s"
+                }
+            ),
         ),
         AttributedValue::SettingsFile {
             value: _,
@@ -448,7 +465,7 @@ pub async fn cmd_doctor(
 mod tests {
     use color_eyre::eyre::eyre;
 
-    use crate::credentials::{API_KEY_VAR_NAME, PASSWORD_VAR_NAME};
+    use crate::credentials::{API_KEY_VAR_NAME, PASSWORD_VAR_NAME, USERNAME_VAR_NAME};
 
     use super::*;
 
@@ -458,7 +475,7 @@ mod tests {
     fn auth_api_key_set_is_a_single_bare_ok_check() {
         let checks = authn_checks(Ok(AttributedValue::EnvironmentVariable {
             value: Credentials::for_api_key("api_key".to_owned()),
-            environment_variable_name: API_KEY_VAR_NAME,
+            environment_variable_names: vec![API_KEY_VAR_NAME],
         }));
         assert_eq!(checks.len(), 1);
         assert_eq!(checks[0].status, Status::Ok);
@@ -469,7 +486,7 @@ mod tests {
     fn auth_legacy_basic_warns_on_key_and_notes_legacy() {
         let checks = authn_checks(Ok(AttributedValue::EnvironmentVariable {
             value: Credentials::for_password("user".to_owned(), "pass".to_owned()),
-            environment_variable_name: PASSWORD_VAR_NAME,
+            environment_variable_names: vec![USERNAME_VAR_NAME, PASSWORD_VAR_NAME],
         }));
         assert_eq!(checks.len(), 2);
         assert_eq!(checks[0].status, Status::Warn);

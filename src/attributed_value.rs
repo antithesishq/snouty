@@ -3,7 +3,7 @@ use std::path::PathBuf;
 pub(crate) enum AttributedValue<T> {
     EnvironmentVariable {
         value: T,
-        environment_variable_name: &'static str,
+        environment_variable_names: Vec<&'static str>,
     },
     SettingsFile {
         value: T,

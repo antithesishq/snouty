@@ -1,7 +1,6 @@
 use std::{
     fs,
     io::{ErrorKind, Write},
-    os::unix::fs::DirBuilderExt,
     path::{Path, PathBuf},
 };
 
@@ -283,15 +282,23 @@ pub(crate) fn update_settings_in_global_file(
         );
     }
 
-    fs::DirBuilder::new()
-        .mode(0o700)
-        .recursive(true)
-        .create(&settings_dir)?;
+    mkdir(&settings_dir, true, 0o700)?;
     let mut temp = NamedTempFile::new_in(&settings_dir)?;
     temp.write_all(toml::to_string_pretty(&contents)?.as_bytes())?;
 
     temp.persist(&path)?;
 
+    Ok(())
+}
+
+pub(crate) fn mkdir(path: &Path, recursive: bool, permissions: u32) -> Result<()> {
+    let mut builder = fs::DirBuilder::new();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        builder.mode(permissions);
+    }
+    builder.recursive(recursive).create(path)?;
     Ok(())
 }
 

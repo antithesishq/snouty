@@ -219,14 +219,14 @@ fn authn_checks(credentials: Result<AttributedValue<Credentials>>) -> Vec<Check>
 
 fn enrich<T>(check: Check, attribution: AttributedValue<T>) -> Check {
     match attribution {
-        AttributedValue::FromEnvironmentVariable {
+        AttributedValue::EnvironmentVariable {
             value: _,
             environment_variable_name,
         } => check.note(
             Level::Note,
             format!("read from the [{environment_variable_name}] environment variable"),
         ),
-        AttributedValue::FromSettingsFile {
+        AttributedValue::SettingsFile {
             value: _,
             settings_file_path,
             profile,
@@ -241,7 +241,7 @@ fn enrich<T>(check: Check, attribution: AttributedValue<T>) -> Check {
                 }
             ),
         ),
-        AttributedValue::FromKeychain {
+        AttributedValue::Keychain {
             value: _,
             entry_name,
         } => check.note(
@@ -457,7 +457,7 @@ mod tests {
 
     #[test]
     fn auth_api_key_set_is_a_single_bare_ok_check() {
-        let checks = authn_checks(Ok(AttributedValue::FromEnvironmentVariable {
+        let checks = authn_checks(Ok(AttributedValue::EnvironmentVariable {
             value: Credentials::for_api_key("api_key".to_owned()),
             environment_variable_name: API_KEY_VAR_NAME,
         }));
@@ -468,7 +468,7 @@ mod tests {
 
     #[test]
     fn auth_legacy_basic_warns_on_key_and_notes_legacy() {
-        let checks = authn_checks(Ok(AttributedValue::FromEnvironmentVariable {
+        let checks = authn_checks(Ok(AttributedValue::EnvironmentVariable {
             value: Credentials::for_password("user".to_owned(), "pass".to_owned()),
             environment_variable_name: PASSWORD_VAR_NAME,
         }));

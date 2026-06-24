@@ -150,6 +150,9 @@ pub(crate) fn snouty() -> Command {
         }
     }
     cmd.env("RUST_LOG", "debug");
+    // DBus configuration is deliberately omitted from FORWARDED_ENV_VARS since
+    // it represents a global state that might leak into or out of tests.
+    cmd.env("SNOUTY_DISABLE_DBUS_CREDENTIAL_STORAGE", "1");
 
     // Global settings can't leak (HOME/XDG_CONFIG_HOME aren't forwarded, so the
     // lookup resolves to nothing). Pin the project settings file to an empty

@@ -6,6 +6,7 @@ use color_eyre::{
     eyre::{Context, OptionExt, Result, eyre},
 };
 use http::HeaderValue;
+use keyring_core::{Entry, set_default_store};
 use serde::{Deserialize, Serialize};
 use tempfile::NamedTempFile;
 
@@ -85,6 +86,25 @@ impl Credentials {
         Ok(None)
     }
 
+    fn try_from_keychain(profile: Option<&str>) -> Result<Option<AttributedValue<Self>>> {
+        let credential_name = construct_keychain_credential_name(profile);
+        let credential = match Entry::new("snouty", credential_name.as_str()) {
+            Ok(cred) => Ok(cred),
+            // A NoDefaultStore error indicates that the version of initialize_credential_store() selected by the compiler was a no-op
+            Err(keyring_core::Error::NoDefaultStore) => return Ok(None),
+            Err(other) => Err(other),
+        }?;
+
+        if let Ok(persisted) = credential.get_password() {
+            return Ok(Some(AttributedValue::FromKeychain {
+                value: serde_json::from_str::<Credentials>(&persisted)?,
+                entry_name: credential_name,
+            }));
+        }
+
+        Ok(None)
+    }
+
     fn try_from_credentials_file(profile: Option<&str>) -> Result<Option<AttributedValue<Self>>> {
         if let Some(snouty_settings_dir) = global_settings_dir() {
             let path = snouty_settings_dir.join(CREDENTIALS_FILENAME);
@@ -133,19 +153,15 @@ impl Credentials {
         allow_basic: bool,
     ) -> Result<AttributedValue<Self>> {
         if let Some(from_env) = Self::try_from_env()? {
-            return Ok(if allow_basic {
-                from_env
-            } else {
-                ensure_non_password_credentials(from_env)?
-            });
+            return to_result(from_env, allow_basic);
+        }
+
+        if let Some(from_keychain) = Self::try_from_keychain(profile)? {
+            return to_result(from_keychain, allow_basic);
         }
 
         if let Some(from_credentials_file) = Self::try_from_credentials_file(profile)? {
-            return Ok(if allow_basic {
-                from_credentials_file
-            } else {
-                ensure_non_password_credentials(from_credentials_file)?
-            });
+            return to_result(from_credentials_file, allow_basic);
         }
 
         Err(user_error("No Antithesis credentials found").suggestion(
@@ -160,6 +176,7 @@ impl Credentials {
         match Self::for_ambient_credentials_with_attribution(profile, allow_basic)? {
             AttributedValue::FromEnvironmentVariable { value, .. } => Ok(value),
             AttributedValue::FromSettingsFile { value, .. } => Ok(value),
+            AttributedValue::FromKeychain { value, .. } => Ok(value),
         }
     }
 
@@ -179,7 +196,64 @@ impl Credentials {
     }
 }
 
-pub(crate) fn persist(credentials: Credentials, profile: Option<&str>) -> Result<Option<String>> {
+#[cfg(target_os = "macos")]
+pub fn initialize_credential_store() -> Result<()> {
+    use apple_native_keyring_store::keychain::Store;
+    set_default_store(Store::new()?);
+
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+pub fn initialize_credential_store() -> Result<()> {
+    if matches!(
+        env::var("SNOUTY_DISABLE_DBUS_CREDENTIAL_STORAGE"),
+        Ok(Some(_))
+    ) {
+        return Ok(());
+    }
+
+    use dbus_secret_service_keyring_store::Store;
+    set_default_store(Store::new()?);
+
+    Ok(())
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+pub fn initialize_credential_store() -> Result<()> {
+    // pass
+    Ok(())
+}
+
+pub(crate) fn persist(credentials: Credentials, profile: Option<&str>) -> Result<()> {
+    match try_persist_to_keychain(&credentials, profile) {
+        Err(err) => Err(err),
+        Ok(Some(())) => Ok(()),
+        Ok(None) => persist_to_file(credentials, profile),
+    }
+}
+
+fn try_persist_to_keychain(credentials: &Credentials, profile: Option<&str>) -> Result<Option<()>> {
+    let credential_name = construct_keychain_credential_name(profile);
+
+    let credential = match Entry::new("snouty", credential_name.as_str()) {
+        Ok(cred) => Ok(cred),
+        // A NoDefaultStore error indicates that the version of initialize_credential_store() selected by the compiler was a no-op
+        Err(keyring_core::Error::NoDefaultStore) => return Ok(None),
+        Err(other) => Err(other),
+    }?;
+
+    credential.set_password(serde_json::to_string(credentials)?.as_str())?;
+    Ok(Some(()))
+}
+
+fn construct_keychain_credential_name(profile: Option<&str>) -> String {
+    profile
+        .map(|p| format!("profile_{p}"))
+        .unwrap_or_else(|| "_default_".to_owned())
+}
+
+fn persist_to_file(credentials: Credentials, profile: Option<&str>) -> Result<()> {
     let settings_dir = global_settings_dir().ok_or_eyre(eyre!(
         "Could not determine settings directory. Please ensure $XDG_CONFIG_DIR or $HOME is set"
     ))?;
@@ -214,7 +288,7 @@ pub(crate) fn persist(credentials: Credentials, profile: Option<&str>) -> Result
 
     temp.persist(&path)?;
 
-    Ok(None)
+    Ok(())
 }
 
 fn parse_credentials_file_toml(contents: String, path: &Path) -> Result<CredentialsFile> {
@@ -224,10 +298,11 @@ fn parse_credentials_file_toml(contents: String, path: &Path) -> Result<Credenti
     ))
 }
 
-fn ensure_non_password_credentials(
+fn to_result(
     credentials: AttributedValue<Credentials>,
+    allow_basic: bool,
 ) -> Result<AttributedValue<Credentials>> {
-    if matches!(credentials.unwrap(), Credentials::Password(_)) {
+    if !allow_basic && matches!(credentials.unwrap(), Credentials::Password(_)) {
         return Err(user_error(
             "This command does not accept username/password authentication, which is only supported when launching runs (`snouty launch`, `snouty debug`)",
         ));

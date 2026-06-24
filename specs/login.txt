@@ -24,8 +24,9 @@ snouty login
 stdout 'What Antithesis tenant would you like to use\?.*'
 stdout 'What container repository would you like to use\?.*'
 stdout 'What kind of credentials would you like to use\?.*'
-stdout '1\. API key'
-stdout '2\. Username/password'
+stdout '1\. Skip setup \(Select this option if you plan to use environment variables instead of persisted credentials\.\)'
+stdout '2\. API key'
+stdout '3\. Username/password'
 stdout '\(Hit enter to use the default value of \[1\]\)'
 ! stdout 'Hit enter to use the previous value'
 

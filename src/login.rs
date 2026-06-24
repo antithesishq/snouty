@@ -31,7 +31,9 @@ pub fn cmd_login(
         )?,
     };
 
-    persist(prompt_for_auth(profile)?, profile)?;
+    if let Some(credentials) = prompt_for_auth(profile)? {
+        persist(credentials, profile)?;
+    }
 
     update_settings_in_global_file(
         Some(tenant_to_use),
@@ -67,31 +69,36 @@ fn prompt_for_value(value_name: &str, previous_value: Option<&str>) -> Result<St
     Ok(input)
 }
 
-enum AuthType {
+enum AuthSetupType {
+    Skip,
     ApiKey,
     Password,
 }
 
-impl AuthType {
+impl AuthSetupType {
     fn try_from_str(to_parse: &str) -> Option<Self> {
         match to_parse {
-            "1" => Some(AuthType::ApiKey),
-            "2" => Some(AuthType::Password),
+            "1" => Some(AuthSetupType::Skip),
+            "2" => Some(AuthSetupType::ApiKey),
+            "3" => Some(AuthSetupType::Password),
             _ => None,
         }
     }
 }
 
-fn prompt_for_auth(profile: Option<&str>) -> Result<Credentials> {
+fn prompt_for_auth(profile: Option<&str>) -> Result<Option<Credentials>> {
     let previous_value = Credentials::for_ambient_credentials(profile, true);
 
     println!("What kind of credentials would you like to use?");
-    println!("1. API key");
-    println!("2. Username/password");
+    println!(
+        "1. Skip setup (Select this option if you plan to use environment variables instead of persisted credentials.)"
+    );
+    println!("2. API key");
+    println!("3. Username/password");
     println!("(Hit enter to use the default value of [1])");
 
     let mut input = String::new();
-    while AuthType::try_from_str(&input).is_none() {
+    while AuthSetupType::try_from_str(&input).is_none() {
         io::stdin().read_line(&mut input)?;
         input = input.trim().to_owned();
 
@@ -100,17 +107,20 @@ fn prompt_for_auth(profile: Option<&str>) -> Result<Credentials> {
         }
     }
 
-    match AuthType::try_from_str(&input).unwrap_or(AuthType::ApiKey) {
-        AuthType::ApiKey => match previous_value {
+    match AuthSetupType::try_from_str(&input).unwrap_or(AuthSetupType::ApiKey) {
+        AuthSetupType::Skip => Ok(None),
+        AuthSetupType::ApiKey => match previous_value {
             Ok(Credentials::ApiKey(creds)) => prompt_for_api_key(Some(&creds.api_key)),
             _ => prompt_for_api_key(None),
-        },
-        AuthType::Password => match previous_value {
+        }
+        .map(Some),
+        AuthSetupType::Password => match previous_value {
             Ok(Credentials::Password(creds)) => {
                 prompt_for_username_password(Some(&creds.username), Some(&creds.password))
             }
             _ => prompt_for_username_password(None, None),
-        },
+        }
+        .map(Some),
     }
 }
 
@@ -150,8 +160,7 @@ fn prompt_for_sensitive_value(value_name: &str, previous_value: Option<&str>) ->
 /// in that case, so nothing is lost.
 fn read_secret(value_name: &str, prompt: &str) -> Result<String> {
     if io::stdin().is_terminal() {
-        return rpassword::prompt_password(prompt)
-            .wrap_err(format!("Unable to read {value_name}"));
+        return rpassword::prompt_password(prompt).wrap_err(format!("Unable to read {value_name}"));
     }
 
     print!("{prompt}");

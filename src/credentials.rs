@@ -68,7 +68,7 @@ impl Credentials {
 
     fn try_from_env() -> Result<Option<AttributedValue<Self>>> {
         if let Some(api_key) = env::var(API_KEY_VAR_NAME)? {
-            return Ok(Some(AttributedValue::FromEnvironmentVariable {
+            return Ok(Some(AttributedValue::EnvironmentVariable {
                 value: Self::for_api_key(api_key),
                 environment_variable_name: API_KEY_VAR_NAME,
             }));
@@ -77,7 +77,7 @@ impl Credentials {
         if let Some(username) = env::var(USERNAME_VAR_NAME)?
             && let Some(password) = env::var(PASSWORD_VAR_NAME)?
         {
-            return Ok(Some(AttributedValue::FromEnvironmentVariable {
+            return Ok(Some(AttributedValue::EnvironmentVariable {
                 value: Self::for_password(username, password),
                 environment_variable_name: PASSWORD_VAR_NAME,
             }));
@@ -96,7 +96,7 @@ impl Credentials {
         }?;
 
         if let Ok(persisted) = credential.get_password() {
-            return Ok(Some(AttributedValue::FromKeychain {
+            return Ok(Some(AttributedValue::Keychain {
                 value: serde_json::from_str::<Credentials>(&persisted)?,
                 entry_name: credential_name,
             }));
@@ -130,7 +130,7 @@ impl Credentials {
                 .as_ref()
                 .and_then(|t| t.get(requested_profile))
         {
-            return Ok(Some(AttributedValue::FromSettingsFile {
+            return Ok(Some(AttributedValue::SettingsFile {
                 value: credentials_for_profile.clone(),
                 settings_file_path: path.to_path_buf(),
                 profile: Some(requested_profile.to_owned()),
@@ -138,7 +138,7 @@ impl Credentials {
         }
 
         if let Some(default_credentials) = parsed.default {
-            return Ok(Some(AttributedValue::FromSettingsFile {
+            return Ok(Some(AttributedValue::SettingsFile {
                 value: default_credentials.clone(),
                 settings_file_path: path.to_path_buf(),
                 profile: None,
@@ -174,9 +174,9 @@ impl Credentials {
         allow_basic: bool,
     ) -> Result<Self> {
         match Self::for_ambient_credentials_with_attribution(profile, allow_basic)? {
-            AttributedValue::FromEnvironmentVariable { value, .. } => Ok(value),
-            AttributedValue::FromSettingsFile { value, .. } => Ok(value),
-            AttributedValue::FromKeychain { value, .. } => Ok(value),
+            AttributedValue::EnvironmentVariable { value, .. } => Ok(value),
+            AttributedValue::SettingsFile { value, .. } => Ok(value),
+            AttributedValue::Keychain { value, .. } => Ok(value),
         }
     }
 

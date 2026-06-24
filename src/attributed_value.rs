@@ -1,16 +1,16 @@
 use std::path::PathBuf;
 
 pub(crate) enum AttributedValue<T> {
-    FromEnvironmentVariable {
+    EnvironmentVariable {
         value: T,
         environment_variable_name: &'static str,
     },
-    FromSettingsFile {
+    SettingsFile {
         value: T,
         settings_file_path: PathBuf,
         profile: Option<String>,
     },
-    FromKeychain {
+    Keychain {
         value: T,
         entry_name: String,
     },
@@ -19,9 +19,9 @@ pub(crate) enum AttributedValue<T> {
 impl<T> AttributedValue<T> {
     pub(crate) fn unwrap(&self) -> &T {
         match self {
-            Self::FromEnvironmentVariable { value, .. } => value,
-            Self::FromSettingsFile { value, .. } => value,
-            Self::FromKeychain { value, .. } => value,
+            Self::EnvironmentVariable { value, .. } => value,
+            Self::SettingsFile { value, .. } => value,
+            Self::Keychain { value, .. } => value,
         }
     }
 }

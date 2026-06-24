@@ -1,4 +1,4 @@
-use std::{collections::HashMap, fs, io::Write, path::Path};
+use std::{collections::HashMap, fs, io::Write, path::Path, time::Duration};
 
 use base64::{Engine, prelude::BASE64_STANDARD};
 use color_eyre::{
@@ -21,6 +21,8 @@ pub(crate) const API_KEY_VAR_NAME: &str = "ANTITHESIS_API_KEY";
 pub(crate) const USERNAME_VAR_NAME: &str = "ANTITHESIS_USERNAME";
 pub(crate) const PASSWORD_VAR_NAME: &str = "ANTITHESIS_PASSWORD";
 const CREDENTIALS_FILENAME: &str = "credentials.toml";
+
+const OIDC_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct ApiKeyCredentials {
@@ -184,6 +186,7 @@ impl Credentials {
     pub(crate) fn for_ambient_credentials_with_attribution(
         profile: Option<&str>,
         allow_basic: bool,
+        offline: bool,
     ) -> Result<AttributedValue<Self>> {
         if let Some(from_env) = Self::try_from_env()? {
             return to_result(from_env, allow_basic);
@@ -197,7 +200,9 @@ impl Credentials {
             return to_result(from_credentials_file, allow_basic);
         }
 
-        if let Some(from_github_actions_environment) = Self::try_from_github_actions_environment()?
+        if !offline
+            && let Some(from_github_actions_environment) =
+                Self::try_from_github_actions_environment()?
         {
             return Ok(from_github_actions_environment);
         }
@@ -211,7 +216,7 @@ impl Credentials {
         profile: Option<&str>,
         allow_basic: bool,
     ) -> Result<Self> {
-        match Self::for_ambient_credentials_with_attribution(profile, allow_basic)? {
+        match Self::for_ambient_credentials_with_attribution(profile, allow_basic, false)? {
             AttributedValue::EnvironmentVariable { value, .. } => Ok(value),
             AttributedValue::SettingsFile { value, .. } => Ok(value),
             AttributedValue::Keychain { value, .. } => Ok(value),
@@ -263,15 +268,26 @@ fn fetch_github_actions_oidc_credentials(
     actions_id_url: &str,
     actions_id_request_token: &str,
 ) -> Result<Credentials> {
-    let client = reqwest::blocking::Client::builder().build()?;
-    let token = client
+    #[derive(Deserialize)]
+    struct OidcTokenResponse {
+        value: String,
+    }
+
+    let client = reqwest::blocking::Client::builder()
+        .timeout(OIDC_REQUEST_TIMEOUT)
+        .build()?;
+    let response: OidcTokenResponse = client
         .get(format!("{actions_id_url}&audience=antithesis"))
         .bearer_auth(actions_id_request_token)
         .send()?
-        .text()?;
+        .error_for_status()
+        .wrap_err("failed to fetch a GitHub Actions OIDC token")?
+        .json()?;
 
     Ok(Credentials::GithubActionsOidc(
-        GithubActionsOidcCredentials { token },
+        GithubActionsOidcCredentials {
+            token: response.value,
+        },
     ))
 }
 
@@ -439,10 +455,13 @@ mod tests {
     }
 
     /// Spawn a one-shot HTTP server that records the request it receives and
-    /// answers it with `response_body`. Returns the request URL — already
-    /// carrying a query string, like the real Actions endpoint — and a channel
-    /// that yields the captured request once it arrives.
-    fn spawn_oidc_token_server(response_body: &'static str) -> (String, Receiver<CapturedRequest>) {
+    /// answers it with `status` (e.g. `"200 OK"`) and a JSON `body`. Returns the
+    /// request URL — already carrying a query string, like the real Actions
+    /// endpoint — and a channel that yields the captured request once it arrives.
+    fn spawn_oidc_token_server(
+        status: &'static str,
+        body: &'static str,
+    ) -> (String, Receiver<CapturedRequest>) {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind mock OIDC server");
         let addr = listener.local_addr().expect("mock server address");
         let (tx, rx) = mpsc::channel();
@@ -480,8 +499,8 @@ mod tests {
             .expect("send captured request");
 
             let response = format!(
-                "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {}\r\n\r\n{response_body}",
-                response_body.len(),
+                "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+                body.len(),
             );
             response_stream
                 .write_all(response.as_bytes())
@@ -494,12 +513,15 @@ mod tests {
 
     #[test]
     fn github_actions_oidc_exchange_sends_bearer_token_and_audience() {
-        let (url, requests) = spawn_oidc_token_server("oidc-jwt-token-value");
+        // The endpoint returns the JWT wrapped in a JSON envelope, exactly as
+        // GitHub's Actions OIDC endpoint does.
+        let (url, requests) =
+            spawn_oidc_token_server("200 OK", r#"{"count":1,"value":"oidc-jwt-token-value"}"#);
 
         let credentials =
             fetch_github_actions_oidc_credentials(&url, "actions-request-token").unwrap();
 
-        // The response body becomes the OIDC token verbatim.
+        // The JWT is lifted out of the `value` field, not the raw body.
         match credentials {
             Credentials::GithubActionsOidc(GithubActionsOidcCredentials { token }) => {
                 assert_eq!(token, "oidc-jwt-token-value");
@@ -522,6 +544,17 @@ mod tests {
             request.authorization.as_deref(),
             Some("Bearer actions-request-token")
         );
+    }
+
+    #[test]
+    fn github_actions_oidc_exchange_errors_on_non_success_status() {
+        // A rejected request token (or any non-2xx) must surface as an error
+        // rather than letting the error body be mistaken for a token.
+        let (url, _requests) =
+            spawn_oidc_token_server("403 Forbidden", r#"{"message":"bad credentials"}"#);
+
+        let result = fetch_github_actions_oidc_credentials(&url, "actions-request-token");
+        assert!(result.is_err(), "expected an error for a 403 response");
     }
 
     #[test]

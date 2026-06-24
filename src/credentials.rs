@@ -270,9 +270,9 @@ fn fetch_github_actions_oidc_credentials(
         .send()?
         .text()?;
 
-    Ok(Credentials::GithubActionsOidc(GithubActionsOidcCredentials {
-        token,
-    }))
+    Ok(Credentials::GithubActionsOidc(
+        GithubActionsOidcCredentials { token },
+    ))
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

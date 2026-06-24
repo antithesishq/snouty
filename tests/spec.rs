@@ -57,7 +57,7 @@ fn snouty_cmd(env: &testscript_rs::TestEnvironment, args: &[String]) -> std::pro
     }
     // DBus configuration is deliberately omitted from FORWARDED_ENV_VARS since
     // it represents a global state that might leak into or out of tests.
-    cmd.env("SNOUTY_DISABLE_DBUS_CREDENTIAL_STORAGE", "1");
+    cmd.env("SNOUTY_DISABLE_KEYCHAIN_CREDENTIAL_STORAGE", "1");
     cmd.env(
         "XDG_CONFIG_HOME",
         isolated_xdg_config_home(&env.current_dir),

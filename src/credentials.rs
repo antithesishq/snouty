@@ -198,6 +198,13 @@ impl Credentials {
 
 #[cfg(target_os = "macos")]
 pub fn initialize_credential_store() -> Result<()> {
+    if matches!(
+        env::var("SNOUTY_DISABLE_KEYCHAIN_CREDENTIAL_STORAGE"),
+        Ok(Some(_))
+    ) {
+        return Ok(());
+    }
+
     use apple_native_keyring_store::keychain::Store;
     set_default_store(Store::new()?);
 
@@ -207,7 +214,7 @@ pub fn initialize_credential_store() -> Result<()> {
 #[cfg(target_os = "linux")]
 pub fn initialize_credential_store() -> Result<()> {
     if matches!(
-        env::var("SNOUTY_DISABLE_DBUS_CREDENTIAL_STORAGE"),
+        env::var("SNOUTY_DISABLE_KEYCHAIN_CREDENTIAL_STORAGE"),
         Ok(Some(_))
     ) {
         return Ok(());

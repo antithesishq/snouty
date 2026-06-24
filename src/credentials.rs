@@ -50,9 +50,22 @@ impl std::fmt::Debug for PasswordCredentials {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(tag = "type")]
+#[derive(Clone)]
+pub struct GithubActionsOidcCredentials {
+    token: String,
+}
+
+impl std::fmt::Debug for GithubActionsOidcCredentials {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("GithubActionsOidcCredentials")
+            .field("token", &"[REDACTED]")
+            .finish()
+    }
+}
+
+#[derive(Clone, Debug)]
 pub enum Credentials {
+    GithubActionsOidc(GithubActionsOidcCredentials),
     ApiKey(ApiKeyCredentials),
     Password(PasswordCredentials),
 }
@@ -70,7 +83,7 @@ impl Credentials {
         if let Some(api_key) = env::var(API_KEY_VAR_NAME)? {
             return Ok(Some(AttributedValue::EnvironmentVariable {
                 value: Self::for_api_key(api_key),
-                environment_variable_name: API_KEY_VAR_NAME,
+                environment_variable_names: vec![API_KEY_VAR_NAME],
             }));
         }
 
@@ -79,7 +92,7 @@ impl Credentials {
         {
             return Ok(Some(AttributedValue::EnvironmentVariable {
                 value: Self::for_password(username, password),
-                environment_variable_name: PASSWORD_VAR_NAME,
+                environment_variable_names: vec![USERNAME_VAR_NAME, PASSWORD_VAR_NAME],
             }));
         }
 
@@ -97,7 +110,8 @@ impl Credentials {
 
         if let Ok(persisted) = credential.get_password() {
             return Ok(Some(AttributedValue::Keychain {
-                value: serde_json::from_str::<Credentials>(&persisted)?,
+                value: serde_json::from_str::<PersistableCredentials>(&persisted)?
+                    .convert_to_credentials(),
                 entry_name: credential_name,
             }));
         }
@@ -131,7 +145,7 @@ impl Credentials {
                 .and_then(|t| t.get(requested_profile))
         {
             return Ok(Some(AttributedValue::SettingsFile {
-                value: credentials_for_profile.clone(),
+                value: credentials_for_profile.clone().convert_to_credentials(),
                 settings_file_path: path.to_path_buf(),
                 profile: Some(requested_profile.to_owned()),
             }));
@@ -139,9 +153,28 @@ impl Credentials {
 
         if let Some(default_credentials) = parsed.default {
             return Ok(Some(AttributedValue::SettingsFile {
-                value: default_credentials.clone(),
+                value: default_credentials.convert_to_credentials(),
                 settings_file_path: path.to_path_buf(),
                 profile: None,
+            }));
+        }
+
+        Ok(None)
+    }
+
+    fn try_from_github_actions_environment() -> Result<Option<AttributedValue<Self>>> {
+        const TARGET_URL_VAR_NAME: &str = "ACTIONS_ID_TOKEN_REQUEST_URL";
+        const REQ_TOKEN_VAR_NAME: &str = "ACTIONS_ID_TOKEN_REQUEST_TOKEN";
+
+        if let Some(actions_id_request_token) = env::var(REQ_TOKEN_VAR_NAME)?
+            && let Some(actions_id_url) = env::var(TARGET_URL_VAR_NAME)?
+        {
+            return Ok(Some(AttributedValue::EnvironmentVariable {
+                value: fetch_github_actions_oidc_credentials(
+                    &actions_id_url,
+                    &actions_id_request_token,
+                )?,
+                environment_variable_names: vec![TARGET_URL_VAR_NAME, REQ_TOKEN_VAR_NAME],
             }));
         }
 
@@ -162,6 +195,11 @@ impl Credentials {
 
         if let Some(from_credentials_file) = Self::try_from_credentials_file(profile)? {
             return to_result(from_credentials_file, allow_basic);
+        }
+
+        if let Some(from_github_actions_environment) = Self::try_from_github_actions_environment()?
+        {
+            return Ok(from_github_actions_environment);
         }
 
         Err(user_error("No Antithesis credentials found").suggestion(
@@ -188,11 +226,68 @@ impl Credentials {
                 format!("Basic {encoded}")
             }
             Credentials::ApiKey(ApiKeyCredentials { api_key }) => format!("Bearer {api_key}"),
+            Credentials::GithubActionsOidc(GithubActionsOidcCredentials { token }) => {
+                format!("GHA {token}")
+            }
         };
         let mut hv =
             HeaderValue::from_str(&value).wrap_err("failed to build Authorization header")?;
         hv.set_sensitive(true);
         Ok(hv)
+    }
+
+    fn convert_to_peristable_credentials(self) -> Result<PersistableCredentials> {
+        match self {
+            Self::ApiKey(api_key_credentials) => {
+                Ok(PersistableCredentials::ApiKey(api_key_credentials))
+            }
+            Self::Password(password_credentials) => {
+                Ok(PersistableCredentials::Password(password_credentials))
+            }
+            Self::GithubActionsOidc(_) => Err(eyre!(
+                "Github Actions OIDC tokens cannot be persisted by Snouty"
+            )),
+        }
+    }
+}
+
+/// Exchange the GitHub Actions OIDC *request* token for an Antithesis-audience
+/// OIDC token by calling the Actions token endpoint.
+///
+/// Split out from [`Credentials::try_from_github_actions_environment`] so the
+/// HTTP exchange can be unit-tested against a local server without mutating the
+/// process environment (which would race other tests under threaded
+/// `cargo test`). The request URL already carries a query string, so the
+/// audience is appended with `&`.
+fn fetch_github_actions_oidc_credentials(
+    actions_id_url: &str,
+    actions_id_request_token: &str,
+) -> Result<Credentials> {
+    let client = reqwest::blocking::Client::builder().build()?;
+    let token = client
+        .get(format!("{actions_id_url}&audience=antithesis"))
+        .bearer_auth(actions_id_request_token)
+        .send()?
+        .text()?;
+
+    Ok(Credentials::GithubActionsOidc(GithubActionsOidcCredentials {
+        token,
+    }))
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(tag = "type")]
+enum PersistableCredentials {
+    ApiKey(ApiKeyCredentials),
+    Password(PasswordCredentials),
+}
+
+impl PersistableCredentials {
+    fn convert_to_credentials(self) -> Credentials {
+        match self {
+            Self::ApiKey(api_key_credentials) => Credentials::ApiKey(api_key_credentials),
+            Self::Password(password_credentials) => Credentials::Password(password_credentials),
+        }
     }
 }
 
@@ -233,14 +328,18 @@ pub fn initialize_credential_store() -> Result<()> {
 }
 
 pub(crate) fn persist(credentials: Credentials, profile: Option<&str>) -> Result<()> {
-    match try_persist_to_keychain(&credentials, profile) {
+    let persistable = credentials.convert_to_peristable_credentials()?;
+    match try_persist_to_keychain(&persistable, profile) {
         Err(err) => Err(err),
         Ok(Some(())) => Ok(()),
-        Ok(None) => persist_to_file(credentials, profile),
+        Ok(None) => persist_to_file(persistable, profile),
     }
 }
 
-fn try_persist_to_keychain(credentials: &Credentials, profile: Option<&str>) -> Result<Option<()>> {
+fn try_persist_to_keychain(
+    credentials: &PersistableCredentials,
+    profile: Option<&str>,
+) -> Result<Option<()>> {
     let credential_name = construct_keychain_credential_name(profile);
 
     let credential = match Entry::new("snouty", credential_name.as_str()) {
@@ -260,7 +359,7 @@ fn construct_keychain_credential_name(profile: Option<&str>) -> String {
         .unwrap_or_else(|| "_default_".to_owned())
 }
 
-fn persist_to_file(credentials: Credentials, profile: Option<&str>) -> Result<()> {
+fn persist_to_file(credentials: PersistableCredentials, profile: Option<&str>) -> Result<()> {
     let settings_dir = global_settings_dir().ok_or_eyre(eyre!(
         "Could not determine settings directory. Please ensure $XDG_CONFIG_DIR or $HOME is set"
     ))?;
@@ -320,13 +419,121 @@ fn to_result(
 
 #[derive(Serialize, Deserialize)]
 struct CredentialsFile {
-    default: Option<Credentials>,
-    profile: Option<HashMap<String, Credentials>>,
+    default: Option<PersistableCredentials>,
+    profile: Option<HashMap<String, PersistableCredentials>>,
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::{BufRead, BufReader};
+    use std::net::TcpListener;
+    use std::sync::mpsc::{self, Receiver};
+    use std::thread;
+    use std::time::Duration;
+
+    /// The parts of an inbound HTTP request the OIDC exchange test asserts on.
+    struct CapturedRequest {
+        request_line: String,
+        authorization: Option<String>,
+    }
+
+    /// Spawn a one-shot HTTP server that records the request it receives and
+    /// answers it with `response_body`. Returns the request URL — already
+    /// carrying a query string, like the real Actions endpoint — and a channel
+    /// that yields the captured request once it arrives.
+    fn spawn_oidc_token_server(response_body: &'static str) -> (String, Receiver<CapturedRequest>) {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind mock OIDC server");
+        let addr = listener.local_addr().expect("mock server address");
+        let (tx, rx) = mpsc::channel();
+
+        thread::spawn(move || {
+            let Ok((stream, _)) = listener.accept() else {
+                return;
+            };
+            let mut response_stream = stream.try_clone().expect("clone stream");
+            let mut reader = BufReader::new(stream);
+
+            let mut request_line = String::new();
+            reader
+                .read_line(&mut request_line)
+                .expect("read request line");
+
+            let mut authorization = None;
+            loop {
+                let mut line = String::new();
+                let read = reader.read_line(&mut line).expect("read header line");
+                if read == 0 || line == "\r\n" || line == "\n" {
+                    break;
+                }
+                if let Some((name, value)) = line.split_once(':')
+                    && name.trim().eq_ignore_ascii_case("authorization")
+                {
+                    authorization = Some(value.trim().to_owned());
+                }
+            }
+
+            tx.send(CapturedRequest {
+                request_line: request_line.trim().to_owned(),
+                authorization,
+            })
+            .expect("send captured request");
+
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {}\r\n\r\n{response_body}",
+                response_body.len(),
+            );
+            response_stream
+                .write_all(response.as_bytes())
+                .expect("write response");
+            response_stream.flush().expect("flush response");
+        });
+
+        (format!("http://{addr}/token?api-version=2.0"), rx)
+    }
+
+    #[test]
+    fn github_actions_oidc_exchange_sends_bearer_token_and_audience() {
+        let (url, requests) = spawn_oidc_token_server("oidc-jwt-token-value");
+
+        let credentials =
+            fetch_github_actions_oidc_credentials(&url, "actions-request-token").unwrap();
+
+        // The response body becomes the OIDC token verbatim.
+        match credentials {
+            Credentials::GithubActionsOidc(GithubActionsOidcCredentials { token }) => {
+                assert_eq!(token, "oidc-jwt-token-value");
+            }
+            other => panic!("expected GithubActionsOidc credentials, got {other:?}"),
+        }
+
+        let request = requests
+            .recv_timeout(Duration::from_secs(5))
+            .expect("server should have received a request");
+
+        // The Antithesis audience is appended onto the (already query-bearing) URL.
+        assert!(
+            request.request_line.contains("audience=antithesis"),
+            "request line missing audience: {:?}",
+            request.request_line
+        );
+        // The Actions request token is presented as a bearer credential.
+        assert_eq!(
+            request.authorization.as_deref(),
+            Some("Bearer actions-request-token")
+        );
+    }
+
+    #[test]
+    fn github_actions_oidc_auth_header_uses_gha_scheme() {
+        let credentials = Credentials::GithubActionsOidc(GithubActionsOidcCredentials {
+            token: "oidc-jwt-token-value".to_owned(),
+        });
+
+        let header = credentials.auth_header().unwrap();
+        assert_eq!(header.to_str().unwrap(), "GHA oidc-jwt-token-value");
+        assert!(header.is_sensitive());
+    }
 
     #[test]
     fn can_read_from_credential_file_defaults() {

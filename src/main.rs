@@ -12,6 +12,7 @@ use snouty::api::AntithesisApi;
 use snouty::cli::{Cli, Commands, DebugArgs, LaunchArgs, UpdateArgs};
 use snouty::config;
 use snouty::container;
+use snouty::credentials::initialize_credential_store;
 use snouty::docs;
 use snouty::error::user_error;
 use snouty::login::cmd_login;
@@ -93,6 +94,10 @@ async fn run(cli: Cli) -> Result<()> {
     } = cli;
     if json && let Some(name) = json_unaware_command_name(&command) {
         eprintln!("warning: --json has no effect for `snouty {name}`");
+    }
+
+    if let Err(err) = initialize_credential_store() {
+        eprintln!("warning: Could not initialize system keychain credential storage: {err:?}");
     }
 
     // Resolve all settings up front. A broken/unreadable settings file fails

@@ -10,20 +10,18 @@ pub(crate) enum AttributedValue<T> {
         settings_file_path: PathBuf,
         profile: Option<String>,
     },
+    FromKeychain {
+        value: T,
+        entry_name: String,
+    },
 }
 
 impl<T> AttributedValue<T> {
     pub(crate) fn unwrap(&self) -> &T {
         match self {
-            Self::FromEnvironmentVariable {
-                value,
-                environment_variable_name: _,
-            } => value,
-            Self::FromSettingsFile {
-                value,
-                settings_file_path: _,
-                profile: _,
-            } => value,
+            Self::FromEnvironmentVariable { value, .. } => value,
+            Self::FromSettingsFile { value, .. } => value,
+            Self::FromKeychain { value, .. } => value,
         }
     }
 }

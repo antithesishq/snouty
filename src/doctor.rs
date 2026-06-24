@@ -241,6 +241,13 @@ fn enrich<T>(check: Check, attribution: AttributedValue<T>) -> Check {
                 }
             ),
         ),
+        AttributedValue::FromKeychain {
+            value: _,
+            entry_name,
+        } => check.note(
+            Level::Note,
+            format!("read from system keychain entry named [{entry_name}]",),
+        ),
     }
 }
 

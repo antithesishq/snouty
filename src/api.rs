@@ -7,10 +7,10 @@ use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use color_eyre::eyre::{Context, Report, Result, eyre};
 use color_eyre::{Section, SectionExt};
 use futures_util::stream;
-use http::HeaderValue;
 use log::debug;
 use progenitor_client::{ClientHooks, ClientInfo, Error as ClientError, OperationInfo};
 use reqwest::Client;
+use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use reqwest_middleware::ClientWithMiddleware;
 
 use crate::api_cache;
@@ -549,7 +549,7 @@ pub struct ClientState {
     /// `Client::execute` time (after our `exec` hook runs). `Some` enables
     /// verbose request/response logging to stderr; we hold the headers here
     /// so the log matches what's actually sent.
-    pub(crate) default_headers: Option<reqwest::header::HeaderMap>,
+    pub(crate) default_headers: Option<HeaderMap>,
 }
 
 impl ClientHooks<ClientState> for generated::Client {
@@ -628,11 +628,7 @@ fn format_response(response: &reqwest::Response, out: &mut String) {
     }
 }
 
-fn format_request(
-    request: &reqwest::Request,
-    default_headers: &reqwest::header::HeaderMap,
-    out: &mut String,
-) {
+fn format_request(request: &reqwest::Request, default_headers: &HeaderMap, out: &mut String) {
     use std::fmt::Write;
 
     let _ = writeln!(out, "> {} {}", request.method(), request.url());
@@ -640,7 +636,7 @@ fn format_request(
     // reqwest merges `default_headers` at `Client::execute` time, after this
     // hook runs. Merge them in explicitly so the verbose log matches what's
     // actually sent, with sensitive values redacted.
-    let mut emit = |name: &reqwest::header::HeaderName, value: &reqwest::header::HeaderValue| {
+    let mut emit = |name: &HeaderName, value: &HeaderValue| {
         let value = value.to_str().unwrap_or("[non-ascii]");
         if is_sensitive_header(name) {
             let _ = writeln!(out, "> {name}: {}", redact_sensitive_value(name, value));
@@ -680,7 +676,7 @@ fn format_request(
     }
 }
 
-fn is_sensitive_header(name: &reqwest::header::HeaderName) -> bool {
+fn is_sensitive_header(name: &HeaderName) -> bool {
     use reqwest::header::{AUTHORIZATION, COOKIE, PROXY_AUTHORIZATION, SET_COOKIE};
     matches!(name, n if n == AUTHORIZATION || n == PROXY_AUTHORIZATION || n == COOKIE || n == SET_COOKIE)
 }
@@ -690,7 +686,7 @@ fn is_sensitive_header(name: &reqwest::header::HeaderName) -> bool {
 /// what kind of credential was sent (`Bearer secret-token` becomes
 /// `bearer sec...`). Other sensitive headers (cookies) are reduced to their
 /// first three chars.
-fn redact_sensitive_value(name: &reqwest::header::HeaderName, value: &str) -> String {
+fn redact_sensitive_value(name: &HeaderName, value: &str) -> String {
     use reqwest::header::{AUTHORIZATION, PROXY_AUTHORIZATION};
     let take_prefix = |s: &str| s.chars().take(3).collect::<String>();
     let is_auth = name == AUTHORIZATION || name == PROXY_AUTHORIZATION;
@@ -744,18 +740,44 @@ fn normalize_base_url(base_url: impl Into<String>) -> String {
         .to_string()
 }
 
-fn default_request_headers(auth: &Auth) -> Result<reqwest::header::HeaderMap> {
-    let mut headers = reqwest::header::HeaderMap::new();
+fn default_request_headers(auth: &Auth) -> Result<HeaderMap> {
+    let mut headers = HeaderMap::new();
     headers.insert(reqwest::header::AUTHORIZATION, auth_header(auth)?);
     headers.insert(
         reqwest::header::USER_AGENT,
-        reqwest::header::HeaderValue::from_str(&crate::user_agent())
+        HeaderValue::from_str(&crate::user_agent())
             .wrap_err("failed to build User-Agent header")?,
     );
+    for (name, value) in extra_headers_from_env()? {
+        headers.insert(name, value);
+    }
     Ok(headers)
 }
 
-fn build_http_client(default_headers: reqwest::header::HeaderMap) -> Result<Client> {
+fn extra_headers_from_env() -> Result<Vec<(HeaderName, HeaderValue)>> {
+    if let Some(extra_headers) = env::var("ANTITHESIS_EXTRA_HEADERS")? {
+        extra_headers
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .map(|line| {
+                let (name, value) = line.split_once(':').ok_or_else(|| {
+                    eyre!("ANTITHESIS_EXTRA_HEADERS entry missing ':' separator: {line:?}")
+                })?;
+                let name = HeaderName::from_bytes(name.trim().as_bytes()).wrap_err_with(|| {
+                    format!("invalid header name in ANTITHESIS_EXTRA_HEADERS: {name:?}")
+                })?;
+                let value = HeaderValue::from_str(value.trim()).wrap_err_with(|| {
+                    format!("invalid header value in ANTITHESIS_EXTRA_HEADERS for {name}")
+                })?;
+                Ok((name, value))
+            })
+            .collect()
+    } else {
+        Ok(vec![])
+    }
+}
+
+fn build_http_client(default_headers: HeaderMap) -> Result<Client> {
     // Only a connect timeout (see CONNECT_TIMEOUT): no read or total timeout, so a
     // slow-but-alive Antithesis request is never aborted no matter how long it runs.
     Client::builder()
@@ -765,7 +787,7 @@ fn build_http_client(default_headers: reqwest::header::HeaderMap) -> Result<Clie
         .wrap_err("failed to build API client")
 }
 
-fn auth_header(auth: &Auth) -> Result<reqwest::header::HeaderValue> {
+fn auth_header(auth: &Auth) -> Result<HeaderValue> {
     let value = match auth {
         Auth::Basic { username, password } => {
             let credentials = format!("{username}:{password}");
@@ -1389,7 +1411,7 @@ mod tests {
         *request.body_mut() = Some(vec![0xff_u8, 0xfe, 0xfd].into());
 
         let mut out = String::new();
-        format_request(&request, &reqwest::header::HeaderMap::new(), &mut out);
+        format_request(&request, &HeaderMap::new(), &mut out);
 
         assert!(out.contains("<3 bytes>"));
     }

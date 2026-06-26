@@ -119,6 +119,21 @@ mock-server 401 '{"message": "unauthorized"}'
 ! snouty debug --input-hash abc123 --run-id 9043254f65c9c65d63fe043a0abfc7fc-53-1 --vtime 1234567890
 stderr 'API error: 401.*'
 
+# ANTITHESIS_EXTRA_HEADERS adds arbitrary headers to every API request (for
+#    consumption by proxies). With --verbose, the merged request headers are
+#    logged to stderr, so a configured extra header shows up on the wire.
+mock-server 200 '{"statusCode":202,"runId":"run-123"}'
+set-env ANTITHESIS_EXTRA_HEADERS X-Snouty-Test: hello-world
+snouty --verbose debug --input-hash abc123 --run-id 9043254f65c9c65d63fe043a0abfc7fc-53-1 --vtime 1234567890
+stderr '> x-snouty-test: hello-world.*'
+
+# A malformed ANTITHESIS_EXTRA_HEADERS entry (missing the ':' separator) is
+#    rejected when the client is built, before any API call.
+mock-server 200 '{"statusCode":202,"runId":"run-123"}'
+set-env ANTITHESIS_EXTRA_HEADERS not-a-valid-header-line
+! snouty debug --input-hash abc123 --run-id 9043254f65c9c65d63fe043a0abfc7fc-53-1 --vtime 1234567890
+stderr 'ANTITHESIS_EXTRA_HEADERS entry missing \':\' separator: "not-a-valid-header-line".*'
+
 -- moment_input.txt --
 Moment.from({ session_id: "f89d5c11f5e3bf5e4bb3641809800cee-44-22", input_hash: "6057726200491963783", vtime: 329.8037810830865 })
 -- moment_run_input.txt --

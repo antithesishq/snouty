@@ -24,4 +24,12 @@ impl<T> AttributedValue<T> {
             Self::Keychain { value, .. } => value,
         }
     }
+
+    pub(crate) fn extract(self) -> T {
+        match self {
+            Self::EnvironmentVariable { value, .. } => value,
+            Self::SettingsFile { value, .. } => value,
+            Self::Keychain { value, .. } => value,
+        }
+    }
 }

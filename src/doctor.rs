@@ -271,7 +271,7 @@ fn enrich<T>(check: Check, attribution: AttributedValue<T>) -> Check {
 /// Binary health checks: local tooling, the required settings
 /// (tenant/repository), and authentication. The resolved values themselves are
 /// reported separately by [`resolve_settings`].
-fn collect_checks(settings: &Settings, offline: bool) -> Vec<Check> {
+async fn collect_checks(settings: &Settings, offline: bool) -> Vec<Check> {
     let mut checks: Vec<Check> = Vec::new();
 
     // Container runtime (for building/pushing images)
@@ -302,7 +302,8 @@ fn collect_checks(settings: &Settings, offline: bool) -> Vec<Check> {
 
     // Authentication (environment-only by design).
     checks.extend(authn_checks(
-        Credentials::for_ambient_credentials_with_attribution(settings.profile(), true, offline),
+        Credentials::for_ambient_credentials_with_attribution(settings.profile(), true, offline)
+            .await,
     ));
 
     checks
@@ -399,7 +400,7 @@ pub async fn cmd_doctor(
     verbose: bool,
     offline: bool,
 ) -> Result<()> {
-    let mut checks = collect_checks(settings, offline);
+    let mut checks = collect_checks(settings, offline).await;
 
     // Connectivity + version check (network). Skipped with --offline. Only runs
     // with an API key: /api/version, like every endpoint but launch, rejects
@@ -407,7 +408,7 @@ pub async fn cmd_doctor(
     // misleading 403 — and the auth checks above already tell legacy and
     // unauthenticated users to set a key. The client is built from the resolved
     // settings (base url / tenant), and `verbose` logs the request/response.
-    if !offline && let Ok(api) = AntithesisApi::new_requiring_api_key(settings, verbose) {
+    if !offline && let Ok(api) = AntithesisApi::new_requiring_api_key(settings, verbose).await {
         let host = api.host();
         checks.push(version_check(&host, api.get_version().await));
     }

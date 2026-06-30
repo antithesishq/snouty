@@ -202,10 +202,10 @@ pub struct AntithesisApi {
 }
 
 impl AntithesisApi {
-    pub fn new(settings: &Settings, verbose: bool) -> Result<Self> {
+    pub async fn new(settings: &Settings, verbose: bool) -> Result<Self> {
         Self::build(
             settings,
-            &Credentials::for_ambient_credentials(settings.profile(), true)?,
+            &Credentials::for_ambient_credentials(settings.profile(), true).await?,
             verbose,
             None,
         )
@@ -213,10 +213,10 @@ impl AntithesisApi {
 
     /// Like [`AntithesisApi::new`], but fails fast unless an API key is
     /// configured. Every endpoint other than launch requires one.
-    pub fn new_requiring_api_key(settings: &Settings, verbose: bool) -> Result<Self> {
+    pub async fn new_requiring_api_key(settings: &Settings, verbose: bool) -> Result<Self> {
         Self::build(
             settings,
-            &Credentials::for_ambient_credentials(settings.profile(), false)?,
+            &Credentials::for_ambient_credentials(settings.profile(), false).await?,
             verbose,
             None,
         )

@@ -164,7 +164,7 @@ impl Credentials {
         Ok(None)
     }
 
-    fn try_from_github_actions_environment() -> Result<Option<AttributedValue<Self>>> {
+    async fn try_from_github_actions_environment() -> Result<Option<AttributedValue<Self>>> {
         const TARGET_URL_VAR_NAME: &str = "ACTIONS_ID_TOKEN_REQUEST_URL";
         const REQ_TOKEN_VAR_NAME: &str = "ACTIONS_ID_TOKEN_REQUEST_TOKEN";
 
@@ -175,7 +175,8 @@ impl Credentials {
                 value: fetch_github_actions_oidc_credentials(
                     &actions_id_url,
                     &actions_id_request_token,
-                )?,
+                )
+                .await?,
                 environment_variable_names: vec![TARGET_URL_VAR_NAME, REQ_TOKEN_VAR_NAME],
             }));
         }
@@ -183,7 +184,7 @@ impl Credentials {
         Ok(None)
     }
 
-    pub(crate) fn for_ambient_credentials_with_attribution(
+    pub(crate) async fn for_ambient_credentials_with_attribution(
         profile: Option<&str>,
         allow_basic: bool,
         offline: bool,
@@ -202,7 +203,7 @@ impl Credentials {
 
         if !offline
             && let Some(from_github_actions_environment) =
-                Self::try_from_github_actions_environment()?
+                Self::try_from_github_actions_environment().await?
         {
             return Ok(from_github_actions_environment);
         }
@@ -212,15 +213,15 @@ impl Credentials {
         ))
     }
 
-    pub(crate) fn for_ambient_credentials(
+    pub(crate) async fn for_ambient_credentials(
         profile: Option<&str>,
         allow_basic: bool,
     ) -> Result<Self> {
-        match Self::for_ambient_credentials_with_attribution(profile, allow_basic, false)? {
-            AttributedValue::EnvironmentVariable { value, .. } => Ok(value),
-            AttributedValue::SettingsFile { value, .. } => Ok(value),
-            AttributedValue::Keychain { value, .. } => Ok(value),
-        }
+        Ok(
+            Self::for_ambient_credentials_with_attribution(profile, allow_basic, false)
+                .await?
+                .extract(),
+        )
     }
 
     pub(crate) fn auth_header(&self) -> Result<HeaderValue> {
@@ -264,7 +265,7 @@ impl Credentials {
 /// process environment (which would race other tests under threaded
 /// `cargo test`). The request URL already carries a query string, so the
 /// audience is appended with `&`.
-fn fetch_github_actions_oidc_credentials(
+async fn fetch_github_actions_oidc_credentials(
     actions_id_url: &str,
     actions_id_request_token: &str,
 ) -> Result<Credentials> {
@@ -273,16 +274,18 @@ fn fetch_github_actions_oidc_credentials(
         value: String,
     }
 
-    let client = reqwest::blocking::Client::builder()
+    let client = reqwest::Client::builder()
         .timeout(OIDC_REQUEST_TIMEOUT)
         .build()?;
     let response: OidcTokenResponse = client
         .get(format!("{actions_id_url}&audience=antithesis"))
         .bearer_auth(actions_id_request_token)
-        .send()?
+        .send()
+        .await?
         .error_for_status()
         .wrap_err("failed to fetch a GitHub Actions OIDC token")?
-        .json()?;
+        .json()
+        .await?;
 
     Ok(Credentials::GithubActionsOidc(
         GithubActionsOidcCredentials {
@@ -509,15 +512,16 @@ mod tests {
         (format!("http://{addr}/token?api-version=2.0"), rx)
     }
 
-    #[test]
-    fn github_actions_oidc_exchange_sends_bearer_token_and_audience() {
+    #[tokio::test]
+    async fn github_actions_oidc_exchange_sends_bearer_token_and_audience() {
         // The endpoint returns the JWT wrapped in a JSON envelope, exactly as
         // GitHub's Actions OIDC endpoint does.
         let (url, requests) =
             spawn_oidc_token_server("200 OK", r#"{"count":1,"value":"oidc-jwt-token-value"}"#);
 
-        let credentials =
-            fetch_github_actions_oidc_credentials(&url, "actions-request-token").unwrap();
+        let credentials = fetch_github_actions_oidc_credentials(&url, "actions-request-token")
+            .await
+            .unwrap();
 
         // The JWT is lifted out of the `value` field, not the raw body.
         match credentials {
@@ -544,14 +548,14 @@ mod tests {
         );
     }
 
-    #[test]
-    fn github_actions_oidc_exchange_errors_on_non_success_status() {
+    #[tokio::test]
+    async fn github_actions_oidc_exchange_errors_on_non_success_status() {
         // A rejected request token (or any non-2xx) must surface as an error
         // rather than letting the error body be mistaken for a token.
         let (url, _requests) =
             spawn_oidc_token_server("403 Forbidden", r#"{"message":"bad credentials"}"#);
 
-        let result = fetch_github_actions_oidc_credentials(&url, "actions-request-token");
+        let result = fetch_github_actions_oidc_credentials(&url, "actions-request-token").await;
         assert!(result.is_err(), "expected an error for a 403 response");
     }
 

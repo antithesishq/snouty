@@ -168,7 +168,7 @@ async fn cmd_runs_list(
 ) -> Result<()> {
     debug!("listing runs");
 
-    let api = AntithesisApi::new_requiring_api_key(settings, verbose)?;
+    let api = AntithesisApi::new_requiring_api_key(settings, verbose).await?;
 
     // clap parsed and validated the filter flags into their real types, so the
     // options struct is built directly with no further string parsing here.
@@ -302,7 +302,7 @@ async fn cmd_runs_show(
 ) -> Result<()> {
     debug!("showing run: {}", run_id);
 
-    let api = AntithesisApi::new_requiring_api_key(settings, verbose)?;
+    let api = AntithesisApi::new_requiring_api_key(settings, verbose).await?;
     let run = match api.get_run(run_id).await {
         Ok(run) => run,
         // A 404 here is unambiguous: the run id is bad. Say so instead of leaking
@@ -422,7 +422,7 @@ async fn cmd_runs_properties(
 ) -> Result<()> {
     debug!("listing properties for run: {}", run_id);
 
-    let api = AntithesisApi::new_requiring_api_key(settings, verbose)?;
+    let api = AntithesisApi::new_requiring_api_key(settings, verbose).await?;
     let mut properties = match api
         .stream_run_properties(run_id, filter.status)
         .try_collect::<Vec<_>>()
@@ -1268,7 +1268,7 @@ async fn cmd_runs_build_logs(
 ) -> Result<()> {
     debug!("streaming build logs for run: {}", run_id);
 
-    let api = AntithesisApi::new_requiring_api_key(settings, verbose)?;
+    let api = AntithesisApi::new_requiring_api_key(settings, verbose).await?;
     let stream = match api.get_run_build_logs(run_id).await {
         Ok(stream) => stream.into_inner(),
         Err(err) => return Err(explain_run_scoped_error(&api, run_id, err).await),
@@ -1399,7 +1399,7 @@ async fn cmd_runs_events(
         );
     }
 
-    let api = AntithesisApi::new_requiring_api_key(settings, verbose)?;
+    let api = AntithesisApi::new_requiring_api_key(settings, verbose).await?;
     let stream = match api.search_run_events(run_id, &server_query).await {
         Ok(stream) => stream.into_inner(),
         Err(err) => return Err(explain_run_scoped_error(&api, run_id, err).await),
@@ -1490,7 +1490,7 @@ async fn cmd_runs_logs(
 ) -> Result<()> {
     debug!("streaming logs for run: {}", run_id);
 
-    let api = AntithesisApi::new_requiring_api_key(settings, verbose)?;
+    let api = AntithesisApi::new_requiring_api_key(settings, verbose).await?;
     let stream = match api
         .get_run_logs(run_id, input_hash, vtime, begin_input_hash, begin_vtime)
         .await

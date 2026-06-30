@@ -115,7 +115,7 @@ async fn run(cli: Cli) -> Result<()> {
         }
         Commands::Update(args) => cmd_update(args),
         Commands::Docs { offline, command } => docs::cmd_docs(command, offline, json).await,
-        Commands::Login { tenant, repository } => cmd_login(tenant, repository, settings),
+        Commands::Login { tenant, repository } => cmd_login(tenant, repository, settings).await,
         Commands::Launch(args) => {
             info!("launching test with webhook: {}", args.webhook);
             cmd_launch(args, &settings?, json, verbose).await
@@ -310,7 +310,7 @@ async fn launch_webhook(
         serde_json::to_string_pretty(&params.to_redacted_map())?
     );
 
-    let api = AntithesisApi::new(settings, verbose)?;
+    let api = AntithesisApi::new(settings, verbose).await?;
     api.launch_test(webhook, &params).await
 }
 
@@ -360,7 +360,7 @@ async fn cmd_debug(args: DebugArgs, settings: &Settings, json: bool, verbose: bo
         serde_json::to_string_pretty(&params.to_redacted_map())?
     );
 
-    let api = AntithesisApi::new(settings, verbose)?;
+    let api = AntithesisApi::new(settings, verbose).await?;
     let response = api.launch_debugging(&params).await?;
 
     if json {

@@ -3,11 +3,12 @@ use std::io::{self, IsTerminal, Write};
 use color_eyre::eyre::{Context, Result, eyre};
 
 use crate::{
+    attributed_value::AttributedValue,
     credentials::{Credentials, persist},
     settings::{Settings, update_settings_in_global_file, validate_tenant_host},
 };
 
-pub fn cmd_login(
+pub async fn cmd_login(
     tenant: Option<String>,
     repository: Option<String>,
     current_settings: Result<Settings>,
@@ -31,7 +32,7 @@ pub fn cmd_login(
         )?,
     };
 
-    if let Some(credentials) = prompt_for_auth(profile)? {
+    if let Some(credentials) = prompt_for_auth(profile).await? {
         persist(credentials, profile)?;
     }
 
@@ -86,8 +87,21 @@ impl AuthSetupType {
     }
 }
 
-fn prompt_for_auth(profile: Option<&str>) -> Result<Option<Credentials>> {
-    let previous_value = Credentials::for_ambient_credentials(profile, true);
+async fn prompt_for_auth(profile: Option<&str>) -> Result<Option<Credentials>> {
+    let previous_value =
+        Credentials::for_ambient_credentials_with_attribution(profile, true, false).await;
+
+    let default_selection = match &previous_value {
+        Err(_) => '1',
+        Ok(creds) => match creds {
+            AttributedValue::EnvironmentVariable { .. } => '1',
+            _ => match creds.unwrap() {
+                Credentials::ApiKey(_) => '2',
+                Credentials::Password(_) => '3',
+                _ => '1',
+            },
+        },
+    };
 
     println!("What kind of credentials would you like to use?");
     println!(
@@ -95,7 +109,7 @@ fn prompt_for_auth(profile: Option<&str>) -> Result<Option<Credentials>> {
     );
     println!("2. API key");
     println!("3. Username/password");
-    println!("(Hit enter to use the default value of [1])");
+    println!("(Hit enter to use the default value of [{default_selection}])");
 
     let mut input = String::new();
     while AuthSetupType::try_from_str(&input).is_none() {
@@ -103,18 +117,18 @@ fn prompt_for_auth(profile: Option<&str>) -> Result<Option<Credentials>> {
         input = input.trim().to_owned();
 
         if input.is_empty() {
-            input.push('1');
+            input.push(default_selection);
         }
     }
 
     match AuthSetupType::try_from_str(&input).unwrap_or(AuthSetupType::ApiKey) {
         AuthSetupType::Skip => Ok(None),
-        AuthSetupType::ApiKey => match previous_value {
+        AuthSetupType::ApiKey => match previous_value.map(|attr| attr.extract()) {
             Ok(Credentials::ApiKey(creds)) => prompt_for_api_key(Some(&creds.api_key)),
             _ => prompt_for_api_key(None),
         }
         .map(Some),
-        AuthSetupType::Password => match previous_value {
+        AuthSetupType::Password => match previous_value.map(|attr| attr.extract()) {
             Ok(Credentials::Password(creds)) => {
                 prompt_for_username_password(Some(&creds.username), Some(&creds.password))
             }

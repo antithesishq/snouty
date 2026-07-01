@@ -36,6 +36,9 @@ thread_local! {
 /// `TMPDIR` matters on macOS: podman recomputes the machine API socket path
 /// from it on every invocation, so dropping it makes `podman machine inspect`
 /// report a `/tmp` fallback path the socket was never bound at.
+///
+/// DBus configuration is deliberately omitted from FORWARDED_ENV_VARS since
+/// it represents a global state that might leak into or out of tests.
 const FORWARDED_ENV_VARS: &[&str] = &["PATH", "HOME", "LLVM_PROFILE_FILE", "TMPDIR"];
 
 /// Build a `Command` for the snouty binary with a clean environment.
@@ -55,6 +58,8 @@ fn snouty_cmd(env: &testscript_rs::TestEnvironment, args: &[String]) -> std::pro
             cmd.env(var, v);
         }
     }
+    // Disable keychain access -- this isn't something we can mock for each test case
+    cmd.env("SNOUTY_DISABLE_KEYCHAIN_CREDENTIAL_STORAGE", "1");
     cmd.env(
         "XDG_CONFIG_HOME",
         isolated_xdg_config_home(&env.current_dir),
@@ -513,6 +518,30 @@ fn spec_tests() {
                     .spawn()
                     .map_err(|e| err(format!("spawn snouty-bg: {e}")))?;
                 env.background_processes.insert("snouty".to_string(), child);
+                Ok(())
+            })
+            .command("isolate-home", |env, args| {
+                // Usage: isolate-home <name>
+                //
+                // `snouty login` persists credentials.toml and settings.toml
+                // under the global settings dir, which is `$XDG_CONFIG_HOME/snouty`
+                // when that var is set and otherwise `$HOME/.config/snouty`. The
+                // shared spec setup pins an isolated XDG_CONFIG_HOME, so here we
+                // point HOME at a fresh per-section temp dir and clear
+                // XDG_CONFIG_HOME (snouty treats an empty value as unset) so the
+                // login writes land under — and are read back from — that HOME.
+                // Each <name> gives a section of the spec its own home, keeping its
+                // writes isolated from sibling sections and from the developer's
+                // real ~/.config.
+                let name = args.first().map(String::as_str).unwrap_or("home");
+                let home = env.work_dir.join(name);
+                std::fs::create_dir_all(&home)
+                    .map_err(|e| err(format!("failed to create isolated HOME: {e}")))?;
+                let home = home
+                    .to_str()
+                    .ok_or_else(|| err("isolated HOME path is not valid UTF-8".to_string()))?;
+                env.set_env_var("HOME", home);
+                env.set_env_var("XDG_CONFIG_HOME", "");
                 Ok(())
             })
             .command("setup-docs-db", |env, _args| {

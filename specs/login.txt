@@ -1,0 +1,106 @@
+# snouty login
+#
+# Interactively gather configuration and credentials and persist them in the
+# global Snouty settings (settings.toml) and credentials (credentials.toml)
+# files.
+#
+# As a developer, I want to run `snouty login` and be prompted for the tenant,
+# repository, and credentials I want to use so that later commands resolve them
+# automatically. Values supplied as flags or sensitive values are not
+# re-prompted, and a previously persisted login is offered back as the default.
+#
+# `login` never contacts the API, so the whole file runs in both mock and
+# staging modes. Each section pins its own temporary $HOME via `isolate-home`
+# so the persisted files do not leak between sections or into the developer's
+# real configuration. Prompts are written to stdout; stdin feeds the answers,
+# one per line, in the order the prompts appear.
+
+# 1. A fresh login with no flags prompts for the tenant, the repository, and the
+#    kind of credentials, then persists them. With nothing stored yet, no
+#    "previous value" default is offered for the tenant or repository.
+isolate-home apikey
+stdin login_apikey.txt
+snouty login
+stdout 'What Antithesis tenant would you like to use\?.*'
+stdout 'What container repository would you like to use\?.*'
+stdout 'What kind of credentials would you like to use\?.*'
+stdout '1\. Skip setup \(Select this option if you plan to use environment variables instead of persisted credentials\.\)'
+stdout '2\. API key'
+stdout '3\. Username/password'
+stdout '\(Hit enter to use the default value of \[1\]\)'
+! stdout 'Hit enter to use the previous value'
+
+# 2. A second login (same $HOME) reads the values persisted by step 1 and offers
+#    them back as the default. Leaving the API key blank reuses the stored key —
+#    which only succeeds because credentials.toml was written in step 1 — so the
+#    command still exits successfully without a fresh secret being entered.
+stdin login_reuse.txt
+snouty login
+stdout '\(Hit enter to use the previous value of \[mytenant\]\)'
+stdout '\(Hit enter to use the previous value of \[myrepo\]\)'
+
+# 3. Values supplied as flags are not prompted for: with --tenant and
+#    --repository given, only the credential prompt is shown.
+isolate-home flags
+stdin login_flags.txt
+snouty login --tenant mytenant --repository myrepo
+stdout 'What kind of credentials would you like to use\?.*'
+! stdout 'What Antithesis tenant would you like to use'
+! stdout 'What container repository would you like to use'
+
+# 4. Selecting option 2 collects a username and password instead of an API key.
+#    The username is a normal prompt; the password is read without echo and is
+#    not itself echoed to stdout.
+isolate-home password
+stdin login_password.txt
+snouty login
+stdout 'What kind of credentials would you like to use\?.*'
+! stdout 'ppass'
+
+# 5. The global --profile flag scopes the persisted login to a named profile. A
+#    fresh profile has no stored default; a second login under the same profile
+#    offers the values persisted by the first.
+isolate-home profile
+stdin login_profile.txt
+snouty --profile prod login
+! stdout 'Hit enter to use the previous value'
+stdin login_profile_reuse.txt
+snouty --profile prod login
+stdout '\(Hit enter to use the previous value of \[ptenant2\]\)'
+
+# 6. The tenant becomes the host in the derived API URL, so a tenant carrying
+#    URL-significant characters is rejected before anything is persisted.
+isolate-home invalid
+stdin login_bad_tenant.txt
+! snouty login
+stderr '.*invalid tenant.*'
+
+-- login_apikey.txt --
+mytenant
+myrepo
+1
+sk-test-key
+-- login_reuse.txt --
+mytenant
+myrepo
+1
+-- login_flags.txt --
+1
+sk-test-key
+-- login_password.txt --
+ptenant
+prepo
+2
+puser
+ppass
+-- login_profile.txt --
+ptenant2
+prepo2
+1
+pk-secret
+-- login_profile_reuse.txt --
+ptenant2
+prepo2
+1
+-- login_bad_tenant.txt --
+evil.com/x

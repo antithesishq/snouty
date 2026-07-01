@@ -12,8 +12,10 @@ use snouty::api::AntithesisApi;
 use snouty::cli::{Cli, Commands, DebugArgs, LaunchArgs, UpdateArgs};
 use snouty::config;
 use snouty::container;
+use snouty::credentials::initialize_credential_store;
 use snouty::docs;
 use snouty::error::user_error;
+use snouty::login::cmd_login;
 use snouty::moment;
 use snouty::params::Params;
 use snouty::settings::Settings;
@@ -94,10 +96,14 @@ async fn run(cli: Cli) -> Result<()> {
         eprintln!("warning: --json has no effect for `snouty {name}`");
     }
 
+    if let Err(err) = initialize_credential_store() {
+        eprintln!("warning: Could not initialize system keychain credential storage: {err:?}");
+    }
+
     // Resolve all settings up front. A broken/unreadable settings file fails
     // here, cleanly and once, before any command runs — including commands that
     // don't read settings. That keeps dispatch a single flat match.
-    let settings = Settings::resolve(settings_path, profile)?;
+    let settings = Settings::resolve(settings_path, profile);
     let result = match command {
         Commands::Completions { shell } => cmd_completions(shell),
         Commands::Version => {
@@ -109,25 +115,26 @@ async fn run(cli: Cli) -> Result<()> {
         }
         Commands::Update(args) => cmd_update(args),
         Commands::Docs { offline, command } => docs::cmd_docs(command, offline, json).await,
+        Commands::Login { tenant, repository } => cmd_login(tenant, repository, settings).await,
         Commands::Launch(args) => {
             info!("launching test with webhook: {}", args.webhook);
-            cmd_launch(args, &settings, json, verbose).await
+            cmd_launch(args, &settings?, json, verbose).await
         }
         Commands::Run(args) => {
             eprintln!("warning: `snouty run` is deprecated, use `snouty launch` instead");
             info!("launching test with webhook: {}", args.webhook);
-            cmd_launch(args, &settings, json, verbose).await
+            cmd_launch(args, &settings?, json, verbose).await
         }
         Commands::Runs { command } => {
-            snouty::runs::cmd_runs(command, &settings, json, verbose).await
+            snouty::runs::cmd_runs(command, &settings?, json, verbose).await
         }
         Commands::Debug(args) => {
             info!("starting debug session");
-            cmd_debug(args, &settings, json, verbose).await
+            cmd_debug(args, &settings?, json, verbose).await
         }
-        Commands::Validate(args) => validate::cmd_validate(args, &settings).await,
+        Commands::Validate(args) => validate::cmd_validate(args, &settings?).await,
         Commands::Doctor(args) => {
-            snouty::doctor::cmd_doctor(&settings, json, verbose, args.offline).await
+            snouty::doctor::cmd_doctor(&settings?, json, verbose, args.offline).await
         }
     };
 
@@ -165,6 +172,7 @@ fn json_unaware_command_name(command: &Commands) -> Option<&'static str> {
         Commands::Completions { .. } => Some("completions"),
         Commands::Version => Some("version"),
         Commands::Update(_) => Some("update"),
+        Commands::Login { .. } => Some("login"),
     }
 }
 
@@ -302,7 +310,7 @@ async fn launch_webhook(
         serde_json::to_string_pretty(&params.to_redacted_map())?
     );
 
-    let api = AntithesisApi::new(settings, verbose)?;
+    let api = AntithesisApi::new(settings, verbose).await?;
     api.launch_test(webhook, &params).await
 }
 
@@ -352,7 +360,7 @@ async fn cmd_debug(args: DebugArgs, settings: &Settings, json: bool, verbose: bo
         serde_json::to_string_pretty(&params.to_redacted_map())?
     );
 
-    let api = AntithesisApi::new(settings, verbose)?;
+    let api = AntithesisApi::new(settings, verbose).await?;
     let response = api.launch_debugging(&params).await?;
 
     if json {

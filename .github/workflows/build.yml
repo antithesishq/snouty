@@ -133,7 +133,18 @@ jobs:
 
           # Time each portion so we can see where setup spends its time.
           t=$SECONDS
-          brew install podman docker-compose
+          # podman 6.0.0 dropped Intel macOS support, so `brew install podman`
+          # no longer yields a working amd64 binary on this runner. Install the
+          # last Intel-capable release (5.8.4) from its macOS pkg instead; still
+          # get docker-compose from brew.
+          brew install docker-compose
+          curl -fsSL -o /tmp/podman-installer.pkg \
+            https://github.com/podman-container-tools/podman/releases/download/v5.8.4/podman-installer-macos-amd64.pkg
+          sudo installer -pkg /tmp/podman-installer.pkg -target /
+          # The pkg installs the CLI under /opt/podman/bin. Put it on PATH for
+          # this step and export it for subsequent steps.
+          echo "/opt/podman/bin" >> "$GITHUB_PATH"
+          export PATH="/opt/podman/bin:$PATH"
           brew_s=$(( SECONDS - t ))
 
           echo "Provisioning podman machine: ${cpus} cpus, ${mem_mib} MiB memory"

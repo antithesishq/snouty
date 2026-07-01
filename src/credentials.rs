@@ -6,7 +6,7 @@ use color_eyre::{
     eyre::{Context, OptionExt, Result, eyre},
 };
 use http::HeaderValue;
-use keyring_core::{Entry, set_default_store};
+use keyring_core::Entry;
 use serde::{Deserialize, Serialize};
 use tempfile::NamedTempFile;
 
@@ -319,28 +319,12 @@ pub fn initialize_credential_store() -> Result<()> {
         return Ok(());
     }
 
-    use apple_native_keyring_store::keychain::Store;
-    set_default_store(Store::new()?);
+    keyring_core::set_default_store(apple_native_keyring_store::keychain::Store::new()?);
 
     Ok(())
 }
 
-#[cfg(target_os = "linux")]
-pub fn initialize_credential_store() -> Result<()> {
-    if matches!(
-        env::var("SNOUTY_DISABLE_KEYCHAIN_CREDENTIAL_STORAGE"),
-        Ok(Some(_))
-    ) {
-        return Ok(());
-    }
-
-    use dbus_secret_service_keyring_store::Store;
-    set_default_store(Store::new()?);
-
-    Ok(())
-}
-
-#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+#[cfg(not(target_os = "macos"))]
 pub fn initialize_credential_store() -> Result<()> {
     // pass
     Ok(())

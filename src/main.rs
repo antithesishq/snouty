@@ -230,12 +230,6 @@ async fn cmd_launch(
         params.merge(extra);
     }
 
-    if params.contains_key("antithesis.images") {
-        return Err(user_error(
-            "invalid argument: antithesis.images cannot be set via --param",
-        ));
-    }
-
     if params.is_empty() {
         return Err(user_error("invalid arguments: no parameters provided"));
     }

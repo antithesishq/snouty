@@ -54,11 +54,6 @@ mock-server 200 '{}'
 ! snouty launch -w basic_test
 stderr 'no parameters provided.*'
 
-# antithesis.images must not be passed via --param.
-mock-server 200 '{"runId":"run-123","statusCode":202}'
-! snouty launch -w basic_test --duration 30 --param antithesis.images=app:latest
-stderr 'antithesis.images cannot be set via --param.*'
-
 [staging] skip
 
 # Parameters are provided as --key value typed flags
@@ -110,6 +105,13 @@ mock-server 200 '{"runId":"run-123","statusCode":202}'
 snouty launch -w basic_test --duration 30 --param my.custom.prop=value --param antithesis.integrations.github.callback_url=https://example.com/cb
 stderr '"my.custom.prop": "value"'
 stderr '"antithesis.integrations.github.callback_url": "https://example.com/cb"'
+
+# 6e. antithesis.images may be passed via --param to register additional
+#    images (e.g. an image referenced only in a CRD field) that the config
+#    parser can't discover. Semicolon-delimited [REGISTRY/]NAME(:TAG|@DIGEST).
+mock-server 200 '{"runId":"run-123","statusCode":202}'
+snouty launch -w basic_test --duration 30 --param 'antithesis.images=app@sha256:abc;db:latest'
+stderr '"antithesis.images": "app@sha256:abc;db:latest"'
 
 # On API failure, the command exits with an error showing the HTTP status
 #    and response body.

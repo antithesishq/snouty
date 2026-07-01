@@ -36,6 +36,9 @@ thread_local! {
 /// `TMPDIR` matters on macOS: podman recomputes the machine API socket path
 /// from it on every invocation, so dropping it makes `podman machine inspect`
 /// report a `/tmp` fallback path the socket was never bound at.
+///
+/// DBus configuration is deliberately omitted from FORWARDED_ENV_VARS since
+/// it represents a global state that might leak into or out of tests.
 const FORWARDED_ENV_VARS: &[&str] = &["PATH", "HOME", "LLVM_PROFILE_FILE", "TMPDIR"];
 
 /// Build a `Command` for the snouty binary with a clean environment.
@@ -55,8 +58,7 @@ fn snouty_cmd(env: &testscript_rs::TestEnvironment, args: &[String]) -> std::pro
             cmd.env(var, v);
         }
     }
-    // DBus configuration is deliberately omitted from FORWARDED_ENV_VARS since
-    // it represents a global state that might leak into or out of tests.
+    // Disable keychain access -- this isn't something we can mock for each test case
     cmd.env("SNOUTY_DISABLE_KEYCHAIN_CREDENTIAL_STORAGE", "1");
     cmd.env(
         "XDG_CONFIG_HOME",

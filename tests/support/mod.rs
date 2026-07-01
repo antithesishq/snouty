@@ -139,6 +139,9 @@ impl MockDocsServer {
 ///
 /// `PATH` lets the binary find `podman`/`docker`; `TMPDIR`/`LLVM_PROFILE_FILE`
 /// keep macOS temp handling and coverage instrumentation working.
+///
+/// DBus configuration is deliberately omitted from FORWARDED_ENV_VARS since
+/// it represents a global state that might leak into or out of tests.
 const FORWARDED_ENV_VARS: &[&str] = &["PATH", "TMPDIR", "LLVM_PROFILE_FILE"];
 
 pub(crate) fn snouty() -> Command {
@@ -150,8 +153,7 @@ pub(crate) fn snouty() -> Command {
         }
     }
     cmd.env("RUST_LOG", "debug");
-    // DBus configuration is deliberately omitted from FORWARDED_ENV_VARS since
-    // it represents a global state that might leak into or out of tests.
+    // Disable keychain access -- this isn't something we can mock for each test case
     cmd.env("SNOUTY_DISABLE_KEYCHAIN_CREDENTIAL_STORAGE", "1");
 
     // Global settings can't leak (HOME/XDG_CONFIG_HOME aren't forwarded, so the

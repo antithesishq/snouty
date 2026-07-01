@@ -355,6 +355,15 @@ mod tests {
     }
 
     #[test]
+    fn validate_images_from_param_key_value_pairs() {
+        // `--param antithesis.images=...` flows through from_key_value_pairs;
+        // the restored image registration must validate cleanly there too.
+        let params =
+            Params::from_key_value_pairs(["antithesis.images=app@sha256:abc;db:latest"]).unwrap();
+        assert!(params.validate_test_params().is_ok());
+    }
+
+    #[test]
     fn validate_images_semicolon_delimited_with_registries() {
         let args = [
             "--antithesis.images",

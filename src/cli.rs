@@ -71,6 +71,13 @@ Extra parameters can be passed with --param:
     --param antithesis.integrations.github.token=TOKEN \
     --param my.custom.property=value
 
+Additional container images that the config parser can't discover (e.g. an
+image referenced only in a Kubernetes CRD field) can be registered with the
+antithesis.images param, a semicolon-delimited [REGISTRY/]NAME(:TAG|@DIGEST)
+list:
+  snouty launch -w basic_k8s_test --config ./config --duration 30 \
+    --param 'antithesis.images=app@sha256:...;db:latest'
+
 Tenant and repository may be set via the environment variables below, or in a
 settings file (./.snouty.toml by default; see the global --settings/--profile
 flags and the README). Environment variables take precedence.

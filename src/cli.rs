@@ -160,9 +160,10 @@ Compose configs:
 
 Kubernetes configs:
   Runs docker.io/antithesishq/k8s-validator against the manifests/
-  directory to perform static analysis of the manifests. --timeout has no
-  effect (the validator does not start any workloads), and --keep-running
-  has no effect (no containers are launched).
+  directory to perform static analysis of the manifests. --timeout,
+  --keep-running, and --allow-unresolved-env have no effect here (no
+  workloads or containers are started, and there is no docker-compose-style
+  ${VAR} interpolation to check).
 
 Example:
   snouty validate ./config
@@ -320,6 +321,11 @@ pub struct ValidateArgs {
     /// Leave containers running after validation for manual inspection
     #[arg(long)]
     pub keep_running: bool,
+
+    /// Warn instead of failing when docker-compose.yaml references environment
+    /// variables that won't resolve in the Antithesis environment
+    #[arg(long)]
+    pub allow_unresolved_env: bool,
 }
 
 #[derive(Args)]

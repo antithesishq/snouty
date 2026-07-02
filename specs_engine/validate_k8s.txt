@@ -9,11 +9,19 @@ stderr 'k8s manifests valid.*'
 ! snouty validate config_invalid
 stderr 'k8s-validator failed.*'
 
+# --allow-unresolved-env is compose-only: it is inert for k8s configs (accepted
+#    but ignored), and a stray .env in the config dir is never read.
+snouty validate config_valid --allow-unresolved-env
+stderr 'k8s manifests valid.*'
+! stderr '.*will not resolve.*'
+
 -- config_valid/manifests/ns.yaml --
 apiVersion: v1
 kind: Namespace
 metadata:
   name: snouty-demo
+-- config_valid/.env --
+SHOULD_BE_IGNORED=1
 -- config_invalid/manifests/pod.yaml --
 apiVersion: v1
 kind: Pod

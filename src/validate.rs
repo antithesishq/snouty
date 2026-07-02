@@ -197,11 +197,20 @@ async fn validate_with_temp_dir(
         config: config_path,
         timeout,
         keep_running,
+        allow_unresolved_env,
     } = args;
     let rt = container::runtime(settings)?;
     match config::detect_config(&config_path)? {
         Config::Compose(cfg) => {
-            validate_compose(rt.as_ref(), cfg, timeout, keep_running, temp_dir).await
+            validate_compose(
+                rt.as_ref(),
+                cfg,
+                timeout,
+                keep_running,
+                allow_unresolved_env,
+                temp_dir,
+            )
+            .await
         }
         Config::Kubernetes(cfg) => validate_kubernetes(rt.as_ref(), &cfg, keep_running).await,
     }
@@ -212,9 +221,14 @@ async fn validate_compose(
     config: ComposeConfig,
     timeout: u64,
     keep_running: bool,
+    allow_unresolved_env: bool,
     temp_dir: &Path,
 ) -> Result<()> {
     let compose = container::docker_compose(rt)?;
+    // Check env-var resolution before contents(): contents() interpolates with
+    // the inherited shell env and would abort on an unset required `${VAR:?}`
+    // before this check could produce its actionable message.
+    check_env_resolution(&compose, &config, allow_unresolved_env)?;
     let contents = compose.contents(&config, None)?;
     container::validate_images_are_available(rt, &contents)?;
     let override_path = generate_setup_override(&contents, temp_dir)?;
@@ -311,6 +325,125 @@ async fn validate_compose(
     }
 
     test_result
+}
+
+/// A compose interpolation variable that won't resolve in the Antithesis
+/// environment: it has no inline default/alternate and no `.env` entry, so it
+/// draws only from the user's shell — which the hermetic Antithesis environment
+/// doesn't have.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct UnresolvedVar {
+    name: String,
+    /// `${VAR:?}` — compose hard-errors on this rather than defaulting to blank.
+    required: bool,
+}
+
+/// Fail (or, with `allow_unresolved_env`, warn) when the compose file
+/// references a `${VAR}` that won't resolve in the Antithesis environment.
+///
+/// Antithesis runs docker-compose from the config image in a hermetic
+/// environment with none of the user's shell variables, so interpolation there
+/// draws only from a `.env` file baked into the config image or an inline
+/// default. We reproduce that by resolving the compose file under a scrubbed
+/// environment (see [`container::DockerCompose::config_isolated_env`]) and
+/// reading which variables compose itself reports as unresolved — delegating all
+/// dotenv/default semantics to compose rather than re-deriving them.
+///
+/// One caveat: an unresolved required `${VAR:?}` makes compose abort, so if such
+/// a variable coexists with soft-missing ones the soft list may be truncated;
+/// the required error is still reported, and a re-run after the fix surfaces the
+/// rest.
+fn check_env_resolution(
+    compose: &container::DockerCompose,
+    config: &ComposeConfig,
+    allow_unresolved_env: bool,
+) -> Result<()> {
+    let output = compose.config_isolated_env(config)?;
+    let unresolved = parse_unresolved_env(&String::from_utf8_lossy(&output.stderr));
+
+    // An empty result means either the compose file resolves cleanly or `config`
+    // failed for a non-env reason (e.g. a malformed file); in the latter case
+    // `contents()` re-runs `config` next and surfaces that with its canonical
+    // error, so there is nothing to report here.
+    if unresolved.is_empty() {
+        return Ok(());
+    }
+
+    if allow_unresolved_env {
+        eprintln!("Warning: {}", unresolved_report(&unresolved));
+        Ok(())
+    } else {
+        Err(unresolved_error(&unresolved))
+    }
+}
+
+/// Parse the unresolved interpolation variables out of `docker-compose config`
+/// stderr produced under a scrubbed environment. Recognizes both the
+/// soft-missing warning (`The "X" variable is not set…`) and the required-var
+/// error (`required variable X is missing a value`).
+///
+/// `ANTITHESIS_*` variables are excluded: the platform injects those itself, so
+/// flagging them would be a false positive.
+fn parse_unresolved_env(stderr: &str) -> Vec<UnresolvedVar> {
+    // name -> required; a variable referenced both ways is treated as required.
+    let mut found: BTreeMap<String, bool> = BTreeMap::new();
+    for raw in stderr.lines() {
+        // logrus escapes the inner quotes of its quoted `msg` field when output
+        // is captured; normalize so escaped and bare quote forms parse alike.
+        let line = raw.replace("\\\"", "\"");
+        if let Some((_, rest)) = line.split_once("required variable ")
+            && let Some((name, _)) = rest.split_once(" is missing a value")
+        {
+            found.insert(name.trim().to_string(), true);
+        } else if let Some((_, rest)) = line.split_once("The \"")
+            && let Some((name, _)) = rest.split_once("\" variable is not set")
+        {
+            found.entry(name.trim().to_string()).or_insert(false);
+        }
+    }
+
+    found
+        .into_iter()
+        .filter(|(name, _)| !name.starts_with("ANTITHESIS_"))
+        .map(|(name, required)| UnresolvedVar { name, required })
+        .collect()
+}
+
+/// The unresolved variables, one indented `(required)`-annotated line each.
+fn unresolved_listing(vars: &[UnresolvedVar]) -> String {
+    vars.iter()
+        .map(|v| {
+            if v.required {
+                format!("  {} (required)", v.name)
+            } else {
+                format!("  {}", v.name)
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+const UNRESOLVED_HEADLINE: &str = "docker-compose.yaml references environment variables that will \
+not resolve in the Antithesis environment";
+
+const UNRESOLVED_FIX: &str = "These resolve from your shell locally, but the Antithesis \
+environment has none of your shell variables. Provide each one in a `.env` file in the config \
+directory (it is baked into the config image) or give it an inline default (e.g. ${VAR:-default}).";
+
+/// The `--allow-unresolved-env` warning body (headline + listing + fix).
+fn unresolved_report(vars: &[UnresolvedVar]) -> String {
+    format!(
+        "{UNRESOLVED_HEADLINE}:\n{}\n{UNRESOLVED_FIX}",
+        unresolved_listing(vars),
+    )
+}
+
+/// The hard-failure report; points at `--allow-unresolved-env` to downgrade it.
+fn unresolved_error(vars: &[UnresolvedVar]) -> color_eyre::Report {
+    user_error(UNRESOLVED_HEADLINE)
+        .with_section(|| unresolved_listing(vars).header("Unresolved:"))
+        .with_suggestion(|| UNRESOLVED_FIX)
+        .with_suggestion(|| "re-run with --allow-unresolved-env to treat this as a warning")
 }
 
 async fn validate_kubernetes(
@@ -1095,6 +1228,111 @@ services:
         assert!(msg.contains("  init"));
         assert!(msg.contains("  migrate"));
         assert!(msg.contains("exits 0"));
+    }
+
+    #[test]
+    fn parse_unresolved_env_soft_warnings() {
+        // Real captured form: logrus escapes the inner quotes of `msg`. An empty
+        // inline default (`${VAR:-}`) or `.env`-provided var emits no such warning,
+        // so it never appears here — compose does that filtering for us.
+        let stderr = concat!(
+            "time=\"...\" level=warning msg=\"The \\\"TAG\\\" variable is not set. Defaulting to a blank string.\"\n",
+            "time=\"...\" level=warning msg=\"The \\\"PW\\\" variable is not set. Defaulting to a blank string.\"\n",
+        );
+        assert_eq!(
+            parse_unresolved_env(stderr),
+            vec![
+                UnresolvedVar {
+                    name: "PW".to_string(),
+                    required: false,
+                },
+                UnresolvedVar {
+                    name: "TAG".to_string(),
+                    required: false,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn parse_unresolved_env_required_and_soft_together() {
+        let stderr = concat!(
+            "time=\"...\" level=warning msg=\"The \\\"PW\\\" variable is not set. Defaulting to a blank string.\"\n",
+            "error while interpolating services.app.environment.REQ: required variable REQ is missing a value: must set REQ\n",
+        );
+        assert_eq!(
+            parse_unresolved_env(stderr),
+            vec![
+                UnresolvedVar {
+                    name: "PW".to_string(),
+                    required: false,
+                },
+                UnresolvedVar {
+                    name: "REQ".to_string(),
+                    required: true,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn parse_unresolved_env_required_wins_over_soft() {
+        let stderr = concat!(
+            "msg=\"The \\\"X\\\" variable is not set. Defaulting to a blank string.\"\n",
+            "required variable X is missing a value: set it\n",
+        );
+        assert_eq!(
+            parse_unresolved_env(stderr),
+            vec![UnresolvedVar {
+                name: "X".to_string(),
+                required: true,
+            }]
+        );
+    }
+
+    #[test]
+    fn parse_unresolved_env_tolerates_bare_quotes() {
+        // TTY form, without logrus backslash escaping.
+        let stderr = "The \"BARE\" variable is not set. Defaulting to a blank string.\n";
+        assert_eq!(
+            parse_unresolved_env(stderr),
+            vec![UnresolvedVar {
+                name: "BARE".to_string(),
+                required: false,
+            }]
+        );
+    }
+
+    #[test]
+    fn parse_unresolved_env_excludes_antithesis_vars() {
+        // Antithesis injects these itself, so they must not be flagged.
+        let stderr = "msg=\"The \\\"ANTITHESIS_OUTPUT_DIR\\\" variable is not set. Defaulting to a blank string.\"\n";
+        assert!(parse_unresolved_env(stderr).is_empty());
+    }
+
+    #[test]
+    fn parse_unresolved_env_empty_when_clean() {
+        assert!(parse_unresolved_env("").is_empty());
+        assert!(parse_unresolved_env("name: proj\nservices: {}\n").is_empty());
+    }
+
+    #[test]
+    fn unresolved_error_names_vars_and_points_at_flag() {
+        let vars = vec![
+            UnresolvedVar {
+                name: "PW".to_string(),
+                required: false,
+            },
+            UnresolvedVar {
+                name: "REQ".to_string(),
+                required: true,
+            },
+        ];
+        let rendered = format!("{:?}", unresolved_error(&vars));
+        assert!(rendered.contains("will not resolve in the Antithesis environment"));
+        assert!(rendered.contains("PW"));
+        assert!(rendered.contains("REQ (required)"));
+        assert!(rendered.contains("--allow-unresolved-env"));
     }
 
     #[test]

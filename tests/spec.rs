@@ -589,6 +589,12 @@ engine_spec_case_test!(
     false
 );
 engine_spec_case_test!(
+    podman_engine_validate_env_specs,
+    "podman",
+    "validate_env.txt",
+    false
+);
+engine_spec_case_test!(
     docker_engine_launch_config_push_specs,
     "docker",
     "launch_config_push.txt",
@@ -616,5 +622,11 @@ engine_spec_case_test!(
     docker_engine_validate_k8s_specs,
     "docker",
     "validate_k8s.txt",
+    false
+);
+engine_spec_case_test!(
+    docker_engine_validate_env_specs,
+    "docker",
+    "validate_env.txt",
     false
 );

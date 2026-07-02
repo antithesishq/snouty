@@ -625,6 +625,38 @@ impl DockerCompose<'_> {
         parse_compose_config(&yaml)
     }
 
+    /// Run `docker-compose config` with a scrubbed process environment so that
+    /// `${VAR}` interpolation resolves only from the config dir's `.env` file and
+    /// inline defaults — reproducing the Antithesis environment, which carries
+    /// none of the user's shell variables. `.env` is read from the project
+    /// directory by path, independent of the process environment, so it (and its
+    /// full dotenv semantics — BOM stripping, `export`, quoting) still applies.
+    ///
+    /// Returns the raw command output for the caller to parse: stderr carries the
+    /// diagnostics — `The "X" variable is not set…` for soft-missing variables
+    /// and `required variable X is missing a value` for `${X:?}` ones — and the
+    /// exit status is non-zero when a required variable is unresolved.
+    pub fn config_isolated_env(&self, config: &ComposeConfig) -> Result<std::process::Output> {
+        let mut cmd = Command::new(DOCKER_COMPOSE);
+        cmd.current_dir(config.dir());
+        cmd.env_clear();
+        // Keep only the machinery docker-compose needs to run. These are not
+        // interpolation sources Antithesis lacks, so retaining them can't mask a
+        // missing variable; dropping them would just break the binary.
+        for key in ["PATH", "HOME"] {
+            if let Some(val) = std::env::var_os(key) {
+                cmd.env(key, val);
+            }
+        }
+        if let Some(host) = &self.docker_host {
+            cmd.env("DOCKER_HOST", host);
+        }
+        cmd.args(compose_file_args(None));
+        cmd.arg("config");
+        cmd.output()
+            .wrap_err("failed to run 'docker-compose config' for the environment check")
+    }
+
     /// Canonicalized compose file for baking into the config image.
     ///
     /// `docker-compose config` itself does the canonicalization: anchors,

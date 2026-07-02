@@ -1,0 +1,59 @@
+# snouty validate — environment-variable resolution checks
+#
+# Antithesis runs docker-compose from the config image in a hermetic
+# environment that has none of the user's shell variables. Interpolation
+# (`${VAR}`) there resolves only from a `.env` file baked into the config image
+# or from inline defaults. validate reproduces that by resolving the compose
+# file under a scrubbed environment and failing when a referenced variable
+# can't be resolved, so a run that would fail in Antithesis fails locally first.
+
+# A variable that resolves only from the shell (no `.env` entry, no inline
+#    default) fails validation before any container starts, naming the variable.
+! snouty validate config_unresolved --timeout 15
+stderr '.*will not resolve in the Antithesis environment.*'
+stderr '.*SNOUTY_TEST_UNSET_VAR.*'
+
+# --allow-unresolved-env downgrades that failure to a warning; validation
+#    continues and still succeeds when the missing variable is harmless.
+build-image env-emitter:latest setup_emitter
+snouty validate config_unresolved_ok --allow-unresolved-env --timeout 20
+stderr '.*Warning:.*'
+stderr '.*SNOUTY_TEST_UNSET_VAR.*'
+stderr '.*Setup validation successful.*'
+
+# A variable satisfied by a `.env` file in the config dir resolves cleanly —
+#    exactly as it would from the config image — so validation neither warns
+#    nor fails on it.
+snouty validate config_env_file --timeout 20
+! stderr '.*will not resolve.*'
+stderr '.*Setup validation successful.*'
+
+-- setup_emitter/Dockerfile --
+FROM busybox
+CMD sh -c 'echo "{\"antithesis_setup\":{\"status\":\"complete\"}}" >> "$ANTITHESIS_OUTPUT_DIR/sdk.jsonl" && sleep 3600'
+
+-- config_unresolved/docker-compose.yaml --
+services:
+  app:
+    image: env-emitter:latest
+    pull_policy: never
+    environment:
+      NEEDS_THIS: ${SNOUTY_TEST_UNSET_VAR}
+
+-- config_unresolved_ok/docker-compose.yaml --
+services:
+  emitter:
+    image: env-emitter:latest
+    pull_policy: never
+    environment:
+      HARMLESS: ${SNOUTY_TEST_UNSET_VAR}
+
+-- config_env_file/docker-compose.yaml --
+services:
+  emitter:
+    image: env-emitter:latest
+    pull_policy: never
+    environment:
+      RESOLVED: ${SNOUTY_TEST_SET_VAR}
+-- config_env_file/.env --
+SNOUTY_TEST_SET_VAR=hello

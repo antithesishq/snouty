@@ -625,6 +625,19 @@ impl DockerCompose<'_> {
         parse_compose_config(&yaml)
     }
 
+    /// List the interpolation variables the compose file references, as the JSON
+    /// object emitted by `docker-compose config --variables --format json`
+    /// (`{ "NAME": { "Name", "DefaultValue", "PresenceValue", "Required" }, … }`).
+    ///
+    /// This reflects the compose *model* (which `${VAR}`s appear and their inline
+    /// defaults), not resolved values, so it is independent of the process
+    /// environment and enumerates every reference whether or not it is currently
+    /// set — and, unlike an interpolating `config`, it never aborts on a missing
+    /// required variable.
+    pub fn config_variables_json(&self, config: &ComposeConfig) -> Result<String> {
+        self.config_yaml(config, None, &["--variables", "--format", "json"])
+    }
+
     /// Canonicalized compose file for baking into the config image.
     ///
     /// `docker-compose config` itself does the canonicalization: anchors,

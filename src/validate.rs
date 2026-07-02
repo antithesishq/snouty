@@ -197,11 +197,20 @@ async fn validate_with_temp_dir(
         config: config_path,
         timeout,
         keep_running,
+        allow_unresolved_env,
     } = args;
     let rt = container::runtime(settings)?;
     match config::detect_config(&config_path)? {
         Config::Compose(cfg) => {
-            validate_compose(rt.as_ref(), cfg, timeout, keep_running, temp_dir).await
+            validate_compose(
+                rt.as_ref(),
+                cfg,
+                timeout,
+                keep_running,
+                allow_unresolved_env,
+                temp_dir,
+            )
+            .await
         }
         Config::Kubernetes(cfg) => validate_kubernetes(rt.as_ref(), &cfg, keep_running).await,
     }
@@ -212,10 +221,12 @@ async fn validate_compose(
     config: ComposeConfig,
     timeout: u64,
     keep_running: bool,
+    allow_unresolved_env: bool,
     temp_dir: &Path,
 ) -> Result<()> {
     let compose = container::docker_compose(rt)?;
     let contents = compose.contents(&config, None)?;
+    check_env_resolution(&compose, &config, allow_unresolved_env)?;
     container::validate_images_are_available(rt, &contents)?;
     let override_path = generate_setup_override(&contents, temp_dir)?;
     let overlay = Some(override_path.as_path());
@@ -311,6 +322,156 @@ async fn validate_compose(
     }
 
     test_result
+}
+
+/// A compose interpolation variable that won't resolve in the Antithesis
+/// environment: it has no inline default and no `.env` entry in the config dir,
+/// so it draws only from the user's shell — which the hermetic Antithesis
+/// environment doesn't have.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct UnresolvedVar {
+    name: String,
+    /// `${VAR:?}` — compose hard-errors on this rather than defaulting to blank.
+    required: bool,
+}
+
+/// Fail (or, with `allow_unresolved_env`, warn) when the compose file
+/// references a `${VAR}` that won't resolve in the Antithesis environment.
+///
+/// Antithesis runs docker-compose from the config image in a hermetic
+/// environment with none of the user's shell variables, so interpolation there
+/// draws only from a `.env` file baked into the config image or an inline
+/// default. This reproduces that judgement statically — every referenced
+/// variable (from `config --variables`) that has neither an inline
+/// default/alternate nor a `.env` entry would be empty (or, if required, a hard
+/// error) in Antithesis — and so catches the trap where local validation passes
+/// only because the user's shell happened to supply the value.
+fn check_env_resolution(
+    compose: &container::DockerCompose,
+    config: &ComposeConfig,
+    allow_unresolved_env: bool,
+) -> Result<()> {
+    let variables_json = compose.config_variables_json(config)?;
+    let env_keys = parse_env_file_keys(config.dir());
+    let unresolved = unresolved_vars(&variables_json, &env_keys)?;
+
+    if unresolved.is_empty() {
+        return Ok(());
+    }
+
+    if allow_unresolved_env {
+        eprintln!("Warning: {}", unresolved_report(&unresolved));
+        Ok(())
+    } else {
+        Err(unresolved_error(&unresolved))
+    }
+}
+
+/// One entry of `docker-compose config --variables --format json`, keyed in the
+/// enclosing object by the variable name.
+#[derive(Deserialize)]
+struct ComposeVariable {
+    /// Inline default from `${VAR:-x}` / `${VAR-x}`; empty when there is none.
+    #[serde(rename = "DefaultValue")]
+    default_value: String,
+    /// Alternate from `${VAR:+x}` / `${VAR+x}`; its presence means the reference
+    /// resolves (to empty when unset) without the shell.
+    #[serde(rename = "PresenceValue")]
+    presence_value: String,
+    /// `${VAR:?}` — required, so compose hard-errors when it's unresolved.
+    #[serde(rename = "Required")]
+    required: bool,
+}
+
+/// Determine which referenced variables won't resolve in Antithesis, given the
+/// `docker-compose config --variables --format json` object and the keys defined
+/// by the config dir's `.env` file. A variable resolves there iff it has an
+/// inline default/alternate or a `.env` entry.
+///
+/// `ANTITHESIS_*` variables are excluded: the platform injects those itself, so
+/// flagging them would be a false positive.
+fn unresolved_vars(
+    variables_json: &str,
+    env_keys: &BTreeSet<String>,
+) -> Result<Vec<UnresolvedVar>> {
+    let variables: BTreeMap<String, ComposeVariable> = serde_json::from_str(variables_json)
+        .wrap_err("failed to parse 'docker-compose config --variables' output")?;
+
+    // BTreeMap keys are unique and sorted, so the result is deduped and ordered.
+    Ok(variables
+        .into_iter()
+        .filter(|(name, v)| {
+            v.default_value.is_empty()
+                && v.presence_value.is_empty()
+                && !env_keys.contains(name)
+                && !name.starts_with("ANTITHESIS_")
+        })
+        .map(|(name, v)| UnresolvedVar {
+            name,
+            required: v.required,
+        })
+        .collect())
+}
+
+/// Collect the keys defined by the `.env` file in `dir` (compose's default
+/// interpolation env file), which is baked into the config image and so is
+/// available to Antithesis. Absent or unreadable `.env` yields no keys.
+fn parse_env_file_keys(dir: &Path) -> BTreeSet<String> {
+    let mut keys = BTreeSet::new();
+    let Ok(contents) = std::fs::read_to_string(dir.join(".env")) else {
+        return keys;
+    };
+    for line in contents.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let line = line.strip_prefix("export ").unwrap_or(line);
+        if let Some((key, _)) = line.split_once('=') {
+            let key = key.trim();
+            if !key.is_empty() {
+                keys.insert(key.to_string());
+            }
+        }
+    }
+    keys
+}
+
+/// The unresolved variables, one indented `(required)`-annotated line each.
+fn unresolved_listing(vars: &[UnresolvedVar]) -> String {
+    vars.iter()
+        .map(|v| {
+            if v.required {
+                format!("  {} (required)", v.name)
+            } else {
+                format!("  {}", v.name)
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+const UNRESOLVED_HEADLINE: &str = "docker-compose.yaml references environment variables that will \
+not resolve in the Antithesis environment";
+
+const UNRESOLVED_FIX: &str = "These resolve from your shell locally, but the Antithesis \
+environment has none of your shell variables. Provide each one in a `.env` file in the config \
+directory (it is baked into the config image) or give it an inline default (e.g. ${VAR:-default}).";
+
+/// The `--allow-unresolved-env` warning body (headline + listing + fix).
+fn unresolved_report(vars: &[UnresolvedVar]) -> String {
+    format!(
+        "{UNRESOLVED_HEADLINE}:\n{}\n{UNRESOLVED_FIX}",
+        unresolved_listing(vars),
+    )
+}
+
+/// The hard-failure report; points at `--allow-unresolved-env` to downgrade it.
+fn unresolved_error(vars: &[UnresolvedVar]) -> color_eyre::Report {
+    user_error(UNRESOLVED_HEADLINE)
+        .with_section(|| unresolved_listing(vars).header("Unresolved:"))
+        .with_suggestion(|| UNRESOLVED_FIX)
+        .with_suggestion(|| "re-run with --allow-unresolved-env to treat this as a warning")
 }
 
 async fn validate_kubernetes(
@@ -1095,6 +1256,111 @@ services:
         assert!(msg.contains("  init"));
         assert!(msg.contains("  migrate"));
         assert!(msg.contains("exits 0"));
+    }
+
+    // Real `docker-compose config --variables --format json` output, keyed by
+    // name: TAG (required, no fallback), FROMENV (no fallback — expected from
+    // `.env`), OPT (inline default), ALT (alternate value), PW (no fallback).
+    const VARIABLES_JSON: &str = r#"{
+      "TAG":     {"Name":"TAG","DefaultValue":"","PresenceValue":"","Required":true},
+      "FROMENV": {"Name":"FROMENV","DefaultValue":"","PresenceValue":"","Required":false},
+      "OPT":     {"Name":"OPT","DefaultValue":"x","PresenceValue":"","Required":false},
+      "ALT":     {"Name":"ALT","DefaultValue":"","PresenceValue":"y","Required":false},
+      "PW":      {"Name":"PW","DefaultValue":"","PresenceValue":"","Required":false}
+    }"#;
+
+    #[test]
+    fn unresolved_vars_flags_only_unresolvable() {
+        // FROMENV comes from `.env`; OPT has an inline default; ALT has an
+        // alternate — all resolve. TAG (required) and PW have neither a fallback
+        // nor a `.env` entry, so both are unresolved.
+        let env_keys = BTreeSet::from(["FROMENV".to_string()]);
+        assert_eq!(
+            unresolved_vars(VARIABLES_JSON, &env_keys).unwrap(),
+            vec![
+                UnresolvedVar {
+                    name: "PW".to_string(),
+                    required: false,
+                },
+                UnresolvedVar {
+                    name: "TAG".to_string(),
+                    required: true,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn unresolved_vars_all_resolved_is_empty() {
+        // With PW and TAG also in `.env`, nothing is unresolved.
+        let env_keys = BTreeSet::from(["FROMENV".to_string(), "PW".to_string(), "TAG".to_string()]);
+        assert!(
+            unresolved_vars(VARIABLES_JSON, &env_keys)
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn unresolved_vars_empty_object() {
+        // A compose file with no interpolation yields `{}`.
+        assert!(
+            unresolved_vars("{}\n", &BTreeSet::new())
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn unresolved_vars_excludes_antithesis_vars() {
+        // Antithesis injects these itself, so they must not be flagged.
+        let json = r#"{"ANTITHESIS_OUTPUT_DIR":{"Name":"ANTITHESIS_OUTPUT_DIR","DefaultValue":"","PresenceValue":"","Required":false}}"#;
+        assert!(unresolved_vars(json, &BTreeSet::new()).unwrap().is_empty());
+    }
+
+    #[test]
+    fn unresolved_vars_errors_on_malformed_json() {
+        assert!(unresolved_vars("not json", &BTreeSet::new()).is_err());
+    }
+
+    #[test]
+    fn parse_env_file_keys_handles_comments_blanks_and_export() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join(".env"),
+            "# a comment\n\nFOO=1\n  BAR = two \nexport BAZ=3\nMALFORMED\n",
+        )
+        .unwrap();
+        let keys = parse_env_file_keys(dir.path());
+        assert_eq!(
+            keys,
+            BTreeSet::from(["FOO".to_string(), "BAR".to_string(), "BAZ".to_string()])
+        );
+    }
+
+    #[test]
+    fn parse_env_file_keys_absent_file_is_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(parse_env_file_keys(dir.path()).is_empty());
+    }
+
+    #[test]
+    fn unresolved_error_names_vars_and_points_at_flag() {
+        let vars = vec![
+            UnresolvedVar {
+                name: "PW".to_string(),
+                required: false,
+            },
+            UnresolvedVar {
+                name: "REQ".to_string(),
+                required: true,
+            },
+        ];
+        let rendered = format!("{:?}", unresolved_error(&vars));
+        assert!(rendered.contains("will not resolve in the Antithesis environment"));
+        assert!(rendered.contains("PW"));
+        assert!(rendered.contains("REQ (required)"));
+        assert!(rendered.contains("--allow-unresolved-env"));
     }
 
     #[test]

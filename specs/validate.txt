@@ -31,6 +31,10 @@ stdout '.*keep-running.*'
 snouty validate --help
 stdout '.*manifests/.*'
 
+# Help text mentions --allow-unresolved-env.
+snouty validate --help
+stdout '.*allow-unresolved-env.*'
+
 -- empty/.keep --
 -- yml_dir/docker-compose.yml --
 -- ambiguous/docker-compose.yaml --

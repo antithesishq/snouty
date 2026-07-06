@@ -75,28 +75,58 @@ stdin login_bad_tenant.txt
 ! snouty login
 stderr '.*invalid tenant.*'
 
+# 7. With settings resolution broken, `--profile prod` still scopes the persisted
+#    tenant and repository under `[profile.prod]` in the global settings file, and
+#    login exits successfully despite the unreadable settings file.
+isolate-home with_profile
+env SNOUTY_SETTINGS_PATH=broken.toml
+stdin login_password.txt
+snouty --profile prod login
+file ~/.config/snouty/settings.toml '\[profile\.prod\]'
+file ~/.config/snouty/settings.toml 'tenant = "ptenant"'
+file ~/.config/snouty/settings.toml 'repository = "prepo"'
+file ~/.config/snouty/credentials.toml '\[profile\.prod\]'
+file ~/.config/snouty/credentials.toml 'type = "Password"'
+file ~/.config/snouty/credentials.toml 'username = "puser"'
+file ~/.config/snouty/credentials.toml 'password = "ppass"'
+
+# 8. The same broken settings file without `--profile` persists the values at the
+#    top level instead — proving it is the flag, not some value resurrected from
+#    the unreadable file, that produced the `[profile.prod]` scoping in step 1.
+isolate-home without_profile
+env SNOUTY_SETTINGS_PATH=broken.toml
+stdin login_password.txt
+snouty login
+file ~/.config/snouty/settings.toml 'tenant = "ptenant"'
+! file ~/.config/snouty/settings.toml '\[profile'
+file ~/.config/snouty/credentials.toml 'username = "puser"'
+! file ~/.config/snouty/credentials.toml '\[profile'
+
+-- broken.toml --
+this is = = not valid toml
+
 -- login_apikey.txt --
 mytenant
 myrepo
-1
+2
 sk-test-key
 -- login_reuse.txt --
-mytenant
-myrepo
+
+
 1
 -- login_flags.txt --
-1
+2
 sk-test-key
 -- login_password.txt --
 ptenant
 prepo
-2
+3
 puser
 ppass
 -- login_profile.txt --
 ptenant2
 prepo2
-1
+2
 pk-secret
 -- login_profile_reuse.txt --
 ptenant2

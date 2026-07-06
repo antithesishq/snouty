@@ -14,6 +14,8 @@ pub fn cmd_login(
     profile: Option<&str>,
     current_settings: Result<Settings>,
 ) -> Result<()> {
+    let profile_to_use = profile.or_else(|| current_settings.as_ref().ok().and_then(|s| s.profile()));
+
     let tenant_to_use = match tenant {
         Some(arg_value) if !arg_value.is_empty() => arg_value,
         Some(_) | None => prompt_for_value(
@@ -31,8 +33,8 @@ pub fn cmd_login(
         )?,
     };
 
-    if let Some(credentials) = prompt_for_auth(profile)? {
-        persist(credentials, profile)?;
+    if let Some(credentials) = prompt_for_auth(profile_to_use)? {
+        persist(credentials, profile_to_use)?;
     }
 
     update_settings_in_global_file(
@@ -40,7 +42,7 @@ pub fn cmd_login(
         Some(repository_to_use),
         None,
         None,
-        profile,
+        profile_to_use,
     )?;
 
     Ok(())

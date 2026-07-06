@@ -12,6 +12,62 @@ fn err(msg: String) -> testscript_rs::Error {
     testscript_rs::Error::Generic(msg)
 }
 
+/// Resolve a spec-supplied path to a concrete filesystem path.
+///
+/// `${VAR}` references are expanded from the test environment first, then a
+/// leading `~` (bare or `~/...`) expands to the test's isolated `$HOME` — the
+/// same `HOME` the snouty subprocess sees, so a spec can point at the global
+/// `settings.toml` that `snouty login` writes under it. A remaining relative
+/// path is resolved against the spec's working directory, matching where inline
+/// `-- file --` fixtures land.
+fn resolve_spec_path(
+    env: &testscript_rs::TestEnvironment,
+    raw: &str,
+) -> testscript_rs::Result<std::path::PathBuf> {
+    let expanded = env.substitute_env_vars(raw);
+    if let Some(rest) = expanded.strip_prefix('~') {
+        let home = env
+            .env_vars
+            .get("HOME")
+            .ok_or_else(|| err("`~` used in a path but HOME is not set".to_string()))?;
+        let rest = rest.strip_prefix('/').unwrap_or(rest);
+        return Ok(std::path::Path::new(home).join(rest));
+    }
+
+    let path = std::path::PathBuf::from(expanded);
+    if path.is_absolute() {
+        Ok(path)
+    } else {
+        Ok(env.current_dir.join(path))
+    }
+}
+
+/// `file <path> <pattern>`: assert the contents of the file at `<path>` match the
+/// regex `<pattern>`, mirroring the built-in `stdout`/`stderr` matchers (combine
+/// with a leading `!` to assert the pattern is absent). `<path>` may start with
+/// `~` to reference the test's isolated `$HOME` (see [`resolve_spec_path`]).
+fn cmd_file(
+    env: &mut testscript_rs::TestEnvironment,
+    args: &[String],
+) -> testscript_rs::Result<()> {
+    let (path_arg, pattern) = match args {
+        [path, rest @ ..] if !rest.is_empty() => (path, rest.join(" ")),
+        _ => return Err(err("file requires <path> <pattern>".to_string())),
+    };
+    let path = resolve_spec_path(env, path_arg)?;
+    let re = regex::Regex::new(&pattern)
+        .map_err(|e| err(format!("invalid file pattern `{pattern}`: {e}")))?;
+    let contents = std::fs::read_to_string(&path)
+        .map_err(|e| err(format!("could not read {}: {e}", path.display())))?;
+    if !re.is_match(&contents) {
+        return Err(err(format!(
+            "file {} does not match /{pattern}/\ncontents:\n{contents}",
+            path.display()
+        )));
+    }
+    Ok(())
+}
+
 // --- Engine context (thread-local so fn-pointer commands can access it) ---
 
 struct EngineContext {
@@ -632,6 +688,7 @@ fn spec_tests() {
             .command("mock-runs-server", cmd_mock_runs_server)
             .command("mock-proxy", cmd_mock_proxy)
             .command("env_from_json", cmd_env_from_json)
+            .command("file", cmd_file)
             .command("set-env", |env, args| {
                 // Usage: set-env KEY value...
                 // Interpolates ${VAR} references in value using env.env_vars.

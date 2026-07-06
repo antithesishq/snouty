@@ -6,7 +6,7 @@ use std::{
 
 use color_eyre::eyre::{Context, OptionExt, Result, eyre};
 use tempfile::NamedTempFile;
-use toml::{Table, Value, map::Entry};
+use toml::{Table, Value};
 
 use crate::env;
 use crate::error::user_error;
@@ -280,48 +280,21 @@ pub(crate) fn update_settings_in_global_file(
     };
 
     if let Some(profile) = profile_to_update {
-        match contents.entry(PROFILE_KEY) {
-            Entry::Vacant(vacant) => {
-                let mut outer = Table::new();
-                let mut target = Table::new();
-                update_table(&mut target, tenant, repository, base_url, container_engine);
-                outer.insert(profile.to_owned(), Value::Table(target));
-                vacant.insert(Value::Table(outer));
-            }
-            Entry::Occupied(mut occupied) => {
-                let outer = occupied.get_mut().as_table_mut().ok_or_eyre(eyre!("The settings file at {:?} is malformed: `profile` should be a table of named profiles", &path))?;
-
-                match outer.entry(profile.to_owned()) {
-                    Entry::Vacant(vacant) => {
-                        let mut target = Table::new();
-                        update_table(&mut target, tenant, repository, base_url, container_engine);
-                        vacant.insert(Value::Table(target));
-                    }
-                    Entry::Occupied(mut occupied) => match occupied.get_mut().as_table_mut() {
-                        None => {
-                            let mut target = Table::new();
-                            update_table(
-                                &mut target,
-                                tenant,
-                                repository,
-                                base_url,
-                                container_engine,
-                            );
-                            occupied.insert(Value::Table(target));
-                        }
-                        Some(current_value) => {
-                            update_table(
-                                current_value,
-                                tenant,
-                                repository,
-                                base_url,
-                                container_engine,
-                            );
-                        }
-                    },
-                }
-            }
-        }
+        let profiles = contents
+            .entry(PROFILE_KEY)
+            .or_insert_with(|| Value::Table(Table::new()))
+            .as_table_mut()
+            .ok_or_eyre(eyre!(
+                "The settings file at {:?} is malformed: `profile` should be a table of named profiles",
+                &path
+            ))?;
+        update_table(
+            entry_as_table_mut(profiles, profile),
+            tenant,
+            repository,
+            base_url,
+            container_engine,
+        );
     } else {
         update_table(
             &mut contents,
@@ -339,6 +312,17 @@ pub(crate) fn update_settings_in_global_file(
     temp.persist(&path)?;
 
     Ok(())
+}
+
+fn entry_as_table_mut<'a>(table: &'a mut Table, key: &str) -> &'a mut Table {
+    let slot = table
+        .entry(key.to_owned())
+        .or_insert_with(|| Value::Table(Table::new()));
+    if slot.as_table_mut().is_none() {
+        *slot = Value::Table(Table::new());
+    }
+    slot.as_table_mut()
+        .expect("slot was just ensured to hold a table")
 }
 
 pub(crate) fn mkdir(path: &Path, recursive: bool, permissions: u32) -> Result<()> {

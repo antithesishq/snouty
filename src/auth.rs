@@ -173,7 +173,9 @@ impl AuthenticationInfo {
                     }));
                 }
                 Err(err) => {
-                    eprintln!("Deserialization of the value in the keychain failed with error {err:#}");
+                    eprintln!(
+                        "Deserialization of the value in the keychain failed with error {err:#}"
+                    );
                 }
             }
         }
@@ -215,20 +217,28 @@ impl AuthenticationInfo {
                 return to_result(from_keychain, allow_basic);
             }
 
-            credentials_file = try_load_credentials_file()?;
-            if let Some((_path, parsed)) = &credentials_file
-                && let Some(by_profile) = &parsed.profile
-                && let Some(from_credentials_file) = by_profile.get(profile_name)
-            {
-                return to_result(
-                    AttributedValue::SettingsFile {
-                        value: Self::Static(from_credentials_file.clone().convert_to_credentials()),
-                        settings_file_path: credentials_file.unwrap().0,
-                        profile: Some(profile_name.to_owned()),
-                    },
-                    allow_basic,
-                );
-            }
+            credentials_file = match try_load_credentials_file()? {
+                Some((path, parsed)) => {
+                    if let Some(from_credentials_file) = parsed
+                        .profile
+                        .as_ref()
+                        .and_then(|by_profile| by_profile.get(profile_name))
+                    {
+                        return to_result(
+                            AttributedValue::SettingsFile {
+                                value: Self::Static(
+                                    from_credentials_file.clone().convert_to_credentials(),
+                                ),
+                                settings_file_path: path,
+                                profile: Some(profile_name.to_owned()),
+                            },
+                            allow_basic,
+                        );
+                    }
+                    Some((path, parsed))
+                }
+                None => None,
+            };
         } else {
             credentials_file = try_load_credentials_file()?;
         }

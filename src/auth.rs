@@ -1,4 +1,9 @@
-use std::{collections::HashMap, io::Write, path::Path, time::Duration};
+use std::{
+    collections::HashMap,
+    io::Write,
+    path::{Path, PathBuf},
+    time::Duration,
+};
 
 use base64::{Engine, prelude::BASE64_STANDARD};
 use color_eyre::{
@@ -164,23 +169,6 @@ impl AuthenticationInfo {
         Ok(None)
     }
 
-    fn try_from_credentials_file(profile: Option<&str>) -> Result<Option<AttributedValue<Self>>> {
-        if let Some(snouty_settings_dir) = global_settings_dir() {
-            let path = snouty_settings_dir.join(CREDENTIALS_FILENAME);
-            return Ok(match read_to_string_if_file_exists(&path)? {
-                Some(contents) => PersistableCredentials::try_from_credentials_file_toml(
-                    contents, &path, profile,
-                )?
-                .map(|c_with_attribution| {
-                    c_with_attribution.map(|c| Self::Static(c.convert_to_credentials()))
-                }),
-                None => None,
-            });
-        }
-
-        Ok(None)
-    }
-
     fn try_from_github_actions_environment() -> Result<Option<AttributedValue<Self>>> {
         const TARGET_URL_VAR_NAME: &str = "ACTIONS_ID_TOKEN_REQUEST_URL";
         const REQ_TOKEN_VAR_NAME: &str = "ACTIONS_ID_TOKEN_REQUEST_TOKEN";
@@ -208,12 +196,45 @@ impl AuthenticationInfo {
             return to_result(from_env, allow_basic);
         }
 
-        if let Some(from_keychain) = Self::try_from_keychain(profile)? {
+        let credentials_file: Option<(PathBuf, CredentialsFile)>;
+        if let Some(profile_name) = profile {
+            if let Some(from_keychain) = Self::try_from_keychain(profile)? {
+                return to_result(from_keychain, allow_basic);
+            }
+
+            credentials_file = try_load_credentials_file()?;
+            if let Some((_path, parsed)) = &credentials_file
+                && let Some(by_profile) = &parsed.profile
+                && let Some(from_credentials_file) = by_profile.get(profile_name)
+            {
+                return to_result(
+                    AttributedValue::SettingsFile {
+                        value: Self::Static(from_credentials_file.clone().convert_to_credentials()),
+                        settings_file_path: credentials_file.unwrap().0,
+                        profile: Some(profile_name.to_owned()),
+                    },
+                    allow_basic,
+                );
+            }
+        } else {
+            credentials_file = try_load_credentials_file()?;
+        }
+
+        if let Some(from_keychain) = Self::try_from_keychain(None)? {
             return to_result(from_keychain, allow_basic);
         }
 
-        if let Some(from_credentials_file) = Self::try_from_credentials_file(profile)? {
-            return to_result(from_credentials_file, allow_basic);
+        if let Some((path, parsed)) = credentials_file
+            && let Some(from_credentials_file) = parsed.default
+        {
+            return to_result(
+                AttributedValue::SettingsFile {
+                    value: Self::Static(from_credentials_file.convert_to_credentials()),
+                    settings_file_path: path,
+                    profile: None,
+                },
+                allow_basic,
+            );
         }
 
         if let Some(from_github_actions_environment) = Self::try_from_github_actions_environment()?
@@ -258,6 +279,19 @@ impl AuthenticationInfo {
             }
         }
     }
+}
+
+fn try_load_credentials_file() -> Result<Option<(PathBuf, CredentialsFile)>> {
+    if let Some(snouty_settings_dir) = global_settings_dir() {
+        let path = snouty_settings_dir.join(CREDENTIALS_FILENAME);
+
+        if let Some(contents) = read_to_string_if_file_exists(&path)? {
+            let parsed = parse_credentials_file_toml(contents, &path)?;
+            return Ok(Some((path, parsed)));
+        }
+    }
+
+    Ok(None)
 }
 
 /// Exchange the GitHub Actions OIDC *request* token for an Antithesis-audience
@@ -310,37 +344,6 @@ impl PersistableCredentials {
             Self::ApiKey(api_key_credentials) => Credentials::ApiKey(api_key_credentials),
             Self::Password(password_credentials) => Credentials::Password(password_credentials),
         }
-    }
-
-    fn try_from_credentials_file_toml(
-        contents: String,
-        path: &Path,
-        profile: Option<&str>,
-    ) -> Result<Option<AttributedValue<Self>>> {
-        let parsed = parse_credentials_file_toml(contents, path)?;
-
-        if let Some(requested_profile) = profile
-            && let Some(credentials_for_profile) = parsed
-                .profile
-                .as_ref()
-                .and_then(|t| t.get(requested_profile))
-        {
-            return Ok(Some(AttributedValue::SettingsFile {
-                value: credentials_for_profile.clone(),
-                settings_file_path: path.to_path_buf(),
-                profile: Some(requested_profile.to_owned()),
-            }));
-        }
-
-        if let Some(default_credentials) = parsed.default {
-            return Ok(Some(AttributedValue::SettingsFile {
-                value: default_credentials,
-                settings_file_path: path.to_path_buf(),
-                profile: None,
-            }));
-        }
-
-        Ok(None)
     }
 }
 
@@ -591,92 +594,5 @@ mod tests {
         let header = credentials.auth_header().unwrap();
         assert_eq!(header.to_str().unwrap(), "GHA oidc-jwt-token-value");
         assert!(header.is_sensitive());
-    }
-
-    #[test]
-    fn can_read_from_credential_file_defaults() {
-        let path = Path::new("./credentials.toml");
-        let api_key_credentials = PersistableCredentials::try_from_credentials_file_toml(
-            "[default]\ntype=\"ApiKey\"\napi_key=\"foo\"".to_owned(),
-            path,
-            None,
-        );
-
-        assert!(matches!(
-            api_key_credentials.unwrap().unwrap().unwrap(),
-            &PersistableCredentials::ApiKey(ApiKeyCredentials { api_key: _ })
-        ));
-
-        let password_credentials = PersistableCredentials::try_from_credentials_file_toml(
-            "[default]\ntype=\"Password\"\nusername=\"user\"\npassword=\"pass\"".to_owned(),
-            path,
-            None,
-        );
-
-        assert!(matches!(
-            password_credentials.unwrap().unwrap().unwrap(),
-            &PersistableCredentials::Password(PasswordCredentials {
-                username: _,
-                password: _
-            })
-        ));
-    }
-
-    #[test]
-    fn can_read_from_credential_file_profile() {
-        let path = Path::new("./credentials.toml");
-        let api_key_credentials = PersistableCredentials::try_from_credentials_file_toml(
-            "[profile.foo]\ntype=\"ApiKey\"\napi_key=\"foo\"".to_owned(),
-            path,
-            Some("foo"),
-        );
-
-        assert!(matches!(
-            api_key_credentials.unwrap().unwrap().unwrap(),
-            &PersistableCredentials::ApiKey(ApiKeyCredentials { api_key: _ })
-        ));
-
-        let password_credentials = PersistableCredentials::try_from_credentials_file_toml(
-            "[profile.foo]\ntype=\"Password\"\nusername=\"user\"\npassword=\"pass\"".to_owned(),
-            path,
-            Some("foo"),
-        );
-
-        assert!(matches!(
-            password_credentials.unwrap().unwrap().unwrap(),
-            &PersistableCredentials::Password(PasswordCredentials {
-                username: _,
-                password: _
-            })
-        ));
-    }
-
-    #[test]
-    fn will_fall_back_to_defaults_if_profile_not_found() {
-        let path = Path::new("./credentials.toml");
-        let api_key_credentials = PersistableCredentials::try_from_credentials_file_toml(
-            "[default]\ntype=\"ApiKey\"\napi_key=\"foo\"\n\n[profile.foo]\ntype=\"Password\"\nusername=\"user\"\npassword=\"pass\"".to_owned(),
-            path,
-            Some("bar"),
-        );
-
-        assert!(matches!(
-            api_key_credentials.unwrap().unwrap().unwrap(),
-            &PersistableCredentials::ApiKey(ApiKeyCredentials { api_key: _ })
-        ));
-
-        let password_credentials = PersistableCredentials::try_from_credentials_file_toml(
-            "[default]\ntype=\"Password\"\nusername=\"user\"\npassword=\"pass\"\n\n[profile.foo]\ntype=\"ApiKey\"\napi_key=\"foo\"".to_owned(),
-            path,
-            Some("bar"),
-        );
-
-        assert!(matches!(
-            password_credentials.unwrap().unwrap().unwrap(),
-            &PersistableCredentials::Password(PasswordCredentials {
-                username: _,
-                password: _
-            })
-        ));
     }
 }

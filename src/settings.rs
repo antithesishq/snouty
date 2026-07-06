@@ -286,18 +286,28 @@ pub(crate) fn update_settings_in_global_file(
                         update_table(&mut target, tenant, repository, base_url, container_engine);
                         vacant.insert(Value::Table(target));
                     }
-                    Entry::Occupied(mut occupied) => {
-                        match occupied.get_mut().as_table_mut() {
-                            None => {
-                                let mut target = Table::new();
-                                update_table(&mut target, tenant, repository, base_url, container_engine);
-                                occupied.insert(Value::Table(target));
-                            }
-                            Some(current_value) => {
-                                update_table(current_value, tenant, repository, base_url, container_engine);
-                            }
+                    Entry::Occupied(mut occupied) => match occupied.get_mut().as_table_mut() {
+                        None => {
+                            let mut target = Table::new();
+                            update_table(
+                                &mut target,
+                                tenant,
+                                repository,
+                                base_url,
+                                container_engine,
+                            );
+                            occupied.insert(Value::Table(target));
                         }
-                    }
+                        Some(current_value) => {
+                            update_table(
+                                current_value,
+                                tenant,
+                                repository,
+                                base_url,
+                                container_engine,
+                            );
+                        }
+                    },
                 }
             }
         }

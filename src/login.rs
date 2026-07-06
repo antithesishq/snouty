@@ -16,22 +16,29 @@ pub fn cmd_login(
 ) -> Result<()> {
     if let Err(report) = &current_settings {
         eprintln!("The current settings failed to load with the following error: {report:#}");
-        eprintln!("Would you like to proceed with the login command? Doing so may cause your existing settings filed to be replaced rather than updated.");
+        eprintln!(
+            "Would you like to proceed with the login command? Doing so may cause your existing settings filed to be replaced rather than updated."
+        );
         eprintln!("1. Yes, please proceed");
         eprintln!("2. No, please exit immediately");
-        eprintln!("Please enter either '1' or '2'. Any other input will cause the program to exit.");
+        eprintln!(
+            "Please enter either '1' or '2'. Any other input will cause the program to exit."
+        );
 
         let mut input = String::new();
         io::stdin().read_line(&mut input)?;
         match input.trim() {
-            "1" => { }
+            "1" => {}
             _ => {
-                return Err(eyre!("Exiting login command without completing per user request."));
+                return Err(eyre!(
+                    "Exiting login command without completing per user request."
+                ));
             }
         }
     }
 
-    let profile_to_use = profile.or_else(|| current_settings.as_ref().ok().and_then(|s| s.profile()));
+    let profile_to_use =
+        profile.or_else(|| current_settings.as_ref().ok().and_then(|s| s.profile()));
 
     let tenant_to_use = match tenant {
         Some(arg_value) if !arg_value.is_empty() => arg_value,
@@ -136,9 +143,7 @@ fn prompt_for_auth(profile: Option<&str>) -> Result<Option<Credentials>> {
     }
 
     match AuthSetupType::try_from_str(&input) {
-        None => {
-            return Err(eyre!("Unrecognized input."))
-        }
+        None => Err(eyre!("Unrecognized input.")),
         Some(AuthSetupType::Skip) => Ok(None),
         Some(AuthSetupType::ApiKey) => match previous_value.map(|attr| attr.extract()) {
             Ok(AuthenticationInfo::Static(Credentials::ApiKey(creds))) => {

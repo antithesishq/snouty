@@ -264,24 +264,41 @@ pub(crate) fn update_settings_in_global_file(
     let settings_dir = global_settings_dir().ok_or_eyre("Could not determine global settings directory. Ensure either $XDG_CONFIG_DIR or $HOME is set.")?;
     let path = settings_dir.join(GLOBAL_SETTINGS_FILENAME);
     let mut contents = match read_to_string_if_file_exists(&path)? {
-        Some(contents) => parse_settings(&contents, &path)?,
+        Some(contents) => parse_settings(&contents, &path).unwrap_or_else(|_| Table::new()),
         None => Table::new(),
     };
 
     if let Some(profile) = profile_to_update {
-        let mut target = Table::new();
-        update_table(&mut target, tenant, repository, base_url, container_engine);
-        let profile_value = Value::Table(target);
-
         match contents.entry(PROFILE_KEY) {
             Entry::Vacant(vacant) => {
                 let mut outer = Table::new();
-                outer.insert(profile.to_owned(), profile_value);
+                let mut target = Table::new();
+                update_table(&mut target, tenant, repository, base_url, container_engine);
+                outer.insert(profile.to_owned(), Value::Table(target));
                 vacant.insert(Value::Table(outer));
             }
             Entry::Occupied(mut occupied) => {
                 let outer = occupied.get_mut().as_table_mut().ok_or_eyre(eyre!("The settings file at {:?} is malformed: `profile` should be a table of named profiles", &path))?;
-                outer.insert(profile.to_owned(), profile_value);
+
+                match outer.entry(profile.to_owned()) {
+                    Entry::Vacant(vacant) => {
+                        let mut target = Table::new();
+                        update_table(&mut target, tenant, repository, base_url, container_engine);
+                        vacant.insert(Value::Table(target));
+                    }
+                    Entry::Occupied(mut occupied) => {
+                        match occupied.get_mut().as_table_mut() {
+                            None => {
+                                let mut target = Table::new();
+                                update_table(&mut target, tenant, repository, base_url, container_engine);
+                                occupied.insert(Value::Table(target));
+                            }
+                            Some(current_value) => {
+                                update_table(current_value, tenant, repository, base_url, container_engine);
+                            }
+                        }
+                    }
+                }
             }
         }
     } else {

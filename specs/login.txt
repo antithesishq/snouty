@@ -80,7 +80,7 @@ stderr '.*invalid tenant.*'
 #    login exits successfully despite the unreadable settings file.
 isolate-home with_profile
 env SNOUTY_SETTINGS_PATH=broken.toml
-stdin login_password.txt
+stdin login_repair_broken_toml.txt
 snouty --profile prod login
 file ~/.config/snouty/settings.toml '\[profile\.prod\]'
 file ~/.config/snouty/settings.toml 'tenant = "ptenant"'
@@ -95,15 +95,70 @@ file ~/.config/snouty/credentials.toml 'password = "ppass"'
 #    the unreadable file, that produced the `[profile.prod]` scoping in step 1.
 isolate-home without_profile
 env SNOUTY_SETTINGS_PATH=broken.toml
-stdin login_password.txt
+stdin login_repair_broken_toml.txt
 snouty login
 file ~/.config/snouty/settings.toml 'tenant = "ptenant"'
 ! file ~/.config/snouty/settings.toml '\[profile'
 file ~/.config/snouty/credentials.toml 'username = "puser"'
 ! file ~/.config/snouty/credentials.toml '\[profile'
 
+# 9. An existing settings file should be updated by `snouty login`, not overwritten
+isolate-home with_existing_global_profile
+env SNOUTY_SETTINGS_PATH=""
+stdin login_password.txt
+snouty login
+file ~/.config/snouty/settings.toml 'tenant = "ptenant"'
+! file ~/.config/snouty/settings.toml 'tenant = "global-tenant"'
+file ~/.config/snouty/settings.toml 'repository = "prepo"'
+! file ~/.config/snouty/settings.toml 'repository = "global-repository"'
+file ~/.config/snouty/settings.toml 'container_engine = "docker"'
+file ~/.config/snouty/settings.toml '\[profile\.prod\]'
+file ~/.config/snouty/settings.toml 'tenant = "profile-tenant"'
+file ~/.config/snouty/settings.toml 'repository = "profile-repository"'
+
+# 10. An existing settings file profile should be updated by `snouty login`, not overwritten
+isolate-home with_existing_profile
+env SNOUTY_SETTINGS_PATH=""
+stdin login_password.txt
+snouty --profile prod login
+file ~/.config/snouty/settings.toml 'tenant = "global-tenant"'
+file ~/.config/snouty/settings.toml 'repository = "global-repository"'
+file ~/.config/snouty/settings.toml 'container_engine = "docker"'
+file ~/.config/snouty/settings.toml '\[profile\.prod\]'
+file ~/.config/snouty/settings.toml 'tenant = "ptenant"'
+! file ~/.config/snouty/settings.toml 'tenant = "old-tenant"'
+file ~/.config/snouty/settings.toml 'repository = "prepo"'
+! file ~/.config/snouty/settings.toml 'repository = "old-repository"'
+file ~/.config/snouty/settings.toml 'container_engine = "podman"'
+file ~/.config/snouty/settings.toml '\[profile\.other\]'
+file ~/.config/snouty/settings.toml 'tenant = "other-tenant"'
+file ~/.config/snouty/settings.toml 'repository = "other-repository"'
+
 -- broken.toml --
 this is = = not valid toml
+
+-- with_existing_global_profile/.config/snouty/settings.toml --
+tenant = "global-tenant"
+repository = "global-repository"
+container_engine = "docker"
+
+[profile.prod]
+tenant = "profile-tenant"
+repository = "profile-repository"
+
+-- with_existing_profile/.config/snouty/settings.toml --
+tenant = "global-tenant"
+repository = "global-repository"
+container_engine = "docker"
+
+[profile.prod]
+tenant = "old-tenant"
+repository = "old-repository"
+container_engine = "podman"
+
+[profile.other]
+tenant = "other-tenant"
+repository = "other-repository"
 
 -- login_apikey.txt --
 mytenant
@@ -134,3 +189,10 @@ prepo2
 1
 -- login_bad_tenant.txt --
 evil.com/x
+-- login_repair_broken_toml.txt --
+1
+ptenant
+prepo
+3
+puser
+ppass

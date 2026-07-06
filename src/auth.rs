@@ -165,13 +165,17 @@ impl AuthenticationInfo {
         }?;
 
         if let Ok(persisted) = credential.get_password() {
-            return Ok(Some(AttributedValue::Keychain {
-                value: Self::Static(
-                    serde_json::from_str::<PersistableCredentials>(&persisted)?
-                        .convert_to_credentials(),
-                ),
-                entry_name: credential_name,
-            }));
+            match serde_json::from_str::<PersistableCredentials>(&persisted) {
+                Ok(persisted) => {
+                    return Ok(Some(AttributedValue::Keychain {
+                        value: Self::Static(persisted.convert_to_credentials()),
+                        entry_name: credential_name,
+                    }));
+                }
+                Err(err) => {
+                    eprintln!("Deserialization of the value in the keychain failed with error {err:#}");
+                }
+            }
         }
 
         Ok(None)

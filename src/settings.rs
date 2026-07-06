@@ -4,7 +4,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use color_eyre::eyre::{OptionExt, Result, eyre};
+use color_eyre::eyre::{Context, OptionExt, Result, eyre};
 use tempfile::NamedTempFile;
 use toml::{Table, Value, map::Entry};
 
@@ -264,7 +264,18 @@ pub(crate) fn update_settings_in_global_file(
     let settings_dir = global_settings_dir().ok_or_eyre("Could not determine global settings directory. Ensure either $XDG_CONFIG_DIR or $HOME is set.")?;
     let path = settings_dir.join(GLOBAL_SETTINGS_FILENAME);
     let mut contents = match read_to_string_if_file_exists(&path)? {
-        Some(contents) => parse_settings(&contents, &path).unwrap_or_else(|_| Table::new()),
+        Some(contents) => match parse_settings(&contents, &path) {
+            Ok(table) => table,
+            Err(_) => {
+                let backup = back_up_unparsable_file(&path)?;
+                eprintln!(
+                    "note: the existing settings file at {} could not be parsed; it has been backed up to {} and a new one will be written.",
+                    path.display(),
+                    backup.display()
+                );
+                Table::new()
+            }
+        },
         None => Table::new(),
     };
 
@@ -515,6 +526,17 @@ pub(crate) fn read_to_string_if_file_exists(path: &Path) -> Result<Option<String
         Err(err) if err.kind() == ErrorKind::NotFound => Ok(None),
         Err(err) => Err(eyre!("File at {:?} could not be read: {err:#}", path)),
     }
+}
+
+pub(crate) fn back_up_unparsable_file(path: &Path) -> Result<PathBuf> {
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| eyre!("Cannot back up file with no name: {:?}", path))?;
+    let backup = path.with_file_name(format!("{file_name}.bak"));
+    fs::rename(path, &backup)
+        .wrap_err_with(|| format!("Failed to back up {:?} to {:?}", path, backup))?;
+    Ok(backup)
 }
 
 #[cfg(test)]

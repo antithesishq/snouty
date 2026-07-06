@@ -22,7 +22,9 @@ use crate::{
     attributed_value::AttributedValue,
     env,
     error::user_error,
-    settings::{global_settings_dir, mkdir, read_to_string_if_file_exists},
+    settings::{
+        back_up_unparsable_file, global_settings_dir, mkdir, read_to_string_if_file_exists,
+    },
 };
 
 pub(crate) const API_KEY_VAR_NAME: &str = "ANTITHESIS_API_KEY";
@@ -453,7 +455,21 @@ fn persist_to_file(credentials: PersistableCredentials, profile: Option<&str>) -
         "Could not determine settings directory. Please ensure $XDG_CONFIG_HOME or $HOME is set",
     )?;
     let mut current_contents = match read_to_string_if_file_exists(&path)? {
-        Some(contents) => parse_credentials_file_toml(contents, &path)?,
+        Some(contents) => match parse_credentials_file_toml(contents, &path) {
+            Ok(file) => file,
+            Err(_) => {
+                let backup = back_up_unparsable_file(&path)?;
+                eprintln!(
+                    "warning: the existing credentials file at {} could not be parsed; it has been backed up to {} and a new one will be written.",
+                    path.display(),
+                    backup.display()
+                );
+                CredentialsFile {
+                    default: None,
+                    profile: None,
+                }
+            }
+        },
         None => CredentialsFile {
             default: None,
             profile: None,

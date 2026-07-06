@@ -151,9 +151,37 @@ stdin login_invalid_tenant.txt
 ! snouty login
 stderr ".*a tenant must be a valid hostname.*"
 
+# 12. An unparsable global settings file is backed up to settings.toml.bak rather
+#     than silently discarded, and a fresh settings file is written in its place.
+#     The invalid file makes settings resolution fail, so login first prompts to
+#     proceed (answered "1" by the stdin fixture) before repairing the file.
+isolate-home unparsable_settings
+stdin login_repair_broken_toml.txt
+snouty login
+file ~/.config/snouty/settings.toml.bak 'unparsable-settings-marker'
+file ~/.config/snouty/settings.toml 'tenant = "ptenant"'
+! file ~/.config/snouty/settings.toml 'unparsable-settings-marker'
+
+# 13. An unparsable credentials file is likewise backed up to credentials.toml.bak
+#     before a fresh one is written. Credentials are not part of settings
+#     resolution, so login does not prompt to proceed here — it just warns and
+#     backs the file up while persisting the new credentials.
+isolate-home unparsable_credentials
+stdin login_password.txt
+snouty login
+file ~/.config/snouty/credentials.toml.bak 'unparsable-credentials-marker'
+file ~/.config/snouty/credentials.toml 'username = "puser"'
+! file ~/.config/snouty/credentials.toml 'unparsable-credentials-marker'
+
 
 -- broken.toml --
 this is = = not valid toml
+
+-- unparsable_settings/.config/snouty/settings.toml --
+this is = = not valid toml unparsable-settings-marker
+
+-- unparsable_credentials/.config/snouty/credentials.toml --
+this is = = not valid toml unparsable-credentials-marker
 
 -- with_existing_global_profile/.config/snouty/settings.toml --
 tenant = "global-tenant"

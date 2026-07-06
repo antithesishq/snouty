@@ -22,6 +22,50 @@ snouty docs --offline search docker
 stdout '/docs/guides/docker_basics/.*'
 stdout 'Docker basics.*'
 
+# By default the query is searched as literal text, so punctuation such as
+#    `.` or `=` is matched verbatim instead of being parsed as FTS5 syntax
+#    (which would otherwise raise an error).
+snouty docs --offline search fault.injection
+stdout '/docs/environment/fault_injection/.*'
+stdout 'Fault injection.*'
+
+# 2c. `=` in a literal query likewise matches verbatim rather than erroring.
+snouty docs --offline search --list python=sdk
+stdout '/docs/sdk/python_sdk/.*'
+! stderr .+
+
+# 2d. A literal query with no matches still exits successfully.
+snouty docs --offline search zzz.qqq
+stderr 'No results found.*'
+
+# 2e. --match treats the query as a raw FTS5 expression, enabling operators
+#    such as AND.
+snouty docs --offline search --match --list 'fault AND injection'
+stdout '/docs/environment/fault_injection/.*'
+! stderr .+
+
+# 2f. -m is the short form of --match.
+snouty docs --offline search -m --list 'fault OR injection'
+stdout '/docs/environment/fault_injection/.*'
+
+# 2g. In --match mode, invalid FTS5 syntax is the caller's error, reported
+#    with a pointer at the double-quote escape hatch and the default search.
+! snouty docs --offline search --match 'moment.branch'
+stderr 'invalid --match query.*'
+stderr 'double quotes.*'
+stderr 'drop --match.*'
+
+# 2h. Within --match mode, wrapping a punctuation term in FTS5 double quotes
+#    searches for it literally.
+snouty docs --offline search --match --list '"fault.injection"'
+stdout '/docs/environment/fault_injection/.*'
+
+# 2i. An unknown column filter in --match mode (reported by FTS5 without the
+#    `fts5:` prefix) still gets the friendly invalid-query guidance.
+! snouty docs --offline search --match 'bogus:fault'
+stderr 'invalid --match query.*'
+stderr 'drop --match.*'
+
 # When search runs with --json, stdout is always JSON. If --json is
 #    present, any non-JSON stdout is a bug.
 snouty --json docs --offline search sdk

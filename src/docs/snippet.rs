@@ -38,14 +38,34 @@ fn is_inline_end(tag: &TagEnd) -> bool {
     )
 }
 
-// --- Step 1: Parse query ---
+// --- Step 1: Derive highlight terms ---
+//
+// `extract_snippet` takes the terms to highlight directly; the caller derives
+// them from the query in a mode-appropriate way. These two helpers cover both
+// search modes: `word_tokens` for the default literal search (the query is
+// plain text) and `fts5_query_terms` for `--match` (the query is an FTS5
+// expression whose operators must be stripped first).
 
-fn parse_query_terms(query: &str) -> Vec<String> {
+/// Split a chunk of text into lowercased word tokens — maximal runs of
+/// alphanumerics, `_`, and `-`. Punctuation such as `.` or `=` separates
+/// tokens, so `moment.branch` yields the highlightable words `moment` and
+/// `branch`.
+pub fn word_tokens(text: &str) -> Vec<String> {
+    text.split(|c: char| !is_word_char(c))
+        .filter(|word| !word.is_empty())
+        .map(str::to_lowercase)
+        .collect()
+}
+
+/// Extract highlightable terms from a raw FTS5 query (`--match` mode) by
+/// dropping the query syntax that can appear in it — `NEAR`, boolean operators,
+/// `-`/`NOT` exclusions, `column:` filters, `prefix*`, and `"phrase"` quotes —
+/// then tokenizing what remains. Excluded terms aren't highlighted because they
+/// don't describe what matched.
+pub fn fts5_query_terms(query: &str) -> Vec<String> {
     let mut terms = Vec::new();
     let mut skip_next = false;
 
-    // Snippets only need highlightable terms, not full FTS semantics, so this
-    // strips the small amount of query syntax that can appear in user input.
     let normalized = query.replace("NEAR(", " ").replace([')', '"'], " ");
 
     for token in normalized.split_whitespace() {
@@ -69,26 +89,12 @@ fn parse_query_terms(query: &str) -> Vec<String> {
         }
 
         // Strip column prefixes like "title:"
-        let token = if let Some((_prefix, rest)) = token.split_once(':') {
-            rest
-        } else {
-            token
-        };
+        let token = token.split_once(':').map_or(token, |(_prefix, rest)| rest);
 
         // Strip trailing * (prefix operator)
         let token = token.trim_end_matches('*');
 
-        if token.is_empty() {
-            continue;
-        }
-
-        // Keep only tokens that are alphanumeric/_/-
-        if token
-            .chars()
-            .all(|c| c.is_alphanumeric() || c == '_' || c == '-')
-        {
-            terms.push(token.to_lowercase());
-        }
+        terms.extend(word_tokens(token));
     }
 
     terms
@@ -329,16 +335,15 @@ fn highlight_hits(text: &str, hits: &[Hit], multi_term: bool) -> String {
 
 pub fn extract_snippet(
     content: &str,
-    query: &str,
+    terms: &[String],
     max_visible: usize,
     title_boosted: bool,
 ) -> String {
-    // The snippet pipeline is:
+    // Given the highlight terms, the snippet pipeline is:
     // 1. flatten markdown to readable plain text
     // 2. find term hits
     // 3. choose the best excerpt window
     // 4. mark highlighted ranges for later styling/output
-    let terms = parse_query_terms(query);
     if terms.is_empty() {
         return String::new();
     }
@@ -348,7 +353,7 @@ pub fn extract_snippet(
         return String::new();
     }
 
-    let hits = find_hits(&plain, &terms);
+    let hits = find_hits(&plain, terms);
     let multi_term = terms.len() > 1;
 
     let best = pick_best_hit(&hits, multi_term);
@@ -383,7 +388,7 @@ pub fn extract_snippet(
 
     // Recompute hits inside the final window so highlight offsets line up with
     // the text we actually emit.
-    let window_hits = find_hits(window_text, &terms);
+    let window_hits = find_hits(window_text, terms);
 
     let highlighted = highlight_hits(window_text, &window_hits, multi_term);
 
@@ -404,62 +409,92 @@ pub fn extract_snippet(
 mod tests {
     use super::*;
 
+    /// Build an owned term slice, the way `extract_snippet` expects it.
+    fn terms(words: &[&str]) -> Vec<String> {
+        words.iter().map(|w| w.to_string()).collect()
+    }
+
     #[test]
-    fn test_parse_query_simple() {
+    fn test_word_tokens_splits_on_punctuation() {
+        // Punctuation-joined text is split into separate tokens, mirroring the
+        // FTS5 tokenizer (a `-` stays part of the word); tokens are lowercased.
+        assert_eq!(word_tokens("Fault Injection"), vec!["fault", "injection"]);
+        assert_eq!(word_tokens("moment.branch"), vec!["moment", "branch"]);
+        assert_eq!(word_tokens("moment=branch"), vec!["moment", "branch"]);
+        assert_eq!(word_tokens("v1.2.3"), vec!["v1", "2", "3"]);
+        assert_eq!(word_tokens("foo-bar"), vec!["foo-bar"]);
+        assert!(word_tokens("...").is_empty());
+    }
+
+    #[test]
+    fn test_fts5_query_terms_simple() {
         assert_eq!(
-            parse_query_terms("rust instrumentation"),
+            fts5_query_terms("rust instrumentation"),
             vec!["rust", "instrumentation"]
         );
     }
 
     #[test]
-    fn test_parse_query_not() {
+    fn test_fts5_query_terms_not() {
         assert_eq!(
-            parse_query_terms("NOT java instrumentation"),
+            fts5_query_terms("NOT java instrumentation"),
             vec!["instrumentation"]
         );
     }
 
     #[test]
-    fn test_parse_query_dash_prefix() {
+    fn test_fts5_query_terms_dash_prefix() {
         assert_eq!(
-            parse_query_terms("-java instrumentation"),
+            fts5_query_terms("-java instrumentation"),
             vec!["instrumentation"]
         );
     }
 
     #[test]
-    fn test_parse_query_operators() {
+    fn test_fts5_query_terms_operators() {
         assert_eq!(
-            parse_query_terms("rust AND instrumentation"),
+            fts5_query_terms("rust AND instrumentation"),
             vec!["rust", "instrumentation"]
         );
-        assert_eq!(parse_query_terms("rust OR go"), vec!["rust", "go"]);
+        assert_eq!(fts5_query_terms("rust OR go"), vec!["rust", "go"]);
     }
 
     #[test]
-    fn test_parse_query_prefix_star() {
-        assert_eq!(parse_query_terms("setup*"), vec!["setup"]);
+    fn test_fts5_query_terms_prefix_star() {
+        assert_eq!(fts5_query_terms("setup*"), vec!["setup"]);
     }
 
     #[test]
-    fn test_parse_query_column_prefix() {
+    fn test_fts5_query_terms_column_prefix() {
         assert_eq!(
-            parse_query_terms("title:rust content:test"),
+            fts5_query_terms("title:rust content:test"),
             vec!["rust", "test"]
         );
     }
 
     #[test]
-    fn test_parse_query_near() {
-        let terms = parse_query_terms("NEAR(docker compose)");
-        assert_eq!(terms, vec!["docker", "compose"]);
+    fn test_fts5_query_terms_near() {
+        assert_eq!(
+            fts5_query_terms("NEAR(docker compose)"),
+            vec!["docker", "compose"]
+        );
     }
 
     #[test]
-    fn test_parse_query_quoted() {
-        let terms = parse_query_terms("\"docker compose\"");
-        assert_eq!(terms, vec!["docker", "compose"]);
+    fn test_fts5_query_terms_quoted() {
+        assert_eq!(
+            fts5_query_terms("\"docker compose\""),
+            vec!["docker", "compose"]
+        );
+    }
+
+    #[test]
+    fn test_fts5_query_terms_splits_punctuation_bareword() {
+        // A quoted punctuation phrase in --match mode still highlights each word.
+        assert_eq!(
+            fts5_query_terms("\"moment.branch\""),
+            vec!["moment", "branch"]
+        );
     }
 
     #[test]
@@ -494,7 +529,7 @@ mod tests {
     #[test]
     fn test_single_term_highlights_all() {
         let content = "# Setup\n\nFirst setup step. Then another setup.";
-        let result = extract_snippet(content, "setup", 300, false);
+        let result = extract_snippet(content, &terms(&["setup"]), 300, false);
         // Single term should highlight all occurrences
         assert!(result.contains(&format!("{MATCH_START}Setup{MATCH_END}")));
         assert!(result.contains(&format!("{MATCH_START}setup{MATCH_END}")));
@@ -504,15 +539,17 @@ mod tests {
     fn test_multi_term_proximity_filtering() {
         // "docker" and "compose" near each other should be highlighted
         let content = "# Docker\n\nUse docker compose to run services. Some other long text about unrelated things that goes on for a while to create distance. Docker is great.";
-        let result = extract_snippet(content, "docker compose", 300, false);
+        let result = extract_snippet(content, &terms(&["docker", "compose"]), 300, false);
         // Should highlight where they co-occur
         assert!(result.contains(MATCH_START));
     }
 
     #[test]
     fn test_not_term_excluded() {
+        // End-to-end: an FTS5 NOT-excluded term is dropped before highlighting.
         let content = "# Java\n\nJava instrumentation is different from Rust instrumentation.";
-        let result = extract_snippet(content, "NOT java instrumentation", 300, false);
+        let terms = fts5_query_terms("NOT java instrumentation");
+        let result = extract_snippet(content, &terms, 300, false);
         // "java" should NOT be highlighted
         assert!(!result.contains(&format!("{MATCH_START}Java{MATCH_END}")));
         assert!(!result.contains(&format!("{MATCH_START}java{MATCH_END}")));
@@ -524,7 +561,7 @@ mod tests {
     fn test_title_boosted_no_content_match_uses_opening() {
         let content = "# Getting Started\n\nThis is the introduction to the documentation. It covers many topics.";
         // query terms not in content, but title_boosted
-        let result = extract_snippet(content, "nonexistent", 300, true);
+        let result = extract_snippet(content, &terms(&["nonexistent"]), 300, true);
         // Should return opening text (no highlights but text present)
         assert!(result.contains("Getting Started"));
     }
@@ -532,7 +569,7 @@ mod tests {
     #[test]
     fn test_ellipsis_added() {
         let content = "# Start\n\nSome prefix text. The rust language is great. Some suffix text that goes on for a long time to exceed the window size and trigger ellipsis behavior at the end of the snippet.";
-        let result = extract_snippet(content, "rust", 50, false);
+        let result = extract_snippet(content, &terms(&["rust"]), 50, false);
         assert!(result.contains("..."));
     }
 
@@ -544,14 +581,14 @@ mod tests {
 
     #[test]
     fn test_empty_content() {
-        let result = extract_snippet("", "test", 300, false);
+        let result = extract_snippet("", &terms(&["test"]), 300, false);
         assert!(result.is_empty());
     }
 
     #[test]
     fn test_no_matches_no_title_boost() {
         let content = "# Hello\n\nSome text about nothing relevant.";
-        let result = extract_snippet(content, "nonexistent", 300, false);
+        let result = extract_snippet(content, &terms(&["nonexistent"]), 300, false);
         // No hits and no title boost → opening text, no highlights
         assert!(result.contains("Hello"));
         assert!(!result.contains(MATCH_START));

@@ -103,7 +103,7 @@ file ~/.config/snouty/credentials.toml 'password = "ppass"'
 
 # 8. The same broken settings file without `--profile` persists the values at the
 #    top level instead — proving it is the flag, not some value resurrected from
-#    the unreadable file, that produced the `[profile.prod]` scoping in step 1.
+#    the unreadable file, that produced the `[profile.prod]` scoping in step 7.
 isolate-home without_profile
 env SNOUTY_SETTINGS_PATH=broken.toml
 stdin login_repair_broken_toml.txt

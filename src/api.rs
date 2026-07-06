@@ -164,38 +164,6 @@ fn normalize_property(property: Property) -> Result<Property> {
 /// to return (e.g. massive log files) and must not be aborted — the user can ctrl-c.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
-#[derive(Clone, PartialEq, Eq)]
-pub enum Auth {
-    Basic { username: String, password: String },
-    Bearer { api_key: String },
-}
-
-impl std::fmt::Debug for Auth {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Basic { username, .. } => f
-                .debug_struct("Basic")
-                .field("username", username)
-                .field("password", &"[REDACTED]")
-                .finish(),
-            Self::Bearer { .. } => f
-                .debug_struct("Bearer")
-                .field("api_key", &"[REDACTED]")
-                .finish(),
-        }
-    }
-}
-
-impl Auth {
-    pub fn basic(username: String, password: String) -> Self {
-        Self::Basic { username, password }
-    }
-
-    pub fn bearer(api_key: String) -> Self {
-        Self::Bearer { api_key }
-    }
-}
-
 pub struct AntithesisApi {
     client: generated::Client,
     base_url: String,
@@ -1987,23 +1955,6 @@ mod tests {
         let body = String::from_utf8(body).unwrap();
 
         assert!(body.contains("slow request"));
-    }
-
-    #[test]
-    fn auth_debug_redacts_password() {
-        let auth = Auth::basic("user".to_string(), "secret".to_string());
-        let debug = format!("{:?}", auth);
-        assert!(debug.contains("user"));
-        assert!(!debug.contains("secret"));
-        assert!(debug.contains("[REDACTED]"));
-    }
-
-    #[test]
-    fn auth_debug_redacts_api_key() {
-        let auth = Auth::bearer("secret-key".to_string());
-        let debug = format!("{:?}", auth);
-        assert!(!debug.contains("secret-key"));
-        assert!(debug.contains("[REDACTED]"));
     }
 
     fn rid(version: u32) -> String {

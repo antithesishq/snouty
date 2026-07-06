@@ -105,7 +105,7 @@ impl Credentials {
         Ok(hv)
     }
 
-    fn convert_to_peristable_credentials(self) -> Result<PersistableCredentials> {
+    fn convert_to_persistable_credentials(self) -> Result<PersistableCredentials> {
         match self {
             Self::ApiKey(api_key_credentials) => {
                 Ok(PersistableCredentials::ApiKey(api_key_credentials))
@@ -375,7 +375,7 @@ pub fn initialize_credential_store() -> Result<()> {
 }
 
 pub(crate) fn persist(credentials: Credentials, profile: Option<&str>) -> Result<()> {
-    let persistable = credentials.convert_to_peristable_credentials()?;
+    let persistable = credentials.convert_to_persistable_credentials()?;
     match try_persist_to_keychain(&persistable, profile) {
         Err(err) => Err(err),
         Ok(Some(())) => Ok(()),
@@ -632,5 +632,22 @@ mod tests {
         let header = credentials.auth_header().unwrap();
         assert_eq!(header.to_str().unwrap(), "GHA oidc-jwt-token-value");
         assert!(header.is_sensitive());
+    }
+
+    #[test]
+    fn password_credentials_debug_redacts_password() {
+        let credentials = Credentials::for_password("user".to_owned(), "secret".to_owned());
+        let debug = format!("{credentials:?}");
+        assert!(debug.contains("user"));
+        assert!(!debug.contains("secret"));
+        assert!(debug.contains("[REDACTED]"));
+    }
+
+    #[test]
+    fn api_key_credentials_debug_redacts_key() {
+        let credentials = Credentials::for_api_key("secret-key".to_owned());
+        let debug = format!("{credentials:?}");
+        assert!(!debug.contains("secret-key"));
+        assert!(debug.contains("[REDACTED]"));
     }
 }

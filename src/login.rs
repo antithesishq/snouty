@@ -17,7 +17,7 @@ pub fn cmd_login(
     if let Err(report) = &current_settings {
         eprintln!("The current settings failed to load with the following error: {report:#}");
         eprintln!(
-            "Would you like to proceed with the login command? Doing so may cause your existing settings filed to be replaced rather than updated."
+            "Would you like to proceed with the login command? Doing so may cause your existing settings file to be replaced rather than updated."
         );
         eprintln!("1. Yes, please proceed");
         eprintln!("2. No, please exit immediately");

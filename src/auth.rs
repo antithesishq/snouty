@@ -282,16 +282,22 @@ impl AuthenticationInfo {
 }
 
 fn try_load_credentials_file() -> Result<Option<(PathBuf, CredentialsFile)>> {
-    if let Some(snouty_settings_dir) = global_settings_dir() {
-        let path = snouty_settings_dir.join(CREDENTIALS_FILENAME);
-
-        if let Some(contents) = read_to_string_if_file_exists(&path)? {
-            let parsed = parse_credentials_file_toml(contents, &path)?;
-            return Ok(Some((path, parsed)));
-        }
+    if let Some(path) = try_get_credentials_file_path()
+        && let Some(contents) = read_to_string_if_file_exists(&path)?
+    {
+        let parsed = parse_credentials_file_toml(contents, &path)?;
+        return Ok(Some((path, parsed)));
     }
 
     Ok(None)
+}
+
+fn try_get_credentials_file_path() -> Option<PathBuf> {
+    if let Some(snouty_settings_dir) = global_settings_dir() {
+        Some(snouty_settings_dir.join(CREDENTIALS_FILENAME));
+    }
+
+    None
 }
 
 /// Exchange the GitHub Actions OIDC *request* token for an Antithesis-audience
@@ -390,6 +396,9 @@ fn try_persist_to_keychain(
     }?;
 
     credential.set_password(serde_json::to_string(credentials)?.as_str())?;
+
+    clear_from_file_if_present(profile);
+
     Ok(Some(()))
 }
 
@@ -397,6 +406,36 @@ fn construct_keychain_credential_name(profile: Option<&str>) -> String {
     profile
         .map(|p| format!("profile_{p}"))
         .unwrap_or_else(|| "_default_".to_owned())
+}
+
+fn clear_from_file_if_present(profile: Option<&str>) {
+    if let Some(path) = try_get_credentials_file_path()
+        && let Ok(Some(contents)) = read_to_string_if_file_exists(&path)
+        && let Ok(mut creds_file) = parse_credentials_file_toml(contents, &path)
+    {
+        let mut changed = false;
+        if let Some(profile) = profile {
+            if let Some(by_profile) = creds_file.profile.as_mut() {
+                changed = by_profile.remove(profile).is_some();
+            }
+        } else {
+            changed = creds_file.default.is_some();
+            creds_file.default = None;
+        }
+
+        if changed
+            && let Some(parent) = path.parent()
+            && let Ok(mut temp) = NamedTempFile::new_in(parent)
+            && let Ok(to_write) = toml::to_string_pretty(&creds_file)
+            && temp.write_all(to_write.as_bytes()).is_ok()
+        {
+            eprintln!(
+                "The supplied credentials were stored in the keychain, but an entry under {} profile name was also present in the user credentials file. Clearing the entry from the credentials file in favor of what was committed to the keychain.",
+                if profile.is_some() { "the same" } else { "no" }
+            );
+            let _ = temp.persist(&path);
+        }
+    }
 }
 
 fn persist_to_file(credentials: PersistableCredentials, profile: Option<&str>) -> Result<()> {

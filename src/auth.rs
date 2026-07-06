@@ -2,6 +2,7 @@ use std::{
     collections::HashMap,
     io::Write,
     path::{Path, PathBuf},
+    sync::Arc,
     time::Duration,
 };
 
@@ -15,6 +16,7 @@ use keyring_core::Entry;
 use progenitor_client::OperationInfo;
 use serde::{Deserialize, Serialize};
 use tempfile::NamedTempFile;
+use tokio::sync::OnceCell;
 
 use crate::{
     attributed_value::AttributedValue,
@@ -123,7 +125,11 @@ impl Credentials {
 #[derive(Clone, Debug)]
 pub enum AuthenticationInfo {
     Static(Credentials),
-    GithubActionsOidc { url: String, request_token: String },
+    GithubActionsOidc {
+        url: String,
+        request_token: String,
+        cached: Arc<OnceCell<Credentials>>,
+    },
 }
 
 impl AuthenticationInfo {
@@ -180,6 +186,7 @@ impl AuthenticationInfo {
                 value: Self::GithubActionsOidc {
                     url: actions_id_url,
                     request_token: actions_id_request_token,
+                    cached: Arc::new(OnceCell::new()),
                 },
                 environment_variable_names: vec![TARGET_URL_VAR_NAME, REQ_TOKEN_VAR_NAME],
             }));
@@ -272,11 +279,14 @@ impl AuthenticationInfo {
     async fn auth_header(&self) -> Result<HeaderValue> {
         match self {
             Self::Static(creds) => creds.auth_header(),
-            Self::GithubActionsOidc { url, request_token } => {
-                fetch_github_actions_oidc_credentials(url, request_token)
-                    .await?
-                    .auth_header()
-            }
+            Self::GithubActionsOidc {
+                url,
+                request_token,
+                cached,
+            } => cached
+                .get_or_try_init(|| fetch_github_actions_oidc_credentials(url, request_token))
+                .await?
+                .auth_header(),
         }
     }
 }
@@ -649,5 +659,36 @@ mod tests {
         let debug = format!("{credentials:?}");
         assert!(!debug.contains("secret-key"));
         assert!(debug.contains("[REDACTED]"));
+    }
+
+    #[tokio::test]
+    async fn github_actions_oidc_token_is_fetched_once_and_cached() {
+        // The mock server accepts exactly one connection and then shuts down, so
+        // a second exchange would fail with a connection error. Both
+        // `auth_header` calls succeeding proves the token is reused from the
+        // cache rather than re-fetched per request.
+        let (url, requests) =
+            spawn_oidc_token_server("200 OK", r#"{"count":1,"value":"oidc-jwt-token-value"}"#);
+
+        let auth = AuthenticationInfo::GithubActionsOidc {
+            url,
+            request_token: "actions-request-token".to_owned(),
+            cached: Arc::new(OnceCell::new()),
+        };
+
+        let first = auth.auth_header().await.unwrap();
+        let second = auth.auth_header().await.unwrap();
+        assert_eq!(first.to_str().unwrap(), "GHA oidc-jwt-token-value");
+        assert_eq!(first, second);
+
+        // Exactly one request reached the server: the first fetch is captured,
+        // and no second request ever arrives.
+        requests
+            .recv_timeout(Duration::from_secs(5))
+            .expect("first fetch should hit the server");
+        assert!(
+            requests.recv_timeout(Duration::from_millis(200)).is_err(),
+            "second auth_header call should be served from cache, not re-fetched"
+        );
     }
 }

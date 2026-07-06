@@ -3,8 +3,8 @@ use serde::Serialize;
 
 use crate::api::{AntithesisApi, ApiVersion, VersionError};
 use crate::attributed_value::AttributedValue;
+use crate::auth::{AuthenticationInfo, Credentials, PasswordCredentials};
 use crate::container;
-use crate::credentials::{AuthenticationInfo, Credentials, PasswordCredentials};
 use crate::render::render_kv;
 use crate::settings::Settings;
 
@@ -470,7 +470,7 @@ pub async fn cmd_doctor(
 mod tests {
     use color_eyre::eyre::eyre;
 
-    use crate::credentials::{API_KEY_VAR_NAME, PASSWORD_VAR_NAME, USERNAME_VAR_NAME};
+    use crate::auth::{API_KEY_VAR_NAME, PASSWORD_VAR_NAME, USERNAME_VAR_NAME};
 
     use super::*;
 
@@ -490,7 +490,10 @@ mod tests {
     #[test]
     fn auth_legacy_basic_warns_on_key_and_notes_legacy() {
         let checks = authn_checks(Ok(AttributedValue::EnvironmentVariable {
-            value: AuthenticationInfo::Static(Credentials::for_password("user".to_owned(), "pass".to_owned())),
+            value: AuthenticationInfo::Static(Credentials::for_password(
+                "user".to_owned(),
+                "pass".to_owned(),
+            )),
             environment_variable_names: vec![USERNAME_VAR_NAME, PASSWORD_VAR_NAME],
         }));
         assert_eq!(checks.len(), 2);

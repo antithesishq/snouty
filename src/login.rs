@@ -4,7 +4,7 @@ use color_eyre::eyre::{Context, Result, eyre};
 
 use crate::{
     attributed_value::AttributedValue,
-    credentials::{AuthenticationInfo, Credentials, persist},
+    auth::{AuthenticationInfo, Credentials, persist},
     settings::{Settings, update_settings_in_global_file, validate_tenant_host},
 };
 
@@ -123,7 +123,9 @@ fn prompt_for_auth(profile: Option<&str>) -> Result<Option<Credentials>> {
     match AuthSetupType::try_from_str(&input).unwrap_or(AuthSetupType::ApiKey) {
         AuthSetupType::Skip => Ok(None),
         AuthSetupType::ApiKey => match previous_value.map(|attr| attr.extract()) {
-            Ok(AuthenticationInfo::Static(Credentials::ApiKey(creds))) => prompt_for_api_key(Some(&creds.api_key)),
+            Ok(AuthenticationInfo::Static(Credentials::ApiKey(creds))) => {
+                prompt_for_api_key(Some(&creds.api_key))
+            }
             _ => prompt_for_api_key(None),
         }
         .map(Some),

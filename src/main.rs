@@ -9,10 +9,10 @@ use color_eyre::Section;
 use color_eyre::eyre::{Context, Result};
 use semver::Version;
 use snouty::api::AntithesisApi;
+use snouty::auth::initialize_credential_store;
 use snouty::cli::{Cli, Commands, DebugArgs, LaunchArgs, UpdateArgs};
 use snouty::config;
 use snouty::container;
-use snouty::credentials::initialize_credential_store;
 use snouty::docs;
 use snouty::error::user_error;
 use snouty::login::cmd_login;
@@ -115,7 +115,9 @@ async fn run(cli: Cli) -> Result<()> {
         }
         Commands::Update(args) => cmd_update(args),
         Commands::Docs { offline, command } => docs::cmd_docs(command, offline, json).await,
-        Commands::Login { tenant, repository } => cmd_login(tenant, repository, profile.as_deref(), settings),
+        Commands::Login { tenant, repository } => {
+            cmd_login(tenant, repository, profile.as_deref(), settings)
+        }
         Commands::Launch(args) => {
             info!("launching test with webhook: {}", args.webhook);
             cmd_launch(args, &settings?, json, verbose).await

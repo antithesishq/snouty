@@ -282,7 +282,7 @@ impl AuthenticationInfo {
 }
 
 fn try_load_credentials_file() -> Result<Option<(PathBuf, CredentialsFile)>> {
-    if let Some(path) = try_get_credentials_file_path()
+    if let Some((_dir, path)) = try_get_credentials_file_path()
         && let Some(contents) = read_to_string_if_file_exists(&path)?
     {
         let parsed = parse_credentials_file_toml(contents, &path)?;
@@ -292,12 +292,13 @@ fn try_load_credentials_file() -> Result<Option<(PathBuf, CredentialsFile)>> {
     Ok(None)
 }
 
-fn try_get_credentials_file_path() -> Option<PathBuf> {
+fn try_get_credentials_file_path() -> Option<(PathBuf, PathBuf)> {
     if let Some(snouty_settings_dir) = global_settings_dir() {
-        Some(snouty_settings_dir.join(CREDENTIALS_FILENAME));
+        let path = snouty_settings_dir.join(CREDENTIALS_FILENAME);
+        Some((snouty_settings_dir, path))
+    } else {
+        None
     }
-
-    None
 }
 
 /// Exchange the GitHub Actions OIDC *request* token for an Antithesis-audience
@@ -409,7 +410,7 @@ fn construct_keychain_credential_name(profile: Option<&str>) -> String {
 }
 
 fn clear_from_file_if_present(profile: Option<&str>) {
-    if let Some(path) = try_get_credentials_file_path()
+    if let Some((parent_dir, path)) = try_get_credentials_file_path()
         && let Ok(Some(contents)) = read_to_string_if_file_exists(&path)
         && let Ok(mut creds_file) = parse_credentials_file_toml(contents, &path)
     {
@@ -424,8 +425,7 @@ fn clear_from_file_if_present(profile: Option<&str>) {
         }
 
         if changed
-            && let Some(parent) = path.parent()
-            && let Ok(mut temp) = NamedTempFile::new_in(parent)
+            && let Ok(mut temp) = NamedTempFile::new_in(parent_dir)
             && let Ok(to_write) = toml::to_string_pretty(&creds_file)
             && temp.write_all(to_write.as_bytes()).is_ok()
         {
@@ -439,10 +439,9 @@ fn clear_from_file_if_present(profile: Option<&str>) {
 }
 
 fn persist_to_file(credentials: PersistableCredentials, profile: Option<&str>) -> Result<()> {
-    let settings_dir = global_settings_dir().ok_or_eyre(eyre!(
-        "Could not determine settings directory. Please ensure $XDG_CONFIG_DIR or $HOME is set"
-    ))?;
-    let path = settings_dir.join(CREDENTIALS_FILENAME);
+    let (settings_dir, path) = try_get_credentials_file_path().ok_or_eyre(
+        "Could not determine settings directory. Please ensure $XDG_CONFIG_HOME or $HOME is set",
+    )?;
     let mut current_contents = match read_to_string_if_file_exists(&path)? {
         Some(contents) => parse_credentials_file_toml(contents, &path)?,
         None => CredentialsFile {

@@ -7,6 +7,7 @@ use color_eyre::{
 };
 use http::HeaderValue;
 use keyring_core::Entry;
+use progenitor_client::OperationInfo;
 use serde::{Deserialize, Serialize};
 use tempfile::NamedTempFile;
 
@@ -81,150 +82,7 @@ impl Credentials {
         Self::Password(PasswordCredentials { username, password })
     }
 
-    fn try_from_env() -> Result<Option<AttributedValue<Self>>> {
-        if let Some(api_key) = env::var(API_KEY_VAR_NAME)? {
-            return Ok(Some(AttributedValue::EnvironmentVariable {
-                value: Self::for_api_key(api_key),
-                environment_variable_names: vec![API_KEY_VAR_NAME],
-            }));
-        }
-
-        if let Some(username) = env::var(USERNAME_VAR_NAME)?
-            && let Some(password) = env::var(PASSWORD_VAR_NAME)?
-        {
-            return Ok(Some(AttributedValue::EnvironmentVariable {
-                value: Self::for_password(username, password),
-                environment_variable_names: vec![USERNAME_VAR_NAME, PASSWORD_VAR_NAME],
-            }));
-        }
-
-        Ok(None)
-    }
-
-    fn try_from_keychain(profile: Option<&str>) -> Result<Option<AttributedValue<Self>>> {
-        let credential_name = construct_keychain_credential_name(profile);
-        let credential = match Entry::new("snouty", credential_name.as_str()) {
-            Ok(cred) => Ok(cred),
-            // A NoDefaultStore error indicates that the version of initialize_credential_store() selected by the compiler was a no-op
-            Err(keyring_core::Error::NoDefaultStore) => return Ok(None),
-            Err(other) => Err(other),
-        }?;
-
-        if let Ok(persisted) = credential.get_password() {
-            return Ok(Some(AttributedValue::Keychain {
-                value: serde_json::from_str::<PersistableCredentials>(&persisted)?
-                    .convert_to_credentials(),
-                entry_name: credential_name,
-            }));
-        }
-
-        Ok(None)
-    }
-
-    fn try_from_credentials_file(profile: Option<&str>) -> Result<Option<AttributedValue<Self>>> {
-        if let Some(snouty_settings_dir) = global_settings_dir() {
-            let path = snouty_settings_dir.join(CREDENTIALS_FILENAME);
-            return Ok(match read_to_string_if_file_exists(&path)? {
-                Some(contents) => Self::try_from_credentials_file_toml(contents, &path, profile)?,
-                None => None,
-            });
-        }
-
-        Ok(None)
-    }
-
-    fn try_from_credentials_file_toml(
-        contents: String,
-        path: &Path,
-        profile: Option<&str>,
-    ) -> Result<Option<AttributedValue<Self>>> {
-        let parsed = parse_credentials_file_toml(contents, path)?;
-
-        if let Some(requested_profile) = profile
-            && let Some(credentials_for_profile) = parsed
-                .profile
-                .as_ref()
-                .and_then(|t| t.get(requested_profile))
-        {
-            return Ok(Some(AttributedValue::SettingsFile {
-                value: credentials_for_profile.clone().convert_to_credentials(),
-                settings_file_path: path.to_path_buf(),
-                profile: Some(requested_profile.to_owned()),
-            }));
-        }
-
-        if let Some(default_credentials) = parsed.default {
-            return Ok(Some(AttributedValue::SettingsFile {
-                value: default_credentials.convert_to_credentials(),
-                settings_file_path: path.to_path_buf(),
-                profile: None,
-            }));
-        }
-
-        Ok(None)
-    }
-
-    async fn try_from_github_actions_environment() -> Result<Option<AttributedValue<Self>>> {
-        const TARGET_URL_VAR_NAME: &str = "ACTIONS_ID_TOKEN_REQUEST_URL";
-        const REQ_TOKEN_VAR_NAME: &str = "ACTIONS_ID_TOKEN_REQUEST_TOKEN";
-
-        if let Some(actions_id_request_token) = env::var(REQ_TOKEN_VAR_NAME)?
-            && let Some(actions_id_url) = env::var(TARGET_URL_VAR_NAME)?
-        {
-            return Ok(Some(AttributedValue::EnvironmentVariable {
-                value: fetch_github_actions_oidc_credentials(
-                    &actions_id_url,
-                    &actions_id_request_token,
-                )
-                .await?,
-                environment_variable_names: vec![TARGET_URL_VAR_NAME, REQ_TOKEN_VAR_NAME],
-            }));
-        }
-
-        Ok(None)
-    }
-
-    pub(crate) async fn for_ambient_credentials_with_attribution(
-        profile: Option<&str>,
-        allow_basic: bool,
-        offline: bool,
-    ) -> Result<AttributedValue<Self>> {
-        if let Some(from_env) = Self::try_from_env()? {
-            return to_result(from_env, allow_basic);
-        }
-
-        if let Some(from_keychain) = Self::try_from_keychain(profile)? {
-            return to_result(from_keychain, allow_basic);
-        }
-
-        if let Some(from_credentials_file) = Self::try_from_credentials_file(profile)? {
-            return to_result(from_credentials_file, allow_basic);
-        }
-
-        if !offline
-            && let Some(from_github_actions_environment) =
-                Self::try_from_github_actions_environment().await?
-        {
-            return Ok(from_github_actions_environment);
-        }
-
-        Err(user_error("No Antithesis credentials found").suggestion(
-            "set ANTITHESIS_API_KEY; ask Antithesis support for an API key if you don't have one",
-        ))
-    }
-
-    pub(crate) async fn for_ambient_credentials(
-        profile: Option<&str>,
-        allow_basic: bool,
-    ) -> Result<Self> {
-        Ok(
-            Self::for_ambient_credentials_with_attribution(profile, allow_basic, false)
-                .await?
-                .extract(),
-        )
-    }
-
-    pub(crate) fn auth_header(&self) -> Result<HeaderValue> {
+    fn auth_header(&self) -> Result<HeaderValue> {
         let value = match self {
             Credentials::Password(PasswordCredentials { username, password }) => {
                 let credentials = format!("{username}:{password}");
@@ -253,6 +111,151 @@ impl Credentials {
             Self::GithubActionsOidc(_) => Err(eyre!(
                 "Github Actions OIDC tokens cannot be persisted by Snouty"
             )),
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub enum AuthenticationInfo {
+    Static(Credentials),
+    GithubActionsOidc { url: String, request_token: String },
+}
+
+impl AuthenticationInfo {
+    fn try_from_env() -> Result<Option<AttributedValue<Self>>> {
+        if let Some(api_key) = env::var(API_KEY_VAR_NAME)? {
+            return Ok(Some(AttributedValue::EnvironmentVariable {
+                value: Self::Static(Credentials::for_api_key(api_key)),
+                environment_variable_names: vec![API_KEY_VAR_NAME],
+            }));
+        }
+
+        if let Some(username) = env::var(USERNAME_VAR_NAME)?
+            && let Some(password) = env::var(PASSWORD_VAR_NAME)?
+        {
+            return Ok(Some(AttributedValue::EnvironmentVariable {
+                value: Self::Static(Credentials::for_password(username, password)),
+                environment_variable_names: vec![USERNAME_VAR_NAME, PASSWORD_VAR_NAME],
+            }));
+        }
+
+        Ok(None)
+    }
+
+    fn try_from_keychain(profile: Option<&str>) -> Result<Option<AttributedValue<Self>>> {
+        let credential_name = construct_keychain_credential_name(profile);
+        let credential = match Entry::new("snouty", credential_name.as_str()) {
+            Ok(cred) => Ok(cred),
+            // A NoDefaultStore error indicates that the version of initialize_credential_store() selected by the compiler was a no-op
+            Err(keyring_core::Error::NoDefaultStore) => return Ok(None),
+            Err(other) => Err(other),
+        }?;
+
+        if let Ok(persisted) = credential.get_password() {
+            return Ok(Some(AttributedValue::Keychain {
+                value: Self::Static(
+                    serde_json::from_str::<PersistableCredentials>(&persisted)?
+                        .convert_to_credentials(),
+                ),
+                entry_name: credential_name,
+            }));
+        }
+
+        Ok(None)
+    }
+
+    fn try_from_credentials_file(profile: Option<&str>) -> Result<Option<AttributedValue<Self>>> {
+        if let Some(snouty_settings_dir) = global_settings_dir() {
+            let path = snouty_settings_dir.join(CREDENTIALS_FILENAME);
+            return Ok(match read_to_string_if_file_exists(&path)? {
+                Some(contents) => PersistableCredentials::try_from_credentials_file_toml(
+                    contents, &path, profile,
+                )?
+                .map(|c_with_attribution| {
+                    c_with_attribution.map(|c| Self::Static(c.convert_to_credentials()))
+                }),
+                None => None,
+            });
+        }
+
+        Ok(None)
+    }
+
+    fn try_from_github_actions_environment() -> Result<Option<AttributedValue<Self>>> {
+        const TARGET_URL_VAR_NAME: &str = "ACTIONS_ID_TOKEN_REQUEST_URL";
+        const REQ_TOKEN_VAR_NAME: &str = "ACTIONS_ID_TOKEN_REQUEST_TOKEN";
+
+        if let Some(actions_id_request_token) = env::var(REQ_TOKEN_VAR_NAME)?
+            && let Some(actions_id_url) = env::var(TARGET_URL_VAR_NAME)?
+        {
+            return Ok(Some(AttributedValue::EnvironmentVariable {
+                value: Self::GithubActionsOidc {
+                    url: actions_id_url,
+                    request_token: actions_id_request_token,
+                },
+                environment_variable_names: vec![TARGET_URL_VAR_NAME, REQ_TOKEN_VAR_NAME],
+            }));
+        }
+
+        Ok(None)
+    }
+
+    pub(crate) fn for_ambient_configuration_with_attribution(
+        profile: Option<&str>,
+        allow_basic: bool,
+    ) -> Result<AttributedValue<Self>> {
+        if let Some(from_env) = Self::try_from_env()? {
+            return to_result(from_env, allow_basic);
+        }
+
+        if let Some(from_keychain) = Self::try_from_keychain(profile)? {
+            return to_result(from_keychain, allow_basic);
+        }
+
+        if let Some(from_credentials_file) = Self::try_from_credentials_file(profile)? {
+            return to_result(from_credentials_file, allow_basic);
+        }
+
+        if let Some(from_github_actions_environment) = Self::try_from_github_actions_environment()?
+        {
+            return Ok(from_github_actions_environment);
+        }
+
+        Err(user_error("No Antithesis credentials found").suggestion(
+            "set ANTITHESIS_API_KEY; ask Antithesis support for an API key if you don't have one",
+        ))
+    }
+
+    pub(crate) fn for_ambient_configuration(
+        profile: Option<&str>,
+        allow_basic: bool,
+    ) -> Result<Self> {
+        Ok(Self::for_ambient_configuration_with_attribution(profile, allow_basic)?.extract())
+    }
+
+    pub(crate) async fn authenticate_request<E>(
+        &self,
+        request: &mut reqwest::Request,
+        _info: &OperationInfo,
+    ) -> std::result::Result<(), progenitor_client::Error<E>> {
+        let header = self
+            .auth_header()
+            .await
+            .map_err(|e| progenitor_client::Error::Custom(e.to_string()))?;
+        request
+            .headers_mut()
+            .insert(reqwest::header::AUTHORIZATION, header);
+        Ok(())
+    }
+
+    async fn auth_header(&self) -> Result<HeaderValue> {
+        match self {
+            Self::Static(creds) => creds.auth_header(),
+            Self::GithubActionsOidc { url, request_token } => {
+                fetch_github_actions_oidc_credentials(url, request_token)
+                    .await?
+                    .auth_header()
+            }
         }
     }
 }
@@ -307,6 +310,37 @@ impl PersistableCredentials {
             Self::ApiKey(api_key_credentials) => Credentials::ApiKey(api_key_credentials),
             Self::Password(password_credentials) => Credentials::Password(password_credentials),
         }
+    }
+
+    fn try_from_credentials_file_toml(
+        contents: String,
+        path: &Path,
+        profile: Option<&str>,
+    ) -> Result<Option<AttributedValue<Self>>> {
+        let parsed = parse_credentials_file_toml(contents, path)?;
+
+        if let Some(requested_profile) = profile
+            && let Some(credentials_for_profile) = parsed
+                .profile
+                .as_ref()
+                .and_then(|t| t.get(requested_profile))
+        {
+            return Ok(Some(AttributedValue::SettingsFile {
+                value: credentials_for_profile.clone(),
+                settings_file_path: path.to_path_buf(),
+                profile: Some(requested_profile.to_owned()),
+            }));
+        }
+
+        if let Some(default_credentials) = parsed.default {
+            return Ok(Some(AttributedValue::SettingsFile {
+                value: default_credentials,
+                settings_file_path: path.to_path_buf(),
+                profile: None,
+            }));
+        }
+
+        Ok(None)
     }
 }
 
@@ -406,16 +440,21 @@ fn parse_credentials_file_toml(contents: String, path: &Path) -> Result<Credenti
 }
 
 fn to_result(
-    credentials: AttributedValue<Credentials>,
+    authn_info: AttributedValue<AuthenticationInfo>,
     allow_basic: bool,
-) -> Result<AttributedValue<Credentials>> {
-    if !allow_basic && matches!(credentials.unwrap(), Credentials::Password(_)) {
+) -> Result<AttributedValue<AuthenticationInfo>> {
+    if !allow_basic
+        && matches!(
+            authn_info.unwrap(),
+            AuthenticationInfo::Static(Credentials::Password(_))
+        )
+    {
         return Err(user_error(
             "This command does not accept username/password authentication, which is only supported when launching runs (`snouty launch`, `snouty debug`)",
         ));
     }
 
-    Ok(credentials)
+    Ok(authn_info)
 }
 
 #[derive(Serialize, Deserialize)]
@@ -557,7 +596,7 @@ mod tests {
     #[test]
     fn can_read_from_credential_file_defaults() {
         let path = Path::new("./credentials.toml");
-        let api_key_credentials = Credentials::try_from_credentials_file_toml(
+        let api_key_credentials = PersistableCredentials::try_from_credentials_file_toml(
             "[default]\ntype=\"ApiKey\"\napi_key=\"foo\"".to_owned(),
             path,
             None,
@@ -565,10 +604,10 @@ mod tests {
 
         assert!(matches!(
             api_key_credentials.unwrap().unwrap().unwrap(),
-            &Credentials::ApiKey(ApiKeyCredentials { api_key: _ })
+            &PersistableCredentials::ApiKey(ApiKeyCredentials { api_key: _ })
         ));
 
-        let password_credentials = Credentials::try_from_credentials_file_toml(
+        let password_credentials = PersistableCredentials::try_from_credentials_file_toml(
             "[default]\ntype=\"Password\"\nusername=\"user\"\npassword=\"pass\"".to_owned(),
             path,
             None,
@@ -576,7 +615,7 @@ mod tests {
 
         assert!(matches!(
             password_credentials.unwrap().unwrap().unwrap(),
-            &Credentials::Password(PasswordCredentials {
+            &PersistableCredentials::Password(PasswordCredentials {
                 username: _,
                 password: _
             })
@@ -586,7 +625,7 @@ mod tests {
     #[test]
     fn can_read_from_credential_file_profile() {
         let path = Path::new("./credentials.toml");
-        let api_key_credentials = Credentials::try_from_credentials_file_toml(
+        let api_key_credentials = PersistableCredentials::try_from_credentials_file_toml(
             "[profile.foo]\ntype=\"ApiKey\"\napi_key=\"foo\"".to_owned(),
             path,
             Some("foo"),
@@ -594,10 +633,10 @@ mod tests {
 
         assert!(matches!(
             api_key_credentials.unwrap().unwrap().unwrap(),
-            &Credentials::ApiKey(ApiKeyCredentials { api_key: _ })
+            &PersistableCredentials::ApiKey(ApiKeyCredentials { api_key: _ })
         ));
 
-        let password_credentials = Credentials::try_from_credentials_file_toml(
+        let password_credentials = PersistableCredentials::try_from_credentials_file_toml(
             "[profile.foo]\ntype=\"Password\"\nusername=\"user\"\npassword=\"pass\"".to_owned(),
             path,
             Some("foo"),
@@ -605,7 +644,7 @@ mod tests {
 
         assert!(matches!(
             password_credentials.unwrap().unwrap().unwrap(),
-            &Credentials::Password(PasswordCredentials {
+            &PersistableCredentials::Password(PasswordCredentials {
                 username: _,
                 password: _
             })
@@ -615,7 +654,7 @@ mod tests {
     #[test]
     fn will_fall_back_to_defaults_if_profile_not_found() {
         let path = Path::new("./credentials.toml");
-        let api_key_credentials = Credentials::try_from_credentials_file_toml(
+        let api_key_credentials = PersistableCredentials::try_from_credentials_file_toml(
             "[default]\ntype=\"ApiKey\"\napi_key=\"foo\"\n\n[profile.foo]\ntype=\"Password\"\nusername=\"user\"\npassword=\"pass\"".to_owned(),
             path,
             Some("bar"),
@@ -623,10 +662,10 @@ mod tests {
 
         assert!(matches!(
             api_key_credentials.unwrap().unwrap().unwrap(),
-            &Credentials::ApiKey(ApiKeyCredentials { api_key: _ })
+            &PersistableCredentials::ApiKey(ApiKeyCredentials { api_key: _ })
         ));
 
-        let password_credentials = Credentials::try_from_credentials_file_toml(
+        let password_credentials = PersistableCredentials::try_from_credentials_file_toml(
             "[default]\ntype=\"Password\"\nusername=\"user\"\npassword=\"pass\"\n\n[profile.foo]\ntype=\"ApiKey\"\napi_key=\"foo\"".to_owned(),
             path,
             Some("bar"),
@@ -634,7 +673,7 @@ mod tests {
 
         assert!(matches!(
             password_credentials.unwrap().unwrap().unwrap(),
-            &Credentials::Password(PasswordCredentials {
+            &PersistableCredentials::Password(PasswordCredentials {
                 username: _,
                 password: _
             })

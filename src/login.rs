@@ -4,17 +4,16 @@ use color_eyre::eyre::{Context, Result, eyre};
 
 use crate::{
     attributed_value::AttributedValue,
-    credentials::{Credentials, persist},
+    credentials::{AuthenticationInfo, Credentials, persist},
     settings::{Settings, update_settings_in_global_file, validate_tenant_host},
 };
 
-pub async fn cmd_login(
+pub fn cmd_login(
     tenant: Option<String>,
     repository: Option<String>,
+    profile: Option<&str>,
     current_settings: Result<Settings>,
 ) -> Result<()> {
-    let profile = current_settings.as_ref().ok().and_then(|s| s.profile());
-
     let tenant_to_use = match tenant {
         Some(arg_value) if !arg_value.is_empty() => arg_value,
         Some(_) | None => prompt_for_value(
@@ -32,7 +31,7 @@ pub async fn cmd_login(
         )?,
     };
 
-    if let Some(credentials) = prompt_for_auth(profile).await? {
+    if let Some(credentials) = prompt_for_auth(profile)? {
         persist(credentials, profile)?;
     }
 
@@ -87,17 +86,17 @@ impl AuthSetupType {
     }
 }
 
-async fn prompt_for_auth(profile: Option<&str>) -> Result<Option<Credentials>> {
+fn prompt_for_auth(profile: Option<&str>) -> Result<Option<Credentials>> {
     let previous_value =
-        Credentials::for_ambient_credentials_with_attribution(profile, true, false).await;
+        AuthenticationInfo::for_ambient_configuration_with_attribution(profile, true);
 
     let default_selection = match &previous_value {
         Err(_) => '1',
         Ok(creds) => match creds {
             AttributedValue::EnvironmentVariable { .. } => '1',
             _ => match creds.unwrap() {
-                Credentials::ApiKey(_) => '2',
-                Credentials::Password(_) => '3',
+                AuthenticationInfo::Static(Credentials::ApiKey(_)) => '2',
+                AuthenticationInfo::Static(Credentials::Password(_)) => '3',
                 _ => '1',
             },
         },
@@ -124,12 +123,12 @@ async fn prompt_for_auth(profile: Option<&str>) -> Result<Option<Credentials>> {
     match AuthSetupType::try_from_str(&input).unwrap_or(AuthSetupType::ApiKey) {
         AuthSetupType::Skip => Ok(None),
         AuthSetupType::ApiKey => match previous_value.map(|attr| attr.extract()) {
-            Ok(Credentials::ApiKey(creds)) => prompt_for_api_key(Some(&creds.api_key)),
+            Ok(AuthenticationInfo::Static(Credentials::ApiKey(creds))) => prompt_for_api_key(Some(&creds.api_key)),
             _ => prompt_for_api_key(None),
         }
         .map(Some),
         AuthSetupType::Password => match previous_value.map(|attr| attr.extract()) {
-            Ok(Credentials::Password(creds)) => {
+            Ok(AuthenticationInfo::Static(Credentials::Password(creds))) => {
                 prompt_for_username_password(Some(&creds.username), Some(&creds.password))
             }
             _ => prompt_for_username_password(None, None),

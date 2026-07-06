@@ -103,7 +103,7 @@ async fn run(cli: Cli) -> Result<()> {
     // Resolve all settings up front. A broken/unreadable settings file fails
     // here, cleanly and once, before any command runs — including commands that
     // don't read settings. That keeps dispatch a single flat match.
-    let settings = Settings::resolve(settings_path, profile);
+    let settings = Settings::resolve(settings_path, profile.clone());
     let result = match command {
         Commands::Completions { shell } => cmd_completions(shell),
         Commands::Version => {
@@ -115,7 +115,7 @@ async fn run(cli: Cli) -> Result<()> {
         }
         Commands::Update(args) => cmd_update(args),
         Commands::Docs { offline, command } => docs::cmd_docs(command, offline, json).await,
-        Commands::Login { tenant, repository } => cmd_login(tenant, repository, settings).await,
+        Commands::Login { tenant, repository } => cmd_login(tenant, repository, profile.as_deref(), settings),
         Commands::Launch(args) => {
             info!("launching test with webhook: {}", args.webhook);
             cmd_launch(args, &settings?, json, verbose).await
@@ -304,7 +304,7 @@ async fn launch_webhook(
         serde_json::to_string_pretty(&params.to_redacted_map())?
     );
 
-    let api = AntithesisApi::new(settings, verbose).await?;
+    let api = AntithesisApi::new(settings, verbose)?;
     api.launch_test(webhook, &params).await
 }
 
@@ -354,7 +354,7 @@ async fn cmd_debug(args: DebugArgs, settings: &Settings, json: bool, verbose: bo
         serde_json::to_string_pretty(&params.to_redacted_map())?
     );
 
-    let api = AntithesisApi::new(settings, verbose).await?;
+    let api = AntithesisApi::new(settings, verbose)?;
     let response = api.launch_debugging(&params).await?;
 
     if json {

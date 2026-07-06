@@ -12,7 +12,7 @@ use reqwest::{Client, Proxy};
 use reqwest_middleware::ClientWithMiddleware;
 
 use crate::api_cache;
-use crate::credentials::Credentials;
+use crate::credentials::{AuthenticationInfo};
 use crate::env;
 use crate::error::{ApiError, user_error};
 use crate::params::Params;
@@ -202,10 +202,10 @@ pub struct AntithesisApi {
 }
 
 impl AntithesisApi {
-    pub async fn new(settings: &Settings, verbose: bool) -> Result<Self> {
+    pub fn new(settings: &Settings, verbose: bool) -> Result<Self> {
         Self::build(
             settings,
-            &Credentials::for_ambient_credentials(settings.profile(), true).await?,
+            AuthenticationInfo::for_ambient_configuration(settings.profile(), true)?,
             verbose,
             None,
         )
@@ -213,10 +213,10 @@ impl AntithesisApi {
 
     /// Like [`AntithesisApi::new`], but fails fast unless an API key is
     /// configured. Every endpoint other than launch requires one.
-    pub async fn new_requiring_api_key(settings: &Settings, verbose: bool) -> Result<Self> {
+    pub fn new_requiring_api_key(settings: &Settings, verbose: bool) -> Result<Self> {
         Self::build(
             settings,
-            &Credentials::for_ambient_credentials(settings.profile(), false).await?,
+            AuthenticationInfo::for_ambient_configuration(settings.profile(), false)?,
             verbose,
             None,
         )
@@ -226,7 +226,7 @@ impl AntithesisApi {
     /// `None` to disable caching (used by tests that don't exercise it).
     pub(crate) fn build(
         settings: &Settings,
-        auth: &Credentials,
+        authn_info: AuthenticationInfo,
         verbose: bool,
         cache_dir: Option<PathBuf>,
     ) -> Result<Self> {
@@ -236,10 +236,11 @@ impl AntithesisApi {
         let base_url = normalize_base_url(crate::settings::require(settings.base_url(), "tenant")?);
         debug!("initializing API client for {}", base_url);
 
-        let default_headers = default_request_headers(auth)?;
+        let default_headers = default_request_headers()?;
         let http_client = build_http_client(default_headers.clone(), settings)?;
         let cached = api_cache::build_cached_client(http_client.clone(), cache_dir);
         let state = ClientState {
+            authn_info,
             cached,
             default_headers: verbose.then_some(default_headers),
         };
@@ -512,15 +513,28 @@ impl AntithesisApi {
 
 #[derive(Clone, Debug)]
 pub struct ClientState {
-    pub(crate) cached: Option<ClientWithMiddleware>,
+    authn_info: AuthenticationInfo,
+    cached: Option<ClientWithMiddleware>,
     /// Default headers reqwest will merge into the outgoing request at
     /// `Client::execute` time (after our `exec` hook runs). `Some` enables
     /// verbose request/response logging to stderr; we hold the headers here
     /// so the log matches what's actually sent.
-    pub(crate) default_headers: Option<HeaderMap>,
+    default_headers: Option<HeaderMap>,
 }
 
 impl ClientHooks<ClientState> for generated::Client {
+    async fn pre<E>(
+        &self,
+        request: &mut reqwest::Request,
+        info: &OperationInfo,
+    ) -> std::result::Result<(), ClientError<E>> {
+        self.inner()
+            .authn_info
+            .authenticate_request(request, info)
+            .await?;
+        Ok(())
+    }
+
     async fn exec(
         &self,
         request: reqwest::Request,
@@ -708,9 +722,8 @@ fn normalize_base_url(base_url: impl Into<String>) -> String {
         .to_string()
 }
 
-fn default_request_headers(auth: &Credentials) -> Result<reqwest::header::HeaderMap> {
+fn default_request_headers() -> Result<reqwest::header::HeaderMap> {
     let mut headers = reqwest::header::HeaderMap::new();
-    headers.insert(reqwest::header::AUTHORIZATION, auth.auth_header()?);
     headers.insert(
         reqwest::header::USER_AGENT,
         HeaderValue::from_str(&crate::user_agent())
@@ -1109,6 +1122,7 @@ async fn format_launch_client_error(err: ClientError<generated::types::ErrorResp
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::credentials::Credentials;
     use futures_util::TryStreamExt;
     use tempfile::TempDir;
     use wiremock::matchers::{method, path, query_param, query_param_is_missing};
@@ -1145,7 +1159,7 @@ mod tests {
     ) -> AntithesisApi {
         AntithesisApi::build(
             &Settings::for_test_base_url(mock_server.uri()),
-            &Credentials::for_password("user".to_owned(), "pass".to_owned()),
+            AuthenticationInfo::Static(Credentials::for_password("user".to_owned(), "pass".to_owned())),
             false,
             cache_dir.map(|d| d.path().to_path_buf()),
         )
@@ -1377,7 +1391,7 @@ mod tests {
     fn with_base_url_trims_trailing_slash() {
         let api = AntithesisApi::build(
             &Settings::for_test_base_url("http://example.com/".to_owned()),
-            &Credentials::for_password("user".to_owned(), "pass".to_owned()),
+            AuthenticationInfo::Static(Credentials::for_password("user".to_owned(), "pass".to_owned())),
             true,
             None,
         )
@@ -1389,7 +1403,7 @@ mod tests {
     fn with_base_url_strips_legacy_api_suffix() {
         let api = AntithesisApi::build(
             &Settings::for_test_base_url("http://example.com/api/v1/".to_owned()),
-            &Credentials::for_password("user".to_owned(), "pass".to_owned()),
+            AuthenticationInfo::Static(Credentials::for_password("user".to_owned(), "pass".to_owned())),
             true,
             None,
         )

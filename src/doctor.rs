@@ -4,7 +4,7 @@ use serde::Serialize;
 use crate::api::{AntithesisApi, ApiVersion, VersionError};
 use crate::attributed_value::AttributedValue;
 use crate::container;
-use crate::credentials::{Credentials, PasswordCredentials};
+use crate::credentials::{AuthenticationInfo, Credentials, PasswordCredentials};
 use crate::render::render_kv;
 use crate::settings::Settings;
 
@@ -167,10 +167,11 @@ fn repository_check(repository: Option<&str>) -> Check {
     }
 }
 
-fn authn_checks(credentials: Result<AttributedValue<Credentials>>) -> Vec<Check> {
-    match credentials {
+fn authn_checks(authn_info: Result<AttributedValue<AuthenticationInfo>>) -> Vec<Check> {
+    match authn_info {
         Ok(credentials) => match credentials.unwrap() {
-            Credentials::GithubActionsOidc(_) => {
+            AuthenticationInfo::GithubActionsOidc { .. }
+            | AuthenticationInfo::Static(Credentials::GithubActionsOidc(_)) => {
                 vec![enrich(
                     Check::ok(
                         "github_actions_oidc_token",
@@ -179,13 +180,16 @@ fn authn_checks(credentials: Result<AttributedValue<Credentials>>) -> Vec<Check>
                     credentials,
                 )]
             }
-            Credentials::ApiKey(_) => {
+            AuthenticationInfo::Static(Credentials::ApiKey(_)) => {
                 vec![enrich(
                     Check::ok("api_key", "API key provided"),
                     credentials,
                 )]
             }
-            Credentials::Password(PasswordCredentials { username, .. }) => vec![
+            AuthenticationInfo::Static(Credentials::Password(PasswordCredentials {
+                username,
+                ..
+            })) => vec![
                 Check::warn("api_key", "API key not provided")
                     .note(
                         Level::Warning,
@@ -271,7 +275,7 @@ fn enrich<T>(check: Check, attribution: AttributedValue<T>) -> Check {
 /// Binary health checks: local tooling, the required settings
 /// (tenant/repository), and authentication. The resolved values themselves are
 /// reported separately by [`resolve_settings`].
-async fn collect_checks(settings: &Settings, offline: bool) -> Vec<Check> {
+fn collect_checks(settings: &Settings) -> Vec<Check> {
     let mut checks: Vec<Check> = Vec::new();
 
     // Container runtime (for building/pushing images)
@@ -302,8 +306,7 @@ async fn collect_checks(settings: &Settings, offline: bool) -> Vec<Check> {
 
     // Authentication (environment-only by design).
     checks.extend(authn_checks(
-        Credentials::for_ambient_credentials_with_attribution(settings.profile(), true, offline)
-            .await,
+        AuthenticationInfo::for_ambient_configuration_with_attribution(settings.profile(), true),
     ));
 
     checks
@@ -400,7 +403,7 @@ pub async fn cmd_doctor(
     verbose: bool,
     offline: bool,
 ) -> Result<()> {
-    let mut checks = collect_checks(settings, offline).await;
+    let mut checks = collect_checks(settings);
 
     // Connectivity + version check (network). Skipped with --offline. Only runs
     // with an API key: /api/version, like every endpoint but launch, rejects
@@ -408,7 +411,7 @@ pub async fn cmd_doctor(
     // misleading 403 — and the auth checks above already tell legacy and
     // unauthenticated users to set a key. The client is built from the resolved
     // settings (base url / tenant), and `verbose` logs the request/response.
-    if !offline && let Ok(api) = AntithesisApi::new_requiring_api_key(settings, verbose).await {
+    if !offline && let Ok(api) = AntithesisApi::new_requiring_api_key(settings, verbose) {
         let host = api.host();
         checks.push(version_check(&host, api.get_version().await));
     }
@@ -476,7 +479,7 @@ mod tests {
     #[test]
     fn auth_api_key_set_is_a_single_bare_ok_check() {
         let checks = authn_checks(Ok(AttributedValue::EnvironmentVariable {
-            value: Credentials::for_api_key("api_key".to_owned()),
+            value: AuthenticationInfo::Static(Credentials::for_api_key("api_key".to_owned())),
             environment_variable_names: vec![API_KEY_VAR_NAME],
         }));
         assert_eq!(checks.len(), 1);
@@ -487,7 +490,7 @@ mod tests {
     #[test]
     fn auth_legacy_basic_warns_on_key_and_notes_legacy() {
         let checks = authn_checks(Ok(AttributedValue::EnvironmentVariable {
-            value: Credentials::for_password("user".to_owned(), "pass".to_owned()),
+            value: AuthenticationInfo::Static(Credentials::for_password("user".to_owned(), "pass".to_owned())),
             environment_variable_names: vec![USERNAME_VAR_NAME, PASSWORD_VAR_NAME],
         }));
         assert_eq!(checks.len(), 2);

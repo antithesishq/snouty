@@ -32,4 +32,12 @@ impl<T> AttributedValue<T> {
             Self::Keychain { value, .. } => value,
         }
     }
+
+    pub(crate) fn map<O, F>(self, func: F) -> AttributedValue<O> where F: Fn(T) -> O {
+        match self {
+            Self::EnvironmentVariable { value, environment_variable_names} => AttributedValue::EnvironmentVariable { value: func(value), environment_variable_names },
+            Self::SettingsFile { value, settings_file_path, profile } => AttributedValue::SettingsFile { value: func(value), settings_file_path, profile },
+            Self::Keychain { value, entry_name } => AttributedValue::Keychain { value: func(value), entry_name },
+        }
+    }
 }

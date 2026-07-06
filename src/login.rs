@@ -74,15 +74,13 @@ fn prompt_for_value(value_name: &str, previous_value: Option<&str>) -> Result<St
     }
 
     let mut input = String::new();
-    while input.is_empty() {
-        io::stdin().read_line(&mut input)?;
-        input = input.trim().to_owned();
+    io::stdin().read_line(&mut input)?;
+    input = input.trim().to_owned();
 
-        if input.is_empty()
-            && let Some(prev) = previous_value
-        {
-            input.push_str(prev);
-        }
+    if input.is_empty()
+        && let Some(prev) = previous_value
+    {
+        input.push_str(prev);
     }
 
     Ok(input)
@@ -130,25 +128,26 @@ fn prompt_for_auth(profile: Option<&str>) -> Result<Option<Credentials>> {
     println!("(Hit enter to use the default value of [{default_selection}])");
 
     let mut input = String::new();
-    while AuthSetupType::try_from_str(&input).is_none() {
-        io::stdin().read_line(&mut input)?;
-        input = input.trim().to_owned();
+    io::stdin().read_line(&mut input)?;
+    input = input.trim().to_owned();
 
-        if input.is_empty() {
-            input.push(default_selection);
-        }
+    if input.is_empty() {
+        input.push(default_selection);
     }
 
-    match AuthSetupType::try_from_str(&input).unwrap_or(AuthSetupType::ApiKey) {
-        AuthSetupType::Skip => Ok(None),
-        AuthSetupType::ApiKey => match previous_value.map(|attr| attr.extract()) {
+    match AuthSetupType::try_from_str(&input) {
+        None => {
+            return Err(eyre!("Unrecognized input."))
+        }
+        Some(AuthSetupType::Skip) => Ok(None),
+        Some(AuthSetupType::ApiKey) => match previous_value.map(|attr| attr.extract()) {
             Ok(AuthenticationInfo::Static(Credentials::ApiKey(creds))) => {
                 prompt_for_api_key(Some(&creds.api_key))
             }
             _ => prompt_for_api_key(None),
         }
         .map(Some),
-        AuthSetupType::Password => match previous_value.map(|attr| attr.extract()) {
+        Some(AuthSetupType::Password) => match previous_value.map(|attr| attr.extract()) {
             Ok(AuthenticationInfo::Static(Credentials::Password(creds))) => {
                 prompt_for_username_password(Some(&creds.username), Some(&creds.password))
             }

@@ -134,6 +134,13 @@ file ~/.config/snouty/settings.toml '\[profile\.other\]'
 file ~/.config/snouty/settings.toml 'tenant = "other-tenant"'
 file ~/.config/snouty/settings.toml 'repository = "other-repository"'
 
+# 11. Exits early with invalid input
+isolate-home invalid_input
+stdin login_invalid_tenant.txt
+! snouty login
+stderr ".*a tenant must be a valid hostname.*"
+
+
 -- broken.toml --
 this is = = not valid toml
 
@@ -196,3 +203,7 @@ prepo
 3
 puser
 ppass
+-- login_invalid_tenant.txt --
+underscores_are_not_allowed
+prepo
+1

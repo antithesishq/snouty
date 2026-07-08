@@ -280,6 +280,7 @@ fn resolve_settings(settings: &Settings) -> Vec<Setting> {
         Setting::new("profile", settings.profile().unwrap_or("(none)")),
         Setting::new("tenant", settings.tenant().unwrap_or("not set")),
         Setting::new("repository", settings.repository().unwrap_or("not set")),
+        Setting::new("https proxy", settings.https_proxy().unwrap_or("not set")),
         // The explicit override, otherwise auto-detected.
         Setting::new(
             "container engine",
@@ -551,27 +552,41 @@ mod tests {
 
     #[test]
     fn tenant_row_shows_value() {
-        let settings = Settings::for_test(None, Some("acme"), None, None, None);
+        let settings = Settings::for_test(None, Some("acme"), None, None, None, None);
         let rows = resolve_settings(&settings);
         assert_eq!(row(&rows, "tenant").value, "acme");
     }
 
     #[test]
     fn missing_settings_render_as_not_set() {
-        let rows = resolve_settings(&Settings::for_test(None, None, None, None, None));
+        let rows = resolve_settings(&Settings::for_test(None, None, None, None, None, None));
         assert_eq!(row(&rows, "tenant").value, "not set");
     }
 
     #[test]
+    fn https_proxy_row_shows_value() {
+        let settings =
+            Settings::for_test(None, None, None, None, Some("http://proxy.corp:8080"), None);
+        let rows = resolve_settings(&settings);
+        assert_eq!(row(&rows, "https proxy").value, "http://proxy.corp:8080");
+    }
+
+    #[test]
+    fn https_proxy_row_defaults_to_not_set() {
+        let rows = resolve_settings(&Settings::for_test(None, None, None, None, None, None));
+        assert_eq!(row(&rows, "https proxy").value, "not set");
+    }
+
+    #[test]
     fn container_engine_row_auto_detects_when_unset() {
-        let settings = Settings::for_test(None, Some("acme"), None, None, None);
+        let settings = Settings::for_test(None, Some("acme"), None, None, None, None);
         let rows = resolve_settings(&settings);
         assert_eq!(row(&rows, "container engine").value, "auto-detect");
     }
 
     #[test]
     fn profile_row_reflects_no_active_profile() {
-        let rows = resolve_settings(&Settings::for_test(None, None, None, None, None));
+        let rows = resolve_settings(&Settings::for_test(None, None, None, None, None, None));
         assert_eq!(row(&rows, "profile").value, "(none)");
     }
 

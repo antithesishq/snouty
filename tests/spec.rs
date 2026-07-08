@@ -3,7 +3,7 @@ use snouty::testutils::{
 };
 use std::cell::RefCell;
 use std::io::{Read, Write};
-use std::net::TcpListener;
+use std::net::{TcpListener, TcpStream};
 use std::process::Stdio;
 use std::thread;
 use testscript_rs::testscript;
@@ -269,6 +269,136 @@ fn cmd_mock_runs_server(
     Ok(())
 }
 
+fn cmd_mock_proxy(
+    env: &mut testscript_rs::TestEnvironment,
+    _args: &[String],
+) -> testscript_rs::Result<()> {
+    // Usage: mock-proxy
+    //
+    // Starts the mock Antithesis API behind an in-process HTTP forward proxy and
+    // points snouty's proxy env var (ANTITHESIS_HTTPS_PROXY) at it. It sets the
+    // API key and tenant but deliberately does NOT set ANTITHESIS_BASE_URL: the
+    // spec sets that to an unresolvable host, so a request can only reach the
+    // mock by traversing the proxy. That makes a successful `snouty runs` proof
+    // that the proxy setting is honored end to end.
+    if is_staging() {
+        return Err(err(
+            "mock-proxy is not supported against staging; guard the block with [!staging]"
+                .to_string(),
+        ));
+    }
+
+    let server = MockApiServer::start();
+    let mock_addr = server
+        .url()
+        .strip_prefix("http://")
+        .ok_or_else(|| err("mock server url missing http scheme".to_string()))?
+        .to_string();
+    let token = server.token().to_string();
+    // Keep the mock server (and its listener thread) alive for the process.
+    std::mem::forget(server);
+
+    let listener = TcpListener::bind("127.0.0.1:0").map_err(|e| err(format!("bind proxy: {e}")))?;
+    let proxy_addr = listener
+        .local_addr()
+        .map_err(|e| err(format!("proxy addr: {e}")))?;
+
+    thread::spawn(move || {
+        for stream in listener.incoming().flatten() {
+            let mock_addr = mock_addr.clone();
+            thread::spawn(move || {
+                // A forwarding failure just drops the connection; snouty then
+                // reports a request error and the spec's assertion fails loudly.
+                let _ = proxy_forward(stream, &mock_addr);
+            });
+        }
+    });
+
+    env.set_env_var("ANTITHESIS_HTTPS_PROXY", &format!("http://{proxy_addr}"));
+    env.set_env_var("ANTITHESIS_API_KEY", &token);
+    env.set_env_var("ANTITHESIS_TENANT", "testtenant");
+    Ok(())
+}
+
+/// A minimal HTTP forward proxy for one request/response exchange.
+///
+/// reqwest, configured with an HTTP proxy for an `http://` target, sends the
+/// proxy a request line in absolute form (`GET http://host/path HTTP/1.1`). We
+/// rewrite it to origin form (`GET /path HTTP/1.1`), relay it to `mock_addr`
+/// (ignoring the — unresolvable — target host), and copy the response back
+/// verbatim. The mock closes the connection after responding (`Connection:
+/// close`), so `read_to_end` returns the full response and reqwest opens a
+/// fresh connection per request (one exchange per proxy connection).
+fn proxy_forward(mut client: TcpStream, mock_addr: &str) -> std::io::Result<()> {
+    let mut buf = Vec::new();
+    let mut chunk = [0u8; 4096];
+    loop {
+        let n = client.read(&mut chunk)?;
+        if n == 0 {
+            return Ok(()); // client closed before sending a full request head
+        }
+        buf.extend_from_slice(&chunk[..n]);
+        let Some(pos) = buf.windows(4).position(|w| w == b"\r\n\r\n") else {
+            continue;
+        };
+
+        let headers_end = pos + 4;
+        let head = String::from_utf8_lossy(&buf[..headers_end]).into_owned();
+        let content_length = proxy_content_length(&head);
+        let mut body = buf[headers_end..].to_vec();
+        while body.len() < content_length {
+            let n = client.read(&mut chunk)?;
+            if n == 0 {
+                break;
+            }
+            body.extend_from_slice(&chunk[..n]);
+        }
+
+        let mut upstream = TcpStream::connect(mock_addr)?;
+        upstream.write_all(proxy_rewrite_request_line(&head).as_bytes())?;
+        upstream.write_all(&body)?;
+        let mut response = Vec::new();
+        upstream.read_to_end(&mut response)?;
+        client.write_all(&response)?;
+        return Ok(());
+    }
+}
+
+/// Parse `Content-Length` from an HTTP header block (0 if absent).
+fn proxy_content_length(head: &str) -> usize {
+    head.lines()
+        .find_map(|line| {
+            let (name, value) = line.split_once(':')?;
+            name.eq_ignore_ascii_case("content-length")
+                .then(|| value.trim().parse().ok())
+                .flatten()
+        })
+        .unwrap_or(0)
+}
+
+/// Rewrite the request line of `head` from absolute form to origin form,
+/// leaving every subsequent header (and the terminating blank line) untouched.
+fn proxy_rewrite_request_line(head: &str) -> String {
+    let request_line = head.split("\r\n").next().unwrap_or("");
+    let mut parts = request_line.splitn(3, ' ');
+    let method = parts.next().unwrap_or("GET");
+    let uri = parts.next().unwrap_or("/");
+    let version = parts.next().unwrap_or("HTTP/1.1");
+
+    // `http://host[:port]/path?query` -> `/path?query`.
+    let origin = match uri.split_once("://") {
+        Some((_, authority_and_path)) => match authority_and_path.find('/') {
+            Some(idx) => &authority_and_path[idx..],
+            None => "/",
+        },
+        None => uri,
+    };
+
+    // `head[request_line.len()..]` keeps the leading "\r\n", the remaining
+    // headers, and the trailing "\r\n\r\n" exactly as received.
+    format!("{method} {origin} {version}{}", &head[request_line.len()..])
+}
+
 fn is_staging() -> bool {
     std::env::var("SNOUTY_STAGING")
         .ok()
@@ -495,6 +625,7 @@ fn spec_tests() {
             .command("snouty", cmd_snouty)
             .command("mock-server", cmd_mock_server)
             .command("mock-runs-server", cmd_mock_runs_server)
+            .command("mock-proxy", cmd_mock_proxy)
             .command("env_from_json", cmd_env_from_json)
             .command("set-env", |env, args| {
                 // Usage: set-env KEY value...

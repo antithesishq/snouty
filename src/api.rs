@@ -9,8 +9,8 @@ use color_eyre::{Section, SectionExt};
 use futures_util::stream;
 use log::debug;
 use progenitor_client::{ClientHooks, ClientInfo, Error as ClientError, OperationInfo};
-use reqwest::Client;
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
+use reqwest::{Client, Proxy};
 use reqwest_middleware::ClientWithMiddleware;
 
 use crate::api_cache;
@@ -269,7 +269,7 @@ impl AntithesisApi {
         debug!("initializing API client for {}", base_url);
 
         let default_headers = default_request_headers(auth)?;
-        let http_client = build_http_client(default_headers.clone())?;
+        let http_client = build_http_client(default_headers.clone(), settings)?;
         let cached = api_cache::build_cached_client(http_client.clone(), cache_dir);
         let state = ClientState {
             cached,
@@ -777,14 +777,20 @@ fn extra_headers_from_env() -> Result<Vec<(HeaderName, HeaderValue)>> {
     }
 }
 
-fn build_http_client(default_headers: HeaderMap) -> Result<Client> {
+fn build_http_client(default_headers: HeaderMap, settings: &Settings) -> Result<Client> {
     // Only a connect timeout (see CONNECT_TIMEOUT): no read or total timeout, so a
     // slow-but-alive Antithesis request is never aborted no matter how long it runs.
-    Client::builder()
+    let mut builder = Client::builder()
         .default_headers(default_headers)
-        .connect_timeout(CONNECT_TIMEOUT)
-        .build()
-        .wrap_err("failed to build API client")
+        .connect_timeout(CONNECT_TIMEOUT);
+
+    if let Some(proxy_address) = settings.https_proxy() {
+        let proxy = Proxy::all(proxy_address)
+            .wrap_err_with(|| eyre!("invalid proxy URL: {proxy_address}"))?;
+        builder = builder.proxy(proxy);
+    }
+
+    builder.build().wrap_err("failed to build API client")
 }
 
 fn auth_header(auth: &Auth) -> Result<HeaderValue> {

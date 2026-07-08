@@ -14,6 +14,7 @@ pub const SNOUTY_SETTINGS_PATH_VAR_NAME: &str = "SNOUTY_SETTINGS_PATH";
 pub const ANTITHESIS_TENANT_VAR_NAME: &str = "ANTITHESIS_TENANT";
 pub const ANTITHESIS_REPOSITORY_VAR_NAME: &str = "ANTITHESIS_REPOSITORY";
 pub const ANTITHESIS_BASE_URL_VAR_NAME: &str = "ANTITHESIS_BASE_URL";
+pub const ANTITHESIS_HTTPS_PROXY_VAR_NAME: &str = "ANTITHESIS_HTTPS_PROXY";
 pub const CONTAINER_ENGINE_VAR_NAME: &str = "SNOUTY_CONTAINER_ENGINE";
 const PROJECT_SETTINGS_FILENAME: &str = ".snouty.toml";
 const GLOBAL_SETTINGS_FILENAME: &str = "settings.toml";
@@ -77,6 +78,7 @@ pub struct Settings {
     tenant: Option<String>,
     repository: Option<String>,
     base_url: Option<String>,
+    https_proxy: Option<String>,
     container_engine: Option<String>,
 }
 
@@ -138,6 +140,7 @@ impl Settings {
         let tenant = resolve("tenant", ANTITHESIS_TENANT_VAR_NAME)?;
         let repository = resolve("repository", ANTITHESIS_REPOSITORY_VAR_NAME)?;
         let base_url = resolve("base_url", ANTITHESIS_BASE_URL_VAR_NAME)?;
+        let https_proxy = resolve("https_proxy", ANTITHESIS_HTTPS_PROXY_VAR_NAME)?;
         let container_engine = resolve("container_engine", CONTAINER_ENGINE_VAR_NAME)?;
 
         // A derived base URL interpolates the tenant into the request host
@@ -156,6 +159,7 @@ impl Settings {
             tenant,
             repository,
             base_url,
+            https_proxy,
             container_engine,
         ))
     }
@@ -169,6 +173,7 @@ impl Settings {
         tenant: Option<String>,
         repository: Option<String>,
         base_url: Option<String>,
+        https_proxy: Option<String>,
         container_engine: Option<String>,
     ) -> Self {
         let base_url = base_url.or_else(|| {
@@ -182,6 +187,7 @@ impl Settings {
             tenant,
             repository,
             base_url,
+            https_proxy,
             container_engine,
         }
     }
@@ -204,6 +210,10 @@ impl Settings {
         self.base_url.as_deref()
     }
 
+    pub fn https_proxy(&self) -> Option<&str> {
+        self.https_proxy.as_deref()
+    }
+
     pub fn container_engine(&self) -> Option<&str> {
         self.container_engine.as_deref()
     }
@@ -220,6 +230,7 @@ impl Settings {
         tenant: Option<&str>,
         repository: Option<&str>,
         base_url: Option<&str>,
+        https_proxy: Option<&str>,
         container_engine: Option<&str>,
     ) -> Self {
         Self::assemble(
@@ -227,6 +238,7 @@ impl Settings {
             tenant.map(str::to_string),
             repository.map(str::to_string),
             base_url.map(str::to_string),
+            https_proxy.map(str::to_string),
             container_engine.map(str::to_string),
         )
     }
@@ -236,7 +248,7 @@ impl Settings {
     /// without touching the environment.
     #[cfg(test)]
     pub(crate) fn for_test_base_url(base_url: String) -> Self {
-        Self::for_test(None, None, None, Some(&base_url), None)
+        Self::for_test(None, None, None, Some(&base_url), None, None)
     }
 }
 
@@ -606,33 +618,61 @@ mod tests {
 
     #[test]
     fn base_url_falls_back_to_tenant_host() {
-        let settings = Settings::for_test(None, Some("acme"), None, None, None);
+        let settings = Settings::for_test(None, Some("acme"), None, None, None, None);
         assert_eq!(settings.base_url(), Some("https://acme.antithesis.com"));
     }
 
     #[test]
     fn explicit_base_url_overrides_tenant_host() {
-        let settings =
-            Settings::for_test(None, Some("acme"), None, Some("https://example.test"), None);
+        let settings = Settings::for_test(
+            None,
+            Some("acme"),
+            None,
+            Some("https://example.test"),
+            None,
+            None,
+        );
         assert_eq!(settings.base_url(), Some("https://example.test"));
     }
 
     #[test]
     fn base_url_without_tenant_is_none() {
-        let settings = Settings::for_test(None, None, None, None, None);
+        let settings = Settings::for_test(None, None, None, None, None, None);
         assert_eq!(settings.base_url(), None);
     }
 
     #[test]
     fn container_engine_absent_resolves_to_none() {
-        let settings = Settings::for_test(None, None, None, None, None);
+        let settings = Settings::for_test(None, None, None, None, None, None);
         assert_eq!(settings.container_engine(), None);
     }
 
     #[test]
     fn container_engine_resolves_when_set() {
-        let settings = Settings::for_test(None, None, None, None, Some("podman"));
+        let settings = Settings::for_test(None, None, None, None, None, Some("podman"));
         assert_eq!(settings.container_engine(), Some("podman"));
+    }
+
+    #[test]
+    fn https_proxy_absent_resolves_to_none() {
+        let settings = Settings::for_test(None, None, None, None, None, None);
+        assert_eq!(settings.https_proxy(), None);
+    }
+
+    #[test]
+    fn https_proxy_resolves_when_set() {
+        let settings =
+            Settings::for_test(None, None, None, None, Some("http://proxy.corp:8080"), None);
+        assert_eq!(settings.https_proxy(), Some("http://proxy.corp:8080"));
+    }
+
+    #[test]
+    fn https_proxy_resolves_from_a_settings_file() {
+        let project = settings_file("https_proxy = \"http://proxy.corp:8080\"\n");
+        assert_eq!(
+            resolve_value("https_proxy", UNSET_ENV, None, Some(&project), None).unwrap(),
+            Some("http://proxy.corp:8080".to_string())
+        );
     }
 
     // ---- validate_tenant_host -----------------------------------------
@@ -682,6 +722,7 @@ mod tests {
             Some("evil.com#"),
             None,
             Some("https://ok.example"),
+            None,
             None,
         );
         assert_eq!(s.base_url(), Some("https://ok.example"));

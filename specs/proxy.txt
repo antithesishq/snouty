@@ -1,0 +1,41 @@
+# HTTPS proxy support
+#
+# When ANTITHESIS_HTTPS_PROXY (or the `https_proxy` setting) is set, snouty
+# routes API requests through that proxy. It builds the client with
+# `Proxy::all`, so both http and https targets are proxied.
+#
+# The behavioral steps drive an in-process mock: `mock-proxy` starts the mock
+# Antithesis API behind a forward proxy and points ANTITHESIS_HTTPS_PROXY at it,
+# but does NOT set the base URL. The base URL below is an unresolvable
+# `.invalid` host (RFC 6761), so a request can reach the mock only by traversing
+# the proxy — a direct connection fails to resolve the host. Success against an
+# unreachable base URL is therefore proof the request went through the proxy.
+#
+# Every line is guarded with [!staging]: the whole file targets the local mock
+# and has no meaning against the live staging backend.
+
+# Negative control. The base URL points at an unresolvable host and no proxy is
+# configured, so `runs` cannot reach the API: it exits non-zero and prints no
+# run table. A real API key gets past the auth-presence check so the request is
+# actually attempted (and fails on the network), rather than short-circuiting.
+[!staging] env ANTITHESIS_BASE_URL=http://mock.invalid
+[!staging] env ANTITHESIS_API_KEY=placeholder-key
+[!staging] env ANTITHESIS_TENANT=testtenant
+[!staging] ! snouty runs
+[!staging] ! stdout 'RUN ID'
+
+# With the proxy configured, the identical request reaches the mock and lists
+# runs. `mock-proxy` sets ANTITHESIS_HTTPS_PROXY (and the API key) while the
+# base URL stays pointed at the unresolvable host, so this success can only be
+# via the proxy.
+[!staging] mock-proxy
+[!staging] snouty runs
+[!staging] stdout 'RUN ID.*STATUS.*CREATED.*TEST NAME'
+[!staging] stdout 'run-1.*completed'
+
+# `snouty doctor` reports the resolved proxy so a user can confirm it took
+# effect. doctor exits non-zero here (the proxy target refuses the connection),
+# but the resolved-settings table is printed regardless of exit status.
+env ANTITHESIS_HTTPS_PROXY=http://127.0.0.1:9
+snouty doctor --offline
+stderr '\s*https proxy\s*http://127\.0\.0\.1:9'

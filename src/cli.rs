@@ -247,6 +247,11 @@ Provide configuration and authentication information to persist in the global
 Snouty settings file, optionally under a named profile. Sensitive information and
 information not provided via args will be queried over stdin.
 
+NOTE: `snouty login` will offer to reuse your existing configuration values, including
+any sourced from a local .snouty.toml file or the file specified by --settings or via
+the SNOUTY_SETTINGS_PATH environment variable. However, snouty login will save the
+specified configuration and credentials to the "global" files in your home directory.
+
 Examples:
   snouty login
   snouty login --tenant "mytenant" --repository "repository"

@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, HashSet};
 use std::io::{Read, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -494,12 +494,23 @@ const DOCKER_COMPOSE: &str = "docker-compose";
 /// docker-compose is pointed at podman's API socket so podman backs Compose.
 pub fn docker_compose(rt: &dyn ContainerRuntime) -> Result<DockerCompose<'_>> {
     ensure_docker_compose()?;
+    let compose_binary = docker_compose_binary()?;
     let docker_host = if std::env::var_os("DOCKER_HOST").is_some() {
         None
     } else {
         rt.engine_docker_host()?
     };
-    Ok(DockerCompose { rt, docker_host })
+    Ok(DockerCompose {
+        rt,
+        docker_host,
+        compose_binary,
+    })
+}
+
+/// Resolve `docker-compose` before clearing the environment for a hermetic
+/// render. [`Command`] otherwise needs `PATH` to find it.
+fn docker_compose_binary() -> Result<PathBuf> {
+    which::which(DOCKER_COMPOSE).wrap_err("failed to resolve the `docker-compose` binary on PATH")
 }
 
 /// Verify the `docker-compose` binary is present and is Docker Compose v2.
@@ -555,6 +566,7 @@ fn is_compose_v2_version(output: &str) -> bool {
 pub struct DockerCompose<'a> {
     rt: &'a dyn ContainerRuntime,
     docker_host: Option<String>,
+    compose_binary: PathBuf,
 }
 
 impl DockerCompose<'_> {
@@ -572,7 +584,7 @@ impl DockerCompose<'_> {
 
     /// Base `docker-compose` command with engine wiring applied.
     fn command(&self, config: &ComposeConfig) -> Command {
-        let mut cmd = Command::new(DOCKER_COMPOSE);
+        let mut cmd = Command::new(&self.compose_binary);
         cmd.current_dir(config.dir());
         if let Some(host) = &self.docker_host {
             cmd.env("DOCKER_HOST", host);
@@ -623,6 +635,35 @@ impl DockerCompose<'_> {
     ) -> Result<ComposeContents> {
         let yaml = self.config_yaml(config, overlay, &[])?;
         parse_compose_config(&yaml)
+    }
+
+    /// Resolve the compose file to JSON using the normal (local) environment —
+    /// the same interpolation `snouty` sees when it runs compose on this machine.
+    pub fn config_json(&self, config: &ComposeConfig) -> Result<String> {
+        self.config_yaml(config, None, &["--format", "json"])
+    }
+
+    /// Resolve the compose file to JSON under a scrubbed process environment
+    /// that mimics the hermetic Antithesis environment: none of the user's shell
+    /// variables, so `${VAR}` interpolation resolves only from the config dir's
+    /// `.env` file, explicit env files, and inline defaults. The compose binary
+    /// was resolved before the environment is cleared, so no shell variables
+    /// need to be retained.
+    ///
+    /// Returns the raw output rather than a string: a required `${VAR:?}` with no
+    /// value makes compose abort (non-zero exit, empty stdout), which the caller
+    /// reads as a definite "won't resolve in Antithesis".
+    pub fn config_json_hermetic_env(&self, config: &ComposeConfig) -> Result<Output> {
+        // Preserve the command and working directory, but intentionally omit
+        // even compose's own process variables: they are valid interpolation
+        // inputs and Antithesis will not inherit their local values.
+        let mut cmd = Command::new(&self.compose_binary);
+        cmd.current_dir(config.dir());
+        cmd.env_clear();
+        cmd.args(compose_file_args(None));
+        cmd.args(["config", "--format", "json"]);
+        cmd.output()
+            .wrap_err("failed to run 'docker-compose config' for the environment check")
     }
 
     /// Canonicalized compose file for baking into the config image.
@@ -3014,6 +3055,47 @@ services:
     fn is_compose_v2_version_rejects_others() {
         assert!(!is_compose_v2_version("podman-compose version 1.0.6"));
         assert!(!is_compose_v2_version(""));
+    }
+
+    #[test]
+    fn config_json_hermetic_env_scrubs_process_variables() {
+        if !has_compose() {
+            skip_or_fail("docker-compose (Docker Compose v2) is not available");
+            return;
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("docker-compose.yaml"),
+            "\
+services:
+  app:
+    image: alpine
+    environment:
+      HOME_VALUE: \"${HOME}\"
+      PATH_VALUE: \"${PATH}\"
+      DOCKER_HOST_VALUE: \"${DOCKER_HOST}\"
+",
+        )
+        .unwrap();
+        let config = match crate::config::detect_config(dir.path()).unwrap() {
+            crate::config::Config::Compose(config) => config,
+            other => panic!("expected Compose config, got {other:?}"),
+        };
+        let runtime = FakeRuntime::default();
+        let compose = DockerCompose {
+            rt: &runtime,
+            docker_host: Some("unix:///tmp/snouty-hermetic-test.sock".to_string()),
+            compose_binary: docker_compose_binary().unwrap(),
+        };
+
+        let output = compose.config_json_hermetic_env(&config).unwrap();
+        assert!(output.status.success(), "compose config failed: {output:?}");
+        let resolved: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        let environment = &resolved["services"]["app"]["environment"];
+        assert_eq!(environment["HOME_VALUE"], "");
+        assert_eq!(environment["PATH_VALUE"], "");
+        assert_eq!(environment["DOCKER_HOST_VALUE"], "");
     }
 
     #[test]

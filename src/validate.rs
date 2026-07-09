@@ -5,8 +5,10 @@ use std::path::{Path, PathBuf};
 use color_eyre::Section;
 use color_eyre::SectionExt;
 use color_eyre::eyre::{Context, Result, bail, eyre};
+use json_patch::{PatchOperation, diff};
 use log::{debug, info, warn};
 use serde::Deserialize;
+use serde_json::Value;
 use tokio::time::{Duration, sleep};
 
 use crate::cli::ValidateArgs;
@@ -197,11 +199,20 @@ async fn validate_with_temp_dir(
         config: config_path,
         timeout,
         keep_running,
+        allow_compose_divergence,
     } = args;
     let rt = container::runtime(settings)?;
     match config::detect_config(&config_path)? {
         Config::Compose(cfg) => {
-            validate_compose(rt.as_ref(), cfg, timeout, keep_running, temp_dir).await
+            validate_compose(
+                rt.as_ref(),
+                cfg,
+                timeout,
+                keep_running,
+                allow_compose_divergence,
+                temp_dir,
+            )
+            .await
         }
         Config::Kubernetes(cfg) => validate_kubernetes(rt.as_ref(), &cfg, keep_running).await,
     }
@@ -212,9 +223,11 @@ async fn validate_compose(
     config: ComposeConfig,
     timeout: u64,
     keep_running: bool,
+    allow_compose_divergence: bool,
     temp_dir: &Path,
 ) -> Result<()> {
     let compose = container::docker_compose(rt)?;
+    check_compose_divergence(&compose, &config, allow_compose_divergence)?;
     let contents = compose.contents(&config, None)?;
     container::validate_images_are_available(rt, &contents)?;
     let override_path = generate_setup_override(&contents, temp_dir)?;
@@ -311,6 +324,112 @@ async fn validate_compose(
     }
 
     test_result
+}
+
+const DIVERGENCE_HEADLINE: &str = "docker-compose.yaml depends on your shell environment, which \
+the Antithesis environment does not have";
+
+const DIVERGENCE_FIX: &str = "Antithesis runs docker-compose hermetically, with none of your shell \
+variables. Provide each value in a `.env` file in the config directory (it is baked into the \
+config image) or give the reference an inline default (e.g. ${VAR:-default}).";
+
+/// Fail — or, with `--allow-compose-divergence`, warn — when the compose file
+/// resolves differently in the hermetic Antithesis environment than it does on
+/// this machine.
+///
+/// The trap: `snouty validate` runs docker-compose with the user's full shell,
+/// so a `${VAR}` drawing its value from the shell resolves locally and
+/// validation passes — but Antithesis runs compose hermetically, with none of
+/// those variables, so the same reference is empty (or a hard error) there and
+/// the run breaks. Validation would have given false confidence.
+///
+/// We catch it by rendering the compose file twice — once with the normal
+/// environment, once under a scrubbed one that mimics Antithesis (see
+/// [`container::DockerCompose::config_json_hermetic_env`]) — and comparing the
+/// complete models. Any field that differs is a value that exists only because
+/// of the local shell. Compose does all the interpolation, `.env`, and default
+/// work in both renders, so we never re-derive any of it — and the
+/// `${VAR:-}` "default to blank" idiom, identical in both renders, is correctly
+/// left alone.
+fn check_compose_divergence(
+    compose: &container::DockerCompose,
+    config: &ComposeConfig,
+    allow_compose_divergence: bool,
+) -> Result<()> {
+    // A failing local render is not an environment problem (e.g. a malformed
+    // compose file); let contents() surface it next with its canonical error.
+    let Ok(local) = compose.config_json(config) else {
+        return Ok(());
+    };
+    let hermetic = compose.config_json_hermetic_env(config)?;
+
+    let detail = if hermetic.status.success() {
+        let local: Value = serde_json::from_str(&local)
+            .wrap_err("failed to parse 'docker-compose config' output")?;
+        let hermetic: Value = serde_json::from_slice(&hermetic.stdout)
+            .wrap_err("failed to parse 'docker-compose config' output")?;
+        let fields = diverging_config_fields(&local, &hermetic);
+        (!fields.is_empty()).then(|| fields.join("\n"))
+    } else {
+        // A required `${VAR:?}` with no value aborts the hermetic render while
+        // the local one (which has the shell value) succeeds. Surface compose's
+        // own diagnostic rather than parsing it, falling back to the exit status
+        // if compose aborts without writing to stderr so the detail is never blank.
+        let stderr = String::from_utf8_lossy(&hermetic.stderr);
+        let stderr = stderr.trim();
+        Some(if stderr.is_empty() {
+            format!("docker-compose config aborted ({})", hermetic.status)
+        } else {
+            stderr.to_string()
+        })
+    };
+
+    let Some(detail) = detail else {
+        return Ok(());
+    };
+
+    if allow_compose_divergence {
+        eprintln!("Warning: {DIVERGENCE_HEADLINE}\n{detail}\n{DIVERGENCE_FIX}");
+        Ok(())
+    } else {
+        Err(user_error(DIVERGENCE_HEADLINE)
+            .with_section(move || detail.header("Won't resolve in Antithesis:"))
+            .with_suggestion(|| DIVERGENCE_FIX)
+            .with_suggestion(
+                || "re-run with --allow-compose-divergence to treat this as a warning",
+            ))
+    }
+}
+
+/// JSON Pointer paths at which the resolved compose models differ, each tagged
+/// with the kind of change. Values are deliberately not shown: they may be
+/// secrets. `json-patch` supplies the complete structural comparison.
+fn diverging_config_fields(local: &Value, hermetic: &Value) -> Vec<String> {
+    diff(local, hermetic)
+        .iter()
+        .map(|operation| {
+            let path = operation.path().to_string();
+            let tag = match operation {
+                PatchOperation::Add(_) => "added in Antithesis",
+                PatchOperation::Remove(_) => "missing in Antithesis",
+                PatchOperation::Replace(_) => {
+                    if hermetic.pointer(&path).is_some_and(is_empty) {
+                        "empty in Antithesis"
+                    } else {
+                        "changed in Antithesis"
+                    }
+                }
+                PatchOperation::Move(_) | PatchOperation::Copy(_) | PatchOperation::Test(_) => {
+                    "changed in Antithesis"
+                }
+            };
+            format!("{path} ({tag})")
+        })
+        .collect()
+}
+
+fn is_empty(value: &Value) -> bool {
+    value.as_str() == Some("") || value.is_null()
 }
 
 async fn validate_kubernetes(
@@ -702,7 +821,74 @@ async fn watch_for_setup_complete(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
     use std::io::Write;
+
+    #[test]
+    fn diverging_config_fields_flags_shell_only_value() {
+        // BARE draws from the shell locally but is empty under the scrubbed
+        // (Antithesis) render; OK renders the same in both and is left alone.
+        let local = json!({"services": {"app": {"environment": {"BARE": "fromshell", "OK": "x"}}}});
+        let hermetic = json!({"services": {"app": {"environment": {"BARE": "", "OK": "x"}}}});
+        assert_eq!(
+            diverging_config_fields(&local, &hermetic),
+            vec!["/services/app/environment/BARE (empty in Antithesis)".to_string()]
+        );
+    }
+
+    #[test]
+    fn diverging_config_fields_ignores_identical_render() {
+        // An empty inline default (`${VAR:-}`) and a `.env`-provided value both
+        // render identically in the two environments, so nothing is flagged.
+        let v = json!({"services": {"app": {"environment": {"EMPTY": "", "FROM_ENV": "x"}}}});
+        assert!(diverging_config_fields(&v, &v).is_empty());
+    }
+
+    #[test]
+    fn diverging_config_fields_flags_changed_value() {
+        let local = json!({"services": {"app": {"image": "myreg/app:dev"}}});
+        let hermetic = json!({"services": {"app": {"image": "app"}}});
+        assert_eq!(
+            diverging_config_fields(&local, &hermetic),
+            vec!["/services/app/image (changed in Antithesis)".to_string()]
+        );
+    }
+
+    #[test]
+    fn diverging_config_fields_reports_array_element() {
+        let local = json!({"services": {"app": {"command": ["run", "--flag=local"]}}});
+        let hermetic = json!({"services": {"app": {"command": ["run", "--flag="]}}});
+        assert_eq!(
+            diverging_config_fields(&local, &hermetic),
+            vec!["/services/app/command/1 (changed in Antithesis)".to_string()]
+        );
+    }
+
+    #[test]
+    fn diverging_config_fields_flags_top_level_project_name() {
+        let local = json!({"name": "shellname", "services": {"app": {"image": "app"}}});
+        let hermetic = json!({"name": "dirname", "services": {"app": {"image": "app"}}});
+        assert_eq!(
+            diverging_config_fields(&local, &hermetic),
+            vec!["/name (changed in Antithesis)".to_string()]
+        );
+    }
+
+    #[test]
+    fn diverging_config_fields_flags_top_level_volume() {
+        let local = json!({
+            "services": {"app": {"image": "app", "volumes": ["data:/data"]}},
+            "volumes": {"data": {"driver_opts": {"device": "/host/data"}}}
+        });
+        let hermetic = json!({
+            "services": {"app": {"image": "app", "volumes": ["data:/data"]}},
+            "volumes": {"data": {"driver_opts": {"device": ""}}}
+        });
+        assert_eq!(
+            diverging_config_fields(&local, &hermetic),
+            vec!["/volumes/data/driver_opts/device (empty in Antithesis)".to_string()]
+        );
+    }
 
     #[test]
     fn generate_setup_override_basic() {

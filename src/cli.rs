@@ -252,10 +252,16 @@ The database is automatically updated before each search unless --offline is pas
 Prints ranked matches (title and page path); pass a path to `snouty docs show`.
 Use --list to print only the paths.
 
+By default the query is searched as literal text. Pass --match to treat the
+query as a raw SQLite FTS5 expression instead, enabling operators like
+AND/OR/NOT/NEAR, "quoted phrases", `title:` column filters, and `prefix*`.
+
 Examples:
   snouty docs search fault injection
   snouty docs search "config image"
-  snouty docs --offline search sdk setup"#)]
+  snouty docs search moment.branch
+  snouty docs search sdk setup
+  snouty docs search --match 'sdk NOT java'"#)]
     Search {
         /// Print only matching page paths, one per line
         #[arg(short = 'l', long)]
@@ -264,6 +270,11 @@ Examples:
         /// Maximum number of results to return
         #[arg(short = 'n', long, default_value = "10")]
         limit: usize,
+
+        /// Treat the query as a raw FTS5 expression (AND/OR/NOT/NEAR, "phrases",
+        /// title: filters, prefix*) instead of literal text
+        #[arg(short = 'm', long = "match")]
+        match_mode: bool,
 
         /// Search query
         query: Vec<String>,

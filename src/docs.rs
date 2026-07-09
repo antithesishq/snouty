@@ -55,11 +55,16 @@ pub async fn cmd_docs(command: DocsCommands, offline: bool, json: bool) -> Resul
     ensure_docs_db_available(offline)?;
 
     match command {
-        DocsCommands::Search { query, list, limit } => {
+        DocsCommands::Search {
+            query,
+            list,
+            limit,
+            match_mode,
+        } => {
             if query.is_empty() {
                 return Err(user_error("search query required"));
             }
-            search(&query.join(" "), json, list, limit)
+            search(&query.join(" "), json, list, limit, match_mode)
         }
         DocsCommands::Sqlite => sqlite_path(),
         DocsCommands::Tree { depth, filter } => tree(depth.map(|d| d.get()), filter.as_deref()),
@@ -160,60 +165,63 @@ fn atomic_write_db(bytes: &[u8]) -> Result<()> {
 
 use snippet::{MATCH_END, MATCH_START};
 
-/// Split a query into simple terms if it uses plain alphanumeric tokens only.
-/// Returns None for anything containing FTS5 operators or special syntax.
-fn simple_query_terms(query: &str) -> Option<Vec<&str>> {
+/// Tokenize a literal (default, non-`--match`) query into search terms,
+/// dropping filler words so ranking focuses on content-bearing tokens. Falls
+/// back to the unfiltered tokens when every token is a stopword.
+fn literal_query_terms(query: &str) -> Vec<&str> {
     let terms: Vec<&str> = query.split_whitespace().collect();
-    let is_simple = terms.iter().all(|t| {
-        t.chars()
-            .all(|c| c.is_alphanumeric() || c == '_' || c == '-')
-            && !matches!(*t, "AND" | "OR" | "NOT" | "NEAR")
-    });
-    if !is_simple {
-        return None;
-    }
-
-    Some(terms)
-}
-
-/// Normalize simple natural-language queries by dropping filler words so
-/// ranking and title boosts focus on the content-bearing terms.
-fn normalized_query(query: &str) -> String {
-    let Some(terms) = simple_query_terms(query) else {
-        return query.to_string();
-    };
-
     let filtered: Vec<&str> = terms
         .iter()
         .copied()
         .filter(|term| !SEARCH_STOPWORDS.contains(&term.to_ascii_lowercase().as_str()))
         .collect();
-    let selected = if filtered.is_empty() { terms } else { filtered };
-
-    selected.join(" ")
+    if filtered.is_empty() { terms } else { filtered }
 }
 
-/// Build an FTS5 query that matches all terms against the title column.
-/// Only operates on simple queries (alphanumeric terms and spaces).
-/// Returns None for anything containing FTS5 operators or special syntax.
-fn title_match_query(query: &str) -> Option<String> {
-    let terms = simple_query_terms(query)?;
+/// Escape a term as an FTS5 string literal (embedded quotes doubled) so any
+/// punctuation it contains is searched as plain text rather than being parsed
+/// as an FTS5 operator.
+fn fts5_literal(term: &str) -> String {
+    format!("\"{}\"", term.replace('"', "\"\""))
+}
 
+/// Build a literal-text FTS5 `MATCH` query from search terms: each term becomes
+/// a quoted string literal (implicitly AND-ed together). The `unicode61`
+/// tokenizer splits each literal on punctuation, so `moment.branch` matches the
+/// terms `moment` and `branch`.
+fn literal_match_query(terms: &[&str]) -> String {
+    terms
+        .iter()
+        .map(|term| fts5_literal(term))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Build the title-boost query for literal search, matching each term against
+/// the title column. Returns None when there are no terms to boost.
+fn literal_title_query(terms: &[&str]) -> Option<String> {
+    if terms.is_empty() {
+        return None;
+    }
     Some(
         terms
             .iter()
-            .map(|t| format!("title:{t}"))
+            .map(|term| format!("title:{}", fts5_literal(term)))
             .collect::<Vec<_>>()
             .join(" "),
     )
 }
 
-fn search(query: &str, json: bool, list: bool, limit: usize) -> Result<()> {
-    let conn = open_db()?;
-    let normalized_query = normalized_query(query);
-
-    let title_query = title_match_query(&normalized_query);
-
+/// Run the full-text search query, returning `(path, title, content,
+/// title_boosted)` rows. `match_query` is bound to the FTS5 `MATCH` and must be
+/// valid FTS5 query syntax; `title_query`, when present, enables title-match
+/// ranking boosts.
+fn run_search(
+    conn: &Connection,
+    match_query: &str,
+    title_query: Option<&str>,
+    fetch_limit: usize,
+) -> rusqlite::Result<Vec<(String, String, String, bool)>> {
     let order_by = if title_query.is_some() {
         "rank * CASE WHEN pages_fts.rowid IN (
              SELECT rowid FROM pages_fts WHERE pages_fts MATCH ?2
@@ -232,43 +240,108 @@ fn search(query: &str, json: bool, list: bool, limit: usize) -> Result<()> {
          FROM pages_fts
          JOIN pages p ON p.rowid = pages_fts.rowid
          WHERE pages_fts MATCH ?1 AND rank MATCH 'bm25(5.0, 1.0)'
-         ORDER BY {}
-         LIMIT ?3",
-        order_by,
+         ORDER BY {order_by}
+         LIMIT ?3"
     );
 
     let mut stmt = conn.prepare(&sql)?;
 
     // When there's no title query, ?2 is unused but still must be bound
-    let title_param = title_query.as_deref().unwrap_or("");
+    let title_param = title_query.unwrap_or("");
+
+    stmt.query_map(
+        rusqlite::params![match_query, title_param, fetch_limit],
+        |row| {
+            Ok((
+                row.get::<_, String>(0)?, // path
+                row.get::<_, String>(1)?, // title
+                row.get::<_, String>(2)?, // content
+                row.get::<_, bool>(3)?,   // title_boosted
+            ))
+        },
+    )?
+    .collect()
+}
+
+/// Whether a rusqlite error comes from a malformed FTS5 `MATCH` query (as
+/// opposed to a genuine failure like a missing table or I/O error). SQLite
+/// reports these two ways, neither with a distinct error code: a parse error is
+/// prefixed `fts5:` (e.g. `fts5: syntax error near "."`), while an unknown
+/// column filter surfaces as `no such column: <name>`. Both can only originate
+/// from the caller-supplied query, since the rest of the SQL is fixed and
+/// references only valid columns.
+fn is_fts5_query_error(err: &rusqlite::Error) -> bool {
+    matches!(
+        err,
+        rusqlite::Error::SqliteFailure(_, Some(msg))
+            if msg.starts_with("fts5:") || msg.starts_with("no such column:")
+    )
+}
+
+fn search(query: &str, json: bool, list: bool, limit: usize, match_mode: bool) -> Result<()> {
+    let conn = open_db()?;
+
+    // Two distinct modes:
+    //   * default        — the argv is a literal string; every term is quoted so
+    //                       punctuation is searched as text and can never be
+    //                       parsed as an FTS5 operator. Stopwords are dropped and
+    //                       title matches are boosted.
+    //   * --match mode   — the argv is passed straight to FTS5, giving callers
+    //                       its full query syntax (AND/OR/NOT/NEAR, "phrases",
+    //                       `title:`, `prefix*`). No normalization is applied.
+    // `highlight_terms` are the plain words to highlight in each snippet; they
+    // must reflect what actually matched, so they're derived the same way the
+    // MATCH query is (literal tokens vs. an FTS5 expression with its operators
+    // stripped).
+    let (match_query, title_query, highlight_terms) = if match_mode {
+        (query.to_string(), None, snippet::fts5_query_terms(query))
+    } else {
+        let terms = literal_query_terms(query);
+        let highlight_terms = terms
+            .iter()
+            .copied()
+            .flat_map(snippet::word_tokens)
+            .collect();
+        (
+            literal_match_query(&terms),
+            literal_title_query(&terms),
+            highlight_terms,
+        )
+    };
 
     let fetch_limit = limit.saturating_mul(5).max(limit);
 
-    let results: Vec<(String, String, String, bool)> = stmt
-        .query_map(
-            rusqlite::params![normalized_query, title_param, fetch_limit],
-            |row| {
-                Ok((
-                    row.get::<_, String>(0)?, // path
-                    row.get::<_, String>(1)?, // title
-                    row.get::<_, String>(2)?, // content
-                    row.get::<_, bool>(3)?,   // title_boosted
-                ))
-            },
-        )?
-        .collect::<std::result::Result<Vec<_>, _>>()?;
+    // An empty MATCH argument is itself an FTS5 syntax error, so a blank query
+    // (nothing but whitespace) is treated as simply having no results.
+    let results: Vec<(String, String, String)> = if match_query.trim().is_empty() {
+        Vec::new()
+    } else {
+        let rows = match run_search(&conn, &match_query, title_query.as_deref(), fetch_limit) {
+            Ok(rows) => rows,
+            Err(e) if match_mode && is_fts5_query_error(&e) => {
+                // In --match mode the caller controls the query syntax, so a
+                // parse failure is theirs to fix; point them back to the default.
+                return Err(user_error(format!("invalid --match query: {e}")).note(
+                    "--match passes the query straight to the full-text search engine; \
+                     wrap a term in double quotes to match punctuation literally \
+                     (e.g. '\"moment.branch\"'), or drop --match to search the whole \
+                     query as text",
+                ));
+            }
+            Err(e) => return Err(e.into()),
+        };
 
-    let results: Vec<_> = results
-        .into_iter()
-        .take(limit)
-        .map(|(path, title, content, title_boosted)| {
-            (
-                path,
-                title,
-                snippet::extract_snippet(&content, &normalized_query, 300, title_boosted),
-            )
-        })
-        .collect();
+        rows.into_iter()
+            .take(limit)
+            .map(|(path, title, content, title_boosted)| {
+                (
+                    path,
+                    title,
+                    snippet::extract_snippet(&content, &highlight_terms, 300, title_boosted),
+                )
+            })
+            .collect()
+    };
 
     if json {
         if results.is_empty() {
@@ -683,7 +756,76 @@ fn normalized_path(path: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{generated_sdk_index, normalized_path};
+    use super::{
+        fts5_literal, generated_sdk_index, is_fts5_query_error, literal_match_query,
+        literal_query_terms, literal_title_query, normalized_path,
+    };
+
+    #[test]
+    fn literal_query_terms_drops_stopwords() {
+        assert_eq!(
+            literal_query_terms("how does fault injection work"),
+            vec!["fault", "injection", "work"]
+        );
+    }
+
+    #[test]
+    fn literal_query_terms_keeps_all_when_only_stopwords() {
+        // Don't strip everything away for an all-stopword query.
+        assert_eq!(literal_query_terms("how to"), vec!["how", "to"]);
+    }
+
+    #[test]
+    fn fts5_literal_quotes_and_escapes() {
+        assert_eq!(fts5_literal("moment.branch"), "\"moment.branch\"");
+        assert_eq!(fts5_literal("moment=branch"), "\"moment=branch\"");
+        // Embedded quotes are doubled so the result stays a valid FTS5 literal.
+        assert_eq!(fts5_literal("a\"b"), "\"a\"\"b\"");
+    }
+
+    #[test]
+    fn literal_match_query_quotes_each_term() {
+        // Each whitespace token becomes a quoted literal (implicit AND); the
+        // FTS5 tokenizer later splits punctuation inside each literal.
+        assert_eq!(literal_match_query(&["moment.branch"]), "\"moment.branch\"");
+        assert_eq!(literal_match_query(&["foo", "bar"]), "\"foo\" \"bar\"");
+    }
+
+    #[test]
+    fn literal_title_query_filters_on_title_column() {
+        assert_eq!(
+            literal_title_query(&["foo", "bar"]).as_deref(),
+            Some("title:\"foo\" title:\"bar\"")
+        );
+        assert_eq!(literal_title_query(&[]), None);
+    }
+
+    #[test]
+    fn is_fts5_query_error_detects_fts5_syntax_errors() {
+        let syntax = rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error::new(1),
+            Some("fts5: syntax error near \".\"".to_string()),
+        );
+        assert!(is_fts5_query_error(&syntax));
+
+        // An unknown column filter (e.g. `--match foo:bar`) reports without the
+        // `fts5:` prefix but is still a malformed-query error.
+        let bad_column = rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error::new(1),
+            Some("no such column: foo".to_string()),
+        );
+        assert!(is_fts5_query_error(&bad_column));
+    }
+
+    #[test]
+    fn is_fts5_query_error_ignores_unrelated_errors() {
+        let other = rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error::new(1),
+            Some("no such table: pages".to_string()),
+        );
+        assert!(!is_fts5_query_error(&other));
+        assert!(!is_fts5_query_error(&rusqlite::Error::QueryReturnedNoRows));
+    }
 
     #[test]
     fn generated_sdk_index_resolves_go_alias() {

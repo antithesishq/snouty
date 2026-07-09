@@ -17,7 +17,7 @@ pub(crate) enum AttributedValue<T> {
 }
 
 impl<T> AttributedValue<T> {
-    pub(crate) fn unwrap(&self) -> &T {
+    pub(crate) fn value(&self) -> &T {
         match self {
             Self::EnvironmentVariable { value, .. } => value,
             Self::SettingsFile { value, .. } => value,

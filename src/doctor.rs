@@ -169,7 +169,7 @@ fn repository_check(repository: Option<&str>) -> Check {
 
 fn authn_checks(authn_info: Result<AttributedValue<AuthenticationInfo>>) -> Vec<Check> {
     match authn_info {
-        Ok(credentials) => match credentials.unwrap() {
+        Ok(credentials) => match credentials.value() {
             AuthenticationInfo::GithubActionsOidc { .. }
             | AuthenticationInfo::Static(Credentials::GithubActionsOidc(_)) => {
                 vec![enrich(

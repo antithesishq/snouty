@@ -526,7 +526,7 @@ fn to_result(
 ) -> Result<AttributedValue<AuthenticationInfo>> {
     if !allow_basic
         && matches!(
-            authn_info.unwrap(),
+            authn_info.value(),
             AuthenticationInfo::Static(Credentials::Password(_))
         )
     {

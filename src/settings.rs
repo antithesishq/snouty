@@ -284,7 +284,7 @@ pub(crate) fn update_settings_in_global_file(
             .entry(PROFILE_KEY)
             .or_insert_with(|| Value::Table(Table::new()))
             .as_table_mut()
-            .ok_or_eyre(eyre!(
+            .ok_or_else(|| eyre!(
                 "The settings file at {:?} is malformed: `profile` should be a table of named profiles",
                 &path
             ))?;

@@ -118,7 +118,7 @@ fn prompt_for_auth(profile: Option<&str>) -> Result<Option<Credentials>> {
         Err(_) => '1',
         Ok(creds) => match creds {
             AttributedValue::EnvironmentVariable { .. } => '1',
-            _ => match creds.unwrap() {
+            _ => match creds.value() {
                 AuthenticationInfo::Static(Credentials::ApiKey(_)) => '2',
                 AuthenticationInfo::Static(Credentials::Password(_)) => '3',
                 _ => '1',

@@ -9,11 +9,19 @@ stderr 'k8s manifests valid.*'
 ! snouty validate config_invalid
 stderr 'k8s-validator failed.*'
 
+# --allow-compose-divergence is compose-only: it is accepted but inert for k8s
+#    configs, and a stray .env in the config dir is never read.
+snouty validate config_valid --allow-compose-divergence
+stderr 'k8s manifests valid.*'
+! stderr '.*depends on your shell environment.*'
+
 -- config_valid/manifests/ns.yaml --
 apiVersion: v1
 kind: Namespace
 metadata:
   name: snouty-demo
+-- config_valid/.env --
+SHOULD_BE_IGNORED=1
 -- config_invalid/manifests/pod.yaml --
 apiVersion: v1
 kind: Pod

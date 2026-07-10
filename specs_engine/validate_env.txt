@@ -1,0 +1,82 @@
+# snouty validate — environment-variable resolution (compose)
+#
+# Antithesis runs docker-compose in a hermetic environment with none of the
+# user's shell variables, so a `${VAR}` that resolves locally only because the
+# shell supplied it would be empty (or a hard error) there. validate renders the
+# compose file twice — with the shell and under a scrubbed environment matching
+# Antithesis — and fails when the two differ, so a setup that would break in
+# Antithesis fails locally first.
+
+build-image env-emitter:latest setup_emitter
+
+# A variable that resolves only from the shell (no `.env` entry, no inline
+#    default) is empty in the Antithesis render, so validation fails up front —
+#    before any container starts — naming the field.
+env SNOUTY_TEST_SHELL_VAR=fromshell
+! snouty validate soft --timeout 15
+stderr '.*depends on your shell environment.*'
+stderr '.*SNOUTY_TEST_SHELL_VAR.*'
+
+# --allow-compose-divergence downgrades that to a warning; validation continues
+#    and still succeeds when the empty value is harmless.
+env SNOUTY_TEST_SOFTOK_VAR=fromshell
+snouty validate soft_ok --allow-compose-divergence --timeout 20
+stderr '.*Warning:.*'
+stderr '.*SNOUTY_TEST_SOFTOK_VAR.*'
+stderr '.*Setup validation successful.*'
+
+# A value from the config dir's `.env` resolves the same in both renders —
+#    exactly as it will from the config image — so it is not flagged. Neither is
+#    an empty inline default (`${VAR:-}`): it renders blank in both, so there is
+#    no divergence to report.
+snouty validate clean --timeout 20
+! stderr '.*depends on your shell environment.*'
+stderr '.*Setup validation successful.*'
+
+# A required (${VAR:?}) variable that resolves only from the shell aborts the
+#    Antithesis render; validate reports it, surfacing docker-compose's own
+#    message, rather than letting contents() hit the same abort with a rawer
+#    error later.
+env SNOUTY_TEST_REQ=fromshell
+! snouty validate required --timeout 15
+stderr '.*depends on your shell environment.*'
+stderr '.*SNOUTY_TEST_REQ.*'
+
+-- setup_emitter/Dockerfile --
+FROM busybox
+CMD sh -c 'echo "{\"antithesis_setup\":{\"status\":\"complete\"}}" >> "$ANTITHESIS_OUTPUT_DIR/sdk.jsonl" && sleep 3600'
+
+-- soft/docker-compose.yaml --
+services:
+  app:
+    image: env-emitter:latest
+    pull_policy: never
+    environment:
+      SNOUTY_TEST_SHELL_VAR: ${SNOUTY_TEST_SHELL_VAR}
+
+-- soft_ok/docker-compose.yaml --
+services:
+  emitter:
+    image: env-emitter:latest
+    pull_policy: never
+    environment:
+      SNOUTY_TEST_SOFTOK_VAR: ${SNOUTY_TEST_SOFTOK_VAR}
+
+-- clean/docker-compose.yaml --
+services:
+  emitter:
+    image: env-emitter:latest
+    pull_policy: never
+    environment:
+      FROM_ENV: ${SNOUTY_TEST_ENV_VAR}
+      BLANK: ${SNOUTY_TEST_BLANK:-}
+-- clean/.env --
+SNOUTY_TEST_ENV_VAR=hello
+
+-- required/docker-compose.yaml --
+services:
+  app:
+    image: env-emitter:latest
+    pull_policy: never
+    environment:
+      NEED: ${SNOUTY_TEST_REQ:?must set SNOUTY_TEST_REQ}

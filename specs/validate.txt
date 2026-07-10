@@ -27,6 +27,10 @@ stderr '.*both docker-compose.yaml and a manifests/ subdirectory.*'
 snouty validate --help
 stdout '.*keep-running.*'
 
+# Help text mentions --allow-compose-divergence.
+snouty validate --help
+stdout '.*allow-compose-divergence.*'
+
 # Help text mentions the manifests/ subdirectory option.
 snouty validate --help
 stdout '.*manifests/.*'

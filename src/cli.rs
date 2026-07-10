@@ -160,6 +160,12 @@ Compose configs:
   discovers test commands from /opt/antithesis/test/v1 inside the
   running containers and validates their structure.
 
+  Before starting anything, validate resolves the compose file twice — with
+  your shell and under a scrubbed environment matching the hermetic Antithesis
+  environment — and fails if any ${VAR} resolves differently, catching setups
+  that only work locally because a value came from your shell. Use
+  --allow-compose-divergence to downgrade that to a warning.
+
   Test commands are discovered by scanning /opt/antithesis/test/v1 from each
   running container for {test_name}/{command} entries. Test commands are
   validated to have recognized prefixes and at least one driver or anytime
@@ -167,9 +173,10 @@ Compose configs:
 
 Kubernetes configs:
   Runs docker.io/antithesishq/k8s-validator against the manifests/
-  directory to perform static analysis of the manifests. --timeout has no
-  effect (the validator does not start any workloads), and --keep-running
-  has no effect (no containers are launched).
+  directory to perform static analysis of the manifests. --timeout,
+  --keep-running, and --allow-compose-divergence have no effect here (no
+  workloads or containers are started, and there is no docker-compose config
+  to render).
 
 Example:
   snouty validate ./config
@@ -338,6 +345,11 @@ pub struct ValidateArgs {
     /// Leave containers running after validation for manual inspection
     #[arg(long)]
     pub keep_running: bool,
+
+    /// Warn instead of failing when docker-compose.yaml renders differently in
+    /// the hermetic Antithesis environment than it does on this machine
+    #[arg(long)]
+    pub allow_compose_divergence: bool,
 }
 
 #[derive(Args)]

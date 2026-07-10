@@ -654,11 +654,12 @@ impl DockerCompose<'_> {
     /// value makes compose abort (non-zero exit, empty stdout), which the caller
     /// reads as a definite "won't resolve in Antithesis".
     pub fn config_json_hermetic_env(&self, config: &ComposeConfig) -> Result<Output> {
-        // Preserve the command and working directory, but intentionally omit
-        // even compose's own process variables: they are valid interpolation
-        // inputs and Antithesis will not inherit their local values.
-        let mut cmd = Command::new(&self.compose_binary);
-        cmd.current_dir(config.dir());
+        // Reuse the normal command (binary + working directory), then clear the
+        // whole environment — including the DOCKER_HOST that command() sets.
+        // Those are all valid interpolation inputs Antithesis will not inherit,
+        // so scrubbing them is the point; only the binary and directory carry
+        // over. (env_clear() drops anything command() set via .env().)
+        let mut cmd = self.command(config);
         cmd.env_clear();
         cmd.args(compose_file_args(None));
         cmd.args(["config", "--format", "json"]);

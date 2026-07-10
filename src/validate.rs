@@ -348,9 +348,11 @@ config image) or give the reference an inline default (e.g. ${VAR:-default}).";
 /// [`container::DockerCompose::config_json_hermetic_env`]) — and comparing the
 /// complete models. Any field that differs is a value that exists only because
 /// of the local shell. Compose does all the interpolation, `.env`, and default
-/// work in both renders, so we never re-derive any of it — and the
-/// `${VAR:-}` "default to blank" idiom, identical in both renders, is correctly
-/// left alone.
+/// work in both renders, so we never re-derive any of it. An inline default
+/// like `${VAR:-default}` is left alone only when `VAR` is also unset locally —
+/// then both renders produce `default`. If the local shell sets `VAR`, the two
+/// renders differ and we flag it, which is correct: Antithesis would fall back
+/// to the default while the local run silently used the shell value.
 fn check_compose_divergence(
     compose: &container::DockerCompose,
     config: &ComposeConfig,
@@ -389,7 +391,13 @@ fn check_compose_divergence(
     };
 
     if allow_compose_divergence {
-        eprintln!("Warning: {DIVERGENCE_HEADLINE}\n{detail}\n{DIVERGENCE_FIX}");
+        // --allow-compose-divergence is an escape hatch, not a silencer: still
+        // surface the problem (and compose's own error, if any) so the user
+        // knows something is off even though validation proceeds to success.
+        eprintln!(
+            "Warning: {DIVERGENCE_HEADLINE}\n{detail}\n{DIVERGENCE_FIX}\n\
+             Proceeding anyway because --allow-compose-divergence was set."
+        );
         Ok(())
     } else {
         Err(user_error(DIVERGENCE_HEADLINE)
@@ -419,7 +427,16 @@ fn diverging_config_fields(local: &Value, hermetic: &Value) -> Vec<String> {
                         "changed in Antithesis"
                     }
                 }
+                // json_patch::diff only emits add/remove/replace from a
+                // structural comparison, so this arm should never be reached.
+                // Catch it loudly in debug builds, but degrade gracefully in
+                // release rather than panicking on a user's `snouty validate`.
                 PatchOperation::Move(_) | PatchOperation::Copy(_) | PatchOperation::Test(_) => {
+                    debug_assert!(
+                        false,
+                        "json_patch::diff emitted an unexpected move/copy/test operation at {path}"
+                    );
+                    warn!("unexpected json-patch operation at {path} while comparing compose renders; treating as changed");
                     "changed in Antithesis"
                 }
             };

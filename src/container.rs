@@ -805,7 +805,7 @@ impl DockerCompose<'_> {
     /// pushed, so the platform always pulls exactly what was resolved here.
     pub fn pin_images(&self, config: &ComposeConfig, registry: &str) -> Result<String> {
         let contents = self.contents(config, None)?;
-        validate_images_are_available(self.rt, &contents)?;
+        with_config_image_escape_hatch(validate_images_are_available(self.rt, &contents))?;
 
         let prefix = format!("{}/", registry.trim_end_matches('/'));
 
@@ -1570,6 +1570,11 @@ pub fn parse_compose_config(yaml: &str) -> Result<ComposeContents> {
 /// Ensure the referenced images are available in the local image store.
 /// snouty never pulls — what runs (validate) and what gets pushed (launch)
 /// is exactly what's in the local store.
+///
+/// The error is intentionally context-free: it explains only why local presence
+/// is required. Command-specific escape hatches (e.g. launch's `--config-image`,
+/// see [`with_config_image_escape_hatch`]) are layered on by the caller so this
+/// shared check doesn't have to know who called it.
 pub fn validate_images_are_available(
     runtime: &dyn ContainerRuntime,
     contents: &ComposeContents,
@@ -1609,8 +1614,25 @@ pub fn validate_images_are_available(
     for note in missing {
         err = err.with_note(|| note);
     }
-    err = err.with_suggestion(|| "pull or build the missing images, then retry");
-    Err(err)
+    Err(err
+        .with_note(|| {
+            "snouty never pulls — what it validates and launches is exactly what's in your \
+             local image store, so every referenced image must already be present there"
+        })
+        .with_suggestion(|| "pull or build the missing images, then retry"))
+}
+
+/// Layer launch's escape hatch onto a [`validate_images_are_available`] failure:
+/// a caller that already has a pre-built config image can skip local packaging
+/// entirely by launching with `--config-image <ref>`. Because `--config-image`
+/// conflicts with `--config`, the suggestion tells users to *replace* `--config`,
+/// not add the flag alongside it. Only the launch path has this alternative, so
+/// only the launch caller wraps its check with this.
+fn with_config_image_escape_hatch<T>(result: Result<T>) -> Result<T> {
+    result.with_suggestion(|| {
+        "if you already have a pre-built config image, launch with `--config-image <ref>` \
+         in place of `--config <dir>` to reuse it and skip local packaging"
+    })
 }
 
 /// Ensure the given image references all use the amd64 architecture.
@@ -2817,6 +2839,43 @@ services:
             debug.contains("image: missing-b:latest (service has a `build:` stanza"),
             "expected build-stanza hint on the second missing image, got: {debug}"
         );
+        assert!(
+            debug.contains("snouty never pulls"),
+            "expected the why-it's-required-locally note, got: {debug}"
+        );
+        // The shared check is context-free: the launch-only `--config-image`
+        // escape hatch is layered on by the caller, not emitted here.
+        assert!(
+            !debug.contains("--config-image"),
+            "shared check should stay context-free, got: {debug}"
+        );
+    }
+
+    #[test]
+    fn with_config_image_escape_hatch_tells_users_to_replace_config() {
+        let runtime = FakeRuntime {
+            available_images: BTreeMap::from([("missing:latest".to_string(), false)]),
+            architectures: BTreeMap::new(),
+            ..Default::default()
+        };
+
+        let err = with_config_image_escape_hatch(validate_images_are_available(
+            &runtime,
+            &contents_of(&[("app", "missing:latest")], &[]),
+        ))
+        .unwrap_err();
+
+        let debug = format!("{err:?}");
+        assert!(
+            debug.contains("--config-image <ref>"),
+            "expected the config-image escape hatch, got: {debug}"
+        );
+        // --config-image conflicts with --config, so the hint must say to replace
+        // it, not add it alongside (which clap would reject).
+        assert!(
+            debug.contains("in place of `--config <dir>`"),
+            "expected the hint to replace --config, not add it, got: {debug}"
+        );
     }
 
     #[test]
@@ -2835,6 +2894,12 @@ services:
         assert!(
             debug.contains("service 'app' has no `image:` field"),
             "expected imageless-service guidance, got: {debug}"
+        );
+        // The imageless check bails before the missing-local-image guidance, so
+        // its unrelated "pull or build" suggestion must not leak onto this error.
+        assert!(
+            !debug.contains("pull or build the missing images"),
+            "imageless error should not carry missing-image guidance, got: {debug}"
         );
     }
 

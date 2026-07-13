@@ -161,6 +161,12 @@ pub trait ContainerRuntime: Send + Sync {
     /// The CLI command name (e.g. "podman" or "docker").
     fn name(&self) -> &str;
 
+    /// The underlying engine ("podman" or "docker"), independent of which binary
+    /// invokes it. These diverge only for podman-in-disguise (podman installed
+    /// as the `docker` binary), where [`name`](Self::name) is `"docker"` but the
+    /// engine is really podman.
+    fn engine_kind(&self) -> &'static str;
+
     /// Clone into a boxed trait object.
     fn clone_box(&self) -> Box<dyn ContainerRuntime>;
 
@@ -1077,6 +1083,10 @@ impl ContainerRuntime for PodmanRuntime {
         &self.cmd
     }
 
+    fn engine_kind(&self) -> &'static str {
+        "podman"
+    }
+
     fn clone_box(&self) -> Box<dyn ContainerRuntime> {
         Box::new(self.clone())
     }
@@ -1176,6 +1186,10 @@ impl ContainerRuntime for DockerRuntime {
 
     fn name(&self) -> &str {
         &self.cmd
+    }
+
+    fn engine_kind(&self) -> &'static str {
+        "docker"
     }
 
     fn remote_manifest(&self, image_ref: &str) -> RemoteManifest {
@@ -1287,11 +1301,20 @@ pub fn announce_auto_detected_engine(settings: &Settings, rt: &dyn ContainerRunt
     if json || settings.container_engine().is_some() {
         return;
     }
-    let engine = rt.name();
+    // Report the real engine, not the binary name: for podman-in-disguise the
+    // command is `docker` but the engine is podman, and the override the user
+    // should set is the engine kind. Call out the disguise so "podman via the
+    // docker binary" doesn't read as a contradiction.
+    let engine = rt.engine_kind();
+    let via = if rt.name() == engine {
+        String::new()
+    } else {
+        format!(" (running as the '{}' binary)", rt.name())
+    };
     eprintln!(
-        "Using auto-detected container engine '{engine}'. If that's not what you \
-         expect, select one explicitly with SNOUTY_CONTAINER_ENGINE={engine} (or \
-         `container_engine = \"{engine}\"` in a snouty settings file)."
+        "Using auto-detected container engine '{engine}'{via}. If that's not what \
+         you expect, select one explicitly with SNOUTY_CONTAINER_ENGINE={engine} \
+         (or `container_engine = \"{engine}\"` in a snouty settings file)."
     );
 }
 
@@ -2773,6 +2796,10 @@ services:
 
     impl ContainerRuntime for FakeRuntime {
         fn name(&self) -> &str {
+            "fake"
+        }
+
+        fn engine_kind(&self) -> &'static str {
             "fake"
         }
 

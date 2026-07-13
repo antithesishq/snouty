@@ -240,8 +240,9 @@ async fn validate_compose(
             .unwrap_or_default();
         eprintln!(
             "Note: --keep-running is set. When done, bring containers down with:\n  \
-             {}docker-compose -f {}/docker-compose.yaml -f {} down\n",
+             {}{} -f {}/docker-compose.yaml -f {} down\n",
             docker_host_prefix,
+            compose.compose_command().display(),
             config.dir().display(),
             override_path.display(),
         );

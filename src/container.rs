@@ -481,20 +481,140 @@ fn stderr_indicates_missing_source(stderr: &str) -> bool {
         || s.contains("could not be found on container")
 }
 
-/// The `docker-compose` (Docker Compose v2) binary. snouty always drives
-/// Compose through this binary, independent of the image runtime, pointing it
-/// at the right engine via `DOCKER_HOST`.
+/// The standalone Docker Compose v2 binary name.
 const DOCKER_COMPOSE: &str = "docker-compose";
+
+/// A resolved Docker Compose v2 invocation: the program to run plus any leading
+/// arguments before the compose subcommand.
+///
+/// Compose v2 ships two ways — the standalone `docker-compose` binary
+/// (`program = docker-compose`, no prefix) and the Docker CLI plugin
+/// (`program = docker`, prefix `compose`). snouty drives whichever it finds;
+/// both are genuine Compose v2, whose features snouty depends on. The program
+/// is always an absolute path so the invocation survives the `env_clear()` in
+/// the hermetic render, where `PATH` is gone.
+#[derive(Clone, Debug)]
+pub struct ComposeCommand {
+    program: PathBuf,
+    prefix: &'static [&'static str],
+}
+
+impl ComposeCommand {
+    /// Resolve a Docker Compose v2 invocation, with a clear error when none is
+    /// available.
+    ///
+    /// Prefers the standalone `docker-compose` binary when it is present and
+    /// genuinely v2 (the historical contract). Otherwise falls back to the
+    /// `docker compose` CLI plugin — but only when `docker` is real Docker,
+    /// never podman in disguise, whose compose provider may not implement the
+    /// v2 features snouty relies on.
+    pub fn resolve() -> Result<ComposeCommand> {
+        // 1. Standalone docker-compose, when it's really v2.
+        if let Ok(program) = which::which(DOCKER_COMPOSE) {
+            let candidate = ComposeCommand {
+                program,
+                prefix: &[],
+            };
+            match candidate.version() {
+                Ok(_) => return Ok(candidate),
+                // Present but not v2 (likely Compose v1). Prefer the docker
+                // plugin if it's usable; only surface the v1 error if not.
+                Err(standalone_err) => {
+                    return Self::docker_plugin().or(Err(standalone_err));
+                }
+            }
+        }
+
+        // 2. The `docker compose` CLI plugin.
+        Self::docker_plugin().map_err(|_| {
+            eyre!(
+                "snouty requires Docker Compose v2, but neither the `docker-compose` binary nor the `docker compose` CLI plugin was found"
+            )
+            .with_suggestion(|| {
+                "install Docker Compose v2: https://docs.docker.com/compose/install/"
+            })
+        })
+    }
+
+    /// The `docker compose` plugin as a v2 invocation. `Err` when docker is
+    /// absent, is podman in disguise, or its compose plugin isn't v2 — callers
+    /// treat any of these as "no usable plugin".
+    fn docker_plugin() -> Result<ComposeCommand> {
+        let program = which::which("docker").wrap_err("`docker` not found on PATH")?;
+        // podman-in-disguise routes `docker compose` to a provider that may not
+        // implement Compose v2; never trust it as a v2 source.
+        if is_podman_in_disguise("docker") {
+            bail!("`docker` is podman in disguise; its `compose` is not Docker Compose v2");
+        }
+        let candidate = ComposeCommand {
+            program,
+            prefix: &["compose"],
+        };
+        candidate.version()?;
+        Ok(candidate)
+    }
+
+    /// Return the version banner, erroring when the command fails to run or
+    /// reports a non-v2 (v1) banner.
+    pub fn version(&self) -> Result<String> {
+        let mut cmd = self.command();
+        cmd.arg("version");
+        match cmd.output() {
+            Ok(o) if o.status.success() => {
+                let version = String::from_utf8_lossy(&o.stdout).trim().to_string();
+                if is_compose_v2_version(&version) {
+                    Ok(version)
+                } else {
+                    let name = self.display();
+                    Err(eyre!("`{name}` is not Docker Compose v2"))
+                        .with_section(move || version.header(format!("{name} version:")))
+                        .with_suggestion(|| {
+                            "install Docker Compose v2: https://docs.docker.com/compose/install/"
+                        })
+                }
+            }
+            Ok(o) => {
+                let name = self.display();
+                let stderr = String::from_utf8_lossy(&o.stderr);
+                Err(eyre!("`{name} version` failed"))
+                    .with_section(move || stderr.trim().to_string().header("Stderr:"))
+            }
+            Err(e) => Err(eyre!("failed to run `{} version`: {e}", self.display())),
+        }
+    }
+
+    /// A fresh [`Command`] for this invocation with the compose prefix applied.
+    fn command(&self) -> Command {
+        let mut cmd = Command::new(&self.program);
+        cmd.args(self.prefix);
+        cmd
+    }
+
+    /// The invocation as a user would type it: `docker-compose` or
+    /// `docker compose`. Used in user-facing hints so they name the command
+    /// snouty actually drives.
+    pub fn display(&self) -> String {
+        let program = self
+            .program
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| self.program.display().to_string());
+        if self.prefix.is_empty() {
+            program
+        } else {
+            format!("{program} {}", self.prefix.join(" "))
+        }
+    }
+}
 
 /// Build a [`DockerCompose`] handle targeting `rt`'s container engine.
 ///
-/// Verifies the `docker-compose` binary is installed (Docker Compose v2) with a
+/// Resolves a Docker Compose v2 invocation ([`ComposeCommand::resolve`]) with a
 /// clear error otherwise. An explicit `DOCKER_HOST` already set in the
 /// environment is always respected; otherwise, for a podman runtime,
 /// docker-compose is pointed at podman's API socket so podman backs Compose.
 pub fn docker_compose(rt: &dyn ContainerRuntime) -> Result<DockerCompose<'_>> {
-    ensure_docker_compose()?;
-    let compose_binary = docker_compose_binary()?;
+    let compose = ComposeCommand::resolve()?;
     let docker_host = if std::env::var_os("DOCKER_HOST").is_some() {
         None
     } else {
@@ -503,55 +623,13 @@ pub fn docker_compose(rt: &dyn ContainerRuntime) -> Result<DockerCompose<'_>> {
     Ok(DockerCompose {
         rt,
         docker_host,
-        compose_binary,
+        compose,
     })
 }
 
-/// Resolve `docker-compose` before clearing the environment for a hermetic
-/// render. [`Command`] otherwise needs `PATH` to find it.
-fn docker_compose_binary() -> Result<PathBuf> {
-    which::which(DOCKER_COMPOSE).wrap_err("failed to resolve the `docker-compose` binary on PATH")
-}
-
-/// Verify the `docker-compose` binary is present and is Docker Compose v2.
-fn ensure_docker_compose() -> Result<()> {
-    docker_compose_version().map(|_| ())
-}
-
-/// Return the `docker-compose` version banner, with a clear error when the
-/// binary is missing or is not Docker Compose v2.
-pub fn docker_compose_version() -> Result<String> {
-    match Command::new(DOCKER_COMPOSE).arg("version").output() {
-        Ok(o) if o.status.success() => {
-            let version = String::from_utf8_lossy(&o.stdout).trim().to_string();
-            if is_compose_v2_version(&version) {
-                Ok(version)
-            } else {
-                Err(eyre!(
-                    "snouty requires Docker Compose v2 (the `docker-compose` binary)"
-                ))
-                .with_section(move || version.header("docker-compose version:"))
-                .with_suggestion(|| {
-                    "install Docker Compose v2: https://docs.docker.com/compose/install/"
-                })
-            }
-        }
-        Ok(o) => {
-            let stderr = String::from_utf8_lossy(&o.stderr);
-            Err(eyre!(
-                "`docker-compose version` failed; snouty requires the `docker-compose` binary (Docker Compose v2)"
-            ))
-            .with_section(move || stderr.trim().to_string().header("Stderr:"))
-        }
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Err(eyre!(
-            "snouty requires the `docker-compose` binary (Docker Compose v2), but it was not found on PATH"
-        ))
-        .with_suggestion(|| "install Docker Compose v2: https://docs.docker.com/compose/install/"),
-        Err(e) => Err(eyre!("failed to run `docker-compose version`: {e}")),
-    }
-}
-
-/// Whether `docker-compose version` output identifies Docker Compose v2.
+/// Whether a `compose version` banner identifies Docker Compose v2. Both the
+/// standalone binary and the CLI plugin print "Docker Compose version ..." for
+/// v2; Compose v1's "docker-compose version ..." (hyphenated) does not match.
 fn is_compose_v2_version(output: &str) -> bool {
     output.to_lowercase().contains("docker compose")
 }
@@ -566,7 +644,7 @@ fn is_compose_v2_version(output: &str) -> bool {
 pub struct DockerCompose<'a> {
     rt: &'a dyn ContainerRuntime,
     docker_host: Option<String>,
-    compose_binary: PathBuf,
+    compose: ComposeCommand,
 }
 
 impl DockerCompose<'_> {
@@ -582,9 +660,15 @@ impl DockerCompose<'_> {
         self.docker_host.as_deref()
     }
 
+    /// The resolved Compose v2 invocation snouty drives. Used to name the
+    /// command in user-facing hints.
+    pub fn compose_command(&self) -> &ComposeCommand {
+        &self.compose
+    }
+
     /// Base `docker-compose` command with engine wiring applied.
     fn command(&self, config: &ComposeConfig) -> Command {
-        let mut cmd = Command::new(&self.compose_binary);
+        let mut cmd = self.compose.command();
         cmd.current_dir(config.dir());
         if let Some(host) = &self.docker_host {
             cmd.env("DOCKER_HOST", host);
@@ -3242,7 +3326,24 @@ services:
     #[test]
     fn is_compose_v2_version_rejects_others() {
         assert!(!is_compose_v2_version("podman-compose version 1.0.6"));
+        // Compose v1's hyphenated banner must not be mistaken for v2.
+        assert!(!is_compose_v2_version("docker-compose version 1.29.2"));
         assert!(!is_compose_v2_version(""));
+    }
+
+    #[test]
+    fn compose_command_display_standalone_and_plugin() {
+        let standalone = ComposeCommand {
+            program: PathBuf::from("/usr/local/bin/docker-compose"),
+            prefix: &[],
+        };
+        assert_eq!(standalone.display(), "docker-compose");
+
+        let plugin = ComposeCommand {
+            program: PathBuf::from("/usr/bin/docker"),
+            prefix: &["compose"],
+        };
+        assert_eq!(plugin.display(), "docker compose");
     }
 
     #[test]
@@ -3274,7 +3375,7 @@ services:
         let compose = DockerCompose {
             rt: &runtime,
             docker_host: Some("unix:///tmp/snouty-hermetic-test.sock".to_string()),
-            compose_binary: docker_compose_binary().unwrap(),
+            compose: ComposeCommand::resolve().unwrap(),
         };
 
         let output = compose.config_json_hermetic_env(&config).unwrap();

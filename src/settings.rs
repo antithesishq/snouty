@@ -261,7 +261,7 @@ pub(crate) fn update_settings_in_global_file(
     container_engine: Option<String>,
     profile_to_update: Option<&str>,
 ) -> Result<()> {
-    let settings_dir = global_settings_dir().ok_or_eyre("Could not determine global settings directory. Ensure either $XDG_CONFIG_DIR or $HOME is set.")?;
+    let settings_dir = global_settings_dir().ok_or_eyre("Could not determine global settings directory. Ensure either $XDG_CONFIG_HOME or $HOME is set.")?;
     let path = settings_dir.join(GLOBAL_SETTINGS_FILENAME);
     let mut contents = match read_to_string_if_file_exists(&path)? {
         Some(contents) => match parse_settings(&contents, &path) {

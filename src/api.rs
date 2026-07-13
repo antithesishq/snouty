@@ -1090,7 +1090,6 @@ async fn format_launch_client_error(err: ClientError<generated::types::ErrorResp
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::auth::Credentials;
     use futures_util::TryStreamExt;
     use tempfile::TempDir;
     use wiremock::matchers::{method, path, query_param, query_param_is_missing};
@@ -1127,10 +1126,10 @@ mod tests {
     ) -> AntithesisApi {
         AntithesisApi::build(
             &Settings::for_test_base_url(mock_server.uri()),
-            AuthenticationInfo::Static(Credentials::for_password(
-                "user".to_owned(),
-                "pass".to_owned(),
-            )),
+            AuthenticationInfo::Password {
+                username: "user".to_owned(),
+                password: "pass".to_owned(),
+            },
             false,
             cache_dir.map(|d| d.path().to_path_buf()),
         )
@@ -1362,10 +1361,10 @@ mod tests {
     fn with_base_url_trims_trailing_slash() {
         let api = AntithesisApi::build(
             &Settings::for_test_base_url("http://example.com/".to_owned()),
-            AuthenticationInfo::Static(Credentials::for_password(
-                "user".to_owned(),
-                "pass".to_owned(),
-            )),
+            AuthenticationInfo::Password {
+                username: "user".to_owned(),
+                password: "pass".to_owned(),
+            },
             true,
             None,
         )
@@ -1377,10 +1376,10 @@ mod tests {
     fn with_base_url_strips_legacy_api_suffix() {
         let api = AntithesisApi::build(
             &Settings::for_test_base_url("http://example.com/api/v1/".to_owned()),
-            AuthenticationInfo::Static(Credentials::for_password(
-                "user".to_owned(),
-                "pass".to_owned(),
-            )),
+            AuthenticationInfo::Password {
+                username: "user".to_owned(),
+                password: "pass".to_owned(),
+            },
             true,
             None,
         )

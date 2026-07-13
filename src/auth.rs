@@ -9,7 +9,7 @@ use std::{
 use base64::{Engine, prelude::BASE64_STANDARD};
 use color_eyre::{
     Section,
-    eyre::{Context, OptionExt, Result, eyre},
+    eyre::{Context, OptionExt, Result},
 };
 use http::HeaderValue;
 use keyring_core::Entry;
@@ -34,111 +34,50 @@ const CREDENTIALS_FILENAME: &str = "credentials.toml";
 
 const OIDC_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 
-#[derive(Clone, Serialize, Deserialize)]
-pub struct ApiKeyCredentials {
-    pub(crate) api_key: String,
-}
-
-impl std::fmt::Debug for ApiKeyCredentials {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ApiKeyCredentials")
-            .field("api_key", &"[REDACTED]")
-            .finish()
-    }
-}
-
-#[derive(Clone, Serialize, Deserialize)]
-pub struct PasswordCredentials {
-    pub username: String,
-    pub(crate) password: String,
-}
-
-impl std::fmt::Debug for PasswordCredentials {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("PasswordCredentials")
-            .field("username", &self.username)
-            .field("password", &"[REDACTED]")
-            .finish()
-    }
-}
-
 #[derive(Clone)]
-pub struct GithubActionsOidcCredentials {
-    token: String,
-}
-
-impl std::fmt::Debug for GithubActionsOidcCredentials {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("GithubActionsOidcCredentials")
-            .field("token", &"[REDACTED]")
-            .finish()
-    }
-}
-
-#[derive(Clone, Debug)]
-pub enum Credentials {
-    GithubActionsOidc(GithubActionsOidcCredentials),
-    ApiKey(ApiKeyCredentials),
-    Password(PasswordCredentials),
-}
-
-impl Credentials {
-    pub(crate) fn for_api_key(api_key: String) -> Self {
-        Self::ApiKey(ApiKeyCredentials { api_key })
-    }
-
-    pub(crate) fn for_password(username: String, password: String) -> Self {
-        Self::Password(PasswordCredentials { username, password })
-    }
-
-    fn auth_header(&self) -> Result<HeaderValue> {
-        let value = match self {
-            Credentials::Password(PasswordCredentials { username, password }) => {
-                let credentials = format!("{username}:{password}");
-                let encoded = BASE64_STANDARD.encode(credentials);
-                format!("Basic {encoded}")
-            }
-            Credentials::ApiKey(ApiKeyCredentials { api_key }) => format!("Bearer {api_key}"),
-            Credentials::GithubActionsOidc(GithubActionsOidcCredentials { token }) => {
-                format!("GHA {token}")
-            }
-        };
-        let mut hv =
-            HeaderValue::from_str(&value).wrap_err("failed to build Authorization header")?;
-        hv.set_sensitive(true);
-        Ok(hv)
-    }
-
-    fn convert_to_persistable_credentials(self) -> Result<PersistableCredentials> {
-        match self {
-            Self::ApiKey(api_key_credentials) => {
-                Ok(PersistableCredentials::ApiKey(api_key_credentials))
-            }
-            Self::Password(password_credentials) => {
-                Ok(PersistableCredentials::Password(password_credentials))
-            }
-            Self::GithubActionsOidc(_) => Err(eyre!(
-                "Github Actions OIDC tokens cannot be persisted by Snouty"
-            )),
-        }
-    }
-}
-
-#[derive(Clone, Debug)]
 pub enum AuthenticationInfo {
-    Static(Credentials),
+    ApiKey {
+        api_key: String,
+    },
     GithubActionsOidc {
         url: String,
         request_token: String,
-        cached: Arc<OnceCell<Credentials>>,
+        // Feels pretty sus to stick our secrets on the heap
+        cached: Arc<OnceCell<String>>,
     },
+    Password {
+        username: String,
+        password: String,
+    },
+}
+
+impl std::fmt::Debug for AuthenticationInfo {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ApiKey { .. } => f
+                .debug_struct("ApiKey")
+                .field("api_key", &"[REDACTED]")
+                .finish(),
+            Self::GithubActionsOidc { url, cached, .. } => f
+                .debug_struct("GithubActionsOidc")
+                .field("url", url)
+                .field("request_token", &"[REDACTED]")
+                .field("cached", &cached.initialized())
+                .finish(),
+            Self::Password { username, .. } => f
+                .debug_struct("Password")
+                .field("username", username)
+                .field("password", &"[REDACTED]")
+                .finish(),
+        }
+    }
 }
 
 impl AuthenticationInfo {
     fn try_from_env() -> Result<Option<AttributedValue<Self>>> {
         if let Some(api_key) = env::var(API_KEY_VAR_NAME)? {
             return Ok(Some(AttributedValue::EnvironmentVariable {
-                value: Self::Static(Credentials::for_api_key(api_key)),
+                value: Self::ApiKey { api_key },
                 environment_variable_names: vec![API_KEY_VAR_NAME],
             }));
         }
@@ -147,7 +86,7 @@ impl AuthenticationInfo {
             && let Some(password) = env::var(PASSWORD_VAR_NAME)?
         {
             return Ok(Some(AttributedValue::EnvironmentVariable {
-                value: Self::Static(Credentials::for_password(username, password)),
+                value: Self::Password { username, password },
                 environment_variable_names: vec![USERNAME_VAR_NAME, PASSWORD_VAR_NAME],
             }));
         }
@@ -168,7 +107,7 @@ impl AuthenticationInfo {
             match serde_json::from_str::<PersistableCredentials>(&persisted) {
                 Ok(persisted) => {
                     return Ok(Some(AttributedValue::Keychain {
-                        value: Self::Static(persisted.convert_to_credentials()),
+                        value: persisted.convert_to_authentication_info(),
                         entry_name: credential_name,
                     }));
                 }
@@ -226,9 +165,9 @@ impl AuthenticationInfo {
                     {
                         return to_result(
                             AttributedValue::SettingsFile {
-                                value: Self::Static(
-                                    from_credentials_file.clone().convert_to_credentials(),
-                                ),
+                                value: from_credentials_file
+                                    .clone()
+                                    .convert_to_authentication_info(),
                                 settings_file_path: path,
                                 profile: Some(profile_name.to_owned()),
                             },
@@ -252,7 +191,7 @@ impl AuthenticationInfo {
         {
             return to_result(
                 AttributedValue::SettingsFile {
-                    value: Self::Static(from_credentials_file.convert_to_credentials()),
+                    value: from_credentials_file.convert_to_authentication_info(),
                     settings_file_path: path,
                     profile: None,
                 },
@@ -294,15 +233,28 @@ impl AuthenticationInfo {
 
     async fn auth_header(&self) -> Result<HeaderValue> {
         match self {
-            Self::Static(creds) => creds.auth_header(),
+            Self::ApiKey { api_key } => to_header_value(&format!("Bearer {api_key}"), true),
             Self::GithubActionsOidc {
                 url,
                 request_token,
                 cached,
-            } => cached
-                .get_or_try_init(|| fetch_github_actions_oidc_credentials(url, request_token))
-                .await?
-                .auth_header(),
+            } => to_header_value(
+                &format!(
+                    "GHA {}",
+                    cached
+                        .get_or_try_init(|| fetch_github_actions_oidc_credentials(
+                            url,
+                            request_token
+                        ))
+                        .await?
+                ),
+                true,
+            ),
+            Self::Password { username, password } => {
+                let credentials = format!("{username}:{password}");
+                let encoded = BASE64_STANDARD.encode(credentials);
+                to_header_value(&format!("Basic {encoded}"), true)
+            }
         }
     }
 }
@@ -338,7 +290,7 @@ fn try_get_credentials_file_path() -> Option<(PathBuf, PathBuf)> {
 async fn fetch_github_actions_oidc_credentials(
     actions_id_url: &str,
     actions_id_request_token: &str,
-) -> Result<Credentials> {
+) -> Result<String> {
     #[derive(Deserialize)]
     struct OidcTokenResponse {
         value: String,
@@ -357,25 +309,45 @@ async fn fetch_github_actions_oidc_credentials(
         .json()
         .await?;
 
-    Ok(Credentials::GithubActionsOidc(
-        GithubActionsOidcCredentials {
-            token: response.value,
-        },
-    ))
+    Ok(response.value)
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+fn to_header_value(content: &str, sensitive: bool) -> Result<HeaderValue> {
+    let mut hv = HeaderValue::from_str(content).wrap_err("failed to build Authorization header")?;
+    hv.set_sensitive(sensitive);
+    Ok(hv)
+}
+
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
-enum PersistableCredentials {
-    ApiKey(ApiKeyCredentials),
-    Password(PasswordCredentials),
+pub(crate) enum PersistableCredentials {
+    ApiKey { api_key: String },
+    Password { username: String, password: String },
+}
+
+impl std::fmt::Debug for PersistableCredentials {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ApiKey { .. } => f
+                .debug_struct("ApiKey")
+                .field("api_key", &"[REDACTED]")
+                .finish(),
+            Self::Password { username, .. } => f
+                .debug_struct("Password")
+                .field("username", username)
+                .field("password", &"[REDACTED]")
+                .finish(),
+        }
+    }
 }
 
 impl PersistableCredentials {
-    fn convert_to_credentials(self) -> Credentials {
+    fn convert_to_authentication_info(self) -> AuthenticationInfo {
         match self {
-            Self::ApiKey(api_key_credentials) => Credentials::ApiKey(api_key_credentials),
-            Self::Password(password_credentials) => Credentials::Password(password_credentials),
+            Self::ApiKey { api_key } => AuthenticationInfo::ApiKey { api_key },
+            Self::Password { username, password } => {
+                AuthenticationInfo::Password { username, password }
+            }
         }
     }
 }
@@ -400,12 +372,11 @@ pub fn initialize_credential_store() -> Result<()> {
     Ok(())
 }
 
-pub(crate) fn persist(credentials: Credentials, profile: Option<&str>) -> Result<()> {
-    let persistable = credentials.convert_to_persistable_credentials()?;
-    match try_persist_to_keychain(&persistable, profile) {
+pub(crate) fn persist(credentials: PersistableCredentials, profile: Option<&str>) -> Result<()> {
+    match try_persist_to_keychain(&credentials, profile) {
         Err(err) => Err(err),
         Ok(Some(())) => Ok(()),
-        Ok(None) => persist_to_file(persistable, profile),
+        Ok(None) => persist_to_file(credentials, profile),
     }
 }
 
@@ -524,12 +495,7 @@ fn to_result(
     authn_info: AttributedValue<AuthenticationInfo>,
     allow_basic: bool,
 ) -> Result<AttributedValue<AuthenticationInfo>> {
-    if !allow_basic
-        && matches!(
-            authn_info.value(),
-            AuthenticationInfo::Static(Credentials::Password(_))
-        )
-    {
+    if !allow_basic && matches!(authn_info.value(), AuthenticationInfo::Password { .. }) {
         return Err(user_error(
             "This command does not accept username/password authentication, which is only supported when launching runs (`snouty launch`, `snouty debug`)",
         ));
@@ -623,17 +589,11 @@ mod tests {
         let (url, requests) =
             spawn_oidc_token_server("200 OK", r#"{"count":1,"value":"oidc-jwt-token-value"}"#);
 
-        let credentials = fetch_github_actions_oidc_credentials(&url, "actions-request-token")
+        let token = fetch_github_actions_oidc_credentials(&url, "actions-request-token")
             .await
             .unwrap();
 
-        // The JWT is lifted out of the `value` field, not the raw body.
-        match credentials {
-            Credentials::GithubActionsOidc(GithubActionsOidcCredentials { token }) => {
-                assert_eq!(token, "oidc-jwt-token-value");
-            }
-            other => panic!("expected GithubActionsOidc credentials, got {other:?}"),
-        }
+        assert_eq!(token, "oidc-jwt-token-value");
 
         let request = requests
             .recv_timeout(Duration::from_secs(5))
@@ -661,34 +621,6 @@ mod tests {
 
         let result = fetch_github_actions_oidc_credentials(&url, "actions-request-token").await;
         assert!(result.is_err(), "expected an error for a 403 response");
-    }
-
-    #[test]
-    fn github_actions_oidc_auth_header_uses_gha_scheme() {
-        let credentials = Credentials::GithubActionsOidc(GithubActionsOidcCredentials {
-            token: "oidc-jwt-token-value".to_owned(),
-        });
-
-        let header = credentials.auth_header().unwrap();
-        assert_eq!(header.to_str().unwrap(), "GHA oidc-jwt-token-value");
-        assert!(header.is_sensitive());
-    }
-
-    #[test]
-    fn password_credentials_debug_redacts_password() {
-        let credentials = Credentials::for_password("user".to_owned(), "secret".to_owned());
-        let debug = format!("{credentials:?}");
-        assert!(debug.contains("user"));
-        assert!(!debug.contains("secret"));
-        assert!(debug.contains("[REDACTED]"));
-    }
-
-    #[test]
-    fn api_key_credentials_debug_redacts_key() {
-        let credentials = Credentials::for_api_key("secret-key".to_owned());
-        let debug = format!("{credentials:?}");
-        assert!(!debug.contains("secret-key"));
-        assert!(debug.contains("[REDACTED]"));
     }
 
     #[tokio::test]

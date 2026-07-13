@@ -4,8 +4,12 @@ use color_eyre::eyre::{Context, Result, eyre};
 
 use crate::{
     attributed_value::AttributedValue,
-    auth::{AuthenticationInfo, Credentials, persist},
-    settings::{Settings, update_settings_in_global_file, validate_tenant_host},
+    auth::{AuthenticationInfo, PersistableCredentials, persist},
+    env,
+    settings::{
+        ANTITHESIS_PROFILE_ENV_VAR_NAME, Settings, update_settings_in_global_file,
+        validate_tenant_host,
+    },
 };
 
 pub fn cmd_login(
@@ -37,8 +41,9 @@ pub fn cmd_login(
         }
     }
 
-    let profile_to_use =
-        profile.or_else(|| current_settings.as_ref().ok().and_then(|s| s.profile()));
+    let profile_to_use = profile
+        .map(|p| p.to_owned())
+        .or_else(|| env::var(ANTITHESIS_PROFILE_ENV_VAR_NAME).ok().flatten());
 
     let tenant_to_use = match tenant {
         Some(arg_value) if !arg_value.is_empty() => arg_value,
@@ -57,8 +62,8 @@ pub fn cmd_login(
         )?,
     };
 
-    if let Some(credentials) = prompt_for_auth(profile_to_use)? {
-        persist(credentials, profile_to_use)?;
+    if let Some(credentials) = prompt_for_auth(profile_to_use.as_deref())? {
+        persist(credentials, profile_to_use.as_deref())?;
     }
 
     update_settings_in_global_file(
@@ -66,7 +71,7 @@ pub fn cmd_login(
         Some(repository_to_use),
         None,
         None,
-        profile_to_use,
+        profile_to_use.as_deref(),
     )?;
 
     Ok(())
@@ -110,7 +115,7 @@ impl AuthSetupType {
     }
 }
 
-fn prompt_for_auth(profile: Option<&str>) -> Result<Option<Credentials>> {
+fn prompt_for_auth(profile: Option<&str>) -> Result<Option<PersistableCredentials>> {
     let previous_value =
         AuthenticationInfo::for_ambient_configuration_with_attribution(profile, true);
 
@@ -119,8 +124,8 @@ fn prompt_for_auth(profile: Option<&str>) -> Result<Option<Credentials>> {
         Ok(creds) => match creds {
             AttributedValue::EnvironmentVariable { .. } => '1',
             _ => match creds.value() {
-                AuthenticationInfo::Static(Credentials::ApiKey(_)) => '2',
-                AuthenticationInfo::Static(Credentials::Password(_)) => '3',
+                AuthenticationInfo::ApiKey { .. } => '2',
+                AuthenticationInfo::Password { .. } => '3',
                 _ => '1',
             },
         },
@@ -146,15 +151,13 @@ fn prompt_for_auth(profile: Option<&str>) -> Result<Option<Credentials>> {
         None => Err(eyre!("Unrecognized input.")),
         Some(AuthSetupType::Skip) => Ok(None),
         Some(AuthSetupType::ApiKey) => match previous_value.map(|attr| attr.extract()) {
-            Ok(AuthenticationInfo::Static(Credentials::ApiKey(creds))) => {
-                prompt_for_api_key(Some(&creds.api_key))
-            }
+            Ok(AuthenticationInfo::ApiKey { api_key }) => prompt_for_api_key(Some(&api_key)),
             _ => prompt_for_api_key(None),
         }
         .map(Some),
         Some(AuthSetupType::Password) => match previous_value.map(|attr| attr.extract()) {
-            Ok(AuthenticationInfo::Static(Credentials::Password(creds))) => {
-                prompt_for_username_password(Some(&creds.username), Some(&creds.password))
+            Ok(AuthenticationInfo::Password { username, password }) => {
+                prompt_for_username_password(Some(&username), Some(&password))
             }
             _ => prompt_for_username_password(None, None),
         }
@@ -162,11 +165,10 @@ fn prompt_for_auth(profile: Option<&str>) -> Result<Option<Credentials>> {
     }
 }
 
-fn prompt_for_api_key(previous_api_key: Option<&str>) -> Result<Credentials> {
-    Ok(Credentials::for_api_key(prompt_for_sensitive_value(
-        "API key",
-        previous_api_key,
-    )?))
+fn prompt_for_api_key(previous_api_key: Option<&str>) -> Result<PersistableCredentials> {
+    Ok(PersistableCredentials::ApiKey {
+        api_key: prompt_for_sensitive_value("API key", previous_api_key)?,
+    })
 }
 
 fn prompt_for_sensitive_value(value_name: &str, previous_value: Option<&str>) -> Result<String> {
@@ -216,9 +218,9 @@ fn read_secret(value_name: &str, prompt: &str) -> Result<String> {
 fn prompt_for_username_password(
     previous_username: Option<&str>,
     previous_password: Option<&str>,
-) -> Result<Credentials> {
-    Ok(Credentials::for_password(
-        prompt_for_value("username", previous_username)?,
-        prompt_for_sensitive_value("password", previous_password)?,
-    ))
+) -> Result<PersistableCredentials> {
+    Ok(PersistableCredentials::Password {
+        username: prompt_for_value("username", previous_username)?,
+        password: prompt_for_sensitive_value("password", previous_password)?,
+    })
 }

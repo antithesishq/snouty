@@ -3,7 +3,7 @@ use serde::Serialize;
 
 use crate::api::{AntithesisApi, ApiVersion, VersionError};
 use crate::attributed_value::AttributedValue;
-use crate::auth::{AuthenticationInfo, Credentials, PasswordCredentials};
+use crate::auth::AuthenticationInfo;
 use crate::container;
 use crate::render::render_kv;
 use crate::settings::Settings;
@@ -170,8 +170,7 @@ fn repository_check(repository: Option<&str>) -> Check {
 fn authn_checks(authn_info: Result<AttributedValue<AuthenticationInfo>>) -> Vec<Check> {
     match authn_info {
         Ok(credentials) => match credentials.value() {
-            AuthenticationInfo::GithubActionsOidc { .. }
-            | AuthenticationInfo::Static(Credentials::GithubActionsOidc(_)) => {
+            AuthenticationInfo::GithubActionsOidc { .. } => {
                 vec![enrich(
                     Check::ok(
                         "github_actions_oidc_token",
@@ -180,16 +179,13 @@ fn authn_checks(authn_info: Result<AttributedValue<AuthenticationInfo>>) -> Vec<
                     credentials,
                 )]
             }
-            AuthenticationInfo::Static(Credentials::ApiKey(_)) => {
+            AuthenticationInfo::ApiKey { .. } => {
                 vec![enrich(
                     Check::ok("api_key", "API key provided"),
                     credentials,
                 )]
             }
-            AuthenticationInfo::Static(Credentials::Password(PasswordCredentials {
-                username,
-                ..
-            })) => vec![
+            AuthenticationInfo::Password { username, .. } => vec![
                 Check::warn("api_key", "API key not provided")
                     .note(
                         Level::Warning,
@@ -479,7 +475,9 @@ mod tests {
     #[test]
     fn auth_api_key_set_is_a_single_bare_ok_check() {
         let checks = authn_checks(Ok(AttributedValue::EnvironmentVariable {
-            value: AuthenticationInfo::Static(Credentials::for_api_key("api_key".to_owned())),
+            value: AuthenticationInfo::ApiKey {
+                api_key: "api_key".to_owned(),
+            },
             environment_variable_names: vec![API_KEY_VAR_NAME],
         }));
         assert_eq!(checks.len(), 1);
@@ -490,10 +488,10 @@ mod tests {
     #[test]
     fn auth_legacy_basic_warns_on_key_and_notes_legacy() {
         let checks = authn_checks(Ok(AttributedValue::EnvironmentVariable {
-            value: AuthenticationInfo::Static(Credentials::for_password(
-                "user".to_owned(),
-                "pass".to_owned(),
-            )),
+            value: AuthenticationInfo::Password {
+                username: "user".to_owned(),
+                password: "pass".to_owned(),
+            },
             environment_variable_names: vec![USERNAME_VAR_NAME, PASSWORD_VAR_NAME],
         }));
         assert_eq!(checks.len(), 2);

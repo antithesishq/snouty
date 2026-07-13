@@ -1277,6 +1277,24 @@ pub fn runtime(settings: &Settings) -> Result<Box<dyn ContainerRuntime>> {
     }
 }
 
+/// Tell the user which container engine snouty picked, but only when it was
+/// auto-detected. An explicit `SNOUTY_CONTAINER_ENGINE` / `container_engine`
+/// setting means the user already chose, so there's nothing to announce, and
+/// machine-readable (`json`) output stays silent. Prints to stderr (never
+/// stdout, so it can't contaminate `--json`). The note points at the override
+/// so a surprising pick is easy to fix.
+pub fn announce_auto_detected_engine(settings: &Settings, rt: &dyn ContainerRuntime, json: bool) {
+    if json || settings.container_engine().is_some() {
+        return;
+    }
+    let engine = rt.name();
+    eprintln!(
+        "Using auto-detected container engine '{engine}'. If that's not what you \
+         expect, select one explicitly with SNOUTY_CONTAINER_ENGINE={engine} (or \
+         `container_engine = \"{engine}\"` in a snouty settings file)."
+    );
+}
+
 /// Return all container runtimes available on this machine.
 /// Skips `docker` if it is actually podman in disguise.
 pub fn available_engines() -> Vec<Box<dyn ContainerRuntime>> {

@@ -300,7 +300,7 @@ fn collect_checks(settings: &Settings) -> Vec<Check> {
     checks.push(tenant_check(settings.tenant()));
     checks.push(repository_check(settings.repository()));
 
-    // Authentication (environment-only by design).
+    // Authentication (synchronous-only by design).
     checks.extend(authn_checks(
         AuthenticationInfo::for_ambient_configuration_with_attribution(settings.profile(), true),
     ));

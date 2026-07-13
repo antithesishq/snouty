@@ -1302,19 +1302,12 @@ pub fn announce_auto_detected_engine(settings: &Settings, rt: &dyn ContainerRunt
         return;
     }
     // Report the real engine, not the binary name: for podman-in-disguise the
-    // command is `docker` but the engine is podman, and the override the user
-    // should set is the engine kind. Call out the disguise so "podman via the
-    // docker binary" doesn't read as a contradiction.
+    // command is `docker` but the engine is podman.
     let engine = rt.engine_kind();
-    let via = if rt.name() == engine {
-        String::new()
-    } else {
-        format!(" (running as the '{}' binary)", rt.name())
-    };
     eprintln!(
-        "Using auto-detected container engine '{engine}'{via}. If that's not what \
-         you expect, select one explicitly with SNOUTY_CONTAINER_ENGINE={engine} \
-         (or `container_engine = \"{engine}\"` in a snouty settings file)."
+        "Using auto-detected container engine '{engine}'. If that's not what you \
+         expect, select one explicitly with SNOUTY_CONTAINER_ENGINE={engine} (or \
+         `container_engine = \"{engine}\"` in a snouty settings file)."
     );
 }
 

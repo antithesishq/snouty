@@ -53,7 +53,7 @@ stdout 'What kind of credentials would you like to use\?.*'
 ! stdout 'What Antithesis tenant would you like to use'
 ! stdout 'What container repository would you like to use'
 
-# 4. Selecting option 2 collects a username and password instead of an API key.
+# 4. Selecting option 3 collects a username and password instead of an API key.
 #    The username is a normal prompt; the password is read without echo and is
 #    not itself echoed to stdout.
 isolate-home password

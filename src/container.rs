@@ -1583,6 +1583,7 @@ pub fn validate_images_are_available(
 
     let mut seen = HashSet::new();
     let mut missing = Vec::new();
+    let mut missing_refs = Vec::new();
 
     for service in &contents.services {
         if !seen.insert(service.image.as_str()) {
@@ -1603,6 +1604,7 @@ pub fn validate_images_are_available(
                 String::new()
             };
             missing.push(format!("image: {}{hint}", service.image));
+            missing_refs.push(service.image.clone());
         }
     }
 
@@ -1614,12 +1616,84 @@ pub fn validate_images_are_available(
     for note in missing {
         err = err.with_note(|| note);
     }
-    Err(err
-        .with_note(|| {
-            "snouty never pulls — what it validates and launches is exactly what's in your \
-             local image store, so every referenced image must already be present there"
+    err = err.with_note(|| {
+        "snouty never pulls — what it validates and launches is exactly what's in your \
+         local image store, so every referenced image must already be present there"
+    });
+
+    // A missing image is often just sitting in the *other* installed engine's
+    // store — the usual cause is `docker compose build` landing it in docker
+    // while snouty auto-selected podman (or vice versa), since the two keep
+    // separate image stores. Surface that instead of leaving the generic
+    // "build it first" note to mislead someone who already built the image.
+    // Best-effort: any probe failure counts as "not there".
+    let elsewhere = images_available_in_other_engines(runtime, &missing_refs);
+    if let Some((warnings, suggestion)) = cross_engine_guidance(runtime.name(), &elsewhere) {
+        for warning in warnings {
+            err = err.with_warning(move || warning);
+        }
+        err = err.with_suggestion(move || suggestion);
+    }
+
+    Err(err.with_suggestion(|| "pull or build the missing images, then retry"))
+}
+
+/// Probe every installed engine other than `active` for the given images.
+/// Returns, for each other engine that holds at least one, its name and the
+/// images it has. Best-effort — a probe error counts as "absent", since this
+/// only enriches an error that is already being returned.
+fn images_available_in_other_engines(
+    active: &dyn ContainerRuntime,
+    images: &[String],
+) -> Vec<(String, Vec<String>)> {
+    if images.is_empty() {
+        return Vec::new();
+    }
+    let active_name = active.name();
+    available_engines()
+        .into_iter()
+        .filter(|engine| engine.name() != active_name)
+        .filter_map(|engine| {
+            let present: Vec<String> = images
+                .iter()
+                .filter(|image| engine.image_exists(image).unwrap_or(false))
+                .cloned()
+                .collect();
+            (!present.is_empty()).then(|| (engine.name().to_string(), present))
         })
-        .with_suggestion(|| "pull or build the missing images, then retry"))
+        .collect()
+}
+
+/// Build cross-engine guidance for images missing from the active engine
+/// (`active`) but present in another installed one. `elsewhere` pairs each
+/// other engine's name with the missing images it holds. Returns the per-image
+/// warning lines plus one suggestion pointing at the engine override, or `None`
+/// when nothing turned up elsewhere. Pure, so it is unit-tested without real
+/// engines.
+fn cross_engine_guidance(
+    active: &str,
+    elsewhere: &[(String, Vec<String>)],
+) -> Option<(Vec<String>, String)> {
+    let (source, _) = elsewhere.first()?;
+
+    let warnings = elsewhere
+        .iter()
+        .flat_map(|(engine, images)| {
+            images.iter().map(move |image| {
+                format!(
+                    "image '{image}' is in {engine}'s local image store but not {active}'s — \
+                     snouty is using {active}, and podman and docker keep separate image stores"
+                )
+            })
+        })
+        .collect();
+
+    let suggestion = format!(
+        "to use {source} instead, set SNOUTY_CONTAINER_ENGINE={source} \
+         (or add `container_engine = \"{source}\"` to a snouty settings file)"
+    );
+
+    Some((warnings, suggestion))
 }
 
 /// Layer launch's escape hatch onto a [`validate_images_are_available`] failure:
@@ -2900,6 +2974,54 @@ services:
         assert!(
             !debug.contains("pull or build the missing images"),
             "imageless error should not carry missing-image guidance, got: {debug}"
+        );
+    }
+
+    #[test]
+    fn cross_engine_guidance_is_none_when_nothing_found_elsewhere() {
+        assert!(cross_engine_guidance("podman", &[]).is_none());
+    }
+
+    #[test]
+    fn cross_engine_guidance_names_the_engine_and_override() {
+        let elsewhere = vec![(
+            "docker".to_string(),
+            vec!["local-benchmark-driver:local".to_string()],
+        )];
+        let (warnings, suggestion) = cross_engine_guidance("podman", &elsewhere).unwrap();
+
+        assert_eq!(warnings.len(), 1);
+        assert!(
+            warnings[0].contains("local-benchmark-driver:local")
+                && warnings[0].contains("docker's local image store")
+                && warnings[0].contains("snouty is using podman"),
+            "unexpected warning: {}",
+            warnings[0]
+        );
+        assert!(
+            suggestion.contains("SNOUTY_CONTAINER_ENGINE=docker")
+                && suggestion.contains("container_engine = \"docker\""),
+            "expected the engine override and setting, got: {suggestion}"
+        );
+        // We point at the override, not at copying images between stores.
+        assert!(
+            !suggestion.contains("save") && !suggestion.contains("load"),
+            "suggestion should not include a copy command, got: {suggestion}"
+        );
+    }
+
+    #[test]
+    fn cross_engine_guidance_warns_once_per_image() {
+        let elsewhere = vec![(
+            "docker".to_string(),
+            vec!["a:latest".to_string(), "b:latest".to_string()],
+        )];
+        let (warnings, suggestion) = cross_engine_guidance("podman", &elsewhere).unwrap();
+
+        assert_eq!(warnings.len(), 2);
+        assert!(
+            suggestion.contains("SNOUTY_CONTAINER_ENGINE=docker"),
+            "expected the engine override, got: {suggestion}"
         );
     }
 

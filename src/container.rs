@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, HashSet};
 use std::io::{Read, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -494,12 +494,23 @@ const DOCKER_COMPOSE: &str = "docker-compose";
 /// docker-compose is pointed at podman's API socket so podman backs Compose.
 pub fn docker_compose(rt: &dyn ContainerRuntime) -> Result<DockerCompose<'_>> {
     ensure_docker_compose()?;
+    let compose_binary = docker_compose_binary()?;
     let docker_host = if std::env::var_os("DOCKER_HOST").is_some() {
         None
     } else {
         rt.engine_docker_host()?
     };
-    Ok(DockerCompose { rt, docker_host })
+    Ok(DockerCompose {
+        rt,
+        docker_host,
+        compose_binary,
+    })
+}
+
+/// Resolve `docker-compose` before clearing the environment for a hermetic
+/// render. [`Command`] otherwise needs `PATH` to find it.
+fn docker_compose_binary() -> Result<PathBuf> {
+    which::which(DOCKER_COMPOSE).wrap_err("failed to resolve the `docker-compose` binary on PATH")
 }
 
 /// Verify the `docker-compose` binary is present and is Docker Compose v2.
@@ -555,6 +566,7 @@ fn is_compose_v2_version(output: &str) -> bool {
 pub struct DockerCompose<'a> {
     rt: &'a dyn ContainerRuntime,
     docker_host: Option<String>,
+    compose_binary: PathBuf,
 }
 
 impl DockerCompose<'_> {
@@ -572,7 +584,7 @@ impl DockerCompose<'_> {
 
     /// Base `docker-compose` command with engine wiring applied.
     fn command(&self, config: &ComposeConfig) -> Command {
-        let mut cmd = Command::new(DOCKER_COMPOSE);
+        let mut cmd = Command::new(&self.compose_binary);
         cmd.current_dir(config.dir());
         if let Some(host) = &self.docker_host {
             cmd.env("DOCKER_HOST", host);
@@ -623,6 +635,36 @@ impl DockerCompose<'_> {
     ) -> Result<ComposeContents> {
         let yaml = self.config_yaml(config, overlay, &[])?;
         parse_compose_config(&yaml)
+    }
+
+    /// Resolve the compose file to JSON using the normal (local) environment —
+    /// the same interpolation `snouty` sees when it runs compose on this machine.
+    pub fn config_json(&self, config: &ComposeConfig) -> Result<String> {
+        self.config_yaml(config, None, &["--format", "json"])
+    }
+
+    /// Resolve the compose file to JSON under a scrubbed process environment
+    /// that mimics the hermetic Antithesis environment: none of the user's shell
+    /// variables, so `${VAR}` interpolation resolves only from the config dir's
+    /// `.env` file, explicit env files, and inline defaults. The compose binary
+    /// was resolved before the environment is cleared, so no shell variables
+    /// need to be retained.
+    ///
+    /// Returns the raw output rather than a string: a required `${VAR:?}` with no
+    /// value makes compose abort (non-zero exit, empty stdout), which the caller
+    /// reads as a definite "won't resolve in Antithesis".
+    pub fn config_json_hermetic_env(&self, config: &ComposeConfig) -> Result<Output> {
+        // Reuse the normal command (binary + working directory), then clear the
+        // whole environment — including the DOCKER_HOST that command() sets.
+        // Those are all valid interpolation inputs Antithesis will not inherit,
+        // so scrubbing them is the point; only the binary and directory carry
+        // over. (env_clear() drops anything command() set via .env().)
+        let mut cmd = self.command(config);
+        cmd.env_clear();
+        cmd.args(compose_file_args(None));
+        cmd.args(["config", "--format", "json"]);
+        cmd.output()
+            .wrap_err("failed to run 'docker-compose config' for the environment check")
     }
 
     /// Canonicalized compose file for baking into the config image.
@@ -763,7 +805,7 @@ impl DockerCompose<'_> {
     /// pushed, so the platform always pulls exactly what was resolved here.
     pub fn pin_images(&self, config: &ComposeConfig, registry: &str) -> Result<String> {
         let contents = self.contents(config, None)?;
-        validate_images_are_available(self.rt, &contents)?;
+        with_config_image_escape_hatch(validate_images_are_available(self.rt, &contents))?;
 
         let prefix = format!("{}/", registry.trim_end_matches('/'));
 
@@ -1528,6 +1570,11 @@ pub fn parse_compose_config(yaml: &str) -> Result<ComposeContents> {
 /// Ensure the referenced images are available in the local image store.
 /// snouty never pulls — what runs (validate) and what gets pushed (launch)
 /// is exactly what's in the local store.
+///
+/// The error is intentionally context-free: it explains only why local presence
+/// is required. Command-specific escape hatches (e.g. launch's `--config-image`,
+/// see [`with_config_image_escape_hatch`]) are layered on by the caller so this
+/// shared check doesn't have to know who called it.
 pub fn validate_images_are_available(
     runtime: &dyn ContainerRuntime,
     contents: &ComposeContents,
@@ -1567,8 +1614,25 @@ pub fn validate_images_are_available(
     for note in missing {
         err = err.with_note(|| note);
     }
-    err = err.with_suggestion(|| "pull or build the missing images, then retry");
-    Err(err)
+    Err(err
+        .with_note(|| {
+            "snouty never pulls — what it validates and launches is exactly what's in your \
+             local image store, so every referenced image must already be present there"
+        })
+        .with_suggestion(|| "pull or build the missing images, then retry"))
+}
+
+/// Layer launch's escape hatch onto a [`validate_images_are_available`] failure:
+/// a caller that already has a pre-built config image can skip local packaging
+/// entirely by launching with `--config-image <ref>`. Because `--config-image`
+/// conflicts with `--config`, the suggestion tells users to *replace* `--config`,
+/// not add the flag alongside it. Only the launch path has this alternative, so
+/// only the launch caller wraps its check with this.
+fn with_config_image_escape_hatch<T>(result: Result<T>) -> Result<T> {
+    result.with_suggestion(|| {
+        "if you already have a pre-built config image, launch with `--config-image <ref>` \
+         in place of `--config <dir>` to reuse it and skip local packaging"
+    })
 }
 
 /// Ensure the given image references all use the amd64 architecture.
@@ -2775,6 +2839,43 @@ services:
             debug.contains("image: missing-b:latest (service has a `build:` stanza"),
             "expected build-stanza hint on the second missing image, got: {debug}"
         );
+        assert!(
+            debug.contains("snouty never pulls"),
+            "expected the why-it's-required-locally note, got: {debug}"
+        );
+        // The shared check is context-free: the launch-only `--config-image`
+        // escape hatch is layered on by the caller, not emitted here.
+        assert!(
+            !debug.contains("--config-image"),
+            "shared check should stay context-free, got: {debug}"
+        );
+    }
+
+    #[test]
+    fn with_config_image_escape_hatch_tells_users_to_replace_config() {
+        let runtime = FakeRuntime {
+            available_images: BTreeMap::from([("missing:latest".to_string(), false)]),
+            architectures: BTreeMap::new(),
+            ..Default::default()
+        };
+
+        let err = with_config_image_escape_hatch(validate_images_are_available(
+            &runtime,
+            &contents_of(&[("app", "missing:latest")], &[]),
+        ))
+        .unwrap_err();
+
+        let debug = format!("{err:?}");
+        assert!(
+            debug.contains("--config-image <ref>"),
+            "expected the config-image escape hatch, got: {debug}"
+        );
+        // --config-image conflicts with --config, so the hint must say to replace
+        // it, not add it alongside (which clap would reject).
+        assert!(
+            debug.contains("in place of `--config <dir>`"),
+            "expected the hint to replace --config, not add it, got: {debug}"
+        );
     }
 
     #[test]
@@ -2793,6 +2894,12 @@ services:
         assert!(
             debug.contains("service 'app' has no `image:` field"),
             "expected imageless-service guidance, got: {debug}"
+        );
+        // The imageless check bails before the missing-local-image guidance, so
+        // its unrelated "pull or build" suggestion must not leak onto this error.
+        assert!(
+            !debug.contains("pull or build the missing images"),
+            "imageless error should not carry missing-image guidance, got: {debug}"
         );
     }
 
@@ -3014,6 +3121,47 @@ services:
     fn is_compose_v2_version_rejects_others() {
         assert!(!is_compose_v2_version("podman-compose version 1.0.6"));
         assert!(!is_compose_v2_version(""));
+    }
+
+    #[test]
+    fn config_json_hermetic_env_scrubs_process_variables() {
+        if !has_compose() {
+            skip_or_fail("docker-compose (Docker Compose v2) is not available");
+            return;
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("docker-compose.yaml"),
+            "\
+services:
+  app:
+    image: alpine
+    environment:
+      HOME_VALUE: \"${HOME}\"
+      PATH_VALUE: \"${PATH}\"
+      DOCKER_HOST_VALUE: \"${DOCKER_HOST}\"
+",
+        )
+        .unwrap();
+        let config = match crate::config::detect_config(dir.path()).unwrap() {
+            crate::config::Config::Compose(config) => config,
+            other => panic!("expected Compose config, got {other:?}"),
+        };
+        let runtime = FakeRuntime::default();
+        let compose = DockerCompose {
+            rt: &runtime,
+            docker_host: Some("unix:///tmp/snouty-hermetic-test.sock".to_string()),
+            compose_binary: docker_compose_binary().unwrap(),
+        };
+
+        let output = compose.config_json_hermetic_env(&config).unwrap();
+        assert!(output.status.success(), "compose config failed: {output:?}");
+        let resolved: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        let environment = &resolved["services"]["app"]["environment"];
+        assert_eq!(environment["HOME_VALUE"], "");
+        assert_eq!(environment["PATH_VALUE"], "");
+        assert_eq!(environment["DOCKER_HOST_VALUE"], "");
     }
 
     #[test]

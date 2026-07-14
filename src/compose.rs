@@ -124,6 +124,25 @@ impl ComposeCli {
         }
     }
 
+    /// After a caller `env_clear()`s a command, restore the minimal environment
+    /// this invocation needs to *locate* the compose implementation.
+    ///
+    /// The standalone binary needs nothing — it's an absolute path. The plugin
+    /// form is `docker compose`, and the docker CLI finds the plugin under
+    /// `$DOCKER_CONFIG/cli-plugins` (default `$HOME/.docker/cli-plugins`) plus
+    /// system dirs; `env_clear()` removed both `DOCKER_CONFIG` and `HOME`, so on
+    /// a user-directory plugin install (e.g. Docker Desktop) the plugin becomes
+    /// undiscoverable. Restore `DOCKER_CONFIG` only — docker machinery, not a
+    /// value users interpolate into compose files — so lookup works without
+    /// reintroducing `$HOME` as a `${VAR}` interpolation source.
+    fn restore_discovery_env(&self, cmd: &mut Command) {
+        if let ComposeCli::Plugin(_) = self
+            && let Some(config_dir) = docker_config_dir()
+        {
+            cmd.env("DOCKER_CONFIG", config_dir);
+        }
+    }
+
     /// Return the version banner, erroring when the command fails to run or
     /// reports a non-v2 (v1) banner.
     fn version(&self) -> Result<String> {
@@ -157,6 +176,17 @@ impl ComposeCli {
 /// v2; Compose v1's "docker-compose version ..." (hyphenated) does not match.
 fn is_compose_v2_version(output: &str) -> bool {
     output.to_lowercase().contains("docker compose")
+}
+
+/// The docker CLI config directory (which holds `cli-plugins/`): `$DOCKER_CONFIG`
+/// if set, else `$HOME/.docker`. Read from snouty's own (un-scrubbed) environment.
+/// `None` when neither is set, in which case plugin lookup falls back to the
+/// system directories.
+fn docker_config_dir() -> Option<PathBuf> {
+    if let Some(dir) = std::env::var_os("DOCKER_CONFIG") {
+        return Some(PathBuf::from(dir));
+    }
+    std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".docker"))
 }
 /// Drives Docker Compose v2, independent of which runtime built or pushed the
 /// images. Compose is invoked through whichever v2 form is available (see
@@ -264,16 +294,17 @@ impl DockerCompose {
         // No COMPOSE_PROJECT_NAME override: the project name must resolve
         // exactly as it does when the user runs `docker compose` in the
         // config dir, because default build tags are derived from it.
+        let name = self.cli.display();
         let mut cmd = self.command(overlay, &["config"]);
         cmd.args(extra_args);
         let output = cmd
             .output()
-            .wrap_err("failed to run 'docker-compose config'")?;
+            .wrap_err_with(|| format!("failed to run '{name} config'"))?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
             let stdout = String::from_utf8_lossy(&output.stdout);
-            return Err(eyre!("'docker-compose config' failed"))
+            return Err(eyre!("'{name} config' failed"))
                 .with_section(move || stdout.trim().to_string().header("Stdout:"))
                 .with_section(move || stderr.trim().to_string().header("Stderr:"));
         }
@@ -310,8 +341,16 @@ impl DockerCompose {
         // the point; only the binary and directory (not an env var) carry over.
         let mut cmd = self.command(None, &["config", "--format", "json"]);
         cmd.env_clear();
-        cmd.output()
-            .wrap_err("failed to run 'docker-compose config' for the environment check")
+        // env_clear() also removes what the `docker compose` plugin form needs to
+        // *find* the plugin — restore just that, so the scrub doesn't turn a
+        // usable Compose into a spurious "won't resolve in Antithesis".
+        self.cli.restore_discovery_env(&mut cmd);
+        cmd.output().wrap_err_with(|| {
+            format!(
+                "failed to run '{} config' for the environment check",
+                self.cli.display()
+            )
+        })
     }
 
     /// Canonicalized compose file for baking into the config image.
@@ -330,48 +369,20 @@ impl DockerCompose {
     /// including stopped/exited ones so callers can flag stranded test
     /// commands. Inspect [`ComposeContainer::stopped`] to tell them apart.
     pub fn ps(&self, overlay: Option<&Path>) -> Result<Vec<ComposeContainer>> {
+        let name = self.cli.display();
         let cmd = self.command(overlay, &["ps", "-a", "--format", "json"]);
 
         let output = output_with_timeout(cmd, DISCOVERY_COMMAND_TIMEOUT)
-            .wrap_err("failed to run 'docker-compose ps'")?;
+            .wrap_err_with(|| format!("failed to run '{name} ps'"))?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(eyre!("'docker-compose ps' failed"))
+            return Err(eyre!("'{name} ps' failed"))
                 .with_section(move || stderr.trim().to_string().header("Stderr:"));
         }
 
         let stdout = String::from_utf8_lossy(&output.stdout);
         parse_compose_ps(&stdout)
-    }
-
-    /// Run a command inside a running compose service container.
-    ///
-    /// Runs `docker-compose exec -T [--workdir workdir] {service} {cmd...}`.
-    /// The `-T` flag disables TTY allocation for non-interactive use. If
-    /// `workdir` is `Some`, sets the working directory inside the container.
-    /// Stdout and stderr are captured in the returned `Output`.
-    pub fn exec(
-        &self,
-        overlay: Option<&Path>,
-        service: &str,
-        workdir: Option<&str>,
-        env: &[(&str, &str)],
-        cmd: &[&str],
-    ) -> Result<std::process::Output> {
-        let mut command = self.command(overlay, &["exec", "-T"]);
-        for (k, v) in env {
-            command.args(["-e", &format!("{k}={v}")]);
-        }
-        if let Some(w) = workdir {
-            command.args(["--workdir", w]);
-        }
-        command.arg(service);
-        command.args(cmd);
-
-        command
-            .output()
-            .wrap_err("failed to run 'docker-compose exec'")
     }
 
     /// Spawn `docker-compose up --detach` and return the child process.
@@ -383,7 +394,7 @@ impl DockerCompose {
         self.spawn_inherited(
             overlay,
             &["up", "--detach", "--no-build", "--pull=never"],
-            "docker-compose up --detach",
+            &format!("{} up --detach", self.cli.display()),
         )
     }
 
@@ -395,7 +406,7 @@ impl DockerCompose {
         self.spawn_inherited(
             overlay,
             &["logs", "--follow"],
-            "docker-compose logs --follow",
+            &format!("{} logs --follow", self.cli.display()),
         )
     }
 
@@ -1917,6 +1928,38 @@ services:
 
         let plugin = ComposeCli::Plugin(PathBuf::from("/usr/bin/docker"));
         assert_eq!(plugin.display(), "docker compose");
+    }
+
+    #[test]
+    fn plugin_hermetic_render_restores_docker_config_after_env_clear() {
+        use std::ffi::OsStr;
+
+        let has_config_dir = docker_config_dir().is_some();
+
+        // Plugin form: the docker CLI needs DOCKER_CONFIG to find the compose
+        // plugin once env_clear() has wiped HOME/DOCKER_CONFIG.
+        let plugin = ComposeCli::Plugin(PathBuf::from("/usr/bin/docker"));
+        let mut cmd = Command::new("docker");
+        cmd.env_clear();
+        plugin.restore_discovery_env(&mut cmd);
+        let restored = cmd
+            .get_envs()
+            .any(|(k, v)| k == OsStr::new("DOCKER_CONFIG") && v.is_some());
+        assert_eq!(
+            restored, has_config_dir,
+            "plugin form must restore DOCKER_CONFIG whenever one is resolvable"
+        );
+
+        // Standalone form: an absolute binary needs no plugin discovery, so the
+        // scrubbed environment is left untouched.
+        let standalone = ComposeCli::Standalone(PathBuf::from("/usr/local/bin/docker-compose"));
+        let mut cmd = Command::new("docker-compose");
+        cmd.env_clear();
+        standalone.restore_discovery_env(&mut cmd);
+        assert!(
+            cmd.get_envs().next().is_none(),
+            "standalone form must not reintroduce any environment"
+        );
     }
 
     #[test]

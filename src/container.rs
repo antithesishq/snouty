@@ -1,16 +1,15 @@
-use std::io::{Read, Write};
+use std::io::Write;
 use std::path::Path;
-use std::process::{Command, Output, Stdio};
-use std::thread;
-use std::time::{Duration, Instant};
+use std::process::Command;
+use std::time::Duration;
 
 use chrono::Utc;
 use color_eyre::{
     Section, SectionExt,
     eyre::{Context, Result, eyre},
 };
-use tokio::process::Child;
 
+use crate::process::output_with_timeout;
 use crate::settings::Settings;
 
 /// Wall-clock budget for each synchronous docker/podman call made while
@@ -20,128 +19,7 @@ use crate::settings::Settings;
 /// whole CLI — forever, with neither `--timeout` nor ctrl+c able to interrupt a
 /// blocking `Command`. These calls are normally sub-second; the generous bound
 /// only exists to convert an indefinite hang into a clear error.
-pub(crate) const DISCOVERY_COMMAND_TIMEOUT: Duration = Duration::from_secs(60);
-
-/// Run a command to completion with a wall-clock timeout, killing it (and
-/// returning an error) if it overruns. Reader threads drain stdout/stderr so a
-/// chatty child can't deadlock on a full pipe while we wait. Used for the
-/// synchronous discovery commands, which would otherwise be uninterruptible.
-///
-/// Deliberately kills only the leader process — not the process group — so it
-/// needs no `libc::kill(-pid, …)` `unsafe`, unlike [`ProcessGroupChild`]. That
-/// wrapper exists for the long-running `docker-compose up`/`logs` commands,
-/// which fork and manage a tree of children that must all die on timeout. The
-/// callers here are one-shot docker/podman *client* invocations (`cp`,
-/// `exec test -d`, `ps`) whose only child is the client itself: killing it
-/// closes the pipes (so the reader threads finish) and the work we were waiting
-/// on ends. The daemon-side operation is intentionally not ours to kill.
-pub(crate) fn output_with_timeout(mut cmd: Command, timeout: Duration) -> Result<Output> {
-    cmd.stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    let mut child = cmd.spawn().wrap_err("failed to spawn command")?;
-
-    // Drain both pipes on their own threads; otherwise a child that fills a pipe
-    // buffer would block on write while we block on wait — a deadlock.
-    let mut stdout_pipe = child.stdout.take().expect("stdout piped");
-    let mut stderr_pipe = child.stderr.take().expect("stderr piped");
-    let stdout_reader = thread::spawn(move || {
-        let mut buf = Vec::new();
-        let _ = stdout_pipe.read_to_end(&mut buf);
-        buf
-    });
-    let stderr_reader = thread::spawn(move || {
-        let mut buf = Vec::new();
-        let _ = stderr_pipe.read_to_end(&mut buf);
-        buf
-    });
-
-    let deadline = Instant::now() + timeout;
-    let status = loop {
-        if let Some(status) = child.try_wait().wrap_err("failed to wait for command")? {
-            break status;
-        }
-        if Instant::now() >= deadline {
-            let _ = child.kill();
-            let _ = child.wait();
-            // The killed leader's pipe write-ends are now closed, so the reader
-            // threads hit EOF and finish; join them rather than detaching them.
-            let _ = stdout_reader.join();
-            let _ = stderr_reader.join();
-            return Err(eyre!(
-                "command timed out after {}s (the container runtime may be unresponsive)",
-                timeout.as_secs()
-            ));
-        }
-        thread::sleep(Duration::from_millis(50));
-    };
-
-    let stdout = stdout_reader.join().unwrap_or_default();
-    let stderr = stderr_reader.join().unwrap_or_default();
-    Ok(Output {
-        status,
-        stdout,
-        stderr,
-    })
-}
-
-/// RAII wrapper around a [`Child`] spawned with `process_group(0)`.
-///
-/// Ensures the entire process group is killed on drop, not just the leader.
-/// The inner child is `Option<Child>` so `Drop` can handle partially-consumed state.
-pub struct ProcessGroupChild {
-    inner: Option<Child>,
-}
-
-impl ProcessGroupChild {
-    /// Wrap a freshly-spawned child that was created with `process_group(0)`.
-    pub fn new(child: Child) -> Self {
-        Self { inner: Some(child) }
-    }
-
-    /// Send `SIGKILL` to the entire process group, then reap the child.
-    pub async fn kill_group(&mut self) -> std::io::Result<()> {
-        if let Some(ref mut child) = self.inner {
-            if let Some(pid) = child.id() {
-                // Safety: negative PID targets the entire process group.
-                unsafe {
-                    libc::kill(-(pid as libc::pid_t), libc::SIGKILL);
-                }
-            }
-            child.wait().await?;
-        }
-        Ok(())
-    }
-
-    /// Delegate to the inner [`Child::wait()`].
-    pub async fn wait(&mut self) -> std::io::Result<std::process::ExitStatus> {
-        self.inner
-            .as_mut()
-            .expect("ProcessGroupChild already consumed")
-            .wait()
-            .await
-    }
-
-    /// Delegate to the inner [`Child::id()`].
-    pub fn id(&self) -> Option<u32> {
-        self.inner.as_ref().and_then(|c| c.id())
-    }
-}
-
-impl Drop for ProcessGroupChild {
-    fn drop(&mut self) {
-        if let Some(ref mut child) = self.inner {
-            if let Some(pid) = child.id() {
-                // Safety: best-effort cleanup of the process group.
-                unsafe {
-                    libc::kill(-(pid as libc::pid_t), libc::SIGKILL);
-                }
-            }
-            // Best-effort synchronous reap — we can't .await in Drop.
-            let _ = child.try_wait();
-        }
-    }
-}
+pub const DISCOVERY_COMMAND_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// Trait representing a container runtime (podman or docker).
 pub trait ContainerRuntime: Send + Sync {
@@ -474,7 +352,7 @@ pub struct PodmanRuntime {
 }
 
 impl PodmanRuntime {
-    pub(crate) fn new(cmd: impl Into<String>) -> Self {
+    pub fn new(cmd: impl Into<String>) -> Self {
         Self { cmd: cmd.into() }
     }
 
@@ -629,7 +507,7 @@ pub struct DockerRuntime {
 }
 
 impl DockerRuntime {
-    pub(crate) fn new(cmd: impl Into<String>) -> Self {
+    pub fn new(cmd: impl Into<String>) -> Self {
         Self { cmd: cmd.into() }
     }
 }
@@ -685,7 +563,7 @@ pub fn generate_image_ref(registry: &str) -> String {
 /// Check whether a binary is genuinely docker or podman-in-disguise.
 /// `docker version` (the subcommand) prints "Podman Engine" in the Client field
 /// when docker is actually podman, while `docker --version` does not.
-pub(crate) fn is_podman_in_disguise(cmd: &str) -> bool {
+pub fn is_podman_in_disguise(cmd: &str) -> bool {
     Command::new(cmd)
         .arg("version")
         .output()
@@ -768,7 +646,7 @@ pub fn available_engines() -> Vec<Box<dyn ContainerRuntime>> {
 /// digest. The tag is kept as human-readable provenance — when inspecting an
 /// Antithesis run, the reference still shows which tag the digest came from.
 /// If the ref already carries a digest, it's replaced.
-pub(crate) fn pinned_image_ref(image_ref: &str, digest: &str) -> String {
+pub fn pinned_image_ref(image_ref: &str, digest: &str) -> String {
     match image_ref.rfind('@') {
         Some(at) => format!("{}@{}", &image_ref[..at], digest),
         None => format!("{image_ref}@{digest}"),
@@ -837,7 +715,7 @@ fn classify_manifest_json(stdout: &[u8]) -> RemoteManifest {
 /// The repository part of an image reference: strips any `@digest` suffix and
 /// any `:tag` (a colon counts as a tag separator only after the last `/`;
 /// before it, it's a registry port).
-pub(crate) fn image_repo(image_ref: &str) -> &str {
+pub fn image_repo(image_ref: &str) -> &str {
     let no_digest = match image_ref.rfind('@') {
         Some(at) => &image_ref[..at],
         None => image_ref,
@@ -855,7 +733,7 @@ pub(crate) fn image_repo(image_ref: &str) -> &str {
 }
 
 /// The tag of an image reference, or `latest` when untagged.
-pub(crate) fn image_ref_tag(image_ref: &str) -> &str {
+pub fn image_ref_tag(image_ref: &str) -> &str {
     let no_digest = match image_ref.rfind('@') {
         Some(at) => &image_ref[..at],
         None => image_ref,
@@ -873,7 +751,7 @@ pub(crate) fn image_ref_tag(image_ref: &str) -> &str {
 /// `user/app` → `docker.io/user/app`, `index.docker.io/...` → `docker.io/...`.
 /// Repositories naming any other registry (first component with a dot, a
 /// port, or `localhost`) pass through unchanged.
-pub(crate) fn normalize_repo(repo: &str) -> String {
+pub fn normalize_repo(repo: &str) -> String {
     let (registry, rest) = match repo.split_once('/') {
         Some((first, rest))
             if first.contains('.') || first.contains(':') || first == "localhost" =>
@@ -898,7 +776,7 @@ pub(crate) fn normalize_repo(repo: &str) -> String {
 /// entries, comparing normalized repository names. Multiple entries per repo
 /// are common — a pull records both the per-arch manifest digest and the
 /// manifest-list digest.
-pub(crate) fn digests_for_repo(repo: &str, repo_digests: &[String]) -> Vec<String> {
+pub fn digests_for_repo(repo: &str, repo_digests: &[String]) -> Vec<String> {
     let want = normalize_repo(repo);
     repo_digests
         .iter()
@@ -1373,27 +1251,6 @@ tag2: digest: sha256:bbb222 size: 200
         assert!(
             debug.contains("Cannot connect to the Docker daemon"),
             "expected daemon error details, got: {debug}"
-        );
-    }
-
-    #[test]
-    fn output_with_timeout_returns_quick_command_output() {
-        let mut cmd = Command::new("sh");
-        cmd.args(["-c", "printf hi; printf oops 1>&2; exit 3"]);
-        let out = output_with_timeout(cmd, Duration::from_secs(10)).unwrap();
-        assert_eq!(out.status.code(), Some(3));
-        assert_eq!(out.stdout, b"hi");
-        assert_eq!(out.stderr, b"oops");
-    }
-
-    #[test]
-    fn output_with_timeout_kills_and_errors_on_overrun() {
-        let mut cmd = Command::new("sh");
-        cmd.args(["-c", "sleep 30"]);
-        let err = output_with_timeout(cmd, Duration::from_millis(150)).unwrap_err();
-        assert!(
-            format!("{err}").contains("timed out"),
-            "expected a timeout error, got: {err}"
         );
     }
 }

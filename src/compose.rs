@@ -15,10 +15,10 @@ use color_eyre::{
 
 use crate::config::ComposeConfig;
 use crate::container::{
-    ContainerRuntime, DISCOVERY_COMMAND_TIMEOUT, ProcessGroupChild, RemoteManifest,
-    available_engines, digests_for_repo, image_ref_tag, image_repo, is_podman_in_disguise,
-    normalize_repo, output_with_timeout,
+    ContainerRuntime, DISCOVERY_COMMAND_TIMEOUT, RemoteManifest, available_engines,
+    digests_for_repo, image_ref_tag, image_repo, is_podman_in_disguise, normalize_repo,
 };
+use crate::process::{ProcessGroupChild, output_with_timeout};
 
 /// Build the `-f` flags for `compose` subcommands: always
 /// `-f docker-compose.yaml`, plus `-f <overlay>` if an overlay was provided.
@@ -48,22 +48,22 @@ enum ComposeCli {
     Plugin(PathBuf),
 }
 impl ComposeCli {
-    /// Resolve a Docker Compose v2 invocation and its version banner, with a
-    /// clear error when none is available. The banner is captured during the
-    /// v2 check so callers that want to display it need not spawn `version`
-    /// again.
+    /// Resolve a usable Docker Compose v2 invocation, with a clear error when
+    /// none is available. Resolution runs `version` internally to confirm v2 —
+    /// callers that want the banner call [`version`](Self::version) on the
+    /// result.
     ///
     /// Prefers the standalone `docker-compose` binary when it is present and
     /// genuinely v2 (the historical contract). Otherwise falls back to the
     /// `docker compose` CLI plugin — but only when `docker` is real Docker,
     /// never podman in disguise, whose compose provider may not implement the
     /// v2 features snouty relies on.
-    fn resolve() -> Result<(ComposeCli, String)> {
+    fn resolve() -> Result<ComposeCli> {
         // 1. Standalone docker-compose, when it's really v2.
         if let Ok(program) = which::which(DOCKER_COMPOSE) {
             let candidate = ComposeCli::Standalone(program);
             match candidate.version() {
-                Ok(version) => return Ok((candidate, version)),
+                Ok(_) => return Ok(candidate),
                 // Present but not v2 (likely Compose v1). Prefer the docker
                 // plugin if it's usable; only surface the v1 error if not.
                 Err(standalone_err) => {
@@ -86,11 +86,10 @@ impl ComposeCli {
         })
     }
 
-    /// The `docker compose` plugin as a v2 invocation, paired with its version
-    /// banner. `Err` when docker is absent, is podman in disguise, or its
-    /// compose plugin isn't v2 — callers treat any of these as "no usable
-    /// plugin".
-    fn plugin() -> Result<(ComposeCli, String)> {
+    /// The `docker compose` CLI plugin, if usable. `Err` when docker is absent,
+    /// is podman in disguise, or its compose plugin isn't v2 — callers treat any
+    /// of these as "no usable plugin".
+    fn plugin() -> Result<ComposeCli> {
         let program = which::which("docker").wrap_err("`docker` not found on PATH")?;
         // podman-in-disguise routes `docker compose` to a provider that may not
         // implement Compose v2; never trust it as a v2 source.
@@ -98,8 +97,8 @@ impl ComposeCli {
             bail!("`docker` is podman in disguise; its `compose` is not Docker Compose v2");
         }
         let candidate = ComposeCli::Plugin(program);
-        let version = candidate.version()?;
-        Ok((candidate, version))
+        candidate.version()?; // confirm it is genuinely Compose v2
+        Ok(candidate)
     }
 
     /// The invocation as a user would type it, for user-facing hints.
@@ -184,7 +183,7 @@ impl DockerCompose {
     /// respected; otherwise, for a podman runtime, compose is pointed at
     /// podman's API socket so podman backs Compose.
     pub fn resolve(rt: &dyn ContainerRuntime, config: ComposeConfig) -> Result<DockerCompose> {
-        let (cli, _version) = ComposeCli::resolve()?;
+        let cli = ComposeCli::resolve()?;
         let docker_host = if std::env::var_os("DOCKER_HOST").is_some() {
             None
         } else {
@@ -201,7 +200,8 @@ impl DockerCompose {
     /// diagnostics and availability checks (`snouty doctor`, tests). Returns the
     /// command name (`docker-compose` / `docker compose`) and version banner.
     pub fn probe() -> Result<(&'static str, String)> {
-        let (cli, version) = ComposeCli::resolve()?;
+        let cli = ComposeCli::resolve()?;
+        let version = cli.version()?;
         Ok((cli.display(), version))
     }
 
@@ -1983,7 +1983,7 @@ services:
             other => panic!("expected Compose config, got {other:?}"),
         };
         let compose = DockerCompose {
-            cli: ComposeCli::resolve().unwrap().0,
+            cli: ComposeCli::resolve().unwrap(),
             docker_host: Some("unix:///tmp/snouty-hermetic-test.sock".to_string()),
             config,
         };

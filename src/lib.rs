@@ -11,6 +11,7 @@ pub(crate) mod env;
 pub mod error;
 pub mod moment;
 pub mod params;
+pub mod process;
 pub(crate) mod render;
 pub mod runs;
 pub mod scripts;

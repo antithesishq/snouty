@@ -475,7 +475,7 @@ async fn validate_kubernetes(
     let runtime_name = rt.name();
     let mut child = cmd
         .spawn()
-        .map(container::ProcessGroupChild::new)
+        .map(crate::process::ProcessGroupChild::new)
         .wrap_err_with(|| format!("failed to start '{runtime_name} run' for k8s-validator"))?;
 
     tokio::select! {

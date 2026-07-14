@@ -484,45 +484,43 @@ fn stderr_indicates_missing_source(stderr: &str) -> bool {
 /// The standalone Docker Compose v2 binary name.
 const DOCKER_COMPOSE: &str = "docker-compose";
 
-/// A resolved Docker Compose v2 invocation: the program to run plus any leading
-/// arguments before the compose subcommand.
+/// How Docker Compose v2 is invoked on this machine.
 ///
-/// Compose v2 ships two ways — the standalone `docker-compose` binary
-/// (`program = docker-compose`, no prefix) and the Docker CLI plugin
-/// (`program = docker`, prefix `compose`). snouty drives whichever it finds;
-/// both are genuine Compose v2, whose features snouty depends on. The program
-/// is always an absolute path so the invocation survives the `env_clear()` in
-/// the hermetic render, where `PATH` is gone.
+/// Compose v2 ships two ways — the standalone `docker-compose` binary and the
+/// `docker compose` CLI plugin — and snouty drives whichever it finds. Modeling
+/// the two as an enum (rather than a program plus a free-form argument prefix)
+/// makes the wrong combinations unrepresentable: each variant fixes its own
+/// invocation. The wrapped path is always absolute so the command survives the
+/// `env_clear()` in the hermetic render, where `PATH` is gone.
 #[derive(Clone, Debug)]
-pub struct ComposeCommand {
-    program: PathBuf,
-    prefix: &'static [&'static str],
+enum ComposeCli {
+    /// The standalone `docker-compose` binary; the path is `docker-compose`.
+    Standalone(PathBuf),
+    /// The `docker compose` CLI plugin; the path is the `docker` binary.
+    Plugin(PathBuf),
 }
 
-impl ComposeCommand {
+impl ComposeCli {
     /// Resolve a Docker Compose v2 invocation and its version banner, with a
     /// clear error when none is available. The banner is captured during the
-    /// v2 check so callers that want to display it (e.g. `snouty doctor`) need
-    /// not spawn `compose version` again.
+    /// v2 check so callers that want to display it need not spawn `version`
+    /// again.
     ///
     /// Prefers the standalone `docker-compose` binary when it is present and
     /// genuinely v2 (the historical contract). Otherwise falls back to the
     /// `docker compose` CLI plugin — but only when `docker` is real Docker,
     /// never podman in disguise, whose compose provider may not implement the
     /// v2 features snouty relies on.
-    pub fn resolve() -> Result<(ComposeCommand, String)> {
+    fn resolve() -> Result<(ComposeCli, String)> {
         // 1. Standalone docker-compose, when it's really v2.
         if let Ok(program) = which::which(DOCKER_COMPOSE) {
-            let candidate = ComposeCommand {
-                program,
-                prefix: &[],
-            };
+            let candidate = ComposeCli::Standalone(program);
             match candidate.version() {
                 Ok(version) => return Ok((candidate, version)),
                 // Present but not v2 (likely Compose v1). Prefer the docker
                 // plugin if it's usable; only surface the v1 error if not.
                 Err(standalone_err) => {
-                    return Self::docker_plugin().or(Err(standalone_err));
+                    return Self::plugin().or(Err(standalone_err));
                 }
             }
         }
@@ -530,7 +528,7 @@ impl ComposeCommand {
         // 2. The `docker compose` CLI plugin. Preserve the plugin's own error
         // (podman-in-disguise, a v1 plugin, or docker genuinely absent) as the
         // cause, rather than collapsing every case to a generic "not found".
-        Self::docker_plugin().map_err(|plugin_err| {
+        Self::plugin().map_err(|plugin_err| {
             eyre!(
                 "snouty requires Docker Compose v2, but neither the `docker-compose` binary nor the `docker compose` CLI plugin is usable"
             )
@@ -545,24 +543,45 @@ impl ComposeCommand {
     /// banner. `Err` when docker is absent, is podman in disguise, or its
     /// compose plugin isn't v2 — callers treat any of these as "no usable
     /// plugin".
-    fn docker_plugin() -> Result<(ComposeCommand, String)> {
+    fn plugin() -> Result<(ComposeCli, String)> {
         let program = which::which("docker").wrap_err("`docker` not found on PATH")?;
         // podman-in-disguise routes `docker compose` to a provider that may not
         // implement Compose v2; never trust it as a v2 source.
         if is_podman_in_disguise("docker") {
             bail!("`docker` is podman in disguise; its `compose` is not Docker Compose v2");
         }
-        let candidate = ComposeCommand {
-            program,
-            prefix: &["compose"],
-        };
+        let candidate = ComposeCli::Plugin(program);
         let version = candidate.version()?;
         Ok((candidate, version))
     }
 
+    /// The invocation as a user would type it, for user-facing hints.
+    fn display(&self) -> &'static str {
+        match self {
+            ComposeCli::Standalone(_) => "docker-compose",
+            ComposeCli::Plugin(_) => "docker compose",
+        }
+    }
+
+    /// A fresh [`Command`] for this invocation, positioned so callers append
+    /// only the compose subcommand and its arguments. The program (and the
+    /// plugin's leading `compose`) are fixed by the variant and can't be
+    /// clobbered by later `args`.
+    fn command(&self) -> Command {
+        match self {
+            ComposeCli::Standalone(program) => Command::new(program),
+            ComposeCli::Plugin(program) => {
+                let mut cmd = Command::new(program);
+                cmd.arg("compose");
+                cmd
+            }
+        }
+    }
+
     /// Return the version banner, erroring when the command fails to run or
     /// reports a non-v2 (v1) banner.
-    pub fn version(&self) -> Result<String> {
+    fn version(&self) -> Result<String> {
+        let name = self.display();
         let mut cmd = self.command();
         cmd.arg("version");
         match cmd.output() {
@@ -571,7 +590,6 @@ impl ComposeCommand {
                 if is_compose_v2_version(&version) {
                     Ok(version)
                 } else {
-                    let name = self.display();
                     Err(eyre!("`{name}` is not Docker Compose v2"))
                         .with_section(move || version.header(format!("{name} version:")))
                         .with_suggestion(|| {
@@ -580,57 +598,13 @@ impl ComposeCommand {
                 }
             }
             Ok(o) => {
-                let name = self.display();
                 let stderr = String::from_utf8_lossy(&o.stderr);
                 Err(eyre!("`{name} version` failed"))
                     .with_section(move || stderr.trim().to_string().header("Stderr:"))
             }
-            Err(e) => Err(eyre!("failed to run `{} version`: {e}", self.display())),
+            Err(e) => Err(eyre!("failed to run `{name} version`: {e}")),
         }
     }
-
-    /// A fresh [`Command`] for this invocation with the compose prefix applied.
-    fn command(&self) -> Command {
-        let mut cmd = Command::new(&self.program);
-        cmd.args(self.prefix);
-        cmd
-    }
-
-    /// The invocation as a user would type it: `docker-compose` or
-    /// `docker compose`. Used in user-facing hints so they name the command
-    /// snouty actually drives.
-    pub fn display(&self) -> String {
-        let program = self
-            .program
-            .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_else(|| self.program.display().to_string());
-        if self.prefix.is_empty() {
-            program
-        } else {
-            format!("{program} {}", self.prefix.join(" "))
-        }
-    }
-}
-
-/// Build a [`DockerCompose`] handle targeting `rt`'s container engine.
-///
-/// Resolves a Docker Compose v2 invocation ([`ComposeCommand::resolve`]) with a
-/// clear error otherwise. An explicit `DOCKER_HOST` already set in the
-/// environment is always respected; otherwise, for a podman runtime,
-/// docker-compose is pointed at podman's API socket so podman backs Compose.
-pub fn docker_compose(rt: &dyn ContainerRuntime) -> Result<DockerCompose<'_>> {
-    let (compose, _version) = ComposeCommand::resolve()?;
-    let docker_host = if std::env::var_os("DOCKER_HOST").is_some() {
-        None
-    } else {
-        rt.engine_docker_host()?
-    };
-    Ok(DockerCompose {
-        rt,
-        docker_host,
-        compose,
-    })
 }
 
 /// Whether a `compose version` banner identifies Docker Compose v2. Both the
@@ -640,41 +614,60 @@ fn is_compose_v2_version(output: &str) -> bool {
     output.to_lowercase().contains("docker compose")
 }
 
-/// Drives Docker Compose v2 via the `docker-compose` binary.
+/// Drives Docker Compose v2, independent of which runtime built or pushed the
+/// images. Compose is invoked through whichever v2 form is available (see
+/// [`ComposeCli`]); `docker_host`, when set, points it at a specific engine
+/// (e.g. podman's API socket); when `None`, compose uses its default (the
+/// Docker daemon, or an explicit `DOCKER_HOST` inherited from the environment).
 ///
-/// All compose operations go through `docker-compose`, independent of which
-/// runtime built or pushed the images. `docker_host`, when set, points
-/// docker-compose at a specific engine (e.g. podman's API socket); when `None`,
-/// docker-compose uses its default (the Docker daemon, or an explicit
-/// `DOCKER_HOST` inherited from the environment).
-pub struct DockerCompose<'a> {
-    rt: &'a dyn ContainerRuntime,
+/// Image operations (tag, push, pin) are not compose's concern — the methods
+/// that need a container engine (e.g. [`pin_images`](Self::pin_images)) take a
+/// [`ContainerRuntime`] argument rather than this type owning one.
+pub struct DockerCompose {
+    cli: ComposeCli,
     docker_host: Option<String>,
-    compose: ComposeCommand,
 }
 
-impl DockerCompose<'_> {
-    /// The container runtime that owns the compose containers (used for
-    /// container-level operations such as `cp`/`exec`).
-    pub fn runtime(&self) -> &dyn ContainerRuntime {
-        self.rt
+impl DockerCompose {
+    /// Resolve Docker Compose v2 and wire it to `rt`'s container engine.
+    ///
+    /// An explicit `DOCKER_HOST` already set in the environment is always
+    /// respected; otherwise, for a podman runtime, compose is pointed at
+    /// podman's API socket so podman backs Compose.
+    pub fn resolve(rt: &dyn ContainerRuntime) -> Result<DockerCompose> {
+        let (cli, _version) = ComposeCli::resolve()?;
+        let docker_host = if std::env::var_os("DOCKER_HOST").is_some() {
+            None
+        } else {
+            rt.engine_docker_host()?
+        };
+        Ok(DockerCompose { cli, docker_host })
     }
 
-    /// The `DOCKER_HOST` docker-compose is wired to, if any. Used to reproduce
-    /// the compose invocation in user-facing hints.
+    /// Locate a usable Docker Compose v2 without wiring it to an engine, for
+    /// diagnostics and availability checks (`snouty doctor`, tests). Returns the
+    /// command name (`docker-compose` / `docker compose`) and version banner.
+    pub fn probe() -> Result<(&'static str, String)> {
+        let (cli, version) = ComposeCli::resolve()?;
+        Ok((cli.display(), version))
+    }
+
+    /// The command name snouty drives (`docker-compose` / `docker compose`),
+    /// for user-facing hints.
+    pub fn display(&self) -> &'static str {
+        self.cli.display()
+    }
+
+    /// The `DOCKER_HOST` compose is wired to, if any. Used to reproduce the
+    /// compose invocation in user-facing hints.
     pub fn docker_host(&self) -> Option<&str> {
         self.docker_host.as_deref()
     }
 
-    /// The resolved Compose v2 invocation snouty drives. Used to name the
-    /// command in user-facing hints.
-    pub fn compose_command(&self) -> &ComposeCommand {
-        &self.compose
-    }
-
-    /// Base `docker-compose` command with engine wiring applied.
+    /// Base compose command with engine wiring and working directory applied.
+    /// Callers append the compose subcommand and its arguments.
     fn command(&self, config: &ComposeConfig) -> Command {
-        let mut cmd = self.compose.command();
+        let mut cmd = self.cli.command();
         cmd.current_dir(config.dir());
         if let Some(host) = &self.docker_host {
             cmd.env("DOCKER_HOST", host);
@@ -893,9 +886,14 @@ impl DockerCompose<'_> {
     /// digest in a registry confirmed to serve it ([`Self::find_remote_pin`]),
     /// or — when no registry has it — tagged with the `registry` prefix and
     /// pushed, so the platform always pulls exactly what was resolved here.
-    pub fn pin_images(&self, config: &ComposeConfig, registry: &str) -> Result<String> {
+    pub fn pin_images(
+        &self,
+        rt: &dyn ContainerRuntime,
+        config: &ComposeConfig,
+        registry: &str,
+    ) -> Result<String> {
         let contents = self.contents(config, None)?;
-        with_config_image_escape_hatch(validate_images_are_available(self.rt, &contents))?;
+        with_config_image_escape_hatch(validate_images_are_available(rt, &contents))?;
 
         let prefix = format!("{}/", registry.trim_end_matches('/'));
 
@@ -905,7 +903,7 @@ impl DockerCompose<'_> {
         for service in &contents.services {
             let image = service.image.as_str();
             if !resolution.contains_key(image) {
-                let pin = self.find_remote_pin(image, &prefix)?;
+                let pin = self.find_remote_pin(rt, image, &prefix)?;
                 if let Some(pinned_ref) = &pin {
                     eprintln!("Image already in a registry, skipping push: {pinned_ref}");
                 }
@@ -931,7 +929,7 @@ impl DockerCompose<'_> {
                 format!("{prefix}{image}")
             };
             if dest != image && tagged.insert(image) {
-                self.rt.image_tag(image, &dest)?;
+                rt.image_tag(image, &dest)?;
             }
             push_targets.push((service.name.clone(), dest));
         }
@@ -946,11 +944,11 @@ impl DockerCompose<'_> {
             .map(|(_, dest)| dest.as_str())
             .filter(|dest| seen.insert(*dest))
             .collect();
-        validate_image_architectures(self.rt, &dests)?;
+        validate_image_architectures(rt, &dests)?;
         let mut digests: BTreeMap<&str, String> = BTreeMap::new();
         for dest in &dests {
             eprintln!("Pushing image: {dest}");
-            let pinned_ref = self.rt.image_push(dest)?;
+            let pinned_ref = rt.image_push(dest)?;
             eprintln!("Image pushed: {pinned_ref}");
             digests.insert(dest, pinned_ref);
         }
@@ -973,8 +971,13 @@ impl DockerCompose<'_> {
     /// can run amd64 from it: a manifest list must offer an amd64 entry,
     /// while a single manifest shares the local image's architecture, so the
     /// local image must be amd64.
-    fn find_remote_pin(&self, image: &str, prefix: &str) -> Result<Option<String>> {
-        let repo_digests = self.rt.image_repo_digests(image)?;
+    fn find_remote_pin(
+        &self,
+        rt: &dyn ContainerRuntime,
+        image: &str,
+        prefix: &str,
+    ) -> Result<Option<String>> {
+        let repo_digests = rt.image_repo_digests(image)?;
         let tag = image_ref_tag(image);
 
         let mut repos = vec![normalize_repo(image_repo(image))];
@@ -986,10 +989,10 @@ impl DockerCompose<'_> {
             // A pull typically records several digests per repo (the
             // per-arch manifest and the manifest list) — try them all.
             for digest in digests_for_repo(repo, &repo_digests) {
-                let amd64_ok = match self.rt.remote_manifest(&format!("{repo}@{digest}")) {
+                let amd64_ok = match rt.remote_manifest(&format!("{repo}@{digest}")) {
                     RemoteManifest::NotFound => continue,
                     RemoteManifest::List { has_amd64 } => has_amd64,
-                    RemoteManifest::Single => self.rt.image_architecture(image)? == "amd64",
+                    RemoteManifest::Single => rt.image_architecture(image)? == "amd64",
                 };
                 if amd64_ok {
                     return Ok(Some(format!("{repo}:{tag}@{digest}")));
@@ -2335,7 +2338,7 @@ services:
             )
             .unwrap();
 
-            let compose = docker_compose(rt.as_ref()).unwrap();
+            let compose = DockerCompose::resolve(rt.as_ref()).unwrap();
             let config = match crate::config::detect_config(dir.path()).unwrap() {
                 crate::config::Config::Compose(c) => c,
                 other => panic!("expected Compose, got {other:?}"),
@@ -2388,7 +2391,7 @@ services:
             )
             .unwrap();
 
-            let compose = docker_compose(rt.as_ref()).unwrap();
+            let compose = DockerCompose::resolve(rt.as_ref()).unwrap();
             let config = match crate::config::detect_config(dir.path()).unwrap() {
                 crate::config::Config::Compose(c) => c,
                 other => panic!("expected Compose, got {other:?}"),
@@ -2557,8 +2560,8 @@ services:
             crate::config::Config::Compose(c) => c,
             other => panic!("expected Compose, got {other:?}"),
         };
-        let compose = docker_compose(rt).unwrap();
-        compose.pin_images(&config, registry)
+        let compose = DockerCompose::resolve(rt).unwrap();
+        compose.pin_images(rt, &config, registry)
     }
 
     #[test]
@@ -2744,8 +2747,8 @@ services:
                 None => continue,
             };
             let addr = registry.host_port();
-            let compose = docker_compose(rt.as_ref())
-                .unwrap_or_else(|e| panic!("{}: docker_compose: {e:?}", rt.name()));
+            let compose = DockerCompose::resolve(rt.as_ref())
+                .unwrap_or_else(|e| panic!("{}: DockerCompose::resolve: {e:?}", rt.name()));
 
             // Build a purely-local image (present locally, in no registry).
             let img_dir = tempfile::tempdir().unwrap();
@@ -2767,7 +2770,7 @@ services:
                     crate::config::Config::Compose(c) => c,
                     other => panic!("expected Compose, got {other:?}"),
                 };
-                let out = compose.pin_images(&config, &addr)?;
+                let out = compose.pin_images(rt.as_ref(), &config, &addr)?;
                 Ok(serde_yaml::from_str::<serde_yaml::Value>(&out)
                     .unwrap()
                     .get("services")
@@ -3338,17 +3341,11 @@ services:
     }
 
     #[test]
-    fn compose_command_display_standalone_and_plugin() {
-        let standalone = ComposeCommand {
-            program: PathBuf::from("/usr/local/bin/docker-compose"),
-            prefix: &[],
-        };
+    fn compose_cli_display_standalone_and_plugin() {
+        let standalone = ComposeCli::Standalone(PathBuf::from("/usr/local/bin/docker-compose"));
         assert_eq!(standalone.display(), "docker-compose");
 
-        let plugin = ComposeCommand {
-            program: PathBuf::from("/usr/bin/docker"),
-            prefix: &["compose"],
-        };
+        let plugin = ComposeCli::Plugin(PathBuf::from("/usr/bin/docker"));
         assert_eq!(plugin.display(), "docker compose");
     }
 
@@ -3377,11 +3374,9 @@ services:
             crate::config::Config::Compose(config) => config,
             other => panic!("expected Compose config, got {other:?}"),
         };
-        let runtime = FakeRuntime::default();
         let compose = DockerCompose {
-            rt: &runtime,
+            cli: ComposeCli::resolve().unwrap().0,
             docker_host: Some("unix:///tmp/snouty-hermetic-test.sock".to_string()),
-            compose: ComposeCommand::resolve().unwrap().0,
         };
 
         let output = compose.config_json_hermetic_env(&config).unwrap();

@@ -163,7 +163,7 @@ pub fn skip_or_fail(msg: &str) {
 /// Check whether Docker Compose v2 is available (the standalone
 /// `docker-compose` binary or the `docker compose` CLI plugin).
 pub fn has_compose() -> bool {
-    crate::container::ComposeCommand::resolve().is_ok()
+    crate::container::DockerCompose::probe().is_ok()
 }
 
 /// Return available runtimes, or skip/fail if none are found.

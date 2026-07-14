@@ -158,7 +158,7 @@ fn mkdir_or_require_empty(path: &Path) -> Result<()> {
 }
 
 struct ComposeDownGuard<'a> {
-    compose: &'a container::DockerCompose<'a>,
+    compose: &'a container::DockerCompose,
     config: &'a ComposeConfig,
     overlay: Option<&'a Path>,
 }
@@ -226,7 +226,7 @@ async fn validate_compose(
     allow_compose_divergence: bool,
     temp_dir: &Path,
 ) -> Result<()> {
-    let compose = container::docker_compose(rt)?;
+    let compose = container::DockerCompose::resolve(rt)?;
     check_compose_divergence(&compose, &config, allow_compose_divergence)?;
     let contents = compose.contents(&config, None)?;
     container::validate_images_are_available(rt, &contents)?;
@@ -242,7 +242,7 @@ async fn validate_compose(
             "Note: --keep-running is set. When done, bring containers down with:\n  \
              {}{} -f {}/docker-compose.yaml -f {} down\n",
             docker_host_prefix,
-            compose.compose_command().display(),
+            compose.display(),
             config.dir().display(),
             override_path.display(),
         );
@@ -282,7 +282,7 @@ async fn validate_compose(
 
     // Discover scripts early so we can use them for both the success path
     // and the timeout diagnostic.
-    let scripts = discover_scripts(&compose, &config, overlay, temp_dir)?;
+    let scripts = discover_scripts(rt, &compose, &config, overlay, temp_dir)?;
 
     // Reset the budget now that containers are up. `--timeout` bounds how long
     // we wait for the setup-complete event; slow container startup (e.g. several
@@ -555,6 +555,7 @@ fn contains_setup_complete(reader: &mut (impl std::io::Read + std::io::Seek)) ->
 /// moves on. Only if every container failed (and no scripts were collected)
 /// does the function surface a combined error.
 fn discover_scripts(
+    rt: &dyn container::ContainerRuntime,
     compose: &container::DockerCompose,
     config: &ComposeConfig,
     overlay: Option<&Path>,
@@ -581,7 +582,7 @@ fn discover_scripts(
         // disk. Short the id for readable warnings.
         let short_id: String = container.id.chars().take(12).collect();
         let service_dir = scripts_dir.join(format!("{service_name}-{short_id}"));
-        let templates = match compose.runtime().extract_test_templates(
+        let templates = match rt.extract_test_templates(
             &container.id,
             &service_dir,
             !container.stopped,

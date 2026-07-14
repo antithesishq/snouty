@@ -251,7 +251,7 @@ fn collect_checks(settings: &Settings) -> Vec<Check> {
     // Docker Compose v2 (required for compose configs). Resolves the standalone
     // `docker-compose` binary or the `docker compose` CLI plugin, and reports
     // which one was picked.
-    match container::ComposeCommand::resolve().and_then(|c| c.version().map(|v| (c, v))) {
+    match container::ComposeCommand::resolve() {
         Ok((cmd, version)) => checks.push(Check::ok(
             "docker_compose",
             format!("{}: {version}", cmd.display()),

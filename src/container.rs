@@ -500,15 +500,17 @@ pub struct ComposeCommand {
 }
 
 impl ComposeCommand {
-    /// Resolve a Docker Compose v2 invocation, with a clear error when none is
-    /// available.
+    /// Resolve a Docker Compose v2 invocation and its version banner, with a
+    /// clear error when none is available. The banner is captured during the
+    /// v2 check so callers that want to display it (e.g. `snouty doctor`) need
+    /// not spawn `compose version` again.
     ///
     /// Prefers the standalone `docker-compose` binary when it is present and
     /// genuinely v2 (the historical contract). Otherwise falls back to the
     /// `docker compose` CLI plugin — but only when `docker` is real Docker,
     /// never podman in disguise, whose compose provider may not implement the
     /// v2 features snouty relies on.
-    pub fn resolve() -> Result<ComposeCommand> {
+    pub fn resolve() -> Result<(ComposeCommand, String)> {
         // 1. Standalone docker-compose, when it's really v2.
         if let Ok(program) = which::which(DOCKER_COMPOSE) {
             let candidate = ComposeCommand {
@@ -516,7 +518,7 @@ impl ComposeCommand {
                 prefix: &[],
             };
             match candidate.version() {
-                Ok(_) => return Ok(candidate),
+                Ok(version) => return Ok((candidate, version)),
                 // Present but not v2 (likely Compose v1). Prefer the docker
                 // plugin if it's usable; only surface the v1 error if not.
                 Err(standalone_err) => {
@@ -525,21 +527,25 @@ impl ComposeCommand {
             }
         }
 
-        // 2. The `docker compose` CLI plugin.
-        Self::docker_plugin().map_err(|_| {
+        // 2. The `docker compose` CLI plugin. Preserve the plugin's own error
+        // (podman-in-disguise, a v1 plugin, or docker genuinely absent) as the
+        // cause, rather than collapsing every case to a generic "not found".
+        Self::docker_plugin().map_err(|plugin_err| {
             eyre!(
-                "snouty requires Docker Compose v2, but neither the `docker-compose` binary nor the `docker compose` CLI plugin was found"
+                "snouty requires Docker Compose v2, but neither the `docker-compose` binary nor the `docker compose` CLI plugin is usable"
             )
+            .with_section(move || format!("{plugin_err:#}").header("docker compose:"))
             .with_suggestion(|| {
                 "install Docker Compose v2: https://docs.docker.com/compose/install/"
             })
         })
     }
 
-    /// The `docker compose` plugin as a v2 invocation. `Err` when docker is
-    /// absent, is podman in disguise, or its compose plugin isn't v2 — callers
-    /// treat any of these as "no usable plugin".
-    fn docker_plugin() -> Result<ComposeCommand> {
+    /// The `docker compose` plugin as a v2 invocation, paired with its version
+    /// banner. `Err` when docker is absent, is podman in disguise, or its
+    /// compose plugin isn't v2 — callers treat any of these as "no usable
+    /// plugin".
+    fn docker_plugin() -> Result<(ComposeCommand, String)> {
         let program = which::which("docker").wrap_err("`docker` not found on PATH")?;
         // podman-in-disguise routes `docker compose` to a provider that may not
         // implement Compose v2; never trust it as a v2 source.
@@ -550,8 +556,8 @@ impl ComposeCommand {
             program,
             prefix: &["compose"],
         };
-        candidate.version()?;
-        Ok(candidate)
+        let version = candidate.version()?;
+        Ok((candidate, version))
     }
 
     /// Return the version banner, erroring when the command fails to run or
@@ -614,7 +620,7 @@ impl ComposeCommand {
 /// environment is always respected; otherwise, for a podman runtime,
 /// docker-compose is pointed at podman's API socket so podman backs Compose.
 pub fn docker_compose(rt: &dyn ContainerRuntime) -> Result<DockerCompose<'_>> {
-    let compose = ComposeCommand::resolve()?;
+    let (compose, _version) = ComposeCommand::resolve()?;
     let docker_host = if std::env::var_os("DOCKER_HOST").is_some() {
         None
     } else {
@@ -3375,7 +3381,7 @@ services:
         let compose = DockerCompose {
             rt: &runtime,
             docker_host: Some("unix:///tmp/snouty-hermetic-test.sock".to_string()),
-            compose: ComposeCommand::resolve().unwrap(),
+            compose: ComposeCommand::resolve().unwrap().0,
         };
 
         let output = compose.config_json_hermetic_env(&config).unwrap();

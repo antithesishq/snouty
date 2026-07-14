@@ -2,6 +2,7 @@ use color_eyre::eyre::Result;
 use serde::Serialize;
 
 use crate::api::{AntithesisApi, ApiVersion, VersionError};
+use crate::compose;
 use crate::container;
 use crate::env;
 use crate::render::render_kv;
@@ -251,7 +252,7 @@ fn collect_checks(settings: &Settings) -> Vec<Check> {
     // Docker Compose v2 (required for compose configs). Resolves the standalone
     // `docker-compose` binary or the `docker compose` CLI plugin, and reports
     // which one was picked.
-    match container::DockerCompose::probe() {
+    match compose::DockerCompose::probe() {
         Ok((name, version)) => {
             checks.push(Check::ok("docker_compose", format!("{name}: {version}")))
         }

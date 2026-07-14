@@ -2,6 +2,7 @@ mod api_cache;
 
 pub mod api;
 pub mod cli;
+pub mod compose;
 pub mod config;
 pub mod container;
 pub mod docs;

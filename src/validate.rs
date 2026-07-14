@@ -12,6 +12,7 @@ use serde_json::Value;
 use tokio::time::{Duration, sleep};
 
 use crate::cli::ValidateArgs;
+use crate::compose;
 use crate::config::{self, ComposeConfig, Config, KubernetesConfig};
 use crate::container;
 use crate::error::user_error;
@@ -45,7 +46,7 @@ struct SetupStatus {
 /// `contents` should be the parsed output of `compose.contents()`.
 /// Returns the path to the generated override file.
 fn generate_setup_override(
-    contents: &container::ComposeContents,
+    contents: &compose::ComposeContents,
     temp_dir: &Path,
 ) -> Result<PathBuf> {
     if contents.services.is_empty() {
@@ -158,7 +159,7 @@ fn mkdir_or_require_empty(path: &Path) -> Result<()> {
 }
 
 struct ComposeDownGuard<'a> {
-    compose: &'a container::DockerCompose,
+    compose: &'a compose::DockerCompose,
     config: &'a ComposeConfig,
     overlay: Option<&'a Path>,
 }
@@ -226,10 +227,10 @@ async fn validate_compose(
     allow_compose_divergence: bool,
     temp_dir: &Path,
 ) -> Result<()> {
-    let compose = container::DockerCompose::resolve(rt)?;
+    let compose = compose::DockerCompose::resolve(rt)?;
     check_compose_divergence(&compose, &config, allow_compose_divergence)?;
     let contents = compose.contents(&config, None)?;
-    container::validate_images_are_available(rt, &contents)?;
+    compose::validate_images_are_available(rt, &contents)?;
     let override_path = generate_setup_override(&contents, temp_dir)?;
     let overlay = Some(override_path.as_path());
 
@@ -346,7 +347,7 @@ config image) or give the reference an inline default (e.g. ${VAR:-default}).";
 ///
 /// We catch it by rendering the compose file twice — once with the normal
 /// environment, once under a scrubbed one that mimics Antithesis (see
-/// [`container::DockerCompose::config_json_hermetic_env`]) — and comparing the
+/// [`compose::DockerCompose::config_json_hermetic_env`]) — and comparing the
 /// complete models. Any field that differs is a value that exists only because
 /// of the local shell. Compose does all the interpolation, `.env`, and default
 /// work in both renders, so we never re-derive any of it. An inline default
@@ -355,7 +356,7 @@ config image) or give the reference an inline default (e.g. ${VAR:-default}).";
 /// renders differ and we flag it, which is correct: Antithesis would fall back
 /// to the default while the local run silently used the shell value.
 fn check_compose_divergence(
-    compose: &container::DockerCompose,
+    compose: &compose::DockerCompose,
     config: &ComposeConfig,
     allow_compose_divergence: bool,
 ) -> Result<()> {
@@ -556,7 +557,7 @@ fn contains_setup_complete(reader: &mut (impl std::io::Read + std::io::Seek)) ->
 /// does the function surface a combined error.
 fn discover_scripts(
     rt: &dyn container::ContainerRuntime,
-    compose: &container::DockerCompose,
+    compose: &compose::DockerCompose,
     config: &ComposeConfig,
     overlay: Option<&Path>,
     temp_dir: &Path,
@@ -582,21 +583,18 @@ fn discover_scripts(
         // disk. Short the id for readable warnings.
         let short_id: String = container.id.chars().take(12).collect();
         let service_dir = scripts_dir.join(format!("{service_name}-{short_id}"));
-        let templates = match rt.extract_test_templates(
-            &container.id,
-            &service_dir,
-            !container.stopped,
-        ) {
-            Ok(t) => t,
-            Err(e) => {
-                warn!(
-                    "extracting test commands from service '{service_name}' \
+        let templates =
+            match rt.extract_test_templates(&container.id, &service_dir, !container.stopped) {
+                Ok(t) => t,
+                Err(e) => {
+                    warn!(
+                        "extracting test commands from service '{service_name}' \
                      (container {short_id}) failed; continuing without it: {e}"
-                );
-                cp_failures.insert(format!("{service_name} ({short_id})"), e);
-                continue;
-            }
-        };
+                    );
+                    cp_failures.insert(format!("{service_name} ({short_id})"), e);
+                    continue;
+                }
+            };
 
         if matches!(templates, container::TestTemplates::Absent) {
             info!("No test commands in service '{service_name}' (container {short_id})");
@@ -918,7 +916,7 @@ services:
   sidecar:
     image: sidecar:latest
 ";
-        let contents = container::parse_compose_config(compose_yaml).unwrap();
+        let contents = compose::parse_compose_config(compose_yaml).unwrap();
         let dir = tempfile::tempdir().unwrap();
         let path = generate_setup_override(&contents, dir.path()).unwrap();
         let content = std::fs::read_to_string(&path).unwrap();
@@ -1006,7 +1004,7 @@ networks:
   frontend:
     driver: bridge
 ";
-        let contents = container::parse_compose_config(compose_yaml).unwrap();
+        let contents = compose::parse_compose_config(compose_yaml).unwrap();
         let dir = tempfile::tempdir().unwrap();
         let path = generate_setup_override(&contents, dir.path()).unwrap();
         let content = std::fs::read_to_string(&path).unwrap();
@@ -1039,7 +1037,7 @@ services:
   \"a: b\":
     image: myapp:latest
 ";
-        let contents = container::parse_compose_config(compose_yaml).unwrap();
+        let contents = compose::parse_compose_config(compose_yaml).unwrap();
         let dir = tempfile::tempdir().unwrap();
         let path = generate_setup_override(&contents, dir.path()).unwrap();
         let content = std::fs::read_to_string(&path).unwrap();
@@ -1052,7 +1050,7 @@ services:
 
     #[test]
     fn generate_setup_override_no_services() {
-        let contents = container::parse_compose_config("version: '3'\n").unwrap();
+        let contents = compose::parse_compose_config("version: '3'\n").unwrap();
         let dir = tempfile::tempdir().unwrap();
         let err = generate_setup_override(&contents, dir.path()).unwrap_err();
         assert!(err.to_string().contains("no services"), "got: {err}");

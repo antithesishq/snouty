@@ -9,7 +9,7 @@ use crate::error::user_error;
 ///
 /// Construct via [`detect_config`]; the type guarantees the directory contains
 /// a `docker-compose.yaml` file.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ComposeConfig {
     dir: PathBuf,
 }

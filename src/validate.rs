@@ -160,13 +160,12 @@ fn mkdir_or_require_empty(path: &Path) -> Result<()> {
 
 struct ComposeDownGuard<'a> {
     compose: &'a compose::DockerCompose,
-    config: &'a ComposeConfig,
     overlay: Option<&'a Path>,
 }
 
 impl Drop for ComposeDownGuard<'_> {
     fn drop(&mut self) {
-        self.compose.down(self.config, self.overlay);
+        self.compose.down(self.overlay);
     }
 }
 
@@ -227,38 +226,29 @@ async fn validate_compose(
     allow_compose_divergence: bool,
     temp_dir: &Path,
 ) -> Result<()> {
-    let compose = compose::DockerCompose::resolve(rt)?;
-    check_compose_divergence(&compose, &config, allow_compose_divergence)?;
-    let contents = compose.contents(&config, None)?;
+    let compose = compose::DockerCompose::resolve(rt, config)?;
+    check_compose_divergence(&compose, allow_compose_divergence)?;
+    let contents = compose.contents(None)?;
     compose::validate_images_are_available(rt, &contents)?;
     let override_path = generate_setup_override(&contents, temp_dir)?;
     let overlay = Some(override_path.as_path());
 
     if keep_running {
-        let docker_host_prefix = compose
-            .docker_host()
-            .map(|h| format!("DOCKER_HOST={h} "))
-            .unwrap_or_default();
         eprintln!(
-            "Note: --keep-running is set. When done, bring containers down with:\n  \
-             {}{} -f {}/docker-compose.yaml -f {} down\n",
-            docker_host_prefix,
-            compose.display(),
-            config.dir().display(),
-            override_path.display(),
+            "Note: --keep-running is set. When done, bring containers down with:\n  {}\n",
+            compose.down_hint(overlay),
         );
     }
 
     let up_deadline = tokio::time::Instant::now() + Duration::from_secs(timeout);
 
     eprintln!("Starting compose services...");
-    let mut up_child = compose.up_detached(&config, overlay)?;
+    let mut up_child = compose.up_detached(overlay)?;
     let _guard = if keep_running {
         None
     } else {
         Some(ComposeDownGuard {
             compose: &compose,
-            config: &config,
             overlay,
         })
     };
@@ -283,14 +273,14 @@ async fn validate_compose(
 
     // Discover scripts early so we can use them for both the success path
     // and the timeout diagnostic.
-    let scripts = discover_scripts(rt, &compose, &config, overlay, temp_dir)?;
+    let scripts = discover_scripts(rt, &compose, overlay, temp_dir)?;
 
     // Reset the budget now that containers are up. `--timeout` bounds how long
     // we wait for the setup-complete event; slow container startup (e.g. several
     // services, or a slow engine like podman-on-macOS) shouldn't eat into it.
     let deadline = tokio::time::Instant::now() + Duration::from_secs(timeout);
 
-    let mut logs_child = compose.logs_follow(&config, overlay)?;
+    let mut logs_child = compose.logs_follow(overlay)?;
 
     let sdk_output_dir = temp_dir.join("antithesis");
 
@@ -357,15 +347,14 @@ config image) or give the reference an inline default (e.g. ${VAR:-default}).";
 /// to the default while the local run silently used the shell value.
 fn check_compose_divergence(
     compose: &compose::DockerCompose,
-    config: &ComposeConfig,
     allow_compose_divergence: bool,
 ) -> Result<()> {
     // A failing local render is not an environment problem (e.g. a malformed
     // compose file); let contents() surface it next with its canonical error.
-    let Ok(local) = compose.config_json(config) else {
+    let Ok(local) = compose.config_json() else {
         return Ok(());
     };
-    let hermetic = compose.config_json_hermetic_env(config)?;
+    let hermetic = compose.config_json_hermetic_env()?;
 
     let detail = if hermetic.status.success() {
         let local: Value = serde_json::from_str(&local)
@@ -558,11 +547,10 @@ fn contains_setup_complete(reader: &mut (impl std::io::Read + std::io::Seek)) ->
 fn discover_scripts(
     rt: &dyn container::ContainerRuntime,
     compose: &compose::DockerCompose,
-    config: &ComposeConfig,
     overlay: Option<&Path>,
     temp_dir: &Path,
 ) -> Result<Vec<TestScript>> {
-    let containers = compose.ps(config, overlay)?;
+    let containers = compose.ps(overlay)?;
 
     let scripts_dir = temp_dir.join("scripts");
     std::fs::create_dir_all(&scripts_dir).wrap_err("failed to create scripts directory")?;

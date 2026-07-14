@@ -171,24 +171,33 @@ fn is_compose_v2_version(output: &str) -> bool {
 pub struct DockerCompose {
     cli: ComposeCli,
     docker_host: Option<String>,
+    config: ComposeConfig,
 }
 impl DockerCompose {
-    /// Resolve Docker Compose v2 and wire it to `rt`'s container engine.
+    /// Resolve Docker Compose v2 for `config`, wired to `rt`'s container engine.
+    ///
+    /// The handle is bound to one config directory — the whole snouty run drives
+    /// a single project — so per-call methods take only the compose overlay,
+    /// which genuinely varies across a run (see [`down`](Self::down)).
     ///
     /// An explicit `DOCKER_HOST` already set in the environment is always
     /// respected; otherwise, for a podman runtime, compose is pointed at
     /// podman's API socket so podman backs Compose.
-    pub fn resolve(rt: &dyn ContainerRuntime) -> Result<DockerCompose> {
+    pub fn resolve(rt: &dyn ContainerRuntime, config: ComposeConfig) -> Result<DockerCompose> {
         let (cli, _version) = ComposeCli::resolve()?;
         let docker_host = if std::env::var_os("DOCKER_HOST").is_some() {
             None
         } else {
             rt.engine_docker_host()?
         };
-        Ok(DockerCompose { cli, docker_host })
+        Ok(DockerCompose {
+            cli,
+            docker_host,
+            config,
+        })
     }
 
-    /// Locate a usable Docker Compose v2 without wiring it to an engine, for
+    /// Locate a usable Docker Compose v2 without binding a config or engine, for
     /// diagnostics and availability checks (`snouty doctor`, tests). Returns the
     /// command name (`docker-compose` / `docker compose`) and version banner.
     pub fn probe() -> Result<(&'static str, String)> {
@@ -196,48 +205,66 @@ impl DockerCompose {
         Ok((cli.display(), version))
     }
 
-    /// The command name snouty drives (`docker-compose` / `docker compose`),
-    /// for user-facing hints.
-    pub fn display(&self) -> &'static str {
-        self.cli.display()
+    /// A copy-pasteable `... down` command that reproduces what [`down`](Self::down)
+    /// runs — same engine wiring, compose form, and files — for the
+    /// `--keep-running` hint. Uses absolute file paths so it works from any
+    /// directory (unlike [`down`](Self::down), which sets the working directory).
+    pub fn down_hint(&self, overlay: Option<&Path>) -> String {
+        let host = self
+            .docker_host
+            .as_deref()
+            .map(|h| format!("DOCKER_HOST={h} "))
+            .unwrap_or_default();
+        let compose_file = self.config.dir().join("docker-compose.yaml");
+        let mut hint = format!("{host}{} -f {}", self.cli.display(), compose_file.display());
+        if let Some(overlay) = overlay {
+            hint.push_str(&format!(" -f {}", overlay.display()));
+        }
+        hint.push_str(" down");
+        hint
     }
 
-    /// The `DOCKER_HOST` compose is wired to, if any. Used to reproduce the
-    /// compose invocation in user-facing hints.
-    pub fn docker_host(&self) -> Option<&str> {
-        self.docker_host.as_deref()
-    }
-
-    /// Base compose command with engine wiring and working directory applied.
-    /// Callers append the compose subcommand and its arguments.
-    fn command(&self, config: &ComposeConfig) -> Command {
+    /// Base compose command wired to the engine and config directory, with the
+    /// `-f` file flags and the given subcommand appended. The program, compose
+    /// prefix, and file flags are all fixed here so no caller hand-assembles a
+    /// compose invocation.
+    fn command(&self, overlay: Option<&Path>, subcommand: &[&str]) -> Command {
         let mut cmd = self.cli.command();
-        cmd.current_dir(config.dir());
+        cmd.current_dir(self.config.dir());
         if let Some(host) = &self.docker_host {
             cmd.env("DOCKER_HOST", host);
         }
+        cmd.args(compose_file_args(overlay));
+        cmd.args(subcommand);
         cmd
     }
 
-    /// Async variant of [`command`](Self::command).
-    fn tokio_command(&self, config: &ComposeConfig) -> tokio::process::Command {
-        self.command(config).into()
+    /// Spawn a long-running compose subcommand (`up`, `logs`) with inherited
+    /// stdio, in its own process group so the whole tree can be killed on
+    /// timeout. `what` names the command for error context.
+    fn spawn_inherited(
+        &self,
+        overlay: Option<&Path>,
+        subcommand: &[&str],
+        what: &str,
+    ) -> Result<ProcessGroupChild> {
+        let mut cmd: tokio::process::Command = self.command(overlay, subcommand).into();
+        cmd.stdin(std::process::Stdio::null());
+        cmd.stdout(std::process::Stdio::inherit());
+        cmd.stderr(std::process::Stdio::inherit());
+        cmd.process_group(0);
+        cmd.spawn()
+            .map(ProcessGroupChild::new)
+            .wrap_err_with(|| format!("failed to start '{what}'"))
     }
 
     /// Run `docker-compose config [extra_args]`, returning the resolved YAML
     /// as a string.
-    fn config_yaml(
-        &self,
-        config: &ComposeConfig,
-        overlay: Option<&Path>,
-        extra_args: &[&str],
-    ) -> Result<String> {
+    fn config_yaml(&self, overlay: Option<&Path>, extra_args: &[&str]) -> Result<String> {
         // No COMPOSE_PROJECT_NAME override: the project name must resolve
         // exactly as it does when the user runs `docker compose` in the
         // config dir, because default build tags are derived from it.
-        let mut cmd = self.command(config);
-        cmd.args(compose_file_args(overlay));
-        cmd.arg("config");
+        let mut cmd = self.command(overlay, &["config"]);
         cmd.args(extra_args);
         let output = cmd
             .output()
@@ -254,20 +281,16 @@ impl DockerCompose {
         Ok(String::from_utf8_lossy(&output.stdout).into_owned())
     }
 
-    /// Resolve and parse a compose config into structured contents.
-    pub fn contents(
-        &self,
-        config: &ComposeConfig,
-        overlay: Option<&Path>,
-    ) -> Result<ComposeContents> {
-        let yaml = self.config_yaml(config, overlay, &[])?;
+    /// Resolve and parse the compose config into structured contents.
+    pub fn contents(&self, overlay: Option<&Path>) -> Result<ComposeContents> {
+        let yaml = self.config_yaml(overlay, &[])?;
         parse_compose_config(&yaml)
     }
 
     /// Resolve the compose file to JSON using the normal (local) environment —
     /// the same interpolation `snouty` sees when it runs compose on this machine.
-    pub fn config_json(&self, config: &ComposeConfig) -> Result<String> {
-        self.config_yaml(config, None, &["--format", "json"])
+    pub fn config_json(&self) -> Result<String> {
+        self.config_yaml(None, &["--format", "json"])
     }
 
     /// Resolve the compose file to JSON under a scrubbed process environment
@@ -280,16 +303,13 @@ impl DockerCompose {
     /// Returns the raw output rather than a string: a required `${VAR:?}` with no
     /// value makes compose abort (non-zero exit, empty stdout), which the caller
     /// reads as a definite "won't resolve in Antithesis".
-    pub fn config_json_hermetic_env(&self, config: &ComposeConfig) -> Result<Output> {
-        // Reuse the normal command (binary + working directory), then clear the
-        // whole environment — including the DOCKER_HOST that command() sets.
-        // Those are all valid interpolation inputs Antithesis will not inherit,
-        // so scrubbing them is the point; only the binary and directory carry
-        // over. (env_clear() drops anything command() set via .env().)
-        let mut cmd = self.command(config);
+    pub fn config_json_hermetic_env(&self) -> Result<Output> {
+        // Build the normal command (binary + working directory + DOCKER_HOST),
+        // then clear the whole environment. Those shell values are all valid
+        // interpolation inputs Antithesis will not inherit, so scrubbing them is
+        // the point; only the binary and directory (not an env var) carry over.
+        let mut cmd = self.command(None, &["config", "--format", "json"]);
         cmd.env_clear();
-        cmd.args(compose_file_args(None));
-        cmd.args(["config", "--format", "json"]);
         cmd.output()
             .wrap_err("failed to run 'docker-compose config' for the environment check")
     }
@@ -302,21 +322,15 @@ impl DockerCompose {
     /// resolve in its own environment, and `--no-path-resolution` keeps
     /// relative paths relative — both would otherwise be baked with values
     /// from this machine.
-    fn canonical_contents(&self, config: &ComposeConfig) -> Result<String> {
-        self.config_yaml(config, None, &["--no-interpolate", "--no-path-resolution"])
+    fn canonical_contents(&self) -> Result<String> {
+        self.config_yaml(None, &["--no-interpolate", "--no-path-resolution"])
     }
 
     /// Parse `docker-compose ps -a --format json` into the list of containers,
     /// including stopped/exited ones so callers can flag stranded test
     /// commands. Inspect [`ComposeContainer::stopped`] to tell them apart.
-    pub fn ps(
-        &self,
-        config: &ComposeConfig,
-        overlay: Option<&Path>,
-    ) -> Result<Vec<ComposeContainer>> {
-        let mut cmd = self.command(config);
-        cmd.args(compose_file_args(overlay));
-        cmd.args(["ps", "-a", "--format", "json"]);
+    pub fn ps(&self, overlay: Option<&Path>) -> Result<Vec<ComposeContainer>> {
+        let cmd = self.command(overlay, &["ps", "-a", "--format", "json"]);
 
         let output = output_with_timeout(cmd, DISCOVERY_COMMAND_TIMEOUT)
             .wrap_err("failed to run 'docker-compose ps'")?;
@@ -339,16 +353,13 @@ impl DockerCompose {
     /// Stdout and stderr are captured in the returned `Output`.
     pub fn exec(
         &self,
-        config: &ComposeConfig,
         overlay: Option<&Path>,
         service: &str,
         workdir: Option<&str>,
         env: &[(&str, &str)],
         cmd: &[&str],
     ) -> Result<std::process::Output> {
-        let mut command = self.command(config);
-        command.args(compose_file_args(overlay));
-        command.args(["exec", "-T"]);
+        let mut command = self.command(overlay, &["exec", "-T"]);
         for (k, v) in env {
             command.args(["-e", &format!("{k}={v}")]);
         }
@@ -368,51 +379,29 @@ impl DockerCompose {
     /// stdout and stderr are inherited so progress is visible during pulls. The
     /// caller awaits the child and checks its exit status. Uses
     /// `process_group(0)` so the whole group can be killed on timeout.
-    pub fn up_detached(
-        &self,
-        config: &ComposeConfig,
-        overlay: Option<&Path>,
-    ) -> Result<ProcessGroupChild> {
-        let mut cmd = self.tokio_command(config);
-        cmd.args(compose_file_args(overlay));
-        cmd.args(["up", "--detach", "--no-build", "--pull=never"]);
-        cmd.stdin(std::process::Stdio::null());
-        cmd.stdout(std::process::Stdio::inherit());
-        cmd.stderr(std::process::Stdio::inherit());
-        cmd.process_group(0);
-
-        cmd.spawn()
-            .map(ProcessGroupChild::new)
-            .wrap_err("failed to start 'docker-compose up --detach'")
+    pub fn up_detached(&self, overlay: Option<&Path>) -> Result<ProcessGroupChild> {
+        self.spawn_inherited(
+            overlay,
+            &["up", "--detach", "--no-build", "--pull=never"],
+            "docker-compose up --detach",
+        )
     }
 
     /// Spawn `docker-compose logs --follow` and return the child process.
     ///
     /// stdout and stderr are inherited so log output goes straight to the
     /// terminal. stdin is null. The process exits when all containers stop.
-    pub fn logs_follow(
-        &self,
-        config: &ComposeConfig,
-        overlay: Option<&Path>,
-    ) -> Result<ProcessGroupChild> {
-        let mut cmd = self.tokio_command(config);
-        cmd.args(compose_file_args(overlay));
-        cmd.args(["logs", "--follow"]);
-        cmd.stdin(std::process::Stdio::null());
-        cmd.stdout(std::process::Stdio::inherit());
-        cmd.stderr(std::process::Stdio::inherit());
-        cmd.process_group(0);
-
-        cmd.spawn()
-            .map(ProcessGroupChild::new)
-            .wrap_err("failed to start 'docker-compose logs --follow'")
+    pub fn logs_follow(&self, overlay: Option<&Path>) -> Result<ProcessGroupChild> {
+        self.spawn_inherited(
+            overlay,
+            &["logs", "--follow"],
+            "docker-compose logs --follow",
+        )
     }
 
     /// Run `docker-compose down` for cleanup. Best-effort, ignores errors.
-    pub fn down(&self, config: &ComposeConfig, overlay: Option<&Path>) {
-        let mut cmd = self.command(config);
-        cmd.args(compose_file_args(overlay));
-        cmd.args(["down", "--timeout", "0"]);
+    pub fn down(&self, overlay: Option<&Path>) {
+        let mut cmd = self.command(overlay, &["down", "--timeout", "0"]);
         cmd.stdin(std::process::Stdio::null());
         cmd.stdout(std::process::Stdio::null());
         cmd.stderr(std::process::Stdio::null());
@@ -427,16 +416,11 @@ impl DockerCompose {
     /// runs — snouty never pulls. Every service must resolve to an image that
     /// is present locally (built via its `build:` stanza, built or loaded out
     /// of band, or previously pulled). Each image is then pinned to its local
-    /// digest in a registry confirmed to serve it ([`Self::find_remote_pin`]),
+    /// digest in a registry confirmed to serve it ([`find_remote_pin`]),
     /// or — when no registry has it — tagged with the `registry` prefix and
     /// pushed, so the platform always pulls exactly what was resolved here.
-    pub fn pin_images(
-        &self,
-        rt: &dyn ContainerRuntime,
-        config: &ComposeConfig,
-        registry: &str,
-    ) -> Result<String> {
-        let contents = self.contents(config, None)?;
+    pub fn pin_images(&self, rt: &dyn ContainerRuntime, registry: &str) -> Result<String> {
+        let contents = self.contents(None)?;
         with_config_image_escape_hatch(validate_images_are_available(rt, &contents))?;
 
         let prefix = format!("{}/", registry.trim_end_matches('/'));
@@ -447,7 +431,7 @@ impl DockerCompose {
         for service in &contents.services {
             let image = service.image.as_str();
             if !resolution.contains_key(image) {
-                let pin = self.find_remote_pin(rt, image, &prefix)?;
+                let pin = find_remote_pin(rt, image, &prefix)?;
                 if let Some(pinned_ref) = &pin {
                     eprintln!("Image already in a registry, skipping push: {pinned_ref}");
                 }
@@ -500,53 +484,51 @@ impl DockerCompose {
             pinned.insert(name.clone(), digests[dest.as_str()].clone());
         }
 
-        rewrite_compose_images(&self.canonical_contents(config)?, &pinned)
+        rewrite_compose_images(&self.canonical_contents()?, &pinned)
+    }
+}
+
+/// Find a registry that already serves `image`'s local bytes, returning
+/// the digest-pinned reference to use, or `None` when the image must be
+/// pushed.
+///
+/// Candidate digests come from the local store's repo digests, for two
+/// repositories: the image's own (e.g. `docker.io/library/redis` for
+/// `redis:7`) and its `prefix`ed name from a previous snouty push. A
+/// candidate counts only when the registry confirms it serves the digest
+/// (a manifest-only round trip — never a pull or push) AND the platform
+/// can run amd64 from it: a manifest list must offer an amd64 entry,
+/// while a single manifest shares the local image's architecture, so the
+/// local image must be amd64.
+///
+/// Depends only on the container engine, not on compose state, so it is a
+/// free function rather than a [`DockerCompose`] method.
+fn find_remote_pin(rt: &dyn ContainerRuntime, image: &str, prefix: &str) -> Result<Option<String>> {
+    let repo_digests = rt.image_repo_digests(image)?;
+    let tag = image_ref_tag(image);
+
+    let mut repos = vec![normalize_repo(image_repo(image))];
+    if !image.starts_with(prefix) {
+        repos.push(normalize_repo(image_repo(&format!("{prefix}{image}"))));
     }
 
-    /// Find a registry that already serves `image`'s local bytes, returning
-    /// the digest-pinned reference to use, or `None` when the image must be
-    /// pushed.
-    ///
-    /// Candidate digests come from the local store's repo digests, for two
-    /// repositories: the image's own (e.g. `docker.io/library/redis` for
-    /// `redis:7`) and its `prefix`ed name from a previous snouty push. A
-    /// candidate counts only when the registry confirms it serves the digest
-    /// (a manifest-only round trip — never a pull or push) AND the platform
-    /// can run amd64 from it: a manifest list must offer an amd64 entry,
-    /// while a single manifest shares the local image's architecture, so the
-    /// local image must be amd64.
-    fn find_remote_pin(
-        &self,
-        rt: &dyn ContainerRuntime,
-        image: &str,
-        prefix: &str,
-    ) -> Result<Option<String>> {
-        let repo_digests = rt.image_repo_digests(image)?;
-        let tag = image_ref_tag(image);
-
-        let mut repos = vec![normalize_repo(image_repo(image))];
-        if !image.starts_with(prefix) {
-            repos.push(normalize_repo(image_repo(&format!("{prefix}{image}"))));
-        }
-
-        for repo in &repos {
-            // A pull typically records several digests per repo (the
-            // per-arch manifest and the manifest list) — try them all.
-            for digest in digests_for_repo(repo, &repo_digests) {
-                let amd64_ok = match rt.remote_manifest(&format!("{repo}@{digest}")) {
-                    RemoteManifest::NotFound => continue,
-                    RemoteManifest::List { has_amd64 } => has_amd64,
-                    RemoteManifest::Single => rt.image_architecture(image)? == "amd64",
-                };
-                if amd64_ok {
-                    return Ok(Some(format!("{repo}:{tag}@{digest}")));
-                }
-                // Served, but not runnable as amd64 — keep looking; the push
-                // path's local arch check produces the actionable error.
+    for repo in &repos {
+        // A pull typically records several digests per repo (the
+        // per-arch manifest and the manifest list) — try them all.
+        for digest in digests_for_repo(repo, &repo_digests) {
+            let amd64_ok = match rt.remote_manifest(&format!("{repo}@{digest}")) {
+                RemoteManifest::NotFound => continue,
+                RemoteManifest::List { has_amd64 } => has_amd64,
+                RemoteManifest::Single => rt.image_architecture(image)? == "amd64",
+            };
+            if amd64_ok {
+                return Ok(Some(format!("{repo}:{tag}@{digest}")));
             }
+            // Served, but not runnable as amd64 — keep looking; the push
+            // path's local arch check produces the actionable error.
         }
-        Ok(None)
     }
+    Ok(None)
 }
 /// Rewrite each service's `image:` field to its pinned digest reference.
 ///
@@ -1199,12 +1181,12 @@ services:
             )
             .unwrap();
 
-            let compose = DockerCompose::resolve(rt.as_ref()).unwrap();
             let config = match crate::config::detect_config(dir.path()).unwrap() {
                 crate::config::Config::Compose(c) => c,
                 other => panic!("expected Compose, got {other:?}"),
             };
-            let contents = compose.contents(&config, None).unwrap();
+            let compose = DockerCompose::resolve(rt.as_ref(), config).unwrap();
+            let contents = compose.contents(None).unwrap();
             let images: Vec<&str> = contents
                 .services
                 .iter()
@@ -1251,13 +1233,13 @@ services:
             )
             .unwrap();
 
-            let compose = DockerCompose::resolve(rt.as_ref()).unwrap();
             let config = match crate::config::detect_config(dir.path()).unwrap() {
                 crate::config::Config::Compose(c) => c,
                 other => panic!("expected Compose, got {other:?}"),
             };
-            let yaml = compose.config_yaml(&config, Some(&overlay), &[]).unwrap();
-            let contents = compose.contents(&config, Some(&overlay)).unwrap();
+            let compose = DockerCompose::resolve(rt.as_ref(), config).unwrap();
+            let yaml = compose.config_yaml(Some(&overlay), &[]).unwrap();
+            let contents = compose.contents(Some(&overlay)).unwrap();
 
             assert!(
                 yaml.contains("overlay:latest"),
@@ -1348,8 +1330,8 @@ services:
             crate::config::Config::Compose(c) => c,
             other => panic!("expected Compose, got {other:?}"),
         };
-        let compose = DockerCompose::resolve(rt).unwrap();
-        compose.pin_images(rt, &config, registry)
+        let compose = DockerCompose::resolve(rt, config).unwrap();
+        compose.pin_images(rt, registry)
     }
     #[test]
     fn pin_images_skips_push_when_registry_serves_digest() {
@@ -1530,8 +1512,6 @@ services:
                 None => continue,
             };
             let addr = registry.host_port();
-            let compose = DockerCompose::resolve(rt.as_ref())
-                .unwrap_or_else(|e| panic!("{}: DockerCompose::resolve: {e:?}", rt.name()));
 
             // Build a purely-local image (present locally, in no registry).
             let img_dir = tempfile::tempdir().unwrap();
@@ -1553,7 +1533,9 @@ services:
                     crate::config::Config::Compose(c) => c,
                     other => panic!("expected Compose, got {other:?}"),
                 };
-                let out = compose.pin_images(rt.as_ref(), &config, &addr)?;
+                let compose = DockerCompose::resolve(rt.as_ref(), config)
+                    .unwrap_or_else(|e| panic!("{}: DockerCompose::resolve: {e:?}", rt.name()));
+                let out = compose.pin_images(rt.as_ref(), &addr)?;
                 Ok(serde_yaml::from_str::<serde_yaml::Value>(&out)
                     .unwrap()
                     .get("services")
@@ -1936,6 +1918,45 @@ services:
         let plugin = ComposeCli::Plugin(PathBuf::from("/usr/bin/docker"));
         assert_eq!(plugin.display(), "docker compose");
     }
+
+    #[test]
+    fn down_hint_reproduces_the_down_invocation() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("docker-compose.yaml"), "services: {}\n").unwrap();
+        let config = match crate::config::detect_config(dir.path()).unwrap() {
+            crate::config::Config::Compose(c) => c,
+            other => panic!("expected Compose, got {other:?}"),
+        };
+
+        // Plugin form, an engine override, and an overlay all appear.
+        let compose = DockerCompose {
+            cli: ComposeCli::Plugin(PathBuf::from("/usr/bin/docker")),
+            docker_host: Some("unix:///run/podman.sock".to_string()),
+            config: config.clone(),
+        };
+        assert_eq!(
+            compose.down_hint(Some(Path::new("/tmp/override.yml"))),
+            format!(
+                "DOCKER_HOST=unix:///run/podman.sock docker compose \
+                 -f {}/docker-compose.yaml -f /tmp/override.yml down",
+                dir.path().display()
+            ),
+        );
+
+        // Standalone, no engine override, no overlay.
+        let compose = DockerCompose {
+            cli: ComposeCli::Standalone(PathBuf::from("/usr/local/bin/docker-compose")),
+            docker_host: None,
+            config,
+        };
+        assert_eq!(
+            compose.down_hint(None),
+            format!(
+                "docker-compose -f {}/docker-compose.yaml down",
+                dir.path().display()
+            ),
+        );
+    }
     #[test]
     fn config_json_hermetic_env_scrubs_process_variables() {
         if !has_compose() {
@@ -1964,9 +1985,10 @@ services:
         let compose = DockerCompose {
             cli: ComposeCli::resolve().unwrap().0,
             docker_host: Some("unix:///tmp/snouty-hermetic-test.sock".to_string()),
+            config,
         };
 
-        let output = compose.config_json_hermetic_env(&config).unwrap();
+        let output = compose.config_json_hermetic_env().unwrap();
         assert!(output.status.success(), "compose config failed: {output:?}");
         let resolved: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
         let environment = &resolved["services"]["app"]["environment"];

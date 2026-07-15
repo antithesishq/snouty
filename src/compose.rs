@@ -271,25 +271,28 @@ impl DockerCompose {
 
     /// Spawn a long-running compose subcommand (`up`, `logs`) with inherited
     /// stdio, in its own process group so the whole tree can be killed on
-    /// timeout. `what` names the command for error context.
+    /// timeout.
     fn spawn_inherited(
         &self,
         overlay: Option<&Path>,
         subcommand: &[&str],
-        what: &str,
     ) -> Result<ProcessGroupChild> {
         let mut cmd: tokio::process::Command = self.command(overlay, subcommand).into();
         cmd.stdin(std::process::Stdio::null());
         cmd.stdout(std::process::Stdio::inherit());
         cmd.stderr(std::process::Stdio::inherit());
         cmd.process_group(0);
-        cmd.spawn()
-            .map(ProcessGroupChild::new)
-            .wrap_err_with(|| format!("failed to start '{what}'"))
+        cmd.spawn().map(ProcessGroupChild::new).wrap_err_with(|| {
+            format!(
+                "failed to start '{} {}'",
+                self.cli.display(),
+                subcommand.join(" ")
+            )
+        })
     }
 
-    /// Run `docker-compose config [extra_args]`, returning the resolved YAML
-    /// as a string.
+    /// Run `compose config [extra_args]`, returning the resolved YAML as a
+    /// string.
     fn config_yaml(&self, overlay: Option<&Path>, extra_args: &[&str]) -> Result<String> {
         // No COMPOSE_PROJECT_NAME override: the project name must resolve
         // exactly as it does when the user runs `docker compose` in the
@@ -365,7 +368,7 @@ impl DockerCompose {
         self.config_yaml(None, &["--no-interpolate", "--no-path-resolution"])
     }
 
-    /// Parse `docker-compose ps -a --format json` into the list of containers,
+    /// Parse `compose ps -a --format json` into the list of containers,
     /// including stopped/exited ones so callers can flag stranded test
     /// commands. Inspect [`ComposeContainer::stopped`] to tell them apart.
     pub fn ps(&self, overlay: Option<&Path>) -> Result<Vec<ComposeContainer>> {
@@ -385,32 +388,24 @@ impl DockerCompose {
         parse_compose_ps(&stdout)
     }
 
-    /// Spawn `docker-compose up --detach` and return the child process.
+    /// Spawn `compose up --detach` and return the child process.
     ///
     /// stdout and stderr are inherited so progress is visible during pulls. The
     /// caller awaits the child and checks its exit status. Uses
     /// `process_group(0)` so the whole group can be killed on timeout.
     pub fn up_detached(&self, overlay: Option<&Path>) -> Result<ProcessGroupChild> {
-        self.spawn_inherited(
-            overlay,
-            &["up", "--detach", "--no-build", "--pull=never"],
-            &format!("{} up --detach", self.cli.display()),
-        )
+        self.spawn_inherited(overlay, &["up", "--detach", "--no-build", "--pull=never"])
     }
 
-    /// Spawn `docker-compose logs --follow` and return the child process.
+    /// Spawn `compose logs --follow` and return the child process.
     ///
     /// stdout and stderr are inherited so log output goes straight to the
     /// terminal. stdin is null. The process exits when all containers stop.
     pub fn logs_follow(&self, overlay: Option<&Path>) -> Result<ProcessGroupChild> {
-        self.spawn_inherited(
-            overlay,
-            &["logs", "--follow"],
-            &format!("{} logs --follow", self.cli.display()),
-        )
+        self.spawn_inherited(overlay, &["logs", "--follow"])
     }
 
-    /// Run `docker-compose down` for cleanup. Best-effort, ignores errors.
+    /// Run `compose down` for cleanup. Best-effort, ignores errors.
     pub fn down(&self, overlay: Option<&Path>) {
         let mut cmd = self.command(overlay, &["down", "--timeout", "0"]);
         cmd.stdin(std::process::Stdio::null());
@@ -915,7 +910,7 @@ fn state_is_stopped(state: Option<&str>) -> bool {
         None => false,
     }
 }
-/// Parse the JSON output of `docker-compose ps --format json`.
+/// Parse the JSON output of `compose ps --format json`.
 ///
 /// Handles both NDJSON (one object per line) and JSON array formats. The
 /// schema is Docker Compose v2: `{"Service": "...", "ID": "...", "State": "running"}`.

@@ -237,11 +237,14 @@ fn auth_checks(api_key: bool, username: bool, password: bool) -> Vec<Check> {
 fn collect_checks(settings: &Settings) -> Vec<Check> {
     let mut checks: Vec<Check> = Vec::new();
 
-    // Container runtime (for building/pushing images)
+    // Container runtime (for building/pushing images). Report the real engine
+    // (engine_kind), not the invoking binary (name): for podman-in-disguise the
+    // command is `docker` but the engine is podman — and this must agree with
+    // the engine `launch`/`validate` announce, which also uses engine_kind.
     match container::runtime(settings) {
         Ok(rt) => checks.push(Check::ok(
             "container_runtime",
-            format!("Container runtime: {} detected", rt.name()),
+            format!("Container runtime: {} detected", rt.engine_kind()),
         )),
         Err(e) => checks.push(
             Check::fail("container_runtime", "Container runtime not detected")

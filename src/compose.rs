@@ -20,18 +20,6 @@ use crate::container::{
 };
 use crate::process::{ProcessGroupChild, output_with_timeout};
 
-/// Build the `-f` flags for `compose` subcommands: always
-/// `-f docker-compose.yaml`, plus `-f <overlay>` if an overlay was provided.
-fn compose_file_args(overlay: Option<&Path>) -> Vec<String> {
-    let mut args = vec!["-f".to_string(), "docker-compose.yaml".to_string()];
-    if let Some(path) = overlay {
-        args.push("-f".to_string());
-        args.push(path.display().to_string());
-    }
-    args
-}
-/// The standalone Docker Compose v2 binary name.
-const DOCKER_COMPOSE: &str = "docker-compose";
 /// How Docker Compose v2 is invoked on this machine.
 ///
 /// Compose v2 ships two ways — the standalone `docker-compose` binary and the
@@ -47,11 +35,20 @@ enum ComposeCli {
     /// The `docker compose` CLI plugin; the path is the `docker` binary.
     Plugin(PathBuf),
 }
+
+impl std::fmt::Display for ComposeCli {
+    /// The invocation as a user would type it, for user-facing hints and errors.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            ComposeCli::Standalone(_) => "docker-compose",
+            ComposeCli::Plugin(_) => "docker compose",
+        })
+    }
+}
+
 impl ComposeCli {
     /// Resolve a usable Docker Compose v2 invocation, with a clear error when
-    /// none is available. Resolution runs `version` internally to confirm v2 —
-    /// callers that want the banner call [`version`](Self::version) on the
-    /// result.
+    /// none is available.
     ///
     /// Prefers the standalone `docker-compose` binary when it is present and
     /// genuinely v2 (the historical contract). Otherwise falls back to the
@@ -60,15 +57,13 @@ impl ComposeCli {
     /// v2 features snouty relies on.
     fn resolve() -> Result<ComposeCli> {
         // 1. Standalone docker-compose, when it's really v2.
-        if let Ok(program) = which::which(DOCKER_COMPOSE) {
+        if let Ok(program) = which::which("docker-compose") {
             let candidate = ComposeCli::Standalone(program);
-            match candidate.version() {
-                Ok(_) => return Ok(candidate),
+            match candidate.require_v2() {
+                Ok(()) => return Ok(candidate),
                 // Present but not v2 (likely Compose v1). Prefer the docker
                 // plugin if it's usable; only surface the v1 error if not.
-                Err(standalone_err) => {
-                    return Self::plugin().or(Err(standalone_err));
-                }
+                Err(standalone_err) => return Self::plugin().or(Err(standalone_err)),
             }
         }
 
@@ -97,16 +92,8 @@ impl ComposeCli {
             bail!("`docker` is podman in disguise; its `compose` is not Docker Compose v2");
         }
         let candidate = ComposeCli::Plugin(program);
-        candidate.version()?; // confirm it is genuinely Compose v2
+        candidate.require_v2()?;
         Ok(candidate)
-    }
-
-    /// The invocation as a user would type it, for user-facing hints.
-    fn display(&self) -> &'static str {
-        match self {
-            ComposeCli::Standalone(_) => "docker-compose",
-            ComposeCli::Plugin(_) => "docker compose",
-        }
     }
 
     /// A fresh [`Command`] for this invocation, positioned so callers append
@@ -124,58 +111,50 @@ impl ComposeCli {
         }
     }
 
-    /// After a caller `env_clear()`s a command, restore the minimal environment
-    /// this invocation needs to *locate* the compose implementation.
-    ///
-    /// The standalone binary needs nothing — it's an absolute path. The plugin
-    /// form is `docker compose`, and the docker CLI finds the plugin under
-    /// `$DOCKER_CONFIG/cli-plugins` (default `$HOME/.docker/cli-plugins`) plus
-    /// system dirs; `env_clear()` removed both `DOCKER_CONFIG` and `HOME`, so on
-    /// a user-directory plugin install (e.g. Docker Desktop) the plugin becomes
-    /// undiscoverable. Restore `DOCKER_CONFIG` only — docker machinery, not a
-    /// value users interpolate into compose files — so lookup works without
-    /// reintroducing `$HOME` as a `${VAR}` interpolation source.
-    fn restore_discovery_env(&self, cmd: &mut Command) {
-        if let ComposeCli::Plugin(_) = self
-            && let Some(config_dir) = docker_config_dir()
-        {
-            cmd.env("DOCKER_CONFIG", config_dir);
+    /// The Compose version this invocation reports (e.g. `2.40.3`), via
+    /// `version --short`. Pure detection — it does not judge whether the version
+    /// is acceptable; that's [`require_v2`](Self::require_v2)'s call.
+    fn version(&self) -> Result<String> {
+        let mut cmd = self.command();
+        cmd.args(["version", "--short"]);
+        let output = cmd
+            .output()
+            .wrap_err_with(|| format!("failed to run `{self} version`"))?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(eyre!("`{self} version` failed"))
+                .with_section(move || stderr.trim().to_string().header("Stderr:"));
         }
+        Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
     }
 
-    /// Return the version banner, erroring when the command fails to run or
-    /// reports a non-v2 (v1) banner.
-    fn version(&self) -> Result<String> {
-        let name = self.display();
-        let mut cmd = self.command();
-        cmd.arg("version");
-        match cmd.output() {
-            Ok(o) if o.status.success() => {
-                let version = String::from_utf8_lossy(&o.stdout).trim().to_string();
-                if is_compose_v2_version(&version) {
-                    Ok(version)
-                } else {
-                    Err(eyre!("`{name}` is not Docker Compose v2"))
-                        .with_section(move || version.header(format!("{name} version:")))
-                        .with_suggestion(|| {
-                            "install Docker Compose v2: https://docs.docker.com/compose/install/"
-                        })
-                }
-            }
-            Ok(o) => {
-                let stderr = String::from_utf8_lossy(&o.stderr);
-                Err(eyre!("`{name} version` failed"))
-                    .with_section(move || stderr.trim().to_string().header("Stderr:"))
-            }
-            Err(e) => Err(eyre!("failed to run `{name} version`: {e}")),
+    /// Confirm this invocation is Docker Compose v2 or newer, erroring otherwise
+    /// — snouty relies on v2-only compose features.
+    fn require_v2(&self) -> Result<()> {
+        let version = self.version()?;
+        match compose_major_version(&version) {
+            Some(major) if major >= 2 => Ok(()),
+            _ => Err(eyre!(
+                "`{self}` is Docker Compose {version}, but snouty requires v2"
+            ))
+            .with_suggestion(
+                || "install Docker Compose v2: https://docs.docker.com/compose/install/",
+            ),
         }
     }
 }
-/// Whether a `compose version` banner identifies Docker Compose v2. Both the
-/// standalone binary and the CLI plugin print "Docker Compose version ..." for
-/// v2; Compose v1's "docker-compose version ..." (hyphenated) does not match.
-fn is_compose_v2_version(output: &str) -> bool {
-    output.to_lowercase().contains("docker compose")
+
+/// The major component of a `compose version --short` string: `2.40.3` → 2,
+/// `v2.40.3` → 2. `None` when it doesn't begin with a number. Only the major is
+/// parsed, so distro build-metadata suffixes (`2.40.3+ds1-0ubuntu1~24.04.1`)
+/// don't matter.
+fn compose_major_version(version: &str) -> Option<u64> {
+    version
+        .trim_start_matches('v')
+        .split('.')
+        .next()?
+        .parse()
+        .ok()
 }
 
 /// The docker CLI config directory (which holds `cli-plugins/`): `$DOCKER_CONFIG`
@@ -229,10 +208,10 @@ impl DockerCompose {
     /// Locate a usable Docker Compose v2 without binding a config or engine, for
     /// diagnostics and availability checks (`snouty doctor`, tests). Returns the
     /// command name (`docker-compose` / `docker compose`) and version banner.
-    pub fn probe() -> Result<(&'static str, String)> {
+    pub fn probe() -> Result<(String, String)> {
         let cli = ComposeCli::resolve()?;
         let version = cli.version()?;
-        Ok((cli.display(), version))
+        Ok((cli.to_string(), version))
     }
 
     /// A copy-pasteable `... down` command that reproduces what [`down`](Self::down)
@@ -246,7 +225,7 @@ impl DockerCompose {
             .map(|h| format!("DOCKER_HOST={h} "))
             .unwrap_or_default();
         let compose_file = self.config.dir().join("docker-compose.yaml");
-        let mut hint = format!("{host}{} -f {}", self.cli.display(), compose_file.display());
+        let mut hint = format!("{host}{} -f {}", self.cli, compose_file.display());
         if let Some(overlay) = overlay {
             hint.push_str(&format!(" -f {}", overlay.display()));
         }
@@ -264,7 +243,10 @@ impl DockerCompose {
         if let Some(host) = &self.docker_host {
             cmd.env("DOCKER_HOST", host);
         }
-        cmd.args(compose_file_args(overlay));
+        cmd.args(["-f", "docker-compose.yaml"]);
+        if let Some(overlay) = overlay {
+            cmd.arg("-f").arg(overlay);
+        }
         cmd.args(subcommand);
         cmd
     }
@@ -277,37 +259,33 @@ impl DockerCompose {
         overlay: Option<&Path>,
         subcommand: &[&str],
     ) -> Result<ProcessGroupChild> {
-        let mut cmd: tokio::process::Command = self.command(overlay, subcommand).into();
+        let mut cmd = tokio::process::Command::from(self.command(overlay, subcommand));
         cmd.stdin(std::process::Stdio::null());
         cmd.stdout(std::process::Stdio::inherit());
         cmd.stderr(std::process::Stdio::inherit());
         cmd.process_group(0);
-        cmd.spawn().map(ProcessGroupChild::new).wrap_err_with(|| {
-            format!(
-                "failed to start '{} {}'",
-                self.cli.display(),
-                subcommand.join(" ")
-            )
-        })
+        cmd.spawn()
+            .map(ProcessGroupChild::new)
+            .wrap_err_with(|| format!("failed to start '{} {}'", self.cli, subcommand.join(" ")))
     }
 
     /// Run `compose config [extra_args]`, returning the resolved YAML as a
     /// string.
-    fn config_yaml(&self, overlay: Option<&Path>, extra_args: &[&str]) -> Result<String> {
+    fn config(&self, overlay: Option<&Path>, extra_args: &[&str]) -> Result<String> {
         // No COMPOSE_PROJECT_NAME override: the project name must resolve
         // exactly as it does when the user runs `docker compose` in the
         // config dir, because default build tags are derived from it.
-        let name = self.cli.display();
+        let cli = &self.cli;
         let mut cmd = self.command(overlay, &["config"]);
         cmd.args(extra_args);
         let output = cmd
             .output()
-            .wrap_err_with(|| format!("failed to run '{name} config'"))?;
+            .wrap_err_with(|| format!("failed to run '{cli} config'"))?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
             let stdout = String::from_utf8_lossy(&output.stdout);
-            return Err(eyre!("'{name} config' failed"))
+            return Err(eyre!("'{cli} config' failed"))
                 .with_section(move || stdout.trim().to_string().header("Stdout:"))
                 .with_section(move || stderr.trim().to_string().header("Stderr:"));
         }
@@ -317,14 +295,14 @@ impl DockerCompose {
 
     /// Resolve and parse the compose config into structured contents.
     pub fn contents(&self, overlay: Option<&Path>) -> Result<ComposeContents> {
-        let yaml = self.config_yaml(overlay, &[])?;
+        let yaml = self.config(overlay, &[])?;
         parse_compose_config(&yaml)
     }
 
     /// Resolve the compose file to JSON using the normal (local) environment —
     /// the same interpolation `snouty` sees when it runs compose on this machine.
     pub fn config_json(&self) -> Result<String> {
-        self.config_yaml(None, &["--format", "json"])
+        self.config(None, &["--format", "json"])
     }
 
     /// Resolve the compose file to JSON under a scrubbed process environment
@@ -344,14 +322,21 @@ impl DockerCompose {
         // the point; only the binary and directory (not an env var) carry over.
         let mut cmd = self.command(None, &["config", "--format", "json"]);
         cmd.env_clear();
-        // env_clear() also removes what the `docker compose` plugin form needs to
-        // *find* the plugin — restore just that, so the scrub doesn't turn a
-        // usable Compose into a spurious "won't resolve in Antithesis".
-        self.cli.restore_discovery_env(&mut cmd);
+        // env_clear() also wiped what the `docker compose` plugin form needs to
+        // *find* the plugin: the docker CLI locates it under $DOCKER_CONFIG/
+        // cli-plugins (default $HOME/.docker/cli-plugins). Restore DOCKER_CONFIG
+        // only — docker machinery, not a value users interpolate into compose
+        // files — so a user-directory plugin install (e.g. Docker Desktop) stays
+        // discoverable without reintroducing $HOME as a `${VAR}` source.
+        if let ComposeCli::Plugin(_) = self.cli
+            && let Some(config_dir) = docker_config_dir()
+        {
+            cmd.env("DOCKER_CONFIG", config_dir);
+        }
         cmd.output().wrap_err_with(|| {
             format!(
                 "failed to run '{} config' for the environment check",
-                self.cli.display()
+                self.cli
             )
         })
     }
@@ -365,22 +350,22 @@ impl DockerCompose {
     /// relative paths relative — both would otherwise be baked with values
     /// from this machine.
     fn canonical_contents(&self) -> Result<String> {
-        self.config_yaml(None, &["--no-interpolate", "--no-path-resolution"])
+        self.config(None, &["--no-interpolate", "--no-path-resolution"])
     }
 
     /// Parse `compose ps -a --format json` into the list of containers,
     /// including stopped/exited ones so callers can flag stranded test
     /// commands. Inspect [`ComposeContainer::stopped`] to tell them apart.
     pub fn ps(&self, overlay: Option<&Path>) -> Result<Vec<ComposeContainer>> {
-        let name = self.cli.display();
+        let cli = &self.cli;
         let cmd = self.command(overlay, &["ps", "-a", "--format", "json"]);
 
         let output = output_with_timeout(cmd, DISCOVERY_COMMAND_TIMEOUT)
-            .wrap_err_with(|| format!("failed to run '{name} ps'"))?;
+            .wrap_err_with(|| format!("failed to run '{cli} ps'"))?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(eyre!("'{name} ps' failed"))
+            return Err(eyre!("'{cli} ps' failed"))
                 .with_section(move || stderr.trim().to_string().header("Stderr:"));
         }
 
@@ -1244,7 +1229,7 @@ services:
                 other => panic!("expected Compose, got {other:?}"),
             };
             let compose = DockerCompose::resolve(rt.as_ref(), config).unwrap();
-            let yaml = compose.config_yaml(Some(&overlay), &[]).unwrap();
+            let yaml = compose.config(Some(&overlay), &[]).unwrap();
             let contents = compose.contents(Some(&overlay)).unwrap();
 
             assert!(
@@ -1905,56 +1890,25 @@ services:
         assert_eq!(contents.build_services, HashSet::from(["app".to_string()]));
     }
     #[test]
-    fn is_compose_v2_version_accepts_docker_compose() {
-        assert!(is_compose_v2_version("Docker Compose version v2.24.5"));
-        assert!(is_compose_v2_version("docker compose version 5.1.4"));
-    }
-    #[test]
-    fn is_compose_v2_version_rejects_others() {
-        assert!(!is_compose_v2_version("podman-compose version 1.0.6"));
-        // Compose v1's hyphenated banner must not be mistaken for v2.
-        assert!(!is_compose_v2_version("docker-compose version 1.29.2"));
-        assert!(!is_compose_v2_version(""));
+    fn compose_major_version_parses_the_major_component() {
+        assert_eq!(compose_major_version("2.40.3"), Some(2));
+        assert_eq!(compose_major_version("v2.40.3"), Some(2));
+        // Distro build-metadata suffixes must not throw off the parse.
+        assert_eq!(
+            compose_major_version("2.40.3+ds1-0ubuntu1~24.04.1"),
+            Some(2)
+        );
+        assert_eq!(compose_major_version("1.29.2"), Some(1)); // Compose v1
+        assert_eq!(compose_major_version(""), None);
+        assert_eq!(compose_major_version("garbage"), None);
     }
     #[test]
     fn compose_cli_display_standalone_and_plugin() {
         let standalone = ComposeCli::Standalone(PathBuf::from("/usr/local/bin/docker-compose"));
-        assert_eq!(standalone.display(), "docker-compose");
+        assert_eq!(standalone.to_string(), "docker-compose");
 
         let plugin = ComposeCli::Plugin(PathBuf::from("/usr/bin/docker"));
-        assert_eq!(plugin.display(), "docker compose");
-    }
-
-    #[test]
-    fn plugin_hermetic_render_restores_docker_config_after_env_clear() {
-        use std::ffi::OsStr;
-
-        let has_config_dir = docker_config_dir().is_some();
-
-        // Plugin form: the docker CLI needs DOCKER_CONFIG to find the compose
-        // plugin once env_clear() has wiped HOME/DOCKER_CONFIG.
-        let plugin = ComposeCli::Plugin(PathBuf::from("/usr/bin/docker"));
-        let mut cmd = Command::new("docker");
-        cmd.env_clear();
-        plugin.restore_discovery_env(&mut cmd);
-        let restored = cmd
-            .get_envs()
-            .any(|(k, v)| k == OsStr::new("DOCKER_CONFIG") && v.is_some());
-        assert_eq!(
-            restored, has_config_dir,
-            "plugin form must restore DOCKER_CONFIG whenever one is resolvable"
-        );
-
-        // Standalone form: an absolute binary needs no plugin discovery, so the
-        // scrubbed environment is left untouched.
-        let standalone = ComposeCli::Standalone(PathBuf::from("/usr/local/bin/docker-compose"));
-        let mut cmd = Command::new("docker-compose");
-        cmd.env_clear();
-        standalone.restore_discovery_env(&mut cmd);
-        assert!(
-            cmd.get_envs().next().is_none(),
-            "standalone form must not reintroduce any environment"
-        );
+        assert_eq!(plugin.to_string(), "docker compose");
     }
 
     #[test]
@@ -2033,25 +1987,5 @@ services:
         assert_eq!(environment["HOME_VALUE"], "");
         assert_eq!(environment["PATH_VALUE"], "");
         assert_eq!(environment["DOCKER_HOST_VALUE"], "");
-    }
-    #[test]
-    fn compose_file_args_no_overlay() {
-        assert_eq!(
-            compose_file_args(None),
-            vec!["-f".to_string(), "docker-compose.yaml".to_string()]
-        );
-    }
-    #[test]
-    fn compose_file_args_with_overlay() {
-        let overlay = PathBuf::from("/tmp/override.yaml");
-        assert_eq!(
-            compose_file_args(Some(&overlay)),
-            vec![
-                "-f".to_string(),
-                "docker-compose.yaml".to_string(),
-                "-f".to_string(),
-                "/tmp/override.yaml".to_string(),
-            ]
-        );
     }
 }

@@ -1579,6 +1579,10 @@ services:
             "fake"
         }
 
+        fn engine_kind(&self) -> &'static str {
+            "fake"
+        }
+
         fn clone_box(&self) -> Box<dyn ContainerRuntime> {
             Box::new(self.clone())
         }

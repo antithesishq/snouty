@@ -58,6 +58,12 @@ pub trait ContainerRuntime: Send + Sync {
     /// The CLI command name (e.g. "podman" or "docker").
     fn name(&self) -> &str;
 
+    /// The underlying engine ("podman" or "docker"), independent of which binary
+    /// invokes it. These diverge only for podman-in-disguise (podman installed
+    /// as the `docker` binary), where [`name`](Self::name) is `"docker"` but the
+    /// engine is really podman.
+    fn engine_kind(&self) -> &'static str;
+
     /// Clone into a boxed trait object.
     fn clone_box(&self) -> Box<dyn ContainerRuntime>;
 
@@ -452,6 +458,10 @@ impl ContainerRuntime for PodmanRuntime {
         &self.cmd
     }
 
+    fn engine_kind(&self) -> &'static str {
+        "podman"
+    }
+
     fn clone_box(&self) -> Box<dyn ContainerRuntime> {
         Box::new(self.clone())
     }
@@ -553,6 +563,10 @@ impl ContainerRuntime for DockerRuntime {
         &self.cmd
     }
 
+    fn engine_kind(&self) -> &'static str {
+        "docker"
+    }
+
     fn remote_manifest(&self, image_ref: &str) -> RemoteManifest {
         remote_manifest_via_cli(&self.cmd, "--insecure", image_ref)
     }
@@ -650,6 +664,26 @@ pub fn runtime(settings: &Settings) -> Result<Box<dyn ContainerRuntime>> {
         }
         Err(e) => Err(eyre!("failed to check docker: {e}")),
     }
+}
+
+/// Tell the user which container engine snouty picked, but only when it was
+/// auto-detected. An explicit `SNOUTY_CONTAINER_ENGINE` / `container_engine`
+/// setting means the user already chose, so there's nothing to announce, and
+/// machine-readable (`json`) output stays silent. Prints to stderr (never
+/// stdout, so it can't contaminate `--json`). The note points at the override
+/// so a surprising pick is easy to fix.
+pub fn announce_auto_detected_engine(settings: &Settings, rt: &dyn ContainerRuntime, json: bool) {
+    if json || settings.container_engine().is_some() {
+        return;
+    }
+    // Report the real engine, not the binary name: for podman-in-disguise the
+    // command is `docker` but the engine is podman.
+    let engine = rt.engine_kind();
+    eprintln!(
+        "Using auto-detected container engine '{engine}'. If that's not what you \
+         expect, select one explicitly with SNOUTY_CONTAINER_ENGINE={engine} (or \
+         `container_engine = \"{engine}\"` in a snouty settings file)."
+    );
 }
 
 /// Return all container runtimes available on this machine.

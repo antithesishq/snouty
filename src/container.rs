@@ -21,6 +21,38 @@ use crate::settings::Settings;
 /// only exists to convert an indefinite hang into a clear error.
 pub const DISCOVERY_COMMAND_TIMEOUT: Duration = Duration::from_secs(60);
 
+/// A container image's CPU architecture, as reported by the runtime.
+///
+/// snouty only cares whether an image is runnable on Antithesis, which is
+/// x86-64 only — so this distinguishes [`Amd64`](Self::Amd64) from everything
+/// else, keeping the raw runtime string for [`Other`](Self::Other) so error
+/// messages can name the offending architecture.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Architecture {
+    /// `amd64` (x86-64) — the only architecture Antithesis runs.
+    Amd64,
+    /// Any other architecture; carries the runtime's raw name for diagnostics.
+    Other(String),
+}
+
+impl From<&str> for Architecture {
+    fn from(arch: &str) -> Self {
+        match arch {
+            "amd64" => Architecture::Amd64,
+            other => Architecture::Other(other.to_string()),
+        }
+    }
+}
+
+impl std::fmt::Display for Architecture {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Architecture::Amd64 => f.write_str("amd64"),
+            Architecture::Other(arch) => f.write_str(arch),
+        }
+    }
+}
+
 /// Trait representing a container runtime (podman or docker).
 pub trait ContainerRuntime: Send + Sync {
     /// The CLI command name (e.g. "podman" or "docker").
@@ -66,7 +98,7 @@ pub trait ContainerRuntime: Send + Sync {
     }
 
     /// Return the local image architecture (for example `amd64` or `arm64`).
-    fn image_architecture(&self, image_ref: &str) -> Result<String> {
+    fn image_architecture(&self, image_ref: &str) -> Result<Architecture> {
         let runtime = self.name();
         let output = Command::new(runtime)
             .args([
@@ -99,7 +131,7 @@ pub trait ContainerRuntime: Send + Sync {
             .with_section(move || stderr.header("Stderr:"));
         }
 
-        Ok(architecture.to_string())
+        Ok(Architecture::from(architecture))
     }
 
     /// Read the `repo@sha256:...` digest references the local store associates
@@ -950,7 +982,12 @@ mod tests {
             let arch = rt
                 .image_architecture(&image_ref)
                 .unwrap_or_else(|e| panic!("{}: {e:?}", rt.name()));
-            assert_eq!(arch, "amd64", "{}: config image must be amd64", rt.name());
+            assert_eq!(
+                arch,
+                Architecture::Amd64,
+                "{}: config image must be amd64",
+                rt.name()
+            );
 
             // Clean up the local image.
             let _ = Command::new(rt.name()).args(["rmi", &image_ref]).output();

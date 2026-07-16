@@ -15,7 +15,7 @@ use color_eyre::{
 
 use crate::config::ComposeConfig;
 use crate::container::{
-    ContainerRuntime, DISCOVERY_COMMAND_TIMEOUT, RemoteManifest, available_engines,
+    Architecture, ContainerRuntime, DISCOVERY_COMMAND_TIMEOUT, RemoteManifest, available_engines,
     digests_for_repo, image_ref_tag, image_repo, is_podman_in_disguise, normalize_repo,
 };
 use crate::process::{ProcessGroupChild, output_with_timeout};
@@ -510,7 +510,7 @@ fn find_remote_pin(rt: &dyn ContainerRuntime, image: &str, prefix: &str) -> Resu
             let amd64_ok = match rt.remote_manifest(&format!("{repo}@{digest}")) {
                 RemoteManifest::NotFound => continue,
                 RemoteManifest::List { has_amd64 } => has_amd64,
-                RemoteManifest::Single => rt.image_architecture(image)? == "amd64",
+                RemoteManifest::Single => rt.image_architecture(image)? == Architecture::Amd64,
             };
             if amd64_ok {
                 return Ok(Some(format!("{repo}:{tag}@{digest}")));
@@ -577,36 +577,10 @@ fn ensure_services_have_images(contents: &ComposeContents) -> Result<()> {
 /// content as building from `config_dir` directly.
 pub fn stage_pinned_config(config_dir: &Path, pinned_yaml: &str) -> Result<tempfile::TempDir> {
     let staged = tempfile::tempdir().wrap_err("failed to create config staging directory")?;
-    copy_dir_recursive(config_dir, staged.path())?;
+    crate::util::copy_dir_recursive(config_dir, staged.path())?;
     std::fs::write(staged.path().join("docker-compose.yaml"), pinned_yaml)
         .wrap_err("failed to write pinned docker-compose.yaml")?;
     Ok(staged)
-}
-/// Recursively copy the contents of `src` into `dst` (which must already exist).
-fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<()> {
-    for entry in
-        std::fs::read_dir(src).wrap_err_with(|| format!("failed to read {}", src.display()))?
-    {
-        let entry = entry.wrap_err_with(|| format!("failed to read entry in {}", src.display()))?;
-        let file_type = entry.file_type().wrap_err("failed to read file type")?;
-        let from = entry.path();
-        let to = dst.join(entry.file_name());
-        if file_type.is_dir() {
-            std::fs::create_dir_all(&to)
-                .wrap_err_with(|| format!("failed to create {}", to.display()))?;
-            copy_dir_recursive(&from, &to)?;
-        } else if file_type.is_symlink() {
-            let target = std::fs::read_link(&from)
-                .wrap_err_with(|| format!("failed to read symlink {}", from.display()))?;
-            std::os::unix::fs::symlink(&target, &to)
-                .wrap_err_with(|| format!("failed to create symlink {}", to.display()))?;
-        } else {
-            std::fs::copy(&from, &to).wrap_err_with(|| {
-                format!("failed to copy {} to {}", from.display(), to.display())
-            })?;
-        }
-    }
-    Ok(())
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ComposeService {
@@ -854,7 +828,7 @@ where
         }
 
         let arch = runtime.image_architecture(image)?;
-        if arch != "amd64" {
+        if arch != Architecture::Amd64 {
             unsupported.push(format!("image '{image}' has architecture '{arch}'"));
         }
     }
@@ -1618,10 +1592,10 @@ services:
             Ok(*self.available_images.get(image_ref).unwrap_or(&false))
         }
 
-        fn image_architecture(&self, image_ref: &str) -> Result<String> {
+        fn image_architecture(&self, image_ref: &str) -> Result<Architecture> {
             self.architectures
                 .get(image_ref)
-                .cloned()
+                .map(|arch| Architecture::from(arch.as_str()))
                 .ok_or_else(|| eyre!("missing fake architecture for {image_ref}"))
         }
 

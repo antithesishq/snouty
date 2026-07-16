@@ -20,6 +20,7 @@ pub mod settings;
 #[doc(hidden)]
 pub mod testutils;
 pub mod time;
+pub mod util;
 pub mod validate;
 
 /// User-Agent string sent with every HTTP request snouty makes.

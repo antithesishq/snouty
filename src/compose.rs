@@ -187,10 +187,20 @@ fn compose_major_version(version: &str) -> Option<u64> {
 /// `None` when neither is set, in which case plugin lookup falls back to the
 /// system directories.
 fn docker_config_dir() -> Option<PathBuf> {
-    if let Some(dir) = std::env::var_os("DOCKER_CONFIG") {
+    docker_config_dir_from(std::env::var_os("DOCKER_CONFIG"), std::env::var_os("HOME"))
+}
+
+/// Pure core of [`docker_config_dir`], split out so it is unit-testable without
+/// mutating the process environment: `$DOCKER_CONFIG` wins, else `$HOME/.docker`,
+/// else `None`.
+fn docker_config_dir_from(
+    docker_config: Option<std::ffi::OsString>,
+    home: Option<std::ffi::OsString>,
+) -> Option<PathBuf> {
+    if let Some(dir) = docker_config {
         return Some(PathBuf::from(dir));
     }
-    std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".docker"))
+    home.map(|home| PathBuf::from(home).join(".docker"))
 }
 /// Drives Docker Compose v2, independent of which runtime built or pushed the
 /// images. Compose is invoked through whichever v2 form is available (see
@@ -243,15 +253,20 @@ impl DockerCompose {
     /// `--keep-running` hint. Uses absolute file paths so it works from any
     /// directory (unlike [`down`](Self::down), which sets the working directory).
     pub fn down_hint(&self, overlay: Option<&Path>) -> String {
+        // Make every path absolute so the printed command is copy-pasteable from
+        // any directory. `config.dir()` (and hence the overlay) is whatever —
+        // often relative — path the user passed to `snouty validate`, so a bare
+        // join would only work from the original working directory.
+        let abs = |p: &Path| std::path::absolute(p).unwrap_or_else(|_| p.to_path_buf());
         let host = self
             .docker_host
             .as_deref()
             .map(|h| format!("DOCKER_HOST={h} "))
             .unwrap_or_default();
-        let compose_file = self.config.dir().join("docker-compose.yaml");
+        let compose_file = abs(&self.config.dir().join("docker-compose.yaml"));
         let mut hint = format!("{host}{} -f {}", self.cli, compose_file.display());
         if let Some(overlay) = overlay {
-            hint.push_str(&format!(" -f {}", overlay.display()));
+            hint.push_str(&format!(" -f {}", abs(overlay).display()));
         }
         hint.push_str(" down");
         hint
@@ -1903,6 +1918,25 @@ services:
         assert_eq!(compose_major_version("1.29.2"), Some(1)); // Compose v1
         assert_eq!(compose_major_version(""), None);
         assert_eq!(compose_major_version("garbage"), None);
+    }
+    #[test]
+    fn docker_config_dir_prefers_explicit_then_home() {
+        use std::ffi::OsString;
+        // DOCKER_CONFIG wins outright.
+        assert_eq!(
+            docker_config_dir_from(
+                Some(OsString::from("/custom/cfg")),
+                Some(OsString::from("/h"))
+            ),
+            Some(PathBuf::from("/custom/cfg"))
+        );
+        // Otherwise fall back to $HOME/.docker.
+        assert_eq!(
+            docker_config_dir_from(None, Some(OsString::from("/home/u"))),
+            Some(PathBuf::from("/home/u/.docker"))
+        );
+        // Neither set -> None (lookup falls back to the system plugin dirs).
+        assert_eq!(docker_config_dir_from(None, None), None);
     }
     #[test]
     fn compose_form_display_standalone_and_plugin() {

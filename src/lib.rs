@@ -2,6 +2,7 @@ mod api_cache;
 
 pub mod api;
 pub mod cli;
+pub mod compose;
 pub mod config;
 pub mod container;
 pub mod docs;
@@ -10,6 +11,7 @@ pub(crate) mod env;
 pub mod error;
 pub mod moment;
 pub mod params;
+pub mod process;
 pub(crate) mod render;
 pub mod runs;
 pub mod scripts;
@@ -18,6 +20,7 @@ pub mod settings;
 #[doc(hidden)]
 pub mod testutils;
 pub mod time;
+pub mod util;
 pub mod validate;
 
 /// User-Agent string sent with every HTTP request snouty makes.

@@ -12,6 +12,7 @@ use serde_json::Value;
 use tokio::time::{Duration, sleep};
 
 use crate::cli::ValidateArgs;
+use crate::compose;
 use crate::config::{self, ComposeConfig, Config, KubernetesConfig};
 use crate::container;
 use crate::error::user_error;
@@ -45,7 +46,7 @@ struct SetupStatus {
 /// `contents` should be the parsed output of `compose.contents()`.
 /// Returns the path to the generated override file.
 fn generate_setup_override(
-    contents: &container::ComposeContents,
+    contents: &compose::ComposeContents,
     temp_dir: &Path,
 ) -> Result<PathBuf> {
     if contents.services.is_empty() {
@@ -158,14 +159,13 @@ fn mkdir_or_require_empty(path: &Path) -> Result<()> {
 }
 
 struct ComposeDownGuard<'a> {
-    compose: &'a container::DockerCompose<'a>,
-    config: &'a ComposeConfig,
+    compose: &'a compose::DockerCompose,
     overlay: Option<&'a Path>,
 }
 
 impl Drop for ComposeDownGuard<'_> {
     fn drop(&mut self) {
-        self.compose.down(self.config, self.overlay);
+        self.compose.down(self.overlay);
     }
 }
 
@@ -229,37 +229,29 @@ async fn validate_compose(
     allow_compose_divergence: bool,
     temp_dir: &Path,
 ) -> Result<()> {
-    let compose = container::docker_compose(rt)?;
-    check_compose_divergence(&compose, &config, allow_compose_divergence)?;
-    let contents = compose.contents(&config, None)?;
-    container::validate_images_are_available(rt, &contents)?;
+    let compose = compose::DockerCompose::resolve(rt, config)?;
+    check_compose_divergence(&compose, allow_compose_divergence)?;
+    let contents = compose.contents(None)?;
+    compose::validate_images_are_available(rt, &contents)?;
     let override_path = generate_setup_override(&contents, temp_dir)?;
     let overlay = Some(override_path.as_path());
 
     if keep_running {
-        let docker_host_prefix = compose
-            .docker_host()
-            .map(|h| format!("DOCKER_HOST={h} "))
-            .unwrap_or_default();
         eprintln!(
-            "Note: --keep-running is set. When done, bring containers down with:\n  \
-             {}docker-compose -f {}/docker-compose.yaml -f {} down\n",
-            docker_host_prefix,
-            config.dir().display(),
-            override_path.display(),
+            "Note: --keep-running is set. When done, bring containers down with:\n  {}\n",
+            compose.down_hint(overlay),
         );
     }
 
     let up_deadline = tokio::time::Instant::now() + Duration::from_secs(timeout);
 
     eprintln!("Starting compose services...");
-    let mut up_child = compose.up_detached(&config, overlay)?;
+    let mut up_child = compose.up_detached(overlay)?;
     let _guard = if keep_running {
         None
     } else {
         Some(ComposeDownGuard {
             compose: &compose,
-            config: &config,
             overlay,
         })
     };
@@ -284,14 +276,14 @@ async fn validate_compose(
 
     // Discover scripts early so we can use them for both the success path
     // and the timeout diagnostic.
-    let scripts = discover_scripts(&compose, &config, overlay, temp_dir)?;
+    let scripts = discover_scripts(rt, &compose, overlay, temp_dir)?;
 
     // Reset the budget now that containers are up. `--timeout` bounds how long
     // we wait for the setup-complete event; slow container startup (e.g. several
     // services, or a slow engine like podman-on-macOS) shouldn't eat into it.
     let deadline = tokio::time::Instant::now() + Duration::from_secs(timeout);
 
-    let mut logs_child = compose.logs_follow(&config, overlay)?;
+    let mut logs_child = compose.logs_follow(overlay)?;
 
     let sdk_output_dir = temp_dir.join("antithesis");
 
@@ -348,7 +340,7 @@ config image) or give the reference an inline default (e.g. ${VAR:-default}).";
 ///
 /// We catch it by rendering the compose file twice — once with the normal
 /// environment, once under a scrubbed one that mimics Antithesis (see
-/// [`container::DockerCompose::config_json_hermetic_env`]) — and comparing the
+/// [`compose::DockerCompose::config_json_hermetic_env`]) — and comparing the
 /// complete models. Any field that differs is a value that exists only because
 /// of the local shell. Compose does all the interpolation, `.env`, and default
 /// work in both renders, so we never re-derive any of it. An inline default
@@ -357,16 +349,15 @@ config image) or give the reference an inline default (e.g. ${VAR:-default}).";
 /// renders differ and we flag it, which is correct: Antithesis would fall back
 /// to the default while the local run silently used the shell value.
 fn check_compose_divergence(
-    compose: &container::DockerCompose,
-    config: &ComposeConfig,
+    compose: &compose::DockerCompose,
     allow_compose_divergence: bool,
 ) -> Result<()> {
     // A failing local render is not an environment problem (e.g. a malformed
     // compose file); let contents() surface it next with its canonical error.
-    let Ok(local) = compose.config_json(config) else {
+    let Ok(local) = compose.config_json() else {
         return Ok(());
     };
-    let hermetic = compose.config_json_hermetic_env(config)?;
+    let hermetic = compose.config_json_hermetic_env()?;
 
     let detail = if hermetic.status.success() {
         let local: Value = serde_json::from_str(&local)
@@ -487,7 +478,7 @@ async fn validate_kubernetes(
     let runtime_name = rt.name();
     let mut child = cmd
         .spawn()
-        .map(container::ProcessGroupChild::new)
+        .map(crate::process::ProcessGroupChild::new)
         .wrap_err_with(|| format!("failed to start '{runtime_name} run' for k8s-validator"))?;
 
     tokio::select! {
@@ -557,12 +548,12 @@ fn contains_setup_complete(reader: &mut (impl std::io::Read + std::io::Seek)) ->
 /// moves on. Only if every container failed (and no scripts were collected)
 /// does the function surface a combined error.
 fn discover_scripts(
-    compose: &container::DockerCompose,
-    config: &ComposeConfig,
+    rt: &dyn container::ContainerRuntime,
+    compose: &compose::DockerCompose,
     overlay: Option<&Path>,
     temp_dir: &Path,
 ) -> Result<Vec<TestScript>> {
-    let containers = compose.ps(config, overlay)?;
+    let containers = compose.ps(overlay)?;
 
     let scripts_dir = temp_dir.join("scripts");
     std::fs::create_dir_all(&scripts_dir).wrap_err("failed to create scripts directory")?;
@@ -583,21 +574,18 @@ fn discover_scripts(
         // disk. Short the id for readable warnings.
         let short_id: String = container.id.chars().take(12).collect();
         let service_dir = scripts_dir.join(format!("{service_name}-{short_id}"));
-        let templates = match compose.runtime().extract_test_templates(
-            &container.id,
-            &service_dir,
-            !container.stopped,
-        ) {
-            Ok(t) => t,
-            Err(e) => {
-                warn!(
-                    "extracting test commands from service '{service_name}' \
+        let templates =
+            match rt.extract_test_templates(&container.id, &service_dir, !container.stopped) {
+                Ok(t) => t,
+                Err(e) => {
+                    warn!(
+                        "extracting test commands from service '{service_name}' \
                      (container {short_id}) failed; continuing without it: {e}"
-                );
-                cp_failures.insert(format!("{service_name} ({short_id})"), e);
-                continue;
-            }
-        };
+                    );
+                    cp_failures.insert(format!("{service_name} ({short_id})"), e);
+                    continue;
+                }
+            };
 
         if matches!(templates, container::TestTemplates::Absent) {
             info!("No test commands in service '{service_name}' (container {short_id})");
@@ -919,7 +907,7 @@ services:
   sidecar:
     image: sidecar:latest
 ";
-        let contents = container::parse_compose_config(compose_yaml).unwrap();
+        let contents = compose::parse_compose_config(compose_yaml).unwrap();
         let dir = tempfile::tempdir().unwrap();
         let path = generate_setup_override(&contents, dir.path()).unwrap();
         let content = std::fs::read_to_string(&path).unwrap();
@@ -1007,7 +995,7 @@ networks:
   frontend:
     driver: bridge
 ";
-        let contents = container::parse_compose_config(compose_yaml).unwrap();
+        let contents = compose::parse_compose_config(compose_yaml).unwrap();
         let dir = tempfile::tempdir().unwrap();
         let path = generate_setup_override(&contents, dir.path()).unwrap();
         let content = std::fs::read_to_string(&path).unwrap();
@@ -1040,7 +1028,7 @@ services:
   \"a: b\":
     image: myapp:latest
 ";
-        let contents = container::parse_compose_config(compose_yaml).unwrap();
+        let contents = compose::parse_compose_config(compose_yaml).unwrap();
         let dir = tempfile::tempdir().unwrap();
         let path = generate_setup_override(&contents, dir.path()).unwrap();
         let content = std::fs::read_to_string(&path).unwrap();
@@ -1053,7 +1041,7 @@ services:
 
     #[test]
     fn generate_setup_override_no_services() {
-        let contents = container::parse_compose_config("version: '3'\n").unwrap();
+        let contents = compose::parse_compose_config("version: '3'\n").unwrap();
         let dir = tempfile::tempdir().unwrap();
         let err = generate_setup_override(&contents, dir.path()).unwrap_err();
         assert!(err.to_string().contains("no services"), "got: {err}");

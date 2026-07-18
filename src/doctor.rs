@@ -2,6 +2,7 @@ use color_eyre::eyre::Result;
 use serde::Serialize;
 
 use crate::api::{AntithesisApi, ApiVersion, VersionError};
+use crate::compose;
 use crate::container;
 use crate::env;
 use crate::render::render_kv;
@@ -236,11 +237,14 @@ fn auth_checks(api_key: bool, username: bool, password: bool) -> Vec<Check> {
 fn collect_checks(settings: &Settings) -> Vec<Check> {
     let mut checks: Vec<Check> = Vec::new();
 
-    // Container runtime (for building/pushing images)
+    // Container runtime (for building/pushing images). Report the real engine
+    // (engine_kind), not the invoking binary (name): for podman-in-disguise the
+    // command is `docker` but the engine is podman — and this must agree with
+    // the engine `launch`/`validate` announce, which also uses engine_kind.
     match container::runtime(settings) {
         Ok(rt) => checks.push(Check::ok(
             "container_runtime",
-            format!("Container runtime: {} detected", rt.name()),
+            format!("Container runtime: {} detected", rt.engine_kind()),
         )),
         Err(e) => checks.push(
             Check::fail("container_runtime", "Container runtime not detected")
@@ -248,11 +252,15 @@ fn collect_checks(settings: &Settings) -> Vec<Check> {
         ),
     }
 
-    // Docker Compose v2 (required for compose configs)
-    match container::docker_compose_version() {
-        Ok(version) => checks.push(Check::ok("docker_compose", version)),
+    // Docker Compose v2 (required for compose configs). Resolves the standalone
+    // `docker-compose` binary or the `docker compose` CLI plugin, and reports
+    // which one was picked.
+    match compose::DockerCompose::probe() {
+        Ok((name, version)) => {
+            checks.push(Check::ok("docker_compose", format!("{name}: {version}")))
+        }
         Err(e) => checks.push(
-            Check::fail("docker_compose", "docker-compose not available")
+            Check::fail("docker_compose", "Docker Compose v2 not available")
                 .note(Level::Error, e.to_string()),
         ),
     }

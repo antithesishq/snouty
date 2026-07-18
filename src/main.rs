@@ -10,6 +10,7 @@ use color_eyre::eyre::{Context, Result};
 use semver::Version;
 use snouty::api::AntithesisApi;
 use snouty::cli::{Cli, Commands, DebugArgs, LaunchArgs, UpdateArgs};
+use snouty::compose;
 use snouty::config;
 use snouty::container;
 use snouty::docs;
@@ -249,9 +250,9 @@ async fn cmd_launch(
         // platform pulls them itself.
         let pinned_config = match &detected {
             config::Config::Compose(compose_config) => {
-                let compose = container::docker_compose(rt.as_ref())?;
-                let pinned_yaml = compose.pin_images(compose_config, &registry)?;
-                let staged = container::stage_pinned_config(compose_config.dir(), &pinned_yaml)?;
+                let compose = compose::DockerCompose::resolve(rt.as_ref(), compose_config.clone())?;
+                let pinned_yaml = compose.pin_images(rt.as_ref(), &registry)?;
+                let staged = compose::stage_pinned_config(compose_config.dir(), &pinned_yaml)?;
                 rt.build_and_push_config_image(staged.path(), &config_image)?
             }
             config::Config::Kubernetes(_) => {

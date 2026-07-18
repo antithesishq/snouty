@@ -160,14 +160,10 @@ pub fn skip_or_fail(msg: &str) {
     eprintln!("skipping: {msg}");
 }
 
-/// Check whether the `docker-compose` binary (Docker Compose v2) is available.
+/// Check whether Docker Compose v2 is available (the standalone
+/// `docker-compose` binary or the `docker compose` CLI plugin).
 pub fn has_compose() -> bool {
-    Command::new("docker-compose")
-        .arg("version")
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .is_ok_and(|s| s.success())
+    crate::compose::DockerCompose::probe().is_ok()
 }
 
 /// Return available runtimes, or skip/fail if none are found.

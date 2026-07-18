@@ -21,7 +21,10 @@ be subject to extra review.
 
 ## Tests
 
-Internal functions must be accompanied by unit tests.
+Internal functions should be accompanied by unit tests. For small, simple
+functions (e.g. trivial env/string/path plumbing) this is a judgement call —
+skip the test when it would add more indirection or complexity than the coverage
+is worth.
 
 ## Checks and lints
 

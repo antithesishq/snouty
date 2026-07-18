@@ -29,20 +29,81 @@ use crate::process::{ProcessGroupChild, output_with_timeout};
 /// invocation. The wrapped path is always absolute so the command survives the
 /// `env_clear()` in the hermetic render, where `PATH` is gone.
 #[derive(Clone, Debug)]
-enum ComposeCli {
+enum ComposeForm {
     /// The standalone `docker-compose` binary; the path is `docker-compose`.
     Standalone(PathBuf),
     /// The `docker compose` CLI plugin; the path is the `docker` binary.
     Plugin(PathBuf),
 }
 
-impl std::fmt::Display for ComposeCli {
+impl std::fmt::Display for ComposeForm {
     /// The invocation as a user would type it, for user-facing hints and errors.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
-            ComposeCli::Standalone(_) => "docker-compose",
-            ComposeCli::Plugin(_) => "docker compose",
+            ComposeForm::Standalone(_) => "docker-compose",
+            ComposeForm::Plugin(_) => "docker compose",
         })
+    }
+}
+
+impl ComposeForm {
+    /// A fresh [`Command`] for this invocation, positioned so callers append
+    /// only the compose subcommand and its arguments. The program (and the
+    /// plugin's leading `compose`) are fixed by the variant and can't be
+    /// clobbered by later `args`.
+    fn command(&self) -> Command {
+        match self {
+            ComposeForm::Standalone(program) => Command::new(program),
+            ComposeForm::Plugin(program) => {
+                let mut cmd = Command::new(program);
+                cmd.arg("compose");
+                cmd
+            }
+        }
+    }
+
+    /// Run `<form> version --short` and, if it is Docker Compose v2 or newer,
+    /// return the reported version; otherwise a clear error. This is the only
+    /// place compose is version-probed — [`ComposeCli`] captures the result so
+    /// nothing has to spawn `version` again.
+    fn detect_v2(&self) -> Result<String> {
+        let mut cmd = self.command();
+        cmd.args(["version", "--short"]);
+        let output = cmd
+            .output()
+            .wrap_err_with(|| format!("failed to run `{self} version`"))?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(eyre!("`{self} version` failed"))
+                .with_section(move || stderr.trim().to_string().header("Stderr:"));
+        }
+        let version = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        match compose_major_version(&version) {
+            Some(major) if major >= 2 => Ok(version),
+            _ => Err(eyre!(
+                "`{self}` is Docker Compose {version}, but snouty requires v2"
+            ))
+            .with_suggestion(
+                || "install Docker Compose v2: https://docs.docker.com/compose/install/",
+            ),
+        }
+    }
+}
+
+/// A resolved Docker Compose v2 invocation and the version it reports.
+///
+/// [`resolve`](Self::resolve) both confirms v2 and captures the version in one
+/// `version --short` call, so [`version`](Self::version) is a cheap accessor
+/// rather than another subprocess.
+#[derive(Clone, Debug)]
+struct ComposeCli {
+    form: ComposeForm,
+    version: String,
+}
+
+impl std::fmt::Display for ComposeCli {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.form.fmt(f)
     }
 }
 
@@ -58,9 +119,9 @@ impl ComposeCli {
     fn resolve() -> Result<ComposeCli> {
         // 1. Standalone docker-compose, when it's really v2.
         if let Ok(program) = which::which("docker-compose") {
-            let candidate = ComposeCli::Standalone(program);
-            match candidate.require_v2() {
-                Ok(()) => return Ok(candidate),
+            let form = ComposeForm::Standalone(program);
+            match form.detect_v2() {
+                Ok(version) => return Ok(ComposeCli { form, version }),
                 // Present but not v2 (likely Compose v1). Prefer the docker
                 // plugin if it's usable; only surface the v1 error if not.
                 Err(standalone_err) => return Self::plugin().or(Err(standalone_err)),
@@ -91,56 +152,20 @@ impl ComposeCli {
         if is_podman_in_disguise("docker") {
             bail!("`docker` is podman in disguise; its `compose` is not Docker Compose v2");
         }
-        let candidate = ComposeCli::Plugin(program);
-        candidate.require_v2()?;
-        Ok(candidate)
+        let form = ComposeForm::Plugin(program);
+        let version = form.detect_v2()?;
+        Ok(ComposeCli { form, version })
     }
 
-    /// A fresh [`Command`] for this invocation, positioned so callers append
-    /// only the compose subcommand and its arguments. The program (and the
-    /// plugin's leading `compose`) are fixed by the variant and can't be
-    /// clobbered by later `args`.
+    /// A fresh [`Command`] for this invocation; see [`ComposeForm::command`].
     fn command(&self) -> Command {
-        match self {
-            ComposeCli::Standalone(program) => Command::new(program),
-            ComposeCli::Plugin(program) => {
-                let mut cmd = Command::new(program);
-                cmd.arg("compose");
-                cmd
-            }
-        }
+        self.form.command()
     }
 
-    /// The Compose version this invocation reports (e.g. `2.40.3`), via
-    /// `version --short`. Pure detection — it does not judge whether the version
-    /// is acceptable; that's [`require_v2`](Self::require_v2)'s call.
-    fn version(&self) -> Result<String> {
-        let mut cmd = self.command();
-        cmd.args(["version", "--short"]);
-        let output = cmd
-            .output()
-            .wrap_err_with(|| format!("failed to run `{self} version`"))?;
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(eyre!("`{self} version` failed"))
-                .with_section(move || stderr.trim().to_string().header("Stderr:"));
-        }
-        Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
-    }
-
-    /// Confirm this invocation is Docker Compose v2 or newer, erroring otherwise
-    /// — snouty relies on v2-only compose features.
-    fn require_v2(&self) -> Result<()> {
-        let version = self.version()?;
-        match compose_major_version(&version) {
-            Some(major) if major >= 2 => Ok(()),
-            _ => Err(eyre!(
-                "`{self}` is Docker Compose {version}, but snouty requires v2"
-            ))
-            .with_suggestion(
-                || "install Docker Compose v2: https://docs.docker.com/compose/install/",
-            ),
-        }
+    /// The Compose version captured during [`resolve`](Self::resolve) (e.g.
+    /// `2.40.3`). No subprocess — it was recorded when v2 was confirmed.
+    fn version(&self) -> &str {
+        &self.version
     }
 }
 
@@ -210,8 +235,7 @@ impl DockerCompose {
     /// command name (`docker-compose` / `docker compose`) and version banner.
     pub fn probe() -> Result<(String, String)> {
         let cli = ComposeCli::resolve()?;
-        let version = cli.version()?;
-        Ok((cli.to_string(), version))
+        Ok((cli.to_string(), cli.version().to_string()))
     }
 
     /// A copy-pasteable `... down` command that reproduces what [`down`](Self::down)
@@ -328,7 +352,7 @@ impl DockerCompose {
         // only — docker machinery, not a value users interpolate into compose
         // files — so a user-directory plugin install (e.g. Docker Desktop) stays
         // discoverable without reintroducing $HOME as a `${VAR}` source.
-        if let ComposeCli::Plugin(_) = self.cli
+        if let ComposeForm::Plugin(_) = self.cli.form
             && let Some(config_dir) = docker_config_dir()
         {
             cmd.env("DOCKER_CONFIG", config_dir);
@@ -1881,11 +1905,11 @@ services:
         assert_eq!(compose_major_version("garbage"), None);
     }
     #[test]
-    fn compose_cli_display_standalone_and_plugin() {
-        let standalone = ComposeCli::Standalone(PathBuf::from("/usr/local/bin/docker-compose"));
+    fn compose_form_display_standalone_and_plugin() {
+        let standalone = ComposeForm::Standalone(PathBuf::from("/usr/local/bin/docker-compose"));
         assert_eq!(standalone.to_string(), "docker-compose");
 
-        let plugin = ComposeCli::Plugin(PathBuf::from("/usr/bin/docker"));
+        let plugin = ComposeForm::Plugin(PathBuf::from("/usr/bin/docker"));
         assert_eq!(plugin.to_string(), "docker compose");
     }
 
@@ -1900,7 +1924,10 @@ services:
 
         // Plugin form, an engine override, and an overlay all appear.
         let compose = DockerCompose {
-            cli: ComposeCli::Plugin(PathBuf::from("/usr/bin/docker")),
+            cli: ComposeCli {
+                form: ComposeForm::Plugin(PathBuf::from("/usr/bin/docker")),
+                version: "2.40.3".to_string(),
+            },
             docker_host: Some("unix:///run/podman.sock".to_string()),
             config: config.clone(),
         };
@@ -1915,7 +1942,10 @@ services:
 
         // Standalone, no engine override, no overlay.
         let compose = DockerCompose {
-            cli: ComposeCli::Standalone(PathBuf::from("/usr/local/bin/docker-compose")),
+            cli: ComposeCli {
+                form: ComposeForm::Standalone(PathBuf::from("/usr/local/bin/docker-compose")),
+                version: "2.40.3".to_string(),
+            },
             docker_host: None,
             config,
         };

@@ -34,6 +34,13 @@ file ~/.config/snouty/settings.toml 'repository = "myrepo"'
 file ~/.config/snouty/credentials.toml '\[default\]'
 file ~/.config/snouty/credentials.toml 'type = "ApiKey"'
 file ~/.config/snouty/credentials.toml 'api_key = "sk-test-key"'
+# On success it confirms what was saved, where, and the next step (so a
+# successful login is never silent). (Patterns need a regex metachar — here `.`,
+# which also matches the literal backticks — or testscript does an exact
+# whole-output match instead of a search.)
+stdout 'Saved tenant .mytenant. and repository .myrepo. to .*settings\.toml'
+stdout 'Stored your API key in .*credentials\.toml'
+stdout 'Run .snouty doctor. to verify'
 
 # 2. A second login (same $HOME) reads the values persisted by step 1 and offers
 #    them back as the default. Leaving the API key blank reuses the stored key —
@@ -75,6 +82,8 @@ isolate-home profile
 stdin login_profile.txt
 snouty --profile prod login
 ! stdout 'Hit enter to use the previous value'
+# The success summary names the profile scope.
+stdout 'under profile .prod.'
 stdin login_profile_reuse.txt
 snouty --profile prod login
 stdout '\(Hit enter to use the previous value of \[ptenant2\]\)'

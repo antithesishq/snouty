@@ -254,13 +254,15 @@ impl Settings {
     }
 }
 
+/// Writes the given fields into the global `settings.toml`, returning the path it
+/// wrote so callers (e.g. `snouty login`) can tell the user where it landed.
 pub(crate) fn update_settings_in_global_file(
     tenant: Option<String>,
     repository: Option<String>,
     base_url: Option<String>,
     container_engine: Option<String>,
     profile_to_update: Option<&str>,
-) -> Result<()> {
+) -> Result<PathBuf> {
     let settings_dir = global_settings_dir().ok_or_eyre("Could not determine global settings directory. Ensure either $XDG_CONFIG_HOME or $HOME is set.")?;
     let path = settings_dir.join(GLOBAL_SETTINGS_FILENAME);
     let mut contents = match read_to_string_if_file_exists(&path)? {
@@ -311,7 +313,7 @@ pub(crate) fn update_settings_in_global_file(
 
     temp.persist(&path)?;
 
-    Ok(())
+    Ok(path)
 }
 
 fn entry_as_table_mut<'a>(table: &'a mut Table, key: &str) -> &'a mut Table {

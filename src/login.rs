@@ -1,10 +1,11 @@
 use std::io::{self, IsTerminal, Write};
+use std::path::Path;
 
 use color_eyre::eyre::{Context, Result, eyre};
 
 use crate::{
     attributed_value::AttributedValue,
-    auth::{AuthenticationInfo, PersistableCredentials, persist},
+    auth::{AuthenticationInfo, CredentialStorage, PersistableCredentials, persist},
     env,
     settings::{
         ANTITHESIS_PROFILE_ENV_VAR_NAME, Settings, update_settings_in_global_file,
@@ -64,19 +65,73 @@ pub fn cmd_login(
         )?,
     };
 
-    if let Some(credentials) = prompt_for_auth(profile_to_use.as_deref())? {
-        persist(credentials, profile_to_use.as_deref())?;
-    }
+    // Capture the credential kind and where it was stored so the summary can name
+    // both; `None` when the user chose to skip credential setup.
+    let credential_summary = match prompt_for_auth(profile_to_use.as_deref())? {
+        Some(credentials) => {
+            let kind = match &credentials {
+                PersistableCredentials::ApiKey { .. } => "API key",
+                PersistableCredentials::Password { .. } => "username and password",
+            };
+            Some((kind, persist(credentials, profile_to_use.as_deref())?))
+        }
+        None => None,
+    };
 
-    update_settings_in_global_file(
-        Some(tenant_to_use),
-        Some(repository_to_use),
+    let settings_path = update_settings_in_global_file(
+        Some(tenant_to_use.clone()),
+        Some(repository_to_use.clone()),
         None,
         None,
         profile_to_use.as_deref(),
     )?;
 
+    print_login_summary(
+        &tenant_to_use,
+        &repository_to_use,
+        profile_to_use.as_deref(),
+        &settings_path,
+        credential_summary,
+    );
+
     Ok(())
+}
+
+/// Confirm what `snouty login` persisted, where, and the obvious next step —
+/// otherwise a successful login exits silently, leaving the user unsure it took.
+fn print_login_summary(
+    tenant: &str,
+    repository: &str,
+    profile: Option<&str>,
+    settings_path: &Path,
+    credentials: Option<(&str, CredentialStorage)>,
+) {
+    let scope = match profile {
+        Some(p) => format!(" under profile `{p}`"),
+        None => String::new(),
+    };
+    // Only mention what was actually recorded: a blank repository is intentionally
+    // not persisted (see `insert_key_if_non_empty` in settings.rs), so don't claim
+    // we saved one.
+    let mut saved = format!("tenant `{tenant}`");
+    if !repository.is_empty() {
+        saved.push_str(&format!(" and repository `{repository}`"));
+    }
+    println!("\nSaved {saved}{scope} to {}.", settings_path.display());
+    match credentials {
+        Some((kind, CredentialStorage::Keychain)) => {
+            println!("Stored your {kind}{scope} in the system keychain.");
+        }
+        Some((kind, CredentialStorage::File(path))) => {
+            println!("Stored your {kind}{scope} in {}.", path.display());
+        }
+        None => {
+            println!(
+                "Skipped credential storage — snouty will use the ANTITHESIS_API_KEY or ANTITHESIS_USERNAME/PASSWORD environment variables."
+            );
+        }
+    }
+    println!("Run `snouty doctor` to verify your setup.");
 }
 
 fn prompt_for_value(value_name: &str, previous_value: Option<&str>) -> Result<String> {

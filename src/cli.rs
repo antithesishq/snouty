@@ -37,7 +37,7 @@ pub struct Cli {
     pub settings: Option<std::path::PathBuf>,
 
     /// Settings profile to select (overrides ANTITHESIS_PROFILE)
-    #[arg(long, global = true, display_order = 1003)]
+    #[arg(long, global = true, value_parser = validate_non_empty, display_order = 1003)]
     pub profile: Option<String>,
 
     #[command(subcommand)]
@@ -264,12 +264,20 @@ Examples:
   snouty login --tenant "mytenant" --repository "repository"
   snouty login --profile "profile""#)]
     Login {
-        #[arg(long)]
+        #[arg(long, value_parser = validate_non_empty)]
         tenant: Option<String>,
 
-        #[arg(long)]
+        #[arg(long, value_parser = validate_non_empty)]
         repository: Option<String>,
     },
+}
+
+fn validate_non_empty(value: &str) -> Result<String, String> {
+    if value.trim().is_empty() {
+        Err("Value may not be empty or whitespace".to_owned())
+    } else {
+        Ok(value.to_owned())
+    }
 }
 
 #[derive(Subcommand)]

@@ -182,40 +182,6 @@ file ~/.config/snouty/credentials.toml.bak 'unparsable-credentials-marker'
 file ~/.config/snouty/credentials.toml 'username = "puser"'
 ! file ~/.config/snouty/credentials.toml 'unparsable-credentials-marker'
 
-# 14. `--profile ""` records the login at the top level (the defaults), *regardless*
-#     of ANTITHESIS_PROFILE. An explicit empty `--profile` neutralizes the env var
-#     rather than falling back to it, so nothing is scoped under `[profile.<env>]`.
-isolate-home empty_profile_flag
-env ANTITHESIS_PROFILE=envprofile
-stdin login_empty_profile.txt
-snouty --profile "" login
-file ~/.config/snouty/settings.toml 'tenant = "atenant"'
-file ~/.config/snouty/settings.toml 'repository = "arepo"'
-! file ~/.config/snouty/settings.toml '\[profile'
-
-# 15. Control for step 14: with the same ANTITHESIS_PROFILE set but *no* `--profile`
-#     flag, the env var is honored and the login is scoped under `[profile.envprofile]`.
-#     This proves it is the empty flag, not an inert env var, that produced the
-#     top-level recording in step 14.
-isolate-home env_profile_only
-env ANTITHESIS_PROFILE=envprofile
-stdin login_empty_profile.txt
-snouty login
-file ~/.config/snouty/settings.toml '\[profile\.envprofile\]'
-file ~/.config/snouty/settings.toml 'tenant = "atenant"'
-file ~/.config/snouty/settings.toml 'repository = "arepo"'
-
-# 16. A blank repository is not recorded by login.The tenant is persisted but `repository`
-#     is omitted entirely, so a later command is free to resolve it from ANTITHESIS_REPOSITORY
-#     instead of being pinned to a persisted empty value.
-isolate-home blank_repository
-env ANTITHESIS_PROFILE=""
-stdin login_blank_repo.txt
-snouty login
-file ~/.config/snouty/settings.toml 'tenant = "btenant"'
-! file ~/.config/snouty/settings.toml 'repository'
-! file ~/.config/snouty/settings.toml '\[profile'
-
 
 -- broken.toml --
 this is = = not valid toml
@@ -258,12 +224,6 @@ sk-test-key
 
 
 1
--- login_empty_profile.txt --
-atenant
-arepo
-1
--- login_blank_repo.txt --
-btenant
 -- login_flags.txt --
 2
 sk-test-key

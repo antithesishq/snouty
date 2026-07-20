@@ -274,8 +274,11 @@ fn prompt_for_username_password(
     previous_username: Option<&str>,
     previous_password: Option<&str>,
 ) -> Result<PersistableCredentials> {
-    Ok(PersistableCredentials::Password {
-        username: prompt_for_value("username", previous_username)?,
-        password: prompt_for_sensitive_value("password", previous_password)?,
-    })
+    let username = prompt_for_value("username", previous_username)?;
+    if username.is_empty() {
+        return Err(eyre!("Username cannot be empty"));
+    }
+    let password = prompt_for_sensitive_value("password", previous_password)?;
+
+    Ok(PersistableCredentials::Password { username, password })
 }

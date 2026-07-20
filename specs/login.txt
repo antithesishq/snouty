@@ -199,6 +199,17 @@ stderr '.*Value may not be empty or whitespace.*'
 ! snouty --profile "" login
 stderr '.*Value may not be empty or whitespace.*'
 
+# 17. A blank username is rejected too, but — unlike the flag checks above — this
+#     failure is raised later, during the interactive credential prompts, not by a
+#     clap value parser. Selecting option 3 (username/password) and leaving the
+#     username blank aborts the login. The fixture supplies only up to the "3"
+#     choice; stdin then hits EOF, which `read_line` reports as an empty line —
+#     the same as hitting enter at the username prompt with no stored default.
+isolate-home blank_username
+stdin login_blank_username.txt
+! snouty login
+stderr '.*sername cannot be empty.*'
+
 
 -- broken.toml --
 this is = = not valid toml
@@ -250,6 +261,10 @@ prepo
 3
 puser
 ppass
+-- login_blank_username.txt --
+btenant
+brepo
+3
 -- login_profile.txt --
 ptenant2
 prepo2

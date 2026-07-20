@@ -372,11 +372,21 @@ pub fn initialize_credential_store() -> Result<()> {
     Ok(())
 }
 
-pub(crate) fn persist(credentials: PersistableCredentials, profile: Option<&str>) -> Result<()> {
+/// Where [`persist`] stored the credentials, so `snouty login` can tell the user
+/// exactly where they landed.
+pub(crate) enum CredentialStorage {
+    Keychain,
+    File(PathBuf),
+}
+
+pub(crate) fn persist(
+    credentials: PersistableCredentials,
+    profile: Option<&str>,
+) -> Result<CredentialStorage> {
     match try_persist_to_keychain(&credentials, profile) {
         Err(err) => Err(err),
-        Ok(Some(())) => Ok(()),
-        Ok(None) => persist_to_file(credentials, profile),
+        Ok(Some(())) => Ok(CredentialStorage::Keychain),
+        Ok(None) => persist_to_file(credentials, profile).map(CredentialStorage::File),
     }
 }
 
@@ -435,7 +445,7 @@ fn clear_from_file_if_present(profile: Option<&str>) {
     }
 }
 
-fn persist_to_file(credentials: PersistableCredentials, profile: Option<&str>) -> Result<()> {
+fn persist_to_file(credentials: PersistableCredentials, profile: Option<&str>) -> Result<PathBuf> {
     let (settings_dir, path) = try_get_credentials_file_path().ok_or_eyre(
         "Could not determine settings directory. Please ensure $XDG_CONFIG_HOME or $HOME is set",
     )?;
@@ -481,7 +491,7 @@ fn persist_to_file(credentials: PersistableCredentials, profile: Option<&str>) -
 
     temp.persist(&path)?;
 
-    Ok(())
+    Ok(path)
 }
 
 fn parse_credentials_file_toml(contents: String, path: &Path) -> Result<CredentialsFile> {

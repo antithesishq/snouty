@@ -71,6 +71,31 @@ _Automated check: PASS|FAIL — <detail>_
 (Help stories show an `Exit code:` line under each command block — the `--help`,
 the default output, and every variant.)
 
+**Interactive / stateful stories** (the `login-*` slugs) have a different shape.
+`snouty login` reads answers from stdin and *writes files*, so instead of a
+single output block these stories show:
+
+```
+## Transcript
+```shell
+$ snouty login
+# stdin> acme                     ← the answers fed to each prompt, in order
+# stdin> registry.example.com/...
+<the prompt transcript snouty printed>
+```
+Exit code: `<n>`
+
+## Persisted state
+`~/.config/snouty/settings.toml`      ← the files login actually wrote,
+```toml                                  with secrets already [REDACTED];
+...                                      "(not written)" when a file was
+```                                      deliberately not created
+```
+
+Judge these on the transcript **and** the persisted state together (see Step 3).
+They run in a throwaway `$HOME`, so the paths are temp dirs — judge the shape and
+content, not the exact path.
+
 Read every story file. For the **large** outputs (e.g. `runs-build-logs`,
 `runs-logs-incomplete` can be tens/hundreds of KB) do **not** read the whole
 file — measure its width with the tool below and read only the head and tail to
@@ -111,8 +136,8 @@ command**? Concretely:
 If a needed coordinate is truncated, omitted, or buried, that's a follow-up
 failure even if the command "worked".
 
-### Axis C — Terminal rendering at ~100 columns
-Assume an average terminal is **100 characters wide**. Measure the widest line
+### Axis C — Terminal rendering at ~140 columns
+Assume an average terminal is **140 characters wide**. Measure the widest line
 of actual command output per story:
 
 ```bash
@@ -126,9 +151,9 @@ done | sort -t= -k2 -rn
 ```
 
 Interpret the widest-line width:
-- **≤ 100** → fits cleanly (✅).
-- **101–120** → wraps a little; usually ⚠️ unless the wrap mangles a table.
-- **> 120** → likely wraps badly; tables become unreadable, columns desync (❌).
+- **≤ 140** → fits cleanly (✅).
+- **141–160** → wraps a little; usually ⚠️ unless the wrap mangles a table.
+- **> 160** → likely wraps badly; tables become unreadable, columns desync (❌).
 
 Also judge rendering quality beyond raw width:
 - **Wasted width**: mostly-empty columns padded to a huge fixed width (e.g. a
@@ -141,11 +166,35 @@ Also judge rendering quality beyond raw width:
   overlap), or is it reasonable?
 - **Density**: walls of near-identical lines, redundant repetition, no grouping.
 
+### Interactive / stateful stories (`login-*`)
+These are `snouty login` runs, so reinterpret the axes — the deliverable is a
+prompt conversation plus files written, not a table:
+- **Axis A (correctness):** were the prompts the right ones, in a sensible order,
+  and *only* for values not already known (a flag or a stored previous value
+  shouldn't be re-prompted)? Was invalid input rejected? And — judged against the
+  **Persisted state** section, not just stdout — did it write the *correct*
+  result (right tenant/repo, right credential type, right `[profile.x]` scope)?
+- **Axis B (follow-up readiness):** after it finishes, does the user know **what
+  was saved, where, and the obvious next step** (e.g. "run `snouty doctor` to
+  verify")? A login that exits `0` in silence — never confirming what it wrote —
+  is an Axis B failure even though the file is correct. For the error/repair
+  paths, does the message say what went wrong *and* how to recover?
+- **Axis C (rendering):** less about 140-col tables, more about **prompt clarity
+  and secret hygiene** — is the menu readable, are previous-value defaults shown
+  legibly, and is the password never echoed into the transcript?
+- **Axis D — safety of a mutating command** (interactive/stateful stories only):
+  before overwriting or discarding existing state, does it warn and/or back up
+  (e.g. `settings.toml.bak`)? Does it scope writes to the intended profile? Does a
+  rejected/aborted run leave nothing half-written? A mutating command that
+  clobbers or half-writes silently fails this axis regardless of how the happy
+  path reads.
+
 ### Per-story verdict
-Combine the three axes into one verdict — **satisfied**, **partial**, or
+Combine the axes into one verdict — **satisfied**, **partial**, or
 **unsatisfied** — and, when not fully satisfied, a **concrete suggested fix**
 (e.g. "round vtime to 3 decimals", "drop the GROUP column when empty",
-"print full run ID, truncate the description instead").
+"print full run ID, truncate the description instead"). For `login-*` stories,
+weigh all four axes (A–D); for every other story, the three (A–C).
 
 ## Step 4 — Write the report
 
@@ -207,6 +256,11 @@ Guidance for a high-signal report:
 - The gallery is pinned to whatever live run IDs were fresh at generation time,
   so exact IDs/values differ between runs. Judge the *shape and quality* of the
   output, not the specific data.
-- Width and rendering are judged for a plain ~100-col terminal; snouty may
+- Width and rendering are judged for a plain ~140-col terminal; snouty may
   detect a wider TTY when run interactively, but the gallery captures
   non-interactive output, which is the conservative case worth reviewing.
+- The `login-*` stories run in a throwaway `$HOME` that is removed after capture,
+  and are fed fake secrets that are redacted again in the file — so the "Persisted
+  state" you review never contains a real credential or touches real config. On
+  Linux these exercise the file-backed credential store (the keychain is a no-op
+  there), which is the realistic default for a CI/gallery run.

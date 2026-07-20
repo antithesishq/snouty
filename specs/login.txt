@@ -182,6 +182,23 @@ file ~/.config/snouty/credentials.toml.bak 'unparsable-credentials-marker'
 file ~/.config/snouty/credentials.toml 'username = "puser"'
 ! file ~/.config/snouty/credentials.toml 'unparsable-credentials-marker'
 
+# 14. A supplied-but-empty --tenant is rejected by the `validate_non_empty` value
+#     parser at argument-parsing time — before any prompt, stdin read, or write —
+#     so the command fails outright with a nonzero exit. (No stdin is provided
+#     precisely to prove nothing is read: parsing fails first.) The shared
+#     isolate-home keeps even this no-write path off the developer's real config.
+isolate-home empty_args
+! snouty login --tenant ""
+stderr '.*Value may not be empty or whitespace.*'
+
+# 15. The same for a supplied-but-empty --repository.
+! snouty login --repository ""
+stderr '.*Value may not be empty or whitespace.*'
+
+# 16. And for the global --profile flag given an empty value.
+! snouty --profile "" login
+stderr '.*Value may not be empty or whitespace.*'
+
 
 -- broken.toml --
 this is = = not valid toml

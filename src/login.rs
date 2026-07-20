@@ -43,7 +43,9 @@ pub fn cmd_login(
 
     let profile_to_use = profile
         .map(|p| p.to_owned())
-        .or_else(|| env::var(ANTITHESIS_PROFILE_ENV_VAR_NAME).ok().flatten());
+        .or_else(|| env::var(ANTITHESIS_PROFILE_ENV_VAR_NAME).ok().flatten())
+        // this .filter is **after** the or_else because `--profile ""` should cause login to not use a profile, regardless of the contents of the env variable
+        .filter(|p| !p.is_empty());
 
     let tenant_to_use = match tenant {
         Some(arg_value) if !arg_value.is_empty() => arg_value,

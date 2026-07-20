@@ -336,6 +336,14 @@ pub(crate) fn mkdir(path: &Path, recursive: bool, permissions: u32) -> Result<()
     Ok(())
 }
 
+fn insert_key_if_non_empty(target: &mut Table, key: &str, value: Option<String>) {
+    if let Some(value) = value
+        && !value.is_empty()
+    {
+        target.insert(key.to_owned(), Value::String(value));
+    }
+}
+
 fn update_table(
     target: &mut Table,
     tenant: Option<String>,
@@ -343,24 +351,10 @@ fn update_table(
     base_url: Option<String>,
     container_engine: Option<String>,
 ) {
-    if let Some(tenant) = tenant {
-        target.insert("tenant".to_owned(), Value::String(tenant));
-    }
-
-    if let Some(repository) = repository {
-        target.insert("repository".to_owned(), Value::String(repository));
-    }
-
-    if let Some(base_url) = base_url {
-        target.insert("base_url".to_owned(), Value::String(base_url));
-    }
-
-    if let Some(container_engine) = container_engine {
-        target.insert(
-            "container_engine".to_owned(),
-            Value::String(container_engine),
-        );
-    }
+    insert_key_if_non_empty(target, "tenant", tenant);
+    insert_key_if_non_empty(target, "repository", repository);
+    insert_key_if_non_empty(target, "base_url", base_url);
+    insert_key_if_non_empty(target, "container_engine", container_engine);
 }
 
 /// Validate that `tenant` is safe to interpolate into the derived base URL

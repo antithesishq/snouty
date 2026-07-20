@@ -37,7 +37,7 @@ pub struct Cli {
     pub settings: Option<std::path::PathBuf>,
 
     /// Settings profile to select (overrides ANTITHESIS_PROFILE)
-    #[arg(long, global = true, display_order = 1003)]
+    #[arg(long, global = true, value_parser = validate_non_empty, display_order = 1003)]
     pub profile: Option<String>,
 
     #[command(subcommand)]
@@ -246,6 +246,38 @@ Examples:
         #[command(subcommand)]
         command: DocsCommands,
     },
+
+    /// Initialize Snouty configuration
+    #[command(long_about = r#"Initialize Snouty configuration and authentication
+
+Provide configuration and authentication information to persist in the global 
+Snouty settings file, optionally under a named profile. Sensitive information and
+information not provided via args will be queried over stdin.
+
+NOTE: `snouty login` will offer to reuse your existing configuration values, including
+any sourced from a local .snouty.toml file or the file specified by --settings or via
+the SNOUTY_SETTINGS_PATH environment variable. However, snouty login will save the
+specified configuration and credentials to the "global" files in your home directory.
+
+Examples:
+  snouty login
+  snouty login --tenant "mytenant" --repository "repository"
+  snouty login --profile "profile""#)]
+    Login {
+        #[arg(long, value_parser = validate_non_empty)]
+        tenant: Option<String>,
+
+        #[arg(long, value_parser = validate_non_empty)]
+        repository: Option<String>,
+    },
+}
+
+fn validate_non_empty(value: &str) -> Result<String, String> {
+    if value.trim().is_empty() {
+        Err("Value may not be empty or whitespace".to_owned())
+    } else {
+        Ok(value.to_owned())
+    }
 }
 
 #[derive(Subcommand)]

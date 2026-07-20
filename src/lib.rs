@@ -1,6 +1,8 @@
 mod api_cache;
+mod attributed_value;
 
 pub mod api;
+pub mod auth;
 pub mod cli;
 pub mod compose;
 pub mod config;
@@ -9,6 +11,7 @@ pub mod docs;
 pub mod doctor;
 pub(crate) mod env;
 pub mod error;
+pub mod login;
 pub mod moment;
 pub mod params;
 pub mod process;

@@ -12,6 +12,62 @@ fn err(msg: String) -> testscript_rs::Error {
     testscript_rs::Error::Generic(msg)
 }
 
+/// Resolve a spec-supplied path to a concrete filesystem path.
+///
+/// `${VAR}` references are expanded from the test environment first, then a
+/// leading `~` (bare or `~/...`) expands to the test's isolated `$HOME` — the
+/// same `HOME` the snouty subprocess sees, so a spec can point at the global
+/// `settings.toml` that `snouty login` writes under it. A remaining relative
+/// path is resolved against the spec's working directory, matching where inline
+/// `-- file --` fixtures land.
+fn resolve_spec_path(
+    env: &testscript_rs::TestEnvironment,
+    raw: &str,
+) -> testscript_rs::Result<std::path::PathBuf> {
+    let expanded = env.substitute_env_vars(raw);
+    if let Some(rest) = expanded.strip_prefix('~') {
+        let home = env
+            .env_vars
+            .get("HOME")
+            .ok_or_else(|| err("`~` used in a path but HOME is not set".to_string()))?;
+        let rest = rest.strip_prefix('/').unwrap_or(rest);
+        return Ok(std::path::Path::new(home).join(rest));
+    }
+
+    let path = std::path::PathBuf::from(expanded);
+    if path.is_absolute() {
+        Ok(path)
+    } else {
+        Ok(env.current_dir.join(path))
+    }
+}
+
+/// `file <path> <pattern>`: assert the contents of the file at `<path>` match the
+/// regex `<pattern>`, mirroring the built-in `stdout`/`stderr` matchers (combine
+/// with a leading `!` to assert the pattern is absent). `<path>` may start with
+/// `~` to reference the test's isolated `$HOME` (see [`resolve_spec_path`]).
+fn cmd_file(
+    env: &mut testscript_rs::TestEnvironment,
+    args: &[String],
+) -> testscript_rs::Result<()> {
+    let (path_arg, pattern) = match args {
+        [path, rest @ ..] if !rest.is_empty() => (path, rest.join(" ")),
+        _ => return Err(err("file requires <path> <pattern>".to_string())),
+    };
+    let path = resolve_spec_path(env, path_arg)?;
+    let re = regex::Regex::new(&pattern)
+        .map_err(|e| err(format!("invalid file pattern `{pattern}`: {e}")))?;
+    let contents = std::fs::read_to_string(&path)
+        .map_err(|e| err(format!("could not read {}: {e}", path.display())))?;
+    if !re.is_match(&contents) {
+        return Err(err(format!(
+            "file {} does not match /{pattern}/\ncontents:\n{contents}",
+            path.display()
+        )));
+    }
+    Ok(())
+}
+
 // --- Engine context (thread-local so fn-pointer commands can access it) ---
 
 struct EngineContext {
@@ -36,6 +92,9 @@ thread_local! {
 /// `TMPDIR` matters on macOS: podman recomputes the machine API socket path
 /// from it on every invocation, so dropping it makes `podman machine inspect`
 /// report a `/tmp` fallback path the socket was never bound at.
+///
+/// DBus configuration is deliberately omitted from FORWARDED_ENV_VARS since
+/// it represents a global state that might leak into or out of tests.
 const FORWARDED_ENV_VARS: &[&str] = &["PATH", "HOME", "LLVM_PROFILE_FILE", "TMPDIR"];
 
 /// Build a `Command` for the snouty binary with a clean environment.
@@ -55,6 +114,8 @@ fn snouty_cmd(env: &testscript_rs::TestEnvironment, args: &[String]) -> std::pro
             cmd.env(var, v);
         }
     }
+    // Disable keychain access -- this isn't something we can mock for each test case
+    cmd.env("SNOUTY_DISABLE_KEYCHAIN_CREDENTIAL_STORAGE", "1");
     cmd.env(
         "XDG_CONFIG_HOME",
         isolated_xdg_config_home(&env.current_dir),
@@ -627,6 +688,7 @@ fn spec_tests() {
             .command("mock-runs-server", cmd_mock_runs_server)
             .command("mock-proxy", cmd_mock_proxy)
             .command("env_from_json", cmd_env_from_json)
+            .command("file", cmd_file)
             .command("set-env", |env, args| {
                 // Usage: set-env KEY value...
                 // Interpolates ${VAR} references in value using env.env_vars.
@@ -644,6 +706,30 @@ fn spec_tests() {
                     .spawn()
                     .map_err(|e| err(format!("spawn snouty-bg: {e}")))?;
                 env.background_processes.insert("snouty".to_string(), child);
+                Ok(())
+            })
+            .command("isolate-home", |env, args| {
+                // Usage: isolate-home <name>
+                //
+                // `snouty login` persists credentials.toml and settings.toml
+                // under the global settings dir, which is `$XDG_CONFIG_HOME/snouty`
+                // when that var is set and otherwise `$HOME/.config/snouty`. The
+                // shared spec setup pins an isolated XDG_CONFIG_HOME, so here we
+                // point HOME at a fresh per-section temp dir and clear
+                // XDG_CONFIG_HOME (snouty treats an empty value as unset) so the
+                // login writes land under — and are read back from — that HOME.
+                // Each <name> gives a section of the spec its own home, keeping its
+                // writes isolated from sibling sections and from the developer's
+                // real ~/.config.
+                let name = args.first().map(String::as_str).unwrap_or("home");
+                let home = env.work_dir.join(name);
+                std::fs::create_dir_all(&home)
+                    .map_err(|e| err(format!("failed to create isolated HOME: {e}")))?;
+                let home = home
+                    .to_str()
+                    .ok_or_else(|| err("isolated HOME path is not valid UTF-8".to_string()))?;
+                env.set_env_var("HOME", home);
+                env.set_env_var("XDG_CONFIG_HOME", "");
                 Ok(())
             })
             .command("setup-docs-db", |env, _args| {

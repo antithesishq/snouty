@@ -41,7 +41,7 @@ stderr 'unexpected argument.*'
 #    ANTITHESIS_API_KEY and ANTITHESIS_TENANT, or
 #    ANTITHESIS_USERNAME, ANTITHESIS_PASSWORD, and ANTITHESIS_TENANT.
 ! snouty launch -w basic_test --duration 30
-stderr 'missing environment variable.*'
+stderr 'No Antithesis credentials found.*'
 
 # --param cannot override typed flag values.
 mock-server 200 '{"runId":"run-123","statusCode":202}'

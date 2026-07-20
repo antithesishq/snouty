@@ -303,7 +303,7 @@ fn launch_fails_without_credentials() {
         .args(["launch", "-w", "basic_test", "--duration", "30"])
         .assert()
         .failure()
-        .stderr(predicate::str::contains("missing environment variable"));
+        .stderr(predicate::str::contains("No Antithesis credentials found"));
 }
 
 #[test]

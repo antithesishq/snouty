@@ -35,6 +35,7 @@ how snouty changes affect command output.
 from __future__ import annotations
 
 import argparse
+import fnmatch
 import json
 import os
 import re
@@ -123,10 +124,17 @@ class Snouty:
     def cleanup(self) -> None:
         shutil.rmtree(self._shim, ignore_errors=True)
 
-    def run(self, args: list[str], env: dict[str, str | None] | None = None) -> Result:
+    def run(
+        self,
+        args: list[str],
+        env: dict[str, str | None] | None = None,
+        stdin: str | None = None,
+    ) -> Result:
         # `env` overrides individual vars for this call only: a string sets the
         # var, None unsets it (so a story can model an environment missing some
         # credential). Everything else inherits the live ANTITHESIS_* env.
+        # `stdin`, when given, is fed to the process's standard input — used by the
+        # interactive stories (`snouty login`) that read answers line-by-line.
         run_env = self._env
         if env is not None:
             run_env = dict(self._env)
@@ -140,6 +148,7 @@ class Snouty:
             capture_output=True,
             text=True,
             env=run_env,
+            input=stdin,
         )
         return Result(args, proc.stdout, proc.stderr, proc.returncode)
 
@@ -587,6 +596,22 @@ class Story:
     # validate stories require a container runtime (see `ensure_validate_runtime`);
     # this flag just documents which ones spin up live containers.
     needs_docker: bool = False
+    # -- interactive / stateful stories (`snouty login`) -------------------
+    # When `sandbox_home` is set the story is an interactive, stateful story: it
+    # runs in a throwaway `$HOME` so the credentials/settings it persists never
+    # touch the operator's real config, and `post_capture` files are read back
+    # from that HOME and shown as the command's result. `stdin` feeds the
+    # interactive prompts their answers.
+    sandbox_home: bool = False
+    # Scripted answers fed to the command's stdin, one per line (login prompts).
+    stdin: str | None = None
+    # Files to pre-write into the sandbox HOME before running, keyed by
+    # HOME-relative path — models pre-existing state (a prior login, a broken
+    # settings file). Mirrors the spec fixtures' txtar `-- path --` sections.
+    seed_files: dict[str, str] | None = None
+    # HOME-relative files to read back after the run and render under a
+    # "Persisted state" section (secrets are redacted before embedding).
+    post_capture: tuple[str, ...] = ()
 
 
 @dataclass
@@ -596,6 +621,9 @@ class StoryRun:
     rows: list[dict] | None  # structured rows from the --json variant, if any
     help_result: Result | None = None  # `<help_cmd> --help` capture, for help stories
     sample_results: list[tuple[str, Result]] | None = None  # extra labelled captures
+    # (rel_path, contents|None) for each `post_capture` file, in order; None means
+    # the file was not written (which some login stories assert on).
+    captured_files: list[tuple[str, str | None]] | None = None
 
 
 class Registry:
@@ -681,6 +709,72 @@ def contains_all(*needles: str):
         text = sr.result.combined
         missing = [n for n in needles if n not in text]
         return (not missing, "all present" if not missing else f"missing {missing!r}")
+
+    return chk
+
+
+# -- login (interactive/stateful) check factories ---------------------------
+#
+# These read `sr.captured_files` (the `post_capture` files read back from the
+# throwaway HOME) rather than stdout, because the interesting outcome of a
+# stateful command is the file it wrote, not what it printed.
+
+
+def _captured(sr: StoryRun, rel_path: str) -> str | None:
+    for path, contents in sr.captured_files or []:
+        if path == rel_path:
+            return contents
+    return None
+
+
+def login_persisted(
+    *,
+    prompts: tuple[str, ...] = (),
+    absent_prompts: tuple[str, ...] = (),
+    files: tuple[tuple[str, tuple[str, ...]], ...] = (),
+    absent_files: tuple[str, ...] = (),
+    secrets_absent: tuple[str, ...] = (),
+    expect_ok: bool = True,
+):
+    """Gate an interactive login story. Combines the concerns a single login
+    story cares about: the command exits with the expected success/failure; the
+    expected `prompts` all appear in the transcript and no `absent_prompts` do;
+    each `(rel_path, needles)` in `files` was written and contains every needle;
+    each path in `absent_files` was NOT written; and no raw `secrets_absent` value
+    leaks into the transcript. Any failure lists what went wrong."""
+
+    def chk(sr: StoryRun, reg: Registry) -> tuple[bool, str]:
+        text = sr.result.combined
+        problems: list[str] = []
+
+        if sr.result.ok != expect_ok:
+            problems.append(f"exit={sr.result.returncode} (want ok={expect_ok})")
+
+        missing_prompts = [p for p in prompts if p not in text]
+        if missing_prompts:
+            problems.append(f"missing prompts={missing_prompts!r}")
+        shown_absent = [p for p in absent_prompts if p in text]
+        if shown_absent:
+            problems.append(f"unexpected prompts={shown_absent!r}")
+
+        for rel_path, needles in files:
+            contents = _captured(sr, rel_path)
+            if contents is None:
+                problems.append(f"{rel_path} not written")
+                continue
+            missing = [n for n in needles if n not in contents]
+            if missing:
+                problems.append(f"{rel_path} missing {missing!r}")
+
+        for rel_path in absent_files:
+            if _captured(sr, rel_path) is not None:
+                problems.append(f"{rel_path} was written (expected absent)")
+
+        leaked = [s for s in secrets_absent if s in text]
+        if leaked:
+            problems.append(f"secret leaked into transcript={leaked!r}")
+
+        return (not problems, "; ".join(problems) or "prompts + persisted state as expected")
 
     return chk
 
@@ -1766,6 +1860,198 @@ def build_validate_stories(ephemeral: Path | None) -> list[Story]:
 
 
 # ---------------------------------------------------------------------------
+# Login stories: `snouty login` is interactive (reads answers from stdin) and
+# stateful (writes settings.toml/credentials.toml). Each runs in a throwaway
+# `$HOME`, feeds scripted answers, and captures the files it wrote so a reviewer
+# can judge both the prompt transcript AND the persisted result. No API,
+# discovery, or container runtime is needed. On Linux the keychain is a no-op, so
+# credentials land in the file backend — the realistic default here.
+# ---------------------------------------------------------------------------
+
+# Fake, obviously-not-real secrets fed on stdin — never a real credential, and
+# redacted again before embedding (see `_redact_secrets`).
+_FAKE_KEY = "sk-FAKE-not-a-real-key"
+_FAKE_PASS = "FAKE-not-a-real-password"
+_TENANT = "acme"
+_REPO = "registry.example.com/acme/app"
+_SETTINGS = ".config/snouty/settings.toml"
+_CREDS = ".config/snouty/credentials.toml"
+_SETTINGS_BAK = ".config/snouty/settings.toml.bak"
+
+# Shared satisfaction rubric for the interactive login stories: judge the prompt
+# transcript AND the persisted result, not just the exit code.
+_LOGIN_RUBRIC = (
+    "Judge the prompt transcript and the persisted state together. Are the "
+    "prompts clear, in a sensible order, and only for values not already known? "
+    "After it finishes, does the user know WHAT was saved, WHERE, and the next "
+    "step (e.g. `snouty doctor`)? Are secrets never echoed? For the error/repair "
+    "paths, is the message clear about what went wrong and how to recover, and is "
+    "a mutating overwrite done safely (warn + back up)?"
+)
+
+
+def _login_story(
+    slug: str,
+    title: str,
+    goal: str,
+    args: list[str],
+    stdin: str,
+    check,
+    *,
+    pre: list[str] | None = None,
+    seed_files: dict[str, str] | None = None,
+    post_capture: tuple[str, ...] = (_SETTINGS, _CREDS),
+    env: dict[str, str | None] | None = None,
+) -> Story:
+    # `pre` holds global flags that must precede the `login` subcommand (e.g.
+    # `--profile`); `args` holds `login`'s own flags.
+    return Story(
+        slug=slug,
+        title=title,
+        goal=goal,
+        judge=_LOGIN_RUBRIC,
+        args=[*(pre or []), "login", *args],
+        check=check,
+        json_capable=False,
+        sandbox_home=True,
+        stdin=stdin,
+        seed_files=seed_files,
+        post_capture=post_capture,
+        env=env,
+    )
+
+
+def build_login_stories() -> list[Story]:
+    return [
+        _login_story(
+            "login-fresh-apikey",
+            "First-time setup with an API key",
+            "I just installed snouty and want to configure my tenant, repository, and API key.",
+            [],
+            f"{_TENANT}\n{_REPO}\n2\n{_FAKE_KEY}\n",
+            login_persisted(
+                prompts=(
+                    "What Antithesis tenant",
+                    "What container repository",
+                    "What kind of credentials",
+                ),
+                files=(
+                    (_SETTINGS, (f'tenant = "{_TENANT}"', f'repository = "{_REPO}"')),
+                    (_CREDS, ('type = "ApiKey"',)),
+                ),
+                secrets_absent=(_FAKE_KEY,),
+            ),
+        ),
+        _login_story(
+            "login-reuse-default",
+            "Re-run login and keep my stored values",
+            "I already logged in; re-running should offer my previous tenant/repo/key as defaults so I can just hit enter.",
+            [],
+            "\n\n\n\n",  # blank tenant, repo, auth-menu (default), api key (reuse)
+            login_persisted(
+                prompts=(
+                    f"Hit enter to use the previous value of [{_TENANT}]",
+                    f"Hit enter to use the previous value of [{_REPO}]",
+                ),
+                files=((_CREDS, ('type = "ApiKey"',)),),
+                secrets_absent=("sk-SEED-not-a-real-key",),
+            ),
+            seed_files={
+                _SETTINGS: f'tenant = "{_TENANT}"\nrepository = "{_REPO}"\n',
+                _CREDS: '[default]\ntype = "ApiKey"\napi_key = "sk-SEED-not-a-real-key"\n',
+            },
+        ),
+        _login_story(
+            "login-flags",
+            "Supply tenant and repository as flags",
+            "I know my tenant and repository already; I only want to be prompted for credentials.",
+            ["--tenant", _TENANT, "--repository", _REPO],
+            f"2\n{_FAKE_KEY}\n",
+            login_persisted(
+                prompts=("What kind of credentials",),
+                absent_prompts=("What Antithesis tenant", "What container repository"),
+                files=(
+                    (_SETTINGS, (f'tenant = "{_TENANT}"',)),
+                    (_CREDS, ('type = "ApiKey"',)),
+                ),
+                secrets_absent=(_FAKE_KEY,),
+            ),
+        ),
+        _login_story(
+            "login-password",
+            "Set up legacy username/password auth",
+            "I authenticate with a username and password rather than an API key.",
+            [],
+            f"{_TENANT}\n{_REPO}\n3\npuser\n{_FAKE_PASS}\n",
+            login_persisted(
+                prompts=("What kind of credentials",),
+                files=((_CREDS, ('type = "Password"', 'username = "puser"')),),
+                secrets_absent=(_FAKE_PASS,),
+            ),
+        ),
+        _login_story(
+            "login-profile",
+            "Scope a login to a named profile",
+            "I keep separate configs per environment and want this login saved under the `prod` profile.",
+            [],
+            f"{_TENANT}\n{_REPO}\n2\n{_FAKE_KEY}\n",
+            login_persisted(
+                files=(
+                    (_SETTINGS, ("[profile.prod]", f'tenant = "{_TENANT}"')),
+                    (_CREDS, ("[profile.prod]", 'type = "ApiKey"')),
+                ),
+                secrets_absent=(_FAKE_KEY,),
+            ),
+            pre=["--profile", "prod"],
+        ),
+        _login_story(
+            "login-skip-creds",
+            "Configure tenant/repo but skip credential storage",
+            "I use environment variables for credentials; I just want snouty to remember my tenant and repository.",
+            [],
+            f"{_TENANT}\n{_REPO}\n1\n",
+            login_persisted(
+                prompts=("What kind of credentials",),
+                files=((_SETTINGS, (f'tenant = "{_TENANT}"',)),),
+                absent_files=(_CREDS,),
+            ),
+        ),
+        _login_story(
+            "login-bad-tenant",
+            "A malformed tenant is rejected safely",
+            "I fat-finger a tenant that isn't a valid hostname; I want a clear error and nothing half-saved.",
+            [],
+            "evil.com/x\n",
+            login_persisted(
+                prompts=("What Antithesis tenant", "invalid tenant"),
+                absent_files=(_SETTINGS, _CREDS),
+                expect_ok=False,
+            ),
+        ),
+        _login_story(
+            "login-repair-broken",
+            "Repair a broken settings file",
+            "My settings.toml got corrupted; I want `snouty login` to fix it without silently destroying the old one.",
+            [],
+            f"1\n{_TENANT}\n{_REPO}\n1\n",  # proceed, tenant, repo, skip creds
+            login_persisted(
+                prompts=(
+                    "The current settings failed to load",
+                    "Would you like to proceed",
+                    "has been backed up to",
+                ),
+                files=(
+                    (_SETTINGS, (f'tenant = "{_TENANT}"',)),
+                    (_SETTINGS_BAK, ("unparsable-settings-marker",)),
+                ),
+            ),
+            seed_files={_SETTINGS: "this is = = not valid toml unparsable-settings-marker\n"},
+            post_capture=(_SETTINGS, _SETTINGS_BAK),
+        ),
+    ]
+
+
+# ---------------------------------------------------------------------------
 # Rendering + main
 # ---------------------------------------------------------------------------
 
@@ -1814,10 +2100,52 @@ def _write_help_story(out_dir: Path, story: Story, sr: StoryRun, verdict: str, d
     (out_dir / f"{story.slug}.md").write_text("\n\n".join(parts) + "\n")
 
 
+# Redact the secret values from persisted TOML before embedding it in a story —
+# belt-and-suspenders on top of the fake secrets the login stories feed on stdin.
+_SECRET_LINE = re.compile(r'^(\s*(?:api_key|password)\s*=\s*)"[^"]*"', re.MULTILINE)
+
+
+def _redact_secrets(text: str) -> str:
+    return _SECRET_LINE.sub(r'\1"[REDACTED]"', text)
+
+
+def _write_login_story(out_dir: Path, story: Story, sr: StoryRun, verdict: str, detail: str) -> None:
+    # The `$ snouty ...` block with the scripted answers shown as a comment, so a
+    # reviewer sees exactly what the user typed at each prompt. `splitlines()`
+    # keeps every answer, including blank "just hit enter" ones (a reuse story
+    # feeds several) that `.rstrip("\n").split("\n")` would collapse.
+    answers = (story.stdin or "").splitlines()
+    stdin_note = "".join(f"# stdin> {a}\n" for a in answers)
+    transcript = (
+        f"```shell\n$ snouty {' '.join(story.args)}\n{stdin_note}"
+        f"{sr.result.combined.rstrip(chr(10))}\n```\nExit code: `{sr.result.returncode}`"
+    )
+    parts = [
+        f"# {story.title}",
+        f"**User goal:** {story.goal}",
+        f"**Judge satisfaction by:** {story.judge}",
+        "## Transcript",
+        transcript,
+    ]
+    if story.post_capture:
+        parts.append("## Persisted state")
+        for rel_path, contents in sr.captured_files or []:
+            if contents is None:
+                parts.append(f"`~/{rel_path}` — _(not written)_")
+            else:
+                body = _redact_secrets(contents).rstrip("\n")
+                parts.append(f"`~/{rel_path}`\n```toml\n{body}\n```")
+    parts.append(f"_Automated check: {verdict} — {detail}_")
+    (out_dir / f"{story.slug}.md").write_text("\n\n".join(parts) + "\n")
+
+
 def write_story(out_dir: Path, story: Story, sr: StoryRun, passed: bool, detail: str) -> None:
     verdict = "PASS" if passed else "FAIL"
     if story.help_cmd is not None:
         _write_help_story(out_dir, story, sr, verdict, detail)
+        return
+    if story.sandbox_home:
+        _write_login_story(out_dir, story, sr, verdict, detail)
         return
     md = (
         f"# {story.title}\n\n"
@@ -1829,7 +2157,43 @@ def write_story(out_dir: Path, story: Story, sr: StoryRun, passed: bool, detail:
     (out_dir / f"{story.slug}.md").write_text(md)
 
 
+def run_login_story(sn: Snouty, story: Story) -> StoryRun:
+    """Run an interactive, stateful story in a throwaway `$HOME` so the
+    credentials/settings it persists never touch the operator's real config. The
+    home is seeded with `seed_files`, the answers are piped to stdin, and the
+    `post_capture` files are read back before the home is removed."""
+    home = Path(tempfile.mkdtemp(prefix="snouty-gallery-login."))
+    try:
+        for rel_path, contents in (story.seed_files or {}).items():
+            dest = home / rel_path
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_text(contents)
+
+        # Pin HOME, clear XDG_CONFIG_HOME (snouty treats empty as unset), and drop
+        # any ambient ANTITHESIS_* credentials so the "previous value" defaults are
+        # deterministic and no real secret can leak into a captured file.
+        env: dict[str, str | None] = {
+            "HOME": str(home),
+            "XDG_CONFIG_HOME": None,
+            **{k: None for k in os.environ if k.startswith("ANTITHESIS_")},
+        }
+        if story.env:
+            env.update(story.env)
+
+        result = sn.run(story.args, env=env, stdin=story.stdin)
+
+        captured: list[tuple[str, str | None]] = []
+        for rel_path in story.post_capture:
+            path = home / rel_path
+            captured.append((rel_path, path.read_text() if path.is_file() else None))
+        return StoryRun(story, result, None, captured_files=captured)
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+
+
 def run_story(sn: Snouty, story: Story) -> StoryRun:
+    if story.sandbox_home:
+        return run_login_story(sn, story)
     # Help-only stories pass no `args`; don't invoke a bare `snouty`.
     result = sn.run(story.args, story.env) if story.args else Result([], "", "", 0)
     rows = None
@@ -1865,7 +2229,12 @@ def main() -> int:
         default=15,
         help="recent completed runs to probe for one with events",
     )
-    parser.add_argument("--only", nargs="+", metavar="SLUG", help="only generate these stories")
+    parser.add_argument(
+        "--only",
+        nargs="+",
+        metavar="SLUG",
+        help="only generate stories matching these slugs (globs allowed, e.g. 'login-*')",
+    )
     parser.add_argument("--list", action="store_true", help="list story slugs and exit")
     parser.add_argument("--fail-fast", action="store_true", help="stop at the first failing story")
     args = parser.parse_args()
@@ -1876,6 +2245,8 @@ def main() -> int:
         for s in build_stories(Discovery()):
             print(s.slug)
         for s in build_validate_stories(None):
+            print(s.slug)
+        for s in build_login_stories():
             print(s.slug)
         return 0
 
@@ -1900,34 +2271,56 @@ def main() -> int:
     # manifests/ dir) are synthesized here for this run only.
     fixtures_dir = Path(tempfile.mkdtemp(prefix="snouty-gallery-fixtures."))
 
+    # Which story groups does this run actually need? The login stories need no
+    # API, discovery, or container runtime, so `--only login-*` must not drag in
+    # (and fail on) live-API discovery or a Docker daemon. Decide up front from
+    # cheaply-enumerable slugs which groups are in scope.
+    def selected(slug: str) -> bool:
+        return not args.only or any(fnmatch.fnmatch(slug, pat) for pat in args.only)
+
+    api_slugs = {s.slug for s in build_stories(Discovery())}
+    validate_slugs = {s.slug for s in build_validate_stories(None)}
+    login_slugs = {s.slug for s in build_login_stories()}
+    need_api = any(selected(s) for s in api_slugs)
+    need_validate = any(selected(s) for s in validate_slugs)
+
+    if args.only:
+        known = api_slugs | validate_slugs | login_slugs
+        unmatched = [p for p in args.only if not any(fnmatch.fnmatch(s, p) for s in known)]
+        if unmatched:
+            print(f"error: --only matched no stories: {unmatched}", file=sys.stderr)
+            return 1
+
     sn = Snouty(snouty_bin)
     failures: list[tuple[str, str]] = []
     try:
-        disc = discover(sn, args.runs_to_scan)
-        stories = build_stories(disc)
+        stories: list[Story] = []
+        if need_api:
+            disc = discover(sn, args.runs_to_scan)
+            stories += build_stories(disc)
 
-        # Validate stories run against the committed sample projects, all of
-        # which require a container runtime (`snouty validate` resolves
-        # docker/podman before inspecting any config). gen-gallery is a developer
-        # tool, so the runtime is mandatory: build the sample images and hard-fail
-        # if it isn't available, rather than silently dropping stories.
-        ensure_validate_runtime()
-        validate_stories = build_validate_stories(fixtures_dir)
-        n_live = sum(s.needs_docker for s in validate_stories)
-        print(
-            f"including all {len(validate_stories)} validate stories "
-            f"({n_live} start live containers)",
-            file=sys.stderr,
-        )
-        stories += validate_stories
+        if need_validate:
+            # Validate stories run against the committed sample projects, all of
+            # which require a container runtime (`snouty validate` resolves
+            # docker/podman before inspecting any config). gen-gallery is a
+            # developer tool, so the runtime is mandatory: build the sample images
+            # and hard-fail if it isn't available, rather than silently dropping
+            # stories.
+            ensure_validate_runtime()
+            validate_stories = build_validate_stories(fixtures_dir)
+            n_live = sum(s.needs_docker for s in validate_stories)
+            print(
+                f"including all {len(validate_stories)} validate stories "
+                f"({n_live} start live containers)",
+                file=sys.stderr,
+            )
+            stories += validate_stories
+
+        # Login stories need no external dependencies, so they always run.
+        stories += build_login_stories()
 
         if args.only:
-            wanted = set(args.only)
-            stories = [s for s in stories if s.slug in wanted]
-            unknown = wanted - {s.slug for s in stories}
-            if unknown:
-                print(f"error: unknown story slug(s): {sorted(unknown)}", file=sys.stderr)
-                return 1
+            stories = [s for s in stories if selected(s.slug)]
 
         # Capture concurrently (subprocess + API roundtrips dominate), preserving
         # story order in the results list. Checks are then evaluated serially in

@@ -26,7 +26,7 @@ reqwest = { version = "0.13.1", default-features = false, features = ["http2", "
 reqwest-middleware = "0.5"
 color-eyre = { version = "0.6", default-features = false }
 futures-util = "0.3"
-tokio = { version = "1", features = ["rt", "macros", "process", "time", "io-util", "io-std", "signal"] }
+tokio = { version = "1", features = ["rt", "macros", "process", "time", "io-util", "io-std", "signal", "sync"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 indexmap = { version = "2.10.0" }
@@ -42,6 +42,11 @@ serde_yaml = "0.9"
 toml = "1.1.2"
 http = "1.4.2"
 which = "8"
+rpassword = "7.5.4"
+keyring-core = "1.0.0"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+apple-native-keyring-store = { version = "1.0.0", features = [ "keychain" ] }
 
 [[example]]
 name = "mock_api"

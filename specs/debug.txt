@@ -16,7 +16,7 @@
 #    ANTITHESIS_API_KEY and ANTITHESIS_TENANT, or
 #    ANTITHESIS_USERNAME, ANTITHESIS_PASSWORD, and ANTITHESIS_TENANT.
 ! snouty debug --input-hash abc --run-id run-123 --vtime 123
-stderr 'missing environment variable.*'
+stderr 'No Antithesis credentials found.*'
 
 # Parameters are validated against the debuggingParams schema before
 #    making any API call. Required fields: input_hash, vtime, and exactly

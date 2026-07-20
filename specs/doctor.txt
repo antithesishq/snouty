@@ -13,7 +13,7 @@ stdout '.*--json.*'
 # not suggest username/password, which is legacy auth (issue #145). The headline
 # states the bare problem; notes explain it and say where to get a key.
 ! snouty doctor
-stderr '.*ANTITHESIS_API_KEY is not set.*'
+stderr '.*No Antithesis credentials found.*'
 stderr '.*requires an API key.*'
 stderr '.*ask Antithesis support.*'
 ! stderr '.*ANTITHESIS_USERNAME.*'
@@ -31,9 +31,10 @@ stdout '.*"level": "error".*'
 env ANTITHESIS_USERNAME=testuser
 env ANTITHESIS_PASSWORD=testpass
 ! snouty doctor
-stderr '.*ANTITHESIS_API_KEY is not set.*'
+stderr '.*Using password credentials for user \[testuser\].*'
 stderr '.*legacy.*'
 stderr '.*snouty launch.*'
+stderr '.*ANTITHESIS_PASSWORD.*'
 
 # --- API connectivity + version check (issue #146) ---
 # Cases that inject a status via mock-server are [!staging]-gated: under

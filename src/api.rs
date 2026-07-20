@@ -2,8 +2,6 @@ use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
 use std::time::Duration;
 
-use base64::Engine;
-use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use color_eyre::eyre::{Context, Report, Result, eyre};
 use color_eyre::{Section, SectionExt};
 use futures_util::stream;
@@ -14,6 +12,7 @@ use reqwest::{Client, Proxy};
 use reqwest_middleware::ClientWithMiddleware;
 
 use crate::api_cache;
+use crate::auth::AuthenticationInfo;
 use crate::env;
 use crate::error::{ApiError, user_error};
 use crate::params::Params;
@@ -165,79 +164,6 @@ fn normalize_property(property: Property) -> Result<Property> {
 /// to return (e.g. massive log files) and must not be aborted — the user can ctrl-c.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// A required credential env var. Reads through [`crate::env::var`], so an
-/// exported-but-empty value counts as missing (the same empty-means-unset policy
-/// as every other snouty env var) rather than producing an empty credential.
-fn required_env(name: &'static str) -> Result<String> {
-    env::var(name)?.ok_or_else(|| user_error(format!("missing environment variable: {name}")))
-}
-
-#[derive(Clone, PartialEq, Eq)]
-pub enum Auth {
-    Basic { username: String, password: String },
-    Bearer { api_key: String },
-}
-
-impl std::fmt::Debug for Auth {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Basic { username, .. } => f
-                .debug_struct("Basic")
-                .field("username", username)
-                .field("password", &"[REDACTED]")
-                .finish(),
-            Self::Bearer { .. } => f
-                .debug_struct("Bearer")
-                .field("api_key", &"[REDACTED]")
-                .finish(),
-        }
-    }
-}
-
-impl Auth {
-    pub fn basic(username: String, password: String) -> Self {
-        Self::Basic { username, password }
-    }
-
-    pub fn bearer(api_key: String) -> Self {
-        Self::Bearer { api_key }
-    }
-
-    pub(crate) fn from_env() -> Result<Self> {
-        if let Some(api_key) = env::var("ANTITHESIS_API_KEY")? {
-            return Ok(Self::bearer(api_key));
-        }
-        Ok(Self::basic(
-            required_env("ANTITHESIS_USERNAME")?,
-            required_env("ANTITHESIS_PASSWORD")?,
-        ))
-    }
-
-    /// Like [`Auth::from_env`], but only accepts an API key. The API rejects
-    /// basic auth everywhere except the launch endpoints, so commands that hit
-    /// other endpoints should fail fast with a clear message instead of
-    /// sending a request destined for a 403.
-    fn api_key_from_env() -> Result<Self> {
-        if let Some(api_key) = env::var("ANTITHESIS_API_KEY")? {
-            return Ok(Self::bearer(api_key));
-        }
-        let has_basic = env::var("ANTITHESIS_USERNAME")?.is_some()
-            || env::var("ANTITHESIS_PASSWORD")?.is_some();
-        let mut err = user_error("missing environment variable: ANTITHESIS_API_KEY");
-        if has_basic {
-            err = err.note(
-                "ANTITHESIS_USERNAME/ANTITHESIS_PASSWORD are set, but this command only \
-                 accepts API key authentication; username/password authentication is only \
-                 supported when launching runs (`snouty launch`, `snouty debug`)",
-            );
-        }
-        Err(err.suggestion(
-            "set ANTITHESIS_API_KEY; ask Antithesis support for an API key if you \
-             don't have one",
-        ))
-    }
-}
-
 pub struct AntithesisApi {
     client: generated::Client,
     base_url: String,
@@ -245,20 +171,30 @@ pub struct AntithesisApi {
 
 impl AntithesisApi {
     pub fn new(settings: &Settings, verbose: bool) -> Result<Self> {
-        Self::build(settings, &Auth::from_env()?, verbose, None)
+        Self::build(
+            settings,
+            AuthenticationInfo::for_ambient_configuration(settings.profile(), true)?,
+            verbose,
+            None,
+        )
     }
 
     /// Like [`AntithesisApi::new`], but fails fast unless an API key is
     /// configured. Every endpoint other than launch requires one.
     pub fn new_requiring_api_key(settings: &Settings, verbose: bool) -> Result<Self> {
-        Self::build(settings, &Auth::api_key_from_env()?, verbose, None)
+        Self::build(
+            settings,
+            AuthenticationInfo::for_ambient_configuration(settings.profile(), false)?,
+            verbose,
+            None,
+        )
     }
 
     /// The response cache lives at `cache_dir`/api-cache-v1 when `Some`; pass
     /// `None` to disable caching (used by tests that don't exercise it).
     pub(crate) fn build(
         settings: &Settings,
-        auth: &Auth,
+        authn_info: AuthenticationInfo,
         verbose: bool,
         cache_dir: Option<PathBuf>,
     ) -> Result<Self> {
@@ -268,10 +204,11 @@ impl AntithesisApi {
         let base_url = normalize_base_url(crate::settings::require(settings.base_url(), "tenant")?);
         debug!("initializing API client for {}", base_url);
 
-        let default_headers = default_request_headers(auth)?;
+        let default_headers = default_request_headers()?;
         let http_client = build_http_client(default_headers.clone(), settings)?;
         let cached = api_cache::build_cached_client(http_client.clone(), cache_dir);
         let state = ClientState {
+            authn_info,
             cached,
             default_headers: verbose.then_some(default_headers),
         };
@@ -544,15 +481,28 @@ impl AntithesisApi {
 
 #[derive(Clone, Debug)]
 pub struct ClientState {
-    pub(crate) cached: Option<ClientWithMiddleware>,
+    authn_info: AuthenticationInfo,
+    cached: Option<ClientWithMiddleware>,
     /// Default headers reqwest will merge into the outgoing request at
     /// `Client::execute` time (after our `exec` hook runs). `Some` enables
     /// verbose request/response logging to stderr; we hold the headers here
     /// so the log matches what's actually sent.
-    pub(crate) default_headers: Option<HeaderMap>,
+    default_headers: Option<HeaderMap>,
 }
 
 impl ClientHooks<ClientState> for generated::Client {
+    async fn pre<E>(
+        &self,
+        request: &mut reqwest::Request,
+        info: &OperationInfo,
+    ) -> std::result::Result<(), ClientError<E>> {
+        self.inner()
+            .authn_info
+            .authenticate_request(request, info)
+            .await?;
+        Ok(())
+    }
+
     async fn exec(
         &self,
         request: reqwest::Request,
@@ -740,9 +690,8 @@ fn normalize_base_url(base_url: impl Into<String>) -> String {
         .to_string()
 }
 
-fn default_request_headers(auth: &Auth) -> Result<HeaderMap> {
-    let mut headers = HeaderMap::new();
-    headers.insert(reqwest::header::AUTHORIZATION, auth_header(auth)?);
+fn default_request_headers() -> Result<reqwest::header::HeaderMap> {
+    let mut headers = reqwest::header::HeaderMap::new();
     headers.insert(
         reqwest::header::USER_AGENT,
         HeaderValue::from_str(&crate::user_agent())
@@ -791,20 +740,6 @@ fn build_http_client(default_headers: HeaderMap, settings: &Settings) -> Result<
     }
 
     builder.build().wrap_err("failed to build API client")
-}
-
-fn auth_header(auth: &Auth) -> Result<HeaderValue> {
-    let value = match auth {
-        Auth::Basic { username, password } => {
-            let credentials = format!("{username}:{password}");
-            let encoded = BASE64_STANDARD.encode(credentials);
-            format!("Basic {encoded}")
-        }
-        Auth::Bearer { api_key } => format!("Bearer {api_key}"),
-    };
-    let mut hv = HeaderValue::from_str(&value).wrap_err("failed to build Authorization header")?;
-    hv.set_sensitive(true);
-    Ok(hv)
 }
 
 fn launch_request(params: &Params) -> Result<generated::types::LaunchRequest> {
@@ -1191,7 +1126,7 @@ mod tests {
     ) -> AntithesisApi {
         AntithesisApi::build(
             &Settings::for_test_base_url(mock_server.uri()),
-            &Auth::Basic {
+            AuthenticationInfo::Password {
                 username: "user".to_owned(),
                 password: "pass".to_owned(),
             },
@@ -1426,7 +1361,10 @@ mod tests {
     fn with_base_url_trims_trailing_slash() {
         let api = AntithesisApi::build(
             &Settings::for_test_base_url("http://example.com/".to_owned()),
-            &Auth::basic("user".to_string(), "pass".to_string()),
+            AuthenticationInfo::Password {
+                username: "user".to_owned(),
+                password: "pass".to_owned(),
+            },
             true,
             None,
         )
@@ -1438,7 +1376,10 @@ mod tests {
     fn with_base_url_strips_legacy_api_suffix() {
         let api = AntithesisApi::build(
             &Settings::for_test_base_url("http://example.com/api/v1/".to_owned()),
-            &Auth::basic("user".to_string(), "pass".to_string()),
+            AuthenticationInfo::Password {
+                username: "user".to_owned(),
+                password: "pass".to_owned(),
+            },
             true,
             None,
         )
@@ -2013,23 +1954,6 @@ mod tests {
         let body = String::from_utf8(body).unwrap();
 
         assert!(body.contains("slow request"));
-    }
-
-    #[test]
-    fn auth_debug_redacts_password() {
-        let auth = Auth::basic("user".to_string(), "secret".to_string());
-        let debug = format!("{:?}", auth);
-        assert!(debug.contains("user"));
-        assert!(!debug.contains("secret"));
-        assert!(debug.contains("[REDACTED]"));
-    }
-
-    #[test]
-    fn auth_debug_redacts_api_key() {
-        let auth = Auth::bearer("secret-key".to_string());
-        let debug = format!("{:?}", auth);
-        assert!(!debug.contains("secret-key"));
-        assert!(debug.contains("[REDACTED]"));
     }
 
     fn rid(version: u32) -> String {

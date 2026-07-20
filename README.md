@@ -2,9 +2,6 @@
 
 A CLI for the [Antithesis](https://antithesis.com) API. See the [webhook documentation](https://antithesis.com/docs/webhook/) for details on available endpoints and parameters.
 
-> [!NOTE]
-> Snouty is new and experimental. Stuff is going to change in the early days. Even so, we hope you'll try it out!
-
 ## Install snouty
 
 ### Install prebuilt binaries via shell script

@@ -180,7 +180,13 @@ fn login_persists_to_real_macos_keychain() {
         "credentials.toml must not be written when the keychain is used"
     );
 
-    // The credential is really in the keychain, stored as snouty's JSON blob.
+    // The credential is really in the keychain under snouty's service/account.
+    // Check *attributes only* — deliberately no `-w`/`-g`: reading the secret
+    // value through the `security` CLI (not the app that created the item) trips
+    // macOS's "allow access" ACL confirmation, which has no GUI to answer on CI
+    // and hangs the test forever. The reuse-login below proves the secret itself
+    // round-trips, since an all-blank login only succeeds if snouty read the
+    // stored key back out of the keychain.
     let found = security(
         &home,
         &[
@@ -189,16 +195,10 @@ fn login_persists_to_real_macos_keychain() {
             "snouty",
             "-a",
             "_default_",
-            "-w",
             kc,
         ],
     );
     assert!(found.status.success(), "credential not found in keychain");
-    let stored = String::from_utf8_lossy(&found.stdout);
-    assert!(
-        stored.contains("sk-KEYCHAIN-TEST") && stored.contains("ApiKey"),
-        "unexpected keychain payload: {stored}"
-    );
 
     // --- Read-back: a second login reusing the stored key (all blank) succeeds
     // only if snouty read it back out of the keychain. ---
@@ -218,6 +218,9 @@ fn login_persists_to_real_macos_keychain() {
     );
     let prof_text = combined(&prof);
     assert!(prof.status.success(), "profile login failed:\n{prof_text}");
+    // Attributes only (no `-w`), for the same reason as the default entry above:
+    // the distinct `profile_prod` account name is what proves the scoping; dumping
+    // the secret via `security` would trip the headless-hanging ACL prompt.
     let prof_found = security(
         &home,
         &[
@@ -226,17 +229,12 @@ fn login_persists_to_real_macos_keychain() {
             "snouty",
             "-a",
             "profile_prod",
-            "-w",
             kc,
         ],
     );
     assert!(
         prof_found.status.success(),
         "profile credential not found under `profile_prod`"
-    );
-    assert!(
-        String::from_utf8_lossy(&prof_found.stdout).contains("sk-PROD-KEY"),
-        "profile keychain entry has the wrong payload"
     );
 
     // Best-effort cleanup of the temp tree (the keychain itself is handled by the

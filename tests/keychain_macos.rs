@@ -9,7 +9,7 @@
 //! to redirect snouty away from the developer's `login.keychain`: snouty's store
 //! resolves the User-domain *default* keychain (`SecKeychain::default_for_domain`
 //! in `apple-native-keyring-store`), which honors
-//! `security default-keychain -d user -s`. So the test creates a throwaway
+//! `security default-keychain -s`. So the test creates a throwaway
 //! keychain, points the user default at it, and restores + deletes it afterward
 //! (even on panic). Changing the machine's default keychain is why it's gated to
 //! CI — we don't want to touch a real Mac's keychain during `cargo test`. It's
@@ -39,13 +39,7 @@ struct KeychainGuard {
 
 impl Drop for KeychainGuard {
     fn drop(&mut self) {
-        security(&[
-            "default-keychain",
-            "-d",
-            "user",
-            "-s",
-            &self.original_default,
-        ]);
+        security(&["default-keychain", "-s", &self.original_default]);
         if let Some(path) = self.keychain.to_str() {
             security(&["delete-keychain", path]);
         }
@@ -60,7 +54,7 @@ fn run_snouty(home: &Path, args: &[&str], stdin: &str) -> Output {
         .env("HOME", home)
         // Empty XDG_CONFIG_HOME is treated as unset, so settings/credentials land
         // under our temp HOME's ~/.config/snouty rather than the runner's.
-        .env("XDG_CONFIG_HOME", "")
+        .env_remove("XDG_CONFIG_HOME")
         .env_remove("SNOUTY_DISABLE_KEYCHAIN_CREDENTIAL_STORAGE")
         .env_remove("ANTITHESIS_API_KEY")
         .env_remove("ANTITHESIS_USERNAME")
@@ -112,7 +106,7 @@ fn login_persists_to_real_macos_keychain() {
         "create-keychain failed"
     );
     let original_default = {
-        let out = security(&["default-keychain", "-d", "user"]);
+        let out = security(&["default-keychain"]);
         // Prints e.g. `    "/Users/runner/Library/Keychains/login.keychain-db"`.
         String::from_utf8_lossy(&out.stdout)
             .trim()
@@ -137,9 +131,7 @@ fn login_persists_to_real_macos_keychain() {
         "unlock-keychain failed"
     );
     assert!(
-        security(&["default-keychain", "-d", "user", "-s", kc])
-            .status
-            .success(),
+        security(&["default-keychain", "-s", kc]).status.success(),
         "setting default keychain failed"
     );
 

@@ -354,10 +354,7 @@ impl PersistableCredentials {
 
 #[cfg(target_os = "macos")]
 pub fn initialize_credential_store() -> Result<()> {
-    if matches!(
-        env::var("SNOUTY_DISABLE_KEYCHAIN_CREDENTIAL_STORAGE"),
-        Ok(Some(_))
-    ) {
+    if env::var("SNOUTY_DISABLE_KEYCHAIN_CREDENTIAL_STORAGE").is_ok_and(|v| v.is_some()) {
         return Ok(());
     }
 

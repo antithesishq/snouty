@@ -203,8 +203,8 @@ async fn validate_with_temp_dir(
     } = args;
     let rt = container::runtime(settings)?;
     // `snouty validate` has no machine-readable output (`--json` is a no-op),
-    // so the auto-detect notice is always eligible to print.
-    container::announce_auto_detected_engine(settings, rt.as_ref(), false);
+    // so the ambiguous-engine warning is always eligible to print.
+    container::warn_ambiguous_engine(settings, rt.as_ref(), false);
     match config::detect_config(&config_path)? {
         Config::Compose(cfg) => {
             validate_compose(

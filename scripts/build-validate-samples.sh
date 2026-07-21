@@ -23,10 +23,17 @@ if ! command -v docker >/dev/null 2>&1; then
   echo "error: docker not found on PATH" >&2
   exit 1
 fi
-# Use the standalone `docker-compose` binary (Compose v2), matching what snouty
-# itself invokes — not the `docker compose` plugin subcommand.
-if ! command -v docker-compose >/dev/null 2>&1; then
-  echo "error: docker-compose not found on PATH" >&2
+# Resolve a Compose v2 command: the standalone `docker-compose` binary or the
+# `docker compose` plugin. snouty supports either, so build with whichever is
+# present. A v1 `docker-compose` (banner `docker-compose version 1.x`) is
+# rejected — only v2 prints the un-hyphenated `Docker Compose version v2.x`.
+compose_is_v2() { "$@" version 2>/dev/null | tr '[:upper:]' '[:lower:]' | grep -q 'docker compose'; }
+if compose_is_v2 docker-compose; then
+  COMPOSE=(docker-compose)
+elif compose_is_v2 docker compose; then
+  COMPOSE=(docker compose)
+else
+  echo "error: Compose v2 not found (need the 'docker-compose' binary or the 'docker compose' plugin)" >&2
   exit 1
 fi
 
@@ -41,7 +48,7 @@ for compose in "$samples_dir"/*/docker-compose.yaml; do
   dir="$(dirname "$compose")"
   [ -f "$dir/Dockerfile" ] || continue
   echo "Building image(s) for sample '$(basename "$dir")'…"
-  docker-compose -f "$compose" build
+  "${COMPOSE[@]}" -f "$compose" build
   built=$((built + 1))
 done
 

@@ -249,7 +249,7 @@ async fn cmd_launch(
 
     if let Some((detected, registry, config_image)) = config_image_ref {
         let rt = container::runtime(settings)?;
-        container::announce_auto_detected_engine(settings, rt.as_ref(), json);
+        container::warn_ambiguous_engine(settings, rt.as_ref(), json);
 
         // For compose configs, every service image is pinned to its local
         // digest (snouty never pulls): served from a registry confirmed to

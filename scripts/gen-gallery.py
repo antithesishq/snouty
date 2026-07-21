@@ -591,6 +591,12 @@ class Story:
     # string sets a var, None unsets it. Used by the doctor stories to model a
     # specific credential setup regardless of the operator's real environment.
     env: dict[str, str | None] | None = None
+    # Run with the global config dir isolated to an empty throwaway
+    # `$XDG_CONFIG_HOME`. `env` only controls ANTITHESIS_* *env* credentials, but
+    # `snouty login` persists credentials to `credentials.toml` / `settings.toml`
+    # under `$XDG_CONFIG_HOME/snouty` — those would otherwise leak in and mask a
+    # story that models an unconfigured machine (e.g. the no-auth doctor stories).
+    isolate_config: bool = False
     # The story starts real containers (a live `snouty validate` sample), as
     # opposed to the static checks that fail before any container starts. All
     # validate stories require a container runtime (see `ensure_validate_runtime`);
@@ -985,6 +991,15 @@ def _doctor_env(
     }
 
 
+# The doctor stories that assert a *reachable* API can't use `_doctor_env`'s
+# synthesized creds — a placeholder tenant resolves to an unreachable host. They
+# run against the operator's real credentials instead (gen-gallery already
+# requires them; discovery hits the same API), dropping only any ambient legacy
+# username/password so the API key is reported on its own.
+def _reachable_doctor_env() -> dict[str, str | None]:
+    return {"ANTITHESIS_USERNAME": None, "ANTITHESIS_PASSWORD": None}
+
+
 def build_stories(d: Discovery) -> list[Story]:
     kw, kw2 = d.event_keyword, d.event_kw2
     # `--begin-vtime` for the logs skip-ahead story: just before the sampled moment.
@@ -1316,11 +1331,11 @@ def build_stories(d: Discovery) -> list[Story]:
             "contacts the API to confirm it's reachable and report the API and tenant versions.",
             ["doctor"],
             doctor_check(
-                contains=("ANTITHESIS_API_KEY is set", "Antithesis API reachable"),
+                contains=("API key provided", "Antithesis API reachable"),
                 absent=("ANTITHESIS_USERNAME", "ANTITHESIS_PASSWORD"),
             ),
             json_capable=False,
-            env=_doctor_env(api_key=True, username=False, password=False, tenant=True, repo=True),
+            env=_reachable_doctor_env(),
         ),
         Story(
             "doctor-offline",
@@ -1331,7 +1346,7 @@ def build_stories(d: Discovery) -> list[Story]:
             "— there is no 'Antithesis API' line — and still reports the rest.",
             ["doctor", "--offline"],
             doctor_check(
-                contains=("ANTITHESIS_API_KEY is set",),
+                contains=("API key provided",),
                 absent=("Antithesis API",),
             ),
             json_capable=False,
@@ -1367,7 +1382,7 @@ def build_stories(d: Discovery) -> list[Story]:
             ["doctor", "--verbose"],
             doctor_check(contains=("> GET", "Antithesis API reachable")),
             json_capable=False,
-            env=_doctor_env(api_key=True, username=False, password=False, tenant=True, repo=True),
+            env=_reachable_doctor_env(),
         ),
         Story(
             "doctor-api-key-and-legacy",
@@ -1378,7 +1393,7 @@ def build_stories(d: Discovery) -> list[Story]:
             "legacy username/password at all.",
             ["doctor"],
             doctor_check(
-                contains=("ANTITHESIS_API_KEY is set",),
+                contains=("API key provided",),
                 absent=("ANTITHESIS_USERNAME", "ANTITHESIS_PASSWORD"),
             ),
             json_capable=False,
@@ -1393,7 +1408,7 @@ def build_stories(d: Discovery) -> list[Story]:
             ["doctor"],
             doctor_check(
                 contains=(
-                    "ANTITHESIS_API_KEY is not set",
+                    "No Antithesis credentials found",
                     "requires an API key",
                     "ask Antithesis support",
                 ),
@@ -1404,6 +1419,7 @@ def build_stories(d: Discovery) -> list[Story]:
             env=_doctor_env(
                 api_key=False, username=False, password=False, tenant=False, repo=False
             ),
+            isolate_config=True,
         ),
         Story(
             "doctor-legacy-auth",
@@ -1415,7 +1431,7 @@ def build_stories(d: Discovery) -> list[Story]:
             ["doctor"],
             doctor_check(
                 contains=(
-                    "ANTITHESIS_API_KEY is not set",
+                    "API key not provided",
                     "ANTITHESIS_USERNAME",
                     "legacy",
                     "snouty launch",
@@ -1439,6 +1455,7 @@ def build_stories(d: Discovery) -> list[Story]:
             env=_doctor_env(
                 api_key=False, username=False, password=False, tenant=False, repo=False
             ),
+            isolate_config=True,
         ),
     ]
     return stories + build_help_stories(d)
@@ -1666,6 +1683,25 @@ def build_help_stories(d: Discovery) -> list[Story]:
     ]
 
 
+def resolve_compose_command() -> list[str] | None:
+    """Resolve a Docker Compose v2 command: the standalone `docker-compose`
+    binary or the `docker compose` plugin (snouty supports either). Returns the
+    command as a list of argv tokens, or None if neither is a working Compose v2.
+
+    A v1 `docker-compose` is rejected — its `version` banner reads
+    `docker-compose version 1.x` (hyphenated), while v2 (binary or plugin) reads
+    `Docker Compose version v2.x`, so requiring the un-hyphenated 'docker compose'
+    substring accepts exactly Compose v2."""
+    for cmd in (["docker-compose"], ["docker", "compose"]):
+        try:
+            ver = subprocess.run([*cmd, "version"], capture_output=True, text=True)
+        except FileNotFoundError:
+            continue
+        if ver.returncode == 0 and "docker compose" in ver.stdout.lower():
+            return cmd
+    return None
+
+
 def ensure_validate_runtime() -> None:
     """Verify a container runtime is ready for the validate stories and build the
     sample images, raising GalleryError if anything is missing.
@@ -1684,17 +1720,17 @@ def ensure_validate_runtime() -> None:
                 "is a developer tool and requires a running container runtime — "
                 "start Docker and retry."
             )
-        ver = subprocess.run(["docker-compose", "version"], capture_output=True, text=True)
-        if ver.returncode != 0 or "docker compose" not in ver.stdout.lower():
-            raise GalleryError(
-                "docker-compose (Compose v2) not available (`docker-compose version` "
-                "failed or is not v2). Install the docker-compose v2 binary and retry."
-            )
     except FileNotFoundError as e:
         raise GalleryError(
             f"container runtime not found ({e.filename}): gen-gallery requires "
-            "docker and the docker-compose v2 binary on PATH."
+            "docker on PATH."
         ) from e
+    if resolve_compose_command() is None:
+        raise GalleryError(
+            "Docker Compose v2 not available: gen-gallery needs either the "
+            "`docker-compose` binary or the `docker compose` plugin (whichever is "
+            "present must report Compose v2). Install one and retry."
+        )
     print("building validate sample images…", file=sys.stderr)
     build = subprocess.run(
         ["bash", str(BUILD_SAMPLES_SCRIPT)], capture_output=True, text=True
@@ -1781,9 +1817,12 @@ def build_validate_stories(ephemeral: Path | None) -> list[Story]:
             "validate-malformed-compose",
             "Validate a broken compose file",
             "My docker-compose.yaml has a YAML syntax error.",
-            "The error shows docker-compose config failed and includes the parser's message.",
+            "The error shows compose config failed and includes the parser's message.",
             [str(s / "malformed-compose")],
-            fails_with("'docker-compose config' failed"),
+            # snouty echoes the compose command it used, which differs between the
+            # standalone binary (`docker-compose config`) and the plugin (`docker
+            # compose config`); assert only the spelling-agnostic tail.
+            fails_with("compose config' failed"),
         ),
         v(
             "validate-no-services",
@@ -2191,9 +2230,27 @@ def run_login_story(sn: Snouty, story: Story) -> StoryRun:
         shutil.rmtree(home, ignore_errors=True)
 
 
+def _run_isolated_story(sn: Snouty, story: Story) -> StoryRun:
+    """Run a story that models an unconfigured machine with the global config dir
+    pointed at an empty throwaway `$XDG_CONFIG_HOME`, so no persisted `snouty
+    login` credentials (`credentials.toml` / `settings.toml`) leak in. The
+    `--json` rows aren't captured (`json_lines` can't take an env override, and
+    the only isolated stories — the no-auth `doctor` stories — validate on
+    rendered text anyway)."""
+    config_home = Path(tempfile.mkdtemp(prefix="snouty-gallery-noauth."))
+    try:
+        env = {**(story.env or {}), "XDG_CONFIG_HOME": str(config_home)}
+        result = sn.run(story.args, env)
+        return StoryRun(story, result, None)
+    finally:
+        shutil.rmtree(config_home, ignore_errors=True)
+
+
 def run_story(sn: Snouty, story: Story) -> StoryRun:
     if story.sandbox_home:
         return run_login_story(sn, story)
+    if story.isolate_config:
+        return _run_isolated_story(sn, story)
     # Help-only stories pass no `args`; don't invoke a bare `snouty`.
     result = sn.run(story.args, story.env) if story.args else Result([], "", "", 0)
     rows = None

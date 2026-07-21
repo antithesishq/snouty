@@ -666,23 +666,35 @@ pub fn runtime(settings: &Settings) -> Result<Box<dyn ContainerRuntime>> {
     }
 }
 
-/// Tell the user which container engine snouty picked, but only when it was
-/// auto-detected. An explicit `SNOUTY_CONTAINER_ENGINE` / `container_engine`
-/// setting means the user already chose, so there's nothing to announce, and
-/// machine-readable (`json`) output stays silent. Prints to stderr (never
-/// stdout, so it can't contaminate `--json`). The note points at the override
-/// so a surprising pick is easy to fix.
-pub fn announce_auto_detected_engine(settings: &Settings, rt: &dyn ContainerRuntime, json: bool) {
+/// Warn the user which container engine snouty picked, but only when the pick
+/// was genuinely ambiguous: several engines are installed and none was chosen
+/// explicitly, so snouty had to break the tie. When only one engine exists
+/// there's nothing to disambiguate, and an explicit `SNOUTY_CONTAINER_ENGINE` /
+/// `container_engine` setting means the user already chose — both stay silent,
+/// as does machine-readable (`json`) output. Prints to stderr (never stdout, so
+/// it can't contaminate `--json`). The note points at the override so a
+/// surprising pick is easy to fix.
+pub fn warn_ambiguous_engine(settings: &Settings, rt: &dyn ContainerRuntime, json: bool) {
     if json || settings.container_engine().is_some() {
+        return;
+    }
+    // Only worth a warning when more than one engine is installed — otherwise
+    // the pick was forced, not a choice snouty made on the user's behalf.
+    let available = available_engines();
+    if available.len() < 2 {
         return;
     }
     // Report the real engine, not the binary name: for podman-in-disguise the
     // command is `docker` but the engine is podman.
     let engine = rt.engine_kind();
+    let detected = available
+        .iter()
+        .map(|e| e.engine_kind())
+        .collect::<Vec<_>>()
+        .join(" and ");
     eprintln!(
-        "Using auto-detected container engine '{engine}'. If that's not what you \
-         expect, select one explicitly with SNOUTY_CONTAINER_ENGINE={engine} (or \
-         `container_engine = \"{engine}\"` in a snouty settings file)."
+        "Warning: {detected} detected; using {engine} \
+         (override with SNOUTY_CONTAINER_ENGINE)."
     );
 }
 

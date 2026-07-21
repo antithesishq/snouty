@@ -392,15 +392,21 @@ impl AntithesisApi {
         })
     }
 
-    pub async fn search_run_events(&self, run_id: &str, query: &str) -> Result<ByteStream> {
-        match self
+    pub async fn search_run_events(
+        &self,
+        run_id: &str,
+        query: &str,
+        limit: u16,
+    ) -> Result<ByteStream> {
+        // The endpoint caps the returned events at `limit`; the CLI always
+        // supplies one (defaulting to 50), and the server validates the range.
+        let request = self
             .client
             .search_run_events()
             .run_id(run_id)
             .q(query)
-            .send()
-            .await
-        {
+            .limit(u64::from(limit));
+        match request.send().await {
             Ok(response) => Ok(response.into_inner()),
             Err(err) => Err(format_api_client_error(err).await),
         }
@@ -1932,7 +1938,7 @@ mod tests {
         let api = test_api_optionally_with_cache(&mock_server, None);
 
         let mut stream = api
-            .search_run_events("run-1", "slow request")
+            .search_run_events("run-1", "slow request", 50)
             .await
             .unwrap()
             .into_inner();
@@ -1943,6 +1949,23 @@ mod tests {
         let body = String::from_utf8(body).unwrap();
 
         assert!(body.contains("slow request"));
+    }
+
+    #[tokio::test]
+    async fn search_run_events_forwards_limit() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/api/v0/runs/run-1/events"))
+            .and(query_param("q", "slow"))
+            .and(query_param("limit", "5"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(""))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let api = test_api_optionally_with_cache(&mock_server, None);
+        api.search_run_events("run-1", "slow", 5).await.unwrap();
     }
 
     fn rid(version: u32) -> String {

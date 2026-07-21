@@ -149,13 +149,14 @@ pub async fn cmd_runs(
         Some(RunsCommands::Events {
             run_id,
             mut matches,
+            limit,
             query,
         }) => {
             // `-m/--match` is the documented form; the trailing positional
             // `query` is a backward-compatible alias whose terms are additional
             // needles. Merge both into a single needle list.
             matches.extend(query);
-            cmd_runs_events(&run_id, &matches, settings, json, verbose).await
+            cmd_runs_events(&run_id, &matches, limit, settings, json, verbose).await
         }
     }
 }
@@ -1359,6 +1360,7 @@ fn haystack_matches_all_needles(haystack: &str, lowered_needles: &[String]) -> b
 async fn cmd_runs_events(
     run_id: &str,
     matches: &[String],
+    limit: u16,
     settings: &Settings,
     json: bool,
     verbose: bool,
@@ -1395,12 +1397,13 @@ async fn cmd_runs_events(
         eprintln!(
             "Note: only \"{server_query}\" is matched on the server (which returns a capped \
              subset of events); the other terms filter that subset locally, so some matching \
-             events may not appear. Search a single, more specific term to be exhaustive."
+             events may not appear. Search a single, more specific term to be exhaustive, or \
+             raise the cap with --limit."
         );
     }
 
     let api = AntithesisApi::new_requiring_api_key(settings, verbose)?;
-    let stream = match api.search_run_events(run_id, &server_query).await {
+    let stream = match api.search_run_events(run_id, &server_query, limit).await {
         Ok(stream) => stream.into_inner(),
         Err(err) => return Err(explain_run_scoped_error(&api, run_id, err).await),
     };

@@ -18,27 +18,28 @@ fn main() {
 
 fn generate_api_client(out_dir: &Path) {
     let file = std::fs::File::open("src/openapi.json").unwrap();
-    let mut spec_value: serde_json::Value = serde_json::from_reader(file).unwrap();
+    let spec_value: serde_json::Value = serde_json::from_reader(file).unwrap();
 
     // A schema's `additionalProperties: false` makes progenitor/typify emit
     // `#[serde(deny_unknown_fields)]`, which turns a forwards-compatible server
     // change (a new field added to a response) into a hard deserialization
     // error — e.g. `snouty doctor` would report a healthy API as "unreachable"
-    // the day `/api/version` grows a field. typify has no setting to disable
-    // this (the choice is hardwired from the schema value), so strip the
-    // constraint from the spec itself before generating, rather than patching
-    // the generated text afterwards. Removing the key is equivalent to the
-    // permissive default: no `deny_unknown_fields` is emitted, and no flattened
-    // `extra` map is added, so struct shapes are unchanged. Operating on the
-    // structured spec (not the formatted output) also handles the attribute
-    // wherever it would appear — including combined with other serde options on
-    // one line (`#[serde(rename = "…", deny_unknown_fields)]`) and on enums —
-    // which a line-text patch could silently miss.
-    let stripped = strip_additional_properties_false(&mut spec_value);
+    // the day `/api/version` grows a field. As of tenant release 58.6 the
+    // published spec no longer marks any schema `additionalProperties: false`:
+    // the server describes fully lenient schemas itself, so no transform is
+    // needed. Assert that invariant so a future spec that reintroduces the
+    // constraint fails the build loudly — prompting a conscious decision to
+    // re-add stripping — instead of silently regenerating a brittle client.
+    // The recursive scan catches the attribute wherever it appears, including on
+    // nested schemas and enums, which a line-text grep could miss.
+    let offenders = additional_properties_false_paths(&spec_value);
     assert!(
-        stripped > 0,
-        "expected the openapi spec to mark some schema `\"additionalProperties\": false`; \
-         none found — the lenient-client transform is now a no-op and can be removed"
+        offenders.is_empty(),
+        "openapi spec marks {} schema(s) `\"additionalProperties\": false`, which would \
+         make the generated client reject unknown response fields; strip them before \
+         generating (see git history for the previous transform). Offending paths: {}",
+        offenders.len(),
+        offenders.join(", ")
     );
     let spec: openapiv3::OpenAPI = serde_json::from_value(spec_value).unwrap();
 
@@ -54,29 +55,31 @@ fn generate_api_client(out_dir: &Path) {
     fs::write(out_dir.join("antithesis_api.rs"), content).unwrap();
 }
 
-/// Recursively remove every `"additionalProperties": false` from the spec so
-/// the generated client is lenient about unknown response fields (see the call
-/// site for why). Returns the number of occurrences removed.
-fn strip_additional_properties_false(value: &mut serde_json::Value) -> usize {
-    let mut count = 0;
-    match value {
-        serde_json::Value::Object(map) => {
-            if map.get("additionalProperties") == Some(&serde_json::Value::Bool(false)) {
-                map.remove("additionalProperties");
-                count += 1;
+/// Recursively collect the JSON-pointer path of every `"additionalProperties":
+/// false` in the spec, so the caller can assert none exist (see the call site
+/// for why they would break the generated client).
+fn additional_properties_false_paths(value: &serde_json::Value) -> Vec<String> {
+    fn walk(value: &serde_json::Value, path: &str, out: &mut Vec<String>) {
+        match value {
+            serde_json::Value::Object(map) => {
+                if map.get("additionalProperties") == Some(&serde_json::Value::Bool(false)) {
+                    out.push(format!("{path}/additionalProperties"));
+                }
+                for (k, v) in map {
+                    walk(v, &format!("{path}/{k}"), out);
+                }
             }
-            for v in map.values_mut() {
-                count += strip_additional_properties_false(v);
+            serde_json::Value::Array(items) => {
+                for (i, v) in items.iter().enumerate() {
+                    walk(v, &format!("{path}/{i}"), out);
+                }
             }
+            _ => {}
         }
-        serde_json::Value::Array(items) => {
-            for v in items.iter_mut() {
-                count += strip_additional_properties_false(v);
-            }
-        }
-        _ => {}
     }
-    count
+    let mut out = Vec::new();
+    walk(value, "", &mut out);
+    out
 }
 
 // The API represents booleans as the strings "true"/"false", but some

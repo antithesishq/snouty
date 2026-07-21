@@ -288,7 +288,10 @@ fn launch_fails_without_parameters() {
 
 #[test]
 fn launch_reports_api_errors() {
-    let mock_url = start_mock_server(r#"{"message":"bad request"}"#, 400);
+    // Launch endpoints report failures with the `Launch_Error_Response`
+    // envelope (`{ statusCode }`), not the `{ message }` shape the other
+    // endpoints use.
+    let mock_url = start_mock_server(r#"{"statusCode":400}"#, 400);
 
     snouty_with_mock(&mock_url)
         .args(["launch", "-w", "basic_test", "--duration", "30"])

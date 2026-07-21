@@ -113,9 +113,10 @@ stdin moment_run_input.txt
 snouty --json debug --stdin
 stdout '\s*"runId": "run-123".*'
 
-# On API failure, the command exits with an error showing the HTTP status
-#    and response body.
-mock-server 401 '{"message": "unauthorized"}'
+# On API failure, the command exits with an error showing the HTTP status.
+# Launch endpoints report failures with the Launch_Error_Response envelope
+# ({ statusCode }), which carries no message text.
+mock-server 401 '{"statusCode":401}'
 ! snouty debug --input-hash abc123 --run-id 9043254f65c9c65d63fe043a0abfc7fc-53-1 --vtime 1234567890
 stderr 'API error: 401.*'
 

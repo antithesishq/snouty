@@ -1086,9 +1086,10 @@ async fn format_client_error<T>(
 }
 
 /// Same as [`format_api_client_error`] but adds a launch-specific suggestion
-/// when the server returned an empty body where a launch response (with
-/// `run_id`) was expected. Call from launch_test / launch_debugging only —
-/// other endpoints have their own meaningful responses for empty bodies.
+/// when the server returned an empty body. The launch/debug endpoints answer
+/// some gateway-level rejections (auth, rate limiting) with no payload at all,
+/// so the empty body is expected there. Call from launch_test / launch_debugging
+/// only — other endpoints have their own meaningful responses for empty bodies.
 async fn format_launch_client_error(
     err: ClientError<generated::types::LaunchErrorResponse>,
 ) -> Report {
@@ -1102,7 +1103,7 @@ async fn format_launch_client_error(
     let report = format_client_error(err, |_body| String::new()).await;
     if body_is_empty {
         report.with_suggestion(|| {
-            "this can happen when the Antithesis server is on an older version that omits expected fields (for example, run_id from a launch response). Contact Antithesis support to confirm whether your tenant needs to be upgraded."
+            "the launch endpoints return an empty body for some gateway-level rejections (for example authentication or rate limiting). Check that your credentials are valid and have access to this tenant; if the problem persists, contact Antithesis support."
         })
     } else {
         report
@@ -1297,8 +1298,8 @@ mod tests {
             "expected launch-specific suggestion, got: {debug}"
         );
         assert!(
-            debug.contains("run_id from a launch response"),
-            "expected run_id wording in suggestion, got: {debug}"
+            debug.contains("authentication or rate limiting"),
+            "expected gateway-rejection wording in suggestion, got: {debug}"
         );
     }
 

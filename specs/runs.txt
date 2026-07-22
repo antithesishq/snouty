@@ -399,3 +399,15 @@ stderr '.*empty search term.*'
 mock-runs-server
 snouty runs events $R_run_id request
 [!staging] stdout '-456.*2\.0.*\[app:error\].*\{"level":"warn","msg":"slow request"\}'
+
+# `--limit` caps how many events the server returns. Three events match
+# parallel_driver_fetch; --limit 1 keeps only the first (vtime 400.5).
+mock-runs-server
+snouty --json runs events $R_run_id --match parallel_driver_fetch --limit 1
+[!staging] stdout '"vtime":"400\.5"'
+[!staging] ! stdout '"vtime":"401\.75"'
+
+# The default limit (50) exceeds the fixture, so all three matches come back.
+mock-runs-server
+snouty --json runs events $R_run_id --match parallel_driver_fetch
+[!staging] stdout '"vtime":"401\.75"'

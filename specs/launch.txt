@@ -113,11 +113,15 @@ mock-server 200 '{"runId":"run-123","statusCode":202}'
 snouty launch -w basic_test --duration 30 --param 'antithesis.images=app@sha256:abc;db:latest'
 stderr '"antithesis.images": "app@sha256:abc;db:latest"'
 
-# On API failure, the command exits with an error showing the HTTP status
-#    and response body.
-mock-server 400 '{"message":"bad request"}'
-! snouty launch -w basic_test --duration 30
-stderr 'API error: 400.*'
+# On an error that reaches the test launcher (e.g. an unknown launcher name),
+# the command exits with an error showing the HTTP status. Such errors carry
+# the Launch_Error_Response envelope ({ statusCode, runId: null }), verified
+# against the live API — no message text, and runId is null. (The launcher does
+# no request validation beyond auth, so it never returns a 400; 404 is the
+# canonical reachable failure.)
+mock-server 404 '{"statusCode":404,"runId":null}'
+! snouty launch -w no_such_launcher --duration 30
+stderr 'API error: 404.*'
 
 # `snouty run` still works but prints a deprecation warning.
 mock-server 200 '{"runId":"run-123","statusCode":202}'

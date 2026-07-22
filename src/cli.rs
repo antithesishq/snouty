@@ -599,10 +599,10 @@ and VTIME into `runs logs` to see the surrounding logs."#
         #[arg(short = 'm', long = "match")]
         matches: Vec<String>,
 
-        /// Maximum number of events the server returns (1-999). Raise it to make
-        /// a search more exhaustive.
+        /// Maximum number of events the server returns. Raise it to make a
+        /// search more exhaustive. The server enforces the accepted range.
         #[arg(short = 'n', long, default_value = "50")]
-        limit: u16,
+        limit: usize,
 
         /// Substrings to match, as a positional alias for `-m` (all must match).
         /// At least one needle (via `-m` or here) is required.

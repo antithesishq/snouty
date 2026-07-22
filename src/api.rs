@@ -271,7 +271,7 @@ impl AntithesisApi {
                 match parse_debug_launch_body(&body) {
                     Ok((run_id, Some(status_code))) if (200..300).contains(&status_code) => {
                         Ok(LaunchResponse {
-                            run_id: Some(run_id),
+                            run_id,
                             status_code,
                         })
                     }
@@ -294,7 +294,7 @@ impl AntithesisApi {
                     .wrap_err("reading debug launch response")?;
                 let (run_id, status_code) = parse_debug_launch_body(&body)?;
                 Ok(LaunchResponse {
-                    run_id: Some(run_id),
+                    run_id,
                     status_code: status_code.unwrap_or(202),
                 })
             }
@@ -396,7 +396,7 @@ impl AntithesisApi {
         &self,
         run_id: &str,
         query: &str,
-        limit: u16,
+        limit: usize,
     ) -> Result<ByteStream> {
         // The endpoint caps the returned events at `limit`; the CLI always
         // supplies one (defaulting to 50), and the server validates the range.
@@ -405,7 +405,7 @@ impl AntithesisApi {
             .search_run_events()
             .run_id(run_id)
             .q(query)
-            .limit(u64::from(limit));
+            .limit(limit as u64);
         match request.send().await {
             Ok(response) => Ok(response.into_inner()),
             Err(err) => Err(format_api_client_error(err).await),
@@ -820,17 +820,18 @@ async fn finish_launch<T>(
 /// `status_code` is the body's own `statusCode`, if present. This webhook family
 /// reports its real status in the body rather than (only) the HTTP status line,
 /// which lets a caller that has lost the transport status still tell a success
-/// envelope from an error one. Errors if the body isn't JSON or carries no run
-/// id.
-fn parse_debug_launch_body(body: &[u8]) -> Result<(String, Option<i64>)> {
+/// envelope from an error one. Errors only if the body isn't JSON: a missing
+/// `run_id`/`runId` yields `None`, matching the generated `LaunchMvdResponse`
+/// deserializer the documented-202 path relies on (the tenant-58.6 schema makes
+/// the field optional) so both paths agree on a run-id-less success body.
+fn parse_debug_launch_body(body: &[u8]) -> Result<(Option<String>, Option<i64>)> {
     let value: serde_json::Value =
         serde_json::from_slice(body).wrap_err("parsing debug launch response")?;
     let run_id = value
         .get("run_id")
         .or_else(|| value.get("runId"))
         .and_then(serde_json::Value::as_str)
-        .ok_or_else(|| eyre!("debug launch response missing run_id/runId: {value}"))?
-        .to_string();
+        .map(str::to_string);
     let status_code = value.get("statusCode").and_then(serde_json::Value::as_i64);
     Ok((run_id, status_code))
 }
@@ -1119,7 +1120,7 @@ mod tests {
     #[test]
     fn parse_debug_launch_body_reads_snake_case_run_id() {
         let (run_id, status) = parse_debug_launch_body(br#"{"run_id":"abc-1"}"#).unwrap();
-        assert_eq!(run_id, "abc-1");
+        assert_eq!(run_id.as_deref(), Some("abc-1"));
         assert_eq!(status, None);
     }
 
@@ -1127,13 +1128,17 @@ mod tests {
     fn parse_debug_launch_body_reads_camel_case_run_id_and_status_code() {
         let (run_id, status) =
             parse_debug_launch_body(br#"{"runId":"xyz-2","statusCode":202}"#).unwrap();
-        assert_eq!(run_id, "xyz-2");
+        assert_eq!(run_id.as_deref(), Some("xyz-2"));
         assert_eq!(status, Some(202));
     }
 
+    // The tenant-58.6 schema makes runId optional, so a success body may omit it.
+    // Both parsing paths must treat that as run_id: None, not a hard error.
     #[test]
-    fn parse_debug_launch_body_errors_without_a_run_id() {
-        assert!(parse_debug_launch_body(br#"{"statusCode":200}"#).is_err());
+    fn parse_debug_launch_body_tolerates_missing_run_id() {
+        let (run_id, status) = parse_debug_launch_body(br#"{"statusCode":202}"#).unwrap();
+        assert_eq!(run_id, None);
+        assert_eq!(status, Some(202));
     }
 
     #[test]
@@ -1529,6 +1534,36 @@ mod tests {
 
         let response = api.launch_debugging(&params).await.unwrap();
         assert_eq!(response.run_id.as_deref(), Some("debug-run-123"));
+    }
+
+    // A success body may legally omit runId under the tenant-58.6 schema. When it
+    // arrives via the undocumented-200 fallback path (not the documented-202
+    // deserializer), we must still accept it as success with run_id: None rather
+    // than hard-erroring on the missing field.
+    #[tokio::test]
+    async fn launch_debugging_accepts_200_without_run_id() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/api/v1/launch/debugging"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({ "statusCode": 202 })),
+            )
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let api = test_api_optionally_with_cache(&mock_server, None);
+        let params = Params::from_key_value_pairs([
+            "antithesis.debugging.run_id=a2a4-53-1",
+            "antithesis.debugging.input_hash=-1",
+            "antithesis.debugging.vtime=1.0",
+        ])
+        .unwrap();
+
+        let response = api.launch_debugging(&params).await.unwrap();
+        assert_eq!(response.run_id, None);
+        assert_eq!(response.status_code, 202);
     }
 
     // The documented 202 body and the live webhook envelope have converged on

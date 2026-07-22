@@ -288,17 +288,19 @@ fn launch_fails_without_parameters() {
 
 #[test]
 fn launch_reports_api_errors() {
-    // A launcher-reached failure carries the `Launch_Error_Response` envelope
-    // (`{ statusCode, runId: null }`), not the `{ message }` shape the other
-    // endpoints use. (Gateway rejections instead return an empty body; that
-    // path is covered in specs/debug.txt.)
-    let mock_url = start_mock_server(r#"{"statusCode":400,"runId":null}"#, 400);
+    // A launcher-reached failure (e.g. unknown launcher -> 404) carries the
+    // `Launch_Error_Response` envelope (`{ statusCode, runId: null }`), not the
+    // `{ message }` shape the other endpoints use. The launcher does no request
+    // validation beyond auth, so 404 — not 400 — is the reachable failure.
+    // (Gateway rejections instead return an empty body; that path is covered in
+    // specs/debug.txt.)
+    let mock_url = start_mock_server(r#"{"statusCode":404,"runId":null}"#, 404);
 
     snouty_with_mock(&mock_url)
-        .args(["launch", "-w", "basic_test", "--duration", "30"])
+        .args(["launch", "-w", "no_such_launcher", "--duration", "30"])
         .assert()
         .failure()
-        .stderr(predicate::str::contains("API error: 400"));
+        .stderr(predicate::str::contains("API error: 404"));
 }
 
 #[test]

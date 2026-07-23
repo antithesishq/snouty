@@ -2,14 +2,16 @@ use std::{
     collections::HashMap,
     io::Write,
     path::{Path, PathBuf},
-    sync::Arc,
+    str::FromStr,
+    sync::{Arc, RwLock},
     time::Duration,
 };
 
 use base64::{Engine, prelude::BASE64_STANDARD};
+use chrono::{DateTime, TimeDelta, Utc};
 use color_eyre::{
     Section,
-    eyre::{Context, OptionExt, Result},
+    eyre::{Context, OptionExt, Result, eyre},
 };
 use http::HeaderValue;
 use keyring_core::Entry;
@@ -35,6 +37,68 @@ const CREDENTIALS_FILENAME: &str = "credentials.toml";
 const OIDC_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[derive(Clone)]
+pub struct OAuthCredential {
+    antithesis_token: String,
+    refresh_token: Option<String>,
+    expiry: Option<DateTime<Utc>>,
+}
+
+impl std::fmt::Debug for OAuthCredential {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OAuthCredential")
+            .field("antithesis_token", &"[REDACTED]")
+            .field("refresh_token", &"[REDACTED]")
+            .field("expiry", &self.expiry)
+            .finish()
+    }
+}
+
+impl OAuthCredential {
+    fn is_expired(&self) -> bool {
+        let refresh_window = TimeDelta::minutes(5);
+        match self.expiry {
+            Some(expiry) => Utc::now() >= expiry - refresh_window,
+            None => false,
+        }
+    }
+}
+
+#[derive(Deserialize)]
+struct OAuthRefreshResponse {
+    antithesis_token: String,
+    refresh_token: Option<String>,
+    expires_in: Option<u32>,
+}
+
+#[derive(Clone, Debug)]
+pub enum OAuthRefreshInfo {
+    Keychain {
+        entry_name: String,
+    },
+    CredentialsFile {
+        path: PathBuf,
+        profile: Option<String>,
+    },
+}
+
+impl OAuthRefreshInfo {
+    fn persist(&self, credentials: &PersistableCredentials) -> Result<()> {
+        match self {
+            Self::Keychain { entry_name } => {
+                let entry = Entry::new("snouty", entry_name)
+                    .wrap_err("opening keychain entry to store the refreshed credential")?;
+                entry
+                    .set_password(&serde_json::to_string(credentials)?)
+                    .wrap_err("writing the refreshed credential to the keychain")
+            }
+            Self::CredentialsFile { path, profile } => {
+                persist_to_file(credentials.clone(), profile.as_deref(), Some(path)).map(|_| ())
+            }
+        }
+    }
+}
+
+#[derive(Clone)]
 pub enum AuthenticationInfo {
     ApiKey {
         api_key: String,
@@ -44,6 +108,10 @@ pub enum AuthenticationInfo {
         request_token: String,
         // Feels pretty sus to stick our secrets on the heap
         cached: Arc<OnceCell<String>>,
+    },
+    OAuth {
+        refresh_info: OAuthRefreshInfo,
+        active_credential: Arc<RwLock<OAuthCredential>>,
     },
     Password {
         username: String,
@@ -63,6 +131,14 @@ impl std::fmt::Debug for AuthenticationInfo {
                 .field("url", url)
                 .field("request_token", &"[REDACTED]")
                 .field("cached", &cached.initialized())
+                .finish(),
+            Self::OAuth {
+                refresh_info,
+                active_credential,
+            } => f
+                .debug_struct("OAuth")
+                .field("refresh_info", refresh_info)
+                .field("active_credential", active_credential)
                 .finish(),
             Self::Password { username, .. } => f
                 .debug_struct("Password")
@@ -107,7 +183,11 @@ impl AuthenticationInfo {
             match serde_json::from_str::<PersistableCredentials>(&persisted) {
                 Ok(persisted) => {
                     return Ok(Some(AttributedValue::Keychain {
-                        value: persisted.convert_to_authentication_info(),
+                        value: persisted.convert_to_authentication_info(|| {
+                            OAuthRefreshInfo::Keychain {
+                                entry_name: credential_name.clone(),
+                            }
+                        }),
                         entry_name: credential_name,
                     }));
                 }
@@ -167,7 +247,12 @@ impl AuthenticationInfo {
                             AttributedValue::SettingsFile {
                                 value: from_credentials_file
                                     .clone()
-                                    .convert_to_authentication_info(),
+                                    .convert_to_authentication_info(|| {
+                                        OAuthRefreshInfo::CredentialsFile {
+                                            path: path.clone(),
+                                            profile: Some(profile_name.to_owned()),
+                                        }
+                                    }),
                                 settings_file_path: path,
                                 profile: Some(profile_name.to_owned()),
                             },
@@ -191,7 +276,12 @@ impl AuthenticationInfo {
         {
             return to_result(
                 AttributedValue::SettingsFile {
-                    value: from_credentials_file.convert_to_authentication_info(),
+                    value: from_credentials_file.convert_to_authentication_info(|| {
+                        OAuthRefreshInfo::CredentialsFile {
+                            path: path.clone(),
+                            profile: None,
+                        }
+                    }),
                     settings_file_path: path,
                     profile: None,
                 },
@@ -218,11 +308,13 @@ impl AuthenticationInfo {
 
     pub(crate) async fn authenticate_request<E>(
         &self,
+        client: &reqwest::Client,
+        base_url: &str,
         request: &mut reqwest::Request,
         _info: &OperationInfo,
     ) -> std::result::Result<(), progenitor_client::Error<E>> {
         let header = self
-            .auth_header()
+            .auth_header(client, base_url)
             .await
             .map_err(|e| progenitor_client::Error::Custom(e.to_string()))?;
         request
@@ -231,7 +323,7 @@ impl AuthenticationInfo {
         Ok(())
     }
 
-    async fn auth_header(&self) -> Result<HeaderValue> {
+    async fn auth_header(&self, client: &reqwest::Client, base_url: &str) -> Result<HeaderValue> {
         match self {
             Self::ApiKey { api_key } => to_header_value(&format!("Bearer {api_key}"), true),
             Self::GithubActionsOidc {
@@ -250,6 +342,10 @@ impl AuthenticationInfo {
                 ),
                 true,
             ),
+            Self::OAuth {
+                refresh_info,
+                active_credential,
+            } => oauth_auth_header(client, base_url, refresh_info, active_credential).await,
             Self::Password { username, password } => {
                 let credentials = format!("{username}:{password}");
                 let encoded = BASE64_STANDARD.encode(credentials);
@@ -257,6 +353,185 @@ impl AuthenticationInfo {
             }
         }
     }
+
+    pub(crate) fn can_refresh(&self) -> bool {
+        match self {
+            Self::OAuth {
+                active_credential, ..
+            } => active_credential
+                .read()
+                .map(|credential| credential.refresh_token.is_some())
+                .unwrap_or(false),
+            _ => false,
+        }
+    }
+
+    pub(crate) async fn refresh_after_unauthorized(
+        &self,
+        client: &reqwest::Client,
+        base_url: &str,
+    ) -> Result<Option<HeaderValue>> {
+        let Self::OAuth {
+            refresh_info,
+            active_credential,
+        } = self
+        else {
+            return Ok(None);
+        };
+
+        // Snapshot the refresh token under a brief read lock, dropped before the
+        // async refresh.
+        let refresh_token = {
+            let current = active_credential
+                .read()
+                .map_err(|err| eyre!("the OAuth credential lock is poisoned: {err}"))?;
+            current.refresh_token.clone()
+        };
+        let Some(refresh_token) = refresh_token else {
+            return Ok(None);
+        };
+
+        let access_token = refresh_and_store(
+            client,
+            base_url,
+            refresh_info,
+            active_credential,
+            &refresh_token,
+        )
+        .await?;
+        Ok(Some(to_header_value(
+            &format!("Bearer {access_token}"),
+            true,
+        )?))
+    }
+}
+
+#[cfg(test)]
+impl AuthenticationInfo {
+    pub(crate) fn oauth_for_test(
+        antithesis_token: impl Into<String>,
+        refresh_token: Option<&str>,
+        expiry: Option<DateTime<Utc>>,
+        refresh_info: OAuthRefreshInfo,
+    ) -> Self {
+        Self::OAuth {
+            refresh_info,
+            active_credential: Arc::new(RwLock::new(OAuthCredential {
+                antithesis_token: antithesis_token.into(),
+                refresh_token: refresh_token.map(str::to_owned),
+                expiry,
+            })),
+        }
+    }
+}
+
+/// Build the `Authorization` header for an OAuth credential, refreshing if necessary and able
+async fn oauth_auth_header(
+    client: &reqwest::Client,
+    base_url: &str,
+    refresh_info: &OAuthRefreshInfo,
+    active_credential: &Arc<RwLock<OAuthCredential>>,
+) -> Result<HeaderValue> {
+    // What to do, decided under (and copied out of) a short-lived read lock.
+    enum Plan {
+        Use(String),
+        Refresh(String),
+    }
+
+    let plan = {
+        let current = active_credential
+            .read()
+            .map_err(|err| eyre!("the OAuth credential lock is poisoned: {err}"))?;
+        match (current.is_expired(), current.refresh_token.clone()) {
+            (true, Some(refresh_token)) => Plan::Refresh(refresh_token),
+            // Not expired, or expired with no refresh token: use what we have and
+            // let the server reject it if it's no longer valid.
+            _ => Plan::Use(current.antithesis_token.clone()),
+        }
+    };
+
+    let access_token = match plan {
+        Plan::Use(access_token) => access_token,
+        Plan::Refresh(refresh_token) => {
+            refresh_and_store(
+                client,
+                base_url,
+                refresh_info,
+                active_credential,
+                &refresh_token,
+            )
+            .await?
+        }
+    };
+    to_header_value(&format!("Bearer {access_token}"), true)
+}
+
+/// Refresh the access token using `refresh_token`, swap the new tokens into
+/// `active_credential`, persist them back to their origin, and return the new
+/// access token.
+async fn refresh_and_store(
+    client: &reqwest::Client,
+    base_url: &str,
+    refresh_info: &OAuthRefreshInfo,
+    active_credential: &Arc<RwLock<OAuthCredential>>,
+    refresh_token: &str,
+) -> Result<String> {
+    let refreshed = refresh_oauth_token(client, base_url, refresh_token).await?;
+    let expiry = refreshed
+        .expires_in
+        .map(|ttl_seconds| Utc::now() + TimeDelta::seconds(ttl_seconds as i64));
+    let new_access_token = refreshed.antithesis_token;
+    let new_refresh_token = refreshed.refresh_token;
+
+    // Swap the new tokens into memory under a short-lived write lock.
+    {
+        let mut writer = active_credential
+            .write()
+            .map_err(|err| eyre!("the OAuth credential lock is poisoned: {err}"))?;
+        writer.antithesis_token = new_access_token.clone();
+        writer.refresh_token = new_refresh_token.clone();
+        writer.expiry = expiry;
+    }
+
+    // Persist back to the origin so the refreshed tokens survive across runs.
+    // Non-fatal on failure: this process already has the new token in memory, and
+    // we'll just refresh again next time rather than aborting the request.
+    let to_persist = PersistableCredentials::OAuth {
+        antithesis_token: new_access_token.clone(),
+        refresh_token: new_refresh_token,
+        expiry,
+    };
+    if let Err(err) = refresh_info.persist(&to_persist) {
+        eprintln!("warning: failed to persist the refreshed OAuth credential: {err:#}");
+    }
+
+    Ok(new_access_token)
+}
+
+async fn refresh_oauth_token(
+    client: &reqwest::Client,
+    base_url: &str,
+    refresh_token: &str,
+) -> Result<OAuthRefreshResponse> {
+    let mut request = reqwest::Request::new(
+        reqwest::Method::GET,
+        reqwest::Url::from_str(&format!("{base_url}/auth/cli/refresh"))?,
+    );
+    request.headers_mut().insert(
+        reqwest::header::AUTHORIZATION,
+        to_header_value(&format!("Bearer {refresh_token}"), true)?,
+    );
+
+    client
+        .execute(request)
+        .await?
+        .error_for_status()
+        .wrap_err(
+            "Unable to refresh OAuth credential. Please run `snouty login` to obtain a new token.",
+        )?
+        .json::<OAuthRefreshResponse>()
+        .await
+        .wrap_err("parsing the OAuth refresh response")
 }
 
 fn try_load_credentials_file() -> Result<Option<(PathBuf, CredentialsFile)>> {
@@ -321,8 +596,18 @@ fn to_header_value(content: &str, sensitive: bool) -> Result<HeaderValue> {
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub(crate) enum PersistableCredentials {
-    ApiKey { api_key: String },
-    Password { username: String, password: String },
+    ApiKey {
+        api_key: String,
+    },
+    OAuth {
+        antithesis_token: String,
+        refresh_token: Option<String>,
+        expiry: Option<DateTime<Utc>>,
+    },
+    Password {
+        username: String,
+        password: String,
+    },
 }
 
 impl std::fmt::Debug for PersistableCredentials {
@@ -331,6 +616,12 @@ impl std::fmt::Debug for PersistableCredentials {
             Self::ApiKey { .. } => f
                 .debug_struct("ApiKey")
                 .field("api_key", &"[REDACTED]")
+                .finish(),
+            Self::OAuth { expiry, .. } => f
+                .debug_struct("OAuth")
+                .field("antithesis_token", &"[REDACTED]")
+                .field("refresh_token", &"[REDACTED]")
+                .field("expiry", expiry)
                 .finish(),
             Self::Password { username, .. } => f
                 .debug_struct("Password")
@@ -342,9 +633,24 @@ impl std::fmt::Debug for PersistableCredentials {
 }
 
 impl PersistableCredentials {
-    fn convert_to_authentication_info(self) -> AuthenticationInfo {
+    fn convert_to_authentication_info<F>(self, refresh_info_supplier: F) -> AuthenticationInfo
+    where
+        F: FnOnce() -> OAuthRefreshInfo,
+    {
         match self {
             Self::ApiKey { api_key } => AuthenticationInfo::ApiKey { api_key },
+            Self::OAuth {
+                antithesis_token,
+                refresh_token,
+                expiry,
+            } => AuthenticationInfo::OAuth {
+                refresh_info: refresh_info_supplier(),
+                active_credential: Arc::new(RwLock::new(OAuthCredential {
+                    antithesis_token,
+                    refresh_token,
+                    expiry,
+                })),
+            },
             Self::Password { username, password } => {
                 AuthenticationInfo::Password { username, password }
             }
@@ -383,7 +689,7 @@ pub(crate) fn persist(
     match try_persist_to_keychain(&credentials, profile) {
         Err(err) => Err(err),
         Ok(Some(())) => Ok(CredentialStorage::Keychain),
-        Ok(None) => persist_to_file(credentials, profile).map(CredentialStorage::File),
+        Ok(None) => persist_to_file(credentials, profile, None).map(CredentialStorage::File),
     }
 }
 
@@ -442,10 +748,20 @@ fn clear_from_file_if_present(profile: Option<&str>) {
     }
 }
 
-fn persist_to_file(credentials: PersistableCredentials, profile: Option<&str>) -> Result<PathBuf> {
-    let (settings_dir, path) = try_get_credentials_file_path().ok_or_eyre(
-        "Could not determine settings directory. Please ensure $XDG_CONFIG_HOME or $HOME is set",
-    )?;
+fn persist_to_file(
+    credentials: PersistableCredentials,
+    profile: Option<&str>,
+    path: Option<&PathBuf>,
+) -> Result<PathBuf> {
+    let (settings_dir, path) = match path {
+        None =>  try_get_credentials_file_path().ok_or_eyre(
+            "Could not determine settings directory. Please ensure $XDG_CONFIG_HOME or $HOME is set",
+        )?,
+        Some(explicit_path) => match explicit_path.parent() {
+            None => return Err(eyre!("Unable to determine parent directory of {}", explicit_path.to_str().unwrap_or("[invalid path]"))),
+            Some(parent_dir) => (parent_dir.to_path_buf(), explicit_path.to_path_buf()),
+        }
+    };
     let mut current_contents = match read_to_string_if_file_exists(&path)? {
         Some(contents) => match parse_credentials_file_toml(contents, &path) {
             Ok(file) => file,
@@ -645,8 +961,15 @@ mod tests {
             cached: Arc::new(OnceCell::new()),
         };
 
-        let first = auth.auth_header().await.unwrap();
-        let second = auth.auth_header().await.unwrap();
+        let client = reqwest::ClientBuilder::new().build().unwrap();
+        let first = auth
+            .auth_header(&client, "https://snouty.example")
+            .await
+            .unwrap();
+        let second = auth
+            .auth_header(&client, "https://snouty.example")
+            .await
+            .unwrap();
         assert_eq!(first.to_str().unwrap(), "GHA oidc-jwt-token-value");
         assert_eq!(first, second);
 

@@ -180,6 +180,12 @@ fn authn_checks(authn_info: Result<AttributedValue<AuthenticationInfo>>) -> Vec<
                     credentials,
                 )]
             }
+            AuthenticationInfo::OAuth { .. } => {
+                vec![enrich(
+                    Check::ok("oauth_credentials", "OAuth credentials used"),
+                    credentials,
+                )]
+            }
             AuthenticationInfo::ApiKey { .. } => {
                 vec![enrich(
                     Check::ok("api_key", "API key provided"),

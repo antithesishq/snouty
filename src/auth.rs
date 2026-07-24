@@ -544,7 +544,12 @@ async fn refresh_and_store(
         .expires_in
         .map(|ttl_seconds| Utc::now() + TimeDelta::seconds(ttl_seconds as i64));
     let new_access_token = refreshed.antithesis_token;
-    let new_refresh_token = refreshed.refresh_token;
+    // Per RFC 6749 §6, a refresh response without a new refresh token means that the previous token is still valid
+    let new_refresh_token = Some(
+        refreshed
+            .refresh_token
+            .unwrap_or_else(|| refresh_token.to_owned()),
+    );
 
     // Swap the new tokens into memory under a short-lived write lock.
     {
@@ -905,6 +910,60 @@ mod tests {
     use std::sync::mpsc::{self, Receiver};
     use std::thread;
     use std::time::Duration;
+
+    #[tokio::test]
+    async fn refresh_retains_prior_refresh_token_when_response_omits_one() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/auth/cli/refresh"))
+            // New access token, but NO refresh_token (and no expires_in).
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "antithesis_token": "new-access-token"
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let active_credential = Arc::new(RwLock::new(OAuthCredential {
+            antithesis_token: "old-access-token".to_owned(),
+            refresh_token: Some("keep-me".to_owned()),
+            expiry: None,
+        }));
+
+        let creds_dir = tempfile::TempDir::new().unwrap();
+        let refresh_info = OAuthRefreshInfo::CredentialsFile {
+            path: creds_dir.path().join("credentials.toml"),
+            profile: None,
+        };
+
+        let client = reqwest::Client::new();
+        let new_access = refresh_and_store(
+            &client,
+            &server.uri(),
+            &refresh_info,
+            &active_credential,
+            "keep-me",
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(new_access, "new-access-token");
+
+        let in_memory = active_credential.read().unwrap();
+        assert_eq!(in_memory.antithesis_token, "new-access-token");
+        assert_eq!(
+            in_memory.refresh_token.as_deref(),
+            Some("keep-me"),
+            "the refresh token must be retained when the server didn't rotate it"
+        );
+
+        let persisted = std::fs::read_to_string(creds_dir.path().join("credentials.toml")).unwrap();
+        assert!(persisted.contains("new-access-token"), "got:\n{persisted}");
+        assert!(persisted.contains("keep-me"), "got:\n{persisted}");
+    }
 
     /// The parts of an inbound HTTP request the OIDC exchange test asserts on.
     struct CapturedRequest {

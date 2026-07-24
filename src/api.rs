@@ -1012,8 +1012,7 @@ fn format_api_error(status: u16, body: &str) -> Report {
     // statement, so it rides along as a suggestion note.
     let report = if matches!(status, 401 | 403) {
         report.suggestion(
-            "check that ANTITHESIS_API_KEY (or ANTITHESIS_USERNAME/ANTITHESIS_PASSWORD) \
-             is set correctly and has access to this tenant",
+            "check that credentials have been configured correctly (either via running `snouty login` or by setting the ANTITHESIS_API_KEY (or ANTITHESIS_USERNAME/ANTITHESIS_PASSWORD) environment variable) for this tenant",
         )
     } else {
         report

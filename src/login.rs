@@ -350,6 +350,8 @@ struct TokenResponse {
 ///    `Authorization` header, alongside the PKCE verifier) and the flow token
 ///    (in the body) for an Antithesis token.
 async fn complete_oauth_login(tenant: &str) -> Result<PersistableCredentials> {
+    // Deliberately ignoring whatever is in ANTITHESIS_BASE_URL because a user may
+    // be logging in to another tenant under a new profile.
     let base_url = format!("https://{tenant}.antithesis.com");
     let client = reqwest::Client::builder()
         .timeout(OAUTH_HTTP_TIMEOUT)

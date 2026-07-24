@@ -55,9 +55,8 @@ impl std::fmt::Debug for OAuthCredential {
 
 impl OAuthCredential {
     fn is_expired(&self) -> bool {
-        let refresh_window = TimeDelta::minutes(5);
         match self.expiry {
-            Some(expiry) => Utc::now() >= expiry - refresh_window,
+            Some(expiry) => Utc::now() >= expiry,
             None => false,
         }
     }
@@ -82,17 +81,17 @@ pub enum OAuthRefreshInfo {
 }
 
 impl OAuthRefreshInfo {
-    fn persist(&self, credentials: &PersistableCredentials) -> Result<()> {
+    fn persist(&self, credentials: PersistableCredentials) -> Result<()> {
         match self {
             Self::Keychain { entry_name } => {
                 let entry = Entry::new("snouty", entry_name)
                     .wrap_err("opening keychain entry to store the refreshed credential")?;
                 entry
-                    .set_password(&serde_json::to_string(credentials)?)
+                    .set_password(&serde_json::to_string(&credentials)?)
                     .wrap_err("writing the refreshed credential to the keychain")
             }
             Self::CredentialsFile { path, profile } => {
-                persist_to_file(credentials.clone(), profile.as_deref(), Some(path)).map(|_| ())
+                persist_to_file(credentials, profile.as_deref(), Some(path)).map(|_| ())
             }
         }
     }

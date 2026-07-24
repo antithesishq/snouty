@@ -514,7 +514,7 @@ async fn refresh_oauth_token(
     refresh_token: &str,
 ) -> Result<OAuthRefreshResponse> {
     let mut request = reqwest::Request::new(
-        reqwest::Method::GET,
+        reqwest::Method::POST,
         reqwest::Url::from_str(&format!("{base_url}/auth/cli/refresh"))?,
     );
     request.headers_mut().insert(

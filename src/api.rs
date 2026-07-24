@@ -1879,7 +1879,7 @@ mod tests {
 
         // Refresh endpoint: given the current refresh token, hands back a brand
         // new access + refresh token pair.
-        Mock::given(method("GET"))
+        Mock::given(method("POST"))
             .and(path("/auth/cli/refresh"))
             .and(header("authorization", "Bearer old-refresh-token"))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({

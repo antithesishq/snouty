@@ -18,7 +18,7 @@ use keyring_core::Entry;
 use progenitor_client::OperationInfo;
 use serde::{Deserialize, Serialize};
 use tempfile::NamedTempFile;
-use tokio::sync::OnceCell;
+use tokio::sync::{Mutex, OnceCell};
 
 use crate::{
     attributed_value::AttributedValue,
@@ -111,6 +111,11 @@ pub enum AuthenticationInfo {
     OAuth {
         refresh_info: OAuthRefreshInfo,
         active_credential: Arc<RwLock<OAuthCredential>>,
+        // Serializes token refreshes so concurrent callers don't each replay the
+        // same (single-use) refresh token — which, under refresh-token rotation
+        // with reuse detection, could otherwise trip the IdP into revoking the
+        // whole token family. Async so it can be held across the refresh `.await`.
+        refresh_lock: Arc<Mutex<()>>,
     },
     Password {
         username: String,
@@ -134,6 +139,7 @@ impl std::fmt::Debug for AuthenticationInfo {
             Self::OAuth {
                 refresh_info,
                 active_credential,
+                ..
             } => f
                 .debug_struct("OAuth")
                 .field("refresh_info", refresh_info)
@@ -344,7 +350,17 @@ impl AuthenticationInfo {
             Self::OAuth {
                 refresh_info,
                 active_credential,
-            } => oauth_auth_header(client, base_url, refresh_info, active_credential).await,
+                refresh_lock,
+            } => {
+                oauth_auth_header(
+                    client,
+                    base_url,
+                    refresh_info,
+                    active_credential,
+                    refresh_lock,
+                )
+                .await
+            }
             Self::Password { username, password } => {
                 let credentials = format!("{username}:{password}");
                 let encoded = BASE64_STANDARD.encode(credentials);
@@ -373,6 +389,7 @@ impl AuthenticationInfo {
         let Self::OAuth {
             refresh_info,
             active_credential,
+            refresh_lock,
         } = self
         else {
             return Ok(None);
@@ -390,11 +407,12 @@ impl AuthenticationInfo {
             return Ok(None);
         };
 
-        let access_token = refresh_and_store(
+        let access_token = refresh_single_flight(
             client,
             base_url,
             refresh_info,
             active_credential,
+            refresh_lock,
             &refresh_token,
         )
         .await?;
@@ -420,16 +438,20 @@ impl AuthenticationInfo {
                 refresh_token: refresh_token.map(str::to_owned),
                 expiry,
             })),
+            refresh_lock: Arc::new(Mutex::new(())),
         }
     }
 }
 
-/// Build the `Authorization` header for an OAuth credential, refreshing if necessary and able
+/// Build the `Authorization` header for an OAuth credential, proactively
+/// refreshing (single-flight) if the token has expired and a refresh token is
+/// available.
 async fn oauth_auth_header(
     client: &reqwest::Client,
     base_url: &str,
     refresh_info: &OAuthRefreshInfo,
     active_credential: &Arc<RwLock<OAuthCredential>>,
+    refresh_lock: &Mutex<()>,
 ) -> Result<HeaderValue> {
     // What to do, decided under (and copied out of) a short-lived read lock.
     enum Plan {
@@ -452,17 +474,59 @@ async fn oauth_auth_header(
     let access_token = match plan {
         Plan::Use(access_token) => access_token,
         Plan::Refresh(refresh_token) => {
-            refresh_and_store(
+            refresh_single_flight(
                 client,
                 base_url,
                 refresh_info,
                 active_credential,
+                refresh_lock,
                 &refresh_token,
             )
             .await?
         }
     };
     to_header_value(&format!("Bearer {access_token}"), true)
+}
+
+/// Refresh at most once for a given refresh token, serializing concurrent
+/// callers.
+async fn refresh_single_flight(
+    client: &reqwest::Client,
+    base_url: &str,
+    refresh_info: &OAuthRefreshInfo,
+    active_credential: &Arc<RwLock<OAuthCredential>>,
+    refresh_lock: &Mutex<()>,
+    intended_refresh_token: &str,
+) -> Result<String> {
+    // Async lock, held across the refresh `.await`: concurrent callers park here
+    // (yielding, not blocking the runtime) until the in-flight refresh finishes.
+    let _guard = refresh_lock.lock().await;
+
+    // Re-read now that we hold the lock. If the refresh token no longer matches
+    // the one we set out to use, another caller already refreshed with it —
+    // adopt their access token rather than replaying a consumed, single-use
+    // token (which reuse detection could treat as a breach).
+    let (current_access_token, current_refresh_token) = {
+        let current = active_credential
+            .read()
+            .map_err(|err| eyre!("the OAuth credential lock is poisoned: {err}"))?;
+        (
+            current.antithesis_token.clone(),
+            current.refresh_token.clone(),
+        )
+    };
+    if current_refresh_token.as_deref() != Some(intended_refresh_token) {
+        return Ok(current_access_token);
+    }
+
+    refresh_and_store(
+        client,
+        base_url,
+        refresh_info,
+        active_credential,
+        intended_refresh_token,
+    )
+    .await
 }
 
 /// Refresh the access token using `refresh_token`, swap the new tokens into
@@ -500,7 +564,7 @@ async fn refresh_and_store(
         refresh_token: new_refresh_token,
         expiry,
     };
-    if let Err(err) = refresh_info.persist(&to_persist) {
+    if let Err(err) = refresh_info.persist(to_persist) {
         eprintln!("warning: failed to persist the refreshed OAuth credential: {err:#}");
     }
 
@@ -649,6 +713,7 @@ impl PersistableCredentials {
                     refresh_token,
                     expiry,
                 })),
+                refresh_lock: Arc::new(Mutex::new(())),
             },
             Self::Password { username, password } => {
                 AuthenticationInfo::Password { username, password }

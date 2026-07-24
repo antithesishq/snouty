@@ -117,7 +117,7 @@ async fn run(cli: Cli) -> Result<()> {
         Commands::Update(args) => cmd_update(args),
         Commands::Docs { offline, command } => docs::cmd_docs(command, offline, json).await,
         Commands::Login { tenant, repository } => {
-            cmd_login(tenant, repository, profile.as_deref(), settings)
+            cmd_login(tenant, repository, profile.as_deref(), settings).await
         }
         Commands::Launch(args) => {
             info!("launching test with webhook: {}", args.webhook);

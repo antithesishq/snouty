@@ -498,7 +498,7 @@ impl ClientHooks<ClientState> for generated::Client {
     ) -> std::result::Result<(), ClientError<E>> {
         self.inner()
             .authn_info
-            .authenticate_request(request, info)
+            .authenticate_request(self.client(), self.baseurl(), request, info)
             .await?;
         Ok(())
     }
@@ -510,6 +510,15 @@ impl ClientHooks<ClientState> for generated::Client {
     ) -> reqwest::Result<reqwest::Response> {
         let state = self.inner();
         let verbose_headers = state.default_headers.as_ref();
+
+        // Keep a resendable copy so a token refresh can retry the request once if
+        // the first attempt is rejected as unauthorized but we have a refreshable credential
+        let retry_request = if state.authn_info.can_refresh() {
+            request.try_clone()
+        } else {
+            None
+        };
+
         if let Some(default_headers) = verbose_headers {
             let mut out = String::new();
             format_request(&request, default_headers, &mut out);
@@ -517,6 +526,36 @@ impl ClientHooks<ClientState> for generated::Client {
         }
 
         let result = send_request(self.client(), state.cached.as_ref(), request).await;
+
+        let result = match (result, retry_request) {
+            (Ok(response), Some(mut retry_request))
+                if response.status() == reqwest::StatusCode::UNAUTHORIZED =>
+            {
+                match state
+                    .authn_info
+                    .refresh_after_unauthorized(self.client(), self.baseurl())
+                    .await
+                {
+                    Ok(Some(header)) => {
+                        retry_request
+                            .headers_mut()
+                            .insert(reqwest::header::AUTHORIZATION, header);
+                        if let Some(default_headers) = verbose_headers {
+                            let mut out = String::new();
+                            format_request(&retry_request, default_headers, &mut out);
+                            eprint!("{out}");
+                        }
+                        send_request(self.client(), state.cached.as_ref(), retry_request).await
+                    }
+                    Ok(None) => Ok(response),
+                    Err(err) => {
+                        log::warn!("reactive OAuth token refresh failed: {err:#}");
+                        Ok(response)
+                    }
+                }
+            }
+            (result, _) => result,
+        };
 
         if verbose_headers.is_some()
             && let Ok(response) = &result
@@ -973,8 +1012,7 @@ fn format_api_error(status: u16, body: &str) -> Report {
     // statement, so it rides along as a suggestion note.
     let report = if matches!(status, 401 | 403) {
         report.suggestion(
-            "check that ANTITHESIS_API_KEY (or ANTITHESIS_USERNAME/ANTITHESIS_PASSWORD) \
-             is set correctly and has access to this tenant",
+            "check that credentials have been configured correctly (either via running `snouty login` or by setting the ANTITHESIS_API_KEY (or ANTITHESIS_USERNAME/ANTITHESIS_PASSWORD) environment variable) for this tenant",
         )
     } else {
         report
@@ -1830,6 +1868,181 @@ mod tests {
 
         assert_eq!(first.run_id, "run-1");
         assert_eq!(second.run_id, "run-1");
+    }
+
+    #[tokio::test]
+    async fn oauth_401_triggers_refresh_and_retries_once() {
+        use wiremock::matchers::header;
+
+        let mock_server = MockServer::start().await;
+
+        // Refresh endpoint: given the current refresh token, hands back a brand
+        // new access + refresh token pair.
+        Mock::given(method("POST"))
+            .and(path("/auth/cli/refresh"))
+            .and(header("authorization", "Bearer old-refresh-token"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "antithesis_token": "new-access-token",
+                "refresh_token": "new-refresh-token",
+                "expires_in": 3600
+            })))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        // The API rejects the stale access token …
+        Mock::given(method("GET"))
+            .and(path("/api/v0/runs/run-1"))
+            .and(header("authorization", "Bearer old-access-token"))
+            .respond_with(ResponseTemplate::new(401))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        // … and accepts the refreshed one on the retry.
+        Mock::given(method("GET"))
+            .and(path("/api/v0/runs/run-1"))
+            .and(header("authorization", "Bearer new-access-token"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "run_id": "run-1",
+                "status": "completed",
+                "created_at": "2025-03-20T02:00:00Z",
+                "launcher": "nightly"
+            })))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        // Persist the refreshed credential to a temp credentials file so the
+        // write-back can be checked without touching the real config.
+        let creds_dir = TempDir::new().unwrap();
+        let creds_path = creds_dir.path().join("credentials.toml");
+        let auth = AuthenticationInfo::oauth_for_test(
+            "old-access-token",
+            Some("old-refresh-token"),
+            // No known expiry, so the proactive (pre-expiry) path is a no-op and
+            // this exercises the reactive, 401-driven refresh specifically.
+            None,
+            crate::auth::OAuthRefreshInfo::CredentialsFile {
+                path: creds_path.clone(),
+                profile: None,
+            },
+        );
+
+        let api = AntithesisApi::build(
+            &Settings::for_test_base_url(mock_server.uri()),
+            auth,
+            false,
+            None,
+        )
+        .unwrap();
+
+        // The initial 401 drives a refresh and a single retry, which succeeds.
+        let run = api.get_run("run-1").await.unwrap();
+        assert_eq!(run.run_id, "run-1");
+
+        // Request sequence: stale token → refresh → retry with the new token.
+        let requests = mock_server.received_requests().await.unwrap();
+        assert_eq!(requests.len(), 3, "expected initial + refresh + retry");
+        let auth_header = |i: usize| {
+            requests[i]
+                .headers
+                .get("authorization")
+                .unwrap()
+                .to_str()
+                .unwrap()
+        };
+        assert_eq!(requests[0].url.path(), "/api/v0/runs/run-1");
+        assert_eq!(auth_header(0), "Bearer old-access-token");
+        assert_eq!(requests[1].url.path(), "/auth/cli/refresh");
+        assert_eq!(auth_header(1), "Bearer old-refresh-token");
+        assert_eq!(requests[2].url.path(), "/api/v0/runs/run-1");
+        assert_eq!(auth_header(2), "Bearer new-access-token");
+
+        // The refreshed tokens (and an expiry) were persisted to the file.
+        let persisted = std::fs::read_to_string(&creds_path).unwrap();
+        assert!(persisted.contains("new-access-token"), "got:\n{persisted}");
+        assert!(persisted.contains("new-refresh-token"), "got:\n{persisted}");
+        assert!(
+            persisted.contains("expiry = \""),
+            "expiry not persisted:\n{persisted}"
+        );
+    }
+
+    #[tokio::test]
+    async fn oauth_without_refresh_token_does_not_retry_on_401() {
+        let mock_server = MockServer::start().await;
+
+        // `.expect(1)` asserts the endpoint is hit exactly once — i.e. no retry.
+        Mock::given(method("GET"))
+            .and(path("/api/v0/runs/run-1"))
+            .respond_with(ResponseTemplate::new(401))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        // OAuth, but with no refresh token — there's nothing to refresh with, so
+        // `can_refresh()` is false and the 401 must pass straight through.
+        let auth = AuthenticationInfo::oauth_for_test(
+            "access-token",
+            None,
+            None,
+            crate::auth::OAuthRefreshInfo::Keychain {
+                entry_name: "unused".to_owned(),
+            },
+        );
+        let api = AntithesisApi::build(
+            &Settings::for_test_base_url(mock_server.uri()),
+            auth,
+            false,
+            None,
+        )
+        .unwrap();
+
+        let result = api.get_run("run-1").await;
+        assert!(
+            result.is_err(),
+            "a 401 with no refresh token should surface as an error, not be retried away"
+        );
+
+        let requests = mock_server.received_requests().await.unwrap();
+        assert_eq!(requests.len(), 1, "no retry should be attempted");
+        assert_eq!(requests[0].url.path(), "/api/v0/runs/run-1");
+        assert!(
+            requests.iter().all(|r| r.url.path() != "/auth/cli/refresh"),
+            "no refresh call should be made"
+        );
+    }
+
+    #[tokio::test]
+    async fn api_key_credential_does_not_retry_on_401() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/api/v0/runs/run-1"))
+            .respond_with(ResponseTemplate::new(401))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        // An API key can't refresh, so `can_refresh()` is false: no clone, no
+        // retry, no refresh call.
+        let api = AntithesisApi::build(
+            &Settings::for_test_base_url(mock_server.uri()),
+            AuthenticationInfo::ApiKey {
+                api_key: "some-key".to_owned(),
+            },
+            false,
+            None,
+        )
+        .unwrap();
+
+        let result = api.get_run("run-1").await;
+        assert!(result.is_err());
+
+        let requests = mock_server.received_requests().await.unwrap();
+        assert_eq!(requests.len(), 1, "an API key can't refresh, so no retry");
+        assert_eq!(requests[0].url.path(), "/api/v0/runs/run-1");
     }
 
     #[tokio::test]

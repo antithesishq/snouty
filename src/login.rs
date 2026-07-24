@@ -210,13 +210,27 @@ async fn prompt_for_auth(
         },
     };
 
+    // Deliberately ignoring whatever is in ANTITHESIS_BASE_URL because a user may
+    // be logging in to another tenant under a new profile.
+    let base_url = format!("https://{tenant}.antithesis.com");
+    let client = reqwest::Client::builder()
+        .timeout(OAUTH_HTTP_TIMEOUT)
+        .build()
+        .wrap_err("failed to build the OAuth HTTP client")?;
+    let oauth_config = fetch_cli_config(&client, &base_url).await;
+
     println!("What kind of credentials would you like to use?");
     println!(
         "1. Skip setup (Select this option if you wish to keep your current credentials or plan to use environment variables instead of persisted credentials.)"
     );
     println!("2. API key");
     println!("3. Username/password");
-    println!("4. OAuth credentials");
+    if oauth_config
+        .as_ref()
+        .is_ok_and(|config| !matches!(config, CliOAuthConfig::Disabled))
+    {
+        println!("4. OAuth credentials");
+    }
     println!("(Hit enter to use the default value of [{default_selection}])");
 
     let mut input = String::new();
@@ -242,7 +256,9 @@ async fn prompt_for_auth(
             _ => prompt_for_username_password(None, None),
         }
         .map(Some),
-        Some(AuthSetupType::OAuth) => complete_oauth_login(tenant).await.map(Some),
+        Some(AuthSetupType::OAuth) => complete_oauth_login(&client, &base_url, &oauth_config?)
+            .await
+            .map(Some),
     }
 }
 
@@ -349,19 +365,14 @@ struct TokenResponse {
 /// 5. `POST /auth/cli/token` — exchange the authorization code (in the
 ///    `Authorization` header, alongside the PKCE verifier) and the flow token
 ///    (in the body) for an Antithesis token.
-async fn complete_oauth_login(tenant: &str) -> Result<PersistableCredentials> {
-    // Deliberately ignoring whatever is in ANTITHESIS_BASE_URL because a user may
-    // be logging in to another tenant under a new profile.
-    let base_url = format!("https://{tenant}.antithesis.com");
-    let client = reqwest::Client::builder()
-        .timeout(OAUTH_HTTP_TIMEOUT)
-        .build()
-        .wrap_err("failed to build the OAuth HTTP client")?;
-
-    let config = fetch_cli_config(&client, &base_url).await?;
+async fn complete_oauth_login(
+    client: &reqwest::Client,
+    base_url: &str,
+    config: &CliOAuthConfig,
+) -> Result<PersistableCredentials> {
     // Bind the callback server *before* initiating login so the port we tell the
     // proxy about is one we're already listening on.
-    let listeners = bind_callback_listener(&config).await?;
+    let listeners = bind_callback_listener(config).await?;
     let port = listeners.port;
 
     // PKCE: the verifier is the secret we keep; the challenge is what we hand to
@@ -371,7 +382,7 @@ async fn complete_oauth_login(tenant: &str) -> Result<PersistableCredentials> {
     let cli_state = generate_verifier_or_state()?;
 
     let location =
-        request_login_redirect(&client, &base_url, port, &code_challenge, &cli_state).await?;
+        request_login_redirect(client, base_url, port, &code_challenge, &cli_state).await?;
 
     println!("\nTo finish signing in, open the following URL in your browser:\n\n  {location}\n");
     open_in_browser(&location)?;
@@ -380,8 +391,8 @@ async fn complete_oauth_login(tenant: &str) -> Result<PersistableCredentials> {
     let callback = wait_for_callback(listeners).await?;
 
     let tokens = exchange_code_for_tokens(
-        &client,
-        &base_url,
+        client,
+        base_url,
         &callback.auth_code,
         &code_verifier,
         &callback.flow_token,

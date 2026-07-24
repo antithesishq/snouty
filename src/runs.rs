@@ -960,7 +960,7 @@ fn sorted_by_vtime(events: &[Event]) -> Vec<&Event> {
         let bv = b.moment.vtime.parse::<f64>().ok();
         match (av, bv) {
             (Some(a), Some(b)) => a.total_cmp(&b),
-            // Numeric vtimes sort ahead of non-numeric/unparseable ones.
+            // Numeric vtimes sort ahead of non-numeric/unparsable ones.
             (Some(_), None) => std::cmp::Ordering::Less,
             (None, Some(_)) => std::cmp::Ordering::Greater,
             (None, None) => std::cmp::Ordering::Equal,

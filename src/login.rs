@@ -644,7 +644,7 @@ fn parse_callback_params(target: &str) -> Result<CallbackParams> {
     // base purely so `Url` will parse the query string for us.
     let url = reqwest::Url::parse("http://localhost")
         .and_then(|base| base.join(target))
-        .wrap_err("the OAuth callback request had an unparseable target")?;
+        .wrap_err("the OAuth callback request had an unparsable target")?;
 
     let mut auth_code = None;
     let mut flow_token = None;
@@ -873,7 +873,7 @@ mod tests {
     }
 
     #[test]
-    fn expiry_is_none_on_unparseable_or_missing_exp() {
+    fn expiry_is_none_on_unparsable_or_missing_exp() {
         // Missing exp claim.
         assert_eq!(
             expiry_from_antithesis_token(&public_paseto_with_claims(br#"{"sub":"user"}"#)),

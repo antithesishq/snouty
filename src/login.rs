@@ -88,7 +88,7 @@ pub async fn cmd_login(
                 let kind = match &credentials {
                     PersistableCredentials::ApiKey { .. } => "API key",
                     PersistableCredentials::Password { .. } => "username and password",
-                    PersistableCredentials::OAuth { .. } => "OAuth",
+                    PersistableCredentials::OAuth { .. } => "OAuth credentials",
                 };
                 Some((kind, persist(credentials, profile_to_use.as_deref())?))
             }
@@ -374,7 +374,7 @@ async fn complete_oauth_login(tenant: &str) -> Result<PersistableCredentials> {
         request_login_redirect(&client, &base_url, port, &code_challenge, &cli_state).await?;
 
     println!("\nTo finish signing in, open the following URL in your browser:\n\n  {location}\n");
-    open_in_browser(&location);
+    open_in_browser(&location)?;
     println!("Waiting for you to complete sign-in in your browser...");
 
     let callback = wait_for_callback(listeners).await?;
@@ -557,17 +557,21 @@ async fn exchange_code_for_tokens(
 /// Accept exactly one loopback connection, read the OAuth callback request, ack
 /// it in the browser, and return the parsed callback parameters.
 async fn wait_for_callback(listeners: CallbackListeners) -> Result<CallbackParams> {
-    let accept = tokio::time::timeout(CALLBACK_TIMEOUT, accept_any(&listeners.listeners)).await;
-    let (mut stream, _addr) = accept
-        .map_err(|_| {
-            user_error(format!(
+    let received = tokio::time::timeout(
+        CALLBACK_TIMEOUT,
+        receive_callback_request(&listeners.listeners),
+    )
+    .await;
+    let (mut stream, request_line) = match received {
+        Ok(result) => result?,
+        Err(_elapsed) => {
+            return Err(user_error(format!(
                 "timed out after {} seconds waiting for the browser to complete sign-in",
                 CALLBACK_TIMEOUT.as_secs()
-            ))
-        })?
-        .wrap_err("failed to accept the OAuth callback connection")?;
+            )));
+        }
+    };
 
-    let request_line = read_request_line(&mut stream).await?;
     let target = request_line
         .split_whitespace()
         .nth(1)
@@ -593,6 +597,16 @@ async fn wait_for_callback(listeners: CallbackListeners) -> Result<CallbackParam
     let _ = stream.flush().await;
 
     result
+}
+
+async fn receive_callback_request(
+    listeners: &[TcpListener],
+) -> Result<(tokio::net::TcpStream, String)> {
+    let (mut stream, _addr) = accept_any(listeners)
+        .await
+        .wrap_err("failed to accept the OAuth callback connection")?;
+    let request_line = read_request_line(&mut stream).await?;
+    Ok((stream, request_line))
 }
 
 /// Accept the first connection to arrive on any of the loopback listeners
@@ -728,24 +742,32 @@ fn parse_exp_claim(exp: &serde_json::Value) -> Option<DateTime<Utc>> {
     None
 }
 
+fn validate_browser_launch_url(url: &str) -> Option<String> {
+    reqwest::Url::parse(url)
+        .ok()
+        .filter(|parsed| matches!(parsed.scheme(), "http" | "https"))
+        .map(|parsed| parsed.as_str().to_owned())
+}
+
 /// Best-effort open of `url` in the user's default browser. Failures are
 /// intentionally ignored — the URL is always also printed, so a headless or
 /// opener-less environment can still complete the flow by hand.
-fn open_in_browser(url: &str) {
+fn open_in_browser(url: &str) -> Result<()> {
+    let Some(url) = validate_browser_launch_url(url) else {
+        return Err(eyre!(
+            "The supplied login URL is not a valid HTTP(S) URL: {url}"
+        ));
+    };
+    let url = url.as_str();
+
     #[cfg(target_os = "macos")]
     let mut command = {
         let mut c = Command::new("open");
         c.arg(url);
         c
     };
-    #[cfg(target_os = "windows")]
-    let mut command = {
-        let mut c = Command::new("cmd");
-        // The empty "" is `start`'s window-title argument; without it a quoted
-        // URL would be consumed as the title.
-        c.args(["/C", "start", "", url]);
-        c
-    };
+    // If Snouty ever supports Windows, another declaration of `command` will be needed here.
+    // Without it, Snouty will fail to compile on or for Windows
     #[cfg(all(unix, not(target_os = "macos")))]
     let mut command = {
         let mut c = Command::new("xdg-open");
@@ -754,6 +776,7 @@ fn open_in_browser(url: &str) {
     };
 
     let _ = command.stdout(Stdio::null()).stderr(Stdio::null()).spawn();
+    Ok(())
 }
 
 #[cfg(test)]
@@ -918,6 +941,60 @@ mod tests {
         assert_eq!(
             expiry_from_antithesis_token(token),
             DateTime::from_timestamp(CANONICAL_VECTOR_EXP_UNIX as i64, 0)
+        );
+    }
+
+    #[test]
+    fn browser_launch_url_accepts_only_http_and_https() {
+        // Real authorization URLs (http/https) pass through.
+        assert!(validate_browser_launch_url("https://idp.example.com/authorize?a=1&b=2").is_some());
+        assert!(validate_browser_launch_url("http://localhost:12345/callback").is_some());
+
+        // Anything else is dropped rather than handed to an OS launcher.
+        assert_eq!(validate_browser_launch_url("file:///etc/passwd"), None);
+        assert_eq!(validate_browser_launch_url("javascript:alert(1)"), None);
+        assert_eq!(validate_browser_launch_url("ftp://example.com/x"), None);
+        assert_eq!(validate_browser_launch_url("not a url"), None);
+        assert_eq!(validate_browser_launch_url(""), None);
+    }
+
+    #[test]
+    fn browser_launch_url_preserves_ampersand_query_params() {
+        // The `&`-separated params (what the unquoted Windows shell mangled)
+        // survive normalization intact.
+        let normalized = validate_browser_launch_url(
+            "https://idp/authorize?response_type=code&client_id=x&state=y",
+        )
+        .expect("valid https URL");
+        assert!(
+            normalized.contains("response_type=code"),
+            "got: {normalized}"
+        );
+        assert!(normalized.contains("&client_id=x"), "got: {normalized}");
+        assert!(normalized.contains("&state=y"), "got: {normalized}");
+    }
+
+    #[tokio::test]
+    async fn callback_read_is_interruptible_when_peer_connects_then_stalls() {
+        use tokio::net::TcpStream;
+
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+
+        // Connect but never send a request line, and hold the connection open so
+        // the server-side read blocks on data that never arrives (no EOF).
+        let _client = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+
+        let listeners = vec![listener];
+        let outcome = tokio::time::timeout(
+            Duration::from_millis(250),
+            receive_callback_request(&listeners),
+        )
+        .await;
+
+        assert!(
+            outcome.is_err(),
+            "a connected-but-silent peer must trip the timeout, not block indefinitely"
         );
     }
 }

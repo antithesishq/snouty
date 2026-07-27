@@ -973,9 +973,6 @@ fn lock_credentials_file(path: &Path) -> Option<std::fs::File> {
 }
 
 fn lock_dir() -> Option<PathBuf> {
-    if let Some(runtime_dir) = env::var("XDG_RUNTIME_DIR").ok().flatten() {
-        return Some(PathBuf::from(runtime_dir).join("snouty").join("locks"));
-    }
     global_settings_dir().map(|dir| dir.join("locks"))
 }
 

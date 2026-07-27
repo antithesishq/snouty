@@ -1360,7 +1360,7 @@ fn haystack_matches_all_needles(haystack: &str, lowered_needles: &[String]) -> b
 async fn cmd_runs_events(
     run_id: &str,
     matches: &[String],
-    limit: usize,
+    limit: Option<usize>,
     settings: &Settings,
     json: bool,
     verbose: bool,

@@ -396,16 +396,16 @@ impl AntithesisApi {
         &self,
         run_id: &str,
         query: &str,
-        limit: usize,
+        limit: Option<usize>,
     ) -> Result<ByteStream> {
-        // The endpoint caps the returned events at `limit`; the CLI always
-        // supplies one (defaulting to 50), and the server validates the range.
-        let request = self
-            .client
-            .search_run_events()
-            .run_id(run_id)
-            .q(query)
-            .limit(limit as u64);
+        // The endpoint caps the returned events at `limit`. Only send the
+        // parameter when the user asked for one: tenants that predate it would
+        // otherwise receive a query param they may not accept, and omitting it
+        // lets the server apply its own default. The server validates the range.
+        let mut request = self.client.search_run_events().run_id(run_id).q(query);
+        if let Some(limit) = limit {
+            request = request.limit(limit as u64);
+        }
         match request.send().await {
             Ok(response) => Ok(response.into_inner()),
             Err(err) => Err(format_api_client_error(err).await),
@@ -1974,7 +1974,7 @@ mod tests {
         let api = test_api_optionally_with_cache(&mock_server, None);
 
         let mut stream = api
-            .search_run_events("run-1", "slow request", 50)
+            .search_run_events("run-1", "slow request", None)
             .await
             .unwrap()
             .into_inner();
@@ -2001,7 +2001,28 @@ mod tests {
             .await;
 
         let api = test_api_optionally_with_cache(&mock_server, None);
-        api.search_run_events("run-1", "slow", 5).await.unwrap();
+        api.search_run_events("run-1", "slow", Some(5))
+            .await
+            .unwrap();
+    }
+
+    // Tenants that predate the `limit` parameter must not receive it, so an
+    // unset `--limit` leaves the query param off entirely.
+    #[tokio::test]
+    async fn search_run_events_omits_limit_when_unset() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/api/v0/runs/run-1/events"))
+            .and(query_param("q", "slow"))
+            .and(query_param_is_missing("limit"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(""))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let api = test_api_optionally_with_cache(&mock_server, None);
+        api.search_run_events("run-1", "slow", None).await.unwrap();
     }
 
     fn rid(version: u32) -> String {

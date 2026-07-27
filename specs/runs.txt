@@ -407,7 +407,7 @@ snouty --json runs events $R_run_id --match parallel_driver_fetch --limit 1
 [!staging] stdout '"vtime":"400\.5"'
 [!staging] ! stdout '"vtime":"401\.75"'
 
-# The default limit (50) exceeds the fixture, so all three matches come back.
+# Without --limit no cap is sent at all, so all three matches come back.
 mock-runs-server
 snouty --json runs events $R_run_id --match parallel_driver_fetch
 [!staging] stdout '"vtime":"401\.75"'

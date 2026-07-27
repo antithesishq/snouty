@@ -656,20 +656,27 @@ fn mock_route_list_run_properties(run_id: &str, query: Option<&str>) -> (u16, St
     )
 }
 
-fn mock_route_search_run_events(run_id: &str, query: Option<&str>) -> (u16, String) {
+fn mock_route_search_run_events(run_id: &str, query_str: Option<&str>) -> (u16, String) {
     if !mock_run_known(run_id) {
         return mock_run_not_found(run_id);
     }
-    let Some(query) = mock_query_param(query, "q") else {
+    let Some(needle) = mock_query_param(query_str, "q") else {
         return (400, r#"{"message":"missing q"}"#.to_string());
     };
 
     let (_, logs) = mock_route_get_run_logs(run_id);
-    let query = query.to_ascii_lowercase();
-    let matches = logs
+    let needle = needle.to_ascii_lowercase();
+    let mut matches = logs
         .lines()
-        .filter(|line| line.to_ascii_lowercase().contains(&query))
+        .filter(|line| line.to_ascii_lowercase().contains(&needle))
         .collect::<Vec<_>>();
+
+    // Cap the returned events at `limit` when present, mirroring the real
+    // endpoint's `limit` query parameter (the subset is the first N matches).
+    if let Some(limit) = mock_query_param(query_str, "limit").and_then(|l| l.parse::<usize>().ok())
+    {
+        matches.truncate(limit);
+    }
 
     if matches.is_empty() {
         (200, String::new())
@@ -729,6 +736,23 @@ mod tests {
         assert!(
             body.contains("slow request"),
             "expected match for decoded query, got: {body}"
+        );
+    }
+
+    #[test]
+    fn mock_route_search_run_events_caps_at_limit() {
+        // parallel_driver_fetch matches three events; limit=1 keeps the first.
+        let (status, all) = mock_route_search_run_events("run-1", Some("q=parallel_driver_fetch"));
+        assert_eq!(status, 200);
+        assert_eq!(all.lines().count(), 3, "fixture should match three events");
+
+        let (status, capped) =
+            mock_route_search_run_events("run-1", Some("q=parallel_driver_fetch&limit=1"));
+        assert_eq!(status, 200);
+        assert_eq!(capped.lines().count(), 1);
+        assert!(
+            capped.contains(r#""vtime":"400.5""#),
+            "the first match should be retained, got: {capped}"
         );
     }
 

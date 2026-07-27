@@ -113,11 +113,13 @@ stdin moment_run_input.txt
 snouty --json debug --stdin
 stdout '\s*"runId": "run-123".*'
 
-# On API failure, the command exits with an error showing the HTTP status
-#    and response body.
-mock-server 401 '{"message": "unauthorized"}'
+# Gateway-level rejections (auth, rate limiting) on the launch/debug endpoints
+# return an EMPTY body rather than the Launch_Error_Response envelope — verified
+# against the live API, which answers a bad token with 401/403 and no payload.
+# snouty must surface that permissively instead of choking on the empty body.
+mock-server 401 ''
 ! snouty debug --input-hash abc123 --run-id 9043254f65c9c65d63fe043a0abfc7fc-53-1 --vtime 1234567890
-stderr 'API error: 401.*'
+stderr '.*empty response body.*'
 
 # ANTITHESIS_EXTRA_HEADERS adds arbitrary headers to every API request (for
 #    consumption by proxies). With --verbose, the merged request headers are

@@ -154,7 +154,7 @@ impl OAuthRefreshInfo {
                     Err(other) => return Err(eyre!("opening keychain entry: {other}")),
                 };
                 match entry.get_password() {
-                    Ok(json) => Ok(serde_json::from_str(&json).ok()),
+                    Ok(json) => Ok(serde_json::from_str(&json)?),
                     Err(_) => Ok(None),
                 }
             }

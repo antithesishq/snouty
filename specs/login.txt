@@ -9,11 +9,15 @@
 # automatically. Values supplied as flags or sensitive values are not
 # re-prompted, and a previously persisted login is offered back as the default.
 #
-# `login` never contacts the API, so the whole file runs in both mock and
-# staging modes. Each section pins its own temporary $HOME via `isolate-home`
-# so the persisted files do not leak between sections or into the developer's
-# real configuration. Prompts are written to stdout; stdin feeds the answers,
-# one per line, in the order the prompts appear.
+# `login` contacts the backend only to discover whether OAuth login is available
+# (GET /auth/cli/config); that probe is best-effort and its failure is silent, so
+# the flag-driven sections below run in both mock and staging modes. The sections
+# that assert on the OAuth option (18-19) are gated to mock mode ([!staging]),
+# where `mock-server` can serve a chosen /auth/cli/config response. Each section
+# pins its own temporary $HOME via `isolate-home` so the persisted files do not
+# leak between sections or into the developer's real configuration. Prompts are
+# written to stdout; stdin feeds the answers, one per line, in the order the
+# prompts appear.
 
 # 1. A fresh login with no flags prompts for the tenant, the repository, and the
 #    kind of credentials, then persists them. With nothing stored yet, no
@@ -209,6 +213,28 @@ isolate-home blank_username
 stdin login_blank_username.txt
 ! snouty login
 stderr '.*sername cannot be empty.*'
+
+# 18. When the backend reports OAuth is disabled for the CLI (a GET
+#     /auth/cli/config -> {"port_strategy":"disabled"} response), the
+#     "4. OAuth credentials" option is not offered. `mock-server` serves that
+#     body at every path and points snouty at it via ANTITHESIS_BASE_URL, so
+#     this is mock-only; the api-key answers just carry the login to completion.
+[!staging] isolate-home oauth_disabled
+[!staging] mock-server 200 '{"port_strategy":"disabled"}'
+[!staging] stdin login_apikey.txt
+[!staging] snouty login
+[!staging] stdout '3\. Username/password'
+[!staging] ! stdout '4\. OAuth credentials'
+
+# 19. Conversely, when the backend advertises a port strategy (here "ephemeral"),
+#     the "4. OAuth credentials" option IS offered — proving it's gated on the
+#     backend's response, not merely never shown. We still finish via the api-key
+#     option rather than selecting 4, which would start the browser flow.
+[!staging] isolate-home oauth_enabled
+[!staging] mock-server 200 '{"port_strategy":"ephemeral"}'
+[!staging] stdin login_apikey.txt
+[!staging] snouty login
+[!staging] stdout '4\. OAuth credentials'
 
 
 -- broken.toml --

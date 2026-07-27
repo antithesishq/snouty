@@ -289,7 +289,10 @@ async fn cmd_launch(
     if json {
         println!("{}", serde_json::to_string_pretty(&response)?);
     } else {
-        println!("Test run started: run_id {}", response.run_id);
+        println!(
+            "Test run started: run_id {}",
+            response.run_id.as_deref().unwrap_or("(unknown)")
+        );
     }
 
     Ok(())
@@ -364,7 +367,10 @@ async fn cmd_debug(args: DebugArgs, settings: &Settings, json: bool, verbose: bo
     if json {
         println!("{}", serde_json::to_string_pretty(&response)?);
     } else {
-        println!("Debugging session started: run_id {}", response.run_id);
+        println!(
+            "Debugging session started: run_id {}",
+            response.run_id.as_deref().unwrap_or("(unknown)")
+        );
     }
 
     Ok(())

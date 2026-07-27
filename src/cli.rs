@@ -599,6 +599,12 @@ and VTIME into `runs logs` to see the surrounding logs."#
         #[arg(short = 'm', long = "match")]
         matches: Vec<String>,
 
+        /// Maximum number of events the server returns (default 50). Raise it
+        /// to make a search more exhaustive. The server enforces the accepted
+        /// range.
+        #[arg(short = 'n', long)]
+        limit: Option<usize>,
+
         /// Substrings to match, as a positional alias for `-m` (all must match).
         /// At least one needle (via `-m` or here) is required.
         query: Vec<String>,
@@ -766,5 +772,31 @@ mod tests {
         };
         assert!(matches.is_empty());
         assert_eq!(query, vec!["request".to_string(), "slow".to_string()]);
+    }
+
+    // `runs events --limit` is unset unless given (so the parameter is left off
+    // the request entirely) and otherwise takes the given value. Range checking
+    // is left to the server, so clap accepts any usize.
+    #[test]
+    fn events_limit_is_unset_by_default_and_parses() {
+        let cli = parse(&["snouty", "runs", "events", "RUN", "-m", "request"]);
+        let Commands::Runs {
+            command: Some(RunsCommands::Events { limit, .. }),
+        } = cli.command
+        else {
+            panic!("expected `runs events`");
+        };
+        assert_eq!(limit, None);
+
+        let cli = parse(&[
+            "snouty", "runs", "events", "RUN", "-m", "x", "--limit", "999",
+        ]);
+        let Commands::Runs {
+            command: Some(RunsCommands::Events { limit, .. }),
+        } = cli.command
+        else {
+            panic!("expected `runs events`");
+        };
+        assert_eq!(limit, Some(999));
     }
 }

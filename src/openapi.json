@@ -48,12 +48,14 @@
         "operationId": "listRuns",
         "summary": "List all test runs",
         "description": "Returns a paginated list of test runs. Results are ordered by creation time, newest first.",
-        "tags": ["Test runs"],
+        "tags": [
+          "Test runs"
+        ],
         "parameters": [
           {
             "name": "limit",
             "in": "query",
-            "description": "Maximum number of results to return. Server-capped at 100.",
+            "description": "Maximum number of results to return. Must be between 1 and 100; values outside this range return 400 Bad Request.",
             "required": false,
             "schema": {
               "type": "integer",
@@ -198,7 +200,9 @@
         "operationId": "getRun",
         "summary": "Get test run details",
         "description": "Returns the full details of a single test run, including results.",
-        "tags": ["Test runs"],
+        "tags": [
+          "Test runs"
+        ],
         "parameters": [
           {
             "name": "run_id",
@@ -314,7 +318,9 @@
         "operationId": "getRunLogs",
         "summary": "Get logs for a specific moment",
         "description": "Streams the logs for a moment in the test run as newline-delimited JSON (NDJSON) in chronological order. Each line is a self-contained JSON object. The response is streamed and the connection remains open until all matching log lines have been sent.",
-        "tags": ["Test runs"],
+        "tags": [
+          "Test runs"
+        ],
         "parameters": [
           {
             "name": "run_id",
@@ -456,7 +462,9 @@
         "operationId": "getRunBuildLogs",
         "summary": "Stream build logs",
         "description": "Streams the build logs for a test run as newline-delimited JSON (NDJSON). Each line contains a timestamp, a stream indicator, and the log text. The response is streamed and the connection remains open until all matching log lines have been sent.\n\n**Known limitation:** Build logs are not available for test runs created before Antithesis version 54.5. Requests for such runs return `404 Not Found`.",
-        "tags": ["Test runs"],
+        "tags": [
+          "Test runs"
+        ],
         "parameters": [
           {
             "name": "run_id",
@@ -476,7 +484,11 @@
                 "schema": {
                   "$ref": "#/components/schemas/Build_Log_Line"
                 },
-                "example": "{\"timestamp\":\"2026-05-14T03:03:23.481Z\",\"text\":\"\",\"stream\":\"stdout\"}\n{\"timestamp\":\"2026-05-14T03:03:24.668Z\",\"text\":\"About to wait for the flock. If the script is hanging here, somebody else is doing a build.\",\"stream\":\"stdout\"}"
+                "example": {
+                  "timestamp": "2026-05-14T03:03:24.668Z",
+                  "text": "About to wait for the flock. If the script is hanging here, somebody else is doing a build.",
+                  "stream": "stdout"
+                }
               }
             }
           },
@@ -512,7 +524,9 @@
         "operationId": "listRunProperties",
         "summary": "List test run properties",
         "description": "Returns a paginated list of property results for a test run, including both passing and failing properties by default. Use the `status` parameter to filter by a specific status.\n\n**Known limitation:** Property results are not available for test runs created before Antithesis version 54.5. Requests for such runs return `404 Not Found`.",
-        "tags": ["Test runs"],
+        "tags": [
+          "Test runs"
+        ],
         "parameters": [
           {
             "name": "run_id",
@@ -535,7 +549,7 @@
           {
             "name": "limit",
             "in": "query",
-            "description": "Maximum number of results to return. Server-capped at 100.",
+            "description": "Maximum number of results to return. Must be between 1 and 100; values outside this range return 400 Bad Request.",
             "required": false,
             "schema": {
               "type": "integer",
@@ -587,17 +601,17 @@
                       "counterexamples": []
                     },
                     {
-                        "name": "Input count",
-                        "description": null,
-                        "status": "Passing",
-                        "is_event": false,
-                        "is_group": false,
-                        "example_count": 1,
-                        "counterexample_count": 0,
-                        "examples": [
-                            318446
-                        ],
-                        "counterexamples": []
+                      "name": "Input count",
+                      "description": null,
+                      "status": "Passing",
+                      "is_event": false,
+                      "is_group": false,
+                      "example_count": 1,
+                      "counterexample_count": 0,
+                      "examples": [
+                        318446
+                      ],
+                      "counterexamples": []
                     }
                   ]
                 }
@@ -636,7 +650,9 @@
         "operationId": "searchRunEvents",
         "summary": "Search run events",
         "description": "Searches events in a test run for the given query string. The search matches against output text, assertion messages, function names, and test composer commands. Results are streamed as newline-delimited JSON (NDJSON). Each line is a self-contained JSON object representing an event.",
-        "tags": ["Test runs"],
+        "tags": [
+          "Test runs"
+        ],
         "parameters": [
           {
             "name": "run_id",
@@ -650,10 +666,23 @@
           {
             "name": "q",
             "in": "query",
-            "description": "The search term. Matches events where this string is contained in the output text, assertion message, function name, or test command.",
-            "required": true,
+            "description": "The search term. Matches events where this string is contained in the output text, assertion message, function name, or test command. When omitted, defaults to an empty string, which matches all events.",
+            "required": false,
             "schema": {
-              "type": "string"
+              "type": "string",
+              "default": ""
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Maximum number of results to return. Must be between 1 and 999. Defaults to 50.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "default": 50,
+              "minimum": 1,
+              "maximum": 999
             }
           }
         ],
@@ -665,7 +694,19 @@
                 "schema": {
                   "$ref": "#/components/schemas/Event"
                 },
-                "example": "{\"moment\":{\"input_hash\":\"-2978388909754056022\",\"vtime\":22.66615231265314},\"IPT_bytes_out\":1073904,\"source\":{\"command_id\":\"BSPID1ERCnmoGEnk6WjwIZ4o3TM\",\"name\":\"setup\",\"stream\":\"info\"},\"output_text\":\"3:08:17AM:     ^ Pending: ContainerCreating\"}\n{\"moment\":{\"input_hash\":\"-2978388909754056022\",\"vtime\":22.6661523131188},\"IPT_bytes_out\":1074064,\"source\":{\"command_id\":\"BSPID1ERCnmoGEnk6WjwIZ4o3TM\",\"name\":\"setup\",\"stream\":\"info\"},\"output_text\":\"3:08:17AM:     ^ Pending: ContainerCreating\"}"
+                "example": {
+                  "moment": {
+                    "input_hash": "-2978388909754056022",
+                    "vtime": "22.66615231265314"
+                  },
+                  "IPT_bytes_out": 1073904,
+                  "source": {
+                    "command_id": "BSPID1ERCnmoGEnk6WjwIZ4o3TM",
+                    "name": "setup",
+                    "stream": "info"
+                  },
+                  "output_text": "3:08:17AM:     ^ Pending: ContainerCreating"
+                }
               }
             }
           },
@@ -701,7 +742,9 @@
         "operationId": "launchTest",
         "summary": "Launch a test",
         "description": "Kicks off a test using the specified launcher (e.g. `basic_test` or `basic_k8s_test`). Fetches the relevant container images specified in configuration files and in `antithesis.images`, builds the test environment, and runs the test for the duration set in `antithesis.duration`. Returns an HTTP status code indicating whether the test was successfully started (not the test result itself).",
-        "tags": ["Launch"],
+        "tags": [
+          "Launch"
+        ],
         "parameters": [
           {
             "name": "launcher_name",
@@ -740,35 +783,37 @@
             }
           },
           "400": {
-            "$ref": "#/components/responses/BadRequest"
+            "$ref": "#/components/responses/Legacy_BadRequest"
           },
           "401": {
-            "$ref": "#/components/responses/Unauthorized"
+            "$ref": "#/components/responses/Legacy_Unauthorized"
           },
           "403": {
-            "$ref": "#/components/responses/Forbidden"
+            "$ref": "#/components/responses/Legacy_Forbidden"
           },
           "404": {
-            "$ref": "#/components/responses/NotFound"
+            "$ref": "#/components/responses/Legacy_NotFound"
           },
           "405": {
-            "$ref": "#/components/responses/MethodNotAllowed"
+            "$ref": "#/components/responses/Legacy_MethodNotAllowed"
           },
           "406": {
-            "$ref": "#/components/responses/NotAcceptable"
+            "$ref": "#/components/responses/Legacy_NotAcceptable"
           },
           "429": {
-            "$ref": "#/components/responses/TooManyRequests"
+            "$ref": "#/components/responses/Legacy_TooManyRequests"
           },
           "500": {
-            "$ref": "#/components/responses/InternalError"
+            "$ref": "#/components/responses/Legacy_InternalError"
           }
         }
       }
     },
     "/api/version": {
       "get": {
-        "tags": ["Version"],
+        "tags": [
+          "Version"
+        ],
         "operationId": "getVersion",
         "summary": "Get API and release version",
         "description": "Returns the latest supported API version and the current Antithesis release version for the tenant.",
@@ -786,6 +831,18 @@
                 }
               }
             }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "406": {
+            "$ref": "#/components/responses/NotAcceptable"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
           }
         }
       }
@@ -796,9 +853,10 @@
         "operationId": "launchMvd",
         "summary": "Launch a debugging session",
         "description": "Kicks off a multiverse debugging session that'll be available for six hours. Returns an HTTP status code indicating whether the debugging session request was successfully accepted and the session is getting ready.\n\nThe target test run is identified by `antithesis.debugging.run_id`. For backwards compatibility, `antithesis.debugging.session_id` is also accepted — prefer `run_id` for new integrations.",
-        "tags": ["Launch"],
-        "parameters": [
+        "tags": [
+          "Launch"
         ],
+        "parameters": [],
         "requestBody": {
           "required": true,
           "content": {
@@ -849,53 +907,41 @@
             }
           },
           "400": {
-            "$ref": "#/components/responses/BadRequest"
+            "$ref": "#/components/responses/Legacy_BadRequest"
           },
           "401": {
-            "$ref": "#/components/responses/Unauthorized"
+            "$ref": "#/components/responses/Legacy_Unauthorized"
           },
           "403": {
-            "$ref": "#/components/responses/Forbidden"
+            "$ref": "#/components/responses/Legacy_Forbidden"
           },
           "404": {
-            "$ref": "#/components/responses/NotFound"
+            "$ref": "#/components/responses/Legacy_NotFound"
           },
           "405": {
-            "$ref": "#/components/responses/MethodNotAllowed"
+            "$ref": "#/components/responses/Legacy_MethodNotAllowed"
           },
           "406": {
-            "$ref": "#/components/responses/NotAcceptable"
+            "$ref": "#/components/responses/Legacy_NotAcceptable"
           },
           "429": {
-            "$ref": "#/components/responses/TooManyRequests"
+            "$ref": "#/components/responses/Legacy_TooManyRequests"
           },
           "500": {
-            "$ref": "#/components/responses/InternalError"
+            "$ref": "#/components/responses/Legacy_InternalError"
           }
         }
       }
     }
   },
   "components": {
-    "parameters": {
-      "Version": {
-        "name": "version",
-        "in": "path",
-        "description": "API version identifier. Use `v0` for preview APIs (may change without notice) or `v1` for the stable, compatibility-committed version. See the [Versioning section](/docs/rest_api/#versioning) for the full policy.",
-        "required": true,
-        "schema": {
-          "type": "string",
-          "enum": ["v0", "v1"],
-          "default": "v1",
-          "example": "v1"
-        }
-      }
-    },
     "schemas": {
       "Error_Response": {
         "type": "object",
         "description": "Standard error envelope returned by all error responses.",
-        "required": ["message"],
+        "required": [
+          "message"
+        ],
         "properties": {
           "message": {
             "type": "string",
@@ -903,12 +949,14 @@
             "example": "limit must be between 1 and 100"
           }
         },
-        "additionalProperties": false
+        "additionalProperties": true
       },
       "Run_List_Response": {
         "type": "object",
         "description": "A page of test run summaries returned by the list endpoint. Use `next_cursor` to iterate through all available results.",
-        "required": ["data"],
+        "required": [
+          "data"
+        ],
         "properties": {
           "data": {
             "type": "array",
@@ -925,7 +973,12 @@
       },
       "Run_Summary": {
         "type": "object",
-        "required": ["run_id", "status", "created_at", "launcher"],
+        "required": [
+          "run_id",
+          "status",
+          "created_at",
+          "launcher"
+        ],
         "properties": {
           "run_id": {
             "type": "string",
@@ -1026,10 +1079,14 @@
       "Launch_Response": {
         "type": "object",
         "description": "Response returned when a test is successfully launched.",
-        "required": ["runId", "statusCode"],
+        "required": [
+          "runId",
+          "statusCode"
+        ],
         "properties": {
           "runId": {
             "type": "string",
+            "nullable": true,
             "description": "Unique identifier for the launched run.",
             "example": "c8d2f4a6e0b3197d5f8a2c4e6b0d3f79-49-1"
           },
@@ -1039,12 +1096,15 @@
             "example": 200
           }
         },
-        "additionalProperties": false
+        "additionalProperties": true
       },
       "Version_Response": {
         "type": "object",
         "description": "Version information returned by the version endpoint.",
-        "required": ["latest_api_version", "release_version"],
+        "required": [
+          "latest_api_version",
+          "release_version"
+        ],
         "properties": {
           "latest_api_version": {
             "type": "string",
@@ -1057,17 +1117,45 @@
             "example": "56.0"
           }
         },
-        "additionalProperties": false
+        "additionalProperties": true
       },
       "Launch_MVD_Response": {
         "type": "object",
         "description": "Response returned when a debugging session request is successfully accepted.",
-        "required": ["run_id"],
+        "required": [
+          "statusCode"
+        ],
         "properties": {
-          "run_id": {
+          "runId": {
             "type": "string",
+            "nullable": true,
             "description": "Unique identifier for the launched debugging session.",
             "example": "c8d2f4a6e0b3197d5f8a2c4e6b0d3f79-49-1"
+          },
+          "statusCode": {
+            "type": "integer",
+            "description": "HTTP status code indicating whether the debugging session was accepted.",
+            "example": 202
+          }
+        },
+        "additionalProperties": true
+      },
+      "Launch_Error_Response": {
+        "type": "object",
+        "description": "Error envelope returned by the launch endpoints (`/api/v1/launch/{launcher_name}` and `/api/v1/launch/debugging`). These endpoints are fronted by the test-launch webhook and report failures with a status code rather than the `Error_Response` `message` envelope used by the other endpoints. A null `runId` is included once a request reaches the test launcher. Some gateway-level rejections (for example authentication or rate limiting) may instead return an empty body.",
+        "required": [
+          "statusCode"
+        ],
+        "properties": {
+          "statusCode": {
+            "type": "integer",
+            "description": "HTTP status code of the error. Matches the HTTP status of the response.",
+            "example": 404
+          },
+          "runId": {
+            "type": "string",
+            "nullable": true,
+            "description": "Always `null` when present. Included once the request reaches the test launcher; omitted for requests rejected before then."
           }
         },
         "additionalProperties": true
@@ -1075,7 +1163,9 @@
       "Launch_Request": {
         "type": "object",
         "description": "Request body for launching a test.",
-        "required": ["params"],
+        "required": [
+          "params"
+        ],
         "properties": {
           "params": {
             "description": "Launch parameters. All parameters are optional.",
@@ -1086,12 +1176,14 @@
             ]
           }
         },
-        "additionalProperties": false
+        "additionalProperties": true
       },
       "Launch_MVD_Request": {
         "type": "object",
         "description": "Request body for launching a multiverse debugging session.",
-        "required": ["params"],
+        "required": [
+          "params"
+        ],
         "properties": {
           "params": {
             "description": "Launch parameters. All parameters are optional.",
@@ -1131,7 +1223,10 @@
           "antithesis.is_ephemeral": {
             "type": "string",
             "nullable": true,
-            "enum": ["true", "false"],
+            "enum": [
+              "true",
+              "false"
+            ],
             "description": "A boolean (represented as `\"true\"` or `\"false\"`) that indicates whether or not the run's results should be reflected in future reports as a historic result. Set to `\"true\"` when kicking off one-off, exploratory runs. Defaults to `\"false\"`."
           },
           "antithesis.report.recipients": {
@@ -1169,12 +1264,12 @@
               },
               "antithesis.debugging.input_hash": {
                 "type": "string",
-                "description": "Obtain it from the [copy moment button](/docs/reports/properties/#copy-moment) in the triage report.",
+                "description": "Obtain it from the [copy moment button](/docs/product/reports/properties/#copy-moment) in the triage report.",
                 "example": "-9067336385060865277"
               },
               "antithesis.debugging.vtime": {
                 "type": "string",
-                "description": "The virtual time at which you want to start debugging. Obtain it from the [copy moment button](/docs/reports/properties/#copy-moment) in the triage report.",
+                "description": "The virtual time at which you want to start debugging. Obtain it from the [copy moment button](/docs/product/reports/properties/#copy-moment) in the triage report.",
                 "example": "45.334635781589895"
               },
               "antithesis.event_description": {
@@ -1205,12 +1300,12 @@
               },
               "antithesis.debugging.input_hash": {
                 "type": "string",
-                "description": "Obtain it from the [copy moment button](/docs/reports/properties/#copy-moment) in the triage report.",
+                "description": "Obtain it from the [copy moment button](/docs/product/reports/properties/#copy-moment) in the triage report.",
                 "example": "-9067336385060865277"
               },
               "antithesis.debugging.vtime": {
                 "type": "string",
-                "description": "The virtual time at which you want to start debugging. Obtain it from the [copy moment button](/docs/reports/properties/#copy-moment) in the triage report.",
+                "description": "The virtual time at which you want to start debugging. Obtain it from the [copy moment button](/docs/product/reports/properties/#copy-moment) in the triage report.",
                 "example": "45.334635781589895"
               },
               "antithesis.event_description": {
@@ -1230,7 +1325,9 @@
       "Event": {
         "type": "object",
         "description": "A single event. Each event includes its moment information. Fields vary by event source.",
-        "required": ["moment"],
+        "required": [
+          "moment"
+        ],
         "properties": {
           "moment": {
             "$ref": "#/components/schemas/Moment"
@@ -1241,7 +1338,10 @@
       "Moment": {
         "type": "object",
         "description": "Identifies a specific moment in the run's execution timeline.",
-        "required": ["input_hash", "vtime"],
+        "required": [
+          "input_hash",
+          "vtime"
+        ],
         "properties": {
           "input_hash": {
             "type": "string",
@@ -1254,12 +1354,15 @@
             "example": "398.4898056755774"
           }
         },
-        "additionalProperties": false
+        "additionalProperties": true
       },
       "Build_Log_Line": {
         "type": "object",
         "description": "A single build log line.",
-        "required": ["timestamp", "text"],
+        "required": [
+          "timestamp",
+          "text"
+        ],
         "properties": {
           "timestamp": {
             "type": "string",
@@ -1269,7 +1372,10 @@
           },
           "stream": {
             "type": "string",
-            "enum": ["stdout", "stderr"],
+            "enum": [
+              "stdout",
+              "stderr"
+            ],
             "description": "Whether this line is from standard output or standard error."
           },
           "text": {
@@ -1283,7 +1389,9 @@
       "Property_List_Response": {
         "type": "object",
         "description": "A page of property results returned by the properties endpoint. Use `next_cursor` to iterate through all available results.",
-        "required": ["data"],
+        "required": [
+          "data"
+        ],
         "properties": {
           "data": {
             "type": "array",
@@ -1301,7 +1409,11 @@
       "Property_Base": {
         "type": "object",
         "description": "Shared fields for all property results. A property result from a test run. Properties with `is_group` set to true represent a group property that contain other individual properties; individual properties within that group reference it via the `group` field.",
-        "required": ["name", "status", "is_event"],
+        "required": [
+          "name",
+          "status",
+          "is_event"
+        ],
         "properties": {
           "name": {
             "type": "string",
@@ -1351,6 +1463,12 @@
           {
             "type": "object",
             "properties": {
+              "is_event": {
+                "description": "Always `true` for event properties. Discriminates this branch of the `oneOf`.",
+                "enum": [
+                  true
+                ]
+              },
               "examples": {
                 "type": "array",
                 "description": "A sample of example events that satisfy the property. This is not an exhaustive list.",
@@ -1378,6 +1496,12 @@
           {
             "type": "object",
             "properties": {
+              "is_event": {
+                "description": "Always `false` for non-event properties. Discriminates this branch of the `oneOf`.",
+                "enum": [
+                  false
+                ]
+              },
               "examples": {
                 "type": "array",
                 "description": "A sample of example instances that satisfy the property. This is not an exhaustive list.",
@@ -1405,12 +1529,22 @@
       },
       "Property_Status": {
         "type": "string",
-        "enum": ["Passing", "Failing"],
+        "enum": [
+          "Passing",
+          "Failing"
+        ],
         "description": "Whether the property is currently passing or failing."
       },
       "Run_Status": {
         "type": "string",
-        "enum": ["starting", "in_progress", "completed", "cancelled", "incomplete", "unknown"],
+        "enum": [
+          "starting",
+          "in_progress",
+          "completed",
+          "cancelled",
+          "incomplete",
+          "unknown"
+        ],
         "description": "Current lifecycle status of a test run. `starting`: the run is being set up. `in_progress`: the run is actively running. `completed`: the run finished successfully. `cancelled`: the run was cancelled before completion. `incomplete`: the run did not complete successfully. `unknown`: the status of the run is unknown."
       },
       "Creator_Info": {
@@ -1428,7 +1562,7 @@
             "example": "ci"
           }
         },
-        "additionalProperties": false
+        "additionalProperties": true
       },
       "Run_Links": {
         "type": "object",
@@ -1440,7 +1574,7 @@
             "description": "URL to the triage report for this test run."
           }
         },
-        "additionalProperties": false
+        "additionalProperties": true
       }
     },
     "responses": {
@@ -1455,7 +1589,7 @@
               "message": "limit must be between 1 and 100"
             }
           }
-        }   
+        }
       },
       "Unauthorized": {
         "description": "Unauthorized — invalid or missing authentication credentials.",
@@ -1540,7 +1674,7 @@
               "$ref": "#/components/schemas/Error_Response"
             },
             "example": {
-              "message": "Too many requests. Retry after 30 seconds."
+              "message": "Too many requests."
             }
           }
         }
@@ -1554,6 +1688,122 @@
             },
             "example": {
               "message": "An unexpected error occurred. Please try again later."
+            }
+          }
+        }
+      },
+      "Legacy_BadRequest": {
+        "description": "Bad request — likely missing or invalid parameters.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Launch_Error_Response"
+            },
+            "example": {
+              "statusCode": 400
+            }
+          }
+        }
+      },
+      "Legacy_Unauthorized": {
+        "description": "Unauthorized — invalid or missing authentication credentials.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Launch_Error_Response"
+            },
+            "example": {
+              "statusCode": 401
+            }
+          }
+        }
+      },
+      "Legacy_Forbidden": {
+        "description": "Forbidden — the authenticated user does not have permission to access this resource.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Launch_Error_Response"
+            },
+            "example": {
+              "statusCode": 403
+            }
+          }
+        }
+      },
+      "Legacy_NotFound": {
+        "description": "The requested resource was not found — for example, the named launcher does not exist.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Launch_Error_Response"
+            },
+            "example": {
+              "statusCode": 404,
+              "runId": null
+            }
+          }
+        }
+      },
+      "Legacy_MethodNotAllowed": {
+        "description": "Method not allowed — the HTTP method is not supported for this endpoint.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Launch_Error_Response"
+            },
+            "example": {
+              "statusCode": 405
+            }
+          }
+        }
+      },
+      "Legacy_NotAcceptable": {
+        "description": "Not acceptable — the requested content type in the Accept header is not supported by this endpoint.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Launch_Error_Response"
+            },
+            "example": {
+              "statusCode": 406
+            }
+          }
+        }
+      },
+      "Legacy_TooManyRequests": {
+        "description": "Rate limit exceeded. The response includes a `Retry-After` header indicating the number of seconds to wait before retrying.\n\nWe recommend implementing a retry mechanism to handle rate limiting. Follow an exponential backoff schedule to reduce request volume when necessary, and add randomness (jitter) to the backoff schedule to avoid thundering-herd retries.",
+        "headers": {
+          "Retry-After": {
+            "description": "The number of seconds to wait before retrying the request.",
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "example": 30
+            }
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Launch_Error_Response"
+            },
+            "example": {
+              "statusCode": 429
+            }
+          }
+        }
+      },
+      "Legacy_InternalError": {
+        "description": "Unknown internal server error.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Launch_Error_Response"
+            },
+            "example": {
+              "statusCode": 500,
+              "runId": null
             }
           }
         }

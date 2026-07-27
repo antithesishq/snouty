@@ -130,18 +130,19 @@ impl OAuthRefreshInfo {
         }
     }
 
-    /// Path of the advisory lock file guarding refreshes for this origin.
+    /// Path of the advisory lock file guarding refreshes for this origin
     fn lock_path(&self) -> Option<PathBuf> {
-        match self {
-            Self::CredentialsFile { path, .. } => {
-                let mut lock = path.clone().into_os_string();
-                lock.push(".lock");
-                Some(PathBuf::from(lock))
+        let dir = lock_dir()?;
+        let name = match self {
+            Self::CredentialsFile { path, profile } => {
+                // Fold both the file and the profile into the name so per-profile
+                // refreshes get their own lock, mirroring the keychain naming.
+                let scope = construct_keychain_credential_name(profile.as_deref());
+                format!("{}.{scope}.refresh.lock", path_lock_token(path))
             }
-            Self::Keychain { entry_name } => {
-                global_settings_dir().map(|dir| dir.join(format!("{entry_name}.refresh.lock")))
-            }
-        }
+            Self::Keychain { entry_name } => format!("{entry_name}.refresh.lock"),
+        };
+        Some(dir.join(name))
     }
 
     fn load(&self) -> Result<Option<PersistableCredentials>> {
@@ -858,8 +859,13 @@ fn construct_keychain_credential_name(profile: Option<&str>) -> String {
 }
 
 fn clear_from_file_if_present(profile: Option<&str>) {
-    if let Some((parent_dir, path)) = try_get_credentials_file_path()
-        && let Ok(Some(contents)) = read_to_string_if_file_exists(&path)
+    let Some((parent_dir, path)) = try_get_credentials_file_path() else {
+        return;
+    };
+
+    let _file_lock = lock_credentials_file(&path);
+
+    if let Ok(Some(contents)) = read_to_string_if_file_exists(&path)
         && let Ok(mut creds_file) = parse_credentials_file_toml(contents, &path)
     {
         let mut changed = false;
@@ -873,7 +879,7 @@ fn clear_from_file_if_present(profile: Option<&str>) {
         }
 
         if changed
-            && let Ok(mut temp) = NamedTempFile::new_in(parent_dir)
+            && let Ok(mut temp) = NamedTempFile::new_in(&parent_dir)
             && let Ok(to_write) = toml::to_string_pretty(&creds_file)
             && temp.write_all(to_write.as_bytes()).is_ok()
         {
@@ -900,6 +906,10 @@ fn persist_to_file(
             Some(parent_dir) => (parent_dir.to_path_buf(), explicit_path.to_path_buf()),
         }
     };
+
+    mkdir(&settings_dir, true, 0o700)?;
+    let _file_lock = lock_credentials_file(&path);
+
     let mut current_contents = match read_to_string_if_file_exists(&path)? {
         Some(contents) => match parse_credentials_file_toml(contents, &path) {
             Ok(file) => file,
@@ -936,13 +946,41 @@ fn persist_to_file(
         current_contents.default = Some(credentials);
     }
 
-    mkdir(&settings_dir, true, 0o700)?;
     let mut temp = NamedTempFile::new_in(&settings_dir)?;
     temp.write_all(toml::to_string_pretty(&current_contents)?.as_bytes())?;
 
     temp.persist(&path)?;
 
     Ok(path)
+}
+
+fn lock_credentials_file(path: &Path) -> Option<std::fs::File> {
+    let dir = lock_dir()?;
+    mkdir(&dir, true, 0o700).ok()?;
+    let lock_file = dir.join(format!("{}.lock", path_lock_token(path)));
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(true)
+        .write(true)
+        .open(&lock_file)
+        .ok()?;
+    file.lock().ok()?;
+    Some(file)
+}
+
+fn lock_dir() -> Option<PathBuf> {
+    if let Some(runtime_dir) = env::var("XDG_RUNTIME_DIR").ok().flatten() {
+        return Some(PathBuf::from(runtime_dir).join("snouty").join("locks"));
+    }
+    global_settings_dir().map(|dir| dir.join("locks"))
+}
+
+fn path_lock_token(path: &Path) -> String {
+    use std::hash::{Hash, Hasher};
+
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    path.hash(&mut hasher);
+    format!("{:016x}", hasher.finish())
 }
 
 fn parse_credentials_file_toml(contents: String, path: &Path) -> Result<CredentialsFile> {

@@ -11,6 +11,7 @@ use sha2::{Digest, Sha256};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 
+use crate::settings;
 use crate::{
     attributed_value::AttributedValue,
     auth::{AuthenticationInfo, CredentialStorage, PersistableCredentials, persist},
@@ -209,9 +210,9 @@ async fn prompt_for_auth(
         },
     };
 
-    // Deliberately ignoring whatever is in ANTITHESIS_BASE_URL because a user may
-    // be logging in to another tenant under a new profile.
-    let base_url = format!("https://{tenant}.antithesis.com");
+    // ANTITHESIS_BASE_URL trumps the supplied tenant because the former is used by spec tests
+    let base_url = env::var(settings::ANTITHESIS_BASE_URL_VAR_NAME)?
+        .unwrap_or_else(|| format!("https://{tenant}.antithesis.com"));
     let client = reqwest::Client::builder()
         .timeout(OAUTH_HTTP_TIMEOUT)
         .build()

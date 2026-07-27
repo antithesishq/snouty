@@ -401,7 +401,7 @@ impl AntithesisApi {
         // The endpoint caps the returned events at `limit`. Only send the
         // parameter when the user asked for one: tenants that predate it would
         // otherwise receive a query param they may not accept, and omitting it
-        // lets the server apply its own default. The server validates the range.
+        // lets the server apply its default. The server validates the range.
         let mut request = self.client.search_run_events().run_id(run_id).q(query);
         if let Some(limit) = limit {
             request = request.limit(limit as u64);

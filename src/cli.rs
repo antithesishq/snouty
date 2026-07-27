@@ -599,9 +599,9 @@ and VTIME into `runs logs` to see the surrounding logs."#
         #[arg(short = 'm', long = "match")]
         matches: Vec<String>,
 
-        /// Maximum number of events the server returns (default: the server's
-        /// own, currently 50). Raise it to make a search more exhaustive. The
-        /// server enforces the accepted range.
+        /// Maximum number of events the server returns (default 50). Raise it
+        /// to make a search more exhaustive. The server enforces the accepted
+        /// range.
         #[arg(short = 'n', long)]
         limit: Option<usize>,
 

@@ -154,7 +154,15 @@ impl OAuthRefreshInfo {
                     Err(other) => return Err(eyre!("opening keychain entry: {other}")),
                 };
                 match entry.get_password() {
-                    Ok(json) => Ok(serde_json::from_str(&json)?),
+                    Ok(json) => match serde_json::from_str(&json) {
+                        Ok(deserialized) => Ok(deserialized),
+                        Err(err) => {
+                            eprintln!(
+                                "Deserialization of the value in the keychain failed with error {err:#}"
+                            );
+                            Ok(None)
+                        }
+                    },
                     Err(_) => Ok(None),
                 }
             }
@@ -637,16 +645,11 @@ async fn refresh_and_store(
         writer.refresh_token = new_refresh_token.clone();
     }
 
-    // Persist back to the origin so the refreshed tokens survive across runs.
-    // Non-fatal on failure: this process already has the new token in memory, and
-    // we'll just refresh again next time rather than aborting the request.
-    let to_persist = PersistableCredentials::OAuth {
+    // Persist back to the origin so the refreshed tokens survive across runs
+    refresh_info.persist(PersistableCredentials::OAuth {
         antithesis_token: new_access_token.clone(),
         refresh_token: new_refresh_token,
-    };
-    if let Err(err) = refresh_info.persist(to_persist) {
-        eprintln!("warning: failed to persist the refreshed OAuth credential: {err:#}");
-    }
+    })?;
 
     Ok(new_access_token)
 }
@@ -664,6 +667,7 @@ async fn refresh_oauth_token(
         reqwest::header::AUTHORIZATION,
         to_header_value(&format!("Bearer {refresh_token}"), true)?,
     );
+    request.timeout_mut().replace(Duration::from_secs(30));
 
     client
         .execute(request)

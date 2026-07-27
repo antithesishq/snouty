@@ -1920,9 +1920,6 @@ mod tests {
         let auth = AuthenticationInfo::oauth_for_test(
             "old-access-token",
             Some("old-refresh-token"),
-            // No known expiry, so the proactive (pre-expiry) path is a no-op and
-            // this exercises the reactive, 401-driven refresh specifically.
-            None,
             crate::auth::OAuthRefreshInfo::CredentialsFile {
                 path: creds_path.clone(),
                 profile: None,
@@ -1959,14 +1956,10 @@ mod tests {
         assert_eq!(requests[2].url.path(), "/api/v0/runs/run-1");
         assert_eq!(auth_header(2), "Bearer new-access-token");
 
-        // The refreshed tokens (and an expiry) were persisted to the file.
+        // The refreshed tokens were persisted to the file.
         let persisted = std::fs::read_to_string(&creds_path).unwrap();
         assert!(persisted.contains("new-access-token"), "got:\n{persisted}");
         assert!(persisted.contains("new-refresh-token"), "got:\n{persisted}");
-        assert!(
-            persisted.contains("expiry = \""),
-            "expiry not persisted:\n{persisted}"
-        );
     }
 
     #[tokio::test]
@@ -1985,7 +1978,6 @@ mod tests {
         // `can_refresh()` is false and the 401 must pass straight through.
         let auth = AuthenticationInfo::oauth_for_test(
             "access-token",
-            None,
             None,
             crate::auth::OAuthRefreshInfo::Keychain {
                 entry_name: "unused".to_owned(),

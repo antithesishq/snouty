@@ -4,7 +4,6 @@ use std::process::{Command, Stdio};
 use std::time::Duration;
 
 use base64::{Engine as _, prelude::BASE64_URL_SAFE_NO_PAD};
-use chrono::{DateTime, Utc};
 use color_eyre::Section;
 use color_eyre::eyre::{Context, Result, eyre};
 use serde::{Deserialize, Serialize};
@@ -399,12 +398,9 @@ async fn complete_oauth_login(
     )
     .await?;
 
-    let expiry = expiry_from_antithesis_token(&tokens.antithesis_token);
-
     Ok(PersistableCredentials::OAuth {
         antithesis_token: tokens.antithesis_token,
         refresh_token: tokens.refresh_token,
-        expiry,
     })
 }
 
@@ -719,40 +715,6 @@ fn generate_verifier_or_state() -> Result<String> {
     Ok(BASE64_URL_SAFE_NO_PAD.encode(bytes))
 }
 
-/// Best-effort extraction of the expiry from the Antithesis token
-fn expiry_from_antithesis_token(token: &str) -> Option<DateTime<Utc>> {
-    #[derive(Deserialize)]
-    struct PasetoClaims {
-        exp: Option<serde_json::Value>,
-    }
-
-    let mut parts = token.splitn(4, '.');
-    let _version = parts.next()?;
-    let purpose = parts.next()?;
-    let payload = parts.next()?;
-    if purpose != "public" {
-        return None;
-    }
-
-    let bytes = BASE64_URL_SAFE_NO_PAD.decode(payload).ok()?;
-    let claims = serde_json::Deserializer::from_slice(&bytes)
-        .into_iter::<PasetoClaims>()
-        .next()?
-        .ok()?;
-
-    parse_exp_claim(&claims.exp?)
-}
-
-fn parse_exp_claim(exp: &serde_json::Value) -> Option<DateTime<Utc>> {
-    if let Some(text) = exp.as_str() {
-        return Some(DateTime::parse_from_rfc3339(text).ok()?.with_timezone(&Utc));
-    }
-    if let Some(secs) = exp.as_u64() {
-        return DateTime::from_timestamp(secs as i64, 0);
-    }
-    None
-}
-
 fn validate_browser_launch_url(url: &str) -> Option<String> {
     reqwest::Url::parse(url)
         .ok()
@@ -868,91 +830,6 @@ mod tests {
     fn parse_callback_requires_code_and_state() {
         assert!(parse_callback_params("/callback?state=only_state").is_err());
         assert!(parse_callback_params("/callback?code=only_code").is_err());
-    }
-
-    /// Build a `v4.public` PASETO whose payload is `claims_json ‖ signature`,
-    /// mirroring the real wire format (a 64-byte Ed25519 signature stand-in
-    /// trails the JSON claims).
-    fn public_paseto_with_claims(claims_json: &[u8]) -> String {
-        let mut payload = claims_json.to_vec();
-        payload.extend_from_slice(&[0u8; 64]);
-        format!("v4.public.{}", BASE64_URL_SAFE_NO_PAD.encode(&payload))
-    }
-
-    #[test]
-    fn expiry_parsed_from_public_paseto_rfc3339_exp() {
-        let token =
-            public_paseto_with_claims(br#"{"sub":"user","exp":"2039-01-01T00:00:00+00:00"}"#);
-        let expected = DateTime::parse_from_rfc3339("2039-01-01T00:00:00+00:00")
-            .unwrap()
-            .with_timezone(&Utc);
-        assert_eq!(expiry_from_antithesis_token(&token), Some(expected));
-    }
-
-    #[test]
-    fn expiry_parsed_from_numeric_exp() {
-        let token = public_paseto_with_claims(br#"{"exp":2145916800}"#);
-        assert_eq!(
-            expiry_from_antithesis_token(&token),
-            DateTime::from_timestamp(2_145_916_800, 0)
-        );
-    }
-
-    #[test]
-    fn expiry_is_none_for_local_paseto() {
-        // A local token's payload is encrypted, so its claims are unreadable.
-        let token = format!(
-            "v4.local.{}",
-            BASE64_URL_SAFE_NO_PAD.encode(b"opaque-ciphertext")
-        );
-        assert_eq!(expiry_from_antithesis_token(&token), None);
-    }
-
-    #[test]
-    fn expiry_is_none_on_unparsable_or_missing_exp() {
-        // Missing exp claim.
-        assert_eq!(
-            expiry_from_antithesis_token(&public_paseto_with_claims(br#"{"sub":"user"}"#)),
-            None
-        );
-        // Not a PASETO at all.
-        assert_eq!(expiry_from_antithesis_token("not-a-token"), None);
-        // Public shape, but the payload isn't valid base64url / JSON.
-        assert_eq!(expiry_from_antithesis_token("v4.public.@@@@"), None);
-        // exp present but not an RFC 3339 string or a number.
-        assert_eq!(
-            expiry_from_antithesis_token(&public_paseto_with_claims(br#"{"exp":"whenever"}"#)),
-            None
-        );
-    }
-
-    // 2019-01-01T00:00:00+00:00, the `exp` claim in the canonical PASETO
-    // v2.public test vectors below.
-    const CANONICAL_VECTOR_EXP_UNIX: u64 = 1_546_300_800;
-
-    #[test]
-    fn expiry_parsed_from_canonical_v2_public_vector() {
-        // Official PASETO 2-S-1 test vector: a real token with a genuine 64-byte
-        // Ed25519 signature trailing the JSON claims (no footer). This exercises
-        // the real base64url decode and the skip-the-signature parse — unlike the
-        // synthetic tokens above whose "signature" is 64 zero bytes.
-        let token = "v2.public.eyJkYXRhIjoidGhpcyBpcyBhIHNpZ25lZCBtZXNzYWdlIiwiZXhwIjoiMjAxOS0wMS0wMVQwMDowMDowMCswMDowMCJ9HQr8URrGntTu7Dz9J2IF23d1M7-9lH9xiqdGyJNvzp4angPW5Esc7C5huy_M8I8_DjJK2ZXC2SUYuOFM-Q_5Cw";
-        assert_eq!(
-            expiry_from_antithesis_token(token),
-            DateTime::from_timestamp(CANONICAL_VECTOR_EXP_UNIX as i64, 0)
-        );
-    }
-
-    #[test]
-    fn expiry_parsed_from_canonical_v2_public_vector_with_footer() {
-        // Official PASETO 2-S-2 test vector: same claims, but with a footer
-        // (`UGFyYWdvbiBJbml0aWF0aXZlIEVudGVycHJpc2Vz` = "Paragon Initiative
-        // Enterprises"). Confirms the 4th `.`-delimited segment is ignored.
-        let token = "v2.public.eyJkYXRhIjoidGhpcyBpcyBhIHNpZ25lZCBtZXNzYWdlIiwiZXhwIjoiMjAxOS0wMS0wMVQwMDowMDowMCswMDowMCJ9flsZsx_gYCR0N_Ec2QxJFFpvQAs7h9HtKwbVK2n1MJ3Rz-hwe8KUqjnd8FAnIJZ601tp7lGkguU63oGbomhoBw.UGFyYWdvbiBJbml0aWF0aXZlIEVudGVycHJpc2Vz";
-        assert_eq!(
-            expiry_from_antithesis_token(token),
-            DateTime::from_timestamp(CANONICAL_VECTOR_EXP_UNIX as i64, 0)
-        );
     }
 
     #[test]

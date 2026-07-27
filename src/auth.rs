@@ -7,8 +7,11 @@ use std::{
     time::Duration,
 };
 
-use base64::{Engine, prelude::BASE64_STANDARD};
-use chrono::{DateTime, TimeDelta, Utc};
+use base64::{
+    Engine,
+    prelude::{BASE64_STANDARD, BASE64_URL_SAFE_NO_PAD},
+};
+use chrono::{DateTime, Utc};
 use color_eyre::{
     Section,
     eyre::{Context, OptionExt, Result, eyre},
@@ -40,7 +43,6 @@ const OIDC_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 pub struct OAuthCredential {
     antithesis_token: String,
     refresh_token: Option<String>,
-    expiry: Option<DateTime<Utc>>,
 }
 
 impl std::fmt::Debug for OAuthCredential {
@@ -48,25 +50,57 @@ impl std::fmt::Debug for OAuthCredential {
         f.debug_struct("OAuthCredential")
             .field("antithesis_token", &"[REDACTED]")
             .field("refresh_token", &"[REDACTED]")
-            .field("expiry", &self.expiry)
             .finish()
     }
 }
 
 impl OAuthCredential {
     fn is_expired(&self) -> bool {
-        match self.expiry {
+        match try_get_expiry_from_token(&self.antithesis_token) {
             Some(expiry) => Utc::now() >= expiry,
             None => false,
         }
     }
 }
 
+/// Try to parse the supplied string as a PASETO token and return the `exp` claim
+fn try_get_expiry_from_token(token: &str) -> Option<DateTime<Utc>> {
+    #[derive(Deserialize)]
+    struct PasetoClaims {
+        exp: Option<serde_json::Value>,
+    }
+
+    let mut parts = token.splitn(4, '.');
+    let _version = parts.next()?;
+    let purpose = parts.next()?;
+    let payload = parts.next()?;
+    if purpose != "public" {
+        return None;
+    }
+
+    let bytes = BASE64_URL_SAFE_NO_PAD.decode(payload).ok()?;
+    let claims = serde_json::Deserializer::from_slice(&bytes)
+        .into_iter::<PasetoClaims>()
+        .next()?
+        .ok()?;
+
+    parse_exp_claim(&claims.exp?)
+}
+
+fn parse_exp_claim(exp: &serde_json::Value) -> Option<DateTime<Utc>> {
+    if let Some(text) = exp.as_str() {
+        return Some(DateTime::parse_from_rfc3339(text).ok()?.with_timezone(&Utc));
+    }
+    if let Some(secs) = exp.as_u64() {
+        return DateTime::from_timestamp(secs as i64, 0);
+    }
+    None
+}
+
 #[derive(Deserialize)]
 struct OAuthRefreshResponse {
     antithesis_token: String,
     refresh_token: Option<String>,
-    expires_in: Option<u32>,
 }
 
 #[derive(Clone, Debug)]
@@ -428,7 +462,6 @@ impl AuthenticationInfo {
     pub(crate) fn oauth_for_test(
         antithesis_token: impl Into<String>,
         refresh_token: Option<&str>,
-        expiry: Option<DateTime<Utc>>,
         refresh_info: OAuthRefreshInfo,
     ) -> Self {
         Self::OAuth {
@@ -436,7 +469,6 @@ impl AuthenticationInfo {
             active_credential: Arc::new(RwLock::new(OAuthCredential {
                 antithesis_token: antithesis_token.into(),
                 refresh_token: refresh_token.map(str::to_owned),
-                expiry,
             })),
             refresh_lock: Arc::new(Mutex::new(())),
         }
@@ -540,9 +572,6 @@ async fn refresh_and_store(
     refresh_token: &str,
 ) -> Result<String> {
     let refreshed = refresh_oauth_token(client, base_url, refresh_token).await?;
-    let expiry = refreshed
-        .expires_in
-        .map(|ttl_seconds| Utc::now() + TimeDelta::seconds(ttl_seconds as i64));
     let new_access_token = refreshed.antithesis_token;
     // Per RFC 6749 §6, a refresh response without a new refresh token means that the previous token is still valid
     let new_refresh_token = Some(
@@ -558,7 +587,6 @@ async fn refresh_and_store(
             .map_err(|err| eyre!("the OAuth credential lock is poisoned: {err}"))?;
         writer.antithesis_token = new_access_token.clone();
         writer.refresh_token = new_refresh_token.clone();
-        writer.expiry = expiry;
     }
 
     // Persist back to the origin so the refreshed tokens survive across runs.
@@ -567,7 +595,6 @@ async fn refresh_and_store(
     let to_persist = PersistableCredentials::OAuth {
         antithesis_token: new_access_token.clone(),
         refresh_token: new_refresh_token,
-        expiry,
     };
     if let Err(err) = refresh_info.persist(to_persist) {
         eprintln!("warning: failed to persist the refreshed OAuth credential: {err:#}");
@@ -670,7 +697,6 @@ pub(crate) enum PersistableCredentials {
     OAuth {
         antithesis_token: String,
         refresh_token: Option<String>,
-        expiry: Option<DateTime<Utc>>,
     },
     Password {
         username: String,
@@ -685,11 +711,13 @@ impl std::fmt::Debug for PersistableCredentials {
                 .debug_struct("ApiKey")
                 .field("api_key", &"[REDACTED]")
                 .finish(),
-            Self::OAuth { expiry, .. } => f
+            Self::OAuth {
+                antithesis_token, ..
+            } => f
                 .debug_struct("OAuth")
                 .field("antithesis_token", &"[REDACTED]")
                 .field("refresh_token", &"[REDACTED]")
-                .field("expiry", expiry)
+                .field("expiry", &try_get_expiry_from_token(antithesis_token))
                 .finish(),
             Self::Password { username, .. } => f
                 .debug_struct("Password")
@@ -710,13 +738,11 @@ impl PersistableCredentials {
             Self::OAuth {
                 antithesis_token,
                 refresh_token,
-                expiry,
             } => AuthenticationInfo::OAuth {
                 refresh_info: refresh_info_supplier(),
                 active_credential: Arc::new(RwLock::new(OAuthCredential {
                     antithesis_token,
                     refresh_token,
-                    expiry,
                 })),
                 refresh_lock: Arc::new(Mutex::new(())),
             },
@@ -930,7 +956,6 @@ mod tests {
         let active_credential = Arc::new(RwLock::new(OAuthCredential {
             antithesis_token: "old-access-token".to_owned(),
             refresh_token: Some("keep-me".to_owned()),
-            expiry: None,
         }));
 
         let creds_dir = tempfile::TempDir::new().unwrap();
@@ -963,6 +988,91 @@ mod tests {
         let persisted = std::fs::read_to_string(creds_dir.path().join("credentials.toml")).unwrap();
         assert!(persisted.contains("new-access-token"), "got:\n{persisted}");
         assert!(persisted.contains("keep-me"), "got:\n{persisted}");
+    }
+
+    /// Build a `v4.public` PASETO whose payload is `claims_json ‖ signature`,
+    /// mirroring the real wire format (a 64-byte Ed25519 signature stand-in
+    /// trails the JSON claims).
+    fn public_paseto_with_claims(claims_json: &[u8]) -> String {
+        let mut payload = claims_json.to_vec();
+        payload.extend_from_slice(&[0u8; 64]);
+        format!("v4.public.{}", BASE64_URL_SAFE_NO_PAD.encode(&payload))
+    }
+
+    #[test]
+    fn expiry_parsed_from_public_paseto_rfc3339_exp() {
+        let token =
+            public_paseto_with_claims(br#"{"sub":"user","exp":"2039-01-01T00:00:00+00:00"}"#);
+        let expected = DateTime::parse_from_rfc3339("2039-01-01T00:00:00+00:00")
+            .unwrap()
+            .with_timezone(&Utc);
+        assert_eq!(try_get_expiry_from_token(&token), Some(expected));
+    }
+
+    #[test]
+    fn expiry_parsed_from_numeric_exp() {
+        let token = public_paseto_with_claims(br#"{"exp":2145916800}"#);
+        assert_eq!(
+            try_get_expiry_from_token(&token),
+            DateTime::from_timestamp(2_145_916_800, 0)
+        );
+    }
+
+    #[test]
+    fn expiry_is_none_for_local_paseto() {
+        // A local token's payload is encrypted, so its claims are unreadable.
+        let token = format!(
+            "v4.local.{}",
+            BASE64_URL_SAFE_NO_PAD.encode(b"opaque-ciphertext")
+        );
+        assert_eq!(try_get_expiry_from_token(&token), None);
+    }
+
+    #[test]
+    fn expiry_is_none_on_unparsable_or_missing_exp() {
+        // Missing exp claim.
+        assert_eq!(
+            try_get_expiry_from_token(&public_paseto_with_claims(br#"{"sub":"user"}"#)),
+            None
+        );
+        // Not a PASETO at all.
+        assert_eq!(try_get_expiry_from_token("not-a-token"), None);
+        // Public shape, but the payload isn't valid base64url / JSON.
+        assert_eq!(try_get_expiry_from_token("v4.public.@@@@"), None);
+        // exp present but not an RFC 3339 string or a number.
+        assert_eq!(
+            try_get_expiry_from_token(&public_paseto_with_claims(br#"{"exp":"whenever"}"#)),
+            None
+        );
+    }
+
+    // 2019-01-01T00:00:00+00:00, the `exp` claim in the canonical PASETO
+    // v2.public test vectors below.
+    const CANONICAL_VECTOR_EXP_UNIX: u64 = 1_546_300_800;
+
+    #[test]
+    fn expiry_parsed_from_canonical_v2_public_vector() {
+        // Official PASETO 2-S-1 test vector: a real token with a genuine 64-byte
+        // Ed25519 signature trailing the JSON claims (no footer). This exercises
+        // the real base64url decode and the skip-the-signature parse — unlike the
+        // synthetic tokens above whose "signature" is 64 zero bytes.
+        let token = "v2.public.eyJkYXRhIjoidGhpcyBpcyBhIHNpZ25lZCBtZXNzYWdlIiwiZXhwIjoiMjAxOS0wMS0wMVQwMDowMDowMCswMDowMCJ9HQr8URrGntTu7Dz9J2IF23d1M7-9lH9xiqdGyJNvzp4angPW5Esc7C5huy_M8I8_DjJK2ZXC2SUYuOFM-Q_5Cw";
+        assert_eq!(
+            try_get_expiry_from_token(token),
+            DateTime::from_timestamp(CANONICAL_VECTOR_EXP_UNIX as i64, 0)
+        );
+    }
+
+    #[test]
+    fn expiry_parsed_from_canonical_v2_public_vector_with_footer() {
+        // Official PASETO 2-S-2 test vector: same claims, but with a footer
+        // (`UGFyYWdvbiBJbml0aWF0aXZlIEVudGVycHJpc2Vz` = "Paragon Initiative
+        // Enterprises"). Confirms the 4th `.`-delimited segment is ignored.
+        let token = "v2.public.eyJkYXRhIjoidGhpcyBpcyBhIHNpZ25lZCBtZXNzYWdlIiwiZXhwIjoiMjAxOS0wMS0wMVQwMDowMDowMCswMDowMCJ9flsZsx_gYCR0N_Ec2QxJFFpvQAs7h9HtKwbVK2n1MJ3Rz-hwe8KUqjnd8FAnIJZ601tp7lGkguU63oGbomhoBw.UGFyYWdvbiBJbml0aWF0aXZlIEVudGVycHJpc2Vz";
+        assert_eq!(
+            try_get_expiry_from_token(token),
+            DateTime::from_timestamp(CANONICAL_VECTOR_EXP_UNIX as i64, 0)
+        );
     }
 
     /// The parts of an inbound HTTP request the OIDC exchange test asserts on.

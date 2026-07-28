@@ -131,14 +131,16 @@ pub async fn cmd_runs(
             run_id,
             input_hash,
             vtime,
+            failure,
             begin_vtime,
             begin_input_hash,
             raw,
         }) => {
             cmd_runs_logs(
                 &run_id,
-                &input_hash,
-                &vtime,
+                input_hash.as_deref(),
+                vtime.as_deref(),
+                failure,
                 begin_input_hash.as_deref(),
                 begin_vtime.as_deref(),
                 settings,
@@ -1482,10 +1484,12 @@ async fn cmd_runs_events(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn cmd_runs_logs(
     run_id: &str,
-    input_hash: &str,
-    vtime: &str,
+    input_hash: Option<&str>,
+    vtime: Option<&str>,
+    failure: bool,
     begin_input_hash: Option<&str>,
     begin_vtime: Option<&str>,
     settings: &Settings,
@@ -1494,8 +1498,31 @@ async fn cmd_runs_logs(
     debug!("streaming logs for run: {}", run_id);
 
     let api = AntithesisApi::new_requiring_api_key(settings, verbose)?;
+
+    // --failure resolves the moment from the run itself (same one `runs show`
+    // reports), so the caller doesn't have to copy HASH/VTIME by hand. clap
+    // guarantees HASH/VTIME are present when --failure is absent.
+    let (input_hash, vtime) = if failure {
+        let run = api.get_run(run_id).await?;
+        match run.real_failure_moment() {
+            Some(moment) => (moment.input_hash.clone(), moment.vtime.clone()),
+            None => {
+                return Err(user_error(format!(
+                    "run {run_id} has no failure moment to stream logs from"
+                ))
+                .note("only runs that failed a property expose one")
+                .note(format!("inspect the run with `snouty runs show {run_id}`")));
+            }
+        }
+    } else {
+        (
+            input_hash.expect("clap requires input_hash without --failure").to_string(),
+            vtime.expect("clap requires vtime without --failure").to_string(),
+        )
+    };
+
     let stream = match api
-        .get_run_logs(run_id, input_hash, vtime, begin_input_hash, begin_vtime)
+        .get_run_logs(run_id, &input_hash, &vtime, begin_input_hash, begin_vtime)
         .await
     {
         Ok(stream) => stream.into_inner(),

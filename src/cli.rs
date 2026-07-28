@@ -556,19 +556,31 @@ INPUT_HASH and VTIME identify the moment and its timeline; logs are streamed up
 to that moment. Without --begin-vtime, streaming starts at the timeline's
 earliest log entry.
 
+Pass --failure instead of HASH/VTIME to stream up to the run's own failure
+moment (the one `runs show` reports) — a shortcut for the common case of
+"show me the logs at the failure" without copying the moment by hand.
+
 Output: `[vtime] [source] [stream] message`. A moment (HASH/VTIME) comes from
 `runs properties --detail` or `runs events`."#)]
     Logs {
         /// Run ID
         run_id: String,
 
-        /// Input hash of the moment to stream up to (with VTIME, picks the timeline)
-        #[arg(allow_hyphen_values = true)]
-        input_hash: String,
+        /// Input hash of the moment to stream up to (with VTIME, picks the
+        /// timeline). Optional when --failure is given.
+        #[arg(allow_hyphen_values = true, required_unless_present = "failure")]
+        input_hash: Option<String>,
 
-        /// Virtual time of the moment to stream up to
-        #[arg(allow_hyphen_values = true)]
-        vtime: String,
+        /// Virtual time of the moment to stream up to. Optional when --failure
+        /// is given.
+        #[arg(allow_hyphen_values = true, required_unless_present = "failure")]
+        vtime: Option<String>,
+
+        /// Stream logs up to the run's own failure moment instead of an
+        /// explicit HASH/VTIME (the same moment `runs show` reports). Conflicts
+        /// with passing HASH/VTIME.
+        #[arg(long, conflicts_with_all = ["input_hash", "vtime"])]
+        failure: bool,
 
         /// Start from this virtual time instead of the timeline's earliest log entry
         #[arg(long, allow_hyphen_values = true)]
@@ -719,10 +731,31 @@ mod tests {
         else {
             panic!("expected `runs logs`");
         };
-        assert_eq!(input_hash, "-123");
-        assert_eq!(vtime, "-2.0");
+        assert_eq!(input_hash.as_deref(), Some("-123"));
+        assert_eq!(vtime.as_deref(), Some("-2.0"));
         assert_eq!(begin_vtime.as_deref(), Some("-2.0"));
         assert_eq!(begin_input_hash.as_deref(), Some("0"));
+    }
+
+    // `--failure` resolves the moment from the run, so HASH/VTIME are omitted.
+    #[test]
+    fn logs_failure_needs_no_moment() {
+        let cli = parse(&["snouty", "runs", "logs", "RUN", "--failure"]);
+        let Commands::Runs {
+            command:
+                Some(RunsCommands::Logs {
+                    input_hash,
+                    vtime,
+                    failure,
+                    ..
+                }),
+        } = cli.command
+        else {
+            panic!("expected `runs logs`");
+        };
+        assert!(failure);
+        assert_eq!(input_hash, None);
+        assert_eq!(vtime, None);
     }
 
     // `-r` is the short form of `--raw`; note `-r` must not swallow the
@@ -737,7 +770,7 @@ mod tests {
             panic!("expected `runs logs`");
         };
         assert!(raw);
-        assert_eq!(vtime, "-2.0");
+        assert_eq!(vtime.as_deref(), Some("-2.0"));
 
         let cli = parse(&["snouty", "runs", "logs", "RUN", "-123", "-2.0"]);
         let Commands::Runs {

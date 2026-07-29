@@ -818,28 +818,21 @@ pub fn initialize_credential_store() -> Result<()> {
     Ok(())
 }
 
-/// Where [`persist`] stored the credentials, so `snouty login` can tell the user
-/// exactly where they landed.
-pub(crate) enum CredentialStorage {
-    Keychain,
-    File(PathBuf),
-}
-
 pub(crate) fn persist(
     credentials: PersistableCredentials,
     profile: Option<&str>,
-) -> Result<CredentialStorage> {
+) -> Result<AttributedValue<()>> {
     match try_persist_to_keychain(&credentials, profile) {
         Err(err) => Err(err),
-        Ok(Some(())) => Ok(CredentialStorage::Keychain),
-        Ok(None) => persist_to_file(credentials, profile, None).map(CredentialStorage::File),
+        Ok(Some(entry_name)) => Ok(AttributedValue::Keychain { value: (), entry_name }),
+        Ok(None) => persist_to_file(credentials, profile, None).map(|path| AttributedValue::SettingsFile { value: (), settings_file_path: path, profile: profile.map(|p| p.to_owned()) }),
     }
 }
 
 fn try_persist_to_keychain(
     credentials: &PersistableCredentials,
     profile: Option<&str>,
-) -> Result<Option<()>> {
+) -> Result<Option<String>> {
     let credential_name = construct_keychain_credential_name(profile);
 
     let credential = match Entry::new("snouty", credential_name.as_str()) {
@@ -853,7 +846,7 @@ fn try_persist_to_keychain(
 
     clear_from_file_if_present(profile);
 
-    Ok(Some(()))
+    Ok(Some(credential_name))
 }
 
 fn construct_keychain_credential_name(profile: Option<&str>) -> String {

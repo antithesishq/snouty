@@ -1,4 +1,4 @@
-use std::io::{self, IsTerminal, Write};
+use std::io::{self, IsTerminal};
 use std::path::Path;
 use std::process::{Command, Stdio};
 use std::time::Duration;
@@ -6,6 +6,7 @@ use std::time::Duration;
 use base64::{Engine as _, prelude::BASE64_URL_SAFE_NO_PAD};
 use color_eyre::Section;
 use color_eyre::eyre::{Context, Result, eyre};
+use dialoguer::{Confirm, Input, Password, Select};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -14,7 +15,7 @@ use tokio::net::TcpListener;
 use crate::settings;
 use crate::{
     attributed_value::AttributedValue,
-    auth::{AuthenticationInfo, CredentialStorage, PersistableCredentials, persist},
+    auth::{AuthenticationInfo, PersistableCredentials, persist},
     env,
     error::user_error,
     settings::{
@@ -30,32 +31,121 @@ const OAUTH_HTTP_TIMEOUT: Duration = Duration::from_secs(10);
 /// sign-in (including MFA).
 const CALLBACK_TIMEOUT: Duration = Duration::from_secs(300);
 
+/// Wrapping our TUI (`dialoguer`) in trait so that it can be subbed out for testing
+trait Prompter {
+    /// Whether we're attached to an interactive terminal.
+    fn is_interactive(&self) -> bool;
+
+    /// A yes/no confirmation with no default (the user must answer).
+    fn confirm(&self, prompt: &str) -> Result<bool>;
+
+    /// A free-text line, pre-filled with `default` when the user just hits enter.
+    fn input(&self, prompt: &str, default: Option<&str>) -> Result<String>;
+
+    /// A single-choice menu over `items`, initially highlighting `default`.
+    /// Returns `None` when the user cancels (Esc/q), mirroring
+    /// [`dialoguer::Select::interact_opt`].
+    fn select(
+        &self,
+        prompt: &str,
+        items: &[String],
+        default: Option<usize>,
+    ) -> Result<Option<usize>>;
+
+    /// A no-echo secret. `allow_empty` permits an empty value; when
+    /// `confirm_prompt` is `Some`, the value must be entered twice and matched.
+    fn password(
+        &self,
+        prompt: &str,
+        allow_empty: bool,
+        confirm_prompt: Option<&str>,
+    ) -> Result<String>;
+}
+
+/// The production [`Prompter`]: `dialoguer` widgets reading the real terminal.
+struct DialoguerPrompter;
+
+impl Prompter for DialoguerPrompter {
+    fn is_interactive(&self) -> bool {
+        io::stdin().is_terminal()
+    }
+
+    fn confirm(&self, prompt: &str) -> Result<bool> {
+        Ok(Confirm::new().with_prompt(prompt).interact().unwrap())
+    }
+
+    fn input(&self, prompt: &str, default: Option<&str>) -> Result<String> {
+        // T is inferred as `String` from the `String` return type — matching the
+        // form dialoguer's own examples use.
+        let mut input = Input::new().with_prompt(prompt);
+        if let Some(default) = default {
+            input = input.default(default.to_owned());
+        }
+        Ok(input.interact_text().unwrap())
+    }
+
+    fn select(
+        &self,
+        prompt: &str,
+        items: &[String],
+        default: Option<usize>,
+    ) -> Result<Option<usize>> {
+        let mut select = Select::new().with_prompt(prompt).items(items);
+        if let Some(default) = default {
+            select = select.default(default);
+        }
+        Ok(select.interact_opt().unwrap())
+    }
+
+    fn password(
+        &self,
+        prompt: &str,
+        allow_empty: bool,
+        confirm_prompt: Option<&str>,
+    ) -> Result<String> {
+        let mut password = Password::new()
+            .with_prompt(prompt)
+            .allow_empty_password(allow_empty);
+        if let Some(confirm_prompt) = confirm_prompt {
+            password = password.with_confirmation(confirm_prompt, "Passwords did not match");
+        }
+        Ok(password.interact().unwrap())
+    }
+}
+
 pub async fn cmd_login(
     tenant: Option<String>,
     repository: Option<String>,
     profile: Option<&str>,
     current_settings: Result<Settings>,
 ) -> Result<()> {
+    do_cmd_login(
+        tenant,
+        repository,
+        profile,
+        current_settings,
+        &DialoguerPrompter,
+    )
+    .await
+}
+
+async fn do_cmd_login(
+    tenant: Option<String>,
+    repository: Option<String>,
+    profile: Option<&str>,
+    current_settings: Result<Settings>,
+    prompter: &dyn Prompter,
+) -> Result<()> {
     if let Err(report) = &current_settings {
         eprintln!("The current settings failed to load with the following error: {report:#}");
-        eprintln!(
-            "Would you like to proceed with the login command? Doing so may cause your existing settings file to be replaced rather than updated."
-        );
-        eprintln!("1. Yes, please proceed");
-        eprintln!("2. No, please exit immediately");
-        eprintln!(
-            "Please enter either '1' or '2'. Any other input will cause the program to exit."
-        );
-
-        let mut input = String::new();
-        io::stdin().read_line(&mut input)?;
-        match input.trim() {
-            "1" => {}
-            _ => {
-                return Err(eyre!(
-                    "Exiting login command without completing per user request."
-                ));
-            }
+        if prompter.is_interactive()
+            && !prompter.confirm(
+                "Would you like to proceed with the login command? Doing so may cause your existing settings file to be replaced rather than updated.",
+            )?
+        {
+            return Err(eyre!(
+                "Exiting login command without completing per user request."
+            ));
         }
     }
 
@@ -66,6 +156,7 @@ pub async fn cmd_login(
     let tenant_to_use = match tenant {
         Some(arg_value) if !arg_value.is_empty() => arg_value,
         Some(_) | None => prompt_for_value(
+            prompter,
             "Antithesis tenant",
             current_settings.as_ref().ok().and_then(|s| s.tenant()),
         )?,
@@ -75,25 +166,35 @@ pub async fn cmd_login(
     let repository_to_use = match repository {
         Some(arg_value) if !arg_value.is_empty() => arg_value,
         Some(_) | None => prompt_for_value(
+            prompter,
             "container repository",
             current_settings.as_ref().ok().and_then(|s| s.repository()),
         )?,
     };
 
+    let current_credentials =
+        AuthenticationInfo::for_ambient_configuration_with_attribution(profile, true);
+
     // Capture the credential kind and where it was stored so the summary can name
     // both; `None` when the user chose to skip credential setup.
-    let credential_summary =
-        match prompt_for_auth(profile_to_use.as_deref(), &tenant_to_use).await? {
+    let credential_summary = if prompter.is_interactive() {
+        match prompt_for_auth(prompter, &tenant_to_use, &current_credentials).await? {
             Some(credentials) => {
                 let kind = match &credentials {
                     PersistableCredentials::ApiKey { .. } => "API key",
                     PersistableCredentials::Password { .. } => "username and password",
                     PersistableCredentials::OAuth { .. } => "OAuth credentials",
                 };
-                Some((kind, persist(credentials, profile_to_use.as_deref())?))
+                Some(persist(credentials, profile_to_use.as_deref())?.with_value(kind))
             }
             None => None,
-        };
+        }
+    } else {
+        eprintln!(
+            "Cannot collect credentials unless running in a TTY. Please provide credentials via environment variables or rerun `snouty login` in an interactive session"
+        );
+        None
+    };
 
     let settings_path = update_settings_in_global_file(
         Some(tenant_to_use.clone()),
@@ -109,6 +210,7 @@ pub async fn cmd_login(
         profile_to_use.as_deref(),
         &settings_path,
         credential_summary,
+        current_credentials,
     );
 
     Ok(())
@@ -121,7 +223,8 @@ fn print_login_summary(
     repository: &str,
     profile: Option<&str>,
     settings_path: &Path,
-    credentials: Option<(&str, CredentialStorage)>,
+    credentials: Option<AttributedValue<&str>>,
+    previous_credentials: Result<AttributedValue<AuthenticationInfo>>,
 ) {
     let scope = match profile {
         Some(p) => format!(" under profile `{p}`"),
@@ -136,80 +239,79 @@ fn print_login_summary(
     }
     println!("\nSaved {saved}{scope} to {}.", settings_path.display());
     match credentials {
-        Some((kind, CredentialStorage::Keychain)) => {
+        Some(AttributedValue::Keychain {
+            value: kind,
+            entry_name: _,
+        }) => {
             println!("Stored your {kind}{scope} in the system keychain.");
         }
-        Some((kind, CredentialStorage::File(path))) => {
+        Some(AttributedValue::SettingsFile {
+            value: kind,
+            settings_file_path: path,
+            profile: _,
+        }) => {
             println!("Stored your {kind}{scope} in {}.", path.display());
         }
-        None => {
-            println!(
-                "Skipped credential storage — snouty will use the ANTITHESIS_API_KEY or ANTITHESIS_USERNAME/PASSWORD environment variables."
-            );
-        }
+        _ => match previous_credentials {
+            Ok(AttributedValue::Keychain { .. }) => {
+                println!(
+                    "Retained your previously stored credentials{scope} in the system keychain."
+                );
+            }
+            Ok(AttributedValue::SettingsFile {
+                settings_file_path, ..
+            }) => {
+                println!(
+                    "Retained your previously stored credentials{scope} in {}.",
+                    settings_file_path.display()
+                );
+            }
+            _ => {
+                println!(
+                    "Skipped credential storage — snouty will use the ANTITHESIS_API_KEY or ANTITHESIS_USERNAME/PASSWORD environment variables."
+                );
+            }
+        },
     }
     println!("Run `snouty doctor` to verify your setup.");
 }
 
-fn prompt_for_value(value_name: &str, previous_value: Option<&str>) -> Result<String> {
-    println!("What {value_name} would you like to use?");
-    if let Some(prev) = previous_value
-        && !prev.is_empty()
-    {
-        println!("(Hit enter to use the previous value of [{prev}])");
+fn prompt_for_value(
+    prompter: &dyn Prompter,
+    value_name: &str,
+    previous_value: Option<&str>,
+) -> Result<String> {
+    if prompter.is_interactive() {
+        prompter.input(
+            &format!("What {value_name} would you like to use?"),
+            previous_value,
+        )
+    } else {
+        Err(eyre!("Cannot prompt for value when not running in a TTY"))
     }
-
-    let mut input = String::new();
-    io::stdin().read_line(&mut input)?;
-    input = input.trim().to_owned();
-
-    if input.is_empty()
-        && let Some(prev) = previous_value
-    {
-        input.push_str(prev);
-    }
-
-    Ok(input)
 }
 
 enum AuthSetupType {
-    Skip,
     ApiKey,
     Password,
     OAuth,
 }
 
-impl AuthSetupType {
-    fn try_from_str(to_parse: &str) -> Option<Self> {
-        match to_parse {
-            "1" => Some(AuthSetupType::Skip),
-            "2" => Some(AuthSetupType::ApiKey),
-            "3" => Some(AuthSetupType::Password),
-            "4" => Some(AuthSetupType::OAuth),
-            _ => None,
+impl std::fmt::Display for AuthSetupType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            AuthSetupType::ApiKey => f.write_str("API Key"),
+            AuthSetupType::Password => f.write_str("Username & password"),
+            AuthSetupType::OAuth => f.write_str("Single sign-on (OAuth)"),
         }
     }
 }
 
 async fn prompt_for_auth(
-    profile: Option<&str>,
+    prompter: &dyn Prompter,
     tenant: &str,
+    previous_value: &Result<AttributedValue<AuthenticationInfo>>,
 ) -> Result<Option<PersistableCredentials>> {
-    let previous_value =
-        AuthenticationInfo::for_ambient_configuration_with_attribution(profile, true);
-
-    let default_selection = match &previous_value {
-        Err(_) => '1',
-        Ok(creds) => match creds {
-            AttributedValue::EnvironmentVariable { .. } => '1',
-            _ => match creds.value() {
-                AuthenticationInfo::ApiKey { .. } => '2',
-                AuthenticationInfo::Password { .. } => '3',
-                _ => '1',
-            },
-        },
-    };
-
     // ANTITHESIS_BASE_URL trumps the supplied tenant because the former is used by spec tests
     let base_url = env::var(settings::ANTITHESIS_BASE_URL_VAR_NAME)?
         .unwrap_or_else(|| format!("https://{tenant}.antithesis.com"));
@@ -219,108 +321,74 @@ async fn prompt_for_auth(
         .wrap_err("failed to build the OAuth HTTP client")?;
     let oauth_config = fetch_cli_config(&client, &base_url).await;
 
-    println!("What kind of credentials would you like to use?");
-    println!(
-        "1. Skip setup (Select this option if you wish to keep your current credentials or plan to use environment variables instead of persisted credentials.)"
-    );
-    println!("2. API key");
-    println!("3. Username/password");
+    let mut credential_options = vec![AuthSetupType::ApiKey, AuthSetupType::Password];
+
     if oauth_config
         .as_ref()
         .is_ok_and(|config| !matches!(config, CliOAuthConfig::Disabled))
     {
-        println!("4. OAuth credentials");
-    }
-    println!("(Hit enter to use the default value of [{default_selection}])");
-
-    let mut input = String::new();
-    io::stdin().read_line(&mut input)?;
-    input = input.trim().to_owned();
-
-    if input.is_empty() {
-        input.push(default_selection);
+        credential_options.push(AuthSetupType::OAuth);
     }
 
-    match AuthSetupType::try_from_str(&input) {
-        None => Err(eyre!("Unrecognized input.")),
-        Some(AuthSetupType::Skip) => Ok(None),
-        Some(AuthSetupType::ApiKey) => match previous_value.map(|attr| attr.extract()) {
-            Ok(AuthenticationInfo::ApiKey { api_key }) => prompt_for_api_key(Some(&api_key)),
-            _ => prompt_for_api_key(None),
-        }
-        .map(Some),
-        Some(AuthSetupType::Password) => match previous_value.map(|attr| attr.extract()) {
-            Ok(AuthenticationInfo::Password { username, password }) => {
-                prompt_for_username_password(Some(&username), Some(&password))
+    let labels: Vec<String> = credential_options.iter().map(ToString::to_string).collect();
+
+    // Default the highlighted option to whatever kind was last used, so the
+    // common "log in again the same way" case is one keystroke.
+    let default = match previous_value {
+        Err(_) => None,
+        Ok(creds) => match creds {
+            AttributedValue::EnvironmentVariable { .. } => None,
+            _ => match creds.value() {
+                AuthenticationInfo::ApiKey { .. } => Some(0),
+                AuthenticationInfo::Password { .. } => Some(1),
+                _ => None,
+            },
+        },
+    };
+
+    let selection = prompter.select(
+        "What kind of credentials would you like to use? (Hit Esc to skip)",
+        &labels,
+        default,
+    )?;
+
+    match selection {
+        None => Ok(None),
+        Some(index) => match credential_options[index] {
+            AuthSetupType::ApiKey => prompt_for_api_key(prompter).map(Some),
+            AuthSetupType::Password => match previous_value.as_ref().map(AttributedValue::value) {
+                Ok(AuthenticationInfo::Password { username, .. }) => {
+                    prompt_for_username_password(prompter, Some(username))
+                }
+                _ => prompt_for_username_password(prompter, None),
             }
-            _ => prompt_for_username_password(None, None),
-        }
-        .map(Some),
-        Some(AuthSetupType::OAuth) => complete_oauth_login(&client, &base_url, &oauth_config?)
-            .await
             .map(Some),
+            AuthSetupType::OAuth => complete_oauth_login(&client, &base_url, &oauth_config?)
+                .await
+                .map(Some),
+        },
     }
 }
 
-fn prompt_for_api_key(previous_api_key: Option<&str>) -> Result<PersistableCredentials> {
+fn prompt_for_api_key(prompter: &dyn Prompter) -> Result<PersistableCredentials> {
     Ok(PersistableCredentials::ApiKey {
-        api_key: prompt_for_sensitive_value("API key", previous_api_key)?,
+        api_key: prompter.password("Please enter your API Key", true, None)?,
     })
 }
 
-fn prompt_for_sensitive_value(value_name: &str, previous_value: Option<&str>) -> Result<String> {
-    let prompt_str = match previous_value {
-        Some(prev) if !prev.is_empty() => {
-            format!("Please enter your {value_name} (leave blank to use previous value): ")
-        }
-        Some(_) | None => format!("Please enter your {value_name}: "),
-    };
-
-    let entered = read_secret(value_name, &prompt_str)?;
-    if entered.is_empty() {
-        match previous_value {
-            Some(prev) if !prev.is_empty() => Ok(prev.to_owned()),
-            Some(_) | None => Err(eyre!("{value_name} cannot be empty")),
-        }
-    } else {
-        Ok(entered)
-    }
-}
-
-/// Read a secret, hiding it from the terminal when one is attached.
-///
-/// Interactively (stdin is a TTY) the value is read with [`rpassword`] so it is
-/// never echoed. When stdin is *not* a terminal — piped input from a script or
-/// the spec tests — `rpassword` would try to open `/dev/tty` (failing, or
-/// blocking on the real terminal) instead of reading the pipe, so we read the
-/// secret as an ordinary line from stdin. There is no terminal echo to suppress
-/// in that case, so nothing is lost.
-fn read_secret(value_name: &str, prompt: &str) -> Result<String> {
-    if io::stdin().is_terminal() {
-        return rpassword::prompt_password(prompt).wrap_err(format!("Unable to read {value_name}"));
-    }
-
-    print!("{prompt}");
-    io::stdout().flush().ok();
-
-    let mut line = String::new();
-    io::stdin()
-        .read_line(&mut line)
-        .wrap_err(format!("Unable to read {value_name}"))?;
-    // Strip only the line terminator; a secret may legitimately contain
-    // surrounding whitespace.
-    Ok(line.trim_end_matches(['\r', '\n']).to_owned())
-}
-
 fn prompt_for_username_password(
+    prompter: &dyn Prompter,
     previous_username: Option<&str>,
-    previous_password: Option<&str>,
 ) -> Result<PersistableCredentials> {
-    let username = prompt_for_value("username", previous_username)?;
+    let username = prompt_for_value(prompter, "username", previous_username)?;
     if username.is_empty() {
         return Err(eyre!("Username cannot be empty"));
     }
-    let password = prompt_for_sensitive_value("password", previous_password)?;
+    let password = prompter.password(
+        "Please enter your password",
+        false,
+        Some("Please reenter your password to confirm"),
+    )?;
 
     Ok(PersistableCredentials::Password { username, password })
 }
@@ -885,5 +953,464 @@ mod tests {
             outcome.is_err(),
             "a connected-but-silent peer must trip the timeout, not block indefinitely"
         );
+    }
+
+    // --- Integration tests -----------------------------------------------------------
+
+    use std::cell::RefCell;
+    use std::collections::VecDeque;
+    use std::io::{Read, Write};
+    use std::path::PathBuf;
+    use std::sync::Mutex;
+    use std::thread;
+
+    use crate::settings::Settings;
+    use color_eyre::eyre::Result;
+
+    enum Answer {
+        Confirm(bool),
+        Input(String),
+        Select(Option<usize>),
+        Password(String),
+    }
+
+    /// Fluent builder for a script of [`Answer`]s, in the order the flow will ask.
+    #[derive(Default)]
+    struct Script(Vec<Answer>);
+
+    impl Script {
+        fn confirm(mut self, value: bool) -> Self {
+            self.0.push(Answer::Confirm(value));
+            self
+        }
+        fn input(mut self, value: &str) -> Self {
+            self.0.push(Answer::Input(value.to_owned()));
+            self
+        }
+        fn select(mut self, index: usize) -> Self {
+            self.0.push(Answer::Select(Some(index)));
+            self
+        }
+        fn password(mut self, value: &str) -> Self {
+            self.0.push(Answer::Password(value.to_owned()));
+            self
+        }
+        fn build(self) -> ScriptedPrompter {
+            ScriptedPrompter {
+                answers: RefCell::new(self.0.into()),
+                prompts: RefCell::new(Vec::new()),
+                menus: RefCell::new(Vec::new()),
+            }
+        }
+    }
+
+    /// A [`Prompter`] that returns pre-programmed answers and records what it was
+    /// asked, so tests can assert on prompt order and menu contents.
+    struct ScriptedPrompter {
+        answers: RefCell<VecDeque<Answer>>,
+        prompts: RefCell<Vec<String>>,
+        menus: RefCell<Vec<Vec<String>>>,
+    }
+
+    impl ScriptedPrompter {
+        fn next(&self, kind: &str, prompt: &str) -> Answer {
+            self.prompts.borrow_mut().push(prompt.to_owned());
+            self.answers.borrow_mut().pop_front().unwrap_or_else(|| {
+                panic!("script ran out of answers at {kind}({prompt:?})");
+            })
+        }
+
+        /// Every prompt string the flow asked, in order.
+        fn prompts(&self) -> Vec<String> {
+            self.prompts.borrow().clone()
+        }
+
+        /// The item lists passed to each `select`, in order.
+        fn menus(&self) -> Vec<Vec<String>> {
+            self.menus.borrow().clone()
+        }
+    }
+
+    impl Prompter for ScriptedPrompter {
+        fn is_interactive(&self) -> bool {
+            true
+        }
+
+        fn confirm(&self, prompt: &str) -> Result<bool> {
+            match self.next("confirm", prompt) {
+                Answer::Confirm(value) => Ok(value),
+                _ => panic!("next scripted answer was not a confirm at {prompt:?}"),
+            }
+        }
+
+        fn input(&self, prompt: &str, _default: Option<&str>) -> Result<String> {
+            match self.next("input", prompt) {
+                Answer::Input(value) => Ok(value),
+                _ => panic!("next scripted answer was not an input at {prompt:?}"),
+            }
+        }
+
+        fn select(
+            &self,
+            prompt: &str,
+            items: &[String],
+            _default: Option<usize>,
+        ) -> Result<Option<usize>> {
+            self.menus.borrow_mut().push(items.to_vec());
+            match self.next("select", prompt) {
+                Answer::Select(value) => Ok(value),
+                _ => panic!("next scripted answer was not a select at {prompt:?}"),
+            }
+        }
+
+        fn password(
+            &self,
+            prompt: &str,
+            _allow_empty: bool,
+            _confirm_prompt: Option<&str>,
+        ) -> Result<String> {
+            match self.next("password", prompt) {
+                Answer::Password(value) => Ok(value),
+                _ => panic!("next scripted answer was not a password at {prompt:?}"),
+            }
+        }
+    }
+
+    // --- Environment isolation -------------------------------------------------
+
+    /// Serializes every test that mutates process-global env. Held for a test's
+    /// whole body via the guard inside [`LoginEnv`].
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    /// `GET /auth/cli/config` body reporting OAuth *unavailable* — the default, so
+    /// tests that don't care about OAuth never surface the option.
+    const OAUTH_DISABLED: &str = r#"{"port_strategy":"disabled"}"#;
+    /// A body reporting OAuth *available* (an ephemeral loopback port).
+    const OAUTH_EPHEMERAL: &str = r#"{"port_strategy":"ephemeral"}"#;
+
+    /// Credential-kind menu labels, matching the `Display` impl on `AuthSetupType`.
+    const API_KEY: &str = "API Key";
+    const USERNAME_PASSWORD: &str = "Username & password";
+    const OAUTH: &str = "Single sign-on (OAuth)";
+
+    /// A per-test isolated environment: an exclusive env lock, a throwaway `$HOME`,
+    /// and an in-process mock backend for the OAuth-config probe.
+    struct LoginEnv {
+        home: tempfile::TempDir,
+        // Held for the test's lifetime so no other test mutates env concurrently.
+        _guard: std::sync::MutexGuard<'static, ()>,
+    }
+
+    impl LoginEnv {
+        /// Isolated env whose `/auth/cli/config` reports OAuth disabled.
+        fn new() -> Self {
+            Self::with_oauth_config(OAUTH_DISABLED)
+        }
+
+        /// Isolated env whose `/auth/cli/config` returns `config_body`.
+        fn with_oauth_config(config_body: &'static str) -> Self {
+            let guard = ENV_LOCK.lock().unwrap_or_else(|poison| poison.into_inner());
+            let home = tempfile::TempDir::new().expect("create temp HOME");
+            let base_url = spawn_mock_server(200, config_body);
+
+            // SAFETY: the `ENV_LOCK` guard we hold serializes every test in this
+            // binary that touches process-global env, so nothing else reads or
+            // writes these vars while the guard is alive. They are (re)set from
+            // scratch for each test, so no state leaks between tests.
+            unsafe {
+                std::env::set_var("HOME", home.path());
+                std::env::set_var("ANTITHESIS_BASE_URL", &base_url);
+                // A stray value for any of these in the developer's shell would leak
+                // into settings resolution; clear them for a clean baseline.
+                for key in [
+                    "XDG_CONFIG_HOME",
+                    "ANTITHESIS_PROFILE",
+                    "ANTITHESIS_TENANT",
+                    "ANTITHESIS_REPOSITORY",
+                    "ANTITHESIS_HTTPS_PROXY",
+                    "CONTAINER_ENGINE",
+                    "SNOUTY_SETTINGS_PATH",
+                ] {
+                    std::env::remove_var(key);
+                }
+            }
+
+            LoginEnv {
+                home,
+                _guard: guard,
+            }
+        }
+
+        fn config_dir(&self) -> PathBuf {
+            self.home.path().join(".config").join("snouty")
+        }
+
+        fn settings(&self) -> String {
+            std::fs::read_to_string(self.config_dir().join("settings.toml")).unwrap_or_default()
+        }
+
+        fn credentials(&self) -> String {
+            std::fs::read_to_string(self.config_dir().join("credentials.toml")).unwrap_or_default()
+        }
+
+        /// Seed a file under the isolated `$HOME` (e.g. an unparsable
+        /// `settings.toml`) before running login.
+        fn seed(&self, rel: &str, contents: &str) {
+            let path = self.home.path().join(rel);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, contents).unwrap();
+        }
+
+        /// Resolve settings the way `main` does, under this test's isolated `$HOME`.
+        fn resolve_settings(&self, profile: Option<&str>) -> Result<Settings> {
+            Settings::resolve(None, profile.map(str::to_owned))
+        }
+    }
+
+    /// Start a TCP server that answers every request with `status` + JSON `body`,
+    /// returning its base URL. The listener thread is intentionally leaked — it
+    /// lives for the test process, which is fine for a test.
+    fn spawn_mock_server(status: u16, body: &'static str) -> String {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind mock server");
+        let addr = listener.local_addr().expect("mock server addr");
+        thread::spawn(move || {
+            for stream in listener.incoming().flatten() {
+                let mut stream = stream;
+                let mut buf = [0u8; 4096];
+                let _ = stream.read(&mut buf);
+                let response = format!(
+                    "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = stream.write_all(response.as_bytes());
+            }
+        });
+        format!("http://{addr}")
+    }
+
+    /// A fresh login with no flags prompts for tenant, repository, and credential
+    /// kind, then persists an API key.
+    #[tokio::test]
+    async fn login_collects_and_persists_an_api_key() -> Result<()> {
+        let env = LoginEnv::new();
+        let settings = env.resolve_settings(None);
+        let prompter = Script::default()
+            .input("mytenant")
+            .input("myrepo")
+            .select(0) // API Key
+            .password("sk-test-key")
+            .build();
+
+        do_cmd_login(None, None, None, settings, &prompter).await?;
+
+        let stored = env.settings();
+        assert!(stored.contains(r#"tenant = "mytenant""#), "{stored}");
+        assert!(stored.contains(r#"repository = "myrepo""#), "{stored}");
+        let creds = env.credentials();
+        assert!(creds.contains(r#"type = "ApiKey""#), "{creds}");
+        assert!(creds.contains(r#"api_key = "sk-test-key""#), "{creds}");
+        Ok(())
+    }
+
+    /// With `--tenant` and `--repository` supplied, only the credential prompt is
+    /// shown — the tenant/repository prompts are skipped.
+    #[tokio::test]
+    async fn login_flags_skip_the_tenant_and_repository_prompts() -> Result<()> {
+        let env = LoginEnv::new();
+        let settings = env.resolve_settings(None);
+        let prompter = Script::default().select(0).password("sk-test-key").build();
+
+        do_cmd_login(
+            Some("mytenant".to_owned()),
+            Some("myrepo".to_owned()),
+            None,
+            settings,
+            &prompter,
+        )
+        .await?;
+
+        let prompts = prompter.prompts();
+        assert!(
+            !prompts
+                .iter()
+                .any(|p| p.contains("What Antithesis tenant would you like to use")),
+            "tenant should not be prompted when --tenant is given: {prompts:?}"
+        );
+        assert!(
+            !prompts
+                .iter()
+                .any(|p| p.contains("What container repository would you like to use")),
+            "repository should not be prompted when --repository is given: {prompts:?}"
+        );
+        assert!(env.settings().contains(r#"tenant = "mytenant""#));
+        Ok(())
+    }
+
+    /// Selecting "Username & password" collects a username and a password and
+    /// persists them.
+    #[tokio::test]
+    async fn login_collects_a_username_and_password() -> Result<()> {
+        let env = LoginEnv::new();
+        let settings = env.resolve_settings(None);
+        let prompter = Script::default()
+            .input("ptenant")
+            .input("prepo")
+            .select(1) // Username & password
+            .input("puser")
+            .password("ppass")
+            .build();
+
+        do_cmd_login(None, None, None, settings, &prompter).await?;
+
+        let creds = env.credentials();
+        assert!(creds.contains(r#"type = "Password""#), "{creds}");
+        assert!(creds.contains(r#"username = "puser""#), "{creds}");
+        assert!(creds.contains(r#"password = "ppass""#), "{creds}");
+        Ok(())
+    }
+
+    /// The global `--profile` flag scopes the persisted login.
+    #[tokio::test]
+    async fn login_scopes_to_a_named_profile() -> Result<()> {
+        let env = LoginEnv::new();
+        let settings = env.resolve_settings(Some("prod"));
+        let prompter = Script::default()
+            .input("ptenant")
+            .input("prepo")
+            .select(0)
+            .password("pk-secret")
+            .build();
+
+        do_cmd_login(None, None, Some("prod"), settings, &prompter).await?;
+
+        let stored = env.settings();
+        assert!(stored.contains("[profile.prod]"), "{stored}");
+        Ok(())
+    }
+
+    /// A tenant that isn't a valid hostname is rejected after the prompt, before
+    /// the repository/credential prompts and before anything is persisted.
+    #[tokio::test]
+    async fn login_rejects_an_invalid_tenant() -> Result<()> {
+        let env = LoginEnv::new();
+        let settings = env.resolve_settings(None);
+        let prompter = Script::default()
+            .input("underscores_are_not_allowed")
+            .build();
+
+        let result = do_cmd_login(None, None, None, settings, &prompter).await;
+
+        let err = result.expect_err("an invalid tenant must fail the login");
+        assert!(
+            format!("{err:#}").contains("a tenant must be a valid hostname"),
+            "unexpected error: {err:#}"
+        );
+        // Only the tenant was prompted; the flow bailed before repository/credentials.
+        assert_eq!(prompter.prompts().len(), 1, "{:?}", prompter.prompts());
+        assert!(env.settings().is_empty(), "nothing should be persisted");
+        Ok(())
+    }
+
+    /// When settings resolution fails (an unparsable settings file), login first
+    /// asks the user to confirm before proceeding; answering yes repairs it.
+    #[tokio::test]
+    async fn login_confirms_before_proceeding_past_broken_settings() -> Result<()> {
+        let env = LoginEnv::new();
+        env.seed(".config/snouty/settings.toml", "this is = = not valid toml");
+        // Resolution now fails, exactly as it would for the real command.
+        let settings = env.resolve_settings(None);
+        assert!(settings.is_err(), "seeded settings should fail to parse");
+
+        let prompter = Script::default()
+            .confirm(true)
+            .input("ptenant")
+            .input("prepo")
+            .select(0)
+            .password("sk-test-key")
+            .build();
+
+        do_cmd_login(None, None, None, settings, &prompter).await?;
+
+        let first_prompt = &prompter.prompts()[0];
+        assert!(
+            first_prompt.contains("Would you like to proceed with the login command"),
+            "the confirmation must come first: {first_prompt:?}"
+        );
+        assert!(
+            env.settings().contains(r#"tenant = "ptenant""#),
+            "{}",
+            env.settings()
+        );
+        Ok(())
+    }
+
+    /// Answering "no" at the broken-settings confirmation aborts the login without
+    /// persisting anything.
+    #[tokio::test]
+    async fn login_aborts_when_user_declines_broken_settings() -> Result<()> {
+        let env = LoginEnv::new();
+        env.seed(".config/snouty/settings.toml", "this is = = not valid toml");
+        let settings = env.resolve_settings(None);
+
+        let prompter = Script::default().confirm(false).build();
+
+        let result = do_cmd_login(None, None, None, settings, &prompter).await;
+
+        assert!(
+            result.is_err(),
+            "declining the confirmation must abort login"
+        );
+        // Nothing beyond the confirmation was asked.
+        assert_eq!(prompter.prompts().len(), 1, "{:?}", prompter.prompts());
+        Ok(())
+    }
+
+    /// When the backend reports OAuth is disabled for the CLI, the "Single sign-on
+    /// (OAuth)" option is not offered in the credential menu.
+    #[tokio::test]
+    async fn login_hides_oauth_when_backend_disables_it() -> Result<()> {
+        let env = LoginEnv::with_oauth_config(OAUTH_DISABLED);
+        let settings = env.resolve_settings(None);
+        let prompter = Script::default()
+            .input("mytenant")
+            .input("myrepo")
+            .select(0)
+            .password("sk-test-key")
+            .build();
+
+        do_cmd_login(None, None, None, settings, &prompter).await?;
+
+        let menu = &prompter.menus()[0];
+        assert_eq!(
+            menu,
+            &[API_KEY.to_owned(), USERNAME_PASSWORD.to_owned()],
+            "OAuth must be hidden when the backend disables it"
+        );
+        Ok(())
+    }
+
+    /// Conversely, when the backend advertises an OAuth port strategy, the "Single
+    /// sign-on (OAuth)" option *is* offered.
+    #[tokio::test]
+    async fn login_offers_oauth_when_backend_supports_it() -> Result<()> {
+        let env = LoginEnv::with_oauth_config(OAUTH_EPHEMERAL);
+        let settings = env.resolve_settings(None);
+        // Finish via the default API-key option rather than OAuth, which would start
+        // the interactive browser flow.
+        let prompter = Script::default()
+            .input("mytenant")
+            .input("myrepo")
+            .select(0)
+            .password("sk-test-key")
+            .build();
+
+        do_cmd_login(None, None, None, settings, &prompter).await?;
+
+        let menu = &prompter.menus()[0];
+        assert!(
+            menu.contains(&OAUTH.to_owned()),
+            "OAuth must be offered when the backend advertises a port strategy: {menu:?}"
+        );
+        Ok(())
     }
 }

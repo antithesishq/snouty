@@ -3,7 +3,7 @@ use std::process::Command;
 
 use clap::{CommandFactory, Parser};
 use clap_complete::Shell;
-use log::{debug, info, warn};
+use log::{debug, info};
 
 use color_eyre::Section;
 use color_eyre::eyre::{Context, Result};
@@ -94,11 +94,11 @@ async fn run(cli: Cli) -> Result<()> {
         command,
     } = cli;
     if json && let Some(name) = json_unaware_command_name(&command) {
-        warn!("warning: --json has no effect for `snouty {name}`");
+        eprintln!("warning: --json has no effect for `snouty {name}`");
     }
 
     if let Err(err) = initialize_credential_store() {
-        warn!("warning: Could not initialize system keychain credential storage: {err:?}");
+        eprintln!("warning: Could not initialize system keychain credential storage: {err:?}");
     }
 
     // Resolve all settings up front. A broken/unreadable settings file fails

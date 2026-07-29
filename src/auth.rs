@@ -133,17 +133,19 @@ impl OAuthRefreshInfo {
 
     /// Path of the advisory lock file guarding refreshes for this origin
     fn lock_path(&self) -> Option<PathBuf> {
-        let dir = lock_dir()?;
-        let name = match self {
+        match self {
             Self::CredentialsFile { path, profile } => {
-                // Fold both the file and the profile into the name so per-profile
-                // refreshes get their own lock, mirroring the keychain naming.
                 let scope = construct_keychain_credential_name(profile.as_deref());
-                format!("{}.{scope}.refresh.lock", path_lock_token(path))
+                Some(
+                    path.parent()?
+                        .join("locks")
+                        .join(format!("{}.{scope}.refresh.lock", path_lock_token(path))),
+                )
             }
-            Self::Keychain { entry_name } => format!("{entry_name}.refresh.lock"),
-        };
-        Some(dir.join(name))
+            Self::Keychain { entry_name } => {
+                Some(lock_dir()?.join(format!("{entry_name}.refresh.lock")))
+            }
+        }
     }
 
     fn load(&self) -> Result<Option<PersistableCredentials>> {
@@ -876,8 +878,6 @@ fn clear_from_file_if_present(profile: Option<&str>) {
         return;
     };
 
-    let _file_lock = lock_credentials_file(&path);
-
     if let Ok(Some(contents)) = read_to_string_if_file_exists(&path)
         && let Ok(mut creds_file) = parse_credentials_file_toml(contents, &path)
     {
@@ -921,7 +921,6 @@ fn persist_to_file(
     };
 
     mkdir(&settings_dir, true, 0o700)?;
-    let _file_lock = lock_credentials_file(&path);
 
     let mut current_contents = match read_to_string_if_file_exists(&path)? {
         Some(contents) => match parse_credentials_file_toml(contents, &path) {
@@ -965,20 +964,6 @@ fn persist_to_file(
     temp.persist(&path)?;
 
     Ok(path)
-}
-
-fn lock_credentials_file(path: &Path) -> Option<std::fs::File> {
-    let dir = lock_dir()?;
-    mkdir(&dir, true, 0o700).ok()?;
-    let lock_file = dir.join(format!("{}.lock", path_lock_token(path)));
-    let file = std::fs::OpenOptions::new()
-        .create(true)
-        .truncate(true)
-        .write(true)
-        .open(&lock_file)
-        .ok()?;
-    file.lock().ok()?;
-    Some(file)
 }
 
 fn lock_dir() -> Option<PathBuf> {

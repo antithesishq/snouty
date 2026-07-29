@@ -54,12 +54,7 @@ trait Prompter {
 
     /// A no-echo secret. `allow_empty` permits an empty value; when
     /// `confirm_prompt` is `Some`, the value must be entered twice and matched.
-    fn password(
-        &self,
-        prompt: &str,
-        allow_empty: bool,
-        confirm_prompt: Option<&str>,
-    ) -> Result<String>;
+    fn password(&self, prompt: &str, confirm_prompt: Option<&str>) -> Result<String>;
 }
 
 /// The production [`Prompter`]: `dialoguer` widgets reading the real terminal.
@@ -71,7 +66,7 @@ impl Prompter for DialoguerPrompter {
     }
 
     fn confirm(&self, prompt: &str) -> Result<bool> {
-        Ok(Confirm::new().with_prompt(prompt).interact().unwrap())
+        Ok(Confirm::new().with_prompt(prompt).interact()?)
     }
 
     fn input(&self, prompt: &str, default: Option<&str>) -> Result<String> {
@@ -81,7 +76,7 @@ impl Prompter for DialoguerPrompter {
         if let Some(default) = default {
             input = input.default(default.to_owned());
         }
-        Ok(input.interact_text().unwrap())
+        Ok(input.interact_text()?)
     }
 
     fn select(
@@ -94,22 +89,15 @@ impl Prompter for DialoguerPrompter {
         if let Some(default) = default {
             select = select.default(default);
         }
-        Ok(select.interact_opt().unwrap())
+        Ok(select.interact_opt()?)
     }
 
-    fn password(
-        &self,
-        prompt: &str,
-        allow_empty: bool,
-        confirm_prompt: Option<&str>,
-    ) -> Result<String> {
-        let mut password = Password::new()
-            .with_prompt(prompt)
-            .allow_empty_password(allow_empty);
+    fn password(&self, prompt: &str, confirm_prompt: Option<&str>) -> Result<String> {
+        let mut password = Password::new().with_prompt(prompt);
         if let Some(confirm_prompt) = confirm_prompt {
             password = password.with_confirmation(confirm_prompt, "Passwords did not match");
         }
-        Ok(password.interact().unwrap())
+        Ok(password.interact()?)
     }
 }
 
@@ -172,8 +160,10 @@ async fn do_cmd_login(
         )?,
     };
 
-    let current_credentials =
-        AuthenticationInfo::for_ambient_configuration_with_attribution(profile, true);
+    let current_credentials = AuthenticationInfo::for_ambient_configuration_with_attribution(
+        profile_to_use.as_deref(),
+        true,
+    );
 
     // Capture the credential kind and where it was stored so the summary can name
     // both; `None` when the user chose to skip credential setup.
@@ -341,6 +331,7 @@ async fn prompt_for_auth(
             _ => match creds.value() {
                 AuthenticationInfo::ApiKey { .. } => Some(0),
                 AuthenticationInfo::Password { .. } => Some(1),
+                AuthenticationInfo::OAuth { .. } if credential_options.len() >= 3 => Some(2),
                 _ => None,
             },
         },
@@ -372,7 +363,7 @@ async fn prompt_for_auth(
 
 fn prompt_for_api_key(prompter: &dyn Prompter) -> Result<PersistableCredentials> {
     Ok(PersistableCredentials::ApiKey {
-        api_key: prompter.password("Please enter your API Key", true, None)?,
+        api_key: prompter.password("Please enter your API Key", None)?,
     })
 }
 
@@ -386,7 +377,6 @@ fn prompt_for_username_password(
     }
     let password = prompter.password(
         "Please enter your password",
-        false,
         Some("Please reenter your password to confirm"),
     )?;
 
@@ -1063,12 +1053,7 @@ mod tests {
             }
         }
 
-        fn password(
-            &self,
-            prompt: &str,
-            _allow_empty: bool,
-            _confirm_prompt: Option<&str>,
-        ) -> Result<String> {
+        fn password(&self, prompt: &str, _confirm_prompt: Option<&str>) -> Result<String> {
             match self.next("password", prompt) {
                 Answer::Password(value) => Ok(value),
                 _ => panic!("next scripted answer was not a password at {prompt:?}"),
@@ -1411,6 +1396,196 @@ mod tests {
             menu.contains(&OAUTH.to_owned()),
             "OAuth must be offered when the backend advertises a port strategy: {menu:?}"
         );
+        Ok(())
+    }
+
+    // --- Real macOS Keychain -------------------------------------------------
+
+    /// Run `/usr/bin/security` under `home` so its keychain preferences (default
+    /// keychain, search list) land in the same `$HOME/Library/Preferences`
+    /// snouty reads back — see [`login_persists_to_real_macos_keychain`].
+    fn security(home: &Path, args: &[&str]) -> std::process::Output {
+        Command::new("/usr/bin/security")
+            .args(args)
+            .env("HOME", home)
+            .output()
+            .expect("run /usr/bin/security")
+    }
+
+    /// Restores the default keychain and deletes the throwaway one — even if the
+    /// test panics partway through. Everything lives under the throwaway `$HOME`,
+    /// so this is mostly belt-and-suspenders on top of the temp-tree cleanup.
+    struct KeychainGuard {
+        home: PathBuf,
+        keychain: PathBuf,
+        original_default: String,
+    }
+
+    impl Drop for KeychainGuard {
+        fn drop(&mut self) {
+            // A fresh temp HOME has no prior default, so only restore when we
+            // actually captured one (otherwise `default-keychain -s ""` just
+            // errors noisily).
+            if !self.original_default.is_empty() {
+                security(
+                    &self.home,
+                    &["default-keychain", "-s", &self.original_default],
+                );
+            }
+            if let Some(path) = self.keychain.to_str() {
+                security(&self.home, &["delete-keychain", path]);
+            }
+        }
+    }
+
+    /// Exercises `snouty login`'s **real macOS Keychain** path end-to-end.
+    #[tokio::test]
+    async fn login_persists_to_real_macos_keychain() -> Result<()> {
+        if !cfg!(target_os = "macos") || std::env::var_os("GITHUB_ACTIONS").is_none() {
+            eprintln!("skipping real-keychain test: not a macOS GitHub Actions runner");
+            return Ok(());
+        }
+
+        #[cfg(target_os = "macos")]
+        {
+            keyring_core::set_default_store(apple_native_keyring_store::keychain::Store::new()?);
+        }
+
+        // `LoginEnv` sets an isolated `$HOME` + mock OAuth-config backend and
+        // holds `ENV_LOCK` for the whole test. We run `security` under that same
+        // HOME so snouty resolves the keychain we configure.
+        let env = LoginEnv::new();
+        let home = env.home.path().to_path_buf();
+
+        // `security` writes its preferences under `$HOME/Library/Preferences`;
+        // on a fresh temp HOME those directories don't exist yet.
+        std::fs::create_dir_all(home.join("Library/Preferences"))
+            .expect("create Library/Preferences");
+        std::fs::create_dir_all(home.join("Library/Keychains")).expect("create Library/Keychains");
+        let keychain = home.join("snouty-test.keychain-db");
+        let kc = keychain.to_str().expect("keychain path utf-8");
+        let password = "snouty-test-keychain";
+
+        // Create the throwaway keychain and capture the current default before we
+        // repoint it, so the guard can put everything back.
+        assert!(
+            security(&home, &["create-keychain", "-p", password, kc])
+                .status
+                .success(),
+            "create-keychain failed"
+        );
+        let original_default = {
+            let out = security(&home, &["default-keychain"]);
+            String::from_utf8_lossy(&out.stdout)
+                .trim()
+                .trim_matches('"')
+                .to_string()
+        };
+        // From here on, always restore the default and delete the keychain. `env`
+        // (declared first) drops last, so the temp HOME outlives this guard's
+        // `delete-keychain`.
+        let _guard = KeychainGuard {
+            home: home.clone(),
+            keychain: keychain.clone(),
+            original_default,
+        };
+        // No auto-lock (so it can't relock mid-test), unlocked, and made default
+        // so snouty's store resolves to it.
+        assert!(
+            security(&home, &["set-keychain-settings", kc])
+                .status
+                .success(),
+            "set-keychain-settings failed"
+        );
+        assert!(
+            security(&home, &["unlock-keychain", "-p", password, kc])
+                .status
+                .success(),
+            "unlock-keychain failed"
+        );
+        assert!(
+            security(&home, &["default-keychain", "-s", kc])
+                .status
+                .success(),
+            "setting default keychain failed"
+        );
+
+        // --- Write an API key; it must land in the keychain, not a file. ---
+        let settings = env.resolve_settings(None);
+        let prompter = Script::default()
+            .input("acme")
+            .input("registry.example.com/acme/app")
+            .select(0) // API Key
+            .password("sk-KEYCHAIN-TEST")
+            .build();
+        do_cmd_login(None, None, None, settings, &prompter).await?;
+
+        assert!(
+            !env.config_dir().join("credentials.toml").exists(),
+            "credentials.toml must not be written when the keychain is used"
+        );
+        // The credential is really in the keychain under snouty's service/account.
+        // Attributes only (no `-w`/`-g`): reading the secret through the
+        // `security` CLI (not the app that created it) trips macOS's "allow
+        // access" ACL confirmation, which has no GUI to answer on CI and would
+        // hang the test. The in-process read-back below proves the secret itself
+        // round-trips.
+        assert!(
+            security(
+                &home,
+                &[
+                    "find-generic-password",
+                    "-s",
+                    "snouty",
+                    "-a",
+                    "_default_",
+                    kc
+                ],
+            )
+            .status
+            .success(),
+            "credential not found in keychain under `_default_`"
+        );
+
+        // --- Read-back: resolving ambient credentials returns the stored key
+        // straight from the keychain, proving the secret round-trips. Reading in
+        // the same process that wrote it doesn't trip the ACL prompt the
+        // `security` CLI would. ---
+        let resolved = AuthenticationInfo::for_ambient_configuration_with_attribution(None, true)?;
+        match &resolved {
+            AttributedValue::Keychain {
+                value: AuthenticationInfo::ApiKey { api_key },
+                ..
+            } => assert_eq!(api_key.as_str(), "sk-KEYCHAIN-TEST"),
+            _ => panic!("expected the API key to resolve from the keychain"),
+        }
+
+        // --- Profile scoping uses a distinct keychain entry (`profile_<name>`). ---
+        let prof_settings = env.resolve_settings(Some("prod"));
+        let prof_prompter = Script::default()
+            .input("acme")
+            .input("registry.example.com/acme/app")
+            .select(0)
+            .password("sk-PROD-KEY")
+            .build();
+        do_cmd_login(None, None, Some("prod"), prof_settings, &prof_prompter).await?;
+        assert!(
+            security(
+                &home,
+                &[
+                    "find-generic-password",
+                    "-s",
+                    "snouty",
+                    "-a",
+                    "profile_prod",
+                    kc,
+                ],
+            )
+            .status
+            .success(),
+            "profile credential not found under `profile_prod`"
+        );
+
         Ok(())
     }
 }

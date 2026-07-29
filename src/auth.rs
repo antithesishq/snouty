@@ -164,7 +164,10 @@ impl OAuthRefreshInfo {
                         }
                     },
                     Err(keyring_core::Error::NoEntry) => Ok(None),
-                    Err(err) => Err(eyre!(err)),
+                    Err(err) => {
+                        eprintln!("keychain lookup for entry {entry_name} failed: {err}");
+                        Ok(None)
+                    }
                 }
             }
             Self::CredentialsFile { path, profile } => {

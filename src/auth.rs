@@ -13,6 +13,7 @@ use color_eyre::{
 };
 use http::HeaderValue;
 use keyring_core::Entry;
+use log::debug;
 use progenitor_client::OperationInfo;
 use serde::{Deserialize, Serialize};
 use tempfile::NamedTempFile;
@@ -103,8 +104,8 @@ impl AuthenticationInfo {
             Err(other) => Err(other),
         }?;
 
-        if let Ok(persisted) = credential.get_password() {
-            match serde_json::from_str::<PersistableCredentials>(&persisted) {
+        match credential.get_password() {
+            Ok(persisted) => match serde_json::from_str::<PersistableCredentials>(&persisted) {
                 Ok(persisted) => {
                     return Ok(Some(AttributedValue::Keychain {
                         value: persisted.convert_to_authentication_info(),
@@ -116,7 +117,16 @@ impl AuthenticationInfo {
                         "Deserialization of the value in the keychain failed with error {err:#}"
                     );
                 }
-            }
+            },
+            // Nothing stored under this name is the ordinary case (no `snouty
+            // login` yet, or credentials live under another profile), so it
+            // stays quiet. Any other error means the vault is there but
+            // wouldn't answer — locked, access denied by platform ACL, or an
+            // ambiguous entry — and we fall through to the credentials file as
+            // if nothing were stored. Log it so a machine whose vault is broken
+            // can be diagnosed instead of just reporting "no credentials".
+            Err(keyring_core::Error::NoEntry) => {}
+            Err(err) => debug!("keychain lookup for entry {credential_name} failed: {err}"),
         }
 
         Ok(None)

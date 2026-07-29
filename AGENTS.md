@@ -19,6 +19,30 @@ Any new subcommands or flags must have a spec accompanying them. Having to chang
 an existing spec is a good sign of backwards incompatible breakage, which will
 be subject to extra review.
 
+## Cookbook
+
+`COOKBOOK.md` collects composable patterns for scripting against snouty —
+recipes that combine existing commands rather than adding new ones. Reach for it
+when a request would grow the CLI surface to serve a case that `--json` plus a
+few lines of shell already covers: a flag that special-cases one command around
+another command's concepts is harder to change later than a recipe is. PR #179
+(`runs logs --failure`) is the precedent — it was declined as a flag and became
+the first recipe instead.
+
+Recipes come from declined proposals, repeated questions, and patterns worth
+writing down once. When you add one:
+
+- Give it a header, and add a matching entry to the top-level table of contents.
+- Put a metadata block directly under the header, one italic line:
+  `*snouty <version> · <date> · source: [#N](<link>)*` — the version the recipe
+  was added in (from `Cargo.toml`), the date, and the PR or issue it came from.
+  Drop the `source:` segment when there is no link.
+- Keep examples minimal and free of error handling — no `set -euo pipefail`, no
+  null checks, no retries. A recipe is a sketch, not a program; leave room for
+  the implementation details a caller's script will need.
+- Verify every command and `jq` expression by running it before writing it down.
+  Do not guess at JSON field names.
+
 ## Tests
 
 Internal functions should be accompanied by unit tests. For small, simple

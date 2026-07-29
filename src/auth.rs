@@ -163,7 +163,8 @@ impl OAuthRefreshInfo {
                             Ok(None)
                         }
                     },
-                    Err(_) => Ok(None),
+                    Err(keyring_core::Error::NoEntry) => Ok(None),
+                    Err(err) => Err(eyre!(err)),
                 }
             }
             Self::CredentialsFile { path, profile } => {

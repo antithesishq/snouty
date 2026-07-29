@@ -64,25 +64,23 @@ jobs:
     runs-on: ${{ matrix.os }}
     needs: skip-check
     if: needs.skip-check.outputs.should_skip != 'true'
-    # Safety net: a wedged container op (e.g. a stuck image pull with no
-    # timeout) must not hang the runner for hours. Linux finishes in ~80s;
-    # macOS is much slower, and its steps carry their own `timeout-minutes`
-    # (below) because a job-level timeout reports a bare cancellation with no
-    # clue which step stalled. This budget has to exceed the sum of those step
-    # bounds, or it fires first and hides the very attribution they exist for:
-    # install 8 + provision 8 + provision retry 8 + validator image ~2 + tests
-    # ~9 = ~35m.
-    timeout-minutes: 35
+    # Safety net so a wedged container op can't hang the runner for hours.
+    # macOS gets a bigger budget: it must exceed the sum of its step timeouts
+    # below, or it fires first and hides which step stalled.
+    timeout-minutes: ${{ matrix.timeout }}
     strategy:
       fail-fast: false
       matrix:
         include:
           - os: ubuntu-latest
             runtime: docker
+            timeout: 20
           - os: ubuntu-latest
             runtime: podman
+            timeout: 20
           - os: macos-15-intel
             runtime: podman
+            timeout: 35
     env:
       SNOUTY_TEST_RUNTIME: ${{ matrix.runtime }}
     steps:
@@ -126,8 +124,6 @@ jobs:
       - name: Install Podman + docker-compose (macOS)
         if: matrix.runtime == 'podman' && startsWith(matrix.os, 'macos')
         shell: bash
-        # Downloads and installs; ~25s when healthy, so a stall here is a
-        # network problem worth reporting quickly rather than sitting on.
         timeout-minutes: 8
         run: |
           # Time each portion so we can see where setup spends its time.
@@ -148,13 +144,9 @@ jobs:
           printf '[timing] install: %ss\n' "$(( SECONDS - t ))"
           echo "::notice title=podman install timing::install $(( SECONDS - t ))s"
 
-      # `podman machine init`/`start` carry no timeout of their own and do
-      # sometimes wedge on this runner: one observed run sat in `start` for 16m
-      # until the job timeout killed it, reporting only a cancelled job. Giving
-      # provisioning its own step with `timeout-minutes` bounds that hang and
-      # names it, and `continue-on-error` lets the retry below act on it.
-      # Healthy runs take 110-170s to init and 156-170s to start, so 8m is
-      # roughly 1.4x the healthy pair and well short of the observed hang.
+      # `podman machine init`/`start` have no timeout of their own and sometimes
+      # wedge. Its own step bounds that hang and names it; healthy runs take
+      # ~5m, so 8m is headroom.
       - name: Provision podman machine (macOS)
         id: podman_machine
         if: matrix.runtime == 'podman' && startsWith(matrix.os, 'macos')
@@ -163,12 +155,9 @@ jobs:
         continue-on-error: true
         run: scripts/provision-podman-machine.sh
 
-      # A wedged start is not sticky — discarding the machine and building a
-      # fresh one clears it — so retry once instead of failing the whole macOS
-      # leg on a transient hang. A second step is what makes the retry bounded
-      # too: the first attempt's `timeout-minutes` has already expired, and this
-      # one gets its own budget. Without `continue-on-error` here, a second
-      # failure fails the job, which is what we want.
+      # A wedged start clears on a fresh machine, so retry once. A second step
+      # gives the retry its own timeout, and no `continue-on-error` here means a
+      # second failure fails the job.
       - name: Recreate podman machine after a failed start (macOS)
         if: |
           matrix.runtime == 'podman' && startsWith(matrix.os, 'macos')

@@ -1507,7 +1507,7 @@ async fn cmd_runs_logs(
     let result = if json {
         // Fault annotation is the default; `--raw` opts out into a verbatim
         // NDJSON passthrough.
-        if raw {
+        if raw || begin_input_hash.is_some() || begin_vtime.is_some() {
             stream_ndjson_lines(stream, NoOpTransformer {}, |line| {
                 wrote_any = true;
                 writeln!(stdout, "{line}")?;

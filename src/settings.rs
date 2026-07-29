@@ -5,6 +5,7 @@ use std::{
 };
 
 use color_eyre::eyre::{Context, OptionExt, Result, eyre};
+use log::warn;
 use tempfile::NamedTempFile;
 use toml::{Table, Value};
 
@@ -270,7 +271,7 @@ pub(crate) fn update_settings_in_global_file(
             Ok(table) => table,
             Err(_) => {
                 let backup = back_up_unparsable_file(&path)?;
-                eprintln!(
+                warn!(
                     "note: the existing settings file at {} could not be parsed; it has been backed up to {} and a new one will be written.",
                     path.display(),
                     backup.display()

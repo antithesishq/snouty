@@ -18,6 +18,7 @@ use color_eyre::{
 };
 use http::HeaderValue;
 use keyring_core::Entry;
+use log::warn;
 use progenitor_client::OperationInfo;
 use serde::{Deserialize, Serialize};
 use tempfile::NamedTempFile;
@@ -157,7 +158,7 @@ impl OAuthRefreshInfo {
                     Ok(json) => match serde_json::from_str(&json) {
                         Ok(deserialized) => Ok(deserialized),
                         Err(err) => {
-                            eprintln!(
+                            warn!(
                                 "Deserialization of the value in the keychain failed with error {err:#}"
                             );
                             Ok(None)
@@ -165,7 +166,7 @@ impl OAuthRefreshInfo {
                     },
                     Err(keyring_core::Error::NoEntry) => Ok(None),
                     Err(err) => {
-                        eprintln!("keychain lookup for entry {entry_name} failed: {err}");
+                        warn!("keychain lookup for entry {entry_name} failed: {err}");
                         Ok(None)
                     }
                 }
@@ -654,7 +655,7 @@ async fn refresh_and_store(
         antithesis_token: new_access_token.clone(),
         refresh_token: new_refresh_token,
     }) {
-        eprintln!("Unable to persist refreshed OAuth credential to durable storage: {err:#}");
+        warn!("Unable to persist refreshed OAuth credential to durable storage: {err:#}");
     }
 
     Ok(new_access_token)
@@ -895,7 +896,7 @@ fn clear_from_file_if_present(profile: Option<&str>) {
             && let Ok(to_write) = toml::to_string_pretty(&creds_file)
             && temp.write_all(to_write.as_bytes()).is_ok()
         {
-            eprintln!(
+            warn!(
                 "The supplied credentials were stored in the keychain, but an entry under {} profile name was also present in the user credentials file. Clearing the entry from the credentials file in favor of what was committed to the keychain.",
                 if profile.is_some() { "the same" } else { "no" }
             );
@@ -927,7 +928,7 @@ fn persist_to_file(
             Ok(file) => file,
             Err(_) => {
                 let backup = back_up_unparsable_file(&path)?;
-                eprintln!(
+                warn!(
                     "warning: the existing credentials file at {} could not be parsed; it has been backed up to {} and a new one will be written.",
                     path.display(),
                     backup.display()

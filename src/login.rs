@@ -7,6 +7,7 @@ use base64::{Engine as _, prelude::BASE64_URL_SAFE_NO_PAD};
 use color_eyre::Section;
 use color_eyre::eyre::{Context, Result, eyre};
 use dialoguer::{Confirm, Input, Password, Select};
+use log::warn;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -124,7 +125,7 @@ async fn do_cmd_login(
     prompter: &dyn Prompter,
 ) -> Result<()> {
     if let Err(report) = &current_settings {
-        eprintln!("The current settings failed to load with the following error: {report:#}");
+        warn!("The current settings failed to load with the following error: {report:#}");
         if prompter.is_interactive()
             && !prompter.confirm(
                 "Would you like to proceed with the login command? Doing so may cause your existing settings file to be replaced rather than updated.",
@@ -179,7 +180,7 @@ async fn do_cmd_login(
             None => None,
         }
     } else {
-        eprintln!(
+        warn!(
             "Cannot collect credentials unless running in a TTY. Please provide credentials via environment variables or rerun `snouty login` in an interactive session"
         );
         None

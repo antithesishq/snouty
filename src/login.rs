@@ -52,8 +52,7 @@ trait Prompter {
         default: Option<usize>,
     ) -> Result<Option<usize>>;
 
-    /// A no-echo secret. `allow_empty` permits an empty value; when
-    /// `confirm_prompt` is `Some`, the value must be entered twice and matched.
+    /// A no-echo secret. When `confirm_prompt` is `Some`, the value must be entered twice and matched.
     fn password(&self, prompt: &str, confirm_prompt: Option<&str>) -> Result<String>;
 }
 

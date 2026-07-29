@@ -650,10 +650,12 @@ async fn refresh_and_store(
     }
 
     // Persist back to the origin so the refreshed tokens survive across runs
-    refresh_info.persist(PersistableCredentials::OAuth {
+    if let Err(err) = refresh_info.persist(PersistableCredentials::OAuth {
         antithesis_token: new_access_token.clone(),
         refresh_token: new_refresh_token,
-    })?;
+    }) {
+        eprintln!("Unable to persist refreshed OAuth credential to durable storage: {err:#}");
+    }
 
     Ok(new_access_token)
 }

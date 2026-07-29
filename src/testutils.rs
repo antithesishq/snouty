@@ -54,9 +54,9 @@ impl OCIRegistry {
             );
             return None;
         }
-        if !ensure_registry_image_available(runtime.name()) {
+        if let Err(reason) = ensure_registry_image_available(runtime.name()) {
             skip_or_fail(&format!(
-                "OCI registry image could not be pulled with {}",
+                "OCI registry image could not be pulled with {}: {reason}",
                 runtime.name()
             ));
             return None;
@@ -237,14 +237,67 @@ fn docker_info_supports_linux_registry(stdout: &str) -> bool {
     os_type.is_empty() || os_type.eq_ignore_ascii_case("linux")
 }
 
-fn ensure_registry_image_available(runtime: &str) -> bool {
-    Command::new(runtime)
-        .args(["pull", "registry:2"])
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .is_ok_and(|status| status.success())
+/// How many times to try pulling the registry image before giving up.
+const REGISTRY_PULL_ATTEMPTS: u32 = 3;
+
+/// Pause between pull attempts, giving a saturated network proxy or a
+/// rate-limiting registry a moment to recover.
+const REGISTRY_PULL_RETRY_DELAY: Duration = Duration::from_secs(1);
+
+/// Pull `registry:2`, retrying a failed pull before giving up.
+///
+/// One attempt is enough on a healthy machine, but on the macOS podman runner
+/// the pull crosses the VM's network proxy and intermittently fails outright,
+/// which fails every registry-backed test in the run at once. Retrying is close
+/// to free — after a success the image is local, so a later pull is a no-op —
+/// and turns a transient blip into a slower success.
+///
+/// Returns the last failure's own words on `Err`, so the skip explains what went
+/// wrong rather than only that something did.
+fn ensure_registry_image_available(runtime: &str) -> Result<(), String> {
+    let mut last_failure = String::new();
+    for attempt in 1..=REGISTRY_PULL_ATTEMPTS {
+        if attempt > 1 {
+            thread::sleep(REGISTRY_PULL_RETRY_DELAY);
+        }
+        last_failure = match Command::new(runtime)
+            .args(["pull", "registry:2"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .output()
+        {
+            Ok(output) if output.status.success() => return Ok(()),
+            Ok(output) => describe_pull_failure(&output),
+            // The runtime binary itself is missing or unrunnable; retrying will
+            // not change that, so report it immediately.
+            Err(err) => return Err(format!("could not run `{runtime} pull`: {err}")),
+        };
+        eprintln!(
+            "registry image pull attempt {attempt}/{REGISTRY_PULL_ATTEMPTS} failed: {last_failure}"
+        );
+    }
+    Err(last_failure)
+}
+
+/// A failed pull reduced to one line: the runtime's last word on stderr plus the
+/// exit status. Truncated because a pull failure can carry a wall of progress
+/// output, and this ends up inside a one-line skip message.
+fn describe_pull_failure(output: &std::process::Output) -> String {
+    const MAX_DETAIL: usize = 200;
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let detail = stderr
+        .lines()
+        .rev()
+        .find(|line| !line.trim().is_empty())
+        .unwrap_or("no stderr output")
+        .trim();
+    let truncated: String = detail.chars().take(MAX_DETAIL).collect();
+    let ellipsis = if truncated.chars().count() < detail.chars().count() {
+        "…"
+    } else {
+        ""
+    };
+    format!("{} ({})", truncated + ellipsis, output.status)
 }
 
 pub fn filtered_path_without_binary(binary: &str) -> Option<String> {
@@ -824,14 +877,22 @@ mod tests {
         perms.set_mode(0o755);
         fs::set_permissions(&runtime_path, perms).unwrap();
 
-        assert!(ensure_registry_image_available(
-            runtime_path.to_str().unwrap()
-        ));
+        assert_eq!(
+            ensure_registry_image_available(runtime_path.to_str().unwrap()),
+            Ok(())
+        );
 
         let log = fs::read_to_string(log_path).unwrap();
         assert!(
             log.lines().any(|line| line == "pull registry:2"),
             "expected registry pull command in log, got: {log}"
+        );
+        assert_eq!(
+            log.lines()
+                .filter(|line| *line == "pull registry:2")
+                .count(),
+            1,
+            "a pull that works must not be retried, got: {log}"
         );
     }
 }

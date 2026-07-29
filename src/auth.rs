@@ -825,8 +825,17 @@ pub(crate) fn persist(
 ) -> Result<AttributedValue<()>> {
     match try_persist_to_keychain(&credentials, profile) {
         Err(err) => Err(err),
-        Ok(Some(entry_name)) => Ok(AttributedValue::Keychain { value: (), entry_name }),
-        Ok(None) => persist_to_file(credentials, profile, None).map(|path| AttributedValue::SettingsFile { value: (), settings_file_path: path, profile: profile.map(|p| p.to_owned()) }),
+        Ok(Some(entry_name)) => Ok(AttributedValue::Keychain {
+            value: (),
+            entry_name,
+        }),
+        Ok(None) => {
+            persist_to_file(credentials, profile, None).map(|path| AttributedValue::SettingsFile {
+                value: (),
+                settings_file_path: path,
+                profile: profile.map(|p| p.to_owned()),
+            })
+        }
     }
 }
 

@@ -65,9 +65,14 @@ jobs:
     needs: skip-check
     if: needs.skip-check.outputs.should_skip != 'true'
     # Safety net: a wedged container op (e.g. a stuck image pull with no
-    # timeout) must not hang the runner for hours. Linux finishes in ~80s and
-    # macOS in well under 10m, so 20m is generous headroom.
-    timeout-minutes: 20
+    # timeout) must not hang the runner for hours. Linux finishes in ~80s;
+    # macOS is much slower, and its steps carry their own `timeout-minutes`
+    # (below) because a job-level timeout reports a bare cancellation with no
+    # clue which step stalled. This budget has to exceed the sum of those step
+    # bounds, or it fires first and hides the very attribution they exist for:
+    # install 8 + provision 8 + provision retry 8 + validator image ~2 + tests
+    # ~9 = ~35m.
+    timeout-minutes: 35
     strategy:
       fail-fast: false
       matrix:
@@ -121,16 +126,10 @@ jobs:
       - name: Install Podman + docker-compose (macOS)
         if: matrix.runtime == 'podman' && startsWith(matrix.os, 'macos')
         shell: bash
+        # Downloads and installs; ~25s when healthy, so a stall here is a
+        # network problem worth reporting quickly rather than sitting on.
+        timeout-minutes: 8
         run: |
-          # Size the podman machine VM to the runner: all logical cores and
-          # 60% of physical memory, instead of the tiny (~2GB) default, so the
-          # parallel spec run has real CPU and RAM to work with. Not 100%: the
-          # VM's memory is effectively exclusive (vfkit grows into it and does
-          # not hand it back), and the test harness — cargo nextest and the
-          # snouty processes — runs on the host, so the host needs headroom.
-          cpus=$(sysctl -n hw.ncpu)
-          mem_mib=$(( $(sysctl -n hw.memsize) * 6 / 10 / 1024 / 1024 ))
-
           # Time each portion so we can see where setup spends its time.
           t=$SECONDS
           # podman 6.0.0 dropped Intel macOS support, so `brew install podman`
@@ -141,24 +140,48 @@ jobs:
           curl -fsSL -o /tmp/podman-installer.pkg \
             https://github.com/podman-container-tools/podman/releases/download/v5.8.4/podman-installer-macos-amd64.pkg
           sudo installer -pkg /tmp/podman-installer.pkg -target /
-          # The pkg installs the CLI under /opt/podman/bin. Put it on PATH for
-          # this step and export it for subsequent steps.
+          # The pkg installs the CLI under /opt/podman/bin, for this step and
+          # every step after it.
           echo "/opt/podman/bin" >> "$GITHUB_PATH"
           export PATH="/opt/podman/bin:$PATH"
-          brew_s=$(( SECONDS - t ))
 
-          echo "Provisioning podman machine: ${cpus} cpus, ${mem_mib} MiB memory"
-          t=$SECONDS
-          podman machine init --cpus "${cpus}" --memory "${mem_mib}"
-          init_s=$(( SECONDS - t ))
+          printf '[timing] install: %ss\n' "$(( SECONDS - t ))"
+          echo "::notice title=podman install timing::install $(( SECONDS - t ))s"
 
-          t=$SECONDS
-          podman machine start
-          start_s=$(( SECONDS - t ))
+      # `podman machine init`/`start` carry no timeout of their own and do
+      # sometimes wedge on this runner: one observed run sat in `start` for 16m
+      # until the job timeout killed it, reporting only a cancelled job. Giving
+      # provisioning its own step with `timeout-minutes` bounds that hang and
+      # names it, and `continue-on-error` lets the retry below act on it.
+      # Healthy runs take 110-170s to init and 156-170s to start, so 8m is
+      # roughly 1.4x the healthy pair and well short of the observed hang.
+      - name: Provision podman machine (macOS)
+        id: podman_machine
+        if: matrix.runtime == 'podman' && startsWith(matrix.os, 'macos')
+        shell: bash
+        timeout-minutes: 8
+        continue-on-error: true
+        run: scripts/provision-podman-machine.sh
 
-          printf '[timing] brew install: %ss | machine init: %ss | machine start: %ss\n' \
-            "$brew_s" "$init_s" "$start_s"
-          echo "::notice title=podman setup timing::brew install ${brew_s}s | machine init ${init_s}s | machine start ${start_s}s"
+      # A wedged start is not sticky — discarding the machine and building a
+      # fresh one clears it — so retry once instead of failing the whole macOS
+      # leg on a transient hang. A second step is what makes the retry bounded
+      # too: the first attempt's `timeout-minutes` has already expired, and this
+      # one gets its own budget. Without `continue-on-error` here, a second
+      # failure fails the job, which is what we want.
+      - name: Recreate podman machine after a failed start (macOS)
+        if: |
+          matrix.runtime == 'podman' && startsWith(matrix.os, 'macos')
+          && steps.podman_machine.outcome == 'failure'
+        shell: bash
+        timeout-minutes: 8
+        run: |
+          echo "::warning title=podman machine retry::provisioning did not finish in time; recreating the machine"
+          # The machine may be half-built or unresponsive, and neither teardown
+          # step is required to succeed for a fresh init to work.
+          podman machine stop || true
+          podman machine rm --force || true
+          scripts/provision-podman-machine.sh
 
       - name: Runtime Info
         shell: bash

@@ -607,15 +607,31 @@ pub fn generate_image_ref(registry: &str) -> String {
 }
 
 /// Check whether a binary is genuinely docker or podman-in-disguise.
-/// `docker version` (the subcommand) prints "Podman Engine" in the Client field
-/// when docker is actually podman, while `docker --version` does not.
+///
+/// Asks with `--version` rather than the `version` subcommand: podman-docker
+/// installs `docker` as a shell script that execs podman, so `docker --version`
+/// answers `podman version 4.9.3` — enough to tell them apart. The subcommand
+/// would work too, but it queries the engine's daemon, which costs a round trip
+/// on every call and blocks indefinitely when `DOCKER_HOST` points somewhere
+/// that accepts connections but never answers (a firewalled remote, a wedged
+/// dockerd). `--version` is answered by the client alone, so it stays instant
+/// no matter what state the daemon is in.
 pub fn is_podman_in_disguise(cmd: &str) -> bool {
     Command::new(cmd)
-        .arg("version")
+        .arg("--version")
         .output()
         .ok()
-        .and_then(|o| String::from_utf8(o.stdout).ok())
-        .is_some_and(|v| v.to_lowercase().contains("podman"))
+        .filter(|o| o.status.success())
+        .is_some_and(|o| version_output_is_podman(&o.stdout))
+}
+
+/// Whether a `--version` banner came from podman. Split out from
+/// [`is_podman_in_disguise`] so callers that already ran `--version` can reuse
+/// their output instead of spawning the binary a second time.
+fn version_output_is_podman(stdout: &[u8]) -> bool {
+    String::from_utf8_lossy(stdout)
+        .to_lowercase()
+        .contains("podman")
 }
 
 /// Return the auto-detected global container runtime, preferring podman over docker.
@@ -649,7 +665,9 @@ pub fn runtime(settings: &Settings) -> Result<Box<dyn ContainerRuntime>> {
     // Fall back to docker
     match Command::new("docker").arg("--version").output() {
         Ok(output) if output.status.success() => {
-            if is_podman_in_disguise("docker") {
+            // The banner we just captured already says whether this `docker` is
+            // really podman, so decide from it rather than asking again.
+            if version_output_is_podman(&output.stdout) {
                 log::warn!("podman not found as 'podman', but 'docker' is podman");
                 return Ok(Box::new(PodmanRuntime::new("docker")));
             }
@@ -709,11 +727,14 @@ pub fn available_engines() -> Vec<Box<dyn ContainerRuntime>> {
     {
         engines.push(Box::new(PodmanRuntime::new("podman")));
     }
+    // One `docker --version` answers both questions: whether docker is here at
+    // all, and whether it is really podman wearing docker's name.
     if Command::new("docker")
         .arg("--version")
         .output()
-        .is_ok_and(|o| o.status.success())
-        && !is_podman_in_disguise("docker")
+        .ok()
+        .filter(|o| o.status.success())
+        .is_some_and(|o| !version_output_is_podman(&o.stdout))
     {
         engines.push(Box::new(DockerRuntime::new("docker")));
     }
@@ -1087,6 +1108,31 @@ mod tests {
             image_ref.starts_with("registry.example.com/repo/snouty-config:"),
             "got: {image_ref}"
         );
+    }
+
+    // Real `--version` banners: podman-docker installs `docker` as a script
+    // that execs podman, so the disguise announces itself here — no need for
+    // the daemon-querying `version` subcommand.
+    #[test]
+    fn version_output_identifies_podman_in_disguise() {
+        // podman-docker 4.9.3's `docker --version`, and podman's own.
+        assert!(version_output_is_podman(b"podman version 4.9.3\n"));
+        // The subcommand banner, in case a caller ever feeds it in.
+        assert!(version_output_is_podman(
+            b"Client:       Podman Engine\nVersion:      4.9.3\n"
+        ));
+
+        // Genuine docker, standalone and Docker Desktop.
+        assert!(!version_output_is_podman(
+            b"Docker version 29.1.3, build 29.1.3-0ubuntu3~24.04.2\n"
+        ));
+        assert!(!version_output_is_podman(
+            b"Docker version 27.4.0, build bde2b89\n"
+        ));
+
+        // Nothing to read is not podman, and invalid UTF-8 must not panic.
+        assert!(!version_output_is_podman(b""));
+        assert!(!version_output_is_podman(&[0xff, 0xfe, 0xfd]));
     }
 
     #[test]

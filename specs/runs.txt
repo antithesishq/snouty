@@ -356,6 +356,12 @@ stdout '"vtime":402.0.*"active_faults":\{\}'
 # `--raw` disables post-processing: NDJSON passes through without fault
 # annotation.
 mock-runs-server
+snouty runs logs --json run-1 -123 1.0 --begin-vtime 401.6
+stdout 'output_text.*starting'
+! stdout 'active_faults'
+
+# Starting the read from a non-root moment
+mock-runs-server
 snouty runs logs --json --raw run-1 -123 1.0
 stdout 'output_text.*starting'
 ! stdout 'active_faults'

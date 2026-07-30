@@ -1505,8 +1505,8 @@ async fn cmd_runs_logs(
     let mut stdout = BufWriter::new(std::io::stdout().lock());
     let mut wrote_any = false;
     let result = if json {
-        // Fault annotation is the default; `--raw` opts out into a verbatim
-        // NDJSON passthrough.
+        // Fault annotation is the default when reading from the root moment
+        // Pass `--raw` or specify a start moment/vtime to opt into a verbatim NDJSON passthrough.
         if raw || begin_input_hash.is_some() || begin_vtime.is_some() {
             stream_ndjson_lines(stream, NoOpTransformer {}, |line| {
                 wrote_any = true;

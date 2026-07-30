@@ -1040,7 +1040,9 @@ mod tests {
             )
             .unwrap();
 
-            let image_ref = format!("{addr}/test/snouty-config:test");
+            // Unique per runtime so iterations sharing a registry don't collide.
+            let repo = crate::testutils::unique_image_prefix(&format!("cfg-{}", rt.name()));
+            let image_ref = format!("{addr}/{repo}/snouty-config:test");
             rt.build_and_push_config_image(dir.path(), &image_ref)
                 .unwrap_or_else(|e| panic!("{}: {e:?}", rt.name()));
 

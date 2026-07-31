@@ -19,6 +19,7 @@ use crate::auth::AuthenticationInfo;
 use crate::env;
 use crate::error::{ApiError, user_error};
 use crate::params::Params;
+use crate::render::sanitize;
 use crate::settings::Settings;
 
 #[allow(dead_code, unused_imports, private_interfaces)]
@@ -983,10 +984,7 @@ fn char_pos_to_byte_offset(body: &str, line: usize, column: usize) -> usize {
 }
 
 async fn format_api_client_error(err: ClientError<()>) -> Report {
-    match classify_client_error(err).await {
-        ApiFailure::Response { status, message } => format_api_error(status, &message),
-        ApiFailure::Other(report) => report,
-    }
+    classify_client_error(err).await.into_report()
 }
 
 /// Same as [`format_api_client_error`] but adds a launch-specific suggestion
@@ -997,12 +995,11 @@ async fn format_api_client_error(err: ClientError<()>) -> Report {
 async fn format_launch_client_error(err: ClientError<()>) -> Report {
     match classify_client_error(err).await {
         ApiFailure::Response { status, message } if message.is_empty() => {
-            format_api_error(status, &message).with_suggestion(|| {
+            format_api_error(status, "").with_suggestion(|| {
                 "the launch endpoints return an empty body for some gateway-level rejections (for example authentication or rate limiting), so there is no detail to show beyond the status; if the problem persists, contact Antithesis support."
             })
         }
-        ApiFailure::Response { status, message } => format_api_error(status, &message),
-        ApiFailure::Other(report) => report,
+        failure => failure.into_report(),
     }
 }
 
@@ -1015,6 +1012,15 @@ enum ApiFailure {
     /// No usable response: a transport failure, or a success body snouty could
     /// not parse.
     Other(Report),
+}
+
+impl ApiFailure {
+    fn into_report(self) -> Report {
+        match self {
+            ApiFailure::Response { status, message } => format_api_error(status, &message),
+            ApiFailure::Other(report) => report,
+        }
+    }
 }
 
 /// Classify a client error. Anything the server answered keeps its HTTP status:
@@ -1033,16 +1039,18 @@ async fn classify_client_error(err: ClientError<()>) -> ApiFailure {
                 .unwrap_or_else(|err| format!("<failed to read response body: {err}>"));
             ApiFailure::Response {
                 status,
-                message: error_body_message(body),
+                message: error_body_message(&body),
             }
         }
-        // Unreachable: progenitor only emits an `Error::ErrorResponse` arm for a
-        // *documented* error response, and `build.rs` documents none. It asserts
-        // as much against the generated source, so this can't rot back into
-        // reachability unnoticed.
-        ClientError::ErrorResponse(_) => {
-            unreachable!("no error response is documented; see build.rs untype_error_responses")
-        }
+        // Unreachable in practice — progenitor only emits this arm for a
+        // *documented* error response, and `build.rs` asserts the generated
+        // client has none. Kept as the same status-first outcome rather than a
+        // panic: it costs two lines, and a CLI should never abort on something a
+        // server said.
+        ClientError::ErrorResponse(response) => ApiFailure::Response {
+            status: response.status().as_u16(),
+            message: String::new(),
+        },
         ClientError::InvalidRequest(message) => {
             ApiFailure::Other(eyre!("invalid API request: {message}"))
         }
@@ -1079,21 +1087,37 @@ async fn classify_client_error(err: ClientError<()>) -> ApiFailure {
 /// truncated if it's a whole web page) so the user still has something to debug
 /// with.
 ///
-/// The body is only ever *displayed* here, never parsed for a status: the launch
-/// envelope's `statusCode` duplicates the status line snouty already printed
-/// from the transport. Echoing the envelope anyway is still worth it, because
-/// whether `runId` is present distinguishes a rejection the test launcher
-/// produced from one an intermediary made on its behalf.
-fn error_body_message(body: String) -> String {
+/// Echoing the launch endpoints' `{statusCode, runId}` envelope is worth it even
+/// though its `statusCode` duplicates the status line: whether `runId` is present
+/// distinguishes a rejection the test launcher produced from one an intermediary
+/// made on its behalf.
+fn error_body_message(body: &str) -> String {
     const MAX_LEN: usize = 200;
 
-    if let Ok(value) = serde_json::from_str::<serde_json::Value>(&body)
+    if let Ok(value) = serde_json::from_str::<serde_json::Value>(body)
         && let Some(message) = value.get("message").and_then(serde_json::Value::as_str)
     {
-        return message.trim().to_owned();
+        return sanitize(message.trim());
     }
 
-    let collapsed = body.split_whitespace().collect::<Vec<_>>().join(" ");
+    // Collapse onto one line, stopping once there are certainly enough bytes to
+    // fill MAX_LEN chars (a char is at most 4 bytes), so a whole web page isn't
+    // rebuilt just to be cut down.
+    let mut collapsed = String::new();
+    for word in body.split_whitespace() {
+        if collapsed.len() > MAX_LEN * 4 {
+            break;
+        }
+        if !collapsed.is_empty() {
+            collapsed.push(' ');
+        }
+        collapsed.push_str(word);
+    }
+
+    // An intermediary's page can carry control characters; `sanitize` is the
+    // repo's policy for making untrusted text safe to print on one line, and it
+    // runs after collapsing so its newline escaping never has anything to do.
+    let collapsed = sanitize(&collapsed);
     match collapsed.char_indices().nth(MAX_LEN) {
         Some((offset, _)) => format!("{}…", &collapsed[..offset]),
         None => collapsed,
@@ -1289,21 +1313,21 @@ mod tests {
     #[test]
     fn error_body_message_unwraps_the_standard_envelope() {
         assert_eq!(
-            error_body_message(r#"{"message":"limit must be 1..100"}"#.to_owned()),
+            error_body_message(r#"{"message":"limit must be 1..100"}"#),
             "limit must be 1..100"
         );
         assert_eq!(
-            error_body_message(r#"{"statusCode":404,"runId":null}"#.to_owned()),
+            error_body_message(r#"{"statusCode":404,"runId":null}"#),
             r#"{"statusCode":404,"runId":null}"#
         );
-        assert_eq!(error_body_message(String::new()), "");
+        assert_eq!(error_body_message(""), "");
     }
 
     // An intermediary's error page is multi-line and can be enormous; collapse
     // it onto one line and cap it so it stays a usable one-line diagnostic.
     #[test]
     fn error_body_message_collapses_and_truncates_html() {
-        let message = error_body_message(format!(
+        let message = error_body_message(&format!(
             "<html>\n  <body>{}</body>\n</html>\n",
             "x".repeat(500)
         ));
@@ -1311,6 +1335,24 @@ mod tests {
         assert!(!message.contains('\n'), "got: {message}");
         assert!(message.ends_with('…'), "got: {message}");
         assert_eq!(message.chars().count(), 201);
+    }
+
+    // The body goes straight to the terminal, so it gets the same control-char
+    // treatment as every other piece of untrusted API text: an escape sequence
+    // in an intermediary's error page must not reach the user's terminal
+    // unescaped.
+    #[test]
+    fn error_body_message_escapes_control_characters() {
+        assert_eq!(
+            error_body_message("oops\u{1b}[31m\u{7}"),
+            r"oops\x1B[31m\x07"
+        );
+        // JSON-escaped inside the envelope, so it parses; the unwrapped message
+        // is sanitized just like an unparsed body.
+        assert_eq!(
+            error_body_message(r#"{"message":"bad\u0007request"}"#),
+            r"bad\x07request"
+        );
     }
 
     #[tokio::test]
@@ -1508,34 +1550,25 @@ mod tests {
         .unwrap()
     }
 
-    async fn mock_debug_launch(status: u16, body: &str) -> MockServer {
+    /// A mock server answering one endpoint with a fixed status and body. The
+    /// endpoint-specific wrappers below name the routes the tests care about.
+    async fn mock_endpoint(http_method: &str, route: &str, status: u16, body: &str) -> MockServer {
         let mock_server = MockServer::start().await;
-        Mock::given(method("POST"))
-            .and(path("/api/v1/launch/debugging"))
-            .respond_with(
-                ResponseTemplate::new(status)
-                    .insert_header("content-type", "application/json")
-                    .set_body_string(body),
-            )
+        Mock::given(method(http_method))
+            .and(path(route.to_owned()))
+            .respond_with(ResponseTemplate::new(status).set_body_string(body))
             .expect(1)
             .mount(&mock_server)
             .await;
         mock_server
     }
 
+    async fn mock_debug_launch(status: u16, body: &str) -> MockServer {
+        mock_endpoint("POST", "/api/v1/launch/debugging", status, body).await
+    }
+
     async fn mock_launch_test(status: u16, body: &str) -> MockServer {
-        let mock_server = MockServer::start().await;
-        Mock::given(method("POST"))
-            .and(path("/api/v1/launch/basic_test"))
-            .respond_with(
-                ResponseTemplate::new(status)
-                    .insert_header("content-type", "application/json")
-                    .set_body_string(body),
-            )
-            .expect(1)
-            .mount(&mock_server)
-            .await;
-        mock_server
+        mock_endpoint("POST", "/api/v1/launch/basic_test", status, body).await
     }
 
     // The body's own statusCode is ignored outright (#180): snouty reads the run
@@ -1678,14 +1711,7 @@ mod tests {
     }
 
     async fn mock_version(status: u16, body: &str) -> MockServer {
-        let mock_server = MockServer::start().await;
-        Mock::given(method("GET"))
-            .and(path("/api/version"))
-            .respond_with(ResponseTemplate::new(status).set_body_string(body))
-            .expect(1)
-            .mount(&mock_server)
-            .await;
-        mock_server
+        mock_endpoint("GET", "/api/version", status, body).await
     }
 
     #[tokio::test]

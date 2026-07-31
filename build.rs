@@ -64,12 +64,10 @@ fn generate_api_client(out_dir: &Path) {
 /// — would otherwise only surface as a status-less failure against a live
 /// tenant.
 fn assert_no_typed_error_responses(content: &str) {
-    let arms = content.matches("Error::ErrorResponse").count();
-    assert_eq!(
-        arms, 0,
-        "generated client has {arms} `Error::ErrorResponse` arm(s); every error response is \
-         supposed to be undocumented so failures keep their HTTP status (see \
-         `untype_error_responses`)"
+    assert!(
+        !content.contains("Error::ErrorResponse"),
+        "generated client has an `Error::ErrorResponse` arm; every error response is supposed \
+         to be undocumented so failures keep their HTTP status (see `untype_error_responses`)"
     );
 }
 

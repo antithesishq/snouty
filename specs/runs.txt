@@ -271,6 +271,18 @@ env ANTITHESIS_API_KEY=test-api-key
 stderr 'API error: 400.*'
 ! stderr 'Backtrace omitted'
 
+# A rejection with no body at all is the API gateway's shape for auth and
+# rate-limit failures (content-type: text/plain, zero length). There is nothing
+# to show beyond the status, so snouty says why instead of printing a bare
+# status line and leaving the silence unexplained (issue #180). The gateway
+# answers every endpoint that way, not just launch, so the note is not
+# endpoint-specific.
+[!staging] mock-server 429 ''
+[!staging] env ANTITHESIS_API_KEY=test-api-key
+[!staging] ! snouty runs
+[!staging] stderr 'API error: 429 Too Many Requests.*'
+[!staging] stderr '.*rejections .* with an empty body.*'
+
 # `snouty runs properties` prints a friendly empty-state message when no properties exist.
 mock-runs-server
 snouty runs properties run-empty

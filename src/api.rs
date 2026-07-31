@@ -776,7 +776,7 @@ async fn finish_launch<T: DeserializeOwned>(
                 .await
                 .wrap_err("parsing launch response body")
         }
-        Err(err) => Err(format_launch_client_error(err).await),
+        Err(err) => Err(format_api_client_error(err).await),
     }
 }
 
@@ -983,20 +983,20 @@ fn char_pos_to_byte_offset(body: &str, line: usize, column: usize) -> usize {
     body.len()
 }
 
+/// Render a failed API call for the user, status first.
+///
+/// A status with no body at all gets a note explaining the silence. That is the
+/// gateway's shape for some rejections — a bad token comes back 401/403 with
+/// `content-type: text/plain` and zero length — and it is not specific to any
+/// endpoint: `GET /api/version` answers exactly the same way, which is what
+/// `snouty doctor` trips over in #180. The note deliberately says nothing about
+/// credentials, because [`format_api_error`] already attaches that on a 401/403
+/// and this fires for 429 and 5xx too.
 async fn format_api_client_error(err: ClientError<()>) -> Report {
-    classify_client_error(err).await.into_report()
-}
-
-/// Same as [`format_api_client_error`] but adds a launch-specific suggestion
-/// when the server returned an empty body. The launch/debug endpoints answer
-/// some gateway-level rejections (auth, rate limiting) with no payload at all,
-/// so the empty body is expected there. Call from launch_test / launch_debugging
-/// only — other endpoints have their own meaningful responses for empty bodies.
-async fn format_launch_client_error(err: ClientError<()>) -> Report {
     match classify_client_error(err).await {
         ApiFailure::Response { status, message } if message.is_empty() => {
             format_api_error(status, "").with_suggestion(|| {
-                "the launch endpoints return an empty body for some gateway-level rejections (for example authentication or rate limiting), so there is no detail to show beyond the status; if the problem persists, contact Antithesis support."
+                "the API answers some gateway-level rejections (for example authentication or rate limiting) with an empty body, so there is no detail to show beyond the status; if the problem persists, contact Antithesis support."
             })
         }
         failure => failure.into_report(),
@@ -1276,35 +1276,40 @@ mod tests {
         ClientError::UnexpectedResponse(response)
     }
 
+    // Every endpoint gets the empty-body note, not just launch: the gateway
+    // answers the same way whichever one you hit, so 429 on `runs list` explains
+    // its silence the way a 401 on `launch` does.
     #[tokio::test]
-    async fn format_launch_client_error_attaches_suggestion_for_empty_body() {
-        let report = format_launch_client_error(served_error(401, "")).await;
-        let debug = format!("{report:?}");
+    async fn format_api_client_error_attaches_suggestion_for_empty_body() {
+        for status in [401, 429, 502] {
+            let report = format_api_client_error(served_error(status, "")).await;
+            let debug = format!("{report:?}");
 
-        assert!(
-            debug.contains("API error: 401"),
-            "the transport status must survive an empty body, got: {debug}"
-        );
-        assert!(
-            debug.contains("Antithesis support"),
-            "expected launch-specific suggestion, got: {debug}"
-        );
-        assert!(
-            debug.contains("authentication or rate limiting"),
-            "expected gateway-rejection wording in suggestion, got: {debug}"
-        );
+            assert!(
+                debug.contains(&format!("API error: {status}")),
+                "the transport status must survive an empty body, got: {debug}"
+            );
+            assert!(
+                debug.contains("Antithesis support"),
+                "expected the empty-body suggestion, got: {debug}"
+            );
+            assert!(
+                debug.contains("authentication or rate limiting"),
+                "expected gateway-rejection wording in suggestion, got: {debug}"
+            );
+        }
     }
 
     #[tokio::test]
-    async fn format_launch_client_error_skips_suggestion_for_non_empty_body() {
-        let report = format_launch_client_error(served_error(400, "not json")).await;
+    async fn format_api_client_error_skips_suggestion_for_non_empty_body() {
+        let report = format_api_client_error(served_error(400, "not json")).await;
         let debug = format!("{report:?}");
 
         assert!(debug.contains("API error: 400"), "got: {debug}");
         assert!(debug.contains("not json"), "got: {debug}");
         assert!(
             !debug.contains("Antithesis support"),
-            "non-empty body must not attach the launch suggestion, got: {debug}"
+            "non-empty body must not attach the empty-body suggestion, got: {debug}"
         );
     }
 
@@ -1447,17 +1452,7 @@ mod tests {
 
     #[tokio::test]
     async fn launch_test_sends_snouty_user_agent() {
-        let mock_server = MockServer::start().await;
-
-        Mock::given(method("POST"))
-            .and(path("/api/v1/launch/basic_test"))
-            .respond_with(ResponseTemplate::new(202).set_body_json(serde_json::json!({
-                "runId": "run-123",
-                "statusCode": 202
-            })))
-            .expect(1)
-            .mount(&mock_server)
-            .await;
+        let mock_server = mock_launch_test(202, LAUNCH_OK_BODY).await;
 
         let api = test_api_optionally_with_cache(&mock_server, None);
         let params = Params::from_key_value_pairs(["antithesis.duration=30"]).unwrap();
@@ -1476,17 +1471,7 @@ mod tests {
 
     #[tokio::test]
     async fn launch_test_uses_basic_auth() {
-        let mock_server = MockServer::start().await;
-
-        Mock::given(method("POST"))
-            .and(path("/api/v1/launch/basic_test"))
-            .respond_with(ResponseTemplate::new(202).set_body_json(serde_json::json!({
-                "runId": "run-123",
-                "statusCode": 202
-            })))
-            .expect(1)
-            .mount(&mock_server)
-            .await;
+        let mock_server = mock_launch_test(202, LAUNCH_OK_BODY).await;
 
         let api = test_api_optionally_with_cache(&mock_server, None);
         let params = Params::from_key_value_pairs(["antithesis.duration=30"]).unwrap();
@@ -1521,17 +1506,7 @@ mod tests {
     // snouty accepts any 2xx as success and reports the transport status.
     #[tokio::test]
     async fn launch_test_accepts_200_webhook_envelope() {
-        let mock_server = MockServer::start().await;
-
-        Mock::given(method("POST"))
-            .and(path("/api/v1/launch/basic_test"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "runId": "run-123",
-                "statusCode": 202
-            })))
-            .expect(1)
-            .mount(&mock_server)
-            .await;
+        let mock_server = mock_launch_test(200, LAUNCH_OK_BODY).await;
 
         let api = test_api_optionally_with_cache(&mock_server, None);
         let params = Params::from_key_value_pairs(["antithesis.duration=30"]).unwrap();
@@ -1570,6 +1545,11 @@ mod tests {
     async fn mock_launch_test(status: u16, body: &str) -> MockServer {
         mock_endpoint("POST", "/api/v1/launch/basic_test", status, body).await
     }
+
+    /// The launch envelope the live webhook returns on success. Its body-level
+    /// `statusCode` deliberately disagrees with the HTTP status the mocks pair
+    /// it with, since snouty must ignore the body's copy (#180).
+    const LAUNCH_OK_BODY: &str = r#"{"runId":"run-123","statusCode":202}"#;
 
     // The body's own statusCode is ignored outright (#180): snouty reads the run
     // id and nothing else, so a body claiming 202 over an HTTP 200 has no way to

@@ -25,10 +25,25 @@ mod generated {
 
 pub(crate) use generated::types::Params as RunParams;
 pub use generated::types::{
-    BuildLogLine, Event, EventProperty, LaunchMvdResponse, LaunchResponse, Moment,
-    NonEventProperty, Property, PropertyStatus, RunDetail, RunStatus, RunSummary,
+    BuildLogLine, Event, EventProperty, Moment, NonEventProperty, Property, PropertyStatus,
+    RunDetail, RunStatus, RunSummary,
 };
 pub use progenitor_client::ByteStream;
+
+/// The outcome of a launch or debugging-launch request, and the `--json` output
+/// of `snouty launch` / `snouty debug`.
+///
+/// snouty owns this shape rather than re-exporting a generated type: the launch
+/// webhooks' response body varies by tenant release, so `build.rs` leaves it
+/// free-form and [`finish_launch`] reads the run id out of it directly.
+/// `status_code` is the response's HTTP status, never the body's own copy of it
+/// (#180).
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LaunchResponse {
+    pub run_id: Option<String>,
+    pub status_code: u16,
+}
 
 /// API and tenant release version, from `GET /api/version`.
 #[derive(Debug, Clone)]
@@ -239,67 +254,13 @@ impl AntithesisApi {
             .body(body)
             .send()
             .await;
-        finish_launch(result, |body| {
-            serde_json::from_value(body).wrap_err("unexpected launch response shape")
-        })
-        .await
+        finish_launch(result).await
     }
 
     pub async fn launch_debugging(&self, params: &Params) -> Result<LaunchResponse> {
         let body = launch_mvd_request(params)?;
-        match self.client.launch_mvd().body(body).send().await {
-            // Documented 202 whose body is the live `{ "runId", "statusCode" }`
-            // envelope: the spec now models exactly that shape, so the generated
-            // client parses it into `LaunchMvdResponse` for us. Carry the body's
-            // own `statusCode` through rather than assuming 202.
-            Ok(response) => {
-                let response = response.into_inner();
-                Ok(LaunchResponse {
-                    run_id: response.run_id,
-                    status_code: response.status_code,
-                })
-            }
-            // A body that fails to parse as `LaunchMvdResponse` lands here. This
-            // variant carries no HTTP status (`ClientError::status()` is `None`),
-            // so we can't gate on `is_success()`. A documented *error* whose body
-            // fails `LaunchErrorResponse` parsing also lands here, so blindly
-            // trusting it would let an error masquerade as success. Lean on this
-            // webhook reporting its real status in the body: recover only when the
-            // body itself reports a 2xx, and fall back to the standard error path
-            // otherwise.
-            Err(ClientError::InvalidResponsePayload(body, source)) => {
-                match parse_debug_launch_body(&body) {
-                    Ok((run_id, Some(status_code))) if (200..300).contains(&status_code) => {
-                        Ok(LaunchResponse {
-                            run_id,
-                            status_code,
-                        })
-                    }
-                    _ => Err(
-                        format_launch_client_error(ClientError::InvalidResponsePayload(
-                            body, source,
-                        ))
-                        .await,
-                    ),
-                }
-            }
-            // Undocumented 2xx: the live API currently answers this webhook with
-            // HTTP 200 carrying the same envelope. The transport status already
-            // confirms success here, so a body without a `statusCode` defaults to
-            // 202 Accepted.
-            Err(ClientError::UnexpectedResponse(resp)) if resp.status().is_success() => {
-                let body = resp
-                    .bytes()
-                    .await
-                    .wrap_err("reading debug launch response")?;
-                let (run_id, status_code) = parse_debug_launch_body(&body)?;
-                Ok(LaunchResponse {
-                    run_id,
-                    status_code: status_code.unwrap_or(202),
-                })
-            }
-            Err(err) => Err(format_launch_client_error(err).await),
-        }
+        let result = self.client.launch_mvd().body(body).send().await;
+        finish_launch(result).await
     }
 
     pub async fn get_run(&self, run_id: &str) -> Result<RunDetail> {
@@ -784,56 +745,38 @@ fn launch_request(params: &Params) -> Result<generated::types::LaunchRequest> {
     .wrap_err("failed to build launch request")
 }
 
-/// Resolve a launch / debugging-launch webhook response, tolerating spec drift
-/// on the success status code.
+/// Resolve a launch / debugging-launch webhook response.
 ///
-/// These webhooks report their real status in the response *body* and return an
-/// HTTP status the OpenAPI spec under-documents (it lists a single 2xx). The
-/// generated client only accepts the documented code and surfaces any other 2xx
-/// as `UnexpectedResponse`. We treat **any** 2xx as success: on the documented
-/// code we use the client's already-parsed value; on any other 2xx we read the
-/// body and build the response via `from_body`. Genuine failures (4xx/5xx) are
-/// still formatted as errors.
-async fn finish_launch<T>(
+/// `build.rs` documents these webhooks as answering any 2xx with a free-form
+/// object, because the spec's single documented status (202) is not the one the
+/// live API uses (200) and the body's shape varies by tenant release. So any
+/// 2xx is a success, and the only thing read out of the body is the run id —
+/// under either spelling. The reported `statusCode` is the transport status:
+/// the API team has confirmed the body's own copy should be ignored (#180).
+async fn finish_launch(
     result: std::result::Result<
-        progenitor_client::ResponseValue<T>,
-        ClientError<generated::types::LaunchErrorResponse>,
+        progenitor_client::ResponseValue<serde_json::Map<String, serde_json::Value>>,
+        ClientError<()>,
     >,
-    from_body: impl FnOnce(serde_json::Value) -> Result<T>,
-) -> Result<T> {
-    match result {
-        Ok(response) => Ok(response.into_inner()),
-        Err(ClientError::UnexpectedResponse(resp)) if resp.status().is_success() => {
-            let body = resp
-                .json::<serde_json::Value>()
-                .await
-                .wrap_err("parsing launch response body")?;
-            from_body(body)
-        }
-        Err(err) => Err(format_launch_client_error(err).await),
-    }
+) -> Result<LaunchResponse> {
+    let response = match result {
+        Ok(response) => response,
+        Err(err) => return Err(format_launch_client_error(err).await),
+    };
+    let status_code = response.status().as_u16();
+    Ok(LaunchResponse {
+        run_id: launch_run_id(response.into_inner()),
+        status_code,
+    })
 }
 
-/// Parse a debug-launch response body into `(run_id, status_code)`, tolerating
-/// either the spec's snake_case `run_id` or the live API's camelCase `runId`.
-///
-/// `status_code` is the body's own `statusCode`, if present. This webhook family
-/// reports its real status in the body rather than (only) the HTTP status line,
-/// which lets a caller that has lost the transport status still tell a success
-/// envelope from an error one. Errors only if the body isn't JSON: a missing
-/// `run_id`/`runId` yields `None`, matching the generated `LaunchMvdResponse`
-/// deserializer the documented-202 path relies on (the tenant-58.6 schema makes
-/// the field optional) so both paths agree on a run-id-less success body.
-fn parse_debug_launch_body(body: &[u8]) -> Result<(Option<String>, Option<i64>)> {
-    let value: serde_json::Value =
-        serde_json::from_slice(body).wrap_err("parsing debug launch response")?;
-    let run_id = value
-        .get("run_id")
-        .or_else(|| value.get("runId"))
-        .and_then(serde_json::Value::as_str)
-        .map(str::to_string);
-    let status_code = value.get("statusCode").and_then(serde_json::Value::as_i64);
-    Ok((run_id, status_code))
+/// The run id in a launch response body, under either spelling: tenants from
+/// 58.6 on answer with the documented `runId`, older ones with `run_id`. Absent
+/// on a launch that started no run, and on the debugging webhook's 200, which
+/// answers `{"statusCode": 202}` alone.
+fn launch_run_id(body: serde_json::Map<String, serde_json::Value>) -> Option<String> {
+    let run_id = body.get("runId").or_else(|| body.get("run_id"))?;
+    run_id.as_str().map(str::to_owned)
 }
 
 fn launch_mvd_request(params: &Params) -> Result<generated::types::LaunchMvdRequest> {
@@ -1039,49 +982,10 @@ fn char_pos_to_byte_offset(body: &str, line: usize, column: usize) -> usize {
     body.len()
 }
 
-async fn format_api_client_error(err: ClientError<generated::types::ErrorResponse>) -> Report {
-    format_client_error(err, |body| body.message).await
-}
-
-/// Core error formatter shared across endpoints. The only endpoint-specific bit
-/// is how a documented error body yields a human message: the standard
-/// endpoints carry it in `Error_Response.message`, while the launch webhooks use
-/// the message-less `Launch_Error_Response` envelope (status code only). Callers
-/// supply that projection via `body_message`.
-async fn format_client_error<T>(
-    err: ClientError<T>,
-    body_message: impl FnOnce(T) -> String,
-) -> Report {
-    match err {
-        ClientError::ErrorResponse(response) => {
-            let status = response.status().as_u16();
-            let body = response.into_inner();
-            format_api_error(status, &body_message(body))
-        }
-        ClientError::UnexpectedResponse(response) => {
-            let status = response.status().as_u16();
-            let body = response
-                .text()
-                .await
-                .unwrap_or_else(|err| format!("<failed to read response body: {err}>"));
-            format_api_error(status, &body)
-        }
-        ClientError::InvalidRequest(message) => eyre!("invalid API request: {message}"),
-        ClientError::CommunicationError(err) => eyre!(err).wrap_err("failed to contact API"),
-        ClientError::InvalidUpgrade(err) => eyre!(err).wrap_err("invalid API upgrade response"),
-        ClientError::ResponseBodyError(err) => {
-            eyre!(err).wrap_err("failed to read API response body")
-        }
-        ClientError::InvalidResponsePayload(body, err) => {
-            let body = String::from_utf8_lossy(&body);
-            if body.trim().is_empty() {
-                eyre!("API returned an empty response body where a JSON payload was expected")
-            } else {
-                let snippet = format_payload_snippet(&body, err.line(), err.column());
-                eyre!("invalid API response payload: {err}").section(snippet.header("payload:"))
-            }
-        }
-        ClientError::Custom(message) => eyre!(message),
+async fn format_api_client_error(err: ClientError<()>) -> Report {
+    match classify_client_error(err).await {
+        ApiFailure::Response { status, message } => format_api_error(status, &message),
+        ApiFailure::Other(report) => report,
     }
 }
 
@@ -1090,23 +994,108 @@ async fn format_client_error<T>(
 /// some gateway-level rejections (auth, rate limiting) with no payload at all,
 /// so the empty body is expected there. Call from launch_test / launch_debugging
 /// only — other endpoints have their own meaningful responses for empty bodies.
-async fn format_launch_client_error(
-    err: ClientError<generated::types::LaunchErrorResponse>,
-) -> Report {
-    let body_is_empty = matches!(
-        &err,
-        ClientError::InvalidResponsePayload(body, _)
-            if body.iter().all(u8::is_ascii_whitespace)
-    );
-    // Launch_Error_Response carries no message field — only a status code that
-    // already matches the HTTP status — so there is nothing to project.
-    let report = format_client_error(err, |_body| String::new()).await;
-    if body_is_empty {
-        report.with_suggestion(|| {
-            "the launch endpoints return an empty body for some gateway-level rejections (for example authentication or rate limiting). Check that your credentials are valid and have access to this tenant; if the problem persists, contact Antithesis support."
-        })
-    } else {
-        report
+async fn format_launch_client_error(err: ClientError<()>) -> Report {
+    match classify_client_error(err).await {
+        ApiFailure::Response { status, message } if message.is_empty() => {
+            format_api_error(status, &message).with_suggestion(|| {
+                "the launch endpoints return an empty body for some gateway-level rejections (for example authentication or rate limiting), so there is no detail to show beyond the status; if the problem persists, contact Antithesis support."
+            })
+        }
+        ApiFailure::Response { status, message } => format_api_error(status, &message),
+        ApiFailure::Other(report) => report,
+    }
+}
+
+/// A client error reduced to what a user-facing message is built from.
+enum ApiFailure {
+    /// The server answered. `status` is the transport status — the only
+    /// authority on success or failure, per the API team's confirmation on
+    /// #180 — and `message` the human-readable text of the body it came with.
+    Response { status: u16, message: String },
+    /// No usable response: a transport failure, or a success body snouty could
+    /// not parse.
+    Other(Report),
+}
+
+/// Classify a client error. Anything the server answered keeps its HTTP status:
+/// `build.rs` documents no error responses, so the generated client never types
+/// an error body and a failure can no longer degrade into the status-less
+/// `InvalidResponsePayload` — whatever shape the body arrives in.
+async fn classify_client_error(err: ClientError<()>) -> ApiFailure {
+    match err {
+        // Every HTTP failure lands here, carrying both its status and its body
+        // exactly as the server sent them.
+        ClientError::UnexpectedResponse(response) => {
+            let status = response.status().as_u16();
+            let body = response
+                .text()
+                .await
+                .unwrap_or_else(|err| format!("<failed to read response body: {err}>"));
+            ApiFailure::Response {
+                status,
+                message: error_body_message(body),
+            }
+        }
+        // No operation documents an error response, so the generated client has
+        // no typed error body to construct this from.
+        ClientError::ErrorResponse(response) => ApiFailure::Response {
+            status: response.status().as_u16(),
+            message: String::new(),
+        },
+        ClientError::InvalidRequest(message) => {
+            ApiFailure::Other(eyre!("invalid API request: {message}"))
+        }
+        ClientError::CommunicationError(err) => {
+            ApiFailure::Other(eyre!(err).wrap_err("failed to contact API"))
+        }
+        ClientError::InvalidUpgrade(err) => {
+            ApiFailure::Other(eyre!(err).wrap_err("invalid API upgrade response"))
+        }
+        ClientError::ResponseBodyError(err) => {
+            ApiFailure::Other(eyre!(err).wrap_err("failed to read API response body"))
+        }
+        // Only a *success* body can land here: no error response is typed, so
+        // none of them is ever parsed.
+        ClientError::InvalidResponsePayload(body, err) => {
+            let body = String::from_utf8_lossy(&body);
+            ApiFailure::Other(if body.trim().is_empty() {
+                eyre!("API returned an empty response body where a JSON payload was expected")
+            } else {
+                let snippet = format_payload_snippet(&body, err.line(), err.column());
+                eyre!("invalid API response payload: {err}").section(snippet.header("payload:"))
+            })
+        }
+        ClientError::Custom(message) => ApiFailure::Other(eyre!(message)),
+    }
+}
+
+/// The human-readable text of an error response body.
+///
+/// The standard endpoints answer with `{"message": "…"}`, so unwrap that when
+/// it's there. Anything else — an empty body, an HTML error page from an
+/// intermediary, the launch endpoints' `{"statusCode", "runId"}` envelope, or a
+/// shape the spec never described — is shown verbatim (whitespace collapsed, and
+/// truncated if it's a whole web page) so the user still has something to debug
+/// with.
+///
+/// The body is only ever *displayed* here, never parsed for a status: the launch
+/// envelope's `statusCode` duplicates the status line snouty already printed
+/// from the transport. Echoing the envelope anyway is still worth it, because
+/// whether `runId` is present distinguishes a rejection the test launcher
+/// produced from one an intermediary made on its behalf.
+fn error_body_message(body: String) -> String {
+    const MAX_LEN: usize = 200;
+
+    if let Ok(value) = serde_json::from_str::<serde_json::Value>(&body)
+        && let Some(message) = value.get("message").and_then(serde_json::Value::as_str)
+    {
+        return message.trim().to_owned();
+    }
+
+    let collapsed = body.split_whitespace().collect::<Vec<_>>().join(" ");
+    match collapsed.char_indices().nth(MAX_LEN) {
+        Some((offset, _)) => format!("{}…", &collapsed[..offset]),
+        None => collapsed,
     }
 }
 
@@ -1118,33 +1107,18 @@ mod tests {
     use wiremock::matchers::{method, path, query_param, query_param_is_missing};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
+    // The launch body is free-form by the time it reaches snouty, so the run id
+    // is read out of it by hand: `runId` from 58.6 on, `run_id` before that, and
+    // absent on a launch that started no run.
     #[test]
-    fn parse_debug_launch_body_reads_snake_case_run_id() {
-        let (run_id, status) = parse_debug_launch_body(br#"{"run_id":"abc-1"}"#).unwrap();
-        assert_eq!(run_id.as_deref(), Some("abc-1"));
-        assert_eq!(status, None);
-    }
+    fn launch_run_id_reads_either_spelling() {
+        let run_id = |body: &str| launch_run_id(serde_json::from_str(body).unwrap());
 
-    #[test]
-    fn parse_debug_launch_body_reads_camel_case_run_id_and_status_code() {
-        let (run_id, status) =
-            parse_debug_launch_body(br#"{"runId":"xyz-2","statusCode":202}"#).unwrap();
-        assert_eq!(run_id.as_deref(), Some("xyz-2"));
-        assert_eq!(status, Some(202));
-    }
-
-    // The tenant-58.6 schema makes runId optional, so a success body may omit it.
-    // Both parsing paths must treat that as run_id: None, not a hard error.
-    #[test]
-    fn parse_debug_launch_body_tolerates_missing_run_id() {
-        let (run_id, status) = parse_debug_launch_body(br#"{"statusCode":202}"#).unwrap();
-        assert_eq!(run_id, None);
-        assert_eq!(status, Some(202));
-    }
-
-    #[test]
-    fn parse_debug_launch_body_errors_on_non_json() {
-        assert!(parse_debug_launch_body(b"not json").is_err());
+        assert_eq!(run_id(r#"{"runId":"abc-1"}"#).as_deref(), Some("abc-1"));
+        assert_eq!(run_id(r#"{"run_id":"abc-1"}"#).as_deref(), Some("abc-1"));
+        assert_eq!(run_id(r#"{"statusCode":202}"#), None);
+        assert_eq!(run_id(r#"{"runId":null}"#), None);
+        assert_eq!(run_id("{}"), None);
     }
 
     fn test_api_optionally_with_cache(
@@ -1261,10 +1235,7 @@ mod tests {
     #[tokio::test]
     async fn format_api_client_error_describes_empty_invalid_payload() {
         let parse_err = serde_json::from_slice::<serde_json::Value>(b"").unwrap_err();
-        let err = ClientError::<generated::types::ErrorResponse>::InvalidResponsePayload(
-            Default::default(),
-            parse_err,
-        );
+        let err = ClientError::<()>::InvalidResponsePayload(Default::default(), parse_err);
 
         let report = format_api_client_error(err).await;
         let message = format!("{report}");
@@ -1282,17 +1253,27 @@ mod tests {
         );
     }
 
+    /// A served error, in the shape the generated client hands every HTTP
+    /// failure to the formatters: no error response is documented, so the
+    /// status and the raw body both survive.
+    fn served_error(status: u16, body: &str) -> ClientError<()> {
+        let response = http::Response::builder()
+            .status(status)
+            .body(body.to_owned())
+            .map(reqwest::Response::from)
+            .unwrap();
+        ClientError::UnexpectedResponse(response)
+    }
+
     #[tokio::test]
     async fn format_launch_client_error_attaches_suggestion_for_empty_body() {
-        let parse_err = serde_json::from_slice::<serde_json::Value>(b"").unwrap_err();
-        let err = ClientError::<generated::types::LaunchErrorResponse>::InvalidResponsePayload(
-            Default::default(),
-            parse_err,
-        );
-
-        let report = format_launch_client_error(err).await;
+        let report = format_launch_client_error(served_error(401, "")).await;
         let debug = format!("{report:?}");
 
+        assert!(
+            debug.contains("API error: 401"),
+            "the transport status must survive an empty body, got: {debug}"
+        );
         assert!(
             debug.contains("Antithesis support"),
             "expected launch-specific suggestion, got: {debug}"
@@ -1305,30 +1286,51 @@ mod tests {
 
     #[tokio::test]
     async fn format_launch_client_error_skips_suggestion_for_non_empty_body() {
-        let body: &[u8] = b"not json";
-        let parse_err = serde_json::from_slice::<serde_json::Value>(body).unwrap_err();
-        let err = ClientError::<generated::types::LaunchErrorResponse>::InvalidResponsePayload(
-            body.to_vec().into(),
-            parse_err,
-        );
-
-        let report = format_launch_client_error(err).await;
+        let report = format_launch_client_error(served_error(400, "not json")).await;
         let debug = format!("{report:?}");
 
+        assert!(debug.contains("API error: 400"), "got: {debug}");
+        assert!(debug.contains("not json"), "got: {debug}");
         assert!(
             !debug.contains("Antithesis support"),
             "non-empty body must not attach the launch suggestion, got: {debug}"
         );
     }
 
+    // The standard `{"message": …}` envelope is unwrapped; anything else is
+    // shown verbatim so the user can still see what the server said.
+    #[test]
+    fn error_body_message_unwraps_the_standard_envelope() {
+        assert_eq!(
+            error_body_message(r#"{"message":"limit must be 1..100"}"#.to_owned()),
+            "limit must be 1..100"
+        );
+        assert_eq!(
+            error_body_message(r#"{"statusCode":404,"runId":null}"#.to_owned()),
+            r#"{"statusCode":404,"runId":null}"#
+        );
+        assert_eq!(error_body_message(String::new()), "");
+    }
+
+    // An intermediary's error page is multi-line and can be enormous; collapse
+    // it onto one line and cap it so it stays a usable one-line diagnostic.
+    #[test]
+    fn error_body_message_collapses_and_truncates_html() {
+        let message = error_body_message(format!(
+            "<html>\n  <body>{}</body>\n</html>\n",
+            "x".repeat(500)
+        ));
+        assert!(message.starts_with("<html> <body>xxx"), "got: {message}");
+        assert!(!message.contains('\n'), "got: {message}");
+        assert!(message.ends_with('…'), "got: {message}");
+        assert_eq!(message.chars().count(), 201);
+    }
+
     #[tokio::test]
     async fn format_api_client_error_keeps_snippet_for_non_empty_invalid_payload() {
         let body: &[u8] = b"not json";
         let parse_err = serde_json::from_slice::<serde_json::Value>(body).unwrap_err();
-        let err = ClientError::<generated::types::ErrorResponse>::InvalidResponsePayload(
-            body.to_vec().into(),
-            parse_err,
-        );
+        let err = ClientError::<()>::InvalidResponsePayload(body.to_vec().into(), parse_err);
 
         let report = format_api_client_error(err).await;
         // The message is the bare statement …
@@ -1487,8 +1489,8 @@ mod tests {
         );
     }
 
-    // The launch webhooks return HTTP 200 with the real status in the body,
-    // even though the spec documents 202. snouty accepts any 2xx as success.
+    // The launch webhooks answer an undocumented HTTP 200 whose body claims 202.
+    // snouty accepts any 2xx as success and reports the transport status.
     #[tokio::test]
     async fn launch_test_accepts_200_webhook_envelope() {
         let mock_server = MockServer::start().await;
@@ -1508,7 +1510,128 @@ mod tests {
 
         let response = api.launch_test("basic_test", &params).await.unwrap();
         assert_eq!(response.run_id.as_deref(), Some("run-123"));
+        assert_eq!(response.status_code, 200);
+    }
+
+    /// Params for a debug launch against a fixed run.
+    fn debug_params() -> Params {
+        Params::from_key_value_pairs([
+            "antithesis.debugging.run_id=a2a4-53-1",
+            "antithesis.debugging.input_hash=-1",
+            "antithesis.debugging.vtime=1.0",
+        ])
+        .unwrap()
+    }
+
+    async fn mock_debug_launch(status: u16, body: &str) -> MockServer {
+        let mock_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/v1/launch/debugging"))
+            .respond_with(
+                ResponseTemplate::new(status)
+                    .insert_header("content-type", "application/json")
+                    .set_body_string(body),
+            )
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+        mock_server
+    }
+
+    async fn mock_launch_test(status: u16, body: &str) -> MockServer {
+        let mock_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/v1/launch/basic_test"))
+            .respond_with(
+                ResponseTemplate::new(status)
+                    .insert_header("content-type", "application/json")
+                    .set_body_string(body),
+            )
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+        mock_server
+    }
+
+    // A pre-58.6 tenant answers the documented 202 with a snake_case `run_id`
+    // and no statusCode at all. That body predates the envelope the spec now
+    // documents and must still be accepted as a successful launch.
+    #[tokio::test]
+    async fn launch_debugging_accepts_snake_case_202_body() {
+        let mock_server = mock_debug_launch(202, r#"{"run_id":"abc-1"}"#).await;
+        let api = test_api_optionally_with_cache(&mock_server, None);
+
+        let response = api.launch_debugging(&debug_params()).await.unwrap();
+        assert_eq!(response.run_id.as_deref(), Some("abc-1"));
         assert_eq!(response.status_code, 202);
+    }
+
+    // The body's own statusCode is ignored outright: a 200 carrying `202`
+    // reports 200, the status the transport actually used.
+    #[tokio::test]
+    async fn launch_debugging_reports_the_transport_status_not_the_body() {
+        let mock_server = mock_debug_launch(200, r#"{"runId":"x","statusCode":202}"#).await;
+        let api = test_api_optionally_with_cache(&mock_server, None);
+
+        let response = api.launch_debugging(&debug_params()).await.unwrap();
+        assert_eq!(response.run_id.as_deref(), Some("x"));
+        assert_eq!(response.status_code, 200);
+    }
+
+    // …and the converse, which is the regression guard for the removed
+    // "recover when the body self-reports a 2xx" gate: a body claiming success
+    // can never turn an error status into a launch.
+    #[tokio::test]
+    async fn launch_debugging_rejects_success_body_on_error_status() {
+        for status in [400, 403, 500] {
+            let mock_server = mock_debug_launch(status, r#"{"statusCode":202}"#).await;
+            let api = test_api_optionally_with_cache(&mock_server, None);
+
+            let report = api.launch_debugging(&debug_params()).await.unwrap_err();
+            assert_eq!(crate::error::api_error_status(&report), Some(status));
+        }
+    }
+
+    // Error bodies are taken as they come — empty, HTML, the live envelope, or
+    // the pre-58.6 `{message}` shape — and every one keeps the HTTP status.
+    #[tokio::test]
+    async fn launch_test_reports_the_status_for_any_error_body() {
+        for body in [
+            "",
+            "<html><body>404 Not Found</body></html>",
+            r#"{"statusCode":404,"runId":null}"#,
+        ] {
+            let mock_server = mock_launch_test(404, body).await;
+            let api = test_api_optionally_with_cache(&mock_server, None);
+            let params = Params::from_key_value_pairs(["antithesis.duration=30"]).unwrap();
+
+            let report = api.launch_test("basic_test", &params).await.unwrap_err();
+            assert_eq!(
+                crate::error::api_error_status(&report),
+                Some(404),
+                "body {body:?} lost its status"
+            );
+            assert!(
+                format!("{report:#}").contains("API error: 404 Not Found"),
+                "body {body:?} produced: {report:#}"
+            );
+        }
+    }
+
+    // The pre-58.6 launch endpoints answered with the standard `{message}`
+    // envelope, which `Launch_Error_Response` cannot represent. Surface the text
+    // anyway rather than reducing the failure to a bare status line.
+    #[tokio::test]
+    async fn launch_test_surfaces_the_error_message_body() {
+        let mock_server = mock_launch_test(404, r#"{"message":"bad request"}"#).await;
+        let api = test_api_optionally_with_cache(&mock_server, None);
+        let params = Params::from_key_value_pairs(["antithesis.duration=30"]).unwrap();
+
+        let report = api.launch_test("basic_test", &params).await.unwrap_err();
+        assert_eq!(
+            format!("{report:#}"),
+            "API error: 404 Not Found — bad request"
+        );
     }
 
     #[tokio::test]
@@ -1543,56 +1666,23 @@ mod tests {
     // than hard-erroring on the missing field.
     #[tokio::test]
     async fn launch_debugging_accepts_200_without_run_id() {
-        let mock_server = MockServer::start().await;
-
-        Mock::given(method("POST"))
-            .and(path("/api/v1/launch/debugging"))
-            .respond_with(
-                ResponseTemplate::new(200).set_body_json(serde_json::json!({ "statusCode": 202 })),
-            )
-            .expect(1)
-            .mount(&mock_server)
-            .await;
-
+        let mock_server = mock_debug_launch(200, r#"{"statusCode":202}"#).await;
         let api = test_api_optionally_with_cache(&mock_server, None);
-        let params = Params::from_key_value_pairs([
-            "antithesis.debugging.run_id=a2a4-53-1",
-            "antithesis.debugging.input_hash=-1",
-            "antithesis.debugging.vtime=1.0",
-        ])
-        .unwrap();
 
-        let response = api.launch_debugging(&params).await.unwrap();
+        let response = api.launch_debugging(&debug_params()).await.unwrap();
         assert_eq!(response.run_id, None);
-        assert_eq!(response.status_code, 202);
+        assert_eq!(response.status_code, 200);
     }
 
     // The documented 202 body and the live webhook envelope have converged on
-    // `{ statusCode, runId }`, which the generated client parses directly. We
-    // carry the body's own status code through rather than assuming 202.
+    // `{ statusCode, runId }`, which the generated client parses directly.
     #[tokio::test]
     async fn launch_debugging_accepts_202_documented() {
-        let mock_server = MockServer::start().await;
-
-        Mock::given(method("POST"))
-            .and(path("/api/v1/launch/debugging"))
-            .respond_with(ResponseTemplate::new(202).set_body_json(serde_json::json!({
-                "statusCode": 202,
-                "runId": "debug-run-456"
-            })))
-            .expect(1)
-            .mount(&mock_server)
-            .await;
-
+        let mock_server =
+            mock_debug_launch(202, r#"{"statusCode":202,"runId":"debug-run-456"}"#).await;
         let api = test_api_optionally_with_cache(&mock_server, None);
-        let params = Params::from_key_value_pairs([
-            "antithesis.debugging.run_id=a2a4-53-1",
-            "antithesis.debugging.input_hash=-1",
-            "antithesis.debugging.vtime=1.0",
-        ])
-        .unwrap();
 
-        let response = api.launch_debugging(&params).await.unwrap();
+        let response = api.launch_debugging(&debug_params()).await.unwrap();
         assert_eq!(response.run_id.as_deref(), Some("debug-run-456"));
         assert_eq!(response.status_code, 202);
     }
@@ -1600,34 +1690,80 @@ mod tests {
     // A documented error status carries the `Launch_Error_Response` envelope
     // (`{ statusCode, runId }`). Its `runId` is informational only and must never
     // be mistaken for a successful launch: the non-2xx HTTP status keeps this an
-    // error even though the body parses cleanly.
+    // error even though the body parses cleanly. The body is still echoed for
+    // debugging, so assert on the outcome rather than on the absent run id.
     #[tokio::test]
     async fn launch_debugging_rejects_error_body_carrying_run_id() {
-        let mock_server = MockServer::start().await;
+        let mock_server =
+            mock_debug_launch(403, r#"{"statusCode":403,"runId":"not-a-launch"}"#).await;
+        let api = test_api_optionally_with_cache(&mock_server, None);
 
-        Mock::given(method("POST"))
-            .and(path("/api/v1/launch/debugging"))
-            .respond_with(ResponseTemplate::new(403).set_body_json(serde_json::json!({
-                "statusCode": 403,
-                "runId": "should-not-be-reported"
-            })))
+        let report = api.launch_debugging(&debug_params()).await.unwrap_err();
+        assert_eq!(crate::error::api_error_status(&report), Some(403));
+    }
+
+    async fn mock_version(status: u16, body: &str) -> MockServer {
+        let mock_server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/version"))
+            .respond_with(ResponseTemplate::new(status).set_body_string(body))
             .expect(1)
             .mount(&mock_server)
             .await;
+        mock_server
+    }
 
+    #[tokio::test]
+    async fn get_version_reads_the_documented_body() {
+        let mock_server = mock_version(
+            200,
+            r#"{"latest_api_version":"v1","release_version":"58.6"}"#,
+        )
+        .await;
         let api = test_api_optionally_with_cache(&mock_server, None);
-        let params = Params::from_key_value_pairs([
-            "antithesis.debugging.run_id=a2a4-53-1",
-            "antithesis.debugging.input_hash=-1",
-            "antithesis.debugging.vtime=1.0",
-        ])
-        .unwrap();
 
-        let err = api.launch_debugging(&params).await.unwrap_err().to_string();
-        assert!(
-            !err.contains("should-not-be-reported"),
-            "a 403 error body must not be reported as a successful launch: {err}"
-        );
+        let version = api.get_version().await.unwrap();
+        assert_eq!(version.latest_api_version, "v1");
+        assert_eq!(version.release_version, "58.6");
+    }
+
+    // The gateway rejects a bad token with a documented status and an *empty*
+    // body (content-type: text/plain). Before the transport-level normalization
+    // that body failed `Error_Response` parsing, which cost the status and left
+    // `snouty doctor` reporting the API as unreachable instead of as rejecting
+    // authentication. Every non-conforming error body must keep its status:
+    // empty, an intermediary's HTML page, or an unexpected JSON shape.
+    #[tokio::test]
+    async fn get_version_keeps_the_status_for_non_conforming_error_bodies() {
+        let cases = [
+            (401, ""),
+            (401, "<html><body>Unauthorized</body></html>"),
+            (406, r#"{"statusCode":406}"#),
+            (429, ""),
+            (500, "<html><body>502 upstream</body></html>"),
+        ];
+        for (status, body) in cases {
+            let mock_server = mock_version(status, body).await;
+            let api = test_api_optionally_with_cache(&mock_server, None);
+
+            match api.get_version().await {
+                Err(VersionError::Http(code)) => assert_eq!(code, status),
+                other => panic!("expected Http({status}) for body {body:?}, got {other:?}"),
+            }
+        }
+    }
+
+    // A 404 is undocumented for this operation, so it never went through the
+    // typed-body path; keep it covered so the normalization can't regress it.
+    #[tokio::test]
+    async fn get_version_keeps_the_status_for_an_undocumented_404() {
+        let mock_server = mock_version(404, "").await;
+        let api = test_api_optionally_with_cache(&mock_server, None);
+
+        match api.get_version().await {
+            Err(VersionError::Http(404)) => {}
+            other => panic!("expected Http(404), got {other:?}"),
+        }
     }
 
     #[tokio::test]

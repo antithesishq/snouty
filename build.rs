@@ -18,7 +18,7 @@ fn main() {
 
 fn generate_api_client(out_dir: &Path) {
     let file = std::fs::File::open("src/openapi.json").unwrap();
-    let spec_value: serde_json::Value = serde_json::from_reader(file).unwrap();
+    let mut spec_value: serde_json::Value = serde_json::from_reader(file).unwrap();
 
     // A schema's `additionalProperties: false` makes progenitor/typify emit
     // `#[serde(deny_unknown_fields)]`, which turns a forwards-compatible server
@@ -41,6 +41,7 @@ fn generate_api_client(out_dir: &Path) {
         offenders.len(),
         offenders.join(", ")
     );
+    relax_response_typing(&mut spec_value);
     let spec: openapiv3::OpenAPI = serde_json::from_value(spec_value).unwrap();
 
     let mut settings = progenitor::GenerationSettings::default();
@@ -53,6 +54,88 @@ fn generate_api_client(out_dir: &Path) {
     let content = patch_lenient_booleans(content);
 
     fs::write(out_dir.join("antithesis_api.rs"), content).unwrap();
+}
+
+/// Stop the generated client from typing the response bodies the server is
+/// known to answer off-schema.
+///
+/// progenitor decodes every *documented* response into a generated type. When a
+/// documented status arrives with a body that doesn't match its schema, the
+/// generated client returns `Error::InvalidResponsePayload(Bytes,
+/// serde_json::Error)` — a variant with nowhere to put the HTTP status, for
+/// which `Error::status()` is `None`. An *undocumented* status takes
+/// `Error::UnexpectedResponse(reqwest::Response)` instead, which keeps the
+/// status *and* the raw body. Two families of response are better left
+/// undocumented, so snouty always has the status:
+///
+/// - **Every error response, on every operation.** An error body is whatever
+///   the thing that produced it feels like sending: the API gateway rejects a
+///   bad token with an empty `text/plain` body, an intermediary answers with an
+///   HTML page. Typed, any of those masks the status — an empty-bodied 401 was
+///   reaching `snouty doctor` as "API unreachable" (#180). Untyped, every
+///   failure arrives as status + raw body and one status-first formatter
+///   renders all of them.
+///
+/// - **The launch webhooks' success body.** The spec documents 202 while the
+///   live webhook answers 200, and the body shape varies by tenant release
+///   (`runId` vs `run_id`; `statusCode` present or not). Their success response
+///   is collapsed into a single `2XX` range carrying a free-form object, so any
+///   2xx is a success and `finish_launch` reads the body itself. Keeping a
+///   documented success — rather than dropping the response outright — is what
+///   preserves the generated `Accept: application/json` request header, which
+///   these endpoints content-negotiate on (they document a 406).
+fn relax_response_typing(spec: &mut serde_json::Value) {
+    const LAUNCH_OPERATIONS: [&str; 2] = ["launchTest", "launchMvd"];
+
+    let launch_success = serde_json::json!({
+        "2XX": {
+            "description": "Any 2xx is a successful launch. The body shape varies by tenant release, so it is left free-form and parsed by the client.",
+            "content": { "application/json": { "schema": { "type": "object" } } }
+        }
+    });
+
+    let paths = spec
+        .get_mut("paths")
+        .and_then(serde_json::Value::as_object_mut)
+        .expect("openapi spec has a `paths` object");
+    let mut launch_operations_found = 0;
+    for path_item in paths.values_mut() {
+        let Some(path_item) = path_item.as_object_mut() else {
+            continue;
+        };
+        // A path item holds non-operation keys too (`parameters`, `summary`);
+        // an operation is anything that documents responses.
+        for operation in path_item.values_mut() {
+            let is_launch = operation
+                .get("operationId")
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|id| LAUNCH_OPERATIONS.contains(&id));
+            let Some(responses) = operation
+                .get_mut("responses")
+                .and_then(serde_json::Value::as_object_mut)
+            else {
+                continue;
+            };
+            if is_launch {
+                launch_operations_found += 1;
+                *responses = launch_success.as_object().unwrap().clone();
+            } else {
+                // Also drops any `default` response, which progenitor would
+                // otherwise turn into a typed catch-all for every error status.
+                responses.retain(|status, _| status.starts_with('2'));
+            }
+        }
+    }
+
+    // A spec refresh that renamed or dropped a launch operation would otherwise
+    // silently leave its responses typed, and the mismatch would only show up
+    // as a runtime "invalid API response payload" against a live tenant.
+    assert_eq!(
+        launch_operations_found,
+        LAUNCH_OPERATIONS.len(),
+        "expected the openapi spec to define {LAUNCH_OPERATIONS:?}; found {launch_operations_found} \
+         of them, so the launch response bodies may still be typed"
+    );
 }
 
 /// Recursively collect the JSON-pointer path of every `"additionalProperties":

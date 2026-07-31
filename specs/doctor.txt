@@ -63,6 +63,17 @@ stderr '.*ANTITHESIS_PASSWORD.*'
 [!staging] stderr '.*returned 404.*'
 [!staging] stderr '.*proxy.*'
 
+# 401 with an EMPTY body — exactly what the API gateway returns for a bad
+# token (content-type: text/plain, zero length). The HTTP status is what
+# classifies the failure, so doctor names the rejected credentials instead of
+# reporting the API as unreachable because the body didn't parse (issue #180).
+[!staging] mock-server 401 ''
+[!staging] env ANTITHESIS_API_KEY=testkey
+[!staging] ! snouty doctor
+[!staging] stderr '.*Antithesis API rejected authentication.*'
+[!staging] stderr '.*returned HTTP 401.*'
+[!staging] ! stderr '.*Antithesis API unreachable.*'
+
 # --offline skips the network check entirely: no version line, no API contact.
 env ANTITHESIS_API_KEY=testkey
 env ANTITHESIS_TENANT=testtenant

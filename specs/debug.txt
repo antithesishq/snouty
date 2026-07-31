@@ -58,6 +58,13 @@ mock-server 202 '{"statusCode":202,"runId":"run-123"}'
 snouty debug --input-hash abc123 --run-id 9043254f65c9c65d63fe043a0abfc7fc-53-1 --vtime 1234567890
 stdout 'Debugging session started: run_id run-123'
 
+# A tenant predating the documented envelope answers with a snake_case run_id
+# and no statusCode at all. That is still a successful launch: the HTTP status
+# says so, and the body only has to supply the run id.
+mock-server 202 '{"run_id":"run-123"}'
+snouty debug --input-hash abc123 --run-id 9043254f65c9c65d63fe043a0abfc7fc-53-1 --vtime 1234567890
+stdout 'Debugging session started: run_id run-123'
+
 # --session-id remains supported for backwards compatibility.
 mock-server 200 '{"statusCode":202,"runId":"run-123"}'
 snouty debug --input-hash abc123 --session-id d5d1c9cf0e64b5dd69b00e97b07fe3f4-18-1 --vtime 1234567890
@@ -107,19 +114,32 @@ stdin moment_run_input.txt
 snouty debug --stdin
 stdout 'Debugging session started: run_id run-123'
 
-# With --json, the full response body is printed as pretty JSON.
+# With --json, the full response body is printed as pretty JSON. `statusCode`
+# is the HTTP status of the response, not the webhook's body-level copy of it
+# (the two disagree here: the mock answers HTTP 200 saying 202).
 mock-server 200 '{"statusCode":202,"runId":"run-123"}'
 stdin moment_run_input.txt
 snouty --json debug --stdin
 stdout '\s*"runId": "run-123".*'
+stdout '\s*"statusCode": 200.*'
 
 # Gateway-level rejections (auth, rate limiting) on the launch/debug endpoints
 # return an EMPTY body rather than the Launch_Error_Response envelope — verified
 # against the live API, which answers a bad token with 401/403 and no payload.
-# snouty must surface that permissively instead of choking on the empty body.
+# The HTTP status is the only thing the server said, so it is what snouty
+# reports, with a note explaining why there is no further detail.
 mock-server 401 ''
 ! snouty debug --input-hash abc123 --run-id 9043254f65c9c65d63fe043a0abfc7fc-53-1 --vtime 1234567890
-stderr '.*empty response body.*'
+stderr 'API error: 401 Unauthorized.*'
+stderr '.*return an empty body for some gateway-level rejections.*'
+
+# An error body snouty cannot make sense of (here an intermediary's HTML page)
+# never masks the status either: it is reported with the body shown for
+# debugging.
+mock-server 502 '<html><body>Bad Gateway</body></html>'
+! snouty debug --input-hash abc123 --run-id 9043254f65c9c65d63fe043a0abfc7fc-53-1 --vtime 1234567890
+stderr 'API error: 502 Bad Gateway.*'
+stderr '.*<html><body>Bad Gateway</body></html>.*'
 
 # ANTITHESIS_EXTRA_HEADERS adds arbitrary headers to every API request (for
 #    consumption by proxies). With --verbose, the merged request headers are

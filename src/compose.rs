@@ -1515,7 +1515,16 @@ services:
             )
             .unwrap();
             std::fs::write(img_dir.path().join("file"), "x").unwrap();
-            let local = "snouty-pin-test:latest";
+            // Unique per runtime: every iteration builds byte-identical content,
+            // so a shared name would make the second push a no-op (the registry
+            // already serves that digest) and stop testing the push path. The
+            // pushed repo is `{registry}/{local name}`, so this covers both the
+            // local image store and the registry.
+            let local = format!(
+                "{}:latest",
+                crate::testutils::unique_image_prefix(&format!("pin-{}", rt.name()))
+            );
+            let local = local.as_str();
             rt.build_image(img_dir.path(), local, None, Some("linux/amd64"))
                 .unwrap_or_else(|e| panic!("{}: build: {e:?}", rt.name()));
 
@@ -1539,7 +1548,7 @@ services:
                     .unwrap()
                     .to_string())
             };
-            let pushed_prefix = format!("{addr}/snouty-pin-test:latest@sha256:");
+            let pushed_prefix = format!("{addr}/{local}@sha256:");
 
             // Case 1 — build stanza: the local build is pushed and pinned.
             let built = pinned_app(&format!(

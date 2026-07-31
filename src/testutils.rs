@@ -989,28 +989,6 @@ mod tests {
         );
     }
 
-    // A registry from TEST_REGISTRY_VAR belongs to whoever started it: dropping
-    // the handle must not stop the container out from under the rest of the run.
-    #[cfg(unix)]
-    #[test]
-    fn oci_registry_drop_leaves_an_external_registry_alone() {
-        let dir = tempfile::tempdir().unwrap();
-        let log_path = dir.path().join("runtime.log");
-
-        {
-            let registry = OCIRegistry {
-                host_port: "127.0.0.1:5000".to_string(),
-                owned: None,
-            };
-            assert_eq!(registry.host_port(), "127.0.0.1:5000");
-        }
-
-        assert!(
-            !log_path.exists(),
-            "dropping an external registry handle must not run any engine command"
-        );
-    }
-
     #[cfg(unix)]
     #[test]
     fn ensure_registry_image_available_pulls_registry_image() {

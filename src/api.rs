@@ -6,10 +6,13 @@ use color_eyre::eyre::{Context, Report, Result, eyre};
 use color_eyre::{Section, SectionExt};
 use futures_util::stream;
 use log::debug;
-use progenitor_client::{ClientHooks, ClientInfo, Error as ClientError, OperationInfo};
+use progenitor_client::{
+    ClientHooks, ClientInfo, Error as ClientError, OperationInfo, ResponseValue,
+};
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use reqwest::{Client, Proxy};
 use reqwest_middleware::ClientWithMiddleware;
+use serde::de::DeserializeOwned;
 
 use crate::api_cache;
 use crate::auth::AuthenticationInfo;
@@ -33,16 +36,17 @@ pub use progenitor_client::ByteStream;
 /// The outcome of a launch or debugging-launch request, and the `--json` output
 /// of `snouty launch` / `snouty debug`.
 ///
-/// snouty owns this shape rather than re-exporting a generated type: the launch
-/// webhooks' response body varies by tenant release, so `build.rs` leaves it
-/// free-form and [`finish_launch`] reads the run id out of it directly.
-/// `status_code` is the response's HTTP status, never the body's own copy of it
-/// (#180).
+/// snouty owns this shape rather than re-exporting a generated response type,
+/// so the `--json` contract is a deliberate choice rather than whatever the
+/// vendored schema happens to say. The run id is the only thing a caller can
+/// act on: success or failure is the exit code, and the launch responses'
+/// body-level `statusCode` is a field the API team has confirmed clients should
+/// ignore (#180). The HTTP status is still visible with `--verbose`, which
+/// dumps the response as it arrived.
 #[derive(Debug, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LaunchResponse {
     pub run_id: Option<String>,
-    pub status_code: u16,
 }
 
 /// API and tenant release version, from `GET /api/version`.
@@ -254,13 +258,19 @@ impl AntithesisApi {
             .body(body)
             .send()
             .await;
-        finish_launch(result).await
+        let response: generated::types::LaunchResponse = finish_launch(result).await?;
+        Ok(LaunchResponse {
+            run_id: response.run_id,
+        })
     }
 
     pub async fn launch_debugging(&self, params: &Params) -> Result<LaunchResponse> {
         let body = launch_mvd_request(params)?;
         let result = self.client.launch_mvd().body(body).send().await;
-        finish_launch(result).await
+        let response: generated::types::LaunchMvdResponse = finish_launch(result).await?;
+        Ok(LaunchResponse {
+            run_id: response.run_id,
+        })
     }
 
     pub async fn get_run(&self, run_id: &str) -> Result<RunDetail> {
@@ -747,36 +757,26 @@ fn launch_request(params: &Params) -> Result<generated::types::LaunchRequest> {
 
 /// Resolve a launch / debugging-launch webhook response.
 ///
-/// `build.rs` documents these webhooks as answering any 2xx with a free-form
-/// object, because the spec's single documented status (202) is not the one the
-/// live API uses (200) and the body's shape varies by tenant release. So any
-/// 2xx is a success, and the only thing read out of the body is the run id —
-/// under either spelling. The reported `statusCode` is the transport status:
-/// the API team has confirmed the body's own copy should be ignored (#180).
-async fn finish_launch(
-    result: std::result::Result<
-        progenitor_client::ResponseValue<serde_json::Map<String, serde_json::Value>>,
-        ClientError<()>,
-    >,
-) -> Result<LaunchResponse> {
-    let response = match result {
-        Ok(response) => response,
-        Err(err) => return Err(format_launch_client_error(err).await),
-    };
-    let status_code = response.status().as_u16();
-    Ok(LaunchResponse {
-        run_id: launch_run_id(response.into_inner()),
-        status_code,
-    })
-}
-
-/// The run id in a launch response body, under either spelling: tenants from
-/// 58.6 on answer with the documented `runId`, older ones with `run_id`. Absent
-/// on a launch that started no run, and on the debugging webhook's 200, which
-/// answers `{"statusCode": 202}` alone.
-fn launch_run_id(body: serde_json::Map<String, serde_json::Value>) -> Option<String> {
-    let run_id = body.get("runId").or_else(|| body.get("run_id"))?;
-    run_id.as_str().map(str::to_owned)
+/// These webhooks return an HTTP status the OpenAPI spec under-documents (it
+/// lists a single 2xx, while the live API has been seen to answer 200). The
+/// generated client accepts only the documented code and surfaces any other 2xx
+/// as `UnexpectedResponse`, so we treat **any** 2xx as success and decode the
+/// body ourselves on that path. Genuine failures (4xx/5xx) are formatted as
+/// errors, status first — `build.rs` leaves them undocumented, so the status is
+/// always there to lead with.
+async fn finish_launch<T: DeserializeOwned>(
+    result: std::result::Result<ResponseValue<T>, ClientError<()>>,
+) -> Result<T> {
+    match result {
+        Ok(response) => Ok(response.into_inner()),
+        Err(ClientError::UnexpectedResponse(response)) if response.status().is_success() => {
+            response
+                .json::<T>()
+                .await
+                .wrap_err("parsing launch response body")
+        }
+        Err(err) => Err(format_launch_client_error(err).await),
+    }
 }
 
 fn launch_mvd_request(params: &Params) -> Result<generated::types::LaunchMvdRequest> {
@@ -1036,12 +1036,13 @@ async fn classify_client_error(err: ClientError<()>) -> ApiFailure {
                 message: error_body_message(body),
             }
         }
-        // No operation documents an error response, so the generated client has
-        // no typed error body to construct this from.
-        ClientError::ErrorResponse(response) => ApiFailure::Response {
-            status: response.status().as_u16(),
-            message: String::new(),
-        },
+        // Unreachable: progenitor only emits an `Error::ErrorResponse` arm for a
+        // *documented* error response, and `build.rs` documents none. It asserts
+        // as much against the generated source, so this can't rot back into
+        // reachability unnoticed.
+        ClientError::ErrorResponse(_) => {
+            unreachable!("no error response is documented; see build.rs untype_error_responses")
+        }
         ClientError::InvalidRequest(message) => {
             ApiFailure::Other(eyre!("invalid API request: {message}"))
         }
@@ -1106,20 +1107,6 @@ mod tests {
     use tempfile::TempDir;
     use wiremock::matchers::{method, path, query_param, query_param_is_missing};
     use wiremock::{Mock, MockServer, ResponseTemplate};
-
-    // The launch body is free-form by the time it reaches snouty, so the run id
-    // is read out of it by hand: `runId` from 58.6 on, `run_id` before that, and
-    // absent on a launch that started no run.
-    #[test]
-    fn launch_run_id_reads_either_spelling() {
-        let run_id = |body: &str| launch_run_id(serde_json::from_str(body).unwrap());
-
-        assert_eq!(run_id(r#"{"runId":"abc-1"}"#).as_deref(), Some("abc-1"));
-        assert_eq!(run_id(r#"{"run_id":"abc-1"}"#).as_deref(), Some("abc-1"));
-        assert_eq!(run_id(r#"{"statusCode":202}"#), None);
-        assert_eq!(run_id(r#"{"runId":null}"#), None);
-        assert_eq!(run_id("{}"), None);
-    }
 
     fn test_api_optionally_with_cache(
         mock_server: &MockServer,
@@ -1466,7 +1453,6 @@ mod tests {
         let requests = mock_server.received_requests().await.unwrap();
 
         assert_eq!(response.run_id.as_deref(), Some("run-123"));
-        assert_eq!(response.status_code, 202);
         assert_eq!(requests.len(), 1);
         assert_eq!(requests[0].url.path(), "/api/v1/launch/basic_test");
         assert_eq!(requests[0].method, reqwest::Method::POST);
@@ -1510,7 +1496,6 @@ mod tests {
 
         let response = api.launch_test("basic_test", &params).await.unwrap();
         assert_eq!(response.run_id.as_deref(), Some("run-123"));
-        assert_eq!(response.status_code, 200);
     }
 
     /// Params for a debug launch against a fixed run.
@@ -1553,29 +1538,21 @@ mod tests {
         mock_server
     }
 
-    // A pre-58.6 tenant answers the documented 202 with a snake_case `run_id`
-    // and no statusCode at all. That body predates the envelope the spec now
-    // documents and must still be accepted as a successful launch.
+    // The body's own statusCode is ignored outright (#180): snouty reads the run
+    // id and nothing else, so a body claiming 202 over an HTTP 200 has no way to
+    // influence what is reported.
     #[tokio::test]
-    async fn launch_debugging_accepts_snake_case_202_body() {
-        let mock_server = mock_debug_launch(202, r#"{"run_id":"abc-1"}"#).await;
-        let api = test_api_optionally_with_cache(&mock_server, None);
-
-        let response = api.launch_debugging(&debug_params()).await.unwrap();
-        assert_eq!(response.run_id.as_deref(), Some("abc-1"));
-        assert_eq!(response.status_code, 202);
-    }
-
-    // The body's own statusCode is ignored outright: a 200 carrying `202`
-    // reports 200, the status the transport actually used.
-    #[tokio::test]
-    async fn launch_debugging_reports_the_transport_status_not_the_body() {
+    async fn launch_debugging_ignores_the_body_status_code() {
         let mock_server = mock_debug_launch(200, r#"{"runId":"x","statusCode":202}"#).await;
         let api = test_api_optionally_with_cache(&mock_server, None);
 
         let response = api.launch_debugging(&debug_params()).await.unwrap();
         assert_eq!(response.run_id.as_deref(), Some("x"));
-        assert_eq!(response.status_code, 200);
+        assert_eq!(
+            serde_json::to_value(&response).unwrap(),
+            serde_json::json!({"runId": "x"}),
+            "the launch --json contract is the run id alone"
+        );
     }
 
     // …and the converse, which is the regression guard for the removed
@@ -1671,7 +1648,6 @@ mod tests {
 
         let response = api.launch_debugging(&debug_params()).await.unwrap();
         assert_eq!(response.run_id, None);
-        assert_eq!(response.status_code, 200);
     }
 
     // The documented 202 body and the live webhook envelope have converged on
@@ -1684,7 +1660,6 @@ mod tests {
 
         let response = api.launch_debugging(&debug_params()).await.unwrap();
         assert_eq!(response.run_id.as_deref(), Some("debug-run-456"));
-        assert_eq!(response.status_code, 202);
     }
 
     // A documented error status carries the `Launch_Error_Response` envelope

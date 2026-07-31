@@ -58,13 +58,6 @@ mock-server 202 '{"statusCode":202,"runId":"run-123"}'
 snouty debug --input-hash abc123 --run-id 9043254f65c9c65d63fe043a0abfc7fc-53-1 --vtime 1234567890
 stdout 'Debugging session started: run_id run-123'
 
-# A tenant predating the documented envelope answers with a snake_case run_id
-# and no statusCode at all. That is still a successful launch: the HTTP status
-# says so, and the body only has to supply the run id.
-mock-server 202 '{"run_id":"run-123"}'
-snouty debug --input-hash abc123 --run-id 9043254f65c9c65d63fe043a0abfc7fc-53-1 --vtime 1234567890
-stdout 'Debugging session started: run_id run-123'
-
 # --session-id remains supported for backwards compatibility.
 mock-server 200 '{"statusCode":202,"runId":"run-123"}'
 snouty debug --input-hash abc123 --session-id d5d1c9cf0e64b5dd69b00e97b07fe3f4-18-1 --vtime 1234567890
@@ -114,14 +107,16 @@ stdin moment_run_input.txt
 snouty debug --stdin
 stdout 'Debugging session started: run_id run-123'
 
-# With --json, the full response body is printed as pretty JSON. `statusCode`
-# is the HTTP status of the response, not the webhook's body-level copy of it
-# (the two disagree here: the mock answers HTTP 200 saying 202).
+# With --json, snouty prints its own envelope: the run id, and nothing else.
+# The webhook's body-level statusCode is deliberately not re-exported (issue
+# #180) — it carries nothing the exit code doesn't, and here it disagrees with
+# the response anyway (the mock answers HTTP 200 saying 202). Use --verbose to
+# see the response as it arrived.
 mock-server 200 '{"statusCode":202,"runId":"run-123"}'
 stdin moment_run_input.txt
 snouty --json debug --stdin
 stdout '\s*"runId": "run-123".*'
-stdout '\s*"statusCode": 200.*'
+! stdout '.*statusCode.*'
 
 # Gateway-level rejections (auth, rate limiting) on the launch/debug endpoints
 # return an EMPTY body rather than the Launch_Error_Response envelope — verified

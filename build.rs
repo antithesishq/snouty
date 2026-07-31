@@ -41,7 +41,7 @@ fn generate_api_client(out_dir: &Path) {
         offenders.len(),
         offenders.join(", ")
     );
-    relax_response_typing(&mut spec_value);
+    untype_error_responses(&mut spec_value);
     let spec: openapiv3::OpenAPI = serde_json::from_value(spec_value).unwrap();
 
     let mut settings = progenitor::GenerationSettings::default();
@@ -52,12 +52,29 @@ fn generate_api_client(out_dir: &Path) {
     let ast = syn::parse2(tokens).unwrap();
     let content = prettyplease::unparse(&ast);
     let content = patch_lenient_booleans(content);
+    assert_no_typed_error_responses(&content);
 
     fs::write(out_dir.join("antithesis_api.rs"), content).unwrap();
 }
 
-/// Stop the generated client from typing the response bodies the server is
-/// known to answer off-schema.
+/// Hold `untype_error_responses` to its promise: with no error response
+/// documented anywhere, progenitor emits no `Error::ErrorResponse` arm, so that
+/// variant is unreachable and `classify_client_error` treats it as such. A spec
+/// refresh that slipped one back in — under a status shape the transform misses
+/// — would otherwise only surface as a status-less failure against a live
+/// tenant.
+fn assert_no_typed_error_responses(content: &str) {
+    let arms = content.matches("Error::ErrorResponse").count();
+    assert_eq!(
+        arms, 0,
+        "generated client has {arms} `Error::ErrorResponse` arm(s); every error response is \
+         supposed to be undocumented so failures keep their HTTP status (see \
+         `untype_error_responses`)"
+    );
+}
+
+/// Stop the generated client from typing error response bodies, so an HTTP
+/// failure always reaches snouty with its status attached.
 ///
 /// progenitor decodes every *documented* response into a generated type. When a
 /// documented status arrives with a body that doesn't match its schema, the
@@ -65,40 +82,22 @@ fn generate_api_client(out_dir: &Path) {
 /// serde_json::Error)` — a variant with nowhere to put the HTTP status, for
 /// which `Error::status()` is `None`. An *undocumented* status takes
 /// `Error::UnexpectedResponse(reqwest::Response)` instead, which keeps the
-/// status *and* the raw body. Two families of response are better left
-/// undocumented, so snouty always has the status:
+/// status *and* the raw body.
 ///
-/// - **Every error response, on every operation.** An error body is whatever
-///   the thing that produced it feels like sending: the API gateway rejects a
-///   bad token with an empty `text/plain` body, an intermediary answers with an
-///   HTML page. Typed, any of those masks the status — an empty-bodied 401 was
-///   reaching `snouty doctor` as "API unreachable" (#180). Untyped, every
-///   failure arrives as status + raw body and one status-first formatter
-///   renders all of them.
+/// Error bodies are exactly the ones that don't honour the schema: the API
+/// gateway rejects a bad token with an empty `text/plain` body, an intermediary
+/// answers with an HTML page. Typed, any of those masked the status — an
+/// empty-bodied 401 was reaching `snouty doctor` as "API unreachable" (#180).
+/// Untyped, every failure arrives as status + raw body and one status-first
+/// formatter renders all of them.
 ///
-/// - **The launch webhooks' success body.** The spec documents 202 while the
-///   live webhook answers 200, and the body shape varies by tenant release
-///   (`runId` vs `run_id`; `statusCode` present or not). Their success response
-///   is collapsed into a single `2XX` range carrying a free-form object, so any
-///   2xx is a success and `finish_launch` reads the body itself. Keeping a
-///   documented success — rather than dropping the response outright — is what
-///   preserves the generated `Accept: application/json` request header, which
-///   these endpoints content-negotiate on (they document a 406).
-fn relax_response_typing(spec: &mut serde_json::Value) {
-    const LAUNCH_OPERATIONS: [&str; 2] = ["launchTest", "launchMvd"];
-
-    let launch_success = serde_json::json!({
-        "2XX": {
-            "description": "Any 2xx is a successful launch. The body shape varies by tenant release, so it is left free-form and parsed by the client.",
-            "content": { "application/json": { "schema": { "type": "object" } } }
-        }
-    });
-
+/// Success responses are left alone: the spec describes them accurately, and
+/// the typed bodies are what the rest of the client is built on.
+fn untype_error_responses(spec: &mut serde_json::Value) {
     let paths = spec
         .get_mut("paths")
         .and_then(serde_json::Value::as_object_mut)
         .expect("openapi spec has a `paths` object");
-    let mut launch_operations_found = 0;
     for path_item in paths.values_mut() {
         let Some(path_item) = path_item.as_object_mut() else {
             continue;
@@ -106,36 +105,18 @@ fn relax_response_typing(spec: &mut serde_json::Value) {
         // A path item holds non-operation keys too (`parameters`, `summary`);
         // an operation is anything that documents responses.
         for operation in path_item.values_mut() {
-            let is_launch = operation
-                .get("operationId")
-                .and_then(serde_json::Value::as_str)
-                .is_some_and(|id| LAUNCH_OPERATIONS.contains(&id));
             let Some(responses) = operation
                 .get_mut("responses")
                 .and_then(serde_json::Value::as_object_mut)
             else {
                 continue;
             };
-            if is_launch {
-                launch_operations_found += 1;
-                *responses = launch_success.as_object().unwrap().clone();
-            } else {
-                // Also drops any `default` response, which progenitor would
-                // otherwise turn into a typed catch-all for every error status.
-                responses.retain(|status, _| status.starts_with('2'));
-            }
+            // Retaining only 2xx also drops any `default` response, which
+            // progenitor would otherwise turn into a typed catch-all covering
+            // every error status — reintroducing the problem by another door.
+            responses.retain(|status, _| status.starts_with('2'));
         }
     }
-
-    // A spec refresh that renamed or dropped a launch operation would otherwise
-    // silently leave its responses typed, and the mismatch would only show up
-    // as a runtime "invalid API response payload" against a live tenant.
-    assert_eq!(
-        launch_operations_found,
-        LAUNCH_OPERATIONS.len(),
-        "expected the openapi spec to define {LAUNCH_OPERATIONS:?}; found {launch_operations_found} \
-         of them, so the launch response bodies may still be typed"
-    );
 }
 
 /// Recursively collect the JSON-pointer path of every `"additionalProperties":

@@ -42,7 +42,8 @@ stdout 'RUN ID.*STATUS.*CREATED.*TEST NAME'
 # table), so full descriptions are visible.
 mock-runs-server
 snouty runs list --detail
-stdout 'Run ID .*run-1'
+stdout 'Run ID +[^ ]'
+[!staging] stdout 'Run ID .*run-1'
 [!staging] stdout 'Status .*completed'
 [!staging] stdout 'Description .*nightly smoke on main'
 ! stdout 'RUN ID.*STATUS.*CREATED.*TEST NAME'
@@ -50,7 +51,8 @@ stdout 'Run ID .*run-1'
 # `-d` is the short form of `--detail`.
 mock-runs-server
 snouty runs list -d
-stdout 'Run ID .*run-1'
+stdout 'Run ID +[^ ]'
+[!staging] stdout 'Run ID .*run-1'
 ! stdout 'RUN ID.*STATUS.*CREATED.*TEST NAME'
 
 # `snouty runs list` is the same as bare `snouty runs`.

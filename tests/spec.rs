@@ -660,6 +660,79 @@ fn run_engine_spec_case(runtime_name: &'static str, case: EngineSpecCase) {
 
 // --- Test functions ---
 
+/// `stdout`/`stderr` patterns are only compiled as regexes when they contain
+/// one of `^ $ [ ( * .` — otherwise testscript-rs 0.2.10 falls back to a plain
+/// substring match (`src/run/environment.rs`, `check_output`). So
+/// `stdout 'Run ID\s+\S+'` never matches anything: it has no trigger character,
+/// so `\s` and `\S` are compared literally.
+///
+/// Add a character that forces regex mode — `[^ ]` instead of `\S`, or a `.` —
+/// or write the plain substring you actually mean.
+#[test]
+fn no_spec_pattern_looks_like_a_regex_without_being_one() {
+    let mut offenders = Vec::new();
+    for (path, number, line) in spec_lines() {
+        let trimmed = line.trim_start();
+        let after_condition = match trimmed.strip_prefix('[') {
+            Some(rest) => rest.split_once(']').map_or(trimmed, |(_, rest)| rest),
+            None => trimmed,
+        };
+        let words = after_condition.trim_start().trim_start_matches("! ");
+        if !words.starts_with("stdout ") && !words.starts_with("stderr ") {
+            continue;
+        }
+        // A backslash followed by a letter is a regex class shorthand (\s, \d,
+        // \w, \b …). Harmless in a real regex, inert in a literal match. `\\`
+        // is an escaped backslash — the following letter is ordinary text, as
+        // in `'line one\\nline two'` matching a literal `\n`.
+        let mut chars = words.chars();
+        let mut has_class = false;
+        while let Some(ch) = chars.next() {
+            if ch != '\\' {
+                continue;
+            }
+            match chars.next() {
+                Some('\\') => continue,
+                Some(next) if next.is_ascii_alphabetic() => {
+                    has_class = true;
+                    break;
+                }
+                _ => {}
+            }
+        }
+        let forces_regex = words.contains(['^', '$', '[', '(', '*', '.']);
+        if has_class && !forces_regex {
+            let name = path.file_name().unwrap().to_string_lossy();
+            offenders.push(format!("{name}:{number}: {trimmed}"));
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "these patterns use a regex escape but contain none of `^ $ [ ( * .`, so testscript \
+         matches them as literal text and they can never match:\n  {}",
+        offenders.join("\n  ")
+    );
+}
+
+/// Every line of every spec file, as `(path, 1-based line number, text)`.
+fn spec_lines() -> Vec<(std::path::PathBuf, usize, String)> {
+    let mut lines = Vec::new();
+    for dir in ["specs", "specs_engine"] {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(dir);
+        for entry in std::fs::read_dir(&dir).expect("read spec dir").flatten() {
+            let path = entry.path();
+            if path.extension().is_none_or(|ext| ext != "txt") {
+                continue;
+            }
+            let text = std::fs::read_to_string(&path).expect("read spec file");
+            for (index, line) in text.lines().enumerate() {
+                lines.push((path.clone(), index + 1, line.to_owned()));
+            }
+        }
+    }
+    lines
+}
+
 /// A condition prefix and a `!` on the same line is a trap, not a style choice.
 ///
 /// testscript-rs 0.2.10 checks the condition inside `execute_command_inner` and

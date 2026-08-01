@@ -95,6 +95,15 @@ executes for real. Write the positive form instead: `stdout -count=0 'x'` for a
 negated assertion, or gate the whole block with `[staging] skip`. The
 `no_spec_line_combines_a_condition_with_a_negated_command` test enforces this.
 
+**A `stdout`/`stderr` pattern is only a regex if it contains one of
+`^ $ [ ( * .`** — otherwise testscript compares it as literal text, so
+`stdout 'Run ID\s+\S+'` matches nothing at all and quietly fails. Write
+`[^ ]` instead of `\S`, or include a `.`. Enforced by
+`no_spec_pattern_looks_like_a_regex_without_being_one`.
+
+Structural assertions must hold against *any* tenant: `stdout 'Run ID +[^ ]'`
+belongs unprefixed, `stdout 'Run ID .*run-1'` belongs behind `[!staging]`.
+
 Two CI jobs keep this path honest:
 
 - `staging-harness` in `build.yml` runs the staging code path against the

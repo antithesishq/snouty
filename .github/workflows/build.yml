@@ -248,13 +248,19 @@ jobs:
       - name: Install Nextest
         uses: taiki-e/install-action@cargo-nextest
 
+      # Built as its own step so the wait below covers only startup. Folded into
+      # the run, a cold cargo cache spends longer compiling than any sensible
+      # readiness timeout.
+      - name: Build the mock Antithesis API
+        run: cargo build --example mock_api
+
       # `examples/mock_api` prints the exports the staging path expects to read
       # out of the real environment, so feeding them to $GITHUB_ENV puts the
       # harness in staging mode against a backend we control.
       - name: Start the mock Antithesis API
         run: |
-          cargo run --example mock_api >mock-api.log 2>&1 &
-          for _ in $(seq 1 60); do
+          ./target/debug/examples/mock_api >mock-api.log 2>&1 &
+          for _ in $(seq 1 30); do
             if grep -q 'ANTITHESIS_BASE_URL=' mock-api.log; then break; fi
             sleep 1
           done

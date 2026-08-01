@@ -36,7 +36,7 @@ stdout 'RUN ID.*STATUS.*CREATED.*TEST NAME'
 # The default table omits the description (it never fit usefully beside the full
 # run id); use `runs list --detail` to see it.
 ! stdout 'DESCRIPTION'
-[!staging] ! stdout 'nightly smoke on main'
+[!staging] stdout -count=0 'nightly smoke on main'
 
 # `snouty runs list --detail` prints one aligned key-value block per run (no
 # table), so full descriptions are visible.
@@ -405,7 +405,7 @@ snouty runs events $R_run_id request
 mock-runs-server
 snouty --json runs events $R_run_id --match parallel_driver_fetch --limit 1
 [!staging] stdout '"vtime":"400\.5"'
-[!staging] ! stdout '"vtime":"401\.75"'
+[!staging] stdout -count=0 '"vtime":"401\.75"'
 
 # Without --limit no cap is sent at all, so all three matches come back.
 mock-runs-server

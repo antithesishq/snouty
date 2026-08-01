@@ -82,8 +82,30 @@ When `SNOUTY_STAGING` is set, the `mock-runs-server` directive becomes a
 pass-through that forwards those vars instead of starting the mock. Spec
 lines prefixed with `[!staging]` are skipped (those assert on hardcoded
 mock data); unprefixed lines still run and hit staging. Only read-oriented
-checks run against staging — any spec that would mutate state is gated
-`[!staging]`.
+checks run against staging — a file that would mutate tenant state stops at a
+`[staging] skip` line, which skips everything below it.
+
+**Never put `!` on a line that also carries a condition.** `[!staging] ! snouty
+runs` does not skip under staging — testscript-rs checks the condition inside
+the inner executor, which returns `Ok` for a skipped line, and the outer
+negation wrapper reads that `Ok` as "the command was expected to fail but
+succeeded". The line fails the whole file instead of being skipped, and it is
+invisible in a normal run because the condition is met there and the line
+executes for real. Write the positive form instead: `stdout -count=0 'x'` for a
+negated assertion, or gate the whole block with `[staging] skip`. The
+`no_spec_line_combines_a_condition_with_a_negated_command` test enforces this.
+
+Two CI jobs keep this path honest:
+
+- `staging-harness` in `build.yml` runs the staging code path against the
+  in-process mock (`cargo run --example mock_api` supplies the credentials), on
+  every PR. No secrets, so it can gate the merge — it is what catches the
+  harness rotting.
+- `spec-tests` in `staging.yml` runs the same specs against a real tenant,
+  nightly and on demand. It needs the `STAGING_ANTITHESIS_TENANT` and
+  `STAGING_ANTITHESIS_API_KEY` repository secrets (plus optional
+  `STAGING_ANTITHESIS_BASE_URL`), and warns rather than fails when they are
+  absent.
 
 ## Scripts
 

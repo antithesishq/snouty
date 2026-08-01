@@ -1,0 +1,80 @@
+name: staging
+
+# The read-only half of the spec suite, run against a real Antithesis tenant.
+#
+# `SNOUTY_STAGING=1` turns the `mock-server` / `mock-runs-server` directives into
+# pass-throughs that hand snouty the real credentials, skips every `[!staging]`
+# line (those assert on hardcoded mock data), and stops each mutating file at its
+# `[staging] skip`. What remains is the wiring no mock can prove: real TLS, real
+# auth, real pagination, and the real response shapes the vendored OpenAPI spec
+# claims to describe.
+#
+# Not on pull_request: it needs credentials, which are not available to forks,
+# and it depends on a service outside this repo — a tenant outage should not read
+# as a broken PR. build.yml's `staging-harness` job covers the same code path
+# against the in-process mock on every PR; this one covers the remote half.
+on:
+  schedule:
+    # 07:00 UTC daily — after the nightly tenant activity has settled.
+    - cron: "0 7 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: never
+  CLICOLOR: 0
+  NO_COLOR: "1"
+  RUST_BACKTRACE: 1
+
+permissions:
+  contents: read
+
+jobs:
+  spec-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+        with:
+          toolchain: stable
+
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+        with:
+          token: ${{secrets.GITHUB_TOKEN}}
+          persist-credentials: false
+
+      - uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5 # v2
+
+      - name: Install Nextest
+        uses: taiki-e/install-action@cargo-nextest
+
+      # Report a missing secret as a warning rather than a red run: until
+      # someone provisions the tenant this job has nothing to say, and a
+      # permanently failing scheduled workflow teaches people to ignore it.
+      - name: Check for tenant credentials
+        id: credentials
+        env:
+          TENANT: ${{ secrets.STAGING_ANTITHESIS_TENANT }}
+          API_KEY: ${{ secrets.STAGING_ANTITHESIS_API_KEY }}
+        run: |
+          if [ -z "$TENANT" ] || [ -z "$API_KEY" ]; then
+            echo "::warning::skipped — set the STAGING_ANTITHESIS_TENANT and STAGING_ANTITHESIS_API_KEY repository secrets to enable this job"
+            echo "configured=false" >>"$GITHUB_OUTPUT"
+          else
+            echo "configured=true" >>"$GITHUB_OUTPUT"
+          fi
+
+      # Only the read-only specs run: `snouty runs …` and the doctor probes.
+      # Every file that would mutate tenant state stops at its `[staging] skip`.
+      - name: Spec tests against staging
+        if: steps.credentials.outputs.configured == 'true'
+        env:
+          SNOUTY_STAGING: 1
+          ANTITHESIS_TENANT: ${{ secrets.STAGING_ANTITHESIS_TENANT }}
+          ANTITHESIS_API_KEY: ${{ secrets.STAGING_ANTITHESIS_API_KEY }}
+          # Optional: defaults to https://<tenant>.antithesis.com when unset.
+          ANTITHESIS_BASE_URL: ${{ secrets.STAGING_ANTITHESIS_BASE_URL }}
+        run: cargo nextest run --test spec spec_tests

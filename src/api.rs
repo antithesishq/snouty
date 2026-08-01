@@ -984,22 +984,10 @@ fn char_pos_to_byte_offset(body: &str, line: usize, column: usize) -> usize {
 }
 
 /// Render a failed API call for the user, status first.
-///
-/// A status with no body at all gets a note explaining the silence. That is the
-/// gateway's shape for some rejections — a bad token comes back 401/403 with
-/// `content-type: text/plain` and zero length — and it is not specific to any
-/// endpoint: `GET /api/version` answers exactly the same way, which is what
-/// `snouty doctor` trips over in #180. The note deliberately says nothing about
-/// credentials, because [`format_api_error`] already attaches that on a 401/403
-/// and this fires for 429 and 5xx too.
 async fn format_api_client_error(err: ClientError<()>) -> Report {
     match classify_client_error(err).await {
-        ApiFailure::Response { status, message } if message.is_empty() => {
-            format_api_error(status, "").with_suggestion(|| {
-                "the API answers some gateway-level rejections (for example authentication or rate limiting) with an empty body, so there is no detail to show beyond the status; if the problem persists, contact Antithesis support."
-            })
-        }
-        failure => failure.into_report(),
+        ApiFailure::Response { status, message } => format_api_error(status, &message),
+        ApiFailure::Other(report) => report,
     }
 }
 
@@ -1014,15 +1002,6 @@ enum ApiFailure {
     Other(Report),
 }
 
-impl ApiFailure {
-    fn into_report(self) -> Report {
-        match self {
-            ApiFailure::Response { status, message } => format_api_error(status, &message),
-            ApiFailure::Other(report) => report,
-        }
-    }
-}
-
 /// Classify a client error. Anything the server answered keeps its HTTP status:
 /// `build.rs` documents no error responses, so the generated client never types
 /// an error body and a failure can no longer degrade into the status-less
@@ -1033,24 +1012,16 @@ async fn classify_client_error(err: ClientError<()>) -> ApiFailure {
         // exactly as the server sent them.
         ClientError::UnexpectedResponse(response) => {
             let status = response.status().as_u16();
-            let body = response
-                .text()
-                .await
-                .unwrap_or_else(|err| format!("<failed to read response body: {err}>"));
             ApiFailure::Response {
                 status,
-                message: error_body_message(&body),
+                message: error_body_message(&read_error_body(response).await),
             }
         }
-        // Unreachable in practice — progenitor only emits this arm for a
-        // *documented* error response, and `build.rs` asserts the generated
-        // client has none. Kept as the same status-first outcome rather than a
-        // panic: it costs two lines, and a CLI should never abort on something a
-        // server said.
-        ClientError::ErrorResponse(response) => ApiFailure::Response {
-            status: response.status().as_u16(),
-            message: String::new(),
-        },
+        // Unreachable: progenitor only emits this arm for a *documented* error
+        // response, and `build.rs` asserts the generated client has none.
+        ClientError::ErrorResponse(_) => {
+            unreachable!("no error response is documented; see build.rs untype_error_responses")
+        }
         ClientError::InvalidRequest(message) => {
             ApiFailure::Other(eyre!("invalid API request: {message}"))
         }
@@ -1078,49 +1049,64 @@ async fn classify_client_error(err: ClientError<()>) -> ApiFailure {
     }
 }
 
-/// The human-readable text of an error response body.
+/// How much of an error response body to read. Error bodies are meant to be a
+/// sentence; anything far past that is an intermediary's web page, and only the
+/// first line of it will ever be shown. Bounding the read keeps a misbehaving
+/// proxy from making snouty buffer an arbitrarily large body to print 200
+/// characters of it.
+const MAX_ERROR_BODY: usize = 4 * 1024;
+
+/// Read up to [`MAX_ERROR_BODY`] of an error response, chunk by chunk, and drop
+/// the rest. Truncating mid-character is fine — the result is only ever
+/// displayed, and `from_utf8_lossy` renders a split character as `U+FFFD`.
+async fn read_error_body(mut response: reqwest::Response) -> String {
+    let mut body = Vec::new();
+    while body.len() < MAX_ERROR_BODY {
+        match response.chunk().await {
+            Ok(Some(chunk)) => {
+                let remaining = MAX_ERROR_BODY - body.len();
+                body.extend_from_slice(&chunk[..chunk.len().min(remaining)]);
+            }
+            Ok(None) => break,
+            Err(err) => return format!("<failed to read response body: {err}>"),
+        }
+    }
+    String::from_utf8_lossy(&body).into_owned()
+}
+
+/// The human-readable text of an error response body, as one terminal line.
 ///
 /// The standard endpoints answer with `{"message": "…"}`, so unwrap that when
 /// it's there. Anything else — an empty body, an HTML error page from an
 /// intermediary, the launch endpoints' `{"statusCode", "runId"}` envelope, or a
-/// shape the spec never described — is shown verbatim (whitespace collapsed, and
-/// truncated if it's a whole web page) so the user still has something to debug
-/// with.
-///
-/// Echoing the launch endpoints' `{statusCode, runId}` envelope is worth it even
-/// though its `statusCode` duplicates the status line: whether `runId` is present
+/// shape the spec never described — is shown as it came, so the user still has
+/// something to debug with. Echoing the launch envelope is worth it even though
+/// its `statusCode` duplicates the status line: whether `runId` is present
 /// distinguishes a rejection the test launcher produced from one an intermediary
 /// made on its behalf.
+///
+/// Runs of whitespace collapse to a single space before the cut, so that an
+/// indented error page spends the 200 characters on its text rather than on its
+/// margins. [`sanitize`] is the repo's policy for untrusted text on one line; it
+/// runs after the collapse, which leaves it nothing to do about newlines and
+/// only control characters to escape.
 fn error_body_message(body: &str) -> String {
     const MAX_LEN: usize = 200;
 
-    if let Ok(value) = serde_json::from_str::<serde_json::Value>(body)
-        && let Some(message) = value.get("message").and_then(serde_json::Value::as_str)
-    {
-        return sanitize(message.trim());
-    }
+    let text = serde_json::from_str::<serde_json::Value>(body)
+        .ok()
+        .and_then(|value| {
+            value
+                .get("message")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned)
+        })
+        .unwrap_or_else(|| body.split_whitespace().collect::<Vec<_>>().join(" "));
 
-    // Collapse onto one line, stopping once there are certainly enough bytes to
-    // fill MAX_LEN chars (a char is at most 4 bytes), so a whole web page isn't
-    // rebuilt just to be cut down.
-    let mut collapsed = String::new();
-    for word in body.split_whitespace() {
-        if collapsed.len() > MAX_LEN * 4 {
-            break;
-        }
-        if !collapsed.is_empty() {
-            collapsed.push(' ');
-        }
-        collapsed.push_str(word);
-    }
-
-    // An intermediary's page can carry control characters; `sanitize` is the
-    // repo's policy for making untrusted text safe to print on one line, and it
-    // runs after collapsing so its newline escaping never has anything to do.
-    let collapsed = sanitize(&collapsed);
-    match collapsed.char_indices().nth(MAX_LEN) {
-        Some((offset, _)) => format!("{}…", &collapsed[..offset]),
-        None => collapsed,
+    let text = sanitize(text.trim());
+    match text.char_indices().nth(MAX_LEN) {
+        Some((offset, _)) => format!("{}…", &text[..offset]),
+        None => text,
     }
 }
 
@@ -1276,11 +1262,11 @@ mod tests {
         ClientError::UnexpectedResponse(response)
     }
 
-    // Every endpoint gets the empty-body note, not just launch: the gateway
-    // answers the same way whichever one you hit, so 429 on `runs list` explains
-    // its silence the way a 401 on `launch` does.
+    // The status is the whole message when the server sent no body — which is
+    // what the gateway does for some rejections, on any endpoint. The point of
+    // #180 is that the status survives that; nothing further is added.
     #[tokio::test]
-    async fn format_api_client_error_attaches_suggestion_for_empty_body() {
+    async fn format_api_client_error_reports_the_status_for_an_empty_body() {
         for status in [401, 429, 502] {
             let report = format_api_client_error(served_error(status, "")).await;
             let debug = format!("{report:?}");
@@ -1289,28 +1275,41 @@ mod tests {
                 debug.contains(&format!("API error: {status}")),
                 "the transport status must survive an empty body, got: {debug}"
             );
-            assert!(
-                debug.contains("Antithesis support"),
-                "expected the empty-body suggestion, got: {debug}"
-            );
-            assert!(
-                debug.contains("authentication or rate limiting"),
-                "expected gateway-rejection wording in suggestion, got: {debug}"
-            );
         }
     }
 
     #[tokio::test]
-    async fn format_api_client_error_skips_suggestion_for_non_empty_body() {
+    async fn format_api_client_error_shows_a_non_empty_body() {
         let report = format_api_client_error(served_error(400, "not json")).await;
         let debug = format!("{report:?}");
 
         assert!(debug.contains("API error: 400"), "got: {debug}");
         assert!(debug.contains("not json"), "got: {debug}");
-        assert!(
-            !debug.contains("Antithesis support"),
-            "non-empty body must not attach the empty-body suggestion, got: {debug}"
-        );
+    }
+
+    // The read is bounded, so a proxy answering an error with a huge page cannot
+    // make snouty buffer all of it just to print 200 characters.
+    #[tokio::test]
+    async fn read_error_body_stops_at_the_cap() {
+        let mock_server =
+            mock_endpoint("GET", "/api/version", 500, &"x".repeat(MAX_ERROR_BODY * 3)).await;
+        let response = reqwest::get(format!("{}/api/version", mock_server.uri()))
+            .await
+            .unwrap();
+
+        assert_eq!(read_error_body(response).await.len(), MAX_ERROR_BODY);
+    }
+
+    // A body under the cap is returned whole, so the bound never truncates a
+    // real error message.
+    #[tokio::test]
+    async fn read_error_body_keeps_a_short_body_intact() {
+        let mock_server = mock_endpoint("GET", "/api/version", 500, "upstream is down").await;
+        let response = reqwest::get(format!("{}/api/version", mock_server.uri()))
+            .await
+            .unwrap();
+
+        assert_eq!(read_error_body(response).await, "upstream is down");
     }
 
     // The standard `{"message": …}` envelope is unwrapped; anything else is

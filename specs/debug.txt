@@ -121,12 +121,10 @@ stdout '\s*"runId": "run-123".*'
 # Gateway-level rejections (auth, rate limiting) on the launch/debug endpoints
 # return an EMPTY body rather than the Launch_Error_Response envelope — verified
 # against the live API, which answers a bad token with 401/403 and no payload.
-# The HTTP status is the only thing the server said, so it is what snouty
-# reports, with a note explaining why there is no further detail.
+# The HTTP status is the only thing the server said, so it is the whole message.
 mock-server 401 ''
 ! snouty debug --input-hash abc123 --run-id 9043254f65c9c65d63fe043a0abfc7fc-53-1 --vtime 1234567890
 stderr 'API error: 401 Unauthorized.*'
-stderr '.*rejections .* with an empty body.*'
 
 # An error body snouty cannot make sense of (here an intermediary's HTML page)
 # never masks the status either: it is reported with the body shown for

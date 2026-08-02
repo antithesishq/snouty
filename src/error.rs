@@ -50,6 +50,54 @@ impl std::fmt::Display for ApiError {
 
 impl std::error::Error for ApiError {}
 
+/// Render a report for the user, at the moment of printing.
+///
+/// This is the one place that turns a `Report` into terminal text, so printing
+/// concerns live here and not in the messages: the chain index is dropped when
+/// there is nothing to enumerate, and overlong prose wraps to
+/// [`crate::render::PROSE_WIDTH`].
+///
+/// color_eyre renders every report as a numbered chain, so a single error —
+/// the common case — arrives as `\n   0: <message>`. The `0:` numbers
+/// nothing and reads like a stack frame; collapse it onto the `Error:` line.
+/// A report with two or more chain elements keeps its numbering, which is
+/// genuinely enumerating causes there.
+pub fn render_report(report: &Report) -> String {
+    let rendered = format!("{report:?}");
+    let rendered = if report.chain().len() == 1 {
+        collapse_single_frame(&rendered)
+    } else {
+        rendered
+    };
+    crate::render::wrap_text(&format!("Error: {rendered}"), crate::render::PROSE_WIDTH)
+}
+
+/// Remove the `\n   0: ` frame header from a rendered single-element chain,
+/// tolerating ANSI color codes around the index. Continuation lines keep the
+/// six-column indent color_eyre gave them.
+fn collapse_single_frame(rendered: &str) -> String {
+    let stripped = rendered.trim_start_matches('\n');
+    // Optional escape sequence, the literal `0`, optional escape, `:`.
+    fn skip_ansi(mut value: &str) -> &str {
+        while let Some(after) = value.strip_prefix('\u{1b}') {
+            match after.find(|c: char| c.is_ascii_alphabetic()) {
+                Some(i) => value = &after[i + 1..],
+                None => break,
+            }
+        }
+        value
+    }
+
+    let rest = skip_ansi(stripped.trim_start_matches(' '));
+    if let Some(after) = rest.strip_prefix('0')
+        && let Some(after) = skip_ansi(after).strip_prefix(':')
+    {
+        return after.trim_start_matches(' ').to_string();
+    }
+    // Unexpected shape: keep what color_eyre produced.
+    stripped.to_string()
+}
+
 /// Returns the HTTP status of the first [`ApiError`] in the report's chain, if
 /// any. Works through `wrap_err` context, so callers can add context without
 /// losing the structured status.
@@ -77,6 +125,70 @@ mod tests {
             status,
             message: message.to_string(),
         })
+    }
+
+    #[test]
+    fn render_report_collapses_a_single_error_onto_one_line() {
+        // Under `cargo test` the default color_eyre hook applies (colors and a
+        // backtrace footer main's hook disables), so assert on the stripped
+        // first line rather than the whole rendering.
+        let rendered = plain(&render_report(&user_error("plain failure")));
+        assert_eq!(rendered.lines().next(), Some("Error: plain failure"));
+    }
+
+    #[test]
+    fn render_report_keeps_suggestions() {
+        let report = user_error("failure").suggestion("do the thing");
+        let rendered = plain(&render_report(&report));
+        assert!(rendered.starts_with("Error: failure"), "got: {rendered}");
+        assert!(
+            rendered.contains("Suggestion: do the thing"),
+            "got: {rendered}"
+        );
+        assert!(!rendered.contains("0:"), "got: {rendered}");
+    }
+
+    #[test]
+    fn render_report_numbers_a_real_chain() {
+        use color_eyre::eyre::Context;
+        let report = std::fs::read_to_string("/nonexistent-render-report-test")
+            .wrap_err("outer context")
+            .unwrap_err()
+            .suppress_backtrace(true);
+        let rendered = plain(&render_report(&report));
+        assert!(rendered.contains("0: outer context"), "got: {rendered}");
+        assert!(rendered.contains("1: "), "got: {rendered}");
+    }
+
+    #[test]
+    fn render_report_wraps_overlong_prose() {
+        let report = user_error(format!("prefix {}", "word ".repeat(40)));
+        let rendered = plain(&render_report(&report));
+        let message_lines: Vec<&str> = rendered.lines().take_while(|l| !l.is_empty()).collect();
+        assert!(message_lines.len() > 1, "got: {rendered}");
+        assert!(
+            message_lines.iter().all(|l| l.len() <= 100),
+            "got: {rendered}"
+        );
+    }
+
+    /// Strip ANSI escape sequences, so assertions see what a plain terminal
+    /// shows.
+    fn plain(s: &str) -> String {
+        let mut out = String::new();
+        let mut chars = s.chars();
+        while let Some(ch) = chars.next() {
+            if ch == '\u{1b}' {
+                for esc in chars.by_ref() {
+                    if esc.is_ascii_alphabetic() {
+                        break;
+                    }
+                }
+            } else {
+                out.push(ch);
+            }
+        }
+        out
     }
 
     #[test]

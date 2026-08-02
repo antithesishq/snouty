@@ -129,12 +129,17 @@ class Snouty:
         args: list[str],
         env: dict[str, str | None] | None = None,
         stdin: str | None = None,
+        merge_streams: bool = False,
     ) -> Result:
         # `env` overrides individual vars for this call only: a string sets the
         # var, None unsets it (so a story can model an environment missing some
         # credential). Everything else inherits the live ANTITHESIS_* env.
         # `stdin`, when given, is fed to the process's standard input — used by the
         # interactive stories (`snouty login`) that read answers line-by-line.
+        # `merge_streams` interleaves stderr into stdout at capture time, which
+        # preserves interaction order for prompt transcripts: login prints its
+        # prompts and warnings on different streams, and capturing them apart
+        # reorders the conversation.
         run_env = self._env
         if env is not None:
             run_env = dict(self._env)
@@ -143,6 +148,16 @@ class Snouty:
                     run_env.pop(key, None)
                 else:
                     run_env[key] = value
+        if merge_streams:
+            proc = subprocess.run(
+                [str(self.binary), *args],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                env=run_env,
+                input=stdin,
+            )
+            return Result(args, proc.stdout, "", proc.returncode)
         proc = subprocess.run(
             [str(self.binary), *args],
             capture_output=True,
@@ -2077,7 +2092,7 @@ def build_login_stories() -> list[Story]:
                 prompts=(
                     "The current settings failed to load",
                     "Would you like to proceed",
-                    "has been backed up to",
+                    "kept as a backup:",
                 ),
                 files=(
                     (_SETTINGS, (f'tenant = "{_TENANT}"',)),
@@ -2219,7 +2234,10 @@ def run_login_story(sn: Snouty, story: Story) -> StoryRun:
         if story.env:
             env.update(story.env)
 
-        result = sn.run(story.args, env=env, stdin=story.stdin)
+        # Merge stderr into stdout so the transcript preserves interaction
+        # order: login prints prompts on one stream and warnings on the other,
+        # and separate captures reorder the conversation.
+        result = sn.run(story.args, env=env, stdin=story.stdin, merge_streams=True)
 
         captured: list[tuple[str, str | None]] = []
         for rel_path in story.post_capture:

@@ -268,7 +268,10 @@ stdout 'No runs found\.'
 mock-server 400 '{"message":"bad request"}'
 env ANTITHESIS_API_KEY=test-api-key
 ! snouty runs
-stderr 'API error: 400.*'
+stderr '^Error: API error: 400.*'
+# The message sits on the `Error:` line itself: a single failure has no cause
+# chain to number, so no `0:` frame appears.
+! stderr '0: API error'
 ! stderr 'Backtrace omitted'
 
 # A rejection with no body at all is the API gateway's shape for auth and

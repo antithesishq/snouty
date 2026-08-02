@@ -647,7 +647,13 @@ fn discover_scripts(
     // and an unexpected non-zero exit surfaces as a property failure during the
     // run itself. We can promote this to a hard error later if it proves noisy.
     if !stopped_with_scripts.is_empty() {
-        eprintln!("{}", stranded_scripts_warning(&stopped_with_scripts));
+        eprintln!(
+            "{}",
+            crate::render::wrap_text(
+                &stranded_scripts_warning(&stopped_with_scripts),
+                crate::render::PROSE_WIDTH,
+            )
+        );
     }
 
     // Genuine misconfigurations — unknown command prefixes or non-executable
@@ -694,6 +700,16 @@ fn combined_discovery_error(
                 "Test commands in service '{service}' are not executable:"
             ))
         });
+    }
+
+    if !unrecognized.is_empty() {
+        err = err.suggestion(
+            "rename each command to start with a recognized prefix (first_, driver_, anytime_, \
+             eventually_, finally_) or helper_",
+        );
+    }
+    if !not_executable.is_empty() {
+        err = err.suggestion("chmod +x the listed commands in the image, then rebuild");
     }
 
     err

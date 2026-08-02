@@ -270,10 +270,13 @@ pub(crate) fn update_settings_in_global_file(
             Ok(table) => table,
             Err(_) => {
                 let backup = back_up_unparsable_file(&path)?;
+                // Paths go on their own lines: they are the two things the
+                // user may need to copy, and they are what made the one-line
+                // form overflow any terminal.
                 eprintln!(
-                    "note: the existing settings file at {} could not be parsed; it has been backed up to {} and a new one will be written.",
+                    "note: the existing settings file could not be parsed; a new one will be written.\n  kept as a backup: {}\n  will be rewritten: {}",
+                    backup.display(),
                     path.display(),
-                    backup.display()
                 );
                 Table::new()
             }

@@ -25,6 +25,7 @@ use crate::error::{api_error_status, user_error};
 use crate::render::{render_kv, sanitize, sanitize_multiline};
 use crate::settings::Settings;
 use crate::time::ReportDuration;
+use crate::vtime::VTime;
 
 /// `print!`/`println!`, but routed through `write!`/`writeln!` to stdout so a
 /// closed pipe (e.g. `snouty runs list | head`) surfaces as an `io::Error` the
@@ -834,14 +835,14 @@ fn render_moments_table(p: &EventProperty) -> String {
         rows.push(vec![
             "failing".to_string(),
             sanitize(&event.moment.input_hash),
-            sanitize(&event.moment.vtime),
+            event.moment.vtime.to_string(),
         ]);
     }
     for event in sorted_by_vtime(&p.examples) {
         rows.push(vec![
             "passing".to_string(),
             sanitize(&event.moment.input_hash),
-            sanitize(&event.moment.vtime),
+            event.moment.vtime.to_string(),
         ]);
     }
     if rows.is_empty() {
@@ -971,23 +972,11 @@ fn trim_blank_edges(lines: &[String]) -> &[String] {
     lines.get(start..end).unwrap_or(&[])
 }
 
-/// Return references to `events` ordered ascending by `moment.vtime` parsed as
-/// f64. Entries whose vtime doesn't parse as a number sort last, preserving
-/// their original relative order. The sort is stable, so events with equal
-/// vtimes keep their incoming order.
+/// Return references to `events` ordered ascending by `moment.vtime`. The
+/// sort is stable, so events with equal vtimes keep their incoming order.
 fn sorted_by_vtime(events: &[Event]) -> Vec<&Event> {
     let mut sorted: Vec<&Event> = events.iter().collect();
-    sorted.sort_by(|a, b| {
-        let av = a.moment.vtime.parse::<f64>().ok();
-        let bv = b.moment.vtime.parse::<f64>().ok();
-        match (av, bv) {
-            (Some(a), Some(b)) => a.total_cmp(&b),
-            // Numeric vtimes sort ahead of non-numeric/unparseable ones.
-            (Some(_), None) => std::cmp::Ordering::Less,
-            (None, Some(_)) => std::cmp::Ordering::Greater,
-            (None, None) => std::cmp::Ordering::Equal,
-        }
-    });
+    sorted.sort_by_key(|e| e.moment.vtime);
     sorted
 }
 
@@ -1160,7 +1149,7 @@ fn print_run_detail(run: &RunDetail) -> Result<()> {
         // Hash before VTime to match the `runs logs <hash> <vtime>` argument
         // order, so the values read top-to-bottom in the order you paste them.
         rows.push(("Failure Hash", moment.input_hash.clone()));
-        rows.push(("Failure VTime", moment.vtime.clone()));
+        rows.push(("Failure VTime", moment.vtime.to_string()));
     }
 
     if let Some(ref creator) = run.creator
@@ -1433,17 +1422,18 @@ async fn cmd_runs_events(
 
     let mut stdout = BufWriter::new(std::io::stdout().lock());
 
-    // JSON mode emits the raw matching line, but matching itself runs against the
-    // DECODED fields (see `event_haystack`) so it agrees with what the table
-    // shows. Parse each line once to build the haystack, then stream the raw
-    // matching line as it arrives.
+    // JSON mode emits the matching line with moment.vtime converted to an
+    // exact JSON number, but matching itself runs against the DECODED fields
+    // (see `event_haystack`) so it agrees with what the table shows. Parse
+    // each line once to build the haystack, then stream the matching line as
+    // it arrives.
     if json {
         let result = stream_ndjson_lines(stream, NoOpTransformer {}, |line| {
             let (haystack, _) = prepare_event_line(line);
             if !haystack_matches_all_needles(&haystack, &lowered_matches) {
                 return Ok(());
             }
-            writeln!(stdout, "{line}")?;
+            writeln!(stdout, "{}", numeric_vtime_line(line))?;
             Ok(())
         })
         .await;
@@ -1616,15 +1606,31 @@ fn format_log_entry(entry: &Value, raw: bool) -> String {
     )
 }
 
-/// Parse a `moment`'s vtime to f64 seconds. The API sends `moment.vtime` as a
-/// seconds string (e.g. "398.4898"); accept a JSON number too, since the schema
-/// doesn't forbid one. Returns `None` when there's no parseable vtime.
-fn moment_vtime_seconds(entry: &Value) -> Option<f64> {
+/// Parse a `moment`'s vtime out of an NDJSON entry. The API sends
+/// `moment.vtime` as a seconds string (e.g. "398.4898"); accept a JSON number
+/// too, since the schema doesn't forbid one (and snouty's own `--json` output
+/// uses a number). Returns `None` when there's no parseable vtime.
+fn moment_vtime(entry: &Value) -> Option<VTime> {
     let vtime = &entry["moment"]["vtime"];
-    vtime
-        .as_str()
-        .and_then(|s| s.parse::<f64>().ok())
-        .or_else(|| vtime.as_f64())
+    match vtime.as_str() {
+        Some(s) => s.parse().ok(),
+        None => vtime.as_f64().and_then(VTime::from_seconds),
+    }
+}
+
+/// Rewrite an NDJSON event line's `moment.vtime` from the server's seconds
+/// string to an exact JSON number, matching every other `--json` surface (the
+/// value survives byte-identically; see [`VTime`]). A line that doesn't parse,
+/// or has no parseable vtime, passes through unchanged.
+fn numeric_vtime_line(line: &str) -> std::borrow::Cow<'_, str> {
+    let Ok(mut entry) = serde_json::from_str::<Value>(line) else {
+        return std::borrow::Cow::Borrowed(line);
+    };
+    let Some(vtime) = moment_vtime(&entry) else {
+        return std::borrow::Cow::Borrowed(line);
+    };
+    entry["moment"]["vtime"] = json!(vtime);
+    std::borrow::Cow::Owned(entry.to_string())
 }
 
 /// Render a log line's vtime in seconds with exactly 3 decimal places,
@@ -1639,10 +1645,10 @@ fn format_log_vtime(entry: &Value) -> String {
         // The API sends vtime as a seconds string; truncate it directly so f64
         // round-trips can't nudge the displayed value.
         Some(s) => truncate_decimals(s, 3),
-        // A JSON-number vtime: format with surplus precision, then truncate the
-        // string, so the kept 3 decimals are never perturbed by rounding.
-        None => match raw.as_f64() {
-            Some(v) => truncate_decimals(&format!("{v:.9}"), 3),
+        // A JSON-number vtime: VTime's Display is the exact text the number
+        // was printed from, so truncating it cuts — never rounds.
+        None => match raw.as_f64().and_then(VTime::from_seconds) {
+            Some(v) => truncate_decimals(&v.to_string(), 3),
             None => String::new(),
         },
     }
@@ -1793,10 +1799,10 @@ impl LineTransformer for FaultAnnotator {
             let mut update_faults = false;
 
             // The API sends moment.vtime as seconds, so the fault-window math
-            // runs directly in seconds. Lines without a vtime fall back to 0.0,
-            // which never expires a window (expiry is strict less-than).
-            let event_vtime = moment_vtime_seconds(&entry);
-            let latest_vtime = event_vtime.unwrap_or(0.0);
+            // runs directly in seconds. Lines without a vtime fall back to
+            // zero, which never expires a window (expiry is strict less-than).
+            let event_vtime = moment_vtime(&entry);
+            let latest_vtime = event_vtime.unwrap_or(VTime::ZERO);
             let fault_name = entry["fault"]["name"].as_str();
             let is_fault_injector = entry["source"]["name"]
                 .as_str()
@@ -1828,7 +1834,7 @@ impl LineTransformer for FaultAnnotator {
 
             if is_fault_injector && let Some(fault_name) = fault_name {
                 let max_duration = entry["fault"]["max_duration"].as_f64().filter(|d| *d > 0.0);
-                let end_vtime = max_duration.map(|duration| duration + latest_vtime);
+                let end_vtime = max_duration.map(|duration| latest_vtime.plus_seconds(duration));
                 let fault_type = entry["fault"]["type"].as_str().unwrap_or("");
 
                 if let Some(target) = entry["fault"]["affected_nodes"]
@@ -1881,8 +1887,9 @@ impl LineTransformer for FaultAnnotator {
             if let Some(output_text) = entry["output_text"].as_str() {
                 entry["output_text"] = Value::String(strip_ansi(output_text));
             }
-            // Replace the seconds string with its f64 form in place — the only
-            // processing snouty does to vtime.
+            // Replace the seconds string with an exact JSON number in place —
+            // the only processing snouty does to vtime (VTime guarantees the
+            // value survives byte-identically).
             if let Some(vtime) = event_vtime {
                 entry["moment"]["vtime"] = json!(vtime);
             }
@@ -1922,14 +1929,14 @@ fn strip_ansi(text: &str) -> String {
 }
 
 struct FaultWindowBounds {
-    start_vtime: f64,
-    end_vtime: Option<f64>,
+    start_vtime: VTime,
+    end_vtime: Option<VTime>,
 }
 
 impl FaultWindowBounds {
-    fn is_expired(&self, latest_vtime: &f64) -> bool {
+    fn is_expired(&self, latest_vtime: VTime) -> bool {
         self.end_vtime
-            .map(|expiry| expiry.lt(latest_vtime))
+            .map(|expiry| expiry < latest_vtime)
             .unwrap_or(false)
     }
 }
@@ -1937,6 +1944,7 @@ impl FaultWindowBounds {
 struct ActiveFaultWindows {
     network: IndexMap<String, FaultWindowBounds>,
     node: IndexMap<String, IndexMap<String, FaultWindowBounds>>,
+    // The offset is a duration (seconds added to the clock), not a vtime.
     clock: Vec<(f64, FaultWindowBounds)>,
 }
 
@@ -1961,17 +1969,16 @@ impl ActiveFaultWindows {
         did_something
     }
 
-    fn clear_expired_faults(&mut self, latest_vtime: f64) -> bool {
+    fn clear_expired_faults(&mut self, latest_vtime: VTime) -> bool {
         let mut did_something;
 
         let clock_faults_length = self.clock.len();
-        self.clock
-            .retain(|fault| !fault.1.is_expired(&latest_vtime));
+        self.clock.retain(|fault| !fault.1.is_expired(latest_vtime));
         did_something = self.clock.len() != clock_faults_length;
 
         for _ in self
             .network
-            .extract_if(.., |_k, window| window.is_expired(&latest_vtime))
+            .extract_if(.., |_k, window| window.is_expired(latest_vtime))
         {
             did_something = true;
         }
@@ -1979,7 +1986,7 @@ impl ActiveFaultWindows {
         let mut dropped_categories_of_node_faults = false;
         for _ in self.node.extract_if(.., |_k, windows_by_container| {
             for _ in
-                windows_by_container.extract_if(.., |_c, window| window.is_expired(&latest_vtime))
+                windows_by_container.extract_if(.., |_c, window| window.is_expired(latest_vtime))
             {
                 did_something = true;
             }
@@ -2072,7 +2079,7 @@ impl ActiveFaultWindows {
 
         if !&self.clock.is_empty() {
             let mut offset_sum = 0f64;
-            let mut max_clock_fault_start = 0f64;
+            let mut max_clock_fault_start = VTime::ZERO;
 
             for entry in &self.clock {
                 offset_sum += entry.0;
@@ -2093,7 +2100,7 @@ fn merge_fault_windows(
     incumbent: &FaultWindowBounds,
     new: FaultWindowBounds,
 ) -> Option<FaultWindowBounds> {
-    if new.start_vtime.lt(&incumbent.start_vtime) {
+    if new.start_vtime < incumbent.start_vtime {
         return Some(FaultWindowBounds {
             start_vtime: new.start_vtime,
             end_vtime: incumbent.end_vtime.and_then(|prev_expiry| {
@@ -2110,7 +2117,7 @@ fn merge_fault_windows(
                 end_vtime: None,
             }),
             Some(new_expiry) => {
-                if new_expiry.gt(&prev_expiry) {
+                if new_expiry > prev_expiry {
                     return Some(FaultWindowBounds {
                         start_vtime: incumbent.start_vtime,
                         end_vtime: Some(new_expiry),
@@ -3159,7 +3166,7 @@ mod tests {
         Event {
             moment: Moment {
                 input_hash: input_hash.to_string(),
-                vtime: vtime.to_string(),
+                vtime: vtime.parse().unwrap(),
             },
         }
     }
@@ -3600,6 +3607,26 @@ mod tests {
         // non-number is passed through untouched.
         assert_eq!(truncate_decimals("1e3", 3), "1000.000");
         assert_eq!(truncate_decimals("n/a", 3), "n/a");
+    }
+
+    #[test]
+    fn format_log_vtime_agrees_between_string_and_number_forms() {
+        // A vtime rendered from the JSON-number form (snouty's own --json
+        // output) must land on the same truncated — never rounded — text as
+        // the server's string form, so a value copied off the screen and fed
+        // back as --begin-vtime lands on the line you saw, never past it.
+        for s in ["398.4898056755774", "311.8487535319291", "402.0", "1.9995"] {
+            let vtime: VTime = s.parse().unwrap();
+            let from_string = format_log_vtime(&json!({"moment": {"vtime": s}}));
+            let from_number = format_log_vtime(&json!({"moment": {"vtime": vtime}}));
+            assert_eq!(from_string, from_number, "for {s}");
+            assert_eq!(from_string, truncate_decimals(s, 3), "for {s}");
+        }
+        // Spot-check the truncation: .4898… cuts to .489 (rounding gives .490).
+        assert_eq!(
+            format_log_vtime(&json!({"moment": {"vtime": "398.4898056755774"}})),
+            "398.489"
+        );
     }
 
     #[test]
@@ -4454,6 +4481,47 @@ mod tests {
                 .to_string()
             )
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // vtime precision through the NDJSON paths
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn fault_annotator_emits_full_precision_vtime_byte_identically() {
+        let mut transformer = FaultAnnotator {
+            active_fault_windows: ActiveFaultWindows::new(),
+            active_faults: json!({}),
+        };
+
+        // The seconds string becomes a JSON number carrying the exact value:
+        // the full-precision text survives the string -> f64 -> text round
+        // trip byte-for-byte (a vtime is ticks / 2^32, exact in an f64).
+        assert_eq!(
+            transformer
+                .try_transform(r#"{"moment":{"vtime":"398.4898056755774"},"output_text":"hi"}"#),
+            Some(
+                concat!(
+                    r#"{"moment":{"vtime":398.4898056755774},"output_text":"hi","#,
+                    r#""active_faults":{}}"#
+                )
+                .to_string()
+            )
+        );
+    }
+
+    #[test]
+    fn numeric_vtime_line_converts_string_vtime_to_exact_number() {
+        assert_eq!(
+            numeric_vtime_line(r#"{"a":1,"moment":{"vtime":"313.15126806590706"},"z":2}"#),
+            r#"{"a":1,"moment":{"vtime":313.15126806590706},"z":2}"#
+        );
+        // No parseable vtime: the line passes through unchanged.
+        assert_eq!(
+            numeric_vtime_line(r#"{"moment":{"vtime":"n/a"}}"#),
+            r#"{"moment":{"vtime":"n/a"}}"#
+        );
+        assert_eq!(numeric_vtime_line("not json"), "not json");
     }
 
     // -----------------------------------------------------------------------

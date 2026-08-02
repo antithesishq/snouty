@@ -139,19 +139,23 @@ snouty runs properties --passing $R_run_id
 ! snouty runs properties --passing --failing $R_run_id
 stderr '.*cannot be used with.*'
 
-# `snouty --json runs properties` outputs JSON.
+# `snouty --json runs properties` outputs JSON. A moment's vtime is an exact
+# JSON number (a vtime is ticks / 2^32, which an f64 holds exactly, so the
+# full-precision value round-trips byte-identically).
 mock-runs-server
 snouty --json runs properties $R_run_id
 [!staging] stdout '"name".*"Counter value stays below limit"'
 [!staging] stdout '"status".*"Failing"'
+[!staging] stdout '"vtime":45\.334635781589895'
 
 # `--name <substr> --detail` expands the matching property into its examples.
 # For the Counter event property that's a STATUS/HASH/VTIME table, sorted
-# numerically by vtime (5.0 before 10.0), failing before passing.
+# numerically by vtime (45.3… before 313.1…, where an alphanumeric sort would
+# put "313…" first), failing before passing.
 mock-runs-server
 snouty runs properties $R_run_id --name 'Counter value' --detail
 [!staging] stdout 'STATUS.*HASH.*VTIME'
-[!staging] stdout '(?s)failing.*-100.*5\.0.*failing.*-200.*10\.0.*passing.*-300.*15\.0'
+[!staging] stdout '(?s)failing.*-100.*45\.334635781589895.*failing.*-200.*313\.15126806590706.*passing.*-300.*398\.4898056755774'
 
 # --name is a case-insensitive substring filter over property names; without
 # --detail it just narrows the (grouped) table.
@@ -238,7 +242,9 @@ mock-runs-server
 [staging] snouty --json runs events $R_run_id --match fault --limit 3
 [!staging] stdout '"antithesis_assert".*"Counter'\''s value retrieved"'
 [!staging] stdout '.*"moment".*"input_hash":"-4735081784258020614".*'
-[!staging] stdout '.*"moment".*"vtime":"311\.8487535319291".*'
+# The vtime is converted from the server's seconds string to an exact JSON
+# number; the full-precision value survives byte-identically.
+[!staging] stdout '.*"moment".*"vtime":311\.8487535319291.*'
 
 [staging] skip
 
@@ -264,6 +270,8 @@ snouty --json runs show $R_run_id
 stdout '"failure_moment".*'
 stdout '"input_hash".*'
 stdout '"vtime".*'
+# failure_moment.vtime is an exact JSON number, full precision intact.
+[!staging] stdout '"vtime": 398\.4898056755774'
 
 # If no runs are returned, the command prints a friendly empty-state message.
 mock-runs-server empty
@@ -375,8 +383,11 @@ stdout 'output_text.*starting'
 stdout 'output_text.*slow request'
 stdout '"antithesis_assert".*"display_type":"AlwaysOrUnreachable"'
 # moment.vtime is converted in place from the server's seconds string to an
-# f64; active_faults is appended by the annotator. The clog window (start 401.5,
-# max_duration 0.267) is active at 401.5 and 401.75, then expired by 402.
+# exact JSON number: a vtime is ticks / 2^32, which an f64 holds exactly, so
+# the full-precision value round-trips byte-identically. active_faults is
+# appended by the annotator. The clog window (start 401.5, max_duration 0.267)
+# is active at 401.5 and 401.75, then expired by 402.
+stdout '"vtime":73\.94233945617452'
 stdout '"vtime":401.5.*"active_faults":\{"network_clog":\{"vtime":401.5\}\}'
 stdout '"vtime":401.75.*"active_faults":\{"network_clog":\{"vtime":401.5\}\}'
 stdout '"vtime":402.0.*"active_faults":\{\}'
@@ -432,10 +443,10 @@ snouty runs events $R_run_id request
 # parallel_driver_fetch; --limit 1 keeps only the first (vtime 400.5).
 mock-runs-server
 snouty --json runs events $R_run_id --match parallel_driver_fetch --limit 1
-[!staging] stdout '"vtime":"400\.5"'
-[!staging] ! stdout '"vtime":"401\.75"'
+[!staging] stdout '"vtime":400\.5'
+[!staging] ! stdout '"vtime":401\.75'
 
 # Without --limit no cap is sent at all, so all three matches come back.
 mock-runs-server
 snouty --json runs events $R_run_id --match parallel_driver_fetch
-[!staging] stdout '"vtime":"401\.75"'
+[!staging] stdout '"vtime":401\.75'

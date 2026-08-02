@@ -2741,6 +2741,8 @@ dependencies = [
  "reqwest-middleware",
  "rpassword",
  "rusqlite",
+ "ryu",
+ "schemars",
  "semver",
  "serde",
  "serde_json",

@@ -26,6 +26,7 @@ pub mod testutils;
 pub mod time;
 pub mod util;
 pub mod validate;
+pub mod vtime;
 
 /// User-Agent string sent with every HTTP request snouty makes.
 pub fn user_agent() -> String {

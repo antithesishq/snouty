@@ -215,7 +215,10 @@ class Discovery:
     event_keyword: str = ""
     event_kw2: str = ""
     event_hash: str = ""
-    event_vtime: float = 0.0
+    # Held as the exact text of the JSON number so positional moment arguments
+    # reach the API byte-identically (Python's float repr agrees with snouty's
+    # print, but text-in text-out never has to rely on that).
+    event_vtime: str = ""
     fail_prop: str = ""  # failing event property whose detail shows counter-examples
     pass_event_prop: str = ""  # passing event property whose detail shows examples
     nonevent_prop: str = ""  # non-event property whose detail shows a real value
@@ -318,13 +321,14 @@ def _pick_completed_run(sn: Snouty, scan: int) -> CompletedPick:
 
 def _real_failure_moment(moment: dict) -> bool:
     """Whether a run's failure moment is a real, streamable coordinate. The API
-    returns the sentinel `input_hash="0", vtime="0"` for an incomplete run with no
+    reports the sentinel `input_hash "0"`, `vtime 0` for an incomplete run with no
     specific failure point (a timeout or kill, not a moment-pinned failure) and
-    omits the fields for some runs; neither yields any logs."""
+    omits the fields for some runs; neither yields any logs. snouty emits vtime
+    as a JSON number, so the zero check is numeric."""
     h, v = moment.get("input_hash"), moment.get("vtime")
-    if not h or not v:
+    if not h or v is None:
         return False
-    return not (str(h) == "0" and str(v) == "0")
+    return not (str(h) == "0" and float(v) == 0.0)
 
 
 def _pick_incomplete_run(sn: Snouty, scan: int) -> tuple[str, dict, str]:
@@ -553,7 +557,7 @@ def discover(sn: Snouty, scan: int) -> Discovery:
         event_keyword=keyword,
         event_kw2=event["_second_needle"],
         event_hash=moment["input_hash"],
-        event_vtime=float(moment["vtime"]),
+        event_vtime=str(moment["vtime"]),
         # Property-story selections were derived against `success` during the
         # holistic run pick, so reuse them rather than re-probing the API.
         fail_prop=pick.fail_prop,
@@ -1017,8 +1021,9 @@ def _reachable_doctor_env() -> dict[str, str | None]:
 
 def build_stories(d: Discovery) -> list[Story]:
     kw, kw2 = d.event_keyword, d.event_kw2
-    # `--begin-vtime` for the logs skip-ahead story: just before the sampled moment.
-    vmin = f"{max(0.0, d.event_vtime - 0.5):.3f}"
+    # `--begin-vtime` for the logs skip-ahead story: just before the sampled
+    # moment. A lower bound, so the float round-trip is harmless here.
+    vmin = f"{max(0.0, float(d.event_vtime or 0.0) - 0.5):.3f}"
     stories = [
         # -- listing --------------------------------------------------------
         Story(
@@ -1281,7 +1286,7 @@ def build_stories(d: Discovery) -> list[Story]:
             "Stream logs at a specific moment",
             "I want the log lines at a particular moment of the run.",
             "At least one log line is streamed at/around the moment.",
-            ["runs", "logs", d.success, d.event_hash, f"{d.event_vtime}"],
+            ["runs", "logs", d.success, d.event_hash, d.event_vtime],
             logs_non_empty,
         ),
         Story(
@@ -1294,7 +1299,7 @@ def build_stories(d: Discovery) -> list[Story]:
                 "logs",
                 d.success,
                 d.event_hash,
-                f"{d.event_vtime}",
+                d.event_vtime,
                 "--begin-vtime",
                 vmin,
                 "--begin-input-hash",
@@ -1607,7 +1612,7 @@ def build_help_stories(d: Discovery) -> list[Story]:
             "I want the help to make clear that the positional moment streams logs up to "
             "it and --begin-vtime sets the start, and to describe the line format.",
             ["runs", "logs"],
-            ["runs", "logs", s, d.event_hash, f"{d.event_vtime}"],
+            ["runs", "logs", s, d.event_hash, d.event_vtime],
         ),
         _help_story(
             "help-runs-build-logs",
@@ -2316,7 +2321,7 @@ def main() -> int:
 
     if args.list:
         # An all-default Discovery is enough to enumerate slugs (build_stories
-        # only reads a few fields, and event_vtime defaults to a real float).
+        # only reads a few fields; an empty event_vtime is fine for listing).
         for s in build_stories(Discovery()):
             print(s.slug)
         for s in build_validate_stories(None):

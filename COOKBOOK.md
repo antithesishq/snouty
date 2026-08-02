@@ -27,10 +27,13 @@ snouty runs show "$run" --json \
 ```
 
 The moment is `{"input_hash": ..., "vtime": ...}` and feeds `runs logs` in that
-order.
+order. The `vtime` is a JSON number carrying the moment's exact value: pass it
+through unchanged, and compare it numerically — never as text, where
+`"1000.0" < "9.0"`.
 
 Not every run has one. The `failure_moment` key is absent when the run has no
 moment-pinned failure, and a run that timed out or was killed reports the
-placeholder `{"input_hash": "0", "vtime": "0"}` — which streams nothing.
-`snouty runs show` treats that placeholder as "no moment"; do the same, and skip
-the log fetch rather than streaming an empty timeline.
+placeholder `{"input_hash": "0", "vtime": 0}` — which streams nothing.
+`snouty runs show` treats that placeholder as "no moment"; do the same with a
+numeric check (`.vtime != 0`), and skip the log fetch rather than streaming an
+empty timeline.

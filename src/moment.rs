@@ -5,6 +5,7 @@ use serde_json::{Map, Value};
 
 use crate::error::user_error;
 use crate::params::Params;
+use crate::vtime::VTime;
 use color_eyre::Section;
 use color_eyre::eyre::Result;
 
@@ -14,9 +15,10 @@ use color_eyre::eyre::Result;
 /// (older triage reports use `session_id` in place of `run_id`).
 ///
 /// This is JSON5 object syntax with unquoted keys. The keys are converted
-/// to `antithesis.debugging.*` format and numeric values are converted to strings.
-/// The parser is identifier-agnostic: whichever of `run_id` / `session_id` the
-/// moment carries is passed through unchanged.
+/// to `antithesis.debugging.*` format and numeric values are converted to
+/// strings — the vtime through [`VTime`], whose print is exact by
+/// construction. The parser is identifier-agnostic: whichever of `run_id` /
+/// `session_id` the moment carries is passed through unchanged.
 pub fn parse(input: &str) -> Result<Params> {
     let input = input.trim();
 
@@ -42,8 +44,18 @@ pub fn parse(input: &str) -> Result<Params> {
     for (key, val) in obj {
         let new_key = format!("antithesis.debugging.{}", key);
         debug!("converting key {} -> {}", key, new_key);
-        // Convert numbers to strings
+        // Convert numbers to strings. The vtime goes through VTime so its
+        // number->text print carries the same exactness guarantee as every
+        // other vtime path (an integer vtime normalizes to e.g. "402.0", the
+        // text the API prints for that moment).
         let string_val = match val {
+            Value::Number(n) if key == "vtime" => {
+                let vtime = n
+                    .as_f64()
+                    .and_then(VTime::from_seconds)
+                    .ok_or_else(|| user_error("invalid arguments: vtime is not a finite number"))?;
+                Value::String(vtime.to_string())
+            }
             Value::Number(n) => Value::String(n.to_string()),
             other => other.clone(),
         };
@@ -129,6 +141,19 @@ mod tests {
         assert_eq!(
             params.as_map().get("antithesis.debugging.vtime"),
             Some(&Value::String("329.8037810830865".to_string()))
+        );
+    }
+
+    #[test]
+    fn parse_whole_number_vtime_normalizes_to_json_number_text() {
+        // json5 keeps `402` as an integer; the vtime routes through VTime, so
+        // it prints as "402.0" — the same text every JSON number path emits.
+        let input = r#"Moment.from({ run_id: "r-1", input_hash: "42", vtime: 402 })"#;
+        let params = parse(input).unwrap();
+
+        assert_eq!(
+            params.as_map().get("antithesis.debugging.vtime"),
+            Some(&Value::String("402.0".to_string()))
         );
     }
 

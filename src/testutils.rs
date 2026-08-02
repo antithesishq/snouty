@@ -780,7 +780,7 @@ fn mock_route_get_run_logs(run_id: &str) -> (u16, String) {
         r#"{"started_task":"abc_parallel_driver_fetch","task_status":"started","command":"core/parallel_driver_fetch","container_id":"d700ef3d05a263","tasks_len":"1","source":{"name":"antithesis_test_composer","pid":974},"moment":{"input_hash":"5181922178177328213","vtime":"400.5"}}"#,
         r#"{"fault":{"name":"clog","type":"network","details":{"disruption_type":"Stopped"},"affected_nodes":["client2","setup"],"max_duration":0.267},"source":{"name":"fault_injector","pid":1086},"moment":{"input_hash":"5181922178177328213","vtime":"401.5"}}"#,
         r#"{"started_task":"abc_parallel_driver_fetch","task_status":"progressing","command":"core/parallel_driver_fetch","container_id":"d700ef3d05a263","tasks_len":"1","source":{"name":"antithesis_test_composer","pid":974},"moment":{"input_hash":"5181922178177328213","vtime":"401.75"}}"#,
-        r#"{"started_task":"abc_parallel_driver_fetch","task_status":"completed","command":"core/parallel_driver_fetch","container_id":"d700ef3d05a263","tasks_len":"1","source":{"name":"antithesis_test_composer","pid":974},"moment":{"input_hash":"5181922178177328213","vtime":"402"}}"#,
+        r#"{"started_task":"abc_parallel_driver_fetch","task_status":"completed","command":"core/parallel_driver_fetch","container_id":"d700ef3d05a263","tasks_len":"1","source":{"name":"antithesis_test_composer","pid":974},"moment":{"input_hash":"5181922178177328213","vtime":"402.0"}}"#,
     ];
     (200, lines.join("\n") + "\n")
 }
@@ -809,7 +809,10 @@ fn mock_route_list_run_properties(run_id: &str, query: Option<&str>) -> (u16, St
     let status = mock_query_param(query, "status");
     let after = mock_query_param(query, "after");
 
-    let failing = r#"{"name":"Counter value stays below limit","description":"Counter stays within safe bounds","status":"Failing","is_event":true,"group":"Safety","example_count":12,"counterexample_count":3,"examples":[{"moment":{"input_hash":"-300","vtime":"15.0"}}],"counterexamples":[{"moment":{"input_hash":"-200","vtime":"10.0"}},{"moment":{"input_hash":"-100","vtime":"5.0"}}]}"#.to_string();
+    // Full-precision, tick-aligned vtimes so a precision fault fails a spec:
+    // the counterexamples also pin the numeric sort ("45..." before "313...",
+    // where an alphanumeric sort would flip them).
+    let failing = r#"{"name":"Counter value stays below limit","description":"Counter stays within safe bounds","status":"Failing","is_event":true,"group":"Safety","example_count":12,"counterexample_count":3,"examples":[{"moment":{"input_hash":"-300","vtime":"398.4898056755774"}}],"counterexamples":[{"moment":{"input_hash":"-200","vtime":"313.15126806590706"}},{"moment":{"input_hash":"-100","vtime":"45.334635781589895"}}]}"#.to_string();
     // A failing non-event ("system") property: the violating value lives in
     // `counterexamples`, so `--detail` must label it apart from the satisfying
     // `examples`.

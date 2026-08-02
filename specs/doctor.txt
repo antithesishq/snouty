@@ -70,13 +70,16 @@ stderr '.*ANTITHESIS_PASSWORD.*'
 # classifies the failure, so doctor names the rejected credentials instead of
 # reporting the API as unreachable because the body didn't parse (issue #180).
 # This block runs against staging too: mock-server passes through to the real
-# gateway, and the bad key below provokes the real 401, so the issue #180
-# scenario is exercised end to end rather than only against a mock of it.
+# gateway, and the bad key below provokes a real rejection, so the issue #180
+# scenario is exercised end to end rather than only against a mock of it. The
+# mock answers 401; the live gateway answers 403 for a bad key (the probes on
+# issue #180 recorded both). Either status is an authentication rejection, so
+# the assertion accepts both.
 mock-server 401 ''
 env ANTITHESIS_API_KEY=testkey
 ! snouty doctor
 stderr '.*Antithesis API rejected authentication.*'
-stderr '.*returned HTTP 401.*'
+stderr '.*returned HTTP 40[13].*'
 ! stderr '.*Antithesis API unreachable.*'
 
 # --offline skips the network check entirely: no version line, no API contact.

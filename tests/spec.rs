@@ -660,14 +660,12 @@ fn run_engine_spec_case(runtime_name: &'static str, case: EngineSpecCase) {
 
 // --- Test functions ---
 
-/// `stdout`/`stderr` patterns are only compiled as regexes when they contain
-/// one of `^ $ [ ( * .` — otherwise testscript-rs 0.2.10 falls back to a plain
-/// substring match (`src/run/environment.rs`, `check_output`). So
-/// `stdout 'Run ID\s+\S+'` never matches anything: it has no trigger character,
-/// so `\s` and `\S` are compared literally.
+/// testscript compiles a `stdout` or `stderr` pattern as a regex only when the
+/// pattern contains one of `^ $ [ ( * .`. It compares any other pattern as
+/// literal text. So `stdout 'Run ID\s+\S+'` matches nothing, because `\s` and
+/// `\S` are literal characters here.
 ///
-/// Add a character that forces regex mode — `[^ ]` instead of `\S`, or a `.` —
-/// or write the plain substring you actually mean.
+/// Write `[^ ]` instead of `\S`, or add a `.` to the pattern.
 #[test]
 fn no_spec_pattern_looks_like_a_regex_without_being_one() {
     let mut offenders = Vec::new();
@@ -681,10 +679,9 @@ fn no_spec_pattern_looks_like_a_regex_without_being_one() {
         if !words.starts_with("stdout ") && !words.starts_with("stderr ") {
             continue;
         }
-        // A backslash followed by a letter is a regex class shorthand (\s, \d,
-        // \w, \b …). Harmless in a real regex, inert in a literal match. `\\`
-        // is an escaped backslash — the following letter is ordinary text, as
-        // in `'line one\\nline two'` matching a literal `\n`.
+        // A backslash and a letter make a regex class such as `\s` or `\d`.
+        // `\\` is an escaped backslash, and the letter after it is ordinary
+        // text. `'line one\\nline two'` matches a literal `\n`.
         let mut chars = words.chars();
         let mut has_class = false;
         while let Some(ch) = chars.next() {

@@ -85,52 +85,25 @@ mock data); unprefixed lines still run and hit staging. Only read-oriented
 checks run against staging — a file that would mutate tenant state stops at a
 `[staging] skip` line, which skips everything below it.
 
-**Never put `!` on a line that also carries a condition.** `[!staging] ! snouty
-runs` does not skip under staging — testscript-rs checks the condition inside
-the inner executor, which returns `Ok` for a skipped line, and the outer
-negation wrapper reads that `Ok` as "the command was expected to fail but
-succeeded". The line fails the whole file instead of being skipped, and it is
-invisible in a normal run because the condition is met there and the line
-executes for real. Write the positive form instead: `stdout -count=0 'x'` for a
-negated assertion, or gate the whole block with `[staging] skip`. Running both
-modes in CI catches this, since whichever mode skips the line is the mode it
-breaks in — but the failure reads "expected to fail but succeeded" against a
-line that never ran, so recognise it rather than trusting the message.
+The `staging` job in `build.yml` runs this suite on every pull request and
+gates the merge. It skips on a fork's pull request, because GitHub does not
+pass secrets there. Three rules follow:
 
-**A `stdout`/`stderr` pattern is only a regex if it contains one of
-`^ $ [ ( * .`** — otherwise testscript compares it as literal text, so
-`stdout 'Run ID\s+\S+'` matches nothing at all. Write `[^ ]` instead of `\S`,
-or include a `.`.
+- An unprefixed assertion must hold against any tenant. Put
+  `stdout 'Run ID +[^ ]'` unprefixed and `stdout 'Run ID .*run-1'` behind
+  `[!staging]`.
+- The tenant must have at least one completed run. `runs.txt` captures a run id
+  from the list and every later command uses it.
+- Never put `!` on a line that also carries a condition. testscript reports the
+  skipped line as "expected to fail but succeeded". Write
+  `stdout -count=0 'x'` instead, or use `[staging] skip` for a whole block.
 
-Unlike the rule above, running the specs does *not* catch this. On a positive
-assertion the inert pattern fails and you find out. On a negated one —
-`! stdout '…'`, `stdout -count=0 '…'` — a pattern that can never match makes
-"assert absent" trivially true, so the check passes while testing nothing.
-`no_spec_pattern_looks_like_a_regex_without_being_one` exists for that case and
-cannot be replaced by running the suite.
-
-Structural assertions must hold against *any* tenant: `stdout 'Run ID +[^ ]'`
-belongs unprefixed, `stdout 'Run ID .*run-1'` belongs behind `[!staging]`.
-
-Both CI runs use the `STAGING_ANTITHESIS_TENANT` and `STAGING_ANTITHESIS_API_KEY`
-repository secrets, and no base URL — snouty resolves
-`https://<tenant>.antithesis.com`, which is the address worth exercising:
-
-- `staging` in `build.yml` gates the merge. It runs alongside the `test` matrix
-  rather than after it, and takes a couple of minutes against a leg that can
-  take fifteen, so it does not move the critical path. It is **skipped on a
-  fork's pull request**, where secrets are not exposed; `pull_request_target`
-  would supply them but would run the base repo's token against the fork's code,
-  so a PR that edited a spec file could print the key. `tests-passed` therefore
-  accepts `skipped` for this job and nothing else.
-- `spec-tests` in `staging.yml` runs the same specs on a schedule. The drift it
-  is best at catching starts outside this repo and does not wait for a PR.
-
-Because it gates merges, this suite must not depend on what the tenant happens
-to hold. Its one standing requirement is **at least one completed run** (the
-`$R_run_id` capture in `runs.txt` needs something to select). Anything narrower
-than that — a run in a particular state, a specific property, a known vtime —
-belongs behind `[!staging]`.
+A `stdout` or `stderr` pattern is a regex only when it contains one of
+`^ $ [ ( * .`. testscript compares any other pattern as literal text, so
+`stdout 'Run ID\s+\S+'` matches nothing. Write `[^ ]` instead of `\S`. A
+negated assertion makes this dangerous: a pattern that never matches makes
+"assert absent" always true, so the check passes and tests nothing. The
+`no_spec_pattern_looks_like_a_regex_without_being_one` test catches it.
 
 ## Scripts
 

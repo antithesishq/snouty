@@ -11,20 +11,19 @@
 # the proxy — a direct connection fails to resolve the host. Success against an
 # unreachable base URL is therefore proof the request went through the proxy.
 #
-# Everything from `[staging] skip` down targets the local mock and has no
-# meaning against the live staging backend. The settings check above it is
-# offline, so it runs in both modes.
+# Everything below `[staging] skip` uses the local mock. The settings check
+# above it is offline, so it runs in both modes.
 
-# `snouty doctor` reports the resolved proxy so a user can confirm it took
-# effect. --offline makes no request, so the proxy target never has to exist;
-# the credentials are only here to get doctor past its own checks.
+# `snouty doctor` reports the resolved proxy, so a user can confirm the setting
+# takes effect. --offline makes no request, so the proxy target does not have to
+# exist. The credentials only get doctor past its own checks.
 env ANTITHESIS_TENANT=testtenant
 env ANTITHESIS_API_KEY=placeholder-key
 env ANTITHESIS_HTTPS_PROXY=http://127.0.0.1:9
 snouty doctor --offline
 stderr '\s*https proxy\s*http://127\.0\.0\.1:9'
 
-# Clear it again so the negative control below is genuinely proxy-less. snouty
+# Clear the proxy again, so the negative control below has no proxy. snouty
 # reads an empty environment variable as unset (see `env::interpret`).
 env ANTITHESIS_HTTPS_PROXY=
 

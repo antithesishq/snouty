@@ -69,9 +69,8 @@ stderr '.*'
 #    endpoints (properties, build-logs, events) only return data once a run
 #    has reached a terminal state, so list with --status completed first.
 #
-#    Against staging this is the suite's one requirement of the tenant: it must
-#    have at least one completed run, or `env_from_json` has nothing to capture
-#    and everything downstream of it fails.
+#    Against staging the tenant must have at least one completed run. Without
+#    one, `env_from_json` captures nothing and every later command fails.
 mock-runs-server
 snouty --json runs list --status completed
 [!staging] stdout '"run_id":"run-.*'
@@ -237,10 +236,9 @@ snouty --json runs events $R_run_id --match counter
 #    the human-readable view shows "Failure VTime" / "Failure Hash" and the
 #    --json view exposes failure_moment with input_hash and vtime.
 #
-#    Gated: this asserts the tenant *has* an incomplete run, and a tenant whose
-#    runs all passed would fail at the `env_from_json` below. Since this suite
-#    gates merges, it must not depend on what the tenant happens to hold today.
-#    The same endpoints are covered unprefixed via the completed run above.
+#    Gated, because this block needs the tenant to hold an incomplete run. This
+#    suite gates merges, so it must not depend on tenant data. The completed run
+#    above covers the same endpoints.
 [!staging] mock-runs-server
 [!staging] snouty --json runs list --status incomplete
 [!staging] stdout '"run_id":.*'

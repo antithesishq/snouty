@@ -3,8 +3,9 @@ name: build
 on:
   push:
     branches: ["main"]
+  # No branch filter: a stacked pull request (base = another PR's branch) gets
+  # the same gate as one that targets main.
   pull_request:
-    branches: ["main"]
   schedule:
     - cron: "0 7 * * *"
   workflow_dispatch:

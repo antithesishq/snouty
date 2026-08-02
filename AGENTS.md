@@ -87,16 +87,13 @@ checks run against staging — a file that would mutate tenant state stops at a
 
 The `staging` job in `build.yml` runs this suite on every pull request and
 gates the merge. It skips on a fork's pull request, because GitHub does not
-pass secrets there. Three rules follow:
+pass secrets there. Two rules follow:
 
 - An unprefixed assertion must hold against any tenant. Put
   `stdout 'Run ID +[^ ]'` unprefixed and `stdout 'Run ID .*run-1'` behind
   `[!staging]`.
 - The tenant must have at least one completed run. `runs.txt` captures a run id
   from the list and every later command uses it.
-- Never put `!` on a line that also carries a condition. testscript reports the
-  skipped line as "expected to fail but succeeded". Write
-  `stdout -count=0 'x'` instead, or use `[staging] skip` for a whole block.
 
 A `stdout` or `stderr` pattern is always a regex, with Go's flags: `^` and
 `$` match at line boundaries, and `.` stops at a newline. State `(?s)` for a

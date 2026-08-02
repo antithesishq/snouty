@@ -98,12 +98,10 @@ pass secrets there. Three rules follow:
   skipped line as "expected to fail but succeeded". Write
   `stdout -count=0 'x'` instead, or use `[staging] skip` for a whole block.
 
-A `stdout` or `stderr` pattern is a regex only when it contains one of
-`^ $ [ ( * .`. testscript compares any other pattern as literal text, so
-`stdout 'Run ID\s+\S+'` matches nothing. Write `[^ ]` instead of `\S`. A
-negated assertion makes this dangerous: a pattern that never matches makes
-"assert absent" always true, so the check passes and tests nothing. The
-`no_spec_pattern_looks_like_a_regex_without_being_one` test catches it.
+A `stdout` or `stderr` pattern is always a regex, with Go's flags: `^` and
+`$` match at line boundaries, and `.` stops at a newline. State `(?s)` for a
+pattern that spans lines, and `-literal` for plain-text matching. `-count=N`
+requires N >= 1; write `! stdout 'x'` for the zero-match assertion.
 
 ## Scripts
 

@@ -2858,7 +2858,7 @@ checksum = "8f50febec83f5ee1df3015341d8bd429f2d1cc62bcba7ea2076759d315084683"
 [[package]]
 name = "testscript-rs"
 version = "0.2.10"
-source = "git+https://github.com/antithesishq/testscript-rs.git?branch=explicit-regex-and-condition-skip#57e77ffb86c05508dce8e569d237e815ba8d39a3"
+source = "git+https://github.com/antithesishq/testscript-rs.git?branch=explicit-regex-and-condition-skip#6c0b8d317fc3233fb25e58661a08309bc4838d40"
 dependencies = [
  "anyhow",
  "regex",

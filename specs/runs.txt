@@ -42,7 +42,8 @@ stdout 'RUN ID.*STATUS.*CREATED.*TEST NAME'
 # table), so full descriptions are visible.
 mock-runs-server
 snouty runs list --detail
-stdout 'Run ID .*run-1'
+stdout 'Run ID +[^ ]'
+[!staging] stdout 'Run ID .*run-1'
 [!staging] stdout 'Status .*completed'
 [!staging] stdout 'Description .*nightly smoke on main'
 ! stdout 'RUN ID.*STATUS.*CREATED.*TEST NAME'
@@ -50,7 +51,8 @@ stdout 'Run ID .*run-1'
 # `-d` is the short form of `--detail`.
 mock-runs-server
 snouty runs list -d
-stdout 'Run ID .*run-1'
+stdout 'Run ID +[^ ]'
+[!staging] stdout 'Run ID .*run-1'
 ! stdout 'RUN ID.*STATUS.*CREATED.*TEST NAME'
 
 # `snouty runs list` is the same as bare `snouty runs`.
@@ -66,6 +68,9 @@ stderr '.*'
 #    captured for use in subsequent commands as $R_run_id. Subsequent read
 #    endpoints (properties, build-logs, events) only return data once a run
 #    has reached a terminal state, so list with --status completed first.
+#
+#    Against staging the tenant must have at least one completed run. Without
+#    one, `env_from_json` captures nothing and every later command fails.
 mock-runs-server
 snouty --json runs list --status completed
 [!staging] stdout '"run_id":"run-.*'
@@ -122,13 +127,13 @@ snouty runs properties $R_run_id
 mock-runs-server
 snouty runs properties --failing $R_run_id
 [!staging] stdout 'failing.*Counter value stays below limit'
-[!staging] stdout -count=0 'Setup completes'
+[!staging] ! stdout 'Setup completes'
 
 # `snouty runs properties --passing` shows only passing properties.
 mock-runs-server
 snouty runs properties --passing $R_run_id
 [!staging] stdout 'passing.*Setup completes'
-[!staging] stdout -count=0 'Counter value stays below limit'
+[!staging] ! stdout 'Counter value stays below limit'
 
 # `snouty runs properties --passing --failing` is rejected.
 ! snouty runs properties --passing --failing $R_run_id
@@ -153,13 +158,13 @@ snouty runs properties $R_run_id --name 'Counter value' --detail
 mock-runs-server
 snouty runs properties $R_run_id --name counter
 [!staging] stdout 'failing.*Counter value stays below limit'
-[!staging] stdout -count=0 'Setup completes'
+[!staging] ! stdout 'Setup completes'
 
 # --group is a case-insensitive substring group filter ('safety' matches 'Safety').
 mock-runs-server
 snouty runs properties $R_run_id --group safety
 [!staging] stdout 'failing.*Counter value stays below limit'
-[!staging] stdout -count=0 'Setup completes'
+[!staging] ! stdout 'Setup completes'
 
 # A non-event ("system") property's --detail shows its value under a `Result`
 # label (no `:`, like the other labels). A small object inlines as compact JSON
@@ -225,11 +230,14 @@ snouty --json runs events $R_run_id --match counter
 [!staging] stdout '.*"moment".*"input_hash":"-4735081784258020614".*'
 [!staging] stdout '.*"moment".*"vtime":"311\.8487535319291".*'
 
+[staging] skip
+
 # An incomplete run carries the failure moment (input_hash + vtime) in its detail
 #    response. Filter the list with --status incomplete so we know the run we
 #    inspect actually entered the incomplete terminal state, then assert that
 #    the human-readable view shows "Failure VTime" / "Failure Hash" and the
-#    --json view exposes failure_moment with input_hash and vtime.
+#    --json view exposes failure_moment with input_hash and vtime. Below the
+#    skip, because a tenant may hold no incomplete run at all.
 mock-runs-server
 snouty --json runs list --status incomplete
 stdout '"run_id":.*'
@@ -246,8 +254,6 @@ snouty --json runs show $R_run_id
 stdout '"failure_moment".*'
 stdout '"input_hash".*'
 stdout '"vtime".*'
-
-[staging] skip
 
 # If no runs are returned, the command prints a friendly empty-state message.
 mock-runs-server empty
@@ -370,7 +376,7 @@ stdout '\[\s*1\.000\] \[\s*app\] \[out\] \{"level":"info","msg":"starting"\}'
 # a JSON-escaped newline on a single output line.
 mock-runs-server
 snouty --json runs logs run-1 -123 1.0
-stdout -count=1 'line one\\nline two'
+stdout -count=1 -literal 'line one\\nline two'
 
 # `snouty runs logs` requires hash and vtime positional arguments.
 mock-runs-server

@@ -82,8 +82,26 @@ When `SNOUTY_STAGING` is set, the `mock-runs-server` directive becomes a
 pass-through that forwards those vars instead of starting the mock. Spec
 lines prefixed with `[!staging]` are skipped (those assert on hardcoded
 mock data); unprefixed lines still run and hit staging. Only read-oriented
-checks run against staging — any spec that would mutate state is gated
-`[!staging]`.
+checks run against staging — a file that would mutate tenant state stops at a
+`[staging] skip` line, which skips everything below it.
+
+The `staging` job in `build.yml` runs this suite on every pull request and
+gates the merge. It skips on a fork's pull request, because GitHub does not
+pass secrets there. Three rules follow:
+
+- An unprefixed assertion must hold against any tenant. Put
+  `stdout 'Run ID +[^ ]'` unprefixed and `stdout 'Run ID .*run-1'` behind
+  `[!staging]`.
+- The tenant must have at least one completed run. `runs.txt` captures a run id
+  from the list and every later command uses it.
+- Never put `!` on a line that also carries a condition. testscript reports the
+  skipped line as "expected to fail but succeeded". Write
+  `stdout -count=0 'x'` instead, or use `[staging] skip` for a whole block.
+
+A `stdout` or `stderr` pattern is always a regex, with Go's flags: `^` and
+`$` match at line boundaries, and `.` stops at a newline. State `(?s)` for a
+pattern that spans lines, and `-literal` for plain-text matching. `-count=N`
+requires N >= 1; write `! stdout 'x'` for the zero-match assertion.
 
 ## Scripts
 

@@ -54,8 +54,8 @@ impl std::error::Error for ApiError {}
 ///
 /// This is the one place that turns a `Report` into terminal text, so printing
 /// concerns live here and not in the messages: the chain index is dropped when
-/// there is nothing to enumerate, and overlong prose wraps to
-/// [`crate::render::PROSE_WIDTH`].
+/// there is nothing to enumerate. Wrapping is the caller's call — it depends
+/// on whether stderr is a terminal, which the print site knows.
 ///
 /// color_eyre renders every report as a numbered chain, so a single error —
 /// the common case — arrives as `\n   0: <message>`. The `0:` numbers
@@ -69,7 +69,7 @@ pub fn render_report(report: &Report) -> String {
     } else {
         rendered
     };
-    crate::render::wrap_text(&format!("Error: {rendered}"), crate::render::PROSE_WIDTH)
+    format!("Error: {rendered}")
 }
 
 /// Remove the `\n   0: ` frame header from a rendered single-element chain,
@@ -160,14 +160,15 @@ mod tests {
         assert!(rendered.contains("1: "), "got: {rendered}");
     }
 
+    // Wrapping belongs to the print site (it is tty-dependent), so the
+    // renderer must hand back the message as one logical line.
     #[test]
-    fn render_report_wraps_overlong_prose() {
-        let report = user_error(format!("prefix {}", "word ".repeat(40)));
+    fn render_report_does_not_wrap() {
+        let long = format!("prefix {}", "word ".repeat(40));
+        let report = user_error(long.clone());
         let rendered = plain(&render_report(&report));
-        let message_lines: Vec<&str> = rendered.lines().take_while(|l| !l.is_empty()).collect();
-        assert!(message_lines.len() > 1, "got: {rendered}");
         assert!(
-            message_lines.iter().all(|l| l.len() <= 100),
+            rendered.lines().next().unwrap().contains(&long),
             "got: {rendered}"
         );
     }

@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, BTreeSet};
+use std::io::IsTerminal;
 use std::io::Seek;
 use std::path::{Path, PathBuf};
 
@@ -649,9 +650,9 @@ fn discover_scripts(
     if !stopped_with_scripts.is_empty() {
         eprintln!(
             "{}",
-            crate::render::wrap_text(
+            crate::render::wrap_if(
                 &stranded_scripts_warning(&stopped_with_scripts),
-                crate::render::PROSE_WIDTH,
+                std::io::stderr().is_terminal(),
             )
         );
     }

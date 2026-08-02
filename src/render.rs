@@ -60,6 +60,21 @@ enum NewlinePolicy {
 /// mid-word wrap; wide enough that short messages stay on one line.
 pub(crate) const PROSE_WIDTH: usize = 100;
 
+/// Wrap `text` for stderr when `tty` says a person is reading it.
+///
+/// Piped and captured output stays unwrapped: tests, specs, and shell
+/// pipelines consume whole lines, and a wrap point that moves with an
+/// embedded path length breaks any multi-word match that straddles it. The
+/// caller passes its own terminal check, so the tty decision stays at the
+/// print site.
+pub fn wrap_if(text: &str, tty: bool) -> String {
+    if tty {
+        wrap_text(text, PROSE_WIDTH)
+    } else {
+        text.to_string()
+    }
+}
+
 /// Word-wrap `text` to `width` visible columns, for prose the user reads.
 ///
 /// Wrapping is a property of *printing*, not of the message: callers apply this

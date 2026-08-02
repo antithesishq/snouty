@@ -82,7 +82,11 @@ async fn main() {
         // failures are built with `user_error`/4xx `suppress_backtrace`, so they
         // print message + any `.note()`/`.suggestion()` hints with no backtrace;
         // genuine internal faults keep theirs.
-        eprintln!("{}", snouty::error::render_report(&report));
+        let rendered = snouty::error::render_report(&report);
+        eprintln!(
+            "{}",
+            snouty::wrap_if(&rendered, std::io::stderr().is_terminal())
+        );
         std::process::exit(1);
     }
 }

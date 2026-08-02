@@ -104,17 +104,25 @@ negated assertion, or gate the whole block with `[staging] skip`. The
 Structural assertions must hold against *any* tenant: `stdout 'Run ID +[^ ]'`
 belongs unprefixed, `stdout 'Run ID .*run-1'` belongs behind `[!staging]`.
 
-Two CI jobs keep this path honest:
+Both CI runs use the `STAGING_ANTITHESIS_TENANT` and `STAGING_ANTITHESIS_API_KEY`
+repository secrets, and no base URL — snouty resolves
+`https://<tenant>.antithesis.com`, which is the address worth exercising:
 
-- `staging-harness` in `build.yml` runs the staging code path against the
-  in-process mock (`cargo run --example mock_api` supplies the credentials), on
-  every PR. No secrets, so it can gate the merge — it is what catches the
-  harness rotting.
-- `spec-tests` in `staging.yml` runs the same specs against a real tenant,
-  nightly and on demand. It needs the `STAGING_ANTITHESIS_TENANT` and
-  `STAGING_ANTITHESIS_API_KEY` repository secrets (plus optional
-  `STAGING_ANTITHESIS_BASE_URL`), and warns rather than fails when they are
-  absent.
+- `staging` in `build.yml` gates the merge. It runs alongside the `test` matrix
+  rather than after it, and takes a couple of minutes against a leg that can
+  take fifteen, so it does not move the critical path. It is **skipped on a
+  fork's pull request**, where secrets are not exposed; `pull_request_target`
+  would supply them but would run the base repo's token against the fork's code,
+  so a PR that edited a spec file could print the key. `tests-passed` therefore
+  accepts `skipped` for this job and nothing else.
+- `spec-tests` in `staging.yml` runs the same specs on a schedule. The drift it
+  is best at catching starts outside this repo and does not wait for a PR.
+
+Because it gates merges, this suite must not depend on what the tenant happens
+to hold. Its one standing requirement is **at least one completed run** (the
+`$R_run_id` capture in `runs.txt` needs something to select). Anything narrower
+than that — a run in a particular state, a specific property, a known vtime —
+belongs behind `[!staging]`.
 
 ## Scripts
 

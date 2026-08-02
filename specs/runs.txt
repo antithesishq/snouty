@@ -68,6 +68,10 @@ stderr '.*'
 #    captured for use in subsequent commands as $R_run_id. Subsequent read
 #    endpoints (properties, build-logs, events) only return data once a run
 #    has reached a terminal state, so list with --status completed first.
+#
+#    Against staging this is the suite's one requirement of the tenant: it must
+#    have at least one completed run, or `env_from_json` has nothing to capture
+#    and everything downstream of it fails.
 mock-runs-server
 snouty --json runs list --status completed
 [!staging] stdout '"run_id":"run-.*'
@@ -232,22 +236,27 @@ snouty --json runs events $R_run_id --match counter
 #    inspect actually entered the incomplete terminal state, then assert that
 #    the human-readable view shows "Failure VTime" / "Failure Hash" and the
 #    --json view exposes failure_moment with input_hash and vtime.
-mock-runs-server
-snouty --json runs list --status incomplete
-stdout '"run_id":.*'
-stdout '"status":"incomplete".*'
-env_from_json 0 run_id
+#
+#    Gated: this asserts the tenant *has* an incomplete run, and a tenant whose
+#    runs all passed would fail at the `env_from_json` below. Since this suite
+#    gates merges, it must not depend on what the tenant happens to hold today.
+#    The same endpoints are covered unprefixed via the completed run above.
+[!staging] mock-runs-server
+[!staging] snouty --json runs list --status incomplete
+[!staging] stdout '"run_id":.*'
+[!staging] stdout '"status":"incomplete".*'
+[!staging] env_from_json 0 run_id
 
-mock-runs-server
-snouty runs show $R_run_id
-stdout 'Failure VTime.*'
-stdout 'Failure Hash.*'
+[!staging] mock-runs-server
+[!staging] snouty runs show $R_run_id
+[!staging] stdout 'Failure VTime.*'
+[!staging] stdout 'Failure Hash.*'
 
-mock-runs-server
-snouty --json runs show $R_run_id
-stdout '"failure_moment".*'
-stdout '"input_hash".*'
-stdout '"vtime".*'
+[!staging] mock-runs-server
+[!staging] snouty --json runs show $R_run_id
+[!staging] stdout '"failure_moment".*'
+[!staging] stdout '"input_hash".*'
+[!staging] stdout '"vtime".*'
 
 [staging] skip
 

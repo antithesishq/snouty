@@ -217,21 +217,31 @@ jobs:
 
       - name: Test
         run: cargo nextest run
-  # The SNOUTY_STAGING spec path — `[staging] skip`, the `[!staging]` line
-  # gating, and the pass-through `mock-*` commands — only executes when a
-  # developer sets SNOUTY_STAGING by hand, so nothing here catches it rotting.
-  # It had in fact rotted: a `[!staging] ! snouty runs` line in proxy.txt failed
-  # instead of skipping, because testscript-rs reports a condition-skipped
-  # negated command as "expected to fail but succeeded", and the whole staging
-  # run died on it before reaching the runs specs it exists for.
+  # The read-only spec suite against a real tenant. `SNOUTY_STAGING=1` turns the
+  # `mock-*` directives into pass-throughs that hand snouty the real credentials,
+  # skips the `[!staging]` lines that assert on mock fixtures, and stops each
+  # mutating file at its `[staging] skip`.
   #
-  # Pointing that same path at the in-process mock exercises every bit of the
-  # harness except the remote host, and needs no credentials, so it can gate
-  # every PR. The real-tenant run lives in staging.yml.
-  staging-harness:
+  # This is the only check that can notice `src/openapi.json` drifting from what
+  # the API actually returns: the mock's fixtures are written from the spec, so
+  # mock and spec agree by construction even when both are wrong. It also covers
+  # real bearer auth, real cursor pagination, and the release-version gating.
+  #
+  # Runs alongside `test` rather than after it, and finishes in a few minutes
+  # against a matrix leg that can take fifteen, so it does not move the critical
+  # path.
+  staging:
     runs-on: ubuntu-latest
     needs: skip-check
-    if: needs.skip-check.outputs.should_skip != 'true'
+    # Secrets are not exposed to workflows triggered by a fork's pull request,
+    # so this cannot run there. `pull_request_target` would supply them, but it
+    # runs with the base repo's token against the fork's code — a PR that edited
+    # a spec file could print the API key. Fork PRs skip the job instead; the
+    # spec-shape lints in `test` still run everywhere.
+    if: |
+      needs.skip-check.outputs.should_skip != 'true' &&
+      (github.event_name != 'pull_request' ||
+       github.event.pull_request.head.repo.full_name == github.repository)
     timeout-minutes: 15
     steps:
       - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
@@ -248,33 +258,25 @@ jobs:
       - name: Install Nextest
         uses: taiki-e/install-action@cargo-nextest
 
-      # Built as its own step so the wait below covers only startup. Folded into
-      # the run, a cold cargo cache spends longer compiling than any sensible
-      # readiness timeout.
-      - name: Build the mock Antithesis API
-        run: cargo build --example mock_api
-
-      # `examples/mock_api` prints the exports the staging path expects to read
-      # out of the real environment, so feeding them to $GITHUB_ENV puts the
-      # harness in staging mode against a backend we control.
-      - name: Start the mock Antithesis API
+      # Fail loudly rather than silently passing: once this job gates merges, a
+      # missing secret means the check is not running, which is worse than red.
+      - name: Require tenant credentials
+        env:
+          TENANT: ${{ secrets.STAGING_ANTITHESIS_TENANT }}
+          API_KEY: ${{ secrets.STAGING_ANTITHESIS_API_KEY }}
         run: |
-          ./target/debug/examples/mock_api >mock-api.log 2>&1 &
-          for _ in $(seq 1 30); do
-            if grep -q 'ANTITHESIS_BASE_URL=' mock-api.log; then break; fi
-            sleep 1
-          done
-          cat mock-api.log
-          if ! grep -q 'ANTITHESIS_BASE_URL=' mock-api.log; then
-            echo "mock API did not start" >&2
+          if [ -z "$TENANT" ] || [ -z "$API_KEY" ]; then
+            echo "STAGING_ANTITHESIS_TENANT and STAGING_ANTITHESIS_API_KEY must be set as repository secrets" >&2
             exit 1
           fi
-          sed -n 's/^[[:space:]]*export[[:space:]]*\(ANTITHESIS_[A-Z_]*=.*\)$/\1/p' \
-            mock-api.log >>"$GITHUB_ENV"
 
-      - name: Spec tests through the staging code path
+      - name: Spec tests against staging
         env:
           SNOUTY_STAGING: 1
+          ANTITHESIS_TENANT: ${{ secrets.STAGING_ANTITHESIS_TENANT }}
+          ANTITHESIS_API_KEY: ${{ secrets.STAGING_ANTITHESIS_API_KEY }}
+          # No base URL: snouty resolves https://<tenant>.antithesis.com from the
+          # tenant, which is the address this is meant to exercise.
         run: cargo nextest run --test spec spec_tests
 
   tests-passed:
@@ -283,7 +285,7 @@ jobs:
       - skip-check
       - test
       - build-nix
-      - staging-harness
+      - staging
     if: always()
     steps:
       - name: Verify test matrix
@@ -292,9 +294,14 @@ jobs:
             exit 0
           fi
 
+          # `staging` is skipped on a fork's pull request, where the credentials
+          # it needs are not available. That is the one non-success this gate
+          # accepts; a failure or cancellation still blocks.
+          staging="${{ needs.staging.result }}"
+
           if [ "${{ needs.test.result }}" = "success" ]; then
             if [ "${{ needs.build-nix.result }}" = "success" ]; then
-              if [ "${{ needs.staging-harness.result }}" = "success" ]; then
+              if [ "$staging" = "success" ] || [ "$staging" = "skipped" ]; then
                 exit 0
               fi
             fi
@@ -302,7 +309,7 @@ jobs:
 
           echo "test matrix result: ${{ needs.test.result }}"
           echo "build-nix result: ${{ needs.build-nix.result }}"
-          echo "staging-harness result: ${{ needs.staging-harness.result }}"
+          echo "staging result: $staging"
           exit 1
   build-nix:
     runs-on: ubuntu-latest

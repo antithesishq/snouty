@@ -1288,22 +1288,24 @@ async fn cmd_runs_build_logs(
 
     let mut wrote_any = false;
     let result = if json {
-        stream_ndjson_lines(stream, NoOpTransformer {}, |line| {
+        // The --json contract is raw NDJSON passthrough.
+        stream_raw_lines(stream, |line| {
             wrote_any = true;
             writeln!(stdout, "{line}")?;
             Ok(())
         })
         .await
     } else {
-        stream_ndjson_lines(stream, NoOpTransformer {}, |line| {
+        stream_ndjson_lines(stream, |line| {
             wrote_any = true;
-            if let Ok(entry) = serde_json::from_str::<serde_json::Value>(line) {
-                let ts = format_local_str(entry["timestamp"].as_str().unwrap_or(""));
-                let stream = entry["stream"].as_str().unwrap_or("out");
-                let text = sanitize(entry["text"].as_str().unwrap_or(""));
-                writeln!(stdout, "{ts} [{stream}] {text}")?;
-            } else {
-                writeln!(stdout, "{line}")?;
+            match line {
+                NdjsonLine::Entry(entry) => {
+                    let ts = format_local_str(entry["timestamp"].as_str().unwrap_or(""));
+                    let stream = entry["stream"].as_str().unwrap_or("out");
+                    let text = sanitize(entry["text"].as_str().unwrap_or(""));
+                    writeln!(stdout, "{ts} [{stream}] {text}")?;
+                }
+                NdjsonLine::Raw(line) => writeln!(stdout, "{line}")?,
             }
             Ok(())
         })
@@ -1331,32 +1333,6 @@ fn event_haystack(rendered: &RenderedEventEntry) -> String {
         "{} {} {} {}",
         rendered.input_hash, rendered.vtime, rendered.source, rendered.output
     )
-}
-
-/// Parse one NDJSON event line a single time and derive both its search haystack
-/// and (for the human table) its rendered row. A line that doesn't parse as JSON
-/// falls back to raw-line matching and a sanitized raw OUTPUT row.
-fn prepare_event_line(line: &str) -> (String, [String; 4]) {
-    match serde_json::from_str::<Value>(line) {
-        Ok(entry) => {
-            let rendered = render_event_entry(&entry);
-            let haystack = event_haystack(&rendered);
-            let row = [
-                rendered.input_hash,
-                rendered.vtime,
-                rendered.source,
-                rendered.output,
-            ];
-            (haystack, row)
-        }
-        // The line isn't valid JSON (a truncated final chunk, a proxy-injected
-        // error blob, …). Match against the raw line and surface it sanitized in
-        // the OUTPUT column rather than dropping it silently.
-        Err(_) => (
-            line.to_string(),
-            [String::new(), String::new(), String::new(), sanitize(line)],
-        ),
-    }
 }
 
 /// True when every needle (already lowercased) appears in `haystack`. Both sides
@@ -1422,27 +1398,22 @@ async fn cmd_runs_events(
 
     let mut stdout = BufWriter::new(std::io::stdout().lock());
 
-    // JSON mode emits the matching line with moment.vtime converted to an
-    // exact JSON number, but matching itself runs against the DECODED fields
-    // (see `event_haystack`) so it agrees with what the table shows. Parse
-    // each line once: the haystack and the vtime rewrite share the `Value`.
-    // A line that isn't JSON matches against the raw text and streams raw,
-    // like the human path.
+    // Matching runs against the DECODED fields (see `event_haystack`) so it
+    // agrees with what the table shows; a raw line matches on its text.
     if json {
-        let result = stream_ndjson_lines(stream, NoOpTransformer {}, |line| {
-            let Ok(mut entry) = serde_json::from_str::<Value>(line) else {
-                if haystack_matches_all_needles(line, &lowered_matches) {
-                    writeln!(stdout, "{line}")?;
+        let result = stream_ndjson_lines(stream, |line| {
+            match line {
+                NdjsonLine::Entry(entry) => {
+                    let haystack = event_haystack(&render_event_entry(&entry));
+                    if haystack_matches_all_needles(&haystack, &lowered_matches) {
+                        writeln!(stdout, "{entry}")?;
+                    }
                 }
-                return Ok(());
-            };
-            let haystack = event_haystack(&render_event_entry(&entry));
-            if !haystack_matches_all_needles(&haystack, &lowered_matches) {
-                return Ok(());
-            }
-            match normalize_moment_vtime(&mut entry) {
-                Some(_) => writeln!(stdout, "{entry}")?,
-                None => writeln!(stdout, "{line}")?,
+                NdjsonLine::Raw(line) => {
+                    if haystack_matches_all_needles(line, &lowered_matches) {
+                        writeln!(stdout, "{line}")?;
+                    }
+                }
             }
             Ok(())
         })
@@ -1453,15 +1424,31 @@ async fn cmd_runs_events(
 
     // Human table: the event stream is small (the server already substring-
     // filters), so buffer the matching rows and size the HASH/VTIME/SOURCE
-    // columns to the actual content rather than guessing fixed widths. Each line
-    // is parsed once into both its haystack and its row.
+    // columns to the actual content rather than guessing fixed widths. A raw
+    // line surfaces sanitized in the OUTPUT column rather than being dropped.
     let mut rows: Vec<Vec<String>> = Vec::new();
-    let result = stream_ndjson_lines(stream, NoOpTransformer {}, |line| {
-        let (haystack, row) = prepare_event_line(line);
+    let result = stream_ndjson_lines(stream, |line| {
+        let (haystack, row) = match line {
+            NdjsonLine::Entry(entry) => {
+                let rendered = render_event_entry(&entry);
+                let haystack = event_haystack(&rendered);
+                let row = vec![
+                    rendered.input_hash,
+                    rendered.vtime,
+                    rendered.source,
+                    rendered.output,
+                ];
+                (haystack, row)
+            }
+            NdjsonLine::Raw(line) => (
+                line.to_string(),
+                vec![String::new(), String::new(), String::new(), sanitize(line)],
+            ),
+        };
         if !haystack_matches_all_needles(&haystack, &lowered_matches) {
             return Ok(());
         }
-        rows.push(row.to_vec());
+        rows.push(row);
         Ok(())
     })
     .await;
@@ -1529,34 +1516,36 @@ async fn cmd_runs_logs(
         // Fault annotation is the default; `--raw` opts out into a verbatim
         // NDJSON passthrough.
         if raw {
-            stream_ndjson_lines(stream, NoOpTransformer {}, |line| {
+            stream_raw_lines(stream, |line| {
                 wrote_any = true;
                 writeln!(stdout, "{line}")?;
                 Ok(())
             })
             .await
         } else {
-            stream_ndjson_lines(
-                stream,
-                FaultAnnotator {
-                    active_fault_windows: ActiveFaultWindows::new(),
-                    active_faults: json!({}),
-                },
-                |line| {
-                    wrote_any = true;
-                    writeln!(stdout, "{line}")?;
-                    Ok(())
-                },
-            )
+            let mut annotator = FaultAnnotator {
+                active_fault_windows: ActiveFaultWindows::new(),
+                active_faults: json!({}),
+            };
+            stream_ndjson_lines(stream, |line| {
+                wrote_any = true;
+                match line {
+                    NdjsonLine::Entry(mut entry) => {
+                        annotator.annotate(&mut entry);
+                        writeln!(stdout, "{entry}")?;
+                    }
+                    NdjsonLine::Raw(line) => writeln!(stdout, "{line}")?,
+                }
+                Ok(())
+            })
             .await
         }
     } else {
-        stream_ndjson_lines(stream, NoOpTransformer {}, |line| {
+        stream_ndjson_lines(stream, |line| {
             wrote_any = true;
-            if let Ok(entry) = serde_json::from_str::<Value>(line) {
-                writeln!(stdout, "{}", format_log_entry(&entry, raw))?;
-            } else {
-                writeln!(stdout, "{line}")?;
+            match line {
+                NdjsonLine::Entry(entry) => writeln!(stdout, "{}", format_log_entry(&entry, raw))?,
+                NdjsonLine::Raw(line) => writeln!(stdout, "{line}")?,
             }
             Ok(())
         })
@@ -1724,9 +1713,49 @@ fn strip_log_envelope(entry: &Value) -> String {
     }
 }
 
+/// One line of an NDJSON stream, classified once at the stream boundary.
+enum NdjsonLine<'a> {
+    /// The happy case: the line parsed as a JSON *object* — the shape every
+    /// log/event record has — with `moment.vtime` already normalized to an
+    /// exact JSON number.
+    Entry(Value),
+    /// Everything else: a line that isn't valid JSON (a truncated final
+    /// chunk, a proxy-injected error blob, …) or valid JSON that isn't an
+    /// object. Carries the original text so callers surface it verbatim
+    /// rather than dropping it silently.
+    Raw(&'a str),
+}
+
+/// Classify one NDJSON line: see [`NdjsonLine`].
+fn classify_line(line: &str) -> NdjsonLine<'_> {
+    if let Ok(mut entry) = serde_json::from_str::<Value>(line)
+        && entry.is_object()
+    {
+        normalize_moment_vtime(&mut entry);
+        return NdjsonLine::Entry(entry);
+    }
+    NdjsonLine::Raw(line)
+}
+
+/// Stream an NDJSON response, handing each line to the callback parsed and
+/// normalized (see [`NdjsonLine`]). Commands whose contract is *raw*
+/// passthrough (`runs logs --json --raw`, `runs build-logs --json`) use
+/// [`stream_raw_lines`] instead — parsing is not their happy case.
 async fn stream_ndjson_lines<S, C>(
+    stream: S,
+    mut process_line: impl FnMut(NdjsonLine<'_>) -> Result<()>,
+) -> Result<()>
+where
+    S: futures_util::Stream<Item = reqwest::Result<C>> + Unpin,
+    C: AsRef<[u8]>,
+{
+    stream_raw_lines(stream, |line| process_line(classify_line(line))).await
+}
+
+/// Split a byte stream into newline-delimited lines and hand each to the
+/// callback verbatim.
+async fn stream_raw_lines<S, C>(
     mut stream: S,
-    mut line_transformer: impl LineTransformer,
     mut process_line: impl FnMut(&str) -> Result<()>,
 ) -> Result<()>
 where
@@ -1746,11 +1775,7 @@ where
             if !line_bytes.is_empty() {
                 let line = std::str::from_utf8(line_bytes)
                     .map_err(|e| eyre!("invalid UTF-8 in response stream: {e}"))?;
-                if let Some(transformed) = line_transformer.try_transform(line) {
-                    process_line(&transformed)?;
-                } else {
-                    process_line(line)?;
-                }
+                process_line(line)?;
             }
             buf.drain(..=pos);
         }
@@ -1759,26 +1784,10 @@ where
     if !buf.is_empty() {
         let line = std::str::from_utf8(&buf)
             .map_err(|e| eyre!("invalid UTF-8 in response stream: {e}"))?;
-        if let Some(transformed) = line_transformer.try_transform(line) {
-            process_line(&transformed)?;
-        } else {
-            process_line(line)?;
-        }
+        process_line(line)?;
     }
 
     Ok(())
-}
-
-trait LineTransformer {
-    fn try_transform(&mut self, line: &str) -> Option<String>;
-}
-
-struct NoOpTransformer {}
-
-impl LineTransformer for NoOpTransformer {
-    fn try_transform(&mut self, _: &str) -> Option<String> {
-        None
-    }
 }
 
 struct FaultAnnotator {
@@ -1786,85 +1795,70 @@ struct FaultAnnotator {
     active_faults: Value,
 }
 
-impl LineTransformer for FaultAnnotator {
-    fn try_transform(&mut self, line: &str) -> Option<String> {
-        if let Ok(mut entry) = serde_json::from_str::<Value>(line) {
-            let mut update_faults = false;
+impl FaultAnnotator {
+    /// Annotate one parsed log entry in place: advance the fault windows
+    /// using the entry's vtime, strip ANSI from `output_text`, and attach the
+    /// current `active_faults`.
+    fn annotate(&mut self, entry: &mut Value) {
+        let mut update_faults = false;
 
-            // The API sends moment.vtime as seconds, so the fault-window math
-            // runs directly in seconds. Lines without a vtime fall back to
-            // zero, which never expires a window (expiry is strict less-than).
-            let event_vtime = normalize_moment_vtime(&mut entry);
-            let latest_vtime = event_vtime.unwrap_or(VTime::ZERO);
-            let fault_name = entry["fault"]["name"].as_str();
-            let is_fault_injector = entry["source"]["name"]
+        // The fault-window math runs directly in seconds. Entries without a
+        // vtime fall back to zero, which never expires a window (expiry is
+        // strict less-than).
+        let latest_vtime = VTime::from_json(&entry["moment"]["vtime"]).unwrap_or(VTime::ZERO);
+        let fault_name = entry["fault"]["name"].as_str();
+        let is_fault_injector = entry["source"]["name"]
+            .as_str()
+            .map(|source| source.eq("fault_injector"))
+            .unwrap_or(false);
+
+        // Clear network and node faults if the fault injector was paused
+        if is_fault_injector
+            && entry["info"]["message"]
                 .as_str()
-                .map(|source| source.eq("fault_injector"))
-                .unwrap_or(false);
+                .map(|message| message.eq("status"))
+                .unwrap_or(false)
+            && entry["info"]["details"]["paused"]
+                .as_bool()
+                .unwrap_or(false)
+        {
+            update_faults = self.active_fault_windows.clear_network_faults() || update_faults;
+            update_faults = self.active_fault_windows.clear_node_faults() || update_faults;
+        }
 
-            // Clear network and node faults if the fault injector was paused
-            if is_fault_injector
-                && entry["info"]["message"]
-                    .as_str()
-                    .map(|message| message.eq("status"))
-                    .unwrap_or(false)
-                && entry["info"]["details"]["paused"]
-                    .as_bool()
-                    .unwrap_or(false)
+        // Clear network faults if the network was restored
+        if is_fault_injector && fault_name.map(|n| n.eq("restore")).unwrap_or(false) {
+            update_faults = self.active_fault_windows.clear_network_faults() || update_faults;
+        }
+
+        // Clear any expired faults
+        update_faults =
+            self.active_fault_windows.clear_expired_faults(latest_vtime) || update_faults;
+
+        if is_fault_injector && let Some(fault_name) = fault_name {
+            let max_duration = entry["fault"]["max_duration"].as_f64().filter(|d| *d > 0.0);
+            let end_vtime = max_duration.map(|duration| latest_vtime.plus_seconds(duration));
+            let fault_type = entry["fault"]["type"].as_str().unwrap_or("");
+
+            if let Some(target) = entry["fault"]["affected_nodes"]
+                .as_array()
+                .and_then(|arr| arr.first())
+                .and_then(|first| first.as_str())
             {
-                update_faults = self.active_fault_windows.clear_network_faults() || update_faults;
-                update_faults = self.active_fault_windows.clear_node_faults() || update_faults;
-            }
-
-            // Clear network faults if the network was restored
-            if is_fault_injector && fault_name.map(|n| n.eq("restore")).unwrap_or(false) {
-                update_faults = self.active_fault_windows.clear_network_faults() || update_faults;
-            }
-
-            // Clear any expired faults
-            update_faults =
-                self.active_fault_windows.clear_expired_faults(latest_vtime) || update_faults;
-
-            if is_fault_injector && let Some(fault_name) = fault_name {
-                let max_duration = entry["fault"]["max_duration"].as_f64().filter(|d| *d > 0.0);
-                let end_vtime = max_duration.map(|duration| latest_vtime.plus_seconds(duration));
-                let fault_type = entry["fault"]["type"].as_str().unwrap_or("");
-
-                if let Some(target) = entry["fault"]["affected_nodes"]
-                    .as_array()
-                    .and_then(|arr| arr.first())
-                    .and_then(|first| first.as_str())
-                {
-                    if fault_name.eq("partition") || fault_name.eq("clog") {
-                        update_faults = self.active_fault_windows.add_network_fault(
-                            fault_name.to_string(),
-                            FaultWindowBounds {
-                                start_vtime: latest_vtime,
-                                end_vtime,
-                            },
-                        ) || update_faults;
-                    }
-
-                    if fault_type.eq("node")
-                        && (fault_name.eq("pause") || fault_name.eq("throttle"))
-                    {
-                        update_faults = self.active_fault_windows.add_node_fault(
-                            fault_name.to_string(),
-                            target.to_string(),
-                            FaultWindowBounds {
-                                start_vtime: latest_vtime,
-                                end_vtime,
-                            },
-                        ) || update_faults;
-                    }
+                if fault_name.eq("partition") || fault_name.eq("clog") {
+                    update_faults = self.active_fault_windows.add_network_fault(
+                        fault_name.to_string(),
+                        FaultWindowBounds {
+                            start_vtime: latest_vtime,
+                            end_vtime,
+                        },
+                    ) || update_faults;
                 }
 
-                if fault_name.eq("skip")
-                    && fault_type.eq("clock")
-                    && let Some(offset) = entry["fault"]["details"]["offset"].as_f64()
-                {
-                    update_faults = self.active_fault_windows.add_clock_fault(
-                        offset,
+                if fault_type.eq("node") && (fault_name.eq("pause") || fault_name.eq("throttle")) {
+                    update_faults = self.active_fault_windows.add_node_fault(
+                        fault_name.to_string(),
+                        target.to_string(),
                         FaultWindowBounds {
                             start_vtime: latest_vtime,
                             end_vtime,
@@ -1873,21 +1867,29 @@ impl LineTransformer for FaultAnnotator {
                 }
             }
 
-            if update_faults {
-                self.active_faults = self.active_fault_windows.to_json();
-            }
-
-            if let Some(output_text) = entry["output_text"].as_str() {
-                entry["output_text"] = Value::String(strip_ansi(output_text));
-            }
-
-            if entry.is_object() {
-                entry["active_faults"] = self.active_faults.clone();
-                return Some(format!("{}", entry));
+            if fault_name.eq("skip")
+                && fault_type.eq("clock")
+                && let Some(offset) = entry["fault"]["details"]["offset"].as_f64()
+            {
+                update_faults = self.active_fault_windows.add_clock_fault(
+                    offset,
+                    FaultWindowBounds {
+                        start_vtime: latest_vtime,
+                        end_vtime,
+                    },
+                ) || update_faults;
             }
         }
 
-        None
+        if update_faults {
+            self.active_faults = self.active_fault_windows.to_json();
+        }
+
+        if let Some(output_text) = entry["output_text"].as_str() {
+            entry["output_text"] = Value::String(strip_ansi(output_text));
+        }
+
+        entry["active_faults"] = self.active_faults.clone();
     }
 }
 
@@ -2209,7 +2211,11 @@ fn render_event_entry(entry: &Value) -> RenderedEventEntry {
         .as_str()
         .unwrap_or("")
         .to_string();
-    let vtime = entry["moment"]["vtime"].as_str().unwrap_or("").to_string();
+    // The stream normalizes vtime to a JSON number; VTime's Display prints
+    // the same text the server sent, so the column stays copy-paste exact.
+    let vtime = VTime::from_json(&entry["moment"]["vtime"])
+        .map(|v| v.to_string())
+        .unwrap_or_default();
     let container = entry["source"]["container"].as_str().unwrap_or("");
     let name = entry["source"]["name"].as_str().unwrap_or("");
     let stream = entry["source"]["stream"].as_str().unwrap_or("");
@@ -2769,6 +2775,25 @@ mod tests {
     use super::*;
     use hegel::generators;
     use serde_json::json;
+
+    /// Test surface for the annotated-logs pipeline: classify the line
+    /// exactly as the stream does, annotate entries, and return the emitted
+    /// text. `None` means the stream would pass the line through raw.
+    trait TryTransform {
+        fn try_transform(&mut self, line: &str) -> Option<String>;
+    }
+
+    impl TryTransform for FaultAnnotator {
+        fn try_transform(&mut self, line: &str) -> Option<String> {
+            match classify_line(line) {
+                NdjsonLine::Entry(mut entry) => {
+                    self.annotate(&mut entry);
+                    Some(entry.to_string())
+                }
+                NdjsonLine::Raw(_) => None,
+            }
+        }
+    }
 
     /// `wrap_text` preserves the exact sequence of words — wrapping only inserts
     /// line breaks, it never drops, splits, reorders, or invents a word.
@@ -5227,7 +5252,10 @@ mod tests {
         // decoded haystack carries them unescaped, so the match succeeds even
         // though the raw NDJSON line escapes them as `\"`.
         let line = r#"{"moment":{"input_hash":"42","vtime":"1.0"},"source":{"container":"app","name":"app","stream":"out"},"output_text":"msg \"starting\""}"#;
-        let (haystack, _row) = prepare_event_line(line);
+        let NdjsonLine::Entry(entry) = classify_line(line) else {
+            panic!("event line should classify as an entry");
+        };
+        let haystack = event_haystack(&render_event_entry(&entry));
         assert!(haystack.contains(r#"msg "starting""#));
 
         let needle = vec![r#""starting""#.to_lowercase()];

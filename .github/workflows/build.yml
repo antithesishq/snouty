@@ -5,6 +5,10 @@ on:
     branches: ["main"]
   pull_request:
     branches: ["main"]
+  # Nightly run on main. The `staging` job is the reason: the API can drift from
+  # `src/openapi.json` without anyone opening a pull request.
+  schedule:
+    - cron: "0 7 * * *"
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}

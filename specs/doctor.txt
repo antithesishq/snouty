@@ -37,11 +37,13 @@ stderr '.*snouty launch.*'
 stderr '.*ANTITHESIS_PASSWORD.*'
 
 # --- API connectivity + version check (issue #146) ---
-# Cases that inject a status via mock-server are [!staging]-gated: under
+# Cases that fabricate a status via mock-server are [!staging]-gated: under
 # SNOUTY_STAGING, mock-server passes through to the real API where fabricated
-# responses don't hold. The --offline and unreachable cases use a controlled
-# local setup and run in both modes. The mock + --offline cases assume a
-# container runtime (CI provisions one); the unreachable case is robust either way.
+# responses don't hold. The 401 case is the exception — a bad key provokes the
+# same status from the real gateway, so it runs in both modes. The --offline
+# and unreachable cases use a controlled local setup and run in both modes. The
+# mock + --offline cases assume a container runtime (CI provisions one); the
+# unreachable case is robust either way.
 
 # 2xx: doctor reports the live API and tenant release versions. The check runs
 # only with an API key (the endpoint rejects basic auth), so set one on top of
@@ -67,12 +69,15 @@ stderr '.*ANTITHESIS_PASSWORD.*'
 # token (content-type: text/plain, zero length). The HTTP status is what
 # classifies the failure, so doctor names the rejected credentials instead of
 # reporting the API as unreachable because the body didn't parse (issue #180).
-[!staging] mock-server 401 ''
-[!staging] env ANTITHESIS_API_KEY=testkey
-[!staging] ! snouty doctor
-[!staging] stderr '.*Antithesis API rejected authentication.*'
-[!staging] stderr '.*returned HTTP 401.*'
-[!staging] ! stderr '.*Antithesis API unreachable.*'
+# This block runs against staging too: mock-server passes through to the real
+# gateway, and the bad key below provokes the real 401, so the issue #180
+# scenario is exercised end to end rather than only against a mock of it.
+mock-server 401 ''
+env ANTITHESIS_API_KEY=testkey
+! snouty doctor
+stderr '.*Antithesis API rejected authentication.*'
+stderr '.*returned HTTP 401.*'
+! stderr '.*Antithesis API unreachable.*'
 
 # --offline skips the network check entirely: no version line, no API contact.
 env ANTITHESIS_API_KEY=testkey

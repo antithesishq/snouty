@@ -36,7 +36,7 @@ stdout 'RUN ID.*STATUS.*CREATED.*TEST NAME'
 # The default table omits the description (it never fit usefully beside the full
 # run id); use `runs list --detail` to see it.
 ! stdout 'DESCRIPTION'
-[!staging] stdout -count=0 'nightly smoke on main'
+[!staging] ! stdout 'nightly smoke on main'
 
 # `snouty runs list --detail` prints one aligned key-value block per run (no
 # table), so full descriptions are visible.
@@ -127,13 +127,13 @@ snouty runs properties $R_run_id
 mock-runs-server
 snouty runs properties --failing $R_run_id
 [!staging] stdout 'failing.*Counter value stays below limit'
-[!staging] stdout -count=0 'Setup completes'
+[!staging] ! stdout 'Setup completes'
 
 # `snouty runs properties --passing` shows only passing properties.
 mock-runs-server
 snouty runs properties --passing $R_run_id
 [!staging] stdout 'passing.*Setup completes'
-[!staging] stdout -count=0 'Counter value stays below limit'
+[!staging] ! stdout 'Counter value stays below limit'
 
 # `snouty runs properties --passing --failing` is rejected.
 ! snouty runs properties --passing --failing $R_run_id
@@ -158,13 +158,13 @@ snouty runs properties $R_run_id --name 'Counter value' --detail
 mock-runs-server
 snouty runs properties $R_run_id --name counter
 [!staging] stdout 'failing.*Counter value stays below limit'
-[!staging] stdout -count=0 'Setup completes'
+[!staging] ! stdout 'Setup completes'
 
 # --group is a case-insensitive substring group filter ('safety' matches 'Safety').
 mock-runs-server
 snouty runs properties $R_run_id --group safety
 [!staging] stdout 'failing.*Counter value stays below limit'
-[!staging] stdout -count=0 'Setup completes'
+[!staging] ! stdout 'Setup completes'
 
 # A non-event ("system") property's --detail shows its value under a `Result`
 # label (no `:`, like the other labels). A small object inlines as compact JSON
@@ -379,7 +379,7 @@ stdout '\[\s*1\.000\] \[\s*app\] \[out\] \{"level":"info","msg":"starting"\}'
 # a JSON-escaped newline on a single output line.
 mock-runs-server
 snouty --json runs logs run-1 -123 1.0
-stdout -count=1 'line one\\nline two'
+stdout -count=1 -literal 'line one\\nline two'
 
 # `snouty runs logs` requires hash and vtime positional arguments.
 mock-runs-server
@@ -414,7 +414,7 @@ snouty runs events $R_run_id request
 mock-runs-server
 snouty --json runs events $R_run_id --match parallel_driver_fetch --limit 1
 [!staging] stdout '"vtime":"400\.5"'
-[!staging] stdout -count=0 '"vtime":"401\.75"'
+[!staging] ! stdout '"vtime":"401\.75"'
 
 # Without --limit no cap is sent at all, so all three matches come back.
 mock-runs-server

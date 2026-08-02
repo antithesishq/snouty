@@ -9,6 +9,7 @@ on:
   # `src/openapi.json` without anyone opening a pull request.
   schedule:
     - cron: "0 7 * * *"
+  workflow_dispatch:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}

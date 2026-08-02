@@ -733,52 +733,6 @@ fn spec_lines() -> Vec<(std::path::PathBuf, usize, String)> {
     lines
 }
 
-/// A condition prefix and a `!` on the same line is a trap, not a style choice.
-///
-/// testscript-rs 0.2.10 checks the condition inside `execute_command_inner` and
-/// returns `Ok(())` when the line is skipped, then `execute_command` sees that
-/// `Ok` and — because the command is negated — reports "Command was expected to
-/// fail but succeeded". So `[!staging] ! snouty runs` does not skip under
-/// staging; it fails the whole file. That is invisible in a normal run, where
-/// the condition is met and the line executes for real, so it only breaks the
-/// mode nobody runs by default.
-///
-/// Write the positive form instead: `stdout -count=0 'x'` for a negated
-/// assertion, or gate the whole block with `[staging] skip`.
-#[test]
-fn no_spec_line_combines_a_condition_with_a_negated_command() {
-    let mut offenders = Vec::new();
-    for dir in ["specs", "specs_engine"] {
-        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(dir);
-        for entry in std::fs::read_dir(&dir).expect("read spec dir").flatten() {
-            let path = entry.path();
-            if path.extension().is_none_or(|ext| ext != "txt") {
-                continue;
-            }
-            let text = std::fs::read_to_string(&path).expect("read spec file");
-            for (number, line) in text.lines().enumerate() {
-                let trimmed = line.trim_start();
-                let Some(rest) = trimmed.strip_prefix('[') else {
-                    continue;
-                };
-                let Some((_condition, rest)) = rest.split_once(']') else {
-                    continue;
-                };
-                if rest.trim_start().starts_with('!') {
-                    let name = path.file_name().unwrap().to_string_lossy();
-                    offenders.push(format!("{name}:{}: {trimmed}", number + 1));
-                }
-            }
-        }
-    }
-    assert!(
-        offenders.is_empty(),
-        "a conditioned line must not also be negated — testscript-rs reports the skip as \
-         \"expected to fail but succeeded\". Use `stdout -count=0 …` or `[staging] skip`:\n  {}",
-        offenders.join("\n  ")
-    );
-}
-
 #[test]
 fn spec_tests() {
     let staging = is_staging();

@@ -92,14 +92,22 @@ negation wrapper reads that `Ok` as "the command was expected to fail but
 succeeded". The line fails the whole file instead of being skipped, and it is
 invisible in a normal run because the condition is met there and the line
 executes for real. Write the positive form instead: `stdout -count=0 'x'` for a
-negated assertion, or gate the whole block with `[staging] skip`. The
-`no_spec_line_combines_a_condition_with_a_negated_command` test enforces this.
+negated assertion, or gate the whole block with `[staging] skip`. Running both
+modes in CI catches this, since whichever mode skips the line is the mode it
+breaks in — but the failure reads "expected to fail but succeeded" against a
+line that never ran, so recognise it rather than trusting the message.
 
 **A `stdout`/`stderr` pattern is only a regex if it contains one of
 `^ $ [ ( * .`** — otherwise testscript compares it as literal text, so
-`stdout 'Run ID\s+\S+'` matches nothing at all and quietly fails. Write
-`[^ ]` instead of `\S`, or include a `.`. Enforced by
-`no_spec_pattern_looks_like_a_regex_without_being_one`.
+`stdout 'Run ID\s+\S+'` matches nothing at all. Write `[^ ]` instead of `\S`,
+or include a `.`.
+
+Unlike the rule above, running the specs does *not* catch this. On a positive
+assertion the inert pattern fails and you find out. On a negated one —
+`! stdout '…'`, `stdout -count=0 '…'` — a pattern that can never match makes
+"assert absent" trivially true, so the check passes while testing nothing.
+`no_spec_pattern_looks_like_a_regex_without_being_one` exists for that case and
+cannot be replaced by running the suite.
 
 Structural assertions must hold against *any* tenant: `stdout 'Run ID +[^ ]'`
 belongs unprefixed, `stdout 'Run ID .*run-1'` belongs behind `[!staging]`.

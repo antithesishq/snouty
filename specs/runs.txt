@@ -230,33 +230,30 @@ snouty --json runs events $R_run_id --match counter
 [!staging] stdout '.*"moment".*"input_hash":"-4735081784258020614".*'
 [!staging] stdout '.*"moment".*"vtime":"311\.8487535319291".*'
 
+[staging] skip
+
 # An incomplete run carries the failure moment (input_hash + vtime) in its detail
 #    response. Filter the list with --status incomplete so we know the run we
 #    inspect actually entered the incomplete terminal state, then assert that
 #    the human-readable view shows "Failure VTime" / "Failure Hash" and the
-#    --json view exposes failure_moment with input_hash and vtime.
-#
-#    Gated, because this block needs the tenant to hold an incomplete run. This
-#    suite gates merges, so it must not depend on tenant data. The completed run
-#    above covers the same endpoints.
-[!staging] mock-runs-server
-[!staging] snouty --json runs list --status incomplete
-[!staging] stdout '"run_id":.*'
-[!staging] stdout '"status":"incomplete".*'
-[!staging] env_from_json 0 run_id
+#    --json view exposes failure_moment with input_hash and vtime. Below the
+#    skip, because a tenant may hold no incomplete run at all.
+mock-runs-server
+snouty --json runs list --status incomplete
+stdout '"run_id":.*'
+stdout '"status":"incomplete".*'
+env_from_json 0 run_id
 
-[!staging] mock-runs-server
-[!staging] snouty runs show $R_run_id
-[!staging] stdout 'Failure VTime.*'
-[!staging] stdout 'Failure Hash.*'
+mock-runs-server
+snouty runs show $R_run_id
+stdout 'Failure VTime.*'
+stdout 'Failure Hash.*'
 
-[!staging] mock-runs-server
-[!staging] snouty --json runs show $R_run_id
-[!staging] stdout '"failure_moment".*'
-[!staging] stdout '"input_hash".*'
-[!staging] stdout '"vtime".*'
-
-[staging] skip
+mock-runs-server
+snouty --json runs show $R_run_id
+stdout '"failure_moment".*'
+stdout '"input_hash".*'
+stdout '"vtime".*'
 
 # If no runs are returned, the command prints a friendly empty-state message.
 mock-runs-server empty

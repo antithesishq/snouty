@@ -140,8 +140,8 @@ snouty runs properties --passing $R_run_id
 stderr '.*cannot be used with.*'
 
 # `snouty --json runs properties` outputs JSON. A moment's vtime is an exact
-# JSON number (a vtime is ticks / 2^32, which an f64 holds exactly, so the
-# full-precision value round-trips byte-identically).
+# JSON number — the full-precision value survives byte-identically (see
+# src/vtime.rs for why an f64 holds it exactly).
 mock-runs-server
 snouty --json runs properties $R_run_id
 [!staging] stdout '"name".*"Counter value stays below limit"'
@@ -242,8 +242,7 @@ mock-runs-server
 [staging] snouty --json runs events $R_run_id --match fault --limit 3
 [!staging] stdout '"antithesis_assert".*"Counter'\''s value retrieved"'
 [!staging] stdout '.*"moment".*"input_hash":"-4735081784258020614".*'
-# The vtime is converted from the server's seconds string to an exact JSON
-# number; the full-precision value survives byte-identically.
+# The vtime is an exact JSON number, full precision intact.
 [!staging] stdout '.*"moment".*"vtime":311\.8487535319291.*'
 
 [staging] skip
@@ -383,10 +382,9 @@ stdout 'output_text.*starting'
 stdout 'output_text.*slow request'
 stdout '"antithesis_assert".*"display_type":"AlwaysOrUnreachable"'
 # moment.vtime is converted in place from the server's seconds string to an
-# exact JSON number: a vtime is ticks / 2^32, which an f64 holds exactly, so
-# the full-precision value round-trips byte-identically. active_faults is
-# appended by the annotator. The clog window (start 401.5, max_duration 0.267)
-# is active at 401.5 and 401.75, then expired by 402.
+# exact JSON number, full precision intact. active_faults is appended by the
+# annotator. The clog window (start 401.5, max_duration 0.267) is active at
+# 401.5 and 401.75, then expired by 402.
 stdout '"vtime":73\.94233945617452'
 stdout '"vtime":401.5.*"active_faults":\{"network_clog":\{"vtime":401.5\}\}'
 stdout '"vtime":401.75.*"active_faults":\{"network_clog":\{"vtime":401.5\}\}'

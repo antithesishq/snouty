@@ -1425,15 +1425,25 @@ async fn cmd_runs_events(
     // JSON mode emits the matching line with moment.vtime converted to an
     // exact JSON number, but matching itself runs against the DECODED fields
     // (see `event_haystack`) so it agrees with what the table shows. Parse
-    // each line once to build the haystack, then stream the matching line as
-    // it arrives.
+    // each line once: the haystack and the vtime rewrite share the `Value`.
+    // A line that isn't JSON matches against the raw text and streams raw,
+    // like the human path.
     if json {
         let result = stream_ndjson_lines(stream, NoOpTransformer {}, |line| {
-            let (haystack, _) = prepare_event_line(line);
+            let Ok(mut entry) = serde_json::from_str::<Value>(line) else {
+                if haystack_matches_all_needles(line, &lowered_matches) {
+                    writeln!(stdout, "{line}")?;
+                }
+                return Ok(());
+            };
+            let haystack = event_haystack(&render_event_entry(&entry));
             if !haystack_matches_all_needles(&haystack, &lowered_matches) {
                 return Ok(());
             }
-            writeln!(stdout, "{}", numeric_vtime_line(line))?;
+            match normalize_moment_vtime(&mut entry) {
+                Some(_) => writeln!(stdout, "{entry}")?,
+                None => writeln!(stdout, "{line}")?,
+            }
             Ok(())
         })
         .await;
@@ -1606,31 +1616,14 @@ fn format_log_entry(entry: &Value, raw: bool) -> String {
     )
 }
 
-/// Parse a `moment`'s vtime out of an NDJSON entry. The API sends
-/// `moment.vtime` as a seconds string (e.g. "398.4898"); accept a JSON number
-/// too, since the schema doesn't forbid one (and snouty's own `--json` output
-/// uses a number). Returns `None` when there's no parseable vtime.
-fn moment_vtime(entry: &Value) -> Option<VTime> {
-    let vtime = &entry["moment"]["vtime"];
-    match vtime.as_str() {
-        Some(s) => s.parse().ok(),
-        None => vtime.as_f64().and_then(VTime::from_seconds),
-    }
-}
-
-/// Rewrite an NDJSON event line's `moment.vtime` from the server's seconds
-/// string to an exact JSON number, matching every other `--json` surface (the
-/// value survives byte-identically; see [`VTime`]). A line that doesn't parse,
-/// or has no parseable vtime, passes through unchanged.
-fn numeric_vtime_line(line: &str) -> std::borrow::Cow<'_, str> {
-    let Ok(mut entry) = serde_json::from_str::<Value>(line) else {
-        return std::borrow::Cow::Borrowed(line);
-    };
-    let Some(vtime) = moment_vtime(&entry) else {
-        return std::borrow::Cow::Borrowed(line);
-    };
+/// Convert an NDJSON entry's `moment.vtime` from the server's seconds string
+/// to an exact JSON number in place — the only processing snouty does to a
+/// vtime (see [`VTime`]). Returns the vtime, or `None` (entry untouched) when
+/// there's no parseable one.
+fn normalize_moment_vtime(entry: &mut Value) -> Option<VTime> {
+    let vtime = VTime::from_json(&entry["moment"]["vtime"])?;
     entry["moment"]["vtime"] = json!(vtime);
-    std::borrow::Cow::Owned(entry.to_string())
+    Some(vtime)
 }
 
 /// Render a log line's vtime in seconds with exactly 3 decimal places,
@@ -1647,7 +1640,7 @@ fn format_log_vtime(entry: &Value) -> String {
         Some(s) => truncate_decimals(s, 3),
         // A JSON-number vtime: VTime's Display is the exact text the number
         // was printed from, so truncating it cuts — never rounds.
-        None => match raw.as_f64().and_then(VTime::from_seconds) {
+        None => match VTime::from_json(raw) {
             Some(v) => truncate_decimals(&v.to_string(), 3),
             None => String::new(),
         },
@@ -1801,7 +1794,7 @@ impl LineTransformer for FaultAnnotator {
             // The API sends moment.vtime as seconds, so the fault-window math
             // runs directly in seconds. Lines without a vtime fall back to
             // zero, which never expires a window (expiry is strict less-than).
-            let event_vtime = moment_vtime(&entry);
+            let event_vtime = normalize_moment_vtime(&mut entry);
             let latest_vtime = event_vtime.unwrap_or(VTime::ZERO);
             let fault_name = entry["fault"]["name"].as_str();
             let is_fault_injector = entry["source"]["name"]
@@ -1886,12 +1879,6 @@ impl LineTransformer for FaultAnnotator {
 
             if let Some(output_text) = entry["output_text"].as_str() {
                 entry["output_text"] = Value::String(strip_ansi(output_text));
-            }
-            // Replace the seconds string with an exact JSON number in place —
-            // the only processing snouty does to vtime (VTime guarantees the
-            // value survives byte-identically).
-            if let Some(vtime) = event_vtime {
-                entry["moment"]["vtime"] = json!(vtime);
             }
 
             if entry.is_object() {
@@ -4494,9 +4481,8 @@ mod tests {
             active_faults: json!({}),
         };
 
-        // The seconds string becomes a JSON number carrying the exact value:
-        // the full-precision text survives the string -> f64 -> text round
-        // trip byte-for-byte (a vtime is ticks / 2^32, exact in an f64).
+        // The full-precision seconds string becomes a JSON number carrying
+        // the exact value, byte-for-byte (see src/vtime.rs).
         assert_eq!(
             transformer
                 .try_transform(r#"{"moment":{"vtime":"398.4898056755774"},"output_text":"hi"}"#),
@@ -4511,17 +4497,18 @@ mod tests {
     }
 
     #[test]
-    fn numeric_vtime_line_converts_string_vtime_to_exact_number() {
+    fn normalize_moment_vtime_converts_string_vtime_to_exact_number() {
+        let mut entry = json!({"a": 1, "moment": {"vtime": "313.15126806590706"}, "z": 2});
+        assert!(normalize_moment_vtime(&mut entry).is_some());
         assert_eq!(
-            numeric_vtime_line(r#"{"a":1,"moment":{"vtime":"313.15126806590706"},"z":2}"#),
+            entry.to_string(),
             r#"{"a":1,"moment":{"vtime":313.15126806590706},"z":2}"#
         );
-        // No parseable vtime: the line passes through unchanged.
-        assert_eq!(
-            numeric_vtime_line(r#"{"moment":{"vtime":"n/a"}}"#),
-            r#"{"moment":{"vtime":"n/a"}}"#
-        );
-        assert_eq!(numeric_vtime_line("not json"), "not json");
+
+        // No parseable vtime: the entry is untouched.
+        let mut entry = json!({"moment": {"vtime": "n/a"}});
+        assert!(normalize_moment_vtime(&mut entry).is_none());
+        assert_eq!(entry, json!({"moment": {"vtime": "n/a"}}));
     }
 
     // -----------------------------------------------------------------------

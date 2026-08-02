@@ -215,10 +215,9 @@ class Discovery:
     event_keyword: str = ""
     event_kw2: str = ""
     event_hash: str = ""
-    # Held as the exact text of the JSON number so positional moment arguments
-    # reach the API byte-identically (Python's float repr agrees with snouty's
-    # print, but text-in text-out never has to rely on that).
-    event_vtime: str = ""
+    # The exact text of the JSON number, so positional moment arguments reach
+    # the API byte-identically.
+    event_vtime: str = "0"
     fail_prop: str = ""  # failing event property whose detail shows counter-examples
     pass_event_prop: str = ""  # passing event property whose detail shows examples
     nonevent_prop: str = ""  # non-event property whose detail shows a real value
@@ -1023,7 +1022,7 @@ def build_stories(d: Discovery) -> list[Story]:
     kw, kw2 = d.event_keyword, d.event_kw2
     # `--begin-vtime` for the logs skip-ahead story: just before the sampled
     # moment. A lower bound, so the float round-trip is harmless here.
-    vmin = f"{max(0.0, float(d.event_vtime or 0.0) - 0.5):.3f}"
+    vmin = f"{max(0.0, float(d.event_vtime) - 0.5):.3f}"
     stories = [
         # -- listing --------------------------------------------------------
         Story(
@@ -2321,7 +2320,7 @@ def main() -> int:
 
     if args.list:
         # An all-default Discovery is enough to enumerate slugs (build_stories
-        # only reads a few fields; an empty event_vtime is fine for listing).
+        # only reads a few fields, and event_vtime defaults to a real vtime).
         for s in build_stories(Discovery()):
             print(s.slug)
         for s in build_validate_stories(None):

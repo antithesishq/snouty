@@ -143,9 +143,7 @@ fn untype_error_responses(spec: &mut serde_json::Value) {
 /// `with_conversion` mapping registered above. The marker is injected here
 /// rather than edited into `src/openapi.json`, because that file is a
 /// vendored upstream artifact — the next spec refresh would silently drop the
-/// edit. Panics when the spec no longer carries the expected string-typed
-/// property, so an upstream schema change fails the build with a clear
-/// message instead of silently regenerating a stringly-typed client.
+/// edit.
 fn mark_vtime_schema(spec: &mut serde_json::Value) {
     let vtime = spec
         .pointer_mut("/components/schemas/Moment/properties/vtime")

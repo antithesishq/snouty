@@ -39,12 +39,21 @@ impl VTime {
         }
         let vtime = VTime(seconds);
         if !vtime.is_tick_aligned() {
-            // Every vtime the API prints today sits on a hypervisor tick. A
-            // value off the tick grid means the API changed representation —
-            // surface that under --verbose instead of absorbing it silently.
+            // Every vtime the API prints today sits on a hypervisor tick; log
+            // the exception so a representation change is visible under
+            // --verbose instead of silently absorbed.
             log::debug!("vtime {seconds} is not tick-aligned (ticks / 2^32)");
         }
         Some(vtime)
+    }
+
+    /// A vtime out of a JSON value, in either wire form: the API's seconds
+    /// string, or the number snouty itself emits.
+    pub fn from_json(value: &serde_json::Value) -> Option<VTime> {
+        match value.as_str() {
+            Some(s) => s.parse().ok(),
+            None => value.as_f64().and_then(VTime::from_seconds),
+        }
     }
 
     /// The raw seconds value, for arithmetic that leaves the vtime domain.
@@ -243,14 +252,20 @@ mod tests {
     }
 
     #[test]
+    fn from_json_accepts_both_wire_forms() {
+        let string_form = VTime::from_json(&serde_json::json!("398.4898056755774")).unwrap();
+        let number_form = VTime::from_json(&serde_json::json!(398.4898056755774)).unwrap();
+        assert_eq!(string_form, number_form);
+        assert!(VTime::from_json(&serde_json::json!(null)).is_none());
+        assert!(VTime::from_json(&serde_json::json!("n/a")).is_none());
+    }
+
+    #[test]
     fn ord_is_numeric_not_alphanumeric() {
+        // As strings, "1000.0" < "9.0" — the order this type guards against.
         let nine: VTime = "9.0".parse().unwrap();
         let thousand: VTime = "1000.0".parse().unwrap();
         assert!(nine < thousand);
-        assert!(
-            "1000.0" < "9.0",
-            "the string order this type guards against"
-        );
     }
 
     #[test]

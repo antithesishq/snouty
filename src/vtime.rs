@@ -16,8 +16,8 @@ const TICKS_PER_SECOND: f64 = 4294967296.0;
 /// power-of-two denominator, so the quotient is exact in an `f64` for any
 /// tick count below 2^53 (a vtime of ~24.3 days); `str::parse::<f64>` is
 /// correctly-rounded, so it recovers the exact value the API printed; and
-/// both [`fmt::Display`] and the JSON output print shortest digits that
-/// parse back to the same `f64`. Every path through this type is therefore
+/// both [`fmt::Display`] and the JSON output print the shortest text that
+/// parses back to the same `f64`. Every path through this type is therefore
 /// value-exact.
 ///
 /// Serialization writes a JSON *number* (not the API's string form): a number
@@ -101,54 +101,15 @@ impl PartialEq for VTime {
 
 impl Eq for VTime {}
 
-/// Print the shortest round-trip digits (via zmij, the formatter `serde_json`
-/// uses) in plain decimal notation, never exponent notation. The API has only
-/// ever emitted plain-decimal vtimes and its spec doesn't promise it parses
-/// `e` notation, so text snouty hands back stays in the dialect the server
-/// demonstrably speaks. Where the JSON writer also prints plain decimal —
-/// every vtime the API emits — the two texts are byte-identical; a hegel
-/// property pins both facts. (std's `{}` float formatting is unsuitable
-/// either way: it prints `402` where the API prints `402.0`.)
+/// Print with zmij — the same shortest-round-trip formatter `serde_json`
+/// uses for numbers — so the human-visible text always agrees byte-for-byte
+/// with the JSON output; a hegel property pins the agreement over all finite
+/// values. (std's `{}` float formatting differs: it prints `402` where JSON
+/// needs `402.0`; ryu differs at the extremes: `1e16` where JSON prints
+/// `1e+16`.)
 impl fmt::Display for VTime {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let mut buf = zmij::Buffer::new();
-        let text = buf.format(self.0);
-        match text.contains('e') {
-            false => f.write_str(text),
-            true => f.write_str(&expand_exponent(text)),
-        }
-    }
-}
-
-/// Rewrite a float string from exponent notation to plain decimal by moving
-/// the decimal point. The digit sequence is preserved exactly, so the value —
-/// and its round-trip guarantee — is unchanged.
-fn expand_exponent(text: &str) -> String {
-    let (mantissa, exp) = text
-        .split_once('e')
-        .expect("caller checked for an exponent");
-    let exp: i32 = exp
-        .parse()
-        .expect("float exponent is a small signed integer");
-    let (sign, mantissa) = match mantissa.strip_prefix('-') {
-        Some(rest) => ("-", rest),
-        None => ("", mantissa),
-    };
-    let (int_part, frac_part) = mantissa.split_once('.').unwrap_or((mantissa, ""));
-    let digits = format!("{int_part}{frac_part}");
-    // Where the decimal point lands within (or beyond) the digit sequence.
-    let point = int_part.len() as i32 + exp;
-
-    if point <= 0 {
-        let zeros = "0".repeat(-point as usize);
-        format!("{sign}0.{zeros}{digits}")
-    } else if point as usize >= digits.len() {
-        let zeros = "0".repeat(point as usize - digits.len());
-        // Keep the ".0" an integral value carries in plain notation.
-        format!("{sign}{digits}{zeros}.0")
-    } else {
-        let (whole, frac) = digits.split_at(point as usize);
-        format!("{sign}{whole}.{frac}")
+        f.write_str(zmij::Buffer::new().format(self.0))
     }
 }
 
@@ -350,41 +311,13 @@ mod tests {
         assert_eq!((reparsed.as_seconds() * TICKS_PER_SECOND) as u64, ticks);
     }
 
-    /// `Display` never uses exponent notation (the only float dialect the
-    /// API demonstrably emits and parses is plain decimal), stays value-exact
-    /// anyway, and is byte-identical to the JSON number wherever the JSON
-    /// writer also prints plain decimal — which is every real vtime.
+    /// The human-visible `Display` text and the JSON number are the same
+    /// bytes for every finite value — the assumption that lets tables print
+    /// `Display` and stay copy-paste exact against the `--json` output.
     #[hegel::test]
-    fn display_is_plain_decimal_and_value_exact_for_any_finite_value(tc: hegel::TestCase) {
+    fn display_matches_json_number_text_for_any_finite_value(tc: hegel::TestCase) {
         let vtime = VTime::from_seconds(tc.draw(any_seconds())).unwrap();
-        let display = vtime.to_string();
-        assert!(
-            !display.contains(['e', 'E']),
-            "not plain decimal: {display}"
-        );
-        assert_eq!(display.parse::<VTime>().unwrap(), vtime);
-
-        let json = serde_json::to_string(&vtime).unwrap();
-        if !json.contains('e') {
-            assert_eq!(display, json);
-        }
-    }
-
-    #[test]
-    fn display_expands_exponent_notation_to_plain_decimal() {
-        // One tick — the smallest real vtime, and the value the issue's
-        // edge-case section flagged: serde_json prints it as an exponent.
-        let one_tick = VTime::from_seconds(1.0 / TICKS_PER_SECOND).unwrap();
-        assert_eq!(one_tick.to_string(), "0.00000000023283064365386963");
-        assert_eq!(
-            serde_json::to_string(&one_tick).unwrap(),
-            "2.3283064365386963e-10"
-        );
-        assert_eq!(one_tick.to_string().parse::<VTime>().unwrap(), one_tick);
-        // Beyond the plain regime on the large side, the ".0" convention of
-        // plain notation is kept.
-        let big = VTime::from_seconds(1e16).unwrap();
-        assert_eq!(big.to_string(), "10000000000000000.0");
+        assert_eq!(vtime.to_string(), serde_json::to_string(&vtime).unwrap());
     }
 
     /// The two wire shapes — the API's seconds string and snouty's JSON

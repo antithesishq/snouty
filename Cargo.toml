@@ -31,9 +31,8 @@ serde = { version = "1", features = ["derive"] }
 # float_roundtrip makes serde_json's f64 parsing correctly-rounded, so a vtime
 # read out of a JSON number is never off by one ULP (see src/vtime.rs).
 serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }
-# The float printer serde_json itself uses; VTime::Display takes its digits
-# (expanding exponent notation to plain decimal — see src/vtime.rs), so the
-# human text matches the JSON number wherever both are plain decimal.
+# The float printer serde_json itself uses; VTime::Display goes through it so
+# the human text matches the JSON number byte-for-byte (see src/vtime.rs).
 zmij = "1"
 indexmap = { version = "2.10.0" }
 rusqlite = { version = "0.34", features = ["bundled"] }

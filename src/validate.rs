@@ -708,7 +708,8 @@ fn combined_discovery_error(
             .collect::<Vec<_>>()
             .join(", ");
         err = err.suggestion(format!(
-            "rename each command to start with a recognized prefix ({prefixes}) or helper_"
+            "rename each command to start with a recognized prefix ({prefixes}) or {helper}",
+            helper = crate::scripts::HELPER_PREFIX,
         ));
     }
     if !not_executable.is_empty() {

@@ -101,13 +101,15 @@ impl PartialEq for VTime {
 
 impl Eq for VTime {}
 
-/// Print with ryu — the same shortest-round-trip formatter `serde_json` uses
-/// for numbers — so the human-visible text always agrees byte-for-byte with
-/// the JSON output. (std's `{}` float formatting differs: it prints `402`
-/// where JSON needs `402.0`.)
+/// Print with zmij — the same shortest-round-trip formatter `serde_json`
+/// uses for numbers — so the human-visible text always agrees byte-for-byte
+/// with the JSON output; a hegel property pins the agreement over all finite
+/// values. (std's `{}` float formatting differs: it prints `402` where JSON
+/// needs `402.0`; ryu differs at the extremes: `1e16` where JSON prints
+/// `1e+16`.)
 impl fmt::Display for VTime {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(ryu::Buffer::new().format(self.0))
+        f.write_str(zmij::Buffer::new().format(self.0))
     }
 }
 
@@ -288,5 +290,45 @@ mod tests {
     fn tick_alignment_detects_off_grid_values() {
         assert!(VTime::ZERO.is_tick_aligned());
         assert!(!VTime::from_seconds(0.1).unwrap().is_tick_aligned());
+    }
+
+    /// Any finite, non-NaN seconds value the generators can produce.
+    fn any_seconds() -> hegel::generators::FloatGenerator<f64> {
+        hegel::generators::floats::<f64>()
+            .allow_nan(false)
+            .allow_infinity(false)
+    }
+
+    /// Every tick-aligned vtime in the representable range (ticks < 2^53,
+    /// ~24.3 days) survives the print/parse cycle, and the original tick
+    /// count recovers exactly — the type's core claim over its whole domain.
+    #[hegel::test]
+    fn any_tick_count_round_trips_exactly(tc: hegel::TestCase) {
+        let ticks = tc.draw(hegel::generators::integers::<u64>().max_value((1 << 53) - 1));
+        let vtime = VTime::from_seconds(ticks as f64 / TICKS_PER_SECOND).unwrap();
+        let reparsed: VTime = vtime.to_string().parse().unwrap();
+        assert_eq!(reparsed, vtime);
+        assert_eq!((reparsed.as_seconds() * TICKS_PER_SECOND) as u64, ticks);
+    }
+
+    /// The human-visible `Display` text and the JSON number are the same
+    /// bytes for every finite value — the assumption that lets tables print
+    /// `Display` and stay copy-paste exact against the `--json` output.
+    #[hegel::test]
+    fn display_matches_json_number_text_for_any_finite_value(tc: hegel::TestCase) {
+        let vtime = VTime::from_seconds(tc.draw(any_seconds())).unwrap();
+        assert_eq!(vtime.to_string(), serde_json::to_string(&vtime).unwrap());
+    }
+
+    /// The two wire shapes — the API's seconds string and snouty's JSON
+    /// number — deserialize to the same vtime for every finite value.
+    #[hegel::test]
+    fn string_and_number_wire_forms_agree_for_any_finite_value(tc: hegel::TestCase) {
+        let vtime = VTime::from_seconds(tc.draw(any_seconds())).unwrap();
+        let text = serde_json::to_string(&vtime).unwrap();
+        let from_number: VTime = serde_json::from_str(&text).unwrap();
+        let from_string: VTime = serde_json::from_str(&format!("\"{text}\"")).unwrap();
+        assert_eq!(from_number, vtime);
+        assert_eq!(from_string, vtime);
     }
 }

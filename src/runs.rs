@@ -4521,6 +4521,53 @@ mod tests {
         );
     }
 
+    /// The copy-paste contract of the log vtime column, over the whole tick
+    /// domain: the truncated text parses to a value at or before the real
+    /// vtime — never past it — and less than one millisecond behind. The
+    /// string and number wire forms render identically.
+    #[hegel::test]
+    fn truncated_log_vtime_never_lands_past_the_line(tc: hegel::TestCase) {
+        let ticks = tc.draw(generators::integers::<u64>().max_value((1 << 53) - 1));
+        let vtime = VTime::from_seconds(ticks as f64 / 4294967296.0).unwrap();
+
+        let truncated: f64 = truncate_decimals(&vtime.to_string(), 3).parse().unwrap();
+        assert!(truncated <= vtime.as_seconds());
+        assert!(vtime.as_seconds() - truncated < 0.001);
+
+        let from_string = format_log_vtime(&json!({"moment": {"vtime": vtime.to_string()}}));
+        let from_number = format_log_vtime(&json!({"moment": {"vtime": vtime}}));
+        assert_eq!(from_string, from_number);
+    }
+
+    /// The issue #191 guarantee over the whole tick domain: a vtime string
+    /// the server sends survives the stream's classify -> normalize ->
+    /// serialize pipeline byte-identically, as a JSON number.
+    #[hegel::test]
+    fn classify_line_preserves_any_real_vtime_byte_for_byte(tc: hegel::TestCase) {
+        let ticks = tc.draw(generators::integers::<u64>().max_value((1 << 53) - 1));
+        let vtime = VTime::from_seconds(ticks as f64 / 4294967296.0).unwrap();
+
+        let line = format!(r#"{{"moment":{{"vtime":"{vtime}"}},"output_text":"x"}}"#);
+        let NdjsonLine::Entry(entry) = classify_line(&line) else {
+            panic!("an object line should classify as Entry");
+        };
+        assert_eq!(
+            entry.to_string(),
+            format!(r#"{{"moment":{{"vtime":{vtime}}},"output_text":"x"}}"#)
+        );
+    }
+
+    /// classify_line never panics, whatever the server sends; anything that
+    /// isn't a JSON object comes back Raw and untouched.
+    #[hegel::test]
+    fn classify_line_never_panics_and_returns_raw_for_non_objects(tc: hegel::TestCase) {
+        let line = tc.draw(generators::text());
+        match classify_line(&line) {
+            NdjsonLine::Entry(entry) => assert!(entry.is_object()),
+            NdjsonLine::Raw(raw) => assert_eq!(raw, line),
+        }
+    }
+
     #[test]
     fn normalize_moment_vtime_converts_string_vtime_to_exact_number() {
         let mut entry = json!({"a": 1, "moment": {"vtime": "313.15126806590706"}, "z": 2});

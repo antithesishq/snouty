@@ -69,9 +69,24 @@ pub fn render_report(report: &Report) -> String {
     if report.chain().len() > 1 {
         return format!("Error: {rendered}");
     }
+    let message = painted_message(report);
     match rendered.split_once("\n\n") {
-        Some((_frame, tail)) => format!("Error: {report}\n\n{tail}"),
-        None => format!("Error: {report}"),
+        Some((_frame, tail)) => format!("Error: {message}\n\n{tail}"),
+        None => format!("Error: {message}"),
+    }
+}
+
+/// The report's message, painted the way color_eyre's dark theme paints an
+/// error — bright red — when stderr is a terminal, and plain otherwise. The
+/// terminal check lives here for the same reason it lives in `wrap_if_tty`:
+/// color is a property of printing, and piped output must stay byte-exact.
+fn painted_message(report: &Report) -> String {
+    use color_eyre::owo_colors::OwoColorize;
+    use std::io::IsTerminal;
+    if std::io::stderr().is_terminal() {
+        format!("{}", report.bright_red())
+    } else {
+        report.to_string()
     }
 }
 

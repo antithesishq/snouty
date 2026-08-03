@@ -18,6 +18,7 @@ use crate::container::{
     Architecture, ContainerRuntime, DISCOVERY_COMMAND_TIMEOUT, RemoteManifest, available_engines,
     digests_for_repo, image_ref_tag, image_repo, is_podman_in_disguise, normalize_repo,
 };
+use crate::error::user_error;
 use crate::process::{ProcessGroupChild, output_with_timeout};
 
 /// How Docker Compose v2 is invoked on this machine.
@@ -690,7 +691,13 @@ pub fn parse_compose_config(yaml: &str) -> Result<ComposeContents> {
                     .and_then(|v| v.as_bool())
                     .unwrap_or(false);
                 if is_external {
-                    bail!("network '{name}' is declared as external and won't work on Antithesis");
+                    return Err(user_error(format!(
+                        "network '{name}' is declared as external and won't work on Antithesis"
+                    ))
+                    .suggestion(
+                        "remove `external: true` and declare the network normally — Antithesis \
+                         provisions every network inside the test environment",
+                    ));
                 }
                 networks.push(name.to_string());
             }
@@ -1146,6 +1153,11 @@ networks:
         assert!(
             err.to_string().contains("external"),
             "expected error about external network, got: {err}"
+        );
+        // The suggestion names the fix, matching the other validate errors.
+        assert!(
+            format!("{err:?}").contains("remove `external: true`"),
+            "expected the removal suggestion, got: {err:?}"
         );
     }
     #[test]

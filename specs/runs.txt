@@ -209,14 +209,23 @@ snouty --json runs build-logs $R_run_id
 [!staging] stdout '"timestamp".*"text"'
 
 # `snouty runs events` filters by `--match` needles against the decoded output.
+#    Against staging the search matches `fault` and carries `--limit`: fault
+#    events are Antithesis-generated, exist in every fault-injecting run, and
+#    first appear near the start of the timeline, so the server stops after a
+#    shallow scan. A workload needle such as `request` sits at an arbitrary
+#    depth, and an unbounded search streams every match — the suite's wall time
+#    must not scale with whatever run the tenant produced last. The mock keeps
+#    the unbounded form, whose full output the assertions below pin.
 mock-runs-server
-snouty runs events $R_run_id --match request
+[!staging] snouty runs events $R_run_id --match request
+[staging] snouty runs events $R_run_id --match fault --limit 3
 [!staging] stdout '^HASH\s+VTIME\s+SOURCE\s+OUTPUT'
 [!staging] stdout '-456.*2\.0.*\[app:error\].*\{"level":"warn","msg":"slow request"\}'
 
 # A second `--match` AND-narrows: every needle must be present in the line.
 mock-runs-server
-snouty runs events $R_run_id --match request --match slow
+[!staging] snouty runs events $R_run_id --match request --match slow
+[staging] snouty runs events $R_run_id --match fault --match network --limit 3
 [!staging] stdout '-456.*2\.0.*\[app:error\].*\{"level":"warn","msg":"slow request"\}'
 # A needle that isn't present excludes the event entirely.
 mock-runs-server
@@ -225,7 +234,8 @@ stdout 'No events matched "starting nonexistent"\.'
 
 # `snouty --json runs events` outputs raw NDJSON.
 mock-runs-server
-snouty --json runs events $R_run_id --match counter
+[!staging] snouty --json runs events $R_run_id --match counter
+[staging] snouty --json runs events $R_run_id --match fault --limit 3
 [!staging] stdout '"antithesis_assert".*"Counter'\''s value retrieved"'
 [!staging] stdout '.*"moment".*"input_hash":"-4735081784258020614".*'
 [!staging] stdout '.*"moment".*"vtime":"311\.8487535319291".*'
@@ -268,7 +278,10 @@ stdout 'No runs found\.'
 mock-server 400 '{"message":"bad request"}'
 env ANTITHESIS_API_KEY=test-api-key
 ! snouty runs
-stderr 'API error: 400.*'
+stderr '^Error: API error: 400.*'
+# The message sits on the `Error:` line itself: a single failure has no cause
+# chain to number, so no `0:` frame appears.
+! stderr '0: API error'
 ! stderr 'Backtrace omitted'
 
 # A rejection with no body at all is the API gateway's shape for auth and

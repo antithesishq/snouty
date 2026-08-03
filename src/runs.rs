@@ -579,6 +579,27 @@ async fn explain_run_scoped_error(
     }
 }
 
+/// Like [`explain_run_scoped_error`], for the logs endpoint. A 404 that
+/// survives the probe means the run exists and the hash/vtime pair does not
+/// name a moment in it, so say that and point at the command that lists valid
+/// moments. The probe already ran inside [`explain_run_scoped_error`]; nothing
+/// extra is fetched here.
+async fn explain_logs_error(
+    api: &AntithesisApi,
+    run_id: &str,
+    err: color_eyre::eyre::Report,
+) -> color_eyre::eyre::Report {
+    let err = explain_run_scoped_error(api, run_id, err).await;
+    if api_error_status(&err) == Some(404) {
+        err.suggestion(format!(
+            "the run exists but no moment matches this hash and vtime — list valid moments with \
+             `snouty runs events {run_id}`"
+        ))
+    } else {
+        err
+    }
+}
+
 /// Turn a properties-endpoint failure into a message that explains *why* there
 /// are no properties. Only a 404 is rewritten; every other error (auth, network,
 /// 5xx) passes through untouched.
@@ -1499,7 +1520,7 @@ async fn cmd_runs_logs(
         .await
     {
         Ok(stream) => stream.into_inner(),
-        Err(err) => return Err(explain_run_scoped_error(&api, run_id, err).await),
+        Err(err) => return Err(explain_logs_error(&api, run_id, err).await),
     };
 
     let mut stdout = BufWriter::new(std::io::stdout().lock());
@@ -5295,6 +5316,40 @@ mod tests {
                 explain_run_scoped_error(&api, "run-1", api_error(404, "endpoint 404")).await;
             assert!(format!("{result:#}").contains("endpoint 404"));
             assert!(!format!("{result:#}").contains("run not found"));
+        }
+
+        // The logs endpoint's 404-with-existing-run means "bad moment", the
+        // one case where snouty can name the next command.
+        #[tokio::test]
+        async fn logs_error_suggests_listing_moments_when_the_run_exists() {
+            let server = mock_get_run(
+                "run-1",
+                200,
+                json!({
+                    "run_id": "run-1",
+                    "status": "completed",
+                    "created_at": "2025-03-20T02:00:00Z",
+                    "launcher": "nightly"
+                }),
+            )
+            .await;
+            let api = test_api(&server.uri());
+            let result = explain_logs_error(&api, "run-1", api_error(404, "API error: 404")).await;
+            let debug = format!("{result:?}");
+            assert!(
+                debug.contains("snouty runs events run-1"),
+                "expected the moment-listing suggestion, got: {debug}"
+            );
+        }
+
+        // A missing run keeps the plain "run not found" with no moment talk.
+        #[tokio::test]
+        async fn logs_error_reports_a_missing_run_without_the_suggestion() {
+            let server = mock_get_run("BAD-ID", 404, json!({"message": "nope"})).await;
+            let api = test_api(&server.uri());
+            let result = explain_logs_error(&api, "BAD-ID", api_error(404, "API error: 404")).await;
+            assert_eq!(format!("{result:#}"), "run not found: BAD-ID");
+            assert!(!format!("{result:?}").contains("runs events"));
         }
 
         #[tokio::test]

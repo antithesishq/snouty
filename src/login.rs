@@ -20,9 +20,18 @@ pub fn cmd_login(
     current_settings: Result<Settings>,
 ) -> Result<()> {
     if let Err(report) = &current_settings {
-        eprintln!("The current settings failed to load with the following error: {report:#}");
         eprintln!(
-            "Would you like to proceed with the login command? Doing so may cause your existing settings file to be replaced rather than updated."
+            "{}",
+            crate::render::wrap_if_tty(&format!(
+                "The current settings failed to load with the following error: {report:#}"
+            ))
+        );
+        eprintln!(
+            "{}",
+            crate::render::wrap_if_tty(
+                "Would you like to proceed with the login command? Doing so may cause your \
+                 existing settings file to be replaced rather than updated.",
+            )
         );
         eprintln!("1. Yes, please proceed");
         eprintln!("2. No, please exit immediately");

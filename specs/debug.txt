@@ -8,15 +8,19 @@
 #
 # Each successful invocation actually starts a debugging session against the
 # API, so the bulk of this file is gated behind `[staging] skip` to avoid
-# mutating staging. Read-only checks (env-var, schema validation, and the
-# run-id/session-id requirement that fail before any API call) run in both
-# modes.
+# mutating staging. The skip sits above the first `mock-server` directive:
+# under staging that directive installs the real tenant credentials, and no
+# `snouty debug` command may execute with them — safety must not depend on
+# where the command fails. Only the credential-free check above the skip runs
+# in both modes.
 
 # The command authenticates with the Antithesis API using either
 #    ANTITHESIS_API_KEY and ANTITHESIS_TENANT, or
 #    ANTITHESIS_USERNAME, ANTITHESIS_PASSWORD, and ANTITHESIS_TENANT.
 ! snouty debug --input-hash abc --run-id run-123 --vtime 123
 stderr 'No Antithesis credentials found.*'
+
+[staging] skip
 
 # Parameters are validated against the debuggingParams schema before
 #    making any API call. Required fields: input_hash, vtime, and exactly
@@ -31,14 +35,12 @@ stderr 'unexpected argument.*'
 
 # The target run must be identified by exactly one of --run-id or
 #    --session-id. Supplying both, or neither, is an error caught before any
-#    API call (so it is exercised in both mock and staging modes).
+#    API call.
 ! snouty debug --input-hash abc --vtime 1 --run-id r-1 --session-id s-1
 stderr 'specify exactly one of --run-id / --session-id.*'
 
 ! snouty debug --input-hash abc --vtime 1
 stderr 'specify --run-id or --session-id.*'
-
-[staging] skip
 
 # Parameters are provided as typed flags. Before sending, the resolved
 #    parameters are printed to stderr with sensitive values redacted. The

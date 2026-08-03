@@ -6,9 +6,9 @@
 # line so that I can trigger testing without using the web UI.
 #
 # Each successful invocation actually starts a test run against the API, so
-# the bulk of this file is gated behind `[staging] skip`. Read-only checks
-# (arg parsing, schema validation, env-var enforcement) all fail before any
-# API call and run in both modes.
+# the bulk of this file is gated behind `[staging] skip`. The credential-free
+# checks above the skip (arg parsing, schema validation) fail before any API
+# call and run in both modes.
 
 # The user specifies a webhook endpoint name via -w / --webhook (required).
 ! snouty launch --duration 30
@@ -43,6 +43,12 @@ stderr 'unexpected argument.*'
 ! snouty launch -w basic_test --duration 30
 stderr 'No Antithesis credentials found.*'
 
+# Everything below runs against the mock only. The skip sits above the first
+# `mock-server` directive: under staging that directive installs the real
+# tenant credentials, and no `snouty launch` command may execute with them —
+# safety must not depend on where the command fails.
+[staging] skip
+
 # --param cannot override typed flag values.
 mock-server 200 '{"runId":"run-123","statusCode":202}'
 ! snouty launch -w basic_test --duration 30 --param antithesis.duration=60
@@ -53,8 +59,6 @@ stderr 'cannot be overridden via --param.*'
 mock-server 200 '{}'
 ! snouty launch -w basic_test
 stderr 'no parameters provided.*'
-
-[staging] skip
 
 # Parameters are provided as --key value typed flags
 #    (e.g. --duration 30, --test-name my-test). Before sending, the resolved

@@ -1,19 +1,26 @@
 ---
 name: Release Snouty
-description: This skill should be used when the user asks to "release snouty", "cut a release", "bump the version", "create a release", or provides a version like "release snouty v0.2.0". Handles version validation, Cargo.toml bump, build, test, commit, and tagging.
+description: This skill should be used when the user asks to "release snouty", "cut a release", "cut a pre-release", "cut an rc", "bump the version", "create a release", or provides a version like "release snouty v0.2.0" or "release snouty v0.7.0-rc.1". Handles version validation, Cargo.toml bump, build, test, commit, and tagging, for releases and pre-releases.
 ---
 
 # Release Snouty
 
 Perform a versioned release of snouty by bumping `Cargo.toml`, building, testing, committing, and tagging. _Do not_ push the resulting commit so the user has a chance to audit it first.
 
+## Pre-releases
+
+A version with an `-rc.N` suffix (e.g. `0.7.0-rc.1`) is a pre-release. The procedure is the same as for a release; only these points differ:
+
+- When the user asks for a pre-release without a full version (e.g. "cut an rc for 0.7.0"), pick the next rc number: list existing tags with `git tag -l 'v0.7.0-rc.*'` and use N+1 of the highest, or `-rc.1` when there are none.
+- Shipping is automatic. Pushing the tag triggers the cargo-dist workflow (`.github/workflows/release.yml`), which builds the artifacts and creates the GitHub release. A pre-release suffix in the tag makes cargo-dist mark it as a GitHub **pre-release**, so `snouty update` ignores it unless the user is on the beta channel (`update_channel = "beta"` or `snouty update --channel beta`). Never create the GitHub release by hand — a hand-made release could miss the pre-release flag and ship the rc to everyone.
+- Do not publish a pre-release to crates.io (see step 7).
+- A later full release of the same version (e.g. `0.7.0` after `0.7.0-rc.2`) is a normal upgrade: semver sorts every `-rc.N` before the release.
+
 ## Release Procedure
 
 ### 1. Parse and Validate the Version
 
-Extract the version from the user's input. Accept formats like `v0.2.0` or `0.2.0`. Strip the leading `v` to get the bare semver.
-
-A version with an `-rc.N` suffix (e.g. `0.7.0-rc.1`) is a pre-release. The release workflow marks the GitHub release as a pre-release automatically, so `snouty update` only installs it for users on the beta channel.
+Extract the version from the user's input. Accept formats like `v0.2.0` or `0.2.0`, including pre-release forms like `v0.7.0-rc.1`. Strip the leading `v` to get the bare semver.
 
 Run all of the following sanity checks before making any changes:
 
@@ -69,4 +76,4 @@ git push && git push --tags
 cargo publish
 ```
 
-For a pre-release (`-rc.N`), omit `cargo publish` — pre-releases ship only as GitHub pre-releases for the beta update channel.
+For a pre-release (`-rc.N`), omit `cargo publish` — pre-releases ship only as GitHub pre-releases for the beta update channel. Also tell the user that after the tag push, CI creates the GitHub pre-release automatically and only beta-channel users receive it.

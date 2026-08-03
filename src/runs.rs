@@ -1627,8 +1627,8 @@ fn format_log_vtime(entry: &Value) -> String {
         // The API sends vtime as a seconds string; truncate it directly so f64
         // round-trips can't nudge the displayed value.
         Some(s) => truncate_decimals(s, 3),
-        // A JSON-number vtime: VTime's Display is the exact text the number
-        // was printed from, so truncating it cuts — never rounds.
+        // A JSON-number vtime: VTime's Display is plain decimal and
+        // value-exact, so truncating it cuts — never rounds.
         None => match VTime::from_json(raw) {
             Some(v) => truncate_decimals(&v.to_string(), 3),
             None => String::new(),
@@ -4551,10 +4551,15 @@ mod tests {
         let NdjsonLine::Entry(entry) = classify_line(&line) else {
             panic!("an object line should classify as Entry");
         };
+        // The expected number text comes from the JSON writer, not Display:
+        // below ~10µs the writer uses exponent notation where Display stays
+        // plain decimal. Both carry the identical value.
+        let number_text = serde_json::to_string(&vtime).unwrap();
         assert_eq!(
             entry.to_string(),
-            format!(r#"{{"moment":{{"vtime":{vtime}}},"output_text":"x"}}"#)
+            format!(r#"{{"moment":{{"vtime":{number_text}}},"output_text":"x"}}"#)
         );
+        assert_eq!(VTime::from_json(&entry["moment"]["vtime"]), Some(vtime));
     }
 
     /// classify_line never panics, whatever the server sends; anything that

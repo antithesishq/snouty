@@ -71,10 +71,15 @@ stderr '"antithesis.report.recipients": "\[REDACTED\]"'
 stderr '"antithesis.source": "ci-pipeline"'
 stdout 'Test run started: run_id run-123'
 
-# With --json, the full response body is printed as pretty JSON.
+# With --json, snouty prints its own envelope: the run id, and nothing else.
+# The launch webhook's body-level statusCode is deliberately not re-exported
+# (issue #180) — the exit code is the success signal, and the field disagrees
+# with the response anyway (the mock answers HTTP 200 saying 202). Use --verbose
+# to see the response as it arrived.
 mock-server 200 '{"runId":"run-123","statusCode":202}'
 snouty --json launch -w basic_test --config-image config:latest --duration 30 --source ci-pipeline
 stdout '\s*"runId": "run-123".*'
+! stdout '.*statusCode.*'
 ! stdout 'Test run started.*'
 
 # 6b. --ephemeral flag sets antithesis.is_ephemeral to "true".
@@ -116,12 +121,13 @@ stderr '"antithesis.images": "app@sha256:abc;db:latest"'
 # On an error that reaches the test launcher (e.g. an unknown launcher name),
 # the command exits with an error showing the HTTP status. Such errors carry
 # the Launch_Error_Response envelope ({ statusCode, runId: null }), verified
-# against the live API — no message text, and runId is null. (The launcher does
+# against the live API — no message text, and runId is null. The status comes
+# from the response, and the body is echoed for debugging. (The launcher does
 # no request validation beyond auth, so it never returns a 400; 404 is the
 # canonical reachable failure.)
 mock-server 404 '{"statusCode":404,"runId":null}'
 ! snouty launch -w no_such_launcher --duration 30
-stderr 'API error: 404.*'
+stderr 'API error: 404 Not Found.*'
 
 # `snouty run` still works but prints a deprecation warning.
 mock-server 200 '{"runId":"run-123","statusCode":202}'

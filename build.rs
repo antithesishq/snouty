@@ -18,7 +18,7 @@ fn main() {
 
 fn generate_api_client(out_dir: &Path) {
     let file = std::fs::File::open("src/openapi.json").unwrap();
-    let spec_value: serde_json::Value = serde_json::from_reader(file).unwrap();
+    let mut spec_value: serde_json::Value = serde_json::from_reader(file).unwrap();
 
     // A schema's `additionalProperties: false` makes progenitor/typify emit
     // `#[serde(deny_unknown_fields)]`, which turns a forwards-compatible server
@@ -41,6 +41,7 @@ fn generate_api_client(out_dir: &Path) {
         offenders.len(),
         offenders.join(", ")
     );
+    untype_error_responses(&mut spec_value);
     let spec: openapiv3::OpenAPI = serde_json::from_value(spec_value).unwrap();
 
     let mut settings = progenitor::GenerationSettings::default();
@@ -51,8 +52,69 @@ fn generate_api_client(out_dir: &Path) {
     let ast = syn::parse2(tokens).unwrap();
     let content = prettyplease::unparse(&ast);
     let content = patch_lenient_booleans(content);
+    assert_no_typed_error_responses(&content);
 
     fs::write(out_dir.join("antithesis_api.rs"), content).unwrap();
+}
+
+/// Hold `untype_error_responses` to its promise: with no error response
+/// documented anywhere, progenitor emits no `Error::ErrorResponse` arm, so that
+/// variant is unreachable and `classify_client_error` treats it as such. A spec
+/// refresh that slipped one back in — under a status shape the transform misses
+/// — would otherwise only surface as a status-less failure against a live
+/// tenant.
+fn assert_no_typed_error_responses(content: &str) {
+    assert!(
+        !content.contains("Error::ErrorResponse"),
+        "generated client has an `Error::ErrorResponse` arm; every error response is supposed \
+         to be undocumented so failures keep their HTTP status (see `untype_error_responses`)"
+    );
+}
+
+/// Stop the generated client from typing error response bodies, so an HTTP
+/// failure always reaches snouty with its status attached.
+///
+/// progenitor decodes every *documented* response into a generated type. When a
+/// documented status arrives with a body that doesn't match its schema, the
+/// generated client returns `Error::InvalidResponsePayload(Bytes,
+/// serde_json::Error)` — a variant with nowhere to put the HTTP status, for
+/// which `Error::status()` is `None`. An *undocumented* status takes
+/// `Error::UnexpectedResponse(reqwest::Response)` instead, which keeps the
+/// status *and* the raw body.
+///
+/// Error bodies are exactly the ones that don't honour the schema: the API
+/// gateway rejects a bad token with an empty `text/plain` body, an intermediary
+/// answers with an HTML page. Typed, any of those masked the status — an
+/// empty-bodied 401 was reaching `snouty doctor` as "API unreachable" (#180).
+/// Untyped, every failure arrives as status + raw body and one status-first
+/// formatter renders all of them.
+///
+/// Success responses are left alone: the spec describes them accurately, and
+/// the typed bodies are what the rest of the client is built on.
+fn untype_error_responses(spec: &mut serde_json::Value) {
+    let paths = spec
+        .get_mut("paths")
+        .and_then(serde_json::Value::as_object_mut)
+        .expect("openapi spec has a `paths` object");
+    for path_item in paths.values_mut() {
+        let Some(path_item) = path_item.as_object_mut() else {
+            continue;
+        };
+        // A path item holds non-operation keys too (`parameters`, `summary`);
+        // an operation is anything that documents responses.
+        for operation in path_item.values_mut() {
+            let Some(responses) = operation
+                .get_mut("responses")
+                .and_then(serde_json::Value::as_object_mut)
+            else {
+                continue;
+            };
+            // Retaining only 2xx also drops any `default` response, which
+            // progenitor would otherwise turn into a typed catch-all covering
+            // every error status — reintroducing the problem by another door.
+            responses.retain(|status, _| status.starts_with('2'));
+        }
+    }
 }
 
 /// Recursively collect the JSON-pointer path of every `"additionalProperties":

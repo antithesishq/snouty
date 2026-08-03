@@ -1,5 +1,4 @@
 use std::collections::{BTreeMap, BTreeSet};
-use std::io::IsTerminal;
 use std::io::Seek;
 use std::path::{Path, PathBuf};
 
@@ -650,10 +649,7 @@ fn discover_scripts(
     if !stopped_with_scripts.is_empty() {
         eprintln!(
             "{}",
-            crate::render::wrap_if(
-                &stranded_scripts_warning(&stopped_with_scripts),
-                std::io::stderr().is_terminal(),
-            )
+            crate::render::wrap_if_tty(&stranded_scripts_warning(&stopped_with_scripts))
         );
     }
 
@@ -704,10 +700,16 @@ fn combined_discovery_error(
     }
 
     if !unrecognized.is_empty() {
-        err = err.suggestion(
-            "rename each command to start with a recognized prefix (first_, driver_, anytime_, \
-             eventually_, finally_) or helper_",
-        );
+        // The list comes from the same table the scan matches against, so the
+        // text a user follows cannot name a prefix the scan rejects.
+        let prefixes = crate::scripts::RECOGNIZED_PREFIXES
+            .iter()
+            .map(|(prefix, _)| *prefix)
+            .collect::<Vec<_>>()
+            .join(", ");
+        err = err.suggestion(format!(
+            "rename each command to start with a recognized prefix ({prefixes}) or helper_"
+        ));
     }
     if !not_executable.is_empty() {
         err = err.suggestion("chmod +x the listed commands in the image, then rebuild");

@@ -16,7 +16,7 @@ pub mod moment;
 pub mod params;
 pub mod process;
 pub(crate) mod render;
-pub use render::wrap_if;
+pub use render::wrap_if_tty;
 pub mod runs;
 pub mod scripts;
 #[doc(hidden)]

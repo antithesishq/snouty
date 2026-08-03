@@ -16,25 +16,25 @@ pub enum ScriptType {
     Finally,
 }
 
+/// Every recognized test-command prefix, paired with its type. One table
+/// drives both the scan and the user-facing error text, so the list a user
+/// reads cannot drift from the list the scan accepts.
+pub const RECOGNIZED_PREFIXES: [(&str, ScriptType); 7] = [
+    ("first_", ScriptType::First),
+    ("parallel_driver_", ScriptType::ParallelDriver),
+    ("serial_driver_", ScriptType::SerialDriver),
+    ("singleton_driver_", ScriptType::SingletonDriver),
+    ("anytime_", ScriptType::Anytime),
+    ("eventually_", ScriptType::Eventually),
+    ("finally_", ScriptType::Finally),
+];
+
 impl ScriptType {
     fn from_prefix(name: &str) -> Option<Self> {
-        if name.starts_with("first_") {
-            Some(Self::First)
-        } else if name.starts_with("parallel_driver_") {
-            Some(Self::ParallelDriver)
-        } else if name.starts_with("serial_driver_") {
-            Some(Self::SerialDriver)
-        } else if name.starts_with("singleton_driver_") {
-            Some(Self::SingletonDriver)
-        } else if name.starts_with("anytime_") {
-            Some(Self::Anytime)
-        } else if name.starts_with("eventually_") {
-            Some(Self::Eventually)
-        } else if name.starts_with("finally_") {
-            Some(Self::Finally)
-        } else {
-            None
-        }
+        RECOGNIZED_PREFIXES
+            .iter()
+            .find(|(prefix, _)| name.starts_with(prefix))
+            .map(|(_, script_type)| *script_type)
     }
 
     pub fn is_driver(self) -> bool {

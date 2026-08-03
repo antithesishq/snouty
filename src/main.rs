@@ -83,10 +83,7 @@ async fn main() {
         // print message + any `.note()`/`.suggestion()` hints with no backtrace;
         // genuine internal faults keep theirs.
         let rendered = snouty::error::render_report(&report);
-        eprintln!(
-            "{}",
-            snouty::wrap_if(&rendered, std::io::stderr().is_terminal())
-        );
+        eprintln!("{}", snouty::wrap_if_tty(&rendered));
         std::process::exit(1);
     }
 }

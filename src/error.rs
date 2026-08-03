@@ -53,49 +53,26 @@ impl std::error::Error for ApiError {}
 /// Render a report for the user, at the moment of printing.
 ///
 /// This is the one place that turns a `Report` into terminal text, so printing
-/// concerns live here and not in the messages: the chain index is dropped when
-/// there is nothing to enumerate. Wrapping is the caller's call — it depends
-/// on whether stderr is a terminal, which the print site knows.
+/// concerns live here and not in the messages. Wrapping is the caller's call —
+/// it depends on whether stderr is a terminal, which the print site knows.
 ///
 /// color_eyre renders every report as a numbered chain, so a single error —
-/// the common case — arrives as `\n   0: <message>`. The `0:` numbers
-/// nothing and reads like a stack frame; collapse it onto the `Error:` line.
-/// A report with two or more chain elements keeps its numbering, which is
-/// genuinely enumerating causes there.
+/// the common case — arrives as `\n   0: <message>`. The `0:` numbers nothing
+/// and reads like a stack frame. For a one-element chain the message comes
+/// from the report itself instead, onto the `Error:` line. The sections a
+/// report carries (`Suggestion:`, `Note:`, payload snippets) render only
+/// through the handler, as the text after the first blank line; that tail is
+/// kept verbatim. A chain of two or more keeps color_eyre's numbering, which
+/// is genuinely enumerating causes there.
 pub fn render_report(report: &Report) -> String {
     let rendered = format!("{report:?}");
-    let rendered = if report.chain().len() == 1 {
-        collapse_single_frame(&rendered)
-    } else {
-        rendered
-    };
-    format!("Error: {rendered}")
-}
-
-/// Remove the `\n   0: ` frame header from a rendered single-element chain,
-/// tolerating ANSI color codes around the index. Continuation lines keep the
-/// six-column indent color_eyre gave them.
-fn collapse_single_frame(rendered: &str) -> String {
-    let stripped = rendered.trim_start_matches('\n');
-    // Optional escape sequence, the literal `0`, optional escape, `:`.
-    fn skip_ansi(mut value: &str) -> &str {
-        while let Some(after) = value.strip_prefix('\u{1b}') {
-            match after.find(|c: char| c.is_ascii_alphabetic()) {
-                Some(i) => value = &after[i + 1..],
-                None => break,
-            }
-        }
-        value
+    if report.chain().len() > 1 {
+        return format!("Error: {rendered}");
     }
-
-    let rest = skip_ansi(stripped.trim_start_matches(' '));
-    if let Some(after) = rest.strip_prefix('0')
-        && let Some(after) = skip_ansi(after).strip_prefix(':')
-    {
-        return after.trim_start_matches(' ').to_string();
+    match rendered.split_once("\n\n") {
+        Some((_frame, tail)) => format!("Error: {report}\n\n{tail}"),
+        None => format!("Error: {report}"),
     }
-    // Unexpected shape: keep what color_eyre produced.
-    stripped.to_string()
 }
 
 /// Returns the HTTP status of the first [`ApiError`] in the report's chain, if

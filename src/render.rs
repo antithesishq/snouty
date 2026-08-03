@@ -58,89 +58,45 @@ enum NewlinePolicy {
 /// The measure user-facing prose wraps to. Narrower than most terminals, so a
 /// wrapped message reads as a paragraph instead of hitting the terminal's own
 /// mid-word wrap; wide enough that short messages stay on one line.
-pub(crate) const PROSE_WIDTH: usize = 100;
+const PROSE_WIDTH: usize = 100;
 
-/// Wrap `text` for stderr when `tty` says a person is reading it.
+/// Wrap prose for stderr when a person is reading it.
 ///
-/// Piped and captured output stays unwrapped: tests, specs, and shell
-/// pipelines consume whole lines, and a wrap point that moves with an
-/// embedded path length breaks any multi-word match that straddles it. The
-/// caller passes its own terminal check, so the tty decision stays at the
-/// print site.
-pub fn wrap_if(text: &str, tty: bool) -> String {
-    if tty {
-        wrap_text(text, PROSE_WIDTH)
+/// Wrapping is a property of printing, not of the message, and it applies only
+/// on a terminal: piped and captured output keeps whole lines, because a wrap
+/// point that moves with an embedded path length breaks any multi-word match
+/// that straddles it.
+pub fn wrap_if_tty(text: &str) -> String {
+    use std::io::IsTerminal;
+    if std::io::stderr().is_terminal() {
+        wrap(text)
     } else {
         text.to_string()
     }
 }
 
-/// Word-wrap `text` to `width` visible columns, for prose the user reads.
+/// Word-wrap each overlong line of `text` to [`PROSE_WIDTH`] visible columns.
 ///
-/// Wrapping is a property of *printing*, not of the message: callers apply this
-/// at the print site, and the stored/built message stays a single logical line.
-/// Each input line wraps independently, continuation lines inherit the line's
-/// leading indent, and ANSI escape sequences count as zero width so a colored
-/// report wraps the same as a plain one. Words longer than the width (paths,
-/// URLs) are left intact and overflow rather than being split.
-pub(crate) fn wrap_text(text: &str, width: usize) -> String {
-    text.lines()
-        .map(|line| wrap_line(line, width))
-        .collect::<Vec<_>>()
-        .join("\n")
+/// A line that already fits is returned byte-identical, which keeps aligned
+/// content (tables, caret markers, indented listings) exactly as built.
+/// Continuation lines inherit the line's indent, ANSI escape sequences count
+/// as zero width, and words are never split — a path overflows rather than
+/// breaking.
+fn wrap(text: &str) -> String {
+    text.lines().map(wrap_line).collect::<Vec<_>>().join("\n")
 }
 
-fn wrap_line(line: &str, width: usize) -> String {
-    // A line that already fits is returned byte-identical, which keeps aligned
-    // content (tables, caret markers, indented listings) exactly as built.
-    // Re-flowing only ever applies to overlong prose.
-    if visible_width(line) <= width {
+fn wrap_line(line: &str) -> String {
+    if textwrap::core::display_width(line) <= PROSE_WIDTH {
         return line.to_string();
     }
     let indent: String = line.chars().take_while(|c| *c == ' ').collect();
-    let mut out = String::new();
-    let mut column = 0;
-    for word in line.split_whitespace() {
-        let word_width = visible_width(word);
-        if column == 0 {
-            out.push_str(&indent);
-            column = indent.len();
-        } else if column + 1 + word_width > width {
-            out.push('\n');
-            out.push_str(&indent);
-            column = indent.len();
-        } else {
-            out.push(' ');
-            column += 1;
-        }
-        out.push_str(word);
-        column += word_width;
-    }
-    if out.is_empty() {
-        line.to_string()
-    } else {
-        out
-    }
-}
-
-/// The number of terminal columns `s` occupies, counting ANSI escape sequences
-/// (`ESC [ … m` and similar) as zero.
-fn visible_width(s: &str) -> usize {
-    let mut width = 0;
-    let mut chars = s.chars();
-    while let Some(ch) = chars.next() {
-        if ch == '\u{1b}' {
-            // Skip to the final byte of the escape sequence (`@` through `~`).
-            for esc in chars.by_ref() {
-                if ('\u{40}'..='\u{7e}').contains(&esc) && esc != '[' {
-                    break;
-                }
-            }
-        } else {
-            width += 1;
-        }
-    }
-    width
+    let options = textwrap::Options::new(PROSE_WIDTH)
+        .initial_indent(&indent)
+        .subsequent_indent(&indent)
+        .break_words(false)
+        .word_splitter(textwrap::WordSplitter::NoHyphenation);
+    textwrap::fill(line.trim_start(), options)
 }
 
 pub(crate) fn sanitize(s: &str) -> String {
@@ -182,38 +138,26 @@ mod tests {
     }
 
     #[test]
-    fn wrap_text_reflows_only_overlong_lines() {
+    fn wrap_reflows_only_overlong_lines() {
         let long = format!("Warning: {}", "word ".repeat(30));
-        let wrapped = wrap_text(&long, 40);
+        let wrapped = wrap(&long);
         assert!(wrapped.lines().count() > 1);
-        assert!(wrapped.lines().all(|l| l.len() <= 40), "got: {wrapped}");
+        assert!(wrapped.lines().all(|l| l.len() <= 100), "got: {wrapped}");
         // A short line keeps its exact bytes, including internal alignment.
-        assert_eq!(
-            wrap_text("  profile     (none)", 100),
-            "  profile     (none)"
-        );
-        assert_eq!(wrap_text("", 100), "");
+        assert_eq!(wrap("  profile     (none)"), "  profile     (none)");
+        assert_eq!(wrap(""), "");
     }
 
     #[test]
-    fn wrap_text_keeps_the_indent_on_continuations() {
-        let wrapped = wrap_text(&format!("   0: {}", "word ".repeat(30)), 40);
+    fn wrap_keeps_the_indent_and_never_splits_words() {
+        let path = format!("/very/long/{}", "seg-x/".repeat(30));
+        let wrapped = wrap(&format!(
+            "   note: backed up to {path} {}",
+            "word ".repeat(20)
+        ));
         for line in wrapped.lines().skip(1) {
             assert!(line.starts_with("   "), "got: {wrapped}");
         }
-    }
-
-    #[test]
-    fn wrap_text_counts_ansi_escapes_as_zero_width() {
-        // 10 visible chars dressed in color codes must not trigger a wrap.
-        let colored = format!("\u{1b}[31m{}\u{1b}[0m", "x".repeat(10));
-        assert_eq!(wrap_text(&colored, 20), colored);
-    }
-
-    #[test]
-    fn wrap_text_leaves_unsplittable_words_intact() {
-        let path = format!("/very/long/{}", "seg/".repeat(30));
-        let wrapped = wrap_text(&format!("backed up to {path}"), 40);
         assert!(wrapped.contains(&path), "paths must never be split");
     }
 

@@ -13,11 +13,13 @@ Perform a versioned release of snouty by bumping `Cargo.toml`, building, testing
 
 Extract the version from the user's input. Accept formats like `v0.2.0` or `0.2.0`. Strip the leading `v` to get the bare semver.
 
+A version with an `-rc.N` suffix (e.g. `0.7.0-rc.1`) is a pre-release. The release workflow marks the GitHub release as a pre-release automatically, so `snouty update` only installs it for users on the beta channel.
+
 Run all of the following sanity checks before making any changes:
 
-- Validate the version matches `MAJOR.MINOR.PATCH` where each component is a non-negative integer.
+- Validate the version matches `MAJOR.MINOR.PATCH` where each component is a non-negative integer, optionally followed by `-rc.N` where N is a positive integer.
 - Read `Cargo.toml` and extract the current version.
-- Confirm the new version is strictly greater than the current version (compare major, then minor, then patch).
+- Confirm the new version is strictly greater than the current version under semver ordering (compare major, then minor, then patch; a pre-release sorts before its release, so `0.7.0-rc.1` < `0.7.0`, and `0.7.0-rc.2` > `0.7.0-rc.1`).
 - Confirm the git tag `vX.Y.Z` does not already exist (`git tag -l vX.Y.Z`).
 - Confirm the working tree is clean (`git status --porcelain` returns empty).
 - Confirm the current branch is `main`.
@@ -66,3 +68,5 @@ Tell the user to run the following once satisfied:
 git push && git push --tags
 cargo publish
 ```
+
+For a pre-release (`-rc.N`), omit `cargo publish` — pre-releases ship only as GitHub pre-releases for the beta update channel.

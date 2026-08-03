@@ -81,6 +81,7 @@ A matching environment variable always overrides the file. The supported keys an
 | `repository`       | `ANTITHESIS_REPOSITORY`   |
 | `base_url`         | `ANTITHESIS_BASE_URL`     |
 | `container_engine` | `SNOUTY_CONTAINER_ENGINE` |
+| `update_channel`   | `SNOUTY_UPDATE_CHANNEL`   |
 
 Authentication (below) is read from the environment only, never from a settings file.
 
@@ -145,7 +146,7 @@ Snouty provides the following subcommands. Invoke `snouty <command> --help` to f
 - `snouty docs`: search the Antithesis documentation locally (auto-refreshes the local copy over the network; pass `--offline` to skip).
 - `snouty completions <shell>`: generate shell completion scripts.
 - `snouty version`: print version and build information.
-- `snouty update`: install the latest version.
+- `snouty update`: install the latest version. Set `update_channel = "beta"` (or `SNOUTY_UPDATE_CHANNEL=beta`) to also consider pre-releases; override the setting for one run with `--channel release|beta`.
 
 ## Shell Completions
 

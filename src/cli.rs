@@ -1,5 +1,5 @@
 use chrono::{DateTime, Utc};
-use clap::{Args, Parser, Subcommand};
+use clap::{Args, Parser, Subcommand, ValueEnum};
 
 use crate::api::RunStatus;
 use crate::time::ReportDuration;
@@ -224,6 +224,13 @@ pre-releases:
   snouty update 0.6.0
   snouty update 0.6.0-rc.1
 
+The update channel decides what "latest" means: `release` (the default)
+installs the latest release, `beta` also considers pre-releases but still
+installs the latest release when it is newer than every pre-release. Set the
+channel with the `update_channel` setting (or SNOUTY_UPDATE_CHANNEL), and
+override it for one run with --channel:
+  snouty update --channel beta
+
 Installing a version older than the one you're running is a downgrade and
 requires --force."#)]
     Update(UpdateArgs),
@@ -362,6 +369,19 @@ pub struct UpdateArgs {
     /// Install the requested version even if it is older than the current one (a downgrade)
     #[arg(long)]
     pub force: bool,
+
+    /// Update channel to use, overriding the `update_channel` setting
+    #[arg(long, value_enum)]
+    pub channel: Option<UpdateChannel>,
+}
+
+/// Which releases `snouty update` considers when no explicit version is given.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, ValueEnum)]
+pub enum UpdateChannel {
+    /// Install the latest release
+    Release,
+    /// Also consider pre-releases, but prefer the latest release when it is newer
+    Beta,
 }
 
 #[derive(Args)]

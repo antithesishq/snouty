@@ -22,3 +22,28 @@ stderr '.*--force.*'
 # the manual update instructions.
 snouty update 0.0.1 --force
 stderr '.*https://github.com/antithesishq/snouty/releases.*'
+
+# --channel only accepts release and beta.
+! snouty update --channel nightly
+stderr 'invalid value'
+
+# --channel beta is accepted; with no helper installed it falls back to the
+# manual update instructions.
+snouty update --channel beta
+stderr '.*https://github.com/antithesishq/snouty/releases.*'
+
+# The update_channel setting is validated before the helper runs.
+env SNOUTY_UPDATE_CHANNEL=nightly
+! snouty update
+stderr 'invalid update_channel setting `nightly`'
+stderr 'expected `release` or `beta`'
+
+# The --channel flag overrides the setting, so an invalid setting value does
+# not block an explicitly chosen channel.
+snouty update --channel release
+stderr '.*https://github.com/antithesishq/snouty/releases.*'
+
+# A valid update_channel setting is accepted.
+env SNOUTY_UPDATE_CHANNEL=beta
+snouty update
+stderr '.*https://github.com/antithesishq/snouty/releases.*'

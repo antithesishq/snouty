@@ -18,6 +18,7 @@ pub const ANTITHESIS_REPOSITORY_VAR_NAME: &str = "ANTITHESIS_REPOSITORY";
 pub const ANTITHESIS_BASE_URL_VAR_NAME: &str = "ANTITHESIS_BASE_URL";
 pub const ANTITHESIS_HTTPS_PROXY_VAR_NAME: &str = "ANTITHESIS_HTTPS_PROXY";
 pub const CONTAINER_ENGINE_VAR_NAME: &str = "SNOUTY_CONTAINER_ENGINE";
+pub const UPDATE_CHANNEL_VAR_NAME: &str = "SNOUTY_UPDATE_CHANNEL";
 const PROJECT_SETTINGS_FILENAME: &str = ".snouty.toml";
 const GLOBAL_SETTINGS_FILENAME: &str = "settings.toml";
 const PROFILE_KEY: &str = "profile";
@@ -82,6 +83,7 @@ pub struct Settings {
     base_url: Option<String>,
     https_proxy: Option<String>,
     container_engine: Option<String>,
+    update_channel: Option<String>,
 }
 
 impl Settings {
@@ -144,6 +146,7 @@ impl Settings {
         let base_url = resolve("base_url", ANTITHESIS_BASE_URL_VAR_NAME)?;
         let https_proxy = resolve("https_proxy", ANTITHESIS_HTTPS_PROXY_VAR_NAME)?;
         let container_engine = resolve("container_engine", CONTAINER_ENGINE_VAR_NAME)?;
+        let update_channel = resolve("update_channel", UPDATE_CHANNEL_VAR_NAME)?;
 
         // A derived base URL interpolates the tenant into the request host
         // (`https://{tenant}.antithesis.com`) and we attach the API key to that
@@ -163,6 +166,7 @@ impl Settings {
             base_url,
             https_proxy,
             container_engine,
+            update_channel,
         ))
     }
 
@@ -177,6 +181,7 @@ impl Settings {
         base_url: Option<String>,
         https_proxy: Option<String>,
         container_engine: Option<String>,
+        update_channel: Option<String>,
     ) -> Self {
         let base_url = base_url.or_else(|| {
             tenant
@@ -191,6 +196,7 @@ impl Settings {
             base_url,
             https_proxy,
             container_engine,
+            update_channel,
         }
     }
 
@@ -220,6 +226,12 @@ impl Settings {
         self.container_engine.as_deref()
     }
 
+    /// The resolved update channel as a raw string, or `None` if unset.
+    /// `snouty update` parses and validates it (`release` or `beta`).
+    pub fn update_channel(&self) -> Option<&str> {
+        self.update_channel.as_deref()
+    }
+
     pub(crate) fn profile(&self) -> Option<&str> {
         self.profile.as_deref()
     }
@@ -234,6 +246,7 @@ impl Settings {
         base_url: Option<&str>,
         https_proxy: Option<&str>,
         container_engine: Option<&str>,
+        update_channel: Option<&str>,
     ) -> Self {
         Self::assemble(
             profile.map(str::to_string),
@@ -242,6 +255,7 @@ impl Settings {
             base_url.map(str::to_string),
             https_proxy.map(str::to_string),
             container_engine.map(str::to_string),
+            update_channel.map(str::to_string),
         )
     }
 
@@ -250,7 +264,7 @@ impl Settings {
     /// without touching the environment.
     #[cfg(test)]
     pub(crate) fn for_test_base_url(base_url: String) -> Self {
-        Self::for_test(None, None, None, Some(&base_url), None, None)
+        Self::for_test(None, None, None, Some(&base_url), None, None, None)
     }
 }
 
@@ -739,7 +753,7 @@ mod tests {
 
     #[test]
     fn base_url_falls_back_to_tenant_host() {
-        let settings = Settings::for_test(None, Some("acme"), None, None, None, None);
+        let settings = Settings::for_test(None, Some("acme"), None, None, None, None, None);
         assert_eq!(settings.base_url(), Some("https://acme.antithesis.com"));
     }
 
@@ -752,38 +766,46 @@ mod tests {
             Some("https://example.test"),
             None,
             None,
+            None,
         );
         assert_eq!(settings.base_url(), Some("https://example.test"));
     }
 
     #[test]
     fn base_url_without_tenant_is_none() {
-        let settings = Settings::for_test(None, None, None, None, None, None);
+        let settings = Settings::for_test(None, None, None, None, None, None, None);
         assert_eq!(settings.base_url(), None);
     }
 
     #[test]
     fn container_engine_absent_resolves_to_none() {
-        let settings = Settings::for_test(None, None, None, None, None, None);
+        let settings = Settings::for_test(None, None, None, None, None, None, None);
         assert_eq!(settings.container_engine(), None);
     }
 
     #[test]
     fn container_engine_resolves_when_set() {
-        let settings = Settings::for_test(None, None, None, None, None, Some("podman"));
+        let settings = Settings::for_test(None, None, None, None, None, Some("podman"), None);
         assert_eq!(settings.container_engine(), Some("podman"));
     }
 
     #[test]
     fn https_proxy_absent_resolves_to_none() {
-        let settings = Settings::for_test(None, None, None, None, None, None);
+        let settings = Settings::for_test(None, None, None, None, None, None, None);
         assert_eq!(settings.https_proxy(), None);
     }
 
     #[test]
     fn https_proxy_resolves_when_set() {
-        let settings =
-            Settings::for_test(None, None, None, None, Some("http://proxy.corp:8080"), None);
+        let settings = Settings::for_test(
+            None,
+            None,
+            None,
+            None,
+            Some("http://proxy.corp:8080"),
+            None,
+            None,
+        );
         assert_eq!(settings.https_proxy(), Some("http://proxy.corp:8080"));
     }
 
@@ -793,6 +815,27 @@ mod tests {
         assert_eq!(
             resolve_value("https_proxy", UNSET_ENV, None, Some(&project), None).unwrap(),
             Some("http://proxy.corp:8080".to_string())
+        );
+    }
+
+    #[test]
+    fn update_channel_absent_resolves_to_none() {
+        let settings = Settings::for_test(None, None, None, None, None, None, None);
+        assert_eq!(settings.update_channel(), None);
+    }
+
+    #[test]
+    fn update_channel_resolves_when_set() {
+        let settings = Settings::for_test(None, None, None, None, None, None, Some("beta"));
+        assert_eq!(settings.update_channel(), Some("beta"));
+    }
+
+    #[test]
+    fn update_channel_resolves_from_a_settings_file() {
+        let project = settings_file("update_channel = \"beta\"\n");
+        assert_eq!(
+            resolve_value("update_channel", UNSET_ENV, None, Some(&project), None).unwrap(),
+            Some("beta".to_string())
         );
     }
 
@@ -843,6 +886,7 @@ mod tests {
             Some("evil.com#"),
             None,
             Some("https://ok.example"),
+            None,
             None,
             None,
         );

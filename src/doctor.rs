@@ -330,6 +330,11 @@ fn resolve_settings(settings: &Settings) -> Vec<Setting> {
             "container engine",
             settings.container_engine().unwrap_or("auto-detect"),
         ),
+        // The explicit override, otherwise the release channel.
+        Setting::new(
+            "update channel",
+            settings.update_channel().unwrap_or("release"),
+        ),
     ]
 }
 
@@ -593,41 +598,69 @@ mod tests {
 
     #[test]
     fn tenant_row_shows_value() {
-        let settings = Settings::for_test(None, Some("acme"), None, None, None, None);
+        let settings = Settings::for_test(None, Some("acme"), None, None, None, None, None);
         let rows = resolve_settings(&settings);
         assert_eq!(row(&rows, "tenant").value, "acme");
     }
 
     #[test]
     fn missing_settings_render_as_not_set() {
-        let rows = resolve_settings(&Settings::for_test(None, None, None, None, None, None));
+        let rows = resolve_settings(&Settings::for_test(
+            None, None, None, None, None, None, None,
+        ));
         assert_eq!(row(&rows, "tenant").value, "not set");
     }
 
     #[test]
     fn https_proxy_row_shows_value() {
-        let settings =
-            Settings::for_test(None, None, None, None, Some("http://proxy.corp:8080"), None);
+        let settings = Settings::for_test(
+            None,
+            None,
+            None,
+            None,
+            Some("http://proxy.corp:8080"),
+            None,
+            None,
+        );
         let rows = resolve_settings(&settings);
         assert_eq!(row(&rows, "https proxy").value, "http://proxy.corp:8080");
     }
 
     #[test]
     fn https_proxy_row_defaults_to_not_set() {
-        let rows = resolve_settings(&Settings::for_test(None, None, None, None, None, None));
+        let rows = resolve_settings(&Settings::for_test(
+            None, None, None, None, None, None, None,
+        ));
         assert_eq!(row(&rows, "https proxy").value, "not set");
     }
 
     #[test]
     fn container_engine_row_auto_detects_when_unset() {
-        let settings = Settings::for_test(None, Some("acme"), None, None, None, None);
+        let settings = Settings::for_test(None, Some("acme"), None, None, None, None, None);
         let rows = resolve_settings(&settings);
         assert_eq!(row(&rows, "container engine").value, "auto-detect");
     }
 
     #[test]
+    fn update_channel_row_defaults_to_release() {
+        let rows = resolve_settings(&Settings::for_test(
+            None, None, None, None, None, None, None,
+        ));
+        assert_eq!(row(&rows, "update channel").value, "release");
+    }
+
+    #[test]
+    fn update_channel_row_shows_value() {
+        let settings = Settings::for_test(None, None, None, None, None, None, Some("beta"));
+        let rows = resolve_settings(&settings);
+        assert_eq!(row(&rows, "update channel").value, "beta");
+    }
+
+    #[test]
     fn profile_row_reflects_no_active_profile() {
-        let rows = resolve_settings(&Settings::for_test(None, None, None, None, None, None));
+        let rows = resolve_settings(&Settings::for_test(
+            None, None, None, None, None, None, None,
+        ));
         assert_eq!(row(&rows, "profile").value, "(none)");
     }
 

@@ -217,6 +217,10 @@ async fn cmd_launch(
         params.insert("antithesis.config_image", config_image);
     }
 
+    if let Some(filter_logs_matching) = args.filter_logs_matching {
+        params.insert("antithesis.filter_logs_matching", filter_logs_matching);
+    }
+
     let config_image_ref = if let Some(config_dir) = args.config {
         let detected = config::detect_config(&config_dir)?;
         let registry = snouty::settings::require(settings.repository(), "repository")?;

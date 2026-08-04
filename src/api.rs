@@ -777,6 +777,7 @@ fn launch_request(params: &Params) -> Result<generated::types::LaunchRequest> {
                 generated::types::ParamsAntithesisIsEphemeral::try_from(value)
                     .wrap_err("invalid antithesis.is_ephemeral value")?,
             )),
+            "antithesis.filter_logs_matching" => builder.antithesis_filter_logs_matching(Some(value.to_string())),
             "antithesis.report.recipients" => {
                 builder.antithesis_report_recipients(Some(value.to_string()))
             }

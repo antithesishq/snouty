@@ -483,6 +483,10 @@ pub struct LaunchArgs {
     #[arg(long)]
     pub recipients: Option<String>,
 
+    /// Regular Expression to filter out logs as part of test run. Filtered logs are recoverable in multi-verse debugging sessions
+    #[arg(long)]
+    pub filter_logs_matching: Option<String>,
+
     /// Extra parameters as key=value pairs (repeatable)
     #[arg(long = "param")]
     pub params: Vec<String>,

@@ -42,17 +42,39 @@ fn generate_api_client(out_dir: &Path) {
         offenders.join(", ")
     );
     untype_error_responses(&mut spec_value);
+    mark_vtime_schema(&mut spec_value);
     let spec: openapiv3::OpenAPI = serde_json::from_value(spec_value).unwrap();
 
     let mut settings = progenitor::GenerationSettings::default();
     settings.with_interface(progenitor::InterfaceStyle::Builder);
     settings.with_inner_type(quote::quote!(crate::api::ClientState));
+    // Map the marked vtime schema onto the handwritten VTime type, which
+    // enforces the exact string<->f64 conversion a vtime needs (the
+    // conversion lookup ignores schema metadata such as description/example,
+    // so `type` + `format` is the whole match key).
+    let vtime_schema: schemars::schema::SchemaObject =
+        serde_json::from_value(serde_json::json!({"type": "string", "format": "vtime"})).unwrap();
+    settings.with_conversion(
+        vtime_schema,
+        "crate::vtime::VTime",
+        std::iter::empty::<progenitor::TypeImpl>(),
+    );
     let mut generator = progenitor::Generator::new(&settings);
     let tokens = generator.generate_tokens(&spec).unwrap();
     let ast = syn::parse2(tokens).unwrap();
     let content = prettyplease::unparse(&ast);
     let content = patch_lenient_booleans(content);
     assert_no_typed_error_responses(&content);
+
+    // The conversion fails open: an unmatched schema silently falls back to a
+    // plain String field. Assert it took, so a progenitor/typify change that
+    // breaks the match fails the build instead of quietly shipping a client
+    // without the vtime precision guarantees.
+    assert!(
+        content.contains("pub vtime: crate::vtime::VTime"),
+        "generated client does not use crate::vtime::VTime for Moment.vtime; \
+         the with_conversion schema match no longer applies"
+    );
 
     fs::write(out_dir.join("antithesis_api.rs"), content).unwrap();
 }
@@ -115,6 +137,23 @@ fn untype_error_responses(spec: &mut serde_json::Value) {
             responses.retain(|status, _| status.starts_with('2'));
         }
     }
+}
+
+/// Tag `Moment.vtime` with a private `format: vtime` marker for the
+/// `with_conversion` mapping registered above. The marker is injected here
+/// rather than edited into `src/openapi.json`, because that file is a
+/// vendored upstream artifact — the next spec refresh would silently drop the
+/// edit.
+fn mark_vtime_schema(spec: &mut serde_json::Value) {
+    let vtime = spec
+        .pointer_mut("/components/schemas/Moment/properties/vtime")
+        .expect("openapi spec has no Moment.properties.vtime; update the VTime wiring in build.rs");
+    assert_eq!(
+        vtime["type"],
+        serde_json::json!("string"),
+        "Moment.vtime is no longer a string in the openapi spec; revisit the VTime wiring in build.rs"
+    );
+    vtime["format"] = serde_json::json!("vtime");
 }
 
 /// Recursively collect the JSON-pointer path of every `"additionalProperties":

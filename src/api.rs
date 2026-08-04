@@ -21,6 +21,7 @@ use crate::error::{ApiError, user_error};
 use crate::params::Params;
 use crate::render::sanitize;
 use crate::settings::Settings;
+use crate::vtime::VTime;
 
 #[allow(dead_code, unused_imports, private_interfaces)]
 mod generated {
@@ -122,7 +123,7 @@ impl RunDetail {
     pub(crate) fn real_failure_moment(&self) -> Option<&Moment> {
         self.failure_moment
             .as_ref()
-            .filter(|m| m.input_hash != "0" || m.vtime != "0")
+            .filter(|m| m.input_hash != "0" || m.vtime != VTime::ZERO)
     }
 }
 

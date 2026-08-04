@@ -2741,6 +2741,7 @@ dependencies = [
  "reqwest-middleware",
  "rpassword",
  "rusqlite",
+ "schemars",
  "semver",
  "serde",
  "serde_json",
@@ -2753,6 +2754,7 @@ dependencies = [
  "toml 1.1.2+spec-1.1.0",
  "which",
  "wiremock",
+ "zmij",
 ]
 
 [[package]]

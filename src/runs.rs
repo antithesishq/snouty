@@ -25,6 +25,7 @@ use crate::error::{api_error_status, user_error};
 use crate::render::{render_kv, sanitize, sanitize_multiline};
 use crate::settings::Settings;
 use crate::time::ReportDuration;
+use crate::vtime::VTime;
 
 /// `print!`/`println!`, but routed through `write!`/`writeln!` to stdout so a
 /// closed pipe (e.g. `snouty runs list | head`) surfaces as an `io::Error` the
@@ -834,14 +835,14 @@ fn render_moments_table(p: &EventProperty) -> String {
         rows.push(vec![
             "failing".to_string(),
             sanitize(&event.moment.input_hash),
-            sanitize(&event.moment.vtime),
+            event.moment.vtime.to_string(),
         ]);
     }
     for event in sorted_by_vtime(&p.examples) {
         rows.push(vec![
             "passing".to_string(),
             sanitize(&event.moment.input_hash),
-            sanitize(&event.moment.vtime),
+            event.moment.vtime.to_string(),
         ]);
     }
     if rows.is_empty() {
@@ -971,23 +972,11 @@ fn trim_blank_edges(lines: &[String]) -> &[String] {
     lines.get(start..end).unwrap_or(&[])
 }
 
-/// Return references to `events` ordered ascending by `moment.vtime` parsed as
-/// f64. Entries whose vtime doesn't parse as a number sort last, preserving
-/// their original relative order. The sort is stable, so events with equal
-/// vtimes keep their incoming order.
+/// Return references to `events` ordered ascending by `moment.vtime`. The
+/// sort is stable, so events with equal vtimes keep their incoming order.
 fn sorted_by_vtime(events: &[Event]) -> Vec<&Event> {
     let mut sorted: Vec<&Event> = events.iter().collect();
-    sorted.sort_by(|a, b| {
-        let av = a.moment.vtime.parse::<f64>().ok();
-        let bv = b.moment.vtime.parse::<f64>().ok();
-        match (av, bv) {
-            (Some(a), Some(b)) => a.total_cmp(&b),
-            // Numeric vtimes sort ahead of non-numeric/unparseable ones.
-            (Some(_), None) => std::cmp::Ordering::Less,
-            (None, Some(_)) => std::cmp::Ordering::Greater,
-            (None, None) => std::cmp::Ordering::Equal,
-        }
-    });
+    sorted.sort_by_key(|e| e.moment.vtime);
     sorted
 }
 
@@ -1160,7 +1149,7 @@ fn print_run_detail(run: &RunDetail) -> Result<()> {
         // Hash before VTime to match the `runs logs <hash> <vtime>` argument
         // order, so the values read top-to-bottom in the order you paste them.
         rows.push(("Failure Hash", moment.input_hash.clone()));
-        rows.push(("Failure VTime", moment.vtime.clone()));
+        rows.push(("Failure VTime", moment.vtime.to_string()));
     }
 
     if let Some(ref creator) = run.creator
@@ -1299,22 +1288,24 @@ async fn cmd_runs_build_logs(
 
     let mut wrote_any = false;
     let result = if json {
-        stream_ndjson_lines(stream, NoOpTransformer {}, |line| {
+        // The --json contract is raw NDJSON passthrough.
+        stream_raw_lines(stream, |line| {
             wrote_any = true;
             writeln!(stdout, "{line}")?;
             Ok(())
         })
         .await
     } else {
-        stream_ndjson_lines(stream, NoOpTransformer {}, |line| {
+        stream_ndjson_lines(stream, |line| {
             wrote_any = true;
-            if let Ok(entry) = serde_json::from_str::<serde_json::Value>(line) {
-                let ts = format_local_str(entry["timestamp"].as_str().unwrap_or(""));
-                let stream = entry["stream"].as_str().unwrap_or("out");
-                let text = sanitize(entry["text"].as_str().unwrap_or(""));
-                writeln!(stdout, "{ts} [{stream}] {text}")?;
-            } else {
-                writeln!(stdout, "{line}")?;
+            match line {
+                NdjsonLine::Entry(entry) => {
+                    let ts = format_local_str(entry["timestamp"].as_str().unwrap_or(""));
+                    let stream = entry["stream"].as_str().unwrap_or("out");
+                    let text = sanitize(entry["text"].as_str().unwrap_or(""));
+                    writeln!(stdout, "{ts} [{stream}] {text}")?;
+                }
+                NdjsonLine::Raw(line) => writeln!(stdout, "{line}")?,
             }
             Ok(())
         })
@@ -1342,32 +1333,6 @@ fn event_haystack(rendered: &RenderedEventEntry) -> String {
         "{} {} {} {}",
         rendered.input_hash, rendered.vtime, rendered.source, rendered.output
     )
-}
-
-/// Parse one NDJSON event line a single time and derive both its search haystack
-/// and (for the human table) its rendered row. A line that doesn't parse as JSON
-/// falls back to raw-line matching and a sanitized raw OUTPUT row.
-fn prepare_event_line(line: &str) -> (String, [String; 4]) {
-    match serde_json::from_str::<Value>(line) {
-        Ok(entry) => {
-            let rendered = render_event_entry(&entry);
-            let haystack = event_haystack(&rendered);
-            let row = [
-                rendered.input_hash,
-                rendered.vtime,
-                rendered.source,
-                rendered.output,
-            ];
-            (haystack, row)
-        }
-        // The line isn't valid JSON (a truncated final chunk, a proxy-injected
-        // error blob, …). Match against the raw line and surface it sanitized in
-        // the OUTPUT column rather than dropping it silently.
-        Err(_) => (
-            line.to_string(),
-            [String::new(), String::new(), String::new(), sanitize(line)],
-        ),
-    }
 }
 
 /// True when every needle (already lowercased) appears in `haystack`. Both sides
@@ -1433,17 +1398,23 @@ async fn cmd_runs_events(
 
     let mut stdout = BufWriter::new(std::io::stdout().lock());
 
-    // JSON mode emits the raw matching line, but matching itself runs against the
-    // DECODED fields (see `event_haystack`) so it agrees with what the table
-    // shows. Parse each line once to build the haystack, then stream the raw
-    // matching line as it arrives.
+    // Matching runs against the DECODED fields (see `event_haystack`) so it
+    // agrees with what the table shows; a raw line matches on its text.
     if json {
-        let result = stream_ndjson_lines(stream, NoOpTransformer {}, |line| {
-            let (haystack, _) = prepare_event_line(line);
-            if !haystack_matches_all_needles(&haystack, &lowered_matches) {
-                return Ok(());
+        let result = stream_ndjson_lines(stream, |line| {
+            match line {
+                NdjsonLine::Entry(entry) => {
+                    let haystack = event_haystack(&render_event_entry(&entry));
+                    if haystack_matches_all_needles(&haystack, &lowered_matches) {
+                        writeln!(stdout, "{entry}")?;
+                    }
+                }
+                NdjsonLine::Raw(line) => {
+                    if haystack_matches_all_needles(line, &lowered_matches) {
+                        writeln!(stdout, "{line}")?;
+                    }
+                }
             }
-            writeln!(stdout, "{line}")?;
             Ok(())
         })
         .await;
@@ -1453,15 +1424,31 @@ async fn cmd_runs_events(
 
     // Human table: the event stream is small (the server already substring-
     // filters), so buffer the matching rows and size the HASH/VTIME/SOURCE
-    // columns to the actual content rather than guessing fixed widths. Each line
-    // is parsed once into both its haystack and its row.
+    // columns to the actual content rather than guessing fixed widths. A raw
+    // line surfaces sanitized in the OUTPUT column rather than being dropped.
     let mut rows: Vec<Vec<String>> = Vec::new();
-    let result = stream_ndjson_lines(stream, NoOpTransformer {}, |line| {
-        let (haystack, row) = prepare_event_line(line);
+    let result = stream_ndjson_lines(stream, |line| {
+        let (haystack, row) = match line {
+            NdjsonLine::Entry(entry) => {
+                let rendered = render_event_entry(&entry);
+                let haystack = event_haystack(&rendered);
+                let row = vec![
+                    rendered.input_hash,
+                    rendered.vtime,
+                    rendered.source,
+                    rendered.output,
+                ];
+                (haystack, row)
+            }
+            NdjsonLine::Raw(line) => (
+                line.to_string(),
+                vec![String::new(), String::new(), String::new(), sanitize(line)],
+            ),
+        };
         if !haystack_matches_all_needles(&haystack, &lowered_matches) {
             return Ok(());
         }
-        rows.push(row.to_vec());
+        rows.push(row);
         Ok(())
     })
     .await;
@@ -1529,34 +1516,36 @@ async fn cmd_runs_logs(
         // Fault annotation is the default; `--raw` opts out into a verbatim
         // NDJSON passthrough.
         if raw {
-            stream_ndjson_lines(stream, NoOpTransformer {}, |line| {
+            stream_raw_lines(stream, |line| {
                 wrote_any = true;
                 writeln!(stdout, "{line}")?;
                 Ok(())
             })
             .await
         } else {
-            stream_ndjson_lines(
-                stream,
-                FaultAnnotator {
-                    active_fault_windows: ActiveFaultWindows::new(),
-                    active_faults: json!({}),
-                },
-                |line| {
-                    wrote_any = true;
-                    writeln!(stdout, "{line}")?;
-                    Ok(())
-                },
-            )
+            let mut annotator = FaultAnnotator {
+                active_fault_windows: ActiveFaultWindows::new(),
+                active_faults: json!({}),
+            };
+            stream_ndjson_lines(stream, |line| {
+                wrote_any = true;
+                match line {
+                    NdjsonLine::Entry(mut entry) => {
+                        annotator.annotate(&mut entry);
+                        writeln!(stdout, "{entry}")?;
+                    }
+                    NdjsonLine::Raw(line) => writeln!(stdout, "{line}")?,
+                }
+                Ok(())
+            })
             .await
         }
     } else {
-        stream_ndjson_lines(stream, NoOpTransformer {}, |line| {
+        stream_ndjson_lines(stream, |line| {
             wrote_any = true;
-            if let Ok(entry) = serde_json::from_str::<Value>(line) {
-                writeln!(stdout, "{}", format_log_entry(&entry, raw))?;
-            } else {
-                writeln!(stdout, "{line}")?;
+            match line {
+                NdjsonLine::Entry(entry) => writeln!(stdout, "{}", format_log_entry(&entry, raw))?,
+                NdjsonLine::Raw(line) => writeln!(stdout, "{line}")?,
             }
             Ok(())
         })
@@ -1616,15 +1605,14 @@ fn format_log_entry(entry: &Value, raw: bool) -> String {
     )
 }
 
-/// Parse a `moment`'s vtime to f64 seconds. The API sends `moment.vtime` as a
-/// seconds string (e.g. "398.4898"); accept a JSON number too, since the schema
-/// doesn't forbid one. Returns `None` when there's no parseable vtime.
-fn moment_vtime_seconds(entry: &Value) -> Option<f64> {
-    let vtime = &entry["moment"]["vtime"];
-    vtime
-        .as_str()
-        .and_then(|s| s.parse::<f64>().ok())
-        .or_else(|| vtime.as_f64())
+/// Convert an NDJSON entry's `moment.vtime` from the server's seconds string
+/// to an exact JSON number in place — the only processing snouty does to a
+/// vtime (see [`VTime`]). Returns the vtime, or `None` (entry untouched) when
+/// there's no parseable one.
+fn normalize_moment_vtime(entry: &mut Value) -> Option<VTime> {
+    let vtime = VTime::from_json(&entry["moment"]["vtime"])?;
+    entry["moment"]["vtime"] = json!(vtime);
+    Some(vtime)
 }
 
 /// Render a log line's vtime in seconds with exactly 3 decimal places,
@@ -1639,10 +1627,10 @@ fn format_log_vtime(entry: &Value) -> String {
         // The API sends vtime as a seconds string; truncate it directly so f64
         // round-trips can't nudge the displayed value.
         Some(s) => truncate_decimals(s, 3),
-        // A JSON-number vtime: format with surplus precision, then truncate the
-        // string, so the kept 3 decimals are never perturbed by rounding.
-        None => match raw.as_f64() {
-            Some(v) => truncate_decimals(&format!("{v:.9}"), 3),
+        // A JSON-number vtime: VTime's Display is the exact text the number
+        // was printed from, so truncating it cuts — never rounds.
+        None => match VTime::from_json(raw) {
+            Some(v) => truncate_decimals(&v.to_string(), 3),
             None => String::new(),
         },
     }
@@ -1725,9 +1713,49 @@ fn strip_log_envelope(entry: &Value) -> String {
     }
 }
 
+/// One line of an NDJSON stream, classified once at the stream boundary.
+enum NdjsonLine<'a> {
+    /// The happy case: the line parsed as a JSON *object* — the shape every
+    /// log/event record has — with `moment.vtime` already normalized to an
+    /// exact JSON number.
+    Entry(Value),
+    /// Everything else: a line that isn't valid JSON (a truncated final
+    /// chunk, a proxy-injected error blob, …) or valid JSON that isn't an
+    /// object. Carries the original text so callers surface it verbatim
+    /// rather than dropping it silently.
+    Raw(&'a str),
+}
+
+/// Classify one NDJSON line: see [`NdjsonLine`].
+fn classify_line(line: &str) -> NdjsonLine<'_> {
+    if let Ok(mut entry) = serde_json::from_str::<Value>(line)
+        && entry.is_object()
+    {
+        normalize_moment_vtime(&mut entry);
+        return NdjsonLine::Entry(entry);
+    }
+    NdjsonLine::Raw(line)
+}
+
+/// Stream an NDJSON response, handing each line to the callback parsed and
+/// normalized (see [`NdjsonLine`]). Commands whose contract is *raw*
+/// passthrough (`runs logs --json --raw`, `runs build-logs --json`) use
+/// [`stream_raw_lines`] instead — parsing is not their happy case.
 async fn stream_ndjson_lines<S, C>(
+    stream: S,
+    mut process_line: impl FnMut(NdjsonLine<'_>) -> Result<()>,
+) -> Result<()>
+where
+    S: futures_util::Stream<Item = reqwest::Result<C>> + Unpin,
+    C: AsRef<[u8]>,
+{
+    stream_raw_lines(stream, |line| process_line(classify_line(line))).await
+}
+
+/// Split a byte stream into newline-delimited lines and hand each to the
+/// callback verbatim.
+async fn stream_raw_lines<S, C>(
     mut stream: S,
-    mut line_transformer: impl LineTransformer,
     mut process_line: impl FnMut(&str) -> Result<()>,
 ) -> Result<()>
 where
@@ -1747,11 +1775,7 @@ where
             if !line_bytes.is_empty() {
                 let line = std::str::from_utf8(line_bytes)
                     .map_err(|e| eyre!("invalid UTF-8 in response stream: {e}"))?;
-                if let Some(transformed) = line_transformer.try_transform(line) {
-                    process_line(&transformed)?;
-                } else {
-                    process_line(line)?;
-                }
+                process_line(line)?;
             }
             buf.drain(..=pos);
         }
@@ -1760,26 +1784,10 @@ where
     if !buf.is_empty() {
         let line = std::str::from_utf8(&buf)
             .map_err(|e| eyre!("invalid UTF-8 in response stream: {e}"))?;
-        if let Some(transformed) = line_transformer.try_transform(line) {
-            process_line(&transformed)?;
-        } else {
-            process_line(line)?;
-        }
+        process_line(line)?;
     }
 
     Ok(())
-}
-
-trait LineTransformer {
-    fn try_transform(&mut self, line: &str) -> Option<String>;
-}
-
-struct NoOpTransformer {}
-
-impl LineTransformer for NoOpTransformer {
-    fn try_transform(&mut self, _: &str) -> Option<String> {
-        None
-    }
 }
 
 struct FaultAnnotator {
@@ -1787,85 +1795,70 @@ struct FaultAnnotator {
     active_faults: Value,
 }
 
-impl LineTransformer for FaultAnnotator {
-    fn try_transform(&mut self, line: &str) -> Option<String> {
-        if let Ok(mut entry) = serde_json::from_str::<Value>(line) {
-            let mut update_faults = false;
+impl FaultAnnotator {
+    /// Annotate one parsed log entry in place: advance the fault windows
+    /// using the entry's vtime, strip ANSI from `output_text`, and attach the
+    /// current `active_faults`.
+    fn annotate(&mut self, entry: &mut Value) {
+        let mut update_faults = false;
 
-            // The API sends moment.vtime as seconds, so the fault-window math
-            // runs directly in seconds. Lines without a vtime fall back to 0.0,
-            // which never expires a window (expiry is strict less-than).
-            let event_vtime = moment_vtime_seconds(&entry);
-            let latest_vtime = event_vtime.unwrap_or(0.0);
-            let fault_name = entry["fault"]["name"].as_str();
-            let is_fault_injector = entry["source"]["name"]
+        // The fault-window math runs directly in seconds. Entries without a
+        // vtime fall back to zero, which never expires a window (expiry is
+        // strict less-than).
+        let latest_vtime = VTime::from_json(&entry["moment"]["vtime"]).unwrap_or(VTime::ZERO);
+        let fault_name = entry["fault"]["name"].as_str();
+        let is_fault_injector = entry["source"]["name"]
+            .as_str()
+            .map(|source| source.eq("fault_injector"))
+            .unwrap_or(false);
+
+        // Clear network and node faults if the fault injector was paused
+        if is_fault_injector
+            && entry["info"]["message"]
                 .as_str()
-                .map(|source| source.eq("fault_injector"))
-                .unwrap_or(false);
+                .map(|message| message.eq("status"))
+                .unwrap_or(false)
+            && entry["info"]["details"]["paused"]
+                .as_bool()
+                .unwrap_or(false)
+        {
+            update_faults = self.active_fault_windows.clear_network_faults() || update_faults;
+            update_faults = self.active_fault_windows.clear_node_faults() || update_faults;
+        }
 
-            // Clear network and node faults if the fault injector was paused
-            if is_fault_injector
-                && entry["info"]["message"]
-                    .as_str()
-                    .map(|message| message.eq("status"))
-                    .unwrap_or(false)
-                && entry["info"]["details"]["paused"]
-                    .as_bool()
-                    .unwrap_or(false)
+        // Clear network faults if the network was restored
+        if is_fault_injector && fault_name.map(|n| n.eq("restore")).unwrap_or(false) {
+            update_faults = self.active_fault_windows.clear_network_faults() || update_faults;
+        }
+
+        // Clear any expired faults
+        update_faults =
+            self.active_fault_windows.clear_expired_faults(latest_vtime) || update_faults;
+
+        if is_fault_injector && let Some(fault_name) = fault_name {
+            let max_duration = entry["fault"]["max_duration"].as_f64().filter(|d| *d > 0.0);
+            let end_vtime = max_duration.map(|duration| latest_vtime.plus_seconds(duration));
+            let fault_type = entry["fault"]["type"].as_str().unwrap_or("");
+
+            if let Some(target) = entry["fault"]["affected_nodes"]
+                .as_array()
+                .and_then(|arr| arr.first())
+                .and_then(|first| first.as_str())
             {
-                update_faults = self.active_fault_windows.clear_network_faults() || update_faults;
-                update_faults = self.active_fault_windows.clear_node_faults() || update_faults;
-            }
-
-            // Clear network faults if the network was restored
-            if is_fault_injector && fault_name.map(|n| n.eq("restore")).unwrap_or(false) {
-                update_faults = self.active_fault_windows.clear_network_faults() || update_faults;
-            }
-
-            // Clear any expired faults
-            update_faults =
-                self.active_fault_windows.clear_expired_faults(latest_vtime) || update_faults;
-
-            if is_fault_injector && let Some(fault_name) = fault_name {
-                let max_duration = entry["fault"]["max_duration"].as_f64().filter(|d| *d > 0.0);
-                let end_vtime = max_duration.map(|duration| duration + latest_vtime);
-                let fault_type = entry["fault"]["type"].as_str().unwrap_or("");
-
-                if let Some(target) = entry["fault"]["affected_nodes"]
-                    .as_array()
-                    .and_then(|arr| arr.first())
-                    .and_then(|first| first.as_str())
-                {
-                    if fault_name.eq("partition") || fault_name.eq("clog") {
-                        update_faults = self.active_fault_windows.add_network_fault(
-                            fault_name.to_string(),
-                            FaultWindowBounds {
-                                start_vtime: latest_vtime,
-                                end_vtime,
-                            },
-                        ) || update_faults;
-                    }
-
-                    if fault_type.eq("node")
-                        && (fault_name.eq("pause") || fault_name.eq("throttle"))
-                    {
-                        update_faults = self.active_fault_windows.add_node_fault(
-                            fault_name.to_string(),
-                            target.to_string(),
-                            FaultWindowBounds {
-                                start_vtime: latest_vtime,
-                                end_vtime,
-                            },
-                        ) || update_faults;
-                    }
+                if fault_name.eq("partition") || fault_name.eq("clog") {
+                    update_faults = self.active_fault_windows.add_network_fault(
+                        fault_name.to_string(),
+                        FaultWindowBounds {
+                            start_vtime: latest_vtime,
+                            end_vtime,
+                        },
+                    ) || update_faults;
                 }
 
-                if fault_name.eq("skip")
-                    && fault_type.eq("clock")
-                    && let Some(offset) = entry["fault"]["details"]["offset"].as_f64()
-                {
-                    update_faults = self.active_fault_windows.add_clock_fault(
-                        offset,
+                if fault_type.eq("node") && (fault_name.eq("pause") || fault_name.eq("throttle")) {
+                    update_faults = self.active_fault_windows.add_node_fault(
+                        fault_name.to_string(),
+                        target.to_string(),
                         FaultWindowBounds {
                             start_vtime: latest_vtime,
                             end_vtime,
@@ -1874,26 +1867,29 @@ impl LineTransformer for FaultAnnotator {
                 }
             }
 
-            if update_faults {
-                self.active_faults = self.active_fault_windows.to_json();
-            }
-
-            if let Some(output_text) = entry["output_text"].as_str() {
-                entry["output_text"] = Value::String(strip_ansi(output_text));
-            }
-            // Replace the seconds string with its f64 form in place — the only
-            // processing snouty does to vtime.
-            if let Some(vtime) = event_vtime {
-                entry["moment"]["vtime"] = json!(vtime);
-            }
-
-            if entry.is_object() {
-                entry["active_faults"] = self.active_faults.clone();
-                return Some(format!("{}", entry));
+            if fault_name.eq("skip")
+                && fault_type.eq("clock")
+                && let Some(offset) = entry["fault"]["details"]["offset"].as_f64()
+            {
+                update_faults = self.active_fault_windows.add_clock_fault(
+                    offset,
+                    FaultWindowBounds {
+                        start_vtime: latest_vtime,
+                        end_vtime,
+                    },
+                ) || update_faults;
             }
         }
 
-        None
+        if update_faults {
+            self.active_faults = self.active_fault_windows.to_json();
+        }
+
+        if let Some(output_text) = entry["output_text"].as_str() {
+            entry["output_text"] = Value::String(strip_ansi(output_text));
+        }
+
+        entry["active_faults"] = self.active_faults.clone();
     }
 }
 
@@ -1922,14 +1918,14 @@ fn strip_ansi(text: &str) -> String {
 }
 
 struct FaultWindowBounds {
-    start_vtime: f64,
-    end_vtime: Option<f64>,
+    start_vtime: VTime,
+    end_vtime: Option<VTime>,
 }
 
 impl FaultWindowBounds {
-    fn is_expired(&self, latest_vtime: &f64) -> bool {
+    fn is_expired(&self, latest_vtime: VTime) -> bool {
         self.end_vtime
-            .map(|expiry| expiry.lt(latest_vtime))
+            .map(|expiry| expiry < latest_vtime)
             .unwrap_or(false)
     }
 }
@@ -1937,6 +1933,7 @@ impl FaultWindowBounds {
 struct ActiveFaultWindows {
     network: IndexMap<String, FaultWindowBounds>,
     node: IndexMap<String, IndexMap<String, FaultWindowBounds>>,
+    // The offset is a duration (seconds added to the clock), not a vtime.
     clock: Vec<(f64, FaultWindowBounds)>,
 }
 
@@ -1961,17 +1958,16 @@ impl ActiveFaultWindows {
         did_something
     }
 
-    fn clear_expired_faults(&mut self, latest_vtime: f64) -> bool {
+    fn clear_expired_faults(&mut self, latest_vtime: VTime) -> bool {
         let mut did_something;
 
         let clock_faults_length = self.clock.len();
-        self.clock
-            .retain(|fault| !fault.1.is_expired(&latest_vtime));
+        self.clock.retain(|fault| !fault.1.is_expired(latest_vtime));
         did_something = self.clock.len() != clock_faults_length;
 
         for _ in self
             .network
-            .extract_if(.., |_k, window| window.is_expired(&latest_vtime))
+            .extract_if(.., |_k, window| window.is_expired(latest_vtime))
         {
             did_something = true;
         }
@@ -1979,7 +1975,7 @@ impl ActiveFaultWindows {
         let mut dropped_categories_of_node_faults = false;
         for _ in self.node.extract_if(.., |_k, windows_by_container| {
             for _ in
-                windows_by_container.extract_if(.., |_c, window| window.is_expired(&latest_vtime))
+                windows_by_container.extract_if(.., |_c, window| window.is_expired(latest_vtime))
             {
                 did_something = true;
             }
@@ -2072,7 +2068,7 @@ impl ActiveFaultWindows {
 
         if !&self.clock.is_empty() {
             let mut offset_sum = 0f64;
-            let mut max_clock_fault_start = 0f64;
+            let mut max_clock_fault_start = VTime::ZERO;
 
             for entry in &self.clock {
                 offset_sum += entry.0;
@@ -2093,7 +2089,7 @@ fn merge_fault_windows(
     incumbent: &FaultWindowBounds,
     new: FaultWindowBounds,
 ) -> Option<FaultWindowBounds> {
-    if new.start_vtime.lt(&incumbent.start_vtime) {
+    if new.start_vtime < incumbent.start_vtime {
         return Some(FaultWindowBounds {
             start_vtime: new.start_vtime,
             end_vtime: incumbent.end_vtime.and_then(|prev_expiry| {
@@ -2110,7 +2106,7 @@ fn merge_fault_windows(
                 end_vtime: None,
             }),
             Some(new_expiry) => {
-                if new_expiry.gt(&prev_expiry) {
+                if new_expiry > prev_expiry {
                     return Some(FaultWindowBounds {
                         start_vtime: incumbent.start_vtime,
                         end_vtime: Some(new_expiry),
@@ -2215,7 +2211,11 @@ fn render_event_entry(entry: &Value) -> RenderedEventEntry {
         .as_str()
         .unwrap_or("")
         .to_string();
-    let vtime = entry["moment"]["vtime"].as_str().unwrap_or("").to_string();
+    // The stream normalizes vtime to a JSON number; VTime's Display prints
+    // the same text the server sent, so the column stays copy-paste exact.
+    let vtime = VTime::from_json(&entry["moment"]["vtime"])
+        .map(|v| v.to_string())
+        .unwrap_or_default();
     let container = entry["source"]["container"].as_str().unwrap_or("");
     let name = entry["source"]["name"].as_str().unwrap_or("");
     let stream = entry["source"]["stream"].as_str().unwrap_or("");
@@ -2776,6 +2776,25 @@ mod tests {
     use hegel::generators;
     use serde_json::json;
 
+    /// Test surface for the annotated-logs pipeline: classify the line
+    /// exactly as the stream does, annotate entries, and return the emitted
+    /// text. `None` means the stream would pass the line through raw.
+    trait TryTransform {
+        fn try_transform(&mut self, line: &str) -> Option<String>;
+    }
+
+    impl TryTransform for FaultAnnotator {
+        fn try_transform(&mut self, line: &str) -> Option<String> {
+            match classify_line(line) {
+                NdjsonLine::Entry(mut entry) => {
+                    self.annotate(&mut entry);
+                    Some(entry.to_string())
+                }
+                NdjsonLine::Raw(_) => None,
+            }
+        }
+    }
+
     /// `wrap_text` preserves the exact sequence of words — wrapping only inserts
     /// line breaks, it never drops, splits, reorders, or invents a word.
     #[hegel::test]
@@ -3159,7 +3178,7 @@ mod tests {
         Event {
             moment: Moment {
                 input_hash: input_hash.to_string(),
-                vtime: vtime.to_string(),
+                vtime: vtime.parse().unwrap(),
             },
         }
     }
@@ -3600,6 +3619,26 @@ mod tests {
         // non-number is passed through untouched.
         assert_eq!(truncate_decimals("1e3", 3), "1000.000");
         assert_eq!(truncate_decimals("n/a", 3), "n/a");
+    }
+
+    #[test]
+    fn format_log_vtime_agrees_between_string_and_number_forms() {
+        // A vtime rendered from the JSON-number form (snouty's own --json
+        // output) must land on the same truncated — never rounded — text as
+        // the server's string form, so a value copied off the screen and fed
+        // back as --begin-vtime lands on the line you saw, never past it.
+        for s in ["398.4898056755774", "311.8487535319291", "402.0", "1.9995"] {
+            let vtime: VTime = s.parse().unwrap();
+            let from_string = format_log_vtime(&json!({"moment": {"vtime": s}}));
+            let from_number = format_log_vtime(&json!({"moment": {"vtime": vtime}}));
+            assert_eq!(from_string, from_number, "for {s}");
+            assert_eq!(from_string, truncate_decimals(s, 3), "for {s}");
+        }
+        // Spot-check the truncation: .4898… cuts to .489 (rounding gives .490).
+        assert_eq!(
+            format_log_vtime(&json!({"moment": {"vtime": "398.4898056755774"}})),
+            "398.489"
+        );
     }
 
     #[test]
@@ -4457,6 +4496,94 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
+    // vtime precision through the NDJSON paths
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn fault_annotator_emits_full_precision_vtime_byte_identically() {
+        let mut transformer = FaultAnnotator {
+            active_fault_windows: ActiveFaultWindows::new(),
+            active_faults: json!({}),
+        };
+
+        // The full-precision seconds string becomes a JSON number carrying
+        // the exact value, byte-for-byte (see src/vtime.rs).
+        assert_eq!(
+            transformer
+                .try_transform(r#"{"moment":{"vtime":"398.4898056755774"},"output_text":"hi"}"#),
+            Some(
+                concat!(
+                    r#"{"moment":{"vtime":398.4898056755774},"output_text":"hi","#,
+                    r#""active_faults":{}}"#
+                )
+                .to_string()
+            )
+        );
+    }
+
+    /// The copy-paste contract of the log vtime column, over the whole tick
+    /// domain: the truncated text parses to a value at or before the real
+    /// vtime — never past it — and less than one millisecond behind. The
+    /// string and number wire forms render identically.
+    #[hegel::test]
+    fn truncated_log_vtime_never_lands_past_the_line(tc: hegel::TestCase) {
+        let ticks = tc.draw(generators::integers::<u64>().max_value((1 << 53) - 1));
+        let vtime = VTime::from_seconds(ticks as f64 / 4294967296.0).unwrap();
+
+        let truncated: f64 = truncate_decimals(&vtime.to_string(), 3).parse().unwrap();
+        assert!(truncated <= vtime.as_seconds());
+        assert!(vtime.as_seconds() - truncated < 0.001);
+
+        let from_string = format_log_vtime(&json!({"moment": {"vtime": vtime.to_string()}}));
+        let from_number = format_log_vtime(&json!({"moment": {"vtime": vtime}}));
+        assert_eq!(from_string, from_number);
+    }
+
+    /// The issue #191 guarantee over the whole tick domain: a vtime string
+    /// the server sends survives the stream's classify -> normalize ->
+    /// serialize pipeline byte-identically, as a JSON number.
+    #[hegel::test]
+    fn classify_line_preserves_any_real_vtime_byte_for_byte(tc: hegel::TestCase) {
+        let ticks = tc.draw(generators::integers::<u64>().max_value((1 << 53) - 1));
+        let vtime = VTime::from_seconds(ticks as f64 / 4294967296.0).unwrap();
+
+        let line = format!(r#"{{"moment":{{"vtime":"{vtime}"}},"output_text":"x"}}"#);
+        let NdjsonLine::Entry(entry) = classify_line(&line) else {
+            panic!("an object line should classify as Entry");
+        };
+        assert_eq!(
+            entry.to_string(),
+            format!(r#"{{"moment":{{"vtime":{vtime}}},"output_text":"x"}}"#)
+        );
+    }
+
+    /// classify_line never panics, whatever the server sends; anything that
+    /// isn't a JSON object comes back Raw and untouched.
+    #[hegel::test]
+    fn classify_line_never_panics_and_returns_raw_for_non_objects(tc: hegel::TestCase) {
+        let line = tc.draw(generators::text());
+        match classify_line(&line) {
+            NdjsonLine::Entry(entry) => assert!(entry.is_object()),
+            NdjsonLine::Raw(raw) => assert_eq!(raw, line),
+        }
+    }
+
+    #[test]
+    fn normalize_moment_vtime_converts_string_vtime_to_exact_number() {
+        let mut entry = json!({"a": 1, "moment": {"vtime": "313.15126806590706"}, "z": 2});
+        assert!(normalize_moment_vtime(&mut entry).is_some());
+        assert_eq!(
+            entry.to_string(),
+            r#"{"a":1,"moment":{"vtime":313.15126806590706},"z":2}"#
+        );
+
+        // No parseable vtime: the entry is untouched.
+        let mut entry = json!({"moment": {"vtime": "n/a"}});
+        assert!(normalize_moment_vtime(&mut entry).is_none());
+        assert_eq!(entry, json!({"moment": {"vtime": "n/a"}}));
+    }
+
+    // -----------------------------------------------------------------------
     // active_faults: partition without max_duration never expires naturally
     // -----------------------------------------------------------------------
 
@@ -5172,7 +5299,10 @@ mod tests {
         // decoded haystack carries them unescaped, so the match succeeds even
         // though the raw NDJSON line escapes them as `\"`.
         let line = r#"{"moment":{"input_hash":"42","vtime":"1.0"},"source":{"container":"app","name":"app","stream":"out"},"output_text":"msg \"starting\""}"#;
-        let (haystack, _row) = prepare_event_line(line);
+        let NdjsonLine::Entry(entry) = classify_line(line) else {
+            panic!("event line should classify as an entry");
+        };
+        let haystack = event_haystack(&render_event_entry(&entry));
         assert!(haystack.contains(r#"msg "starting""#));
 
         let needle = vec![r#""starting""#.to_lowercase()];

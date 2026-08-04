@@ -408,26 +408,6 @@ fn check_update_target(requested: &str, current: &str, force: bool) -> Result<()
     Ok(())
 }
 
-/// Pick the update channel: the --channel flag wins, then the `update_channel`
-/// setting, then the release channel. A setting value other than `release` or
-/// `beta` is a hard error rather than a silent fallback — but only when the
-/// flag doesn't override it, so a bad setting never blocks an explicit choice.
-fn resolve_update_channel(
-    flag: Option<UpdateChannel>,
-    setting: Option<&str>,
-) -> Result<UpdateChannel> {
-    if let Some(channel) = flag {
-        return Ok(channel);
-    }
-    match setting {
-        None | Some("release") => Ok(UpdateChannel::Release),
-        Some("beta") => Ok(UpdateChannel::Beta),
-        Some(other) => Err(user_error(format!(
-            "invalid update_channel setting `{other}`: expected `release` or `beta`"
-        ))),
-    }
-}
-
 fn cmd_update(args: UpdateArgs, settings: &Settings) -> Result<()> {
     // When a specific version is requested, validate it and refuse an unforced
     // downgrade up front, before bothering to spawn the helper.
@@ -435,18 +415,19 @@ fn cmd_update(args: UpdateArgs, settings: &Settings) -> Result<()> {
         check_update_target(version, env!("CARGO_PKG_VERSION"), args.force)?;
     }
 
-    let channel = resolve_update_channel(args.channel, settings.update_channel())?;
+    // The --channel flag overrides the (already validated) setting.
+    let channel = args.channel.unwrap_or(settings.update_channel());
 
     // Attempt to spawn snouty-update and wait for it to finish. An explicit
     // version is forwarded via --version; the helper installs it directly
-    // (pre-releases included), so --prerelease is only needed when the beta
-    // channel picks "latest". The helper then installs the greatest version
-    // across releases and pre-releases, so a release newer than every
+    // (pre-releases included), so --prerelease is only needed when the
+    // unstable channel picks "latest". The helper then installs the greatest
+    // version across releases and pre-releases, so a release newer than every
     // pre-release still wins.
     let mut updater = Command::new("snouty-update");
     if let Some(version) = &args.version {
         updater.arg("--version").arg(version);
-    } else if channel == UpdateChannel::Beta {
+    } else if channel == UpdateChannel::Unstable {
         updater.arg("--prerelease");
     }
     match updater.status() {
@@ -570,51 +551,5 @@ mod tests {
     fn check_update_target_rejects_invalid_version() {
         let err = check_update_target("not-a-version", "0.5.0", false).unwrap_err();
         assert!(format!("{err}").contains("invalid version"));
-    }
-
-    #[test]
-    fn resolve_update_channel_defaults_to_release() {
-        assert_eq!(
-            resolve_update_channel(None, None).unwrap(),
-            UpdateChannel::Release
-        );
-    }
-
-    #[test]
-    fn resolve_update_channel_reads_the_setting() {
-        assert_eq!(
-            resolve_update_channel(None, Some("beta")).unwrap(),
-            UpdateChannel::Beta
-        );
-        assert_eq!(
-            resolve_update_channel(None, Some("release")).unwrap(),
-            UpdateChannel::Release
-        );
-    }
-
-    #[test]
-    fn resolve_update_channel_flag_wins_over_setting() {
-        assert_eq!(
-            resolve_update_channel(Some(UpdateChannel::Release), Some("beta")).unwrap(),
-            UpdateChannel::Release
-        );
-    }
-
-    #[test]
-    fn resolve_update_channel_rejects_unknown_setting() {
-        let err = resolve_update_channel(None, Some("nightly")).unwrap_err();
-        let rendered = format!("{err}");
-        assert!(
-            rendered.contains("invalid update_channel setting `nightly`"),
-            "got: {rendered}"
-        );
-    }
-
-    #[test]
-    fn resolve_update_channel_flag_bypasses_invalid_setting() {
-        assert_eq!(
-            resolve_update_channel(Some(UpdateChannel::Beta), Some("nightly")).unwrap(),
-            UpdateChannel::Beta
-        );
     }
 }

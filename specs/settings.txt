@@ -43,12 +43,12 @@ env SNOUTY_CONTAINER_ENGINE=podman
 ! snouty doctor
 stderr 'container engine.*podman'
 
-# 7. The update channel is reported in the table; unset resolves to release.
+# 7. The update channel is reported in the table; unset resolves to stable.
 ! snouty doctor
-stderr 'update channel.*release'
-env SNOUTY_UPDATE_CHANNEL=beta
+stderr 'update channel.*stable'
+env SNOUTY_UPDATE_CHANNEL=unstable
 ! snouty doctor
-stderr 'update channel.*beta'
+stderr 'update channel.*unstable'
 
 # 8. SNOUTY_SETTINGS_PATH selects the project file in place of ./.snouty.toml.
 #    Observed via repository, since no earlier step set ANTITHESIS_REPOSITORY

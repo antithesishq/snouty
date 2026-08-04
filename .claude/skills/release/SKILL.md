@@ -9,25 +9,20 @@ Perform a versioned release of snouty by bumping `Cargo.toml`, building, testing
 
 ## Pre-releases
 
-A version with an `-rc.N` suffix (e.g. `0.7.0-rc.1`) is a pre-release. The procedure is the same as for a release; only these points differ:
-
-- When the user asks for a pre-release without a full version (e.g. "cut an rc for 0.7.0"), pick the next rc number: list existing tags with `git tag -l 'v0.7.0-rc.*'` and use N+1 of the highest, or `-rc.1` when there are none.
-- Shipping is automatic. Pushing the tag triggers the cargo-dist workflow (`.github/workflows/release.yml`), which builds the artifacts and creates the GitHub release. A pre-release suffix in the tag makes cargo-dist mark it as a GitHub **pre-release**, so `snouty update` ignores it unless the user is on the beta channel (`update_channel = "beta"` or `snouty update --channel beta`). Never create the GitHub release by hand — a hand-made release could miss the pre-release flag and ship the rc to everyone.
-- `cargo publish` works for pre-releases too, and is safe: cargo only selects a pre-release when a user asks for it explicitly (e.g. `cargo install snouty --version 0.7.0-rc.1`), so stable users never receive it.
-- A later full release of the same version (e.g. `0.7.0` after `0.7.0-rc.2`) is a normal upgrade: semver sorts every `-rc.N` before the release.
+The procedure for a pre-release (`-rc.N` suffix) is the same as for a release, with one difference: when the user asks for a pre-release without a full version (e.g. "cut an rc for 0.7.0"), pick the next rc number — list existing tags with `git tag -l 'v0.7.0-rc.*'` and use N+1 of the highest, or `-rc.1` when there are none.
 
 ## Release Procedure
 
 ### 1. Parse and Validate the Version
 
-Extract the version from the user's input. Accept formats like `v0.2.0` or `0.2.0`, including pre-release forms like `v0.7.0-rc.1`. Strip the leading `v` to get the bare semver.
+Extract the version from the user's input. Accept formats like `v0.2.0`, `0.2.0`, or `v0.7.0-rc.1`. Strip the leading `v` to get the bare semver. If `-rc.N` is specified, this is a pre-release.
 
 Run all of the following sanity checks before making any changes:
 
 - Validate the version matches `MAJOR.MINOR.PATCH` where each component is a non-negative integer, optionally followed by `-rc.N` where N is a positive integer.
 - Read `Cargo.toml` and extract the current version.
 - Confirm the new version is strictly greater than the current version under semver ordering (compare major, then minor, then patch; a pre-release sorts before its release, so `0.7.0-rc.1` < `0.7.0`, and `0.7.0-rc.2` > `0.7.0-rc.1`).
-- Confirm the git tag `vX.Y.Z` does not already exist (`git tag -l vX.Y.Z`).
+- Confirm the git tag `vX.Y.Z[-rc.N]` does not already exist (`git tag -l vX.Y.Z[-rc.N]`).
 - Confirm the working tree is clean (`git status --porcelain` returns empty).
 - Confirm the current branch is `main`.
 
@@ -75,5 +70,3 @@ Tell the user to run the following once satisfied:
 git push && git push --tags
 cargo publish
 ```
-
-For a pre-release (`-rc.N`), also tell the user that after the tag push, CI creates the GitHub pre-release automatically and only beta-channel users receive it via `snouty update`. Publishing the pre-release crate is safe: cargo never selects a pre-release unless a user requests it explicitly.

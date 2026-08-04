@@ -77,6 +77,10 @@ pub fn cache_dir() -> Option<PathBuf> {
 ///
 /// Every command shares the same resolved instance (threaded by reference), so a
 /// value resolves identically no matter which code path reads it.
+///
+/// `Default` is every setting unset (and the `stable` update channel) — handy
+/// when a caller needs a `Settings` without resolving anything.
+#[derive(Default)]
 pub struct Settings {
     profile: Option<String>,
     tenant: Option<String>,
@@ -245,11 +249,11 @@ impl Settings {
         self.profile.as_deref()
     }
 
-    /// Test-only: start building a `Settings` from explicit values, with no
-    /// environment or filesystem IO. Set only the values a test needs and
-    /// finish with [`SettingsBuilder::build`].
-    #[cfg(test)]
-    pub(crate) fn for_test() -> SettingsBuilder {
+    /// Start building a `Settings` from explicit values, with no environment
+    /// or filesystem IO — for callers (and tests) that already hold the
+    /// values. Set only what's needed and finish with
+    /// [`SettingsBuilder::build`].
+    pub fn builder() -> SettingsBuilder {
         SettingsBuilder::default()
     }
 
@@ -258,17 +262,16 @@ impl Settings {
     /// without touching the environment.
     #[cfg(test)]
     pub(crate) fn for_test_base_url(base_url: String) -> Self {
-        Self::for_test().base_url(&base_url).build()
+        Self::builder().base_url(&base_url).build()
     }
 }
 
-/// Test-only builder behind [`Settings::for_test`], so test call sites name
-/// just the values they set instead of growing a positional argument for every
-/// new setting. `base_url` still derives from the tenant when left unset (see
-/// [`Settings::assemble`]).
-#[cfg(test)]
+/// Builder behind [`Settings::builder`], so call sites name just the values
+/// they set instead of growing a positional argument for every new setting.
+/// It bypasses the resolution precedence chain entirely; `base_url` still
+/// derives from the tenant when left unset (see [`Settings::assemble`]).
 #[derive(Default)]
-pub(crate) struct SettingsBuilder {
+pub struct SettingsBuilder {
     profile: Option<String>,
     tenant: Option<String>,
     repository: Option<String>,
@@ -278,45 +281,43 @@ pub(crate) struct SettingsBuilder {
     update_channel: UpdateChannel,
 }
 
-#[cfg(test)]
-#[allow(dead_code)] // a builder offers every setting; not every test uses all of them
 impl SettingsBuilder {
-    pub(crate) fn profile(mut self, value: &str) -> Self {
+    pub fn profile(mut self, value: &str) -> Self {
         self.profile = Some(value.to_string());
         self
     }
 
-    pub(crate) fn tenant(mut self, value: &str) -> Self {
+    pub fn tenant(mut self, value: &str) -> Self {
         self.tenant = Some(value.to_string());
         self
     }
 
-    pub(crate) fn repository(mut self, value: &str) -> Self {
+    pub fn repository(mut self, value: &str) -> Self {
         self.repository = Some(value.to_string());
         self
     }
 
-    pub(crate) fn base_url(mut self, value: &str) -> Self {
+    pub fn base_url(mut self, value: &str) -> Self {
         self.base_url = Some(value.to_string());
         self
     }
 
-    pub(crate) fn https_proxy(mut self, value: &str) -> Self {
+    pub fn https_proxy(mut self, value: &str) -> Self {
         self.https_proxy = Some(value.to_string());
         self
     }
 
-    pub(crate) fn container_engine(mut self, value: &str) -> Self {
+    pub fn container_engine(mut self, value: &str) -> Self {
         self.container_engine = Some(value.to_string());
         self
     }
 
-    pub(crate) fn update_channel(mut self, value: UpdateChannel) -> Self {
+    pub fn update_channel(mut self, value: UpdateChannel) -> Self {
         self.update_channel = value;
         self
     }
 
-    pub(crate) fn build(self) -> Settings {
+    pub fn build(self) -> Settings {
         Settings::assemble(
             self.profile,
             self.tenant,
@@ -814,13 +815,13 @@ mod tests {
 
     #[test]
     fn base_url_falls_back_to_tenant_host() {
-        let settings = Settings::for_test().tenant("acme").build();
+        let settings = Settings::builder().tenant("acme").build();
         assert_eq!(settings.base_url(), Some("https://acme.antithesis.com"));
     }
 
     #[test]
     fn explicit_base_url_overrides_tenant_host() {
-        let settings = Settings::for_test()
+        let settings = Settings::builder()
             .tenant("acme")
             .base_url("https://example.test")
             .build();
@@ -829,31 +830,31 @@ mod tests {
 
     #[test]
     fn base_url_without_tenant_is_none() {
-        let settings = Settings::for_test().build();
+        let settings = Settings::default();
         assert_eq!(settings.base_url(), None);
     }
 
     #[test]
     fn container_engine_absent_resolves_to_none() {
-        let settings = Settings::for_test().build();
+        let settings = Settings::default();
         assert_eq!(settings.container_engine(), None);
     }
 
     #[test]
     fn container_engine_resolves_when_set() {
-        let settings = Settings::for_test().container_engine("podman").build();
+        let settings = Settings::builder().container_engine("podman").build();
         assert_eq!(settings.container_engine(), Some("podman"));
     }
 
     #[test]
     fn https_proxy_absent_resolves_to_none() {
-        let settings = Settings::for_test().build();
+        let settings = Settings::default();
         assert_eq!(settings.https_proxy(), None);
     }
 
     #[test]
     fn https_proxy_resolves_when_set() {
-        let settings = Settings::for_test()
+        let settings = Settings::builder()
             .https_proxy("http://proxy.corp:8080")
             .build();
         assert_eq!(settings.https_proxy(), Some("http://proxy.corp:8080"));
@@ -870,13 +871,13 @@ mod tests {
 
     #[test]
     fn update_channel_absent_resolves_to_stable() {
-        let settings = Settings::for_test().build();
+        let settings = Settings::default();
         assert_eq!(settings.update_channel(), UpdateChannel::Stable);
     }
 
     #[test]
     fn update_channel_resolves_when_set() {
-        let settings = Settings::for_test()
+        let settings = Settings::builder()
             .update_channel(UpdateChannel::Unstable)
             .build();
         assert_eq!(settings.update_channel(), UpdateChannel::Unstable);
@@ -933,7 +934,7 @@ mod tests {
         // interpolated into the host), so an otherwise-invalid tenant still
         // constructs. The derive-path validation itself is covered by
         // validate_tenant_host's unit tests and specs/settings_tenant.txt.
-        let s = Settings::for_test()
+        let s = Settings::builder()
             .tenant("evil.com#")
             .base_url("https://ok.example")
             .build();

@@ -28,7 +28,12 @@ color-eyre = { version = "0.6", default-features = false }
 futures-util = "0.3"
 tokio = { version = "1", features = ["rt", "macros", "process", "time", "io-util", "io-std", "net", "signal", "sync"] }
 serde = { version = "1", features = ["derive"] }
-serde_json = { version = "1", features = ["preserve_order"] }
+# float_roundtrip makes serde_json's f64 parsing correctly-rounded, so a vtime
+# read out of a JSON number is never off by one ULP (see src/vtime.rs).
+serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }
+# The float printer serde_json itself uses; VTime::Display goes through it so
+# the human text matches the JSON number byte-for-byte (see src/vtime.rs).
+zmij = "1"
 indexmap = { version = "2.10.0" }
 rusqlite = { version = "0.34", features = ["bundled"] }
 console = "0.15"
@@ -43,6 +48,7 @@ toml = "1.1.2"
 http = "1.4.2"
 which = "8"
 keyring-core = "1.0.0"
+textwrap = { version = "0.16.2", default-features = false }
 sha2 = "0.10"
 dialoguer = "0.12.0"
 
@@ -60,6 +66,9 @@ openapiv3 = "2"
 prettyplease = "0.2"
 progenitor = "0.14.0"
 quote = "1"
+# Same schemars version progenitor/typify resolve; build.rs hands
+# with_conversion a schemars SchemaObject to map vtime onto crate::vtime::VTime.
+schemars = "0.8"
 serde_json = "1"
 syn = "2"
 
@@ -68,7 +77,11 @@ assert_cmd = "2"
 predicates = "3"
 serde_json = "1"
 tempfile = "3"
-testscript-rs = "0.2"
+# The antithesishq fork: explicit regex matching, Go-aligned regex flags, and
+# a condition on a negated line skips instead of failing. Point back at
+# crates.io when upstream ships these
+# (https://github.com/antithesishq/testscript-rs).
+testscript-rs = { git = "https://github.com/antithesishq/testscript-rs.git", branch = "main" }
 ctor = "0.4"
 wiremock = "0.6"
 hegeltest = "0.21.2"

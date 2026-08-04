@@ -42,7 +42,8 @@ stdout 'RUN ID.*STATUS.*CREATED.*TEST NAME'
 # table), so full descriptions are visible.
 mock-runs-server
 snouty runs list --detail
-stdout 'Run ID .*run-1'
+stdout 'Run ID +[^ ]'
+[!staging] stdout 'Run ID .*run-1'
 [!staging] stdout 'Status .*completed'
 [!staging] stdout 'Description .*nightly smoke on main'
 ! stdout 'RUN ID.*STATUS.*CREATED.*TEST NAME'
@@ -50,7 +51,8 @@ stdout 'Run ID .*run-1'
 # `-d` is the short form of `--detail`.
 mock-runs-server
 snouty runs list -d
-stdout 'Run ID .*run-1'
+stdout 'Run ID +[^ ]'
+[!staging] stdout 'Run ID .*run-1'
 ! stdout 'RUN ID.*STATUS.*CREATED.*TEST NAME'
 
 # `snouty runs list` is the same as bare `snouty runs`.
@@ -66,6 +68,9 @@ stderr '.*'
 #    captured for use in subsequent commands as $R_run_id. Subsequent read
 #    endpoints (properties, build-logs, events) only return data once a run
 #    has reached a terminal state, so list with --status completed first.
+#
+#    Against staging the tenant must have at least one completed run. Without
+#    one, `env_from_json` captures nothing and every later command fails.
 mock-runs-server
 snouty --json runs list --status completed
 [!staging] stdout '"run_id":"run-.*'
@@ -122,44 +127,48 @@ snouty runs properties $R_run_id
 mock-runs-server
 snouty runs properties --failing $R_run_id
 [!staging] stdout 'failing.*Counter value stays below limit'
-[!staging] stdout -count=0 'Setup completes'
+[!staging] ! stdout 'Setup completes'
 
 # `snouty runs properties --passing` shows only passing properties.
 mock-runs-server
 snouty runs properties --passing $R_run_id
 [!staging] stdout 'passing.*Setup completes'
-[!staging] stdout -count=0 'Counter value stays below limit'
+[!staging] ! stdout 'Counter value stays below limit'
 
 # `snouty runs properties --passing --failing` is rejected.
 ! snouty runs properties --passing --failing $R_run_id
 stderr '.*cannot be used with.*'
 
-# `snouty --json runs properties` outputs JSON.
+# `snouty --json runs properties` outputs JSON. A moment's vtime is an exact
+# JSON number — the full-precision value survives byte-identically (see
+# src/vtime.rs for why an f64 holds it exactly).
 mock-runs-server
 snouty --json runs properties $R_run_id
 [!staging] stdout '"name".*"Counter value stays below limit"'
 [!staging] stdout '"status".*"Failing"'
+[!staging] stdout '"vtime":45\.334635781589895'
 
 # `--name <substr> --detail` expands the matching property into its examples.
 # For the Counter event property that's a STATUS/HASH/VTIME table, sorted
-# numerically by vtime (5.0 before 10.0), failing before passing.
+# numerically by vtime (45.3… before 313.1…, where an alphanumeric sort would
+# put "313…" first), failing before passing.
 mock-runs-server
 snouty runs properties $R_run_id --name 'Counter value' --detail
 [!staging] stdout 'STATUS.*HASH.*VTIME'
-[!staging] stdout '(?s)failing.*-100.*5\.0.*failing.*-200.*10\.0.*passing.*-300.*15\.0'
+[!staging] stdout '(?s)failing.*-100.*45\.334635781589895.*failing.*-200.*313\.15126806590706.*passing.*-300.*398\.4898056755774'
 
 # --name is a case-insensitive substring filter over property names; without
 # --detail it just narrows the (grouped) table.
 mock-runs-server
 snouty runs properties $R_run_id --name counter
 [!staging] stdout 'failing.*Counter value stays below limit'
-[!staging] stdout -count=0 'Setup completes'
+[!staging] ! stdout 'Setup completes'
 
 # --group is a case-insensitive substring group filter ('safety' matches 'Safety').
 mock-runs-server
 snouty runs properties $R_run_id --group safety
 [!staging] stdout 'failing.*Counter value stays below limit'
-[!staging] stdout -count=0 'Setup completes'
+[!staging] ! stdout 'Setup completes'
 
 # A non-event ("system") property's --detail shows its value under a `Result`
 # label (no `:`, like the other labels). A small object inlines as compact JSON
@@ -204,14 +213,23 @@ snouty --json runs build-logs $R_run_id
 [!staging] stdout '"timestamp".*"text"'
 
 # `snouty runs events` filters by `--match` needles against the decoded output.
+#    Against staging the search matches `fault` and carries `--limit`: fault
+#    events are Antithesis-generated, exist in every fault-injecting run, and
+#    first appear near the start of the timeline, so the server stops after a
+#    shallow scan. A workload needle such as `request` sits at an arbitrary
+#    depth, and an unbounded search streams every match — the suite's wall time
+#    must not scale with whatever run the tenant produced last. The mock keeps
+#    the unbounded form, whose full output the assertions below pin.
 mock-runs-server
-snouty runs events $R_run_id --match request
+[!staging] snouty runs events $R_run_id --match request
+[staging] snouty runs events $R_run_id --match fault --limit 3
 [!staging] stdout '^HASH\s+VTIME\s+SOURCE\s+OUTPUT'
 [!staging] stdout '-456.*2\.0.*\[app:error\].*\{"level":"warn","msg":"slow request"\}'
 
 # A second `--match` AND-narrows: every needle must be present in the line.
 mock-runs-server
-snouty runs events $R_run_id --match request --match slow
+[!staging] snouty runs events $R_run_id --match request --match slow
+[staging] snouty runs events $R_run_id --match fault --match network --limit 3
 [!staging] stdout '-456.*2\.0.*\[app:error\].*\{"level":"warn","msg":"slow request"\}'
 # A needle that isn't present excludes the event entirely.
 mock-runs-server
@@ -220,16 +238,21 @@ stdout 'No events matched "starting nonexistent"\.'
 
 # `snouty --json runs events` outputs raw NDJSON.
 mock-runs-server
-snouty --json runs events $R_run_id --match counter
+[!staging] snouty --json runs events $R_run_id --match counter
+[staging] snouty --json runs events $R_run_id --match fault --limit 3
 [!staging] stdout '"antithesis_assert".*"Counter'\''s value retrieved"'
 [!staging] stdout '.*"moment".*"input_hash":"-4735081784258020614".*'
-[!staging] stdout '.*"moment".*"vtime":"311\.8487535319291".*'
+# The vtime is an exact JSON number, full precision intact.
+[!staging] stdout '.*"moment".*"vtime":311\.8487535319291.*'
+
+[staging] skip
 
 # An incomplete run carries the failure moment (input_hash + vtime) in its detail
 #    response. Filter the list with --status incomplete so we know the run we
 #    inspect actually entered the incomplete terminal state, then assert that
 #    the human-readable view shows "Failure VTime" / "Failure Hash" and the
-#    --json view exposes failure_moment with input_hash and vtime.
+#    --json view exposes failure_moment with input_hash and vtime. Below the
+#    skip, because a tenant may hold no incomplete run at all.
 mock-runs-server
 snouty --json runs list --status incomplete
 stdout '"run_id":.*'
@@ -246,8 +269,8 @@ snouty --json runs show $R_run_id
 stdout '"failure_moment".*'
 stdout '"input_hash".*'
 stdout '"vtime".*'
-
-[staging] skip
+# failure_moment.vtime is an exact JSON number, full precision intact.
+[!staging] stdout '"vtime": 398\.4898056755774'
 
 # If no runs are returned, the command prints a friendly empty-state message.
 mock-runs-server empty
@@ -262,8 +285,20 @@ stdout 'No runs found\.'
 mock-server 400 '{"message":"bad request"}'
 env ANTITHESIS_API_KEY=test-api-key
 ! snouty runs
-stderr 'API error: 400.*'
+stderr '^Error: API error: 400.*'
+# The message sits on the `Error:` line itself: a single failure has no cause
+# chain to number, so no `0:` frame appears.
+! stderr '0: API error'
 ! stderr 'Backtrace omitted'
+
+# A rejection with no body at all is the API gateway's shape for auth and
+# rate-limit failures (content-type: text/plain, zero length). The status is all
+# the server said, so it is all snouty reports — the point of issue #180 is that
+# the status survives an unparsable body rather than being lost with it.
+[!staging] mock-server 429 ''
+[!staging] env ANTITHESIS_API_KEY=test-api-key
+[!staging] ! snouty runs
+[!staging] stderr 'API error: 429 Too Many Requests.*'
 
 # `snouty runs properties` prints a friendly empty-state message when no properties exist.
 mock-runs-server
@@ -347,8 +382,10 @@ stdout 'output_text.*starting'
 stdout 'output_text.*slow request'
 stdout '"antithesis_assert".*"display_type":"AlwaysOrUnreachable"'
 # moment.vtime is converted in place from the server's seconds string to an
-# f64; active_faults is appended by the annotator. The clog window (start 401.5,
-# max_duration 0.267) is active at 401.5 and 401.75, then expired by 402.
+# exact JSON number, full precision intact. active_faults is appended by the
+# annotator. The clog window (start 401.5, max_duration 0.267) is active at
+# 401.5 and 401.75, then expired by 402.
+stdout '"vtime":73\.94233945617452'
 stdout '"vtime":401.5.*"active_faults":\{"network_clog":\{"vtime":401.5\}\}'
 stdout '"vtime":401.75.*"active_faults":\{"network_clog":\{"vtime":401.5\}\}'
 stdout '"vtime":402.0.*"active_faults":\{\}'
@@ -370,7 +407,7 @@ stdout '\[\s*1\.000\] \[\s*app\] \[out\] \{"level":"info","msg":"starting"\}'
 # a JSON-escaped newline on a single output line.
 mock-runs-server
 snouty --json runs logs run-1 -123 1.0
-stdout -count=1 'line one\\nline two'
+stdout -count=1 -literal 'line one\\nline two'
 
 # `snouty runs logs` requires hash and vtime positional arguments.
 mock-runs-server
@@ -404,10 +441,10 @@ snouty runs events $R_run_id request
 # parallel_driver_fetch; --limit 1 keeps only the first (vtime 400.5).
 mock-runs-server
 snouty --json runs events $R_run_id --match parallel_driver_fetch --limit 1
-[!staging] stdout '"vtime":"400\.5"'
-[!staging] ! stdout '"vtime":"401\.75"'
+[!staging] stdout '"vtime":400\.5'
+[!staging] ! stdout '"vtime":401\.75'
 
 # Without --limit no cap is sent at all, so all three matches come back.
 mock-runs-server
 snouty --json runs events $R_run_id --match parallel_driver_fetch
-[!staging] stdout '"vtime":"401\.75"'
+[!staging] stdout '"vtime":401\.75'

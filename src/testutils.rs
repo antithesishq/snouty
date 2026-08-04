@@ -36,17 +36,52 @@ pub fn available_runtimes() -> Vec<Box<dyn ContainerRuntime>> {
     runtimes
 }
 
+/// Points tests at a registry the environment already runs, instead of each one
+/// starting its own (see `scripts/setup-test-images.sh`, which CI runs).
+///
+/// The value is a `host:port`, and the host has to be `127.0.0.1` or
+/// `localhost`: snouty only disables TLS verification for those, so a registry
+/// reached any other way fails the push (see `ContainerRuntime::image_push`).
+pub const TEST_REGISTRY_VAR: &str = "SNOUTY_TEST_REGISTRY";
+
 pub struct OCIRegistry {
+    host_port: String,
+    /// The container this handle started, or `None` when the registry came from
+    /// [`TEST_REGISTRY_VAR`] — someone else's to stop.
+    owned: Option<OwnedRegistry>,
+}
+
+struct OwnedRegistry {
     child: Child,
     runtime: String,
     container_name: String,
-    port: u16,
+    /// The container's stderr, kept so a start failure can say why.
+    log: tempfile::NamedTempFile,
 }
 
 impl OCIRegistry {
-    /// Try to start a local OCI registry container.  Returns `None` when the
-    /// container cannot be launched.
+    /// A registry to push test images to: the one [`TEST_REGISTRY_VAR`] names,
+    /// or a fresh container. Returns `None` when neither is usable.
     pub fn start(runtime: &dyn ContainerRuntime) -> Option<Self> {
+        if let Some(host_port) = std::env::var(TEST_REGISTRY_VAR)
+            .ok()
+            .filter(|v| !v.is_empty())
+        {
+            // A configured-but-dead registry is a broken environment, not a
+            // reason to quietly start a second one: fall through to skip_or_fail
+            // so CI fails loudly on its own setup.
+            if registry_v2_ping_addr(&host_port) {
+                return Some(Self {
+                    host_port,
+                    owned: None,
+                });
+            }
+            skip_or_fail(&format!(
+                "{TEST_REGISTRY_VAR} is set to {host_port} but nothing answers /v2/ there"
+            ));
+            return None;
+        }
+
         if !runtime_supports_linux_registry_image(runtime.name()) {
             eprintln!(
                 "skipping: OCI registry image requires Linux containers for {}",
@@ -62,72 +97,109 @@ impl OCIRegistry {
             return None;
         }
 
-        let port = reserve_local_port();
-        let container_name = format!("snouty-test-registry-{}-{}", std::process::id(), port);
-        let publish = format!("127.0.0.1:{port}:5000");
+        let container_name = format!(
+            "snouty-test-registry-{}-{}",
+            std::process::id(),
+            next_registry_nonce()
+        );
         let runtime_name = runtime.name().to_owned();
+        let log = tempfile::NamedTempFile::new().expect("create OCI registry log file");
 
+        // Let the engine pick the host port. Asking the kernel for a free port
+        // first and publishing it by number leaves a window where another test
+        // takes it before the engine binds.
         let child = Command::new(&runtime_name)
             .args([
                 "run",
                 "--rm",
                 "-p",
-                &publish,
+                "127.0.0.1:0:5000",
                 "--name",
                 &container_name,
                 "registry:2",
             ])
             .stdin(Stdio::null())
             .stdout(Stdio::null())
-            .stderr(Stdio::null())
+            .stderr(Stdio::from(
+                log.reopen().expect("reopen OCI registry log file"),
+            ))
             .spawn()
             .unwrap_or_else(|e| {
                 panic!("failed to start OCI registry with {}: {e}", runtime.name())
             });
 
         let mut registry = Self {
-            child,
-            runtime: runtime_name,
-            container_name,
-            port,
+            host_port: String::new(),
+            owned: Some(OwnedRegistry {
+                child,
+                runtime: runtime_name,
+                container_name,
+                log,
+            }),
         };
-        if !registry.wait_until_ready() {
-            registry.cleanup_container();
-            skip_or_fail(&format!(
-                "OCI registry could not start with {}",
-                runtime.name()
-            ));
-            return None;
+        match registry.wait_until_ready() {
+            Ok(host_port) => {
+                registry.host_port = host_port;
+                Some(registry)
+            }
+            Err(reason) => {
+                registry.cleanup_container();
+                skip_or_fail(&format!(
+                    "OCI registry could not start with {}: {reason}",
+                    runtime.name()
+                ));
+                None
+            }
         }
-        Some(registry)
     }
 
     pub fn host_port(&self) -> String {
-        format!("127.0.0.1:{}", self.port)
+        self.host_port.clone()
     }
 
-    /// Returns `true` when the registry is ready, `false` when it exited or
-    /// timed out.
-    fn wait_until_ready(&mut self) -> bool {
+    /// Wait for the container to publish its port and answer `/v2/`, returning
+    /// the `host:port` it landed on. `Err` carries what the container said, so a
+    /// failure to start explains itself.
+    fn wait_until_ready(&mut self) -> Result<String, String> {
+        let owned = self
+            .owned
+            .as_mut()
+            .expect("wait_until_ready is only for a container this handle started");
+        let mut host_port = None;
         for _ in 0..200 {
-            if registry_v2_ping(self.port) {
-                return true;
+            if host_port.is_none() {
+                host_port = published_host_port(&owned.runtime, &owned.container_name);
             }
-            if let Some(_status) = self
+            if let Some(addr) = &host_port
+                && registry_v2_ping_addr(addr)
+            {
+                return Ok(addr.clone());
+            }
+            if owned
                 .child
                 .try_wait()
                 .expect("failed to poll OCI registry child process")
+                .is_some()
             {
-                return false;
+                return Err(container_log_tail(&owned.log));
             }
             thread::sleep(Duration::from_millis(100));
         }
-        false
+        Err(format!(
+            "timed out waiting for the registry to answer{}: {}",
+            host_port
+                .map(|a| format!(" on {a}"))
+                .unwrap_or_else(|| " (it never published a port)".to_string()),
+            container_log_tail(&owned.log)
+        ))
     }
 
     fn cleanup_container(&self) {
-        let _ = Command::new(&self.runtime)
-            .args(["rm", "-f", &self.container_name])
+        let Some(owned) = &self.owned else {
+            return;
+        };
+        let _ = Command::new(&owned.runtime)
+            .args(["rm", "-f", &owned.container_name])
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -137,12 +209,75 @@ impl OCIRegistry {
 
 impl Drop for OCIRegistry {
     fn drop(&mut self) {
-        if self.child.try_wait().ok().flatten().is_none() {
-            let _ = self.child.kill();
+        // A registry from TEST_REGISTRY_VAR outlives every test that used it.
+        let Some(owned) = &mut self.owned else {
+            return;
+        };
+        if owned.child.try_wait().ok().flatten().is_none() {
+            let _ = owned.child.kill();
         }
-        let _ = self.child.wait();
+        let _ = owned.child.wait();
         self.cleanup_container();
     }
+}
+
+/// Distinguishes registries started by the same process, since one test can
+/// start several (one per container runtime).
+fn next_registry_nonce() -> u32 {
+    static NONCE: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    NONCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
+/// The `host:port` the engine published the registry's port 5000 on, once the
+/// container is running.
+fn published_host_port(runtime: &str, container_name: &str) -> Option<String> {
+    let output = Command::new(runtime)
+        .args(["port", container_name, "5000/tcp"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    // Both engines answer `127.0.0.1:49154`, one mapping per line.
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(str::trim)
+        .find(|line| line.starts_with("127.0.0.1:"))
+        .map(str::to_string)
+}
+
+/// The last thing the registry container wrote, for a start-failure message.
+fn container_log_tail(log: &tempfile::NamedTempFile) -> String {
+    const MAX_TAIL: usize = 400;
+    let Ok(contents) = std::fs::read_to_string(log.path()) else {
+        return "no container output".to_string();
+    };
+    let tail: String = contents
+        .lines()
+        .rev()
+        .take(3)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect::<Vec<_>>()
+        .join("; ");
+    if tail.trim().is_empty() {
+        return "no container output".to_string();
+    }
+    tail.chars().take(MAX_TAIL).collect()
+}
+
+/// A repo prefix unique to this call, so tests that share one registry — every
+/// test does when [`TEST_REGISTRY_VAR`] is set — never push to the same repo.
+/// That matters beyond hygiene: `pin_images` skips the push when the registry
+/// already serves the digest, so a shared repo would silently stop exercising
+/// the push path. Include the runtime in `label` when a test loops over engines.
+pub fn unique_image_prefix(label: &str) -> String {
+    format!(
+        "snouty-test-{label}-{}-{}",
+        std::process::id(),
+        next_registry_nonce()
+    )
 }
 
 /// Returns `true` when running inside GitHub Actions (or any CI that sets `CI=true`).
@@ -187,21 +322,13 @@ pub fn require_runtimes_with_compose() -> Vec<Box<dyn ContainerRuntime>> {
     runtimes
 }
 
-fn reserve_local_port() -> u16 {
-    TcpListener::bind("127.0.0.1:0")
-        .unwrap()
-        .local_addr()
-        .unwrap()
-        .port()
-}
-
-fn registry_v2_ping(port: u16) -> bool {
-    let Ok(mut stream) = TcpStream::connect(("127.0.0.1", port)) else {
+/// Whether an OCI registry answers `/v2/` at `addr` (a `host:port`).
+fn registry_v2_ping_addr(addr: &str) -> bool {
+    let Ok(mut stream) = TcpStream::connect(addr) else {
         return false;
     };
 
-    let request =
-        format!("GET /v2/ HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n");
+    let request = format!("GET /v2/ HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\n\r\n");
     if std::io::Write::write_all(&mut stream, request.as_bytes()).is_err() {
         return false;
     }
@@ -653,7 +780,7 @@ fn mock_route_get_run_logs(run_id: &str) -> (u16, String) {
         r#"{"started_task":"abc_parallel_driver_fetch","task_status":"started","command":"core/parallel_driver_fetch","container_id":"d700ef3d05a263","tasks_len":"1","source":{"name":"antithesis_test_composer","pid":974},"moment":{"input_hash":"5181922178177328213","vtime":"400.5"}}"#,
         r#"{"fault":{"name":"clog","type":"network","details":{"disruption_type":"Stopped"},"affected_nodes":["client2","setup"],"max_duration":0.267},"source":{"name":"fault_injector","pid":1086},"moment":{"input_hash":"5181922178177328213","vtime":"401.5"}}"#,
         r#"{"started_task":"abc_parallel_driver_fetch","task_status":"progressing","command":"core/parallel_driver_fetch","container_id":"d700ef3d05a263","tasks_len":"1","source":{"name":"antithesis_test_composer","pid":974},"moment":{"input_hash":"5181922178177328213","vtime":"401.75"}}"#,
-        r#"{"started_task":"abc_parallel_driver_fetch","task_status":"completed","command":"core/parallel_driver_fetch","container_id":"d700ef3d05a263","tasks_len":"1","source":{"name":"antithesis_test_composer","pid":974},"moment":{"input_hash":"5181922178177328213","vtime":"402"}}"#,
+        r#"{"started_task":"abc_parallel_driver_fetch","task_status":"completed","command":"core/parallel_driver_fetch","container_id":"d700ef3d05a263","tasks_len":"1","source":{"name":"antithesis_test_composer","pid":974},"moment":{"input_hash":"5181922178177328213","vtime":"402.0"}}"#,
     ];
     (200, lines.join("\n") + "\n")
 }
@@ -682,7 +809,8 @@ fn mock_route_list_run_properties(run_id: &str, query: Option<&str>) -> (u16, St
     let status = mock_query_param(query, "status");
     let after = mock_query_param(query, "after");
 
-    let failing = r#"{"name":"Counter value stays below limit","description":"Counter stays within safe bounds","status":"Failing","is_event":true,"group":"Safety","example_count":12,"counterexample_count":3,"examples":[{"moment":{"input_hash":"-300","vtime":"15.0"}}],"counterexamples":[{"moment":{"input_hash":"-200","vtime":"10.0"}},{"moment":{"input_hash":"-100","vtime":"5.0"}}]}"#.to_string();
+    // Full-precision vtimes so a precision fault fails a spec (see specs/runs.txt).
+    let failing = r#"{"name":"Counter value stays below limit","description":"Counter stays within safe bounds","status":"Failing","is_event":true,"group":"Safety","example_count":12,"counterexample_count":3,"examples":[{"moment":{"input_hash":"-300","vtime":"398.4898056755774"}}],"counterexamples":[{"moment":{"input_hash":"-200","vtime":"313.15126806590706"}},{"moment":{"input_hash":"-100","vtime":"45.334635781589895"}}]}"#.to_string();
     // A failing non-event ("system") property: the violating value lives in
     // `counterexamples`, so `--detail` must label it apart from the satisfying
     // `examples`.
@@ -844,10 +972,13 @@ mod tests {
 
         {
             let _registry = OCIRegistry {
-                child,
-                runtime: runtime_path.display().to_string(),
-                container_name: container_name.clone(),
-                port: 5000,
+                host_port: "127.0.0.1:5000".to_string(),
+                owned: Some(OwnedRegistry {
+                    child,
+                    runtime: runtime_path.display().to_string(),
+                    container_name: container_name.clone(),
+                    log: tempfile::NamedTempFile::new().unwrap(),
+                }),
             };
         }
 

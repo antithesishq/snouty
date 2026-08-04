@@ -50,6 +50,46 @@ impl std::fmt::Display for ApiError {
 
 impl std::error::Error for ApiError {}
 
+/// Render a report for the user, at the moment of printing.
+///
+/// This is the one place that turns a `Report` into terminal text, so printing
+/// concerns live here and not in the messages. Wrapping is the caller's call —
+/// it depends on whether stderr is a terminal, which the print site knows.
+///
+/// color_eyre renders every report as a numbered chain, so a single error —
+/// the common case — arrives as `\n   0: <message>`. The `0:` numbers nothing
+/// and reads like a stack frame. For a one-element chain the message comes
+/// from the report itself instead, onto the `Error:` line. The sections a
+/// report carries (`Suggestion:`, `Note:`, payload snippets) render only
+/// through the handler, as the text after the first blank line; that tail is
+/// kept verbatim. A chain of two or more keeps color_eyre's numbering, which
+/// is genuinely enumerating causes there.
+pub fn render_report(report: &Report) -> String {
+    let rendered = format!("{report:?}");
+    if report.chain().len() > 1 {
+        return format!("Error: {rendered}");
+    }
+    let message = painted_message(report);
+    match rendered.split_once("\n\n") {
+        Some((_frame, tail)) => format!("Error: {message}\n\n{tail}"),
+        None => format!("Error: {message}"),
+    }
+}
+
+/// The report's message, painted the way color_eyre's dark theme paints an
+/// error — bright red — when stderr is a terminal, and plain otherwise. The
+/// terminal check lives here for the same reason it lives in `wrap_if_tty`:
+/// color is a property of printing, and piped output must stay byte-exact.
+fn painted_message(report: &Report) -> String {
+    use color_eyre::owo_colors::OwoColorize;
+    use std::io::IsTerminal;
+    if std::io::stderr().is_terminal() {
+        format!("{}", report.bright_red())
+    } else {
+        report.to_string()
+    }
+}
+
 /// Returns the HTTP status of the first [`ApiError`] in the report's chain, if
 /// any. Works through `wrap_err` context, so callers can add context without
 /// losing the structured status.
@@ -77,6 +117,71 @@ mod tests {
             status,
             message: message.to_string(),
         })
+    }
+
+    #[test]
+    fn render_report_collapses_a_single_error_onto_one_line() {
+        // Under `cargo test` the default color_eyre hook applies (colors and a
+        // backtrace footer main's hook disables), so assert on the stripped
+        // first line rather than the whole rendering.
+        let rendered = plain(&render_report(&user_error("plain failure")));
+        assert_eq!(rendered.lines().next(), Some("Error: plain failure"));
+    }
+
+    #[test]
+    fn render_report_keeps_suggestions() {
+        let report = user_error("failure").suggestion("do the thing");
+        let rendered = plain(&render_report(&report));
+        assert!(rendered.starts_with("Error: failure"), "got: {rendered}");
+        assert!(
+            rendered.contains("Suggestion: do the thing"),
+            "got: {rendered}"
+        );
+        assert!(!rendered.contains("0:"), "got: {rendered}");
+    }
+
+    #[test]
+    fn render_report_numbers_a_real_chain() {
+        use color_eyre::eyre::Context;
+        let report = std::fs::read_to_string("/nonexistent-render-report-test")
+            .wrap_err("outer context")
+            .unwrap_err()
+            .suppress_backtrace(true);
+        let rendered = plain(&render_report(&report));
+        assert!(rendered.contains("0: outer context"), "got: {rendered}");
+        assert!(rendered.contains("1: "), "got: {rendered}");
+    }
+
+    // Wrapping belongs to the print site (it is tty-dependent), so the
+    // renderer must hand back the message as one logical line.
+    #[test]
+    fn render_report_does_not_wrap() {
+        let long = format!("prefix {}", "word ".repeat(40));
+        let report = user_error(long.clone());
+        let rendered = plain(&render_report(&report));
+        assert!(
+            rendered.lines().next().unwrap().contains(&long),
+            "got: {rendered}"
+        );
+    }
+
+    /// Strip ANSI escape sequences, so assertions see what a plain terminal
+    /// shows.
+    fn plain(s: &str) -> String {
+        let mut out = String::new();
+        let mut chars = s.chars();
+        while let Some(ch) = chars.next() {
+            if ch == '\u{1b}' {
+                for esc in chars.by_ref() {
+                    if esc.is_ascii_alphabetic() {
+                        break;
+                    }
+                }
+            } else {
+                out.push(ch);
+            }
+        }
+        out
     }
 
     #[test]

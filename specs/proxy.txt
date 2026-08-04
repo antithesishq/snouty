@@ -11,31 +11,39 @@
 # the proxy — a direct connection fails to resolve the host. Success against an
 # unreachable base URL is therefore proof the request went through the proxy.
 #
-# Every line is guarded with [!staging]: the whole file targets the local mock
-# and has no meaning against the live staging backend.
+# Everything below `[staging] skip` uses the local mock. The settings check
+# above it is offline, so it runs in both modes.
+
+# `snouty doctor` reports the resolved proxy, so a user can confirm the setting
+# takes effect. --offline makes no request, so the proxy target does not have to
+# exist. The credentials only get doctor past its own checks.
+env ANTITHESIS_TENANT=testtenant
+env ANTITHESIS_API_KEY=placeholder-key
+env ANTITHESIS_HTTPS_PROXY=http://127.0.0.1:9
+snouty doctor --offline
+stderr '\s*https proxy\s*http://127\.0\.0\.1:9'
+
+# Clear the proxy again, so the negative control below has no proxy. snouty
+# reads an empty environment variable as unset (see `env::interpret`).
+env ANTITHESIS_HTTPS_PROXY=
+
+[staging] skip
 
 # Negative control. The base URL points at an unresolvable host and no proxy is
 # configured, so `runs` cannot reach the API: it exits non-zero and prints no
 # run table. A real API key gets past the auth-presence check so the request is
 # actually attempted (and fails on the network), rather than short-circuiting.
-[!staging] env ANTITHESIS_BASE_URL=http://mock.invalid
-[!staging] env ANTITHESIS_API_KEY=placeholder-key
-[!staging] env ANTITHESIS_TENANT=testtenant
-[!staging] ! snouty runs
-[!staging] ! stdout 'RUN ID'
+env ANTITHESIS_BASE_URL=http://mock.invalid
+env ANTITHESIS_API_KEY=placeholder-key
+env ANTITHESIS_TENANT=testtenant
+! snouty runs
+! stdout 'RUN ID'
 
 # With the proxy configured, the identical request reaches the mock and lists
 # runs. `mock-proxy` sets ANTITHESIS_HTTPS_PROXY (and the API key) while the
 # base URL stays pointed at the unresolvable host, so this success can only be
 # via the proxy.
-[!staging] mock-proxy
-[!staging] snouty runs
-[!staging] stdout 'RUN ID.*STATUS.*CREATED.*TEST NAME'
-[!staging] stdout 'run-1.*completed'
-
-# `snouty doctor` reports the resolved proxy so a user can confirm it took
-# effect. doctor exits non-zero here (the proxy target refuses the connection),
-# but the resolved-settings table is printed regardless of exit status.
-env ANTITHESIS_HTTPS_PROXY=http://127.0.0.1:9
-snouty doctor --offline
-stderr '\s*https proxy\s*http://127\.0\.0\.1:9'
+mock-proxy
+snouty runs
+stdout 'RUN ID.*STATUS.*CREATED.*TEST NAME'
+stdout 'run-1.*completed'

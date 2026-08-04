@@ -55,6 +55,50 @@ enum NewlinePolicy {
     KeepNewlineDropReturn,
 }
 
+/// The measure user-facing prose wraps to. Narrower than most terminals, so a
+/// wrapped message reads as a paragraph instead of hitting the terminal's own
+/// mid-word wrap; wide enough that short messages stay on one line.
+const PROSE_WIDTH: usize = 100;
+
+/// Wrap prose for stderr when a person is reading it.
+///
+/// Wrapping is a property of printing, not of the message, and it applies only
+/// on a terminal: piped and captured output keeps whole lines, because a wrap
+/// point that moves with an embedded path length breaks any multi-word match
+/// that straddles it.
+pub fn wrap_if_tty(text: &str) -> String {
+    use std::io::IsTerminal;
+    if std::io::stderr().is_terminal() {
+        wrap(text)
+    } else {
+        text.to_string()
+    }
+}
+
+/// Word-wrap each overlong line of `text` to [`PROSE_WIDTH`] visible columns.
+///
+/// A line that already fits is returned byte-identical, which keeps aligned
+/// content (tables, caret markers, indented listings) exactly as built.
+/// Continuation lines inherit the line's indent, ANSI escape sequences count
+/// as zero width, and words are never split — a path overflows rather than
+/// breaking.
+fn wrap(text: &str) -> String {
+    text.lines().map(wrap_line).collect::<Vec<_>>().join("\n")
+}
+
+fn wrap_line(line: &str) -> String {
+    if textwrap::core::display_width(line) <= PROSE_WIDTH {
+        return line.to_string();
+    }
+    let indent: String = line.chars().take_while(|c| *c == ' ').collect();
+    let options = textwrap::Options::new(PROSE_WIDTH)
+        .initial_indent(&indent)
+        .subsequent_indent(&indent)
+        .break_words(false)
+        .word_splitter(textwrap::WordSplitter::NoHyphenation);
+    textwrap::fill(line.trim_start(), options)
+}
+
 pub(crate) fn sanitize(s: &str) -> String {
     let mut escaped = String::new();
     for ch in s.chars() {
@@ -91,6 +135,30 @@ mod tests {
     fn render_kv_sanitizes_values() {
         let rows = vec![("k", "a\nb".to_string())];
         assert_eq!(render_kv(&rows, 0), "k  a\\nb\n");
+    }
+
+    #[test]
+    fn wrap_reflows_only_overlong_lines() {
+        let long = format!("Warning: {}", "word ".repeat(30));
+        let wrapped = wrap(&long);
+        assert!(wrapped.lines().count() > 1);
+        assert!(wrapped.lines().all(|l| l.len() <= 100), "got: {wrapped}");
+        // A short line keeps its exact bytes, including internal alignment.
+        assert_eq!(wrap("  profile     (none)"), "  profile     (none)");
+        assert_eq!(wrap(""), "");
+    }
+
+    #[test]
+    fn wrap_keeps_the_indent_and_never_splits_words() {
+        let path = format!("/very/long/{}", "seg-x/".repeat(30));
+        let wrapped = wrap(&format!(
+            "   note: backed up to {path} {}",
+            "word ".repeat(20)
+        ));
+        for line in wrapped.lines().skip(1) {
+            assert!(line.starts_with("   "), "got: {wrapped}");
+        }
+        assert!(wrapped.contains(&path), "paths must never be split");
     }
 
     #[test]

@@ -8,15 +8,19 @@
 #
 # Each successful invocation actually starts a debugging session against the
 # API, so the bulk of this file is gated behind `[staging] skip` to avoid
-# mutating staging. Read-only checks (env-var, schema validation, and the
-# run-id/session-id requirement that fail before any API call) run in both
-# modes.
+# mutating staging. The skip sits above the first `mock-server` directive:
+# under staging that directive installs the real tenant credentials, and no
+# `snouty debug` command may execute with them — safety must not depend on
+# where the command fails. Only the credential-free check above the skip runs
+# in both modes.
 
 # The command authenticates with the Antithesis API using either
 #    ANTITHESIS_API_KEY and ANTITHESIS_TENANT, or
 #    ANTITHESIS_USERNAME, ANTITHESIS_PASSWORD, and ANTITHESIS_TENANT.
 ! snouty debug --input-hash abc --run-id run-123 --vtime 123
 stderr 'No Antithesis credentials found.*'
+
+[staging] skip
 
 # Parameters are validated against the debuggingParams schema before
 #    making any API call. Required fields: input_hash, vtime, and exactly
@@ -31,14 +35,12 @@ stderr 'unexpected argument.*'
 
 # The target run must be identified by exactly one of --run-id or
 #    --session-id. Supplying both, or neither, is an error caught before any
-#    API call (so it is exercised in both mock and staging modes).
+#    API call.
 ! snouty debug --input-hash abc --vtime 1 --run-id r-1 --session-id s-1
 stderr 'specify exactly one of --run-id / --session-id.*'
 
 ! snouty debug --input-hash abc --vtime 1
 stderr 'specify --run-id or --session-id.*'
-
-[staging] skip
 
 # Parameters are provided as typed flags. Before sending, the resolved
 #    parameters are printed to stderr with sensitive values redacted. The
@@ -107,19 +109,32 @@ stdin moment_run_input.txt
 snouty debug --stdin
 stdout 'Debugging session started: run_id run-123'
 
-# With --json, the full response body is printed as pretty JSON.
+# With --json, snouty prints its own envelope: the run id, and nothing else.
+# The webhook's body-level statusCode is deliberately not re-exported (issue
+# #180) — it carries nothing the exit code doesn't, and here it disagrees with
+# the response anyway (the mock answers HTTP 200 saying 202). Use --verbose to
+# see the response as it arrived.
 mock-server 200 '{"statusCode":202,"runId":"run-123"}'
 stdin moment_run_input.txt
 snouty --json debug --stdin
 stdout '\s*"runId": "run-123".*'
+! stdout '.*statusCode.*'
 
 # Gateway-level rejections (auth, rate limiting) on the launch/debug endpoints
 # return an EMPTY body rather than the Launch_Error_Response envelope — verified
 # against the live API, which answers a bad token with 401/403 and no payload.
-# snouty must surface that permissively instead of choking on the empty body.
+# The HTTP status is the only thing the server said, so it is the whole message.
 mock-server 401 ''
 ! snouty debug --input-hash abc123 --run-id 9043254f65c9c65d63fe043a0abfc7fc-53-1 --vtime 1234567890
-stderr '.*empty response body.*'
+stderr 'API error: 401 Unauthorized.*'
+
+# An error body snouty cannot make sense of (here an intermediary's HTML page)
+# never masks the status either: it is reported with the body shown for
+# debugging.
+mock-server 502 '<html><body>Bad Gateway</body></html>'
+! snouty debug --input-hash abc123 --run-id 9043254f65c9c65d63fe043a0abfc7fc-53-1 --vtime 1234567890
+stderr 'API error: 502 Bad Gateway.*'
+stderr '.*<html><body>Bad Gateway</body></html>.*'
 
 # ANTITHESIS_EXTRA_HEADERS adds arbitrary headers to every API request (for
 #    consumption by proxies). With --verbose, the merged request headers are

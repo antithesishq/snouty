@@ -927,10 +927,13 @@ fn persist_to_file(
             Ok(file) => file,
             Err(_) => {
                 let backup = back_up_unparsable_file(&path)?;
-                warn!(
-                    "warning: the existing credentials file at {} could not be parsed; it has been backed up to {} and a new one will be written.",
+                // Same shape as the settings repair note: paths on their own
+                // lines, since they are what the user may copy and what made
+                // the one-line form overflow.
+                eprintln!(
+                    "warning: the existing credentials file could not be parsed; a new one will be written.\n  kept as a backup: {}\n  will be rewritten: {}",
+                    backup.display(),
                     path.display(),
-                    backup.display()
                 );
                 CredentialsFile {
                     default: None,

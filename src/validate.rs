@@ -647,7 +647,10 @@ fn discover_scripts(
     // and an unexpected non-zero exit surfaces as a property failure during the
     // run itself. We can promote this to a hard error later if it proves noisy.
     if !stopped_with_scripts.is_empty() {
-        eprintln!("{}", stranded_scripts_warning(&stopped_with_scripts));
+        eprintln!(
+            "{}",
+            crate::render::wrap_if_tty(&stranded_scripts_warning(&stopped_with_scripts))
+        );
     }
 
     // Genuine misconfigurations — unknown command prefixes or non-executable
@@ -694,6 +697,23 @@ fn combined_discovery_error(
                 "Test commands in service '{service}' are not executable:"
             ))
         });
+    }
+
+    if !unrecognized.is_empty() {
+        // The list comes from the same table the scan matches against, so the
+        // text a user follows cannot name a prefix the scan rejects.
+        let prefixes = crate::scripts::RECOGNIZED_PREFIXES
+            .iter()
+            .map(|(prefix, _)| *prefix)
+            .collect::<Vec<_>>()
+            .join(", ");
+        err = err.suggestion(format!(
+            "rename each command to start with a recognized prefix ({prefixes}) or {helper}",
+            helper = crate::scripts::HELPER_PREFIX,
+        ));
+    }
+    if !not_executable.is_empty() {
+        err = err.suggestion("chmod +x the listed commands in the image, then rebuild");
     }
 
     err

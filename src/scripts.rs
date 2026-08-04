@@ -16,25 +16,31 @@ pub enum ScriptType {
     Finally,
 }
 
+/// The prefix of a script that test commands call but the platform never
+/// runs. The scan allows and skips it — it is deliberately not in
+/// [`RECOGNIZED_PREFIXES`], because every entry there names a command type
+/// the platform executes, and a helper has none.
+pub const HELPER_PREFIX: &str = "helper_";
+
+/// Every recognized test-command prefix, paired with its type. One table
+/// drives both the scan and the user-facing error text, so the list a user
+/// reads cannot drift from the list the scan accepts.
+pub const RECOGNIZED_PREFIXES: [(&str, ScriptType); 7] = [
+    ("first_", ScriptType::First),
+    ("parallel_driver_", ScriptType::ParallelDriver),
+    ("serial_driver_", ScriptType::SerialDriver),
+    ("singleton_driver_", ScriptType::SingletonDriver),
+    ("anytime_", ScriptType::Anytime),
+    ("eventually_", ScriptType::Eventually),
+    ("finally_", ScriptType::Finally),
+];
+
 impl ScriptType {
     fn from_prefix(name: &str) -> Option<Self> {
-        if name.starts_with("first_") {
-            Some(Self::First)
-        } else if name.starts_with("parallel_driver_") {
-            Some(Self::ParallelDriver)
-        } else if name.starts_with("serial_driver_") {
-            Some(Self::SerialDriver)
-        } else if name.starts_with("singleton_driver_") {
-            Some(Self::SingletonDriver)
-        } else if name.starts_with("anytime_") {
-            Some(Self::Anytime)
-        } else if name.starts_with("eventually_") {
-            Some(Self::Eventually)
-        } else if name.starts_with("finally_") {
-            Some(Self::Finally)
-        } else {
-            None
-        }
+        RECOGNIZED_PREFIXES
+            .iter()
+            .find(|(prefix, _)| name.starts_with(prefix))
+            .map(|(_, script_type)| *script_type)
     }
 
     pub fn is_driver(self) -> bool {
@@ -99,7 +105,7 @@ pub fn scan_scripts(base: &Path, service: &str) -> Result<ScanResult> {
             let script_type = match ScriptType::from_prefix(&command_name) {
                 Some(t) => t,
                 None => {
-                    if command_name.starts_with("helper_") {
+                    if command_name.starts_with(HELPER_PREFIX) {
                         debug!("skipping helper: {}", command_name);
                     } else {
                         unrecognized.push(format!("{}/{}", test_name, command_name));

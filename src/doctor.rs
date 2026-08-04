@@ -336,6 +336,7 @@ fn resolve_settings(settings: &Settings) -> Vec<Setting> {
             "container engine",
             settings.container_engine().unwrap_or("auto-detect"),
         ),
+        Setting::new("update channel", settings.update_channel().as_str()),
     ]
 }
 
@@ -481,6 +482,7 @@ mod tests {
     use color_eyre::eyre::eyre;
 
     use crate::auth::{API_KEY_VAR_NAME, PASSWORD_VAR_NAME, USERNAME_VAR_NAME};
+    use crate::cli::UpdateChannel;
 
     use super::*;
 
@@ -599,41 +601,57 @@ mod tests {
 
     #[test]
     fn tenant_row_shows_value() {
-        let settings = Settings::for_test(None, Some("acme"), None, None, None, None);
+        let settings = Settings::builder().tenant("acme").build();
         let rows = resolve_settings(&settings);
         assert_eq!(row(&rows, "tenant").value, "acme");
     }
 
     #[test]
     fn missing_settings_render_as_not_set() {
-        let rows = resolve_settings(&Settings::for_test(None, None, None, None, None, None));
+        let rows = resolve_settings(&Settings::default());
         assert_eq!(row(&rows, "tenant").value, "not set");
     }
 
     #[test]
     fn https_proxy_row_shows_value() {
-        let settings =
-            Settings::for_test(None, None, None, None, Some("http://proxy.corp:8080"), None);
+        let settings = Settings::builder()
+            .https_proxy("http://proxy.corp:8080")
+            .build();
         let rows = resolve_settings(&settings);
         assert_eq!(row(&rows, "https proxy").value, "http://proxy.corp:8080");
     }
 
     #[test]
     fn https_proxy_row_defaults_to_not_set() {
-        let rows = resolve_settings(&Settings::for_test(None, None, None, None, None, None));
+        let rows = resolve_settings(&Settings::default());
         assert_eq!(row(&rows, "https proxy").value, "not set");
     }
 
     #[test]
     fn container_engine_row_auto_detects_when_unset() {
-        let settings = Settings::for_test(None, Some("acme"), None, None, None, None);
+        let settings = Settings::builder().tenant("acme").build();
         let rows = resolve_settings(&settings);
         assert_eq!(row(&rows, "container engine").value, "auto-detect");
     }
 
     #[test]
+    fn update_channel_row_defaults_to_stable() {
+        let rows = resolve_settings(&Settings::default());
+        assert_eq!(row(&rows, "update channel").value, "stable");
+    }
+
+    #[test]
+    fn update_channel_row_shows_value() {
+        let settings = Settings::builder()
+            .update_channel(UpdateChannel::Unstable)
+            .build();
+        let rows = resolve_settings(&settings);
+        assert_eq!(row(&rows, "update channel").value, "unstable");
+    }
+
+    #[test]
     fn profile_row_reflects_no_active_profile() {
-        let rows = resolve_settings(&Settings::for_test(None, None, None, None, None, None));
+        let rows = resolve_settings(&Settings::default());
         assert_eq!(row(&rows, "profile").value, "(none)");
     }
 

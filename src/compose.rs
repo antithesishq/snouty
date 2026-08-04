@@ -18,6 +18,7 @@ use crate::container::{
     Architecture, ContainerRuntime, DISCOVERY_COMMAND_TIMEOUT, RemoteManifest, available_engines,
     digests_for_repo, image_ref_tag, image_repo, is_podman_in_disguise, normalize_repo,
 };
+use crate::error::user_error;
 use crate::process::{ProcessGroupChild, output_with_timeout};
 
 /// How Docker Compose v2 is invoked on this machine.
@@ -690,7 +691,13 @@ pub fn parse_compose_config(yaml: &str) -> Result<ComposeContents> {
                     .and_then(|v| v.as_bool())
                     .unwrap_or(false);
                 if is_external {
-                    bail!("network '{name}' is declared as external and won't work on Antithesis");
+                    return Err(user_error(format!(
+                        "network '{name}' is declared as external and won't work on Antithesis"
+                    ))
+                    .suggestion(
+                        "remove `external: true` and declare the network normally — Antithesis \
+                         provisions every network inside the test environment",
+                    ));
                 }
                 networks.push(name.to_string());
             }
@@ -1147,6 +1154,11 @@ networks:
             err.to_string().contains("external"),
             "expected error about external network, got: {err}"
         );
+        // The suggestion names the fix, matching the other validate errors.
+        assert!(
+            format!("{err:?}").contains("remove `external: true`"),
+            "expected the removal suggestion, got: {err:?}"
+        );
     }
     #[test]
     fn compose_config_resolves_env() {
@@ -1515,7 +1527,16 @@ services:
             )
             .unwrap();
             std::fs::write(img_dir.path().join("file"), "x").unwrap();
-            let local = "snouty-pin-test:latest";
+            // Unique per runtime: every iteration builds byte-identical content,
+            // so a shared name would make the second push a no-op (the registry
+            // already serves that digest) and stop testing the push path. The
+            // pushed repo is `{registry}/{local name}`, so this covers both the
+            // local image store and the registry.
+            let local = format!(
+                "{}:latest",
+                crate::testutils::unique_image_prefix(&format!("pin-{}", rt.name()))
+            );
+            let local = local.as_str();
             rt.build_image(img_dir.path(), local, None, Some("linux/amd64"))
                 .unwrap_or_else(|e| panic!("{}: build: {e:?}", rt.name()));
 
@@ -1539,7 +1560,7 @@ services:
                     .unwrap()
                     .to_string())
             };
-            let pushed_prefix = format!("{addr}/snouty-pin-test:latest@sha256:");
+            let pushed_prefix = format!("{addr}/{local}@sha256:");
 
             // Case 1 — build stanza: the local build is pushed and pinned.
             let built = pinned_app(&format!(

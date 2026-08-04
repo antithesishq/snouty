@@ -16,6 +16,7 @@ pub mod moment;
 pub mod params;
 pub mod process;
 pub(crate) mod render;
+pub use render::wrap_if_tty;
 pub mod runs;
 pub mod scripts;
 #[doc(hidden)]
@@ -25,6 +26,7 @@ pub mod testutils;
 pub mod time;
 pub mod util;
 pub mod validate;
+pub mod vtime;
 
 /// User-Agent string sent with every HTTP request snouty makes.
 pub fn user_agent() -> String {

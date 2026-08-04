@@ -3,8 +3,12 @@ name: build
 on:
   push:
     branches: ["main"]
+  # No branch filter: a stacked pull request (base = another PR's branch) gets
+  # the same gate as one that targets main.
   pull_request:
-    branches: ["main"]
+  schedule:
+    - cron: "0 7 * * *"
+  workflow_dispatch:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -208,14 +212,68 @@ jobs:
             podman save docker.io/antithesishq/k8s-validator:1.0.0 -o ~/k8s-validator.tar
           fi
 
+      # Pre-fetch every remote image and start the registry tests push to, so a
+      # slow or rate-limited pull fails here rather than inside a test.
+      - name: Set up test images and registry
+        shell: bash
+        timeout-minutes: 10
+        run: scripts/setup-test-images.sh "${{ matrix.runtime }}"
+
       - name: Test
         run: cargo nextest run
+  staging:
+    runs-on: ubuntu-latest
+    needs: skip-check
+    # GitHub does not pass secrets to a workflow that a fork's pull request
+    # triggers, so this job skips there.
+    if: |
+      needs.skip-check.outputs.should_skip != 'true' &&
+      (github.event_name != 'pull_request' ||
+       github.event.pull_request.head.repo.full_name == github.repository)
+    timeout-minutes: 15
+    steps:
+      - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+        with:
+          toolchain: stable
+
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+        with:
+          token: ${{secrets.GITHUB_TOKEN}}
+          persist-credentials: false
+
+      - uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5 # v2
+
+      - name: Install Nextest
+        uses: taiki-e/install-action@cargo-nextest
+
+      # This job gates merges. A missing secret must fail the job, because a
+      # check that does not run is worse than a check that fails.
+      - name: Require tenant credentials
+        env:
+          TENANT: ${{ secrets.STAGING_ANTITHESIS_TENANT }}
+          API_KEY: ${{ secrets.STAGING_ANTITHESIS_API_KEY }}
+        run: |
+          if [ -z "$TENANT" ] || [ -z "$API_KEY" ]; then
+            echo "STAGING_ANTITHESIS_TENANT and STAGING_ANTITHESIS_API_KEY must be set as repository secrets" >&2
+            exit 1
+          fi
+
+      - name: Spec tests against staging
+        env:
+          SNOUTY_STAGING: 1
+          ANTITHESIS_TENANT: ${{ secrets.STAGING_ANTITHESIS_TENANT }}
+          ANTITHESIS_API_KEY: ${{ secrets.STAGING_ANTITHESIS_API_KEY }}
+          # No base URL. snouty resolves https://<tenant>.antithesis.com, which
+          # is the address to test.
+        run: cargo nextest run --test spec spec_tests
+
   tests-passed:
     runs-on: ubuntu-latest
     needs:
       - skip-check
       - test
       - build-nix
+      - staging
     if: always()
     steps:
       - name: Verify test matrix
@@ -224,14 +282,21 @@ jobs:
             exit 0
           fi
 
+          # `staging` skips on a fork's pull request. This gate accepts that
+          # one result. A failure or a cancellation still blocks the merge.
+          staging="${{ needs.staging.result }}"
+
           if [ "${{ needs.test.result }}" = "success" ]; then
             if [ "${{ needs.build-nix.result }}" = "success" ]; then
-              exit 0
+              if [ "$staging" = "success" ] || [ "$staging" = "skipped" ]; then
+                exit 0
+              fi
             fi
           fi
 
           echo "test matrix result: ${{ needs.test.result }}"
           echo "build-nix result: ${{ needs.build-nix.result }}"
+          echo "staging result: $staging"
           exit 1
   build-nix:
     runs-on: ubuntu-latest
@@ -248,6 +313,13 @@ jobs:
       - name: Start Podman socket # required for docker-compose
         run: |
           systemctl --user start podman.socket
+
+      # This leg sets no SNOUTY_TEST_RUNTIME, so the suite exercises both
+      # engines and both need the images.
+      - name: Set up test images and registry
+        shell: bash
+        timeout-minutes: 10
+        run: scripts/setup-test-images.sh podman docker
 
       - name: Test
         run: nix-shell --run "cargo nextest run"

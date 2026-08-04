@@ -1,5 +1,5 @@
 use chrono::{DateTime, Utc};
-use clap::{Args, Parser, Subcommand};
+use clap::{Args, Parser, Subcommand, ValueEnum};
 
 use crate::api::RunStatus;
 use crate::time::ReportDuration;
@@ -224,6 +224,13 @@ pre-releases:
   snouty update 0.6.0
   snouty update 0.6.0-rc.1
 
+The update channel decides what "latest" means: `stable` (the default)
+installs the latest release, `unstable` also considers pre-releases but still
+installs the latest release when it is newer than every pre-release. Set the
+channel with the `update_channel` setting (or SNOUTY_UPDATE_CHANNEL), and
+override it for one run with --channel:
+  snouty update --channel unstable
+
 Installing a version older than the one you're running is a downgrade and
 requires --force."#)]
     Update(UpdateArgs),
@@ -362,6 +369,48 @@ pub struct UpdateArgs {
     /// Install the requested version even if it is older than the current one (a downgrade)
     #[arg(long)]
     pub force: bool,
+
+    /// Update channel to use, overriding the `update_channel` setting
+    #[arg(long, value_enum)]
+    pub channel: Option<UpdateChannel>,
+}
+
+/// Which releases `snouty update` considers when no explicit version is given.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, ValueEnum)]
+pub enum UpdateChannel {
+    /// Install the latest release
+    #[default]
+    Stable,
+    /// Also consider pre-releases, but prefer the latest release when it is newer
+    Unstable,
+}
+
+impl UpdateChannel {
+    pub const STABLE: &'static str = "stable";
+    pub const UNSTABLE: &'static str = "unstable";
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            UpdateChannel::Stable => Self::STABLE,
+            UpdateChannel::Unstable => Self::UNSTABLE,
+        }
+    }
+}
+
+impl std::str::FromStr for UpdateChannel {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            Self::STABLE => Ok(UpdateChannel::Stable),
+            Self::UNSTABLE => Ok(UpdateChannel::Unstable),
+            other => Err(format!(
+                "expected `{}` or `{}`, got `{other}`",
+                Self::STABLE,
+                Self::UNSTABLE
+            )),
+        }
+    }
 }
 
 #[derive(Args)]
@@ -657,6 +706,24 @@ mod tests {
 
     fn parse(args: &[&str]) -> Cli {
         Cli::try_parse_from(args).expect("args should parse")
+    }
+
+    #[test]
+    fn update_channel_parses_its_named_values() {
+        assert_eq!(
+            UpdateChannel::STABLE.parse::<UpdateChannel>().unwrap(),
+            UpdateChannel::Stable
+        );
+        assert_eq!(
+            UpdateChannel::UNSTABLE.parse::<UpdateChannel>().unwrap(),
+            UpdateChannel::Unstable
+        );
+    }
+
+    #[test]
+    fn update_channel_rejects_unknown_values() {
+        let err = "nightly".parse::<UpdateChannel>().unwrap_err();
+        assert_eq!(err, "expected `stable` or `unstable`, got `nightly`");
     }
 
     #[test]

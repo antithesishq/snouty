@@ -43,14 +43,21 @@ env SNOUTY_CONTAINER_ENGINE=podman
 ! snouty doctor
 stderr 'container engine.*podman'
 
-# 7. SNOUTY_SETTINGS_PATH selects the project file in place of ./.snouty.toml.
+# 7. The update channel is reported in the table; unset resolves to stable.
+! snouty doctor
+stderr 'update channel.*stable'
+env SNOUTY_UPDATE_CHANNEL=unstable
+! snouty doctor
+stderr 'update channel.*unstable'
+
+# 8. SNOUTY_SETTINGS_PATH selects the project file in place of ./.snouty.toml.
 #    Observed via repository, since no earlier step set ANTITHESIS_REPOSITORY
 #    (ANTITHESIS_TENANT is already pinned from step 5, so tenant won't show it).
 env SNOUTY_SETTINGS_PATH=env-settings.toml
 ! snouty doctor
 stderr 'repository.*env-path-repo'
 
-# 8. The --settings flag wins over SNOUTY_SETTINGS_PATH.
+# 9. The --settings flag wins over SNOUTY_SETTINGS_PATH.
 ! snouty --settings other.toml doctor
 stderr 'repository.*other/repo'
 

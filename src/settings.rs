@@ -8,6 +8,7 @@ use color_eyre::eyre::{Context, OptionExt, Result, eyre};
 use tempfile::NamedTempFile;
 use toml::{Table, Value};
 
+use crate::cli::UpdateChannel;
 use crate::env;
 use crate::error::user_error;
 
@@ -18,6 +19,7 @@ pub const ANTITHESIS_REPOSITORY_VAR_NAME: &str = "ANTITHESIS_REPOSITORY";
 pub const ANTITHESIS_BASE_URL_VAR_NAME: &str = "ANTITHESIS_BASE_URL";
 pub const ANTITHESIS_HTTPS_PROXY_VAR_NAME: &str = "ANTITHESIS_HTTPS_PROXY";
 pub const CONTAINER_ENGINE_VAR_NAME: &str = "SNOUTY_CONTAINER_ENGINE";
+pub const UPDATE_CHANNEL_VAR_NAME: &str = "SNOUTY_UPDATE_CHANNEL";
 const PROJECT_SETTINGS_FILENAME: &str = ".snouty.toml";
 const GLOBAL_SETTINGS_FILENAME: &str = "settings.toml";
 const PROFILE_KEY: &str = "profile";
@@ -75,6 +77,10 @@ pub fn cache_dir() -> Option<PathBuf> {
 ///
 /// Every command shares the same resolved instance (threaded by reference), so a
 /// value resolves identically no matter which code path reads it.
+///
+/// `Default` is every setting unset (and the `stable` update channel) — handy
+/// when a caller needs a `Settings` without resolving anything.
+#[derive(Default)]
 pub struct Settings {
     profile: Option<String>,
     tenant: Option<String>,
@@ -82,6 +88,7 @@ pub struct Settings {
     base_url: Option<String>,
     https_proxy: Option<String>,
     container_engine: Option<String>,
+    update_channel: UpdateChannel,
 }
 
 impl Settings {
@@ -145,6 +152,15 @@ impl Settings {
         let https_proxy = resolve("https_proxy", ANTITHESIS_HTTPS_PROXY_VAR_NAME)?;
         let container_engine = resolve("container_engine", CONTAINER_ENGINE_VAR_NAME)?;
 
+        // The channel resolves to a typed value here, so an invalid setting
+        // fails at startup like any other malformed setting.
+        let update_channel = match resolve("update_channel", UPDATE_CHANNEL_VAR_NAME)? {
+            Some(value) => value
+                .parse::<UpdateChannel>()
+                .map_err(|err| user_error(format!("invalid update_channel setting: {err}")))?,
+            None => UpdateChannel::default(),
+        };
+
         // A derived base URL interpolates the tenant into the request host
         // (`https://{tenant}.antithesis.com`) and we attach the API key to that
         // host, so a malformed tenant would silently send credentials to an
@@ -163,6 +179,7 @@ impl Settings {
             base_url,
             https_proxy,
             container_engine,
+            update_channel,
         ))
     }
 
@@ -177,6 +194,7 @@ impl Settings {
         base_url: Option<String>,
         https_proxy: Option<String>,
         container_engine: Option<String>,
+        update_channel: UpdateChannel,
     ) -> Self {
         let base_url = base_url.or_else(|| {
             tenant
@@ -191,6 +209,7 @@ impl Settings {
             base_url,
             https_proxy,
             container_engine,
+            update_channel,
         }
     }
 
@@ -220,29 +239,22 @@ impl Settings {
         self.container_engine.as_deref()
     }
 
+    /// The resolved update channel; `stable` when unset. Already validated —
+    /// an invalid setting value fails in [`Settings::resolve`].
+    pub fn update_channel(&self) -> UpdateChannel {
+        self.update_channel
+    }
+
     pub(crate) fn profile(&self) -> Option<&str> {
         self.profile.as_deref()
     }
 
-    /// Test-only: a `Settings` built from explicit values, with no environment or
-    /// filesystem IO. `base_url` still derives from the tenant when left `None`.
-    #[cfg(test)]
-    pub(crate) fn for_test(
-        profile: Option<&str>,
-        tenant: Option<&str>,
-        repository: Option<&str>,
-        base_url: Option<&str>,
-        https_proxy: Option<&str>,
-        container_engine: Option<&str>,
-    ) -> Self {
-        Self::assemble(
-            profile.map(str::to_string),
-            tenant.map(str::to_string),
-            repository.map(str::to_string),
-            base_url.map(str::to_string),
-            https_proxy.map(str::to_string),
-            container_engine.map(str::to_string),
-        )
+    /// Start building a `Settings` from explicit values, with no environment
+    /// or filesystem IO — for callers (and tests) that already hold the
+    /// values. Set only what's needed and finish with
+    /// [`SettingsBuilder::build`].
+    pub fn builder() -> SettingsBuilder {
+        SettingsBuilder::default()
     }
 
     /// Test-only: a `Settings` with an explicit base URL and everything else
@@ -250,7 +262,71 @@ impl Settings {
     /// without touching the environment.
     #[cfg(test)]
     pub(crate) fn for_test_base_url(base_url: String) -> Self {
-        Self::for_test(None, None, None, Some(&base_url), None, None)
+        Self::builder().base_url(&base_url).build()
+    }
+}
+
+/// Builder behind [`Settings::builder`], so call sites name just the values
+/// they set instead of growing a positional argument for every new setting.
+/// It bypasses the resolution precedence chain entirely; `base_url` still
+/// derives from the tenant when left unset (see [`Settings::assemble`]).
+#[derive(Default)]
+pub struct SettingsBuilder {
+    profile: Option<String>,
+    tenant: Option<String>,
+    repository: Option<String>,
+    base_url: Option<String>,
+    https_proxy: Option<String>,
+    container_engine: Option<String>,
+    update_channel: UpdateChannel,
+}
+
+impl SettingsBuilder {
+    pub fn profile(mut self, value: &str) -> Self {
+        self.profile = Some(value.to_string());
+        self
+    }
+
+    pub fn tenant(mut self, value: &str) -> Self {
+        self.tenant = Some(value.to_string());
+        self
+    }
+
+    pub fn repository(mut self, value: &str) -> Self {
+        self.repository = Some(value.to_string());
+        self
+    }
+
+    pub fn base_url(mut self, value: &str) -> Self {
+        self.base_url = Some(value.to_string());
+        self
+    }
+
+    pub fn https_proxy(mut self, value: &str) -> Self {
+        self.https_proxy = Some(value.to_string());
+        self
+    }
+
+    pub fn container_engine(mut self, value: &str) -> Self {
+        self.container_engine = Some(value.to_string());
+        self
+    }
+
+    pub fn update_channel(mut self, value: UpdateChannel) -> Self {
+        self.update_channel = value;
+        self
+    }
+
+    pub fn build(self) -> Settings {
+        Settings::assemble(
+            self.profile,
+            self.tenant,
+            self.repository,
+            self.base_url,
+            self.https_proxy,
+            self.container_engine,
+            self.update_channel,
+        )
     }
 }
 
@@ -739,51 +815,48 @@ mod tests {
 
     #[test]
     fn base_url_falls_back_to_tenant_host() {
-        let settings = Settings::for_test(None, Some("acme"), None, None, None, None);
+        let settings = Settings::builder().tenant("acme").build();
         assert_eq!(settings.base_url(), Some("https://acme.antithesis.com"));
     }
 
     #[test]
     fn explicit_base_url_overrides_tenant_host() {
-        let settings = Settings::for_test(
-            None,
-            Some("acme"),
-            None,
-            Some("https://example.test"),
-            None,
-            None,
-        );
+        let settings = Settings::builder()
+            .tenant("acme")
+            .base_url("https://example.test")
+            .build();
         assert_eq!(settings.base_url(), Some("https://example.test"));
     }
 
     #[test]
     fn base_url_without_tenant_is_none() {
-        let settings = Settings::for_test(None, None, None, None, None, None);
+        let settings = Settings::default();
         assert_eq!(settings.base_url(), None);
     }
 
     #[test]
     fn container_engine_absent_resolves_to_none() {
-        let settings = Settings::for_test(None, None, None, None, None, None);
+        let settings = Settings::default();
         assert_eq!(settings.container_engine(), None);
     }
 
     #[test]
     fn container_engine_resolves_when_set() {
-        let settings = Settings::for_test(None, None, None, None, None, Some("podman"));
+        let settings = Settings::builder().container_engine("podman").build();
         assert_eq!(settings.container_engine(), Some("podman"));
     }
 
     #[test]
     fn https_proxy_absent_resolves_to_none() {
-        let settings = Settings::for_test(None, None, None, None, None, None);
+        let settings = Settings::default();
         assert_eq!(settings.https_proxy(), None);
     }
 
     #[test]
     fn https_proxy_resolves_when_set() {
-        let settings =
-            Settings::for_test(None, None, None, None, Some("http://proxy.corp:8080"), None);
+        let settings = Settings::builder()
+            .https_proxy("http://proxy.corp:8080")
+            .build();
         assert_eq!(settings.https_proxy(), Some("http://proxy.corp:8080"));
     }
 
@@ -793,6 +866,29 @@ mod tests {
         assert_eq!(
             resolve_value("https_proxy", UNSET_ENV, None, Some(&project), None).unwrap(),
             Some("http://proxy.corp:8080".to_string())
+        );
+    }
+
+    #[test]
+    fn update_channel_absent_resolves_to_stable() {
+        let settings = Settings::default();
+        assert_eq!(settings.update_channel(), UpdateChannel::Stable);
+    }
+
+    #[test]
+    fn update_channel_resolves_when_set() {
+        let settings = Settings::builder()
+            .update_channel(UpdateChannel::Unstable)
+            .build();
+        assert_eq!(settings.update_channel(), UpdateChannel::Unstable);
+    }
+
+    #[test]
+    fn update_channel_resolves_from_a_settings_file() {
+        let project = settings_file("update_channel = \"unstable\"\n");
+        assert_eq!(
+            resolve_value("update_channel", UNSET_ENV, None, Some(&project), None).unwrap(),
+            Some("unstable".to_string())
         );
     }
 
@@ -838,14 +934,10 @@ mod tests {
         // interpolated into the host), so an otherwise-invalid tenant still
         // constructs. The derive-path validation itself is covered by
         // validate_tenant_host's unit tests and specs/settings_tenant.txt.
-        let s = Settings::for_test(
-            None,
-            Some("evil.com#"),
-            None,
-            Some("https://ok.example"),
-            None,
-            None,
-        );
+        let s = Settings::builder()
+            .tenant("evil.com#")
+            .base_url("https://ok.example")
+            .build();
         assert_eq!(s.base_url(), Some("https://ok.example"));
     }
 }

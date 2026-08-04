@@ -42,7 +42,12 @@ If any check fails, report the issue clearly and stop.
 
 Read `CHANGELOG.md` and check the `# Unreleased` section.
 
-If the `# Unreleased` section is missing, empty, or stale (it does not cover the changes since the last release tag), draft entries first: list the commits with `git log --oneline vPREV..HEAD` (where `vPREV` is the most recent tag), and write one factual bullet per user-visible change with its PR number, e.g. `- Add \`--limit\` to \`runs events\` (#176)`. Group bullets under `##` topic headings when there are many. Skip internal-only changes (CI, refactors) or group them in one bullet.
+If the `# Unreleased` section is missing, empty, or stale (it does not cover the changes since the last release tag), draft entries first: list the commits with `git log --oneline vPREV..HEAD` (where `vPREV` is the most recent tag), and write one factual bullet per notable feature. Follow these rules:
+
+- Write each entry as the net change relative to the previous release. When a feature is new in this release, describe the feature once; do not list the iterations that built it (e.g. a rewrite of a command that did not exist in the previous release is part of the feature, not an entry).
+- Compress to the set of notable features. The changelog does not need to describe every change or every detail of a feature.
+- Link PR numbers with the public base URL, e.g. `([#176](https://github.com/antithesishq/snouty/pull/176))`. Do not use the exe proxy hostname.
+- Skip internal-only changes (CI, refactors, dependency bumps).
 
 Then, depending on the release type:
 

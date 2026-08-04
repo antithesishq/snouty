@@ -13,7 +13,7 @@ A version with an `-rc.N` suffix (e.g. `0.7.0-rc.1`) is a pre-release. The proce
 
 - When the user asks for a pre-release without a full version (e.g. "cut an rc for 0.7.0"), pick the next rc number: list existing tags with `git tag -l 'v0.7.0-rc.*'` and use N+1 of the highest, or `-rc.1` when there are none.
 - Shipping is automatic. Pushing the tag triggers the cargo-dist workflow (`.github/workflows/release.yml`), which builds the artifacts and creates the GitHub release. A pre-release suffix in the tag makes cargo-dist mark it as a GitHub **pre-release**, so `snouty update` ignores it unless the user is on the beta channel (`update_channel = "beta"` or `snouty update --channel beta`). Never create the GitHub release by hand — a hand-made release could miss the pre-release flag and ship the rc to everyone.
-- Do not publish a pre-release to crates.io (see step 7).
+- `cargo publish` works for pre-releases too, and is safe: cargo only selects a pre-release when a user asks for it explicitly (e.g. `cargo install snouty --version 0.7.0-rc.1`), so stable users never receive it.
 - A later full release of the same version (e.g. `0.7.0` after `0.7.0-rc.2`) is a normal upgrade: semver sorts every `-rc.N` before the release.
 
 ## Release Procedure
@@ -76,4 +76,4 @@ git push && git push --tags
 cargo publish
 ```
 
-For a pre-release (`-rc.N`), omit `cargo publish` — pre-releases ship only as GitHub pre-releases for the beta update channel. Also tell the user that after the tag push, CI creates the GitHub pre-release automatically and only beta-channel users receive it.
+For a pre-release (`-rc.N`), also tell the user that after the tag push, CI creates the GitHub pre-release automatically and only beta-channel users receive it via `snouty update`. Publishing the pre-release crate is safe: cargo never selects a pre-release unless a user requests it explicitly.

@@ -24,22 +24,23 @@ fn generate_api_client(out_dir: &Path) {
     // `#[serde(deny_unknown_fields)]`, which turns a forwards-compatible server
     // change (a new field added to a response) into a hard deserialization
     // error — e.g. `snouty doctor` would report a healthy API as "unreachable"
-    // the day `/api/version` grows a field. As of tenant release 58.6 the
-    // published spec no longer marks any schema `additionalProperties: false`:
-    // the server describes fully lenient schemas itself, so no transform is
-    // needed. Assert that invariant so a future spec that reintroduces the
-    // constraint fails the build loudly — prompting a conscious decision to
-    // re-add stripping — instead of silently regenerating a brittle client.
-    // The recursive scan catches the attribute wherever it appears, including on
-    // nested schemas and enums, which a line-text grep could miss.
-    let offenders = additional_properties_false_paths(&spec_value);
+    // the day `/api/version` grows a field. typify has no setting to disable
+    // this (the choice is hardwired from the schema value), so strip the
+    // constraint from the spec itself before generating. Removing the key is
+    // equivalent to the permissive default: no `deny_unknown_fields` is
+    // emitted, and no flattened `extra` map is added, so struct shapes are
+    // unchanged. Tenant release 58.6 shipped a fully lenient spec, but 60.0
+    // reintroduced the constraint on the event-search schemas, so the strip is
+    // load-bearing again. Assert it keeps finding occurrences so a future
+    // fully-lenient spec flags the transform as removable instead of leaving
+    // it as silent dead code. The recursive walk catches the attribute
+    // wherever it appears, including on nested schemas and enums, which a
+    // line-text grep could miss.
+    let stripped = strip_additional_properties_false(&mut spec_value);
     assert!(
-        offenders.is_empty(),
-        "openapi spec marks {} schema(s) `\"additionalProperties\": false`, which would \
-         make the generated client reject unknown response fields; strip them before \
-         generating (see git history for the previous transform). Offending paths: {}",
-        offenders.len(),
-        offenders.join(", ")
+        !stripped.is_empty(),
+        "expected the openapi spec to mark some schema `\"additionalProperties\": false`; \
+         none found — the lenient-client transform is now a no-op and can be removed"
     );
     untype_error_responses(&mut spec_value);
     mark_vtime_schema(&mut spec_value);
@@ -156,22 +157,23 @@ fn mark_vtime_schema(spec: &mut serde_json::Value) {
     vtime["format"] = serde_json::json!("vtime");
 }
 
-/// Recursively collect the JSON-pointer path of every `"additionalProperties":
-/// false` in the spec, so the caller can assert none exist (see the call site
-/// for why they would break the generated client).
-fn additional_properties_false_paths(value: &serde_json::Value) -> Vec<String> {
-    fn walk(value: &serde_json::Value, path: &str, out: &mut Vec<String>) {
+/// Recursively remove every `"additionalProperties": false` from the spec so
+/// the generated client is lenient about unknown response fields (see the call
+/// site for why). Returns the JSON-pointer path of each removed occurrence.
+fn strip_additional_properties_false(value: &mut serde_json::Value) -> Vec<String> {
+    fn walk(value: &mut serde_json::Value, path: &str, out: &mut Vec<String>) {
         match value {
             serde_json::Value::Object(map) => {
                 if map.get("additionalProperties") == Some(&serde_json::Value::Bool(false)) {
+                    map.remove("additionalProperties");
                     out.push(format!("{path}/additionalProperties"));
                 }
-                for (k, v) in map {
+                for (k, v) in map.iter_mut() {
                     walk(v, &format!("{path}/{k}"), out);
                 }
             }
             serde_json::Value::Array(items) => {
-                for (i, v) in items.iter().enumerate() {
+                for (i, v) in items.iter_mut().enumerate() {
                     walk(v, &format!("{path}/{i}"), out);
                 }
             }

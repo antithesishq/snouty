@@ -1,4 +1,5 @@
 use std::io::{BufWriter, Write};
+use std::ops::ControlFlow;
 use std::path::Path;
 use std::sync::OnceLock;
 
@@ -17,8 +18,8 @@ use chrono::{DateTime, Local, Utc};
 #[cfg(test)]
 use crate::api::Moment;
 use crate::api::{
-    AntithesisApi, Event, EventProperty, NonEventProperty, Property, PropertyStatus, RunDetail,
-    RunStatus, RunSummary, RunsFilterOptions,
+    AntithesisApi, ByteStream, Event, EventProperty, EventSearchOptions, NonEventProperty,
+    Property, PropertyStatus, RunDetail, RunStatus, RunSummary, RunsFilterOptions,
 };
 use crate::cli::{RunsCommands, RunsListArgs};
 use crate::error::{api_error_status, user_error};
@@ -158,6 +159,22 @@ pub async fn cmd_runs(
             // needles. Merge both into a single needle list.
             matches.extend(query);
             cmd_runs_events(&run_id, &matches, limit, settings, json, verbose).await
+        }
+        Some(RunsCommands::Search {
+            run_id,
+            query,
+            limit,
+            count,
+            follow,
+            check,
+        }) => {
+            let modes = SearchModes {
+                limit,
+                count,
+                follow,
+                check,
+            };
+            cmd_runs_search(&run_id, &query, modes, settings, json, verbose).await
         }
     }
 }
@@ -1343,6 +1360,287 @@ fn haystack_matches_all_needles(haystack: &str, lowered_needles: &[String]) -> b
     lowered_needles.iter().all(|n| haystack_lower.contains(n))
 }
 
+/// Fetch the server-filtered event stream for the `runs events` needles.
+///
+/// One needle goes to the GET events endpoint, whose single `q` substring
+/// filters it exactly. Several needles route through the events-search
+/// endpoint, which ANDs them all server-side (see [`needles_to_dsl_filter`]),
+/// so the cap applies to true matches instead of a one-needle superset. Two
+/// cases stay on the legacy single-needle path, with the capped-subset note
+/// that path deserves:
+///
+/// - A run that is still producing events. On a live run the search stream
+///   never closes and ignores `limit` (observed on tenant release 58.11),
+///   while the GET endpoint returns the current matching set and closes; the
+///   run is probed first to pick the path.
+/// - A tenant that predates the search endpoint (pre-58.11), which 404s it.
+///   The probe has already shown the run exists, so a 404 can only mean the
+///   endpoint is missing.
+async fn fetch_filtered_event_stream(
+    api: &AntithesisApi,
+    run_id: &str,
+    matches: &[String],
+    limit: Option<usize>,
+) -> Result<ByteStream> {
+    if let [needle] = matches {
+        return match api.search_run_events(run_id, needle, limit).await {
+            Ok(stream) => Ok(stream),
+            Err(err) => Err(explain_run_scoped_error(api, run_id, err).await),
+        };
+    }
+
+    let run = match probe_run(api, run_id).await {
+        RunProbe::Exists(run) => run,
+        RunProbe::NotFound => return Err(user_error(format!("run not found: {run_id}"))),
+        RunProbe::ProbeFailed(err) => return Err(err),
+    };
+    let run_is_over = matches!(
+        run.status,
+        RunStatus::Completed | RunStatus::Cancelled | RunStatus::Incomplete
+    );
+    if run_is_over {
+        let query = needles_to_dsl_filter(matches);
+        let opts = EventSearchOptions {
+            limit: limit.map(|l| l as u64),
+            ..Default::default()
+        };
+        match api.search_run_events_query(run_id, &query, opts).await {
+            Ok(stream) => return Ok(stream),
+            // The endpoint is missing on this tenant; fall through to the
+            // legacy path.
+            Err(err) if api_error_status(&err) == Some(404) => {}
+            Err(err) => return Err(err),
+        }
+    }
+
+    // Legacy path: the GET endpoint takes a single `q` substring and streams
+    // only a capped subset of matching events. Send the LONGEST needle (a
+    // crude selectivity proxy) so the cap is most likely to retain rare
+    // matches; the caller AND-filters the remaining needles client-side over
+    // that capped server subset. A true match the cap evicted would otherwise
+    // vanish silently, so make the limitation visible.
+    let server_query = matches
+        .iter()
+        .max_by_key(|m| m.chars().count())
+        .cloned()
+        .unwrap_or_default();
+    eprintln!(
+        "Note: only \"{server_query}\" is matched on the server (which returns a capped \
+         subset of events); the other terms filter that subset locally, so some matching \
+         events may not appear. Search a single, more specific term to be exhaustive, or \
+         raise the cap with --limit."
+    );
+    match api.search_run_events(run_id, &server_query, limit).await {
+        Ok(stream) => Ok(stream),
+        Err(err) => Err(explain_run_scoped_error(api, run_id, err).await),
+    }
+}
+
+/// Build the event-set DSL query that ANDs every needle server-side. The JS
+/// predicate matches each needle against the whole raw event JSON
+/// (`JSON.stringify`), lowercased on both sides, so the server prefilter sees
+/// every field — hash, vtime, source, output text, and the structured
+/// payloads (assertions, composer/fault fields) that carry no `output_text`
+/// at all. The caller's client-side pass then re-checks every returned row
+/// against the *rendered* haystack, so displayed matches stay exact. A needle
+/// that exists only in snouty's rendering and not in the raw JSON (e.g. the
+/// assertion summary's `must-hit` marker for the raw `must_hit` field, or a
+/// `key=value` decoration) can still be missed server-side — the same class
+/// of gap the legacy path had for its single server-matched needle. Each
+/// needle is embedded as a JSON string literal (also a valid JS string
+/// literal), so escaping is serde's problem, not string surgery here.
+fn needles_to_dsl_filter(needles: &[String]) -> String {
+    const HAYSTACK: &str = r#"JSON.stringify(ev).toLowerCase()"#;
+    let clauses = needles
+        .iter()
+        .map(|needle| {
+            let literal =
+                serde_json::to_string(&needle.to_lowercase()).expect("a string serializes to JSON");
+            format!("{HAYSTACK}.includes({literal})")
+        })
+        .collect::<Vec<_>>()
+        .join(" && ");
+    format!("filter(ev => {clauses})")
+}
+
+/// The `runs search` mode switches, mirroring the `Search_Request` body. clap
+/// marks `count`/`follow`/`check` mutually exclusive.
+struct SearchModes {
+    limit: Option<u64>,
+    count: bool,
+    follow: bool,
+    check: bool,
+}
+
+/// The search endpoint's own default for `limit`, mirrored client-side. The
+/// request body always names a limit — the user's, or the generated type's
+/// default of 50 (see `search_run_events_query`) — so this is what the
+/// server was told whenever `-n` is not given.
+const SEARCH_DEFAULT_LIMIT: u64 = 50;
+
+async fn cmd_runs_search(
+    run_id: &str,
+    query: &str,
+    modes: SearchModes,
+    settings: &Settings,
+    json: bool,
+    verbose: bool,
+) -> Result<()> {
+    debug!("querying events for run: {}", run_id);
+
+    let api = AntithesisApi::new_requiring_api_key(settings, verbose)?;
+    let opts = EventSearchOptions {
+        count_only: modes.count,
+        is_streaming: modes.follow,
+        validate_only: modes.check,
+        limit: modes.limit,
+    };
+    let stream = match api.search_run_events_query(run_id, query, opts).await {
+        Ok(stream) => stream.into_inner(),
+        Err(err) => return Err(explain_search_error(&api, run_id, err).await),
+    };
+
+    if modes.check {
+        // A valid query gets a 200 with an empty body; an invalid one failed
+        // above with the server's rejection. Nothing to read.
+        if json {
+            outln!("{}", json!({"valid": true}))?;
+        } else {
+            outln!("query is valid")?;
+        }
+        return Ok(());
+    }
+
+    if modes.count {
+        return print_search_count(stream, json).await;
+    }
+
+    let mut stdout = BufWriter::new(std::io::stdout().lock());
+    let mut seen: u64 = 0;
+    // The server is supposed to end the stream at the limit it was told (the
+    // user's, or its default of 50), but a live run's stream ignores it and
+    // never closes (observed on tenant release 58.11) — without a client-side
+    // cap the default invocation would tail a live run forever, like an
+    // unrequested --follow. Enforce the effective limit here. It covers
+    // --follow too: the documented contract terminates the stream at `limit`
+    // whether or not `is_streaming` is set.
+    let cap = modes.limit.unwrap_or(SEARCH_DEFAULT_LIMIT);
+    let result = stream_ndjson_lines_until(stream, |line| {
+        match line {
+            NdjsonLine::Entry(entry) => {
+                if json {
+                    writeln!(stdout, "{entry}")?;
+                } else if entry.get("moment").is_some() {
+                    let rendered = render_event_entry(&entry);
+                    writeln!(
+                        stdout,
+                        "{} {} {} {}",
+                        rendered.input_hash, rendered.vtime, rendered.source, rendered.output
+                    )?;
+                } else {
+                    // map/narrow/fold reshape rows into arbitrary objects;
+                    // show the JSON itself rather than empty columns.
+                    writeln!(stdout, "{}", sanitize(&entry.to_string()))?;
+                }
+            }
+            NdjsonLine::Raw(line) => {
+                if json {
+                    writeln!(stdout, "{line}")?;
+                } else {
+                    writeln!(stdout, "{}", sanitize(line))?;
+                }
+            }
+        }
+        seen += 1;
+        // Flush per row: on a live run the server holds the connection open
+        // (with and without `is_streaming`), so rows must not sit in the
+        // buffer waiting for an EOF that may never come.
+        stdout.flush()?;
+        if seen >= cap {
+            Ok(ControlFlow::Break(()))
+        } else {
+            Ok(ControlFlow::Continue(()))
+        }
+    })
+    .await;
+
+    if seen == 0 && !json {
+        // Surface a mid-stream error even when it preceded any row.
+        result?;
+        writeln!(stdout, "No events matched the query.")?;
+        stdout.flush()?;
+        return Ok(());
+    }
+    result
+}
+
+/// Read the `count_only` answer — a single `{"count": N}` object — off the
+/// response stream and print it.
+async fn print_search_count<S, C>(stream: S, json: bool) -> Result<()>
+where
+    S: futures_util::Stream<Item = reqwest::Result<C>> + Unpin,
+    C: AsRef<[u8]>,
+{
+    let mut count: Option<u64> = None;
+    stream_ndjson_lines_until(stream, |line| match line {
+        NdjsonLine::Entry(entry) => {
+            if entry.get("moment").is_none()
+                && let Some(n) = entry.get("count").and_then(Value::as_u64)
+            {
+                count = Some(n);
+                Ok(ControlFlow::Break(()))
+            } else {
+                // The tenant ignores `count_only` and streams the events
+                // themselves (observed on releases 58.11 and 60.0); fail
+                // rather than print one as a count.
+                Err(
+                    user_error("the server answered the count request with the events themselves")
+                        .note("this tenant ignores `count_only`; report it to the API team")
+                        .suggestion(
+                            "drop --count and count the events instead, e.g. `--json | wc -l`",
+                        ),
+                )
+            }
+        }
+        NdjsonLine::Raw(line) => Err(eyre!(
+            "unexpected response to a count request: {}",
+            sanitize(line)
+        )),
+    })
+    .await?;
+    let Some(count) = count else {
+        return Err(eyre!(
+            "the server ended the count response without sending a count"
+        ));
+    };
+    if json {
+        outln!("{}", json!({"count": count}))?;
+    } else {
+        outln!("{count}")?;
+    }
+    Ok(())
+}
+
+/// Like [`explain_run_scoped_error`], for the events-search endpoint. A 404
+/// that survives the probe means the run exists but the tenant does not serve
+/// the endpoint, which ships with tenant release 58.11. A 400 is the server
+/// rejecting the query itself.
+async fn explain_search_error(
+    api: &AntithesisApi,
+    run_id: &str,
+    err: color_eyre::eyre::Report,
+) -> color_eyre::eyre::Report {
+    let err = explain_run_scoped_error(api, run_id, err).await;
+    match api_error_status(&err) {
+        Some(404) => err.note(
+            "the run exists but this tenant does not serve the events search API, \
+             which ships with tenant release 58.11",
+        ),
+        Some(400) => err.note("the server rejected the query; check the event-set DSL syntax"),
+        _ => err,
+    }
+}
+
 async fn cmd_runs_events(
     run_id: &str,
     matches: &[String],
@@ -1365,34 +1663,10 @@ async fn cmd_runs_events(
             .suggestion("each `-m/--match` needle must be a non-empty substring"));
     }
 
-    // The server endpoint takes a single `q` substring and streams only a capped
-    // subset of matching events. Send the LONGEST needle (a crude selectivity
-    // proxy) so the cap is most likely to retain rare matches; any additional
-    // needles are AND-filtered client-side over that capped server subset.
-    let server_query = matches
-        .iter()
-        .max_by_key(|m| m.chars().count())
-        .cloned()
-        .unwrap_or_default();
-
-    // With more than one needle only `server_query` is filtered server-side, and
-    // the server caps how many events it returns; the remaining needles filter
-    // that capped subset locally. A true match the cap evicted would otherwise
-    // vanish silently, so make the limitation visible.
-    if matches.len() > 1 {
-        eprintln!(
-            "Note: only \"{server_query}\" is matched on the server (which returns a capped \
-             subset of events); the other terms filter that subset locally, so some matching \
-             events may not appear. Search a single, more specific term to be exhaustive, or \
-             raise the cap with --limit."
-        );
-    }
-
     let api = AntithesisApi::new_requiring_api_key(settings, verbose)?;
-    let stream = match api.search_run_events(run_id, &server_query, limit).await {
-        Ok(stream) => stream.into_inner(),
-        Err(err) => return Err(explain_run_scoped_error(&api, run_id, err).await),
-    };
+    let stream = fetch_filtered_event_stream(&api, run_id, matches, limit)
+        .await?
+        .into_inner();
 
     let lowered_matches: Vec<String> = matches.iter().map(|m| m.to_lowercase()).collect();
 
@@ -1804,6 +2078,31 @@ where
     .await
 }
 
+/// Like [`stream_ndjson_lines`] (same decoding, same `Stream_Error`
+/// handling), but the callback can end the stream early by returning
+/// `ControlFlow::Break`: the connection drops on return. `runs search` uses
+/// this to enforce its `--limit` against a server that keeps the connection
+/// open.
+async fn stream_ndjson_lines_until<S, C>(
+    stream: S,
+    mut process_line: impl FnMut(NdjsonLine<'_>) -> Result<ControlFlow<()>>,
+) -> Result<()>
+where
+    S: futures_util::Stream<Item = reqwest::Result<C>> + Unpin,
+    C: AsRef<[u8]>,
+{
+    split_stream_lines_until(stream, |line| {
+        let classified = classify_line(line);
+        if let NdjsonLine::Entry(entry) = &classified
+            && let Some(message) = stream_error_message(entry)
+        {
+            return Err(mid_stream_error(message));
+        }
+        process_line(classified)
+    })
+    .await
+}
+
 /// Stream an NDJSON response, handing each line to the callback verbatim —
 /// except a `Stream_Error` line ([`stream_error_message`]), which becomes the
 /// command's failure instead of reaching the callback: it is the server
@@ -1831,8 +2130,24 @@ where
 /// callback. Pure line splitting, no JSON awareness — the NDJSON wrappers
 /// above layer decoding and `Stream_Error` detection on top.
 async fn split_stream_lines<S, C>(
-    mut stream: S,
+    stream: S,
     mut handle_line: impl FnMut(&str) -> Result<()>,
+) -> Result<()>
+where
+    S: futures_util::Stream<Item = reqwest::Result<C>> + Unpin,
+    C: AsRef<[u8]>,
+{
+    split_stream_lines_until(stream, |line| {
+        handle_line(line).map(|()| ControlFlow::Continue(()))
+    })
+    .await
+}
+
+/// [`split_stream_lines`], but the callback can end the stream early by
+/// returning `ControlFlow::Break`.
+async fn split_stream_lines_until<S, C>(
+    mut stream: S,
+    mut handle_line: impl FnMut(&str) -> Result<ControlFlow<()>>,
 ) -> Result<()>
 where
     S: futures_util::Stream<Item = reqwest::Result<C>> + Unpin,
@@ -1848,19 +2163,24 @@ where
 
         while let Some(pos) = buf.iter().position(|&b| b == b'\n') {
             let line_bytes = &buf[..pos];
+            let mut flow = ControlFlow::Continue(());
             if !line_bytes.is_empty() {
                 let line = std::str::from_utf8(line_bytes)
                     .map_err(|e| eyre!("invalid UTF-8 in response stream: {e}"))?;
-                handle_line(line)?;
+                flow = handle_line(line)?;
             }
             buf.drain(..=pos);
+            if flow.is_break() {
+                return Ok(());
+            }
         }
     }
 
     if !buf.is_empty() {
         let line = std::str::from_utf8(&buf)
             .map_err(|e| eyre!("invalid UTF-8 in response stream: {e}"))?;
-        handle_line(line)?;
+        // The stream is over; Continue and Break both mean returning Ok.
+        let _ = handle_line(line)?;
     }
 
     Ok(())
@@ -4681,6 +5001,25 @@ mod tests {
             NdjsonLine::Entry(entry) => assert!(entry.is_object()),
             NdjsonLine::Raw(raw) => assert_eq!(raw, line),
         }
+    }
+
+    // The multi-needle DSL filter matches each needle against the whole raw
+    // event JSON, lowercased, and embeds the needle as a JSON string literal
+    // so quotes and backslashes arrive escaped rather than breaking the query.
+    #[test]
+    fn needles_to_dsl_filter_conjoins_lowercased_escaped_needles() {
+        let query = needles_to_dsl_filter(&["Raft".to_string(), r#"say "hi"\"#.to_string()]);
+        assert!(query.starts_with("filter(ev => "), "got: {query}");
+        assert!(
+            query.contains(r#"JSON.stringify(ev).toLowerCase().includes("raft")"#),
+            "got: {query}"
+        );
+        assert!(
+            query.contains(r#".includes("say \"hi\"\\")"#),
+            "got: {query}"
+        );
+        assert_eq!(query.matches(".includes(").count(), 2, "got: {query}");
+        assert!(query.contains(" && "), "got: {query}");
     }
 
     #[test]

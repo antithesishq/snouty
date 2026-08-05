@@ -48,9 +48,7 @@
         "operationId": "listRuns",
         "summary": "List all test runs",
         "description": "Returns a paginated list of test runs. Results are ordered by creation time, newest first.",
-        "tags": [
-          "Test runs"
-        ],
+        "tags": ["Test runs"],
         "parameters": [
           {
             "name": "limit",
@@ -200,9 +198,7 @@
         "operationId": "getRun",
         "summary": "Get test run details",
         "description": "Returns the full details of a single test run, including results.",
-        "tags": [
-          "Test runs"
-        ],
+        "tags": ["Test runs"],
         "parameters": [
           {
             "name": "run_id",
@@ -318,9 +314,7 @@
         "operationId": "getRunLogs",
         "summary": "Get logs for a specific moment",
         "description": "Streams the logs for a moment in the test run as newline-delimited JSON (NDJSON) in chronological order. Each line is a self-contained JSON object. The response is streamed and the connection remains open until all matching log lines have been sent.",
-        "tags": [
-          "Test runs"
-        ],
+        "tags": ["Test runs"],
         "parameters": [
           {
             "name": "run_id",
@@ -377,7 +371,10 @@
             "content": {
               "application/x-ndjson": {
                 "schema": {
-                  "$ref": "#/components/schemas/Event"
+                  "oneOf": [
+                    { "$ref": "#/components/schemas/Event" },
+                    { "$ref": "#/components/schemas/Stream_Error" }
+                  ]
                 },
                 "examples": {
                   "raft_vote_log": {
@@ -462,9 +459,7 @@
         "operationId": "getRunBuildLogs",
         "summary": "Stream build logs",
         "description": "Streams the build logs for a test run as newline-delimited JSON (NDJSON). Each line contains a timestamp, a stream indicator, and the log text. The response is streamed and the connection remains open until all matching log lines have been sent.\n\n**Known limitation:** Build logs are not available for test runs created before Antithesis version 54.5. Requests for such runs return `404 Not Found`.",
-        "tags": [
-          "Test runs"
-        ],
+        "tags": ["Test runs"],
         "parameters": [
           {
             "name": "run_id",
@@ -482,7 +477,10 @@
             "content": {
               "application/x-ndjson": {
                 "schema": {
-                  "$ref": "#/components/schemas/Build_Log_Line"
+                  "oneOf": [
+                    { "$ref": "#/components/schemas/Build_Log_Line" },
+                    { "$ref": "#/components/schemas/Stream_Error" }
+                  ]
                 },
                 "example": {
                   "timestamp": "2026-05-14T03:03:24.668Z",
@@ -524,9 +522,7 @@
         "operationId": "listRunProperties",
         "summary": "List test run properties",
         "description": "Returns a paginated list of property results for a test run, including both passing and failing properties by default. Use the `status` parameter to filter by a specific status.\n\n**Known limitation:** Property results are not available for test runs created before Antithesis version 54.5. Requests for such runs return `404 Not Found`.",
-        "tags": [
-          "Test runs"
-        ],
+        "tags": ["Test runs"],
         "parameters": [
           {
             "name": "run_id",
@@ -601,17 +597,17 @@
                       "counterexamples": []
                     },
                     {
-                      "name": "Input count",
-                      "description": null,
-                      "status": "Passing",
-                      "is_event": false,
-                      "is_group": false,
-                      "example_count": 1,
-                      "counterexample_count": 0,
-                      "examples": [
-                        318446
-                      ],
-                      "counterexamples": []
+                        "name": "Input count",
+                        "description": null,
+                        "status": "Passing",
+                        "is_event": false,
+                        "is_group": false,
+                        "example_count": 1,
+                        "counterexample_count": 0,
+                        "examples": [
+                            318446
+                        ],
+                        "counterexamples": []
                     }
                   ]
                 }
@@ -650,9 +646,7 @@
         "operationId": "searchRunEvents",
         "summary": "Search run events",
         "description": "Searches events in a test run for the given query string. The search matches against output text, assertion messages, function names, and test composer commands. Results are streamed as newline-delimited JSON (NDJSON). Each line is a self-contained JSON object representing an event.",
-        "tags": [
-          "Test runs"
-        ],
+        "tags": ["Test runs"],
         "parameters": [
           {
             "name": "run_id",
@@ -676,13 +670,13 @@
           {
             "name": "limit",
             "in": "query",
-            "description": "Maximum number of results to return. Must be between 1 and 999. Defaults to 50.",
+            "description": "Maximum number of results to return. Must be between 1 and 1000. Defaults to 50.",
             "required": false,
             "schema": {
               "type": "integer",
               "default": 50,
               "minimum": 1,
-              "maximum": 999
+              "maximum": 1000
             }
           }
         ],
@@ -692,7 +686,10 @@
             "content": {
               "application/x-ndjson": {
                 "schema": {
-                  "$ref": "#/components/schemas/Event"
+                  "oneOf": [
+                    { "$ref": "#/components/schemas/Event" },
+                    { "$ref": "#/components/schemas/Stream_Error" }
+                  ]
                 },
                 "example": {
                   "moment": {
@@ -737,14 +734,128 @@
         }
       }
     },
+    "/api/v0/runs/{run_id}/events/search": {
+      "post": {
+        "operationId": "search",
+        "summary": "Search events with the event-set DSL",
+        "description": "Runs a search query across a single run's events and returns either the matching events or, when `count_only` is `true`, an aggregate count. The run to search is identified by the `run_id` path parameter.\n\n### Event Query\n\nThe `query` field is a string in the event-set domain specific language. A query is a pipeline of verbs separated by `.`, applied left-to-right to the underlying event stream. The supported verbs are:\n\n- **String-matching:**\n  - `matches({field: \"exact_value\", ...})` — keep events whose fields exactly equal the given values.\n  - `contains({field: \"substring\", ...})` — keep events whose fields contain the given substrings.\n  - `not_matches({field: \"exact_value\", ...})` — exclude events whose fields exactly equal the given values.\n  - `excludes({field: \"substring\", ...})` — exclude events whose fields contain the given substrings.\n\n- **JavaScript verbs:**\n  - `map(row => expr)` — transform event fields.\n  - `filter(row => expr)` — keep events where the predicate is truthy.\n  - `flatmap(row => expr)` — transform and optionally drop or fan out events (return an array).\n  - `fold((state, event) => expr, initial_state)` — generic fold over the matching events.\n\n- **Field selection:**\n  - `narrow([\"field1\", \"field2\"])` — restrict events to the listed fields (plus a small set of unshadowable fields).\n\n- **Set operations (each pipeline argument is itself an event-set query):**\n  - `union(pipeline, pipeline, ...)`\n  - `intersect(pipeline, pipeline, ...)`\n  - `difference(pipeline)`\n  - `distinct_by_moment(pipeline, pipeline, ...)` — deduplicate by moment, preferring self.\n\n- **Temporal verbs:**\n  - `with_last({name: pipeline, ...})` — annotate each event with the most recent matching predecessor from each named pipeline.\n  - `with_next({name: pipeline, ...}, timeout_ms?)` — annotate each event with the next matching event from each named pipeline, optionally bounded by a virtual-time timeout.\n\n**Example queries:**\n\n```\nmatches({container: \"etcd0\"})\ncontains({output_text: \"raft\"}).filter(ev => ev.stream === \"error\")\nunion(matches({container: \"etcd0\"}), matches({container: \"etcd1\"}))\n```\n\n### Response format\n\n- When `count_only` is `false` (the default), the response is a stream of matching events as newline-delimited JSON (NDJSON). Each line is an `Event` object with the same shape as events returned by `/api/v0/runs/{run_id}/events`.\n- When `count_only` is `true`, the response is a single JSON object with the total number of matching events.\n\n### Result limit\n\nThe `limit` field bounds how many events are returned, following the same logic as `/api/v0/runs/{run_id}/events`: it must be between 1 and 999 and defaults to 50. Once `limit` events have been returned the server terminates the connection — this applies whether or not `is_streaming` is `true`. The limit does not apply when `count_only` is `true`.\n\n### Validating a query\n\nWhen `validate_only` is `true` the server checks only that `query` is syntactically valid and does not execute it: no events are returned and no count is computed. A syntactically valid query responds with `200 OK` and an empty body; an invalid query responds with `400 Bad Request`. `validate_only` takes precedence over `count_only` and `is_streaming`.\n\n### Streaming\n\nWhen `is_streaming` is `true` the connection remains open and the server continues to emit events as they are observed in live runs. When `false` the server closes the connection once it has returned the current matching set.",
+        "tags": ["Test runs"],
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "description": "Unique identifier of the test run to search.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Search_Request"
+              },
+              "examples": {
+                "get_events": {
+                  "summary": "Return error log lines from etcd0",
+                  "value": {
+                    "query": "matches({container: \"etcd0\", stream: \"error\"})",
+                    "is_streaming": false
+                  }
+                },
+                "count_only": {
+                  "summary": "Count raft-related log lines in a single run",
+                  "value": {
+                    "query": "contains({output_text: \"raft\"})",
+                    "is_streaming": false,
+                    "count_only": true
+                  }
+                },
+                "streaming_events": {
+                  "summary": "Stream slow-request warnings as they happen",
+                  "value": {
+                    "query": "contains({output_text: \"apply request took too long\"})",
+                    "is_streaming": true
+                  }
+                },
+                "validate_only": {
+                  "summary": "Validate a query without running it",
+                  "value": {
+                    "query": "matches({container: \"etcd0\"})",
+                    "validate_only": true
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Search results. When `validate_only` is `true` and the query is valid, the body is empty. Otherwise the content type depends on `count_only`: NDJSON of `Event` objects when `false`, or a single JSON object when `true`.",
+            "content": {
+              "application/x-ndjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Event"
+                },
+                "example": {
+                  "moment": {
+                    "input_hash": "-3625518438076122494",
+                    "vtime": "398.4898056755774"
+                  },
+                  "output_text": "{\"level\":\"info\",\"msg\":\"sent MsgPreVote request\"}",
+                  "source": {
+                    "container": "etcd0",
+                    "name": "etcd0",
+                    "stream": "error"
+                  }
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Search_Count_Response"
+                },
+                "example": {
+                  "count": 318446
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "405": {
+            "$ref": "#/components/responses/MethodNotAllowed"
+          },
+          "406": {
+            "$ref": "#/components/responses/NotAcceptable"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      }
+    },
     "/api/v1/launch/{launcher_name}": {
       "post": {
         "operationId": "launchTest",
         "summary": "Launch a test",
         "description": "Kicks off a test using the specified launcher (e.g. `basic_test` or `basic_k8s_test`). Fetches the relevant container images specified in configuration files and in `antithesis.images`, builds the test environment, and runs the test for the duration set in `antithesis.duration`. Returns an HTTP status code indicating whether the test was successfully started (not the test result itself).",
-        "tags": [
-          "Launch"
-        ],
+        "tags": ["Launch"],
         "parameters": [
           {
             "name": "launcher_name",
@@ -811,9 +922,7 @@
     },
     "/api/version": {
       "get": {
-        "tags": [
-          "Version"
-        ],
+        "tags": ["Version"],
         "operationId": "getVersion",
         "summary": "Get API and release version",
         "description": "Returns the latest supported API version and the current Antithesis release version for the tenant.",
@@ -853,10 +962,9 @@
         "operationId": "launchMvd",
         "summary": "Launch a debugging session",
         "description": "Kicks off a multiverse debugging session that'll be available for six hours. Returns an HTTP status code indicating whether the debugging session request was successfully accepted and the session is getting ready.\n\nThe target test run is identified by `antithesis.debugging.run_id`. For backwards compatibility, `antithesis.debugging.session_id` is also accepted — prefer `run_id` for new integrations.",
-        "tags": [
-          "Launch"
+        "tags": ["Launch"],
+        "parameters": [
         ],
-        "parameters": [],
         "requestBody": {
           "required": true,
           "content": {
@@ -939,9 +1047,7 @@
       "Error_Response": {
         "type": "object",
         "description": "Standard error envelope returned by all error responses.",
-        "required": [
-          "message"
-        ],
+        "required": ["message"],
         "properties": {
           "message": {
             "type": "string",
@@ -951,12 +1057,23 @@
         },
         "additionalProperties": true
       },
+      "Stream_Error": {
+        "type": "object",
+        "description": "An error that may be emitted as an individual line in an NDJSON stream. This occurs when the server encounters an error after the server responds with a `200 OK` status and before the stream completes.",
+        "required": ["error"],
+        "properties": {
+          "error": {
+            "type": "string",
+            "description": "The error message.",
+            "example": "An unexpected error occurred. Please try again later."
+          }
+        },
+        "additionalProperties": true
+      },
       "Run_List_Response": {
         "type": "object",
         "description": "A page of test run summaries returned by the list endpoint. Use `next_cursor` to iterate through all available results.",
-        "required": [
-          "data"
-        ],
+        "required": ["data"],
         "properties": {
           "data": {
             "type": "array",
@@ -973,12 +1090,7 @@
       },
       "Run_Summary": {
         "type": "object",
-        "required": [
-          "run_id",
-          "status",
-          "created_at",
-          "launcher"
-        ],
+        "required": ["run_id", "status", "created_at", "launcher"],
         "properties": {
           "run_id": {
             "type": "string",
@@ -1079,10 +1191,7 @@
       "Launch_Response": {
         "type": "object",
         "description": "Response returned when a test is successfully launched.",
-        "required": [
-          "runId",
-          "statusCode"
-        ],
+        "required": ["runId", "statusCode"],
         "properties": {
           "runId": {
             "type": "string",
@@ -1101,10 +1210,7 @@
       "Version_Response": {
         "type": "object",
         "description": "Version information returned by the version endpoint.",
-        "required": [
-          "latest_api_version",
-          "release_version"
-        ],
+        "required": ["latest_api_version", "release_version"],
         "properties": {
           "latest_api_version": {
             "type": "string",
@@ -1122,9 +1228,7 @@
       "Launch_MVD_Response": {
         "type": "object",
         "description": "Response returned when a debugging session request is successfully accepted.",
-        "required": [
-          "statusCode"
-        ],
+        "required": ["statusCode"],
         "properties": {
           "runId": {
             "type": "string",
@@ -1143,9 +1247,7 @@
       "Launch_Error_Response": {
         "type": "object",
         "description": "Error envelope returned by the launch endpoints (`/api/v1/launch/{launcher_name}` and `/api/v1/launch/debugging`). These endpoints are fronted by the test-launch webhook and report failures with a status code rather than the `Error_Response` `message` envelope used by the other endpoints. A null `runId` is included once a request reaches the test launcher. Some gateway-level rejections (for example authentication or rate limiting) may instead return an empty body.",
-        "required": [
-          "statusCode"
-        ],
+        "required": ["statusCode"],
         "properties": {
           "statusCode": {
             "type": "integer",
@@ -1163,9 +1265,7 @@
       "Launch_Request": {
         "type": "object",
         "description": "Request body for launching a test.",
-        "required": [
-          "params"
-        ],
+        "required": ["params"],
         "properties": {
           "params": {
             "description": "Launch parameters. All parameters are optional.",
@@ -1181,9 +1281,7 @@
       "Launch_MVD_Request": {
         "type": "object",
         "description": "Request body for launching a multiverse debugging session.",
-        "required": [
-          "params"
-        ],
+        "required": ["params"],
         "properties": {
           "params": {
             "description": "Launch parameters. All parameters are optional.",
@@ -1195,6 +1293,55 @@
           }
         },
         "additionalProperties": true
+      },
+      "Search_Request": {
+        "type": "object",
+        "description": "Request body for searching events with the event-set DSL.",
+        "required": ["query"],
+        "properties": {
+          "query": {
+            "type": "string",
+            "description": "An event-set DSL query: a pipeline of dot-separated verbs (`matches`, `contains`, `not_matches`, `excludes`, `map`, `filter`, `flatmap`, `fold`, `narrow`, `union`, `intersect`, `difference`, `distinct_by_moment`, `with_last`, `with_next`) applied to the underlying event stream. See the endpoint description for the full grammar.",
+            "example": "matches({container: \"etcd0\", stream: \"error\"}).filter(ev => ev.output_text.includes(\"raft\"))"
+          },
+          "is_streaming": {
+            "type": "boolean",
+            "description": "When `true`, the connection stays open and the server keeps emitting newly observed events as they arrive. When `false`, the server closes the connection after returning the current matching set. Defaults to `false`.",
+            "default": false
+          },
+          "count_only": {
+            "type": "boolean",
+            "description": "When `true`, the response is a single JSON object with the total number of matching events instead of the events themselves. When `false`, the response is an NDJSON stream of matching events. Defaults to `false`.",
+            "default": false
+          },
+          "limit": {
+            "type": "integer",
+            "description": "Maximum number of events to return. Must be between 1 and 999. Defaults to 50. Once this many events have been returned the server terminates the connection; this applies whether or not `is_streaming` is `true`. Ignored when `count_only` is `true`.",
+            "default": 50,
+            "minimum": 1,
+            "maximum": 999
+          },
+          "validate_only": {
+            "type": "boolean",
+            "description": "When `true`, the server only validates the syntax of `query` without executing it. A valid query returns `200 OK` with an empty body; an invalid query returns `400 Bad Request`. No events are returned and no count is computed. Defaults to `false`.",
+            "default": false
+          }
+        },
+        "additionalProperties": false
+      },
+      "Search_Count_Response": {
+        "type": "object",
+        "description": "Response returned when `count_only` is `true`.",
+        "required": ["count"],
+        "properties": {
+          "count": {
+            "type": "integer",
+            "format": "uint64",
+            "minimum": 0,
+            "description": "The total number of events matching the query."
+          }
+        },
+        "additionalProperties": false
       },
       "Params": {
         "type": "object",
@@ -1223,10 +1370,7 @@
           "antithesis.is_ephemeral": {
             "type": "string",
             "nullable": true,
-            "enum": [
-              "true",
-              "false"
-            ],
+            "enum": ["true", "false"],
             "description": "A boolean (represented as `\"true\"` or `\"false\"`) that indicates whether or not the run's results should be reflected in future reports as a historic result. Set to `\"true\"` when kicking off one-off, exploratory runs. Defaults to `\"false\"`."
           },
           "antithesis.report.recipients": {
@@ -1325,9 +1469,7 @@
       "Event": {
         "type": "object",
         "description": "A single event. Each event includes its moment information. Fields vary by event source.",
-        "required": [
-          "moment"
-        ],
+        "required": ["moment"],
         "properties": {
           "moment": {
             "$ref": "#/components/schemas/Moment"
@@ -1338,10 +1480,7 @@
       "Moment": {
         "type": "object",
         "description": "Identifies a specific moment in the run's execution timeline.",
-        "required": [
-          "input_hash",
-          "vtime"
-        ],
+        "required": ["input_hash", "vtime"],
         "properties": {
           "input_hash": {
             "type": "string",
@@ -1359,10 +1498,7 @@
       "Build_Log_Line": {
         "type": "object",
         "description": "A single build log line.",
-        "required": [
-          "timestamp",
-          "text"
-        ],
+        "required": ["timestamp", "text"],
         "properties": {
           "timestamp": {
             "type": "string",
@@ -1372,10 +1508,7 @@
           },
           "stream": {
             "type": "string",
-            "enum": [
-              "stdout",
-              "stderr"
-            ],
+            "enum": ["stdout", "stderr"],
             "description": "Whether this line is from standard output or standard error."
           },
           "text": {
@@ -1389,9 +1522,7 @@
       "Property_List_Response": {
         "type": "object",
         "description": "A page of property results returned by the properties endpoint. Use `next_cursor` to iterate through all available results.",
-        "required": [
-          "data"
-        ],
+        "required": ["data"],
         "properties": {
           "data": {
             "type": "array",
@@ -1409,11 +1540,7 @@
       "Property_Base": {
         "type": "object",
         "description": "Shared fields for all property results. A property result from a test run. Properties with `is_group` set to true represent a group property that contain other individual properties; individual properties within that group reference it via the `group` field.",
-        "required": [
-          "name",
-          "status",
-          "is_event"
-        ],
+        "required": ["name", "status", "is_event"],
         "properties": {
           "name": {
             "type": "string",
@@ -1465,9 +1592,7 @@
             "properties": {
               "is_event": {
                 "description": "Always `true` for event properties. Discriminates this branch of the `oneOf`.",
-                "enum": [
-                  true
-                ]
+                "enum": [true]
               },
               "examples": {
                 "type": "array",
@@ -1498,9 +1623,7 @@
             "properties": {
               "is_event": {
                 "description": "Always `false` for non-event properties. Discriminates this branch of the `oneOf`.",
-                "enum": [
-                  false
-                ]
+                "enum": [false]
               },
               "examples": {
                 "type": "array",
@@ -1529,22 +1652,12 @@
       },
       "Property_Status": {
         "type": "string",
-        "enum": [
-          "Passing",
-          "Failing"
-        ],
+        "enum": ["Passing", "Failing"],
         "description": "Whether the property is currently passing or failing."
       },
       "Run_Status": {
         "type": "string",
-        "enum": [
-          "starting",
-          "in_progress",
-          "completed",
-          "cancelled",
-          "incomplete",
-          "unknown"
-        ],
+        "enum": ["starting", "in_progress", "completed", "cancelled", "incomplete", "unknown"],
         "description": "Current lifecycle status of a test run. `starting`: the run is being set up. `in_progress`: the run is actively running. `completed`: the run finished successfully. `cancelled`: the run was cancelled before completion. `incomplete`: the run did not complete successfully. `unknown`: the status of the run is unknown."
       },
       "Creator_Info": {
@@ -1589,7 +1702,7 @@
               "message": "limit must be between 1 and 100"
             }
           }
-        }
+        }   
       },
       "Unauthorized": {
         "description": "Unauthorized — invalid or missing authentication credentials.",

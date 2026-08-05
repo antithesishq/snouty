@@ -16,6 +16,15 @@ fn main() {
     generate_api_client(Path::new(&out_dir));
 }
 
+/// How many `"additionalProperties": false` occurrences the vendored spec
+/// carries (tenant release 58.11: `Search_Request`, `Search_Count_Response`).
+const EXPECTED_ADDITIONAL_PROPERTIES_FALSE: usize = 2;
+
+/// How many untagged Markdown code fences the vendored spec's descriptions
+/// carry (tenant release 58.11: the example block in the events-search
+/// endpoint description).
+const EXPECTED_UNTAGGED_CODE_FENCES: usize = 1;
+
 fn generate_api_client(out_dir: &Path) {
     let file = std::fs::File::open("src/openapi.json").unwrap();
     let mut spec_value: serde_json::Value = serde_json::from_reader(file).unwrap();
@@ -24,25 +33,41 @@ fn generate_api_client(out_dir: &Path) {
     // `#[serde(deny_unknown_fields)]`, which turns a forwards-compatible server
     // change (a new field added to a response) into a hard deserialization
     // error — e.g. `snouty doctor` would report a healthy API as "unreachable"
-    // the day `/api/version` grows a field. As of tenant release 58.6 the
-    // published spec no longer marks any schema `additionalProperties: false`:
-    // the server describes fully lenient schemas itself, so no transform is
-    // needed. Assert that invariant so a future spec that reintroduces the
-    // constraint fails the build loudly — prompting a conscious decision to
-    // re-add stripping — instead of silently regenerating a brittle client.
-    // The recursive scan catches the attribute wherever it appears, including on
-    // nested schemas and enums, which a line-text grep could miss.
-    let offenders = additional_properties_false_paths(&spec_value);
-    assert!(
-        offenders.is_empty(),
-        "openapi spec marks {} schema(s) `\"additionalProperties\": false`, which would \
-         make the generated client reject unknown response fields; strip them before \
-         generating (see git history for the previous transform). Offending paths: {}",
-        offenders.len(),
-        offenders.join(", ")
+    // the day `/api/version` grows a field. typify has no setting to disable
+    // this (the choice is hardwired from the schema value), so strip the
+    // constraint from the spec itself before generating. Removing the key is
+    // equivalent to the permissive default: no `deny_unknown_fields` is
+    // emitted, and no flattened `extra` map is added, so struct shapes are
+    // unchanged. The recursive strip catches the attribute wherever it
+    // appears, including on nested schemas and enums, which a line-text patch
+    // could miss. The occurrence count is pinned exactly: every occurrence is
+    // a spec defect the API team has to hear about, so a spec refresh that
+    // moves the count in either direction fails the build until they have
+    // been reminded and the pin updated.
+    let stripped = strip_additional_properties_false(&mut spec_value);
+    assert_eq!(
+        stripped, EXPECTED_ADDITIONAL_PROPERTIES_FALSE,
+        "openapi spec marks {stripped} schema(s) `\"additionalProperties\": false`, but build.rs \
+         pins {EXPECTED_ADDITIONAL_PROPERTIES_FALSE}. The constraint makes generated clients \
+         reject unknown response fields, turning additive server changes into breaking ones; \
+         snouty strips it before generating. ACTION: remind the API team to publish schemas \
+         without `additionalProperties: false`, then update \
+         EXPECTED_ADDITIONAL_PROPERTIES_FALSE in build.rs to {stripped}."
     );
     untype_error_responses(&mut spec_value);
     mark_vtime_schema(&mut spec_value);
+    // Same exact-count pin as the additionalProperties strip above, for the
+    // same reason: each untagged fence is a spec defect to report.
+    let tagged = tag_untagged_code_fences(&mut spec_value);
+    assert_eq!(
+        tagged, EXPECTED_UNTAGGED_CODE_FENCES,
+        "openapi spec descriptions contain {tagged} untagged Markdown code fence(s), but \
+         build.rs pins {EXPECTED_UNTAGGED_CODE_FENCES}. progenitor copies descriptions into doc \
+         comments, and rustdoc compiles untagged fenced blocks as Rust doctests, which fail \
+         `cargo test`; snouty rewrites them to ```text before generating. ACTION: remind the \
+         API team to tag every fenced code block in descriptions with a language, then update \
+         EXPECTED_UNTAGGED_CODE_FENCES in build.rs to {tagged}."
+    );
     let spec: openapiv3::OpenAPI = serde_json::from_value(spec_value).unwrap();
 
     let mut settings = progenitor::GenerationSettings::default();
@@ -156,31 +181,81 @@ fn mark_vtime_schema(spec: &mut serde_json::Value) {
     vtime["format"] = serde_json::json!("vtime");
 }
 
-/// Recursively collect the JSON-pointer path of every `"additionalProperties":
-/// false` in the spec, so the caller can assert none exist (see the call site
-/// for why they would break the generated client).
-fn additional_properties_false_paths(value: &serde_json::Value) -> Vec<String> {
-    fn walk(value: &serde_json::Value, path: &str, out: &mut Vec<String>) {
-        match value {
-            serde_json::Value::Object(map) => {
-                if map.get("additionalProperties") == Some(&serde_json::Value::Bool(false)) {
-                    out.push(format!("{path}/additionalProperties"));
+/// Tag every untagged Markdown code fence in the spec's `description` strings
+/// as `text`. progenitor copies operation descriptions into the generated
+/// client's doc comments verbatim, and rustdoc compiles an untagged fenced
+/// block as a Rust doctest — so the event-DSL examples in the events-search
+/// endpoint's description fail `cargo test`. Only opening fences may carry an
+/// info string (text after the backticks makes a would-be closing fence open a
+/// nested block instead), so fences are tagged in alternation. Returns the
+/// number of opening fences tagged.
+fn tag_untagged_code_fences(value: &mut serde_json::Value) -> usize {
+    fn tag_fences(text: &str, count: &mut usize) -> String {
+        let mut in_fence = false;
+        text.split('\n')
+            .map(|line| {
+                let trimmed = line.trim();
+                if !trimmed.starts_with("```") {
+                    return line.to_owned();
                 }
-                for (k, v) in map {
-                    walk(v, &format!("{path}/{k}"), out);
-                }
-            }
-            serde_json::Value::Array(items) => {
-                for (i, v) in items.iter().enumerate() {
-                    walk(v, &format!("{path}/{i}"), out);
-                }
-            }
-            _ => {}
-        }
+                let tagged = if !in_fence && trimmed == "```" {
+                    *count += 1;
+                    line.replacen("```", "```text", 1)
+                } else {
+                    line.to_owned()
+                };
+                in_fence = !in_fence;
+                tagged
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
     }
-    let mut out = Vec::new();
-    walk(value, "", &mut out);
-    out
+    let mut count = 0;
+    match value {
+        serde_json::Value::Object(map) => {
+            for (key, v) in map.iter_mut() {
+                if key == "description"
+                    && let serde_json::Value::String(text) = v
+                {
+                    *text = tag_fences(text, &mut count);
+                } else {
+                    count += tag_untagged_code_fences(v);
+                }
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for v in items.iter_mut() {
+                count += tag_untagged_code_fences(v);
+            }
+        }
+        _ => {}
+    }
+    count
+}
+
+/// Recursively remove every `"additionalProperties": false` from the spec so
+/// the generated client is lenient about unknown response fields (see the call
+/// site for why). Returns the number of occurrences removed.
+fn strip_additional_properties_false(value: &mut serde_json::Value) -> usize {
+    let mut count = 0;
+    match value {
+        serde_json::Value::Object(map) => {
+            if map.get("additionalProperties") == Some(&serde_json::Value::Bool(false)) {
+                map.remove("additionalProperties");
+                count += 1;
+            }
+            for v in map.values_mut() {
+                count += strip_additional_properties_false(v);
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for v in items.iter_mut() {
+                count += strip_additional_properties_false(v);
+            }
+        }
+        _ => {}
+    }
+    count
 }
 
 // The API represents booleans as the strings "true"/"false", but some

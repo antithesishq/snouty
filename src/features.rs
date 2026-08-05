@@ -78,12 +78,20 @@ pub enum Feature {
     /// `snouty runs exec`, which drives the execute-command API. That API is
     /// unstable and is unavailable on most tenants.
     RunsExec,
+    /// `snouty runs search`, and the routing of `snouty runs events` through
+    /// the events-search API. That API does not honor its documented contract
+    /// yet: the server ignores the request's `limit`, and holds a
+    /// non-streaming connection open instead of closing it after the current
+    /// matching set (observed on tenant releases 58.11 and 60.0). Gated until
+    /// the server fixes both.
+    RunsSearch,
     /// An id this build does not recognize.
     Unknown(String),
 }
 
 impl Feature {
     pub const RUNS_EXEC: &'static str = "runs-exec";
+    pub const RUNS_SEARCH: &'static str = "runs-search";
 }
 
 /// The feature an id names. Every id maps to a feature, so this is total:
@@ -92,6 +100,7 @@ impl From<&str> for Feature {
     fn from(id: &str) -> Self {
         match id {
             Self::RUNS_EXEC => Feature::RunsExec,
+            Self::RUNS_SEARCH => Feature::RunsSearch,
             other => Feature::Unknown(other.to_string()),
         }
     }
@@ -111,6 +120,7 @@ impl Display for Feature {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
             Feature::RunsExec => Self::RUNS_EXEC,
+            Feature::RunsSearch => Self::RUNS_SEARCH,
             Feature::Unknown(id) => id,
         })
     }
@@ -125,6 +135,9 @@ mod tests {
         assert_eq!(Feature::from("runs-exec"), Feature::RunsExec);
         assert_eq!("runs-exec".parse(), Ok(Feature::RunsExec));
         assert_eq!(Feature::RunsExec.to_string(), "runs-exec");
+        assert_eq!(Feature::from("runs-search"), Feature::RunsSearch);
+        assert_eq!("runs-search".parse(), Ok(Feature::RunsSearch));
+        assert_eq!(Feature::RunsSearch.to_string(), "runs-search");
     }
 
     #[test]

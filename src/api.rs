@@ -1,4 +1,5 @@
 use std::collections::{HashMap, VecDeque};
+use std::num::NonZeroU64;
 use std::time::Duration;
 
 use color_eyre::eyre::{Context, Report, Result, eyre};
@@ -60,6 +61,39 @@ pub struct LaunchResponse {
 pub struct ApiVersion {
     pub latest_api_version: String,
     pub release_version: String,
+}
+
+/// The events-search request switches, mirroring the `Search_Request` body of
+/// `POST /runs/{run_id}/events/search` minus the required `query`. Each switch
+/// selects a response mode: default (NDJSON of matching events, connection
+/// closed after the current set), `is_streaming` (connection stays open, new
+/// matches arrive live), or `validate_only` (empty body when the query parses,
+/// 400 when it does not). The body's `count_only` switch is not exposed: the
+/// API team is moving the count into a separate endpoint, and the current
+/// tenants ignore the switch anyway (observed on releases 58.11 and 60.0).
+#[derive(Debug, Clone, Copy, Default)]
+pub struct EventSearchOptions {
+    pub is_streaming: bool,
+    pub validate_only: bool,
+    /// Cap on returned events (server-validated range 1..=999, default 50).
+    /// `NonZeroU64` matches the generated `Search_Request` body's field, so a
+    /// zero can never reach the request builder.
+    pub limit: Option<NonZeroU64>,
+}
+
+/// The search endpoint's default for `limit`. The generated `Search_Request`
+/// body cannot omit the field: it always serializes the caller's value or
+/// this default (see `search_run_events_query`), so this is what the server
+/// was told whenever no limit was given.
+pub const SEARCH_DEFAULT_LIMIT: NonZeroU64 = NonZeroU64::new(50).unwrap();
+
+impl EventSearchOptions {
+    /// The limit the request names: the caller's, or the default the
+    /// generated body serializes in its place. A caller that enforces the
+    /// limit client-side must cap at exactly this value.
+    pub fn effective_limit(&self) -> NonZeroU64 {
+        self.limit.unwrap_or(SEARCH_DEFAULT_LIMIT)
+    }
 }
 
 /// Why a `/api/version` probe failed, classified for `snouty doctor`.
@@ -471,17 +505,51 @@ impl AntithesisApi {
         &self,
         run_id: &str,
         query: &str,
-        limit: Option<usize>,
+        limit: Option<NonZeroU64>,
     ) -> Result<ByteStream> {
         // The endpoint caps the returned events at `limit`. Only send the
         // parameter when the user asked for one: tenants that predate it would
         // otherwise receive a query param they may not accept, and omitting it
-        // lets the server apply its default. The server validates the range.
+        // lets the server apply its default. The server validates the range;
+        // `NonZeroU64` (the generated parameter's own type) keeps a zero from
+        // ever reaching the request builder.
         let mut request = self.client.search_run_events().run_id(run_id).q(query);
         if let Some(limit) = limit {
-            request = request.limit(limit as u64);
+            request = request.limit(limit);
         }
         match request.send().await {
+            Ok(response) => Ok(response.into_inner()),
+            Err(err) => Err(format_api_client_error(err).await),
+        }
+    }
+
+    /// POST an event-set DSL query to the events-search endpoint and return
+    /// the raw NDJSON response stream. Every response mode arrives through
+    /// the stream (see [`EventSearchOptions`]): matching events as NDJSON
+    /// lines, and the `validate_only` answer as an empty body. build.rs drops
+    /// the operation's `application/json` response variant so the generated
+    /// method exposes the stream (see `untype_search_count_response` there).
+    pub async fn search_run_events_query(
+        &self,
+        run_id: &str,
+        query: &str,
+        opts: EventSearchOptions,
+    ) -> Result<ByteStream> {
+        // `count_only` is left to the generated default (false): snouty does
+        // not expose it (see `EventSearchOptions`).
+        let mut body = generated::types::SearchRequest::builder()
+            .query(query)
+            .is_streaming(opts.is_streaming)
+            .validate_only(opts.validate_only);
+        // The generated body type defaults `limit` to the server's default
+        // (50) and always serializes it — the field cannot be omitted. That
+        // is harmless here: unlike the GET events endpoint's `limit` query
+        // parameter, every tenant that serves this endpoint accepts the
+        // field, and the explicit 50 equals the server default.
+        if let Some(limit) = opts.limit {
+            body = body.limit(limit);
+        }
+        match self.client.search().run_id(run_id).body(body).send().await {
             Ok(response) => Ok(response.into_inner()),
             Err(err) => Err(format_api_client_error(err).await),
         }
@@ -1252,7 +1320,7 @@ mod tests {
     use super::*;
     use futures_util::TryStreamExt;
     use tempfile::TempDir;
-    use wiremock::matchers::{method, path, query_param, query_param_is_missing};
+    use wiremock::matchers::{body_json, method, path, query_param, query_param_is_missing};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     fn test_api_optionally_with_cache(
@@ -2423,7 +2491,7 @@ mod tests {
             .await;
 
         let api = test_api_optionally_with_cache(&mock_server, None);
-        api.search_run_events("run-1", "slow", Some(5))
+        api.search_run_events("run-1", "slow", NonZeroU64::new(5))
             .await
             .unwrap();
     }
@@ -2445,6 +2513,107 @@ mod tests {
 
         let api = test_api_optionally_with_cache(&mock_server, None);
         api.search_run_events("run-1", "slow", None).await.unwrap();
+    }
+
+    // The DSL search wrapper POSTs the full Search_Request body: the query,
+    // every mode switch (`count_only` always as its default of false), and
+    // the limit (the generated body type always serializes `limit`,
+    // defaulting to the server's own default of 50).
+    #[tokio::test]
+    async fn search_run_events_query_posts_full_body() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/api/v0/runs/run-1/events/search"))
+            .and(body_json(serde_json::json!({
+                "query": "contains({output_text: \"raft\"})",
+                "count_only": false,
+                "is_streaming": false,
+                "validate_only": false,
+                "limit": 50,
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_string(
+                r#"{"output_text":"raft","moment":{"input_hash":"-456","vtime":"2.0"}}"#,
+            ))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let api = test_api_optionally_with_cache(&mock_server, None);
+        let mut stream = api
+            .search_run_events_query(
+                "run-1",
+                "contains({output_text: \"raft\"})",
+                EventSearchOptions::default(),
+            )
+            .await
+            .unwrap()
+            .into_inner();
+        let mut body = Vec::new();
+        while let Some(chunk) = futures_util::StreamExt::next(&mut stream).await {
+            body.extend_from_slice(&chunk.unwrap());
+        }
+        assert!(String::from_utf8(body).unwrap().contains("raft"));
+    }
+
+    #[tokio::test]
+    async fn search_run_events_query_forwards_switches_and_limit() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/api/v0/runs/run-1/events/search"))
+            .and(body_json(serde_json::json!({
+                "query": "contains({output_text: \"raft\"})",
+                "count_only": false,
+                "is_streaming": true,
+                "validate_only": true,
+                "limit": 7,
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_string(""))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let api = test_api_optionally_with_cache(&mock_server, None);
+        api.search_run_events_query(
+            "run-1",
+            "contains({output_text: \"raft\"})",
+            EventSearchOptions {
+                is_streaming: true,
+                validate_only: true,
+                limit: NonZeroU64::new(7),
+            },
+        )
+        .await
+        .unwrap();
+    }
+
+    // An error must keep its HTTP status so callers can classify it — the 404
+    // path feeds the runs-events fallback for tenants that predate the
+    // endpoint.
+    #[tokio::test]
+    async fn search_run_events_query_keeps_error_status() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/api/v0/runs/run-1/events/search"))
+            .respond_with(ResponseTemplate::new(404).set_body_string(""))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let api = test_api_optionally_with_cache(&mock_server, None);
+        let Err(err) = api
+            .search_run_events_query(
+                "run-1",
+                "contains({x: \"y\"})",
+                EventSearchOptions::default(),
+            )
+            .await
+        else {
+            panic!("expected the 404 to surface as an error");
+        };
+        assert_eq!(crate::error::api_error_status(&err), Some(404));
     }
 
     fn rid(version: u32) -> String {

@@ -52,6 +52,7 @@ fn generate_api_client(out_dir: &Path) {
     untype_error_responses(&mut spec_value);
     drop_use_otis(&mut spec_value);
     mark_vtime_schema(&mut spec_value);
+    untype_search_count_response(&mut spec_value);
     let spec: openapiv3::OpenAPI = serde_json::from_value(spec_value).unwrap();
 
     let mut settings = progenitor::GenerationSettings::default();
@@ -146,6 +147,38 @@ fn untype_error_responses(spec: &mut serde_json::Value) {
             responses.retain(|status, _| status.starts_with('2'));
         }
     }
+}
+
+/// Drop the `application/json` variant from the events-search 200 response so
+/// progenitor generates a raw `ByteStream` method for it.
+///
+/// The operation serves two body shapes from one endpoint: an
+/// `application/x-ndjson` event stream, or a single `application/json` count
+/// object when the request sets `count_only`. progenitor types exactly one
+/// 200 body per operation and picks the JSON variant, so the generated
+/// `search()` would hardcode `Accept: application/json`, deserialize every
+/// response as the count object, and give no access to the stream — the
+/// endpoint's primary mode. With only the NDJSON variant left the method
+/// returns the raw byte stream; api.rs decodes the count and validate modes
+/// from that stream by hand.
+fn untype_search_count_response(spec: &mut serde_json::Value) {
+    let content = spec
+        .pointer_mut("/paths/~1api~1v0~1runs~1{run_id}~1events~1search/post/responses/200/content")
+        .and_then(serde_json::Value::as_object_mut)
+        .expect(
+            "openapi spec has no events-search 200 response content; \
+             update untype_search_count_response in build.rs",
+        );
+    assert!(
+        content.remove("application/json").is_some(),
+        "events-search 200 response no longer offers `application/json`; \
+         untype_search_count_response in build.rs is a no-op and can be removed"
+    );
+    assert!(
+        content.contains_key("application/x-ndjson"),
+        "events-search 200 response no longer offers `application/x-ndjson`; \
+         revisit untype_search_count_response in build.rs"
+    );
 }
 
 /// Tag `Moment.vtime` with a private `format: vtime` marker for the

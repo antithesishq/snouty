@@ -214,7 +214,9 @@ mock-runs-server
 snouty --json runs build-logs $R_run_id
 [!staging] stdout '"timestamp".*"text"'
 
-# `snouty runs events` filters by `--match` needles against the decoded output.
+# `snouty runs events` filters by `--match` server-side and prints each
+# matching event as one `HASH VTIME SOURCE OUTPUT` line (no table: rows print
+# as the server sends them).
 #    Against staging the search matches `fault` and carries `--limit`: fault
 #    events are Antithesis-generated, exist in every fault-injecting run, and
 #    first appear near the start of the timeline, so the server stops after a
@@ -225,18 +227,30 @@ snouty --json runs build-logs $R_run_id
 mock-runs-server
 [!staging] snouty runs events $R_run_id --match request
 [staging] snouty runs events $R_run_id --match fault --limit 3
-[!staging] stdout '^HASH\s+VTIME\s+SOURCE\s+OUTPUT'
-[!staging] stdout '-456.*2\.0.*\[app:error\].*\{"level":"warn","msg":"slow request"\}'
+[!staging] ! stdout '^HASH\s+VTIME\s+SOURCE\s+OUTPUT'
+[!staging] stdout '^-456 2\.0 \[app:error\] \{"level":"warn","msg":"slow request"\}'
 
-# A second `--match` AND-narrows: every needle must be present in the line.
+# Multiple needles need the events-search API to AND them server-side. With
+# the `runs-search` feature off, the command refuses up front and names the
+# fix — the old behavior (match one needle server-side, filter the rest
+# client-side) silently second-guessed the server's own filter and is gone.
 mock-runs-server
+! snouty runs events run-1 --match request --match slow
+stderr 'multiple search terms require the events-search API'
+stderr 'SNOUTY_UNSTABLE_FEATURES=runs-search'
+
+# With the `runs-search` feature on, `runs events` routes through the
+# events-search endpoint: every needle is matched server-side.
+mock-runs-server
+env SNOUTY_UNSTABLE_FEATURES=runs-search
 [!staging] snouty runs events $R_run_id --match request --match slow
 [staging] snouty runs events $R_run_id --match fault --match network --limit 3
-[!staging] stdout '-456.*2\.0.*\[app:error\].*\{"level":"warn","msg":"slow request"\}'
+[!staging] stdout '-456 2\.0 \[app:error\] \{"level":"warn","msg":"slow request"\}'
 # A needle that isn't present excludes the event entirely.
 mock-runs-server
 snouty runs events $R_run_id --match starting --match nonexistent
 stdout 'No events matched "starting nonexistent"\.'
+env SNOUTY_UNSTABLE_FEATURES=
 
 # `snouty --json runs events` outputs raw NDJSON.
 mock-runs-server
@@ -427,12 +441,10 @@ mock-runs-server
 ! snouty runs logs run-1 -123 1.0 --begin-vtime not-a-number --begin-input-hash 0
 stderr 'invalid value .*not-a-number.*'
 
-# `snouty runs events` prints a friendly message (and no table header) when no
-# events match, instead of an empty table.
+# `snouty runs events` prints a friendly message when no events match.
 mock-runs-server
 snouty runs events run-1 --match nomatch
 stdout 'No events matched "nomatch"\.'
-! stdout '^HASH\s+VTIME\s+SOURCE\s+OUTPUT'
 
 # `snouty runs events` requires at least one search needle.
 mock-runs-server
@@ -462,6 +474,106 @@ mock-runs-server
 snouty --json runs events $R_run_id --match parallel_driver_fetch
 [!staging] stdout '"vtime":401\.75'
 
+# `--limit 0` is rejected by clap before any request: the server's accepted
+# range starts at 1.
+mock-runs-server
+! snouty runs events run-1 --match x --limit 0
+stderr 'invalid value .0.'
+
+# With the `runs-search` feature on, the limit is enforced client-side: the
+# search server is told the limit but ignores it and streams every match
+# (the mock models that), so this pins the cap in `runs events` itself.
+mock-runs-server
+env SNOUTY_UNSTABLE_FEATURES=runs-search
+snouty --json runs events $R_run_id --match parallel_driver_fetch --limit 1
+[!staging] stdout '"vtime":400\.5'
+[!staging] ! stdout '"vtime":401\.75'
+
+# Still with the feature on: a 404 from the search endpoint (a tenant that
+# predates it, or a bad run id) is settled before it is reported — a bad run
+# id still says "run not found", with one needle (the GET fallback answers)
+# or several (the run probe answers).
+mock-runs-server
+! snouty runs events no-such-run --match anything
+stderr 'run not found: no-such-run'
+mock-runs-server
+! snouty runs events no-such-run --match one --match two
+stderr 'run not found: no-such-run'
+env SNOUTY_UNSTABLE_FEATURES=
+
+# `snouty runs search` is gated behind the `runs-search` unstable feature,
+# because the events-search API does not honor its documented contract yet.
+# Invoking it while the feature is off is refused with the fix; specs in
+# features.txt cover the gate mechanics themselves.
+mock-runs-server
+! snouty runs search run-1 'contains({output_text: "x"})'
+stderr 'unstable feature'
+stderr 'SNOUTY_UNSTABLE_FEATURES=runs-search'
+
+# The feature stays on for the rest of the `runs search` specs.
+env SNOUTY_UNSTABLE_FEATURES=runs-search
+
+# `snouty runs search` runs one event-set DSL query server-side and prints
+# each matching event as one `HASH VTIME SOURCE OUTPUT` line (no table: on a
+# live run the stream stays open, so rows print as they arrive).
+#    Against staging the query carries --limit for the same wall-time reason
+#    as the events specs above.
+mock-runs-server
+[!staging] snouty runs search $R_run_id 'contains({output_text: "slow request"})'
+[staging] snouty runs search $R_run_id 'contains({output_text: "fault"})' --limit 3
+[!staging] stdout '-456 2\.0 \[app:error\] \{"level":"warn","msg":"slow request"\}'
+! stdout '^HASH\s+VTIME\s+SOURCE\s+OUTPUT'
+
+# `--json` passes the NDJSON through, vtime normalized to an exact JSON number.
+mock-runs-server
+[!staging] snouty --json runs search $R_run_id 'contains({output_text: "slow request"})'
+[staging] snouty --json runs search $R_run_id 'contains({output_text: "fault"})' --limit 3
+[!staging] stdout '"moment":\{"input_hash":"-456","vtime":2\.0'
+
+# `--limit` caps the returned events. The mock, like the live server, ignores
+# the request's `limit` and streams every match (three here), so this pins the
+# client-side cap in `runs search`, not server truncation.
+mock-runs-server
+snouty --json runs search $R_run_id 'contains({output_text: "parallel_driver_fetch"})' --limit 1
+[!staging] stdout '"vtime":400\.5'
+[!staging] ! stdout '"vtime":401\.75'
+
+# `--limit 0` is rejected by clap before any request.
+mock-runs-server
+! snouty runs search run-1 'contains({output_text: "x"})' --limit 0
+stderr 'invalid value .0.'
+
+# A query that matches nothing prints a friendly empty-state. (Mock-only: on a
+# live run this scans the whole event history.)
+mock-runs-server
+[!staging] snouty runs search $R_run_id 'contains({output_text: "zzz-no-such-needle"})'
+[!staging] stdout 'No events matched the query\.'
+
+# `--check` validates the query without running it.
+mock-runs-server
+snouty runs search $R_run_id 'contains({output_text: "x"})' --check
+stdout 'query is valid'
+
+# An invalid query fails with the server's rejection. (Mock-only: the live
+# tenant answers an invalid query with a generic 500 instead of the
+# documented 400.)
+mock-runs-server
+[!staging] ! snouty runs search $R_run_id 'bogus_verb({x: "y"})' --check
+[!staging] stderr 'invalid query'
+
+# The mode switches pick conflicting response modes, so clap rejects the pairing.
+mock-runs-server
+! snouty runs search run-1 'contains({output_text: "x"})' --check --follow
+stderr 'cannot be used with'
+
+# An unknown run reports "run not found", like every run-scoped command.
+mock-runs-server
+! snouty runs search no-such-run 'contains({output_text: "x"})'
+stderr 'run not found: no-such-run'
+
+# The `runs search` specs are over; the feature goes back off.
+env SNOUTY_UNSTABLE_FEATURES=
+
 # The server can fail after it has already committed to a `200 OK`: it reports
 # that by ending the NDJSON stream with a `Stream_Error` line, `{"error":"..."}`.
 # Every streaming command must turn that line into a failure — with the server's
@@ -483,11 +595,10 @@ stdout '"timestamp".*Building image payments-service'
 ! stdout '"error"'
 stderr 'the server reported an error mid-stream: mock stream failure'
 
-# `runs events` renders the rows it already matched, then fails; the error is
-# never swallowed by the needle filter or reported as "No events matched".
+# `runs events` prints the rows it already received, then fails; the error is
+# never reported as "No events matched".
 mock-runs-server
 ! snouty runs events run-stream-error --match starting
-stdout '^HASH\s+VTIME\s+SOURCE\s+OUTPUT'
 stdout -literal '{"level":"info","msg":"starting"}'
 ! stdout 'No events matched'
 stderr 'the server reported an error mid-stream: mock stream failure'
@@ -520,3 +631,19 @@ mock-runs-server
 stdout 'output_text.*starting'
 ! stdout '"error"'
 stderr 'the server reported an error mid-stream: mock stream failure'
+
+# `runs search` prints the rows it already received, then fails the same way.
+# (The command is feature-gated; the gate itself is covered above.)
+mock-runs-server
+env SNOUTY_UNSTABLE_FEATURES=runs-search
+! snouty runs search run-stream-error 'contains({output_text: "starting"})'
+stdout -literal '{"level":"info","msg":"starting"}'
+! stdout 'No events matched'
+stderr 'the server reported an error mid-stream: mock stream failure'
+
+mock-runs-server
+! snouty --json runs search run-stream-error 'contains({output_text: "starting"})'
+stdout 'output_text.*starting'
+! stdout '"error"'
+stderr 'the server reported an error mid-stream: mock stream failure'
+env SNOUTY_UNSTABLE_FEATURES=

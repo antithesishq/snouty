@@ -80,17 +80,15 @@ BUILD_SAMPLES_SCRIPT = Path(__file__).resolve().parent / "build-validate-samples
 # required, so a truly unfiltered call isn't possible; ordering broadest-first
 # (a near-universal needle, then common log words) makes the common case a
 # single probe per run before falling back to narrower terms.
-EVENT_KEYWORDS = ["the", "info", "test", "start", "error", "client", "setup"]
+# Keyword order probed when picking the completed run's event stories.
+# Distinctive words first: a stopword like "the" matches nearly every event,
+# so a story built on it exercises the result cap instead of the search and
+# reads as unrealistic. A run matching none of these is skipped by discovery.
+EVENT_KEYWORDS = ["error", "start", "setup", "client", "test", "info"]
 
 # Keyword order probed for an incomplete run's events story: its narrative is
 # "events around the failure", so try "error" before the general needles.
 INCOMPLETE_EVENT_KEYWORDS = ["error", *EVENT_KEYWORDS]
-
-# The `--limit` the two `runs events` search stories pass. Stated rather than
-# left to the server default, so the AND-narrowing check knows the cap it has to
-# reason about (see `event_multi_match`). It matches the server default, so the
-# stories still show what an unadorned search returns.
-EVENT_LIMIT = 50
 
 
 class GalleryError(Exception):
@@ -166,13 +164,13 @@ class Snouty:
         )
         return Result(args, proc.stdout, proc.stderr, proc.returncode)
 
-    def json_lines(self, args: list[str]) -> list[dict]:
+    def json_lines(self, args: list[str], env: dict[str, str | None] | None = None) -> list[dict]:
         """Run `snouty --json <args>` and parse NDJSON rows.
 
         A non-zero exit is a hard error (timeout, 5xx, auth, DNS, ...) and raises
         — discovery distinguishes this from an empty-but-healthy result (exit 0,
         no rows). This is exact, unlike grepping stderr for known phrases."""
-        res = self.run(["--json", *args])
+        res = self.run(["--json", *args], env)
         if not res.ok:
             raise GalleryError(
                 f"`snouty {' '.join(args)}` failed (exit {res.returncode}): "
@@ -1138,30 +1136,20 @@ def verbose_api_calls(sr: StoryRun, reg: Registry) -> tuple[bool, str]:
     return (has_get and has_table, f"api_calls={has_get} table={has_table}")
 
 
-def event_multi_match(needle: str, second: str, limit: int):
-    """Gate the AND-narrowing story: every row must contain both needles, and
-    the result should be strictly smaller than the single-needle search.
-
-    That last comparison only means something when the single-needle search came
-    back under `limit`. `runs events` matches one needle on the server, which
-    returns at most `limit` events, and filters the rest locally — so when the
-    single-needle search is capped, both searches can report `limit` rows while
-    still describing different sets. Rather than fail on that, the check says
-    the comparison was not assertable and gates on the needles alone."""
+def event_multi_match(needle: str, second: str):
+    """Both needles must appear in every returned row's raw JSON: the search
+    backend ANDs them server-side. No count comparison against the
+    single-needle story — that one runs on the GET events backend, whose
+    curated haystack (output text, assertion messages, function names, test
+    commands) is narrower than the raw JSON the search backend matches, so
+    the two row counts are not comparable."""
 
     def chk(sr: StoryRun, reg: Registry) -> tuple[bool, str]:
         rows = sr.rows or []
         n1, n2 = needle.lower(), second.lower()
         bad = [r for r in rows if not (n1 in json.dumps(r).lower() and n2 in json.dumps(r).lower())]
-        single = reg.row_counts.get("runs-events-single", 1 << 30)
-        capped = single >= limit
-        narrowed = len(rows) < single
-        ok = bool(rows) and not bad and (narrowed or capped)
-        if capped:
-            note = f"narrowing not assertable (single-match hit the {limit}-row cap)"
-        else:
-            note = f"narrowed {single}->{len(rows)}={narrowed}"
-        return (ok, f"{len(rows)} rows w/ both needles, {note}")
+        ok = bool(rows) and not bad
+        return (ok, f"{len(rows)} rows, all contain both needles={not bad}")
 
     return chk
 
@@ -1554,28 +1542,35 @@ def build_stories(d: Discovery) -> list[Story]:
             "runs-events-single",
             f"Find events that mention '{kw}'",
             "I want to find events that mention a particular keyword.",
-            f"At least one matching event row, and the keyword '{kw}' appears in the output.",
-            ["runs", "events", d.success, "--match", kw, "--limit", str(EVENT_LIMIT)],
+            f"At least one matching event row, and the keyword '{kw}' appears in the output. "
+            "Each row is one `HASH VTIME SOURCE OUTPUT` line whose HASH and VTIME are "
+            "copyable into `runs logs`.",
+            ["runs", "events", d.success, "--match", kw],
             event_keyword_present(kw),
         ),
         Story(
             "runs-events-multi-match",
             "AND-narrow with two --match needles",
-            "I want to narrow results to events that mention BOTH of two terms.",
-            f"At least one row, and every row contains both '{kw}' and '{kw2}'. Fewer rows than "
-            "the single-needle search when that search was not capped by --limit.",
-            [
-                "runs",
-                "events",
-                d.success,
-                "--match",
-                kw,
-                "--match",
-                kw2,
-                "--limit",
-                str(EVENT_LIMIT),
-            ],
-            event_multi_match(kw, kw2, EVENT_LIMIT),
+            "I want to narrow results to events that mention BOTH of two terms. "
+            "Several terms route through the events-search API (the `runs-search` "
+            "unstable feature), which ANDs them server-side against the raw event JSON.",
+            f"At least one row, and every row's raw JSON contains both '{kw}' and '{kw2}'.",
+            ["runs", "events", d.success, "--match", kw, "--match", kw2],
+            event_multi_match(kw, kw2),
+            env={"SNOUTY_UNSTABLE_FEATURES": "runs-search"},
+        ),
+        Story(
+            "runs-events-multi-gated",
+            "Two --match needles without the events-search API",
+            "I pass two terms but the `runs-search` feature is off; I want a clear "
+            "refusal that names the fix, not a silent approximation.",
+            "A clear error saying multiple terms require the events-search API, with the "
+            "feature variable to set or the advice to search one term. Non-zero exit.",
+            ["runs", "events", d.success, "--match", kw, "--match", kw2],
+            expect_message("multiple search terms require the events-search API"),
+            json_capable=False,
+            expect_ok=False,
+            env={"SNOUTY_UNSTABLE_FEATURES": None},
         ),
         Story(
             "runs-events-no-results",
@@ -1593,6 +1588,81 @@ def build_stories(d: Discovery) -> list[Story]:
             f"At least one event row matching '{d.fail_event_kw}' from the incomplete run.",
             ["runs", "events", d.fail, "--match", d.fail_event_kw],
             non_empty_table,
+        ),
+        # -- search (event-set DSL; gated behind the runs-search feature) ----
+        Story(
+            "runs-search-contains",
+            f"Query events with the DSL: contains '{kw}'",
+            "I want to run an event-set DSL query and read the matching events.",
+            f"At least one matching event line, keyword '{kw}' visible. Each row is one "
+            "`HASH VTIME SOURCE OUTPUT` line whose HASH and VTIME are copyable into "
+            "`runs logs`; output should be legible without a table header.",
+            ["runs", "search", d.success, f'contains({{output_text: "{kw}"}})'],
+            event_keyword_present(kw),
+            env={"SNOUTY_UNSTABLE_FEATURES": "runs-search"},
+        ),
+        Story(
+            "runs-search-limit",
+            "Cap a DSL query at -n 3",
+            "I want only the first few matches, not the whole stream — the limit must "
+            "hold even though the server ignores it (snouty enforces it client-side).",
+            "Exactly at most 3 event lines, then the command exits promptly.",
+            ["runs", "search", d.success, f'contains({{output_text: "{kw}"}})', "-n", "3"],
+            rows_at_most(3),
+            env={"SNOUTY_UNSTABLE_FEATURES": "runs-search"},
+        ),
+        Story(
+            "runs-search-no-results",
+            "A DSL query that matches nothing",
+            "My query matches no events; I want a friendly empty result.",
+            "A clear 'No events matched the query' message — not an error, not silence.",
+            [
+                "runs",
+                "search",
+                d.success,
+                'contains({output_text: "this string will not appear anywhere"})',
+            ],
+            expect_message("No events matched the query"),
+            json_capable=False,
+            env={"SNOUTY_UNSTABLE_FEATURES": "runs-search"},
+        ),
+        Story(
+            "runs-search-check-valid",
+            "Validate a query without running it",
+            "I want to check my query's syntax before running an expensive search.",
+            "A clear 'query is valid' confirmation and exit 0.",
+            ["runs", "search", d.success, 'contains({output_text: "x"})', "--check"],
+            expect_message("query is valid"),
+            json_capable=False,
+            env={"SNOUTY_UNSTABLE_FEATURES": "runs-search"},
+        ),
+        Story(
+            "runs-search-check-invalid",
+            "Validate an invalid query",
+            "My query has a bad verb; I want the validator to tell me what is wrong. "
+            "(Known server limitation: current tenants answer an invalid query with a "
+            "generic 500 instead of the documented 400, so judge how snouty presents "
+            "that unhelpful answer.)",
+            "A non-zero exit with an error a human can act on — at minimum, it must be "
+            "clear the query (not snouty) is the likely problem.",
+            ["runs", "search", d.success, 'bogus_verb({x: "y"})', "--check"],
+            expect_message("API error"),
+            json_capable=False,
+            expect_ok=False,
+            env={"SNOUTY_UNSTABLE_FEATURES": "runs-search"},
+        ),
+        Story(
+            "runs-search-gated",
+            "Invoke `runs search` while the feature is off",
+            "I typed `runs search` without enabling the unstable feature; I want to "
+            "learn how to enable it, not a bare 'unrecognized subcommand'.",
+            "A clear refusal naming the feature and the exact variable to set, plus a "
+            "pointer to `--help`. Non-zero exit.",
+            ["runs", "search", d.success, 'contains({output_text: "x"})'],
+            expect_message("unstable feature"),
+            json_capable=False,
+            expect_ok=False,
+            env={"SNOUTY_UNSTABLE_FEATURES": None},
         ),
         # -- logs -----------------------------------------------------------
         Story(
@@ -1924,11 +1994,19 @@ def build_help_stories(d: Discovery) -> list[Story]:
         _help_story(
             "help-runs-events",
             "Learn to search events and chain into logs",
-            "I want the help to explain the HASH/VTIME/SOURCE/OUTPUT columns and that "
-            "a moment feeds `runs logs`.",
+            "I want the help to explain the one-line `HASH VTIME SOURCE OUTPUT` format, "
+            "that a moment feeds `runs logs`, and when multiple terms need the "
+            "events-search feature.",
             ["runs", "events"],
             ["runs", "events", s, "--match", d.event_keyword],
-            align=("HASH", "VTIME", "SOURCE", "OUTPUT"),
+        ),
+        _help_story(
+            "help-runs-search",
+            "Learn the event-set DSL query command",
+            "I want the help to explain the QUERY syntax (verbs), the unstable-feature "
+            "gate and how to enable it, the mode switches, and the output line format. "
+            "Help-only: the command is gated, so no default output is captured.",
+            ["runs", "search"],
         ),
         _help_story(
             "help-runs-logs",
@@ -2570,7 +2648,7 @@ def run_story(sn: Snouty, story: Story) -> StoryRun:
     rows = None
     if story.json_capable and story.args:
         try:
-            rows = sn.json_lines(story.args)
+            rows = sn.json_lines(story.args, story.env)
         except (GalleryError, json.JSONDecodeError):
             rows = None  # error stories are validated on rendered text instead
 
@@ -2695,8 +2773,8 @@ def main() -> int:
 
         # Capture concurrently (subprocess + API roundtrips dominate), preserving
         # story order in the results list. Checks are then evaluated serially in
-        # that order — the only cross-story dependency, event_multi_match reading
-        # reg.row_counts["runs-events-single"], is satisfied by ordered evaluation.
+        # that order; no check currently depends on another story's registry
+        # entry, but the ordered evaluation keeps that option open.
         print(f"capturing {len(stories)} stories…", file=sys.stderr)
         with ThreadPoolExecutor(max_workers=CAPTURE_WORKERS) as pool:
             captured = list(pool.map(lambda s: run_story(sn, s), stories))

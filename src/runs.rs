@@ -1,5 +1,7 @@
 use std::fmt::{self, Display, Formatter};
 use std::io::{BufWriter, IsTerminal, Read, Write};
+use std::num::NonZeroU64;
+use std::ops::ControlFlow;
 use std::path::Path;
 use std::sync::OnceLock;
 use std::time::Duration;
@@ -20,12 +22,16 @@ use crate::api::{
     AntithesisApi, Event, EventProperty, LogsBegin, Moment, NonEventProperty, Property,
     PropertyStatus, RunDetail, RunStatus, RunSummary, RunsFilterOptions,
 };
-use crate::cli::{RunsCommands, RunsListArgs};
+use crate::cli::{RunsCommands, RunsListArgs, RunsSearchArgs};
 use crate::error::{api_error_status, user_error};
 use crate::render::{OutputOptions, render_kv, sanitize, sanitize_multiline, wrap_text};
 use crate::settings::Settings;
 use crate::time::HumanDuration;
 use crate::vtime::VTime;
+
+mod event_search;
+
+use event_search::{EventQuery, EventSearch};
 
 /// `print!`/`println!`, but routed through `write!`/`writeln!` to stdout so a
 /// closed pipe (e.g. `snouty runs list | head`) surfaces as an `io::Error` the
@@ -190,6 +196,7 @@ pub async fn cmd_runs(
             matches.extend(query);
             cmd_runs_events(&run_id, &matches, limit, settings, output).await
         }
+        Some(RunsCommands::Search(args)) => cmd_runs_search(args, settings, output).await,
     }
 }
 
@@ -1418,36 +1425,31 @@ async fn cmd_runs_build_logs(
     result
 }
 
-/// The text `runs events` searches a single NDJSON line against, built from the
-/// already-rendered event. We match the DECODED content the user actually sees
-/// in the table (input_hash, vtime, source, output), not the raw JSON-escaped
-/// line — so a needle containing quotes/backslashes copied from the OUTPUT
-/// column matches.
-///
-/// Client-side substring matching is the only filtering `runs events` does.
-/// Structural filters (source/stream/vtime) are intentionally unsupported: the
-/// server streams only a capped subset of matching events, so filtering it
-/// client-side would silently apply to that subset rather than to all of the
-/// run's events.
-fn event_haystack(rendered: &RenderedEventEntry) -> String {
-    format!(
-        "{} {} {} {}",
-        rendered.input_hash, rendered.vtime, rendered.source, rendered.output
-    )
-}
+async fn cmd_runs_search(
+    args: RunsSearchArgs,
+    settings: &Settings,
+    OutputOptions { json, verbose }: OutputOptions,
+) -> Result<()> {
+    debug!("querying events for run: {}", args.run_id);
 
-/// True when every needle (already lowercased) appears in `haystack`. Both sides
-/// are compared with Unicode `to_lowercase` so case-insensitivity holds for
-/// non-ASCII text the OUTPUT column may contain.
-fn haystack_matches_all_needles(haystack: &str, lowered_needles: &[String]) -> bool {
-    let haystack_lower = haystack.to_lowercase();
-    lowered_needles.iter().all(|n| haystack_lower.contains(n))
+    let api = AntithesisApi::new(settings, verbose)?;
+    if args.check {
+        return event_search::check_query(&api, &args.run_id, &args.query, json).await;
+    }
+    let search = EventSearch {
+        query: EventQuery::Dsl {
+            query: args.query,
+            follow: args.follow,
+        },
+        limit: args.limit,
+    };
+    event_search::execute(&api, &args.run_id, search, json).await
 }
 
 async fn cmd_runs_events(
     run_id: &str,
     matches: &[String],
-    limit: Option<usize>,
+    limit: Option<NonZeroU64>,
     settings: &Settings,
     OutputOptions { json, verbose }: OutputOptions,
 ) -> Result<()> {
@@ -1457,137 +1459,20 @@ async fn cmd_runs_events(
         return Err(user_error("no search term given")
             .suggestion("pass at least one needle via `-m/--match` or as a positional argument"));
     }
-    // An empty needle matches every line (`contains("")` is always true), which
-    // would silently disable filtering, so reject it rather than dump the whole
-    // stream as if no filter were given.
+    // An empty needle matches every event (`contains("")` is always true on
+    // either backend), which would silently disable filtering, so reject it
+    // rather than dump the whole stream as if no filter were given.
     if matches.iter().any(|m| m.is_empty()) {
         return Err(user_error("empty search term")
             .suggestion("each `-m/--match` needle must be a non-empty substring"));
     }
 
-    // The server endpoint takes a single `q` substring and streams only a capped
-    // subset of matching events. Send the LONGEST needle (a crude selectivity
-    // proxy) so the cap is most likely to retain rare matches; any additional
-    // needles are AND-filtered client-side over that capped server subset.
-    let server_query = matches
-        .iter()
-        .max_by_key(|m| m.chars().count())
-        .cloned()
-        .unwrap_or_default();
-
-    // With more than one needle only `server_query` is filtered server-side, and
-    // the server caps how many events it returns; the remaining needles filter
-    // that capped subset locally. A true match the cap evicted would otherwise
-    // vanish silently, so make the limitation visible.
-    if matches.len() > 1 {
-        eprintln!(
-            "Note: only \"{server_query}\" is matched on the server (which returns a capped \
-             subset of events); the other terms filter that subset locally, so some matching \
-             events may not appear. Search a single, more specific term to be exhaustive, or \
-             raise the cap with --limit."
-        );
-    }
-
     let api = AntithesisApi::new(settings, verbose)?;
-    let stream = match api.search_run_events(run_id, &server_query, limit).await {
-        Ok(stream) => stream.into_inner(),
-        Err(err) => return Err(explain_run_scoped_error(&api, run_id, err).await),
+    let search = EventSearch {
+        query: EventQuery::Needles(matches.to_vec()),
+        limit,
     };
-
-    let lowered_matches: Vec<String> = matches.iter().map(|m| m.to_lowercase()).collect();
-
-    let mut stdout = BufWriter::new(std::io::stdout().lock());
-
-    // Matching runs against the DECODED fields (see `event_haystack`) so it
-    // agrees with what the table shows; a raw line matches on its text.
-    if json {
-        let result = stream_ndjson_lines(stream, |line| {
-            match line {
-                NdjsonLine::Entry(entry) => {
-                    let haystack = event_haystack(&render_event_entry(&entry));
-                    if haystack_matches_all_needles(&haystack, &lowered_matches) {
-                        writeln!(stdout, "{entry}")?;
-                    }
-                }
-                NdjsonLine::Raw(line) => {
-                    if haystack_matches_all_needles(line, &lowered_matches) {
-                        writeln!(stdout, "{line}")?;
-                    }
-                }
-            }
-            Ok(())
-        })
-        .await;
-        stdout.flush()?;
-        return result;
-    }
-
-    // Human table: the event stream is small (the server already substring-
-    // filters), so buffer the matching rows and size the HASH/VTIME/SOURCE
-    // columns to the actual content rather than guessing fixed widths. A raw
-    // line surfaces sanitized in the OUTPUT column rather than being dropped.
-    let mut rows: Vec<Vec<String>> = Vec::new();
-    let result = stream_ndjson_lines(stream, |line| {
-        let (haystack, row) = match line {
-            NdjsonLine::Entry(entry) => {
-                let rendered = render_event_entry(&entry);
-                let haystack = event_haystack(&rendered);
-                let row = vec![
-                    rendered.input_hash,
-                    rendered.vtime,
-                    rendered.source,
-                    rendered.output,
-                ];
-                (haystack, row)
-            }
-            NdjsonLine::Raw(line) => (
-                line.to_string(),
-                vec![String::new(), String::new(), String::new(), sanitize(line)],
-            ),
-        };
-        if !haystack_matches_all_needles(&haystack, &lowered_matches) {
-            return Ok(());
-        }
-        rows.push(row);
-        Ok(())
-    })
-    .await;
-
-    // A mid-stream error must not discard rows we already buffered: render them
-    // first, then propagate the error. The clean-empty "No events matched"
-    // message is only for a successful stream that yielded nothing.
-    if rows.is_empty() {
-        result?;
-        let query = matches.join(" ");
-        writeln!(stdout, "No events matched \"{query}\".")?;
-        stdout.flush()?;
-        return Ok(());
-    }
-
-    // Auto-width HASH/VTIME/SOURCE columns; OUTPUT is the final column, windowed
-    // around the matched needle so the hit stays visible on a narrow terminal. On
-    // a non-tty `terminal_width()` is `usize::MAX`, so piped output isn't truncated.
-    let headers = [
-        "HASH".to_string(),
-        "VTIME".to_string(),
-        "SOURCE".to_string(),
-        "OUTPUT".to_string(),
-    ];
-    let table = render_columns(
-        &headers,
-        &rows,
-        LastColumn::TruncateAround {
-            total_width: terminal_width(),
-            needles: matches.to_vec(),
-        },
-        &left_aligned(headers.len()),
-    );
-    writeln!(stdout, "{table}")?;
-    stdout.flush()?;
-
-    // Now that buffered rows are rendered, surface any mid-stream error.
-    result?;
-    Ok(())
+    event_search::execute(&api, run_id, search, json).await
 }
 
 async fn cmd_runs_logs(
@@ -2132,7 +2017,53 @@ where
     S: futures_util::Stream<Item = reqwest::Result<C>> + Unpin,
     C: AsRef<[u8]>,
 {
-    split_stream_lines(stream, |line| {
+    stream_ndjson_lines_until(stream, |line| {
+        process_line(line).map(|()| ControlFlow::Continue(()))
+    })
+    .await
+}
+
+/// [`stream_ndjson_lines`], but stop reading — dropping the connection —
+/// once `cap` lines have reached the callback, and return how many did.
+/// Every line the server sends counts (entries and raw lines alike),
+/// mirroring what a server-enforced limit would count; `None` means no cap.
+/// `runs search` and the search route of `runs events` use this to enforce
+/// the limit their request named against a server that ignores it.
+async fn stream_ndjson_lines_capped<S, C>(
+    stream: S,
+    cap: Option<u64>,
+    mut process_line: impl FnMut(NdjsonLine<'_>) -> Result<()>,
+) -> Result<u64>
+where
+    S: futures_util::Stream<Item = reqwest::Result<C>> + Unpin,
+    C: AsRef<[u8]>,
+{
+    let mut seen: u64 = 0;
+    stream_ndjson_lines_until(stream, |line| {
+        process_line(line)?;
+        seen += 1;
+        Ok(if cap.is_some_and(|cap| seen >= cap) {
+            ControlFlow::Break(())
+        } else {
+            ControlFlow::Continue(())
+        })
+    })
+    .await?;
+    Ok(seen)
+}
+
+/// [`stream_ndjson_lines`] (same decoding, same `Stream_Error` handling),
+/// but the callback can end the stream early by returning
+/// `ControlFlow::Break`: the connection drops on return.
+async fn stream_ndjson_lines_until<S, C>(
+    stream: S,
+    mut process_line: impl FnMut(NdjsonLine<'_>) -> Result<ControlFlow<()>>,
+) -> Result<()>
+where
+    S: futures_util::Stream<Item = reqwest::Result<C>> + Unpin,
+    C: AsRef<[u8]>,
+{
+    split_stream_lines_until(stream, |line| {
         let classified = classify_line(line);
         if let NdjsonLine::Entry(entry) = &classified
             && let Some(message) = stream_error_message(entry)
@@ -2171,8 +2102,24 @@ where
 /// callback. Pure line splitting, no JSON awareness — the NDJSON wrappers
 /// above layer decoding and `Stream_Error` detection on top.
 async fn split_stream_lines<S, C>(
-    mut stream: S,
+    stream: S,
     mut handle_line: impl FnMut(&str) -> Result<()>,
+) -> Result<()>
+where
+    S: futures_util::Stream<Item = reqwest::Result<C>> + Unpin,
+    C: AsRef<[u8]>,
+{
+    split_stream_lines_until(stream, |line| {
+        handle_line(line).map(|()| ControlFlow::Continue(()))
+    })
+    .await
+}
+
+/// [`split_stream_lines`], but the callback can end the stream early by
+/// returning `ControlFlow::Break`.
+async fn split_stream_lines_until<S, C>(
+    mut stream: S,
+    mut handle_line: impl FnMut(&str) -> Result<ControlFlow<()>>,
 ) -> Result<()>
 where
     S: futures_util::Stream<Item = reqwest::Result<C>> + Unpin,
@@ -2188,19 +2135,24 @@ where
 
         while let Some(pos) = buf.iter().position(|&b| b == b'\n') {
             let line_bytes = &buf[..pos];
+            let mut flow = ControlFlow::Continue(());
             if !line_bytes.is_empty() {
                 let line = std::str::from_utf8(line_bytes)
                     .map_err(|e| eyre!("invalid UTF-8 in response stream: {e}"))?;
-                handle_line(line)?;
+                flow = handle_line(line)?;
             }
             buf.drain(..=pos);
+            if flow.is_break() {
+                return Ok(());
+            }
         }
     }
 
     if !buf.is_empty() {
         let line = std::str::from_utf8(&buf)
             .map_err(|e| eyre!("invalid UTF-8 in response stream: {e}"))?;
-        handle_line(line)?;
+        // The stream is over; Continue and Break both mean returning Ok.
+        let _ = handle_line(line)?;
     }
 
     Ok(())
@@ -2856,14 +2808,6 @@ enum LastColumn {
     /// multiple lines with a hanging indent under the column start (floored at a
     /// readable minimum width).
     Wrap { total_width: usize },
-    /// Bound the final column like [`Truncate`], but window a too-long cell
-    /// *around* the first matching needle (centering on the match) rather than
-    /// always keeping the head — so the user sees the substring they searched for.
-    /// `needles` are the raw search terms, matched case-insensitively.
-    TruncateAround {
-        total_width: usize,
-        needles: Vec<String>,
-    },
 }
 
 /// Per-column horizontal alignment for the leading (fixed-width) columns. The
@@ -2967,113 +2911,7 @@ fn render_columns(
             }
             output.trim_end().to_string()
         }
-        LastColumn::TruncateAround {
-            total_width,
-            needles,
-        } => {
-            let last_width = total_width
-                .saturating_sub(prefix_width)
-                .max(headers[last].chars().count());
-            widths[last] = last_width;
-
-            let mut output = String::new();
-            push_table_row(&mut output, headers, &widths, aligns);
-            for row in rows {
-                let mut row = row.clone();
-                row[last] = truncate_around(&row[last], needles, last_width);
-                push_table_row(&mut output, &row, &widths, aligns);
-            }
-            output.trim_end().to_string()
-        }
     }
-}
-
-/// Earliest case-insensitive occurrence of any needle in `text`, as the
-/// `(char_start, char_len)` of the match. Used to keep a search hit visible when
-/// a cell is windowed.
-///
-/// The scan runs in the original text's char space — comparing char-by-char
-/// case-insensitively — so the returned index is always a valid offset into the
-/// same `chars()` vec the caller windows. (Searching a `to_lowercase()` copy and
-/// reusing its offsets would drift for the few characters whose lowercase form
-/// has a different char count, e.g. `İ` → `i` + a combining dot.)
-fn first_needle_span(text: &str, needles: &[String]) -> Option<(usize, usize)> {
-    let chars: Vec<char> = text.chars().collect();
-    needles
-        .iter()
-        .filter_map(|n| {
-            let needle: Vec<char> = n.chars().collect();
-            if needle.is_empty() || needle.len() > chars.len() {
-                return None;
-            }
-            (0..=chars.len() - needle.len())
-                .find(|&i| {
-                    chars[i..i + needle.len()]
-                        .iter()
-                        .zip(&needle)
-                        .all(|(a, b)| chars_eq_ignore_case(*a, *b))
-                })
-                .map(|start| (start, needle.len()))
-        })
-        .min_by_key(|(start, _)| *start)
-}
-
-/// Case-insensitive comparison of two characters, comparing their full lowercase
-/// mappings (so it works beyond ASCII).
-fn chars_eq_ignore_case(a: char, b: char) -> bool {
-    a == b || a.to_lowercase().eq(b.to_lowercase())
-}
-
-/// Truncate `text` to at most `width` characters, keeping the region around the
-/// first matching needle in view. A too-long cell is windowed and centered on the
-/// match, with `…` marking each truncated edge; when no needle lands in this cell
-/// (it matched another column) the head is kept instead. Returns `text` unchanged
-/// when it already fits. (Width is counted in characters, not display columns, so
-/// a cell of double-width glyphs can render wider — acceptable for the ASCII log
-/// output this serves.)
-fn truncate_around(text: &str, needles: &[String], width: usize) -> String {
-    const ELL: char = '…';
-    let chars: Vec<char> = text.chars().collect();
-    let len = chars.len();
-    if len <= width {
-        return text.to_string();
-    }
-    // Too narrow to fit an ellipsis beside content: just clip the head.
-    if width <= 1 {
-        return chars[..width].iter().collect();
-    }
-    let Some((m, mlen)) = first_needle_span(text, needles) else {
-        // No hit in this cell — keep the head, like a plain truncation.
-        let head: String = chars[..width - 1].iter().collect();
-        return format!("{head}{ELL}");
-    };
-
-    // Center an inner window on the match midpoint, reserving a column for an
-    // ellipsis on each (initially assumed) truncated edge.
-    let inner = width - 2;
-    let center = (m + mlen / 2).min(len - 1);
-    let mut start = center.saturating_sub(inner / 2);
-    if start + inner > len {
-        start = len - inner;
-    }
-    let mut end = start + inner;
-    // Reclaim the reserved ellipsis column on any edge that isn't truncated after
-    // all (the window reached the start or end of the text).
-    if start == 0 && end < len {
-        end = (end + 1).min(len);
-    } else if end == len && start > 0 {
-        start -= 1;
-    }
-
-    let mut out = String::new();
-    if start > 0 {
-        out.push(ELL);
-    }
-    out.extend(chars[start..end].iter());
-    if end < len {
-        out.push(ELL);
-    }
-    out
 }
 
 fn render_runs_table(runs: &[RunSummary], width: usize) -> String {
@@ -3182,42 +3020,6 @@ mod tests {
                 }
                 NdjsonLine::Raw(_) => None,
             }
-        }
-    }
-
-    /// `truncate_around` never returns more than `width` characters (the `…`
-    /// markers are counted), and returns text unchanged when it already fits.
-    #[hegel::test]
-    fn truncate_around_stays_within_width(tc: hegel::TestCase) {
-        let text = tc.draw(generators::text());
-        let needles = tc.draw(generators::vecs(generators::text().max_size(6)).max_size(3));
-        let width = tc.draw(generators::integers::<usize>().max_value(50));
-        let out = truncate_around(&text, &needles, width);
-        assert!(
-            out.chars().count() <= width,
-            "output {out:?} ({} chars) exceeds width {width}",
-            out.chars().count()
-        );
-        if text.chars().count() <= width {
-            assert_eq!(
-                out, text,
-                "text that already fits must pass through unchanged"
-            );
-        }
-    }
-
-    /// `first_needle_span` returns a span that is a valid window into the text's
-    /// char vector — the returned `(start, len)` never runs off the end.
-    #[hegel::test]
-    fn first_needle_span_is_in_bounds(tc: hegel::TestCase) {
-        let text = tc.draw(generators::text());
-        let needles = tc.draw(generators::vecs(generators::text().max_size(6)).max_size(3));
-        let char_count = text.chars().count();
-        if let Some((start, len)) = first_needle_span(&text, &needles) {
-            assert!(
-                start + len <= char_count,
-                "span {start}+{len} > {char_count}"
-            );
         }
     }
 
@@ -5684,82 +5486,6 @@ mod tests {
     }
 
     #[test]
-    fn truncate_around_returns_short_text_unchanged() {
-        let n = vec!["err".to_string()];
-        assert_eq!(
-            truncate_around("short error here", &n, 80),
-            "short error here"
-        );
-        // Exactly at the width bound: still unchanged, no ellipsis.
-        assert_eq!(truncate_around("abcdef", &n, 6), "abcdef");
-    }
-
-    #[test]
-    fn truncate_around_centers_on_a_mid_string_match() {
-        let needles = vec!["NEEDLE".to_string()];
-        let text = "xxxxxxxxxxxxxxxxxxxxxxxxx NEEDLE yyyyyyyyyyyyyyyyyyyyyyyyy";
-        let out = truncate_around(text, &needles, 20);
-        // Windowed on both sides and the match stays visible.
-        assert!(out.starts_with('…'), "want leading ellipsis: {out:?}");
-        assert!(out.ends_with('…'), "want trailing ellipsis: {out:?}");
-        assert!(out.contains("NEEDLE"), "match must remain visible: {out:?}");
-        assert_eq!(out.chars().count(), 20);
-    }
-
-    #[test]
-    fn truncate_around_keeps_head_when_match_is_near_the_start() {
-        let needles = vec!["abc".to_string()];
-        let text = "abc def ghi jkl mno pqr stu vwx yz0 123 456 789";
-        let out = truncate_around(text, &needles, 20);
-        // No leading ellipsis (window reached the start); trailing edge truncated.
-        assert!(
-            !out.starts_with('…'),
-            "no leading ellipsis expected: {out:?}"
-        );
-        assert!(out.starts_with("abc"), "head retained: {out:?}");
-        assert!(out.ends_with('…'), "trailing ellipsis expected: {out:?}");
-        assert_eq!(out.chars().count(), 20);
-    }
-
-    #[test]
-    fn truncate_around_keeps_tail_when_match_is_near_the_end() {
-        let needles = vec!["xyz".to_string()];
-        let text = "000 111 222 333 444 555 666 777 888 999 last xyz";
-        let out = truncate_around(text, &needles, 20);
-        assert!(out.starts_with('…'), "leading ellipsis expected: {out:?}");
-        assert!(
-            !out.ends_with('…'),
-            "no trailing ellipsis expected: {out:?}"
-        );
-        assert!(out.ends_with("xyz"), "tail retained: {out:?}");
-        assert_eq!(out.chars().count(), 20);
-    }
-
-    #[test]
-    fn truncate_around_head_truncates_when_no_needle_in_cell() {
-        // The needle matched another column, so this cell has no hit — keep the
-        // head, like a plain ellipsis truncation.
-        let needles = vec!["error".to_string()];
-        let text = "[raft] failed to get previous log: previous-index=1 last-index=0";
-        let out = truncate_around(text, &needles, 24);
-        assert!(out.starts_with("[raft]"), "head retained: {out:?}");
-        assert!(out.ends_with('…'), "trailing ellipsis expected: {out:?}");
-        assert_eq!(out.chars().count(), 24);
-    }
-
-    #[test]
-    fn truncate_around_is_case_insensitive() {
-        let needles = vec!["ERROR".to_string()];
-        let text = "aaaaaaaaaaaaaaaaaaaaaaaaa fatal error occurred bbbbbbbbbbbbbbbbbbbbbbbbb";
-        let out = truncate_around(text, &needles, 24);
-        assert!(
-            out.to_lowercase().contains("error"),
-            "match visible: {out:?}"
-        );
-        assert_eq!(out.chars().count(), 24);
-    }
-
-    #[test]
     fn runs_long_view_renders_aligned_key_value_block() {
         let runs = vec![
             summary(
@@ -5794,37 +5520,6 @@ mod tests {
         assert!(out.contains("incomplete"));
         // A blank line separates the two run blocks.
         assert!(out.contains("\n\n"));
-    }
-
-    #[test]
-    fn event_matches_anding_of_multiple_needles() {
-        // `--match` is case-insensitive and every needle must be present (AND).
-        let line = "fault_injector: network partition started";
-
-        let needles = ["Network".to_string(), "partition".to_string()];
-        let lowered: Vec<String> = needles.iter().map(|n| n.to_lowercase()).collect();
-        assert!(haystack_matches_all_needles(line, &lowered));
-
-        let missing = ["network".to_string(), "missing".to_string()];
-        assert!(!haystack_matches_all_needles(line, &missing));
-    }
-
-    #[test]
-    fn event_haystack_matches_decoded_output_with_quotes() {
-        // A needle copied from the OUTPUT column contains literal quotes. The
-        // decoded haystack carries them unescaped, so the match succeeds even
-        // though the raw NDJSON line escapes them as `\"`.
-        let line = r#"{"moment":{"input_hash":"42","vtime":"1.0"},"source":{"container":"app","name":"app","stream":"out"},"output_text":"msg \"starting\""}"#;
-        let NdjsonLine::Entry(entry) = classify_line(line) else {
-            panic!("event line should classify as an entry");
-        };
-        let haystack = event_haystack(&render_event_entry(&entry));
-        assert!(haystack.contains(r#"msg "starting""#));
-
-        let needle = vec![r#""starting""#.to_lowercase()];
-        assert!(haystack_matches_all_needles(&haystack, &needle));
-        // The same needle does NOT match the raw escaped line.
-        assert!(!haystack_matches_all_needles(line, &needle));
     }
 
     #[test]

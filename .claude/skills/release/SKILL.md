@@ -1,11 +1,21 @@
 ---
 name: Release Snouty
-description: This skill should be used when the user asks to "release snouty", "cut a release", "cut a pre-release", "cut an rc", "bump the version", "create a release", or provides a version like "release snouty v0.2.0" or "release snouty v0.7.0-rc.1". Handles version validation, Cargo.toml bump, build, test, commit, and tagging, for releases and pre-releases.
+description: This skill should be used when the user asks to "release snouty", "cut a release", "cut a pre-release", "cut an rc", "bump the version", "create a release", or provides a version like "release snouty v0.2.0" or "release snouty v0.7.0-rc.1". Handles version validation, changelog update, Cargo.toml bump, build, test, commit, and tagging, for releases and pre-releases.
 ---
 
 # Release Snouty
 
-Perform a versioned release of snouty by bumping `Cargo.toml`, building, testing, committing, and tagging. _Do not_ push the resulting commit so the user has a chance to audit it first.
+Perform a versioned release of snouty by updating `CHANGELOG.md`, bumping `Cargo.toml`, building, testing, committing, and tagging. _Do not_ push the resulting commit so the user has a chance to audit it first.
+
+## How the changelog reaches GitHub Releases
+
+cargo-dist reads the top-level `CHANGELOG.md` when the release tag is pushed. It finds the section for the version and puts it in the GitHub Release body. The matching rules are:
+
+1. A heading with the exact version (e.g. `# Version 0.7.0`) matches that version.
+2. A pre-release (e.g. `0.7.0-rc.2`) with no exact heading falls back to the stable heading (`# Version 0.7.0`), then to the `# Unreleased` heading. cargo-dist rewrites the heading to include the pre-release version in the GitHub Release.
+3. A stable version matches only its exact heading. A missing heading does not fail the release; cargo-dist just omits the notes.
+
+The convention: entries accumulate under `# Unreleased` as PRs land. Pre-releases publish the `# Unreleased` section as-is. A stable release renames `# Unreleased` to its version, so all rc-era entries fold into the final release notes.
 
 ## Pre-releases
 
@@ -28,27 +38,51 @@ Run all of the following sanity checks before making any changes:
 
 If any check fails, report the issue clearly and stop.
 
-### 2. Bump the Version in Cargo.toml
+### 2. Update CHANGELOG.md
+
+Read `CHANGELOG.md` and check the `# Unreleased` section.
+
+If the `# Unreleased` section is missing, empty, or stale (it does not cover the changes since the last release tag), draft entries first: list the commits with `git log --oneline vPREV..HEAD` (where `vPREV` is the most recent tag), and write one factual bullet per notable feature. Follow these rules:
+
+- Write each entry as the net change relative to the previous release. When a feature is new in this release, describe the feature once; do not list the iterations that built it (e.g. a rewrite of a command that did not exist in the previous release is part of the feature, not an entry).
+- Compress to the set of notable features. The changelog does not need to describe every change or every detail of a feature.
+- Link PR numbers with the public base URL, e.g. `([#176](https://github.com/antithesishq/snouty/pull/176))`. Do not use the exe proxy hostname.
+- Skip internal-only changes (CI, refactors, dependency bumps).
+
+Then, depending on the release type:
+
+- **Pre-release (`-rc.N`)**: do not rename anything. cargo-dist publishes the `# Unreleased` section under the rc version automatically. Do not create a heading for the rc version.
+- **Stable release**: rename `# Unreleased` to `# Version X.Y.Z (YYYY-MM-DD)` with today's date, and insert a fresh section above it:
+
+  ```markdown
+  # Unreleased
+
+  Nothing Yet!
+  ```
+
+Verify the result parses: `parse-changelog CHANGELOG.md X.Y.Z` must print the section for a stable release; `parse-changelog CHANGELOG.md Unreleased` must print it for a pre-release. Install the CLI with `cargo install parse-changelog` if it is missing. cargo-dist uses this same library, so this check proves the GitHub Release will pick up the notes.
+
+### 3. Bump the Version in Cargo.toml
 
 Edit the `version = "..."` line in `Cargo.toml` to the new version.
 
-### 3. Build
+### 4. Build
 
 Run `cargo build` to update `Cargo.lock` and verify the project compiles.
 
-### 4. Run Tests
+### 5. Run Tests
 
 Run `cargo nextest run` to ensure everything passes. If tests fail, stop and report.
 
-### 5. Commit the Release
+### 6. Commit the Release
 
-Stage only `Cargo.toml` and `Cargo.lock`. If there are any other changes abort. Then commit with message:
+Stage only `Cargo.toml`, `Cargo.lock`, and `CHANGELOG.md`. If there are any other changes abort. Then commit with message:
 
 ```
 chore: Release snouty version X.Y.Z
 ```
 
-### 6. Create an Annotated Tag
+### 7. Create an Annotated Tag
 
 Create an annotated git tag:
 
@@ -56,7 +90,7 @@ Create an annotated git tag:
 git tag -a vX.Y.Z -m "chore: Release snouty version X.Y.Z"
 ```
 
-### 7. Ask user to audit
+### 8. Ask user to audit
 
 Do NOT push. Show the user:
 

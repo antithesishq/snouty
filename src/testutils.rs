@@ -695,7 +695,9 @@ fn mock_route_list_runs(query: Option<&str>, empty: bool) -> (u16, String) {
 /// events, build logs) 404 for any other id, matching the real API and letting
 /// run-scoped commands disambiguate "run not found" from an empty resource.
 /// `run-empty` and `run-no-events` are properties-only fixtures and are
-/// recognised separately by `mock_route_list_run_properties`.
+/// recognised separately by `mock_route_list_run_properties`; `run-stream-error`
+/// is recognised separately by the streaming routes, whose response ends with
+/// a `Stream_Error` line.
 fn mock_run_known(run_id: &str) -> bool {
     MOCK_RUNS.iter().any(|(id, ..)| *id == run_id)
 }
@@ -746,11 +748,25 @@ fn mock_route_get_run(run_id: &str) -> (u16, String) {
     (200, format!("{{{}}}", fields.join(",")))
 }
 
+/// The `Stream_Error` line the `run-stream-error` fixture ends its streams
+/// with: the server's shape for a failure that happens after the `200 OK` is
+/// already committed (see `parse_stream_error` in runs.rs).
+const MOCK_STREAM_ERROR_LINE: &str = r#"{"error":"mock stream failure"}"#;
+
 fn mock_route_get_run_build_logs(run_id: &str) -> (u16, String) {
     // `run-empty` models a completed run with no build logs: a successful but
     // empty stream, which exercises the "No build logs for this run." note.
     if run_id == "run-empty" {
         return (200, String::new());
+    }
+    // `run-stream-error` models the server failing mid-stream: one good line,
+    // then a `Stream_Error` line ends the stream.
+    if run_id == "run-stream-error" {
+        let lines = [
+            r#"{"timestamp":"2025-03-20T02:01:12Z","stream":"stdout","text":"Building image payments-service..."}"#,
+            MOCK_STREAM_ERROR_LINE,
+        ];
+        return (200, lines.join("\n") + "\n");
     }
     if !mock_run_known(run_id) {
         return mock_run_not_found(run_id);
@@ -764,6 +780,14 @@ fn mock_route_get_run_build_logs(run_id: &str) -> (u16, String) {
 }
 
 fn mock_route_get_run_logs(run_id: &str) -> (u16, String) {
+    // See the `run-stream-error` fixture note in `mock_route_get_run_build_logs`.
+    if run_id == "run-stream-error" {
+        let lines = [
+            r#"{"output_text":"{\"level\":\"info\",\"msg\":\"starting\"}","source":{"container":"app","name":"app","stream":"out"},"moment":{"input_hash":"-123","vtime":"1.0","session_id":"sess-1"}}"#,
+            MOCK_STREAM_ERROR_LINE,
+        ];
+        return (200, lines.join("\n") + "\n");
+    }
     if !mock_run_known(run_id) {
         return mock_run_not_found(run_id);
     }
@@ -838,6 +862,12 @@ fn mock_route_list_run_properties(run_id: &str, query: Option<&str>) -> (u16, St
 }
 
 fn mock_route_search_run_events(run_id: &str, query_str: Option<&str>) -> (u16, String) {
+    // The `run-stream-error` stream is returned unfiltered: a `Stream_Error`
+    // line is a failure signal the server emits regardless of the query, not
+    // a match, so the needle filter below must not consume it.
+    if run_id == "run-stream-error" {
+        return mock_route_get_run_logs(run_id);
+    }
     if !mock_run_known(run_id) {
         return mock_run_not_found(run_id);
     }

@@ -5072,6 +5072,7 @@ mod tests {
                 antithesis_is_ephemeral: None,
                 antithesis_report_recipients: None,
                 antithesis_source: None,
+                antithesis_filter_logs_matching: None,
                 extra,
             })
         } else {

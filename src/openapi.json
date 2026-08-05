@@ -1238,6 +1238,11 @@
             "type": "string",
             "description": "An identifier used to separate property history in reports. Each property's history is generated from all previous runs sharing the same source value. Useful for tracking test history per branch.",
             "example": "main"
+          },
+          "antithesis.filter_logs_matching" : {
+            "type": "string",
+            "description": "Regular Expression to filter out logs as part of test run. Filtered logs are recoverable in multi-verse debugging sessions",
+            "example": "debug"
           }
         },
         "additionalProperties": {

@@ -112,7 +112,8 @@ Examples:
   snouty runs properties <run_id> --name <substring> --detail
   snouty runs build-logs <run_id>
   snouty runs logs <run_id> <hash> <vtime>
-  snouty runs events <run_id> -m <query>"#,
+  snouty runs events <run_id> -m <query>
+  snouty runs exec <run_id> <hash> <vtime> 'uname -a'"#,
         subcommand_required = false
     )]
     Runs {
@@ -635,6 +636,47 @@ Output: `[vtime] [source] [stream] message`. A moment (HASH/VTIME) comes from
         /// otherwise print the text payload verbatim (keep ANSI/control bytes)
         #[arg(short = 'r', long)]
         raw: bool,
+    },
+
+    /// Execute a command in a run's live session
+    #[command(
+        long_about = r#"Execute a bash script in a run's live session, at a moment.
+
+The run must have a live session (it is in progress). The script executes on
+a fresh branch of the multiverse, so it does not disturb the running test.
+INPUT_HASH and VTIME identify the moment to execute at; a moment comes from
+`runs properties --detail` or `runs events`.
+
+The script's stdout and stderr stream to snouty's stdout and stderr. On exit,
+a trailer on stderr documents the branch's end moment, to chain a follow-up
+command from. A non-zero exit code, a timeout, or a truncated stream fails
+snouty with exit code 1.
+
+Examples:
+  snouty runs exec <run_id> <hash> <vtime> 'uname -a'
+  echo 'ps aux' | snouty runs exec <run_id> <hash> <vtime>
+  snouty runs exec <run_id> <hash> <vtime> - < script.sh"#
+    )]
+    Exec {
+        /// Run ID
+        run_id: String,
+
+        /// Input hash of the moment to execute at (with VTIME, picks the timeline)
+        #[arg(allow_hyphen_values = true)]
+        input_hash: String,
+
+        /// Virtual time of the moment to execute at
+        #[arg(allow_hyphen_values = true)]
+        vtime: String,
+
+        /// Bash script to execute; omit it (or pass `-`) to read the script
+        /// from stdin
+        script: Option<String>,
+
+        /// Maximum seconds the server waits for the script to exit before
+        /// reporting a timeout
+        #[arg(long, default_value_t = 30)]
+        timeout: u64,
     },
 
     /// Search events in a run

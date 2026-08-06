@@ -105,7 +105,7 @@
           {
             "name": "launcher",
             "in": "query",
-            "description": "Filter by the launcher that kicked off the test run.",
+            "description": "Filter by the name of the configured launcher that kicked off the test run.",
             "required": false,
             "schema": {
               "type": "string"
@@ -313,6 +313,120 @@
         }
       }
     },
+    "/api/v0/runs/{run_id}/execute_command": {
+      "post": {
+        "operationId": "executeCommand",
+        "summary": "Execute a command in a test run",
+        "description": "Executes a bash command in the live session associated with the test run, starting at the requested moment. Output is streamed as newline-delimited JSON (NDJSON). Each line is an `output` event followed by a terminal `exited` or `timed_out` event, unless the stream ends with an error.",
+        "tags": [
+          "Test runs"
+        ],
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "description": "Unique identifier of the test run whose live session should execute the command.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Execute_Command_Request"
+              },
+              "example": {
+                "moment": {
+                  "input_hash": "-3625518438076122494",
+                  "vtime": "398.4898056755774"
+                },
+                "script": "uname -a",
+                "timeout_seconds": 30,
+                "use_otis": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "A stream of command output and one terminal event in NDJSON format. Each line is a self-contained JSON object.",
+            "content": {
+              "application/x-ndjson": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/Execute_Command_Stream_Event"
+                    },
+                    {
+                      "$ref": "#/components/schemas/Stream_Error"
+                    }
+                  ]
+                },
+                "examples": {
+                  "output": {
+                    "summary": "A line written to stdout",
+                    "value": {
+                      "type": "output",
+                      "stream": "stdout",
+                      "text": "Linux antithesis 6.12.0",
+                      "moment": {
+                        "input_hash": "-3625518438076122494",
+                        "vtime": "398.491"
+                      }
+                    }
+                  },
+                  "exited": {
+                    "summary": "The command exited",
+                    "value": {
+                      "type": "exited",
+                      "exit_code": 0,
+                      "end_moment": {
+                        "input_hash": "-3625518438076122494",
+                        "vtime": "398.492"
+                      }
+                    }
+                  },
+                  "timed_out": {
+                    "summary": "The command timed out",
+                    "value": {
+                      "type": "timed_out"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "405": {
+            "$ref": "#/components/responses/MethodNotAllowed"
+          },
+          "406": {
+            "$ref": "#/components/responses/NotAcceptable"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      }
+    },
     "/api/v0/runs/{run_id}/logs": {
       "get": {
         "operationId": "getRunLogs",
@@ -377,7 +491,14 @@
             "content": {
               "application/x-ndjson": {
                 "schema": {
-                  "$ref": "#/components/schemas/Event"
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/Event"
+                    },
+                    {
+                      "$ref": "#/components/schemas/Stream_Error"
+                    }
+                  ]
                 },
                 "examples": {
                   "raft_vote_log": {
@@ -482,7 +603,14 @@
             "content": {
               "application/x-ndjson": {
                 "schema": {
-                  "$ref": "#/components/schemas/Build_Log_Line"
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/Build_Log_Line"
+                    },
+                    {
+                      "$ref": "#/components/schemas/Stream_Error"
+                    }
+                  ]
                 },
                 "example": {
                   "timestamp": "2026-05-14T03:03:24.668Z",
@@ -648,7 +776,7 @@
     "/api/v0/runs/{run_id}/events": {
       "get": {
         "operationId": "searchRunEvents",
-        "summary": "Search run events",
+        "summary": "Search test run events",
         "description": "Searches events in a test run for the given query string. The search matches against output text, assertion messages, function names, and test composer commands. Results are streamed as newline-delimited JSON (NDJSON). Each line is a self-contained JSON object representing an event.",
         "tags": [
           "Test runs"
@@ -692,7 +820,14 @@
             "content": {
               "application/x-ndjson": {
                 "schema": {
-                  "$ref": "#/components/schemas/Event"
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/Event"
+                    },
+                    {
+                      "$ref": "#/components/schemas/Stream_Error"
+                    }
+                  ]
                 },
                 "example": {
                   "moment": {
@@ -706,6 +841,124 @@
                     "stream": "info"
                   },
                   "output_text": "3:08:17AM:     ^ Pending: ContainerCreating"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "405": {
+            "$ref": "#/components/responses/MethodNotAllowed"
+          },
+          "406": {
+            "$ref": "#/components/responses/NotAcceptable"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      }
+    },
+    "/api/v0/runs/{run_id}/events/search": {
+      "post": {
+        "operationId": "search",
+        "summary": "Search events with event sets",
+        "description": "Runs a search query across a single test run's events and returns either the matching events or, when `count_only` is `true`, an aggregate count. The test run to search is identified by the `run_id` path parameter.\n\n### Search query\n\nThe `query` field is an event set. An event set is a pipeline of verbs separated by `.`, applied left to right to the underlying event stream. The [event set reference](/docs/reference/event-set-reference/) has the full grammar.\n\n### Validating a query\n\nWhen `validate_only` is `true` the server checks only that `query` is syntactically valid and does not execute it; no events are returned and no count is computed. The server responds with `200 OK` and an empty body for a syntactically valid query, and for an invalid query, the server responds with `400 Bad Request`. `validate_only` takes precedence over `count_only` and `is_streaming`.\n\n### Streaming\n\nWhen `is_streaming` is `true` the connection remains open and the server continues to emit events as they are observed in live test runs. When `false` the server closes the connection once it has returned the current matching set.",
+        "tags": [
+          "Test runs"
+        ],
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "description": "Unique identifier of the test run to search.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Search_Request"
+              },
+              "examples": {
+                "get_events": {
+                  "summary": "Return error log lines from etcd0",
+                  "value": {
+                    "query": "matches({container: \"etcd0\", stream: \"error\"})",
+                    "is_streaming": false
+                  }
+                },
+                "count_only": {
+                  "summary": "Count raft-related log lines in a single run",
+                  "value": {
+                    "query": "contains({output_text: \"raft\"})",
+                    "is_streaming": false,
+                    "count_only": true
+                  }
+                },
+                "streaming_events": {
+                  "summary": "Stream slow-request warnings as they happen",
+                  "value": {
+                    "query": "contains({output_text: \"apply request took too long\"})",
+                    "is_streaming": true
+                  }
+                },
+                "validate_only": {
+                  "summary": "Validate a query without running it",
+                  "value": {
+                    "query": "matches({container: \"etcd0\"})",
+                    "validate_only": true
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Search results. When `validate_only` is `true` and the query is valid, the body is empty. Otherwise the content type is NDJSON of `Event` objects when `count_only` is `false`, or a single JSON object when `count_only` is `true`.",
+            "content": {
+              "application/x-ndjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Event"
+                },
+                "example": {
+                  "moment": {
+                    "input_hash": "-3625518438076122494",
+                    "vtime": "398.4898056755774"
+                  },
+                  "output_text": "{\"level\":\"info\",\"msg\":\"sent MsgPreVote request\"}",
+                  "source": {
+                    "container": "etcd0",
+                    "name": "etcd0",
+                    "stream": "error"
+                  }
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Search_Count_Response"
+                },
+                "example": {
+                  "count": 318446
                 }
               }
             }
@@ -947,6 +1200,21 @@
             "type": "string",
             "description": "A human-readable explanation of what went wrong.",
             "example": "limit must be between 1 and 100"
+          }
+        },
+        "additionalProperties": true
+      },
+      "Stream_Error": {
+        "type": "object",
+        "description": "An error that may be emitted as an individual line in an NDJSON stream. This occurs when the server encounters an error after the server responds with a `200 OK` status and before the stream completes.",
+        "required": [
+          "error"
+        ],
+        "properties": {
+          "error": {
+            "type": "string",
+            "description": "The error message.",
+            "example": "An unexpected error occurred. Please try again later."
           }
         },
         "additionalProperties": true
@@ -1195,6 +1463,172 @@
           }
         },
         "additionalProperties": true
+      },
+      "Execute_Command_Request": {
+        "type": "object",
+        "description": "Request body for executing a command in a test run's live session.",
+        "required": [
+          "moment",
+          "script"
+        ],
+        "properties": {
+          "moment": {
+            "$ref": "#/components/schemas/Moment"
+          },
+          "script": {
+            "type": "string",
+            "description": "Bash script to execute in the live session.",
+            "example": "uname -a"
+          },
+          "timeout_seconds": {
+            "type": "integer",
+            "format": "uint64",
+            "minimum": 0,
+            "default": 30,
+            "description": "Maximum number of seconds to wait for the command to exit before emitting a `timed_out` event."
+          },
+          "use_otis": {
+            "type": "boolean",
+            "default": false,
+            "description": "When true, reads command output through the tenant coordinator rather than the live per-session Pangolin service. Intended for local testing."
+          }
+        },
+        "additionalProperties": true
+      },
+      "Execute_Command_Stream_Event": {
+        "description": "One NDJSON event emitted while executing a command.",
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "type",
+              "stream",
+              "text",
+              "moment"
+            ],
+            "properties": {
+              "type": {
+                "type": "string",
+                "enum": [
+                  "output"
+                ]
+              },
+              "stream": {
+                "type": "string",
+                "enum": [
+                  "stdout",
+                  "stderr"
+                ],
+                "description": "The output stream that produced this line."
+              },
+              "text": {
+                "type": "string",
+                "description": "One line of command output without its trailing newline."
+              },
+              "moment": {
+                "$ref": "#/components/schemas/Moment"
+              }
+            },
+            "additionalProperties": true
+          },
+          {
+            "type": "object",
+            "required": [
+              "type",
+              "exit_code",
+              "end_moment"
+            ],
+            "properties": {
+              "type": {
+                "type": "string",
+                "enum": [
+                  "exited"
+                ]
+              },
+              "exit_code": {
+                "type": "integer",
+                "format": "int64",
+                "nullable": true,
+                "description": "The command's exit code, or null if no exit code was available."
+              },
+              "end_moment": {
+                "$ref": "#/components/schemas/Moment"
+              }
+            },
+            "additionalProperties": true
+          },
+          {
+            "type": "object",
+            "required": [
+              "type"
+            ],
+            "properties": {
+              "type": {
+                "type": "string",
+                "enum": [
+                  "timed_out"
+                ]
+              }
+            },
+            "additionalProperties": true
+          }
+        ],
+        "discriminator": {
+          "propertyName": "type"
+        }
+      },
+      "Search_Request": {
+        "type": "object",
+        "description": "Request body for searching events with the event sets.",
+        "required": [
+          "query"
+        ],
+        "properties": {
+          "query": {
+            "type": "string",
+            "description": "An event set query. A pipeline of dot-separated verbs (`matches`, `contains`, `not_matches`, `excludes`, `map`, `filter`, `flatmap`, `fold`, `narrow`, `union`, `intersect`, `difference`, `distinct_by_moment`, `with_last`, `with_next`) applied to the underlying event stream. See the [event sets reference](/docs/reference/event-set-reference/) for the full grammar.",
+            "example": "matches({container: \"etcd0\", stream: \"error\"}).filter(ev => ev.output_text.includes(\"raft\"))"
+          },
+          "is_streaming": {
+            "type": "boolean",
+            "description": "When `true`, the connection stays open and the server keeps emitting newly observed events as they arrive. When `false`, the server closes the connection after returning the current matching set. Defaults to `false`.",
+            "default": false
+          },
+          "count_only": {
+            "type": "boolean",
+            "description": "When `true`, the response is a single JSON object with the total number of matching events instead of the events themselves. When `false`, the response is an NDJSON stream of matching events. Defaults to `false`.",
+            "default": false
+          },
+          "limit": {
+            "type": "integer",
+            "description": "Maximum number of events to return. Must be between 1 and 999. Defaults to 50. Once the requested number of events have been returned the server terminates the connection; this applies whether or not `is_streaming` is `true`. The limit doesn't apply when `count_only` is `true`.",
+            "default": 50,
+            "minimum": 1,
+            "maximum": 999
+          },
+          "validate_only": {
+            "type": "boolean",
+            "description": "When `true`, the server only validates the syntax of `query` without executing it. The server responds with `200 OK` and an empty body for a syntactically valid query, and for an invalid query, the server responds with `400 Bad Request`. No events are returned and no count is computed. Defaults to `false`.",
+            "default": false
+          }
+        },
+        "additionalProperties": false
+      },
+      "Search_Count_Response": {
+        "type": "object",
+        "description": "Response returned when `count_only` is `true`.",
+        "required": [
+          "count"
+        ],
+        "properties": {
+          "count": {
+            "type": "integer",
+            "format": "uint64",
+            "minimum": 0,
+            "description": "The total number of events matching the query."
+          }
+        },
+        "additionalProperties": false
       },
       "Params": {
         "type": "object",

@@ -1737,9 +1737,52 @@ fn classify_line(line: &str) -> NdjsonLine<'_> {
     NdjsonLine::Raw(line)
 }
 
+/// Extract the message from a `Stream_Error` record, the shape every
+/// streaming endpoint (logs, events, build logs) uses to report a
+/// server-side failure that happens after the `200 OK` is already committed:
+/// `{"error": "..."}` as its own NDJSON line, usually ending the stream.
+///
+/// Such a line is an out-of-band failure signal, not data — rendered as a
+/// record it would print as a blank log line or be dropped by the events
+/// needle filter, and the command would exit 0 over a truncated stream. The
+/// streaming helpers below turn it into the command's failure instead.
+///
+/// A *data* record can legitimately carry a top-level `error` field of its
+/// own (an event's payload is arbitrary workload JSON), but data records
+/// always carry their schema's required envelope — `moment` for log/event
+/// records, `timestamp` for build log lines — which `Stream_Error` never has,
+/// so the envelope's absence disambiguates.
+fn stream_error_message(entry: &Value) -> Option<&str> {
+    let obj = entry.as_object()?;
+    if obj.contains_key("moment") || obj.contains_key("timestamp") {
+        return None;
+    }
+    obj.get("error")?.as_str()
+}
+
+/// [`stream_error_message`] for an undecoded line, used where no parsed
+/// record exists (the raw-passthrough path and tests).
+fn parse_stream_error(line: &str) -> Option<String> {
+    // Cheap pre-filter: skip JSON parsing for the vast majority of lines,
+    // which don't even contain the key's text.
+    if !line.contains(r#""error""#) {
+        return None;
+    }
+    let value: Value = serde_json::from_str(line).ok()?;
+    Some(stream_error_message(&value)?.to_string())
+}
+
+/// The failure a `Stream_Error` line becomes.
+fn mid_stream_error(message: &str) -> color_eyre::eyre::Report {
+    eyre!("the server reported an error mid-stream: {message}")
+        .note("output produced before the error may be incomplete")
+}
+
 /// Stream an NDJSON response, handing each line to the callback parsed and
-/// normalized (see [`NdjsonLine`]). Commands whose contract is *raw*
-/// passthrough (`runs logs --json --raw`, `runs build-logs --json`) use
+/// normalized (see [`NdjsonLine`]) — except a `Stream_Error` record
+/// ([`stream_error_message`]), which becomes the command's failure instead of
+/// reaching the callback. Commands whose contract is *raw* passthrough
+/// (`runs logs --json --raw`, `runs build-logs --json`) use
 /// [`stream_raw_lines`] instead — parsing is not their happy case.
 async fn stream_ndjson_lines<S, C>(
     stream: S,
@@ -1749,14 +1792,47 @@ where
     S: futures_util::Stream<Item = reqwest::Result<C>> + Unpin,
     C: AsRef<[u8]>,
 {
-    stream_raw_lines(stream, |line| process_line(classify_line(line))).await
+    split_stream_lines(stream, |line| {
+        let classified = classify_line(line);
+        if let NdjsonLine::Entry(entry) = &classified
+            && let Some(message) = stream_error_message(entry)
+        {
+            return Err(mid_stream_error(message));
+        }
+        process_line(classified)
+    })
+    .await
+}
+
+/// Stream an NDJSON response, handing each line to the callback verbatim —
+/// except a `Stream_Error` line ([`stream_error_message`]), which becomes the
+/// command's failure instead of reaching the callback: it is the server
+/// aborting the stream, so even the raw-passthrough modes must not present it
+/// (and whatever follows it never arrives) as data. Detecting it is the one
+/// reason each line takes a decode pass here.
+async fn stream_raw_lines<S, C>(
+    stream: S,
+    mut process_line: impl FnMut(&str) -> Result<()>,
+) -> Result<()>
+where
+    S: futures_util::Stream<Item = reqwest::Result<C>> + Unpin,
+    C: AsRef<[u8]>,
+{
+    split_stream_lines(stream, |line| {
+        if let Some(message) = parse_stream_error(line) {
+            return Err(mid_stream_error(&message));
+        }
+        process_line(line)
+    })
+    .await
 }
 
 /// Split a byte stream into newline-delimited lines and hand each to the
-/// callback verbatim.
-async fn stream_raw_lines<S, C>(
+/// callback. Pure line splitting, no JSON awareness — the NDJSON wrappers
+/// above layer decoding and `Stream_Error` detection on top.
+async fn split_stream_lines<S, C>(
     mut stream: S,
-    mut process_line: impl FnMut(&str) -> Result<()>,
+    mut handle_line: impl FnMut(&str) -> Result<()>,
 ) -> Result<()>
 where
     S: futures_util::Stream<Item = reqwest::Result<C>> + Unpin,
@@ -1775,7 +1851,7 @@ where
             if !line_bytes.is_empty() {
                 let line = std::str::from_utf8(line_bytes)
                     .map_err(|e| eyre!("invalid UTF-8 in response stream: {e}"))?;
-                process_line(line)?;
+                handle_line(line)?;
             }
             buf.drain(..=pos);
         }
@@ -1784,7 +1860,7 @@ where
     if !buf.is_empty() {
         let line = std::str::from_utf8(&buf)
             .map_err(|e| eyre!("invalid UTF-8 in response stream: {e}"))?;
-        process_line(line)?;
+        handle_line(line)?;
     }
 
     Ok(())
@@ -3619,6 +3695,45 @@ mod tests {
         // non-number is passed through untouched.
         assert_eq!(truncate_decimals("1e3", 3), "1000.000");
         assert_eq!(truncate_decimals("n/a", 3), "n/a");
+    }
+
+    #[test]
+    fn parse_stream_error_extracts_the_server_message() {
+        assert_eq!(
+            parse_stream_error(r#"{"error":"mock stream failure"}"#).as_deref(),
+            Some("mock stream failure")
+        );
+        // additionalProperties is open on Stream_Error: extra keys don't
+        // stop the line from being an error.
+        assert_eq!(
+            parse_stream_error(r#"{"error":"boom","request_id":"r-1"}"#).as_deref(),
+            Some("boom")
+        );
+    }
+
+    #[test]
+    fn parse_stream_error_leaves_data_records_alone() {
+        // A log/event record carrying its own top-level `error` field is data:
+        // the `moment` envelope identifies it.
+        assert_eq!(
+            parse_stream_error(r#"{"error":"disk full","moment":{"vtime":"1.0"}}"#),
+            None
+        );
+        // A build log line is identified by its `timestamp`.
+        assert_eq!(
+            parse_stream_error(r#"{"error":"x","timestamp":"2025-03-20T02:01:12Z"}"#),
+            None
+        );
+        // `error` under output_text (or any nested position) is not the signal.
+        assert_eq!(
+            parse_stream_error(r#"{"output_text":"an \"error\" happened","moment":{}}"#),
+            None
+        );
+        // A non-string `error`, a non-object line, and a non-JSON line are not
+        // stream errors.
+        assert_eq!(parse_stream_error(r#"{"error":42}"#), None);
+        assert_eq!(parse_stream_error(r#"["error"]"#), None);
+        assert_eq!(parse_stream_error("plain text with \"error\" in it"), None);
     }
 
     #[test]

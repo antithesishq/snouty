@@ -448,3 +448,62 @@ snouty --json runs events $R_run_id --match parallel_driver_fetch --limit 1
 mock-runs-server
 snouty --json runs events $R_run_id --match parallel_driver_fetch
 [!staging] stdout '"vtime":401\.75'
+
+# The server can fail after it has already committed to a `200 OK`: it reports
+# that by ending the NDJSON stream with a `Stream_Error` line, `{"error":"..."}`.
+# Every streaming command must turn that line into a failure — with the server's
+# message on stderr and a non-zero exit — instead of rendering it as a data
+# record or dropping it. Data received before the error still prints. The
+# `run-stream-error` mock fixture ends each of its streams this way.
+mock-runs-server
+env TZ=UTC
+! snouty runs build-logs run-stream-error
+stdout -literal '2025-03-20 02:01:12 [stdout] Building image payments-service...'
+stderr 'the server reported an error mid-stream: mock stream failure'
+stderr 'output produced before the error may be incomplete'
+
+# In the raw NDJSON passthrough the error line stays off stdout: it is the
+# server aborting the stream, not build log data.
+mock-runs-server
+! snouty --json runs build-logs run-stream-error
+stdout '"timestamp".*Building image payments-service'
+! stdout '"error"'
+stderr 'the server reported an error mid-stream: mock stream failure'
+
+# `runs events` renders the rows it already matched, then fails; the error is
+# never swallowed by the needle filter or reported as "No events matched".
+mock-runs-server
+! snouty runs events run-stream-error --match starting
+stdout '^HASH\s+VTIME\s+SOURCE\s+OUTPUT'
+stdout -literal '{"level":"info","msg":"starting"}'
+! stdout 'No events matched'
+stderr 'the server reported an error mid-stream: mock stream failure'
+
+mock-runs-server
+! snouty --json runs events run-stream-error --match starting
+stdout 'output_text.*starting'
+! stdout '"error"'
+stderr 'the server reported an error mid-stream: mock stream failure'
+
+# `runs logs`, human mode: the error must not render as a blank-columned log
+# line. (Column formatting itself is pinned by the run-1 block above; here it
+# is enough that the data line printed.)
+mock-runs-server
+! snouty runs logs run-stream-error -123 1.0
+stdout -literal '[out] {"level":"info","msg":"starting"}'
+! stdout 'mock stream failure'
+stderr 'the server reported an error mid-stream: mock stream failure'
+
+# `runs logs --json` (fault-annotated) and `--json --raw` (verbatim): the error
+# line reaches neither stdout variant.
+mock-runs-server
+! snouty --json runs logs run-stream-error -123 1.0
+stdout 'output_text.*starting'
+! stdout '"error"'
+stderr 'the server reported an error mid-stream: mock stream failure'
+
+mock-runs-server
+! snouty runs logs --json --raw run-stream-error -123 1.0
+stdout 'output_text.*starting'
+! stdout '"error"'
+stderr 'the server reported an error mid-stream: mock stream failure'

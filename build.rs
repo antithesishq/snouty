@@ -16,6 +16,10 @@ fn main() {
     generate_api_client(Path::new(&out_dir));
 }
 
+/// How many `"additionalProperties": false` occurrences the vendored spec
+/// carries (tenant release 60.0: `Search_Request`, `Search_Count_Response`).
+const EXPECTED_ADDITIONAL_PROPERTIES_FALSE: usize = 2;
+
 fn generate_api_client(out_dir: &Path) {
     let file = std::fs::File::open("src/openapi.json").unwrap();
     let mut spec_value: serde_json::Value = serde_json::from_reader(file).unwrap();
@@ -24,22 +28,26 @@ fn generate_api_client(out_dir: &Path) {
     // `#[serde(deny_unknown_fields)]`, which turns a forwards-compatible server
     // change (a new field added to a response) into a hard deserialization
     // error — e.g. `snouty doctor` would report a healthy API as "unreachable"
-    // the day `/api/version` grows a field. As of tenant release 58.6 the
-    // published spec no longer marks any schema `additionalProperties: false`:
-    // the server describes fully lenient schemas itself, so no transform is
-    // needed. Assert that invariant so a future spec that reintroduces the
-    // constraint fails the build loudly — prompting a conscious decision to
-    // re-add stripping — instead of silently regenerating a brittle client.
-    // The recursive scan catches the attribute wherever it appears, including on
-    // nested schemas and enums, which a line-text grep could miss.
-    let offenders = additional_properties_false_paths(&spec_value);
-    assert!(
-        offenders.is_empty(),
-        "openapi spec marks {} schema(s) `\"additionalProperties\": false`, which would \
-         make the generated client reject unknown response fields; strip them before \
-         generating (see git history for the previous transform). Offending paths: {}",
-        offenders.len(),
-        offenders.join(", ")
+    // the day `/api/version` grows a field. typify has no setting to disable
+    // this (the choice is hardwired from the schema value), so strip the
+    // constraint from the spec itself before generating. Removing the key is
+    // equivalent to the permissive default: no `deny_unknown_fields` is
+    // emitted, and no flattened `extra` map is added, so struct shapes are
+    // unchanged. The recursive strip catches the attribute wherever it
+    // appears, including on nested schemas and enums, which a line-text patch
+    // could miss. The occurrence count is pinned exactly: every occurrence is
+    // a spec defect the API team has to hear about, so a spec refresh that
+    // moves the count in either direction fails the build until they have
+    // been reminded and the pin updated.
+    let stripped = strip_additional_properties_false(&mut spec_value);
+    assert_eq!(
+        stripped, EXPECTED_ADDITIONAL_PROPERTIES_FALSE,
+        "openapi spec marks {stripped} schema(s) `\"additionalProperties\": false`, but build.rs \
+         pins {EXPECTED_ADDITIONAL_PROPERTIES_FALSE}. The constraint makes generated clients \
+         reject unknown response fields, turning additive server changes into breaking ones; \
+         snouty strips it before generating. ACTION: remind the API team to publish schemas \
+         without `additionalProperties: false`, then update \
+         EXPECTED_ADDITIONAL_PROPERTIES_FALSE in build.rs to {stripped}."
     );
     untype_error_responses(&mut spec_value);
     mark_vtime_schema(&mut spec_value);
@@ -156,31 +164,29 @@ fn mark_vtime_schema(spec: &mut serde_json::Value) {
     vtime["format"] = serde_json::json!("vtime");
 }
 
-/// Recursively collect the JSON-pointer path of every `"additionalProperties":
-/// false` in the spec, so the caller can assert none exist (see the call site
-/// for why they would break the generated client).
-fn additional_properties_false_paths(value: &serde_json::Value) -> Vec<String> {
-    fn walk(value: &serde_json::Value, path: &str, out: &mut Vec<String>) {
-        match value {
-            serde_json::Value::Object(map) => {
-                if map.get("additionalProperties") == Some(&serde_json::Value::Bool(false)) {
-                    out.push(format!("{path}/additionalProperties"));
-                }
-                for (k, v) in map {
-                    walk(v, &format!("{path}/{k}"), out);
-                }
+/// Recursively remove every `"additionalProperties": false` from the spec so
+/// the generated client is lenient about unknown response fields (see the call
+/// site for why). Returns the number of occurrences removed.
+fn strip_additional_properties_false(value: &mut serde_json::Value) -> usize {
+    let mut count = 0;
+    match value {
+        serde_json::Value::Object(map) => {
+            if map.get("additionalProperties") == Some(&serde_json::Value::Bool(false)) {
+                map.remove("additionalProperties");
+                count += 1;
             }
-            serde_json::Value::Array(items) => {
-                for (i, v) in items.iter().enumerate() {
-                    walk(v, &format!("{path}/{i}"), out);
-                }
+            for v in map.values_mut() {
+                count += strip_additional_properties_false(v);
             }
-            _ => {}
         }
+        serde_json::Value::Array(items) => {
+            for v in items.iter_mut() {
+                count += strip_additional_properties_false(v);
+            }
+        }
+        _ => {}
     }
-    let mut out = Vec::new();
-    walk(value, "", &mut out);
-    out
+    count
 }
 
 // The API represents booleans as the strings "true"/"false", but some

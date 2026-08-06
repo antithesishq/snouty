@@ -124,9 +124,14 @@ stderr 'stream ended before the command reported completion.*'
 ! snouty runs exec run-1 -3625518438076122494 398.4898056755774 'uname -a'
 stderr 'API error: 400 Bad Request.*minting session token failed.*'
 
-# An unknown run id is a clean "run not found" error.
+# An unknown run id is the shared "run not found" error every run-scoped
+# command reports. The endpoint's own 404 body is an unhelpful "Resource not
+# found" (the mock reproduces it verbatim), so this proves snouty's
+# translation rather than a friendly server message.
 ! snouty runs exec no-such-run -3625518438076122494 398.4898056755774 'uname -a'
-stderr 'run not found.*'
+stderr 'run not found: no-such-run'
+! stderr 'API error'
+! stderr 'Resource not found'
 
 # Runs created before tenant release 60 predate the endpoint. The run id
 # encodes its tenant version, and a pre-60 id is rejected client-side before

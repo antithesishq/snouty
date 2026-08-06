@@ -345,17 +345,23 @@ impl AntithesisApi {
     /// Execute a bash script in the run's live session, starting at `moment`.
     /// Returns the NDJSON response stream: `output` events, then a terminal
     /// `exited` or `timed_out` event.
+    ///
+    /// The request body carries `moment.vtime` as a JSON number ([`VTime`]'s
+    /// wire form), where the spec documents a string. The server accepts both
+    /// — verified against the live API (orbitinghail, release 60.0) with this
+    /// exact request path — and the number form keeps the moment value-exact
+    /// end to end instead of round-tripping through a second text form.
     pub async fn execute_command(
         &self,
         run_id: &str,
         moment: Moment,
-        script: &str,
+        script: String,
         timeout_seconds: u64,
     ) -> Result<ByteStream> {
         ensure_resource_supported(run_id, MIN_EXEC_VERSION, "command execution")?;
         let body = generated::types::ExecuteCommandRequest {
             moment,
-            script: script.to_string(),
+            script,
             timeout_seconds,
             // A server-side testing knob (routes output through the tenant
             // coordinator); snouty always wants the live session's output.

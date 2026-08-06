@@ -1664,10 +1664,13 @@ async fn cmd_runs_exec(
         input_hash: input_hash.to_string(),
         vtime,
     };
-    let stream = api
-        .execute_command(run_id, moment, &script, timeout)
-        .await?
-        .into_inner();
+    let stream = match api.execute_command(run_id, moment, script, timeout).await {
+        Ok(stream) => stream.into_inner(),
+        // Translate a bad run id's 404 into the shared "run not found"
+        // message every sibling run-scoped command reports (the endpoint's
+        // own 404 body is an unhelpful "Resource not found").
+        Err(err) => return Err(explain_run_scoped_error(&api, run_id, err).await),
+    };
 
     let mut terminal: Option<ExecTerminal> = None;
     let result = stream_ndjson_lines(stream, |line| {

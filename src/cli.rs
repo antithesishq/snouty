@@ -662,6 +662,44 @@ and VTIME into `runs logs` to see the surrounding logs."#
         /// At least one needle (via `-m` or here) is required.
         query: Vec<String>,
     },
+
+    /// Query events with the event-set DSL
+    #[command(long_about = r#"Run an event-set DSL query against a run's events.
+
+QUERY is a pipeline of dot-separated verbs applied to the run's event stream,
+e.g. `contains({output_text: "raft"})` or
+`matches({container: "etcd0", stream: "error"})`. Verbs: matches, contains,
+not_matches, excludes, map, filter, flatmap, fold, narrow, union, intersect,
+difference, distinct_by_moment, with_last, with_next.
+
+Each matching event prints as one line: `HASH VTIME SOURCE OUTPUT`. Rows
+reshaped by map/narrow/fold print as raw JSON. Feed a line's HASH and VTIME
+into `runs logs` to see the surrounding logs."#)]
+    Search {
+        /// Run ID
+        run_id: String,
+
+        /// Event-set DSL query
+        query: String,
+
+        /// Maximum number of events the server returns (default 50). The
+        /// server enforces the accepted range.
+        #[arg(short = 'n', long)]
+        limit: Option<u64>,
+
+        /// Print the number of matching events instead of the events
+        #[arg(long, conflicts_with_all = ["follow", "check"])]
+        count: bool,
+
+        /// Keep the connection open and print new matches as they arrive
+        /// (the limit still caps the total)
+        #[arg(short = 'f', long)]
+        follow: bool,
+
+        /// Check the query's syntax without running it
+        #[arg(long, conflicts_with = "follow")]
+        check: bool,
+    },
 }
 
 #[derive(Args)]
@@ -869,5 +907,62 @@ mod tests {
             panic!("expected `runs events`");
         };
         assert_eq!(limit, Some(999));
+    }
+
+    // `runs search` takes the run id and one raw DSL query positionally; the
+    // mode switches default off and the limit stays unset unless given.
+    #[test]
+    fn search_parses_query_and_defaults() {
+        let cli = parse(&[
+            "snouty",
+            "runs",
+            "search",
+            "RUN",
+            r#"contains({output_text: "raft"})"#,
+        ]);
+        let Commands::Runs {
+            command:
+                Some(RunsCommands::Search {
+                    run_id,
+                    query,
+                    limit,
+                    count,
+                    follow,
+                    check,
+                }),
+        } = cli.command
+        else {
+            panic!("expected `runs search`");
+        };
+        assert_eq!(run_id, "RUN");
+        assert_eq!(query, r#"contains({output_text: "raft"})"#);
+        assert_eq!(limit, None);
+        assert!(!count && !follow && !check);
+
+        let cli = parse(&["snouty", "runs", "search", "RUN", "q", "-n", "7", "-f"]);
+        let Commands::Runs {
+            command: Some(RunsCommands::Search { limit, follow, .. }),
+        } = cli.command
+        else {
+            panic!("expected `runs search`");
+        };
+        assert_eq!(limit, Some(7));
+        assert!(follow);
+    }
+
+    // The three mode switches each pick a different response mode, so clap
+    // rejects every pairing rather than letting the server precedence rules
+    // silently ignore one of them.
+    #[test]
+    fn search_mode_switches_conflict() {
+        for args in [
+            ["--count", "--follow"],
+            ["--count", "--check"],
+            ["--check", "--follow"],
+        ] {
+            let parsed =
+                Cli::try_parse_from(["snouty", "runs", "search", "RUN", "q", args[0], args[1]]);
+            assert!(parsed.is_err(), "expected {args:?} to conflict");
+        }
     }
 }

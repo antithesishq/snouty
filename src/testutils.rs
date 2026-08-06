@@ -493,12 +493,9 @@ impl MockApiServer {
 
         let handle = thread::spawn(move || {
             for mut stream in listener.incoming().flatten() {
-                let mut buf = [0u8; 8192];
-                let bytes_read = match stream.read(&mut buf) {
-                    Ok(n) => n,
-                    Err(_) => continue,
+                let Some(request) = mock_read_request(&mut stream) else {
+                    continue;
                 };
-                let request = String::from_utf8_lossy(&buf[..bytes_read]);
 
                 let (status, body, content_type) = if !mock_check_user_agent(&request) {
                     (
@@ -514,7 +511,11 @@ impl MockApiServer {
                     )
                 } else {
                     let (method, path) = mock_parse_request_line(&request);
-                    mock_route(&method, &path, empty)
+                    let request_body = request
+                        .split_once("\r\n\r\n")
+                        .map(|(_, body)| body)
+                        .unwrap_or("");
+                    mock_route(&method, &path, request_body, empty)
                 };
 
                 let response = format!(
@@ -537,6 +538,47 @@ impl MockApiServer {
 }
 
 const MOCK_API_TOKEN: &str = "snouty-mock-api-token";
+
+/// Read one HTTP request off the socket: the headers, plus a body when
+/// `Content-Length` says one follows. A POST body can arrive in a TCP segment
+/// after the headers, so a single `read` is not enough for the search route.
+fn mock_read_request(stream: &mut std::net::TcpStream) -> Option<String> {
+    let mut buf: Vec<u8> = Vec::new();
+    let mut chunk = [0u8; 8192];
+    let header_end = loop {
+        let n = stream.read(&mut chunk).ok()?;
+        if n == 0 {
+            return None;
+        }
+        buf.extend_from_slice(&chunk[..n]);
+        if let Some(pos) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+            break pos + 4;
+        }
+        // A request this large is a bug, not a fixture; bail rather than spin.
+        if buf.len() > 64 * 1024 {
+            return None;
+        }
+    };
+    let headers = String::from_utf8_lossy(&buf[..header_end]);
+    let content_length = headers
+        .lines()
+        .find_map(|line| {
+            let (name, value) = line.split_once(':')?;
+            if !name.trim().eq_ignore_ascii_case("content-length") {
+                return None;
+            }
+            value.trim().parse::<usize>().ok()
+        })
+        .unwrap_or(0);
+    while buf.len() < header_end + content_length {
+        let n = stream.read(&mut chunk).ok()?;
+        if n == 0 {
+            break;
+        }
+        buf.extend_from_slice(&chunk[..n]);
+    }
+    Some(String::from_utf8_lossy(&buf).to_string())
+}
 
 fn mock_check_auth(request: &str, expected_token: &str) -> bool {
     let expected = format!("Bearer {expected_token}");
@@ -567,7 +609,7 @@ fn mock_parse_request_line(request: &str) -> (String, String) {
 }
 
 /// Route a request and return (status_code, response_body, content_type).
-fn mock_route(method: &str, path: &str, empty: bool) -> (u16, String, &'static str) {
+fn mock_route(method: &str, path: &str, body: &str, empty: bool) -> (u16, String, &'static str) {
     // Split path and query string
     let (path_part, query) = match path.split_once('?') {
         Some((p, q)) => (p, Some(q)),
@@ -578,6 +620,10 @@ fn mock_route(method: &str, path: &str, empty: bool) -> (u16, String, &'static s
     let ndjson = "application/x-ndjson";
 
     match (method, path_part) {
+        ("POST", p) if p.starts_with("/api/v0/runs/") && p.ends_with("/events/search") => {
+            let run_id = &p["/api/v0/runs/".len()..p.len() - "/events/search".len()];
+            mock_route_search_events(run_id, body)
+        }
         ("GET", "/api/v0/runs") => {
             let (s, b) = mock_route_list_runs(query, empty);
             (s, b, json)
@@ -896,6 +942,123 @@ fn mock_route_search_run_events(run_id: &str, query_str: Option<&str>) -> (u16, 
     }
 }
 
+/// `POST /runs/{id}/events/search` — the events-search endpoint, modelling
+/// the DOCUMENTED contract (the live tenant diverges; see the notes in
+/// runs.rs): `validate_only` returns an empty 200, `count_only` returns one
+/// `{"count": N}` object, `limit` (default 50) caps the events, and the
+/// stream always closes.
+///
+/// The mock carries no DSL engine. A query is "interpreted" by extracting
+/// every double-quoted string literal and requiring each, case-insensitively,
+/// somewhere in the raw event line — enough for `contains({...})` needles and
+/// for the multi-needle JS filter `runs events` builds, where the quoted
+/// literals are exactly the needles (the filter's `" "` separators drop out
+/// as whitespace). Validity checking is one rule: the pipeline must start
+/// with a known verb.
+fn mock_route_search_events(run_id: &str, body: &str) -> (u16, String, &'static str) {
+    let json = "application/json";
+    let ndjson = "application/x-ndjson";
+
+    // Like the other streaming routes: `run-stream-error` answers with a
+    // stream that ends in a `Stream_Error` line, whatever the query.
+    if run_id == "run-stream-error" {
+        let (status, body) = mock_route_get_run_logs(run_id);
+        return (status, body, ndjson);
+    }
+    if !mock_run_known(run_id) {
+        let (status, body) = mock_run_not_found(run_id);
+        return (status, body, json);
+    }
+
+    let Ok(request) = serde_json::from_str::<serde_json::Value>(body) else {
+        return (
+            400,
+            r#"{"message":"invalid request body"}"#.to_string(),
+            json,
+        );
+    };
+    let Some(query) = request["query"].as_str() else {
+        return (400, r#"{"message":"missing query"}"#.to_string(), json);
+    };
+    const VERBS: &[&str] = &[
+        "matches",
+        "contains",
+        "not_matches",
+        "excludes",
+        "map",
+        "filter",
+        "flatmap",
+        "fold",
+        "narrow",
+        "union",
+        "intersect",
+        "difference",
+        "distinct_by_moment",
+        "with_last",
+        "with_next",
+    ];
+    let starts_with_verb = VERBS
+        .iter()
+        .any(|verb| query.trim_start().starts_with(&format!("{verb}(")));
+    if !starts_with_verb {
+        return (400, r#"{"message":"invalid query"}"#.to_string(), json);
+    }
+    if request["validate_only"].as_bool().unwrap_or(false) {
+        return (200, String::new(), ndjson);
+    }
+
+    let needles: Vec<String> = extract_quoted_literals(query)
+        .into_iter()
+        .filter(|literal| !literal.trim().is_empty())
+        .map(|literal| literal.to_ascii_lowercase())
+        .collect();
+    let (_, logs) = mock_route_get_run_logs(run_id);
+    let mut matches: Vec<&str> = logs
+        .lines()
+        .filter(|line| {
+            let lowered = line.to_ascii_lowercase();
+            needles.iter().all(|needle| lowered.contains(needle))
+        })
+        .collect();
+
+    if request["count_only"].as_bool().unwrap_or(false) {
+        return (200, format!(r#"{{"count":{}}}"#, matches.len()), json);
+    }
+    let limit = request["limit"].as_u64().unwrap_or(50) as usize;
+    matches.truncate(limit);
+    if matches.is_empty() {
+        (200, String::new(), ndjson)
+    } else {
+        (200, matches.join("\n") + "\n", ndjson)
+    }
+}
+
+/// Every double-quoted string literal in `query`, with `\"` and `\\` escapes
+/// resolved.
+fn extract_quoted_literals(query: &str) -> Vec<String> {
+    let mut literals = Vec::new();
+    let mut chars = query.chars();
+    while let Some(c) = chars.next() {
+        if c != '"' {
+            continue;
+        }
+        let mut literal = String::new();
+        loop {
+            match chars.next() {
+                Some('\\') => {
+                    if let Some(escaped) = chars.next() {
+                        literal.push(escaped);
+                    }
+                }
+                Some('"') | None => break,
+                Some(other) => literal.push(other),
+            }
+        }
+        literals.push(literal);
+    }
+    literals
+}
+
 fn mock_route_launch() -> (u16, String) {
     (
         200,
@@ -925,6 +1088,21 @@ mod tests {
         assert_eq!(mock_query_param(q, "other"), Some("a&b".to_string()));
         assert_eq!(mock_query_param(q, "missing"), None);
         assert_eq!(mock_query_param(None, "q"), None);
+    }
+
+    #[test]
+    fn extract_quoted_literals_resolves_escapes() {
+        assert_eq!(
+            extract_quoted_literals(r#"contains({output_text: "slow request"})"#),
+            vec!["slow request".to_string()]
+        );
+        // Escaped quotes and backslashes arrive resolved; the JS filter's
+        // bare " " separators come out as literals too (callers drop blanks).
+        assert_eq!(
+            extract_quoted_literals(r#"filter(ev => (a + " ").includes("say \"hi\"\\"))"#),
+            vec![" ".to_string(), r#"say "hi"\"#.to_string()]
+        );
+        assert!(extract_quoted_literals("matches({a: 1})").is_empty());
     }
 
     #[test]

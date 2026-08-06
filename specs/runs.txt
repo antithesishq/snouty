@@ -227,10 +227,14 @@ mock-runs-server
 [!staging] stdout '-456.*2\.0.*\[app:error\].*\{"level":"warn","msg":"slow request"\}'
 
 # A second `--match` AND-narrows: every needle must be present in the line.
+# On a run in a terminal state every needle is matched server-side through
+# the events-search endpoint, so the single-needle capped-subset caveat does
+# not apply and its note must not print.
 mock-runs-server
 [!staging] snouty runs events $R_run_id --match request --match slow
 [staging] snouty runs events $R_run_id --match fault --match network --limit 3
 [!staging] stdout '-456.*2\.0.*\[app:error\].*\{"level":"warn","msg":"slow request"\}'
+! stderr 'Note: only'
 # A needle that isn't present excludes the event entirely.
 mock-runs-server
 snouty runs events $R_run_id --match starting --match nonexistent
@@ -449,6 +453,66 @@ mock-runs-server
 snouty --json runs events $R_run_id --match parallel_driver_fetch
 [!staging] stdout '"vtime":401\.75'
 
+# `snouty runs search` runs one event-set DSL query server-side and prints
+# each matching event as one `HASH VTIME SOURCE OUTPUT` line (no table: on a
+# live run the stream stays open, so rows print as they arrive).
+#    Against staging the query carries --limit for the same wall-time reason
+#    as the events specs above.
+mock-runs-server
+[!staging] snouty runs search $R_run_id 'contains({output_text: "slow request"})'
+[staging] snouty runs search $R_run_id 'contains({output_text: "fault"})' --limit 3
+[!staging] stdout '-456 2\.0 \[app:error\] \{"level":"warn","msg":"slow request"\}'
+! stdout '^HASH\s+VTIME\s+SOURCE\s+OUTPUT'
+
+# `--json` passes the NDJSON through, vtime normalized to an exact JSON number.
+mock-runs-server
+[!staging] snouty --json runs search $R_run_id 'contains({output_text: "slow request"})'
+[staging] snouty --json runs search $R_run_id 'contains({output_text: "fault"})' --limit 3
+[!staging] stdout '"moment":\{"input_hash":"-456","vtime":2\.0'
+
+# `--limit` caps the returned events (same fixture as the events --limit spec).
+mock-runs-server
+snouty --json runs search $R_run_id 'contains({output_text: "parallel_driver_fetch"})' --limit 1
+[!staging] stdout '"vtime":400\.5'
+[!staging] ! stdout '"vtime":401\.75'
+
+# A query that matches nothing prints a friendly empty-state. (Mock-only: on a
+# live run this scans the whole event history.)
+mock-runs-server
+[!staging] snouty runs search $R_run_id 'contains({output_text: "zzz-no-such-needle"})'
+[!staging] stdout 'No events matched the query\.'
+
+# `--count` prints the number of matching events. The mock models the
+# documented contract; the live tenant currently ignores `count_only` and
+# streams the events themselves (observed on releases 58.11 and 60.0), which
+# `runs search` reports as a distinct failure rather than printing an event as
+# a count.
+mock-runs-server
+[!staging] snouty runs search $R_run_id 'contains({output_text: "slow request"})' --count
+[!staging] stdout '^1$'
+
+# `--check` validates the query without running it.
+mock-runs-server
+snouty runs search $R_run_id 'contains({output_text: "x"})' --check
+stdout 'query is valid'
+
+# An invalid query fails with the server's rejection. (Mock-only: the live
+# tenant answers an invalid query with a generic 500 instead of the
+# documented 400.)
+mock-runs-server
+[!staging] ! snouty runs search $R_run_id 'bogus_verb({x: "y"})' --check
+[!staging] stderr 'invalid query'
+
+# The mode switches pick conflicting response modes, so clap rejects pairings.
+mock-runs-server
+! snouty runs search run-1 'contains({output_text: "x"})' --count --follow
+stderr 'cannot be used with'
+
+# An unknown run reports "run not found", like every run-scoped command.
+mock-runs-server
+! snouty runs search no-such-run 'contains({output_text: "x"})'
+stderr 'run not found: no-such-run'
+
 # The server can fail after it has already committed to a `200 OK`: it reports
 # that by ending the NDJSON stream with a `Stream_Error` line, `{"error":"..."}`.
 # Every streaming command must turn that line into a failure — with the server's
@@ -504,6 +568,19 @@ stderr 'the server reported an error mid-stream: mock stream failure'
 
 mock-runs-server
 ! snouty runs logs --json --raw run-stream-error -123 1.0
+stdout 'output_text.*starting'
+! stdout '"error"'
+stderr 'the server reported an error mid-stream: mock stream failure'
+
+# `runs search` prints the rows it already received, then fails the same way.
+mock-runs-server
+! snouty runs search run-stream-error 'contains({output_text: "starting"})'
+stdout -literal '{"level":"info","msg":"starting"}'
+! stdout 'No events matched'
+stderr 'the server reported an error mid-stream: mock stream failure'
+
+mock-runs-server
+! snouty --json runs search run-stream-error 'contains({output_text: "starting"})'
 stdout 'output_text.*starting'
 ! stdout '"error"'
 stderr 'the server reported an error mid-stream: mock stream failure'

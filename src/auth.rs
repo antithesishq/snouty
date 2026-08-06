@@ -1115,15 +1115,17 @@ mod tests {
         .await
         .unwrap();
 
-        // Adopted the persisted token; no network refresh happened.
+        // Adopted the persisted token; no network refresh happened. The
+        // network assertion runs before the read lock is taken, so no guard
+        // is held across an await point (clippy::await_holding_lock).
         assert_eq!(result.as_deref(), Some("fresh-from-other-process"));
-        let in_memory = active_credential.read().unwrap();
-        assert_eq!(in_memory.antithesis_token, "fresh-from-other-process");
-        assert_eq!(in_memory.refresh_token.as_deref(), Some("fresh-refresh"));
         assert!(
             server.received_requests().await.unwrap().is_empty(),
             "must not refresh when the origin already holds a newer token"
         );
+        let in_memory = active_credential.read().unwrap();
+        assert_eq!(in_memory.antithesis_token, "fresh-from-other-process");
+        assert_eq!(in_memory.refresh_token.as_deref(), Some("fresh-refresh"));
     }
 
     /// Build a `v4.public` PASETO whose payload is `claims_json ‖ signature`,

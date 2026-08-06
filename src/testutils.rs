@@ -975,7 +975,11 @@ fn mock_route_execute_command(run_id: &str, req_body: &str) -> (u16, String) {
         return (200, lines.join("\n") + "\n");
     }
     if !mock_run_known(run_id) {
-        return mock_run_not_found(run_id);
+        // The live endpoint's 404 body, which — unlike the friendlier body
+        // the other nested routes mock — never names the run. snouty's "run
+        // not found" translation has to do the work, and the spec can only
+        // prove that against the unhelpful body.
+        return (404, r#"{"message":"Resource not found"}"#.to_string());
     }
     // Only an in-progress run has a live session. Anything else answers with
     // the live API's (rough, verbatim) error for a session-less run.
@@ -1150,9 +1154,12 @@ mod tests {
         let (status, out) = mock_route_execute_command("run-1", body);
         assert_eq!(status, 400);
         assert!(out.contains("minting session token failed"), "got: {out}");
-        // Unknown runs 404 like every other nested run resource.
-        let (status, _) = mock_route_execute_command("no-such-run", body);
+        // Unknown runs 404 with the live endpoint's unhelpful body, which
+        // never names the run — snouty's "run not found" translation depends
+        // on the status, not the message.
+        let (status, out) = mock_route_execute_command("no-such-run", body);
         assert_eq!(status, 404);
+        assert_eq!(out, r#"{"message":"Resource not found"}"#);
     }
 
     #[test]

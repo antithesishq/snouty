@@ -76,6 +76,11 @@ stderr 'end moment: -8206006569229276678 398.492'
 stderr 'command exited with code 5'
 stderr 'end moment: -8206006569229276678 398.492'
 
+# `exit_code` is nullable: a command the session killed reports no code. That
+# is not a success, so snouty fails and says so rather than claiming exit 0.
+! snouty runs exec run-2 -3625518438076122494 398.4898056755774 no-exit-code
+stderr 'command exited without reporting an exit code'
+
 # A script that outlives the timeout ends with a terminal `timed_out` event,
 # which snouty reports as a failure. Output produced before the timeout is
 # still shown; the event carries no end moment, so there is no trailer.

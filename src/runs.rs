@@ -1,9 +1,9 @@
-use std::io::{BufWriter, Write};
+use std::io::{BufWriter, IsTerminal, Read, Write};
 use std::path::Path;
 use std::sync::OnceLock;
 
 use color_eyre::Section;
-use color_eyre::eyre::{Result, eyre};
+use color_eyre::eyre::{Result, WrapErr, eyre};
 use futures_util::{StreamExt, TryStreamExt};
 use indexmap::IndexMap;
 use indexmap::map::Entry;
@@ -14,11 +14,9 @@ use serde_json::{Map, Value, json};
 
 use chrono::{DateTime, Local, Utc};
 
-#[cfg(test)]
-use crate::api::Moment;
 use crate::api::{
-    AntithesisApi, Event, EventProperty, NonEventProperty, Property, PropertyStatus, RunDetail,
-    RunStatus, RunSummary, RunsFilterOptions,
+    AntithesisApi, Event, EventProperty, Moment, NonEventProperty, Property, PropertyStatus,
+    RunDetail, RunStatus, RunSummary, RunsFilterOptions,
 };
 use crate::cli::{RunsCommands, RunsListArgs};
 use crate::error::{api_error_status, user_error};
@@ -144,6 +142,25 @@ pub async fn cmd_runs(
                 begin_vtime.as_deref(),
                 settings,
                 LogOutputOptions { json, verbose, raw },
+            )
+            .await
+        }
+        Some(RunsCommands::Exec {
+            run_id,
+            input_hash,
+            vtime,
+            script,
+            timeout,
+        }) => {
+            cmd_runs_exec(
+                &run_id,
+                &input_hash,
+                &vtime,
+                script.as_deref(),
+                timeout,
+                settings,
+                json,
+                verbose,
             )
             .await
         }
@@ -1556,6 +1573,184 @@ async fn cmd_runs_logs(
     // empty stream; say so in human mode rather than printing nothing.
     note_if_empty(&result, json, wrote_any, "No log lines at this moment.");
     result
+}
+
+/// One event in an execute-command NDJSON stream. Extra fields (e.g. an
+/// output event's `moment`) are ignored; the `exited` event's `end_moment` is
+/// kept for the end-moment trailer.
+#[derive(Debug, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum ExecEvent {
+    Output {
+        stream: String,
+        text: String,
+    },
+    Exited {
+        exit_code: Option<i64>,
+        #[serde(default)]
+        end_moment: Value,
+    },
+    TimedOut,
+}
+
+/// The terminal event an execute-command stream ended with.
+enum ExecTerminal {
+    Exited {
+        exit_code: Option<i64>,
+        end_moment: Value,
+    },
+    TimedOut,
+}
+
+/// The script to execute: the SCRIPT argument, or stdin when the argument is
+/// omitted or `-`. An empty script is rejected before any API call.
+fn resolve_exec_script(arg: Option<&str>) -> Result<String> {
+    let no_script = || {
+        user_error("no script provided")
+            .suggestion("pass the script as an argument, or pipe it on stdin")
+    };
+    let script = match arg {
+        Some("-") | None => {
+            // Bare `runs exec RUN HASH VTIME` at an interactive terminal
+            // would silently wait for stdin; explain instead. An explicit `-`
+            // asked for stdin, so honor it either way.
+            if arg.is_none() && std::io::stdin().is_terminal() {
+                return Err(no_script());
+            }
+            let mut buf = String::new();
+            std::io::stdin()
+                .read_to_string(&mut buf)
+                .wrap_err("failed to read the script from stdin")?;
+            buf
+        }
+        Some(script) => script.to_string(),
+    };
+    if script.trim().is_empty() {
+        return Err(no_script());
+    }
+    Ok(script)
+}
+
+/// A moment's `input_hash` and exact vtime text, in the positional order
+/// `runs exec` and `runs logs` take them, so the end-moment trailer can be
+/// copy-pasted into a follow-up command.
+fn moment_coordinates(moment: &Value) -> Option<(String, String)> {
+    let hash = moment["input_hash"].as_str()?.to_string();
+    let vtime = VTime::from_json(&moment["vtime"])?.to_string();
+    Some((hash, vtime))
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn cmd_runs_exec(
+    run_id: &str,
+    input_hash: &str,
+    vtime: &str,
+    script: Option<&str>,
+    timeout: u64,
+    settings: &Settings,
+    json: bool,
+    verbose: bool,
+) -> Result<()> {
+    let script = resolve_exec_script(script)?;
+    let vtime: VTime = vtime.parse().map_err(|_| {
+        user_error(format!(
+            "invalid vtime '{vtime}': expected a finite decimal number of seconds"
+        ))
+    })?;
+
+    debug!("executing command in run: {}", run_id);
+    let api = AntithesisApi::new_requiring_api_key(settings, verbose)?;
+    let moment = Moment {
+        input_hash: input_hash.to_string(),
+        vtime,
+    };
+    let stream = api
+        .execute_command(run_id, moment, &script, timeout)
+        .await?
+        .into_inner();
+
+    let mut terminal: Option<ExecTerminal> = None;
+    let result = stream_ndjson_lines(stream, |line| {
+        match line {
+            NdjsonLine::Entry(mut entry) => {
+                // classify_line normalized `moment.vtime`; the exited event
+                // carries its moment under `end_moment` instead, so normalize
+                // that the same way.
+                if let Some(v) = VTime::from_json(&entry["end_moment"]["vtime"]) {
+                    entry["end_moment"]["vtime"] = json!(v);
+                }
+                let event = ExecEvent::deserialize(&entry).ok();
+                if json {
+                    outln!("{entry}")?;
+                } else {
+                    match &event {
+                        Some(ExecEvent::Output { stream, text }) => {
+                            let text = normalize_terminal_text(text);
+                            if stream == "stderr" {
+                                eprintln!("{text}");
+                            } else {
+                                outln!("{text}")?;
+                            }
+                        }
+                        // Terminal events are handled after the stream ends.
+                        Some(_) => {}
+                        // An unrecognized event is not command output; keep
+                        // it off stdout.
+                        None => eprintln!("{entry}"),
+                    }
+                }
+                match event {
+                    Some(ExecEvent::Exited {
+                        exit_code,
+                        end_moment,
+                    }) => {
+                        terminal = Some(ExecTerminal::Exited {
+                            exit_code,
+                            end_moment,
+                        });
+                    }
+                    Some(ExecEvent::TimedOut) => terminal = Some(ExecTerminal::TimedOut),
+                    _ => {}
+                }
+            }
+            NdjsonLine::Raw(line) => {
+                if json {
+                    outln!("{line}")?;
+                } else {
+                    eprintln!("{line}");
+                }
+            }
+        }
+        Ok(())
+    })
+    .await;
+    result?;
+
+    match terminal {
+        // Exit 0 must mean "the script ran and exited 0", so a stream that
+        // ends without a terminal event — truncation — is a failure.
+        None => Err(eyre!("stream ended before the command reported completion")
+            .note("the command may still have run; output above may be incomplete")),
+        Some(ExecTerminal::TimedOut) => {
+            Err(user_error(format!("command timed out after {timeout}s")))
+        }
+        Some(ExecTerminal::Exited {
+            exit_code,
+            end_moment,
+        }) => {
+            // The trailer documents where the branch's timeline ended — the
+            // moment to chain a follow-up command from. --json carries it in
+            // the exited event instead.
+            if !json && let Some((hash, vtime)) = moment_coordinates(&end_moment) {
+                eprintln!("end moment: {hash} {vtime}");
+            }
+            match exit_code {
+                Some(0) => Ok(()),
+                Some(code) => Err(user_error(format!("command exited with code {code}"))),
+                None => Err(user_error("command exited without reporting an exit code")),
+            }
+        }
+    }
 }
 
 /// The source column is sized to fit `antithesis_test_composer` — the built-in
@@ -3695,6 +3890,83 @@ mod tests {
         // non-number is passed through untouched.
         assert_eq!(truncate_decimals("1e3", 3), "1000.000");
         assert_eq!(truncate_decimals("n/a", 3), "n/a");
+    }
+
+    #[test]
+    fn exec_event_parses_each_stream_shape() {
+        // Real event shapes captured from the live API (orbitinghail, r60).
+        let output: ExecEvent = serde_json::from_str(
+            r#"{"type":"output","stream":"stderr","text":"hello-err","moment":{"input_hash":"-3160476794197372487","vtime":"16.304728139657527"}}"#,
+        )
+        .unwrap();
+        let ExecEvent::Output { stream, text } = output else {
+            panic!("expected output event");
+        };
+        assert_eq!((stream.as_str(), text.as_str()), ("stderr", "hello-err"));
+
+        let exited: ExecEvent = serde_json::from_str(
+            r#"{"type":"exited","exit_code":5,"end_moment":{"input_hash":"-316","vtime":"16.3"}}"#,
+        )
+        .unwrap();
+        let ExecEvent::Exited {
+            exit_code,
+            end_moment,
+        } = exited
+        else {
+            panic!("expected exited event");
+        };
+        assert_eq!(exit_code, Some(5));
+        assert_eq!(end_moment["input_hash"], json!("-316"));
+
+        // `exit_code` is nullable ("no exit code was available").
+        let ExecEvent::Exited { exit_code, .. } =
+            serde_json::from_str(r#"{"type":"exited","exit_code":null,"end_moment":{}}"#).unwrap()
+        else {
+            panic!("expected exited event");
+        };
+        assert_eq!(exit_code, None);
+
+        assert!(matches!(
+            serde_json::from_str(r#"{"type":"timed_out"}"#).unwrap(),
+            ExecEvent::TimedOut
+        ));
+
+        // A future event type doesn't parse — the stream handler surfaces it
+        // verbatim instead of guessing.
+        assert!(serde_json::from_str::<ExecEvent>(r#"{"type":"heartbeat"}"#).is_err());
+    }
+
+    #[test]
+    fn moment_coordinates_keeps_vtime_text_exact() {
+        // Positional order (hash, then vtime) and full vtime precision, so the
+        // trailer pastes into a follow-up `runs exec`/`runs logs` unchanged.
+        let m = json!({"input_hash": "-8206006569229276678", "vtime": "398.4898056755774"});
+        assert_eq!(
+            moment_coordinates(&m),
+            Some((
+                "-8206006569229276678".to_string(),
+                "398.4898056755774".to_string()
+            ))
+        );
+        // Both wire forms: the API's string and snouty's normalized number.
+        let m = json!({"input_hash": "-1", "vtime": 398.492});
+        assert_eq!(
+            moment_coordinates(&m),
+            Some(("-1".to_string(), "398.492".to_string()))
+        );
+        assert_eq!(moment_coordinates(&json!({})), None);
+        assert_eq!(moment_coordinates(&json!({"input_hash": "-1"})), None);
+    }
+
+    #[test]
+    fn resolve_exec_script_takes_the_argument_verbatim() {
+        assert_eq!(
+            resolve_exec_script(Some("uname -a")).unwrap(),
+            "uname -a".to_string()
+        );
+        // A blank argument is "no script", same as an empty stdin.
+        let err = resolve_exec_script(Some("  ")).unwrap_err();
+        assert!(err.to_string().contains("no script provided"), "{err}");
     }
 
     #[test]

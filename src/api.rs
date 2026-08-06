@@ -353,6 +353,32 @@ impl AntithesisApi {
         }
     }
 
+    /// Execute a bash script in the run's live session, starting at `moment`.
+    /// Returns the NDJSON response stream: `output` events, then a terminal
+    /// `exited` or `timed_out` event.
+    pub async fn execute_command(
+        &self,
+        run_id: &str,
+        moment: Moment,
+        script: &str,
+        timeout_seconds: u64,
+    ) -> Result<ByteStream> {
+        ensure_resource_supported(run_id, MIN_EXEC_VERSION, "command execution")?;
+        let body = generated::types::ExecuteCommandRequest {
+            moment,
+            script: script.to_string(),
+            timeout_seconds,
+            // A server-side testing knob (routes output through the tenant
+            // coordinator); snouty always wants the live session's output.
+            use_otis: false,
+        };
+        let request = self.client.execute_command().run_id(run_id).body(body);
+        match request.send().await {
+            Ok(response) => Ok(response.into_inner()),
+            Err(err) => Err(format_api_client_error(err).await),
+        }
+    }
+
     pub fn stream_run_properties(
         &self,
         run_id: &str,
@@ -897,6 +923,10 @@ const MIN_PROPERTIES_VERSION: u32 = 52;
 /// properties arrived in v52, while logs and events are served for every
 /// version we can produce, so neither needs a guard.
 const MIN_BUILD_LOGS_VERSION: u32 = 54;
+
+/// The tenant version that first served the execute-command resource. Runs
+/// created on older tenants 404 on `/runs/{run_id}/execute_command`.
+const MIN_EXEC_VERSION: u32 = 60;
 
 /// Run IDs encode the tenant version that produced them as their second
 /// dash-delimited field — e.g. the `40` in

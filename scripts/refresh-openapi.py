@@ -25,9 +25,8 @@ GET /api/version) and the spec route fetched — for quick reference when the
 spec's provenance is in question.
 
 After a refresh, build.rs may fail with a pinned-count mismatch (see
-EXPECTED_ADDITIONAL_PROPERTIES_FALSE and EXPECTED_UNTAGGED_CODE_FENCES):
-that is the point — report the spec defect to the API team, then update the
-pin.
+EXPECTED_ADDITIONAL_PROPERTIES_FALSE): that is the point — report the spec
+defect to the API team, then update the pin.
 """
 
 from __future__ import annotations
@@ -43,16 +42,17 @@ import tomllib
 import urllib.error
 import urllib.request
 from pathlib import Path
-from typing import NoReturn
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SPEC_PATH = REPO_ROOT / "src" / "openapi.json"
 PROVENANCE_PATH = REPO_ROOT / "src" / "openapi.provenance.json"
 
 
-def fail(message: str) -> NoReturn:
-    print(f"error: {message}", file=sys.stderr)
-    sys.exit(1)
+def fail(message: str) -> SystemExit:
+    """Build the exit for an error; call sites `raise fail(...)`, keeping the
+    control flow explicit. Raising SystemExit with a string prints it to
+    stderr and exits with status 1."""
+    return SystemExit(f"error: {message}")
 
 
 def snouty_config_dir() -> Path:
@@ -76,7 +76,7 @@ def resolve_api_key() -> str:
     entry = load_toml(credentials_path).get(profile, {})
     if entry.get("type") == "ApiKey" and (key := entry.get("api_key")):
         return key
-    fail(
+    raise fail(
         "no API key: set ANTITHESIS_API_KEY, or log in with an ApiKey profile "
         f"({credentials_path})"
     )
@@ -88,7 +88,7 @@ def resolve_base_url() -> str:
     settings_path = snouty_config_dir() / "settings.toml"
     tenant = os.environ.get("ANTITHESIS_TENANT") or load_toml(settings_path).get("tenant")
     if not tenant:
-        fail(
+        raise fail(
             "no tenant: set ANTITHESIS_TENANT or ANTITHESIS_BASE_URL, or set "
             f"tenant in {settings_path}"
         )
@@ -105,13 +105,13 @@ def fetch_json(url: str, api_key: str) -> dict:
         with urllib.request.urlopen(request, context=context) as response:
             body = response.read()
     except urllib.error.HTTPError as e:
-        fail(f"GET {url} failed: {e.code} {e.reason}")
+        raise fail(f"GET {url} failed: {e.code} {e.reason}")
     except urllib.error.URLError as e:
-        fail(f"GET {url} failed: {e.reason}")
+        raise fail(f"GET {url} failed: {e.reason}")
     try:
         return json.loads(body)
     except json.JSONDecodeError as e:
-        fail(f"response from {url} is not JSON: {e}")
+        raise fail(f"response from {url} is not JSON: {e}")
 
 
 def write_via_jq(document: dict, path: Path) -> None:
@@ -123,7 +123,7 @@ def write_via_jq(document: dict, path: Path) -> None:
         text=True,
     )
     if result.returncode != 0:
-        fail(f"jq failed: {result.stderr.strip()}")
+        raise fail(f"jq failed: {result.stderr.strip()}")
     path.write_text(result.stdout)
 
 
@@ -136,7 +136,7 @@ def main() -> None:
     )
     args = parser.parse_args()
     if not re.fullmatch(r"v\d+", args.version):
-        fail(f"--version must look like v1, got {args.version!r}")
+        raise fail(f"--version must look like v1, got {args.version!r}")
 
     api_key = resolve_api_key()
     base_url = resolve_base_url()
@@ -148,7 +148,7 @@ def main() -> None:
     # Refuse to overwrite the vendored spec with something that isn't one (an
     # HTML error page from a proxy, an error envelope, ...).
     if "openapi" not in spec or "paths" not in spec:
-        fail(f"response from {spec_url} does not look like an OpenAPI document")
+        raise fail(f"response from {spec_url} does not look like an OpenAPI document")
 
     version_info = fetch_json(f"{base_url}/api/version", api_key)
     provenance = {

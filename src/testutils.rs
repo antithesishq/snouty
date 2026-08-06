@@ -1003,7 +1003,7 @@ fn mock_route_execute_command(run_id: &str, req_body: &str) -> (u16, String) {
     }
 
     // snouty's generated client always sends a well-formed body, so a
-    // missing script or unparseable JSON just falls through to the default
+    // missing script or unparsable JSON just falls through to the default
     // script rather than modelling a validation error nothing exercises.
     let request = serde_json::from_str::<serde_json::Value>(req_body).unwrap_or_default();
     let script = request["script"].as_str().unwrap_or_default();

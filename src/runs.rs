@@ -152,10 +152,19 @@ pub async fn cmd_runs(
             script,
             timeout,
         }) => {
+            // The request body carries the moment typed, so the vtime is
+            // parsed (and rejected) here, before any API call.
+            let moment = Moment {
+                input_hash,
+                vtime: vtime.parse().map_err(|_| {
+                    user_error(format!(
+                        "invalid vtime '{vtime}': expected a finite decimal number of seconds"
+                    ))
+                })?,
+            };
             cmd_runs_exec(
                 &run_id,
-                &input_hash,
-                &vtime,
+                moment,
                 script.as_deref(),
                 timeout,
                 settings,
@@ -1578,6 +1587,11 @@ async fn cmd_runs_logs(
 /// One event in an execute-command NDJSON stream. Extra fields (e.g. an
 /// output event's `moment`) are ignored; the `exited` event's `end_moment` is
 /// kept for the end-moment trailer.
+///
+/// Hand-written rather than the generated `ExecuteCommandStreamEvent`: that
+/// type is an untagged enum whose variants progenitor names `Variant0/1/2`,
+/// which reads far worse at the match sites than the three named variants
+/// here.
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum ExecEvent {
@@ -1587,16 +1601,10 @@ enum ExecEvent {
     },
     Exited {
         exit_code: Option<i64>,
+        /// Left untyped so a missing or malformed moment costs only the
+        /// trailer: typed here, it would fail the whole event and a real
+        /// `exited` would be misreported as a truncated stream.
         #[serde(default)]
-        end_moment: Value,
-    },
-    TimedOut,
-}
-
-/// The terminal event an execute-command stream ended with.
-enum ExecTerminal {
-    Exited {
-        exit_code: Option<i64>,
         end_moment: Value,
     },
     TimedOut,
@@ -1631,20 +1639,9 @@ fn resolve_exec_script(arg: Option<&str>) -> Result<String> {
     Ok(script)
 }
 
-/// A moment's `input_hash` and exact vtime text, in the positional order
-/// `runs exec` and `runs logs` take them, so the end-moment trailer can be
-/// copy-pasted into a follow-up command.
-fn moment_coordinates(moment: &Value) -> Option<(String, String)> {
-    let hash = moment["input_hash"].as_str()?.to_string();
-    let vtime = VTime::from_json(&moment["vtime"])?.to_string();
-    Some((hash, vtime))
-}
-
-#[allow(clippy::too_many_arguments)]
 async fn cmd_runs_exec(
     run_id: &str,
-    input_hash: &str,
-    vtime: &str,
+    moment: Moment,
     script: Option<&str>,
     timeout: u64,
     settings: &Settings,
@@ -1652,18 +1649,9 @@ async fn cmd_runs_exec(
     verbose: bool,
 ) -> Result<()> {
     let script = resolve_exec_script(script)?;
-    let vtime: VTime = vtime.parse().map_err(|_| {
-        user_error(format!(
-            "invalid vtime '{vtime}': expected a finite decimal number of seconds"
-        ))
-    })?;
 
     debug!("executing command in run: {}", run_id);
     let api = AntithesisApi::new_requiring_api_key(settings, verbose)?;
-    let moment = Moment {
-        input_hash: input_hash.to_string(),
-        vtime,
-    };
     let stream = match api.execute_command(run_id, moment, script, timeout).await {
         Ok(stream) => stream.into_inner(),
         // Translate a bad run id's 404 into the shared "run not found"
@@ -1672,47 +1660,35 @@ async fn cmd_runs_exec(
         Err(err) => return Err(explain_run_scoped_error(&api, run_id, err).await),
     };
 
-    let mut terminal: Option<ExecTerminal> = None;
+    // The terminal event the stream ended with, kept for the exit decision
+    // below: an `output` event is rendered as it arrives, but `exited` and
+    // `timed_out` decide the command's outcome, so they are acted on only
+    // once the stream is known to have completed.
+    let mut terminal: Option<ExecEvent> = None;
     let result = stream_ndjson_lines(stream, |line| {
         match line {
             NdjsonLine::Entry(mut entry) => {
                 // classify_line normalized `moment.vtime`; the exited event
-                // carries its moment under `end_moment` instead, so normalize
-                // that the same way.
-                if let Some(v) = VTime::from_json(&entry["end_moment"]["vtime"]) {
-                    entry["end_moment"]["vtime"] = json!(v);
-                }
-                let event = ExecEvent::deserialize(&entry).ok();
+                // carries its moment under `end_moment` instead.
+                normalize_vtime_field(&mut entry, "end_moment");
                 if json {
                     outln!("{entry}")?;
-                } else {
-                    match &event {
-                        Some(ExecEvent::Output { stream, text }) => {
-                            let text = normalize_terminal_text(text);
-                            if stream == "stderr" {
-                                eprintln!("{text}");
-                            } else {
-                                outln!("{text}")?;
-                            }
-                        }
-                        // Terminal events are handled after the stream ends.
-                        Some(_) => {}
-                        // An unrecognized event is not command output; keep
-                        // it off stdout.
-                        None => eprintln!("{entry}"),
-                    }
                 }
-                match event {
-                    Some(ExecEvent::Exited {
-                        exit_code,
-                        end_moment,
-                    }) => {
-                        terminal = Some(ExecTerminal::Exited {
-                            exit_code,
-                            end_moment,
-                        });
+                match ExecEvent::deserialize(&entry).ok() {
+                    Some(ExecEvent::Output { stream, text }) if !json => {
+                        let text = normalize_terminal_text(&text);
+                        if stream == "stderr" {
+                            eprintln!("{text}");
+                        } else {
+                            outln!("{text}")?;
+                        }
                     }
-                    Some(ExecEvent::TimedOut) => terminal = Some(ExecTerminal::TimedOut),
+                    Some(event @ (ExecEvent::Exited { .. } | ExecEvent::TimedOut)) => {
+                        terminal = Some(event);
+                    }
+                    // An unrecognized event is not command output; keep it
+                    // off stdout (--json already passed the line through).
+                    None if !json => eprintln!("{entry}"),
                     _ => {}
                 }
             }
@@ -1730,22 +1706,16 @@ async fn cmd_runs_exec(
     result?;
 
     match terminal {
-        // Exit 0 must mean "the script ran and exited 0", so a stream that
-        // ends without a terminal event — truncation — is a failure.
-        None => Err(eyre!("stream ended before the command reported completion")
-            .note("the command may still have run; output above may be incomplete")),
-        Some(ExecTerminal::TimedOut) => {
-            Err(user_error(format!("command timed out after {timeout}s")))
-        }
-        Some(ExecTerminal::Exited {
+        Some(ExecEvent::Exited {
             exit_code,
             end_moment,
         }) => {
             // The trailer documents where the branch's timeline ended — the
-            // moment to chain a follow-up command from. --json carries it in
-            // the exited event instead.
-            if !json && let Some((hash, vtime)) = moment_coordinates(&end_moment) {
-                eprintln!("end moment: {hash} {vtime}");
+            // moment to chain a follow-up command from, in the positional
+            // order `runs exec` takes it (VTime's Display is exact, so it
+            // pastes back unchanged). --json carries it in the exited event.
+            if !json && let Ok(m) = Moment::deserialize(&end_moment) {
+                eprintln!("end moment: {} {}", m.input_hash, m.vtime);
             }
             match exit_code {
                 Some(0) => Ok(()),
@@ -1753,6 +1723,11 @@ async fn cmd_runs_exec(
                 None => Err(user_error("command exited without reporting an exit code")),
             }
         }
+        Some(ExecEvent::TimedOut) => Err(user_error(format!("command timed out after {timeout}s"))),
+        // Exit 0 must mean "the script ran and exited 0", so a stream that
+        // ends without a terminal event — truncation — is a failure.
+        _ => Err(eyre!("stream ended before the command reported completion")
+            .note("the command may still have run; output above may be incomplete")),
     }
 }
 
@@ -1808,8 +1783,15 @@ fn format_log_entry(entry: &Value, raw: bool) -> String {
 /// vtime (see [`VTime`]). Returns the vtime, or `None` (entry untouched) when
 /// there's no parseable one.
 fn normalize_moment_vtime(entry: &mut Value) -> Option<VTime> {
-    let vtime = VTime::from_json(&entry["moment"]["vtime"])?;
-    entry["moment"]["vtime"] = json!(vtime);
+    normalize_vtime_field(entry, "moment")
+}
+
+/// [`normalize_moment_vtime`] for an entry whose moment sits under a different
+/// key — an execute-command `exited` event carries its moment as `end_moment`.
+/// The normalization rule lives here once so every key normalizes identically.
+fn normalize_vtime_field(entry: &mut Value, key: &str) -> Option<VTime> {
+    let vtime = VTime::from_json(&entry[key]["vtime"])?;
+    entry[key]["vtime"] = json!(vtime);
     Some(vtime)
 }
 
@@ -3919,7 +3901,20 @@ mod tests {
             panic!("expected exited event");
         };
         assert_eq!(exit_code, Some(5));
-        assert_eq!(end_moment["input_hash"], json!("-316"));
+        // The trailer types the moment only at the print site: VTime's Display
+        // is exact, so a vtime copied off the trailer names the same moment.
+        let m = Moment::deserialize(&end_moment).expect("exited carries a moment");
+        assert_eq!(m.input_hash, "-316");
+        assert_eq!(m.vtime.to_string(), "16.3");
+
+        // A malformed end_moment costs only the trailer — the event itself
+        // still parses, so a real exit is never misreported as truncation.
+        let ExecEvent::Exited { end_moment, .. } =
+            serde_json::from_str(r#"{"type":"exited","exit_code":0,"end_moment":{}}"#).unwrap()
+        else {
+            panic!("expected exited event");
+        };
+        assert!(Moment::deserialize(&end_moment).is_err());
 
         // `exit_code` is nullable ("no exit code was available").
         let ExecEvent::Exited { exit_code, .. } =
@@ -3940,25 +3935,19 @@ mod tests {
     }
 
     #[test]
-    fn moment_coordinates_keeps_vtime_text_exact() {
-        // Positional order (hash, then vtime) and full vtime precision, so the
-        // trailer pastes into a follow-up `runs exec`/`runs logs` unchanged.
-        let m = json!({"input_hash": "-8206006569229276678", "vtime": "398.4898056755774"});
-        assert_eq!(
-            moment_coordinates(&m),
-            Some((
-                "-8206006569229276678".to_string(),
-                "398.4898056755774".to_string()
-            ))
-        );
-        // Both wire forms: the API's string and snouty's normalized number.
-        let m = json!({"input_hash": "-1", "vtime": 398.492});
-        assert_eq!(
-            moment_coordinates(&m),
-            Some(("-1".to_string(), "398.492".to_string()))
-        );
-        assert_eq!(moment_coordinates(&json!({})), None);
-        assert_eq!(moment_coordinates(&json!({"input_hash": "-1"})), None);
+    fn normalize_vtime_field_normalizes_either_moment_key() {
+        // The exited event's moment sits under `end_moment`; the rule that
+        // rewrites the seconds string to an exact JSON number is the same one
+        // `moment` gets, so --json output agrees across commands.
+        let mut entry = json!({"end_moment": {"input_hash": "-1", "vtime": "398.4898056755774"}});
+        normalize_vtime_field(&mut entry, "end_moment");
+        assert_eq!(entry["end_moment"]["vtime"], json!(398.4898056755774));
+        assert!(entry["end_moment"]["vtime"].is_number());
+
+        // An entry without that key is left untouched.
+        let mut entry = json!({"moment": {"vtime": "1.0"}});
+        assert_eq!(normalize_vtime_field(&mut entry, "end_moment"), None);
+        assert_eq!(entry["moment"]["vtime"], json!("1.0"));
     }
 
     #[test]

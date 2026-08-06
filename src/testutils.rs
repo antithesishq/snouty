@@ -553,12 +553,9 @@ fn mock_read_request(stream: &mut TcpStream) -> Option<String> {
             let headers = String::from_utf8_lossy(&buf[..header_end]);
             let content_length = headers
                 .lines()
-                .find_map(|line| {
-                    let (name, value) = line.split_once(':')?;
-                    name.trim()
-                        .eq_ignore_ascii_case("content-length")
-                        .then(|| value.trim().parse::<usize>().ok())?
-                })
+                .filter_map(|line| line.split_once(':'))
+                .find(|(name, _)| name.trim().eq_ignore_ascii_case("content-length"))
+                .and_then(|(_, value)| value.trim().parse::<usize>().ok())
                 .unwrap_or(0);
             if buf.len() >= header_end + content_length {
                 break;
@@ -963,13 +960,25 @@ fn mock_route_search_run_events(run_id: &str, query_str: Option<&str>) -> (u16, 
 /// input hash (verified against the live API).
 const MOCK_EXEC_BRANCH_HASH: &str = "-8206006569229276678";
 
+/// One `output` event of a mock execution.
+fn mock_exec_output(stream: &str, text: &str, vtime: &str) -> String {
+    format!(
+        r#"{{"type":"output","stream":"{stream}","text":"{text}","moment":{{"input_hash":"{MOCK_EXEC_BRANCH_HASH}","vtime":"{vtime}"}}}}"#
+    )
+}
+
+/// The terminal `exited` event of a mock execution.
+fn mock_exec_exited(exit_code: i64) -> String {
+    format!(
+        r#"{{"type":"exited","exit_code":{exit_code},"end_moment":{{"input_hash":"{MOCK_EXEC_BRANCH_HASH}","vtime":"398.492"}}}}"#
+    )
+}
+
 fn mock_route_execute_command(run_id: &str, req_body: &str) -> (u16, String) {
     // See the `run-stream-error` fixture note in `mock_route_get_run_build_logs`.
     if run_id == "run-stream-error" {
         let lines = [
-            format!(
-                r#"{{"type":"output","stream":"stdout","text":"Linux antithesis 6.12.0","moment":{{"input_hash":"{MOCK_EXEC_BRANCH_HASH}","vtime":"398.491"}}}}"#
-            ),
+            mock_exec_output("stdout", "Linux antithesis 6.12.0", "398.491"),
             MOCK_STREAM_ERROR_LINE.to_string(),
         ];
         return (200, lines.join("\n") + "\n");
@@ -993,51 +1002,38 @@ fn mock_route_execute_command(run_id: &str, req_body: &str) -> (u16, String) {
         );
     }
 
-    let Ok(request) = serde_json::from_str::<serde_json::Value>(req_body) else {
-        return (
-            400,
-            r#"{"message":"Bad request: invalid body"}"#.to_string(),
-        );
-    };
-    let Some(script) = request["script"].as_str() else {
-        return (
-            400,
-            r#"{"message":"Bad request: missing script"}"#.to_string(),
-        );
-    };
+    // snouty's generated client always sends a well-formed body, so a
+    // missing script or unparseable JSON just falls through to the default
+    // script rather than modelling a validation error nothing exercises.
+    let request = serde_json::from_str::<serde_json::Value>(req_body).unwrap_or_default();
+    let script = request["script"].as_str().unwrap_or_default();
     let timeout = request["timeout_seconds"].as_u64().unwrap_or(30);
 
-    let output = |stream: &str, text: &str, vtime: &str| {
-        format!(
-            r#"{{"type":"output","stream":"{stream}","text":"{text}","moment":{{"input_hash":"{MOCK_EXEC_BRANCH_HASH}","vtime":"{vtime}"}}}}"#
-        )
-    };
-    let exited = |exit_code: i64| {
-        format!(
-            r#"{{"type":"exited","exit_code":{exit_code},"end_moment":{{"input_hash":"{MOCK_EXEC_BRANCH_HASH}","vtime":"398.492"}}}}"#
-        )
-    };
-
     let lines = match script.trim() {
-        "true" => vec![exited(0)],
-        "exit 5" => vec![exited(5)],
+        "true" => vec![mock_exec_exited(0)],
+        "exit 5" => vec![mock_exec_exited(5)],
+        // A command the session killed reports no exit code (`exit_code` is
+        // nullable in the spec).
+        "no-exit-code" => {
+            vec![r#"{"type":"exited","exit_code":null,"end_moment":{}}"#.to_string()]
+        }
         "sleep 60" => vec![
-            output("stdout", "still working", "398.491"),
+            mock_exec_output("stdout", "still working", "398.491"),
             r#"{"type":"timed_out"}"#.to_string(),
         ],
         "print-timeout" => vec![
-            output("stdout", &format!("timeout_seconds={timeout}"), "398.491"),
-            exited(0),
+            mock_exec_output("stdout", &format!("timeout_seconds={timeout}"), "398.491"),
+            mock_exec_exited(0),
         ],
-        "truncate-stream" => vec![output("stdout", "partial output", "398.491")],
+        "truncate-stream" => vec![mock_exec_output("stdout", "partial output", "398.491")],
         _ => vec![
-            output("stdout", "Linux antithesis 6.12.0", "398.491"),
-            output(
+            mock_exec_output("stdout", "Linux antithesis 6.12.0", "398.491"),
+            mock_exec_output(
                 "stderr",
                 "warning: virtual clock drift detected",
                 "398.4915",
             ),
-            exited(0),
+            mock_exec_exited(0),
         ],
     };
     (200, lines.join("\n") + "\n")

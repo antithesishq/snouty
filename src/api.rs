@@ -913,15 +913,16 @@ const MIN_PROPERTIES_VERSION: u32 = 52;
 
 /// The tenant version that first served the run build logs resource. Runs
 /// created on older tenants 404 on `/runs/{run_id}/build_logs`.
-///
-/// Note the other nested run resources have different (or no) cutoffs: run
-/// properties arrived in v52, while logs and events are served for every
-/// version we can produce, so neither needs a guard.
 const MIN_BUILD_LOGS_VERSION: u32 = 54;
 
 /// The tenant version that first served the execute-command resource. Runs
 /// created on older tenants 404 on `/runs/{run_id}/execute_command`.
 const MIN_EXEC_VERSION: u32 = 60;
+
+// Every nested run resource with a version cutoff has a `MIN_*_VERSION` const
+// above, enforced by `ensure_resource_supported`. Logs and events have no
+// cutoff — they are served for every version we can produce — so neither
+// needs a guard. A new gated resource belongs in this group.
 
 /// Run IDs encode the tenant version that produced them as their second
 /// dash-delimited field — e.g. the `40` in

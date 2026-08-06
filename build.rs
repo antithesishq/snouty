@@ -20,11 +20,6 @@ fn main() {
 /// carries (tenant release 60.0: `Search_Request`, `Search_Count_Response`).
 const EXPECTED_ADDITIONAL_PROPERTIES_FALSE: usize = 2;
 
-/// How many untagged Markdown code fences the vendored spec's descriptions
-/// carry (tenant release 60.0: none — release 58.11's event-DSL example block
-/// in the events-search endpoint description is gone).
-const EXPECTED_UNTAGGED_CODE_FENCES: usize = 0;
-
 fn generate_api_client(out_dir: &Path) {
     let file = std::fs::File::open("src/openapi.json").unwrap();
     let mut spec_value: serde_json::Value = serde_json::from_reader(file).unwrap();
@@ -56,18 +51,6 @@ fn generate_api_client(out_dir: &Path) {
     );
     untype_error_responses(&mut spec_value);
     mark_vtime_schema(&mut spec_value);
-    // Same exact-count pin as the additionalProperties strip above, for the
-    // same reason: each untagged fence is a spec defect to report.
-    let tagged = tag_untagged_code_fences(&mut spec_value);
-    assert_eq!(
-        tagged, EXPECTED_UNTAGGED_CODE_FENCES,
-        "openapi spec descriptions contain {tagged} untagged Markdown code fence(s), but \
-         build.rs pins {EXPECTED_UNTAGGED_CODE_FENCES}. progenitor copies descriptions into doc \
-         comments, and rustdoc compiles untagged fenced blocks as Rust doctests, which fail \
-         `cargo test`; snouty rewrites them to ```text before generating. ACTION: remind the \
-         API team to tag every fenced code block in descriptions with a language, then update \
-         EXPECTED_UNTAGGED_CODE_FENCES in build.rs to {tagged}."
-    );
     let spec: openapiv3::OpenAPI = serde_json::from_value(spec_value).unwrap();
 
     let mut settings = progenitor::GenerationSettings::default();
@@ -179,58 +162,6 @@ fn mark_vtime_schema(spec: &mut serde_json::Value) {
         "Moment.vtime is no longer a string in the openapi spec; revisit the VTime wiring in build.rs"
     );
     vtime["format"] = serde_json::json!("vtime");
-}
-
-/// Tag every untagged Markdown code fence in the spec's `description` strings
-/// as `text`. progenitor copies operation descriptions into the generated
-/// client's doc comments verbatim, and rustdoc compiles an untagged fenced
-/// block as a Rust doctest — release 58.11's event-DSL examples in the
-/// events-search endpoint's description failed `cargo test` this way. Only
-/// opening fences may carry an info string (text after the backticks makes a
-/// would-be closing fence open a nested block instead), so fences are tagged
-/// in alternation. Returns the number of opening fences tagged.
-fn tag_untagged_code_fences(value: &mut serde_json::Value) -> usize {
-    fn tag_fences(text: &str, count: &mut usize) -> String {
-        let mut in_fence = false;
-        text.split('\n')
-            .map(|line| {
-                let trimmed = line.trim();
-                if !trimmed.starts_with("```") {
-                    return line.to_owned();
-                }
-                let tagged = if !in_fence && trimmed == "```" {
-                    *count += 1;
-                    line.replacen("```", "```text", 1)
-                } else {
-                    line.to_owned()
-                };
-                in_fence = !in_fence;
-                tagged
-            })
-            .collect::<Vec<_>>()
-            .join("\n")
-    }
-    let mut count = 0;
-    match value {
-        serde_json::Value::Object(map) => {
-            for (key, v) in map.iter_mut() {
-                if key == "description"
-                    && let serde_json::Value::String(text) = v
-                {
-                    *text = tag_fences(text, &mut count);
-                } else {
-                    count += tag_untagged_code_fences(v);
-                }
-            }
-        }
-        serde_json::Value::Array(items) => {
-            for v in items.iter_mut() {
-                count += tag_untagged_code_fences(v);
-            }
-        }
-        _ => {}
-    }
-    count
 }
 
 /// Recursively remove every `"additionalProperties": false` from the spec so

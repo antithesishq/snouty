@@ -458,7 +458,7 @@ snouty --json runs events $R_run_id --match parallel_driver_fetch
 mock-runs-server
 env TZ=UTC
 ! snouty runs build-logs run-stream-error
-stdout '2025-03-20 02:01:12 \[stdout\] Building image payments-service\.\.\.'
+stdout -literal '2025-03-20 02:01:12 [stdout] Building image payments-service...'
 stderr 'the server reported an error mid-stream: mock stream failure'
 stderr 'output produced before the error may be incomplete'
 
@@ -475,7 +475,7 @@ stderr 'the server reported an error mid-stream: mock stream failure'
 mock-runs-server
 ! snouty runs events run-stream-error --match starting
 stdout '^HASH\s+VTIME\s+SOURCE\s+OUTPUT'
-stdout '\{"level":"info","msg":"starting"\}'
+stdout -literal '{"level":"info","msg":"starting"}'
 ! stdout 'No events matched'
 stderr 'the server reported an error mid-stream: mock stream failure'
 
@@ -486,10 +486,11 @@ stdout 'output_text.*starting'
 stderr 'the server reported an error mid-stream: mock stream failure'
 
 # `runs logs`, human mode: the error must not render as a blank-columned log
-# line.
+# line. (Column formatting itself is pinned by the run-1 block above; here it
+# is enough that the data line printed.)
 mock-runs-server
 ! snouty runs logs run-stream-error -123 1.0
-stdout '\[\s*1\.000\] \[\s*app\] \[out\] \{"level":"info","msg":"starting"\}'
+stdout -literal '[out] {"level":"info","msg":"starting"}'
 ! stdout 'mock stream failure'
 stderr 'the server reported an error mid-stream: mock stream failure'
 

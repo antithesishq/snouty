@@ -652,30 +652,38 @@ a trailer on stderr documents the branch's end moment, to chain a follow-up
 command from. A non-zero exit code, a timeout, or a truncated stream fails
 snouty with exit code 1.
 
+Omit SCRIPT to read the script from stdin — a pipe, a redirect, or a heredoc.
+
 Examples:
   snouty runs exec <run_id> <hash> <vtime> 'uname -a'
   echo 'ps aux' | snouty runs exec <run_id> <hash> <vtime>
-  snouty runs exec <run_id> <hash> <vtime> - < script.sh"#
+  snouty runs exec <run_id> <hash> <vtime> < script.sh"#
     )]
     Exec {
         /// Run ID
         run_id: String,
 
         /// Input hash of the moment to execute at (with VTIME, picks the timeline)
+        // A moment's input hash is routinely negative.
         #[arg(allow_hyphen_values = true)]
         input_hash: String,
 
         /// Virtual time of the moment to execute at
-        #[arg(allow_hyphen_values = true)]
-        vtime: String,
+        // Parsed by `VTime` so a malformed value is rejected by clap, before
+        // any API call. No `allow_hyphen_values`: a vtime is seconds since the
+        // run began and is never negative, and accepting hyphen-led values
+        // here would swallow a misplaced `--timeout` as the vtime.
+        vtime: crate::vtime::VTime,
 
-        /// Bash script to execute; omit it (or pass `-`) to read the script
-        /// from stdin
+        /// Bash script to execute; omit it to read the script from stdin
         script: Option<String>,
 
         /// Maximum seconds the server waits for the script to exit before
         /// reporting a timeout
-        #[arg(long, default_value_t = 30)]
+        // The API's own default is 30 with a minimum of 0 and no maximum. A
+        // 0-second timeout can only ever time out, so the floor here is 1; the
+        // ceiling is left to the server rather than guessed at.
+        #[arg(long, default_value_t = 30, value_parser = clap::value_parser!(u64).range(1..))]
         timeout: u64,
     },
 

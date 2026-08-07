@@ -1015,7 +1015,9 @@ fn mock_route_execute_command(run_id: &str, req_body: &str) -> (u16, String) {
         // A command the session killed reports no exit code (`exit_code` is
         // nullable in the spec).
         "no-exit-code" => {
-            vec![r#"{"type":"exited","exit_code":null,"end_moment":{}}"#.to_string()]
+            vec![format!(
+                r#"{{"type":"exited","exit_code":null,"end_moment":{{"input_hash":"{MOCK_EXEC_BRANCH_HASH}","vtime":"398.492"}}}}"#
+            )]
         }
         "sleep 60" => vec![
             mock_exec_output("stdout", "still working", "398.491"),

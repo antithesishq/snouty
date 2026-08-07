@@ -191,24 +191,30 @@ pub struct AntithesisApi {
 }
 
 impl AntithesisApi {
+    /// Fails fast with a friendly error when only username/password
+    /// credentials are configured: every endpoint other than the launch
+    /// webhooks rejects them. The launch commands use
+    /// [`AntithesisApi::new_for_launch`].
     pub fn new(settings: &Settings, verbose: bool) -> Result<Self> {
-        Self::build(
-            settings,
-            AuthenticationInfo::for_ambient_configuration(settings.profile(), true)?,
-            verbose,
-            None,
-        )
-    }
-
-    /// Like [`AntithesisApi::new`], but fails fast unless an API key is
-    /// configured. Every endpoint other than launch requires one.
-    pub fn new_requiring_api_key(settings: &Settings, verbose: bool) -> Result<Self> {
         Self::build(
             settings,
             AuthenticationInfo::for_ambient_configuration(settings.profile(), false)?,
             verbose,
             None,
         )
+    }
+
+    /// Like [`AntithesisApi::new`], but accepts username/password credentials
+    /// — the launch webhooks (`snouty launch`, `snouty debug`) are the only
+    /// endpoints that still do. Username/password authentication is
+    /// deprecated, so proceeding with it prints a warning that steers the
+    /// user to `snouty login`.
+    pub fn new_for_launch(settings: &Settings, verbose: bool) -> Result<Self> {
+        let authn_info = AuthenticationInfo::for_ambient_configuration(settings.profile(), true)?;
+        if matches!(authn_info, AuthenticationInfo::Password { .. }) {
+            crate::auth::warn_password_auth_deprecated();
+        }
+        Self::build(settings, authn_info, verbose, None)
     }
 
     /// The response cache lives at `cache_dir`/api-cache-v1 when `Some`; pass

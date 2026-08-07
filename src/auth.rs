@@ -299,16 +299,16 @@ impl AuthenticationInfo {
 
     pub(crate) fn for_ambient_configuration_with_attribution(
         profile: Option<&str>,
-        allow_basic: bool,
+        allow_password: bool,
     ) -> Result<AttributedValue<Self>> {
         if let Some(from_env) = Self::try_from_env()? {
-            return to_result(from_env, allow_basic);
+            return reject_password_if_unsupported(from_env, allow_password);
         }
 
         let credentials_file: Option<(PathBuf, CredentialsFile)>;
         if let Some(profile_name) = profile {
             if let Some(from_keychain) = Self::try_from_keychain(profile)? {
-                return to_result(from_keychain, allow_basic);
+                return reject_password_if_unsupported(from_keychain, allow_password);
             }
 
             credentials_file = match try_load_credentials_file()? {
@@ -318,7 +318,7 @@ impl AuthenticationInfo {
                         .as_ref()
                         .and_then(|by_profile| by_profile.get(profile_name))
                     {
-                        return to_result(
+                        return reject_password_if_unsupported(
                             AttributedValue::SettingsFile {
                                 value: from_credentials_file
                                     .clone()
@@ -331,7 +331,7 @@ impl AuthenticationInfo {
                                 settings_file_path: path,
                                 profile: Some(profile_name.to_owned()),
                             },
-                            allow_basic,
+                            allow_password,
                         );
                     }
                     Some((path, parsed))
@@ -343,13 +343,13 @@ impl AuthenticationInfo {
         }
 
         if let Some(from_keychain) = Self::try_from_keychain(None)? {
-            return to_result(from_keychain, allow_basic);
+            return reject_password_if_unsupported(from_keychain, allow_password);
         }
 
         if let Some((path, parsed)) = credentials_file
             && let Some(from_credentials_file) = parsed.default
         {
-            return to_result(
+            return reject_password_if_unsupported(
                 AttributedValue::SettingsFile {
                     value: from_credentials_file.convert_to_authentication_info(
                         OAuthRefreshInfo::CredentialsFile {
@@ -360,7 +360,7 @@ impl AuthenticationInfo {
                     settings_file_path: path,
                     profile: None,
                 },
-                allow_basic,
+                allow_password,
             );
         }
 
@@ -376,9 +376,9 @@ impl AuthenticationInfo {
 
     pub(crate) fn for_ambient_configuration(
         profile: Option<&str>,
-        allow_basic: bool,
+        allow_password: bool,
     ) -> Result<Self> {
-        Ok(Self::for_ambient_configuration_with_attribution(profile, allow_basic)?.extract())
+        Ok(Self::for_ambient_configuration_with_attribution(profile, allow_password)?.extract())
     }
 
     pub(crate) async fn authenticate_request<E>(
@@ -988,17 +988,34 @@ fn parse_credentials_file_toml(contents: String, path: &Path) -> Result<Credenti
     ))
 }
 
-fn to_result(
+/// Reject username/password credentials for commands that don't support them —
+/// every endpoint other than the launch webhooks answers them with an opaque
+/// 403, so failing here gives the user an actionable message instead.
+fn reject_password_if_unsupported(
     authn_info: AttributedValue<AuthenticationInfo>,
-    allow_basic: bool,
+    allow_password: bool,
 ) -> Result<AttributedValue<AuthenticationInfo>> {
-    if !allow_basic && matches!(authn_info.value(), AuthenticationInfo::Password { .. }) {
+    if !allow_password && matches!(authn_info.value(), AuthenticationInfo::Password { .. }) {
         return Err(user_error(
             "This command does not accept username/password authentication, which is only supported when launching runs (`snouty launch`, `snouty debug`)",
+        )
+        .suggestion(
+            "username/password authentication is deprecated; run `snouty login` to switch to single sign-on (if your tenant offers it) or an API key",
         ));
     }
 
     Ok(authn_info)
+}
+
+/// Deprecation notice for username/password authentication, printed when a
+/// command proceeds with those credentials (see
+/// [`crate::api::AntithesisApi::new_for_launch`]).
+pub(crate) fn warn_password_auth_deprecated() {
+    eprintln!(
+        "warning: username/password authentication is deprecated and will be removed in a future release.\n  \
+         Run `snouty login` to switch to single sign-on (if your tenant offers it) or an API key;\n  \
+         ask Antithesis support for an API key if you don't have one."
+    );
 }
 
 #[derive(Serialize, Deserialize)]

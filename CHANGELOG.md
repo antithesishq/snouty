@@ -1,5 +1,6 @@
 # Unreleased
 
+- Deprecate username/password authentication: `snouty launch` and `snouty debug` print a warning that steers the user to `snouty login` (single sign-on or an API key)
 - Add `snouty login`: interactive sign-in with browser-based OAuth or an API key, multiple profiles, and credential storage in the macOS keychain or a credentials file on Linux ([#157](https://github.com/antithesishq/snouty/pull/157), [#173](https://github.com/antithesishq/snouty/pull/173), [#178](https://github.com/antithesishq/snouty/pull/178))
 - Add GitHub Actions OIDC authentication ([#157](https://github.com/antithesishq/snouty/pull/157))
 - Add support for the `docker compose` plugin in addition to standalone `docker-compose` ([#172](https://github.com/antithesishq/snouty/pull/172))

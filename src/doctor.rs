@@ -209,7 +209,7 @@ fn authn_checks(authn_info: Result<AttributedValue<AuthenticationInfo>>) -> Vec<
                     )
                     .note(
                         Level::Warning,
-                        "legacy authentication method, set ANTITHESIS_API_KEY for full API access",
+                        "username/password authentication is deprecated; run `snouty login` to switch to single sign-on or an API key",
                     )
                     .note(
                         Level::Note,
@@ -422,7 +422,7 @@ pub async fn cmd_doctor(
     // misleading 403 — and the auth checks above already tell legacy and
     // unauthenticated users to set a key. The client is built from the resolved
     // settings (base url / tenant), and `verbose` logs the request/response.
-    if !offline && let Ok(api) = AntithesisApi::new_requiring_api_key(settings, verbose) {
+    if !offline && let Ok(api) = AntithesisApi::new(settings, verbose) {
         let host = api.host();
         checks.push(version_check(&host, api.get_version().await));
     }
@@ -502,7 +502,7 @@ mod tests {
     }
 
     #[test]
-    fn auth_legacy_basic_warns_on_key_and_notes_legacy() {
+    fn auth_password_warns_on_key_and_notes_deprecation() {
         let checks = authn_checks(Ok(AttributedValue::EnvironmentVariable {
             value: AuthenticationInfo::Password {
                 username: "user".to_owned(),
@@ -523,9 +523,9 @@ mod tests {
         assert_eq!(checks[1].status, Status::Ok);
         assert_eq!(checks[1].notes.len(), 3);
         assert!(checks[1].notes.iter().any(|n| n.level == Level::Warning
-            && n.text.contains("legacy authentication method")
-            && n.text.contains("ANTITHESIS_API_KEY")));
-        // The legacy creds steer the user to the only commands they unlock.
+            && n.text.contains("deprecated")
+            && n.text.contains("snouty login")));
+        // The deprecated creds steer the user to the only commands they unlock.
         assert!(checks[1].notes.iter().any(|n| n.level == Level::Note
             && n.text.contains("snouty launch")
             && n.text.contains("snouty debug")));

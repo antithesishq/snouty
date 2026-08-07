@@ -52,6 +52,9 @@ stderr '"antithesis.debugging.run_id": "9043254f65c9c65d63fe043a0abfc7fc-53-1"'
 stderr '"antithesis.debugging.vtime": "1234567890"'
 stderr '"antithesis.event_description": "debug this moment"'
 stderr '"antithesis.report.recipients": "\[REDACTED\]"'
+# The mock-server directive configures username/password credentials, which are
+# deprecated — the launch warns and steers the user to `snouty login`.
+stderr 'warning: username/password authentication is deprecated'
 
 # The webhook reports success as an under-documented HTTP status (the live API
 #    answers 200), but a real, spec-conformant 202 carrying the same

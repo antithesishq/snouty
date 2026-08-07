@@ -291,7 +291,7 @@ impl std::fmt::Display for AuthSetupType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             AuthSetupType::ApiKey => f.write_str("API Key"),
-            AuthSetupType::Password => f.write_str("Username & password"),
+            AuthSetupType::Password => f.write_str("Username & password (deprecated)"),
             AuthSetupType::OAuth => f.write_str("Single sign-on (OAuth)"),
         }
     }
@@ -1075,7 +1075,7 @@ mod tests {
 
     /// Credential-kind menu labels, matching the `Display` impl on `AuthSetupType`.
     const API_KEY: &str = "API Key";
-    const USERNAME_PASSWORD: &str = "Username & password";
+    const USERNAME_PASSWORD: &str = "Username & password (deprecated)";
     const OAUTH: &str = "Single sign-on (OAuth)";
 
     /// A per-test isolated environment: an exclusive env lock, a throwaway `$HOME`,

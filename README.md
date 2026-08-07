@@ -82,8 +82,29 @@ A matching environment variable always overrides the file. The supported keys an
 | `base_url`         | `ANTITHESIS_BASE_URL`     |
 | `container_engine` | `SNOUTY_CONTAINER_ENGINE` |
 | `update_channel`   | `SNOUTY_UPDATE_CHANNEL`   |
+| `features`         | `SNOUTY_FEATURES`         |
 
 Authentication (below) is read from the environment only, never from a settings file.
+
+### Features
+
+Some commands are gated behind an opt-in feature, because the Antithesis API
+they call is still changing shape or is unavailable on most tenants. A gated
+command is absent until you enable it: it does not appear in `--help` or in
+completions, and invoking it fails as an unknown subcommand.
+
+Enable features by id, as a TOML array in a settings file or a comma-separated
+`SNOUTY_FEATURES`. Like every other setting, it can be set per profile, and
+`snouty doctor` lists whatever resolved.
+
+```toml
+# .snouty.toml
+features = ["runs-exec"]
+```
+
+| Feature id  | Enables                                                        |
+| ----------- | -------------------------------------------------------------- |
+| `runs-exec` | `snouty runs exec` — run a bash script in a live run's session |
 
 ### Profiles
 

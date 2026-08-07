@@ -11,6 +11,7 @@ pub mod docs;
 pub mod doctor;
 pub(crate) mod env;
 pub mod error;
+pub mod features;
 pub mod login;
 pub mod moment;
 pub mod params;

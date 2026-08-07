@@ -29,6 +29,12 @@
 #     numbers (like `runs logs --json`) and no trailer; exit semantics are
 #     unchanged.
 #
+# The command is gated behind the `runs-exec` feature, because the API it
+# calls is unstable and unavailable on most tenants; specs/features.txt covers
+# the gate itself. Every check here needs the command to exist, so the feature
+# is on for the whole file.
+env SNOUTY_FEATURES=runs-exec
+
 # Every successful invocation executes a script inside a live session, so
 # everything below the credential-free check is gated behind `[staging] skip`,
 # like `snouty debug`: staging has no reliably-live run to execute against.

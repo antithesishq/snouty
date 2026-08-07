@@ -1,0 +1,119 @@
+# Opt-in features
+#
+# A feature gates a command that isn't ready to be on for everyone — because
+# the Antithesis API it calls is still changing shape, or because most tenants
+# can't serve it yet. Gating lets such a command ship in a release without
+# putting it in front of users who would only hit a wall.
+#
+# Features are enabled by id in the `features` setting: a TOML array in a
+# settings file, or a comma-separated SNOUTY_FEATURES. Resolution follows the
+# same precedence as every other setting (environment, then the active
+# profile, then top-level defaults; project file before global).
+#
+# Today the only feature is `runs-exec`, which gates `snouty runs exec`.
+#
+# A gated-off command is absent, not merely hidden: it is missing from help
+# and from completions, and invoking it fails the way any unknown subcommand
+# does. That is what these checks pin.
+
+# 1. With no features set, `runs exec` does not exist. The error is clap's
+#    ordinary unrecognized-subcommand error — nothing hints that the command
+#    is real but disabled.
+! snouty runs exec run-1 -123 1.0 'uname -a'
+stderr 'unrecognized subcommand .*exec'
+! stderr 'feature'
+
+# 2. It is absent from `runs --help`, so it can't be discovered there.
+snouty runs --help
+stdout 'logs.*Stream moment logs'
+! stdout '.*exec.*'
+
+# 3. `runs exec --help` is refused too: a gated-off command leaks no help.
+! snouty runs exec --help
+stderr 'unrecognized subcommand .*exec'
+
+# 4. Shell completions omit it, the other way a command gets discovered.
+snouty completions bash
+! stdout '.*exec.*'
+
+# 5. The setting turns it on: the command appears in help...
+env SNOUTY_FEATURES=runs-exec
+snouty runs --help
+stdout 'exec.*Execute a command in a run'
+
+# 6. ...and in completions...
+snouty completions bash
+stdout '.*exec.*'
+
+# 7. ...and is callable. (It gets as far as needing credentials, which is
+#    proof the gate let it through.)
+! snouty runs exec run-1 -123 1.0 'uname -a'
+stderr 'No Antithesis credentials found.*'
+! stderr 'unrecognized subcommand.*'
+
+# 8. SNOUTY_FEATURES is a comma-separated list, and unknown ids are carried
+#    rather than rejected: a settings file is shared across snouty versions,
+#    so an id from a newer build must not break this one.
+env SNOUTY_FEATURES=from-the-future,runs-exec
+! snouty runs exec run-1 -123 1.0 'uname -a'
+stderr 'No Antithesis credentials found.*'
+
+# 9. An id that isn't a feature this build knows enables nothing.
+env SNOUTY_FEATURES=not-a-feature
+! snouty runs exec run-1 -123 1.0 'uname -a'
+stderr 'unrecognized subcommand .*exec'
+
+# 10. In a settings file the value is a TOML array. (Unset the env var first:
+#     it takes precedence over every file layer.)
+env SNOUTY_FEATURES=
+snouty --settings features.toml runs --help
+stdout 'exec.*Execute a command in a run'
+
+# 11. The setting resolves per profile like any other, so a feature can be on
+#     for one profile and off for another.
+snouty --settings profiles.toml --profile beta runs --help
+stdout 'exec.*Execute a command in a run'
+
+snouty --settings profiles.toml --profile plain runs --help
+! stdout '.*exec.*'
+
+# 12. A settings file may also use the comma-separated spelling, so the file
+#     and the environment variable accept the same text.
+snouty --settings string-form.toml runs --help
+stdout 'exec.*Execute a command in a run'
+
+# 13. A `features` value that is neither a list nor a string is an error, like
+#     any other malformed setting. (Reported by a command that reads settings;
+#     `--help` never resolves them, for any setting.)
+! snouty --settings malformed.toml doctor
+stderr 'setting .features. must be a list of strings.*'
+
+# 14. So is a list holding a non-string.
+! snouty --settings malformed-entry.toml doctor
+stderr 'setting .features. must be a list of strings.*'
+
+# 15. `snouty doctor` reports the enabled features, so "which layer turned
+#     this on?" is answerable. doctor exits non-zero here (no credentials or
+#     container runtime), but the settings table still prints.
+! snouty --settings features.toml doctor
+stderr 'features.*runs-exec'
+
+# 16. The row is omitted entirely when no feature is set — an empty row would
+#     be noise on every ordinary run.
+! snouty doctor
+! stderr 'features.*'
+
+-- features.toml --
+features = ["runs-exec"]
+-- profiles.toml --
+[profile.beta]
+features = ["runs-exec"]
+
+[profile.plain]
+tenant = "plain-tenant"
+-- string-form.toml --
+features = "runs-exec"
+-- malformed.toml --
+features = 42
+-- malformed-entry.toml --
+features = ["runs-exec", 7]

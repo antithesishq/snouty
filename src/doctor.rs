@@ -6,6 +6,7 @@ use crate::attributed_value::AttributedValue;
 use crate::auth::AuthenticationInfo;
 use crate::compose;
 use crate::container;
+use crate::features::Feature;
 use crate::render::render_kv;
 use crate::settings::Settings;
 
@@ -326,7 +327,7 @@ fn collect_checks(settings: &Settings) -> Vec<Check> {
 /// where it came from (env > profile > project/global file). Purely
 /// informational — required/optional semantics are reported by [`collect_checks`].
 fn resolve_settings(settings: &Settings) -> Vec<Setting> {
-    vec![
+    let mut rows = vec![
         Setting::new("profile", settings.profile().unwrap_or("(none)")),
         Setting::new("tenant", settings.tenant().unwrap_or("not set")),
         Setting::new("repository", settings.repository().unwrap_or("not set")),
@@ -337,7 +338,15 @@ fn resolve_settings(settings: &Settings) -> Vec<Setting> {
             settings.container_engine().unwrap_or("auto-detect"),
         ),
         Setting::new("update channel", settings.update_channel().as_str()),
-    ]
+    ];
+    // Only when set: features are opt-in, so an empty row would be noise on
+    // every ordinary run. Listing them when present is what makes a
+    // precedence question ("which layer turned this on?") answerable.
+    if !settings.features().is_empty() {
+        let enabled: Vec<&str> = settings.features().iter().map(Feature::as_str).collect();
+        rows.push(Setting::new("features", enabled.join(", ")));
+    }
+    rows
 }
 
 /// Print the resolved-settings table, aligned via the shared [`render_kv`] helper

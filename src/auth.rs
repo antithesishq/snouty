@@ -1000,7 +1000,7 @@ fn reject_password_if_unsupported(
             "This command does not accept username/password authentication, which is only supported when launching runs (`snouty launch`, `snouty debug`)",
         )
         .suggestion(
-            "username/password authentication is deprecated; run `snouty login` to switch to single sign-on (if your tenant offers it) or an API key",
+            "username/password authentication is deprecated; run `snouty login` to switch to another authentication method",
         ));
     }
 
@@ -1013,8 +1013,7 @@ fn reject_password_if_unsupported(
 pub(crate) fn warn_password_auth_deprecated() {
     eprintln!(
         "warning: username/password authentication is deprecated and will be removed in a future release.\n  \
-         Run `snouty login` to switch to single sign-on (if your tenant offers it) or an API key;\n  \
-         ask Antithesis support for an API key if you don't have one."
+         Run `snouty login` to switch to another authentication method."
     );
 }
 

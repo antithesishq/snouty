@@ -6,7 +6,7 @@ use std::time::Duration;
 use base64::{Engine as _, prelude::BASE64_URL_SAFE_NO_PAD};
 use color_eyre::Section;
 use color_eyre::eyre::{Context, Result, eyre};
-use dialoguer::{Confirm, Input, Password, Select};
+use dialoguer::{Confirm, Input, Select};
 use log::warn;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -46,14 +46,10 @@ trait Prompter {
     /// A single-choice menu over `items`, initially highlighting `default`.
     /// Returns `None` when the user cancels (Esc/q), mirroring
     /// [`dialoguer::Select::interact_opt`].
-    fn select(
-        &self,
-        prompt: &str,
-        items: &[String],
-        default: Option<usize>,
-    ) -> Result<Option<usize>>;
+    fn select(&self, prompt: &str, items: &[String], default: usize) -> Result<Option<usize>>;
 
-    /// A no-echo secret. When `confirm_prompt` is `Some`, the value must be entered twice and matched.
+    /// A masked secret (each character echoes as `*`). When `confirm_prompt` is
+    /// `Some`, the value must be entered twice and matched.
     fn password(&self, prompt: &str, confirm_prompt: Option<&str>) -> Result<String>;
 }
 
@@ -71,33 +67,87 @@ impl Prompter for DialoguerPrompter {
 
     fn input(&self, prompt: &str, default: Option<&str>) -> Result<String> {
         // T is inferred as `String` from the `String` return type — matching the
-        // form dialoguer's own examples use.
+        // form dialoguer's own examples use. The default is deliberately not
+        // rendered: a long one (e.g. a registry URL) wraps the prompt line,
+        // which dialoguer re-renders duplicated on submit. The caller prints
+        // the current value on its own line instead (see `prompt_for_value`).
         let mut input = Input::new().with_prompt(prompt);
         if let Some(default) = default {
-            input = input.default(default.to_owned());
+            input = input.default(default.to_owned()).show_default(false);
         }
         Ok(input.interact_text()?)
     }
 
-    fn select(
-        &self,
-        prompt: &str,
-        items: &[String],
-        default: Option<usize>,
-    ) -> Result<Option<usize>> {
-        let mut select = Select::new().with_prompt(prompt).items(items);
-        if let Some(default) = default {
-            select = select.default(default);
-        }
-        Ok(select.interact_opt()?)
+    fn select(&self, prompt: &str, items: &[String], default: usize) -> Result<Option<usize>> {
+        Ok(Select::new()
+            .with_prompt(prompt)
+            .items(items)
+            .default(default)
+            .interact_opt()?)
     }
 
     fn password(&self, prompt: &str, confirm_prompt: Option<&str>) -> Result<String> {
-        let mut password = Password::new().with_prompt(prompt);
-        if let Some(confirm_prompt) = confirm_prompt {
-            password = password.with_confirmation(confirm_prompt, "Passwords did not match");
+        let term = console::Term::stderr();
+        loop {
+            let value = read_masked_line(&term, prompt)?;
+            let Some(confirm_prompt) = confirm_prompt else {
+                return Ok(value);
+            };
+            if read_masked_line(&term, confirm_prompt)? == value {
+                return Ok(value);
+            }
+            term.write_line("Passwords did not match")?;
         }
-        Ok(password.interact()?)
+    }
+}
+
+/// What one keypress did to an in-progress masked value, so the reader knows
+/// what to echo.
+enum MaskedEdit {
+    Submitted,
+    Interrupted,
+    Appended,
+    Erased,
+    Ignored,
+}
+
+fn apply_masked_key(value: &mut String, key: console::Key) -> MaskedEdit {
+    use console::Key;
+    match key {
+        Key::Enter => MaskedEdit::Submitted,
+        Key::CtrlC => MaskedEdit::Interrupted,
+        Key::Backspace => match value.pop() {
+            Some(_) => MaskedEdit::Erased,
+            None => MaskedEdit::Ignored,
+        },
+        Key::Char(c) if !c.is_control() => {
+            value.push(c);
+            MaskedEdit::Appended
+        }
+        _ => MaskedEdit::Ignored,
+    }
+}
+
+/// Read a secret from the terminal, echoing one `*` per character.
+/// `dialoguer::Password` echoes nothing at all, which makes a pasted value look
+/// like a hang; the mask shows input arriving without revealing it.
+fn read_masked_line(term: &console::Term, prompt: &str) -> Result<String> {
+    term.write_str(&format!("{prompt}: "))?;
+    let mut value = String::new();
+    loop {
+        match apply_masked_key(&mut value, term.read_key()?) {
+            MaskedEdit::Submitted => {
+                term.write_line("")?;
+                return Ok(value);
+            }
+            MaskedEdit::Interrupted => {
+                term.write_line("")?;
+                return Err(user_error("interrupted"));
+            }
+            MaskedEdit::Appended => term.write_str("*")?,
+            MaskedEdit::Erased => term.clear_chars(1)?,
+            MaskedEdit::Ignored => {}
+        }
     }
 }
 
@@ -271,13 +321,21 @@ fn prompt_for_value(
     value_name: &str,
     previous_value: Option<&str>,
 ) -> Result<String> {
-    if prompter.is_interactive() {
-        prompter.input(
-            &format!("What {value_name} would you like to use?"),
-            previous_value,
-        )
-    } else {
-        Err(eyre!("Cannot prompt for value when not running in a TTY"))
+    if !prompter.is_interactive() {
+        return Err(eyre!("Cannot prompt for value when not running in a TTY"));
+    }
+    match previous_value {
+        // The current value goes on its own line, not inline in the prompt: it
+        // can be long (e.g. a registry URL), and a prompt line that wraps is
+        // re-rendered duplicated when dialoguer clears it on submit.
+        Some(previous) => {
+            eprintln!("Current {value_name}: {previous}");
+            prompter.input(
+                &format!("What {value_name} would you like to use? (Enter to keep)"),
+                Some(previous),
+            )
+        }
+        None => prompter.input(&format!("What {value_name} would you like to use?"), None),
     }
 }
 
@@ -311,31 +369,42 @@ async fn prompt_for_auth(
         .wrap_err("failed to build the OAuth HTTP client")?;
     let oauth_config = fetch_cli_config(&client, &base_url).await;
 
-    let mut credential_options = vec![AuthSetupType::ApiKey, AuthSetupType::Password];
-
+    // Single sign-on (when the tenant offers it) leads and is the first-login
+    // default; the deprecated username/password option always comes last.
+    let mut credential_options = Vec::new();
     if oauth_config
         .as_ref()
         .is_ok_and(|config| !matches!(config, CliOAuthConfig::Disabled))
     {
         credential_options.push(AuthSetupType::OAuth);
     }
+    credential_options.push(AuthSetupType::ApiKey);
+    credential_options.push(AuthSetupType::Password);
 
     let labels: Vec<String> = credential_options.iter().map(ToString::to_string).collect();
 
     // Default the highlighted option to whatever kind was last used, so the
-    // common "log in again the same way" case is one keystroke.
-    let default = match previous_value {
-        Err(_) => None,
+    // common "log in again the same way" case is one keystroke; otherwise
+    // highlight the first (preferred) option.
+    let previous_kind = match previous_value {
         Ok(creds) => match creds {
             AttributedValue::EnvironmentVariable { .. } => None,
-            _ => match creds.value() {
-                AuthenticationInfo::ApiKey { .. } => Some(0),
-                AuthenticationInfo::Password { .. } => Some(1),
-                AuthenticationInfo::OAuth { .. } if credential_options.len() >= 3 => Some(2),
-                _ => None,
-            },
+            _ => Some(creds.value()),
         },
+        Err(_) => None,
     };
+    let default = previous_kind
+        .and_then(|kind| {
+            credential_options.iter().position(|option| {
+                matches!(
+                    (option, kind),
+                    (AuthSetupType::ApiKey, AuthenticationInfo::ApiKey { .. })
+                        | (AuthSetupType::Password, AuthenticationInfo::Password { .. })
+                        | (AuthSetupType::OAuth, AuthenticationInfo::OAuth { .. })
+                )
+            })
+        })
+        .unwrap_or(0);
 
     let selection = prompter.select(
         "What kind of credentials would you like to use? (Hit Esc to skip)",
@@ -816,6 +885,53 @@ mod tests {
     use super::*;
 
     #[test]
+    fn masked_key_edits_track_the_value_and_echo() {
+        use console::Key;
+
+        let mut value = String::new();
+        // Typed (or pasted) characters append and echo a star each.
+        assert!(matches!(
+            apply_masked_key(&mut value, Key::Char('a')),
+            MaskedEdit::Appended
+        ));
+        assert!(matches!(
+            apply_masked_key(&mut value, Key::Char('b')),
+            MaskedEdit::Appended
+        ));
+        // Backspace erases one character (and one star)...
+        assert!(matches!(
+            apply_masked_key(&mut value, Key::Backspace),
+            MaskedEdit::Erased
+        ));
+        assert_eq!(value, "a");
+        // ...but on an empty value there is nothing to erase or un-echo.
+        value.clear();
+        assert!(matches!(
+            apply_masked_key(&mut value, Key::Backspace),
+            MaskedEdit::Ignored
+        ));
+        // Control characters and navigation keys are ignored.
+        assert!(matches!(
+            apply_masked_key(&mut value, Key::Char('\u{7}')),
+            MaskedEdit::Ignored
+        ));
+        assert!(matches!(
+            apply_masked_key(&mut value, Key::ArrowLeft),
+            MaskedEdit::Ignored
+        ));
+        assert!(value.is_empty());
+        // Enter submits, ctrl-c interrupts.
+        assert!(matches!(
+            apply_masked_key(&mut value, Key::Enter),
+            MaskedEdit::Submitted
+        ));
+        assert!(matches!(
+            apply_masked_key(&mut value, Key::CtrlC),
+            MaskedEdit::Interrupted
+        ));
+    }
+
+    #[test]
     fn cli_config_deserializes_all_three_strategies() {
         let fixed: CliOAuthConfig =
             serde_json::from_str(r#"{"port_strategy":"fixed","ports":[12345,12346,12347]}"#)
@@ -990,6 +1106,7 @@ mod tests {
                 answers: RefCell::new(self.0.into()),
                 prompts: RefCell::new(Vec::new()),
                 menus: RefCell::new(Vec::new()),
+                defaults: RefCell::new(Vec::new()),
             }
         }
     }
@@ -1000,6 +1117,7 @@ mod tests {
         answers: RefCell<VecDeque<Answer>>,
         prompts: RefCell<Vec<String>>,
         menus: RefCell<Vec<Vec<String>>>,
+        defaults: RefCell<Vec<usize>>,
     }
 
     impl ScriptedPrompter {
@@ -1018,6 +1136,11 @@ mod tests {
         /// The item lists passed to each `select`, in order.
         fn menus(&self) -> Vec<Vec<String>> {
             self.menus.borrow().clone()
+        }
+
+        /// The default index passed to each `select`, in order.
+        fn defaults(&self) -> Vec<usize> {
+            self.defaults.borrow().clone()
         }
     }
 
@@ -1040,13 +1163,9 @@ mod tests {
             }
         }
 
-        fn select(
-            &self,
-            prompt: &str,
-            items: &[String],
-            _default: Option<usize>,
-        ) -> Result<Option<usize>> {
+        fn select(&self, prompt: &str, items: &[String], default: usize) -> Result<Option<usize>> {
             self.menus.borrow_mut().push(items.to_vec());
+            self.defaults.borrow_mut().push(default);
             match self.next("select", prompt) {
                 Answer::Select(value) => Ok(value),
                 _ => panic!("next scripted answer was not a select at {prompt:?}"),
@@ -1375,13 +1494,70 @@ mod tests {
     }
 
     /// Conversely, when the backend advertises an OAuth port strategy, the "Single
-    /// sign-on (OAuth)" option *is* offered.
+    /// sign-on (OAuth)" option *is* offered — first in the menu and as the
+    /// default, with the deprecated username/password option last.
     #[tokio::test]
-    async fn login_offers_oauth_when_backend_supports_it() -> Result<()> {
+    async fn login_offers_oauth_first_when_backend_supports_it() -> Result<()> {
         let env = LoginEnv::with_oauth_config(OAUTH_EPHEMERAL);
         let settings = env.resolve_settings(None);
-        // Finish via the default API-key option rather than OAuth, which would start
+        // Finish via the API-key option rather than OAuth, which would start
         // the interactive browser flow.
+        let prompter = Script::default()
+            .input("mytenant")
+            .input("myrepo")
+            .select(1)
+            .password("sk-test-key")
+            .build();
+
+        do_cmd_login(None, None, None, settings, &prompter).await?;
+
+        let menu = &prompter.menus()[0];
+        assert_eq!(
+            menu,
+            &[
+                OAUTH.to_owned(),
+                API_KEY.to_owned(),
+                USERNAME_PASSWORD.to_owned()
+            ],
+            "OAuth must lead the menu when the backend advertises a port strategy"
+        );
+        assert_eq!(
+            prompter.defaults(),
+            vec![0],
+            "OAuth must be the default for a first login"
+        );
+        Ok(())
+    }
+
+    /// With no stored credentials, the first menu option is highlighted — a
+    /// menu with nothing selected is confusing.
+    #[tokio::test]
+    async fn login_defaults_to_the_first_credential_option() -> Result<()> {
+        let env = LoginEnv::new();
+        let settings = env.resolve_settings(None);
+        let prompter = Script::default()
+            .input("mytenant")
+            .input("myrepo")
+            .select(0)
+            .password("sk-test-key")
+            .build();
+
+        do_cmd_login(None, None, None, settings, &prompter).await?;
+
+        assert_eq!(prompter.defaults(), vec![0]);
+        Ok(())
+    }
+
+    /// Stored username/password credentials move the default to that (last)
+    /// menu entry, so "log in again the same way" stays one keystroke.
+    #[tokio::test]
+    async fn login_defaults_to_the_previously_used_kind() -> Result<()> {
+        let env = LoginEnv::new();
+        env.seed(
+            ".config/snouty/credentials.toml",
+            "[default]\ntype = \"Password\"\nusername = \"puser\"\npassword = \"ppass\"\n",
+        );
+        let settings = env.resolve_settings(None);
         let prompter = Script::default()
             .input("mytenant")
             .input("myrepo")
@@ -1392,10 +1568,12 @@ mod tests {
         do_cmd_login(None, None, None, settings, &prompter).await?;
 
         let menu = &prompter.menus()[0];
-        assert!(
-            menu.contains(&OAUTH.to_owned()),
-            "OAuth must be offered when the backend advertises a port strategy: {menu:?}"
-        );
+        let password_index = menu
+            .iter()
+            .position(|label| label == USERNAME_PASSWORD)
+            .expect("menu must offer username/password");
+        assert_eq!(password_index, menu.len() - 1, "password must come last");
+        assert_eq!(prompter.defaults(), vec![password_index]);
         Ok(())
     }
 

@@ -209,7 +209,7 @@ fn authn_checks(authn_info: Result<AttributedValue<AuthenticationInfo>>) -> Vec<
                     )
                     .note(
                         Level::Warning,
-                        "username/password authentication is deprecated; run `snouty login` to switch to single sign-on or an API key",
+                        "username/password authentication is deprecated; run `snouty login` to switch to another authentication method",
                     )
                     .note(
                         Level::Note,

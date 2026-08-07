@@ -1,7 +1,8 @@
 use chrono::{DateTime, Utc};
-use clap::{Args, Parser, Subcommand, ValueEnum};
+use clap::{Args, CommandFactory, Parser, Subcommand, ValueEnum};
 
 use crate::api::RunStatus;
+use crate::features::Feature;
 use crate::time::ReportDuration;
 
 /// clap value parser for `--status` that keeps a friendly, enumerated error
@@ -13,6 +14,75 @@ fn parse_run_status(value: &str) -> Result<RunStatus, String> {
              valid values: starting, in_progress, completed, cancelled, incomplete, unknown"
         )
     })
+}
+
+/// The global flags that decide which settings file and profile to read,
+/// read out of the raw arguments before the real parse.
+///
+/// A feature-gated subcommand has to be in the parser (or left out of it)
+/// *before* clap sees the arguments, so that `--help`, completions, and error
+/// messages all reflect the gate. But the gate is a setting, and which
+/// settings apply depends on `--settings`/`--profile` — which normally only
+/// the parse would tell us. This breaks the cycle by scanning for those two
+/// flags directly.
+///
+/// It is a scan rather than a second clap parser because both flags are
+/// `global = true`: they are accepted anywhere, including after a subcommand
+/// and its positionals, and no arrangement of a stand-in parser reproduces
+/// that without also having to know every subcommand's shape.
+#[derive(Default, Debug, PartialEq, Eq)]
+pub struct GlobalSettingsFlags {
+    pub settings: Option<std::path::PathBuf>,
+    pub profile: Option<String>,
+}
+
+impl GlobalSettingsFlags {
+    /// Read the two flags out of the real command line.
+    pub fn from_env() -> Self {
+        Self::from_args(std::env::args())
+    }
+
+    /// Read the two flags out of `args` (which includes the program name).
+    /// Never fails and never reports: a malformed command line is the real
+    /// parse's to complain about, and anything not understood here just
+    /// leaves the flag unset.
+    pub fn from_args(args: impl IntoIterator<Item = String>) -> Self {
+        let mut flags = Self::default();
+        let mut args = args.into_iter().skip(1);
+        while let Some(arg) = args.next() {
+            // A bare `--` ends the options; everything after it is a value,
+            // even if it is spelled like a flag.
+            if arg == "--" {
+                break;
+            }
+            // The last occurrence wins, matching clap for a non-repeating flag.
+            match take_flag_value(&arg, "--settings", &mut args) {
+                Some(value) => flags.settings = Some(value.into()),
+                None => {
+                    if let Some(value) = take_flag_value(&arg, "--profile", &mut args) {
+                        flags.profile = Some(value);
+                    }
+                }
+            }
+        }
+        flags
+    }
+}
+
+/// The value of `name` at `arg`, in either spelling: `--flag=value` carries it
+/// inline, `--flag value` takes the next argument.
+fn take_flag_value(
+    arg: &str,
+    name: &str,
+    rest: &mut impl Iterator<Item = String>,
+) -> Option<String> {
+    if let Some(value) = arg.strip_prefix(name).and_then(|v| v.strip_prefix('=')) {
+        return Some(value.to_string());
+    }
+    if arg == name {
+        return rest.next();
+    }
+    None
 }
 
 #[derive(Parser)]
@@ -112,8 +182,7 @@ Examples:
   snouty runs properties <run_id> --name <substring> --detail
   snouty runs build-logs <run_id>
   snouty runs logs <run_id> <hash> <vtime>
-  snouty runs events <run_id> -m <query>
-  snouty runs exec <run_id> <hash> <vtime> 'uname -a'"#,
+  snouty runs events <run_id> -m <query>"#,
         subcommand_required = false
     )]
     Runs {
@@ -639,8 +708,16 @@ Output: `[vtime] [source] [stream] message`. A moment (HASH/VTIME) comes from
     },
 
     /// Execute a command in a run's live session
+    // Gated behind the `runs-exec` feature: hidden here, and revealed by
+    // `apply_feature_gates` only when the feature is enabled. Reaching it
+    // while disabled is refused in `main` (see `exec_is_gated_off`).
     #[command(
+        hide = true,
         long_about = r#"Execute a bash script in a run's live session, at a moment.
+
+This command is gated behind the `runs-exec` feature, because the Antithesis
+API it calls is unstable and unavailable on most tenants. Enable it with
+`features = ["runs-exec"]` in .snouty.toml, or SNOUTY_FEATURES=runs-exec.
 
 The run must have a live session (it is in progress). The script executes on
 a fresh branch of the multiverse, so it does not disturb the running test.
@@ -754,12 +831,220 @@ impl Default for RunsListArgs {
     }
 }
 
+/// The name a gated-off subcommand is parked under. clap cannot drop a
+/// subcommand from a built `Command`, but it can rename one — and a rename is
+/// what makes the gate total. Under this name nothing a user would type
+/// reaches the command: `runs exec` and `runs exec --help` both get clap's own
+/// unrecognized-subcommand error, and it is absent from help and completions.
+///
+/// Typing the parked name is not a way in either: [`gated_subcommand_error`]
+/// turns it into the same unrecognized-subcommand error.
+const GATED_SUBCOMMAND_NAME: &str = "__gated";
+
+/// Apply the feature gates to the parser: a gated command keeps its real name
+/// when its feature is enabled, and is parked under [`GATED_SUBCOMMAND_NAME`]
+/// when it is not.
+///
+/// Must be applied before the parse, since it decides what the parser — and
+/// therefore `--help`, completions, and every error message — knows about.
+pub fn apply_feature_gates(command: clap::Command, features: &[Feature]) -> clap::Command {
+    let exec_enabled = features.contains(&Feature::RunsExec);
+    command.mut_subcommand("runs", |runs| {
+        runs.mut_subcommand("exec", |exec| {
+            if exec_enabled {
+                exec.hide(false)
+            } else {
+                exec.name(GATED_SUBCOMMAND_NAME)
+            }
+        })
+    })
+}
+
+/// Clap's unrecognized-subcommand error when the invocation typed the parked
+/// name of a gated-off command.
+///
+/// The name is spellable even though nothing advertises it, and clap accepts
+/// it — so without this the derive would drop the unknown subcommand and the
+/// parent would quietly run its no-subcommand behaviour (`snouty runs __gated`
+/// would list runs). Reporting the name the user typed is what clap does for
+/// any other unknown subcommand.
+pub fn gated_subcommand_error(matches: &clap::ArgMatches) -> Option<clap::Error> {
+    let mut parent_name = None;
+    let mut current = matches;
+    while let Some((name, sub)) = current.subcommand() {
+        if name == GATED_SUBCOMMAND_NAME {
+            let mut command = Cli::command();
+            // Build first, so the error's usage line carries the full command
+            // path (`snouty runs`) rather than the bare subcommand name.
+            command.build();
+            let parent = match parent_name {
+                Some(parent) => command
+                    .find_subcommand_mut(parent)
+                    .expect("the parent of a gated subcommand exists"),
+                None => &mut command,
+            };
+            return Some(parent.error(
+                clap::error::ErrorKind::InvalidSubcommand,
+                format!("unrecognized subcommand '{name}'"),
+            ));
+        }
+        parent_name = Some(name);
+        current = sub;
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use clap::FromArgMatches;
+    use std::path::Path;
 
     fn parse(args: &[&str]) -> Cli {
         Cli::try_parse_from(args).expect("args should parse")
+    }
+
+    /// Render a command's help the way clap would print it.
+    fn help_of(command: &mut clap::Command, subcommand: &str) -> String {
+        command
+            .find_subcommand_mut(subcommand)
+            .expect("subcommand exists")
+            .render_help()
+            .to_string()
+    }
+
+    #[test]
+    fn exec_is_listed_in_help_only_when_its_feature_is_enabled() {
+        let mut without = apply_feature_gates(Cli::command(), &[]);
+        assert!(!help_of(&mut without, "runs").contains("\n  exec"));
+
+        let mut with = apply_feature_gates(Cli::command(), &[Feature::RunsExec]);
+        assert!(help_of(&mut with, "runs").contains("\n  exec"));
+
+        // An unrelated feature doesn't reveal it.
+        let mut other = apply_feature_gates(
+            Cli::command(),
+            &[Feature::Unknown("something-else".to_string())],
+        );
+        assert!(!help_of(&mut other, "runs").contains("\n  exec"));
+    }
+
+    #[test]
+    fn a_gated_off_exec_does_not_parse_but_an_enabled_one_does() {
+        let args = ["snouty", "runs", "exec", "RUN", "1", "2.0", "true"];
+
+        // Disabled: clap itself doesn't know the name.
+        let err = apply_feature_gates(Cli::command(), &[])
+            .try_get_matches_from(args)
+            .expect_err("a gated-off subcommand must not parse");
+        assert_eq!(err.kind(), clap::error::ErrorKind::InvalidSubcommand);
+        assert!(err.to_string().contains("exec"), "{err}");
+
+        // Enabled: it parses into the variant it should.
+        let matches = apply_feature_gates(Cli::command(), &[Feature::RunsExec])
+            .try_get_matches_from(args)
+            .expect("an enabled subcommand parses");
+        assert!(gated_subcommand_error(&matches).is_none());
+        assert!(matches!(
+            Cli::from_arg_matches(&matches).unwrap().command,
+            Commands::Runs {
+                command: Some(RunsCommands::Exec { .. })
+            }
+        ));
+
+        // Sibling subcommands are unaffected by the gate.
+        assert!(
+            apply_feature_gates(Cli::command(), &[])
+                .try_get_matches_from(["snouty", "runs", "logs", "RUN", "1", "2.0"])
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn typing_the_parked_name_is_refused_rather_than_silently_ignored() {
+        // clap accepts the parked name, and the derive would then drop the
+        // unknown subcommand and quietly run `runs` with none — so this is
+        // caught before `from_arg_matches` ever sees it.
+        let matches = apply_feature_gates(Cli::command(), &[])
+            .try_get_matches_from(["snouty", "runs", GATED_SUBCOMMAND_NAME, "R", "1", "2.0"])
+            .expect("clap knows the parked name");
+        let err = gated_subcommand_error(&matches).expect("the parked name is refused");
+        assert_eq!(err.kind(), clap::error::ErrorKind::InvalidSubcommand);
+        assert!(err.to_string().contains(GATED_SUBCOMMAND_NAME), "{err}");
+
+        // An ordinary invocation is not mistaken for it.
+        let matches = apply_feature_gates(Cli::command(), &[])
+            .try_get_matches_from(["snouty", "runs", "list"])
+            .unwrap();
+        assert!(gated_subcommand_error(&matches).is_none());
+    }
+
+    fn global_flags(args: &[&str]) -> GlobalSettingsFlags {
+        GlobalSettingsFlags::from_args(args.iter().map(|a| a.to_string()))
+    }
+
+    #[test]
+    fn global_settings_flags_are_found_wherever_clap_accepts_them() {
+        // Both flags are `global = true`, so they are valid before a
+        // subcommand, after one, and after its positionals. The gate has to
+        // see them in every position the real parse would.
+        for args in [
+            &["snouty", "--profile", "p", "runs", "list"][..],
+            &["snouty", "runs", "--profile", "p", "list"][..],
+            &["snouty", "runs", "list", "--profile", "p"][..],
+            &[
+                "snouty",
+                "runs",
+                "exec",
+                "R",
+                "1",
+                "2.0",
+                "x",
+                "--profile",
+                "p",
+            ][..],
+        ] {
+            assert_eq!(
+                global_flags(args).profile.as_deref(),
+                Some("p"),
+                "did not find --profile in {args:?}"
+            );
+        }
+
+        // The `--flag=value` spelling, and both flags at once.
+        let flags = global_flags(&["snouty", "--profile=p", "--settings=/tmp/s.toml", "doctor"]);
+        assert_eq!(flags.profile.as_deref(), Some("p"));
+        assert_eq!(flags.settings.as_deref(), Some(Path::new("/tmp/s.toml")));
+    }
+
+    #[test]
+    fn global_settings_flags_never_fail_on_a_bad_command_line() {
+        // The scan runs before the real parse, which is what reports a bad
+        // command line — so nothing here may error, and a flag it can't
+        // resolve is simply left unset.
+        assert_eq!(
+            global_flags(&[
+                "snouty",
+                "--profile",
+                "staging",
+                "not-a-command",
+                "--nonsense"
+            ])
+            .profile
+            .as_deref(),
+            Some("staging")
+        );
+        assert_eq!(global_flags(&["snouty"]), GlobalSettingsFlags::default());
+        // A trailing `--profile` with no value.
+        assert_eq!(
+            global_flags(&["snouty", "doctor", "--profile"]).profile,
+            None
+        );
+        // After `--`, a flag-shaped argument is a value, not a flag.
+        assert_eq!(
+            global_flags(&["snouty", "runs", "list", "--", "--profile", "p"]).profile,
+            None
+        );
     }
 
     #[test]

@@ -14,7 +14,8 @@
 # snouty's contract:
 #
 #   - The script comes from the SCRIPT argument, or from stdin when SCRIPT is
-#     omitted or `-`.
+#     omitted. Omitting it is the only way to read stdin; a pipe, a redirect,
+#     and a heredoc all work, and a script over 2 MiB is refused.
 #   - `output` events are routed by stream: stdout lines to snouty's stdout,
 #     stderr lines to snouty's stderr. stdout carries only the script's
 #     output, so `snouty runs exec ... | jq` composes.
@@ -48,18 +49,22 @@ stdout 'Linux antithesis 6.12.0'
 stderr 'warning: virtual clock drift detected'
 stderr 'end moment: -8206006569229276678 398.492'
 
-# The script can be piped on stdin when SCRIPT is omitted...
+# Omitting SCRIPT reads the script from stdin. That is the only way to do it:
+# there is no `-` spelling, so there is one way to trigger a stdin read.
 stdin exec_script.txt
 snouty runs exec run-2 -3625518438076122494 398.4898056755774
 stdout 'Linux antithesis 6.12.0'
 
-# ...or named explicitly as `-`.
+# A literal `-` is therefore just a script, not a stdin marker. The mock's
+# default branch runs it like any other script.
 stdin exec_script.txt
 snouty runs exec run-2 -3625518438076122494 398.4898056755774 -
 stdout 'Linux antithesis 6.12.0'
 
-# No SCRIPT argument and nothing on stdin is an error, caught before any API
-# call.
+# An empty stdin is "no script", caught before any API call. (The
+# nothing-on-stdin-at-a-terminal case can't be driven here: the harness always
+# provides a non-interactive stdin.)
+stdin empty_script.txt
 ! snouty runs exec run-2 -3625518438076122494 398.4898056755774
 stderr 'no script provided.*'
 
@@ -144,10 +149,18 @@ stderr 'run not found: no-such-run'
 ! snouty runs exec e88ec3ec6cdb7b31ea08718616e04849-59-1 -3625518438076122494 398.4898056755774 'uname -a'
 stderr 'command execution is not available for run .*'
 
-# The vtime is validated client-side: the request body carries it as a typed
-# number, so a non-numeric value is rejected before any API call.
+# VTIME is parsed by clap into the typed vtime the request body carries, so a
+# non-numeric value is rejected before any API call.
 ! snouty runs exec run-2 -3625518438076122494 not-a-number 'uname -a'
-stderr 'invalid vtime.*'
+stderr 'invalid value .*not-a-number.*'
+stderr 'vtime is not a finite decimal number'
+
+# --timeout must be at least 1: a 0-second timeout can only ever time out.
+# (The API documents a minimum of 0 and no maximum; the floor is snouty's.)
+! snouty runs exec run-2 -3625518438076122494 398.4898056755774 'uname -a' --timeout 0
+stderr '0 is not in .*1\.\..*'
 
 -- exec_script.txt --
 uname -a
+-- empty_script.txt --
+

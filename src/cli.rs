@@ -193,8 +193,8 @@ environment variables for authentication, and API connectivity — then prints
 the resolved settings (tenant, repository, container engine) so you can confirm
 what snouty will use.
 
-snouty prefers an API key (full API access); a username and password is legacy
-auth, accepted only by `snouty launch` and `snouty debug`.
+snouty prefers an API key (full API access); a username and password is
+deprecated auth, accepted only by `snouty launch` and `snouty debug`.
 
 When credentials are configured, doctor also contacts the Antithesis API to
 report the API and tenant versions and confirm connectivity. Pass --offline to

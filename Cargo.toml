@@ -50,7 +50,7 @@ which = "8"
 keyring-core = "1.0.0"
 textwrap = { version = "0.16.2", default-features = false }
 sha2 = "0.10"
-dialoguer = "0.12.0"
+inquire = "0.9"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 apple-native-keyring-store = { version = "1.0.0", features = [ "keychain" ] }
@@ -85,6 +85,8 @@ testscript-rs = { git = "https://github.com/antithesishq/testscript-rs.git", bra
 ctor = "0.4"
 wiremock = "0.6"
 hegeltest = "0.21.2"
+expectrl = "0.9"
+strip-ansi-escapes = "0.2.1"
 
 # The profile that 'dist' will build with
 [profile.dist]

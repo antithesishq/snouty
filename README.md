@@ -85,6 +85,30 @@ A matching environment variable always overrides the file. The supported keys an
 
 Authentication (below) is read from the environment only, never from a settings file.
 
+### Features
+
+Some commands are gated behind an opt-in feature, because the Antithesis API
+they call is still changing shape or is unavailable on most tenants. Until you
+enable it, a gated command is absent from `--help` and invoking it fails as an
+unrecognized subcommand. (It is hidden rather than removed, so `snouty <command>
+--help` still describes it and names the feature that enables it.)
+
+Enable features by id in `SNOUTY_FEATURES`, a comma-separated list:
+
+```sh
+export SNOUTY_FEATURES=runs-exec
+```
+
+This is an environment variable rather than a settings key on purpose: the gate
+decides which subcommands exist, so snouty has to know it before it parses the
+command line — earlier than a settings file, whose location depends on
+`--settings`/`--profile`, can be read. `snouty doctor` lists whatever is
+enabled.
+
+| Feature id  | Enables                                                        |
+| ----------- | -------------------------------------------------------------- |
+| `runs-exec` | `snouty runs exec` — run a bash script in a live run's session |
+
 ### Profiles
 
 A settings file can define named profiles for switching between environments. Select one with the global `--profile <name>` flag or the `ANTITHESIS_PROFILE` environment variable (the flag wins):

@@ -351,8 +351,10 @@ fn debug_with_cli_args() {
         .stderr(predicate::str::contains(
             r#""antithesis.debugging.session_id": "sess-456""#,
         ))
+        // Normalized to the vtime's exact print, so every route into a moment
+        // sends the same text (see `Params::normalize_debug_vtime`).
         .stderr(predicate::str::contains(
-            r#""antithesis.debugging.vtime": "1234567890""#,
+            r#""antithesis.debugging.vtime": "1234567890.0""#,
         ))
         .stderr(predicate::str::contains(
             r#""antithesis.event_description": "debug this moment""#,

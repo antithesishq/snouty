@@ -414,6 +414,17 @@ mock-runs-server
 ! snouty runs logs run-1
 stderr '.*INPUT_HASH.*'
 
+# VTIME and --begin-vtime are parsed into the vtime type, so a malformed value
+# is rejected by the CLI instead of being sent to the server.
+mock-runs-server
+! snouty runs logs run-1 -123 not-a-number
+stderr 'invalid value .*not-a-number.*'
+stderr 'vtime is not a finite decimal number'
+
+mock-runs-server
+! snouty runs logs run-1 -123 1.0 --begin-vtime not-a-number --begin-input-hash 0
+stderr 'invalid value .*not-a-number.*'
+
 # `snouty runs events` prints a friendly message (and no table header) when no
 # events match, instead of an empty table.
 mock-runs-server

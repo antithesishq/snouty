@@ -1,7 +1,8 @@
 use chrono::{DateTime, Utc};
-use clap::{Args, Parser, Subcommand, ValueEnum};
+use clap::{Args, CommandFactory, Parser, Subcommand, ValueEnum};
 
 use crate::api::RunStatus;
+use crate::features::Feature;
 use crate::time::ReportDuration;
 
 /// clap value parser for `--status` that keeps a friendly, enumerated error
@@ -512,7 +513,7 @@ pub struct DebugArgs {
 
     /// Virtual time identifying the moment to debug
     #[arg(long)]
-    pub vtime: Option<String>,
+    pub vtime: Option<crate::vtime::VTime>,
 
     /// Debugging session description
     #[arg(long)]
@@ -620,12 +621,15 @@ Output: `[vtime] [source] [stream] message`. A moment (HASH/VTIME) comes from
         input_hash: String,
 
         /// Virtual time of the moment to stream up to
+        // Typed, so a malformed vtime is rejected by clap instead of by the
+        // server. `allow_hyphen_values` is kept here (unlike `runs exec`),
+        // because this command has always accepted a hyphen-led vtime.
         #[arg(allow_hyphen_values = true)]
-        vtime: String,
+        vtime: crate::vtime::VTime,
 
         /// Start from this virtual time instead of the timeline's earliest log entry
         #[arg(long, allow_hyphen_values = true)]
-        begin_vtime: Option<String>,
+        begin_vtime: Option<crate::vtime::VTime>,
 
         /// Start from this input hash (optimization; must be paired with --begin-vtime)
         #[arg(long, allow_hyphen_values = true, requires = "begin_vtime")]
@@ -635,6 +639,65 @@ Output: `[vtime] [source] [stream] message`. A moment (HASH/VTIME) comes from
         /// otherwise print the text payload verbatim (keep ANSI/control bytes)
         #[arg(short = 'r', long)]
         raw: bool,
+    },
+
+    /// Execute a command in a run's live session
+    // Gated behind the `runs-exec` feature. `hide` is an expression, so the
+    // decision is made when the command is built — the feature comes from the
+    // environment, which needs no parse to read. Hiding only keeps it out of
+    // `--help`; invoking it while disabled is refused by
+    // [`gated_command_error`].
+    #[command(
+        hide = !crate::features::is_enabled(Feature::RunsExec),
+        long_about = r#"Execute a bash script in a run's live session, at a moment.
+
+This command is gated behind the `runs-exec` feature, because the Antithesis
+API it calls is unstable and unavailable on most tenants. Enable it by setting
+SNOUTY_FEATURES=runs-exec.
+
+The run must have a live session (it is in progress). The script executes on
+a fresh branch of the multiverse, so it does not disturb the running test.
+INPUT_HASH and VTIME identify the moment to execute at; a moment comes from
+`runs properties --detail` or `runs events`.
+
+The script's stdout and stderr stream to snouty's stdout and stderr. On exit,
+a trailer on stderr documents the branch's end moment, to chain a follow-up
+command from. A non-zero exit code, a timeout, or a truncated stream fails
+snouty with exit code 1.
+
+Omit SCRIPT to read the script from stdin — a pipe, a redirect, or a heredoc.
+
+Examples:
+  snouty runs exec <run_id> <hash> <vtime> 'uname -a'
+  echo 'ps aux' | snouty runs exec <run_id> <hash> <vtime>
+  snouty runs exec <run_id> <hash> <vtime> < script.sh"#
+    )]
+    Exec {
+        /// Run ID
+        run_id: String,
+
+        /// Input hash of the moment to execute at (with VTIME, picks the timeline)
+        // A moment's input hash is routinely negative.
+        #[arg(allow_hyphen_values = true)]
+        input_hash: String,
+
+        /// Virtual time of the moment to execute at
+        // Parsed by `VTime` so a malformed value is rejected by clap, before
+        // any API call. No `allow_hyphen_values`: a vtime is seconds since the
+        // run began and is never negative, and accepting hyphen-led values
+        // here would swallow a misplaced `--timeout` as the vtime.
+        vtime: crate::vtime::VTime,
+
+        /// Bash script to execute; omit it to read the script from stdin
+        script: Option<String>,
+
+        /// Maximum seconds the server waits for the script to exit before
+        /// reporting a timeout
+        // The API's own default is 30 with a minimum of 0 and no maximum. A
+        // 0-second timeout can only ever time out, so the floor here is 1; the
+        // ceiling is left to the server rather than guessed at.
+        #[arg(long, default_value_t = 30, value_parser = clap::value_parser!(u64).range(1..))]
+        timeout: u64,
     },
 
     /// Search events in a run
@@ -704,6 +767,38 @@ impl Default for RunsListArgs {
     }
 }
 
+/// Clap's unrecognized-subcommand error when `command` is a gated command
+/// whose feature is off, so a gated-off command reads exactly like one that
+/// does not exist — same wording, same usage line, same exit code.
+///
+/// This is the half of the gate that hiding cannot do: a hidden subcommand is
+/// still callable. `enabled` names the features that are on — the caller
+/// passes them so the decision is testable without touching the environment.
+pub fn gated_command_error(command: &Commands, enabled: &[Feature]) -> Option<clap::Error> {
+    let gated_off = matches!(
+        command,
+        Commands::Runs {
+            command: Some(RunsCommands::Exec { .. })
+        }
+    ) && !enabled.contains(&Feature::RunsExec);
+    if !gated_off {
+        return None;
+    }
+
+    let mut cli = Cli::command();
+    // Build first, so the usage line carries the full command path
+    // (`snouty runs`) rather than the bare subcommand name.
+    cli.build();
+    Some(
+        cli.find_subcommand_mut("runs")
+            .expect("the parent of a gated subcommand exists")
+            .error(
+                clap::error::ErrorKind::InvalidSubcommand,
+                "unrecognized subcommand 'exec'",
+            ),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -713,21 +808,34 @@ mod tests {
     }
 
     #[test]
-    fn update_channel_parses_its_named_values() {
-        assert_eq!(
-            UpdateChannel::STABLE.parse::<UpdateChannel>().unwrap(),
-            UpdateChannel::Stable
-        );
-        assert_eq!(
-            UpdateChannel::UNSTABLE.parse::<UpdateChannel>().unwrap(),
-            UpdateChannel::Unstable
-        );
-    }
+    fn a_gated_off_command_is_refused_and_an_enabled_one_runs() {
+        let exec = parse(&["snouty", "runs", "exec", "RUN", "1", "2.0", "true"]).command;
 
-    #[test]
-    fn update_channel_rejects_unknown_values() {
-        let err = "nightly".parse::<UpdateChannel>().unwrap_err();
-        assert_eq!(err, "expected `stable` or `unstable`, got `nightly`");
+        // Off: refused with clap's own unrecognized-subcommand error, which
+        // says nothing about the command being real but disabled.
+        let err = gated_command_error(&exec, &[]).expect("a gated-off command is refused");
+        assert_eq!(err.kind(), clap::error::ErrorKind::InvalidSubcommand);
+        let rendered = err.to_string();
+        assert!(
+            rendered.contains("unrecognized subcommand 'exec'"),
+            "{rendered}"
+        );
+        // The usage line names the full path, not the bare subcommand.
+        assert!(rendered.contains("snouty runs"), "{rendered}");
+        assert!(!rendered.contains("feature"), "{rendered}");
+
+        // On: allowed through.
+        assert!(gated_command_error(&exec, &[Feature::RunsExec]).is_none());
+        // An unrelated feature does not enable it.
+        assert!(gated_command_error(&exec, &[Feature::Unknown("other".to_string())]).is_some());
+
+        // Sibling subcommands are never gated.
+        for args in [
+            &["snouty", "runs", "logs", "RUN", "1", "2.0"][..],
+            &["snouty", "runs"][..],
+        ] {
+            assert!(gated_command_error(&parse(args).command, &[]).is_none());
+        }
     }
 
     #[test]
@@ -791,8 +899,11 @@ mod tests {
             panic!("expected `runs logs`");
         };
         assert_eq!(input_hash, "-123");
-        assert_eq!(vtime, "-2.0");
-        assert_eq!(begin_vtime.as_deref(), Some("-2.0"));
+        assert_eq!(vtime, "-2.0".parse::<crate::vtime::VTime>().unwrap());
+        assert_eq!(
+            begin_vtime,
+            Some("-2.0".parse::<crate::vtime::VTime>().unwrap())
+        );
         assert_eq!(begin_input_hash.as_deref(), Some("0"));
     }
 
@@ -808,7 +919,7 @@ mod tests {
             panic!("expected `runs logs`");
         };
         assert!(raw);
-        assert_eq!(vtime, "-2.0");
+        assert_eq!(vtime, "-2.0".parse::<crate::vtime::VTime>().unwrap());
 
         let cli = parse(&["snouty", "runs", "logs", "RUN", "-123", "-2.0"]);
         let Commands::Runs {

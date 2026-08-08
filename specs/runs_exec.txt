@@ -1,0 +1,172 @@
+# snouty runs exec
+#
+# Execute a bash script in the live session of a test run, at a specific
+# moment in the run's execution timeline.
+#
+# Semantics verified against the live API (orbitinghail, release 60.0):
+# an in-progress run has a live session; a completed run does not (the server
+# answers 400). The script executes on a fresh branch of the multiverse — the
+# response moments carry a new input_hash — so the running test is not
+# disturbed. The response streams NDJSON: zero or more `output` events, then
+# one terminal event (`exited` or `timed_out`), unless the stream ends with a
+# `Stream_Error` line.
+#
+# snouty's contract:
+#
+#   - The script comes from the SCRIPT argument, or from stdin when SCRIPT is
+#     omitted. Omitting it is the only way to read stdin; a pipe, a redirect,
+#     and a heredoc all work, and a script over 2 MiB is refused.
+#   - `output` events are routed by stream: stdout lines to snouty's stdout,
+#     stderr lines to snouty's stderr. stdout carries only the script's
+#     output, so `snouty runs exec ... | jq` composes.
+#   - On `exited`, a trailer on stderr documents the branch's end moment, to
+#     chain a follow-up command from.
+#   - `exited` with code 0 is success. Any other terminal state fails snouty
+#     with exit code 1: a non-zero code (reported, not forwarded), a
+#     `timed_out` event, or a stream that ends with no terminal event at all —
+#     exit 0 must mean "the script ran and exited 0".
+#   - `--json` passes the NDJSON through with vtimes normalized to exact JSON
+#     numbers (like `runs logs --json`) and no trailer; exit semantics are
+#     unchanged.
+#
+# The command is gated behind the `runs-exec` feature, because the API it
+# calls is unstable and unavailable on most tenants; specs/features.txt covers
+# the gate itself. Every check here needs the command to exist, so the feature
+# is on for the whole file.
+env SNOUTY_FEATURES=runs-exec
+
+# Every successful invocation executes a script inside a live session, so
+# everything below the credential-free check is gated behind `[staging] skip`,
+# like `snouty debug`: staging has no reliably-live run to execute against.
+
+# The command authenticates with the Antithesis API. An API key is required,
+# like every run-scoped endpoint.
+! snouty runs exec run-2 -3625518438076122494 398.4898056755774 'uname -a'
+stderr 'No Antithesis credentials found.*'
+
+[staging] skip
+
+mock-runs-server
+
+# Happy path: output events are routed by stream — stdout lines to stdout,
+# stderr lines to stderr — and the end-moment trailer lands on stderr.
+snouty runs exec run-2 -3625518438076122494 398.4898056755774 'uname -a'
+stdout 'Linux antithesis 6.12.0'
+stderr 'warning: virtual clock drift detected'
+stderr 'end moment: -8206006569229276678 398.492'
+
+# Omitting SCRIPT reads the script from stdin. That is the only way to do it:
+# there is no `-` spelling, so there is one way to trigger a stdin read.
+stdin exec_script.txt
+snouty runs exec run-2 -3625518438076122494 398.4898056755774
+stdout 'Linux antithesis 6.12.0'
+
+# A literal `-` is therefore just a script, not a stdin marker. The mock's
+# default branch runs it like any other script.
+stdin exec_script.txt
+snouty runs exec run-2 -3625518438076122494 398.4898056755774 -
+stdout 'Linux antithesis 6.12.0'
+
+# An empty stdin is "no script", caught before any API call. (The
+# nothing-on-stdin-at-a-terminal case can't be driven here: the harness always
+# provides a non-interactive stdin.)
+stdin empty_script.txt
+! snouty runs exec run-2 -3625518438076122494 398.4898056755774
+stderr 'no script provided.*'
+
+# A script with no output prints nothing but the trailer: exec's stdout is
+# the script's stdout, not a report.
+snouty runs exec run-2 -3625518438076122494 398.4898056755774 'true'
+! stdout '.'
+stderr 'end moment: -8206006569229276678 398.492'
+
+# A non-zero exit code fails snouty (with exit code 1 — the script's code is
+# reported, not forwarded). The trailer still shows: the branch reached its
+# end moment, exit code notwithstanding.
+! snouty runs exec run-2 -3625518438076122494 398.4898056755774 'exit 5'
+stderr 'command exited with code 5'
+stderr 'end moment: -8206006569229276678 398.492'
+
+# `exit_code` is nullable: a command the session killed reports no code. That
+# is not a success, so snouty fails and says so rather than claiming exit 0.
+! snouty runs exec run-2 -3625518438076122494 398.4898056755774 no-exit-code
+stderr 'command exited without reporting an exit code'
+
+# A script that outlives the timeout ends with a terminal `timed_out` event,
+# which snouty reports as a failure. Output produced before the timeout is
+# still shown; the event carries no end moment, so there is no trailer.
+! snouty runs exec run-2 -3625518438076122494 398.4898056755774 'sleep 60'
+stdout 'still working'
+stderr 'command timed out after 30s'
+! stderr 'end moment'
+
+# --timeout is forwarded to the server as timeout_seconds (the mock echoes
+# back the value it received), and the default is the API default, 30.
+snouty runs exec run-2 -3625518438076122494 398.4898056755774 print-timeout --timeout 45
+stdout 'timeout_seconds=45'
+
+snouty runs exec run-2 -3625518438076122494 398.4898056755774 print-timeout
+stdout 'timeout_seconds=30'
+
+# --json passes the NDJSON stream through: output events, then the terminal
+# event, with vtimes normalized to exact JSON numbers (like `runs logs`) and
+# no trailer.
+snouty --json runs exec run-2 -3625518438076122494 398.4898056755774 'uname -a'
+stdout '\{"type":"output","stream":"stdout","text":"Linux antithesis 6.12.0","moment":\{"input_hash":"-8206006569229276678","vtime":398.491\}\}'
+stdout '\{"type":"exited","exit_code":0,"end_moment":\{"input_hash":"-8206006569229276678","vtime":398.492\}\}'
+! stderr 'end moment'
+
+# --json exit semantics match human mode: a non-zero exit code still fails
+# snouty, and the exited event is still emitted for scripts to parse.
+! snouty --json runs exec run-2 -3625518438076122494 398.4898056755774 'exit 5'
+stdout '"exit_code":5'
+stderr 'command exited with code 5'
+
+# A `Stream_Error` line is the server aborting the stream, not data: it
+# becomes the command's failure and is never rendered as output.
+! snouty runs exec run-stream-error -3625518438076122494 398.4898056755774 'uname -a'
+stderr 'the server reported an error mid-stream: mock stream failure'
+
+# A stream that ends without a terminal event is truncated, and truncation is
+# a failure.
+! snouty runs exec run-2 -3625518438076122494 398.4898056755774 truncate-stream
+stdout 'partial output'
+stderr 'stream ended before the command reported completion.*'
+
+# A run with no live session (here a completed run) fails with the server's
+# error as-is. The message is known to be rough (it leaks "minting session
+# token failed"); the API team is improving it server-side, so snouty does
+# not translate it.
+! snouty runs exec run-1 -3625518438076122494 398.4898056755774 'uname -a'
+stderr 'API error: 400 Bad Request.*minting session token failed.*'
+
+# An unknown run id is the shared "run not found" error every run-scoped
+# command reports. The endpoint's own 404 body is an unhelpful "Resource not
+# found" (the mock reproduces it verbatim), so this proves snouty's
+# translation rather than a friendly server message.
+! snouty runs exec no-such-run -3625518438076122494 398.4898056755774 'uname -a'
+stderr 'run not found: no-such-run'
+! stderr 'API error'
+! stderr 'Resource not found'
+
+# Runs created before tenant release 60 predate the endpoint. The run id
+# encodes its tenant version, and a pre-60 id is rejected client-side before
+# any API call, with an explanation instead of an opaque 404.
+! snouty runs exec e88ec3ec6cdb7b31ea08718616e04849-59-1 -3625518438076122494 398.4898056755774 'uname -a'
+stderr 'command execution is not available for run .*'
+
+# VTIME is parsed by clap into the typed vtime the request body carries, so a
+# non-numeric value is rejected before any API call.
+! snouty runs exec run-2 -3625518438076122494 not-a-number 'uname -a'
+stderr 'invalid value .*not-a-number.*'
+stderr 'vtime is not a finite decimal number'
+
+# --timeout must be at least 1: a 0-second timeout can only ever time out.
+# (The API documents a minimum of 0 and no maximum; the floor is snouty's.)
+! snouty runs exec run-2 -3625518438076122494 398.4898056755774 'uname -a' --timeout 0
+stderr '0 is not in .*1\.\..*'
+
+-- exec_script.txt --
+uname -a
+-- empty_script.txt --
+

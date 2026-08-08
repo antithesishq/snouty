@@ -1,9 +1,9 @@
-use std::io::{BufWriter, Write};
+use std::io::{BufWriter, IsTerminal, Read, Write};
 use std::path::Path;
 use std::sync::OnceLock;
 
 use color_eyre::Section;
-use color_eyre::eyre::{Result, eyre};
+use color_eyre::eyre::{Result, WrapErr, eyre};
 use futures_util::{StreamExt, TryStreamExt};
 use indexmap::IndexMap;
 use indexmap::map::Entry;
@@ -14,11 +14,9 @@ use serde_json::{Map, Value, json};
 
 use chrono::{DateTime, Local, Utc};
 
-#[cfg(test)]
-use crate::api::Moment;
 use crate::api::{
-    AntithesisApi, Event, EventProperty, NonEventProperty, Property, PropertyStatus, RunDetail,
-    RunStatus, RunSummary, RunsFilterOptions,
+    AntithesisApi, Event, EventProperty, Moment, NonEventProperty, Property, PropertyStatus,
+    RunDetail, RunStatus, RunSummary, RunsFilterOptions,
 };
 use crate::cli::{RunsCommands, RunsListArgs};
 use crate::error::{api_error_status, user_error};
@@ -139,11 +137,30 @@ pub async fn cmd_runs(
             cmd_runs_logs(
                 &run_id,
                 &input_hash,
-                &vtime,
+                vtime,
                 begin_input_hash.as_deref(),
-                begin_vtime.as_deref(),
+                begin_vtime,
                 settings,
                 LogOutputOptions { json, verbose, raw },
+            )
+            .await
+        }
+        Some(RunsCommands::Exec {
+            run_id,
+            input_hash,
+            vtime,
+            script,
+            timeout,
+        }) => {
+            let moment = Moment { input_hash, vtime };
+            cmd_runs_exec(
+                &run_id,
+                moment,
+                script.as_deref(),
+                timeout,
+                settings,
+                json,
+                verbose,
             )
             .await
         }
@@ -1493,9 +1510,9 @@ async fn cmd_runs_events(
 async fn cmd_runs_logs(
     run_id: &str,
     input_hash: &str,
-    vtime: &str,
+    vtime: VTime,
     begin_input_hash: Option<&str>,
-    begin_vtime: Option<&str>,
+    begin_vtime: Option<VTime>,
     settings: &Settings,
     LogOutputOptions { json, verbose, raw }: LogOutputOptions,
 ) -> Result<()> {
@@ -1558,6 +1575,178 @@ async fn cmd_runs_logs(
     result
 }
 
+/// One event in an execute-command NDJSON stream. Extra fields (e.g. an
+/// output event's `moment`) are ignored; the `exited` event's `end_moment` is
+/// kept for the end-moment trailer.
+///
+/// Hand-written rather than the generated `ExecuteCommandStreamEvent`: that
+/// type is an untagged enum whose variants progenitor names `Variant0/1/2`,
+/// which reads far worse at the match sites than the three named variants
+/// here.
+#[derive(Debug, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum ExecEvent {
+    Output {
+        stream: String,
+        text: String,
+    },
+    Exited {
+        exit_code: Option<i64>,
+        /// Required by the spec and present on every observed response;
+        /// `Option` only so a server that omits it costs the trailer rather
+        /// than the whole event.
+        #[serde(default)]
+        end_moment: Option<Moment>,
+    },
+    TimedOut,
+}
+
+/// Cap on a script read from stdin. Far more than any hand-written bash
+/// script needs, and small enough that `snouty runs exec ... < /dev/urandom`
+/// fails with a message instead of consuming memory until the OOM killer
+/// steps in.
+const MAX_SCRIPT_BYTES: u64 = 2 * 1024 * 1024;
+
+/// The script to execute: the SCRIPT argument, or stdin when it is omitted.
+/// An empty script is rejected before any API call.
+fn resolve_exec_script(arg: Option<&str>) -> Result<String> {
+    match arg {
+        Some(script) => {
+            if script.trim().is_empty() {
+                return Err(no_script_error());
+            }
+            Ok(script.to_string())
+        }
+        None => read_script_from_stdin(std::io::stdin(), std::io::stdin().is_terminal()),
+    }
+}
+
+fn no_script_error() -> color_eyre::eyre::Report {
+    user_error("no script provided")
+        .suggestion("pass the script as an argument, or pipe it on stdin")
+}
+
+/// Read a script from `input`, refusing to read at all from an interactive
+/// terminal: with SCRIPT omitted, a bare `runs exec RUN HASH VTIME` at a
+/// prompt would otherwise hang with no indication it wants input. A pipe, a
+/// redirect, and a heredoc are all non-interactive, so every scripted way of
+/// supplying a script still works.
+fn read_script_from_stdin(input: impl Read, interactive: bool) -> Result<String> {
+    if interactive {
+        return Err(no_script_error());
+    }
+    // Read one byte past the cap so an over-long script is detected rather
+    // than silently truncated into a script that means something else.
+    let mut buf = String::new();
+    input
+        .take(MAX_SCRIPT_BYTES + 1)
+        .read_to_string(&mut buf)
+        .wrap_err("failed to read the script from stdin")?;
+    if buf.len() as u64 > MAX_SCRIPT_BYTES {
+        return Err(user_error(format!(
+            "the script on stdin is larger than the {} MiB limit",
+            MAX_SCRIPT_BYTES / (1024 * 1024)
+        ))
+        .note("`runs exec` sends the whole script in one request body"));
+    }
+    if buf.trim().is_empty() {
+        return Err(no_script_error());
+    }
+    Ok(buf)
+}
+
+async fn cmd_runs_exec(
+    run_id: &str,
+    moment: Moment,
+    script: Option<&str>,
+    timeout: u64,
+    settings: &Settings,
+    json: bool,
+    verbose: bool,
+) -> Result<()> {
+    let script = resolve_exec_script(script)?;
+
+    debug!("executing command in run: {}", run_id);
+    let api = AntithesisApi::new_requiring_api_key(settings, verbose)?;
+    let stream = match api.execute_command(run_id, moment, script, timeout).await {
+        Ok(stream) => stream.into_inner(),
+        // Translate a bad run id's 404 into the shared "run not found"
+        // message every sibling run-scoped command reports (the endpoint's
+        // own 404 body is an unhelpful "Resource not found").
+        Err(err) => return Err(explain_run_scoped_error(&api, run_id, err).await),
+    };
+
+    // The terminal event the stream ended with, kept for the exit decision
+    // below: an `output` event is rendered as it arrives, but `exited` and
+    // `timed_out` decide the command's outcome, so they are acted on only
+    // once the stream is known to have completed.
+    let mut terminal: Option<ExecEvent> = None;
+    let result = stream_ndjson_lines(stream, |line| {
+        match line {
+            NdjsonLine::Entry(mut entry) => {
+                // classify_line normalized `moment.vtime`; the exited event
+                // carries its moment under `end_moment` instead.
+                normalize_vtime_field(&mut entry, "end_moment");
+                if json {
+                    outln!("{entry}")?;
+                }
+                match ExecEvent::deserialize(&entry).ok() {
+                    Some(ExecEvent::Output { stream, text }) if !json => {
+                        let text = normalize_terminal_text(&text);
+                        if stream == "stderr" {
+                            eprintln!("{text}");
+                        } else {
+                            outln!("{text}")?;
+                        }
+                    }
+                    Some(event @ (ExecEvent::Exited { .. } | ExecEvent::TimedOut)) => {
+                        terminal = Some(event);
+                    }
+                    // An unrecognized event is not command output; keep it
+                    // off stdout (--json already passed the line through).
+                    None if !json => eprintln!("{entry}"),
+                    _ => {}
+                }
+            }
+            NdjsonLine::Raw(line) => {
+                if json {
+                    outln!("{line}")?;
+                } else {
+                    eprintln!("{line}");
+                }
+            }
+        }
+        Ok(())
+    })
+    .await;
+    result?;
+
+    match terminal {
+        Some(ExecEvent::Exited {
+            exit_code,
+            end_moment,
+        }) => {
+            // The trailer documents where the branch's timeline ended — the
+            // moment to chain a follow-up command from, in the positional
+            // order `runs exec` takes it (VTime's Display is exact, so it
+            // pastes back unchanged). --json carries it in the exited event.
+            if !json && let Some(m) = end_moment {
+                eprintln!("end moment: {} {}", m.input_hash, m.vtime);
+            }
+            match exit_code {
+                Some(0) => Ok(()),
+                Some(code) => Err(user_error(format!("command exited with code {code}"))),
+                None => Err(user_error("command exited without reporting an exit code")),
+            }
+        }
+        Some(ExecEvent::TimedOut) => Err(user_error(format!("command timed out after {timeout}s"))),
+        // Exit 0 must mean "the script ran and exited 0", so a stream that
+        // ends without a terminal event — truncation — is a failure.
+        _ => Err(eyre!("stream ended before the command reported completion")
+            .note("the command may still have run; output above may be incomplete")),
+    }
+}
+
 /// The source column is sized to fit `antithesis_test_composer` — the built-in
 /// test-composer source present in nearly every run's logs — so those lines align
 /// instead of overflowing. Longer sources still overflow on their own lines
@@ -1605,13 +1794,14 @@ fn format_log_entry(entry: &Value, raw: bool) -> String {
     )
 }
 
-/// Convert an NDJSON entry's `moment.vtime` from the server's seconds string
-/// to an exact JSON number in place — the only processing snouty does to a
-/// vtime (see [`VTime`]). Returns the vtime, or `None` (entry untouched) when
-/// there's no parseable one.
-fn normalize_moment_vtime(entry: &mut Value) -> Option<VTime> {
-    let vtime = VTime::from_json(&entry["moment"]["vtime"])?;
-    entry["moment"]["vtime"] = json!(vtime);
+/// Convert the vtime under an NDJSON entry's `key` (`moment` for a log/event
+/// record, `end_moment` for an execute-command `exited` event) from the
+/// server's seconds string to an exact JSON number in place — the only
+/// processing snouty does to a vtime (see [`VTime`]). Returns the vtime, or
+/// `None` (entry untouched) when there's no parseable one.
+fn normalize_vtime_field(entry: &mut Value, key: &str) -> Option<VTime> {
+    let vtime = VTime::from_json(&entry[key]["vtime"])?;
+    entry[key]["vtime"] = json!(vtime);
     Some(vtime)
 }
 
@@ -1731,7 +1921,7 @@ fn classify_line(line: &str) -> NdjsonLine<'_> {
     if let Ok(mut entry) = serde_json::from_str::<Value>(line)
         && entry.is_object()
     {
-        normalize_moment_vtime(&mut entry);
+        normalize_vtime_field(&mut entry, "moment");
         return NdjsonLine::Entry(entry);
     }
     NdjsonLine::Raw(line)
@@ -3698,6 +3888,123 @@ mod tests {
     }
 
     #[test]
+    fn exec_event_parses_each_stream_shape() {
+        // Real event shapes captured from the live API (orbitinghail, r60).
+        let output: ExecEvent = serde_json::from_str(
+            r#"{"type":"output","stream":"stderr","text":"hello-err","moment":{"input_hash":"-3160476794197372487","vtime":"16.304728139657527"}}"#,
+        )
+        .unwrap();
+        let ExecEvent::Output { stream, text } = output else {
+            panic!("expected output event");
+        };
+        assert_eq!((stream.as_str(), text.as_str()), ("stderr", "hello-err"));
+
+        let exited: ExecEvent = serde_json::from_str(
+            r#"{"type":"exited","exit_code":5,"end_moment":{"input_hash":"-316","vtime":"16.3"}}"#,
+        )
+        .unwrap();
+        let ExecEvent::Exited {
+            exit_code,
+            end_moment,
+        } = exited
+        else {
+            panic!("expected exited event");
+        };
+        assert_eq!(exit_code, Some(5));
+        // VTime's Display is exact, so a vtime copied off the trailer names
+        // the same moment.
+        let m = end_moment.expect("exited carries a moment");
+        assert_eq!(m.input_hash, "-316");
+        assert_eq!(m.vtime.to_string(), "16.3");
+
+        // `exit_code` is nullable ("no exit code was available").
+        let ExecEvent::Exited { exit_code, .. } = serde_json::from_str(
+            r#"{"type":"exited","exit_code":null,"end_moment":{"input_hash":"-1","vtime":"1.0"}}"#,
+        )
+        .unwrap() else {
+            panic!("expected exited event");
+        };
+        assert_eq!(exit_code, None);
+
+        assert!(matches!(
+            serde_json::from_str(r#"{"type":"timed_out"}"#).unwrap(),
+            ExecEvent::TimedOut
+        ));
+
+        // A future event type doesn't parse — the stream handler surfaces it
+        // verbatim instead of guessing.
+        assert!(serde_json::from_str::<ExecEvent>(r#"{"type":"heartbeat"}"#).is_err());
+    }
+
+    #[test]
+    fn normalize_vtime_field_normalizes_either_moment_key() {
+        // The exited event's moment sits under `end_moment`; the rule that
+        // rewrites the seconds string to an exact JSON number is the same one
+        // `moment` gets, so --json output agrees across commands.
+        let mut entry = json!({"end_moment": {"input_hash": "-1", "vtime": "398.4898056755774"}});
+        normalize_vtime_field(&mut entry, "end_moment");
+        assert_eq!(entry["end_moment"]["vtime"], json!(398.4898056755774));
+        assert!(entry["end_moment"]["vtime"].is_number());
+
+        // An entry without that key is left untouched.
+        let mut entry = json!({"moment": {"vtime": "1.0"}});
+        assert_eq!(normalize_vtime_field(&mut entry, "end_moment"), None);
+        assert_eq!(entry["moment"]["vtime"], json!("1.0"));
+    }
+
+    #[test]
+    fn resolve_exec_script_takes_the_argument_verbatim() {
+        assert_eq!(
+            resolve_exec_script(Some("uname -a")).unwrap(),
+            "uname -a".to_string()
+        );
+        // A blank argument is "no script", same as an empty stdin.
+        let err = resolve_exec_script(Some("  ")).unwrap_err();
+        assert!(err.to_string().contains("no script provided"), "{err}");
+    }
+
+    #[test]
+    fn read_script_from_stdin_accepts_piped_input() {
+        // A pipe, a redirect, and a heredoc all arrive here non-interactive.
+        let script = read_script_from_stdin(&b"uname -a\n"[..], false).unwrap();
+        assert_eq!(script, "uname -a\n");
+    }
+
+    #[test]
+    fn read_script_from_stdin_refuses_an_interactive_terminal() {
+        // Nothing is read: with SCRIPT omitted at a prompt, waiting on stdin
+        // would look like a hang.
+        let err = read_script_from_stdin(&b"uname -a"[..], true).unwrap_err();
+        assert!(err.to_string().contains("no script provided"), "{err}");
+    }
+
+    #[test]
+    fn read_script_from_stdin_rejects_an_empty_script() {
+        let err = read_script_from_stdin(&b"  \n"[..], false).unwrap_err();
+        assert!(err.to_string().contains("no script provided"), "{err}");
+    }
+
+    #[test]
+    fn read_script_from_stdin_caps_the_script_size() {
+        // Exactly at the cap is fine; one byte over is refused rather than
+        // silently truncated into a script that means something else.
+        let at_cap = vec![b'x'; MAX_SCRIPT_BYTES as usize];
+        assert_eq!(
+            read_script_from_stdin(at_cap.as_slice(), false)
+                .unwrap()
+                .len(),
+            MAX_SCRIPT_BYTES as usize
+        );
+
+        let over_cap = vec![b'x'; MAX_SCRIPT_BYTES as usize + 1];
+        let err = read_script_from_stdin(over_cap.as_slice(), false).unwrap_err();
+        assert!(
+            err.to_string().contains("larger than the 2 MiB limit"),
+            "{err}"
+        );
+    }
+
+    #[test]
     fn parse_stream_error_extracts_the_server_message() {
         assert_eq!(
             parse_stream_error(r#"{"error":"mock stream failure"}"#).as_deref(),
@@ -4684,9 +4991,9 @@ mod tests {
     }
 
     #[test]
-    fn normalize_moment_vtime_converts_string_vtime_to_exact_number() {
+    fn normalize_vtime_field_converts_string_vtime_to_exact_number() {
         let mut entry = json!({"a": 1, "moment": {"vtime": "313.15126806590706"}, "z": 2});
-        assert!(normalize_moment_vtime(&mut entry).is_some());
+        assert!(normalize_vtime_field(&mut entry, "moment").is_some());
         assert_eq!(
             entry.to_string(),
             r#"{"a":1,"moment":{"vtime":313.15126806590706},"z":2}"#
@@ -4694,7 +5001,7 @@ mod tests {
 
         // No parseable vtime: the entry is untouched.
         let mut entry = json!({"moment": {"vtime": "n/a"}});
-        assert!(normalize_moment_vtime(&mut entry).is_none());
+        assert!(normalize_vtime_field(&mut entry, "moment").is_none());
         assert_eq!(entry, json!({"moment": {"vtime": "n/a"}}));
     }
 

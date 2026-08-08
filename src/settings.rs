@@ -11,7 +11,6 @@ use toml::{Table, Value};
 use crate::cli::UpdateChannel;
 use crate::env;
 use crate::error::user_error;
-use crate::features::Feature;
 
 pub const ANTITHESIS_PROFILE_ENV_VAR_NAME: &str = "ANTITHESIS_PROFILE";
 pub const SNOUTY_SETTINGS_PATH_VAR_NAME: &str = "SNOUTY_SETTINGS_PATH";
@@ -21,7 +20,6 @@ pub const ANTITHESIS_BASE_URL_VAR_NAME: &str = "ANTITHESIS_BASE_URL";
 pub const ANTITHESIS_HTTPS_PROXY_VAR_NAME: &str = "ANTITHESIS_HTTPS_PROXY";
 pub const CONTAINER_ENGINE_VAR_NAME: &str = "SNOUTY_CONTAINER_ENGINE";
 pub const UPDATE_CHANNEL_VAR_NAME: &str = "SNOUTY_UPDATE_CHANNEL";
-pub const FEATURES_VAR_NAME: &str = "SNOUTY_FEATURES";
 const PROJECT_SETTINGS_FILENAME: &str = ".snouty.toml";
 const GLOBAL_SETTINGS_FILENAME: &str = "settings.toml";
 const PROFILE_KEY: &str = "profile";
@@ -91,7 +89,6 @@ pub struct Settings {
     https_proxy: Option<String>,
     container_engine: Option<String>,
     update_channel: UpdateChannel,
-    features: Vec<Feature>,
 }
 
 impl Settings {
@@ -155,19 +152,6 @@ impl Settings {
         let https_proxy = resolve("https_proxy", ANTITHESIS_HTTPS_PROXY_VAR_NAME)?;
         let container_engine = resolve("container_engine", CONTAINER_ENGINE_VAR_NAME)?;
 
-        // Ids this build doesn't know are kept rather than rejected (see
-        // `Feature`), so a settings file stays portable across snouty versions.
-        let features = resolve_list(
-            "features",
-            FEATURES_VAR_NAME,
-            profile.as_deref(),
-            project.as_ref(),
-            global.as_ref(),
-        )?
-        .iter()
-        .map(|id| id.parse().expect("parsing a feature id cannot fail"))
-        .collect();
-
         // The channel resolves to a typed value here, so an invalid setting
         // fails at startup like any other malformed setting.
         let update_channel = match resolve("update_channel", UPDATE_CHANNEL_VAR_NAME)? {
@@ -188,7 +172,7 @@ impl Settings {
             validate_tenant_host(tenant)?;
         }
 
-        Ok(SettingsBuilder {
+        Ok(Self::assemble(
             profile,
             tenant,
             repository,
@@ -196,9 +180,37 @@ impl Settings {
             https_proxy,
             container_engine,
             update_channel,
-            features,
+        ))
+    }
+
+    /// Assemble the final `Settings` from already-resolved layers, applying the
+    /// one derived value: `base_url` falls back to a tenant-derived host. Shared
+    /// by [`Settings::resolve`] and the test constructors so the derivation is
+    /// exercised the same way everywhere.
+    fn assemble(
+        profile: Option<String>,
+        tenant: Option<String>,
+        repository: Option<String>,
+        base_url: Option<String>,
+        https_proxy: Option<String>,
+        container_engine: Option<String>,
+        update_channel: UpdateChannel,
+    ) -> Self {
+        let base_url = base_url.or_else(|| {
+            tenant
+                .as_ref()
+                .map(|tenant| format!("https://{tenant}.antithesis.com"))
+        });
+
+        Self {
+            profile,
+            tenant,
+            repository,
+            base_url,
+            https_proxy,
+            container_engine,
+            update_channel,
         }
-        .build())
     }
 
     /// The resolved tenant, or `None` if unset. Call sites that require it turn
@@ -233,17 +245,6 @@ impl Settings {
         self.update_channel
     }
 
-    /// The opt-in features enabled by the `features` setting, in the order
-    /// they were listed. Empty when the setting is unset.
-    pub fn features(&self) -> &[Feature] {
-        &self.features
-    }
-
-    /// Whether `feature` is enabled.
-    pub fn feature_enabled(&self, feature: &Feature) -> bool {
-        self.features.contains(feature)
-    }
-
     pub(crate) fn profile(&self) -> Option<&str> {
         self.profile.as_deref()
     }
@@ -268,7 +269,7 @@ impl Settings {
 /// Builder behind [`Settings::builder`], so call sites name just the values
 /// they set instead of growing a positional argument for every new setting.
 /// It bypasses the resolution precedence chain entirely; `base_url` still
-/// derives from the tenant when left unset (see [`SettingsBuilder::build`]).
+/// derives from the tenant when left unset (see [`Settings::assemble`]).
 #[derive(Default)]
 pub struct SettingsBuilder {
     profile: Option<String>,
@@ -278,7 +279,6 @@ pub struct SettingsBuilder {
     https_proxy: Option<String>,
     container_engine: Option<String>,
     update_channel: UpdateChannel,
-    features: Vec<Feature>,
 }
 
 impl SettingsBuilder {
@@ -317,32 +317,16 @@ impl SettingsBuilder {
         self
     }
 
-    pub fn features(mut self, values: impl IntoIterator<Item = Feature>) -> Self {
-        self.features = values.into_iter().collect();
-        self
-    }
-
-    /// Finish, applying the one derived value: `base_url` falls back to a
-    /// tenant-derived host. Every `Settings` is built here — including the one
-    /// [`Settings::resolve`] produces — so the derivation happens once, in one
-    /// place.
     pub fn build(self) -> Settings {
-        let base_url = self.base_url.or_else(|| {
-            self.tenant
-                .as_ref()
-                .map(|tenant| format!("https://{tenant}.antithesis.com"))
-        });
-
-        Settings {
-            profile: self.profile,
-            tenant: self.tenant,
-            repository: self.repository,
-            base_url,
-            https_proxy: self.https_proxy,
-            container_engine: self.container_engine,
-            update_channel: self.update_channel,
-            features: self.features,
-        }
+        Settings::assemble(
+            self.profile,
+            self.tenant,
+            self.repository,
+            self.base_url,
+            self.https_proxy,
+            self.container_engine,
+            self.update_channel,
+        )
     }
 }
 
@@ -534,79 +518,30 @@ fn resolve_value(
         return Ok(Some(value));
     }
 
-    match lookup_setting(key, profile, project, global)? {
-        Some((value, display)) => string_value(value, &display).map(Some),
-        None => Ok(None),
-    }
-}
-
-/// [`resolve_value`] for a setting that holds a list of ids (today just
-/// `features`). Same precedence chain; only the value's shape differs. In a
-/// settings file the value is a TOML array of strings; in the environment it
-/// is a comma-separated list, since an env var can only carry text. Empty
-/// entries and surrounding whitespace are dropped, so `"a, b,"` is `[a, b]`.
-fn resolve_list(
-    key: &str,
-    env_var: &str,
-    profile: Option<&str>,
-    project: Option<&Table>,
-    global: Option<&Table>,
-) -> Result<Vec<String>> {
-    if let Some(value) = env::var(env_var)? {
-        return Ok(split_list(&value));
-    }
-
-    match lookup_setting(key, profile, project, global)? {
-        Some((value, display)) => list_value(value, &display),
-        None => Ok(Vec::new()),
-    }
-}
-
-/// Split a comma-separated env-var list into its non-empty, trimmed entries.
-fn split_list(value: &str) -> Vec<String> {
-    value
-        .split(',')
-        .map(str::trim)
-        .filter(|entry| !entry.is_empty())
-        .map(str::to_string)
-        .collect()
-}
-
-/// Find the raw TOML value for `key` in the settings files, following the
-/// precedence chain: the active profile (project file before global), then
-/// top-level defaults (project before global). Returns the value together with
-/// its dotted path, so a type error can name where it came from. The
-/// environment layer sits above this and is handled by the callers, which know
-/// how to read their own shape out of a string.
-fn lookup_setting<'a>(
-    key: &str,
-    profile: Option<&str>,
-    project: Option<&'a Table>,
-    global: Option<&'a Table>,
-) -> Result<Option<(&'a Value, String)>> {
     // A named profile is consulted before defaults, project before global.
     if let Some(profile) = profile {
         for table in [project, global].into_iter().flatten() {
             if let Some(value) = profile_value(table, profile, key)? {
-                return Ok(Some((value, format!("{PROFILE_KEY}.{profile}.{key}"))));
+                return Ok(Some(value));
             }
         }
     }
 
     // Finally fall back to top-level defaults, project before global.
     for table in [project, global].into_iter().flatten() {
-        if let Some(value) = table.get(key) {
-            return Ok(Some((value, key.to_string())));
+        if let Some(value) = default_value(table, key)? {
+            return Ok(Some(value));
         }
     }
 
     Ok(None)
 }
 
-/// The raw `[profile.<name>]` value for `key`. `Ok(None)` when the `profile`
-/// section, the named profile, or the key is absent; an error when
-/// `profile`/`profile.<name>` is present but not a table.
-fn profile_value<'a>(table: &'a Table, profile: &str, key: &str) -> Result<Option<&'a Value>> {
+/// A `[profile.<name>]` value: `profile.<profile>.<key>`. `Ok(None)` when the
+/// `profile` section, the named profile, or the key is absent; an error when
+/// `profile`/`profile.<name>` is present but not a table, or the value is
+/// present but not a string.
+fn profile_value(table: &Table, profile: &str, key: &str) -> Result<Option<String>> {
     let Some(profiles) = table.get(PROFILE_KEY) else {
         return Ok(None);
     };
@@ -619,43 +554,28 @@ fn profile_value<'a>(table: &'a Table, profile: &str, key: &str) -> Result<Optio
     let selected = selected
         .as_table()
         .ok_or_else(|| eyre!("profile `{profile}` must be a table"))?;
-    Ok(selected.get(key))
+    string_value(selected, key, &format!("{PROFILE_KEY}.{profile}.{key}"))
 }
 
-/// Read a located value as a string, naming it `display` in the error. An error
-/// when it holds a non-string TOML value.
-fn string_value(value: &Value, display: &str) -> Result<String> {
-    match value.as_str() {
-        Some(value) => Ok(value.to_string()),
-        None => Err(eyre!(
-            "setting `{display}` must be a string, but found {}",
-            value.type_str()
-        )),
-    }
+/// A top-level default value: `<key>`. `Ok(None)` when absent; an error when
+/// present but not a string.
+fn default_value(table: &Table, key: &str) -> Result<Option<String>> {
+    string_value(table, key, key)
 }
 
-/// Read a located value as a list of ids: a TOML array of strings. A bare
-/// string is also accepted and split on commas, so a settings file can use the
-/// same spelling as the environment variable. An error when it is neither, or
-/// when an array holds a non-string element.
-fn list_value(value: &Value, display: &str) -> Result<Vec<String>> {
-    match value {
-        Value::String(value) => Ok(split_list(value)),
-        Value::Array(entries) => entries
-            .iter()
-            .map(|entry| {
-                entry.as_str().map(str::to_string).ok_or_else(|| {
-                    eyre!(
-                        "setting `{display}` must be a list of strings, but it holds {}",
-                        entry.type_str()
-                    )
-                })
-            })
-            .collect(),
-        other => Err(eyre!(
-            "setting `{display}` must be a list of strings, but found {}",
-            other.type_str()
-        )),
+/// Read `key` from `table` as a string, naming the offending value `display` in
+/// the error. `Ok(None)` when the key is absent; an error when it is present but
+/// holds a non-string TOML value.
+fn string_value(table: &Table, key: &str, display: &str) -> Result<Option<String>> {
+    match table.get(key) {
+        None => Ok(None),
+        Some(value) => match value.as_str() {
+            Some(value) => Ok(Some(value.to_string())),
+            None => Err(eyre!(
+                "setting `{display}` must be a string, but found {}",
+                value.type_str()
+            )),
+        },
     }
 }
 
@@ -727,7 +647,7 @@ mod tests {
         assert!(err.to_string().contains("was not found"));
     }
 
-    // ---- the precedence-chain lookup -----------------------------------
+    // ---- profile_value / default_value ---------------------------------
 
     #[test]
     fn profile_value_reads_nested_table() {
@@ -737,41 +657,25 @@ mod tests {
         assert_eq!(
             profile_value(&table, "staging", "tenant")
                 .unwrap()
-                .and_then(Value::as_str),
+                .as_deref(),
             Some("staging-tenant")
         );
         // missing profile and missing key both resolve to None
-        assert!(profile_value(&table, "prod", "tenant").unwrap().is_none());
-        assert!(
-            profile_value(&table, "staging", "repository")
-                .unwrap()
-                .is_none()
+        assert_eq!(profile_value(&table, "prod", "tenant").unwrap(), None);
+        assert_eq!(
+            profile_value(&table, "staging", "repository").unwrap(),
+            None
         );
     }
 
     #[test]
-    fn lookup_setting_prefers_the_profile_then_the_top_level_default() {
-        let table: Table = "tenant = \"acme\"\n[profile.staging]\ntenant = \"staging-tenant\"\n"
-            .parse()
-            .unwrap();
-        let (value, display) = lookup_setting("tenant", Some("staging"), Some(&table), None)
-            .unwrap()
-            .expect("the profile has the key");
-        assert_eq!(value.as_str(), Some("staging-tenant"));
-        assert_eq!(display, "profile.staging.tenant");
-
-        // No profile selected: the top-level default, named by its bare key.
-        let (value, display) = lookup_setting("tenant", None, Some(&table), None)
-            .unwrap()
-            .expect("the top level has the key");
-        assert_eq!(value.as_str(), Some("acme"));
-        assert_eq!(display, "tenant");
-
-        assert!(
-            lookup_setting("missing", None, Some(&table), None)
-                .unwrap()
-                .is_none()
+    fn default_value_reads_top_level_key() {
+        let table: Table = "tenant = \"acme\"\n".parse().unwrap();
+        assert_eq!(
+            default_value(&table, "tenant").unwrap().as_deref(),
+            Some("acme")
         );
+        assert_eq!(default_value(&table, "missing").unwrap(), None);
     }
 
     // ---- strict TOML typing --------------------------------------------
@@ -779,10 +683,8 @@ mod tests {
     #[test]
     fn non_string_default_value_is_an_error() {
         let table: Table = "tenant = 123\n".parse().unwrap();
-        let (value, display) = lookup_setting("tenant", None, Some(&table), None)
-            .unwrap()
-            .unwrap();
-        let msg = string_value(value, &display).unwrap_err().to_string();
+        let err = default_value(&table, "tenant").unwrap_err();
+        let msg = err.to_string();
         assert!(msg.contains("tenant"), "unexpected error: {msg}");
         assert!(msg.contains("must be a string"), "unexpected error: {msg}");
     }
@@ -790,69 +692,10 @@ mod tests {
     #[test]
     fn non_string_profile_value_is_an_error() {
         let table: Table = "[profile.p]\ntenant = true\n".parse().unwrap();
-        let (value, display) = lookup_setting("tenant", Some("p"), Some(&table), None)
-            .unwrap()
-            .unwrap();
-        let msg = string_value(value, &display).unwrap_err().to_string();
+        let err = profile_value(&table, "p", "tenant").unwrap_err();
+        let msg = err.to_string();
         assert!(msg.contains("profile.p.tenant"), "unexpected error: {msg}");
         assert!(msg.contains("must be a string"), "unexpected error: {msg}");
-    }
-
-    #[test]
-    fn list_value_accepts_an_array_or_a_comma_separated_string() {
-        let table: Table = "a = [\"one\", \"two\"]\nb = \"one, two,\"\nc = 42\nd = [\"one\", 7]\n"
-            .parse()
-            .unwrap();
-        let read = |key: &str| list_value(table.get(key).unwrap(), key);
-
-        assert_eq!(read("a").unwrap(), vec!["one", "two"]);
-        // The string form drops whitespace and empty entries, so the file and
-        // the environment variable accept the same text.
-        assert_eq!(read("b").unwrap(), vec!["one", "two"]);
-
-        for key in ["c", "d"] {
-            let msg = read(key).unwrap_err().to_string();
-            assert!(
-                msg.contains("must be a list of strings"),
-                "unexpected error for {key}: {msg}"
-            );
-        }
-    }
-
-    #[test]
-    fn resolve_list_follows_the_same_precedence_as_a_string_setting() {
-        let project: Table = "features = [\"from-project\"]\n\
-             [profile.beta]\nfeatures = [\"from-profile\"]\n"
-            .parse()
-            .unwrap();
-        let global: Table = "features = [\"from-global\"]\n".parse().unwrap();
-        let read =
-            |profile| resolve_list("features", "", profile, Some(&project), Some(&global)).unwrap();
-
-        // Profile before top-level default, project before global.
-        assert_eq!(read(Some("beta")), vec!["from-profile"]);
-        assert_eq!(read(None), vec!["from-project"]);
-        // A profile without the key falls through to the defaults.
-        assert_eq!(read(Some("other")), vec!["from-project"]);
-        // Global only.
-        assert_eq!(
-            resolve_list("features", "", None, None, Some(&global)).unwrap(),
-            vec!["from-global"]
-        );
-        // Unset everywhere is empty, not an error.
-        assert!(
-            resolve_list("features", "", None, None, None)
-                .unwrap()
-                .is_empty()
-        );
-    }
-
-    #[test]
-    fn split_list_drops_blanks_and_whitespace() {
-        assert_eq!(split_list("one, two"), vec!["one", "two"]);
-        assert_eq!(split_list(" one ,, two , "), vec!["one", "two"]);
-        assert!(split_list("").is_empty());
-        assert!(split_list(" , ").is_empty());
     }
 
     #[test]

@@ -204,10 +204,11 @@ fn accepts_an_api_key_longer_than_the_terminal_width() {
     );
 }
 
-/// The username/password flow (last menu entry) confirms the password and
-/// retries on a mismatch.
+/// The username/password flow (last menu entry) collects the password exactly
+/// once, masked: an Antithesis password is a long generated string pasted like
+/// an API key, so there is no confirmation round.
 #[test]
-fn password_confirmation_retries_on_mismatch() {
+fn password_flow_asks_once_and_masks_the_password() {
     let home = tempfile::TempDir::new().expect("temp HOME");
     let base_url = spawn_config_server(OAUTH_DISABLED);
     let mut session = spawn_login(home.path(), &base_url);
@@ -219,20 +220,18 @@ fn password_confirmation_retries_on_mismatch() {
     send(&mut session, "pty-user\r");
 
     expect(&mut session, "Please enter your password");
-    send(&mut session, "hunter2\r");
-    expect(&mut session, "Please reenter your password to confirm");
-    send(&mut session, "hunter3\r");
-    expect(&mut session, "Passwords did not match");
-
-    // The whole password prompt restarts after a mismatch; answer it
-    // consistently this time.
-    expect(&mut session, "Please enter your password");
-    send(&mut session, "hunter2\r");
-    expect(&mut session, "Please reenter your password to confirm");
-    send(&mut session, "hunter2\r");
+    let password = format!("pw-{}", "b".repeat(60));
+    send(&mut session, &password);
+    // The input wraps at the row edge, so only the first row's worth of stars
+    // is one contiguous run; assert most of what fits after the prompt.
+    expect(&mut session, &"*".repeat(40));
+    send(&mut session, "\r");
     finish(session);
 
     let creds = credentials(home.path());
     assert!(creds.contains(r#"username = "pty-user""#), "{creds}");
-    assert!(creds.contains(r#"password = "hunter2""#), "{creds}");
+    assert!(
+        creds.contains(&format!(r#"password = "{password}""#)),
+        "{creds}"
+    );
 }

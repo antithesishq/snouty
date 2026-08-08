@@ -47,9 +47,10 @@ trait Prompter {
     /// Returns `None` when the user cancels (Esc).
     fn select(&self, prompt: &str, items: &[String], default: usize) -> Result<Option<usize>>;
 
-    /// A masked secret (each character echoes as `*`). When `confirm_prompt` is
-    /// `Some`, the value must be entered twice and matched.
-    fn password(&self, prompt: &str, confirm_prompt: Option<&str>) -> Result<String>;
+    /// A masked secret (each character echoes as `*`). There is deliberately
+    /// no confirmation round: Antithesis passwords are long generated strings
+    /// that are pasted like API keys, not typed twice.
+    fn password(&self, prompt: &str) -> Result<String>;
 }
 
 /// The production [`Prompter`]: `inquire` prompts reading the real terminal.
@@ -79,15 +80,11 @@ impl Prompter for InquirePrompter {
             .map(|choice| choice.index))
     }
 
-    fn password(&self, prompt: &str, confirm_prompt: Option<&str>) -> Result<String> {
-        let mut password = Password::new(prompt).with_display_mode(PasswordDisplayMode::Masked);
-        password = match confirm_prompt {
-            Some(confirm_prompt) => password
-                .with_custom_confirmation_message(confirm_prompt)
-                .with_custom_confirmation_error_message("Passwords did not match"),
-            None => password.without_confirmation(),
-        };
-        Ok(password.prompt()?)
+    fn password(&self, prompt: &str) -> Result<String> {
+        Ok(Password::new(prompt)
+            .with_display_mode(PasswordDisplayMode::Masked)
+            .without_confirmation()
+            .prompt()?)
     }
 }
 
@@ -363,7 +360,7 @@ async fn prompt_for_auth(
 
 fn prompt_for_api_key(prompter: &dyn Prompter) -> Result<PersistableCredentials> {
     Ok(PersistableCredentials::ApiKey {
-        api_key: prompter.password("Please enter your API Key", None)?,
+        api_key: prompter.password("Please enter your API Key")?,
     })
 }
 
@@ -375,10 +372,9 @@ fn prompt_for_username_password(
     if username.is_empty() {
         return Err(eyre!("Username cannot be empty"));
     }
-    let password = prompter.password(
-        "Please enter your password",
-        Some("Please reenter your password to confirm"),
-    )?;
+    // No confirmation round: like an API key, an Antithesis password is a
+    // long generated string that is pasted, not typed.
+    let password = prompter.password("Please enter your password")?;
 
     Ok(PersistableCredentials::Password { username, password })
 }
@@ -1056,7 +1052,7 @@ mod tests {
             }
         }
 
-        fn password(&self, prompt: &str, _confirm_prompt: Option<&str>) -> Result<String> {
+        fn password(&self, prompt: &str) -> Result<String> {
             match self.next("password", prompt) {
                 Answer::Password(value) => Ok(value),
                 _ => panic!("next scripted answer was not a password at {prompt:?}"),

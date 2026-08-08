@@ -11,15 +11,15 @@ use semver::Version;
 use snouty::api::AntithesisApi;
 use snouty::auth::initialize_credential_store;
 use snouty::cli::{
-    Cli, Commands, DebugArgs, GlobalSettingsFlags, LaunchArgs, UpdateArgs, UpdateChannel,
-    apply_feature_gates, gated_subcommand_error,
+    Cli, Commands, DebugArgs, LaunchArgs, UpdateArgs, UpdateChannel, apply_feature_gates,
+    gated_command_error,
 };
 use snouty::compose;
 use snouty::config;
 use snouty::container;
 use snouty::docs;
 use snouty::error::user_error;
-use snouty::features::Feature;
+use snouty::features::{self, Feature};
 use snouty::login::cmd_login;
 use snouty::moment;
 use snouty::params::Params;
@@ -77,27 +77,23 @@ async fn main() {
             writeln!(buf, "{}", record.args())
         })
         .init();
-    // Settings are resolved before the parse, because the enabled features
-    // decide which subcommands the parser has (see `apply_feature_gates`). A
-    // settings failure is carried, not reported: `run` hands it to the
-    // commands that need settings, so one that doesn't still works.
-    let flags = GlobalSettingsFlags::from_env();
-    let settings = Settings::resolve(flags.settings, flags.profile);
-    let features = settings
-        .as_ref()
-        .map(|settings| settings.features().to_vec())
-        .unwrap_or_default();
-
-    let matches = apply_feature_gates(Cli::command(), &features).get_matches();
-    if let Some(err) = gated_subcommand_error(&matches) {
-        err.exit();
-    }
-    let cli = match Cli::from_arg_matches(&matches) {
+    // The enabled features decide which subcommands the parser reveals, so
+    // they are read from the environment before the parse (see
+    // `features::enabled` for why this is an env var and not a setting).
+    let features = features::enabled();
+    let cli = match Cli::from_arg_matches(
+        &apply_feature_gates(Cli::command(), &features).get_matches(),
+    ) {
         Ok(cli) => cli,
         Err(err) => err.exit(),
     };
+    // Hiding keeps a gated command out of help and completions, but a hidden
+    // subcommand is still callable — so refuse it here too.
+    if let Some(err) = gated_command_error(&cli.command, &features) {
+        err.exit();
+    }
 
-    if let Err(report) = run(cli, settings, features).await {
+    if let Err(report) = run(cli, features).await {
         // One rendering for every error: `render_report` collapses the chain
         // index for single errors and wraps overlong prose, both printing
         // concerns that belong here rather than in the messages. User-facing
@@ -110,11 +106,11 @@ async fn main() {
     }
 }
 
-async fn run(cli: Cli, settings: Result<Settings>, features: Vec<Feature>) -> Result<()> {
+async fn run(cli: Cli, features: Vec<Feature>) -> Result<()> {
     let Cli {
         json,
         verbose,
-        settings: _,
+        settings: settings_path,
         profile,
         command,
     } = cli;
@@ -126,10 +122,10 @@ async fn run(cli: Cli, settings: Result<Settings>, features: Vec<Feature>) -> Re
         eprintln!("warning: Could not initialize system keychain credential storage: {err:?}");
     }
 
-    // `settings` was resolved before the parse (the feature gate needs it) and
-    // is threaded in already. A broken/unreadable settings file is still a
-    // clean, once-only failure surfaced by the first command that reads
-    // settings, which keeps dispatch a single flat match.
+    // Resolve all settings up front. A broken/unreadable settings file fails
+    // here, cleanly and once, before any command runs — including commands that
+    // don't read settings. That keeps dispatch a single flat match.
+    let settings = Settings::resolve(settings_path, profile.clone());
     let result = match command {
         Commands::Completions { shell } => cmd_completions(shell, &features),
         Commands::Version => {
@@ -406,8 +402,11 @@ async fn cmd_debug(args: DebugArgs, settings: &Settings, json: bool, verbose: bo
 }
 
 fn cmd_completions(shell: Shell, features: &[Feature]) -> Result<()> {
-    // Completions list exactly what `--help` does, so a gated-off command is
-    // absent from both.
+    // Gated the same way as `--help`, though it only goes so far: clap_complete
+    // emits hidden subcommands into the candidate list for bash and zsh, so a
+    // gated-off command can still be tab-completed — and then refused by
+    // `gated_command_error`. Applying the gate keeps the generated script
+    // right for the generators that do respect `hide`.
     let mut cmd = apply_feature_gates(Cli::command(), features);
     let bin_name = cmd.get_name().to_string();
     clap_complete::generate(shell, &mut cmd, bin_name, &mut io::stdout());

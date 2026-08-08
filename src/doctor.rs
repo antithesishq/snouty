@@ -6,7 +6,7 @@ use crate::attributed_value::AttributedValue;
 use crate::auth::AuthenticationInfo;
 use crate::compose;
 use crate::container;
-use crate::features::Feature;
+use crate::features::{self, Feature};
 use crate::render::render_kv;
 use crate::settings::Settings;
 
@@ -340,11 +340,12 @@ fn resolve_settings(settings: &Settings) -> Vec<Setting> {
         Setting::new("update channel", settings.update_channel().as_str()),
     ];
     // Only when set: features are opt-in, so an empty row would be noise on
-    // every ordinary run. Listing them when present is what makes a
-    // precedence question ("which layer turned this on?") answerable.
-    if !settings.features().is_empty() {
-        let enabled: Vec<&str> = settings.features().iter().map(Feature::as_str).collect();
-        rows.push(Setting::new("features", enabled.join(", ")));
+    // every ordinary run. Read from the environment rather than from
+    // `settings`, since that is the only place features come from.
+    let enabled = features::enabled();
+    if !enabled.is_empty() {
+        let ids: Vec<&str> = enabled.iter().map(Feature::as_str).collect();
+        rows.push(Setting::new("features", ids.join(", ")));
     }
     rows
 }

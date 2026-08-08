@@ -82,25 +82,28 @@ A matching environment variable always overrides the file. The supported keys an
 | `base_url`         | `ANTITHESIS_BASE_URL`     |
 | `container_engine` | `SNOUTY_CONTAINER_ENGINE` |
 | `update_channel`   | `SNOUTY_UPDATE_CHANNEL`   |
-| `features`         | `SNOUTY_FEATURES`         |
 
 Authentication (below) is read from the environment only, never from a settings file.
 
 ### Features
 
 Some commands are gated behind an opt-in feature, because the Antithesis API
-they call is still changing shape or is unavailable on most tenants. A gated
-command is absent until you enable it: it does not appear in `--help` or in
-completions, and invoking it fails as an unknown subcommand.
+they call is still changing shape or is unavailable on most tenants. Until you
+enable it, a gated command is absent from `--help` and invoking it fails as an
+unrecognized subcommand. (It is hidden rather than removed, so `snouty <command>
+--help` still describes it and names the feature that enables it.)
 
-Enable features by id, as a TOML array in a settings file or a comma-separated
-`SNOUTY_FEATURES`. Like every other setting, it can be set per profile, and
-`snouty doctor` lists whatever resolved.
+Enable features by id in `SNOUTY_FEATURES`, a comma-separated list:
 
-```toml
-# .snouty.toml
-features = ["runs-exec"]
+```sh
+export SNOUTY_FEATURES=runs-exec
 ```
+
+This is an environment variable rather than a settings key on purpose: the gate
+decides which subcommands exist, so snouty has to know it before it parses the
+command line — earlier than a settings file, whose location depends on
+`--settings`/`--profile`, can be read. `snouty doctor` lists whatever is
+enabled.
 
 | Feature id  | Enables                                                        |
 | ----------- | -------------------------------------------------------------- |

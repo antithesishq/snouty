@@ -27,6 +27,14 @@ use crate::env;
 /// of ids.
 pub const FEATURES_VAR_NAME: &str = "SNOUTY_FEATURES";
 
+/// Whether `feature` is enabled.
+///
+/// Cheap enough to call from anywhere — including a clap `hide` attribute,
+/// which is how a gated command decides whether to show itself.
+pub fn is_enabled(feature: Feature) -> bool {
+    enabled().contains(&feature)
+}
+
 /// The features `SNOUTY_FEATURES` enables, in the order listed. Empty when the
 /// variable is unset or holds nothing usable; whitespace and empty entries are
 /// dropped, so `"a, b,"` is `[a, b]`.

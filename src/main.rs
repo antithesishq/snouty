@@ -1,7 +1,7 @@
 use std::io::{self, ErrorKind, IsTerminal, Read};
 use std::process::Command;
 
-use clap::{CommandFactory, FromArgMatches};
+use clap::{CommandFactory, Parser};
 use clap_complete::Shell;
 use log::{debug, info};
 
@@ -11,15 +11,14 @@ use semver::Version;
 use snouty::api::AntithesisApi;
 use snouty::auth::initialize_credential_store;
 use snouty::cli::{
-    Cli, Commands, DebugArgs, LaunchArgs, UpdateArgs, UpdateChannel, apply_feature_gates,
-    gated_command_error,
+    Cli, Commands, DebugArgs, LaunchArgs, UpdateArgs, UpdateChannel, gated_command_error,
 };
 use snouty::compose;
 use snouty::config;
 use snouty::container;
 use snouty::docs;
 use snouty::error::user_error;
-use snouty::features::{self, Feature};
+use snouty::features;
 use snouty::login::cmd_login;
 use snouty::moment;
 use snouty::params::Params;
@@ -77,23 +76,15 @@ async fn main() {
             writeln!(buf, "{}", record.args())
         })
         .init();
-    // The enabled features decide which subcommands the parser reveals, so
-    // they are read from the environment before the parse (see
-    // `features::enabled` for why this is an env var and not a setting).
-    let features = features::enabled();
-    let cli = match Cli::from_arg_matches(
-        &apply_feature_gates(Cli::command(), &features).get_matches(),
-    ) {
-        Ok(cli) => cli,
-        Err(err) => err.exit(),
-    };
-    // Hiding keeps a gated command out of help and completions, but a hidden
-    // subcommand is still callable — so refuse it here too.
-    if let Some(err) = gated_command_error(&cli.command, &features) {
+    // A gated command hides itself as the parser is built (see the `hide`
+    // attribute on `RunsCommands::Exec`), but a hidden subcommand is still
+    // callable — so refuse it here too.
+    let cli = Cli::parse();
+    if let Some(err) = gated_command_error(&cli.command, &features::enabled()) {
         err.exit();
     }
 
-    if let Err(report) = run(cli, features).await {
+    if let Err(report) = run(cli).await {
         // One rendering for every error: `render_report` collapses the chain
         // index for single errors and wraps overlong prose, both printing
         // concerns that belong here rather than in the messages. User-facing
@@ -106,7 +97,7 @@ async fn main() {
     }
 }
 
-async fn run(cli: Cli, features: Vec<Feature>) -> Result<()> {
+async fn run(cli: Cli) -> Result<()> {
     let Cli {
         json,
         verbose,
@@ -127,7 +118,7 @@ async fn run(cli: Cli, features: Vec<Feature>) -> Result<()> {
     // don't read settings. That keeps dispatch a single flat match.
     let settings = Settings::resolve(settings_path, profile.clone());
     let result = match command {
-        Commands::Completions { shell } => cmd_completions(shell, &features),
+        Commands::Completions { shell } => cmd_completions(shell),
         Commands::Version => {
             // SNOUTY_VERSION (set by build.rs) is the crate version plus the
             // build's git sha when known — the same string clap's --version
@@ -401,13 +392,12 @@ async fn cmd_debug(args: DebugArgs, settings: &Settings, json: bool, verbose: bo
     Ok(())
 }
 
-fn cmd_completions(shell: Shell, features: &[Feature]) -> Result<()> {
-    // Gated the same way as `--help`, though it only goes so far: clap_complete
-    // emits hidden subcommands into the candidate list for bash and zsh, so a
-    // gated-off command can still be tab-completed — and then refused by
-    // `gated_command_error`. Applying the gate keeps the generated script
-    // right for the generators that do respect `hide`.
-    let mut cmd = apply_feature_gates(Cli::command(), features);
+fn cmd_completions(shell: Shell) -> Result<()> {
+    // `Cli::command()` already reflects the feature gate, though it only goes
+    // so far: clap_complete emits hidden subcommands into the candidate list
+    // for bash and zsh, so a gated-off command can still be tab-completed —
+    // and is then refused by `gated_command_error`.
+    let mut cmd = Cli::command();
     let bin_name = cmd.get_name().to_string();
     clap_complete::generate(shell, &mut cmd, bin_name, &mut io::stdout());
     Ok(())

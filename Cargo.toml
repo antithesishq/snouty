@@ -86,6 +86,7 @@ ctor = "0.4"
 wiremock = "0.6"
 hegeltest = "0.21.2"
 expectrl = "0.9"
+strip-ansi-escapes = "0.2.1"
 
 # The profile that 'dist' will build with
 [profile.dist]

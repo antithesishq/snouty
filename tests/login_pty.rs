@@ -92,8 +92,10 @@ fn spawn_login(home: &Path, base_url: &str) -> OsSession {
 /// (zhiburt/expectrl#75), so this drains everything the child rendered since
 /// the last match — `try_read` empties the session's unmatched buffer first,
 /// the drain pattern the expectrl maintainer recommends — and panics with it.
-/// Control characters are escaped, so the prompt text stays readable inside
-/// the terminal escape sequences.
+/// ANSI escape sequences are stripped for readability (the prompts re-render
+/// on every keystroke, so the raw stream is mostly cursor movements); the
+/// panic message says so, since a needle can legitimately fail to match
+/// *because of* escape sequences that the stripped view no longer shows.
 fn expect(session: &mut OsSession, needle: &str) {
     if let Err(err) = Expect::expect(session, needle) {
         let mut pending = Vec::new();
@@ -104,10 +106,13 @@ fn expect(session: &mut OsSession, needle: &str) {
             }
             pending.extend(&chunk[..n]);
         }
+        let stripped = strip_ansi_escapes::strip(&pending);
         panic!(
             "gave up waiting for {needle:?}: {err}\n\
-             unmatched output since the last expect (escapes shown as text):\n{}",
-            String::from_utf8_lossy(&pending).escape_debug()
+             unmatched output since the last expect — note: ANSI escape sequences \
+             have been stripped, so styled text (e.g. the menu cursor) may differ \
+             from the raw byte stream:\n{}",
+            String::from_utf8_lossy(&stripped)
         );
     }
 }

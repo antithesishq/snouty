@@ -5,7 +5,6 @@ use serde_json::{Map, Value};
 
 use crate::error::user_error;
 use crate::params::Params;
-use crate::vtime::{ParseVTimeError, VTime};
 use color_eyre::Section;
 use color_eyre::eyre::Result;
 
@@ -18,6 +17,10 @@ use color_eyre::eyre::Result;
 /// to `antithesis.debugging.*` format and numeric values are converted to strings.
 /// The parser is identifier-agnostic: whichever of `run_id` / `session_id` the
 /// moment carries is passed through unchanged.
+///
+/// The vtime is stringified like any other number here; it is normalized (and
+/// validated) by [`Params::normalize_debug_vtime`], which owns that rule for
+/// every route into a debug moment.
 pub fn parse(input: &str) -> Result<Params> {
     let input = input.trim();
 
@@ -43,18 +46,10 @@ pub fn parse(input: &str) -> Result<Params> {
     for (key, val) in obj {
         let new_key = format!("antithesis.debugging.{}", key);
         debug!("converting key {} -> {}", key, new_key);
-        // Convert numbers to strings. The vtime — number or string — routes
-        // through VTime, so the text sent to the API is its exact print
-        // (an integer vtime normalizes to e.g. "402.0").
-        let string_val = if key == "vtime" {
-            let vtime = VTime::from_json(val)
-                .ok_or_else(|| user_error(format!("invalid arguments: {ParseVTimeError}")))?;
-            Value::String(vtime.to_string())
-        } else {
-            match val {
-                Value::Number(n) => Value::String(n.to_string()),
-                other => other.clone(),
-            }
+        // Convert numbers to strings; every param is sent as text.
+        let string_val = match val {
+            Value::Number(n) => Value::String(n.to_string()),
+            other => other.clone(),
         };
         map.insert(new_key, string_val);
     }
@@ -142,20 +137,33 @@ mod tests {
     }
 
     #[test]
-    fn parse_normalizes_vtime_to_its_exact_print() {
-        // Both shapes normalize: integer 402 and string "402" print as "402.0".
-        for moment in [
-            r#"Moment.from({ run_id: "r-1", input_hash: "42", vtime: 402 })"#,
-            r#"Moment.from({ run_id: "r-1", input_hash: "42", vtime: "402" })"#,
+    fn parse_leaves_the_vtime_for_normalization() {
+        // The vtime is stringified verbatim here; `normalize_debug_vtime` turns
+        // either spelling into the same exact print, and rejects a bad one.
+        for (moment, stringified) in [
+            (
+                r#"Moment.from({ run_id: "r-1", input_hash: "42", vtime: 402 })"#,
+                "402",
+            ),
+            (
+                r#"Moment.from({ run_id: "r-1", input_hash: "42", vtime: "402" })"#,
+                "402",
+            ),
         ] {
-            let params = parse(moment).unwrap();
+            let mut params = parse(moment).unwrap();
+            assert_eq!(
+                params.as_map().get("antithesis.debugging.vtime"),
+                Some(&Value::String(stringified.to_string()))
+            );
+            params.normalize_debug_vtime().unwrap();
             assert_eq!(
                 params.as_map().get("antithesis.debugging.vtime"),
                 Some(&Value::String("402.0".to_string()))
             );
         }
-        // A vtime that isn't a finite number is rejected.
-        assert!(parse(r#"Moment.from({ run_id: "r-1", vtime: "oops" })"#).is_err());
+
+        let mut params = parse(r#"Moment.from({ run_id: "r-1", vtime: "oops" })"#).unwrap();
+        assert!(params.normalize_debug_vtime().is_err());
     }
 
     #[test]

@@ -6,7 +6,7 @@ use std::time::Duration;
 use base64::{Engine as _, prelude::BASE64_URL_SAFE_NO_PAD};
 use color_eyre::Section;
 use color_eyre::eyre::{Context, Result, eyre};
-use dialoguer::{Confirm, Input, Select};
+use inquire::{Confirm, Password, PasswordDisplayMode, Select, Text};
 use log::warn;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -32,7 +32,7 @@ const OAUTH_HTTP_TIMEOUT: Duration = Duration::from_secs(10);
 /// sign-in (including MFA).
 const CALLBACK_TIMEOUT: Duration = Duration::from_secs(300);
 
-/// Wrapping our TUI (`dialoguer`) in trait so that it can be subbed out for testing
+/// Wrapping our TUI (`inquire`) in a trait so that it can be subbed out for testing
 trait Prompter {
     /// Whether we're attached to an interactive terminal.
     fn is_interactive(&self) -> bool;
@@ -44,8 +44,7 @@ trait Prompter {
     fn input(&self, prompt: &str, default: Option<&str>) -> Result<String>;
 
     /// A single-choice menu over `items`, initially highlighting `default`.
-    /// Returns `None` when the user cancels (Esc/q), mirroring
-    /// [`dialoguer::Select::interact_opt`].
+    /// Returns `None` when the user cancels (Esc).
     fn select(&self, prompt: &str, items: &[String], default: usize) -> Result<Option<usize>>;
 
     /// A masked secret (each character echoes as `*`). When `confirm_prompt` is
@@ -53,152 +52,42 @@ trait Prompter {
     fn password(&self, prompt: &str, confirm_prompt: Option<&str>) -> Result<String>;
 }
 
-/// The production [`Prompter`]: `dialoguer` widgets reading the real terminal.
-struct DialoguerPrompter;
+/// The production [`Prompter`]: `inquire` prompts reading the real terminal.
+struct InquirePrompter;
 
-impl Prompter for DialoguerPrompter {
+impl Prompter for InquirePrompter {
     fn is_interactive(&self) -> bool {
         io::stdin().is_terminal()
     }
 
     fn confirm(&self, prompt: &str) -> Result<bool> {
-        Ok(Confirm::new().with_prompt(prompt).interact()?)
+        Ok(Confirm::new(prompt).prompt()?)
     }
 
     fn input(&self, prompt: &str, default: Option<&str>) -> Result<String> {
-        // T is inferred as `String` from the `String` return type — matching the
-        // form dialoguer's own examples use. The default is deliberately not
-        // rendered: a long one (e.g. a registry URL) wraps the prompt line,
-        // which dialoguer re-renders duplicated on submit. The caller prints
-        // the current value on its own line instead (see `prompt_for_value`).
-        let mut input = Input::new().with_prompt(prompt);
+        let mut text = Text::new(prompt);
         if let Some(default) = default {
-            input = input.default(default.to_owned()).show_default(false);
+            text = text.with_default(default);
         }
-        Ok(input.interact_text()?)
+        Ok(text.prompt()?)
     }
 
     fn select(&self, prompt: &str, items: &[String], default: usize) -> Result<Option<usize>> {
-        Ok(Select::new()
-            .with_prompt(prompt)
-            .items(items)
-            .default(default)
-            .interact_opt()?)
+        Ok(Select::new(prompt, items.to_vec())
+            .with_starting_cursor(default)
+            .raw_prompt_skippable()?
+            .map(|choice| choice.index))
     }
 
     fn password(&self, prompt: &str, confirm_prompt: Option<&str>) -> Result<String> {
-        let term = console::Term::stderr();
-        loop {
-            let value = read_masked_line(&term, prompt)?;
-            let Some(confirm_prompt) = confirm_prompt else {
-                return Ok(value);
-            };
-            if read_masked_line(&term, confirm_prompt)? == value {
-                return Ok(value);
-            }
-            term.write_line("Passwords did not match")?;
-        }
-    }
-}
-
-/// What one keypress did to an in-progress masked value, so the reader knows
-/// what to echo.
-enum MaskedEdit {
-    Submitted,
-    Interrupted,
-    Appended,
-    Erased,
-    Ignored,
-}
-
-fn apply_masked_key(value: &mut String, key: console::Key) -> MaskedEdit {
-    use console::Key;
-    match key {
-        Key::Enter => MaskedEdit::Submitted,
-        Key::CtrlC => MaskedEdit::Interrupted,
-        Key::Backspace => match value.pop() {
-            Some(_) => MaskedEdit::Erased,
-            None => MaskedEdit::Ignored,
-        },
-        Key::Char(c) if !c.is_control() => {
-            value.push(c);
-            MaskedEdit::Appended
-        }
-        _ => MaskedEdit::Ignored,
-    }
-}
-
-/// Bookkeeping for how many mask characters are on screen. Stars are echoed
-/// for the first `shown` characters of the value only, capped at `budget` (the
-/// space left on the prompt row): erasing a star uses a cursor-left escape
-/// that cannot cross a line wrap, so a star must never be written past the end
-/// of the row.
-struct MaskedEcho {
-    budget: usize,
-    shown: usize,
-}
-
-impl MaskedEcho {
-    fn new(budget: usize) -> Self {
-        Self { budget, shown: 0 }
-    }
-
-    /// A character was appended; returns whether to echo a star for it.
-    fn appended(&mut self) -> bool {
-        if self.shown < self.budget {
-            self.shown += 1;
-            true
-        } else {
-            false
-        }
-    }
-
-    /// A character was erased, leaving `remaining` characters; returns whether
-    /// a star was on screen for it and must be cleared.
-    fn erased(&mut self, remaining: usize) -> bool {
-        if remaining < self.shown {
-            self.shown -= 1;
-            true
-        } else {
-            false
-        }
-    }
-}
-
-/// Read a secret from the terminal, echoing one `*` per character.
-/// `dialoguer::Password` echoes nothing at all, which makes a pasted value look
-/// like a hang; the mask shows input arriving without revealing it.
-fn read_masked_line(term: &console::Term, prompt: &str) -> Result<String> {
-    let prompt = format!("{prompt}: ");
-    term.write_str(&prompt)?;
-    // Echo at most the rest of the row (keeping the last column free so the
-    // cursor never wraps); a longer secret is still accepted, silently.
-    let (_rows, cols) = term.size();
-    let budget = (cols as usize).saturating_sub(console::measure_text_width(&prompt) + 1);
-    let mut echo = MaskedEcho::new(budget);
-    let mut value = String::new();
-    loop {
-        match apply_masked_key(&mut value, term.read_key()?) {
-            MaskedEdit::Submitted => {
-                term.write_line("")?;
-                return Ok(value);
-            }
-            MaskedEdit::Interrupted => {
-                term.write_line("")?;
-                return Err(user_error("interrupted"));
-            }
-            MaskedEdit::Appended => {
-                if echo.appended() {
-                    term.write_str("*")?;
-                }
-            }
-            MaskedEdit::Erased => {
-                if echo.erased(value.len()) {
-                    term.clear_chars(1)?;
-                }
-            }
-            MaskedEdit::Ignored => {}
-        }
+        let mut password = Password::new(prompt).with_display_mode(PasswordDisplayMode::Masked);
+        password = match confirm_prompt {
+            Some(confirm_prompt) => password
+                .with_custom_confirmation_message(confirm_prompt)
+                .with_custom_confirmation_error_message("Passwords did not match"),
+            None => password.without_confirmation(),
+        };
+        Ok(password.prompt()?)
     }
 }
 
@@ -213,7 +102,7 @@ pub async fn cmd_login(
         repository,
         profile,
         current_settings,
-        &DialoguerPrompter,
+        &InquirePrompter,
     )
     .await
 }
@@ -375,19 +264,10 @@ fn prompt_for_value(
     if !prompter.is_interactive() {
         return Err(eyre!("Cannot prompt for value when not running in a TTY"));
     }
-    match previous_value {
-        // The current value goes on its own line, not inline in the prompt: it
-        // can be long (e.g. a registry URL), and a prompt line that wraps is
-        // re-rendered duplicated when dialoguer clears it on submit.
-        Some(previous) => {
-            eprintln!("Current {value_name}: {previous}");
-            prompter.input(
-                &format!("What {value_name} would you like to use? (Enter to keep)"),
-                Some(previous),
-            )
-        }
-        None => prompter.input(&format!("What {value_name} would you like to use?"), None),
-    }
+    prompter.input(
+        &format!("What {value_name} would you like to use?"),
+        previous_value,
+    )
 }
 
 enum AuthSetupType {
@@ -934,78 +814,6 @@ fn open_in_browser(url: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn masked_key_edits_track_the_value_and_echo() {
-        use console::Key;
-
-        let mut value = String::new();
-        // Typed (or pasted) characters append and echo a star each.
-        assert!(matches!(
-            apply_masked_key(&mut value, Key::Char('a')),
-            MaskedEdit::Appended
-        ));
-        assert!(matches!(
-            apply_masked_key(&mut value, Key::Char('b')),
-            MaskedEdit::Appended
-        ));
-        // Backspace erases one character (and one star)...
-        assert!(matches!(
-            apply_masked_key(&mut value, Key::Backspace),
-            MaskedEdit::Erased
-        ));
-        assert_eq!(value, "a");
-        // ...but on an empty value there is nothing to erase or un-echo.
-        value.clear();
-        assert!(matches!(
-            apply_masked_key(&mut value, Key::Backspace),
-            MaskedEdit::Ignored
-        ));
-        // Control characters and navigation keys are ignored.
-        assert!(matches!(
-            apply_masked_key(&mut value, Key::Char('\u{7}')),
-            MaskedEdit::Ignored
-        ));
-        assert!(matches!(
-            apply_masked_key(&mut value, Key::ArrowLeft),
-            MaskedEdit::Ignored
-        ));
-        assert!(value.is_empty());
-        // Enter submits, ctrl-c interrupts.
-        assert!(matches!(
-            apply_masked_key(&mut value, Key::Enter),
-            MaskedEdit::Submitted
-        ));
-        assert!(matches!(
-            apply_masked_key(&mut value, Key::CtrlC),
-            MaskedEdit::Interrupted
-        ));
-    }
-
-    #[test]
-    fn masked_echo_never_exceeds_its_budget_and_clears_only_shown_stars() {
-        let mut echo = MaskedEcho::new(3);
-        // The first three characters echo a star each; the fourth does not fit
-        // on the row and is accepted silently.
-        assert!(echo.appended());
-        assert!(echo.appended());
-        assert!(echo.appended());
-        assert!(!echo.appended()); // value is now 4 chars, 3 stars shown
-
-        // Erasing the un-echoed fourth character clears nothing...
-        assert!(!echo.erased(3));
-        // ...erasing echoed characters clears their stars.
-        assert!(echo.erased(2));
-        assert!(echo.erased(1));
-
-        // Appending echoes again now that there is room.
-        assert!(echo.appended());
-
-        // A zero budget (prompt fills the row) echoes nothing at all.
-        let mut none = MaskedEcho::new(0);
-        assert!(!none.appended());
-        assert!(!none.erased(0));
-    }
 
     #[test]
     fn cli_config_deserializes_all_three_strategies() {

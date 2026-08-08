@@ -50,7 +50,7 @@ which = "8"
 keyring-core = "1.0.0"
 textwrap = { version = "0.16.2", default-features = false }
 sha2 = "0.10"
-dialoguer = "0.12.0"
+inquire = "0.9"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 apple-native-keyring-store = { version = "1.0.0", features = [ "keychain" ] }
@@ -74,8 +74,6 @@ syn = "2"
 
 [dev-dependencies]
 assert_cmd = "2"
-# PTY plumbing for the interactive-login tests (tests/login_pty.rs).
-libc = "0.2"
 predicates = "3"
 serde_json = "1"
 tempfile = "3"
@@ -87,6 +85,7 @@ testscript-rs = { git = "https://github.com/antithesishq/testscript-rs.git", bra
 ctor = "0.4"
 wiremock = "0.6"
 hegeltest = "0.21.2"
+expectrl = "0.9"
 
 # The profile that 'dist' will build with
 [profile.dist]

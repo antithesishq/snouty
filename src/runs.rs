@@ -137,9 +137,9 @@ pub async fn cmd_runs(
             cmd_runs_logs(
                 &run_id,
                 &input_hash,
-                &vtime,
+                vtime,
                 begin_input_hash.as_deref(),
-                begin_vtime.as_deref(),
+                begin_vtime,
                 settings,
                 LogOutputOptions { json, verbose, raw },
             )
@@ -1510,9 +1510,9 @@ async fn cmd_runs_events(
 async fn cmd_runs_logs(
     run_id: &str,
     input_hash: &str,
-    vtime: &str,
+    vtime: VTime,
     begin_input_hash: Option<&str>,
-    begin_vtime: Option<&str>,
+    begin_vtime: Option<VTime>,
     settings: &Settings,
     LogOutputOptions { json, verbose, raw }: LogOutputOptions,
 ) -> Result<()> {

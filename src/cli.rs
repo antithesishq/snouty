@@ -639,11 +639,13 @@ Output: `[vtime] [source] [stream] message`. A moment (HASH/VTIME) comes from
     },
 
     /// Execute a command in a run's live session
-    // Gated behind the `runs-exec` feature: hidden here, and revealed by
-    // `apply_feature_gates` only when the feature is enabled. Invoking it
-    // while disabled is refused by `gated_command_error`.
+    // Gated behind the `runs-exec` feature. `hide` is an expression, so the
+    // decision is made when the command is built — the feature comes from the
+    // environment, which needs no parse to read. Hiding only keeps it out of
+    // `--help`; invoking it while disabled is refused by
+    // [`gated_command_error`].
     #[command(
-        hide = true,
+        hide = !crate::features::is_enabled(Feature::RunsExec),
         long_about = r#"Execute a bash script in a run's live session, at a moment.
 
 This command is gated behind the `runs-exec` feature, because the Antithesis
@@ -762,34 +764,20 @@ impl Default for RunsListArgs {
     }
 }
 
-/// Reveal the subcommands whose features are enabled.
-///
-/// Every feature-gated command is declared `hide = true`, so this is what puts
-/// one in front of a user: it is listed by `--help` and by shell completions
-/// exactly when its feature is on. Applied before the parse, since that is
-/// when clap decides what to show.
-///
-/// Hiding is only half the gate — a hidden subcommand is still callable — so a
-/// gated-off command is also refused when invoked (see [`gated_command_error`]).
-pub fn apply_feature_gates(command: clap::Command, features: &[Feature]) -> clap::Command {
-    if !features.contains(&Feature::RunsExec) {
-        return command;
-    }
-    command.mut_subcommand("runs", |runs| {
-        runs.mut_subcommand("exec", |exec| exec.hide(false))
-    })
-}
-
 /// Clap's unrecognized-subcommand error when `command` is a gated command
 /// whose feature is off, so a gated-off command reads exactly like one that
 /// does not exist — same wording, same usage line, same exit code.
-pub fn gated_command_error(command: &Commands, features: &[Feature]) -> Option<clap::Error> {
+///
+/// This is the half of the gate that hiding cannot do: a hidden subcommand is
+/// still callable. `enabled` names the features that are on — the caller
+/// passes them so the decision is testable without touching the environment.
+pub fn gated_command_error(command: &Commands, enabled: &[Feature]) -> Option<clap::Error> {
     let gated_off = matches!(
         command,
         Commands::Runs {
             command: Some(RunsCommands::Exec { .. })
         }
-    ) && !features.contains(&Feature::RunsExec);
+    ) && !enabled.contains(&Feature::RunsExec);
     if !gated_off {
         return None;
     }
@@ -814,31 +802,6 @@ mod tests {
 
     fn parse(args: &[&str]) -> Cli {
         Cli::try_parse_from(args).expect("args should parse")
-    }
-
-    /// Render a command's help the way clap would print it.
-    fn help_of(command: &mut clap::Command, subcommand: &str) -> String {
-        command
-            .find_subcommand_mut(subcommand)
-            .expect("subcommand exists")
-            .render_help()
-            .to_string()
-    }
-
-    #[test]
-    fn exec_is_listed_in_help_only_when_its_feature_is_enabled() {
-        let mut without = apply_feature_gates(Cli::command(), &[]);
-        assert!(!help_of(&mut without, "runs").contains("\n  exec"));
-
-        let mut with = apply_feature_gates(Cli::command(), &[Feature::RunsExec]);
-        assert!(help_of(&mut with, "runs").contains("\n  exec"));
-
-        // An unrelated feature doesn't reveal it.
-        let mut other = apply_feature_gates(
-            Cli::command(),
-            &[Feature::Unknown("something-else".to_string())],
-        );
-        assert!(!help_of(&mut other, "runs").contains("\n  exec"));
     }
 
     #[test]

@@ -315,25 +315,28 @@ impl AntithesisApi {
         }
     }
 
+    /// The endpoint takes each vtime as a decimal-seconds query parameter, so
+    /// the typed values are rendered with [`VTime`]'s exact `Display` — the
+    /// same text the value was parsed from, for anything snouty printed.
     pub async fn get_run_logs(
         &self,
         run_id: &str,
         input_hash: &str,
-        vtime: &str,
+        vtime: VTime,
         begin_input_hash: Option<&str>,
-        begin_vtime: Option<&str>,
+        begin_vtime: Option<VTime>,
     ) -> Result<ByteStream> {
         let mut request = self
             .client
             .get_run_logs()
             .run_id(run_id)
             .input_hash(input_hash)
-            .vtime(vtime);
+            .vtime(vtime.to_string());
         if let Some(v) = begin_input_hash {
             request = request.begin_input_hash(v);
         }
         if let Some(v) = begin_vtime {
-            request = request.begin_vtime(v);
+            request = request.begin_vtime(v.to_string());
         }
 
         match request.send().await {

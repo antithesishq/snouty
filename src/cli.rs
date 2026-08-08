@@ -5,6 +5,17 @@ use crate::api::RunStatus;
 use crate::features::Feature;
 use crate::time::ReportDuration;
 
+/// clap value parser for a vtime the command passes through as text: the value
+/// must parse as a [`crate::vtime::VTime`], but the caller's exact spelling is
+/// what reaches the API. Commands that send a vtime as a typed field take
+/// `VTime` directly instead.
+fn validate_vtime(value: &str) -> Result<String, String> {
+    value
+        .parse::<crate::vtime::VTime>()
+        .map(|_| value.to_string())
+        .map_err(|err| err.to_string())
+}
+
 /// clap value parser for `--status` that keeps a friendly, enumerated error
 /// message (the generated `RunStatus::from_str` only says "invalid value").
 fn parse_run_status(value: &str) -> Result<RunStatus, String> {
@@ -512,7 +523,11 @@ pub struct DebugArgs {
     pub input_hash: Option<String>,
 
     /// Virtual time identifying the moment to debug
-    #[arg(long)]
+    // Validated as a vtime but kept as text: it is passed through verbatim as
+    // the `antithesis.debugging.vtime` parameter, and `--stdin` supplies the
+    // same parameter without going through this flag, so normalizing here
+    // would make the two paths disagree about what they send.
+    #[arg(long, value_parser = validate_vtime)]
     pub vtime: Option<String>,
 
     /// Debugging session description
@@ -621,12 +636,15 @@ Output: `[vtime] [source] [stream] message`. A moment (HASH/VTIME) comes from
         input_hash: String,
 
         /// Virtual time of the moment to stream up to
+        // Typed, so a malformed vtime is rejected by clap instead of by the
+        // server. `allow_hyphen_values` is kept here (unlike `runs exec`),
+        // because this command has always accepted a hyphen-led vtime.
         #[arg(allow_hyphen_values = true)]
-        vtime: String,
+        vtime: crate::vtime::VTime,
 
         /// Start from this virtual time instead of the timeline's earliest log entry
         #[arg(long, allow_hyphen_values = true)]
-        begin_vtime: Option<String>,
+        begin_vtime: Option<crate::vtime::VTime>,
 
         /// Start from this input hash (optimization; must be paired with --begin-vtime)
         #[arg(long, allow_hyphen_values = true, requires = "begin_vtime")]
@@ -896,8 +914,11 @@ mod tests {
             panic!("expected `runs logs`");
         };
         assert_eq!(input_hash, "-123");
-        assert_eq!(vtime, "-2.0");
-        assert_eq!(begin_vtime.as_deref(), Some("-2.0"));
+        assert_eq!(vtime, "-2.0".parse::<crate::vtime::VTime>().unwrap());
+        assert_eq!(
+            begin_vtime,
+            Some("-2.0".parse::<crate::vtime::VTime>().unwrap())
+        );
         assert_eq!(begin_input_hash.as_deref(), Some("0"));
     }
 
@@ -913,7 +934,7 @@ mod tests {
             panic!("expected `runs logs`");
         };
         assert!(raw);
-        assert_eq!(vtime, "-2.0");
+        assert_eq!(vtime, "-2.0".parse::<crate::vtime::VTime>().unwrap());
 
         let cli = parse(&["snouty", "runs", "logs", "RUN", "-123", "-2.0"]);
         let Commands::Runs {

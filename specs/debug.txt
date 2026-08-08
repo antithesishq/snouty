@@ -29,6 +29,15 @@ mock-server 200 '{}'
 ! snouty debug --input-hash abc
 stderr 'validation failed.*'
 
+# --vtime is validated as a vtime before any API call, but passed through as
+# text: it becomes the `antithesis.debugging.vtime` parameter verbatim (see the
+# steps below), and --stdin supplies that parameter without going through this
+# flag.
+mock-server 200 '{}'
+! snouty debug --input-hash abc --run-id run-1 --vtime not-a-number
+stderr 'invalid value .*not-a-number.*'
+stderr 'vtime is not a finite decimal number'
+
 # Old-style raw --antithesis.* args are not accepted by `debug`.
 ! snouty debug --antithesis.debugging.input_hash abc --antithesis.debugging.run_id run --antithesis.debugging.vtime 123
 stderr 'unexpected argument.*'

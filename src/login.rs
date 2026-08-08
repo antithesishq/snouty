@@ -128,11 +128,54 @@ fn apply_masked_key(value: &mut String, key: console::Key) -> MaskedEdit {
     }
 }
 
+/// Bookkeeping for how many mask characters are on screen. Stars are echoed
+/// for the first `shown` characters of the value only, capped at `budget` (the
+/// space left on the prompt row): erasing a star uses a cursor-left escape
+/// that cannot cross a line wrap, so a star must never be written past the end
+/// of the row.
+struct MaskedEcho {
+    budget: usize,
+    shown: usize,
+}
+
+impl MaskedEcho {
+    fn new(budget: usize) -> Self {
+        Self { budget, shown: 0 }
+    }
+
+    /// A character was appended; returns whether to echo a star for it.
+    fn appended(&mut self) -> bool {
+        if self.shown < self.budget {
+            self.shown += 1;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// A character was erased, leaving `remaining` characters; returns whether
+    /// a star was on screen for it and must be cleared.
+    fn erased(&mut self, remaining: usize) -> bool {
+        if remaining < self.shown {
+            self.shown -= 1;
+            true
+        } else {
+            false
+        }
+    }
+}
+
 /// Read a secret from the terminal, echoing one `*` per character.
 /// `dialoguer::Password` echoes nothing at all, which makes a pasted value look
 /// like a hang; the mask shows input arriving without revealing it.
 fn read_masked_line(term: &console::Term, prompt: &str) -> Result<String> {
-    term.write_str(&format!("{prompt}: "))?;
+    let prompt = format!("{prompt}: ");
+    term.write_str(&prompt)?;
+    // Echo at most the rest of the row (keeping the last column free so the
+    // cursor never wraps); a longer secret is still accepted, silently.
+    let (_rows, cols) = term.size();
+    let budget = (cols as usize).saturating_sub(console::measure_text_width(&prompt) + 1);
+    let mut echo = MaskedEcho::new(budget);
     let mut value = String::new();
     loop {
         match apply_masked_key(&mut value, term.read_key()?) {
@@ -144,8 +187,16 @@ fn read_masked_line(term: &console::Term, prompt: &str) -> Result<String> {
                 term.write_line("")?;
                 return Err(user_error("interrupted"));
             }
-            MaskedEdit::Appended => term.write_str("*")?,
-            MaskedEdit::Erased => term.clear_chars(1)?,
+            MaskedEdit::Appended => {
+                if echo.appended() {
+                    term.write_str("*")?;
+                }
+            }
+            MaskedEdit::Erased => {
+                if echo.erased(value.len()) {
+                    term.clear_chars(1)?;
+                }
+            }
             MaskedEdit::Ignored => {}
         }
     }
@@ -929,6 +980,31 @@ mod tests {
             apply_masked_key(&mut value, Key::CtrlC),
             MaskedEdit::Interrupted
         ));
+    }
+
+    #[test]
+    fn masked_echo_never_exceeds_its_budget_and_clears_only_shown_stars() {
+        let mut echo = MaskedEcho::new(3);
+        // The first three characters echo a star each; the fourth does not fit
+        // on the row and is accepted silently.
+        assert!(echo.appended());
+        assert!(echo.appended());
+        assert!(echo.appended());
+        assert!(!echo.appended()); // value is now 4 chars, 3 stars shown
+
+        // Erasing the un-echoed fourth character clears nothing...
+        assert!(!echo.erased(3));
+        // ...erasing echoed characters clears their stars.
+        assert!(echo.erased(2));
+        assert!(echo.erased(1));
+
+        // Appending echoes again now that there is room.
+        assert!(echo.appended());
+
+        // A zero budget (prompt fills the row) echoes nothing at all.
+        let mut none = MaskedEcho::new(0);
+        assert!(!none.appended());
+        assert!(!none.erased(0));
     }
 
     #[test]

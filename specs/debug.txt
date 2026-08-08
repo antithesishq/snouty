@@ -29,10 +29,8 @@ mock-server 200 '{}'
 ! snouty debug --input-hash abc
 stderr 'validation failed.*'
 
-# --vtime is validated as a vtime before any API call, but passed through as
-# text: it becomes the `antithesis.debugging.vtime` parameter verbatim (see the
-# steps below), and --stdin supplies that parameter without going through this
-# flag.
+# --vtime is parsed into the vtime type, so a malformed value is rejected
+# before any API call.
 mock-server 200 '{}'
 ! snouty debug --input-hash abc --run-id run-1 --vtime not-a-number
 stderr 'invalid value .*not-a-number.*'
@@ -54,11 +52,14 @@ stderr 'specify --run-id or --session-id.*'
 # Parameters are provided as typed flags. Before sending, the resolved
 #    parameters are printed to stderr with sensitive values redacted. The
 #    target run is identified by --run-id (preferred for new integrations).
+#    The vtime is normalized to its exact print, so every route into a moment
+#    (flags, Moment.from, raw JSON) sends the same text: `1234567890` becomes
+#    `1234567890.0`.
 mock-server 200 '{"statusCode":202,"runId":"run-123"}'
 snouty debug --input-hash abc123 --run-id 9043254f65c9c65d63fe043a0abfc7fc-53-1 --vtime 1234567890 --description 'debug this moment' --recipients team@example.com
 stderr '"antithesis.debugging.input_hash": "abc123"'
 stderr '"antithesis.debugging.run_id": "9043254f65c9c65d63fe043a0abfc7fc-53-1"'
-stderr '"antithesis.debugging.vtime": "1234567890"'
+stderr '"antithesis.debugging.vtime": "1234567890.0"'
 stderr '"antithesis.event_description": "debug this moment"'
 stderr '"antithesis.report.recipients": "\[REDACTED\]"'
 
@@ -96,11 +97,20 @@ stderr '"antithesis.debugging.session_id": "f89d5c11f5e3bf5e4bb3641809800cee-44-
 stderr '"antithesis.debugging.input_hash": "6057726200491963783"'
 stderr '"antithesis.debugging.vtime": "329.8037810830865"'
 
-# 3b. stdin as JSON
+# 3b. stdin as JSON. Its vtime is normalized the same way the flags' is.
 mock-server 200 '{"statusCode":202,"runId":"run-123"}'
 stdin debug_json.txt
 snouty debug --stdin
 stderr '"antithesis.debugging.input_hash": "abc"'
+stderr '"antithesis.debugging.vtime": "123.0"'
+
+# A vtime that isn't a number is rejected wherever it came from — here from
+# raw JSON on stdin, which no typed flag validated.
+mock-server 200 '{}'
+stdin debug_bad_vtime.txt
+! snouty debug --stdin
+stderr 'vtime is not a finite decimal number'
+stderr 'antithesis.debugging.vtime = "not-a-number"'
 
 # When both stdin and CLI args are provided, CLI args take priority over
 #    stdin values.
@@ -169,4 +179,10 @@ Moment.from({ run_id: "9043254f65c9c65d63fe043a0abfc7fc-53-1", input_hash: "6057
     "antithesis.debugging.input_hash": "abc",
     "antithesis.debugging.session_id": "sess",
     "antithesis.debugging.vtime": "123"
+}
+-- debug_bad_vtime.txt --
+{
+    "antithesis.debugging.input_hash": "abc",
+    "antithesis.debugging.session_id": "sess",
+    "antithesis.debugging.vtime": "not-a-number"
 }

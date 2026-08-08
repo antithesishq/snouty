@@ -344,7 +344,7 @@ fn debug_typed_params(args: &DebugArgs) -> Params {
         params.insert("antithesis.debugging.input_hash", input_hash.as_str());
     }
     if let Some(vtime) = &args.vtime {
-        params.insert("antithesis.debugging.vtime", vtime.as_str());
+        params.insert("antithesis.debugging.vtime", vtime.to_string());
     }
     if let Some(description) = &args.description {
         params.insert("antithesis.event_description", description.as_str());
@@ -364,6 +364,10 @@ fn debug_params(args: DebugArgs) -> Result<Params> {
         return Err(user_error("invalid arguments: no parameters provided"));
     }
 
+    // Every path into the moment lands here — the typed flags, a Moment.from
+    // on stdin, and raw JSON on stdin — so the vtime is normalized once, and
+    // all three send the same text for the same moment.
+    params.normalize_debug_vtime()?;
     Ok(params)
 }
 

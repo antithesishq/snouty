@@ -5,17 +5,6 @@ use crate::api::RunStatus;
 use crate::features::Feature;
 use crate::time::ReportDuration;
 
-/// clap value parser for a vtime the command passes through as text: the value
-/// must parse as a [`crate::vtime::VTime`], but the caller's exact spelling is
-/// what reaches the API. Commands that send a vtime as a typed field take
-/// `VTime` directly instead.
-fn validate_vtime(value: &str) -> Result<String, String> {
-    value
-        .parse::<crate::vtime::VTime>()
-        .map(|_| value.to_string())
-        .map_err(|err| err.to_string())
-}
-
 /// clap value parser for `--status` that keeps a friendly, enumerated error
 /// message (the generated `RunStatus::from_str` only says "invalid value").
 fn parse_run_status(value: &str) -> Result<RunStatus, String> {
@@ -523,12 +512,8 @@ pub struct DebugArgs {
     pub input_hash: Option<String>,
 
     /// Virtual time identifying the moment to debug
-    // Validated as a vtime but kept as text: it is passed through verbatim as
-    // the `antithesis.debugging.vtime` parameter, and `--stdin` supplies the
-    // same parameter without going through this flag, so normalizing here
-    // would make the two paths disagree about what they send.
-    #[arg(long, value_parser = validate_vtime)]
-    pub vtime: Option<String>,
+    #[arg(long)]
+    pub vtime: Option<crate::vtime::VTime>,
 
     /// Debugging session description
     #[arg(long)]

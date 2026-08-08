@@ -87,9 +87,28 @@ fn spawn_login(home: &Path, base_url: &str) -> OsSession {
 }
 
 /// Wait until `needle` appears in the session output, consuming through it.
+///
+/// On failure the expectrl error itself carries no context
+/// (zhiburt/expectrl#75), so this drains everything the child rendered since
+/// the last match — `try_read` empties the session's unmatched buffer first,
+/// the drain pattern the expectrl maintainer recommends — and panics with it.
+/// Control characters are escaped, so the prompt text stays readable inside
+/// the terminal escape sequences.
 fn expect(session: &mut OsSession, needle: &str) {
     if let Err(err) = Expect::expect(session, needle) {
-        panic!("gave up waiting for {needle:?}: {err}");
+        let mut pending = Vec::new();
+        let mut chunk = [0u8; 4096];
+        while let Ok(n) = session.try_read(&mut chunk) {
+            if n == 0 {
+                break;
+            }
+            pending.extend(&chunk[..n]);
+        }
+        panic!(
+            "gave up waiting for {needle:?}: {err}\n\
+             unmatched output since the last expect (escapes shown as text):\n{}",
+            String::from_utf8_lossy(&pending).escape_debug()
+        );
     }
 }
 

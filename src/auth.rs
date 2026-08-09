@@ -988,6 +988,11 @@ fn parse_credentials_file_toml(contents: String, path: &Path) -> Result<Credenti
     ))
 }
 
+/// The one-line remediation for the username/password deprecation, shared by
+/// every message that states it (the rejection suggestion here and the doctor
+/// warning note) so the wording cannot drift apart.
+pub(crate) const PASSWORD_DEPRECATION_SUGGESTION: &str = "username/password authentication is deprecated; run `snouty login` to switch to another authentication method";
+
 /// Reject username/password credentials for commands that don't support them —
 /// every endpoint other than the launch webhooks answers them with an opaque
 /// 403, so failing here gives the user an actionable message instead.
@@ -999,9 +1004,7 @@ fn reject_password_if_unsupported(
         return Err(user_error(
             "This command does not accept username/password authentication, which is only supported when launching runs (`snouty launch`, `snouty debug`)",
         )
-        .suggestion(
-            "username/password authentication is deprecated; run `snouty login` to switch to another authentication method",
-        ));
+        .suggestion(PASSWORD_DEPRECATION_SUGGESTION));
     }
 
     Ok(authn_info)

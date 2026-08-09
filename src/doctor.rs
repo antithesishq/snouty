@@ -207,10 +207,7 @@ fn authn_checks(authn_info: Result<AttributedValue<AuthenticationInfo>>) -> Vec<
                         "basic_auth",
                         format!("Using password credentials for user [{username}]"),
                     )
-                    .note(
-                        Level::Warning,
-                        "username/password authentication is deprecated; run `snouty login` to switch to another authentication method",
-                    )
+                    .note(Level::Warning, crate::auth::PASSWORD_DEPRECATION_SUGGESTION)
                     .note(
                         Level::Note,
                         "username/password only enables `snouty launch` and `snouty debug`",
@@ -419,8 +416,8 @@ pub async fn cmd_doctor(
     // Connectivity + version check (network). Skipped with --offline. Only runs
     // with an API key: /api/version, like every endpoint but launch, rejects
     // basic auth, so probing it under username/password would only yield a
-    // misleading 403 — and the auth checks above already tell legacy and
-    // unauthenticated users to set a key. The client is built from the resolved
+    // misleading 403 — and the auth checks above already tell deprecated-credential
+    // and unauthenticated users to set a key. The client is built from the resolved
     // settings (base url / tenant), and `verbose` logs the request/response.
     if !offline && let Ok(api) = AntithesisApi::new(settings, verbose) {
         let host = api.host();

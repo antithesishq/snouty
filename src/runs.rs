@@ -153,16 +153,7 @@ pub async fn cmd_runs(
             timeout,
         }) => {
             let moment = Moment { input_hash, vtime };
-            cmd_runs_exec(
-                &run_id,
-                moment,
-                script.as_deref(),
-                timeout,
-                settings,
-                json,
-                verbose,
-            )
-            .await
+            cmd_runs_exec(&run_id, moment, script, timeout, settings, json, verbose).await
         }
         Some(RunsCommands::Events {
             run_id,
@@ -1609,13 +1600,13 @@ const MAX_SCRIPT_BYTES: u64 = 2 * 1024 * 1024;
 
 /// The script to execute: the SCRIPT argument, or stdin when it is omitted.
 /// An empty script is rejected before any API call.
-fn resolve_exec_script(arg: Option<&str>) -> Result<String> {
+fn resolve_exec_script(arg: Option<String>) -> Result<String> {
     match arg {
         Some(script) => {
             if script.trim().is_empty() {
                 return Err(no_script_error());
             }
-            Ok(script.to_string())
+            Ok(script)
         }
         None => read_script_from_stdin(std::io::stdin(), std::io::stdin().is_terminal()),
     }
@@ -1637,10 +1628,15 @@ fn read_script_from_stdin(input: impl Read, interactive: bool) -> Result<String>
     }
     // Read one byte past the cap so an over-long script is detected rather
     // than silently truncated into a script that means something else.
-    let mut buf = String::new();
+    //
+    // Bytes, not text, and the size is checked before the UTF-8 conversion:
+    // reading straight into a `String` would validate the whole capped buffer
+    // first, so an over-long script whose cap boundary splits a multi-byte
+    // character would fail as invalid UTF-8 and never mention its size.
+    let mut buf = Vec::new();
     input
         .take(MAX_SCRIPT_BYTES + 1)
-        .read_to_string(&mut buf)
+        .read_to_end(&mut buf)
         .wrap_err("failed to read the script from stdin")?;
     if buf.len() as u64 > MAX_SCRIPT_BYTES {
         return Err(user_error(format!(
@@ -1649,16 +1645,18 @@ fn read_script_from_stdin(input: impl Read, interactive: bool) -> Result<String>
         ))
         .note("`runs exec` sends the whole script in one request body"));
     }
-    if buf.trim().is_empty() {
+    let script =
+        String::from_utf8(buf).map_err(|_| user_error("the script on stdin is not valid UTF-8"))?;
+    if script.trim().is_empty() {
         return Err(no_script_error());
     }
-    Ok(buf)
+    Ok(script)
 }
 
 async fn cmd_runs_exec(
     run_id: &str,
     moment: Moment,
-    script: Option<&str>,
+    script: Option<String>,
     timeout: u64,
     settings: &Settings,
     json: bool,
@@ -3955,11 +3953,11 @@ mod tests {
     #[test]
     fn resolve_exec_script_takes_the_argument_verbatim() {
         assert_eq!(
-            resolve_exec_script(Some("uname -a")).unwrap(),
+            resolve_exec_script(Some("uname -a".to_string())).unwrap(),
             "uname -a".to_string()
         );
         // A blank argument is "no script", same as an empty stdin.
-        let err = resolve_exec_script(Some("  ")).unwrap_err();
+        let err = resolve_exec_script(Some("  ".to_string())).unwrap_err();
         assert!(err.to_string().contains("no script provided"), "{err}");
     }
 
@@ -3982,6 +3980,37 @@ mod tests {
     fn read_script_from_stdin_rejects_an_empty_script() {
         let err = read_script_from_stdin(&b"  \n"[..], false).unwrap_err();
         assert!(err.to_string().contains("no script provided"), "{err}");
+    }
+
+    #[test]
+    fn read_script_from_stdin_reports_size_before_utf8() {
+        // An over-cap script is refused for its size even when the cap
+        // boundary splits a multi-byte character. Reading straight into a
+        // `String` validated the whole buffer first, so this failed as
+        // "invalid UTF-8" and never mentioned the limit.
+        let two_byte_chars = "é".repeat(MAX_SCRIPT_BYTES as usize); // 2 bytes each
+        let err = read_script_from_stdin(two_byte_chars.as_bytes(), false).unwrap_err();
+        assert!(
+            err.to_string().contains("larger than the 2 MiB limit"),
+            "{err}"
+        );
+
+        // Binary input over the cap is the same case, and the one the doc
+        // comment names.
+        let binary = vec![0xffu8; MAX_SCRIPT_BYTES as usize + 1];
+        let err = read_script_from_stdin(binary.as_slice(), false).unwrap_err();
+        assert!(
+            err.to_string().contains("larger than the 2 MiB limit"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn read_script_from_stdin_rejects_invalid_utf8_under_the_cap() {
+        // Under the cap, a non-text script says so plainly rather than
+        // surfacing the raw io error.
+        let err = read_script_from_stdin(&[0xff, 0xfe][..], false).unwrap_err();
+        assert!(err.to_string().contains("not valid UTF-8"), "{err}");
     }
 
     #[test]

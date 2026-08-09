@@ -50,7 +50,9 @@ which = "8"
 keyring-core = "1.0.0"
 textwrap = { version = "0.16.2", default-features = false }
 sha2 = "0.10"
-inquire = "0.9"
+# Only the crossterm backend: the default `fuzzy` filter (fuzzy-matcher) is
+# pointless for a three-entry menu, and the `macros`/`one-liners` sugar is unused.
+inquire = { version = "0.9", default-features = false, features = ["crossterm"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 apple-native-keyring-store = { version = "1.0.0", features = [ "keychain" ] }

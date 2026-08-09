@@ -3,7 +3,7 @@ use serde::Serialize;
 
 use crate::api::{AntithesisApi, ApiVersion, VersionError};
 use crate::attributed_value::AttributedValue;
-use crate::auth::AuthenticationInfo;
+use crate::auth::{AuthenticationInfo, PasswordPolicy};
 use crate::compose;
 use crate::container;
 use crate::render::render_kv;
@@ -313,7 +313,10 @@ fn collect_checks(settings: &Settings) -> Vec<Check> {
 
     // Authentication (synchronous-only by design).
     checks.extend(authn_checks(
-        AuthenticationInfo::for_ambient_configuration_with_attribution(settings.profile(), true),
+        AuthenticationInfo::for_ambient_configuration_with_attribution(
+            settings.profile(),
+            PasswordPolicy::Inspect,
+        ),
     ));
 
     checks
@@ -413,12 +416,14 @@ pub async fn cmd_doctor(
 ) -> Result<()> {
     let mut checks = collect_checks(settings);
 
-    // Connectivity + version check (network). Skipped with --offline. Only runs
-    // with an API key: /api/version, like every endpoint but launch, rejects
-    // basic auth, so probing it under username/password would only yield a
-    // misleading 403 — and the auth checks above already tell deprecated-credential
-    // and unauthenticated users to set a key. The client is built from the resolved
-    // settings (base url / tenant), and `verbose` logs the request/response.
+    // Connectivity + version check (network). Skipped with --offline. Only
+    // runs when the resolved credentials work against the full API:
+    // /api/version, like every endpoint but launch, rejects username/password
+    // auth, so probing it with those credentials would only yield a misleading
+    // 403 — and the auth checks above already tell deprecated-credential and
+    // unauthenticated users to set a key. The client is built from the
+    // resolved settings (base url / tenant), and `verbose` logs the
+    // request/response.
     if !offline && let Ok(api) = AntithesisApi::new(settings, verbose) {
         let host = api.host();
         checks.push(version_check(&host, api.get_version().await));

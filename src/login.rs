@@ -16,7 +16,7 @@ use tokio::net::TcpListener;
 use crate::settings;
 use crate::{
     attributed_value::AttributedValue,
-    auth::{AuthenticationInfo, PersistableCredentials, persist},
+    auth::{AuthenticationInfo, PasswordPolicy, PersistableCredentials, persist},
     env,
     error::user_error,
     settings::{
@@ -45,7 +45,7 @@ trait Prompter {
 
     /// A single-choice menu over `items`, initially highlighting `default`.
     /// Returns `None` when the user cancels (Esc).
-    fn select(&self, prompt: &str, items: &[String], default: usize) -> Result<Option<usize>>;
+    fn select(&self, prompt: &str, items: Vec<String>, default: usize) -> Result<Option<usize>>;
 
     /// A masked secret (each character echoes as `*`). There is deliberately
     /// no confirmation round: Antithesis passwords are long generated strings
@@ -73,8 +73,8 @@ impl Prompter for InquirePrompter {
         Ok(text.prompt()?)
     }
 
-    fn select(&self, prompt: &str, items: &[String], default: usize) -> Result<Option<usize>> {
-        Ok(Select::new(prompt, items.to_vec())
+    fn select(&self, prompt: &str, items: Vec<String>, default: usize) -> Result<Option<usize>> {
+        Ok(Select::new(prompt, items)
             .with_starting_cursor(default)
             .raw_prompt_skippable()?
             .map(|choice| choice.index))
@@ -149,7 +149,7 @@ async fn do_cmd_login(
 
     let current_credentials = AuthenticationInfo::for_ambient_configuration_with_attribution(
         profile_to_use.as_deref(),
-        true,
+        PasswordPolicy::Inspect,
     );
 
     // Capture the credential kind and where it was stored so the summary can name
@@ -267,10 +267,28 @@ fn prompt_for_value(
     )
 }
 
+#[derive(Clone, Copy, PartialEq)]
 enum AuthSetupType {
     ApiKey,
     Password,
     OAuth,
+}
+
+impl AuthSetupType {
+    /// The credential menu, in order: single sign-on leads and is the
+    /// first-login default; the deprecated username/password option is last.
+    const IN_PREFERENCE_ORDER: [Self; 3] = [Self::OAuth, Self::ApiKey, Self::Password];
+
+    /// Whether this menu entry collects the same credential kind as `info`.
+    fn collects(self, info: &AuthenticationInfo) -> bool {
+        match info {
+            AuthenticationInfo::ApiKey { .. } => self == Self::ApiKey,
+            AuthenticationInfo::Password { .. } => self == Self::Password,
+            AuthenticationInfo::OAuth { .. } => self == Self::OAuth,
+            // No menu entry sets up GitHub Actions OIDC; it is ambient-only.
+            AuthenticationInfo::GithubActionsOidc { .. } => false,
+        }
+    }
 }
 
 impl std::fmt::Display for AuthSetupType {
@@ -297,46 +315,36 @@ async fn prompt_for_auth(
         .wrap_err("failed to build the OAuth HTTP client")?;
     let oauth_config = fetch_cli_config(&client, &base_url).await;
 
-    // Single sign-on (when the tenant offers it) leads and is the first-login
-    // default; the deprecated username/password option always comes last.
-    let mut credential_options = Vec::new();
-    if oauth_config
+    let oauth_offered = oauth_config
         .as_ref()
-        .is_ok_and(|config| !matches!(config, CliOAuthConfig::Disabled))
-    {
-        credential_options.push(AuthSetupType::OAuth);
-    }
-    credential_options.push(AuthSetupType::ApiKey);
-    credential_options.push(AuthSetupType::Password);
+        .is_ok_and(|config| !matches!(config, CliOAuthConfig::Disabled));
+    let credential_options: Vec<AuthSetupType> = AuthSetupType::IN_PREFERENCE_ORDER
+        .into_iter()
+        .filter(|option| oauth_offered || *option != AuthSetupType::OAuth)
+        .collect();
 
-    let labels: Vec<String> = credential_options.iter().map(ToString::to_string).collect();
-
-    // Default the highlighted option to whatever kind was last used, so the
+    // Default the highlighted option to whatever kind was last stored, so the
     // common "log in again the same way" case is one keystroke; otherwise
-    // highlight the first (preferred) option.
+    // highlight the first (preferred) option. Credentials from environment
+    // variables are not stored, so they set no default.
     let previous_kind = match previous_value {
-        Ok(creds) => match creds {
-            AttributedValue::EnvironmentVariable { .. } => None,
-            _ => Some(creds.value()),
-        },
-        Err(_) => None,
+        Ok(creds) if !matches!(creds, AttributedValue::EnvironmentVariable { .. }) => {
+            Some(creds.value())
+        }
+        _ => None,
     };
     let default = previous_kind
         .and_then(|kind| {
-            credential_options.iter().position(|option| {
-                matches!(
-                    (option, kind),
-                    (AuthSetupType::ApiKey, AuthenticationInfo::ApiKey { .. })
-                        | (AuthSetupType::Password, AuthenticationInfo::Password { .. })
-                        | (AuthSetupType::OAuth, AuthenticationInfo::OAuth { .. })
-                )
-            })
+            credential_options
+                .iter()
+                .position(|option| option.collects(kind))
         })
         .unwrap_or(0);
 
+    let labels = credential_options.iter().map(ToString::to_string).collect();
     let selection = prompter.select(
         "What kind of credentials would you like to use? (Hit Esc to skip)",
-        &labels,
+        labels,
         default,
     )?;
 
@@ -985,8 +993,7 @@ mod tests {
             ScriptedPrompter {
                 answers: RefCell::new(self.0.into()),
                 prompts: RefCell::new(Vec::new()),
-                menus: RefCell::new(Vec::new()),
-                defaults: RefCell::new(Vec::new()),
+                selects: RefCell::new(Vec::new()),
             }
         }
     }
@@ -996,8 +1003,8 @@ mod tests {
     struct ScriptedPrompter {
         answers: RefCell<VecDeque<Answer>>,
         prompts: RefCell<Vec<String>>,
-        menus: RefCell<Vec<Vec<String>>>,
-        defaults: RefCell<Vec<usize>>,
+        /// Each `select` call: its item list and its default index.
+        selects: RefCell<Vec<(Vec<String>, usize)>>,
     }
 
     impl ScriptedPrompter {
@@ -1013,14 +1020,9 @@ mod tests {
             self.prompts.borrow().clone()
         }
 
-        /// The item lists passed to each `select`, in order.
-        fn menus(&self) -> Vec<Vec<String>> {
-            self.menus.borrow().clone()
-        }
-
-        /// The default index passed to each `select`, in order.
-        fn defaults(&self) -> Vec<usize> {
-            self.defaults.borrow().clone()
+        /// The (items, default) pair passed to each `select`, in order.
+        fn selects(&self) -> Vec<(Vec<String>, usize)> {
+            self.selects.borrow().clone()
         }
     }
 
@@ -1043,9 +1045,13 @@ mod tests {
             }
         }
 
-        fn select(&self, prompt: &str, items: &[String], default: usize) -> Result<Option<usize>> {
-            self.menus.borrow_mut().push(items.to_vec());
-            self.defaults.borrow_mut().push(default);
+        fn select(
+            &self,
+            prompt: &str,
+            items: Vec<String>,
+            default: usize,
+        ) -> Result<Option<usize>> {
+            self.selects.borrow_mut().push((items, default));
             match self.next("select", prompt) {
                 Answer::Select(value) => Ok(value),
                 _ => panic!("next scripted answer was not a select at {prompt:?}"),
@@ -1364,11 +1370,15 @@ mod tests {
 
         do_cmd_login(None, None, None, settings, &prompter).await?;
 
-        let menu = &prompter.menus()[0];
+        let (menu, default) = &prompter.selects()[0];
         assert_eq!(
             menu,
             &[API_KEY.to_owned(), USERNAME_PASSWORD.to_owned()],
             "OAuth must be hidden when the backend disables it"
+        );
+        assert_eq!(
+            *default, 0,
+            "the first option must be highlighted when no credentials are stored"
         );
         Ok(())
     }
@@ -1391,7 +1401,7 @@ mod tests {
 
         do_cmd_login(None, None, None, settings, &prompter).await?;
 
-        let menu = &prompter.menus()[0];
+        let (menu, default) = &prompter.selects()[0];
         assert_eq!(
             menu,
             &[
@@ -1401,30 +1411,7 @@ mod tests {
             ],
             "OAuth must lead the menu when the backend advertises a port strategy"
         );
-        assert_eq!(
-            prompter.defaults(),
-            vec![0],
-            "OAuth must be the default for a first login"
-        );
-        Ok(())
-    }
-
-    /// With no stored credentials, the first menu option is highlighted — a
-    /// menu with nothing selected is confusing.
-    #[tokio::test]
-    async fn login_defaults_to_the_first_credential_option() -> Result<()> {
-        let env = LoginEnv::new();
-        let settings = env.resolve_settings(None);
-        let prompter = Script::default()
-            .input("mytenant")
-            .input("myrepo")
-            .select(0)
-            .password("sk-test-key")
-            .build();
-
-        do_cmd_login(None, None, None, settings, &prompter).await?;
-
-        assert_eq!(prompter.defaults(), vec![0]);
+        assert_eq!(*default, 0, "OAuth must be the default for a first login");
         Ok(())
     }
 
@@ -1447,13 +1434,13 @@ mod tests {
 
         do_cmd_login(None, None, None, settings, &prompter).await?;
 
-        let menu = &prompter.menus()[0];
+        let (menu, default) = &prompter.selects()[0];
         let password_index = menu
             .iter()
             .position(|label| label == USERNAME_PASSWORD)
             .expect("menu must offer username/password");
         assert_eq!(password_index, menu.len() - 1, "password must come last");
-        assert_eq!(prompter.defaults(), vec![password_index]);
+        assert_eq!(*default, password_index);
         Ok(())
     }
 
@@ -1609,7 +1596,10 @@ mod tests {
         // straight from the keychain, proving the secret round-trips. Reading in
         // the same process that wrote it doesn't trip the ACL prompt the
         // `security` CLI would. ---
-        let resolved = AuthenticationInfo::for_ambient_configuration_with_attribution(None, true)?;
+        let resolved = AuthenticationInfo::for_ambient_configuration_with_attribution(
+            None,
+            PasswordPolicy::Inspect,
+        )?;
         match &resolved {
             AttributedValue::Keychain {
                 value: AuthenticationInfo::ApiKey { api_key },

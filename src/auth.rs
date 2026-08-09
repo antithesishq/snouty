@@ -189,6 +189,21 @@ impl OAuthRefreshInfo {
     }
 }
 
+/// How a command treats username/password credentials when ambient
+/// resolution finds them. The other credential kinds are always accepted.
+#[derive(Clone, Copy)]
+pub(crate) enum PasswordPolicy {
+    /// Fail with a friendly error: every endpoint other than the launch
+    /// webhooks answers username/password with an opaque 403.
+    Reject,
+    /// Accept them and print the deprecation warning: the launch commands
+    /// (`snouty launch`, `snouty debug`) take this path.
+    WarnDeprecated,
+    /// Accept them silently: the caller only inspects the stored credential
+    /// (`snouty login`, `snouty doctor`) and must not warn.
+    Inspect,
+}
+
 #[derive(Clone)]
 pub enum AuthenticationInfo {
     ApiKey {
@@ -299,16 +314,16 @@ impl AuthenticationInfo {
 
     pub(crate) fn for_ambient_configuration_with_attribution(
         profile: Option<&str>,
-        allow_password: bool,
+        policy: PasswordPolicy,
     ) -> Result<AttributedValue<Self>> {
         if let Some(from_env) = Self::try_from_env()? {
-            return reject_password_if_unsupported(from_env, allow_password);
+            return apply_password_policy(from_env, policy);
         }
 
         let credentials_file: Option<(PathBuf, CredentialsFile)>;
         if let Some(profile_name) = profile {
             if let Some(from_keychain) = Self::try_from_keychain(profile)? {
-                return reject_password_if_unsupported(from_keychain, allow_password);
+                return apply_password_policy(from_keychain, policy);
             }
 
             credentials_file = match try_load_credentials_file()? {
@@ -318,7 +333,7 @@ impl AuthenticationInfo {
                         .as_ref()
                         .and_then(|by_profile| by_profile.get(profile_name))
                     {
-                        return reject_password_if_unsupported(
+                        return apply_password_policy(
                             AttributedValue::SettingsFile {
                                 value: from_credentials_file
                                     .clone()
@@ -331,7 +346,7 @@ impl AuthenticationInfo {
                                 settings_file_path: path,
                                 profile: Some(profile_name.to_owned()),
                             },
-                            allow_password,
+                            policy,
                         );
                     }
                     Some((path, parsed))
@@ -343,13 +358,13 @@ impl AuthenticationInfo {
         }
 
         if let Some(from_keychain) = Self::try_from_keychain(None)? {
-            return reject_password_if_unsupported(from_keychain, allow_password);
+            return apply_password_policy(from_keychain, policy);
         }
 
         if let Some((path, parsed)) = credentials_file
             && let Some(from_credentials_file) = parsed.default
         {
-            return reject_password_if_unsupported(
+            return apply_password_policy(
                 AttributedValue::SettingsFile {
                     value: from_credentials_file.convert_to_authentication_info(
                         OAuthRefreshInfo::CredentialsFile {
@@ -360,7 +375,7 @@ impl AuthenticationInfo {
                     settings_file_path: path,
                     profile: None,
                 },
-                allow_password,
+                policy,
             );
         }
 
@@ -376,9 +391,9 @@ impl AuthenticationInfo {
 
     pub(crate) fn for_ambient_configuration(
         profile: Option<&str>,
-        allow_password: bool,
+        policy: PasswordPolicy,
     ) -> Result<Self> {
-        Ok(Self::for_ambient_configuration_with_attribution(profile, allow_password)?.extract())
+        Ok(Self::for_ambient_configuration_with_attribution(profile, policy)?.extract())
     }
 
     pub(crate) async fn authenticate_request<E>(
@@ -988,36 +1003,37 @@ fn parse_credentials_file_toml(contents: String, path: &Path) -> Result<Credenti
     ))
 }
 
-/// The one-line remediation for the username/password deprecation, shared by
-/// every message that states it (the rejection suggestion here and the doctor
-/// warning note) so the wording cannot drift apart.
+/// The one-line remediation for the username/password deprecation. Every
+/// message that states the deprecation (the rejection suggestion, the warning
+/// on use, and the doctor note) renders this constant, so the wording cannot
+/// drift apart.
 pub(crate) const PASSWORD_DEPRECATION_SUGGESTION: &str = "username/password authentication is deprecated; run `snouty login` to switch to another authentication method";
 
-/// Reject username/password credentials for commands that don't support them —
-/// every endpoint other than the launch webhooks answers them with an opaque
-/// 403, so failing here gives the user an actionable message instead.
-fn reject_password_if_unsupported(
+/// Apply the caller's [`PasswordPolicy`] to a resolved credential. This is
+/// the only place that accepts or rejects username/password credentials, so
+/// the whole deprecation policy lives here.
+fn apply_password_policy(
     authn_info: AttributedValue<AuthenticationInfo>,
-    allow_password: bool,
+    policy: PasswordPolicy,
 ) -> Result<AttributedValue<AuthenticationInfo>> {
-    if !allow_password && matches!(authn_info.value(), AuthenticationInfo::Password { .. }) {
-        return Err(user_error(
+    if !matches!(authn_info.value(), AuthenticationInfo::Password { .. }) {
+        return Ok(authn_info);
+    }
+    match policy {
+        PasswordPolicy::Reject => Err(user_error(
             "This command does not accept username/password authentication, which is only supported when launching runs (`snouty launch`, `snouty debug`)",
         )
-        .suggestion(PASSWORD_DEPRECATION_SUGGESTION));
+        .suggestion(PASSWORD_DEPRECATION_SUGGESTION)),
+        PasswordPolicy::WarnDeprecated => {
+            // A bare eprintln, not log::warn!: the notice must reach stderr
+            // on every run, independent of RUST_LOG.
+            eprintln!(
+                "warning: {PASSWORD_DEPRECATION_SUGGESTION} (support will be removed in a future release)"
+            );
+            Ok(authn_info)
+        }
+        PasswordPolicy::Inspect => Ok(authn_info),
     }
-
-    Ok(authn_info)
-}
-
-/// Deprecation notice for username/password authentication, printed when a
-/// command proceeds with those credentials (see
-/// [`crate::api::AntithesisApi::new_for_launch`]).
-pub(crate) fn warn_password_auth_deprecated() {
-    eprintln!(
-        "warning: username/password authentication is deprecated and will be removed in a future release.\n  \
-         Run `snouty login` to switch to another authentication method."
-    );
 }
 
 #[derive(Serialize, Deserialize)]

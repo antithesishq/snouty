@@ -364,15 +364,16 @@ fn debug_params(args: DebugArgs) -> Result<Params> {
         return Err(user_error("invalid arguments: no parameters provided"));
     }
 
-    // Every path into the moment lands here — the typed flags, a Moment.from
-    // on stdin, and raw JSON on stdin — so the vtime is normalized once, and
-    // all three send the same text for the same moment.
-    params.normalize_debug_vtime()?;
     Ok(params)
 }
 
 async fn cmd_debug(args: DebugArgs, settings: &Settings, json: bool, verbose: bool) -> Result<()> {
-    let params = debug_params(args)?;
+    let mut params = debug_params(args)?;
+    // Every path into the moment has merged by now — the typed flags, a
+    // Moment.from on stdin, and raw JSON on stdin — so normalizing here makes
+    // all three send the same text. It runs before validation, so a bad vtime
+    // reports itself rather than surfacing as a schema error.
+    params.normalize_debug_vtime()?;
     params.validate_debugging_params()?;
     params.ensure_single_debug_target()?;
 

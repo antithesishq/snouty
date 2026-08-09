@@ -326,7 +326,7 @@ fn collect_checks(settings: &Settings) -> Vec<Check> {
 /// The resolved-settings table: the value snouty resolved for each setting and
 /// where it came from (env > profile > project/global file). Purely
 /// informational — required/optional semantics are reported by [`collect_checks`].
-fn resolve_settings(settings: &Settings) -> Vec<Setting> {
+fn resolve_settings(settings: &Settings, features: &[Feature]) -> Vec<Setting> {
     let mut rows = vec![
         Setting::new("profile", settings.profile().unwrap_or("(none)")),
         Setting::new("tenant", settings.tenant().unwrap_or("not set")),
@@ -340,11 +340,9 @@ fn resolve_settings(settings: &Settings) -> Vec<Setting> {
         Setting::new("update channel", settings.update_channel().as_str()),
     ];
     // Only when set: features are opt-in, so an empty row would be noise on
-    // every ordinary run. Read from the environment rather than from
-    // `settings`, since that is the only place features come from.
-    let enabled = features::enabled();
-    if !enabled.is_empty() {
-        let ids: Vec<&str> = enabled.iter().map(Feature::as_str).collect();
+    // every ordinary run.
+    if !features.is_empty() {
+        let ids: Vec<&str> = features.iter().map(Feature::as_str).collect();
         rows.push(Setting::new("features", ids.join(", ")));
     }
     rows
@@ -439,7 +437,7 @@ pub async fn cmd_doctor(
         checks.push(version_check(&host, api.get_version().await));
     }
 
-    let settings_rows = resolve_settings(settings);
+    let settings_rows = resolve_settings(settings, &features::enabled());
 
     // Only the checks carry pass/warn/fail; the settings table is informational.
     let errors = checks.iter().filter(|c| c.status == Status::Error).count();
@@ -614,13 +612,13 @@ mod tests {
     #[test]
     fn tenant_row_shows_value() {
         let settings = Settings::builder().tenant("acme").build();
-        let rows = resolve_settings(&settings);
+        let rows = resolve_settings(&settings, &[]);
         assert_eq!(row(&rows, "tenant").value, "acme");
     }
 
     #[test]
     fn missing_settings_render_as_not_set() {
-        let rows = resolve_settings(&Settings::default());
+        let rows = resolve_settings(&Settings::default(), &[]);
         assert_eq!(row(&rows, "tenant").value, "not set");
     }
 
@@ -629,26 +627,43 @@ mod tests {
         let settings = Settings::builder()
             .https_proxy("http://proxy.corp:8080")
             .build();
-        let rows = resolve_settings(&settings);
+        let rows = resolve_settings(&settings, &[]);
         assert_eq!(row(&rows, "https proxy").value, "http://proxy.corp:8080");
     }
 
     #[test]
     fn https_proxy_row_defaults_to_not_set() {
-        let rows = resolve_settings(&Settings::default());
+        let rows = resolve_settings(&Settings::default(), &[]);
         assert_eq!(row(&rows, "https proxy").value, "not set");
     }
 
     #[test]
     fn container_engine_row_auto_detects_when_unset() {
         let settings = Settings::builder().tenant("acme").build();
-        let rows = resolve_settings(&settings);
+        let rows = resolve_settings(&settings, &[]);
         assert_eq!(row(&rows, "container engine").value, "auto-detect");
     }
 
     #[test]
+    fn features_row_appears_only_when_a_feature_is_on() {
+        let rows = resolve_settings(&Settings::default(), &[]);
+        assert!(!rows.iter().any(|r| r.name == "features"));
+
+        let rows = resolve_settings(
+            &Settings::default(),
+            &[Feature::RunsExec, Feature::Unknown("other".to_string())],
+        );
+        let row = rows
+            .iter()
+            .find(|r| r.name == "features")
+            .expect("the row appears when a feature is on");
+        // An id this build doesn't know is echoed, not dropped.
+        assert_eq!(row.value, "runs-exec, other");
+    }
+
+    #[test]
     fn update_channel_row_defaults_to_stable() {
-        let rows = resolve_settings(&Settings::default());
+        let rows = resolve_settings(&Settings::default(), &[]);
         assert_eq!(row(&rows, "update channel").value, "stable");
     }
 
@@ -657,13 +672,13 @@ mod tests {
         let settings = Settings::builder()
             .update_channel(UpdateChannel::Unstable)
             .build();
-        let rows = resolve_settings(&settings);
+        let rows = resolve_settings(&settings, &[]);
         assert_eq!(row(&rows, "update channel").value, "unstable");
     }
 
     #[test]
     fn profile_row_reflects_no_active_profile() {
-        let rows = resolve_settings(&Settings::default());
+        let rows = resolve_settings(&Settings::default(), &[]);
         assert_eq!(row(&rows, "profile").value, "(none)");
     }
 

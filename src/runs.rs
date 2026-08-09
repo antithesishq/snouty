@@ -1601,15 +1601,16 @@ const MAX_SCRIPT_BYTES: u64 = 2 * 1024 * 1024;
 /// The script to execute: the SCRIPT argument, or stdin when it is omitted.
 /// An empty script is rejected before any API call.
 fn resolve_exec_script(arg: Option<String>) -> Result<String> {
-    match arg {
-        Some(script) => {
-            if script.trim().is_empty() {
-                return Err(no_script_error());
-            }
-            Ok(script)
-        }
-        None => read_script_from_stdin(std::io::stdin(), std::io::stdin().is_terminal()),
+    let stdin = std::io::stdin();
+    let script = match arg {
+        Some(script) => script,
+        None => read_script_from_stdin(&stdin, stdin.is_terminal())?,
+    };
+    // One rule for both sources: a blank script is no script.
+    if script.trim().is_empty() {
+        return Err(no_script_error());
     }
+    Ok(script)
 }
 
 fn no_script_error() -> color_eyre::eyre::Report {
@@ -1622,6 +1623,9 @@ fn no_script_error() -> color_eyre::eyre::Report {
 /// prompt would otherwise hang with no indication it wants input. A pipe, a
 /// redirect, and a heredoc are all non-interactive, so every scripted way of
 /// supplying a script still works.
+///
+/// Returns the text as read. Whether a blank script counts as no script is
+/// [`resolve_exec_script`]'s rule, since it holds for the argument too.
 fn read_script_from_stdin(input: impl Read, interactive: bool) -> Result<String> {
     if interactive {
         return Err(no_script_error());
@@ -1645,12 +1649,7 @@ fn read_script_from_stdin(input: impl Read, interactive: bool) -> Result<String>
         ))
         .note("`runs exec` sends the whole script in one request body"));
     }
-    let script =
-        String::from_utf8(buf).map_err(|_| user_error("the script on stdin is not valid UTF-8"))?;
-    if script.trim().is_empty() {
-        return Err(no_script_error());
-    }
-    Ok(script)
+    String::from_utf8(buf).map_err(|_| user_error("the script on stdin is not valid UTF-8"))
 }
 
 async fn cmd_runs_exec(
@@ -3956,7 +3955,8 @@ mod tests {
             resolve_exec_script(Some("uname -a".to_string())).unwrap(),
             "uname -a".to_string()
         );
-        // A blank argument is "no script", same as an empty stdin.
+        // A blank argument is "no script". The same rule covers a blank
+        // stdin, which specs/runs_exec.txt drives end to end.
         let err = resolve_exec_script(Some("  ".to_string())).unwrap_err();
         assert!(err.to_string().contains("no script provided"), "{err}");
     }
@@ -3973,12 +3973,6 @@ mod tests {
         // Nothing is read: with SCRIPT omitted at a prompt, waiting on stdin
         // would look like a hang.
         let err = read_script_from_stdin(&b"uname -a"[..], true).unwrap_err();
-        assert!(err.to_string().contains("no script provided"), "{err}");
-    }
-
-    #[test]
-    fn read_script_from_stdin_rejects_an_empty_script() {
-        let err = read_script_from_stdin(&b"  \n"[..], false).unwrap_err();
         assert!(err.to_string().contains("no script provided"), "{err}");
     }
 

@@ -100,8 +100,7 @@ impl Params {
             user_error(format!("invalid arguments: {ParseVTimeError}"))
                 .note(format!("{key} = {value}"))
         })?;
-        self.inner
-            .insert(key.to_string(), Value::String(vtime.to_string()));
+        self.insert(key, vtime.to_string());
         Ok(())
     }
 

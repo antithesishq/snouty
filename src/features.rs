@@ -18,9 +18,6 @@
 //! without first parsing `--settings`/`--profile`, which would mean parsing the
 //! command line twice. An environment variable has no such dependency.
 
-use std::fmt;
-use std::str::FromStr;
-
 use crate::env;
 
 /// The environment variable that enables features, as a comma-separated list
@@ -43,14 +40,21 @@ pub fn is_enabled(feature: Feature) -> bool {
 /// this is read before the parse, where there is no good way to report an
 /// error, and the cost of ignoring it is only that a feature stays off.
 pub fn enabled() -> Vec<Feature> {
-    let Ok(Some(value)) = env::var(FEATURES_VAR_NAME) else {
-        return Vec::new();
-    };
+    match env::var(FEATURES_VAR_NAME) {
+        Ok(Some(value)) => parse_list(&value),
+        _ => Vec::new(),
+    }
+}
+
+/// The ids in one comma-separated list. Factored out of the environment read
+/// so the splitting rule can be unit-tested without changing process-global
+/// state — the same split `crate::env` makes for its own pure part.
+fn parse_list(value: &str) -> Vec<Feature> {
     value
         .split(',')
         .map(str::trim)
         .filter(|id| !id.is_empty())
-        .map(|id| id.parse().expect("parsing a feature id cannot fail"))
+        .map(Feature::from_id)
         .collect()
 }
 
@@ -72,28 +76,20 @@ pub enum Feature {
 impl Feature {
     pub const RUNS_EXEC: &'static str = "runs-exec";
 
+    /// The feature an id names. Every id maps to a feature, so this is total:
+    /// one this build does not know becomes [`Feature::Unknown`].
+    pub fn from_id(id: &str) -> Self {
+        match id {
+            Self::RUNS_EXEC => Feature::RunsExec,
+            other => Feature::Unknown(other.to_string()),
+        }
+    }
+
     pub fn as_str(&self) -> &str {
         match self {
             Feature::RunsExec => Self::RUNS_EXEC,
             Feature::Unknown(id) => id,
         }
-    }
-}
-
-impl FromStr for Feature {
-    type Err = std::convert::Infallible;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Ok(match s {
-            Self::RUNS_EXEC => Feature::RunsExec,
-            other => Feature::Unknown(other.to_string()),
-        })
-    }
-}
-
-impl fmt::Display for Feature {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(self.as_str())
     }
 }
 
@@ -103,8 +99,8 @@ mod tests {
 
     #[test]
     fn known_id_parses_to_its_variant() {
-        assert_eq!("runs-exec".parse::<Feature>().unwrap(), Feature::RunsExec);
-        assert_eq!(Feature::RunsExec.to_string(), "runs-exec");
+        assert_eq!(Feature::from_id("runs-exec"), Feature::RunsExec);
+        assert_eq!(Feature::RunsExec.as_str(), "runs-exec");
     }
 
     #[test]
@@ -112,21 +108,9 @@ mod tests {
         // One exported SNOUTY_FEATURES is shared by every snouty on the
         // machine: an id from a newer build, or one whose feature has
         // graduated, must not break this one.
-        let parsed = "from-the-future".parse::<Feature>().unwrap();
+        let parsed = Feature::from_id("from-the-future");
         assert_eq!(parsed, Feature::Unknown("from-the-future".to_string()));
-        assert_eq!(parsed.to_string(), "from-the-future");
-    }
-
-    /// `enabled` reads the process environment, so its list-splitting is
-    /// exercised through this pure helper instead (the env-var plumbing itself
-    /// is covered by specs/features.txt).
-    fn parse_list(value: &str) -> Vec<Feature> {
-        value
-            .split(',')
-            .map(str::trim)
-            .filter(|id| !id.is_empty())
-            .map(|id| id.parse().unwrap())
-            .collect()
+        assert_eq!(parsed.as_str(), "from-the-future");
     }
 
     #[test]

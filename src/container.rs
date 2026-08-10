@@ -823,7 +823,7 @@ pub fn image_repo(image_ref: &str) -> &str {
         Some(at) => &image_ref[..at],
         None => image_ref,
     };
-    let name_start = no_digest.rfind('/').map_or(0, |slash| slash);
+    let name_start = no_digest.rfind('/').unwrap_or(0);
     match no_digest[name_start..].find(':') {
         Some(colon) => &no_digest[..name_start + colon],
         None => no_digest,

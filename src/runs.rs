@@ -1664,7 +1664,7 @@ async fn cmd_runs_exec(
     let script = resolve_exec_script(script)?;
 
     debug!("executing command in run: {}", run_id);
-    let api = AntithesisApi::new_requiring_api_key(settings, verbose)?;
+    let api = AntithesisApi::new(settings, verbose)?;
     let stream = match api.execute_command(run_id, moment, script, timeout).await {
         Ok(stream) => stream.into_inner(),
         // Translate a bad run id's 404 into the shared "run not found"

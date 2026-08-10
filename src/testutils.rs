@@ -990,8 +990,10 @@ fn mock_route_execute_command(run_id: &str, req_body: &str) -> (u16, String) {
         // prove that against the unhelpful body.
         return (404, r#"{"message":"Resource not found"}"#.to_string());
     }
-    // Only an in-progress run has a live session. Anything else answers with
-    // the live API's (rough, verbatim) error for a session-less run.
+    // The mock treats only an in-progress run as having a live session.
+    // The real API is looser — a session outlives the run for a while (see
+    // the header of specs/runs_exec.txt) — but this rule drives both paths.
+    // Anything else answers with the live API's verbatim session-less error.
     let live = MOCK_RUNS
         .iter()
         .any(|&(id, status, ..)| id == run_id && status == "in_progress");

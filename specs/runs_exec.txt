@@ -4,9 +4,13 @@
 # moment in the run's execution timeline.
 #
 # Semantics verified against the live API (orbitinghail, release 60.0):
-# an in-progress run has a live session; a completed run does not (the server
-# answers 400). The script executes on a fresh branch of the multiverse — the
-# response moments carry a new input_hash — so the running test is not
+# the command needs a live session, and a run keeps one while it runs and for
+# a while after it completes. A run whose session has ended answers 400. The
+# window is not documented; a run that completed 48 minutes earlier still
+# executed, and runs that completed 17 hours and 1 day earlier did not. The
+# mock below models the simpler rule "in-progress only", which is enough to
+# drive both paths. The script executes on a fresh branch of the multiverse —
+# the response moments carry a new input_hash — so the running test is not
 # disturbed. The response streams NDJSON: zero or more `output` events, then
 # one terminal event (`exited` or `timed_out`), unless the stream ends with a
 # `Stream_Error` line.
@@ -133,10 +137,9 @@ stderr 'the server reported an error mid-stream: mock stream failure'
 stdout 'partial output'
 stderr 'stream ended before the command reported completion.*'
 
-# A run with no live session (here a completed run) fails with the server's
-# error as-is. The message is known to be rough (it leaks "minting session
-# token failed"); the API team is improving it server-side, so snouty does
-# not translate it.
+# A run whose live session has ended fails with the server's error as-is. The
+# message is known to be rough (it leaks "minting session token failed"); the
+# API team is improving it server-side, so snouty does not translate it.
 ! snouty runs exec run-1 -3625518438076122494 398.4898056755774 'uname -a'
 stderr 'API error: 400 Bad Request.*minting session token failed.*'
 

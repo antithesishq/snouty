@@ -633,7 +633,10 @@ fn discover_scripts(
         let short_id: String = container.id.chars().take(12).collect();
         let service_dir = scripts_dir.join(format!("{service_name}-{short_id}"));
         let templates =
-            match rt.extract_test_templates(&container.id, &service_dir, !container.stopped) {
+            // `running`, not `!stopped`: a `created` container (waiting on a
+            // depends_on condition) is neither, and exec fails in it while cp
+            // works. See [`wait_for_service_containers`].
+            match rt.extract_test_templates(&container.id, &service_dir, container.running) {
                 Ok(t) => t,
                 Err(e) => {
                     warn!(

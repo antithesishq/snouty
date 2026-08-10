@@ -956,6 +956,13 @@ pub struct ComposeContainer {
     /// `created`, `restarting`, `paused`, and missing State are treated as
     /// not-stopped to avoid false positives on healthy setups still settling.
     pub stopped: bool,
+    /// Whether the container's entrypoint is currently running, i.e. `exec`
+    /// can work in it. Strictly the `running` state: a `created` container
+    /// is neither stopped nor running (compose creates containers up front
+    /// and starts them as `depends_on` conditions clear), and `exec` fails
+    /// in it, while `cp` works — so discovery must not equate "not stopped"
+    /// with "exec-able".
+    pub running: bool,
 }
 /// Determine whether a `State` field value reports a stopped container.
 /// Only `exited` and `dead` qualify — every other value (including missing
@@ -966,6 +973,15 @@ fn state_is_stopped(state: Option<&str>) -> bool {
         Some(s) => s.eq_ignore_ascii_case("exited") || s.eq_ignore_ascii_case("dead"),
         None => false,
     }
+}
+/// Determine whether a `State` field value reports a running container.
+/// Only a literal `running` qualifies. Everything else — `created`,
+/// `paused`, `restarting`, missing `State`, human-readable forms — is
+/// treated as not-running, because `exec` fails in all of those states and
+/// callers use this to choose between an `exec` pre-flight and a plain `cp`
+/// (which works regardless of state).
+fn state_is_running(state: Option<&str>) -> bool {
+    matches!(state, Some(s) if s.eq_ignore_ascii_case("running"))
 }
 /// Parse the JSON output of `compose ps --format json`.
 ///
@@ -1007,6 +1023,7 @@ fn parse_compose_ps(stdout: &str) -> Result<Vec<ComposeContainer>> {
                 service: service.to_string(),
                 id: id.to_string(),
                 stopped: state_is_stopped(state),
+                running: state_is_running(state),
             })
         })
         .collect()
@@ -1019,11 +1036,12 @@ mod tests {
     use crate::testutils::{OCIRegistry, has_compose, require_runtimes_with_compose, skip_or_fail};
     use std::path::PathBuf;
 
-    fn cc(service: &str, id: &str, stopped: bool) -> ComposeContainer {
+    fn cc(service: &str, id: &str, stopped: bool, running: bool) -> ComposeContainer {
         ComposeContainer {
             service: service.to_string(),
             id: id.to_string(),
             stopped,
+            running,
         }
     }
     #[test]
@@ -1033,7 +1051,10 @@ mod tests {
         let result = parse_compose_ps(stdout).unwrap();
         assert_eq!(
             result,
-            vec![cc("app", "abc123", false), cc("sidecar", "def456", true)]
+            vec![
+                cc("app", "abc123", false, true),
+                cc("sidecar", "def456", true, false)
+            ]
         );
     }
     #[test]
@@ -1045,7 +1066,10 @@ mod tests {
         let result = parse_compose_ps(stdout).unwrap();
         assert_eq!(
             result,
-            vec![cc("app", "abc123", false), cc("sidecar", "def456", false)]
+            vec![
+                cc("app", "abc123", false, true),
+                cc("sidecar", "def456", false, true)
+            ]
         );
     }
     #[test]
@@ -1060,12 +1084,14 @@ mod tests {
         // diagnostic fires on healthy containers.
         let stdout = r#"[{"ID":"abc","Service":"app"}]"#;
         let result = parse_compose_ps(stdout).unwrap();
-        assert_eq!(result, vec![cc("app", "abc", false)]);
+        assert_eq!(result, vec![cc("app", "abc", false, false)]);
     }
     #[test]
     fn parse_compose_ps_transient_states_are_not_stopped() {
         // created / restarting / paused are not "stopped" — Antithesis may
         // still see them recover. Only `exited` and `dead` count as stopped.
+        // None of them are "running" either: exec fails in every one of
+        // these states, so discovery must take the cp path for them.
         let stdout = r#"[
             {"ID":"a","Service":"svc","State":"created"},
             {"ID":"b","Service":"svc","State":"restarting"},
@@ -1075,17 +1101,19 @@ mod tests {
             {"ID":"f","Service":"svc","State":"EXITED"}
         ]"#;
         let result = parse_compose_ps(stdout).unwrap();
-        let stopped: Vec<(&str, bool)> =
-            result.iter().map(|c| (c.id.as_str(), c.stopped)).collect();
+        let states: Vec<(&str, bool, bool)> = result
+            .iter()
+            .map(|c| (c.id.as_str(), c.stopped, c.running))
+            .collect();
         assert_eq!(
-            stopped,
+            states,
             vec![
-                ("a", false),
-                ("b", false),
-                ("c", false),
-                ("d", false),
-                ("e", true),
-                ("f", true),
+                ("a", false, false),
+                ("b", false, false),
+                ("c", false, false),
+                ("d", false, false),
+                ("e", true, false),
+                ("f", true, false),
             ]
         );
     }
@@ -1103,9 +1131,9 @@ mod tests {
         assert_eq!(
             result,
             vec![
-                cc("worker", "a1", false),
-                cc("worker", "a2", false),
-                cc("worker", "a3", true),
+                cc("worker", "a1", false, true),
+                cc("worker", "a2", false, true),
+                cc("worker", "a3", true, false),
             ]
         );
     }

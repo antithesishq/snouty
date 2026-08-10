@@ -243,10 +243,13 @@ async fn validate_compose(
         );
     }
 
-    let up_deadline = tokio::time::Instant::now() + Duration::from_secs(timeout);
+    // One budget covers container startup and the wait for setup-complete.
+    // An attached `up` doesn't return once the project is running, so there is
+    // no "containers are up" moment at which to restart the clock.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(timeout);
 
     eprintln!("Starting compose services...");
-    let mut up_child = compose.up_detached(overlay)?;
+    let mut up_child = compose.up_attached(overlay)?;
     let _guard = if keep_running {
         None
     } else {
@@ -256,61 +259,46 @@ async fn validate_compose(
         })
     };
 
-    // Wait for compose up to finish, but respect the timeout and ctrl+c.
-    tokio::select! {
-        status = up_child.wait() => {
-            let status = status.wrap_err("failed to wait for compose up")?;
-            if !status.success() {
-                bail!("compose up --detach failed (exit status: {status})");
-            }
-        }
-        _ = tokio::time::sleep_until(up_deadline) => {
+    // Discover test commands before waiting for setup-complete, so a static
+    // mistake (a misnamed or non-executable command) is reported in seconds
+    // rather than after the full `--timeout`. A detached `up` returning used to
+    // mark this moment; an attached one never returns, so wait for the thing
+    // discovery actually needs — a container per service to read templates out
+    // of. See [`wait_for_service_containers`].
+    let service_names: Vec<String> = contents.services.iter().map(|s| s.name.clone()).collect();
+    let ready = tokio::select! {
+        ready = wait_for_service_containers(&compose, overlay, &service_names, deadline) => ready,
+        status = up_child.wait() => Err(compose_exited_early(status)),
+        _ = tokio::signal::ctrl_c() => Err(eyre!("interrupted")),
+    };
+    let scripts = match ready.and_then(|()| discover_scripts(rt, &compose, overlay, temp_dir)) {
+        Ok(scripts) => scripts,
+        Err(e) => {
             up_child.kill_group().await.ok();
-            bail!("timed out during 'compose up --detach'");
-        }
-        _ = tokio::signal::ctrl_c() => {
-            up_child.kill_group().await.ok();
-            bail!("interrupted");
+            return Err(e);
         }
     };
-
-    // Discover scripts early so we can use them for both the success path
-    // and the timeout diagnostic.
-    let scripts = discover_scripts(rt, &compose, overlay, temp_dir)?;
-
-    // Reset the budget now that containers are up. `--timeout` bounds how long
-    // we wait for the setup-complete event; slow container startup (e.g. several
-    // services, or a slow engine like podman-on-macOS) shouldn't eat into it.
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(timeout);
-
-    let mut logs_child = compose.logs_follow(overlay)?;
 
     let sdk_output_dir = temp_dir.join("antithesis");
 
     let result = tokio::select! {
         result = watch_for_setup_complete(&sdk_output_dir, deadline) => result,
-        status = logs_child.wait() => {
-            match status {
-                Ok(s) if !s.success() => Err(eyre!("compose exited with status: {s}")),
-                Ok(_) => Err(eyre!("compose exited before setup-complete event was detected")),
-                Err(e) => Err(eyre!("failed to wait for compose: {e}")),
-            }
-        }
+        status = up_child.wait() => Err(compose_exited_early(status)),
         _ = tokio::signal::ctrl_c() => Err(eyre!("interrupted")),
     };
 
-    // Stop the entire compose logs process group so child processes
-    // (e.g. per-service log streamers) don't keep writing to the terminal.
-    logs_child.kill_group().await.ok();
+    // Stop compose's log streaming before printing anything of our own, so a
+    // status line can't land in the middle of a container's output. The
+    // containers themselves survive — they're owned by the engine, not by this
+    // process tree — so --keep-running leaves a working project behind.
+    up_child.kill_group().await.ok();
 
     let test_result = match result {
         Ok(true) => {
             eprintln!("Setup-complete event detected.");
             validate_test_scripts(&scripts)
         }
-        Ok(false) => {
-            bail!("timed out waiting for setup-complete event");
-        }
+        Ok(false) => Err(eyre!("timed out waiting for setup-complete event")),
         Err(e) => Err(e),
     };
 
@@ -319,6 +307,48 @@ async fn validate_compose(
     }
 
     test_result
+}
+
+/// Describe an attached `compose up` that exited while we were still waiting on
+/// it. Compose exits on its own once every container has stopped, so this means
+/// the project ended early rather than that anything we did stopped it.
+fn compose_exited_early(status: std::io::Result<std::process::ExitStatus>) -> color_eyre::Report {
+    match status {
+        Ok(s) if !s.success() => eyre!("compose exited with status: {s}"),
+        Ok(_) => eyre!("compose exited before setup-complete event was detected"),
+        Err(e) => eyre!("failed to wait for compose: {e}"),
+    }
+}
+
+/// Wait until compose has created a container for every service.
+///
+/// Compose creates the whole project's containers up front and then starts them
+/// as each `depends_on` condition clears, so this lands early and — importantly
+/// — does not wait on healthchecks: a service stuck behind an unhealthy
+/// dependency still has a `created` container to read from. Discovery only
+/// needs the container to exist, since it reads the templates with `cp`, which
+/// works on a container that has never started.
+///
+/// `ps` can fail transiently while compose is still assembling the project, so
+/// a failed poll counts as "not ready yet" and is retried.
+async fn wait_for_service_containers(
+    compose: &compose::DockerCompose,
+    overlay: Option<&Path>,
+    services: &[String],
+    deadline: tokio::time::Instant,
+) -> Result<()> {
+    loop {
+        if let Ok(containers) = compose.ps(overlay) {
+            let present: BTreeSet<&str> = containers.iter().map(|c| c.service.as_str()).collect();
+            if services.iter().all(|s| present.contains(s.as_str())) {
+                return Ok(());
+            }
+        }
+        if tokio::time::Instant::now() >= deadline {
+            bail!("timed out waiting for compose to create containers");
+        }
+        sleep(Duration::from_millis(100)).await;
+    }
 }
 
 const DIVERGENCE_HEADLINE: &str = "docker-compose.yaml depends on your shell environment, which \
@@ -367,17 +397,31 @@ fn check_compose_divergence(
         let fields = diverging_config_fields(&local, &hermetic);
         (!fields.is_empty()).then(|| fields.join("\n"))
     } else {
-        // A required `${VAR:?}` with no value aborts the hermetic render while
-        // the local one (which has the shell value) succeeds. Surface compose's
-        // own diagnostic rather than parsing it, falling back to the exit status
-        // if compose aborts without writing to stderr so the detail is never blank.
+        // The hermetic render failed. Only an interpolation failure means the
+        // compose file depends on the shell — anything else is compose failing
+        // at its job, and reporting that as an environment mismatch sends the
+        // user hunting through their compose file for a problem that isn't
+        // there. Surface compose's own diagnostic either way; only the verdict
+        // differs.
         let stderr = String::from_utf8_lossy(&hermetic.stderr);
         let stderr = stderr.trim();
-        Some(if stderr.is_empty() {
-            format!("docker-compose config aborted ({})", hermetic.status)
-        } else {
-            stderr.to_string()
-        })
+        if !is_interpolation_failure(stderr) {
+            return Err(eyre!(
+                "'{} config' failed while checking whether docker-compose.yaml depends on your shell environment",
+                compose.cli_name()
+            )
+            .with_section(move || {
+                if stderr.is_empty() {
+                    format!("exited with {}", hermetic.status)
+                } else {
+                    stderr.to_string()
+                }
+                .header("Stderr:")
+            }));
+        }
+        // A required `${VAR:?}` with no value aborts the hermetic render while
+        // the local one (which has the shell value) succeeds.
+        Some(stderr.to_string())
     };
 
     let Some(detail) = detail else {
@@ -401,6 +445,20 @@ fn check_compose_divergence(
                 || "re-run with --allow-compose-divergence to treat this as a warning",
             ))
     }
+}
+
+/// Whether a failed `compose config` failed *because* interpolation could not
+/// be satisfied — the signature of a compose file that depends on the shell.
+///
+/// Compose reports a required-but-unset `${VAR:?}` as an interpolation error
+/// naming the variable. Every other failure (compose can't find `docker`, the
+/// file is unreadable, the daemon is unreachable) says nothing about the
+/// environment, and must not be reported as one: an unrecognized failure is far
+/// better surfaced as itself than dressed up as a shell dependency the user
+/// will hunt for and never find.
+fn is_interpolation_failure(stderr: &str) -> bool {
+    let stderr = stderr.to_ascii_lowercase();
+    stderr.contains("required variable") || stderr.contains("interpolation")
 }
 
 /// JSON Pointer paths at which the resolved compose models differ, each tagged
@@ -851,6 +909,57 @@ mod tests {
     use super::*;
     use serde_json::json;
     use std::io::Write;
+
+    /// Both strings are verbatim `docker-compose config` stderr. Misreading the
+    /// second as a shell dependency is what sent a user hunting through a
+    /// compose file that was fine — the compose binary simply couldn't find
+    /// `docker` under the scrubbed environment.
+    #[test]
+    fn is_interpolation_failure_separates_missing_vars_from_broken_compose() {
+        let missing_required_var = "invalid interpolation format for services.app.image.\n\
+             You may need to escape any $ with another $.\n\
+             required variable REQUIRED_TAG is missing a value: set REQUIRED_TAG";
+        assert!(is_interpolation_failure(missing_required_var));
+
+        let docker_not_found = "exec: \"docker\": executable file not found in $PATH\n\
+             Current PATH : ";
+        assert!(!is_interpolation_failure(docker_not_found));
+
+        // Anything unrecognized has to fall on the "not a divergence" side, so
+        // it surfaces as itself rather than as an environment verdict.
+        assert!(!is_interpolation_failure(""));
+        assert!(!is_interpolation_failure(
+            "Cannot connect to the Docker daemon at unix:///var/run/docker.sock"
+        ));
+    }
+
+    /// A clean exit still means the project ended before setup-complete, so it
+    /// has to read as a failure rather than as compose merely finishing.
+    #[test]
+    fn compose_exited_early_distinguishes_clean_from_failing_exits() {
+        use std::os::unix::process::ExitStatusExt;
+
+        let clean = compose_exited_early(Ok(std::process::ExitStatus::from_raw(0)));
+        assert!(
+            clean
+                .to_string()
+                .contains("exited before setup-complete event"),
+            "unexpected message: {clean}"
+        );
+
+        // Raw wait status: exit code 1 is encoded in the high byte.
+        let failed = compose_exited_early(Ok(std::process::ExitStatus::from_raw(1 << 8)));
+        assert!(
+            failed.to_string().contains("exited with status"),
+            "unexpected message: {failed}"
+        );
+
+        let broken = compose_exited_early(Err(std::io::Error::other("boom")));
+        assert!(
+            broken.to_string().contains("failed to wait for compose"),
+            "unexpected message: {broken}"
+        );
+    }
 
     #[test]
     fn diverging_config_fields_flags_shell_only_value() {

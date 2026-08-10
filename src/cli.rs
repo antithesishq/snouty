@@ -419,8 +419,8 @@ pub struct ValidateArgs {
     /// manifests/ subdirectory (Kubernetes manifests).
     pub config: std::path::PathBuf,
 
-    /// Maximum seconds to wait for the setup-complete event
-    #[arg(long, default_value = "60")]
+    /// Maximum seconds to wait for containers to start and reach setup-complete
+    #[arg(long, default_value = "120")]
     pub timeout: u64,
 
     /// Leave containers running after validation for manual inspection

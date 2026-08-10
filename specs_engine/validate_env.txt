@@ -13,14 +13,14 @@ build-image env-emitter:latest setup_emitter
 #    default) is empty in the Antithesis render, so validation fails up front —
 #    before any container starts — naming the field.
 env SNOUTY_TEST_SHELL_VAR=fromshell
-! snouty validate soft --timeout 15
+! snouty validate soft --timeout 30
 stderr '.*depends on your shell environment.*'
 stderr '.*SNOUTY_TEST_SHELL_VAR.*'
 
 # --allow-compose-divergence downgrades that to a warning; validation continues
 #    and still succeeds when the empty value is harmless.
 env SNOUTY_TEST_SOFTOK_VAR=fromshell
-snouty validate soft_ok --allow-compose-divergence --timeout 20
+snouty validate soft_ok --allow-compose-divergence --timeout 40
 stderr '.*Warning:.*'
 stderr '.*SNOUTY_TEST_SOFTOK_VAR.*'
 stderr '.*Setup validation successful.*'
@@ -29,7 +29,7 @@ stderr '.*Setup validation successful.*'
 #    exactly as it will from the config image — so it is not flagged. Neither is
 #    an empty inline default (`${VAR:-}`): it renders blank in both, so there is
 #    no divergence to report.
-snouty validate clean --timeout 20
+snouty validate clean --timeout 40
 ! stderr '.*depends on your shell environment.*'
 stderr '.*Setup validation successful.*'
 
@@ -38,7 +38,7 @@ stderr '.*Setup validation successful.*'
 #    message, rather than letting contents() hit the same abort with a rawer
 #    error later.
 env SNOUTY_TEST_REQ=fromshell
-! snouty validate required --timeout 15
+! snouty validate required --timeout 30
 stderr '.*depends on your shell environment.*'
 stderr '.*SNOUTY_TEST_REQ.*'
 

@@ -63,11 +63,11 @@ impl ComposeForm {
         }
     }
 
-    /// Run `<form> version --short` and, if it is Docker Compose v2 or newer,
-    /// return the reported version; otherwise a clear error. This is the only
-    /// place compose is version-probed — [`ComposeCli`] captures the result so
-    /// nothing has to spawn `version` again.
-    fn detect_v2(&self) -> Result<String> {
+    /// Run `<form> version --short` and, if it is new enough for snouty, return
+    /// the reported version; otherwise a clear error. This is the only place
+    /// compose is version-probed — [`ComposeCli`] captures the result so nothing
+    /// has to spawn `version` again.
+    fn detect_supported(&self) -> Result<String> {
         let mut cmd = self.command();
         cmd.args(["version", "--short"]);
         let output = cmd
@@ -79,14 +79,13 @@ impl ComposeForm {
                 .with_section(move || stderr.trim().to_string().header("Stderr:"));
         }
         let version = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        match compose_major_version(&version) {
-            Some(major) if major >= 2 => Ok(version),
+        match compose_version_parts(&version) {
+            Some(parts) if parts >= MIN_COMPOSE_VERSION => Ok(version),
             _ => Err(eyre!(
-                "`{self}` is Docker Compose {version}, but snouty requires v2"
+                "`{self}` is Docker Compose {version}, but snouty requires v{} or newer",
+                min_compose_version()
             ))
-            .with_suggestion(
-                || "install Docker Compose v2: https://docs.docker.com/compose/install/",
-            ),
+            .with_suggestion(|| "upgrade Docker Compose: https://docs.docker.com/compose/install/"),
         }
     }
 }
@@ -109,52 +108,55 @@ impl std::fmt::Display for ComposeCli {
 }
 
 impl ComposeCli {
-    /// Resolve a usable Docker Compose v2 invocation, with a clear error when
-    /// none is available.
+    /// Resolve a usable Docker Compose invocation, with a clear error when none
+    /// is available.
     ///
-    /// Prefers the standalone `docker-compose` binary when it is present and
-    /// genuinely v2 (the historical contract). Otherwise falls back to the
-    /// `docker compose` CLI plugin — but only when `docker` is real Docker,
-    /// never podman in disguise, whose compose provider may not implement the
-    /// v2 features snouty relies on.
+    /// Prefers the standalone `docker-compose` binary when it is present and new
+    /// enough (the historical contract). Otherwise falls back to the `docker
+    /// compose` CLI plugin — but only when `docker` is real Docker, never podman
+    /// in disguise, whose compose provider may not implement the features snouty
+    /// relies on.
     fn resolve() -> Result<ComposeCli> {
-        // 1. Standalone docker-compose, when it's really v2.
+        // 1. Standalone docker-compose, when it meets the version bar.
         if let Ok(program) = which::which("docker-compose") {
             let form = ComposeForm::Standalone(program);
-            match form.detect_v2() {
+            match form.detect_supported() {
                 Ok(version) => return Ok(ComposeCli { form, version }),
-                // Present but not v2 (likely Compose v1). Prefer the docker
-                // plugin if it's usable; only surface the v1 error if not.
+                // Present but too old (Compose v1, or a v2 below
+                // MIN_COMPOSE_VERSION — a stale standalone alongside a current
+                // plugin is a common Docker Desktop layout). Prefer the plugin
+                // if it's usable; only surface the standalone's error if not.
                 Err(standalone_err) => return Self::plugin().or(Err(standalone_err)),
             }
         }
 
         // 2. The `docker compose` CLI plugin. Preserve the plugin's own error
-        // (podman-in-disguise, a v1 plugin, or docker genuinely absent) as the
+        // (podman-in-disguise, too old, or docker genuinely absent) as the
         // cause, rather than collapsing every case to a generic "not found".
-        Self::plugin().map_err(|plugin_err| {
+        Self::plugin().map_err(move |plugin_err| {
             eyre!(
-                "snouty requires Docker Compose v2, but neither the `docker-compose` binary nor the `docker compose` CLI plugin is usable"
+                "snouty requires Docker Compose v{} or newer, but neither the `docker-compose` binary nor the `docker compose` CLI plugin is usable",
+                min_compose_version()
             )
             .with_section(move || format!("{plugin_err:#}").header("docker compose:"))
             .with_suggestion(|| {
-                "install Docker Compose v2: https://docs.docker.com/compose/install/"
+                "install Docker Compose: https://docs.docker.com/compose/install/"
             })
         })
     }
 
     /// The `docker compose` CLI plugin, if usable. `Err` when docker is absent,
-    /// is podman in disguise, or its compose plugin isn't v2 — callers treat any
-    /// of these as "no usable plugin".
+    /// is podman in disguise, or its compose plugin is too old — callers treat
+    /// any of these as "no usable plugin".
     fn plugin() -> Result<ComposeCli> {
         let program = which::which("docker").wrap_err("`docker` not found on PATH")?;
         // podman-in-disguise routes `docker compose` to a provider that may not
-        // implement Compose v2; never trust it as a v2 source.
+        // implement Compose v2; never trust it as a source.
         if is_podman_in_disguise("docker") {
             bail!("`docker` is podman in disguise; its `compose` is not Docker Compose v2");
         }
         let form = ComposeForm::Plugin(program);
-        let version = form.detect_v2()?;
+        let version = form.detect_supported()?;
         Ok(ComposeCli { form, version })
     }
 
@@ -170,17 +172,53 @@ impl ComposeCli {
     }
 }
 
-/// The major component of a `compose version --short` string: `2.40.3` → 2,
-/// `v2.40.3` → 2. `None` when it doesn't begin with a number. Only the major is
-/// parsed, so distro build-metadata suffixes (`2.40.3+ds1-0ubuntu1~24.04.1`)
-/// don't matter.
-fn compose_major_version(version: &str) -> Option<u64> {
-    version
-        .trim_start_matches('v')
-        .split('.')
-        .next()?
-        .parse()
-        .ok()
+/// The lowest Docker Compose version snouty works with, as `(major, minor)`.
+///
+/// Set by `compose config --no-path-resolution`, introduced in v2.18.0
+/// ("introduce --no-path-resolution to skip relative path to be resolved",
+/// docker/compose#10557). Without it compose rewrites every relative build
+/// context and bind-mount source to an absolute path on the developer's
+/// machine, and those paths get baked into the config image and shipped to
+/// Antithesis, where they mean nothing.
+///
+/// The bar is v2.24.7 rather than v2.18.0 because the flag was ignored for
+/// files pulled in with `include:` until then (docker/compose#11508). Since
+/// `include:` resolves each file's relative paths against that file's own
+/// directory, a project using it on v2.20 (where `include:` landed) through
+/// v2.24.6 would pass a looser check and still ship absolute local paths —
+/// silently, and only visible once the run is on the platform. A version check
+/// that lets a broken config through is worse than no check.
+const MIN_COMPOSE_VERSION: (u64, u64, u64) = (2, 24, 7);
+
+/// `MIN_COMPOSE_VERSION` as it appears in messages: `2.24.7`.
+fn min_compose_version() -> String {
+    let (major, minor, patch) = MIN_COMPOSE_VERSION;
+    format!("{major}.{minor}.{patch}")
+}
+
+/// The major, minor, and patch components of a `compose version --short`
+/// string: `2.40.3` → `(2, 40, 3)`, `v2.24` → `(2, 24, 0)`. `None` when it
+/// doesn't begin with a number.
+fn compose_version_parts(version: &str) -> Option<(u64, u64, u64)> {
+    // Any component may carry a distro or pre-release suffix (`40+ds1`,
+    // `7-rc1`); keep its leading digits. A missing component reads as zero, so
+    // `2.24` is `(2, 24, 0)` — correctly below `(2, 24, 7)`.
+    fn leading_number(part: Option<&str>) -> Option<u64> {
+        match part {
+            Some(part) => part
+                .split(|c: char| !c.is_ascii_digit())
+                .next()?
+                .parse()
+                .ok(),
+            None => Some(0),
+        }
+    }
+
+    let mut parts = version.trim_start_matches('v').split('.');
+    let major = leading_number(Some(parts.next()?))?;
+    let minor = leading_number(parts.next())?;
+    let patch = leading_number(parts.next())?;
+    Some((major, minor, patch))
 }
 
 /// The docker CLI config directory (which holds `cli-plugins/`): `$DOCKER_CONFIG`
@@ -239,6 +277,12 @@ impl DockerCompose {
         Ok((cli.to_string(), cli.version().to_string()))
     }
 
+    /// The resolved compose command name (`docker-compose` / `docker compose`),
+    /// for error messages that need to name what actually ran.
+    pub fn cli_name(&self) -> String {
+        self.cli.to_string()
+    }
+
     /// A copy-pasteable `... down` command that reproduces what [`down`](Self::down)
     /// runs — same engine wiring, compose form, and files — for the
     /// `--keep-running` hint. Uses absolute file paths so it works from any
@@ -281,9 +325,9 @@ impl DockerCompose {
         cmd
     }
 
-    /// Spawn a long-running compose subcommand (`up`, `logs`) with inherited
-    /// stdio, in its own process group so the whole tree can be killed on
-    /// timeout.
+    /// Spawn a long-running compose subcommand (`up`) with inherited stdio, in
+    /// its own process group so the whole tree can be killed on timeout. stdin
+    /// is null so compose stays non-interactive and never blocks on a prompt.
     fn spawn_inherited(
         &self,
         overlay: Option<&Path>,
@@ -338,29 +382,38 @@ impl DockerCompose {
     /// Resolve the compose file to JSON under a scrubbed process environment
     /// that mimics the hermetic Antithesis environment: none of the user's shell
     /// variables, so `${VAR}` interpolation resolves only from the config dir's
-    /// `.env` file, explicit env files, and inline defaults. The compose binary
-    /// was resolved before the environment is cleared, so no shell variables
-    /// need to be retained.
+    /// `.env` file, explicit env files, and inline defaults.
     ///
     /// Returns the raw output rather than a string: a required `${VAR:?}` with no
     /// value makes compose abort (non-zero exit, empty stdout), which the caller
-    /// reads as a definite "won't resolve in Antithesis".
+    /// inspects to tell a genuine environment dependency apart from compose
+    /// failing for some unrelated reason.
     pub fn config_json_hermetic_env(&self) -> Result<Output> {
         // Build the normal command (binary + working directory + DOCKER_HOST),
         // then clear the whole environment. Those shell values are all valid
         // interpolation inputs Antithesis will not inherit, so scrubbing them is
-        // the point; only the binary and directory (not an env var) carry over.
+        // the point.
         let mut cmd = self.command(None, &["config", "--format", "json"]);
         cmd.env_clear();
-        // env_clear() also wiped what the `docker compose` plugin form needs to
-        // *find* the plugin: the docker CLI locates it under $DOCKER_CONFIG/
-        // cli-plugins (default $HOME/.docker/cli-plugins). Restore DOCKER_CONFIG
-        // only — docker machinery, not a value users interpolate into compose
-        // files — so a user-directory plugin install (e.g. Docker Desktop) stays
-        // discoverable without reintroducing $HOME as a `${VAR}` source.
-        if let ComposeForm::Plugin(_) = self.cli.form
-            && let Some(config_dir) = docker_config_dir()
-        {
+        // Put back the two variables compose needs to *run*, as opposed to the
+        // ones it would interpolate into the file. Both are docker machinery:
+        //
+        // - PATH: compose shells out to `docker`, so without it compose fails
+        //   with "executable file not found in $PATH" and the whole check
+        //   collapses into a bogus "depends on your shell environment" verdict.
+        // - DOCKER_CONFIG: the docker CLI finds the compose plugin under
+        //   $DOCKER_CONFIG/cli-plugins (default $HOME/.docker/cli-plugins), so a
+        //   user-directory install (e.g. Docker Desktop) stays discoverable
+        //   without reintroducing $HOME as a `${VAR}` source.
+        //
+        // A compose file that interpolates `${PATH}` is consequently not flagged.
+        // That is a deliberate trade: PATH exists in the Antithesis environment
+        // too, so it is a poor divergence signal, and keeping it costs every
+        // user with a standalone compose a false failure.
+        if let Some(path) = std::env::var_os("PATH") {
+            cmd.env("PATH", path);
+        }
+        if let Some(config_dir) = docker_config_dir() {
             cmd.env("DOCKER_CONFIG", config_dir);
         }
         cmd.output().wrap_err_with(|| {
@@ -403,21 +456,30 @@ impl DockerCompose {
         parse_compose_ps(&stdout)
     }
 
-    /// Spawn `compose up --detach` and return the child process.
+    /// Spawn `compose up` in the foreground and return the child process.
     ///
-    /// stdout and stderr are inherited so progress is visible during pulls. The
-    /// caller awaits the child and checks its exit status. Uses
-    /// `process_group(0)` so the whole group can be killed on timeout.
-    pub fn up_detached(&self, overlay: Option<&Path>) -> Result<ProcessGroupChild> {
-        self.spawn_inherited(overlay, &["up", "--detach", "--no-build", "--pull=never"])
-    }
-
-    /// Spawn `compose logs --follow` and return the child process.
+    /// Attached rather than detached because only an attached `up` interleaves
+    /// container logs in real time. A detached `up` followed by `compose logs`
+    /// replays each container's buffered history as its own block, so the
+    /// startup window — the part worth reading — arrives grouped by container
+    /// rather than in the order things actually happened.
     ///
-    /// stdout and stderr are inherited so log output goes straight to the
-    /// terminal. stdin is null. The process exits when all containers stop.
-    pub fn logs_follow(&self, overlay: Option<&Path>) -> Result<ProcessGroupChild> {
-        self.spawn_inherited(overlay, &["logs", "--follow"])
+    /// stdout and stderr are inherited so compose writes straight to the
+    /// terminal and keeps its per-service colors; stdin is null (see
+    /// [`spawn_inherited`](Self::spawn_inherited)) so compose never decides it
+    /// is interactive and blocks on a prompt that nothing can answer.
+    ///
+    /// Deliberately no `--abort-on-container-exit`: a one-shot setup container
+    /// that exits 0 is a legitimate compose pattern (`depends_on:
+    /// service_completed_successfully`), and tearing the project down on the
+    /// first exit would break exactly those setups. The process exits on its
+    /// own once every container has stopped.
+    ///
+    /// Uses `process_group(0)` so the whole group can be killed once the
+    /// setup-complete event lands. Killing it leaves the containers running —
+    /// they belong to the engine, not to this process tree.
+    pub fn up_attached(&self, overlay: Option<&Path>) -> Result<ProcessGroupChild> {
+        self.spawn_inherited(overlay, &["up", "--no-build", "--pull=never"])
     }
 
     /// Run `compose down` for cleanup. Best-effort, ignores errors.
@@ -1918,17 +1980,49 @@ services:
         assert_eq!(contents.build_services, HashSet::from(["app".to_string()]));
     }
     #[test]
-    fn compose_major_version_parses_the_major_component() {
-        assert_eq!(compose_major_version("2.40.3"), Some(2));
-        assert_eq!(compose_major_version("v2.40.3"), Some(2));
-        // Distro build-metadata suffixes must not throw off the parse.
+    fn compose_version_parts_parses_major_minor_and_patch() {
+        assert_eq!(compose_version_parts("2.40.3"), Some((2, 40, 3)));
+        assert_eq!(compose_version_parts("v2.40.3"), Some((2, 40, 3)));
+        // Distro build-metadata and pre-release suffixes must not throw off the
+        // parse, on any component.
         assert_eq!(
-            compose_major_version("2.40.3+ds1-0ubuntu1~24.04.1"),
-            Some(2)
+            compose_version_parts("2.40.3+ds1-0ubuntu1~24.04.1"),
+            Some((2, 40, 3))
         );
-        assert_eq!(compose_major_version("1.29.2"), Some(1)); // Compose v1
-        assert_eq!(compose_major_version(""), None);
-        assert_eq!(compose_major_version("garbage"), None);
+        assert_eq!(compose_version_parts("2.24.7-rc1"), Some((2, 24, 7)));
+        // Absent components read as zero, so a bare minor sorts below any patch.
+        assert_eq!(compose_version_parts("2.24"), Some((2, 24, 0)));
+        assert_eq!(compose_version_parts("2"), Some((2, 0, 0)));
+        assert_eq!(compose_version_parts("1.29.2"), Some((1, 29, 2))); // Compose v1
+        assert_eq!(compose_version_parts(""), None);
+        assert_eq!(compose_version_parts("garbage"), None);
+    }
+
+    /// The gate has to order by patch within the same minor, because the
+    /// release that matters — 2.24.7, which fixed `--no-path-resolution` for
+    /// `include:` — is a patch release. Accepting 2.24.0 would let a silently
+    /// broken config through.
+    #[test]
+    fn min_compose_version_rejects_releases_below_the_include_fix() {
+        let supported =
+            |v: &str| compose_version_parts(v).is_some_and(|p| p >= MIN_COMPOSE_VERSION);
+
+        assert!(!supported("1.29.2"), "Compose v1 must be rejected");
+        assert!(
+            !supported("2.18.0"),
+            "the release that introduced the flag is still too old for `include:`"
+        );
+        assert!(
+            !supported("2.24.6"),
+            "the release just below the fix must be rejected"
+        );
+        assert!(supported("2.24.7"), "the bar itself must be accepted");
+        assert!(supported("2.40.3"));
+        assert!(supported("5.3.1"), "a future major must be accepted");
+        assert!(
+            !supported("garbage"),
+            "an unparsable version must be rejected"
+        );
     }
     #[test]
     fn compose_form_display_standalone_and_plugin() {
@@ -2019,7 +2113,15 @@ services:
         let resolved: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
         let environment = &resolved["services"]["app"]["environment"];
         assert_eq!(environment["HOME_VALUE"], "");
-        assert_eq!(environment["PATH_VALUE"], "");
         assert_eq!(environment["DOCKER_HOST_VALUE"], "");
+        // PATH is deliberately *not* scrubbed: compose shells out to `docker`,
+        // and without it every compose file on a standalone install fails the
+        // check with a bogus "depends on your shell environment" verdict. The
+        // cost is that `${PATH}` alone isn't flagged, which is fine — the
+        // Antithesis environment has a PATH too, so it is a poor signal.
+        assert_ne!(
+            environment["PATH_VALUE"], "",
+            "PATH must survive the scrub so compose can find `docker`"
+        );
     }
 }

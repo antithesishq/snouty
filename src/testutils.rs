@@ -1030,6 +1030,17 @@ fn mock_route_execute_command(run_id: &str, req_body: &str) -> (u16, String) {
             mock_exec_exited(0),
         ],
         "truncate-stream" => vec![mock_exec_output("stdout", "partial output", "398.491")],
+        // A frame type this build does not know, and a known frame carrying a
+        // field it does not know. The stream must survive both.
+        "unknown-frames" => vec![
+            format!(
+                r#"{{"type":"heartbeat","at":"398.4905","input_hash":"{MOCK_EXEC_BRANCH_HASH}"}}"#
+            ),
+            format!(
+                r#"{{"type":"output","stream":"stdout","text":"known with extras","truncated":true,"moment":{{"input_hash":"{MOCK_EXEC_BRANCH_HASH}","vtime":"398.491"}}}}"#
+            ),
+            mock_exec_exited(0),
+        ],
         _ => vec![
             mock_exec_output("stdout", "Linux antithesis 6.12.0", "398.491"),
             mock_exec_output(

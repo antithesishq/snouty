@@ -136,6 +136,18 @@ impl FromStr for VTime {
     }
 }
 
+/// A vtime becomes its exact [`fmt::Display`] text wherever a `String` is
+/// wanted — notably the generated client's query parameters, whose setters
+/// take `impl TryInto<String>`. Converting here rather than through
+/// [`serde::Serialize`] is deliberate: serialization writes a JSON *number*,
+/// and a query parameter formatted from that would be a second, unpinned
+/// rendering of a precision-critical value.
+impl From<VTime> for String {
+    fn from(vtime: VTime) -> Self {
+        vtime.to_string()
+    }
+}
+
 impl serde::Serialize for VTime {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         serializer.serialize_f64(self.0)
@@ -245,6 +257,16 @@ mod tests {
         assert!(serde_json::from_str::<VTime>("\"NaN\"").is_err());
         assert!(serde_json::from_str::<VTime>("\"not a number\"").is_err());
         assert!(serde_json::from_str::<VTime>("true").is_err());
+    }
+
+    #[test]
+    fn converts_to_its_exact_display_text() {
+        // The query-parameter path: the text must be the same one Display
+        // prints, not a second rendering.
+        for text in REAL_VTIMES {
+            let vtime: VTime = text.parse().unwrap();
+            assert_eq!(String::from(vtime), *text);
+        }
     }
 
     #[test]

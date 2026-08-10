@@ -1,7 +1,11 @@
 use chrono::{DateTime, Utc};
-use clap::{Args, CommandFactory, Parser, Subcommand, ValueEnum};
+use clap::{Args, Parser, Subcommand, ValueEnum};
+
+use color_eyre::Section;
+use color_eyre::eyre::Report;
 
 use crate::api::RunStatus;
+use crate::error::user_error;
 use crate::features::{self, Feature};
 use crate::time::ReportDuration;
 use crate::vtime::VTime;
@@ -769,35 +773,37 @@ impl Default for RunsListArgs {
     }
 }
 
-/// Clap's unrecognized-subcommand error when `command` is a gated command
-/// whose feature is off, so a gated-off command reads exactly like one that
-/// does not exist — same wording, same usage line, same exit code.
+/// The error for invoking a gated command whose feature is off.
 ///
 /// This is the half of the gate that hiding cannot do: a hidden subcommand is
-/// still callable. `enabled` names the features that are on — the caller
-/// passes them so the decision is testable without touching the environment.
-pub fn gated_command_error(command: &Commands, enabled: &[Feature]) -> Option<clap::Error> {
-    let gated_off = matches!(
-        command,
+/// still callable. Anyone who types the command already knows it exists, so
+/// the error says what is actually wrong and how to fix it, rather than
+/// pretending the command is not there. `enabled` names the features that are
+/// on — the caller passes them so the decision is testable without touching
+/// the environment.
+pub fn gated_command_error(command: &Commands, enabled: &[Feature]) -> Option<Report> {
+    let gated = match command {
         Commands::Runs {
-            command: Some(RunsCommands::Exec { .. })
-        }
-    ) && !enabled.contains(&Feature::RunsExec);
-    if !gated_off {
+            command: Some(RunsCommands::Exec { .. }),
+        } => (Feature::RunsExec, "snouty runs exec"),
+        _ => return None,
+    };
+    let (feature, path) = gated;
+    if enabled.contains(&feature) {
         return None;
     }
 
-    let mut cli = Cli::command();
-    // Build first, so the usage line carries the full command path
-    // (`snouty runs`) rather than the bare subcommand name.
-    cli.build();
     Some(
-        cli.find_subcommand_mut("runs")
-            .expect("the parent of a gated subcommand exists")
-            .error(
-                clap::error::ErrorKind::InvalidSubcommand,
-                "unrecognized subcommand 'exec'",
-            ),
+        user_error(format!(
+            "`{path}` is an unstable feature and is not enabled"
+        ))
+        .note(format!(
+            "enable it by setting {}={}",
+            features::UNSTABLE_FEATURES_VAR_NAME,
+            feature.as_str()
+        ))
+        .note("an unstable feature can change or go away in any release")
+        .suggestion(format!("run `{path} --help` for what it does")),
     )
 }
 
@@ -831,18 +837,18 @@ mod tests {
     fn a_gated_off_command_is_refused_and_an_enabled_one_runs() {
         let exec = parse(&["snouty", "runs", "exec", "RUN", "1", "2.0", "true"]).command;
 
-        // Off: refused with clap's own unrecognized-subcommand error, which
-        // says nothing about the command being real but disabled.
+        // Off: refused with a message that says what is wrong and how to fix
+        // it. Whoever typed the command knows it exists, so pretending it does
+        // not would only waste their time.
         let err = gated_command_error(&exec, &[]).expect("a gated-off command is refused");
-        assert_eq!(err.kind(), clap::error::ErrorKind::InvalidSubcommand);
-        let rendered = err.to_string();
+        let rendered = format!("{err:?}");
+        assert!(rendered.contains("`snouty runs exec`"), "{rendered}");
+        assert!(rendered.contains("unstable feature"), "{rendered}");
         assert!(
-            rendered.contains("unrecognized subcommand 'exec'"),
+            rendered.contains("SNOUTY_UNSTABLE_FEATURES=runs-exec"),
             "{rendered}"
         );
-        // The usage line names the full path, not the bare subcommand.
-        assert!(rendered.contains("snouty runs"), "{rendered}");
-        assert!(!rendered.contains("feature"), "{rendered}");
+        assert!(rendered.contains("snouty runs exec --help"), "{rendered}");
 
         // On: allowed through.
         assert!(gated_command_error(&exec, &[Feature::RunsExec]).is_none());

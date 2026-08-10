@@ -50,6 +50,7 @@ fn generate_api_client(out_dir: &Path) {
          EXPECTED_ADDITIONAL_PROPERTIES_FALSE in build.rs to {stripped}."
     );
     untype_error_responses(&mut spec_value);
+    drop_use_otis(&mut spec_value);
     mark_vtime_schema(&mut spec_value);
     let spec: openapiv3::OpenAPI = serde_json::from_value(spec_value).unwrap();
 
@@ -152,6 +153,29 @@ fn untype_error_responses(spec: &mut serde_json::Value) {
 /// rather than edited into `src/openapi.json`, because that file is a
 /// vendored upstream artifact — the next spec refresh would silently drop the
 /// edit.
+/// Remove `use_otis` from the execute-command request schema, so the generated
+/// request type has no such field and snouty never sends one.
+///
+/// The field is a server-side testing knob that routes output through the
+/// tenant coordinator; snouty always wants the live session's output, so it
+/// would only ever send `false`. Sending `false` is not the same as saying
+/// nothing: the API team expects to retire the field, and a client that keeps
+/// naming it makes that harder. Leaving it out defers to whatever the server
+/// defaults to, and the eventual removal costs us nothing.
+///
+/// The pointer is asserted, so a spec refresh that drops the field fails the
+/// build. ACTION when that happens: delete this transform and its call.
+fn drop_use_otis(spec: &mut serde_json::Value) {
+    let properties = spec
+        .pointer_mut("/components/schemas/Execute_Command_Request/properties")
+        .and_then(serde_json::Value::as_object_mut)
+        .expect("openapi spec has no Execute_Command_Request.properties");
+    assert!(
+        properties.remove("use_otis").is_some(),
+        "Execute_Command_Request no longer has `use_otis`; delete `drop_use_otis` in build.rs"
+    );
+}
+
 fn mark_vtime_schema(spec: &mut serde_json::Value) {
     let vtime = spec
         .pointer_mut("/components/schemas/Moment/properties/vtime")

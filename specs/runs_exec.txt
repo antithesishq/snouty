@@ -126,6 +126,21 @@ stdout '\{"type":"exited","exit_code":0,"end_moment":\{"input_hash":"-8206006569
 stdout '"exit_code":5'
 stderr 'command exited with code 5'
 
+# The stream may grow frames and fields while the command is unstable, so
+# neither kind stops it. An unrecognized frame goes to stderr in human mode,
+# and a known frame with an unknown field still renders its output.
+snouty runs exec run-2 -3625518438076122494 398.4898056755774 unknown-frames
+stdout 'known with extras'
+stderr '.*heartbeat.*'
+! stdout '.*heartbeat.*'
+
+# With --json both pass through to stdout unchanged: the unknown frame whole,
+# and the unknown field alongside the known ones.
+snouty --json runs exec run-2 -3625518438076122494 398.4898056755774 unknown-frames
+stdout '"type":"heartbeat".*"at":"398.4905"'
+stdout '"text":"known with extras".*"truncated":true'
+stdout '"type":"exited"'
+
 # A `Stream_Error` line is the server aborting the stream, not data: it
 # becomes the command's failure and is never rendered as output.
 ! snouty runs exec run-stream-error -3625518438076122494 398.4898056755774 'uname -a'

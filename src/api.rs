@@ -326,9 +326,9 @@ impl AntithesisApi {
         }
     }
 
-    /// The endpoint takes each vtime as a decimal-seconds query parameter, so
-    /// the typed values are rendered with [`VTime`]'s exact `Display` — the
-    /// same text the value was parsed from, for anything snouty printed.
+    /// The endpoint takes each vtime as a decimal-seconds query parameter. The
+    /// generated setters accept anything that converts to `String`, and
+    /// [`VTime`]'s conversion is its exact `Display` text.
     pub async fn get_run_logs(
         &self,
         run_id: &str,
@@ -342,12 +342,12 @@ impl AntithesisApi {
             .get_run_logs()
             .run_id(run_id)
             .input_hash(input_hash)
-            .vtime(vtime.to_string());
+            .vtime(vtime);
         if let Some(v) = begin_input_hash {
             request = request.begin_input_hash(v);
         }
         if let Some(v) = begin_vtime {
-            request = request.begin_vtime(v.to_string());
+            request = request.begin_vtime(v);
         }
 
         match request.send().await {
@@ -372,13 +372,12 @@ impl AntithesisApi {
         script: String,
         timeout_seconds: u64,
     ) -> Result<ByteStream> {
+        // No `use_otis`: `build.rs` drops that field from the generated type,
+        // so snouty says nothing about it and the server applies its default.
         let body = generated::types::ExecuteCommandRequest {
             moment,
             script,
             timeout_seconds,
-            // A server-side testing knob (routes output through the tenant
-            // coordinator); snouty always wants the live session's output.
-            use_otis: false,
         };
         let request = self.client.execute_command().run_id(run_id).body(body);
         match request.send().await {
@@ -927,17 +926,6 @@ const MIN_PROPERTIES_VERSION: u32 = 52;
 /// The tenant version that first served the run build logs resource. Runs
 /// created on older tenants 404 on `/runs/{run_id}/build_logs`.
 const MIN_BUILD_LOGS_VERSION: u32 = 54;
-
-// Every nested run resource with a version cutoff has a `MIN_*_VERSION` const
-// above, enforced by `ensure_resource_supported`. Logs and events have no
-// cutoff — they are served for every version we can produce — so neither
-// needs a guard.
-//
-// Execute-command has no cutoff either, on purpose. The multiverse debugger
-// has not shipped, so the release that first serves the endpoint is not
-// settled, and a pinned floor here would reject runs the server can in fact
-// execute against. The feature is unstable, so the server's own answer is the
-// authority. Add a const here once the release is known.
 
 /// Run IDs encode the tenant version that produced them as their second
 /// dash-delimited field — e.g. the `40` in

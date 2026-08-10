@@ -13,13 +13,13 @@
 #
 # Today the only feature is `runs-exec`, which gates `snouty runs exec`.
 
-# 1. With no features set, `runs exec` is refused with clap's ordinary
-#    unrecognized-subcommand error. Nothing hints that the command is real but
-#    disabled, and the exit code is clap's usage-error 2, not snouty's 1.
+# 1. With no features set, invoking `runs exec` says what is wrong and how to
+#    fix it. Whoever types the command knows it exists, so the error names the
+#    feature and the variable instead of pretending the command is absent.
 ! snouty runs exec run-1 -123 1.0 'uname -a'
-stderr 'unrecognized subcommand .*exec'
-stderr 'Usage: snouty runs'
-! stderr 'feature'
+stderr 'is an unstable feature and is not enabled'
+stderr 'SNOUTY_UNSTABLE_FEATURES=runs-exec'
+stderr 'snouty runs exec --help'
 
 # 2. It is absent from `runs --help`, so it isn't discoverable there.
 snouty runs --help
@@ -67,12 +67,12 @@ stderr 'No Antithesis credentials found.*'
 # 9. An id that isn't a feature this build knows enables nothing.
 env SNOUTY_UNSTABLE_FEATURES=not-a-feature
 ! snouty runs exec run-1 -123 1.0 'uname -a'
-stderr 'unrecognized subcommand .*exec'
+stderr 'is an unstable feature and is not enabled'
 
 # 10. An empty value is "unset", not "a feature named the empty string".
 env SNOUTY_UNSTABLE_FEATURES=
 ! snouty runs exec run-1 -123 1.0 'uname -a'
-stderr 'unrecognized subcommand .*exec'
+stderr 'is an unstable feature and is not enabled'
 
 # 11. A settings file cannot enable a feature — the key is not a setting, so
 #     it is ignored like any other unknown key rather than erroring.

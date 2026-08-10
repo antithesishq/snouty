@@ -76,15 +76,7 @@ async fn main() {
             writeln!(buf, "{}", record.args())
         })
         .init();
-    // A gated command hides itself as the parser is built (see the `hide`
-    // attribute on `RunsCommands::Exec`), but a hidden subcommand is still
-    // callable — so refuse it here too.
-    let cli = Cli::parse();
-    if let Some(err) = gated_command_error(&cli.command, &features::enabled()) {
-        err.exit();
-    }
-
-    if let Err(report) = run(cli).await {
+    if let Err(report) = run(Cli::parse()).await {
         // One rendering for every error: `render_report` collapses the chain
         // index for single errors and wraps overlong prose, both printing
         // concerns that belong here rather than in the messages. User-facing
@@ -107,6 +99,13 @@ async fn run(cli: Cli) -> Result<()> {
     } = cli;
     if json && let Some(name) = json_unaware_command_name(&command) {
         eprintln!("warning: --json has no effect for `snouty {name}`");
+    }
+
+    // A gated command hides itself as the parser is built (see the `hide`
+    // attribute on `RunsCommands::Exec`), but a hidden subcommand is still
+    // callable — so refuse it here too.
+    if let Some(report) = gated_command_error(&command, &features::enabled()) {
+        return Err(report);
     }
 
     if let Err(err) = initialize_credential_store() {

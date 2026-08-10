@@ -1566,20 +1566,48 @@ async fn cmd_runs_logs(
     result
 }
 
-/// One event in an execute-command NDJSON stream. Extra fields (e.g. an
-/// output event's `moment`) are ignored; the `exited` event's `end_moment` is
-/// kept for the end-moment trailer.
+/// One frame of an execute-command NDJSON stream.
+///
+/// Deliberately permissive, because `runs exec` is a work in progress behind
+/// an unstable feature and the stream may still grow frames and fields: a
+/// frame this build does not recognize is kept whole as [`ExecFrame::Unknown`]
+/// rather than failing the stream. Tighten this to a closed type once the
+/// command stabilizes.
+// The retained payloads below are not read yet: `--json` currently passes the
+// raw line through, so nothing consumes the typed copies. They exist so the
+// data survives into the type as the command grows a rendered JSON form, and
+// so a new server field is not silently dropped in the meantime.
+#[allow(dead_code)]
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum ExecFrame {
+    Known(ExecEvent),
+    /// A frame with an unknown `type`, or a known one whose shape did not fit.
+    Unknown(Value),
+}
+
+/// A frame this build understands.
+///
+/// Each variant keeps whatever else the server sent in `extra`, so a new field
+/// survives to the `--json` output and to any rendering added later instead of
+/// being dropped here.
 ///
 /// Hand-written rather than the generated `ExecuteCommandStreamEvent`: that
 /// type is an untagged enum whose variants progenitor names `Variant0/1/2`,
-/// which reads far worse at the match sites than the three named variants
-/// here.
+/// which reads far worse at the match sites than the named variants here.
+#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum ExecEvent {
     Output {
         stream: String,
         text: String,
+        /// Where the branch stood when the line was written. Kept for the
+        /// `--json` output.
+        #[serde(default)]
+        moment: Option<Moment>,
+        #[serde(flatten)]
+        extra: Map<String, Value>,
     },
     Exited {
         exit_code: Option<i64>,
@@ -1588,8 +1616,13 @@ enum ExecEvent {
         /// than the whole event.
         #[serde(default)]
         end_moment: Option<Moment>,
+        #[serde(flatten)]
+        extra: Map<String, Value>,
     },
-    TimedOut,
+    TimedOut {
+        #[serde(flatten)]
+        extra: Map<String, Value>,
+    },
 }
 
 /// Cap on a script read from stdin. Far more than any hand-written bash
@@ -1687,8 +1720,8 @@ async fn cmd_runs_exec(
                 if json {
                     outln!("{entry}")?;
                 }
-                match ExecEvent::deserialize(&entry).ok() {
-                    Some(ExecEvent::Output { stream, text }) if !json => {
+                match ExecFrame::deserialize(&entry) {
+                    Ok(ExecFrame::Known(ExecEvent::Output { stream, text, .. })) if !json => {
                         let text = normalize_terminal_text(&text);
                         if stream == "stderr" {
                             eprintln!("{text}");
@@ -1696,12 +1729,14 @@ async fn cmd_runs_exec(
                             outln!("{text}")?;
                         }
                     }
-                    Some(event @ (ExecEvent::Exited { .. } | ExecEvent::TimedOut)) => {
+                    Ok(ExecFrame::Known(
+                        event @ (ExecEvent::Exited { .. } | ExecEvent::TimedOut { .. }),
+                    )) => {
                         terminal = Some(event);
                     }
-                    // An unrecognized event is not command output; keep it
-                    // off stdout (--json already passed the line through).
-                    None if !json => eprintln!("{entry}"),
+                    // A frame this build doesn't know is not command output;
+                    // keep it off stdout (--json already passed it through).
+                    Ok(ExecFrame::Unknown(_)) | Err(_) if !json => eprintln!("{entry}"),
                     _ => {}
                 }
             }
@@ -1722,6 +1757,7 @@ async fn cmd_runs_exec(
         Some(ExecEvent::Exited {
             exit_code,
             end_moment,
+            ..
         }) => {
             // The trailer documents where the branch's timeline ended — the
             // moment to chain a follow-up command from, in the positional
@@ -1736,7 +1772,9 @@ async fn cmd_runs_exec(
                 None => Err(user_error("command exited without reporting an exit code")),
             }
         }
-        Some(ExecEvent::TimedOut) => Err(user_error(format!("command timed out after {timeout}s"))),
+        Some(ExecEvent::TimedOut { .. }) => {
+            Err(user_error(format!("command timed out after {timeout}s")))
+        }
         // Exit 0 must mean "the script ran and exited 0", so a stream that
         // ends without a terminal event — truncation — is a failure.
         _ => Err(eyre!("stream ended before the command reported completion")
@@ -3891,10 +3929,21 @@ mod tests {
             r#"{"type":"output","stream":"stderr","text":"hello-err","moment":{"input_hash":"-3160476794197372487","vtime":"16.304728139657527"}}"#,
         )
         .unwrap();
-        let ExecEvent::Output { stream, text } = output else {
+        let ExecEvent::Output {
+            stream,
+            text,
+            moment,
+            ..
+        } = output
+        else {
             panic!("expected output event");
         };
         assert_eq!((stream.as_str(), text.as_str()), ("stderr", "hello-err"));
+        // The output moment is kept, not discarded — the rendered JSON form
+        // will show it.
+        let moment = moment.expect("an output event carries its moment");
+        assert_eq!(moment.input_hash, "-3160476794197372487");
+        assert_eq!(moment.vtime.to_string(), "16.304728139657527");
 
         let exited: ExecEvent = serde_json::from_str(
             r#"{"type":"exited","exit_code":5,"end_moment":{"input_hash":"-316","vtime":"16.3"}}"#,
@@ -3903,6 +3952,7 @@ mod tests {
         let ExecEvent::Exited {
             exit_code,
             end_moment,
+            ..
         } = exited
         else {
             panic!("expected exited event");
@@ -3925,12 +3975,31 @@ mod tests {
 
         assert!(matches!(
             serde_json::from_str(r#"{"type":"timed_out"}"#).unwrap(),
-            ExecEvent::TimedOut
+            ExecEvent::TimedOut { .. }
         ));
+    }
 
-        // A future event type doesn't parse — the stream handler surfaces it
-        // verbatim instead of guessing.
-        assert!(serde_json::from_str::<ExecEvent>(r#"{"type":"heartbeat"}"#).is_err());
+    #[test]
+    fn exec_frame_keeps_what_it_does_not_understand() {
+        // The stream may grow frames and fields while the command is a work
+        // in progress, so neither kind may fail the stream.
+        let frame: ExecFrame = serde_json::from_str(r#"{"type":"heartbeat","at":"12.5"}"#).unwrap();
+        let ExecFrame::Unknown(value) = frame else {
+            panic!("an unknown frame type is kept whole");
+        };
+        assert_eq!(value["type"], json!("heartbeat"));
+        assert_eq!(value["at"], json!("12.5"));
+
+        // A known frame with a field this build doesn't know keeps that field
+        // rather than dropping it.
+        let frame: ExecFrame = serde_json::from_str(
+            r#"{"type":"output","stream":"stdout","text":"hi","moment":{"input_hash":"-1","vtime":"1.0"},"truncated":true}"#,
+        )
+        .unwrap();
+        let ExecFrame::Known(ExecEvent::Output { extra, .. }) = frame else {
+            panic!("expected a known output frame");
+        };
+        assert_eq!(extra.get("truncated"), Some(&json!(true)));
     }
 
     #[test]

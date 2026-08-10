@@ -1,6 +1,7 @@
 # Unreleased
 
-- Add `snouty login`: interactive sign-in with browser-based OAuth or an API key, multiple profiles, and credential storage in the macOS keychain or a credentials file on Linux ([#157](https://github.com/antithesishq/snouty/pull/157), [#173](https://github.com/antithesishq/snouty/pull/173), [#178](https://github.com/antithesishq/snouty/pull/178))
+- Deprecate username/password authentication: `snouty launch` and `snouty debug` print a warning that steers the user to `snouty login` ([#212](https://github.com/antithesishq/snouty/pull/212))
+- Add `snouty login`: interactive sign-in with browser-based OAuth or an API key, multiple profiles, and credential storage in the macOS keychain or a credentials file on Linux ([#157](https://github.com/antithesishq/snouty/pull/157), [#173](https://github.com/antithesishq/snouty/pull/173), [#178](https://github.com/antithesishq/snouty/pull/178), [#212](https://github.com/antithesishq/snouty/pull/212))
 - Add GitHub Actions OIDC authentication ([#157](https://github.com/antithesishq/snouty/pull/157))
 - Add support for the `docker compose` plugin in addition to standalone `docker-compose` ([#172](https://github.com/antithesishq/snouty/pull/172))
 - Announce the auto-detected container engine during `launch` and `validate`, and point to the other engine when it holds a missing image ([#170](https://github.com/antithesishq/snouty/pull/170), [#171](https://github.com/antithesishq/snouty/pull/171), [#175](https://github.com/antithesishq/snouty/pull/175))

@@ -75,6 +75,25 @@ stderr '"antithesis.report.recipients": "\[REDACTED\]"'
 stderr '"antithesis.source": "ci-pipeline"'
 stdout 'Test run started: run_id run-123'
 
+# Username/password authentication still works for the launch webhook, but it
+# is deprecated: a warning on stderr steers the user to `snouty login`. The
+# mock-server directive configures username/password credentials.
+mock-server 200 '{"runId":"run-123","statusCode":202}'
+snouty launch -w basic_test --duration 30 --source ci-pipeline
+stderr 'warning: username/password authentication is deprecated'
+stderr 'snouty login'
+stdout 'Test run started: run_id run-123'
+
+# With an API key configured, no deprecation warning is shown. (An empty env
+# value means unset, so the last line restores username/password auth for the
+# rest of the file.)
+mock-server 200 '{"runId":"run-123","statusCode":202}'
+env ANTITHESIS_API_KEY=testkey
+snouty launch -w basic_test --duration 30 --source ci-pipeline
+! stderr 'deprecated'
+stdout 'Test run started: run_id run-123'
+env ANTITHESIS_API_KEY=
+
 # With --json, snouty prints its own envelope: the run id, and nothing else.
 # The launch webhook's body-level statusCode is deliberately not re-exported
 # (issue #180) — the exit code is the success signal, and the field disagrees

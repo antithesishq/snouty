@@ -6,7 +6,7 @@ use std::time::Duration;
 use base64::{Engine as _, prelude::BASE64_URL_SAFE_NO_PAD};
 use color_eyre::Section;
 use color_eyre::eyre::{Context, Result, eyre};
-use dialoguer::{Confirm, Input, Password, Select};
+use inquire::{Confirm, Password, PasswordDisplayMode, Select, Text};
 use log::warn;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -16,7 +16,7 @@ use tokio::net::TcpListener;
 use crate::settings;
 use crate::{
     attributed_value::AttributedValue,
-    auth::{AuthenticationInfo, PersistableCredentials, persist},
+    auth::{AuthenticationInfo, PasswordPolicy, PersistableCredentials, persist},
     env,
     error::user_error,
     settings::{
@@ -32,7 +32,7 @@ const OAUTH_HTTP_TIMEOUT: Duration = Duration::from_secs(10);
 /// sign-in (including MFA).
 const CALLBACK_TIMEOUT: Duration = Duration::from_secs(300);
 
-/// Wrapping our TUI (`dialoguer`) in trait so that it can be subbed out for testing
+/// Wrapping our TUI (`inquire`) in a trait so that it can be subbed out for testing
 trait Prompter {
     /// Whether we're attached to an interactive terminal.
     fn is_interactive(&self) -> bool;
@@ -44,60 +44,47 @@ trait Prompter {
     fn input(&self, prompt: &str, default: Option<&str>) -> Result<String>;
 
     /// A single-choice menu over `items`, initially highlighting `default`.
-    /// Returns `None` when the user cancels (Esc/q), mirroring
-    /// [`dialoguer::Select::interact_opt`].
-    fn select(
-        &self,
-        prompt: &str,
-        items: &[String],
-        default: Option<usize>,
-    ) -> Result<Option<usize>>;
+    /// Returns `None` when the user cancels (Esc).
+    fn select(&self, prompt: &str, items: Vec<String>, default: usize) -> Result<Option<usize>>;
 
-    /// A no-echo secret. When `confirm_prompt` is `Some`, the value must be entered twice and matched.
-    fn password(&self, prompt: &str, confirm_prompt: Option<&str>) -> Result<String>;
+    /// A masked secret (each character echoes as `*`). There is deliberately
+    /// no confirmation round: Antithesis passwords are long generated strings
+    /// that are pasted like API keys, not typed twice.
+    fn password(&self, prompt: &str) -> Result<String>;
 }
 
-/// The production [`Prompter`]: `dialoguer` widgets reading the real terminal.
-struct DialoguerPrompter;
+/// The production [`Prompter`]: `inquire` prompts reading the real terminal.
+struct InquirePrompter;
 
-impl Prompter for DialoguerPrompter {
+impl Prompter for InquirePrompter {
     fn is_interactive(&self) -> bool {
         io::stdin().is_terminal()
     }
 
     fn confirm(&self, prompt: &str) -> Result<bool> {
-        Ok(Confirm::new().with_prompt(prompt).interact()?)
+        Ok(Confirm::new(prompt).prompt()?)
     }
 
     fn input(&self, prompt: &str, default: Option<&str>) -> Result<String> {
-        // T is inferred as `String` from the `String` return type — matching the
-        // form dialoguer's own examples use.
-        let mut input = Input::new().with_prompt(prompt);
+        let mut text = Text::new(prompt);
         if let Some(default) = default {
-            input = input.default(default.to_owned());
+            text = text.with_default(default);
         }
-        Ok(input.interact_text()?)
+        Ok(text.prompt()?)
     }
 
-    fn select(
-        &self,
-        prompt: &str,
-        items: &[String],
-        default: Option<usize>,
-    ) -> Result<Option<usize>> {
-        let mut select = Select::new().with_prompt(prompt).items(items);
-        if let Some(default) = default {
-            select = select.default(default);
-        }
-        Ok(select.interact_opt()?)
+    fn select(&self, prompt: &str, items: Vec<String>, default: usize) -> Result<Option<usize>> {
+        Ok(Select::new(prompt, items)
+            .with_starting_cursor(default)
+            .raw_prompt_skippable()?
+            .map(|choice| choice.index))
     }
 
-    fn password(&self, prompt: &str, confirm_prompt: Option<&str>) -> Result<String> {
-        let mut password = Password::new().with_prompt(prompt);
-        if let Some(confirm_prompt) = confirm_prompt {
-            password = password.with_confirmation(confirm_prompt, "Passwords did not match");
-        }
-        Ok(password.interact()?)
+    fn password(&self, prompt: &str) -> Result<String> {
+        Ok(Password::new(prompt)
+            .with_display_mode(PasswordDisplayMode::Masked)
+            .without_confirmation()
+            .prompt()?)
     }
 }
 
@@ -112,7 +99,7 @@ pub async fn cmd_login(
         repository,
         profile,
         current_settings,
-        &DialoguerPrompter,
+        &InquirePrompter,
     )
     .await
 }
@@ -162,7 +149,7 @@ async fn do_cmd_login(
 
     let current_credentials = AuthenticationInfo::for_ambient_configuration_with_attribution(
         profile_to_use.as_deref(),
-        true,
+        PasswordPolicy::Inspect,
     );
 
     // Capture the credential kind and where it was stored so the summary can name
@@ -271,27 +258,44 @@ fn prompt_for_value(
     value_name: &str,
     previous_value: Option<&str>,
 ) -> Result<String> {
-    if prompter.is_interactive() {
-        prompter.input(
-            &format!("What {value_name} would you like to use?"),
-            previous_value,
-        )
-    } else {
-        Err(eyre!("Cannot prompt for value when not running in a TTY"))
+    if !prompter.is_interactive() {
+        return Err(eyre!("Cannot prompt for value when not running in a TTY"));
     }
+    prompter.input(
+        &format!("What {value_name} would you like to use?"),
+        previous_value,
+    )
 }
 
+#[derive(Clone, Copy, PartialEq)]
 enum AuthSetupType {
     ApiKey,
     Password,
     OAuth,
 }
 
+impl AuthSetupType {
+    /// The credential menu, in order: single sign-on leads and is the
+    /// first-login default; the deprecated username/password option is last.
+    const IN_PREFERENCE_ORDER: [Self; 3] = [Self::OAuth, Self::ApiKey, Self::Password];
+
+    /// Whether this menu entry collects the same credential kind as `info`.
+    fn collects(self, info: &AuthenticationInfo) -> bool {
+        match info {
+            AuthenticationInfo::ApiKey { .. } => self == Self::ApiKey,
+            AuthenticationInfo::Password { .. } => self == Self::Password,
+            AuthenticationInfo::OAuth { .. } => self == Self::OAuth,
+            // No menu entry sets up GitHub Actions OIDC; it is ambient-only.
+            AuthenticationInfo::GithubActionsOidc { .. } => false,
+        }
+    }
+}
+
 impl std::fmt::Display for AuthSetupType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             AuthSetupType::ApiKey => f.write_str("API Key"),
-            AuthSetupType::Password => f.write_str("Username & password"),
+            AuthSetupType::Password => f.write_str("Username & password (deprecated)"),
             AuthSetupType::OAuth => f.write_str("Single sign-on (OAuth)"),
         }
     }
@@ -311,35 +315,36 @@ async fn prompt_for_auth(
         .wrap_err("failed to build the OAuth HTTP client")?;
     let oauth_config = fetch_cli_config(&client, &base_url).await;
 
-    let mut credential_options = vec![AuthSetupType::ApiKey, AuthSetupType::Password];
-
-    if oauth_config
+    let oauth_offered = oauth_config
         .as_ref()
-        .is_ok_and(|config| !matches!(config, CliOAuthConfig::Disabled))
-    {
-        credential_options.push(AuthSetupType::OAuth);
-    }
+        .is_ok_and(|config| !matches!(config, CliOAuthConfig::Disabled));
+    let credential_options: Vec<AuthSetupType> = AuthSetupType::IN_PREFERENCE_ORDER
+        .into_iter()
+        .filter(|option| oauth_offered || *option != AuthSetupType::OAuth)
+        .collect();
 
-    let labels: Vec<String> = credential_options.iter().map(ToString::to_string).collect();
-
-    // Default the highlighted option to whatever kind was last used, so the
-    // common "log in again the same way" case is one keystroke.
-    let default = match previous_value {
-        Err(_) => None,
-        Ok(creds) => match creds {
-            AttributedValue::EnvironmentVariable { .. } => None,
-            _ => match creds.value() {
-                AuthenticationInfo::ApiKey { .. } => Some(0),
-                AuthenticationInfo::Password { .. } => Some(1),
-                AuthenticationInfo::OAuth { .. } if credential_options.len() >= 3 => Some(2),
-                _ => None,
-            },
-        },
+    // Default the highlighted option to whatever kind was last stored, so the
+    // common "log in again the same way" case is one keystroke; otherwise
+    // highlight the first (preferred) option. Credentials from environment
+    // variables are not stored, so they set no default.
+    let previous_kind = match previous_value {
+        Ok(creds) if !matches!(creds, AttributedValue::EnvironmentVariable { .. }) => {
+            Some(creds.value())
+        }
+        _ => None,
     };
+    let default = previous_kind
+        .and_then(|kind| {
+            credential_options
+                .iter()
+                .position(|option| option.collects(kind))
+        })
+        .unwrap_or(0);
 
+    let labels = credential_options.iter().map(ToString::to_string).collect();
     let selection = prompter.select(
         "What kind of credentials would you like to use? (Hit Esc to skip)",
-        &labels,
+        labels,
         default,
     )?;
 
@@ -363,7 +368,7 @@ async fn prompt_for_auth(
 
 fn prompt_for_api_key(prompter: &dyn Prompter) -> Result<PersistableCredentials> {
     Ok(PersistableCredentials::ApiKey {
-        api_key: prompter.password("Please enter your API Key", None)?,
+        api_key: prompter.password("Please enter your API Key")?,
     })
 }
 
@@ -375,10 +380,9 @@ fn prompt_for_username_password(
     if username.is_empty() {
         return Err(eyre!("Username cannot be empty"));
     }
-    let password = prompter.password(
-        "Please enter your password",
-        Some("Please reenter your password to confirm"),
-    )?;
+    // No confirmation round: like an API key, an Antithesis password is a
+    // long generated string that is pasted, not typed.
+    let password = prompter.password("Please enter your password")?;
 
     Ok(PersistableCredentials::Password { username, password })
 }
@@ -989,7 +993,7 @@ mod tests {
             ScriptedPrompter {
                 answers: RefCell::new(self.0.into()),
                 prompts: RefCell::new(Vec::new()),
-                menus: RefCell::new(Vec::new()),
+                selects: RefCell::new(Vec::new()),
             }
         }
     }
@@ -999,7 +1003,8 @@ mod tests {
     struct ScriptedPrompter {
         answers: RefCell<VecDeque<Answer>>,
         prompts: RefCell<Vec<String>>,
-        menus: RefCell<Vec<Vec<String>>>,
+        /// Each `select` call: its item list and its default index.
+        selects: RefCell<Vec<(Vec<String>, usize)>>,
     }
 
     impl ScriptedPrompter {
@@ -1015,9 +1020,9 @@ mod tests {
             self.prompts.borrow().clone()
         }
 
-        /// The item lists passed to each `select`, in order.
-        fn menus(&self) -> Vec<Vec<String>> {
-            self.menus.borrow().clone()
+        /// The (items, default) pair passed to each `select`, in order.
+        fn selects(&self) -> Vec<(Vec<String>, usize)> {
+            self.selects.borrow().clone()
         }
     }
 
@@ -1043,17 +1048,17 @@ mod tests {
         fn select(
             &self,
             prompt: &str,
-            items: &[String],
-            _default: Option<usize>,
+            items: Vec<String>,
+            default: usize,
         ) -> Result<Option<usize>> {
-            self.menus.borrow_mut().push(items.to_vec());
+            self.selects.borrow_mut().push((items, default));
             match self.next("select", prompt) {
                 Answer::Select(value) => Ok(value),
                 _ => panic!("next scripted answer was not a select at {prompt:?}"),
             }
         }
 
-        fn password(&self, prompt: &str, _confirm_prompt: Option<&str>) -> Result<String> {
+        fn password(&self, prompt: &str) -> Result<String> {
             match self.next("password", prompt) {
                 Answer::Password(value) => Ok(value),
                 _ => panic!("next scripted answer was not a password at {prompt:?}"),
@@ -1075,7 +1080,7 @@ mod tests {
 
     /// Credential-kind menu labels, matching the `Display` impl on `AuthSetupType`.
     const API_KEY: &str = "API Key";
-    const USERNAME_PASSWORD: &str = "Username & password";
+    const USERNAME_PASSWORD: &str = "Username & password (deprecated)";
     const OAUTH: &str = "Single sign-on (OAuth)";
 
     /// A per-test isolated environment: an exclusive env lock, a throwaway `$HOME`,
@@ -1365,23 +1370,61 @@ mod tests {
 
         do_cmd_login(None, None, None, settings, &prompter).await?;
 
-        let menu = &prompter.menus()[0];
+        let (menu, default) = &prompter.selects()[0];
         assert_eq!(
             menu,
             &[API_KEY.to_owned(), USERNAME_PASSWORD.to_owned()],
             "OAuth must be hidden when the backend disables it"
         );
+        assert_eq!(
+            *default, 0,
+            "the first option must be highlighted when no credentials are stored"
+        );
         Ok(())
     }
 
     /// Conversely, when the backend advertises an OAuth port strategy, the "Single
-    /// sign-on (OAuth)" option *is* offered.
+    /// sign-on (OAuth)" option *is* offered — first in the menu and as the
+    /// default, with the deprecated username/password option last.
     #[tokio::test]
-    async fn login_offers_oauth_when_backend_supports_it() -> Result<()> {
+    async fn login_offers_oauth_first_when_backend_supports_it() -> Result<()> {
         let env = LoginEnv::with_oauth_config(OAUTH_EPHEMERAL);
         let settings = env.resolve_settings(None);
-        // Finish via the default API-key option rather than OAuth, which would start
+        // Finish via the API-key option rather than OAuth, which would start
         // the interactive browser flow.
+        let prompter = Script::default()
+            .input("mytenant")
+            .input("myrepo")
+            .select(1)
+            .password("sk-test-key")
+            .build();
+
+        do_cmd_login(None, None, None, settings, &prompter).await?;
+
+        let (menu, default) = &prompter.selects()[0];
+        assert_eq!(
+            menu,
+            &[
+                OAUTH.to_owned(),
+                API_KEY.to_owned(),
+                USERNAME_PASSWORD.to_owned()
+            ],
+            "OAuth must lead the menu when the backend advertises a port strategy"
+        );
+        assert_eq!(*default, 0, "OAuth must be the default for a first login");
+        Ok(())
+    }
+
+    /// Stored username/password credentials move the default to that (last)
+    /// menu entry, so "log in again the same way" stays one keystroke.
+    #[tokio::test]
+    async fn login_defaults_to_the_previously_used_kind() -> Result<()> {
+        let env = LoginEnv::new();
+        env.seed(
+            ".config/snouty/credentials.toml",
+            "[default]\ntype = \"Password\"\nusername = \"puser\"\npassword = \"ppass\"\n",
+        );
+        let settings = env.resolve_settings(None);
         let prompter = Script::default()
             .input("mytenant")
             .input("myrepo")
@@ -1391,11 +1434,13 @@ mod tests {
 
         do_cmd_login(None, None, None, settings, &prompter).await?;
 
-        let menu = &prompter.menus()[0];
-        assert!(
-            menu.contains(&OAUTH.to_owned()),
-            "OAuth must be offered when the backend advertises a port strategy: {menu:?}"
-        );
+        let (menu, default) = &prompter.selects()[0];
+        let password_index = menu
+            .iter()
+            .position(|label| label == USERNAME_PASSWORD)
+            .expect("menu must offer username/password");
+        assert_eq!(password_index, menu.len() - 1, "password must come last");
+        assert_eq!(*default, password_index);
         Ok(())
     }
 
@@ -1551,7 +1596,10 @@ mod tests {
         // straight from the keychain, proving the secret round-trips. Reading in
         // the same process that wrote it doesn't trip the ACL prompt the
         // `security` CLI would. ---
-        let resolved = AuthenticationInfo::for_ambient_configuration_with_attribution(None, true)?;
+        let resolved = AuthenticationInfo::for_ambient_configuration_with_attribution(
+            None,
+            PasswordPolicy::Inspect,
+        )?;
         match &resolved {
             AttributedValue::Keychain {
                 value: AuthenticationInfo::ApiKey { api_key },

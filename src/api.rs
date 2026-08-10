@@ -15,7 +15,7 @@ use reqwest_middleware::ClientWithMiddleware;
 use serde::de::DeserializeOwned;
 
 use crate::api_cache;
-use crate::auth::AuthenticationInfo;
+use crate::auth::{AuthenticationInfo, PasswordPolicy};
 use crate::env;
 use crate::error::{ApiError, user_error};
 use crate::params::Params;
@@ -191,21 +191,32 @@ pub struct AntithesisApi {
 }
 
 impl AntithesisApi {
+    /// Rejects username/password credentials with a friendly error
+    /// ([`PasswordPolicy::Reject`]); the launch commands use
+    /// [`AntithesisApi::new_for_launch`].
     pub fn new(settings: &Settings, verbose: bool) -> Result<Self> {
         Self::build(
             settings,
-            AuthenticationInfo::for_ambient_configuration(settings.profile(), true)?,
+            AuthenticationInfo::for_ambient_configuration(
+                settings.profile(),
+                PasswordPolicy::Reject,
+            )?,
             verbose,
             None,
         )
     }
 
-    /// Like [`AntithesisApi::new`], but fails fast unless an API key is
-    /// configured. Every endpoint other than launch requires one.
-    pub fn new_requiring_api_key(settings: &Settings, verbose: bool) -> Result<Self> {
+    /// Like [`AntithesisApi::new`], but accepts the deprecated
+    /// username/password credentials and warns on use
+    /// ([`PasswordPolicy::WarnDeprecated`]) — the launch webhooks are the
+    /// only endpoints that still accept them.
+    pub fn new_for_launch(settings: &Settings, verbose: bool) -> Result<Self> {
         Self::build(
             settings,
-            AuthenticationInfo::for_ambient_configuration(settings.profile(), false)?,
+            AuthenticationInfo::for_ambient_configuration(
+                settings.profile(),
+                PasswordPolicy::WarnDeprecated,
+            )?,
             verbose,
             None,
         )

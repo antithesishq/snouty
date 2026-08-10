@@ -25,6 +25,8 @@ env ANTITHESIS_PASSWORD=testpass
 env ANTITHESIS_TENANT=testtenant
 ! snouty runs
 stderr 'This command does not accept username/password authentication.*'
+stderr 'deprecated'
+stderr 'snouty login'
 
 # On success, the command fetches all pages via next_cursor and prints a table
 # with relative timestamps and short status words.

@@ -3,7 +3,7 @@ use serde::Serialize;
 
 use crate::api::{AntithesisApi, ApiVersion, VersionError};
 use crate::attributed_value::AttributedValue;
-use crate::auth::AuthenticationInfo;
+use crate::auth::{AuthenticationInfo, PasswordPolicy};
 use crate::compose;
 use crate::container;
 use crate::render::render_kv;
@@ -207,10 +207,7 @@ fn authn_checks(authn_info: Result<AttributedValue<AuthenticationInfo>>) -> Vec<
                         "basic_auth",
                         format!("Using password credentials for user [{username}]"),
                     )
-                    .note(
-                        Level::Warning,
-                        "legacy authentication method, set ANTITHESIS_API_KEY for full API access",
-                    )
+                    .note(Level::Warning, crate::auth::PASSWORD_DEPRECATION_SUGGESTION)
                     .note(
                         Level::Note,
                         "username/password only enables `snouty launch` and `snouty debug`",
@@ -316,7 +313,10 @@ fn collect_checks(settings: &Settings) -> Vec<Check> {
 
     // Authentication (synchronous-only by design).
     checks.extend(authn_checks(
-        AuthenticationInfo::for_ambient_configuration_with_attribution(settings.profile(), true),
+        AuthenticationInfo::for_ambient_configuration_with_attribution(
+            settings.profile(),
+            PasswordPolicy::Inspect,
+        ),
     ));
 
     checks
@@ -416,13 +416,15 @@ pub async fn cmd_doctor(
 ) -> Result<()> {
     let mut checks = collect_checks(settings);
 
-    // Connectivity + version check (network). Skipped with --offline. Only runs
-    // with an API key: /api/version, like every endpoint but launch, rejects
-    // basic auth, so probing it under username/password would only yield a
-    // misleading 403 — and the auth checks above already tell legacy and
-    // unauthenticated users to set a key. The client is built from the resolved
-    // settings (base url / tenant), and `verbose` logs the request/response.
-    if !offline && let Ok(api) = AntithesisApi::new_requiring_api_key(settings, verbose) {
+    // Connectivity + version check (network). Skipped with --offline. Only
+    // runs when the resolved credentials work against the full API:
+    // /api/version, like every endpoint but launch, rejects username/password
+    // auth, so probing it with those credentials would only yield a misleading
+    // 403 — and the auth checks above already tell deprecated-credential and
+    // unauthenticated users to set a key. The client is built from the
+    // resolved settings (base url / tenant), and `verbose` logs the
+    // request/response.
+    if !offline && let Ok(api) = AntithesisApi::new(settings, verbose) {
         let host = api.host();
         checks.push(version_check(&host, api.get_version().await));
     }
@@ -502,7 +504,7 @@ mod tests {
     }
 
     #[test]
-    fn auth_legacy_basic_warns_on_key_and_notes_legacy() {
+    fn auth_password_warns_on_key_and_notes_deprecation() {
         let checks = authn_checks(Ok(AttributedValue::EnvironmentVariable {
             value: AuthenticationInfo::Password {
                 username: "user".to_owned(),
@@ -523,9 +525,9 @@ mod tests {
         assert_eq!(checks[1].status, Status::Ok);
         assert_eq!(checks[1].notes.len(), 3);
         assert!(checks[1].notes.iter().any(|n| n.level == Level::Warning
-            && n.text.contains("legacy authentication method")
-            && n.text.contains("ANTITHESIS_API_KEY")));
-        // The legacy creds steer the user to the only commands they unlock.
+            && n.text.contains("deprecated")
+            && n.text.contains("snouty login")));
+        // The deprecated creds steer the user to the only commands they unlock.
         assert!(checks[1].notes.iter().any(|n| n.level == Level::Note
             && n.text.contains("snouty launch")
             && n.text.contains("snouty debug")));

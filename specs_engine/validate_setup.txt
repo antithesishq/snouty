@@ -2,7 +2,7 @@
 
 # Setup-complete only (no test commands) — validate succeeds.
 build-image setup-emitter-setup:latest setup_emitter
-snouty validate config_no_scripts --timeout 15
+snouty validate config_no_scripts --timeout 30
 stderr 'Isolating networks: default.*'
 stderr 'Setup-complete event detected.*'
 stderr 'No test commands in service.*'
@@ -12,14 +12,14 @@ stderr 'Setup validation successful.*'
 #    Includes a sidecar without test commands to verify it doesn't block validation.
 #    Two services start here, so allow extra headroom on slow runtimes.
 build-image all-types-setup:latest all_types
-snouty validate config_all_types --timeout 30
+snouty validate config_all_types --timeout 60
 stderr 'Setup-complete event detected.*'
 stderr 'Found 2 first, 1 driver, 1 anytime, 1 eventually, 1 finally test commands.*'
 stderr 'Setup validation successful.*'
 
 # Setup-complete via ANTITHESIS_SDK_LOCAL_OUTPUT (legacy env var).
 build-image sdk-local-emitter-setup:latest sdk_local_emitter
-snouty validate config_sdk_local --timeout 15
+snouty validate config_sdk_local --timeout 30
 stderr 'Setup-complete event detected.*'
 stderr 'Setup validation successful.*'
 

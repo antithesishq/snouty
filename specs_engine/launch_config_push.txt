@@ -13,8 +13,8 @@
 # Local build images are tagged with the registry prefix and pushed; the
 # config image is pinned. antithesis.images is never set.
 mock-server 200 '{"runId":"run-123","statusCode":200}'
-build-image myapp:latest images/myapp
-build-image sidecar:v1 images/sidecar
+build-image --platform linux/amd64 myapp:latest images/myapp
+build-image --platform linux/amd64 sidecar:v1 images/sidecar
 snouty launch -w basic_test -c push_config --duration 30
 stderr 'Pushing image:.*myapp'
 stderr 'Pushing image:.*sidecar'
@@ -45,7 +45,7 @@ stderr '.*pull or build the missing images, then retry.*'
 # Mixed: even though the build image is present, a missing remote image fails
 # the launch before anything is pushed.
 mock-server 200 '{"runId":"run-123","statusCode":200}'
-build-image myapp:latest images/myapp
+build-image --platform linux/amd64 myapp:latest images/myapp
 ! snouty launch -w basic_test -c mixed_config --duration 30
 stderr '.*image: docker.io/library/nginx-snouty-absent:latest.*'
 ! stderr 'Pushing image:'
@@ -53,7 +53,7 @@ stderr '.*image: docker.io/library/nginx-snouty-absent:latest.*'
 # A local image referenced WITHOUT a build stanza, but built before launch, is
 # pushed and pinned anyway — local availability is enough.
 mock-server 200 '{"runId":"run-123","statusCode":200}'
-build-image snouty-prebuilt-xyz:latest images/myapp
+build-image --platform linux/amd64 snouty-prebuilt-xyz:latest images/myapp
 snouty launch -w basic_test -c prebuilt_config --duration 30
 stderr 'Pushing image:.*snouty-prebuilt-xyz'
 stderr '"antithesis.config_image":.*@sha256:'
@@ -70,7 +70,7 @@ stderr '.*image: localapp:latest.*'
 # default build tag (<project>-<service>:latest). Built beforehand, it's
 # pushed and pinned like any other local image.
 mock-server 200 '{"runId":"run-123","statusCode":200}'
-build-image buildonly_config-app:latest images/myapp
+build-image --platform linux/amd64 buildonly_config-app:latest images/myapp
 snouty launch -w basic_test -c buildonly_config --duration 30
 stderr 'Pushing image:.*buildonly_config-app'
 stderr '"antithesis.config_image":.*@sha256:'

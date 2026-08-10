@@ -289,9 +289,10 @@ pub trait ContainerRuntime: Send + Sync {
     /// `Err` with stderr attached.
     ///
     /// When `running` is true, performs an unambiguous pre-flight existence
-    /// check via `runtime exec <id> test -d <path>`. When false (stopped
-    /// containers — exec is unavailable), falls back to attempting the cp
-    /// and inspecting stderr to distinguish absence from real errors.
+    /// check via `runtime exec <id> test -d <path>`. When false (stopped or
+    /// not-yet-started containers — exec is unavailable), falls back to
+    /// attempting the cp and inspecting stderr to distinguish absence from
+    /// real errors.
     fn extract_test_templates(
         &self,
         container_id: &str,

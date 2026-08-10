@@ -302,7 +302,7 @@ fn collect_checks(settings: &Settings) -> Vec<Check> {
             checks.push(Check::ok("docker_compose", format!("{name}: {version}")))
         }
         Err(e) => checks.push(
-            Check::fail("docker_compose", "Docker Compose v2 not available")
+            Check::fail("docker_compose", "no usable Docker Compose")
                 .note(Level::Error, e.to_string()),
         ),
     }

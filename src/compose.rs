@@ -172,7 +172,7 @@ impl ComposeCli {
     }
 }
 
-/// The lowest Docker Compose version snouty works with, as `(major, minor)`.
+/// The lowest Docker Compose version snouty works with, as `(major, minor, patch)`.
 ///
 /// Set by `compose config --no-path-resolution`, introduced in v2.18.0
 /// ("introduce --no-path-resolution to skip relative path to be resolved",

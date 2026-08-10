@@ -1,5 +1,7 @@
 # Unreleased
 
+- snouty now requires Docker Compose v2.24.7 or newer, checked up front ([#214](https://github.com/antithesishq/snouty/pull/214))
+- `snouty validate` streams container logs in real time and in order, treats `--timeout` as a single budget (default 120 seconds), refuses to start when the project already has leftover containers, and reports compose failures as themselves instead of as environment divergence ([#214](https://github.com/antithesishq/snouty/pull/214))
 - `snouty launch` accepts unknown `antithesis.*` params, so new platform params work without a snouty update ([#213](https://github.com/antithesishq/snouty/pull/213))
 - Deprecate username/password authentication: `snouty launch` and `snouty debug` print a warning that steers the user to `snouty login` ([#212](https://github.com/antithesishq/snouty/pull/212))
 - Add `snouty login`: interactive sign-in with browser-based OAuth or an API key, multiple profiles, and credential storage in the macOS keychain or a credentials file on Linux ([#157](https://github.com/antithesishq/snouty/pull/157), [#173](https://github.com/antithesishq/snouty/pull/173), [#178](https://github.com/antithesishq/snouty/pull/178), [#212](https://github.com/antithesishq/snouty/pull/212))

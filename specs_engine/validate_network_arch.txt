@@ -5,13 +5,13 @@ build-image setup-emitter-netarch:latest setup_emitter
 
 # Custom networks are isolated and outbound traffic is blocked.
 build-image net-check-netarch:latest net_check
-snouty validate config_net_check --timeout 15
+snouty validate config_net_check --timeout 30
 stderr 'Isolating networks: default.*'
 stderr 'Setup-complete event detected.*'
 stderr 'Setup validation successful.*'
 
 # Missing images are reported together before any container is started.
-! snouty validate config_missing_images --timeout 15
+! snouty validate config_missing_images --timeout 30
 stderr 'some images are not available locally.*'
 stderr '.*image: missing-app:latest.*'
 stderr '.*image: missing-sidecar:latest.*'

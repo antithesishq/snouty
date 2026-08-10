@@ -236,6 +236,32 @@ async fn validate_compose(
     let override_path = generate_setup_override(&contents, temp_dir)?;
     let overlay = Some(override_path.as_path());
 
+    // Refuse to start over a project that already has containers — leftovers
+    // from a `--keep-running` session or a crashed run whose cleanup never
+    // fired. They would satisfy the readiness poll below before this run's
+    // containers exist, so discovery could read a previous run's container.
+    // Tearing them down ourselves could destroy state the user kept on
+    // purpose, so name the command and leave the destructive step to them.
+    let leftovers = compose.ps(overlay)?;
+    if !leftovers.is_empty() {
+        let services: BTreeSet<&str> = leftovers.iter().map(|c| c.service.as_str()).collect();
+        let services = services.into_iter().collect::<Vec<_>>().join(", ");
+        return Err(eyre!(
+            "this compose project already has containers (services: {services}), \
+             likely left over from a previous run"
+        ))
+        .with_suggestion(|| {
+            // down_hint(None), not (overlay): this run's override file is
+            // deleted when the process exits, so a hint naming it would not
+            // be runnable. The overlay adds no services, so a `down` against
+            // the base file alone removes every leftover container.
+            format!(
+                "bring the project down first, then re-run validate:\n  {}",
+                compose.down_hint(None)
+            )
+        });
+    }
+
     if keep_running {
         eprintln!(
             "Note: --keep-running is set. When done, bring containers down with:\n  {}\n",

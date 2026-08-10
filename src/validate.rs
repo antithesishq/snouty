@@ -616,18 +616,17 @@ fn discover_scripts(
         // on a depends_on condition) is neither, and exec fails in it while
         // cp works.
         let running = container.state == compose::ContainerState::Running;
-        let templates =
-            match rt.extract_test_templates(&container.id, &service_dir, running) {
-                Ok(t) => t,
-                Err(e) => {
-                    warn!(
-                        "extracting test commands from service '{service_name}' \
+        let templates = match rt.extract_test_templates(&container.id, &service_dir, running) {
+            Ok(t) => t,
+            Err(e) => {
+                warn!(
+                    "extracting test commands from service '{service_name}' \
                      (container {short_id}) failed; continuing without it: {e}"
-                    );
-                    cp_failures.insert(format!("{service_name} ({short_id})"), e);
-                    continue;
-                }
-            };
+                );
+                cp_failures.insert(format!("{service_name} ({short_id})"), e);
+                continue;
+            }
+        };
 
         if matches!(templates, container::TestTemplates::Absent) {
             info!("No test commands in service '{service_name}' (container {short_id})");

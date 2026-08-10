@@ -134,6 +134,14 @@ snouty launch -w basic_test --duration 30 --param my.custom.prop=value --param a
 stderr '"my.custom.prop": "value"'
 stderr '"antithesis.integrations.github.callback_url": "https://example.com/cb"'
 
+# 6d2. Unknown antithesis.* params pass through: the platform can add params
+#    before snouty learns about them (#211). Known params keep their value
+#    checks (see the antithesis.duration=asdf case above).
+mock-server 200 '{"runId":"run-123","statusCode":202}'
+snouty launch -w basic_test --duration 30 --param antithesis.brand_new_param=on
+stderr '"antithesis.brand_new_param": "on"'
+stdout 'Test run started: run_id run-123'
+
 # 6e. antithesis.images may be passed via --param to register additional
 #    images (e.g. an image referenced only in a CRD field) that the config
 #    parser can't discover. Semicolon-delimited [REGISTRY/]NAME(:TAG|@DIGEST).

@@ -1573,11 +1573,6 @@ async fn cmd_runs_logs(
 /// frame this build does not recognize is kept whole as [`ExecFrame::Unknown`]
 /// rather than failing the stream. Tighten this to a closed type once the
 /// command stabilizes.
-// The retained payloads below are not read yet: `--json` currently passes the
-// raw line through, so nothing consumes the typed copies. They exist so the
-// data survives into the type as the command grows a rendered JSON form, and
-// so a new server field is not silently dropped in the meantime.
-#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 #[serde(untagged)]
 enum ExecFrame {
@@ -1595,6 +1590,11 @@ enum ExecFrame {
 /// Hand-written rather than the generated `ExecuteCommandStreamEvent`: that
 /// type is an untagged enum whose variants progenitor names `Variant0/1/2`,
 /// which reads far worse at the match sites than the named variants here.
+///
+/// `moment` and `extra` are not read yet: `--json` passes the raw line
+/// through, so nothing consumes the typed copies. They are kept so the data
+/// survives into the type as the command grows a rendered JSON form, and so a
+/// field the server adds is not dropped here in the meantime.
 #[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -1623,6 +1623,29 @@ enum ExecEvent {
         #[serde(flatten)]
         extra: Map<String, Value>,
     },
+}
+
+/// Render one frame for a human. Only what the script itself wrote goes to
+/// stdout — its stdout on stdout, its stderr on stderr — so `runs exec ... |
+/// jq` sees the script's output and nothing else. A frame this build does not
+/// know is not the script's output, so it goes to stderr whole.
+///
+/// The terminal events produce no output of their own: they decide the exit
+/// status, which the caller settles after the stream ends.
+fn render_exec_frame(frame: &ExecFrame) -> Result<()> {
+    match frame {
+        ExecFrame::Known(ExecEvent::Output { stream, text, .. }) => {
+            let text = normalize_terminal_text(text);
+            if stream == "stderr" {
+                eprintln!("{text}");
+            } else {
+                outln!("{text}")?;
+            }
+        }
+        ExecFrame::Known(ExecEvent::Exited { .. } | ExecEvent::TimedOut { .. }) => {}
+        ExecFrame::Unknown(frame) => eprintln!("{frame}"),
+    }
+    Ok(())
 }
 
 /// Cap on a script read from stdin. Far more than any hand-written bash
@@ -1717,27 +1740,24 @@ async fn cmd_runs_exec(
                 // classify_line normalized `moment.vtime`; the exited event
                 // carries its moment under `end_moment` instead.
                 normalize_vtime_field(&mut entry, "end_moment");
+                let frame = ExecFrame::deserialize(&entry).map_err(|err| {
+                    eyre!("could not decode a line of the command's output: {err}")
+                        .note("every JSON object decodes, so this means the decoder itself failed")
+                })?;
+
                 if json {
                     outln!("{entry}")?;
+                } else {
+                    render_exec_frame(&frame)?;
                 }
-                match ExecFrame::deserialize(&entry) {
-                    Ok(ExecFrame::Known(ExecEvent::Output { stream, text, .. })) if !json => {
-                        let text = normalize_terminal_text(&text);
-                        if stream == "stderr" {
-                            eprintln!("{text}");
-                        } else {
-                            outln!("{text}")?;
-                        }
-                    }
-                    Ok(ExecFrame::Known(
-                        event @ (ExecEvent::Exited { .. } | ExecEvent::TimedOut { .. }),
-                    )) => {
-                        terminal = Some(event);
-                    }
-                    // A frame this build doesn't know is not command output;
-                    // keep it off stdout (--json already passed it through).
-                    Ok(ExecFrame::Unknown(_)) | Err(_) if !json => eprintln!("{entry}"),
-                    _ => {}
+
+                // Either mode: the terminal event decides the exit status, and
+                // is acted on once the stream is known to have completed.
+                if let ExecFrame::Known(
+                    event @ (ExecEvent::Exited { .. } | ExecEvent::TimedOut { .. }),
+                ) = frame
+                {
+                    terminal = Some(event);
                 }
             }
             NdjsonLine::Raw(line) => {
@@ -3977,6 +3997,28 @@ mod tests {
             serde_json::from_str(r#"{"type":"timed_out"}"#).unwrap(),
             ExecEvent::TimedOut { .. }
         ));
+    }
+
+    #[test]
+    fn exec_frame_decodes_any_object() {
+        // The stream handler treats a decode failure as an error. This says
+        // why that arm should never run: `Unknown(Value)` accepts any JSON, so
+        // no shape the server can send fails to decode. If this ever fails,
+        // the error path in `cmd_runs_exec` is the right place to find out.
+        for line in [
+            r#"{}"#,
+            r#"{"type":null}"#,
+            r#"{"type":"output"}"#,
+            r#"{"type":"exited","exit_code":"not-a-number"}"#,
+            r#"{"type":42,"nested":{"deep":[1,2,{"x":null}]}}"#,
+            r#"{"type":"output","stream":[],"text":{}}"#,
+        ] {
+            let entry: Value = serde_json::from_str(line).unwrap();
+            assert!(
+                ExecFrame::deserialize(&entry).is_ok(),
+                "should decode: {line}"
+            );
+        }
     }
 
     #[test]

@@ -949,39 +949,35 @@ pub struct ComposeContainer {
     pub service: String,
     /// Container ID (whatever the runtime emitted — short or full).
     pub id: String,
-    /// Whether the container's entrypoint has exited. Antithesis can't run
+    /// Lifecycle state, reduced to the distinctions snouty acts on.
+    pub state: ContainerState,
+}
+/// A container's lifecycle state as reported by `compose ps`, reduced to
+/// the three distinctions snouty acts on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ContainerState {
+    /// The entrypoint is running: `exec` works in this container.
+    Running,
+    /// The entrypoint has exited (`exited` or `dead`). Antithesis can't run
     /// test commands in stopped containers, so validate flags any service
-    /// that has test commands defined but ended up in this state. Only
-    /// `exited` and `dead` count as stopped — transient states like
-    /// `created`, `restarting`, `paused`, and missing State are treated as
-    /// not-stopped to avoid false positives on healthy setups still settling.
-    pub stopped: bool,
-    /// Whether the container's entrypoint is currently running, i.e. `exec`
-    /// can work in it. Strictly the `running` state: a `created` container
-    /// is neither stopped nor running (compose creates containers up front
-    /// and starts them as `depends_on` conditions clear), and `exec` fails
-    /// in it, while `cp` works — so discovery must not equate "not stopped"
-    /// with "exec-able".
-    pub running: bool,
+    /// that has test commands defined but ended up in this state.
+    Stopped,
+    /// Everything else: `created`, `restarting`, `paused`, a missing
+    /// `State`, or human-readable forms like "Up 5 seconds". Healthy setups
+    /// still settling pass through these states, so they must not trip the
+    /// stranded-test-commands diagnostic — and `exec` fails in all of them,
+    /// so discovery must fall back to `cp`, which works in any state.
+    Transient,
 }
-/// Determine whether a `State` field value reports a stopped container.
-/// Only `exited` and `dead` qualify — every other value (including missing
-/// `State`, transient `created`/`restarting`/`paused`, and human-readable
-/// forms like "Up 5 seconds") is treated as not-stopped.
-fn state_is_stopped(state: Option<&str>) -> bool {
+/// Reduce a `State` field value to a [`ContainerState`].
+fn parse_container_state(state: Option<&str>) -> ContainerState {
     match state {
-        Some(s) => s.eq_ignore_ascii_case("exited") || s.eq_ignore_ascii_case("dead"),
-        None => false,
+        Some(s) if s.eq_ignore_ascii_case("running") => ContainerState::Running,
+        Some(s) if s.eq_ignore_ascii_case("exited") || s.eq_ignore_ascii_case("dead") => {
+            ContainerState::Stopped
+        }
+        _ => ContainerState::Transient,
     }
-}
-/// Determine whether a `State` field value reports a running container.
-/// Only a literal `running` qualifies. Everything else — `created`,
-/// `paused`, `restarting`, missing `State`, human-readable forms — is
-/// treated as not-running, because `exec` fails in all of those states and
-/// callers use this to choose between an `exec` pre-flight and a plain `cp`
-/// (which works regardless of state).
-fn state_is_running(state: Option<&str>) -> bool {
-    matches!(state, Some(s) if s.eq_ignore_ascii_case("running"))
 }
 /// Parse the JSON output of `compose ps --format json`.
 ///
@@ -1022,8 +1018,7 @@ fn parse_compose_ps(stdout: &str) -> Result<Vec<ComposeContainer>> {
             Ok(ComposeContainer {
                 service: service.to_string(),
                 id: id.to_string(),
-                stopped: state_is_stopped(state),
-                running: state_is_running(state),
+                state: parse_container_state(state),
             })
         })
         .collect()
@@ -1036,12 +1031,11 @@ mod tests {
     use crate::testutils::{OCIRegistry, has_compose, require_runtimes_with_compose, skip_or_fail};
     use std::path::PathBuf;
 
-    fn cc(service: &str, id: &str, stopped: bool, running: bool) -> ComposeContainer {
+    fn cc(service: &str, id: &str, state: ContainerState) -> ComposeContainer {
         ComposeContainer {
             service: service.to_string(),
             id: id.to_string(),
-            stopped,
-            running,
+            state,
         }
     }
     #[test]
@@ -1052,8 +1046,8 @@ mod tests {
         assert_eq!(
             result,
             vec![
-                cc("app", "abc123", false, true),
-                cc("sidecar", "def456", true, false)
+                cc("app", "abc123", ContainerState::Running),
+                cc("sidecar", "def456", ContainerState::Stopped)
             ]
         );
     }
@@ -1067,8 +1061,8 @@ mod tests {
         assert_eq!(
             result,
             vec![
-                cc("app", "abc123", false, true),
-                cc("sidecar", "def456", false, true)
+                cc("app", "abc123", ContainerState::Running),
+                cc("sidecar", "def456", ContainerState::Running)
             ]
         );
     }
@@ -1084,7 +1078,7 @@ mod tests {
         // diagnostic fires on healthy containers.
         let stdout = r#"[{"ID":"abc","Service":"app"}]"#;
         let result = parse_compose_ps(stdout).unwrap();
-        assert_eq!(result, vec![cc("app", "abc", false, false)]);
+        assert_eq!(result, vec![cc("app", "abc", ContainerState::Transient)]);
     }
     #[test]
     fn parse_compose_ps_transient_states_are_not_stopped() {
@@ -1101,19 +1095,17 @@ mod tests {
             {"ID":"f","Service":"svc","State":"EXITED"}
         ]"#;
         let result = parse_compose_ps(stdout).unwrap();
-        let states: Vec<(&str, bool, bool)> = result
-            .iter()
-            .map(|c| (c.id.as_str(), c.stopped, c.running))
-            .collect();
+        let states: Vec<(&str, ContainerState)> =
+            result.iter().map(|c| (c.id.as_str(), c.state)).collect();
         assert_eq!(
             states,
             vec![
-                ("a", false, false),
-                ("b", false, false),
-                ("c", false, false),
-                ("d", false, false),
-                ("e", true, false),
-                ("f", true, false),
+                ("a", ContainerState::Transient),
+                ("b", ContainerState::Transient),
+                ("c", ContainerState::Transient),
+                ("d", ContainerState::Transient),
+                ("e", ContainerState::Stopped),
+                ("f", ContainerState::Stopped),
             ]
         );
     }
@@ -1131,9 +1123,9 @@ mod tests {
         assert_eq!(
             result,
             vec![
-                cc("worker", "a1", false, true),
-                cc("worker", "a2", false, true),
-                cc("worker", "a3", true, false),
+                cc("worker", "a1", ContainerState::Running),
+                cc("worker", "a2", ContainerState::Running),
+                cc("worker", "a3", ContainerState::Stopped),
             ]
         );
     }

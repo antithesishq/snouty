@@ -658,11 +658,12 @@ fn discover_scripts(
         // disk. Short the id for readable warnings.
         let short_id: String = container.id.chars().take(12).collect();
         let service_dir = scripts_dir.join(format!("{service_name}-{short_id}"));
+        // Running, not "not stopped": a `created` container (still waiting
+        // on a depends_on condition) is neither, and exec fails in it while
+        // cp works.
+        let running = container.state == compose::ContainerState::Running;
         let templates =
-            // `running`, not `!stopped`: a `created` container (waiting on a
-            // depends_on condition) is neither, and exec fails in it while cp
-            // works. See [`wait_for_service_containers`].
-            match rt.extract_test_templates(&container.id, &service_dir, container.running) {
+            match rt.extract_test_templates(&container.id, &service_dir, running) {
                 Ok(t) => t,
                 Err(e) => {
                     warn!(
@@ -699,7 +700,7 @@ fn discover_scripts(
                 "Found {} test commands in service '{service_name}' (container {short_id})",
                 result.scripts.len()
             );
-            if container.stopped {
+            if container.state == compose::ContainerState::Stopped {
                 stopped_with_scripts.insert(service_name.to_string());
             }
             all_scripts.extend(result.scripts.into_iter().filter(|s| {

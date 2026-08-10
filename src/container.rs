@@ -814,21 +814,19 @@ fn classify_manifest_json(stdout: &[u8]) -> RemoteManifest {
 
 /// The repository part of an image reference: strips any `@digest` suffix and
 /// any `:tag` (a colon counts as a tag separator only after the last `/`;
-/// before it, it's a registry port).
+/// before it, it's a registry port). The cut is at the *first* colon after
+/// the last `/` — the same spot as the last colon on any valid reference,
+/// but stable on degenerate names with several colons (`a:b:c`), which keeps
+/// this function and [`digest_only_ref`] idempotent (#209).
 pub fn image_repo(image_ref: &str) -> &str {
     let no_digest = match image_ref.rfind('@') {
         Some(at) => &image_ref[..at],
         None => image_ref,
     };
-    match no_digest.rfind('/') {
-        Some(slash) => match no_digest[slash..].rfind(':') {
-            Some(colon) => &no_digest[..slash + colon],
-            None => no_digest,
-        },
-        None => match no_digest.rfind(':') {
-            Some(colon) => &no_digest[..colon],
-            None => no_digest,
-        },
+    let name_start = no_digest.rfind('/').map_or(0, |slash| slash);
+    match no_digest[name_start..].find(':') {
+        Some(colon) => &no_digest[..name_start + colon],
+        None => no_digest,
     }
 }
 
@@ -1166,6 +1164,17 @@ mod tests {
             "ghcr.io/org/app"
         );
         assert_eq!(image_ref_tag("ghcr.io/org/app:v2@sha256:abc"), "v2");
+    }
+
+    /// Degenerate names with several colons strip to a fixed point in one
+    /// pass — the hegel counterexample from #209.
+    #[test]
+    fn image_repo_is_stable_on_degenerate_refs() {
+        assert_eq!(image_repo("::@"), "");
+        assert_eq!(digest_only_ref("::@"), "@");
+        assert_eq!(digest_only_ref("@"), "@");
+        assert_eq!(image_repo("a:b:c"), "a");
+        assert_eq!(digest_only_ref("a:b:c@sha256:abc"), "a@sha256:abc");
     }
 
     #[test]

@@ -372,7 +372,6 @@ impl AntithesisApi {
         script: String,
         timeout_seconds: u64,
     ) -> Result<ByteStream> {
-        ensure_resource_supported(run_id, MIN_EXEC_VERSION, "command execution")?;
         let body = generated::types::ExecuteCommandRequest {
             moment,
             script,
@@ -929,14 +928,16 @@ const MIN_PROPERTIES_VERSION: u32 = 52;
 /// created on older tenants 404 on `/runs/{run_id}/build_logs`.
 const MIN_BUILD_LOGS_VERSION: u32 = 54;
 
-/// The tenant version that first served the execute-command resource. Runs
-/// created on older tenants 404 on `/runs/{run_id}/execute_command`.
-const MIN_EXEC_VERSION: u32 = 60;
-
 // Every nested run resource with a version cutoff has a `MIN_*_VERSION` const
 // above, enforced by `ensure_resource_supported`. Logs and events have no
 // cutoff — they are served for every version we can produce — so neither
-// needs a guard. A new gated resource belongs in this group.
+// needs a guard.
+//
+// Execute-command has no cutoff either, on purpose. The multiverse debugger
+// has not shipped, so the release that first serves the endpoint is not
+// settled, and a pinned floor here would reject runs the server can in fact
+// execute against. The feature is unstable, so the server's own answer is the
+// authority. Add a const here once the release is known.
 
 /// Run IDs encode the tenant version that produced them as their second
 /// dash-delimited field — e.g. the `40` in

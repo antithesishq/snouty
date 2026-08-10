@@ -5,7 +5,7 @@
 # can't serve it yet. Gating lets such a command ship in a release without
 # putting it in front of users who would only hit a wall.
 #
-# Features are enabled by id in SNOUTY_FEATURES, a comma-separated list. They
+# Features are enabled by id in SNOUTY_UNSTABLE_FEATURES, a comma-separated list. They
 # are deliberately an environment variable and not a setting: the gate decides
 # which subcommands the parser has, so it must be known before the command
 # line is parsed, and a setting can't be read that early without first parsing
@@ -31,8 +31,8 @@ stdout 'logs.*Stream moment logs'
 #    to enable it. Someone has to already know the command to get here, and
 #    what they find tells them the truth about it.
 snouty runs exec --help
-stdout 'gated behind the .runs-exec. feature'
-stdout 'SNOUTY_FEATURES=runs-exec'
+stdout 'gated behind the .runs-exec. unstable feature'
+stdout 'SNOUTY_UNSTABLE_FEATURES=runs-exec'
 
 # 4. Shell completions list it either way: clap_complete emits hidden
 #    subcommands into the candidate list. Completing it while the feature is
@@ -41,7 +41,7 @@ snouty completions bash
 stdout 'logs exec events'
 
 # 5. The variable turns it on: the command appears in help...
-env SNOUTY_FEATURES=runs-exec
+env SNOUTY_UNSTABLE_FEATURES=runs-exec
 snouty runs --help
 stdout 'exec.*Execute a command in a run'
 
@@ -52,25 +52,25 @@ stderr 'No Antithesis credentials found.*'
 ! stderr 'unrecognized subcommand.*'
 
 # 7. The list is comma-separated, and unknown ids are carried rather than
-#    rejected: one exported SNOUTY_FEATURES is shared by every snouty on the
+#    rejected: one exported SNOUTY_UNSTABLE_FEATURES is shared by every snouty on the
 #    machine, so an id from a newer build must not break this one.
-env SNOUTY_FEATURES=from-the-future,runs-exec
+env SNOUTY_UNSTABLE_FEATURES=from-the-future,runs-exec
 ! snouty runs exec run-1 -123 1.0 'uname -a'
 stderr 'No Antithesis credentials found.*'
 
 # 8. Whitespace and empty entries are ignored. (`set-env` keeps the spaces;
 #    the `env` directive would split on them.)
-set-env SNOUTY_FEATURES  runs-exec , ,
+set-env SNOUTY_UNSTABLE_FEATURES  runs-exec , ,
 ! snouty runs exec run-1 -123 1.0 'uname -a'
 stderr 'No Antithesis credentials found.*'
 
 # 9. An id that isn't a feature this build knows enables nothing.
-env SNOUTY_FEATURES=not-a-feature
+env SNOUTY_UNSTABLE_FEATURES=not-a-feature
 ! snouty runs exec run-1 -123 1.0 'uname -a'
 stderr 'unrecognized subcommand .*exec'
 
 # 10. An empty value is "unset", not "a feature named the empty string".
-env SNOUTY_FEATURES=
+env SNOUTY_UNSTABLE_FEATURES=
 ! snouty runs exec run-1 -123 1.0 'uname -a'
 stderr 'unrecognized subcommand .*exec'
 
@@ -82,13 +82,13 @@ snouty --settings features.toml runs --help
 # 12. `snouty doctor` reports the enabled features, so what is on is visible
 #     alongside the rest of the resolved configuration. doctor exits non-zero
 #     here (no credentials or container runtime), but the table still prints.
-env SNOUTY_FEATURES=runs-exec
+env SNOUTY_UNSTABLE_FEATURES=runs-exec
 ! snouty doctor
 stderr 'features.*runs-exec'
 
 # 13. The row is omitted entirely when nothing is set — an empty row would be
 #     noise on every ordinary run.
-env SNOUTY_FEATURES=
+env SNOUTY_UNSTABLE_FEATURES=
 ! snouty doctor
 ! stderr 'features.*'
 

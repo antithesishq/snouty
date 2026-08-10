@@ -85,7 +85,7 @@ A matching environment variable always overrides the file. The supported keys an
 
 Authentication (below) is read from the environment only, never from a settings file.
 
-### Features
+### Unstable features
 
 Some commands are gated behind an opt-in feature, because the Antithesis API
 they call is still changing shape or is unavailable on most tenants. Until you
@@ -93,10 +93,14 @@ enable it, a gated command is absent from `--help` and invoking it fails as an
 unrecognized subcommand. (It is hidden rather than removed, so `snouty <command>
 --help` still describes it and names the feature that enables it.)
 
-Enable features by id in `SNOUTY_FEATURES`, a comma-separated list:
+The variable says "unstable" because that is the promise: a feature behind this
+gate can change its behaviour, its flags, or its id, or go away, in any release.
+Do not depend on one from a script you cannot easily change.
+
+Enable features by id in `SNOUTY_UNSTABLE_FEATURES`, a comma-separated list:
 
 ```sh
-export SNOUTY_FEATURES=runs-exec
+export SNOUTY_UNSTABLE_FEATURES=runs-exec
 ```
 
 This is an environment variable rather than a settings key on purpose: the gate

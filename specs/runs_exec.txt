@@ -37,7 +37,7 @@
 # calls is unstable and unavailable on most tenants; specs/features.txt covers
 # the gate itself. Every check here needs the command to exist, so the feature
 # is on for the whole file.
-env SNOUTY_FEATURES=runs-exec
+env SNOUTY_UNSTABLE_FEATURES=runs-exec
 
 # Every successful invocation executes a script inside a live session, so
 # everything below the credential-free check is gated behind `[staging] skip`,
@@ -151,12 +151,6 @@ stderr 'API error: 400 Bad Request.*minting session token failed.*'
 stderr 'run not found: no-such-run'
 ! stderr 'API error'
 ! stderr 'Resource not found'
-
-# Runs created before tenant release 60 predate the endpoint. The run id
-# encodes its tenant version, and a pre-60 id is rejected client-side before
-# any API call, with an explanation instead of an opaque 404.
-! snouty runs exec e88ec3ec6cdb7b31ea08718616e04849-59-1 -3625518438076122494 398.4898056755774 'uname -a'
-stderr 'command execution is not available for run .*'
 
 # VTIME is parsed by clap into the typed vtime the request body carries, so a
 # non-numeric value is rejected before any API call.

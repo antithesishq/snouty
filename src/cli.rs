@@ -652,9 +652,10 @@ Output: `[vtime] [source] [stream] message`. A moment (HASH/VTIME) comes from
         hide = !features::is_enabled(Feature::RunsExec),
         long_about = r#"Execute a bash script in a run's live session, at a moment.
 
-This command is gated behind the `runs-exec` feature, because the Antithesis
-API it calls is unstable and unavailable on most tenants. Enable it by setting
-SNOUTY_FEATURES=runs-exec.
+This command is gated behind the `runs-exec` unstable feature, because the
+Antithesis API it calls is unstable and unavailable on most tenants. Enable it
+by setting SNOUTY_UNSTABLE_FEATURES=runs-exec. An unstable feature can change
+or go away in any release.
 
 The run must have a live session (it is in progress). The script executes on
 a fresh branch of the multiverse, so it does not disturb the running test.

@@ -1,4 +1,4 @@
-//! Opt-in features.
+//! Opt-in unstable features.
 //!
 //! A feature gates a command that isn't ready to be on for everyone — because
 //! the Antithesis API it depends on is still changing shape, or because most
@@ -6,11 +6,16 @@
 //! instead of waiting on the API, without putting it in front of users who
 //! would only hit a wall.
 //!
-//! Enable features by id in `SNOUTY_FEATURES`, a comma-separated list (see
-//! [`enabled`]). A gated command is hidden from `--help` until its feature is
-//! on, and invoking it while it is off fails as an unrecognized subcommand.
-//! (Hiding is not removal: `runs exec --help` still prints its help, which
-//! names the feature, and clap_complete lists hidden subcommands anyway.)
+//! Enable features by id in `SNOUTY_UNSTABLE_FEATURES`, a comma-separated
+//! list (see [`enabled`]). The variable says "unstable" because that is the
+//! promise: a feature here can change its behaviour, its flags, or its id, or
+//! go away, in any release. Nothing behind this gate is covered by whatever
+//! stability the rest of the CLI has.
+//!
+//! A gated command is hidden from `--help` until its feature is on, and
+//! invoking it while it is off fails as an unrecognized subcommand. (Hiding is
+//! not removal: `runs exec --help` still prints its help, which names the
+//! feature, and clap_complete lists hidden subcommands anyway.)
 //!
 //! Deliberately an environment variable and not a setting. The gate has to be
 //! known before the command line is parsed, because it decides which
@@ -20,9 +25,9 @@
 
 use crate::env;
 
-/// The environment variable that enables features, as a comma-separated list
-/// of ids.
-pub const FEATURES_VAR_NAME: &str = "SNOUTY_FEATURES";
+/// The environment variable that enables unstable features, as a
+/// comma-separated list of ids.
+pub const UNSTABLE_FEATURES_VAR_NAME: &str = "SNOUTY_UNSTABLE_FEATURES";
 
 /// Whether `feature` is enabled.
 ///
@@ -32,7 +37,7 @@ pub fn is_enabled(feature: Feature) -> bool {
     enabled().contains(&feature)
 }
 
-/// The features `SNOUTY_FEATURES` enables, in the order listed. Empty when the
+/// The features `SNOUTY_UNSTABLE_FEATURES` enables, in the order listed. Empty when the
 /// variable is unset or holds nothing usable; whitespace and empty entries are
 /// dropped, so `"a, b,"` is `[a, b]`.
 ///
@@ -40,7 +45,7 @@ pub fn is_enabled(feature: Feature) -> bool {
 /// this is read before the parse, where there is no good way to report an
 /// error, and the cost of ignoring it is only that a feature stays off.
 pub fn enabled() -> Vec<Feature> {
-    match env::var(FEATURES_VAR_NAME) {
+    match env::var(UNSTABLE_FEATURES_VAR_NAME) {
         Ok(Some(value)) => parse_list(&value),
         _ => Vec::new(),
     }
@@ -61,7 +66,7 @@ fn parse_list(value: &str) -> Vec<Feature> {
 /// A feature that can be turned on by id.
 ///
 /// Unknown ids are kept as [`Feature::Unknown`] rather than rejected: one
-/// exported `SNOUTY_FEATURES` is shared by every snouty on the machine, so an
+/// exported `SNOUTY_UNSTABLE_FEATURES` is shared by every snouty on the machine, so an
 /// id a newer build knows about — or one whose feature has graduated and had
 /// its id retired — must not break the build that reads it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -105,7 +110,7 @@ mod tests {
 
     #[test]
     fn unknown_id_is_kept_rather_than_rejected() {
-        // One exported SNOUTY_FEATURES is shared by every snouty on the
+        // One exported SNOUTY_UNSTABLE_FEATURES is shared by every snouty on the
         // machine: an id from a newer build, or one whose feature has
         // graduated, must not break this one.
         let parsed = Feature::from_id("from-the-future");

@@ -22,18 +22,6 @@ impl Params {
         Self::default()
     }
 
-    /// Parse params from CLI arguments.
-    ///
-    /// Arguments should be in the format: `--key value`
-    pub fn from_args<I, S>(args: I) -> Result<Self>
-    where
-        I: IntoIterator<Item = S>,
-        S: AsRef<str>,
-    {
-        let inner = parse_args(args)?;
-        Ok(Self { inner })
-    }
-
     /// Parse params from `key=value` pairs.
     ///
     /// Values may contain `=` (only the first `=` is used as the delimiter).
@@ -166,37 +154,6 @@ fn is_sensitive_key(key: &str) -> bool {
     key.ends_with(".token") || key == "antithesis.report.recipients"
 }
 
-fn parse_args<I, S>(args: I) -> Result<Map<String, Value>>
-where
-    I: IntoIterator<Item = S>,
-    S: AsRef<str>,
-{
-    let mut map = Map::new();
-    let mut iter = args.into_iter().peekable();
-
-    while let Some(arg) = iter.next() {
-        let arg = arg.as_ref();
-
-        if let Some(key) = arg.strip_prefix("--") {
-            if key.is_empty() {
-                return Err(user_error("invalid arguments: empty key after --"));
-            }
-
-            let value = iter.next().ok_or_else(|| {
-                user_error(format!("invalid arguments: missing value for --{key}"))
-            })?;
-
-            map.insert(key.to_string(), Value::String(value.as_ref().to_string()));
-        } else {
-            return Err(user_error(format!(
-                "invalid arguments: unexpected argument: {arg}"
-            )));
-        }
-    }
-
-    Ok(map)
-}
-
 fn validate_against_def(params: &Map<String, Value>, def_name: &str) -> Result<()> {
     let notes = collect_validation_notes(params, def_name);
     if notes.is_empty() {
@@ -282,26 +239,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parse_simple_args() {
-        let args = [
-            "--antithesis.duration",
-            "30",
-            "--antithesis.description",
-            "test run",
-        ];
-        let params = Params::from_args(args).unwrap();
-
-        assert_eq!(params.as_map().get("antithesis.duration").unwrap(), "30");
-        assert_eq!(
-            params.as_map().get("antithesis.description").unwrap(),
-            "test run"
-        );
-    }
-
-    #[test]
     fn parse_values_as_strings() {
-        let args = ["--count", "42", "--enabled", "true", "--ratio", "3.14"];
-        let params = Params::from_args(args).unwrap();
+        let pairs = ["count=42", "enabled=true", "ratio=3.14"];
+        let params = Params::from_key_value_pairs(pairs).unwrap();
 
         // Values are kept as strings (schema validates format)
         assert_eq!(params.as_map().get("count").unwrap(), "42");
@@ -310,14 +250,12 @@ mod tests {
     }
 
     #[test]
-    fn parse_integration_args() {
-        let args = [
-            "--antithesis.integrations.github.callback_url",
-            "https://github.com/cb",
-            "--antithesis.integrations.github.token",
-            "secret",
+    fn parse_integration_params() {
+        let pairs = [
+            "antithesis.integrations.github.callback_url=https://github.com/cb",
+            "antithesis.integrations.github.token=secret",
         ];
-        let params = Params::from_args(args).unwrap();
+        let params = Params::from_key_value_pairs(pairs).unwrap();
 
         assert_eq!(
             params
@@ -337,27 +275,13 @@ mod tests {
 
     #[test]
     fn validate_test_params_success() {
-        let args = [
-            "--antithesis.duration",
-            "30",
-            "--antithesis.is_ephemeral",
-            "true",
-        ];
-        let params = Params::from_args(args).unwrap();
+        let pairs = ["antithesis.duration=30", "antithesis.is_ephemeral=true"];
+        let params = Params::from_key_value_pairs(pairs).unwrap();
         assert!(params.validate_test_params().is_ok());
     }
 
     #[test]
     fn validate_images_semicolon_delimited() {
-        let args = ["--antithesis.images", "app:latest;db:latest"];
-        let params = Params::from_args(args).unwrap();
-        assert!(params.validate_test_params().is_ok());
-    }
-
-    #[test]
-    fn validate_images_from_param_key_value_pairs() {
-        // `--param antithesis.images=...` flows through from_key_value_pairs;
-        // the restored image registration must validate cleanly there too.
         let params =
             Params::from_key_value_pairs(["antithesis.images=app@sha256:abc;db:latest"]).unwrap();
         assert!(params.validate_test_params().is_ok());
@@ -365,11 +289,10 @@ mod tests {
 
     #[test]
     fn validate_images_semicolon_delimited_with_registries() {
-        let args = [
-            "--antithesis.images",
-            "us-central1-docker.pkg.dev/myproject/repo/app:v1.2.3; registry.example.com:5000/team/service@sha256:abc123def456",
+        let pairs = [
+            "antithesis.images=us-central1-docker.pkg.dev/myproject/repo/app:v1.2.3; registry.example.com:5000/team/service@sha256:abc123def456",
         ];
-        let params = Params::from_args(args).unwrap();
+        let params = Params::from_key_value_pairs(pairs).unwrap();
         assert!(params.validate_test_params().is_ok());
     }
 
@@ -378,13 +301,10 @@ mod tests {
         // A bad `antithesis.duration` value used to drag every sibling property
         // into a misleading "Unevaluated properties are not allowed" note. The
         // only real error is the duration pattern; the siblings are valid.
-        let params = Params::from_args([
-            "--antithesis.duration",
-            "15m",
-            "--antithesis.test_name",
-            "my-test",
-            "--antithesis.source",
-            "my-source",
+        let params = Params::from_key_value_pairs([
+            "antithesis.duration=15m",
+            "antithesis.test_name=my-test",
+            "antithesis.source=my-source",
         ])
         .unwrap();
 
@@ -414,7 +334,7 @@ mod tests {
         // The platform can add antithesis.* params before snouty learns about
         // them, so unknown antithesis.* keys must pass validation (#211).
         let params =
-            Params::from_args(["--antithesis.duration", "30", "--antithesis.new_param", "x"])
+            Params::from_key_value_pairs(["antithesis.duration=30", "antithesis.new_param=x"])
                 .unwrap();
         assert!(params.validate_test_params().is_ok());
     }
@@ -423,7 +343,7 @@ mod tests {
     fn pattern_violation_note_names_the_field() {
         // The jsonschema message only describes the value and the pattern; the
         // note must prepend the field name so the user can find the culprit.
-        let params = Params::from_args(["--antithesis.duration", "asdf"]).unwrap();
+        let params = Params::from_key_value_pairs(["antithesis.duration=asdf"]).unwrap();
         let notes = collect_validation_notes(params.as_map(), "testParams");
         assert_eq!(notes.len(), 1, "expected one error, got: {notes:?}");
         assert!(
@@ -446,64 +366,49 @@ mod tests {
 
     #[test]
     fn validate_images_rejects_comma_delimited() {
-        let args = ["--antithesis.images", "app:latest,db:latest"];
-        let params = Params::from_args(args).unwrap();
+        let params =
+            Params::from_key_value_pairs(["antithesis.images=app:latest,db:latest"]).unwrap();
         assert!(params.validate_test_params().is_err());
     }
 
     #[test]
     fn validate_test_params_with_custom_props() {
-        let args = [
-            "--antithesis.duration",
-            "30",
-            "--my.custom.property",
-            "value",
-        ];
-        let params = Params::from_args(args).unwrap();
+        let pairs = ["antithesis.duration=30", "my.custom.property=value"];
+        let params = Params::from_key_value_pairs(pairs).unwrap();
         assert!(params.validate_test_params().is_ok());
     }
 
     #[test]
     fn validate_debugging_params_success() {
-        let args = [
-            "--antithesis.debugging.input_hash",
-            "abc123",
-            "--antithesis.debugging.session_id",
-            "sess-456",
-            "--antithesis.debugging.vtime",
-            "1234567890",
+        let pairs = [
+            "antithesis.debugging.input_hash=abc123",
+            "antithesis.debugging.session_id=sess-456",
+            "antithesis.debugging.vtime=1234567890",
         ];
-        let params = Params::from_args(args).unwrap();
+        let params = Params::from_key_value_pairs(pairs).unwrap();
         assert!(params.validate_debugging_params().is_ok());
     }
 
     #[test]
     fn validate_debugging_params_rejects_custom_props() {
-        let args = [
-            "--antithesis.debugging.input_hash",
-            "abc123",
-            "--antithesis.debugging.session_id",
-            "sess-456",
-            "--antithesis.debugging.vtime",
-            "123",
-            "--my.custom.prop",
-            "value",
+        let pairs = [
+            "antithesis.debugging.input_hash=abc123",
+            "antithesis.debugging.session_id=sess-456",
+            "antithesis.debugging.vtime=123",
+            "my.custom.prop=value",
         ];
-        let params = Params::from_args(args).unwrap();
+        let params = Params::from_key_value_pairs(pairs).unwrap();
         assert!(params.validate_debugging_params().is_err());
     }
 
     #[test]
     fn validate_debugging_params_run_id_success() {
-        let args = [
-            "--antithesis.debugging.input_hash",
-            "abc123",
-            "--antithesis.debugging.run_id",
-            "9043254f65c9c65d63fe043a0abfc7fc-53-1",
-            "--antithesis.debugging.vtime",
-            "1234567890",
+        let pairs = [
+            "antithesis.debugging.input_hash=abc123",
+            "antithesis.debugging.run_id=9043254f65c9c65d63fe043a0abfc7fc-53-1",
+            "antithesis.debugging.vtime=1234567890",
         ];
-        let params = Params::from_args(args).unwrap();
+        let params = Params::from_key_value_pairs(pairs).unwrap();
         assert!(params.validate_debugging_params().is_ok());
     }
 
@@ -511,13 +416,11 @@ mod tests {
     fn validate_debugging_params_does_not_require_an_identifier() {
         // The exactly-one-of rule is enforced by ensure_single_debug_target, not
         // the schema: schema validation only requires input_hash + vtime.
-        let args = [
-            "--antithesis.debugging.input_hash",
-            "abc123",
-            "--antithesis.debugging.vtime",
-            "1234567890",
+        let pairs = [
+            "antithesis.debugging.input_hash=abc123",
+            "antithesis.debugging.vtime=1234567890",
         ];
-        let params = Params::from_args(args).unwrap();
+        let params = Params::from_key_value_pairs(pairs).unwrap();
         assert!(params.validate_debugging_params().is_ok());
     }
 
@@ -553,42 +456,16 @@ mod tests {
     }
 
     #[test]
-    fn missing_value_error() {
-        let args = ["--antithesis.duration"];
-        let result = Params::from_args(args);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn unexpected_arg_error() {
-        let args = ["notaflag", "value"];
-        let result = Params::from_args(args);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn empty_key_after_dashes_error() {
-        let args = ["--", "value"];
-        let result = Params::from_args(args);
-        assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("empty key"));
-    }
-
-    #[test]
     fn merge_params_overwrites_existing_keys() {
-        let mut base = Params::from_args([
-            "--antithesis.duration",
-            "30",
-            "--antithesis.description",
-            "base description",
+        let mut base = Params::from_key_value_pairs([
+            "antithesis.duration=30",
+            "antithesis.description=base description",
         ])
         .unwrap();
 
-        let overlay = Params::from_args([
-            "--antithesis.duration",
-            "60",
-            "--antithesis.report.recipients",
-            "team@example.com",
+        let overlay = Params::from_key_value_pairs([
+            "antithesis.duration=60",
+            "antithesis.report.recipients=team@example.com",
         ])
         .unwrap();
 
@@ -798,17 +675,13 @@ mod tests {
 
     #[test]
     fn redacted_map_hides_sensitive_values() {
-        let args = [
-            "--antithesis.duration",
-            "30",
-            "--antithesis.integrations.github.token",
-            "secret_token_123",
-            "--antithesis.integrations.github.callback_url",
-            "https://example.com/callback",
-            "--antithesis.report.recipients",
-            "user@example.com;other@example.com",
+        let pairs = [
+            "antithesis.duration=30",
+            "antithesis.integrations.github.token=secret_token_123",
+            "antithesis.integrations.github.callback_url=https://example.com/callback",
+            "antithesis.report.recipients=user@example.com;other@example.com",
         ];
-        let params = Params::from_args(args).unwrap();
+        let params = Params::from_key_value_pairs(pairs).unwrap();
         let redacted = params.to_redacted_map();
 
         // Non-sensitive values should be preserved

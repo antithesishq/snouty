@@ -27,14 +27,6 @@
       }
     },
 
-    "userProperties": {
-      "type": "object",
-      "description": "Allow any user-defined properties not prefixed with antithesis",
-      "patternProperties": {
-        "^(?!antithesis\\.)": true
-      }
-    },
-
     "testCore": {
       "type": "object",
       "properties": {
@@ -108,14 +100,12 @@
     },
 
     "testParams": {
-      "description": "Parameters for basic_test and k8s_test webhooks",
+      "description": "Parameters for basic_test and k8s_test webhooks. Known antithesis.* params are value-checked; unknown params (antithesis.* or user-defined) pass through so newer platform params work with older snouty versions.",
       "allOf": [
         { "$ref": "#/$defs/testCore" },
         { "$ref": "#/$defs/reportRecipients" },
-        { "$ref": "#/$defs/integrations" },
-        { "$ref": "#/$defs/userProperties" }
-      ],
-      "unevaluatedProperties": false
+        { "$ref": "#/$defs/integrations" }
+      ]
     },
 
     "debuggingParams": {

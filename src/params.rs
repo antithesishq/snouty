@@ -410,19 +410,13 @@ mod tests {
     }
 
     #[test]
-    fn genuinely_unexpected_property_is_still_reported() {
-        // When nothing more specific fails, a truly unexpected property must
-        // still surface via the unevaluated-properties check.
+    fn unknown_antithesis_param_is_allowed() {
+        // The platform can add antithesis.* params before snouty learns about
+        // them, so unknown antithesis.* keys must pass validation (#211).
         let params =
-            Params::from_args(["--antithesis.duration", "30", "--antithesis.bogus", "x"]).unwrap();
-
-        let notes = collect_validation_notes(params.as_map(), "testParams");
-        assert!(
-            notes
-                .iter()
-                .any(|n| n.contains("Unevaluated properties") && n.contains("antithesis.bogus")),
-            "expected unexpected-property note, got: {notes:?}"
-        );
+            Params::from_args(["--antithesis.duration", "30", "--antithesis.new_param", "x"])
+                .unwrap();
+        assert!(params.validate_test_params().is_ok());
     }
 
     #[test]

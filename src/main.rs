@@ -10,12 +10,15 @@ use color_eyre::eyre::{Context, Result};
 use semver::Version;
 use snouty::api::AntithesisApi;
 use snouty::auth::initialize_credential_store;
-use snouty::cli::{Cli, Commands, DebugArgs, LaunchArgs, UpdateArgs, UpdateChannel};
+use snouty::cli::{
+    Cli, Commands, DebugArgs, LaunchArgs, UpdateArgs, UpdateChannel, gated_command_error,
+};
 use snouty::compose;
 use snouty::config;
 use snouty::container;
 use snouty::docs;
 use snouty::error::user_error;
+use snouty::features;
 use snouty::login::cmd_login;
 use snouty::moment;
 use snouty::params::Params;
@@ -73,9 +76,7 @@ async fn main() {
             writeln!(buf, "{}", record.args())
         })
         .init();
-    let cli = Cli::parse();
-
-    if let Err(report) = run(cli).await {
+    if let Err(report) = run(Cli::parse()).await {
         // One rendering for every error: `render_report` collapses the chain
         // index for single errors and wraps overlong prose, both printing
         // concerns that belong here rather than in the messages. User-facing
@@ -98,6 +99,13 @@ async fn run(cli: Cli) -> Result<()> {
     } = cli;
     if json && let Some(name) = json_unaware_command_name(&command) {
         eprintln!("warning: --json has no effect for `snouty {name}`");
+    }
+
+    // A gated command hides itself as the parser is built (see the `hide`
+    // attribute on `RunsCommands::Exec`), but a hidden subcommand is still
+    // callable — so refuse it here too.
+    if let Some(report) = gated_command_error(&command, &features::enabled()) {
+        return Err(report);
     }
 
     if let Err(err) = initialize_credential_store() {
@@ -335,7 +343,7 @@ fn debug_typed_params(args: &DebugArgs) -> Params {
         params.insert("antithesis.debugging.input_hash", input_hash.as_str());
     }
     if let Some(vtime) = &args.vtime {
-        params.insert("antithesis.debugging.vtime", vtime.as_str());
+        params.insert("antithesis.debugging.vtime", vtime.to_string());
     }
     if let Some(description) = &args.description {
         params.insert("antithesis.event_description", description.as_str());
@@ -359,7 +367,12 @@ fn debug_params(args: DebugArgs) -> Result<Params> {
 }
 
 async fn cmd_debug(args: DebugArgs, settings: &Settings, json: bool, verbose: bool) -> Result<()> {
-    let params = debug_params(args)?;
+    let mut params = debug_params(args)?;
+    // Every path into the moment has merged by now — the typed flags, a
+    // Moment.from on stdin, and raw JSON on stdin — so normalizing here makes
+    // all three send the same text. It runs before validation, so a bad vtime
+    // reports itself rather than surfacing as a schema error.
+    params.normalize_debug_vtime()?;
     params.validate_debugging_params()?;
     params.ensure_single_debug_target()?;
 
@@ -384,6 +397,10 @@ async fn cmd_debug(args: DebugArgs, settings: &Settings, json: bool, verbose: bo
 }
 
 fn cmd_completions(shell: Shell) -> Result<()> {
+    // `Cli::command()` already reflects the feature gate, though it only goes
+    // so far: clap_complete emits hidden subcommands into the candidate list
+    // for bash and zsh, so a gated-off command can still be tab-completed —
+    // and is then refused by `gated_command_error`.
     let mut cmd = Cli::command();
     let bin_name = cmd.get_name().to_string();
     clap_complete::generate(shell, &mut cmd, bin_name, &mut io::stdout());

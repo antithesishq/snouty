@@ -326,13 +326,16 @@ impl AntithesisApi {
         }
     }
 
+    /// The endpoint takes each vtime as a decimal-seconds query parameter. The
+    /// generated setters accept anything that converts to `String`, and
+    /// [`VTime`]'s conversion is its exact `Display` text.
     pub async fn get_run_logs(
         &self,
         run_id: &str,
         input_hash: &str,
-        vtime: &str,
+        vtime: VTime,
         begin_input_hash: Option<&str>,
-        begin_vtime: Option<&str>,
+        begin_vtime: Option<VTime>,
     ) -> Result<ByteStream> {
         let mut request = self
             .client
@@ -347,6 +350,36 @@ impl AntithesisApi {
             request = request.begin_vtime(v);
         }
 
+        match request.send().await {
+            Ok(response) => Ok(response.into_inner()),
+            Err(err) => Err(format_api_client_error(err).await),
+        }
+    }
+
+    /// Execute a bash script in the run's live session, starting at `moment`.
+    /// Returns the NDJSON response stream: `output` events, then a terminal
+    /// `exited` or `timed_out` event.
+    ///
+    /// The request body carries `moment.vtime` as a JSON number ([`VTime`]'s
+    /// wire form), where the spec documents a string. The server accepts both
+    /// — verified against the live API (orbitinghail, release 60.0) with this
+    /// exact request path — and the number form keeps the moment value-exact
+    /// end to end instead of round-tripping through a second text form.
+    pub async fn execute_command(
+        &self,
+        run_id: &str,
+        moment: Moment,
+        script: String,
+        timeout_seconds: u64,
+    ) -> Result<ByteStream> {
+        // No `use_otis`: `build.rs` drops that field from the generated type,
+        // so snouty says nothing about it and the server applies its default.
+        let body = generated::types::ExecuteCommandRequest {
+            moment,
+            script,
+            timeout_seconds,
+        };
+        let request = self.client.execute_command().run_id(run_id).body(body);
         match request.send().await {
             Ok(response) => Ok(response.into_inner()),
             Err(err) => Err(format_api_client_error(err).await),
@@ -892,10 +925,6 @@ const MIN_PROPERTIES_VERSION: u32 = 52;
 
 /// The tenant version that first served the run build logs resource. Runs
 /// created on older tenants 404 on `/runs/{run_id}/build_logs`.
-///
-/// Note the other nested run resources have different (or no) cutoffs: run
-/// properties arrived in v52, while logs and events are served for every
-/// version we can produce, so neither needs a guard.
 const MIN_BUILD_LOGS_VERSION: u32 = 54;
 
 /// Run IDs encode the tenant version that produced them as their second

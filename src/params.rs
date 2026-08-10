@@ -7,6 +7,7 @@ use color_eyre::Section;
 use color_eyre::eyre::Result;
 
 use crate::error::user_error;
+use crate::vtime::{ParseVTimeError, VTime};
 
 const SCHEMA: &str = include_str!("params_schema.json");
 
@@ -80,6 +81,27 @@ impl Params {
     /// Validate params against the debugging params schema.
     pub fn validate_debugging_params(&self) -> Result<()> {
         validate_against_def(&self.inner, "debuggingParams")
+    }
+
+    /// Rewrite `antithesis.debugging.vtime` as the exact print of the
+    /// [`VTime`] it names, and reject one that isn't a vtime at all.
+    ///
+    /// A debug moment arrives by several routes — typed flags, a `Moment.from`
+    /// on stdin, raw JSON on stdin — which spell the same moment differently
+    /// (`402`, `402.0`, `"402"`). Normalizing once, after those routes have
+    /// merged, is what makes them agree on the text sent to the API. Absent is
+    /// fine: a missing required vtime is the schema's error to report.
+    pub fn normalize_debug_vtime(&mut self) -> Result<()> {
+        let key = "antithesis.debugging.vtime";
+        let Some(value) = self.inner.get(key) else {
+            return Ok(());
+        };
+        let vtime = VTime::from_json(value).ok_or_else(|| {
+            user_error(format!("invalid arguments: {ParseVTimeError}"))
+                .note(format!("{key} = {value}"))
+        })?;
+        self.insert(key, vtime.to_string());
+        Ok(())
     }
 
     /// Ensure the debugging target run is identified by exactly one of
@@ -237,6 +259,56 @@ fn unescape_pointer_token(token: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
+
+    fn debug_vtime(params: &Params) -> Option<&str> {
+        params
+            .as_map()
+            .get("antithesis.debugging.vtime")
+            .and_then(Value::as_str)
+    }
+
+    #[test]
+    fn normalize_debug_vtime_agrees_across_spellings() {
+        // Every spelling of the same moment — integer, decimal, quoted, and a
+        // JSON number straight off stdin — sends identical text.
+        for value in [json!(402), json!(402.0), json!("402"), json!("402.0")] {
+            let mut params =
+                Params::from_json(&json!({"antithesis.debugging.vtime": value})).unwrap();
+            params.normalize_debug_vtime().unwrap();
+            assert_eq!(debug_vtime(&params), Some("402.0"));
+        }
+
+        // Full precision survives untouched — the property the type exists for.
+        let mut params =
+            Params::from_json(&json!({"antithesis.debugging.vtime": "329.8037810830865"})).unwrap();
+        params.normalize_debug_vtime().unwrap();
+        assert_eq!(debug_vtime(&params), Some("329.8037810830865"));
+    }
+
+    #[test]
+    fn normalize_debug_vtime_rejects_a_non_vtime() {
+        for value in [json!("oops"), json!("NaN"), json!(true), json!(null)] {
+            let mut params =
+                Params::from_json(&json!({"antithesis.debugging.vtime": value})).unwrap();
+            let err = format!("{:?}", params.normalize_debug_vtime().unwrap_err());
+            assert!(
+                err.contains("vtime is not a finite decimal number")
+                    && err.contains("antithesis.debugging.vtime"),
+                "unexpected error for {value}: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn normalize_debug_vtime_leaves_an_absent_vtime_to_the_schema() {
+        // A missing required vtime is the schema's error to report, not this
+        // function's, so normalizing without one must succeed.
+        let mut params = Params::from_json(&json!({"antithesis.debugging.run_id": "r-1"})).unwrap();
+        params.normalize_debug_vtime().unwrap();
+        assert_eq!(debug_vtime(&params), None);
+        assert!(params.validate_debugging_params().is_err());
+    }
 
     #[test]
     fn parse_values_as_strings() {

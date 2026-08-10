@@ -493,12 +493,9 @@ impl MockApiServer {
 
         let handle = thread::spawn(move || {
             for mut stream in listener.incoming().flatten() {
-                let mut buf = [0u8; 8192];
-                let bytes_read = match stream.read(&mut buf) {
-                    Ok(n) => n,
-                    Err(_) => continue,
+                let Some(request) = mock_read_request(&mut stream) else {
+                    continue;
                 };
-                let request = String::from_utf8_lossy(&buf[..bytes_read]);
 
                 let (status, body, content_type) = if !mock_check_user_agent(&request) {
                     (
@@ -514,7 +511,8 @@ impl MockApiServer {
                     )
                 } else {
                     let (method, path) = mock_parse_request_line(&request);
-                    mock_route(&method, &path, empty)
+                    let req_body = mock_request_body(&request);
+                    mock_route(&method, &path, req_body, empty)
                 };
 
                 let response = format!(
@@ -537,6 +535,53 @@ impl MockApiServer {
 }
 
 const MOCK_API_TOKEN: &str = "snouty-mock-api-token";
+
+/// Read one HTTP request off the socket: headers, then as many body bytes as
+/// Content-Length declares. A single `read` is not enough — the client may
+/// deliver a POST's headers and body in separate packets, and routing on a
+/// truncated body would be racy.
+fn mock_read_request(stream: &mut TcpStream) -> Option<String> {
+    let mut buf = Vec::new();
+    let mut chunk = [0u8; 8192];
+    loop {
+        let n = stream.read(&mut chunk).ok()?;
+        if n == 0 {
+            break;
+        }
+        buf.extend_from_slice(&chunk[..n]);
+        if let Some(header_end) = mock_find_header_end(&buf) {
+            let headers = String::from_utf8_lossy(&buf[..header_end]);
+            let content_length = headers
+                .lines()
+                .filter_map(|line| line.split_once(':'))
+                .find(|(name, _)| name.trim().eq_ignore_ascii_case("content-length"))
+                .and_then(|(_, value)| value.trim().parse::<usize>().ok())
+                .unwrap_or(0);
+            if buf.len() >= header_end + content_length {
+                break;
+            }
+        }
+    }
+    if buf.is_empty() {
+        return None;
+    }
+    Some(String::from_utf8_lossy(&buf).into_owned())
+}
+
+/// Byte offset just past the `\r\n\r\n` header terminator, if present.
+fn mock_find_header_end(buf: &[u8]) -> Option<usize> {
+    buf.windows(4)
+        .position(|w| w == b"\r\n\r\n")
+        .map(|pos| pos + 4)
+}
+
+/// The request body: everything after the blank line separating the headers.
+fn mock_request_body(request: &str) -> &str {
+    match request.split_once("\r\n\r\n") {
+        Some((_, body)) => body,
+        None => "",
+    }
+}
 
 fn mock_check_auth(request: &str, expected_token: &str) -> bool {
     let expected = format!("Bearer {expected_token}");
@@ -567,7 +612,12 @@ fn mock_parse_request_line(request: &str) -> (String, String) {
 }
 
 /// Route a request and return (status_code, response_body, content_type).
-fn mock_route(method: &str, path: &str, empty: bool) -> (u16, String, &'static str) {
+fn mock_route(
+    method: &str,
+    path: &str,
+    req_body: &str,
+    empty: bool,
+) -> (u16, String, &'static str) {
     // Split path and query string
     let (path_part, query) = match path.split_once('?') {
         Some((p, q)) => (p, Some(q)),
@@ -599,6 +649,15 @@ fn mock_route(method: &str, path: &str, empty: bool) -> (u16, String, &'static s
             } else {
                 let (s, b) = mock_route_get_run(rest);
                 (s, b, json)
+            }
+        }
+        ("POST", p) if p.starts_with("/api/v0/runs/") => {
+            let rest = &p["/api/v0/runs/".len()..];
+            if let Some(run_id) = rest.strip_suffix("/execute_command") {
+                let (s, b) = mock_route_execute_command(run_id, req_body);
+                (s, b, ndjson)
+            } else {
+                (404, r#"{"message":"not found"}"#.to_string(), json)
             }
         }
         ("POST", p) if p.starts_with("/api/v1/launch/") => {
@@ -896,6 +955,105 @@ fn mock_route_search_run_events(run_id: &str, query_str: Option<&str>) -> (u16, 
     }
 }
 
+/// The branch input hash every mock execution lands on: executing a command
+/// branches the multiverse, so response moments never carry the requested
+/// input hash (verified against the live API).
+const MOCK_EXEC_BRANCH_HASH: &str = "-8206006569229276678";
+
+/// One `output` event of a mock execution.
+fn mock_exec_output(stream: &str, text: &str, vtime: &str) -> String {
+    format!(
+        r#"{{"type":"output","stream":"{stream}","text":"{text}","moment":{{"input_hash":"{MOCK_EXEC_BRANCH_HASH}","vtime":"{vtime}"}}}}"#
+    )
+}
+
+/// The terminal `exited` event of a mock execution.
+fn mock_exec_exited(exit_code: i64) -> String {
+    format!(
+        r#"{{"type":"exited","exit_code":{exit_code},"end_moment":{{"input_hash":"{MOCK_EXEC_BRANCH_HASH}","vtime":"398.492"}}}}"#
+    )
+}
+
+fn mock_route_execute_command(run_id: &str, req_body: &str) -> (u16, String) {
+    // See the `run-stream-error` fixture note in `mock_route_get_run_build_logs`.
+    if run_id == "run-stream-error" {
+        let lines = [
+            mock_exec_output("stdout", "Linux antithesis 6.12.0", "398.491"),
+            MOCK_STREAM_ERROR_LINE.to_string(),
+        ];
+        return (200, lines.join("\n") + "\n");
+    }
+    if !mock_run_known(run_id) {
+        // The live endpoint's 404 body, which — unlike the friendlier body
+        // the other nested routes mock — never names the run. snouty's "run
+        // not found" translation has to do the work, and the spec can only
+        // prove that against the unhelpful body.
+        return (404, r#"{"message":"Resource not found"}"#.to_string());
+    }
+    // The mock treats only an in-progress run as having a live session.
+    // The real API is looser — a session outlives the run for a while (see
+    // the header of specs/runs_exec.txt) — but this rule drives both paths.
+    // Anything else answers with the live API's verbatim session-less error.
+    let live = MOCK_RUNS
+        .iter()
+        .any(|&(id, status, ..)| id == run_id && status == "in_progress");
+    if !live {
+        return (
+            400,
+            r#"{"message":"Bad request: minting session token failed: Invalid status code: 503 Service Unavailable"}"#.to_string(),
+        );
+    }
+
+    // snouty's generated client always sends a well-formed body, so a
+    // missing script or unparsable JSON just falls through to the default
+    // script rather than modelling a validation error nothing exercises.
+    let request = serde_json::from_str::<serde_json::Value>(req_body).unwrap_or_default();
+    let script = request["script"].as_str().unwrap_or_default();
+    let timeout = request["timeout_seconds"].as_u64().unwrap_or(30);
+
+    let lines = match script.trim() {
+        "true" => vec![mock_exec_exited(0)],
+        "exit 5" => vec![mock_exec_exited(5)],
+        // A command the session killed reports no exit code (`exit_code` is
+        // nullable in the spec).
+        "no-exit-code" => {
+            vec![format!(
+                r#"{{"type":"exited","exit_code":null,"end_moment":{{"input_hash":"{MOCK_EXEC_BRANCH_HASH}","vtime":"398.492"}}}}"#
+            )]
+        }
+        "sleep 60" => vec![
+            mock_exec_output("stdout", "still working", "398.491"),
+            r#"{"type":"timed_out"}"#.to_string(),
+        ],
+        "print-timeout" => vec![
+            mock_exec_output("stdout", &format!("timeout_seconds={timeout}"), "398.491"),
+            mock_exec_exited(0),
+        ],
+        "truncate-stream" => vec![mock_exec_output("stdout", "partial output", "398.491")],
+        // A frame type this build does not know, and a known frame carrying a
+        // field it does not know. The stream must survive both.
+        "unknown-frames" => vec![
+            format!(
+                r#"{{"type":"heartbeat","at":"398.4905","input_hash":"{MOCK_EXEC_BRANCH_HASH}"}}"#
+            ),
+            format!(
+                r#"{{"type":"output","stream":"stdout","text":"known with extras","truncated":true,"moment":{{"input_hash":"{MOCK_EXEC_BRANCH_HASH}","vtime":"398.491"}}}}"#
+            ),
+            mock_exec_exited(0),
+        ],
+        _ => vec![
+            mock_exec_output("stdout", "Linux antithesis 6.12.0", "398.491"),
+            mock_exec_output(
+                "stderr",
+                "warning: virtual clock drift detected",
+                "398.4915",
+            ),
+            mock_exec_exited(0),
+        ],
+    };
+    (200, lines.join("\n") + "\n")
+}
+
 fn mock_route_launch() -> (u16, String) {
     (
         200,
@@ -965,6 +1123,71 @@ mod tests {
             capped.contains(r#""vtime":"400.5""#),
             "the first match should be retained, got: {capped}"
         );
+    }
+
+    #[test]
+    fn mock_route_execute_command_branches_on_script() {
+        let body = |script: &str, timeout: u64| {
+            format!(
+                r#"{{"moment":{{"input_hash":"-1","vtime":1.0}},"script":"{script}","timeout_seconds":{timeout}}}"#
+            )
+        };
+
+        // The default script succeeds with output on both streams, and the
+        // response moments carry the branch hash, never the requested one.
+        let (status, out) = mock_route_execute_command("run-2", &body("uname -a", 30));
+        assert_eq!(status, 200);
+        assert!(out.contains(r#""stream":"stderr""#), "got: {out}");
+        assert!(out.ends_with("\n"));
+        assert!(out.contains(MOCK_EXEC_BRANCH_HASH));
+        assert!(!out.contains(r#""input_hash":"-1""#), "got: {out}");
+
+        let (_, out) = mock_route_execute_command("run-2", &body("exit 5", 30));
+        assert!(out.contains(r#""exit_code":5"#), "got: {out}");
+
+        let (_, out) = mock_route_execute_command("run-2", &body("sleep 60", 30));
+        assert!(out.ends_with("{\"type\":\"timed_out\"}\n"), "got: {out}");
+
+        // print-timeout echoes the timeout_seconds the server received, so a
+        // spec can verify the --timeout flag reaches the wire.
+        let (_, out) = mock_route_execute_command("run-2", &body("print-timeout", 45));
+        assert!(out.contains("timeout_seconds=45"), "got: {out}");
+
+        let (_, out) = mock_route_execute_command("run-2", &body("truncate-stream", 30));
+        assert!(!out.contains("exited"), "got: {out}");
+        assert!(!out.contains("timed_out"), "got: {out}");
+    }
+
+    #[test]
+    fn mock_route_execute_command_requires_a_live_session() {
+        let body = r#"{"moment":{"input_hash":"-1","vtime":1.0},"script":"uname -a"}"#;
+        // run-1 is completed: no live session, the API's verbatim 400.
+        let (status, out) = mock_route_execute_command("run-1", body);
+        assert_eq!(status, 400);
+        assert!(out.contains("minting session token failed"), "got: {out}");
+        // Unknown runs 404 with the live endpoint's unhelpful body, which
+        // never names the run — snouty's "run not found" translation depends
+        // on the status, not the message.
+        let (status, out) = mock_route_execute_command("no-such-run", body);
+        assert_eq!(status, 404);
+        assert_eq!(out, r#"{"message":"Resource not found"}"#);
+    }
+
+    #[test]
+    fn mock_request_body_splits_after_headers() {
+        let request = "POST /x HTTP/1.1\r\nContent-Length: 2\r\n\r\n{}";
+        assert_eq!(mock_request_body(request), "{}");
+        assert_eq!(mock_request_body("GET /x HTTP/1.1\r\n\r\n"), "");
+        assert_eq!(mock_request_body("garbage"), "");
+    }
+
+    #[test]
+    fn mock_find_header_end_locates_the_blank_line() {
+        assert_eq!(
+            mock_find_header_end(b"POST /x HTTP/1.1\r\nA: b\r\n\r\nbody"),
+            Some(26)
+        );
+        assert_eq!(mock_find_header_end(b"POST /x HTTP/1.1\r\nA: b\r\n"), None);
     }
 
     #[test]

@@ -238,10 +238,11 @@ async fn validate_compose(
 
     // Refuse to start over a project that already has containers — leftovers
     // from a `--keep-running` session or a crashed run whose cleanup never
-    // fired. They would satisfy the readiness poll below before this run's
-    // containers exist, so discovery could read a previous run's container.
-    // Tearing them down ourselves could destroy state the user kept on
-    // purpose, so name the command and leave the destructive step to them.
+    // fired. Discovery lists this project's containers, so a previous run's
+    // could be read in place of this run's, and published host ports would
+    // collide anyway. Tearing them down ourselves could destroy state the
+    // user kept on purpose, so name the command and leave the destructive
+    // step to them.
     let leftovers = compose.ps(overlay)?;
     if !leftovers.is_empty() {
         let services: BTreeSet<&str> = leftovers.iter().map(|c| c.service.as_str()).collect();
@@ -285,26 +286,6 @@ async fn validate_compose(
         })
     };
 
-    // Discover test commands before waiting for setup-complete, so a static
-    // mistake (a misnamed or non-executable command) is reported in seconds
-    // rather than after the full `--timeout`. A detached `up` returning used to
-    // mark this moment; an attached one never returns, so wait for the thing
-    // discovery actually needs — a container per service to read templates out
-    // of. See [`wait_for_service_containers`].
-    let service_names: Vec<String> = contents.services.iter().map(|s| s.name.clone()).collect();
-    let ready = tokio::select! {
-        ready = wait_for_service_containers(&compose, overlay, &service_names, deadline) => ready,
-        status = up_child.wait() => Err(compose_exited_early(status)),
-        _ = tokio::signal::ctrl_c() => Err(eyre!("interrupted")),
-    };
-    let scripts = match ready.and_then(|()| discover_scripts(rt, &compose, overlay, temp_dir)) {
-        Ok(scripts) => scripts,
-        Err(e) => {
-            up_child.kill_group().await.ok();
-            return Err(e);
-        }
-    };
-
     let sdk_output_dir = temp_dir.join("antithesis");
 
     let result = tokio::select! {
@@ -322,7 +303,11 @@ async fn validate_compose(
     let test_result = match result {
         Ok(true) => {
             eprintln!("Setup-complete event detected.");
-            validate_test_scripts(&scripts)
+            // Discover test commands only now: setup-complete means the
+            // project came up, so every container exists and discovery reads
+            // settled filesystems instead of racing container startup.
+            discover_scripts(rt, &compose, overlay, temp_dir)
+                .and_then(|scripts| validate_test_scripts(&scripts))
         }
         Ok(false) => Err(eyre!("timed out waiting for setup-complete event")),
         Err(e) => Err(e),
@@ -343,37 +328,6 @@ fn compose_exited_early(status: std::io::Result<std::process::ExitStatus>) -> co
         Ok(s) if !s.success() => eyre!("compose exited with status: {s}"),
         Ok(_) => eyre!("compose exited before setup-complete event was detected"),
         Err(e) => eyre!("failed to wait for compose: {e}"),
-    }
-}
-
-/// Wait until compose has created a container for every service.
-///
-/// Compose creates the whole project's containers up front and then starts them
-/// as each `depends_on` condition clears, so this lands early and — importantly
-/// — does not wait on healthchecks: a service stuck behind an unhealthy
-/// dependency still has a `created` container to read from. Discovery only
-/// needs the container to exist, since it reads the templates with `cp`, which
-/// works on a container that has never started.
-///
-/// `ps` can fail transiently while compose is still assembling the project, so
-/// a failed poll counts as "not ready yet" and is retried.
-async fn wait_for_service_containers(
-    compose: &compose::DockerCompose,
-    overlay: Option<&Path>,
-    services: &[String],
-    deadline: tokio::time::Instant,
-) -> Result<()> {
-    loop {
-        if let Ok(containers) = compose.ps(overlay) {
-            let present: BTreeSet<&str> = containers.iter().map(|c| c.service.as_str()).collect();
-            if services.iter().all(|s| present.contains(s.as_str())) {
-                return Ok(());
-            }
-        }
-        if tokio::time::Instant::now() >= deadline {
-            bail!("timed out waiting for compose to create containers");
-        }
-        sleep(Duration::from_millis(100)).await;
     }
 }
 

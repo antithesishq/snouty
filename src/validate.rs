@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, BTreeSet};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use color_eyre::Section;
@@ -299,18 +300,14 @@ async fn validate_compose(
     // process tree — so --keep-running leaves a working project behind.
     up_child.kill_group().await.ok();
 
-    let test_result = match result {
-        Ok(SetupOutcome::Found) => {
-            eprintln!("Setup-complete event detected.");
-            // Discover test commands only now: setup-complete means the
-            // project came up, so every container exists and discovery reads
-            // settled filesystems instead of racing container startup.
-            discover_scripts(rt, &compose, overlay, temp_dir)
-                .and_then(|scripts| validate_test_scripts(&scripts))
-        }
-        Ok(SetupOutcome::TimedOut) => Err(eyre!("timed out waiting for setup-complete event")),
-        Err(e) => Err(e),
-    };
+    let test_result = result.and_then(|()| {
+        eprintln!("Setup-complete event detected.");
+        // Discover test commands only now: setup-complete means the project
+        // came up, so every container exists and discovery reads settled
+        // filesystems instead of racing container startup.
+        discover_scripts(rt, &compose, overlay, temp_dir)
+            .and_then(|scripts| validate_test_scripts(&scripts))
+    });
 
     if test_result.is_ok() {
         eprintln!("Setup validation successful.");
@@ -830,23 +827,23 @@ fn find_jsonl_files(root: &Path) -> Result<Vec<PathBuf>> {
 /// closes that window; see [`watch_for_setup_complete`].
 const POLL_INTERVAL: Duration = Duration::from_millis(25);
 
-/// Why [`watch_for_setup_complete`] stopped watching.
-#[derive(Debug, PartialEq, Eq)]
-enum SetupOutcome {
-    /// The setup-complete event was seen.
-    Found,
-    /// The deadline passed without the event.
-    TimedOut,
-}
+/// How much of one output file to read.
+///
+/// Setup-complete arrives early in a run, so it is not expected to sit behind a
+/// megabyte of other events. Capping the read keeps a chatty — or corrupt —
+/// file from being pulled into memory on every poll. An event past the cap is
+/// not seen, and the watch times out as though it never arrived.
+const MAX_READ_BYTES: u64 = 1024 * 1024;
 
 /// Watch `.jsonl` files anywhere under the given directory for setup-complete.
+/// Returns once the event is seen, and errors when the deadline passes first.
 ///
-/// Reads every file in full on every poll, and remembers nothing between
-/// polls. The SDK's local-file handler opens its output without `O_APPEND` and
-/// truncates it during initialization, so every SDK-linked process writes from
-/// offset 0. Nothing a previous poll learned about a file's contents stays
-/// true, so tracking read offsets would only let the watcher skip a region a
-/// later writer had refilled. These files hold a handful of short lines until
+/// Reads every file on every poll, and remembers nothing between polls. The
+/// SDK's local-file handler opens its output without `O_APPEND` and truncates
+/// it during initialization, so every SDK-linked process writes from offset 0.
+/// Nothing a previous poll learned about a file's contents stays true, so
+/// tracking read offsets would only let the watcher skip a region a later
+/// writer had refilled. These files hold a handful of short lines until
 /// setup-complete arrives, which is the whole period this runs for, so reading
 /// them again costs nothing worth optimizing.
 ///
@@ -856,27 +853,26 @@ enum SetupOutcome {
 ///
 /// Uses blocking `std::fs` calls intentionally — reads are small and infrequent,
 /// and this avoids pulling in tokio::fs for a simple poll loop.
-async fn watch_for_setup_complete(
-    output_dir: &Path,
-    deadline: tokio::time::Instant,
-) -> Result<SetupOutcome> {
+async fn watch_for_setup_complete(output_dir: &Path, deadline: tokio::time::Instant) -> Result<()> {
     loop {
         if tokio::time::Instant::now() >= deadline {
-            return Ok(SetupOutcome::TimedOut);
+            bail!("timed out waiting for setup-complete event");
         }
 
         for path in find_jsonl_files(output_dir)? {
-            let content = match std::fs::read(&path) {
-                Ok(content) => content,
+            let file = match std::fs::File::open(&path) {
+                Ok(file) => file,
                 // Raced with something removing the file since the scan.
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
                 Err(e) => return Err(e.into()),
             };
+            let mut content = Vec::new();
+            file.take(MAX_READ_BYTES).read_to_end(&mut content)?;
 
             // Lossy: a half-written multi-byte character is replaced rather
             // than fatal, and the next poll reads the finished line.
             if contains_setup_complete(&String::from_utf8_lossy(&content)) {
-                return Ok(SetupOutcome::Found);
+                return Ok(());
             }
         }
 
@@ -1213,10 +1209,17 @@ services:
     }
 
     /// Watch `dir` until the event arrives or the test deadline passes.
-    async fn watch(dir: &Path) -> SetupOutcome {
-        watch_for_setup_complete(dir, test_deadline())
-            .await
-            .expect("watch failed")
+    async fn watch(dir: &Path) -> Result<()> {
+        watch_for_setup_complete(dir, test_deadline()).await
+    }
+
+    /// Assert the watch timed out rather than failing for another reason.
+    fn assert_timed_out(result: Result<()>) {
+        let err = result.expect_err("expected a timeout, got the event");
+        assert!(
+            err.to_string().contains("timed out"),
+            "expected a timeout, got: {err}"
+        );
     }
 
     /// Write the setup-complete event before the watcher starts.
@@ -1230,7 +1233,9 @@ services:
         )
         .unwrap();
 
-        assert_eq!(watch(dir.path()).await, SetupOutcome::Found);
+        watch(dir.path())
+            .await
+            .expect("setup-complete not detected");
     }
 
     /// The file appears after the watcher starts polling.
@@ -1248,7 +1253,9 @@ services:
             .unwrap();
         });
 
-        assert_eq!(watch(dir.path()).await, SetupOutcome::Found);
+        watch(dir.path())
+            .await
+            .expect("setup-complete not detected");
     }
 
     /// The event arrives in a later append, after unrelated lines.
@@ -1270,7 +1277,9 @@ services:
             writeln!(f, "{{\"antithesis_setup\": {{\"status\": \"complete\"}}}}").unwrap();
         });
 
-        assert_eq!(watch(dir.path()).await, SetupOutcome::Found);
+        watch(dir.path())
+            .await
+            .expect("setup-complete not detected");
     }
 
     /// Non-complete status values are ignored.
@@ -1292,7 +1301,9 @@ services:
             writeln!(f, "{{\"antithesis_setup\": {{\"status\": \"complete\"}}}}").unwrap();
         });
 
-        assert_eq!(watch(dir.path()).await, SetupOutcome::Found);
+        watch(dir.path())
+            .await
+            .expect("setup-complete not detected");
     }
 
     /// The event is split across two writes (partial line buffering).
@@ -1316,7 +1327,9 @@ services:
             writeln!(f, " {{\"status\": \"complete\"}}}}").unwrap();
         });
 
-        assert_eq!(watch(dir.path()).await, SetupOutcome::Found);
+        watch(dir.path())
+            .await
+            .expect("setup-complete not detected");
     }
 
     /// Times out when the event never arrives.
@@ -1330,7 +1343,24 @@ services:
         )
         .unwrap();
 
-        assert_eq!(watch(dir.path()).await, SetupOutcome::TimedOut);
+        assert_timed_out(watch(dir.path()).await);
+    }
+
+    /// Only the first [`MAX_READ_BYTES`] of a file are read, so an event behind
+    /// more than that is deliberately not found.
+    #[tokio::test]
+    async fn ignores_an_event_past_the_read_cap() {
+        let dir = tempfile::tempdir().unwrap();
+        let service_dir = dir.path().join("app");
+        std::fs::create_dir_all(&service_dir).unwrap();
+
+        let padding = "{\"padding\": \"".to_string() + &"x".repeat(1000) + "\"}\n";
+        let mut content = padding.repeat(MAX_READ_BYTES as usize / padding.len() + 1);
+        assert!(content.len() as u64 > MAX_READ_BYTES);
+        content.push_str("{\"antithesis_setup\": {\"status\": \"complete\"}}\n");
+        std::fs::write(service_dir.join("sdk.jsonl"), content).unwrap();
+
+        assert_timed_out(watch(dir.path()).await);
     }
 
     /// The SDK writes without `O_APPEND` and truncates on start, so a second
@@ -1364,11 +1394,9 @@ services:
             .unwrap();
         });
 
-        assert_eq!(
-            watch(dir.path()).await,
-            SetupOutcome::Found,
-            "event written over already-read bytes was missed"
-        );
+        watch(dir.path())
+            .await
+            .expect("event written over already-read bytes was missed");
     }
 
     #[test]

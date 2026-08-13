@@ -1,6 +1,6 @@
 # Unreleased
 
-- `snouty validate` no longer misses a setup-complete event that another process overwrote in the shared SDK output file ([#218](https://github.com/antithesishq/snouty/pull/218))
+- `snouty validate` reads the SDK output file from the start instead of tailing it, so a setup-complete event written over bytes snouty had already read is still detected ([#218](https://github.com/antithesishq/snouty/pull/218))
 - Add `snouty runs exec`: run a bash script in a run's live session at a given moment, on a fresh branch of the multiverse. The command is gated behind the `runs-exec` unstable feature (`SNOUTY_UNSTABLE_FEATURES=runs-exec`), because the API it calls is unstable and unavailable on most tenants ([#208](https://github.com/antithesishq/snouty/pull/208))
 - snouty now requires Docker Compose v2.24.7 or newer, checked up front ([#214](https://github.com/antithesishq/snouty/pull/214))
 - `snouty validate` streams container logs in real time and in order, treats `--timeout` as a single budget (default 120 seconds), refuses to start when the project already has leftover containers, and reports compose failures as themselves instead of as environment divergence ([#214](https://github.com/antithesishq/snouty/pull/214))

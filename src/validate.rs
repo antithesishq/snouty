@@ -1,5 +1,4 @@
 use std::collections::{BTreeMap, BTreeSet};
-use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use color_eyre::Section;
@@ -825,9 +824,13 @@ fn find_jsonl_files(root: &Path) -> Result<Vec<PathBuf>> {
     Ok(paths)
 }
 
-fn open_jsonl_file(path: &Path) -> Result<Option<std::fs::File>> {
-    match std::fs::File::open(path) {
-        Ok(file) => Ok(Some(file)),
+/// Length and mtime of `path`, or `None` when it has gone away.
+fn file_stamp(path: &Path) -> Result<Option<FileStamp>> {
+    match std::fs::metadata(path) {
+        Ok(metadata) => Ok(Some(FileStamp {
+            len: metadata.len(),
+            modified: metadata.modified().ok(),
+        })),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(e) => Err(e.into()),
     }
@@ -835,17 +838,15 @@ fn open_jsonl_file(path: &Path) -> Result<Option<std::fs::File>> {
 
 /// How often the SDK output directory is re-scanned for new data.
 ///
-/// This interval bounds how long a written event can sit unread, and so bounds
-/// the window in which another process can truncate it away. Native filesystem
-/// notifications would shorten that window by a further ~20ms, but `notify`'s
-/// own documentation records that no backend is a fully reliable event source,
-/// so a poll would have to stay as a backstop regardless. Polling is therefore
-/// the whole mechanism.
+/// The files are small and the scan is cheap, so this is short enough that a
+/// written event is normally read within one tick. It only narrows the window
+/// in which another process can truncate an event away before we read it. No
+/// value closes that window; see [`watch_for_setup_complete`].
 const POLL_INTERVAL: Duration = Duration::from_millis(25);
 
 /// Length and mtime of one file. A file whose stamp is unchanged since the last
 /// poll has nothing new to say and is skipped without a read.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(PartialEq, Eq)]
 struct FileStamp {
     len: u64,
     modified: Option<std::time::SystemTime>,
@@ -863,13 +864,17 @@ enum SetupOutcome {
 /// Watch `.jsonl` files anywhere under the given directory for setup-complete.
 ///
 /// Polls recursively for new files, and re-reads a file from the start whenever
-/// its length or mtime changed. Reading from the start, rather than tailing from
-/// a stored offset, is what makes the event detectable at all when a second
-/// writer overwrites bytes we have already consumed. The SDK's local-file
-/// handler does exactly that: it opens its output without `O_APPEND` and
-/// truncates it during initialization, so every SDK-linked process writes from
-/// offset 0. A tailing reader holds an offset past the rewritten region and
-/// never looks at it again.
+/// its length or mtime changed.
+///
+/// Reading from the start matters because the SDK's local-file handler opens
+/// its output without `O_APPEND` and truncates it during initialization, so
+/// every SDK-linked process writes from offset 0. A reader tailing from a
+/// stored offset sits past that region and never looks at it again, so it
+/// misses an event written there.
+///
+/// This recovers an event that is on disk behind a stale offset. It cannot
+/// recover an event that a later truncation already destroyed — that one is
+/// gone, and only having polled inside the window would have caught it.
 ///
 /// Uses blocking `std::fs` calls intentionally — reads are small and infrequent,
 /// and this avoids pulling in tokio::fs for a simple poll loop.
@@ -885,24 +890,26 @@ async fn watch_for_setup_complete(
         }
 
         for path in find_jsonl_files(output_dir)? {
-            let Some(mut file) = open_jsonl_file(&path)? else {
+            // Stat before opening, so an unchanged file costs one syscall
+            // rather than an open and a close as well.
+            let Some(stamp) = file_stamp(&path)? else {
                 continue;
             };
-            let metadata = file.metadata()?;
-            let stamp = FileStamp {
-                len: metadata.len(),
-                modified: metadata.modified().ok(),
-            };
-            // Skipping unchanged files is what keeps a full re-read cheap. A
-            // rewrite to the identical length within one mtime tick hides here,
-            // but the SDK writes different content, so the length moves.
-            if seen.get(&path).is_some_and(|previous| *previous == stamp) {
+            // A rewrite to the identical length within one mtime tick hides
+            // here, but the SDK writes different content, so the length moves.
+            if seen.get(&path) == Some(&stamp) {
                 continue;
             }
-            seen.insert(path, stamp);
 
-            let mut content = Vec::new();
-            file.read_to_end(&mut content)?;
+            let content = match std::fs::read(&path) {
+                Ok(content) => content,
+                // Raced with something removing the file.
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(e) => return Err(e.into()),
+            };
+            // Stamped after the read, so a file that changed in between is read
+            // again next poll rather than skipped.
+            seen.insert(path, stamp);
 
             // Lossy: a half-written multi-byte character is replaced rather
             // than fatal, and the next poll reads the finished line.
@@ -1240,16 +1247,23 @@ services:
     }
 
     #[test]
-    fn open_jsonl_file_returns_none_for_missing_files() {
+    fn file_stamp_returns_none_for_missing_files() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("missing.jsonl");
 
-        let file = open_jsonl_file(&path).unwrap();
-        assert!(file.is_none(), "missing files should be skipped");
+        let stamp = file_stamp(&path).unwrap();
+        assert!(stamp.is_none(), "missing files should be skipped");
     }
 
     fn test_deadline() -> tokio::time::Instant {
         tokio::time::Instant::now() + Duration::from_secs(3)
+    }
+
+    /// Watch `dir` until the event arrives or the test deadline passes.
+    async fn watch(dir: &Path) -> SetupOutcome {
+        watch_for_setup_complete(dir, test_deadline())
+            .await
+            .expect("watch failed")
     }
 
     /// Write the setup-complete event before the watcher starts.
@@ -1263,12 +1277,7 @@ services:
         )
         .unwrap();
 
-        assert_eq!(
-            watch_for_setup_complete(dir.path(), test_deadline())
-                .await
-                .expect("watch failed"),
-            SetupOutcome::Found
-        );
+        assert_eq!(watch(dir.path()).await, SetupOutcome::Found);
     }
 
     /// The file appears after the watcher starts polling.
@@ -1286,12 +1295,7 @@ services:
             .unwrap();
         });
 
-        assert_eq!(
-            watch_for_setup_complete(dir.path(), test_deadline())
-                .await
-                .expect("watch failed"),
-            SetupOutcome::Found
-        );
+        assert_eq!(watch(dir.path()).await, SetupOutcome::Found);
     }
 
     /// The event arrives in a later append, after unrelated lines.
@@ -1313,12 +1317,7 @@ services:
             writeln!(f, "{{\"antithesis_setup\": {{\"status\": \"complete\"}}}}").unwrap();
         });
 
-        assert_eq!(
-            watch_for_setup_complete(dir.path(), test_deadline())
-                .await
-                .expect("watch failed"),
-            SetupOutcome::Found
-        );
+        assert_eq!(watch(dir.path()).await, SetupOutcome::Found);
     }
 
     /// Non-complete status values are ignored.
@@ -1340,12 +1339,7 @@ services:
             writeln!(f, "{{\"antithesis_setup\": {{\"status\": \"complete\"}}}}").unwrap();
         });
 
-        assert_eq!(
-            watch_for_setup_complete(dir.path(), test_deadline())
-                .await
-                .expect("watch failed"),
-            SetupOutcome::Found
-        );
+        assert_eq!(watch(dir.path()).await, SetupOutcome::Found);
     }
 
     /// The event is split across two writes (partial line buffering).
@@ -1369,12 +1363,7 @@ services:
             writeln!(f, " {{\"status\": \"complete\"}}}}").unwrap();
         });
 
-        assert_eq!(
-            watch_for_setup_complete(dir.path(), test_deadline())
-                .await
-                .expect("watch failed"),
-            SetupOutcome::Found
-        );
+        assert_eq!(watch(dir.path()).await, SetupOutcome::Found);
     }
 
     /// Times out when the event never arrives.
@@ -1388,10 +1377,7 @@ services:
         )
         .unwrap();
 
-        let watch = watch_for_setup_complete(dir.path(), test_deadline())
-            .await
-            .expect("watch failed");
-        assert_eq!(watch, SetupOutcome::TimedOut);
+        assert_eq!(watch(dir.path()).await, SetupOutcome::TimedOut);
     }
 
     /// The SDK writes without `O_APPEND` and truncates on start, so a second
@@ -1426,9 +1412,7 @@ services:
         });
 
         assert_eq!(
-            watch_for_setup_complete(dir.path(), test_deadline())
-                .await
-                .expect("watch failed"),
+            watch(dir.path()).await,
             SetupOutcome::Found,
             "event written over already-read bytes was missed"
         );

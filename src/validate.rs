@@ -539,13 +539,11 @@ async fn validate_kubernetes(
 ///
 /// Checks every line for `{"antithesis_setup": {"status": "complete"}}`. A
 /// partial trailing line fails to parse and is ignored; the watcher re-reads
-/// the whole file on every change, so the line is seen once its writer
-/// finishes it.
+/// the whole file on every poll, so the line is seen once its writer finishes
+/// it.
 fn contains_setup_complete(content: &str) -> bool {
     for line in content.lines() {
-        let line = line.trim();
-        if !line.is_empty()
-            && let Ok(event) = serde_json::from_str::<SetupEvent>(line)
+        if let Ok(event) = serde_json::from_str::<SetupEvent>(line.trim())
             && let Some(setup) = event.antithesis_setup
             && setup.status == "complete"
         {
@@ -824,33 +822,13 @@ fn find_jsonl_files(root: &Path) -> Result<Vec<PathBuf>> {
     Ok(paths)
 }
 
-/// Length and mtime of `path`, or `None` when it has gone away.
-fn file_stamp(path: &Path) -> Result<Option<FileStamp>> {
-    match std::fs::metadata(path) {
-        Ok(metadata) => Ok(Some(FileStamp {
-            len: metadata.len(),
-            modified: metadata.modified().ok(),
-        })),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(e) => Err(e.into()),
-    }
-}
-
-/// How often the SDK output directory is re-scanned for new data.
+/// How often the SDK output directory is re-scanned.
 ///
-/// The files are small and the scan is cheap, so this is short enough that a
-/// written event is normally read within one tick. It only narrows the window
-/// in which another process can truncate an event away before we read it. No
-/// value closes that window; see [`watch_for_setup_complete`].
+/// The files are small and few before setup-complete, so a full re-scan is
+/// cheap and the interval can be short. It only narrows the window in which
+/// another process can truncate an event away before we read it. No value
+/// closes that window; see [`watch_for_setup_complete`].
 const POLL_INTERVAL: Duration = Duration::from_millis(25);
-
-/// Length and mtime of one file. A file whose stamp is unchanged since the last
-/// poll has nothing new to say and is skipped without a read.
-#[derive(PartialEq, Eq)]
-struct FileStamp {
-    len: u64,
-    modified: Option<std::time::SystemTime>,
-}
 
 /// Why [`watch_for_setup_complete`] stopped watching.
 #[derive(Debug, PartialEq, Eq)]
@@ -863,18 +841,18 @@ enum SetupOutcome {
 
 /// Watch `.jsonl` files anywhere under the given directory for setup-complete.
 ///
-/// Polls recursively for new files, and re-reads a file from the start whenever
-/// its length or mtime changed.
+/// Reads every file in full on every poll, and remembers nothing between
+/// polls. The SDK's local-file handler opens its output without `O_APPEND` and
+/// truncates it during initialization, so every SDK-linked process writes from
+/// offset 0. Nothing a previous poll learned about a file's contents stays
+/// true, so tracking read offsets would only let the watcher skip a region a
+/// later writer had refilled. These files hold a handful of short lines until
+/// setup-complete arrives, which is the whole period this runs for, so reading
+/// them again costs nothing worth optimizing.
 ///
-/// Reading from the start matters because the SDK's local-file handler opens
-/// its output without `O_APPEND` and truncates it during initialization, so
-/// every SDK-linked process writes from offset 0. A reader tailing from a
-/// stored offset sits past that region and never looks at it again, so it
-/// misses an event written there.
-///
-/// This recovers an event that is on disk behind a stale offset. It cannot
-/// recover an event that a later truncation already destroyed — that one is
-/// gone, and only having polled inside the window would have caught it.
+/// This finds an event that is on disk. It cannot recover one that a later
+/// truncation already destroyed — that one is gone, and only having polled
+/// inside the window would have caught it.
 ///
 /// Uses blocking `std::fs` calls intentionally — reads are small and infrequent,
 /// and this avoids pulling in tokio::fs for a simple poll loop.
@@ -882,34 +860,18 @@ async fn watch_for_setup_complete(
     output_dir: &Path,
     deadline: tokio::time::Instant,
 ) -> Result<SetupOutcome> {
-    let mut seen: BTreeMap<PathBuf, FileStamp> = BTreeMap::new();
-
     loop {
         if tokio::time::Instant::now() >= deadline {
             return Ok(SetupOutcome::TimedOut);
         }
 
         for path in find_jsonl_files(output_dir)? {
-            // Stat before opening, so an unchanged file costs one syscall
-            // rather than an open and a close as well.
-            let Some(stamp) = file_stamp(&path)? else {
-                continue;
-            };
-            // A rewrite to the identical length within one mtime tick hides
-            // here, but the SDK writes different content, so the length moves.
-            if seen.get(&path) == Some(&stamp) {
-                continue;
-            }
-
             let content = match std::fs::read(&path) {
                 Ok(content) => content,
-                // Raced with something removing the file.
+                // Raced with something removing the file since the scan.
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
                 Err(e) => return Err(e.into()),
             };
-            // Stamped after the read, so a file that changed in between is read
-            // again next poll rather than skipped.
-            seen.insert(path, stamp);
 
             // Lossy: a half-written multi-byte character is replaced rather
             // than fatal, and the next poll reads the finished line.
@@ -1244,15 +1206,6 @@ services:
             files,
             vec![dir.path().join("root.jsonl"), nested.join("events.jsonl")]
         );
-    }
-
-    #[test]
-    fn file_stamp_returns_none_for_missing_files() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("missing.jsonl");
-
-        let stamp = file_stamp(&path).unwrap();
-        assert!(stamp.is_none(), "missing files should be skipped");
     }
 
     fn test_deadline() -> tokio::time::Instant {

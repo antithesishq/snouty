@@ -213,6 +213,9 @@ struct AssertionPayload {
     hit: Option<bool>,
     condition: Option<bool>,
     message: Option<String>,
+    /// Fallback for a payload without a `message` — the SDKs set the two to
+    /// the same text.
+    id: Option<String>,
     assert_type: Option<String>,
     display_type: Option<String>,
     #[serde(default)]
@@ -291,9 +294,17 @@ impl TryFrom<AssertionPayload> for AssertionSummary {
 
     fn try_from(payload: AssertionPayload) -> std::result::Result<Self, Self::Error> {
         let hit = payload.hit.ok_or(())?;
-        let condition = payload.condition.ok_or(())?;
+        // `condition` only means something on an evaluation; a catalog
+        // registration (`hit: false`) classifies without one, so a missing
+        // condition must not knock it down to the raw-JSON fallback.
+        let condition = match payload.condition {
+            Some(condition) => condition,
+            None if !hit => false,
+            None => return Err(()),
+        };
         let message = payload
             .message
+            .or(payload.id)
             .map(|message| message.trim().to_string())
             .filter(|message| !message.is_empty())
             .ok_or(())?;
@@ -532,7 +543,7 @@ fn render_guidance(guidance: &Value, detail: bool) -> RenderedPayload {
         .or(guidance["id"].as_str())
         .unwrap_or("")
         .trim();
-    let headline = format!("{} \"{}\"", style("GUIDANCE").magenta(), sanitize(message));
+    let headline = format!("{} \"{}\"", style("GUIDANCE").bold(), sanitize(message));
     let mut details = Vec::new();
     if detail {
         let mut info = sanitize(guidance["guidance_type"].as_str().unwrap_or(""));
@@ -1470,6 +1481,34 @@ mod tests {
         // non-number is passed through untouched.
         assert_eq!(truncate_decimals("1e3", 3), "1000.000");
         assert_eq!(truncate_decimals("n/a", 3), "n/a");
+    }
+
+    #[test]
+    fn catalog_entries_classify_without_a_condition_and_fall_back_to_id() {
+        // A registration (`hit: false`) carries no meaningful condition, and
+        // some payloads carry only `id`; neither gap may knock the event down
+        // to the raw-JSON fallback.
+        let block = render_one(json!({
+            "antithesis_assert": {
+                "assert_type": "sometimes", "display_type": "Sometimes",
+                "hit": false, "id": "precept fault: before prepare"
+            },
+            "source": {"container": "client"},
+            "moment": {"input_hash": "-1", "vtime": "1.0"}
+        }));
+        assert!(
+            block.ends_with(r#"[client] CATALOG Sometimes "precept fault: before prepare""#),
+            "got: {block}"
+        );
+
+        // A hit evaluation without a condition is still unclassifiable.
+        let entry = json!({
+            "antithesis_assert": {
+                "assert_type": "always", "display_type": "Always",
+                "hit": true, "message": "m"
+            }
+        });
+        assert_eq!(parse_assertion_summary(&entry), None);
     }
 
     #[test]

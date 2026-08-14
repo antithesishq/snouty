@@ -109,7 +109,8 @@ After changing `gen-gallery.py`, type-check it with pyright and confirm it
 reports 0 errors before considering the change done:
 
 ```
-uvx pyright scripts/gen-gallery.py
+uv sync                             # so ./.venv holds the dependencies
+uvx pyright scripts/gen-gallery.py  # `[tool.pyright]` points it at ./.venv
 ```
 
 ## AI Coding Workflow

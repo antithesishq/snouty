@@ -9,7 +9,7 @@ story is also gated by a programmatic check; a degenerate example (an empty
 table, an unintended error, a filter that didn't narrow) fails the run rather
 than being silently emitted.
 
-There are two kinds of story:
+There are three kinds of story:
 
   * goal stories — capture one command's output and judge it against a user goal
     (the bulk of the gallery; slugs like `runs-events-single`).
@@ -19,6 +19,10 @@ There are two kinds of story:
     prints. Commands that mutate state or need an interactive arg (launch,
     debug, validate, update, completions) are help-only. An automated check
     verifies any column/field the help names actually appears in the output.
+  * TTY stories — drive an interactive command (today only `snouty login`) on a
+    real pseudo-terminal and record the conversation: one *frame* per prompt,
+    an asciinema recording to replay, and the files the command persisted. See
+    "TTY stories" below.
 
 Credentials come from the usual ANTITHESIS_* environment variables (snouty reads
 them). Behaviour is controlled with flags, not env vars:
@@ -43,11 +47,15 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Callable
+
+import pexpect
+import pyte
 
 # A syntactically-valid but nonexistent run id, for clean-error stories.
 UNKNOWN_RUN = "ffffffffffffffffffffffffffffffff-54-5"
@@ -124,46 +132,29 @@ class Snouty:
     def cleanup(self) -> None:
         shutil.rmtree(self._shim, ignore_errors=True)
 
+    def env_with(self, overrides: dict[str, str | None]) -> dict[str, str]:
+        """The environment a snouty child inherits, with `overrides` applied: a
+        string sets a var, None removes it (so a story can model an environment
+        missing some credential). Everything else inherits the live
+        ANTITHESIS_* env."""
+        env = dict(self._env)
+        for key, value in overrides.items():
+            if value is None:
+                env.pop(key, None)
+            else:
+                env[key] = value
+        return env
+
     def run(
         self,
         args: list[str],
         env: dict[str, str | None] | None = None,
-        stdin: str | None = None,
-        merge_streams: bool = False,
     ) -> Result:
-        # `env` overrides individual vars for this call only: a string sets the
-        # var, None unsets it (so a story can model an environment missing some
-        # credential). Everything else inherits the live ANTITHESIS_* env.
-        # `stdin`, when given, is fed to the process's standard input — used by the
-        # interactive stories (`snouty login`) that read answers line-by-line.
-        # `merge_streams` interleaves stderr into stdout at capture time, which
-        # preserves interaction order for prompt transcripts: login prints its
-        # prompts and warnings on different streams, and capturing them apart
-        # reorders the conversation.
-        run_env = self._env
-        if env is not None:
-            run_env = dict(self._env)
-            for key, value in env.items():
-                if value is None:
-                    run_env.pop(key, None)
-                else:
-                    run_env[key] = value
-        if merge_streams:
-            proc = subprocess.run(
-                [str(self.binary), *args],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                env=run_env,
-                input=stdin,
-            )
-            return Result(args, proc.stdout, "", proc.returncode)
         proc = subprocess.run(
             [str(self.binary), *args],
             capture_output=True,
             text=True,
-            env=run_env,
-            input=stdin,
+            env=self._env if env is None else self.env_with(env),
         )
         return Result(args, proc.stdout, proc.stderr, proc.returncode)
 
@@ -194,6 +185,246 @@ class Snouty:
                 f"{res.stderr.strip() or '<no stderr>'}"
             )
         return json.loads(res.stdout)
+
+
+# ---------------------------------------------------------------------------
+# TTY driver: run an interactive command on a real pseudo-terminal.
+#
+# `snouty login` prompts through `inquire`, which engages only when stdin is a
+# terminal — piping answers at it takes the non-interactive path instead. A TTY
+# story therefore spawns snouty on a pseudo-terminal and types at it.
+#
+# What the terminal receives is not readable as it stands: `inquire` redraws the
+# whole prompt on every keystroke, in ANSI escapes. `pyte` replays that stream
+# the way a terminal would, so a *frame* is the screen exactly as it stood at
+# one moment. The same stream is written out as an asciinema v2 recording, which
+# `asciinema play` replays at its original speed.
+# ---------------------------------------------------------------------------
+
+
+# The keys a dialogue step types: either a literal string, or — when they depend
+# on what snouty drew — a function of the settled screen (see `pick`).
+Keys = str | Callable[[list[str]], str]
+
+# One step of a dialogue: text to wait for on screen, then the keys to type once
+# it is there. Every send is gated on its prompt being rendered, so no keystroke
+# can race ahead of the prompt meant to read it.
+Step = tuple[str, Keys]
+
+# One frame: the prompt that was waiting, and the screen at that moment.
+Frame = tuple[str, str]
+
+# Keys a step can send. `inquire` holds the terminal in raw mode for a prompt's
+# whole lifetime, so these arrive as key events rather than line-edited text.
+ENTER = "\r"
+DOWN = "\x1b[B"
+UP = "\x1b[A"
+
+# The pseudo-terminal's size. 120 columns keeps snouty's own lines — which carry
+# absolute paths under the throwaway `$HOME` — clear of the wrap boundary, so a
+# reviewer judges snouty's wording rather than the sandbox's path length. 40
+# rows fits a whole login on one screen.
+TTY_COLS = 120
+TTY_ROWS = 40
+
+# How long to wait for one prompt. Generous: a healthy exchange completes in
+# milliseconds, but the credential menu waits on snouty probing the tenant for
+# its OAuth configuration first.
+PROMPT_TIMEOUT = 30
+
+# How long the output must stay quiet before a frame is taken. A prompt matches
+# mid-stream, so without this the frame would catch a half-drawn screen.
+SETTLE = 0.2
+
+# `inquire`'s row prefixes (see its RenderConfig defaults): the prompt still
+# being answered leads with `?`, one already answered with `>`, the highlighted
+# menu row with `>`, and every other menu row with a space. Each is followed by
+# one more space.
+LIVE_PROMPT = "? "
+HIGHLIGHTED = "> "
+UNHIGHLIGHTED = "  "
+
+
+def pick(prompt: str, label: str) -> Step:
+    """A step that chooses `label` from an `inquire` menu: move the highlight
+    onto that row, then select it.
+
+    The keys are read off the screen rather than fixed, because the menu's
+    contents depend on the tenant — `snouty login` offers single sign-on only
+    where the tenant enables it — so a fixed count of arrow presses would land
+    on the wrong row."""
+
+    def keys(screen: list[str]) -> str:
+        options = _menu_options(screen)
+        labels = [text for text, _ in options]
+        if label not in labels:
+            raise GalleryError(f"menu has no {label!r} option; it offers {labels}")
+        highlighted = next((i for i, (_, on) in enumerate(options) if on), 0)
+        distance = labels.index(label) - highlighted
+        arrow = DOWN if distance > 0 else UP
+        return arrow * abs(distance) + ENTER
+
+    return (prompt, keys)
+
+
+def _menu_options(screen: list[str]) -> list[tuple[str, bool]]:
+    """Every option of the `inquire` menu on `screen`: its label, and whether it
+    is the highlighted one.
+
+    The menu sits under the prompt still being answered — the last line leading
+    with `?`, since an answered prompt is redrawn with `>`. Its options are the
+    rows below that, up to the first row that is neither highlighted nor
+    indented (the help line, or a blank row past the end of the menu)."""
+    live = [i for i, line in enumerate(screen) if line.startswith(LIVE_PROMPT)]
+    if not live:
+        return []
+    options: list[tuple[str, bool]] = []
+    for line in screen[live[-1] + 1 :]:
+        if line.startswith(HIGHLIGHTED):
+            options.append((line[2:].strip(), True))
+        elif line.startswith(UNHIGHLIGHTED) and line.strip():
+            options.append((line[2:].strip(), False))
+        else:
+            break
+    return options
+
+
+class _Recorder:
+    """Sink for everything the child writes.
+
+    `pexpect` hands its `logfile_read` every byte it reads, once and in order —
+    unlike `before`/`after`, which repeat whatever is still in its buffer. Each
+    chunk is timestamped for the recording and fed to the terminal emulator for
+    the frames."""
+
+    def __init__(self, screen: pyte.Screen):
+        self.started = time.monotonic()
+        self.events: list[tuple[float, bytes]] = []
+        self.stream = pyte.ByteStream(screen)
+
+    def write(self, data: bytes) -> None:
+        if data:
+            self.events.append((time.monotonic() - self.started, data))
+            self.stream.feed(data)
+
+    def flush(self) -> None:
+        pass
+
+
+class TtySession:
+    """One interactive snouty run on a pseudo-terminal.
+
+    Holds the child, the bytes it has written (kept whole, for the recording),
+    and a terminal emulator fed the same bytes (for the frames)."""
+
+    def __init__(self, binary: Path, args: list[str], env: dict[str, str]):
+        self.screen = pyte.Screen(TTY_COLS, TTY_ROWS)
+        self.recorder = _Recorder(self.screen)
+        # `echo=False` stops the terminal driver echoing what we type, so a
+        # secret can only reach the screen if snouty itself renders it — which
+        # is exactly what the `secrets_absent` check asserts.
+        self.child = pexpect.spawn(
+            str(binary),
+            args,
+            env=env,
+            dimensions=(TTY_ROWS, TTY_COLS),
+            timeout=PROMPT_TIMEOUT,
+            echo=False,
+            encoding=None,
+        )
+        # `logfile_read` is an attribute rather than a constructor argument.
+        # Setting it here still catches every byte: pexpect reads the child only
+        # when asked to, and nothing has asked yet.
+        self.child.logfile_read = self.recorder
+
+    def wait_for(self, needle: str) -> None:
+        """Consume output through `needle`, then let the prompt finish drawing."""
+        self.child.expect_exact(needle.encode())
+        self.settle()
+
+    def settle(self) -> None:
+        """Wait until the output has stayed quiet for `SETTLE`, so a frame
+        catches a settled screen rather than a half-drawn one. A prompt matches
+        mid-stream, and `inquire` draws a menu's rows after its question.
+        Matching on TIMEOUT is how pexpect waits for silence."""
+        self.child.expect([pexpect.TIMEOUT, pexpect.EOF], timeout=SETTLE)
+
+    def send(self, keys: str) -> None:
+        self.child.send(keys.encode())
+
+    def frame(self) -> str:
+        """The screen as it stands, trailing blank rows dropped."""
+        rows = [row.rstrip() for row in self.screen.display]
+        while rows and not rows[-1]:
+            rows.pop()
+        return "\n".join(rows)
+
+    def finish(self) -> int:
+        """Wait for the child to exit and return its status."""
+        try:
+            self.child.expect(pexpect.EOF)
+        except pexpect.TIMEOUT:
+            pass
+        self.child.close(force=True)
+        # A child killed after a stall has no exit status of its own; report it
+        # as a failure so the story's check fails rather than reading as clean.
+        return 1 if self.child.exitstatus is None else self.child.exitstatus
+
+    def cast(self, command: str) -> str:
+        """The session as an asciinema v2 recording: a header line, then one
+        `[time, "o", data]` line per chunk the terminal received."""
+        header = {
+            "version": 2,
+            "width": TTY_COLS,
+            "height": TTY_ROWS,
+            "timestamp": int(time.time()),
+            "command": command,
+            "env": {"TERM": "xterm-256color"},
+        }
+        lines = [json.dumps(header)]
+        for at, data in self.recorder.events:
+            lines.append(json.dumps([round(at, 6), "o", data.decode("utf-8", "replace")]))
+        return "\n".join(lines) + "\n"
+
+
+def drive_tty(
+    binary: Path,
+    args: list[str],
+    env: dict[str, str],
+    dialogue: tuple[Step, ...],
+) -> tuple[Result, list[Frame], str]:
+    """Run `snouty <args>` on a pseudo-terminal, typing `dialogue` at it.
+
+    Returns the run's result (its output is the final screen), one frame per
+    step — the screen the user faced when that prompt asked for an answer — plus
+    a closing frame, and the asciinema recording.
+
+    A step that cannot be taken — its prompt never arrives, or the screen does
+    not offer what the step meant to choose — is reported in the frames and as a
+    failing exit, so it shows up in that one story rather than aborting the whole
+    gallery."""
+    session = TtySession(binary, args, env)
+    frames: list[Frame] = []
+    for prompt, keys in dialogue:
+        try:
+            session.wait_for(prompt)
+        except (pexpect.TIMEOUT, pexpect.EOF) as e:
+            stalled = "no output" if isinstance(e, pexpect.TIMEOUT) else "snouty exited"
+            frames.append((f"[gallery] waiting for {prompt!r}: {stalled}", session.frame()))
+            break
+        frames.append((prompt, session.frame()))
+        try:
+            session.send(keys if isinstance(keys, str) else keys(session.screen.display))
+        except GalleryError as e:
+            frames.append((f"[gallery] answering {prompt!r}: {e}", session.frame()))
+            break
+    returncode = session.finish()
+    frames.append(("[after it exits]", session.frame()))
+    return (
+        Result(args, session.frame(), "", returncode),
+        frames,
+        session.cast(f"snouty {' '.join(args)}"),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -620,16 +851,13 @@ class Story:
     # validate stories require a container runtime (see `ensure_validate_runtime`);
     # this flag just documents which ones spin up live containers.
     needs_docker: bool = False
-    # -- interactive / stateful stories (`snouty login`) -------------------
-    # When `sandbox_home` is set the story is an interactive, stateful story: it
-    # runs in a throwaway `$HOME` so the credentials/settings it persists never
-    # touch the operator's real config, and `post_capture` files are read back
-    # from that HOME and shown as the command's result. `stdin` feeds the
-    # interactive prompts their answers.
-    sandbox_home: bool = False
-    # Scripted answers fed to the command's stdin, one per line (login prompts).
-    stdin: str | None = None
-    # Files to pre-write into the sandbox HOME before running, keyed by
+    # -- TTY stories -------------------------------------------------------
+    # A story with a `dialogue` is a TTY story: snouty is spawned on a real
+    # pseudo-terminal and the dialogue is typed at it, one `(wait for, send)`
+    # step per prompt. It runs in a throwaway `$HOME` so the credentials and
+    # settings it persists never touch the operator's real config.
+    dialogue: tuple[Step, ...] | None = None
+    # Files to pre-write into the throwaway HOME before running, keyed by
     # HOME-relative path — models pre-existing state (a prior login, a broken
     # settings file). Mirrors the spec fixtures' txtar `-- path --` sections.
     seed_files: dict[str, str] | None = None
@@ -646,8 +874,12 @@ class StoryRun:
     help_result: Result | None = None  # `<help_cmd> --help` capture, for help stories
     sample_results: list[tuple[str, Result]] | None = None  # extra labelled captures
     # (rel_path, contents|None) for each `post_capture` file, in order; None means
-    # the file was not written (which some login stories assert on).
+    # the file was not written (which some TTY stories assert on).
     captured_files: list[tuple[str, str | None]] | None = None
+    # TTY stories: the screen at each prompt, and the asciinema recording of the
+    # whole session.
+    frames: list[Frame] | None = None
+    cast: str | None = None
 
 
 class Registry:
@@ -751,7 +983,14 @@ def _captured(sr: StoryRun, rel_path: str) -> str | None:
     return None
 
 
-def login_persisted(
+def _shown(sr: StoryRun) -> str:
+    """Everything a TTY story put on screen: every frame, not just the last one.
+    A menu is erased once chosen, so its options survive only in the frame taken
+    while it was up."""
+    return "\n".join(screen for _, screen in sr.frames or [])
+
+
+def tty_persisted(
     *,
     prompts: tuple[str, ...] = (),
     absent_prompts: tuple[str, ...] = (),
@@ -760,15 +999,15 @@ def login_persisted(
     secrets_absent: tuple[str, ...] = (),
     expect_ok: bool = True,
 ):
-    """Gate an interactive login story. Combines the concerns a single login
-    story cares about: the command exits with the expected success/failure; the
-    expected `prompts` all appear in the transcript and no `absent_prompts` do;
-    each `(rel_path, needles)` in `files` was written and contains every needle;
-    each path in `absent_files` was NOT written; and no raw `secrets_absent` value
-    leaks into the transcript. Any failure lists what went wrong."""
+    """Gate a TTY story. Combines the concerns one such story cares about: the
+    command exits with the expected success/failure; the expected `prompts` all
+    appear on screen and no `absent_prompts` do; each `(rel_path, needles)` in
+    `files` was written and contains every needle; each path in `absent_files`
+    was NOT written; and no raw `secrets_absent` value ever reached the screen.
+    Any failure lists what went wrong."""
 
     def chk(sr: StoryRun, reg: Registry) -> tuple[bool, str]:
-        text = sr.result.combined
+        text = _shown(sr)
         problems: list[str] = []
 
         if sr.result.ok != expect_ok:
@@ -796,7 +1035,7 @@ def login_persisted(
 
         leaked = [s for s in secrets_absent if s in text]
         if leaked:
-            problems.append(f"secret leaked into transcript={leaked!r}")
+            problems.append(f"secret reached the screen={leaked!r}")
 
         return (not problems, "; ".join(problems) or "prompts + persisted state as expected")
 
@@ -1445,14 +1684,14 @@ def build_stories(d: Discovery) -> list[Story]:
             "I only have a legacy username and password",
             "I authenticate with a username/password and no API key; I want doctor to tell me whether that's enough.",
             "doctor warns the API key is missing (so `snouty runs` and other API commands won't work), "
-            "flags username/password as legacy auth limited to `snouty launch`/`snouty debug`, and steers "
-            "me toward setting an API key.",
+            "flags username/password as deprecated and limited to `snouty launch`/`snouty debug`, and "
+            "steers me toward setting an API key.",
             ["doctor"],
             doctor_check(
                 contains=(
                     "API key not provided",
                     "ANTITHESIS_USERNAME",
-                    "legacy",
+                    "deprecated",
                     "snouty launch",
                     "ask Antithesis support",
                 ),
@@ -1918,28 +2157,46 @@ def build_validate_stories(ephemeral: Path | None) -> list[Story]:
 
 
 # ---------------------------------------------------------------------------
-# Login stories: `snouty login` is interactive (reads answers from stdin) and
-# stateful (writes settings.toml/credentials.toml). Each runs in a throwaway
-# `$HOME`, feeds scripted answers, and captures the files it wrote so a reviewer
-# can judge both the prompt transcript AND the persisted result. No API,
-# discovery, or container runtime is needed. On Linux the keychain is a no-op, so
-# credentials land in the file backend — the realistic default here.
+# TTY stories: `snouty login` holds a conversation on a terminal and writes
+# settings.toml/credentials.toml as it goes. Each story runs in a throwaway
+# `$HOME`, types a scripted dialogue at a real pseudo-terminal, and captures both
+# the screens and the files written, so a reviewer judges the conversation AND
+# its result. No API, discovery, or container runtime is needed. On Linux the
+# keychain is a no-op, so credentials land in the file backend — the realistic
+# default here.
+#
+# The tenant is contacted for real: `snouty login` asks it whether single
+# sign-on is available before it draws the credential menu, so the menu a story
+# shows is the menu that tenant gives. That is the point — the gallery shows
+# what a human would see. It also means the menu's contents are not fixed, which
+# is why `pick` finds its row on screen instead of counting keypresses.
 # ---------------------------------------------------------------------------
 
-# Fake, obviously-not-real secrets fed on stdin — never a real credential, and
-# redacted again before embedding (see `_redact_secrets`).
+# Fake, obviously-not-real secrets typed at the prompts — never a real
+# credential, and redacted again before embedding (see `_redact_secrets`).
 _FAKE_KEY = "sk-FAKE-not-a-real-key"
 _FAKE_PASS = "FAKE-not-a-real-password"
+_SEED_KEY = "sk-SEED-not-a-real-key"
 _TENANT = "acme"
 _REPO = "registry.example.com/acme/app"
 _SETTINGS = ".config/snouty/settings.toml"
 _CREDS = ".config/snouty/credentials.toml"
-_SETTINGS_BAK = ".config/snouty/settings.toml.bak"
 
-# Shared satisfaction rubric for the interactive login stories: judge the prompt
-# transcript AND the persisted result, not just the exit code.
-_LOGIN_RUBRIC = (
-    "Judge the prompt transcript and the persisted state together. Are the "
+# Prompts the dialogues wait for, and the credential-menu labels they choose
+# between (these match the `Display` impl on snouty's `AuthSetupType`).
+_ASK_TENANT = "What Antithesis tenant"
+_ASK_REPO = "What container repository"
+_ASK_CREDENTIALS = "What kind of credentials"
+_ASK_KEY = "Please enter your API Key"
+_ASK_USERNAME = "What username"
+_ASK_PASSWORD = "Please enter your password"
+_API_KEY = "API Key"
+_USERNAME_PASSWORD = "Username & password (deprecated)"
+
+# Shared satisfaction rubric for the TTY stories: judge the conversation AND the
+# persisted result, not just the exit code.
+_TTY_RUBRIC = (
+    "Judge the prompt conversation and the persisted state together. Are the "
     "prompts clear, in a sensible order, and only for values not already known? "
     "After it finishes, does the user know WHAT was saved, WHERE, and the next "
     "step (e.g. `snouty doctor`)? Are secrets never echoed? For the error/repair "
@@ -1948,163 +2205,96 @@ _LOGIN_RUBRIC = (
 )
 
 
-def _login_story(
+def _tty_story(
     slug: str,
     title: str,
     goal: str,
     args: list[str],
-    stdin: str,
+    dialogue: tuple[Step, ...],
     check,
     *,
-    pre: list[str] | None = None,
     seed_files: dict[str, str] | None = None,
     post_capture: tuple[str, ...] = (_SETTINGS, _CREDS),
-    env: dict[str, str | None] | None = None,
 ) -> Story:
-    # `pre` holds global flags that must precede the `login` subcommand (e.g.
-    # `--profile`); `args` holds `login`'s own flags.
     return Story(
         slug=slug,
         title=title,
         goal=goal,
-        judge=_LOGIN_RUBRIC,
-        args=[*(pre or []), "login", *args],
+        judge=_TTY_RUBRIC,
+        args=args,
         check=check,
         json_capable=False,
-        sandbox_home=True,
-        stdin=stdin,
+        dialogue=dialogue,
         seed_files=seed_files,
         post_capture=post_capture,
-        env=env,
     )
 
 
-def build_login_stories() -> list[Story]:
+def build_tty_stories() -> list[Story]:
     return [
-        _login_story(
+        _tty_story(
             "login-fresh-apikey",
             "First-time setup with an API key",
             "I just installed snouty and want to configure my tenant, repository, and API key.",
-            [],
-            f"{_TENANT}\n{_REPO}\n2\n{_FAKE_KEY}\n",
-            login_persisted(
-                prompts=(
-                    "What Antithesis tenant",
-                    "What container repository",
-                    "What kind of credentials",
-                ),
+            ["login"],
+            (
+                (_ASK_TENANT, _TENANT + ENTER),
+                (_ASK_REPO, _REPO + ENTER),
+                pick(_ASK_CREDENTIALS, _API_KEY),
+                (_ASK_KEY, _FAKE_KEY + ENTER),
+            ),
+            tty_persisted(
+                prompts=(_ASK_TENANT, _ASK_REPO, _ASK_CREDENTIALS),
                 files=(
                     (_SETTINGS, (f'tenant = "{_TENANT}"', f'repository = "{_REPO}"')),
-                    (_CREDS, ('type = "ApiKey"',)),
+                    (_CREDS, ('type = "ApiKey"', f'api_key = "{_FAKE_KEY}"')),
                 ),
                 secrets_absent=(_FAKE_KEY,),
             ),
         ),
-        _login_story(
+        _tty_story(
             "login-reuse-default",
             "Re-run login and keep my stored values",
-            "I already logged in; re-running should offer my previous tenant/repo/key as defaults so I can just hit enter.",
-            [],
-            "\n\n\n\n",  # blank tenant, repo, auth-menu (default), api key (reuse)
-            login_persisted(
-                prompts=(
-                    f"Hit enter to use the previous value of [{_TENANT}]",
-                    f"Hit enter to use the previous value of [{_REPO}]",
+            "I already logged in; re-running should offer my previous tenant, repository, and key "
+            "back so I can just hit enter.",
+            ["login"],
+            (
+                (_ASK_TENANT, ENTER),
+                (_ASK_REPO, ENTER),
+                pick(_ASK_CREDENTIALS, _API_KEY),
+                (_ASK_KEY, ENTER),
+            ),
+            tty_persisted(
+                prompts=(_TENANT, _REPO),
+                files=(
+                    (_SETTINGS, (f'tenant = "{_TENANT}"', f'repository = "{_REPO}"')),
+                    # Every answer was a bare Enter, so the stored key must survive.
+                    (_CREDS, ('type = "ApiKey"', f'api_key = "{_SEED_KEY}"')),
                 ),
-                files=((_CREDS, ('type = "ApiKey"',)),),
-                secrets_absent=("sk-SEED-not-a-real-key",),
+                secrets_absent=(_SEED_KEY,),
             ),
             seed_files={
                 _SETTINGS: f'tenant = "{_TENANT}"\nrepository = "{_REPO}"\n',
-                _CREDS: '[default]\ntype = "ApiKey"\napi_key = "sk-SEED-not-a-real-key"\n',
+                _CREDS: f'[default]\ntype = "ApiKey"\napi_key = "{_SEED_KEY}"\n',
             },
         ),
-        _login_story(
-            "login-flags",
-            "Supply tenant and repository as flags",
-            "I know my tenant and repository already; I only want to be prompted for credentials.",
-            ["--tenant", _TENANT, "--repository", _REPO],
-            f"2\n{_FAKE_KEY}\n",
-            login_persisted(
-                prompts=("What kind of credentials",),
-                absent_prompts=("What Antithesis tenant", "What container repository"),
-                files=(
-                    (_SETTINGS, (f'tenant = "{_TENANT}"',)),
-                    (_CREDS, ('type = "ApiKey"',)),
-                ),
-                secrets_absent=(_FAKE_KEY,),
-            ),
-        ),
-        _login_story(
+        _tty_story(
             "login-password",
-            "Set up legacy username/password auth",
+            "Set up deprecated username/password auth",
             "I authenticate with a username and password rather than an API key.",
-            [],
-            f"{_TENANT}\n{_REPO}\n3\npuser\n{_FAKE_PASS}\n",
-            login_persisted(
-                prompts=("What kind of credentials",),
+            ["login"],
+            (
+                (_ASK_TENANT, _TENANT + ENTER),
+                (_ASK_REPO, _REPO + ENTER),
+                pick(_ASK_CREDENTIALS, _USERNAME_PASSWORD),
+                (_ASK_USERNAME, "puser" + ENTER),
+                (_ASK_PASSWORD, _FAKE_PASS + ENTER),
+            ),
+            tty_persisted(
+                prompts=(_ASK_CREDENTIALS, _USERNAME_PASSWORD),
                 files=((_CREDS, ('type = "Password"', 'username = "puser"')),),
                 secrets_absent=(_FAKE_PASS,),
             ),
-        ),
-        _login_story(
-            "login-profile",
-            "Scope a login to a named profile",
-            "I keep separate configs per environment and want this login saved under the `prod` profile.",
-            [],
-            f"{_TENANT}\n{_REPO}\n2\n{_FAKE_KEY}\n",
-            login_persisted(
-                files=(
-                    (_SETTINGS, ("[profile.prod]", f'tenant = "{_TENANT}"')),
-                    (_CREDS, ("[profile.prod]", 'type = "ApiKey"')),
-                ),
-                secrets_absent=(_FAKE_KEY,),
-            ),
-            pre=["--profile", "prod"],
-        ),
-        _login_story(
-            "login-skip-creds",
-            "Configure tenant/repo but skip credential storage",
-            "I use environment variables for credentials; I just want snouty to remember my tenant and repository.",
-            [],
-            f"{_TENANT}\n{_REPO}\n1\n",
-            login_persisted(
-                prompts=("What kind of credentials",),
-                files=((_SETTINGS, (f'tenant = "{_TENANT}"',)),),
-                absent_files=(_CREDS,),
-            ),
-        ),
-        _login_story(
-            "login-bad-tenant",
-            "A malformed tenant is rejected safely",
-            "I fat-finger a tenant that isn't a valid hostname; I want a clear error and nothing half-saved.",
-            [],
-            "evil.com/x\n",
-            login_persisted(
-                prompts=("What Antithesis tenant", "invalid tenant"),
-                absent_files=(_SETTINGS, _CREDS),
-                expect_ok=False,
-            ),
-        ),
-        _login_story(
-            "login-repair-broken",
-            "Repair a broken settings file",
-            "My settings.toml got corrupted; I want `snouty login` to fix it without silently destroying the old one.",
-            [],
-            f"1\n{_TENANT}\n{_REPO}\n1\n",  # proceed, tenant, repo, skip creds
-            login_persisted(
-                prompts=(
-                    "The current settings failed to load",
-                    "Would you like to proceed",
-                    "kept as a backup:",
-                ),
-                files=(
-                    (_SETTINGS, (f'tenant = "{_TENANT}"',)),
-                    (_SETTINGS_BAK, ("unparsable-settings-marker",)),
-                ),
-            ),
-            seed_files={_SETTINGS: "this is = = not valid toml unparsable-settings-marker\n"},
-            post_capture=(_SETTINGS, _SETTINGS_BAK),
         ),
     ]
 
@@ -2159,7 +2349,7 @@ def _write_help_story(out_dir: Path, story: Story, sr: StoryRun, verdict: str, d
 
 
 # Redact the secret values from persisted TOML before embedding it in a story —
-# belt-and-suspenders on top of the fake secrets the login stories feed on stdin.
+# belt-and-suspenders on top of the fake secrets the TTY stories type.
 _SECRET_LINE = re.compile(r'^(\s*(?:api_key|password)\s*=\s*)"[^"]*"', re.MULTILINE)
 
 
@@ -2167,24 +2357,25 @@ def _redact_secrets(text: str) -> str:
     return _SECRET_LINE.sub(r'\1"[REDACTED]"', text)
 
 
-def _write_login_story(out_dir: Path, story: Story, sr: StoryRun, verdict: str, detail: str) -> None:
-    # The `$ snouty ...` block with the scripted answers shown as a comment, so a
-    # reviewer sees exactly what the user typed at each prompt. `splitlines()`
-    # keeps every answer, including blank "just hit enter" ones (a reuse story
-    # feeds several) that `.rstrip("\n").split("\n")` would collapse.
-    answers = (story.stdin or "").splitlines()
-    stdin_note = "".join(f"# stdin> {a}\n" for a in answers)
-    transcript = (
-        f"```shell\n$ snouty {' '.join(story.args)}\n{stdin_note}"
-        f"{sr.result.combined.rstrip(chr(10))}\n```\nExit code: `{sr.result.returncode}`"
-    )
+def _write_tty_story(out_dir: Path, story: Story, sr: StoryRun, verdict: str, detail: str) -> None:
+    # One frame per prompt, so a reviewer sees the screen the user faced at each
+    # decision — including the menus, which are erased once chosen and so appear
+    # nowhere in the closing screen. The keys typed are not listed separately:
+    # `inquire` draws each answer next to its prompt, and the frames carry that.
     parts = [
         f"# {story.title}",
         f"**User goal:** {story.goal}",
         f"**Judge satisfaction by:** {story.judge}",
-        "## Transcript",
-        transcript,
+        "## Conversation",
+        f"```shell\n$ snouty {' '.join(story.args)}\n```",
     ]
+    for prompt, screen in sr.frames or []:
+        parts.append(f"### At `{prompt}`\n```\n{screen}\n```")
+    parts.append(f"Exit code: `{sr.result.returncode}`")
+    if sr.cast is not None:
+        cast_name = f"{story.slug}.cast"
+        (out_dir / cast_name).write_text(sr.cast)
+        parts.append(f"_Replay the session: `asciinema play {cast_name}`_")
     if story.post_capture:
         parts.append("## Persisted state")
         for rel_path, contents in sr.captured_files or []:
@@ -2202,8 +2393,8 @@ def write_story(out_dir: Path, story: Story, sr: StoryRun, passed: bool, detail:
     if story.help_cmd is not None:
         _write_help_story(out_dir, story, sr, verdict, detail)
         return
-    if story.sandbox_home:
-        _write_login_story(out_dir, story, sr, verdict, detail)
+    if story.dialogue is not None:
+        _write_tty_story(out_dir, story, sr, verdict, detail)
         return
     md = (
         f"# {story.title}\n\n"
@@ -2215,39 +2406,44 @@ def write_story(out_dir: Path, story: Story, sr: StoryRun, passed: bool, detail:
     (out_dir / f"{story.slug}.md").write_text(md)
 
 
-def run_login_story(sn: Snouty, story: Story) -> StoryRun:
-    """Run an interactive, stateful story in a throwaway `$HOME` so the
-    credentials/settings it persists never touch the operator's real config. The
-    home is seeded with `seed_files`, the answers are piped to stdin, and the
+def run_tty_story(sn: Snouty, story: Story) -> StoryRun:
+    """Run a TTY story in a throwaway `$HOME` so the credentials and settings it
+    persists never touch the operator's real config. The home is seeded with
+    `seed_files`, the dialogue is typed at a pseudo-terminal, and the
     `post_capture` files are read back before the home is removed."""
-    home = Path(tempfile.mkdtemp(prefix="snouty-gallery-login."))
+    # A short prefix on purpose: this path shows up inside snouty's own output,
+    # and a long one would push those lines over the terminal's width for a
+    # reason that belongs to the harness rather than to snouty.
+    home = Path(tempfile.mkdtemp(prefix="snouty-tty."))
+
     try:
         for rel_path, contents in (story.seed_files or {}).items():
             dest = home / rel_path
             dest.parent.mkdir(parents=True, exist_ok=True)
             dest.write_text(contents)
 
-        # Pin HOME, clear XDG_CONFIG_HOME (snouty treats empty as unset), and drop
-        # any ambient ANTITHESIS_* credentials so the "previous value" defaults are
-        # deterministic and no real secret can leak into a captured file.
-        env: dict[str, str | None] = {
-            "HOME": str(home),
-            "XDG_CONFIG_HOME": None,
-            **{k: None for k in os.environ if k.startswith("ANTITHESIS_")},
-        }
-        if story.env:
-            env.update(story.env)
-
-        # Merge stderr into stdout so the transcript preserves interaction
-        # order: login prints prompts on one stream and warnings on the other,
-        # and separate captures reorder the conversation.
-        result = sn.run(story.args, env=env, stdin=story.stdin, merge_streams=True)
+        # Pin HOME, clear XDG_CONFIG_HOME (snouty treats empty as unset), and
+        # drop any ambient ANTITHESIS_* credentials, so the story shows the state
+        # it seeded rather than the operator's own and no real secret can reach a
+        # captured file. TERM names a terminal `inquire` can draw on.
+        env = sn.env_with(
+            {
+                "HOME": str(home),
+                "TERM": "xterm-256color",
+                "XDG_CONFIG_HOME": None,
+                **{k: None for k in os.environ if k.startswith("ANTITHESIS_")},
+                **(story.env or {}),
+            }
+        )
+        result, frames, cast = drive_tty(sn.binary, story.args, env, story.dialogue or ())
 
         captured: list[tuple[str, str | None]] = []
         for rel_path in story.post_capture:
             path = home / rel_path
             captured.append((rel_path, path.read_text() if path.is_file() else None))
-        return StoryRun(story, result, None, captured_files=captured)
+        return StoryRun(
+            story, result, None, captured_files=captured, frames=frames, cast=cast
+        )
     finally:
         shutil.rmtree(home, ignore_errors=True)
 
@@ -2269,8 +2465,8 @@ def _run_isolated_story(sn: Snouty, story: Story) -> StoryRun:
 
 
 def run_story(sn: Snouty, story: Story) -> StoryRun:
-    if story.sandbox_home:
-        return run_login_story(sn, story)
+    if story.dialogue is not None:
+        return run_tty_story(sn, story)
     if story.isolate_config:
         return _run_isolated_story(sn, story)
     # Help-only stories pass no `args`; don't invoke a bare `snouty`.
@@ -2325,7 +2521,7 @@ def main() -> int:
             print(s.slug)
         for s in build_validate_stories(None):
             print(s.slug)
-        for s in build_login_stories():
+        for s in build_tty_stories():
             print(s.slug)
         return 0
 
@@ -2350,7 +2546,7 @@ def main() -> int:
     # manifests/ dir) are synthesized here for this run only.
     fixtures_dir = Path(tempfile.mkdtemp(prefix="snouty-gallery-fixtures."))
 
-    # Which story groups does this run actually need? The login stories need no
+    # Which story groups does this run actually need? The TTY stories need no
     # API, discovery, or container runtime, so `--only login-*` must not drag in
     # (and fail on) live-API discovery or a Docker daemon. Decide up front from
     # cheaply-enumerable slugs which groups are in scope.
@@ -2359,12 +2555,12 @@ def main() -> int:
 
     api_slugs = {s.slug for s in build_stories(Discovery())}
     validate_slugs = {s.slug for s in build_validate_stories(None)}
-    login_slugs = {s.slug for s in build_login_stories()}
+    tty_slugs = {s.slug for s in build_tty_stories()}
     need_api = any(selected(s) for s in api_slugs)
     need_validate = any(selected(s) for s in validate_slugs)
 
     if args.only:
-        known = api_slugs | validate_slugs | login_slugs
+        known = api_slugs | validate_slugs | tty_slugs
         unmatched = [p for p in args.only if not any(fnmatch.fnmatch(s, p) for s in known)]
         if unmatched:
             print(f"error: --only matched no stories: {unmatched}", file=sys.stderr)
@@ -2395,8 +2591,8 @@ def main() -> int:
             )
             stories += validate_stories
 
-        # Login stories need no external dependencies, so they always run.
-        stories += build_login_stories()
+        # TTY stories need no external dependencies, so they always run.
+        stories += build_tty_stories()
 
         if args.only:
             stories = [s for s in stories if selected(s.slug)]

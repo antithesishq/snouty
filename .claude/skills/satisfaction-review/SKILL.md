@@ -71,19 +71,31 @@ _Automated check: PASS|FAIL — <detail>_
 (Help stories show an `Exit code:` line under each command block — the `--help`,
 the default output, and every variant.)
 
-**Interactive / stateful stories** (the `login-*` slugs) have a different shape.
-`snouty login` reads answers from stdin and *writes files*, so instead of a
-single output block these stories show:
+**TTY stories** (the `login-*` slugs) have a different shape. `snouty login`
+holds a conversation on a terminal and *writes files*, so instead of a single
+output block these stories show one **frame** per prompt — the screen exactly as
+the user saw it at that moment — then the persisted files:
 
 ```
-## Transcript
+## Conversation
 ```shell
 $ snouty login
-# stdin> acme                     ← the answers fed to each prompt, in order
-# stdin> registry.example.com/...
-<the prompt transcript snouty printed>
+```
+
+### At `What kind of credentials`   ← one frame per prompt, in order
+```
+> What Antithesis tenant would you like to use? acme
+? What kind of credentials would you like to use? (Hit Esc to skip)
+> API Key
+  Username & password (deprecated)
+```
+
+### At `[after it exits]`           ← the closing screen
+```
+...
 ```
 Exit code: `<n>`
+_Replay the session: `asciinema play login-fresh-apikey.cast`_
 
 ## Persisted state
 `~/.config/snouty/settings.toml`      ← the files login actually wrote,
@@ -92,7 +104,17 @@ Exit code: `<n>`
 ```                                      deliberately not created
 ```
 
-Judge these on the transcript **and** the persisted state together (see Step 3).
+Read the frames in order — they are the conversation. A menu is erased once
+chosen, so its options appear only in the frame taken while it was on screen;
+the closing frame shows just the answer that won. A frame headed
+`[gallery] waiting for …` means the harness stalled, not that snouty misbehaved:
+report it as a harness problem rather than judging the story.
+
+Each story also ships a `.cast` beside it. Run `asciinema play <slug>.cast` when
+a frame leaves you unsure how something felt to type — pacing and redraws show
+up there and nowhere else.
+
+Judge these on the frames **and** the persisted state together (see Step 3).
 They run in a throwaway `$HOME`, so the paths are temp dirs — judge the shape and
 content, not the exact path.
 
@@ -166,14 +188,15 @@ Also judge rendering quality beyond raw width:
   overlap), or is it reasonable?
 - **Density**: walls of near-identical lines, redundant repetition, no grouping.
 
-### Interactive / stateful stories (`login-*`)
+### TTY stories (`login-*`)
 These are `snouty login` runs, so reinterpret the axes — the deliverable is a
 prompt conversation plus files written, not a table:
 - **Axis A (correctness):** were the prompts the right ones, in a sensible order,
   and *only* for values not already known (a flag or a stored previous value
   shouldn't be re-prompted)? Was invalid input rejected? And — judged against the
-  **Persisted state** section, not just stdout — did it write the *correct*
-  result (right tenant/repo, right credential type, right `[profile.x]` scope)?
+  **Persisted state** section, not just the closing frame — did it write the
+  *correct* result (right tenant/repo, right credential type, right
+  `[profile.x]` scope)?
 - **Axis B (follow-up readiness):** after it finishes, does the user know **what
   was saved, where, and the obvious next step** (e.g. "run `snouty doctor` to
   verify")? A login that exits `0` in silence — never confirming what it wrote —
@@ -181,8 +204,9 @@ prompt conversation plus files written, not a table:
   paths, does the message say what went wrong *and* how to recover?
 - **Axis C (rendering):** less about 140-col tables, more about **prompt clarity
   and secret hygiene** — is the menu readable, are previous-value defaults shown
-  legibly, and is the password never echoed into the transcript?
-- **Axis D — safety of a mutating command** (interactive/stateful stories only):
+  legibly, and is a secret never echoed into any frame? A stored secret should
+  appear only as a masked hint, never whole.
+- **Axis D — safety of a mutating command** (TTY stories only):
   before overwriting or discarding existing state, does it warn and/or back up
   (e.g. `settings.toml.bak`)? Does it scope writes to the intended profile? Does a
   rejected/aborted run leave nothing half-written? A mutating command that
@@ -258,9 +282,15 @@ Guidance for a high-signal report:
   output, not the specific data.
 - Width and rendering are judged for a plain ~140-col terminal; snouty may
   detect a wider TTY when run interactively, but the gallery captures
-  non-interactive output, which is the conservative case worth reviewing.
+  non-interactive output, which is the conservative case worth reviewing. The
+  TTY stories are the exception: they run on a real 120-col terminal, so a line
+  that wraps there wraps for the user too.
 - The `login-*` stories run in a throwaway `$HOME` that is removed after capture,
   and are fed fake secrets that are redacted again in the file — so the "Persisted
   state" you review never contains a real credential or touches real config. On
   Linux these exercise the file-backed credential store (the keychain is a no-op
   there), which is the realistic default for a CI/gallery run.
+- The `login-*` stories contact the tenant for real: snouty asks it whether
+  single sign-on is available before drawing the credential menu. The menu you
+  see is therefore the menu that tenant gives, and it may differ between runs —
+  judge the menu you were shown, not the one you expected.

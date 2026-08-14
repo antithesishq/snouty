@@ -177,6 +177,15 @@ Compose configs:
   validated to have recognized prefixes and at least one driver or anytime
   test command when any are present. Test commands are not executed.
 
+  The setup-complete event is watched through a temp directory bind-mounted
+  into each container. If your container engine runs inside a VM or on
+  another machine and does not share this machine's temp directory (Lima
+  and Colima do not share it by default; Docker Desktop and podman machine
+  do), validate times out even though the container emits the event. Set
+  SNOUTY_TEMP_DIR to a directory under a path the VM shares with write
+  access, or share the temp directory with the VM. See the README section
+  "VM-backed container runtimes".
+
 Kubernetes configs:
   Runs docker.io/antithesishq/k8s-validator against the manifests/
   directory to perform static analysis of the manifests. --timeout,

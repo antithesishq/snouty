@@ -35,6 +35,10 @@ stdout '.*allow-compose-divergence.*'
 snouty validate --help
 stdout '.*manifests/.*'
 
+# Help text mentions the VM-backed runtime caveat and its workaround.
+snouty validate --help
+stdout '.*SNOUTY_TEMP_DIR.*'
+
 -- empty/.keep --
 -- yml_dir/docker-compose.yml --
 -- ambiguous/docker-compose.yaml --

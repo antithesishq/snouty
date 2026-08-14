@@ -856,7 +856,18 @@ const MAX_READ_BYTES: u64 = 1024 * 1024;
 async fn watch_for_setup_complete(output_dir: &Path, deadline: tokio::time::Instant) -> Result<()> {
     loop {
         if tokio::time::Instant::now() >= deadline {
-            bail!("timed out waiting for setup-complete event");
+            // The suggestion covers the silent VM-runtime failure (issue
+            // #217): the engine creates the bind source inside the VM, so the
+            // host-side directory this watch reads stays empty forever. The
+            // full explanation lives in `snouty validate --help` and the
+            // README.
+            return Err(
+                eyre!("timed out waiting for setup-complete event").suggestion(
+                    "one possible cause is a container engine that cannot see this machine's \
+                     temp directory, such as a VM-backed engine (e.g. Lima, Colima) or a \
+                     remote daemon; see 'snouty validate --help'",
+                ),
+            );
         }
 
         for path in find_jsonl_files(output_dir)? {

@@ -49,6 +49,22 @@ Commands that work with `docker-compose.yaml` files (e.g. `launch`, `validate`) 
 
 If both engines are installed, Podman is preferred. Override the engine with `SNOUTY_CONTAINER_ENGINE=docker` or `container_engine` in a settings file (see below); an explicit `DOCKER_HOST` in your environment is always respected.
 
+### VM-backed container runtimes
+
+On macOS, the container engine usually runs inside a virtual machine. `snouty validate` bind-mounts a temp directory from your machine into each container and watches it for the setup-complete event. The VM must share that temp directory with your machine. If it does not, the engine silently creates the bind source inside the VM instead, the directory on your machine stays empty, and validate fails with `timed out waiting for setup-complete event` — even though the system under test emits the event.
+
+On macOS the temp directory lives under `/var/folders`. Docker Desktop and `podman machine` share `/var/folders` with the VM by default. Lima and Colima do not. There are two fixes:
+
+- Configure the VM to share the macOS temp directory with write access (see your runtime's mount documentation).
+- Set `SNOUTY_TEMP_DIR` to a directory under a path the VM already shares with write access. For example, Colima shares your home directory by default, and Lima before v2.0 shares `/tmp/lima`:
+
+  ```sh
+  SNOUTY_TEMP_DIR=$HOME/.cache/snouty-validate snouty validate ./config  # Colima
+  SNOUTY_TEMP_DIR=/tmp/lima/snouty snouty validate ./config             # Lima < 2.0
+  ```
+
+  `SNOUTY_TEMP_DIR` must name an empty or non-existent directory, and snouty leaves it in place after the run — remove it before the next run.
+
 ## Configuration
 
 Using the API requires at least a **tenant** and a **repository**. These (and other settings) can be supplied via environment variables or a TOML settings file; environment variables always take precedence. Docs commands require no configuration at the moment.

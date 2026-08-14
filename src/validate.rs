@@ -856,7 +856,13 @@ const MAX_READ_BYTES: u64 = 1024 * 1024;
 async fn watch_for_setup_complete(output_dir: &Path, deadline: tokio::time::Instant) -> Result<()> {
     loop {
         if tokio::time::Instant::now() >= deadline {
-            bail!("timed out waiting for setup-complete event");
+            return Err(
+                eyre!("timed out waiting for setup-complete event").suggestion(
+                    "one possible cause is a container engine that cannot see this machine's \
+                     temp directory, such as a VM-backed engine (e.g. Lima, Colima) or a \
+                     remote daemon; see 'snouty validate --help'",
+                ),
+            );
         }
 
         for path in find_jsonl_files(output_dir)? {
@@ -1219,6 +1225,13 @@ services:
         assert!(
             err.to_string().contains("timed out"),
             "expected a timeout, got: {err}"
+        );
+        // The timeout carries the unshared-temp-directory suggestion, which
+        // points at the full explanation in the help text.
+        let rendered = format!("{err:?}");
+        assert!(
+            rendered.contains("snouty validate --help"),
+            "expected the suggestion to point at --help, got: {rendered}"
         );
     }
 

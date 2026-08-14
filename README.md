@@ -49,6 +49,21 @@ Commands that work with `docker-compose.yaml` files (e.g. `launch`, `validate`) 
 
 If both engines are installed, Podman is preferred. Override the engine with `SNOUTY_CONTAINER_ENGINE=docker` or `container_engine` in a settings file (see below); an explicit `DOCKER_HOST` in your environment is always respected.
 
+### VM-backed and remote container engines
+
+`snouty validate` bind-mounts a temp directory from this machine into each container. It watches this directory for the setup-complete event. Some container engines run inside a VM or on another machine. If the engine does not share this machine's temp directory, the engine creates the bind source on its own side and reports no error. The directory on this machine stays empty. Validate then fails with `timed out waiting for setup-complete event`, even though the system under test emits the event.
+
+There are two fixes:
+
+- Share this machine's temp directory with the engine. See the mount documentation for your engine.
+- Set `SNOUTY_TEMP_DIR` to a directory under a path the engine already shares with write access:
+
+  ```sh
+  SNOUTY_TEMP_DIR=/path/shared/with/the/vm/snouty snouty validate ./config
+  ```
+
+  `SNOUTY_TEMP_DIR` must point to an empty or non-existent directory. This prevents validate from reading events that a previous run left behind. Snouty does not remove the directory after the run, so remove it before the next run.
+
 ## Configuration
 
 Using the API requires at least a **tenant** and a **repository**. These (and other settings) can be supplied via environment variables or a TOML settings file; environment variables always take precedence. Docs commands require no configuration at the moment.

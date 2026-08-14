@@ -53,9 +53,10 @@ pub async fn cmd_runs(
     output: OutputOptions,
 ) -> Result<()> {
     // `--detail` produces human formatting, so it can't combine with `--json`.
-    // It rides on more than one subcommand (`runs list`, `runs properties`), so
-    // the conflict is checked once here — a global `--json` vs a per-subcommand
-    // flag can't be expressed with clap's `conflicts_with`.
+    // It rides on more than one subcommand (`runs list`, `runs properties`,
+    // `runs logs`, `runs events`, `runs search`), so the conflict is checked
+    // once here — a global `--json` vs a per-subcommand flag can't be
+    // expressed with clap's `conflicts_with`.
     let detail = match &command {
         Some(RunsCommands::List(args)) => args.detail,
         Some(RunsCommands::Properties { detail, .. }) => *detail,

@@ -427,6 +427,13 @@ snouty runs logs --detail run-1 -123 1.0
 stdout '^311\.8487535319291  \[control\] CATALOG AlwaysOrUnreachable "Counter'\''s value retrieved"$'
 stdout '^ +@ control\.go:get:87$'
 
+# `--detail` formats human output, so it cannot combine with `--json` (same
+# rule as `runs list`/`runs properties`; `runs events` and `runs search`
+# share the check).
+mock-runs-server
+! snouty --json runs logs --detail run-1 -123 1.0
+stderr '--detail and --json cannot be combined'
+
 # `snouty --json runs logs` outputs NDJSON with faults annotated.
 mock-runs-server
 snouty --json runs logs run-1 -123 1.0

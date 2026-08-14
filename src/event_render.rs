@@ -30,6 +30,7 @@
 //! past — the line you saw; the divider carries the segment's full-precision
 //! moment for exact `runs logs`/`runs exec`/`snouty debug` follow-ups.
 
+use std::collections::HashMap;
 use std::path::Path;
 use std::sync::OnceLock;
 
@@ -488,10 +489,14 @@ impl RenderedPayload {
     }
 }
 
-fn render_payload(entry: &Value, detail: bool) -> RenderedPayload {
+fn render_payload(
+    entry: &Value,
+    detail: bool,
+    assert_types: &HashMap<String, String>,
+) -> RenderedPayload {
     match classify(entry) {
         EventKind::Assert(summary) => render_assert(&summary, detail),
-        EventKind::Guidance(guidance) => render_guidance(guidance, detail),
+        EventKind::Guidance(guidance) => render_guidance(guidance, detail, assert_types),
         EventKind::Sdk(sdk) => render_sdk(sdk),
         EventKind::Setup(setup) => render_setup(setup, detail),
         EventKind::Fault(fault) => render_fault(fault, detail),
@@ -535,15 +540,40 @@ fn render_assert(summary: &AssertionSummary, detail: bool) -> RenderedPayload {
     RenderedPayload { headline, details }
 }
 
-fn render_guidance(guidance: &Value, detail: bool) -> RenderedPayload {
-    // The message is the guidance's own description of what it tracks — the
-    // closest thing the event carries to a literal expression.
+/// Guidance rendering follows ~/guidance-rendering.md: `hit: false` is the
+/// catalog registration (dim, no data); an observation reconstructs the
+/// source expression from `guidance_data` — best effort, with the raw
+/// operands as the fallback when the expression cannot be recovered.
+fn render_guidance(
+    guidance: &Value,
+    detail: bool,
+    assert_types: &HashMap<String, String>,
+) -> RenderedPayload {
+    // The message doubles as the display label and the key into the
+    // assertion map (`id` and `message` carry identical values).
     let message = guidance["message"]
         .as_str()
         .or(guidance["id"].as_str())
         .unwrap_or("")
         .trim();
-    let headline = format!("{} \"{}\"", style("GUIDANCE").bold(), sanitize(message));
+
+    // A catalog registration: no data to show, the whole line recedes.
+    if guidance["hit"].as_bool() == Some(false) {
+        let headline = style(format!("CATALOG GUIDANCE \"{}\"", sanitize(message)))
+            .dim()
+            .to_string();
+        let details = if detail {
+            guidance_location(guidance).into_iter().collect()
+        } else {
+            Vec::new()
+        };
+        return RenderedPayload { headline, details };
+    }
+
+    let mut headline = format!("{} \"{}\"", style("GUIDANCE").bold(), sanitize(message));
+    if let Some(expression) = render_guidance_expression(guidance, assert_types) {
+        headline.push_str(&format!(": {expression}"));
+    }
     let mut details = Vec::new();
     if detail {
         let mut info = sanitize(guidance["guidance_type"].as_str().unwrap_or(""));
@@ -560,14 +590,89 @@ fn render_guidance(guidance: &Value, detail: bool) -> RenderedPayload {
         if !info.is_empty() {
             details.push(style(info).dim().to_string());
         }
-        if let Some(location) = AssertionLocation::deserialize(&guidance["location"])
-            .ok()
-            .and_then(render_assertion_location)
-        {
-            details.push(style(format!("@ {location}")).dim().to_string());
-        }
+        details.extend(guidance_location(guidance));
     }
     RenderedPayload { headline, details }
+}
+
+fn guidance_location(guidance: &Value) -> Option<String> {
+    AssertionLocation::deserialize(&guidance["location"])
+        .ok()
+        .and_then(render_assertion_location)
+        .map(|location| style(format!("@ {location}")).dim().to_string())
+}
+
+/// The source expression a guidance observation stands for, reconstructed
+/// from `guidance_data` — best effort, `None` when there is nothing to show.
+///
+/// Numeric guidance carries the two operands in source order; the comparison
+/// operator depends on the direction AND on whether the assertion is an
+/// `always` or a `sometimes` (a greater-than iff `maximize != is_always`).
+/// That `assert_type` lives only on the assertion events sharing the
+/// guidance's id, which the stream renderer accumulates as it reads — an
+/// assertion with the id always precedes its guidance in a complete stream.
+/// A renderer that starts mid-stream (`runs events`/`runs search`, or a logs
+/// slice) can miss it; then the operands render without an operator rather
+/// than guessing one. Strictness is not recoverable at all (`>` and `>=`
+/// emit identical guidance), so the strict glyph stands for both.
+///
+/// Boolean guidance needs no lookup: `maximize` alone picks the connective
+/// (`&&` when true, `||` when false), and each named proposition renders
+/// with its observed value inline.
+fn render_guidance_expression(
+    guidance: &Value,
+    assert_types: &HashMap<String, String>,
+) -> Option<String> {
+    let data = &guidance["guidance_data"];
+    match guidance["guidance_type"].as_str() {
+        Some("numeric") => {
+            let left = guidance_operand(&data["left"])?;
+            let right = guidance_operand(&data["right"])?;
+            let maximize = guidance["maximize"].as_bool()?;
+            let id = guidance["id"].as_str().or(guidance["message"].as_str())?;
+            let operator = match assert_types.get(id).map(String::as_str) {
+                Some("always") => Some(if maximize { "<" } else { ">" }),
+                Some("sometimes") => Some(if maximize { ">" } else { "<" }),
+                _ => None,
+            };
+            Some(match operator {
+                Some(operator) => format!("{left} {operator} {right}"),
+                // No assertion in sight to pick the operator: show the
+                // operands without claiming a comparison.
+                None => format!("left={left} right={right}"),
+            })
+        }
+        Some("boolean") => {
+            let propositions = data.as_object().filter(|map| !map.is_empty())?;
+            let connective = if guidance["maximize"].as_bool()? {
+                " && "
+            } else {
+                " || "
+            };
+            let terms: Option<Vec<String>> = propositions
+                .iter()
+                .map(|(name, value)| {
+                    value
+                        .as_bool()
+                        .map(|value| format!("{}({value})", sanitize(name)))
+                })
+                .collect();
+            Some(terms?.join(connective))
+        }
+        // Unknown guidance type: the raw data is the best available view.
+        _ => render_details_json(data),
+    }
+}
+
+/// One numeric guidance operand. The macros emit JSON numbers of the source
+/// type; anything else (a shape this build does not know) renders as its
+/// compact JSON rather than failing the whole expression.
+fn guidance_operand(value: &Value) -> Option<String> {
+    match value {
+        Value::Number(n) => Some(n.to_string()),
+        Value::Null => None,
+        other => render_details_json(other),
+    }
 }
 
 fn render_sdk(sdk: &Value) -> RenderedPayload {
@@ -871,6 +976,10 @@ pub(crate) struct EventStreamRenderer {
     detail: bool,
     last_input_hash: Option<String>,
     wrote_block: bool,
+    /// `id -> assert_type` (lowercased), accumulated from every assertion
+    /// event seen so far. Guidance rendering consults it to pick the numeric
+    /// comparison operator; see [`render_guidance_expression`].
+    assert_types: HashMap<String, String>,
 }
 
 impl EventStreamRenderer {
@@ -879,6 +988,7 @@ impl EventStreamRenderer {
             detail,
             last_input_hash: None,
             wrote_block: false,
+            assert_types: HashMap::new(),
         }
     }
 
@@ -887,6 +997,18 @@ impl EventStreamRenderer {
     /// entry opens a new timeline segment, the event line, and any indented
     /// detail lines — and carries no trailing newline.
     pub(crate) fn render_entry(&mut self, entry: &Value) -> String {
+        // Accumulate `id -> assert_type` from every assertion event, catalog
+        // registrations included — guidance rendering needs it (see
+        // [`render_guidance_expression`]), and in a complete stream the
+        // assertion always precedes its guidance.
+        if let Some(assertion) = entry.get("antithesis_assert")
+            && let (Some(id), Some(assert_type)) =
+                (assertion["id"].as_str(), assertion["assert_type"].as_str())
+        {
+            self.assert_types
+                .insert(id.to_string(), assert_type.to_ascii_lowercase());
+        }
+
         // A full event carries both its moment and its source envelope. A
         // row reshaped by an event-set DSL pipeline can lack either (narrow
         // can keep `moment` while dropping the rest); rendering it through
@@ -918,7 +1040,7 @@ impl EventStreamRenderer {
             format_vtime_cell(entry)
         };
         let vtime_cell = format!("{vtime:>VTIME_WIDTH$}");
-        let rendered = render_payload(entry, self.detail);
+        let rendered = render_payload(entry, self.detail, &self.assert_types);
         out.push_str(
             format!(
                 "{}  {} {}",
@@ -1108,12 +1230,11 @@ mod tests {
     }
 
     #[test]
-    fn renders_guidance_as_its_message_with_specifics_under_detail() {
+    fn guidance_catalog_entries_render_dim_without_data() {
         let entry = json!({
             "antithesis_guidance": {
                 "guidance_type": "numeric", "maximize": true, "hit": false,
-                "message": "wal grew long",
-                "guidance_data": {"left": 48, "right": 1000},
+                "message": "wal grew long", "guidance_data": null,
                 "location": {"begin_line": 439, "file": "src/actions.rs", "function": "checkpoint"}
             },
             "source": {"container": "w", "name": "w"},
@@ -1121,12 +1242,113 @@ mod tests {
         });
         let block = render_one(entry.clone());
         assert!(
-            block.ends_with(r#"GUIDANCE "wal grew long""#),
+            block.ends_with(r#"[w] CATALOG GUIDANCE "wal grew long""#),
             "got: {block}"
         );
         assert_eq!(block.lines().count(), 2, "got: {block}");
 
+        // --detail adds the location; there is no data on a registration.
         let block = render_one_detailed(entry);
+        assert!(
+            block.ends_with("          @ actions.rs:checkpoint:439"),
+            "got: {block}"
+        );
+    }
+
+    #[test]
+    fn numeric_guidance_reconstructs_the_comparison_from_the_assertion_map() {
+        let guidance = |message: &str, maximize: bool| {
+            json!({
+                "antithesis_guidance": {
+                    "guidance_type": "numeric", "maximize": maximize, "hit": true,
+                    "message": message, "id": message,
+                    "guidance_data": {"left": -3, "right": 0}
+                },
+                "source": {"container": "w", "name": "w"},
+                "moment": {"input_hash": "-1", "vtime": "2.0"}
+            })
+        };
+        let assertion = |id: &str, assert_type: &str| {
+            json!({
+                "antithesis_assert": {
+                    "assert_type": assert_type, "display_type": assert_type,
+                    "hit": false, "id": id, "message": id
+                },
+                "source": {"container": "w", "name": "w"},
+                "moment": {"input_hash": "-1", "vtime": "1.0"}
+            })
+        };
+
+        // The preceding assertion event supplies the assert_type; the
+        // operator is a greater-than iff maximize != is_always.
+        let mut r = renderer(false);
+        r.render_entry(&assertion("Positive x", "always"));
+        let block = r.render_entry(&guidance("Positive x", false));
+        assert!(
+            block.ends_with(r#"GUIDANCE "Positive x": -3 > 0"#),
+            "got: {block}"
+        );
+        let block = r.render_entry(&guidance("Positive x", true));
+        assert!(
+            block.ends_with(r#"GUIDANCE "Positive x": -3 < 0"#),
+            "got: {block}"
+        );
+
+        let mut r = renderer(false);
+        r.render_entry(&assertion("Backlog can spike", "sometimes"));
+        let block = r.render_entry(&guidance("Backlog can spike", true));
+        assert!(
+            block.ends_with(r#"GUIDANCE "Backlog can spike": -3 > 0"#),
+            "got: {block}"
+        );
+
+        // No assertion seen (a mid-stream start): show the operands without
+        // claiming a comparison.
+        let block = render_one(guidance("Positive x", false));
+        assert!(
+            block.ends_with(r#"GUIDANCE "Positive x": left=-3 right=0"#),
+            "got: {block}"
+        );
+    }
+
+    #[test]
+    fn boolean_guidance_renders_propositions_with_the_connective() {
+        let guidance = |maximize: bool, data: Value| {
+            render_one(json!({
+                "antithesis_guidance": {
+                    "guidance_type": "boolean", "maximize": maximize, "hit": true,
+                    "message": "m", "guidance_data": data
+                },
+                "source": {"container": "w", "name": "w"},
+                "moment": {"input_hash": "-1", "vtime": "1.0"}
+            }))
+        };
+        // maximize picks the connective; no assertion lookup is needed.
+        let block = guidance(false, json!({"queue_empty": false, "worker_idle": false}));
+        assert!(
+            block.ends_with(r#"GUIDANCE "m": queue_empty(false) || worker_idle(false)"#),
+            "got: {block}"
+        );
+        let block = guidance(true, json!({"acked": true, "durable": false}));
+        assert!(
+            block.ends_with(r#"GUIDANCE "m": acked(true) && durable(false)"#),
+            "got: {block}"
+        );
+    }
+
+    #[test]
+    fn guidance_detail_mode_keeps_the_raw_data_and_location() {
+        let mut r = renderer(true);
+        let block = r.render_entry(&json!({
+            "antithesis_guidance": {
+                "guidance_type": "numeric", "maximize": true, "hit": true,
+                "message": "wal grew long",
+                "guidance_data": {"left": 48, "right": 1000},
+                "location": {"begin_line": 439, "file": "src/actions.rs", "function": "checkpoint"}
+            },
+            "source": {"container": "w", "name": "w"},
+            "moment": {"input_hash": "-1", "vtime": "1.0"}
+        }));
         let mut lines = block.lines().skip(2);
         assert_eq!(
             lines.next().unwrap(),

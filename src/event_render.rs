@@ -30,7 +30,6 @@
 //! past — the line you saw; the divider carries the segment's full-precision
 //! moment for exact `runs logs`/`runs exec`/`snouty debug` follow-ups.
 
-use std::collections::HashMap;
 use std::path::Path;
 use std::sync::OnceLock;
 
@@ -489,14 +488,10 @@ impl RenderedPayload {
     }
 }
 
-fn render_payload(
-    entry: &Value,
-    detail: bool,
-    assert_types: &HashMap<String, String>,
-) -> RenderedPayload {
+fn render_payload(entry: &Value, detail: bool) -> RenderedPayload {
     match classify(entry) {
         EventKind::Assert(summary) => render_assert(&summary, detail),
-        EventKind::Guidance(guidance) => render_guidance(guidance, detail, assert_types),
+        EventKind::Guidance(guidance) => render_guidance(guidance, detail),
         EventKind::Sdk(sdk) => render_sdk(sdk),
         EventKind::Setup(setup) => render_setup(setup, detail),
         EventKind::Fault(fault) => render_fault(fault, detail),
@@ -544,11 +539,7 @@ fn render_assert(summary: &AssertionSummary, detail: bool) -> RenderedPayload {
 /// catalog registration (dim, no data); an observation reconstructs the
 /// source expression from `guidance_data` — best effort, with the raw
 /// operands as the fallback when the expression cannot be recovered.
-fn render_guidance(
-    guidance: &Value,
-    detail: bool,
-    assert_types: &HashMap<String, String>,
-) -> RenderedPayload {
+fn render_guidance(guidance: &Value, detail: bool) -> RenderedPayload {
     // The message doubles as the display label and the key into the
     // assertion map (`id` and `message` carry identical values).
     let message = guidance["message"]
@@ -571,7 +562,7 @@ fn render_guidance(
     }
 
     let mut headline = format!("{} \"{}\"", style("GUIDANCE").bold(), sanitize(message));
-    if let Some(expression) = render_guidance_expression(guidance, assert_types) {
+    if let Some(expression) = render_guidance_expression(guidance) {
         headline.push_str(&format!(": {expression}"));
     }
     let mut details = Vec::new();
@@ -602,45 +593,37 @@ fn guidance_location(guidance: &Value) -> Option<String> {
         .map(|location| style(format!("@ {location}")).dim().to_string())
 }
 
-/// The source expression a guidance observation stands for, reconstructed
-/// from `guidance_data` — best effort, `None` when there is nothing to show.
+/// What a guidance observation says, reconstructed from `guidance_data` —
+/// best effort, `None` when there is nothing to show.
 ///
-/// Numeric guidance carries the two operands in source order; the comparison
-/// operator depends on the direction AND on whether the assertion is an
-/// `always` or a `sometimes` (a greater-than iff `maximize != is_always`).
-/// That `assert_type` lives only on the assertion events sharing the
-/// guidance's id, which the stream renderer accumulates as it reads — an
-/// assertion with the id always precedes its guidance in a complete stream.
-/// A renderer that starts mid-stream (`runs events`/`runs search`, or a logs
-/// slice) can miss it; then the operands render without an operator rather
-/// than guessing one. Strictness is not recoverable at all (`>` and `>=`
-/// emit identical guidance), so the strict glyph stands for both.
+/// Numeric guidance carries the two operands in source order, and the
+/// explorer drives their difference: `maximize: true` pushes `left` up
+/// relative to `right`, `false` pushes it down — in every case the event
+/// worth reaching is `left` crossing `right`. That movement is what renders:
+/// `20 ↗ 1000` is the value being driven up toward its bound, `1 ↘ 0` down
+/// toward it. The source inequality is deliberately NOT reconstructed — its
+/// strictness is unrecoverable (`>` and `>=` emit identical guidance), and
+/// its direction additionally depends on the assertion's `always`/`sometimes`
+/// type, which lives on a different event a mid-stream reader may never see.
+/// The drive direction is self-contained and tells the reader what the
+/// explorer is doing with the number.
 ///
-/// Boolean guidance needs no lookup: `maximize` alone picks the connective
-/// (`&&` when true, `||` when false), and each named proposition renders
-/// with its observed value inline.
-fn render_guidance_expression(
-    guidance: &Value,
-    assert_types: &HashMap<String, String>,
-) -> Option<String> {
+/// Boolean guidance: `maximize` alone picks the connective (`&&` when true,
+/// `||` when false), and each named proposition renders with its observed
+/// value inline.
+fn render_guidance_expression(guidance: &Value) -> Option<String> {
     let data = &guidance["guidance_data"];
     match guidance["guidance_type"].as_str() {
         Some("numeric") => {
             let left = guidance_operand(&data["left"])?;
             let right = guidance_operand(&data["right"])?;
-            let maximize = guidance["maximize"].as_bool()?;
-            let id = guidance["id"].as_str().or(guidance["message"].as_str())?;
-            let operator = match assert_types.get(id).map(String::as_str) {
-                Some("always") => Some(if maximize { "<" } else { ">" }),
-                Some("sometimes") => Some(if maximize { ">" } else { "<" }),
-                _ => None,
+            let arrow = match guidance["maximize"].as_bool() {
+                Some(true) => "↗",
+                Some(false) => "↘",
+                // No direction: show the operands without claiming one.
+                None => return Some(format!("left={left} right={right}")),
             };
-            Some(match operator {
-                Some(operator) => format!("{left} {operator} {right}"),
-                // No assertion in sight to pick the operator: show the
-                // operands without claiming a comparison.
-                None => format!("left={left} right={right}"),
-            })
+            Some(format!("{left} {arrow} {right}"))
         }
         Some("boolean") => {
             let propositions = data.as_object().filter(|map| !map.is_empty())?;
@@ -976,10 +959,6 @@ pub(crate) struct EventStreamRenderer {
     detail: bool,
     last_input_hash: Option<String>,
     wrote_block: bool,
-    /// `id -> assert_type` (lowercased), accumulated from every assertion
-    /// event seen so far. Guidance rendering consults it to pick the numeric
-    /// comparison operator; see [`render_guidance_expression`].
-    assert_types: HashMap<String, String>,
 }
 
 impl EventStreamRenderer {
@@ -988,7 +967,6 @@ impl EventStreamRenderer {
             detail,
             last_input_hash: None,
             wrote_block: false,
-            assert_types: HashMap::new(),
         }
     }
 
@@ -997,18 +975,6 @@ impl EventStreamRenderer {
     /// entry opens a new timeline segment, the event line, and any indented
     /// detail lines — and carries no trailing newline.
     pub(crate) fn render_entry(&mut self, entry: &Value) -> String {
-        // Accumulate `id -> assert_type` from every assertion event, catalog
-        // registrations included — guidance rendering needs it (see
-        // [`render_guidance_expression`]), and in a complete stream the
-        // assertion always precedes its guidance.
-        if let Some(assertion) = entry.get("antithesis_assert")
-            && let (Some(id), Some(assert_type)) =
-                (assertion["id"].as_str(), assertion["assert_type"].as_str())
-        {
-            self.assert_types
-                .insert(id.to_string(), assert_type.to_ascii_lowercase());
-        }
-
         // A full event carries both its moment and its source envelope. A
         // row reshaped by an event-set DSL pipeline can lack either (narrow
         // can keep `moment` while dropping the rest); rendering it through
@@ -1040,7 +1006,7 @@ impl EventStreamRenderer {
             format_vtime_cell(entry)
         };
         let vtime_cell = format!("{vtime:>VTIME_WIDTH$}");
-        let rendered = render_payload(entry, self.detail, &self.assert_types);
+        let rendered = render_payload(entry, self.detail);
         out.push_str(
             format!(
                 "{}  {} {}",
@@ -1256,55 +1222,33 @@ mod tests {
     }
 
     #[test]
-    fn numeric_guidance_reconstructs_the_comparison_from_the_assertion_map() {
-        let guidance = |message: &str, maximize: bool| {
-            json!({
+    fn numeric_guidance_renders_the_drive_direction() {
+        let guidance = |maximize: Value| {
+            render_one(json!({
                 "antithesis_guidance": {
                     "guidance_type": "numeric", "maximize": maximize, "hit": true,
-                    "message": message, "id": message,
+                    "message": "Positive x", "id": "Positive x",
                     "guidance_data": {"left": -3, "right": 0}
                 },
                 "source": {"container": "w", "name": "w"},
                 "moment": {"input_hash": "-1", "vtime": "2.0"}
-            })
+            }))
         };
-        let assertion = |id: &str, assert_type: &str| {
-            json!({
-                "antithesis_assert": {
-                    "assert_type": assert_type, "display_type": assert_type,
-                    "hit": false, "id": id, "message": id
-                },
-                "source": {"container": "w", "name": "w"},
-                "moment": {"input_hash": "-1", "vtime": "1.0"}
-            })
-        };
-
-        // The preceding assertion event supplies the assert_type; the
-        // operator is a greater-than iff maximize != is_always.
-        let mut r = renderer(false);
-        r.render_entry(&assertion("Positive x", "always"));
-        let block = r.render_entry(&guidance("Positive x", false));
+        // The arrow is the explorer's push on `left` relative to `right`:
+        // up when maximizing, down when minimizing. No inequality is claimed
+        // — its strictness and direction are not recoverable from the event.
+        let block = guidance(json!(true));
         assert!(
-            block.ends_with(r#"GUIDANCE "Positive x": -3 > 0"#),
+            block.ends_with(r#"GUIDANCE "Positive x": -3 ↗ 0"#),
             "got: {block}"
         );
-        let block = r.render_entry(&guidance("Positive x", true));
+        let block = guidance(json!(false));
         assert!(
-            block.ends_with(r#"GUIDANCE "Positive x": -3 < 0"#),
+            block.ends_with(r#"GUIDANCE "Positive x": -3 ↘ 0"#),
             "got: {block}"
         );
-
-        let mut r = renderer(false);
-        r.render_entry(&assertion("Backlog can spike", "sometimes"));
-        let block = r.render_entry(&guidance("Backlog can spike", true));
-        assert!(
-            block.ends_with(r#"GUIDANCE "Backlog can spike": -3 > 0"#),
-            "got: {block}"
-        );
-
-        // No assertion seen (a mid-stream start): show the operands without
-        // claiming a comparison.
-        let block = render_one(guidance("Positive x", false));
+        // Without a direction, show the operands without claiming one.
+        let block = guidance(json!(null));
         assert!(
             block.ends_with(r#"GUIDANCE "Positive x": left=-3 right=0"#),
             "got: {block}"

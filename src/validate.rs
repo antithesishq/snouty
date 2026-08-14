@@ -1231,6 +1231,13 @@ services:
             err.to_string().contains("timed out"),
             "expected a timeout, got: {err}"
         );
+        // The timeout carries the unshared-temp-directory suggestion, which
+        // points at the full explanation in the help text.
+        let rendered = format!("{err:?}");
+        assert!(
+            rendered.contains("snouty validate --help"),
+            "expected the suggestion to point at --help, got: {rendered}"
+        );
     }
 
     /// Write the setup-complete event before the watcher starts.

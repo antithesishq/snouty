@@ -148,12 +148,16 @@ struct Report<'a> {
 /// The tenant is required by every command, so a missing one fails doctor.
 /// (A broken settings file never reaches here — it fails at startup, before
 /// doctor runs — so the resolved value is simply present or absent.)
+/// `snouty login` sets tenant, repository, and credentials in one pass, so every
+/// check that reports one of them missing points at it. Each says so in its own
+/// words: on an unconfigured machine all three fire at once, and the same
+/// sentence three times reads as noise rather than as advice.
 fn tenant_check(tenant: Option<&str>) -> Check {
     match tenant {
         Some(_) => Check::ok("tenant", "tenant is set"),
         None => Check::fail("tenant", "tenant is not set").note(
             Level::Note,
-            "set ANTITHESIS_TENANT or add it to a settings file",
+            "run `snouty login` to set it, or set ANTITHESIS_TENANT or add it to a settings file",
         ),
     }
 }
@@ -165,7 +169,11 @@ fn repository_check(repository: Option<&str>) -> Check {
     match repository {
         Some(_) => Check::ok("repository", "repository is set"),
         None => Check::warn("repository", "repository is not set")
-            .note(Level::Warning, "repository is needed for `snouty launch`"),
+            .note(Level::Warning, "repository is needed for `snouty launch`")
+            .note(
+                Level::Note,
+                "run `snouty login` to set it, or set ANTITHESIS_REPOSITORY",
+            ),
     }
 }
 
@@ -222,6 +230,10 @@ fn authn_checks(authn_info: Result<AttributedValue<AuthenticationInfo>>) -> Vec<
                 .note(
                     Level::Error,
                     "snouty requires an API key to authenticate with Antithesis",
+                )
+                .note(
+                    Level::Note,
+                    "run `snouty login` to sign in and store credentials",
                 )
                 .note(
                     Level::Note,
@@ -554,6 +566,13 @@ mod tests {
                 .iter()
                 .any(|n| n.text.contains("ask Antithesis support"))
         );
+        assert!(
+            checks[0]
+                .notes
+                .iter()
+                .any(|n| n.text.contains("snouty login")),
+            "an unconfigured machine must be told the command that configures it"
+        );
         let all = format!(
             "{} {}",
             checks[0].message,
@@ -586,6 +605,10 @@ mod tests {
                 .iter()
                 .any(|n| n.text.contains("ANTITHESIS_TENANT"))
         );
+        assert!(
+            check.notes.iter().any(|n| n.text.contains("snouty login")),
+            "an unset tenant must point at the command that sets it"
+        );
     }
 
     #[test]
@@ -601,6 +624,7 @@ mod tests {
         let check = repository_check(None);
         assert_eq!(check.status, Status::Warn);
         assert!(check.notes.iter().any(|n| n.text.contains("snouty launch")));
+        assert!(check.notes.iter().any(|n| n.text.contains("snouty login")));
     }
 
     // ---- resolved-settings table (informational, no status) ------------

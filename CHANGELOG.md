@@ -1,5 +1,6 @@
 # Unreleased
 
+- Converge the human output of `runs logs`, `runs events`, and `runs search` on one event-aware renderer. Each event is auto-classified (SDK assertions, guidance, SDK handshake, setup-complete, faults, container lifecycle, test-composer chatter, plain log text, unknown JSON) and rendered as a concise colored block: a `moment HASH VTIME` divider (full precision, pasteable into `runs logs`/`runs exec`/`snouty debug`) opens each timeline segment, and each event renders as one `VTIME [source] payload` line with dim indented detail lines. `--raw` (now also on `runs events` and `runs search`) is the uninterpreted view: legacy `[vtime] [source] [stream]` lines with verbatim text and raw JSON payloads. Scripts should use `--json`, which is unchanged
 - Remove the `Moment.from({...})` input format; `snouty debug --stdin` now accepts JSON only ([#243](https://github.com/antithesishq/snouty/pull/243))
 - Add `snouty runs wait`: poll a run until it reaches a terminal state (completed, cancelled, or incomplete) ([#221](https://github.com/antithesishq/snouty/pull/221))
 - `snouty validate` reads the SDK output file from the start instead of tailing it, so a setup-complete event written over bytes snouty had already read is still detected ([#218](https://github.com/antithesishq/snouty/pull/218))

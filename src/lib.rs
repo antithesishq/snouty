@@ -12,6 +12,7 @@ pub mod docs;
 pub mod doctor;
 pub(crate) mod env;
 pub mod error;
+pub mod event_render;
 pub mod event_set_dsl;
 pub mod features;
 pub mod jsonl;

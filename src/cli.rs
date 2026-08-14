@@ -643,10 +643,12 @@ Query snippets (each is a complete QUERY, ready to paste):
   # each crash annotated with the nearest earlier fault
   contains({output_text: "fatal"}).with_last({fault: filter(ev => ev.fault)})
 
-Each matching event prints as its JSON, one line per event, with
-`moment.vtime` normalized to an exact number. Feed an event's
-`moment.input_hash` and `moment.vtime` into `runs logs` to see the
-surrounding logs."#;
+Matching events print as classified blocks: a `moment HASH VTIME` divider
+opens each timeline segment (feed its HASH and VTIME into `runs logs` to see
+the surrounding logs), and each event under it renders on one line with the
+Antithesis event shapes — SDK assertions, faults, container lifecycle, test
+composer — each in their own concise form. Rows reshaped by map/narrow/fold
+print as raw JSON."#;
 
 #[derive(Subcommand)]
 pub enum RunsCommands {
@@ -768,7 +770,10 @@ INPUT_HASH and VTIME identify the moment and its timeline; logs are streamed up
 to that moment. Without --begin-vtime, streaming starts at the timeline's
 earliest log entry.
 
-Output: `[vtime] [source] [stream] message`. A moment (HASH/VTIME) comes from
+Output: a `moment HASH VTIME` divider opens each timeline segment, and each
+event under it renders on one line as `VTIME [source] payload` — Antithesis
+event shapes (SDK assertions, faults, container lifecycle, test composer)
+each in their own concise form. A moment (HASH/VTIME) comes from
 `runs properties --detail` or `runs events`."#)]
     Logs {
         /// Run ID
@@ -794,7 +799,9 @@ Output: `[vtime] [source] [stream] message`. A moment (HASH/VTIME) comes from
         begin_input_hash: Option<String>,
 
         /// Skip post-processing: with --json, pass NDJSON through unannotated;
-        /// otherwise print the text payload verbatim (keep ANSI/control bytes)
+        /// otherwise print legacy `[vtime] [source] [stream]` lines with the
+        /// text payload verbatim (keep ANSI/control bytes) and structured
+        /// payloads as raw JSON
         #[arg(short = 'r', long)]
         raw: bool,
     },
@@ -863,10 +870,11 @@ Examples:
     #[command(
         long_about = r#"Search a run's events for one or more substrings (all must match).
 
-Each matching event prints as its JSON, one line per event, with
-`moment.vtime` normalized to an exact number. Feed an event's
-`moment.input_hash` and `moment.vtime` into `runs logs` to see the
-surrounding logs.
+Matching events print as classified blocks: a `moment HASH VTIME` divider
+opens each timeline segment (feed its HASH and VTIME into `runs logs` to see
+the surrounding logs), and each event under it renders on one line with the
+Antithesis event shapes — SDK assertions, faults, container lifecycle, test
+composer — each in their own concise form.
 
 Matching runs server-side. More than one term requires the events-search API,
 which is behind the `runs-search` unstable feature
@@ -892,6 +900,12 @@ which is behind the `runs-search` unstable feature
         /// Substrings to match, as a positional alias for `-m` (all must match).
         /// At least one needle (via `-m` or here) is required.
         query: Vec<String>,
+
+        /// Skip post-processing: print legacy `[vtime] [source] [stream]`
+        /// lines with the text payload verbatim (keep ANSI/control bytes)
+        /// and structured payloads as raw JSON
+        #[arg(short = 'r', long)]
+        raw: bool,
     },
 
     /// Query events with the event-set DSL
@@ -928,6 +942,12 @@ pub struct RunsSearchArgs {
     /// Check the query's syntax without running it
     #[arg(long, conflicts_with = "follow")]
     pub check: bool,
+
+    /// Skip post-processing: print legacy `[vtime] [source] [stream]` lines
+    /// with the text payload verbatim (keep ANSI/control bytes) and
+    /// structured payloads as raw JSON
+    #[arg(short = 'r', long)]
+    pub raw: bool,
 }
 
 #[derive(Args)]

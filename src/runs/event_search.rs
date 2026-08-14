@@ -23,15 +23,16 @@ use futures_util::{StreamExt, TryStreamExt};
 
 use crate::api::{AntithesisApi, MIN_SEARCH_RELEASE, SearchMode};
 use crate::error::{api_error_status, user_error};
+use crate::event_render::EventStreamRenderer;
 use crate::features::{self, Feature};
 use crate::jsonl::JsonStream;
 
-use super::{ErrorRows, event_lines};
+use super::{ErrorRows, event_lines, raw_lines};
 
 /// Print every line of the (already server-filtered) stream, one line out
-/// per line in: each event as its JSON, vtime normalized. Human and `--json`
-/// output are the same simple dump for now; only the human empty-state note
-/// differs.
+/// per line in. `--json` dumps each event as its JSON (vtime normalized;
+/// with `raw`, round-tripped without normalization); human mode renders
+/// classified event blocks through the shared [`EventStreamRenderer`].
 ///
 /// Each row is flushed as it arrives: on a live run the search backend holds
 /// the connection open, so rows must not sit in the buffer waiting for an
@@ -45,18 +46,37 @@ pub(super) async fn print_event_stream(
     cap: Option<NonZeroU64>,
     error_rows: ErrorRows,
     json: bool,
+    raw: bool,
     empty_message: &str,
 ) -> Result<()> {
     let cap = cap.map_or(usize::MAX, |cap| {
         usize::try_from(cap.get()).unwrap_or(usize::MAX)
     });
-    let mut lines = event_lines(stream, error_rows).take(cap);
     let mut stdout = BufWriter::new(std::io::stdout().lock());
     let mut seen: u64 = 0;
-    while let Some(value) = lines.try_next().await? {
-        seen += 1;
-        writeln!(stdout, "{value}")?;
-        stdout.flush()?;
+    if raw {
+        // Round-trip passthrough (the caller already required --json). The
+        // cap is still ours to enforce — the search backend ignores the
+        // limit.
+        let mut lines = raw_lines(stream, error_rows).take(cap);
+        while let Some(line) = lines.try_next().await? {
+            seen += 1;
+            writeln!(stdout, "{line}")?;
+            stdout.flush()?;
+        }
+    } else {
+        let mut renderer = EventStreamRenderer::new(false);
+        let mut lines = event_lines(stream, error_rows).take(cap);
+        while let Some(value) = lines.try_next().await? {
+            seen += 1;
+            let rendered = if json {
+                value.to_string()
+            } else {
+                renderer.render_entry(&value)
+            };
+            writeln!(stdout, "{rendered}")?;
+            stdout.flush()?;
+        }
     }
 
     // Only a successfully-empty stream earns the friendly empty state; a

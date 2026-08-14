@@ -1,5 +1,5 @@
 //! The one renderer for human-facing event streams (`runs logs`,
-//! `runs events`, `runs search`, and any future stream of moment-stamped
+//! `runs events`, `runs search`, `runs build-logs`, and any future stream of
 //! events).
 //!
 //! Every stream entry is classified into an [`EventKind`] and rendered as a
@@ -10,15 +10,19 @@
 //! line. Colors go through [`console::style`], which disables itself off-tty
 //! and under `NO_COLOR`.
 //!
-//! Two rendering modes:
-//! - classified (the default): recognize Antithesis event shapes (SDK
-//!   assertions, guidance, fault injections, container lifecycle, test
-//!   composer chatter) and render each in its own concise form; everything
-//!   else falls back to the log-text or raw-JSON renderer.
-//! - raw (`--raw`): no classification, no colors, no dividers — the legacy
-//!   `[vtime] [source] [stream] payload` line with the text payload verbatim
-//!   (ANSI and control bytes intact) and structured payloads as their raw
-//!   JSON. The uninterpreted view.
+//! Two rendering depths:
+//! - default: one line per event. Antithesis event shapes (SDK assertions,
+//!   guidance, fault injections, container lifecycle, test composer chatter)
+//!   each render in their own concise form; everything else falls back to
+//!   the log-text or raw-JSON renderer.
+//! - detail (`--detail`): full-precision vtime on every line, assertion and
+//!   guidance source locations, the payload's attached `details` JSON, the
+//!   composer's captured stdout/stderr, and composer chatter expanded to one
+//!   key=value per line, untruncated.
+//!
+//! There is no "raw" rendering here: `--raw` on the commands requires
+//! `--json` and passes the server's NDJSON stream through verbatim, without
+//! touching this module.
 //!
 //! The renderer also owns the display conventions the streams share: vtime is
 //! normalized through [`VTime`] and shown truncated (never rounded) to 3
@@ -47,68 +51,10 @@ const VTIME_WIDTH: usize = 8;
 /// two-space gap.
 const DETAIL_INDENT: usize = VTIME_WIDTH + 2;
 
-/// The raw-mode source column is sized to fit `antithesis_test_composer` —
-/// the built-in test-composer source present in nearly every run's logs — so
-/// those lines align instead of overflowing. Longer sources still overflow on
-/// their own lines rather than widening the column for everyone.
-const RAW_SOURCE_MIN_WIDTH: usize = "antithesis_test_composer".len();
-const RAW_STREAM_WIDTH: usize = 3;
-
 /// Long opaque values (container ids, image digests) are truncated to this
-/// many columns in classified key=value renderings; the full value is always
-/// in `--json`.
+/// many columns in one-line key=value renderings; `--detail` and `--json`
+/// carry the full value.
 const VALUE_TRUNCATE_WIDTH: usize = 40;
-
-/// Event stream classification. Variants match the canonical values that
-/// appear in an event's `source.stream` field.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Stream {
-    Stdout,
-    Stderr,
-    Info,
-    Error,
-}
-
-impl Stream {
-    /// Three-character display abbreviation used in the logs viewer.
-    pub fn abbreviated(self) -> &'static str {
-        match self {
-            Self::Stdout => "out",
-            Self::Stderr => "err",
-            Self::Info => "inf",
-            Self::Error => "err",
-        }
-    }
-}
-
-impl std::str::FromStr for Stream {
-    type Err = String;
-
-    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
-        // Accept the short forms too: the events/logs API reports app
-        // stdout/stderr as `out`/`err` (see `abbreviated`), so the logs viewer
-        // can normalize either form when rendering a stream label.
-        match s {
-            "stdout" | "out" => Ok(Self::Stdout),
-            "stderr" | "err" => Ok(Self::Stderr),
-            "info" | "inf" => Ok(Self::Info),
-            "error" => Ok(Self::Error),
-            other => Err(format!(
-                "invalid stream '{other}' (expected one of: stdout, stderr, info, error)"
-            )),
-        }
-    }
-}
-
-fn abbreviate_stream(stream: &str) -> std::borrow::Cow<'static, str> {
-    if let Ok(s) = stream.parse::<Stream>() {
-        return std::borrow::Cow::Borrowed(s.abbreviated());
-    }
-    if stream.is_empty() {
-        return std::borrow::Cow::Borrowed("   ");
-    }
-    std::borrow::Cow::Owned(stream.chars().take(RAW_STREAM_WIDTH).collect())
-}
 
 fn ansi_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
@@ -128,11 +74,46 @@ pub(crate) fn strip_ansi(text: &str) -> String {
 
 /// Single choke point for terminal-bound free text: strip ANSI escape
 /// sequences first, then escape any remaining control bytes so stray
-/// `\r`/`\x08`/BEL can't corrupt the terminal. Every classified payload's
-/// free text goes through here so the streams render container output
-/// identically.
+/// `\r`/`\x08`/BEL can't corrupt the terminal.
 pub(crate) fn normalize_terminal_text(text: &str) -> String {
     sanitize(&strip_ansi(text))
+}
+
+/// Is `seq` an SGR sequence (`ESC [ params m`, digits and `;` only)? SGR only
+/// restyles characters — it cannot move the cursor, clear the screen, or
+/// retitle the window — so it is the one escape family log text may keep.
+fn is_sgr(seq: &str) -> bool {
+    seq.strip_prefix("\x1b[")
+        .and_then(|s| s.strip_suffix('m'))
+        .is_some_and(|params| params.bytes().all(|b| b.is_ascii_digit() || b == b';'))
+}
+
+/// Sanitize a SUT log line for the terminal while keeping its colors: SGR
+/// sequences pass through (when the terminal takes colors at all), every
+/// other escape sequence is dropped, remaining control bytes are escaped, and
+/// a reset is appended after the last kept sequence so a dangling color can't
+/// bleed into the rest of the stream.
+fn sanitize_log_text(text: &str) -> String {
+    sanitize_log_text_inner(text, console::colors_enabled())
+}
+
+fn sanitize_log_text_inner(text: &str, keep_colors: bool) -> String {
+    let mut out = String::new();
+    let mut kept_any = false;
+    let mut last = 0;
+    for m in ansi_re().find_iter(text) {
+        out.push_str(&sanitize(&text[last..m.start()]));
+        if keep_colors && is_sgr(m.as_str()) {
+            out.push_str(m.as_str());
+            kept_any = true;
+        }
+        last = m.end();
+    }
+    out.push_str(&sanitize(&text[last..]));
+    if kept_any {
+        out.push_str("\x1b[0m");
+    }
+    out
 }
 
 /// Keys that wrap a log record's payload; dropped before rendering the body.
@@ -199,24 +180,28 @@ fn truncate_decimals(s: &str, decimals: usize) -> String {
     format!("{int_part}.{frac}")
 }
 
+/// An event's vtime at full precision: the server's own string when it is
+/// still one, otherwise [`VTime`]'s exact print of the normalized number.
+fn full_vtime(entry: &Value) -> String {
+    let raw = &entry["moment"]["vtime"];
+    match raw.as_str() {
+        Some(s) => s.to_string(),
+        None => VTime::from_json(raw)
+            .map(|v| v.to_string())
+            .unwrap_or_default(),
+    }
+}
+
 /// Render an event's vtime in seconds with exactly 3 decimal places,
 /// truncated — never rounded. Fixed precision keeps the decimal point and
 /// right edge aligned down the fixed [`VTIME_WIDTH`] column. Truncating
 /// rather than rounding means a vtime copied off the screen and pasted back
 /// as `--begin-vtime` lands on — never just past — the line you saw.
 fn format_vtime_cell(entry: &Value) -> String {
-    let raw = &entry["moment"]["vtime"];
-    match raw.as_str() {
-        // The API sends vtime as a seconds string; truncate it directly so f64
-        // round-trips can't nudge the displayed value.
-        Some(s) => truncate_decimals(s, 3),
-        // A JSON-number vtime: VTime's Display is the exact text the number
-        // was printed from, so truncating it cuts — never rounds.
-        None => match VTime::from_json(raw) {
-            Some(v) => truncate_decimals(&v.to_string(), 3),
-            None => String::new(),
-        },
-    }
+    // Truncate the server's seconds string directly so f64 round-trips can't
+    // nudge the displayed value; a normalized JSON-number vtime goes through
+    // VTime's exact Display first, so truncating still cuts — never rounds.
+    truncate_decimals(&full_vtime(entry), 3)
 }
 
 // ---------------------------------------------------------------------------
@@ -227,13 +212,13 @@ fn format_vtime_cell(entry: &Value) -> String {
 struct AssertionPayload {
     hit: Option<bool>,
     condition: Option<bool>,
-    #[serde(default)]
-    must_hit: bool,
     message: Option<String>,
     assert_type: Option<String>,
     display_type: Option<String>,
     #[serde(default)]
     location: Option<AssertionLocation>,
+    #[serde(default)]
+    details: Option<Value>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -246,34 +231,57 @@ struct AssertionLocation {
 #[derive(Debug, PartialEq, Eq)]
 struct AssertionSummary {
     label: String,
-    status: AssertionStatus,
+    verdict: AssertVerdict,
     message: String,
-    must_hit: bool,
     location: Option<String>,
+    /// The payload's attached `details`, pre-rendered as compact JSON.
+    /// `None` when absent, null, or an empty container.
+    details: Option<String>,
 }
 
+/// What one assertion event means. `must_hit` is deliberately not surfaced —
+/// it is an internal aggregation concept, not something a reader of one event
+/// acts on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum AssertionStatus {
+enum AssertVerdict {
+    /// `hit: false` — the SDK registering the assertion in the catalog at
+    /// startup, not an evaluation.
+    Catalog,
+    /// A passing `always`-family evaluation.
     Pass,
+    /// A hit `sometimes`/`reachable` evaluation: informational, neither good
+    /// nor bad on its own.
+    Hit,
+    /// A failing `always`-family evaluation, or a hit `unreachable`.
     Fail,
-    Unhit,
 }
 
-impl AssertionStatus {
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::Pass => "PASS",
-            Self::Fail => "FAIL",
-            Self::Unhit => "UNHIT",
+impl AssertVerdict {
+    fn classify(hit: bool, condition: bool, assert_type: &str, display_type: &str) -> Self {
+        if !hit {
+            return Self::Catalog;
         }
+        let assert_type = assert_type.to_ascii_lowercase();
+        let display_type = display_type.to_ascii_lowercase();
+        if assert_type == "unreachable" || display_type == "unreachable" {
+            return Self::Fail;
+        }
+        // `always` covers AlwaysOrUnreachable too (its assert_type is
+        // "always"); everything else (sometimes, reachability, unknown
+        // future types) is informational.
+        if assert_type == "always" || display_type.starts_with("always") {
+            return if condition { Self::Pass } else { Self::Fail };
+        }
+        Self::Hit
     }
 
-    fn styled(self) -> console::StyledObject<&'static str> {
-        let styled = style(self.as_str()).bold();
+    /// The badge: FAIL only on a failing always/unreachable; CATALOG on a
+    /// catalog registration; HIT otherwise.
+    fn badge(self) -> &'static str {
         match self {
-            Self::Pass => styled.green(),
-            Self::Fail => styled.red(),
-            Self::Unhit => styled.yellow(),
+            Self::Catalog => "CATALOG",
+            Self::Fail => "FAIL",
+            Self::Pass | Self::Hit => "HIT",
         }
     }
 }
@@ -289,32 +297,20 @@ impl TryFrom<AssertionPayload> for AssertionSummary {
             .map(|message| message.trim().to_string())
             .filter(|message| !message.is_empty())
             .ok_or(())?;
-        let label = payload
-            .display_type
-            .map(|label| label.trim().to_string())
+        let assert_type = payload.assert_type.unwrap_or_default();
+        let display_type = payload.display_type.unwrap_or_default();
+        let label = Some(display_type.trim())
             .filter(|label| !label.is_empty())
-            .or_else(|| {
-                payload
-                    .assert_type
-                    .map(|label| label.trim().to_string())
-                    .filter(|label| !label.is_empty())
-            })
-            .ok_or(())?;
-
-        let status = if !hit {
-            AssertionStatus::Unhit
-        } else if condition {
-            AssertionStatus::Pass
-        } else {
-            AssertionStatus::Fail
-        };
+            .or_else(|| Some(assert_type.trim()).filter(|label| !label.is_empty()))
+            .ok_or(())?
+            .to_string();
 
         Ok(Self {
+            verdict: AssertVerdict::classify(hit, condition, &assert_type, &display_type),
             label,
-            status,
             message,
-            must_hit: payload.must_hit,
             location: payload.location.and_then(render_assertion_location),
+            details: payload.details.as_ref().and_then(render_details_json),
         })
     }
 }
@@ -323,6 +319,26 @@ fn parse_assertion_summary(entry: &Value) -> Option<AssertionSummary> {
     let assertion = entry.get("antithesis_assert")?;
     let payload = AssertionPayload::deserialize(assertion).ok()?;
     AssertionSummary::try_from(payload).ok()
+}
+
+/// A payload's attached `details` as compact JSON — `None` for null and empty
+/// containers, so callers only emit a detail line when there is something to
+/// read. The details are user-controlled, arbitrarily nested JSON, so they
+/// are never flattened to key=value; the JSON itself (sanitized) is the
+/// rendering.
+fn render_details_json(details: &Value) -> Option<String> {
+    let empty = match details {
+        Value::Null => true,
+        Value::Object(map) => map.is_empty(),
+        Value::Array(items) => items.is_empty(),
+        _ => false,
+    };
+    if empty {
+        return None;
+    }
+    Some(sanitize(
+        &serde_json::to_string(details).unwrap_or_default(),
+    ))
 }
 
 fn render_assertion_location(location: AssertionLocation) -> Option<String> {
@@ -461,18 +477,18 @@ impl RenderedPayload {
     }
 }
 
-fn render_payload(entry: &Value) -> RenderedPayload {
+fn render_payload(entry: &Value, detail: bool) -> RenderedPayload {
     match classify(entry) {
-        EventKind::Assert(summary) => render_assert(&summary),
-        EventKind::Guidance(guidance) => render_guidance(guidance),
+        EventKind::Assert(summary) => render_assert(&summary, detail),
+        EventKind::Guidance(guidance) => render_guidance(guidance, detail),
         EventKind::Sdk(sdk) => render_sdk(sdk),
-        EventKind::Setup(setup) => render_setup(setup),
-        EventKind::Fault(fault) => render_fault(fault),
+        EventKind::Setup(setup) => render_setup(setup, detail),
+        EventKind::Fault(fault) => render_fault(fault, detail),
         EventKind::FaultInjectorInfo(info) => render_fault_injector_info(info),
         EventKind::ContainerMeta(entry) => render_container_meta(entry),
-        EventKind::ComposerTask(entry) => render_composer_task(entry),
-        EventKind::ComposerKv(obj) => render_composer_kv(obj),
-        EventKind::Log(text) => render_log_text(text),
+        EventKind::ComposerTask(entry) => render_composer_task(entry, detail),
+        EventKind::ComposerKv(obj) => render_composer_kv(obj, detail),
+        EventKind::Log(text) => RenderedPayload::line(sanitize_log_text(text)),
         EventKind::Other(entry) => RenderedPayload::line(
             style(sanitize(&strip_log_envelope(entry)))
                 .dim()
@@ -481,38 +497,66 @@ fn render_payload(entry: &Value) -> RenderedPayload {
     }
 }
 
-fn render_assert(summary: &AssertionSummary) -> RenderedPayload {
-    let mut headline = format!(
-        "{} {} \"{}\"",
-        summary.status.styled(),
+fn render_assert(summary: &AssertionSummary, detail: bool) -> RenderedPayload {
+    let body = format!(
+        "{} \"{}\"",
         sanitize(&summary.label),
-        sanitize(&summary.message),
+        sanitize(&summary.message)
     );
-    if summary.must_hit {
-        headline.push_str(" must-hit");
+    let badge = summary.verdict.badge();
+    let headline = match summary.verdict {
+        // A catalog registration is chatter: the whole line recedes.
+        AssertVerdict::Catalog => style(format!("{badge} {body}")).dim().to_string(),
+        AssertVerdict::Fail => format!("{} {body}", style(badge).red().bold()),
+        AssertVerdict::Pass => format!("{} {body}", style(badge).green().bold()),
+        // A hit sometimes/reachable is neither good nor bad on its own.
+        AssertVerdict::Hit => format!("{} {body}", style(badge).bold()),
+    };
+    let mut details = Vec::new();
+    if detail {
+        if let Some(location) = &summary.location {
+            details.push(style(format!("@ {location}")).dim().to_string());
+        }
+        if let Some(json) = &summary.details {
+            details.push(style(format!("details {json}")).dim().to_string());
+        }
     }
-    let details = summary
-        .location
-        .iter()
-        .map(|location| style(format!("@ {location}")).dim().to_string())
-        .collect();
     RenderedPayload { headline, details }
 }
 
-fn render_guidance(guidance: &Value) -> RenderedPayload {
-    let goal = match guidance["maximize"].as_bool() {
-        Some(true) => " maximize",
-        Some(false) => " minimize",
-        None => "",
-    };
-    let kind = guidance["guidance_type"].as_str().unwrap_or("");
-    let message = guidance["message"].as_str().unwrap_or("").trim();
-    RenderedPayload::line(format!(
-        "{} {}{goal} \"{}\"",
-        style("GUIDANCE").magenta(),
-        sanitize(kind),
-        sanitize(message),
-    ))
+fn render_guidance(guidance: &Value, detail: bool) -> RenderedPayload {
+    // The message is the guidance's own description of what it tracks — the
+    // closest thing the event carries to a literal expression.
+    let message = guidance["message"]
+        .as_str()
+        .or(guidance["id"].as_str())
+        .unwrap_or("")
+        .trim();
+    let headline = format!("{} \"{}\"", style("GUIDANCE").magenta(), sanitize(message));
+    let mut details = Vec::new();
+    if detail {
+        let mut info = sanitize(guidance["guidance_type"].as_str().unwrap_or(""));
+        match guidance["maximize"].as_bool() {
+            Some(true) => info.push_str(" maximize"),
+            Some(false) => info.push_str(" minimize"),
+            None => {}
+        }
+        if let Some(data) = render_details_json(&guidance["guidance_data"]) {
+            info.push(' ');
+            info.push_str(&data);
+        }
+        let info = info.trim().to_string();
+        if !info.is_empty() {
+            details.push(style(info).dim().to_string());
+        }
+        if let Some(location) = AssertionLocation::deserialize(&guidance["location"])
+            .ok()
+            .and_then(render_assertion_location)
+        {
+            details.push(style(format!("@ {location}")).dim().to_string());
+        }
+    }
+    RenderedPayload { headline, details }
 }
 
 fn render_sdk(sdk: &Value) -> RenderedPayload {
@@ -530,23 +574,29 @@ fn render_sdk(sdk: &Value) -> RenderedPayload {
     ))
 }
 
-fn render_setup(setup: &Value) -> RenderedPayload {
-    let mut headline = format!(
+fn render_setup(setup: &Value, detail: bool) -> RenderedPayload {
+    let headline = format!(
         "{} {}",
         style("SETUP").green().bold(),
         sanitize(setup["status"].as_str().unwrap_or("")),
     );
-    if let Some(details) = setup["details"].as_object() {
-        for (key, value) in details {
-            if let Some(rendered) = format_scalar(value) {
-                headline.push_str(&format!(" {}={rendered}", sanitize(key)));
-            }
-        }
+    // The details are user-controlled, arbitrarily nested JSON: never
+    // flattened to key=value, shown as JSON under --detail.
+    let details = if detail {
+        render_details_json(&setup["details"])
+            .map(|json| style(format!("details {json}")).dim().to_string())
+            .into_iter()
+            .collect()
+    } else {
+        Vec::new()
+    };
+    RenderedPayload {
+        headline: headline.trim_end().to_string(),
+        details,
     }
-    RenderedPayload::line(headline.trim_end().to_string())
 }
 
-fn render_fault(fault: &Value) -> RenderedPayload {
+fn render_fault(fault: &Value, detail: bool) -> RenderedPayload {
     let name = fault["name"].as_str().unwrap_or("");
     let kind = fault["type"].as_str().unwrap_or("");
     // `restore` ends the disruption; everything else starts one.
@@ -559,17 +609,17 @@ fn render_fault(fault: &Value) -> RenderedPayload {
     };
 
     let mut bits: Vec<String> = Vec::new();
-    let details = &fault["details"];
-    if let Some(disruption) = details["disruption_type"].as_str() {
+    let fault_details = &fault["details"];
+    if let Some(disruption) = fault_details["disruption_type"].as_str() {
         bits.push(sanitize(disruption));
     }
-    if details["asymmetric"].as_bool() == Some(true) {
+    if fault_details["asymmetric"].as_bool() == Some(true) {
         bits.push("asymmetric".to_string());
     }
-    if let Some(offset) = details["offset"].as_f64() {
+    if let Some(offset) = fault_details["offset"].as_f64() {
         bits.push(format!("offset={offset:+.2}s"));
     }
-    if let Some(latency) = details["latency"].as_object() {
+    if let Some(latency) = fault_details["latency"].as_object() {
         let mean = latency.get("mean").and_then(Value::as_f64).unwrap_or(0.0);
         let deviation = latency
             .get("deviation")
@@ -577,7 +627,7 @@ fn render_fault(fault: &Value) -> RenderedPayload {
             .unwrap_or(0.0);
         bits.push(format!("latency={mean:.0}ms±{deviation:.0}"));
     }
-    if let Some(drop_rate) = details["drop_rate"].as_f64()
+    if let Some(drop_rate) = fault_details["drop_rate"].as_f64()
         && drop_rate > 0.0
     {
         bits.push(format!("drop={drop_rate}"));
@@ -604,7 +654,15 @@ fn render_fault(fault: &Value) -> RenderedPayload {
         headline.push(' ');
         headline.push_str(&bits.join(" "));
     }
-    RenderedPayload::line(headline)
+    let details = if detail {
+        render_details_json(fault_details)
+            .map(|json| style(format!("details {json}")).dim().to_string())
+            .into_iter()
+            .collect()
+    } else {
+        Vec::new()
+    };
+    RenderedPayload { headline, details }
 }
 
 fn render_fault_injector_info(info: &Value) -> RenderedPayload {
@@ -614,7 +672,7 @@ fn render_fault_injector_info(info: &Value) -> RenderedPayload {
     );
     if let Some(details) = info["details"].as_object() {
         for (key, value) in details {
-            if let Some(rendered) = format_scalar(value) {
+            if let Some(rendered) = format_value(value) {
                 text.push_str(&format!(" {}={rendered}", sanitize(key)));
             }
         }
@@ -627,13 +685,16 @@ fn render_container_meta(entry: &Value) -> RenderedPayload {
     let name = entry["name"].as_str().unwrap_or("");
     let mut text = format!("container {} {}", sanitize(event), sanitize(name));
     if let Some(code) = entry.get("container_exit_code")
-        && let Some(rendered) = format_scalar(code)
+        && let Some(rendered) = format_value(code)
     {
         text.push_str(&format!(" exit={rendered}"));
     }
-    // Deaths pop red; the routine lifecycle chatter stays blue.
+    // Deaths pop red; health probes are pure chatter (the record carries no
+    // healthy/unhealthy verdict) and recede; the rest of the lifecycle stays
+    // blue.
     let headline = match event {
         "died" | "kill" | "oom" => style(text).red().to_string(),
+        event if event.starts_with("health_status") => style(text).dim().to_string(),
         _ => style(text).blue().to_string(),
     };
     // The image (repository only — the digest is noise at a glance) matters
@@ -652,7 +713,7 @@ fn render_container_meta(entry: &Value) -> RenderedPayload {
     RenderedPayload { headline, details }
 }
 
-fn render_composer_task(entry: &Value) -> RenderedPayload {
+fn render_composer_task(entry: &Value, detail: bool) -> RenderedPayload {
     let status = entry["task_status"].as_str().unwrap_or("");
     let command = entry["command"].as_str().unwrap_or("");
     match status {
@@ -672,19 +733,21 @@ fn render_composer_task(entry: &Value) -> RenderedPayload {
                 style(text).red().to_string()
             };
             let mut details = Vec::new();
-            for (key, prefix) in [("additional_stdout", "out"), ("additional_stderr", "err")] {
-                let Some(text) = entry[key].as_str() else {
-                    continue;
-                };
-                for line in strip_ansi(text).lines() {
-                    if line.trim().is_empty() {
+            if detail {
+                for (key, prefix) in [("additional_stdout", "out"), ("additional_stderr", "err")] {
+                    let Some(text) = entry[key].as_str() else {
                         continue;
+                    };
+                    for line in strip_ansi(text).lines() {
+                        if line.trim().is_empty() {
+                            continue;
+                        }
+                        details.push(
+                            style(format!("{prefix}| {}", sanitize(line)))
+                                .dim()
+                                .to_string(),
+                        );
                     }
-                    details.push(
-                        style(format!("{prefix}| {}", sanitize(line)))
-                            .dim()
-                            .to_string(),
-                    );
                 }
             }
             RenderedPayload { headline, details }
@@ -697,33 +760,41 @@ fn render_composer_task(entry: &Value) -> RenderedPayload {
     }
 }
 
-fn render_composer_kv(obj: &Map<String, Value>) -> RenderedPayload {
-    let mut text = "composer".to_string();
-    for (key, value) in obj {
+fn render_composer_kv(obj: &Map<String, Value>, detail: bool) -> RenderedPayload {
+    let pairs = obj.iter().filter_map(|(key, value)| {
         if LOG_ENVELOPE_KEYS.contains(&key.as_str()) {
-            continue;
+            return None;
         }
-        if let Some(rendered) = format_scalar(value) {
+        format_value(value).map(|rendered| (key, rendered))
+    });
+    if detail {
+        // One pair per line, untruncated.
+        let details = pairs
+            .map(|(key, rendered)| {
+                style(format!("{}={rendered}", sanitize(key)))
+                    .dim()
+                    .to_string()
+            })
+            .collect();
+        RenderedPayload {
+            headline: style("composer".to_string()).dim().to_string(),
+            details,
+        }
+    } else {
+        let mut text = "composer".to_string();
+        for (key, rendered) in pairs {
             let truncated = console::truncate_str(&rendered, VALUE_TRUNCATE_WIDTH, "…");
             text.push_str(&format!(" {}={truncated}", sanitize(key)));
         }
+        RenderedPayload::line(style(text).dim().to_string())
     }
-    RenderedPayload::line(style(text).dim().to_string())
 }
 
-fn render_log_text(text: &str) -> RenderedPayload {
-    // Strip ANSI color codes before escaping controls so colorized container
-    // output shows the plain text, not visible `\x1B[…` escape noise. The
-    // payload is one line in practice (the server splits on newlines); a
-    // multi-line payload would have its break escaped to a visible `\n` by
-    // the sanitizer, staying one terminal line either way.
-    RenderedPayload::line(normalize_terminal_text(text))
-}
-
-/// Render a scalar JSON value for a key=value cell; `None` for empties and
-/// nested structures (arrays of scalars join with commas). Mirrors what the
-/// composer/fault chatter actually carries: stringified scalars.
-fn format_scalar(value: &Value) -> Option<String> {
+/// Render a JSON value for a key=value cell. Scalars render bare, arrays of
+/// scalars join with commas, and anything nested renders as its compact JSON
+/// rather than being dropped — the value may be user-controlled and
+/// arbitrarily shaped. `None` only for null and empties.
+fn format_value(value: &Value) -> Option<String> {
     match value {
         Value::Null => None,
         Value::Bool(b) => Some(b.to_string()),
@@ -741,13 +812,14 @@ fn format_scalar(value: &Value) -> Option<String> {
                     _ => None,
                 })
                 .collect();
-            let scalars = scalars?;
-            if scalars.is_empty() {
-                return None;
+            match scalars {
+                Some(scalars) if scalars.is_empty() => None,
+                Some(scalars) => Some(sanitize(&scalars.join(","))),
+                // An array with nested members: compact JSON, whole.
+                None => render_details_json(value),
             }
-            Some(sanitize(&scalars.join(",")))
         }
-        Value::Object(_) => None,
+        Value::Object(_) => render_details_json(value),
     }
 }
 
@@ -763,26 +835,18 @@ fn format_duration(value: &Value) -> Option<String> {
 }
 
 /// The bracketed source label: the container when the record names one,
-/// otherwise the source name with the `antithesis_` prefix dropped, plus the
-/// abbreviated stream when present.
+/// otherwise the source name with the `antithesis_` prefix dropped. The
+/// stream (info/error) is deliberately not shown; `--json` carries it.
 fn render_source(entry: &Value) -> String {
     let container = entry["source"]["container"].as_str().unwrap_or("");
     let name = entry["source"]["name"].as_str().unwrap_or("");
-    let stream = entry["source"]["stream"].as_str().unwrap_or("");
 
     let label = if !container.trim().is_empty() {
         sanitize(container)
     } else {
         sanitize(name.trim().strip_prefix("antithesis_").unwrap_or(name))
     };
-    let stream = (!stream.is_empty()).then(|| abbreviate_stream(stream));
-
-    match (label.is_empty(), stream) {
-        (false, Some(stream)) => format!("[{label}:{stream}]"),
-        (false, None) => format!("[{label}]"),
-        (true, Some(stream)) => format!("[{stream}]"),
-        (true, None) => "[]".to_string(),
-    }
+    format!("[{label}]")
 }
 
 // ---------------------------------------------------------------------------
@@ -793,15 +857,15 @@ fn render_source(entry: &Value) -> String {
 /// stream order; it returns the exact text to print for each, dividers and
 /// blank-line separation included.
 pub(crate) struct EventStreamRenderer {
-    raw: bool,
+    detail: bool,
     last_input_hash: Option<String>,
     wrote_block: bool,
 }
 
 impl EventStreamRenderer {
-    pub(crate) fn new(raw: bool) -> Self {
+    pub(crate) fn new(detail: bool) -> Self {
         Self {
-            raw,
+            detail,
             last_input_hash: None,
             wrote_block: false,
         }
@@ -812,10 +876,6 @@ impl EventStreamRenderer {
     /// entry opens a new timeline segment, the event line, and any indented
     /// detail lines — and carries no trailing newline.
     pub(crate) fn render_entry(&mut self, entry: &Value) -> String {
-        if self.raw {
-            return raw_line(entry);
-        }
-
         // A full event carries both its moment and its source envelope. A
         // row reshaped by an event-set DSL pipeline can lack either (narrow
         // can keep `moment` while dropping the rest); rendering it through
@@ -833,17 +893,21 @@ impl EventStreamRenderer {
             }
             // The divider carries the segment's full-precision moment —
             // exactly what `runs logs`/`runs exec`/`snouty debug` take.
-            let vtime = VTime::from_json(&entry["moment"]["vtime"])
-                .map(|v| v.to_string())
-                .unwrap_or_default();
-            let divider = format!("moment {} {}", sanitize(hash), vtime);
+            let divider = format!("moment {} {}", sanitize(hash), full_vtime(entry));
             out.push_str(&style(divider.trim_end().to_string()).yellow().to_string());
             out.push('\n');
             self.last_input_hash = Some(hash.to_string());
         }
 
-        let vtime_cell = format!("{:>VTIME_WIDTH$}", format_vtime_cell(entry));
-        let rendered = render_payload(entry);
+        // Detail mode shows the exact vtime on every line; the default shows
+        // the aligned 3-decimal truncation.
+        let vtime = if self.detail {
+            full_vtime(entry)
+        } else {
+            format_vtime_cell(entry)
+        };
+        let vtime_cell = format!("{vtime:>VTIME_WIDTH$}");
+        let rendered = render_payload(entry, self.detail);
         out.push_str(
             format!(
                 "{}  {} {}",
@@ -862,33 +926,19 @@ impl EventStreamRenderer {
     }
 }
 
-/// The `--raw` line: the legacy `[vtime] [source] [stream] payload` format
-/// with no classification and no colors. Text payloads are verbatim (ANSI and
-/// control bytes intact); structured payloads show their raw JSON after a
-/// ` - ` separator.
-fn raw_line(entry: &Value) -> String {
-    let vtime = format_vtime_cell(entry);
-    let container = entry["source"]["container"].as_str().unwrap_or("");
-    let name = entry["source"]["name"].as_str().unwrap_or("");
-    let source = if !container.is_empty() {
-        container
-    } else {
-        name
-    };
-    let stream_raw = entry["source"]["stream"].as_str().unwrap_or("");
-    let stream = abbreviate_stream(stream_raw);
-
-    let payload = match entry.get("output_text").and_then(Value::as_str) {
-        Some(text) => text.to_string(),
-        None => format!(" - {}", strip_log_envelope(entry)),
-    };
-
+/// One build-log line, in the renderer's shared visual grammar: dim
+/// timestamp, cyan bracketed source, sanitized text (SUT colors kept). Build
+/// logs are wall-clock events with no moment, so there is no divider and no
+/// classification — the stream label stands in for the source.
+pub(crate) fn render_build_log_line(timestamp: &str, stream: &str, text: &str) -> String {
     format!(
-        "[{vtime:>vw$}] [{source:>sw$}] [{stream:<stw$}] {payload}",
-        vw = VTIME_WIDTH,
-        sw = RAW_SOURCE_MIN_WIDTH,
-        stw = RAW_STREAM_WIDTH,
+        "{} {} {}",
+        style(timestamp.to_string()).dim(),
+        style(format!("[{}]", sanitize(stream))).cyan(),
+        sanitize_log_text(text)
     )
+    .trim_end()
+    .to_string()
 }
 
 #[cfg(test)]
@@ -900,13 +950,17 @@ mod tests {
     /// affordance layered by `console`, which the test harness (a pipe, not a
     /// tty) disables. Force that off so a color-forcing environment can't
     /// flake the suite.
-    fn renderer(raw: bool) -> EventStreamRenderer {
+    fn renderer(detail: bool) -> EventStreamRenderer {
         console::set_colors_enabled(false);
-        EventStreamRenderer::new(raw)
+        EventStreamRenderer::new(detail)
     }
 
     fn render_one(entry: Value) -> String {
         renderer(false).render_entry(&entry)
+    }
+
+    fn render_one_detailed(entry: Value) -> String {
+        renderer(true).render_entry(&entry)
     }
 
     #[test]
@@ -918,10 +972,11 @@ mod tests {
             "output_text": "starting"
         }));
         // The divider carries the exact moment (pasteable into `runs logs`);
-        // the event line shows the truncated vtime.
+        // the event line shows the truncated vtime and the source without
+        // its stream.
         assert_eq!(
             first,
-            "moment -123 311.8487535319291\n 311.848  [app:out] starting"
+            "moment -123 311.8487535319291\n 311.848  [app] starting"
         );
 
         // Same hash: no divider, no blank line.
@@ -930,7 +985,7 @@ mod tests {
             "source": {"container": "app", "name": "app", "stream": "out"},
             "output_text": "still here"
         }));
-        assert_eq!(second, " 312.000  [app:out] still here");
+        assert_eq!(second, " 312.000  [app] still here");
 
         // New hash: blank line, then the next divider.
         let third = r.render_entry(&json!({
@@ -938,30 +993,94 @@ mod tests {
             "source": {"container": "app", "name": "app", "stream": "out"},
             "output_text": "branched"
         }));
-        assert_eq!(third, "\nmoment 456 313.5\n 313.500  [app:out] branched");
+        assert_eq!(third, "\nmoment 456 313.5\n 313.500  [app] branched");
     }
 
     #[test]
-    fn renders_assertions_with_status_and_location_detail() {
-        let block = render_one(json!({
+    fn detail_mode_shows_the_full_vtime_on_every_line() {
+        let block = render_one_detailed(json!({
+            "moment": {"input_hash": "-123", "vtime": "311.8487535319291"},
+            "source": {"container": "app", "name": "app"},
+            "output_text": "starting"
+        }));
+        assert_eq!(
+            block,
+            "moment -123 311.8487535319291\n311.8487535319291  [app] starting"
+        );
+    }
+
+    #[test]
+    fn assert_verdicts_follow_the_family_rules() {
+        let entry = |assert_type: &str, display_type: &str, hit: bool, condition: bool| {
+            json!({
+                "antithesis_assert": {
+                    "assert_type": assert_type, "display_type": display_type,
+                    "hit": hit, "condition": condition, "message": "m"
+                },
+                "source": {"container": "app"},
+                "moment": {"input_hash": "-1", "vtime": "1.0"}
+            })
+        };
+        // hit:false is a catalog registration, whatever the family.
+        let block = render_one(entry("always", "AlwaysOrUnreachable", false, false));
+        assert!(
+            block.ends_with(r#"[app] CATALOG AlwaysOrUnreachable "m""#),
+            "got: {block}"
+        );
+        // A failing always is the FAIL badge; a passing one says HIT.
+        let block = render_one(entry("always", "Always", true, false));
+        assert!(block.ends_with(r#"[app] FAIL Always "m""#), "got: {block}");
+        let block = render_one(entry("always", "Always", true, true));
+        assert!(block.ends_with(r#"[app] HIT Always "m""#), "got: {block}");
+        // A hit unreachable is a failure regardless of condition.
+        let block = render_one(entry("reachability", "Unreachable", true, true));
+        assert!(
+            block.ends_with(r#"[app] FAIL Unreachable "m""#),
+            "got: {block}"
+        );
+        // sometimes/reachable evaluations are informational HITs — never FAIL,
+        // whatever the condition.
+        let block = render_one(entry("sometimes", "Sometimes", true, false));
+        assert!(
+            block.ends_with(r#"[app] HIT Sometimes "m""#),
+            "got: {block}"
+        );
+        let block = render_one(entry("reachability", "Reachable", true, true));
+        assert!(
+            block.ends_with(r#"[app] HIT Reachable "m""#),
+            "got: {block}"
+        );
+    }
+
+    #[test]
+    fn assert_location_and_details_appear_only_in_detail_mode() {
+        let entry = json!({
             "antithesis_assert": {
-                "assert_type": "always",
-                "condition": false,
-                "display_type": "AlwaysOrUnreachable",
-                "hit": false,
-                "location": {"begin_line": 87, "file": "/go/src/antithesis/control/control.go", "function": "get"},
+                "assert_type": "always", "display_type": "Always",
+                "hit": true, "condition": false,
                 "message": "Counter's value retrieved",
-                "must_hit": true
+                "location": {"begin_line": 87, "file": "/go/src/antithesis/control/control.go", "function": "get"},
+                "details": {"left": 7, "right": {"limit": 5}}
             },
             "source": {"container": "control", "name": "control"},
             "moment": {"input_hash": "-1", "vtime": "311.8487535319291"}
-        }));
-        let mut lines = block.lines().skip(1); // divider
+        });
+        // Default: one line, no location, no details, no must-hit.
+        let block = render_one(entry.clone());
+        assert_eq!(
+            block.lines().nth(1).unwrap(),
+            " 311.848  [control] FAIL Always \"Counter's value retrieved\""
+        );
+        assert_eq!(block.lines().count(), 2, "got: {block}");
+
+        // Detail: location line and the attached details JSON.
+        let block = render_one_detailed(entry);
+        let mut lines = block.lines().skip(2);
+        assert_eq!(lines.next().unwrap(), "          @ control.go:get:87");
         assert_eq!(
             lines.next().unwrap(),
-            " 311.848  [control] UNHIT AlwaysOrUnreachable \"Counter's value retrieved\" must-hit"
+            r#"          details {"left":7,"right":{"limit":5}}"#
         );
-        assert_eq!(lines.next().unwrap(), "          @ control.go:get:87");
     }
 
     #[test]
@@ -978,17 +1097,38 @@ mod tests {
     }
 
     #[test]
-    fn renders_guidance_sdk_and_setup_events() {
-        let guidance = render_one(json!({
-            "antithesis_guidance": {"guidance_type": "numeric", "maximize": true, "message": "wal grew long", "hit": false},
+    fn renders_guidance_as_its_message_with_specifics_under_detail() {
+        let entry = json!({
+            "antithesis_guidance": {
+                "guidance_type": "numeric", "maximize": true, "hit": false,
+                "message": "wal grew long",
+                "guidance_data": {"left": 48, "right": 1000},
+                "location": {"begin_line": 439, "file": "src/actions.rs", "function": "checkpoint"}
+            },
             "source": {"container": "w", "name": "w"},
             "moment": {"input_hash": "-1", "vtime": "1.0"}
-        }));
+        });
+        let block = render_one(entry.clone());
         assert!(
-            guidance.ends_with("GUIDANCE numeric maximize \"wal grew long\""),
-            "got: {guidance}"
+            block.ends_with(r#"GUIDANCE "wal grew long""#),
+            "got: {block}"
         );
+        assert_eq!(block.lines().count(), 2, "got: {block}");
 
+        let block = render_one_detailed(entry);
+        let mut lines = block.lines().skip(2);
+        assert_eq!(
+            lines.next().unwrap(),
+            r#"          numeric maximize {"left":48,"right":1000}"#
+        );
+        assert_eq!(
+            lines.next().unwrap(),
+            "          @ actions.rs:checkpoint:439"
+        );
+    }
+
+    #[test]
+    fn renders_sdk_and_setup_events() {
         let sdk = render_one(json!({
             "antithesis_sdk": {"language": {"name": "Rust", "version": "1.97.1"}, "protocol_version": "1.1.0", "sdk_version": "0.2.9"},
             "source": {"container": "w", "name": "w"},
@@ -999,13 +1139,18 @@ mod tests {
             "got: {sdk}"
         );
 
-        let setup = render_one(json!({
-            "antithesis_setup": {"status": "complete", "details": {"db": "/data/test.db"}},
+        // The setup details are arbitrary user JSON: never flattened into the
+        // headline, shown as JSON only under --detail.
+        let entry = json!({
+            "antithesis_setup": {"status": "complete", "details": {"db": "/data/test.db", "nested": {"a": 1}}},
             "source": {"container": "w", "name": "w"},
             "moment": {"input_hash": "-1", "vtime": "1.0"}
-        }));
+        });
+        let setup = render_one(entry.clone());
+        assert!(setup.ends_with("SETUP complete"), "got: {setup}");
+        let setup = render_one_detailed(entry);
         assert!(
-            setup.ends_with("SETUP complete db=/data/test.db"),
+            setup.ends_with(r#"          details {"db":"/data/test.db","nested":{"a":1}}"#),
             "got: {setup}"
         );
     }
@@ -1065,10 +1210,25 @@ mod tests {
             stop.ends_with("FAULT node/stop nodes=prefill-1 max=0.0s"),
             "got: {stop}"
         );
+
+        // --detail adds the fault's raw details JSON.
+        let detailed = render_one_detailed(json!({
+            "fault": {
+                "name": "skip", "type": "clock",
+                "details": {"offset": -1.5},
+                "affected_nodes": [], "max_duration": 1.0
+            },
+            "source": {"name": "fault_injector"},
+            "moment": {"input_hash": "-1", "vtime": "87.4"}
+        }));
+        assert!(
+            detailed.ends_with(r#"          details {"offset":-1.5}"#),
+            "got: {detailed}"
+        );
     }
 
     #[test]
-    fn renders_container_lifecycle_with_image_only_on_create() {
+    fn renders_container_lifecycle_with_dim_health_probes() {
         let create = render_one(json!({
             "event": "create", "name": "sqlite-init", "id": "3babcd",
             "image": "pkg.dev/repo/sqlite-antithesis@sha256:45abbf",
@@ -1096,14 +1256,46 @@ mod tests {
             died.ends_with("container died sqlite-init exit=0"),
             "got: {died}"
         );
+
+        // Health probes carry no verdict and recede as dim chatter (the text
+        // survives; only the styling changes, invisible with colors off).
+        let health = render_one(json!({
+            "event": "health_status", "name": "sqlite-init",
+            "source": {"name": "containers_meta"},
+            "moment": {"input_hash": "-1", "vtime": "12.8"}
+        }));
+        assert!(
+            health.ends_with("container health_status sqlite-init"),
+            "got: {health}"
+        );
     }
 
     #[test]
-    fn renders_composer_task_lifecycle() {
+    fn composer_captured_output_appears_only_in_detail_mode() {
+        let entry = json!({
+            "task_status": "finished", "command": "git_walk/parallel_driver_walk",
+            "command_return_code": "1", "command_runtime": "0.03181171417236328",
+            "additional_stdout": "", "additional_stderr": "boom\nsecond line",
+            "source": {"name": "antithesis_test_composer"},
+            "moment": {"input_hash": "-1", "vtime": "16.1"}
+        });
+        // Default: the one-line summary only.
+        let block = render_one(entry.clone());
+        assert_eq!(
+            block.lines().nth(1).unwrap(),
+            "  16.100  [test_composer] task finished git_walk/parallel_driver_walk exit=1 in 0.0s"
+        );
+        assert_eq!(block.lines().count(), 2, "got: {block}");
+
+        // Detail: stderr lines surface as indented details; empty stdout is
+        // omitted.
+        let block = render_one_detailed(entry);
+        let mut lines = block.lines().skip(2);
+        assert_eq!(lines.next().unwrap(), "          err| boom");
+        assert_eq!(lines.next().unwrap(), "          err| second line");
+
         let started = render_one(json!({
             "task_status": "started", "command": "git_walk/parallel_driver_walk",
-            "command_type": "parallel_driver_", "container_id": "74ef1b", "tasks_len": "1",
-            "started_task": "74ef1b_parallel_driver_walk",
             "source": {"name": "antithesis_test_composer"},
             "moment": {"input_hash": "-1", "vtime": "15.3"}
         }));
@@ -1111,55 +1303,86 @@ mod tests {
             started.ends_with("[test_composer] task started git_walk/parallel_driver_walk"),
             "got: {started}"
         );
-
-        let finished = render_one(json!({
-            "task_status": "finished", "command": "git_walk/parallel_driver_walk",
-            "command_return_code": "1", "command_runtime": "0.03181171417236328",
-            "additional_stdout": "", "additional_stderr": "boom\nsecond line",
-            "source": {"name": "antithesis_test_composer"},
-            "moment": {"input_hash": "-1", "vtime": "16.1"}
-        }));
-        let mut lines = finished.lines().skip(1);
-        assert_eq!(
-            lines.next().unwrap(),
-            "  16.100  [test_composer] task finished git_walk/parallel_driver_walk exit=1 in 0.0s"
-        );
-        // stderr lines surface as indented details; empty stdout is omitted.
-        assert_eq!(lines.next().unwrap(), "          err| boom");
-        assert_eq!(lines.next().unwrap(), "          err| second line");
     }
 
     #[test]
-    fn renders_other_composer_chatter_as_truncated_key_values() {
-        let block = render_one(json!({
+    fn composer_chatter_truncates_inline_and_expands_under_detail() {
+        let entry = json!({
             "new_command_path": "git_walk/anytime_invariants",
             "container_id": "22453394531ae33a6df72b8119fb9fd8338f8854d6a271fe736417fb35975013",
             "source": {"name": "antithesis_test_composer"},
             "moment": {"input_hash": "-1", "vtime": "13.3"}
-        }));
+        });
+        let block = render_one(entry.clone());
         assert!(
             block.contains("composer new_command_path=git_walk/anytime_invariants"),
             "got: {block}"
         );
-        // The 64-hex container id is truncated for the eye; --json has it whole.
+        // The 64-hex container id is truncated for the eye.
         assert!(
             block.contains("container_id=22453394531ae33a6df72b8119fb9fd8338f885…"),
             "got: {block}"
         );
+
+        // --detail: one pair per line, untruncated.
+        let block = render_one_detailed(entry);
+        let mut lines = block.lines().skip(1);
+        assert!(
+            lines.next().unwrap().ends_with("[test_composer] composer"),
+            "got: {block}"
+        );
+        assert_eq!(
+            lines.next().unwrap(),
+            "          new_command_path=git_walk/anytime_invariants"
+        );
+        assert_eq!(
+            lines.next().unwrap(),
+            "          container_id=22453394531ae33a6df72b8119fb9fd8338f8854d6a271fe736417fb35975013"
+        );
     }
 
     #[test]
-    fn strips_ansi_and_escapes_controls_in_log_text() {
-        let block = render_one(json!({
-            "output_text": "\x1B[4mhello\x1B[0m\u{0008}world\r\n",
-            "source": {"container": "app", "stream": "out"},
-            "moment": {"input_hash": "-1", "vtime": "1.0"}
-        }));
-        assert!(
-            block.ends_with(r"[app:out] hello\x08world\r\n"),
-            "got: {block}"
+    fn kv_values_render_nested_json_rather_than_dropping_it() {
+        // User-controlled values are not always scalars; a nested value shows
+        // as its compact JSON instead of vanishing.
+        assert_eq!(
+            format_value(&json!({"paused": {"since": 3}})),
+            Some(r#"{"paused":{"since":3}}"#.to_string())
         );
-        assert!(!block.contains('\x1B'));
+        assert_eq!(
+            format_value(&json!([1, {"a": 2}])),
+            Some(r#"[1,{"a":2}]"#.to_string())
+        );
+        assert_eq!(format_value(&json!(["a", "b"])), Some("a,b".to_string()));
+        assert_eq!(format_value(&json!(null)), None);
+        assert_eq!(format_value(&json!({})), None);
+    }
+
+    #[test]
+    fn log_text_keeps_sgr_colors_but_nothing_else() {
+        console::set_colors_enabled(false);
+        // Colors off (a pipe): everything is stripped and controls escaped.
+        assert_eq!(
+            sanitize_log_text("\x1B[31mred\x1B[0m\u{0008}done"),
+            r"red\x08done"
+        );
+
+        // Colors on: SGR passes through with a trailing reset; cursor moves,
+        // OSC retitles, and other escapes are still dropped, and stray
+        // control bytes are still escaped.
+        assert_eq!(
+            sanitize_log_text_inner("\x1B[31mred\x1B[0m plain", true),
+            "\x1B[31mred\x1B[0m plain\x1B[0m"
+        );
+        assert_eq!(
+            sanitize_log_text_inner("a\x1B[2Ab\x1B]0;title\x07c\rd", true),
+            r"abc\rd"
+        );
+        // is_sgr admits only `ESC[…m` with digit/semicolon params.
+        assert!(is_sgr("\x1b[31;1m"));
+        assert!(is_sgr("\x1b[m"));
+        assert!(!is_sgr("\x1b[2A"));
+        assert!(!is_sgr("\x1b[?25lm"));
     }
 
     #[test]
@@ -1182,7 +1405,7 @@ mod tests {
     }
 
     #[test]
-    fn source_label_prefers_container_and_strips_the_antithesis_prefix() {
+    fn source_label_prefers_container_and_never_shows_the_stream() {
         let source = |container: &str, name: &str, stream: Option<&str>| {
             let mut entry = json!({"source": {"container": container, "name": name}});
             if let Some(stream) = stream {
@@ -1197,38 +1420,20 @@ mod tests {
             "[test_composer]"
         );
         assert_eq!(source("client1", "python3.11", None), "[client1]");
-        // Streams are abbreviated to the logs viewer's three-letter forms.
+        // The stream is not part of the label; --json carries it.
+        assert_eq!(source("app", "app", Some("error")), "[app]");
         assert_eq!(
             source("", "antithesis_test_composer", Some("info")),
-            "[test_composer:inf]"
+            "[test_composer]"
         );
-        assert_eq!(source("app", "app", Some("error")), "[app:err]");
     }
 
     #[test]
-    fn raw_mode_is_the_legacy_line_with_verbatim_payload() {
-        let mut r = renderer(true);
-        // Text payload: ANSI and control bytes reach the terminal verbatim,
-        // and there is no divider.
-        let text = r.render_entry(&json!({
-            "moment": {"input_hash": "1", "vtime": "14.118"},
-            "source": {"name": "setup", "stream": "error"},
-            "output_text": "\x1B[4m>>>> hello\x1B[0m"
-        }));
+    fn build_log_lines_share_the_visual_grammar() {
+        console::set_colors_enabled(false);
         assert_eq!(
-            text,
-            "[  14.118] [                   setup] [err] \x1B[4m>>>> hello\x1B[0m"
-        );
-
-        // Structured payload: the raw JSON after the " - " separator.
-        let structured = r.render_entry(&json!({
-            "moment": {"input_hash": "1", "vtime": "2.0"},
-            "source": {"name": "fault_injector"},
-            "fault": {"name": "clog", "type": "network"}
-        }));
-        assert!(
-            structured.ends_with(r#"[   ]  - {"fault":{"name":"clog","type":"network"}}"#),
-            "got: {structured}"
+            render_build_log_line("2025-03-20 02:01:12", "out", "pulling image\r"),
+            r"2025-03-20 02:01:12 [out] pulling image\r"
         );
     }
 
@@ -1271,14 +1476,14 @@ mod tests {
     fn assertion_summary_prefers_display_type_and_renders_partial_locations() {
         let entry = json!({
             "antithesis_assert": {
-                "hit": false, "condition": false, "must_hit": true,
+                "hit": false, "condition": false,
                 "message": "setup reached", "assert_type": "reachability",
                 "display_type": "SetupReached",
                 "location": {"function": "run_setup", "begin_line": 42}
             }
         });
         let summary = parse_assertion_summary(&entry).unwrap();
-        assert_eq!(summary.status, AssertionStatus::Unhit);
+        assert_eq!(summary.verdict, AssertVerdict::Catalog);
         assert_eq!(summary.label, "SetupReached");
         assert_eq!(summary.location.as_deref(), Some("run_setup:42"));
 
@@ -1292,7 +1497,8 @@ mod tests {
         });
         let summary = parse_assertion_summary(&entry).unwrap();
         assert_eq!(summary.label, "sometimes");
-        assert_eq!(summary.status, AssertionStatus::Pass);
+        assert_eq!(summary.verdict, AssertVerdict::Hit);
         assert_eq!(summary.location, None);
+        assert_eq!(summary.details, None);
     }
 }

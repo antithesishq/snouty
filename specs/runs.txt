@@ -231,7 +231,7 @@ mock-runs-server
 [!staging] ! stdout '^HASH\s+VTIME\s+SOURCE\s+OUTPUT'
 stdout '^moment [0-9-]'
 [!staging] stdout '^moment -456 2\.0$'
-[!staging] stdout '^   2\.000  \[app:err\] \{"level":"warn","msg":"slow request"\}$'
+[!staging] stdout '^   2\.000  \[app\] \{"level":"warn","msg":"slow request"\}$'
 
 # Multiple needles need the events-search API to AND them server-side. With
 # the `runs-search` feature off, the command refuses up front and names the
@@ -249,7 +249,7 @@ env SNOUTY_UNSTABLE_FEATURES=runs-search
 [!staging] snouty runs events $R_run_id --match request --match slow
 [staging] snouty runs events $R_run_id --match fault --match network --limit 3
 [!staging] stdout '^moment -456 2\.0$'
-[!staging] stdout '\[app:err\] \{"level":"warn","msg":"slow request"\}'
+[!staging] stdout '\[app\] \{"level":"warn","msg":"slow request"\}'
 # A needle that isn't present excludes the event entirely.
 mock-runs-server
 snouty runs events $R_run_id --match starting --match nonexistent
@@ -265,14 +265,18 @@ mock-runs-server
 # The vtime is an exact JSON number, full precision intact.
 [!staging] stdout '.*"moment".*"vtime":311\.8487535319291.*'
 
-# `runs events --raw` is the same uninterpreted view as `runs logs --raw`:
-# legacy `[vtime] [source] [stream]` lines, structured payloads as raw JSON,
-# no dividers. (`runs search` shares the flag and the pipeline.)
+# `--raw` means the server's NDJSON verbatim, so it requires --json; with it,
+# the stream passes through untouched — the vtime stays the server's string,
+# not the normalized JSON number. (`runs search` shares the flag and the
+# pipeline.)
 mock-runs-server
-[!staging] snouty runs events $R_run_id --match counter --raw
-[staging] snouty runs events $R_run_id --match fault --limit 3 --raw
+! snouty runs events run-1 --match counter --raw
+stderr '--raw requires --json'
+mock-runs-server
+[!staging] snouty --json runs events $R_run_id --match counter --raw
+[staging] snouty --json runs events $R_run_id --match fault --limit 3 --raw
 ! stdout '^moment '
-[!staging] stdout '\[\s*311\.848\] \[\s*control\] \[\s*\] +- \{"antithesis_assert"'
+[!staging] stdout '"vtime":"311\.8487535319291"'
 
 [staging] skip
 
@@ -397,23 +401,31 @@ stderr '.*'
 # `snouty runs logs` renders classified event blocks: a `moment HASH VTIME`
 # divider (full precision, pasteable back into `runs logs`) opens each
 # timeline segment, and each event under it renders as one
-# `VTIME [source:stream] payload` line. Antithesis shapes get their own
-# concise forms: an SDK assertion shows its status/label/message with the
-# location on an indented detail line; a fault shows its type, disruption and
-# nodes; test-composer records show their task lifecycle or key=value
-# chatter.
+# `VTIME [source] payload` line. Antithesis shapes get their own concise
+# forms: an SDK assertion shows a verdict badge (HIT/FAIL on evaluations,
+# CATALOG on the hit:false registrations the SDK emits at startup) with its
+# label and message; a fault shows its type, disruption and nodes;
+# test-composer records show their task lifecycle or key=value chatter.
 mock-runs-server
 snouty runs logs run-1 -123 1.0
 stdout '^moment -123 1\.0$'
-stdout '^   1\.000  \[app:out\] \{"level":"info","msg":"starting"\}$'
+stdout '^   1\.000  \[app\] \{"level":"info","msg":"starting"\}$'
 stdout '^moment -456 2\.0$'
-stdout '^   2\.000  \[app:err\] \{"level":"warn","msg":"slow request"\}$'
-stdout '^ 311\.848  \[control\] UNHIT AlwaysOrUnreachable "Counter'\''s value retrieved"$'
-stdout '^ +@ control\.go:get:87$'
+stdout '^   2\.000  \[app\] \{"level":"warn","msg":"slow request"\}$'
+stdout '^ 311\.848  \[control\] CATALOG AlwaysOrUnreachable "Counter'\''s value retrieved"$'
 stdout '^ 400\.500  \[test_composer\] task started core/parallel_driver_fetch$'
 stdout '^ 401\.500  \[fault_injector\] FAULT network/clog Stopped nodes=client2,setup max=0\.3s$'
+# Locations and attached details stay behind --detail.
+! stdout '@ control\.go'
 # Consecutive timeline segments are separated by one blank line.
 stdout '(?s)"starting"\}\n\nmoment -456'
+
+# `--detail` upgrades the rendering: full-precision vtime on every line, and
+# the assertion's source location on an indented detail line.
+mock-runs-server
+snouty runs logs --detail run-1 -123 1.0
+stdout '^311\.8487535319291  \[control\] CATALOG AlwaysOrUnreachable "Counter'\''s value retrieved"$'
+stdout '^ +@ control\.go:get:87$'
 
 # `snouty --json runs logs` outputs NDJSON with faults annotated.
 mock-runs-server
@@ -437,15 +449,11 @@ snouty runs logs --json --raw run-1 -123 1.0
 stdout 'output_text.*starting'
 ! stdout 'active_faults'
 
-# `--raw` in human mode is the uninterpreted view: legacy `[vtime] [source]
-# [stream]` lines with the text payload verbatim (no ANSI stripping or
-# control-byte escaping, no classification, no dividers); structured payloads
-# show their raw JSON after a " - " separator.
+# `--raw` means the server's NDJSON verbatim, so it requires --json; there is
+# no raw human rendering.
 mock-runs-server
-snouty runs logs --raw run-1 -123 1.0
-stdout '\[\s*1\.000\] \[\s*app\] \[out\] \{"level":"info","msg":"starting"\}'
-stdout '\[\s*311\.848\] \[\s*control\] \[\s*\] +- \{"antithesis_assert"'
-! stdout '^moment '
+! snouty runs logs --raw run-1 -123 1.0
+stderr '--raw requires --json'
 
 # `snouty --json runs logs` emits a record whose output_text contains
 # a JSON-escaped newline on a single output line.
@@ -489,7 +497,7 @@ stderr '.*empty search term.*'
 mock-runs-server
 snouty runs events $R_run_id request
 [!staging] stdout '^moment -456 2\.0$'
-[!staging] stdout '\[app:err\] \{"level":"warn","msg":"slow request"\}'
+[!staging] stdout '\[app\] \{"level":"warn","msg":"slow request"\}'
 
 # `--limit` caps how many events the server returns. Three events match
 # parallel_driver_fetch; --limit 1 keeps only the first (vtime 400.5).
@@ -551,7 +559,7 @@ mock-runs-server
 [!staging] snouty runs search $R_run_id 'contains({output_text: "slow request"})'
 [staging] snouty runs search $R_run_id 'contains({output_text: "fault"})' --limit 3
 [!staging] stdout '^moment -456 2\.0$'
-[!staging] stdout '^   2\.000  \[app:err\] \{"level":"warn","msg":"slow request"\}$'
+[!staging] stdout '^   2\.000  \[app\] \{"level":"warn","msg":"slow request"\}$'
 ! stdout '^HASH\s+VTIME\s+SOURCE\s+OUTPUT'
 
 # `--json` passes the NDJSON through, vtime normalized to an exact JSON number.
@@ -644,7 +652,7 @@ stderr 'the server reported an error mid-stream: mock stream failure'
 # is enough that the data line printed.)
 mock-runs-server
 ! snouty runs logs run-stream-error -123 1.0
-stdout -literal '[app:out] {"level":"info","msg":"starting"}'
+stdout -literal '[app] {"level":"info","msg":"starting"}'
 ! stdout 'mock stream failure'
 stderr 'the server reported an error mid-stream: mock stream failure'
 

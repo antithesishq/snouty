@@ -20,7 +20,9 @@ use crate::api::{
 };
 use crate::cli::{RunsCommands, RunsListArgs, RunsSearchArgs};
 use crate::error::{api_error_status, user_error};
-use crate::event_render::{EventStreamRenderer, Stream, normalize_terminal_text, strip_ansi};
+use crate::event_render::{
+    EventStreamRenderer, normalize_terminal_text, render_build_log_line, strip_ansi,
+};
 use crate::event_set_dsl;
 use crate::features::{self, Feature};
 use crate::jsonl::JsonStream;
@@ -30,6 +32,8 @@ use crate::time::HumanDuration;
 use crate::vtime::VTime;
 
 mod event_search;
+
+use event_search::EventOutput;
 
 /// `print!`/`println!`, but routed through `write!`/`writeln!` to stdout so a
 /// closed pipe (e.g. `snouty runs list | head`) surfaces as an `io::Error` the
@@ -55,6 +59,9 @@ pub async fn cmd_runs(
     let detail = match &command {
         Some(RunsCommands::List(args)) => args.detail,
         Some(RunsCommands::Properties { detail, .. }) => *detail,
+        Some(RunsCommands::Logs { detail, .. }) => *detail,
+        Some(RunsCommands::Events { detail, .. }) => *detail,
+        Some(RunsCommands::Search(args)) => args.detail,
         _ => false,
     };
     reject_detail_with_json(output.json, detail)?;
@@ -111,6 +118,7 @@ pub async fn cmd_runs(
             begin_vtime,
             begin_input_hash,
             raw,
+            detail,
         }) => {
             let moment = Moment { input_hash, vtime };
             // clap enforces `begin_input_hash requires begin_vtime`, so mapping
@@ -124,7 +132,11 @@ pub async fn cmd_runs(
                 moment,
                 begin,
                 settings,
-                LogOutputOptions { output, raw },
+                LogOutputOptions {
+                    output,
+                    raw,
+                    detail,
+                },
             )
             .await
         }
@@ -147,12 +159,13 @@ pub async fn cmd_runs(
             limit,
             query,
             raw,
+            detail,
         }) => {
             // `-m/--match` is the documented form; the trailing positional
             // `query` is a backward-compatible alias whose terms are additional
             // needles. Merge both into a single needle list.
             matches.extend(query);
-            cmd_runs_events(&run_id, &matches, limit, settings, output, raw).await
+            cmd_runs_events(&run_id, &matches, limit, settings, output, raw, detail).await
         }
         Some(RunsCommands::Search(args)) => cmd_runs_search(args, settings, output).await,
     }
@@ -1316,10 +1329,21 @@ fn render_runs_detail(runs: &[RunSummary]) -> String {
 struct LogOutputOptions {
     /// The global `--json`/`--verbose` flags.
     output: OutputOptions,
-    /// Skip all log post-processing: no fault annotation in JSON mode, and the
-    /// human payload is rendered verbatim (no ANSI stripping or control-byte
-    /// escaping).
+    /// Pass the server's stream through without normalization: no fault
+    /// annotation, no vtime normalization. Only meaningful with `json`;
+    /// without it the command refuses (there is no "raw human" rendering).
     raw: bool,
+    /// Detailed human rendering: full-precision vtime on every line, source
+    /// locations, and attached details JSON.
+    detail: bool,
+}
+
+/// The refusal for `--raw` without `--json`. Raw output IS the server's
+/// NDJSON stream; there is no raw human rendering to fall back to.
+fn raw_requires_json_error() -> color_eyre::eyre::Report {
+    user_error("--raw requires --json")
+        .note("--raw passes the server's NDJSON stream through verbatim")
+        .suggestion("add --json, or drop --raw for the rendered output")
 }
 
 /// After streaming a log/event stream in human mode, print `empty_note` when the
@@ -1362,8 +1386,8 @@ async fn cmd_runs_build_logs(
                 wrote_any = true;
                 let ts = format_local_str(entry["timestamp"].as_str().unwrap_or(""));
                 let stream = entry["stream"].as_str().unwrap_or("out");
-                let text = sanitize(entry["text"].as_str().unwrap_or(""));
-                writeln!(stdout, "{ts} [{stream}] {text}")?;
+                let text = entry["text"].as_str().unwrap_or("");
+                writeln!(stdout, "{}", render_build_log_line(&ts, stream, text))?;
             }
         }
         Ok(())
@@ -1415,6 +1439,11 @@ async fn cmd_runs_search(
         (true, None) => None,
         (_, limit) => Some(limit.unwrap_or(SEARCH_DEFAULT_LIMIT)),
     };
+    let output = EventOutput {
+        json,
+        raw: args.raw,
+        detail: args.detail,
+    };
     // A user-written DSL pipeline can reshape rows into any object,
     // `{"error": ...}` included, so this stream must not guess that such a
     // row is the server's Stream_Error signal.
@@ -1422,8 +1451,7 @@ async fn cmd_runs_search(
         stream,
         cap,
         ErrorRows::Data,
-        json,
-        args.raw,
+        output,
         "No events matched the query.",
     )
     .await
@@ -1436,6 +1464,7 @@ async fn cmd_runs_events(
     settings: &Settings,
     OutputOptions { json, verbose }: OutputOptions,
     raw: bool,
+    detail: bool,
 ) -> Result<()> {
     debug!("searching events for run: {}", run_id);
 
@@ -1479,12 +1508,12 @@ async fn cmd_runs_events(
         // The GET endpoint enforces `limit` server-side — no cap to add.
         (stream, None)
     };
+    let output = EventOutput { json, raw, detail };
     event_search::print_event_stream(
         stream,
         cap,
         ErrorRows::Abort,
-        json,
-        raw,
+        output,
         &format!("No events matched \"{}\".", matches.join(" ")),
     )
     .await
@@ -1498,6 +1527,7 @@ async fn cmd_runs_logs(
     LogOutputOptions {
         output: OutputOptions { json, verbose },
         raw,
+        detail,
     }: LogOutputOptions,
 ) -> Result<()> {
     debug!("streaming logs for run: {}", run_id);
@@ -1531,7 +1561,7 @@ async fn cmd_runs_logs(
                 writeln!(stdout, "{entry}")?;
             }
         } else {
-            let mut renderer = EventStreamRenderer::new(false);
+            let mut renderer = EventStreamRenderer::new(detail);
             let mut lines = event_lines(stream, ErrorRows::Abort);
             while let Some(entry) = lines.try_next().await? {
                 wrote_any = true;
@@ -1623,10 +1653,10 @@ fn render_exec_frame(frame: &ExecFrame) -> Result<()> {
     match frame {
         ExecFrame::Known(ExecEvent::Output { stream, text, .. }) => {
             let text = normalize_terminal_text(text);
-            // Parse via `Stream` so the short form `err` routes to stderr
-            // too. Anything else — stdout, info, or an unrecognized label —
-            // goes to stdout, as before.
-            if stream.parse::<Stream>() == Ok(Stream::Stderr) {
+            // The API labels stderr output as `stderr` or the short form
+            // `err`; both route to stderr. Anything else — stdout, info, or
+            // an unrecognized label — goes to stdout, as before.
+            if matches!(stream.as_str(), "stderr" | "err") {
                 eprintln!("{text}");
             } else {
                 outln!("{text}")?;
@@ -1856,15 +1886,6 @@ fn event_lines(
         normalize_vtime_field(&mut value, "moment");
         Ok(value)
     })
-}
-
-/// The refusal for `--raw` without `--json`. Raw output IS the server's
-/// stream round-tripped without normalization; there is no raw human
-/// rendering.
-fn raw_requires_json_error() -> color_eyre::eyre::Report {
-    user_error("--raw requires --json")
-        .note("--raw passes the server's stream through without normalization")
-        .suggestion("add --json, or drop --raw for the rendered output")
 }
 
 /// Raw lines: each parsed value serialized back out unmodified (no vtime

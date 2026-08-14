@@ -29,6 +29,19 @@ use crate::jsonl::JsonStream;
 
 use super::{ErrorRows, event_lines, raw_lines};
 
+/// How `runs events`/`runs search` print their matches.
+#[derive(Clone, Copy)]
+pub(super) struct EventOutput {
+    pub json: bool,
+    /// Pass the server's stream through without normalization (parsed
+    /// records round-trip verbatim). Requires `json`; the commands refuse
+    /// the combination up front.
+    pub raw: bool,
+    /// Detailed human rendering: full-precision vtime on every line, source
+    /// locations, and attached details JSON.
+    pub detail: bool,
+}
+
 /// Print every line of the (already server-filtered) stream, one line out
 /// per line in. `--json` dumps each event as its JSON (vtime normalized;
 /// with `raw`, round-tripped without normalization); human mode renders
@@ -45,8 +58,7 @@ pub(super) async fn print_event_stream(
     stream: JsonStream,
     cap: Option<NonZeroU64>,
     error_rows: ErrorRows,
-    json: bool,
-    raw: bool,
+    output: EventOutput,
     empty_message: &str,
 ) -> Result<()> {
     let cap = cap.map_or(usize::MAX, |cap| {
@@ -54,7 +66,7 @@ pub(super) async fn print_event_stream(
     });
     let mut stdout = BufWriter::new(std::io::stdout().lock());
     let mut seen: u64 = 0;
-    if raw {
+    if output.raw {
         // Round-trip passthrough (the caller already required --json). The
         // cap is still ours to enforce — the search backend ignores the
         // limit.
@@ -65,11 +77,11 @@ pub(super) async fn print_event_stream(
             stdout.flush()?;
         }
     } else {
-        let mut renderer = EventStreamRenderer::new(false);
+        let mut renderer = EventStreamRenderer::new(output.detail);
         let mut lines = event_lines(stream, error_rows).take(cap);
         while let Some(value) = lines.try_next().await? {
             seen += 1;
-            let rendered = if json {
+            let rendered = if output.json {
                 value.to_string()
             } else {
                 renderer.render_entry(&value)
@@ -81,7 +93,7 @@ pub(super) async fn print_event_stream(
 
     // Only a successfully-empty stream earns the friendly empty state; a
     // mid-stream error propagated above instead.
-    if seen == 0 && !json {
+    if seen == 0 && !output.json {
         writeln!(stdout, "{empty_message}")?;
         stdout.flush()?;
     }

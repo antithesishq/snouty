@@ -798,12 +798,15 @@ each in their own concise form. A moment (HASH/VTIME) comes from
         #[arg(long, allow_hyphen_values = true, requires = "begin_vtime")]
         begin_input_hash: Option<String>,
 
-        /// Skip post-processing: with --json, pass NDJSON through unannotated;
-        /// otherwise print legacy `[vtime] [source] [stream]` lines with the
-        /// text payload verbatim (keep ANSI/control bytes) and structured
-        /// payloads as raw JSON
+        /// Pass the server's NDJSON through verbatim (no fault annotation,
+        /// no vtime normalization); requires --json
         #[arg(short = 'r', long)]
         raw: bool,
+
+        /// Detailed rendering: full-precision vtime on every line, source
+        /// locations, and each event's attached details JSON
+        #[arg(short = 'd', long, conflicts_with = "raw")]
+        detail: bool,
     },
 
     /// Execute a command in a run's live session
@@ -901,11 +904,15 @@ which is behind the `runs-search` unstable feature
         /// At least one needle (via `-m` or here) is required.
         query: Vec<String>,
 
-        /// Skip post-processing: print legacy `[vtime] [source] [stream]`
-        /// lines with the text payload verbatim (keep ANSI/control bytes)
-        /// and structured payloads as raw JSON
+        /// Pass the server's NDJSON through verbatim (no vtime
+        /// normalization); requires --json
         #[arg(short = 'r', long)]
         raw: bool,
+
+        /// Detailed rendering: full-precision vtime on every line, source
+        /// locations, and each event's attached details JSON
+        #[arg(short = 'd', long, conflicts_with = "raw")]
+        detail: bool,
     },
 
     /// Query events with the event-set DSL
@@ -943,11 +950,15 @@ pub struct RunsSearchArgs {
     #[arg(long, conflicts_with = "follow")]
     pub check: bool,
 
-    /// Skip post-processing: print legacy `[vtime] [source] [stream]` lines
-    /// with the text payload verbatim (keep ANSI/control bytes) and
-    /// structured payloads as raw JSON
+    /// Pass the server's NDJSON through verbatim (no vtime normalization);
+    /// requires --json
     #[arg(short = 'r', long)]
     pub raw: bool,
+
+    /// Detailed rendering: full-precision vtime on every line, source
+    /// locations, and each event's attached details JSON
+    #[arg(short = 'd', long, conflicts_with = "raw")]
+    pub detail: bool,
 }
 
 #[derive(Args)]

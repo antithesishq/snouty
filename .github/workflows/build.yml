@@ -321,5 +321,8 @@ jobs:
         timeout-minutes: 10
         run: scripts/setup-test-images.sh podman docker
 
+      - name: Build
+        run: nix-build
+
       - name: Test
         run: nix-shell --run "cargo nextest run"

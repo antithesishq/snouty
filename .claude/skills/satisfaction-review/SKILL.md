@@ -120,8 +120,8 @@ content, not the exact path.
 
 Read every story file. For the **large** outputs (e.g. `runs-build-logs`,
 `runs-logs-incomplete` can be tens/hundreds of KB) do **not** read the whole
-file — measure its width with the tool below and read only the head and tail to
-judge structure. For everything else, read the full file.
+file — read the head and tail and judge the structure from those. For everything
+else, read the full file.
 
 ## Step 3 — Judge each story on three axes
 
@@ -158,26 +158,27 @@ command**? Concretely:
 If a needed coordinate is truncated, omitted, or buried, that's a follow-up
 failure even if the command "worked".
 
-### Axis C — Terminal rendering at ~140 columns
-Assume an average terminal is **140 characters wide**. Measure the widest line
-of actual command output per story:
+### Axis C — Terminal rendering
+Judge how the output reads in a terminal. There is no width threshold to check
+against and no measurement to run: a number tells you a line is long, not
+whether that hurts. Read the output and decide.
 
-```bash
-for f in "$GALLERY"/*.md; do
-  awk -v fn="$(basename "$f")" '
-    /^```/        { infence = !infence; next }
-    infence       { n++; if (length($0) > max) max = length($0) }
-    END           { printf "%-34s width=%-4d lines=%d\n", fn, max+0, n+0 }
-  ' "$f"
-done | sort -t= -k2 -rn
-```
+**Long lines.** A line longer than the terminal wraps, and wrapping is only
+sometimes a problem. Ask what the wrap does to the reader:
+- A wrapped **table row** is the bad case: continuation text lands under the
+  wrong columns and every row after it is harder to scan. Flag it.
+- A wrapped **prose field** (a run description, a `Details` paragraph) is worse
+  when it runs under the label column with no indent, and fine when snouty
+  wraps and indents it itself. Flag the first, not the second.
+- A long **opaque token** — a signed report URL, an image digest, a log line
+  from the tested system — has to be long. Do not flag it; snouty cannot
+  shorten it and truncating it would be worse.
+- Output behind a **debugging flag** (`--verbose`) is meant to be bulky. Do not
+  flag width there.
+Say what the wrap breaks and roughly how wide the line is, rather than quoting a
+threshold.
 
-Interpret the widest-line width:
-- **≤ 140** → fits cleanly (✅).
-- **141–160** → wraps a little; usually ⚠️ unless the wrap mangles a table.
-- **> 160** → likely wraps badly; tables become unreadable, columns desync (❌).
-
-Also judge rendering quality beyond raw width:
+**Also judge rendering quality beyond line length:**
 - **Wasted width**: mostly-empty columns padded to a huge fixed width (e.g. a
   `GROUP` column padded ~45 chars when most rows are blank), or full-precision
   floats (e.g. `vtime` printed as `18.310608921106905`) eating horizontal space.
@@ -187,6 +188,8 @@ Also judge rendering quality beyond raw width:
 - **Truncation**: is `…`-truncation hiding information the user needs (Axis B
   overlap), or is it reasonable?
 - **Density**: walls of near-identical lines, redundant repetition, no grouping.
+- **Stray control characters**: raw escape sequences (e.g. a literal `[K`) that
+  a terminal would hide but a piped or CI-captured log shows.
 
 ### TTY stories (`login-*`)
 These are `snouty login` runs, so reinterpret the axes — the deliverable is a
@@ -202,7 +205,7 @@ prompt conversation plus files written, not a table:
   verify")? A login that exits `0` in silence — never confirming what it wrote —
   is an Axis B failure even though the file is correct. For the error/repair
   paths, does the message say what went wrong *and* how to recover?
-- **Axis C (rendering):** less about 140-col tables, more about **prompt clarity
+- **Axis C (rendering):** less about tables, more about **prompt clarity
   and secret hygiene** — is the menu readable, are previous-value defaults shown
   legibly, and is a secret never echoed into any frame? A stored secret should
   appear only as a masked hint, never whole.
@@ -243,9 +246,9 @@ Reviewed by: Claude (<model>), <date>
 
 ## Summary table
 
-| Story (slug) | Correct | Follow-up | Render (width) | Verdict | Top issue |
+| Story (slug) | Correct | Follow-up | Render | Verdict | Top issue |
 |---|---|---|---|---|---|
-| runs-list | ✅ | ⚠️ | ✅ (98) | partial | desc truncated with … |
+| runs-list | ✅ | ⚠️ | ✅ | partial | desc truncated with … |
 | ... |
 
 ## Per-story detail
@@ -254,7 +257,7 @@ Reviewed by: Claude (<model>), <date>
 `$ snouty <args>`
 - **Correct:** <✅/⚠️/❌> — <rationale>
 - **Follow-up:** <✅/⚠️/❌> — <rationale>
-- **Render:** <✅/⚠️/❌> (widest <N> cols) — <rationale>
+- **Render:** <✅/⚠️/❌> — <rationale; name what a wrap breaks, if anything>
 - **Fix:** <concrete suggestion, or "none — satisfied">
 ```
 
@@ -280,10 +283,10 @@ Guidance for a high-signal report:
 - The gallery is pinned to whatever live run IDs were fresh at generation time,
   so exact IDs/values differ between runs. Judge the *shape and quality* of the
   output, not the specific data.
-- Width and rendering are judged for a plain ~140-col terminal; snouty may
-  detect a wider TTY when run interactively, but the gallery captures
-  non-interactive output, which is the conservative case worth reviewing. The
-  TTY stories are the exception: they run on a real 120-col terminal, so a line
+- Rendering is judged for an ordinary terminal, without a fixed width to check
+  against. The gallery captures non-interactive output, which is the
+  conservative case: snouty may detect a wider TTY when run by hand. The TTY
+  stories are the exception — they run on a real 120-column terminal, so a line
   that wraps there wraps for the user too.
 - The `login-*` stories run in a throwaway `$HOME` that is removed after capture,
   and are fed fake secrets that are redacted again in the file — so the "Persisted

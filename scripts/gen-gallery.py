@@ -43,6 +43,7 @@ import fnmatch
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -83,6 +84,12 @@ EVENT_KEYWORDS = ["the", "info", "test", "start", "error", "client", "setup"]
 # Keyword order probed for an incomplete run's events story: its narrative is
 # "events around the failure", so try "error" before the general needles.
 INCOMPLETE_EVENT_KEYWORDS = ["error", *EVENT_KEYWORDS]
+
+# The `--limit` the two `runs events` search stories pass. Stated rather than
+# left to the server default, so the AND-narrowing check knows the cap it has to
+# reason about (see `event_multi_match`). It matches the server default, so the
+# stories still show what an unadorned search returns.
+EVENT_LIMIT = 50
 
 
 class GalleryError(Exception):
@@ -423,7 +430,7 @@ def drive_tty(
     return (
         Result(args, session.frame(), "", returncode),
         frames,
-        session.cast(f"snouty {' '.join(args)}"),
+        session.cast(_command_line(args)),
     )
 
 
@@ -1101,15 +1108,30 @@ def verbose_api_calls(sr: StoryRun, reg: Registry) -> tuple[bool, str]:
     return (has_get and has_table, f"api_calls={has_get} table={has_table}")
 
 
-def event_multi_match(needle: str, second: str):
+def event_multi_match(needle: str, second: str, limit: int):
+    """Gate the AND-narrowing story: every row must contain both needles, and
+    the result should be strictly smaller than the single-needle search.
+
+    That last comparison only means something when the single-needle search came
+    back under `limit`. `runs events` matches one needle on the server, which
+    returns at most `limit` events, and filters the rest locally — so when the
+    single-needle search is capped, both searches can report `limit` rows while
+    still describing different sets. Rather than fail on that, the check says
+    the comparison was not assertable and gates on the needles alone."""
+
     def chk(sr: StoryRun, reg: Registry) -> tuple[bool, str]:
         rows = sr.rows or []
         n1, n2 = needle.lower(), second.lower()
         bad = [r for r in rows if not (n1 in json.dumps(r).lower() and n2 in json.dumps(r).lower())]
         single = reg.row_counts.get("runs-events-single", 1 << 30)
+        capped = single >= limit
         narrowed = len(rows) < single
-        ok = bool(rows) and not bad and narrowed
-        return (ok, f"{len(rows)} rows w/ both needles, narrowed {single}->{len(rows)}={narrowed}")
+        ok = bool(rows) and not bad and (narrowed or capped)
+        if capped:
+            note = f"narrowing not assertable (single-match hit the {limit}-row cap)"
+        else:
+            note = f"narrowed {single}->{len(rows)}={narrowed}"
+        return (ok, f"{len(rows)} rows w/ both needles, {note}")
 
     return chk
 
@@ -1485,21 +1507,34 @@ def build_stories(d: Discovery) -> list[Story]:
             json_capable=False,
         ),
         # -- events ---------------------------------------------------------
+        # Both searches pass the same explicit --limit, so the AND-narrowing
+        # check can tell a genuinely smaller result from one the server capped.
         Story(
             "runs-events-single",
             f"Find events that mention '{kw}'",
             "I want to find events that mention a particular keyword.",
             f"At least one matching event row, and the keyword '{kw}' appears in the output.",
-            ["runs", "events", d.success, "--match", kw],
+            ["runs", "events", d.success, "--match", kw, "--limit", str(EVENT_LIMIT)],
             event_keyword_present(kw),
         ),
         Story(
             "runs-events-multi-match",
             "AND-narrow with two --match needles",
             "I want to narrow results to events that mention BOTH of two terms.",
-            f"At least one row, every row contains both '{kw}' and '{kw2}', and strictly fewer rows than single-match.",
-            ["runs", "events", d.success, "--match", kw, "--match", kw2],
-            event_multi_match(kw, kw2),
+            f"At least one row, and every row contains both '{kw}' and '{kw2}'. Fewer rows than "
+            "the single-needle search when that search was not capped by --limit.",
+            [
+                "runs",
+                "events",
+                d.success,
+                "--match",
+                kw,
+                "--match",
+                kw2,
+                "--limit",
+                str(EVENT_LIMIT),
+            ],
+            event_multi_match(kw, kw2, EVENT_LIMIT),
         ),
         Story(
             "runs-events-no-results",
@@ -2310,6 +2345,16 @@ def build_tty_stories() -> list[Story]:
 HELP_SAMPLE_MAX_LINES = 18
 
 
+def _command_line(args: list[str]) -> str:
+    """`snouty <args>` as a line a reader can paste into a shell.
+
+    Arguments are quoted where a shell would need it: several stories pass a
+    value that contains spaces (`--launcher 'Basic Test git'`, a multi-word
+    `--match` needle), and joining on a bare space would show a command that
+    means something different from the one that ran."""
+    return f"snouty {shlex.join(args)}"
+
+
 def _shell_block(args: list[str], text: str, returncode: int, cap: int | None = None) -> str:
     """A ```shell block showing `$ snouty <args>`, its output, and the exit code
     on the line below — so a reviewer can judge whether the return code makes
@@ -2321,7 +2366,7 @@ def _shell_block(args: list[str], text: str, returncode: int, cap: int | None = 
         hidden = len(lines) - cap
         lines = lines[:cap] + [f"… ({hidden} more lines)"]
     body = "\n".join(lines)
-    return f"```shell\n$ snouty {' '.join(args)}\n{body}\n```\nExit code: `{returncode}`"
+    return f"```shell\n$ {_command_line(args)}\n{body}\n```\nExit code: `{returncode}`"
 
 
 def _write_help_story(out_dir: Path, story: Story, sr: StoryRun, verdict: str, detail: str) -> None:
@@ -2367,7 +2412,7 @@ def _write_tty_story(out_dir: Path, story: Story, sr: StoryRun, verdict: str, de
         f"**User goal:** {story.goal}",
         f"**Judge satisfaction by:** {story.judge}",
         "## Conversation",
-        f"```shell\n$ snouty {' '.join(story.args)}\n```",
+        f"```shell\n$ {_command_line(story.args)}\n```",
     ]
     for prompt, screen in sr.frames or []:
         parts.append(f"### At `{prompt}`\n```\n{screen}\n```")

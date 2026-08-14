@@ -1,5 +1,5 @@
 use std::collections::{BTreeMap, BTreeSet};
-use std::io::Seek;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use color_eyre::Section;
@@ -300,18 +300,14 @@ async fn validate_compose(
     // process tree — so --keep-running leaves a working project behind.
     up_child.kill_group().await.ok();
 
-    let test_result = match result {
-        Ok(true) => {
-            eprintln!("Setup-complete event detected.");
-            // Discover test commands only now: setup-complete means the
-            // project came up, so every container exists and discovery reads
-            // settled filesystems instead of racing container startup.
-            discover_scripts(rt, &compose, overlay, temp_dir)
-                .and_then(|scripts| validate_test_scripts(&scripts))
-        }
-        Ok(false) => Err(eyre!("timed out waiting for setup-complete event")),
-        Err(e) => Err(e),
-    };
+    let test_result = result.and_then(|()| {
+        eprintln!("Setup-complete event detected.");
+        // Discover test commands only now: setup-complete means the project
+        // came up, so every container exists and discovery reads settled
+        // filesystems instead of racing container startup.
+        discover_scripts(rt, &compose, overlay, temp_dir)
+            .and_then(|scripts| validate_test_scripts(&scripts))
+    });
 
     if test_result.is_ok() {
         eprintln!("Setup validation successful.");
@@ -536,40 +532,22 @@ async fn validate_kubernetes(
     Ok(())
 }
 
-/// Check whether a reader contains the setup-complete event.
+/// Check whether `content` contains the setup-complete event.
 ///
-/// Reads from the current position, checks each complete line for
-/// `{"antithesis_setup": {"status": "complete"}}`, and seeks back over any
-/// partial trailing line so it will be re-read on the next call.
-fn contains_setup_complete(reader: &mut (impl std::io::Read + std::io::Seek)) -> Result<bool> {
-    let mut content = String::new();
-    reader.read_to_string(&mut content)?;
-
-    if content.is_empty() {
-        return Ok(false);
-    }
-
-    // Seek back over any partial trailing line so it's re-read next call.
-    if !content.ends_with('\n') {
-        let partial_len = match content.rfind('\n') {
-            Some(pos) => content.len() - pos - 1,
-            None => content.len(),
-        };
-        reader.seek(std::io::SeekFrom::Current(-(partial_len as i64)))?;
-        content.truncate(content.len() - partial_len);
-    }
-
+/// Checks every line for `{"antithesis_setup": {"status": "complete"}}`. A
+/// partial trailing line fails to parse and is ignored; the watcher re-reads
+/// the whole file on every poll, so the line is seen once its writer finishes
+/// it.
+fn contains_setup_complete(content: &str) -> bool {
     for line in content.lines() {
-        let line = line.trim();
-        if !line.is_empty()
-            && let Ok(event) = serde_json::from_str::<SetupEvent>(line)
+        if let Ok(event) = serde_json::from_str::<SetupEvent>(line.trim())
             && let Some(setup) = event.antithesis_setup
             && setup.status == "complete"
         {
-            return Ok(true);
+            return true;
         }
     }
-    Ok(false)
+    false
 }
 
 /// Discover test commands across all compose containers, including stopped
@@ -841,49 +819,64 @@ fn find_jsonl_files(root: &Path) -> Result<Vec<PathBuf>> {
     Ok(paths)
 }
 
-fn open_jsonl_file(path: &Path) -> Result<Option<std::fs::File>> {
-    match std::fs::File::open(path) {
-        Ok(file) => Ok(Some(file)),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(e) => Err(e.into()),
-    }
-}
+/// How often the SDK output directory is re-scanned.
+///
+/// The files are small and few before setup-complete, so a full re-scan is
+/// cheap and the interval can be short. It only narrows the window in which
+/// another process can truncate an event away before we read it. No value
+/// closes that window; see [`watch_for_setup_complete`].
+const POLL_INTERVAL: Duration = Duration::from_millis(25);
+
+/// How much of one output file to read.
+///
+/// Setup-complete arrives early in a run, so it is not expected to sit behind a
+/// megabyte of other events. Capping the read keeps a chatty — or corrupt —
+/// file from being pulled into memory on every poll. An event past the cap is
+/// not seen, and the watch times out as though it never arrived.
+const MAX_READ_BYTES: u64 = 1024 * 1024;
 
 /// Watch `.jsonl` files anywhere under the given directory for setup-complete.
+/// Returns once the event is seen, and errors when the deadline passes first.
 ///
-/// Polls recursively for new files (100ms interval), tails each file for new
-/// data, and tolerates truncation/recreation by tracking offsets per path.
-/// Returns `Ok(true)` when the event is found, `Ok(false)` on timeout.
+/// Reads every file on every poll, and remembers nothing between polls. The
+/// SDK's local-file handler opens its output without `O_APPEND` and truncates
+/// it during initialization, so every SDK-linked process writes from offset 0.
+/// Nothing a previous poll learned about a file's contents stays true, so
+/// tracking read offsets would only let the watcher skip a region a later
+/// writer had refilled. These files hold a handful of short lines until
+/// setup-complete arrives, which is the whole period this runs for, so reading
+/// them again costs nothing worth optimizing.
+///
+/// This finds an event that is on disk. It cannot recover one that a later
+/// truncation already destroyed — that one is gone, and only having polled
+/// inside the window would have caught it.
 ///
 /// Uses blocking `std::fs` calls intentionally — reads are small and infrequent,
 /// and this avoids pulling in tokio::fs for a simple poll loop.
-async fn watch_for_setup_complete(
-    output_dir: &Path,
-    deadline: tokio::time::Instant,
-) -> Result<bool> {
-    let mut offsets = BTreeMap::new();
-
+async fn watch_for_setup_complete(output_dir: &Path, deadline: tokio::time::Instant) -> Result<()> {
     loop {
         if tokio::time::Instant::now() >= deadline {
-            return Ok(false);
+            bail!("timed out waiting for setup-complete event");
         }
 
         for path in find_jsonl_files(output_dir)? {
-            let previous_offset = offsets.get(&path).copied().unwrap_or(0);
-            let Some(mut file) = open_jsonl_file(&path)? else {
-                continue;
+            let file = match std::fs::File::open(&path) {
+                Ok(file) => file,
+                // Raced with something removing the file since the scan.
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(e) => return Err(e.into()),
             };
-            let start_offset = previous_offset.min(file.metadata()?.len());
-            file.seek(std::io::SeekFrom::Start(start_offset))?;
+            let mut content = Vec::new();
+            file.take(MAX_READ_BYTES).read_to_end(&mut content)?;
 
-            if contains_setup_complete(&mut file)? {
-                return Ok(true);
+            // Lossy: a half-written multi-byte character is replaced rather
+            // than fatal, and the next poll reads the finished line.
+            if contains_setup_complete(&String::from_utf8_lossy(&content)) {
+                return Ok(());
             }
-
-            offsets.insert(path, file.stream_position()?);
         }
 
-        sleep(Duration::from_millis(100)).await;
+        sleep(POLL_INTERVAL).await;
     }
 }
 
@@ -1162,19 +1155,19 @@ services:
     #[test]
     fn contains_setup_complete_found() {
         let data = "{\"antithesis_setup\": {\"status\": \"complete\"}}\n";
-        assert!(contains_setup_complete(&mut std::io::Cursor::new(data)).unwrap());
+        assert!(contains_setup_complete(data));
     }
 
     #[test]
     fn contains_setup_complete_not_found() {
         let data = "{\"antithesis_setup\": {\"status\": \"running\"}}\n";
-        assert!(!contains_setup_complete(&mut std::io::Cursor::new(data)).unwrap());
+        assert!(!contains_setup_complete(data));
     }
 
     #[test]
     fn contains_setup_complete_empty() {
         let data = "";
-        assert!(!contains_setup_complete(&mut std::io::Cursor::new(data)).unwrap());
+        assert!(!contains_setup_complete(data));
     }
 
     #[test]
@@ -1183,7 +1176,16 @@ services:
                     not json at all\n\
                     {\"antithesis_setup\": {\"status\": \"complete\"}}\n\
                     {\"more\": \"stuff\"}\n";
-        assert!(contains_setup_complete(&mut std::io::Cursor::new(data)).unwrap());
+        assert!(contains_setup_complete(data));
+    }
+
+    /// A partial trailing line is ignored rather than fatal, and the complete
+    /// lines before it are still checked.
+    #[test]
+    fn contains_setup_complete_ignores_partial_trailing_line() {
+        let data = "{\"antithesis_setup\": {\"status\": \"complete\"}}\n{\"antithesis_setu";
+        assert!(contains_setup_complete(data));
+        assert!(!contains_setup_complete("{\"antithesis_setup\": {\"stat"));
     }
 
     #[test]
@@ -1202,17 +1204,22 @@ services:
         );
     }
 
-    #[test]
-    fn open_jsonl_file_returns_none_for_missing_files() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("missing.jsonl");
-
-        let file = open_jsonl_file(&path).unwrap();
-        assert!(file.is_none(), "missing files should be skipped");
-    }
-
     fn test_deadline() -> tokio::time::Instant {
         tokio::time::Instant::now() + Duration::from_secs(3)
+    }
+
+    /// Watch `dir` until the event arrives or the test deadline passes.
+    async fn watch(dir: &Path) -> Result<()> {
+        watch_for_setup_complete(dir, test_deadline()).await
+    }
+
+    /// Assert the watch timed out rather than failing for another reason.
+    fn assert_timed_out(result: Result<()>) {
+        let err = result.expect_err("expected a timeout, got the event");
+        assert!(
+            err.to_string().contains("timed out"),
+            "expected a timeout, got: {err}"
+        );
     }
 
     /// Write the setup-complete event before the watcher starts.
@@ -1226,11 +1233,9 @@ services:
         )
         .unwrap();
 
-        assert!(
-            watch_for_setup_complete(dir.path(), test_deadline())
-                .await
-                .expect("watch failed")
-        );
+        watch(dir.path())
+            .await
+            .expect("setup-complete not detected");
     }
 
     /// The file appears after the watcher starts polling.
@@ -1248,11 +1253,9 @@ services:
             .unwrap();
         });
 
-        assert!(
-            watch_for_setup_complete(dir.path(), test_deadline())
-                .await
-                .expect("watch failed")
-        );
+        watch(dir.path())
+            .await
+            .expect("setup-complete not detected");
     }
 
     /// The event arrives in a later append, after unrelated lines.
@@ -1274,11 +1277,9 @@ services:
             writeln!(f, "{{\"antithesis_setup\": {{\"status\": \"complete\"}}}}").unwrap();
         });
 
-        assert!(
-            watch_for_setup_complete(dir.path(), test_deadline())
-                .await
-                .expect("watch failed")
-        );
+        watch(dir.path())
+            .await
+            .expect("setup-complete not detected");
     }
 
     /// Non-complete status values are ignored.
@@ -1300,11 +1301,9 @@ services:
             writeln!(f, "{{\"antithesis_setup\": {{\"status\": \"complete\"}}}}").unwrap();
         });
 
-        assert!(
-            watch_for_setup_complete(dir.path(), test_deadline())
-                .await
-                .expect("watch failed")
-        );
+        watch(dir.path())
+            .await
+            .expect("setup-complete not detected");
     }
 
     /// The event is split across two writes (partial line buffering).
@@ -1328,11 +1327,9 @@ services:
             writeln!(f, " {{\"status\": \"complete\"}}}}").unwrap();
         });
 
-        assert!(
-            watch_for_setup_complete(dir.path(), test_deadline())
-                .await
-                .expect("watch failed")
-        );
+        watch(dir.path())
+            .await
+            .expect("setup-complete not detected");
     }
 
     /// Times out when the event never arrives.
@@ -1346,10 +1343,60 @@ services:
         )
         .unwrap();
 
-        let found = watch_for_setup_complete(dir.path(), test_deadline())
+        assert_timed_out(watch(dir.path()).await);
+    }
+
+    /// Only the first [`MAX_READ_BYTES`] of a file are read, so an event behind
+    /// more than that is deliberately not found.
+    #[tokio::test]
+    async fn ignores_an_event_past_the_read_cap() {
+        let dir = tempfile::tempdir().unwrap();
+        let service_dir = dir.path().join("app");
+        std::fs::create_dir_all(&service_dir).unwrap();
+
+        let padding = "{\"padding\": \"".to_string() + &"x".repeat(1000) + "\"}\n";
+        let mut content = padding.repeat(MAX_READ_BYTES as usize / padding.len() + 1);
+        assert!(content.len() as u64 > MAX_READ_BYTES);
+        content.push_str("{\"antithesis_setup\": {\"status\": \"complete\"}}\n");
+        std::fs::write(service_dir.join("sdk.jsonl"), content).unwrap();
+
+        assert_timed_out(watch(dir.path()).await);
+    }
+
+    /// The SDK writes without `O_APPEND` and truncates on start, so a second
+    /// process writes the event over bytes we have already read while the file
+    /// stays at least as long. Tailing from a stored offset never re-read that
+    /// region and missed the event even though it was on disk.
+    /// Regression test for #216.
+    #[tokio::test]
+    async fn detects_event_written_over_already_read_bytes() {
+        let dir = tempfile::tempdir().unwrap();
+        let service_dir = dir.path().join("app");
+        std::fs::create_dir_all(&service_dir).unwrap();
+        let file = service_dir.join("sdk.jsonl");
+        // Padded, so the rewrite below leaves the file longer than the offset a
+        // tailing reader would have stored. A shrinking file is the easy case.
+        let padding = "x".repeat(200);
+        std::fs::write(&file, format!("{{\"unrelated\": \"{padding}\"}}\n")).unwrap();
+
+        let path = file.clone();
+        tokio::spawn(async move {
+            sleep(Duration::from_millis(200)).await;
+            // Truncate and write from offset 0, as the SDK does on init.
+            let padding = "y".repeat(300);
+            std::fs::write(
+                &path,
+                format!(
+                    "{{\"antithesis_setup\": {{\"status\": \"complete\"}}}}\n\
+                     {{\"padding\": \"{padding}\"}}\n"
+                ),
+            )
+            .unwrap();
+        });
+
+        watch(dir.path())
             .await
-            .expect("watch failed");
-        assert!(!found, "expected timeout (false), got true");
+            .expect("event written over already-read bytes was missed");
     }
 
     #[test]

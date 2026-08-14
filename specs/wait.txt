@@ -1,0 +1,90 @@
+# snouty runs wait
+#
+# Wait for a run to reach a terminal state (completed, cancelled, or
+# incomplete), then print the run's details — the same output as `runs show`.
+# The command exits 0 for every terminal state; the caller reads the status
+# from the output. A run that reports status `unknown` fails the command
+# instead of waiting forever on a run that may never make progress.
+#
+# The status transitions themselves (poll until in_progress becomes completed,
+# the timeout path mid-wait, the over-schedule warning) are covered by Rust
+# integration tests in src/runs.rs, where the test server can change the run's
+# status between polls. This spec pins the static behavior: argument
+# validation, terminal-state handling, output shapes, and errors.
+
+# Like every runs command, wait requires an API key.
+! snouty runs wait some-run
+stderr 'No Antithesis credentials found.*'
+
+# A run ID is required.
+! snouty runs wait
+stderr '.*RUN_ID.*'
+
+# The poll interval has a 30-second floor, enforced by the CLI: anything
+# faster just burns API requests without observing runs (which take minutes
+# to hours) any sooner.
+! snouty runs wait some-run --poll-interval 10
+stderr 'invalid value .*10.* for .*--poll-interval.*'
+
+# `snouty runs --help` lists the wait subcommand.
+snouty runs --help
+stdout 'wait.*terminal state'
+
+# `snouty runs wait --help` explains the terminal states, the unknown-status
+# failure, and that re-running resumes the wait after an interruption.
+snouty runs wait --help
+stdout 'completed, cancelled, or incomplete'
+stdout 'unknown'
+stdout 'interrupt and re-run'
+stdout '--poll-interval'
+stdout '--timeout'
+
+# A run that is already terminal returns immediately: one status line on
+# stderr, the run's details on stdout (same rendering as `runs show`), exit 0.
+mock-runs-server
+snouty --json runs list --status completed
+env_from_json 0 run_id
+
+mock-runs-server
+snouty runs wait $R_run_id
+stderr 'run .* is completed'
+stdout 'Run ID.*$R_run_id'
+[!staging] stdout 'Status.*completed'
+
+# `snouty --json runs wait` prints the run detail as JSON — the same shape as
+# `runs show --json`, so a launch-to-report pipeline needs no second call.
+mock-runs-server
+snouty --json runs wait $R_run_id
+stdout '"run_id".*"$R_run_id"'
+[!staging] stdout '"status".*"completed"'
+
+# incomplete is a terminal state too: the wait succeeds and reports it (the
+# run's outcome is in the output, not the exit code). run-3 is the mock's
+# incomplete fixture.
+mock-runs-server
+[!staging] snouty runs wait run-3
+[!staging] stderr 'run run-3 is incomplete'
+[!staging] stdout 'Status.*incomplete'
+
+# A run that reports status `unknown` fails the wait: snouty cannot tell
+# whether such a run will still make progress, so the caller decides what to
+# do. The error names the status the server sent.
+mock-runs-server
+[!staging] ! snouty runs wait run-unknown-status
+[!staging] stderr 'run run-unknown-status reported status "unknown"'
+[!staging] stderr 'snouty runs show run-unknown-status'
+
+# A bad run id gives the same friendly "run not found" message as every other
+# run-scoped subcommand.
+mock-runs-server
+! snouty runs wait no-such-run
+stderr '.*run not found: no-such-run.*'
+! stderr '.*API error.*'
+
+# --timeout bounds the wait. run-2 stays in_progress on the mock, so a zero
+# timeout polls once, reports the status it saw, and fails with a resume hint.
+mock-runs-server
+[!staging] ! snouty runs wait run-2 --timeout 0
+[!staging] stderr 'run run-2 is in_progress'
+[!staging] stderr 'timed out waiting for run run-2'
+[!staging] stderr 'snouty runs wait run-2'

@@ -113,6 +113,7 @@ Examples:
   snouty runs
   snouty runs list --status completed --launcher nightly
   snouty runs show <run_id>
+  snouty runs wait <run_id>
   snouty runs properties <run_id>
   snouty runs properties --failing <run_id>
   snouty runs properties <run_id> --name <substring> --detail
@@ -562,6 +563,42 @@ Incomplete runs also show the failure moment (Failure Hash/VTime) to pass to
         /// Open the run's triage report in a browser instead of printing details
         #[arg(short = 'w', long)]
         web: bool,
+    },
+
+    /// Wait for a run to reach a terminal state
+    #[command(
+        long_about = r#"Wait for a run to reach a terminal state (completed, cancelled, or incomplete).
+
+Polls the run's status until it is terminal, then prints the run's details —
+the same output as `runs show` — and exits 0 whatever the terminal state is;
+the run's outcome is in the output, not the exit code. A run that reports
+status `unknown` fails the command instead: snouty cannot tell whether such a
+run will still make progress, so the caller decides what to do.
+
+The wait is unbounded unless --timeout is given, and the command is safe to
+interrupt and re-run: waiting holds no state beyond the run id, so re-running
+resumes the wait.
+
+Examples:
+  snouty runs wait <run_id>
+  snouty runs wait <run_id> --timeout 7200
+  snouty launch --json -w basic_test ... | jq -r .runId | xargs snouty runs wait"#
+    )]
+    Wait {
+        /// Run ID
+        run_id: String,
+
+        /// Seconds between status checks
+        // The 30-second floor keeps a scripted wait from hammering the API:
+        // polling faster cannot observe a run (which takes minutes to hours)
+        // any sooner.
+        #[arg(long, default_value_t = 60, value_parser = clap::value_parser!(u64).range(30..))]
+        poll_interval: u64,
+
+        /// Maximum seconds to wait before the command fails; without it the
+        /// wait is unbounded
+        #[arg(long)]
+        timeout: Option<u64>,
     },
 
     /// List property results for a run

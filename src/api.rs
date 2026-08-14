@@ -68,6 +68,19 @@ pub enum VersionError {
     Unreachable(String),
 }
 
+impl RunStatus {
+    /// Whether this status is final: the run has stopped and its status will
+    /// not change again. `unknown` is deliberately not terminal — it is the
+    /// server saying it cannot classify the run, and callers that poll must
+    /// decide for themselves what to do with it.
+    pub(crate) fn is_terminal(self) -> bool {
+        matches!(
+            self,
+            RunStatus::Completed | RunStatus::Cancelled | RunStatus::Incomplete
+        )
+    }
+}
+
 fn params_test_name(params: Option<&RunParams>) -> Option<&str> {
     params.and_then(|p| p.extra.get("antithesis.test_name").map(String::as_str))
 }
@@ -185,6 +198,23 @@ fn normalize_property(property: Property) -> Result<Property> {
 /// to return (e.g. massive log files) and must not be aborted — the user can ctrl-c.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// Where API responses are cached, per [`AntithesisApi::build`].
+#[derive(Debug)]
+pub(crate) enum ResponseCache {
+    /// `$XDG_RUNTIME_DIR/snouty/api-cache-v1` — the default for every command.
+    /// Caching is disabled when `XDG_RUNTIME_DIR` is unusable.
+    Default,
+    /// No response cache: every request hits the server. For poll loops that
+    /// must observe fresh state — the server marks run detail cacheable
+    /// (`Cache-Control: private, max-age=3600`), so a cached poll could
+    /// re-read the same status for up to an hour.
+    Disabled,
+    /// Cache under this directory. Only tests construct this variant (the
+    /// commands all use `Default` or `Disabled`), hence the dead-code allow.
+    #[allow(dead_code)]
+    Dir(PathBuf),
+}
+
 pub struct AntithesisApi {
     client: generated::Client,
     base_url: String,
@@ -202,7 +232,21 @@ impl AntithesisApi {
                 PasswordPolicy::Reject,
             )?,
             verbose,
-            None,
+            ResponseCache::Default,
+        )
+    }
+
+    /// Like [`AntithesisApi::new`], but with the response cache disabled
+    /// ([`ResponseCache::Disabled`]), for commands that poll for fresh state.
+    pub fn new_uncached(settings: &Settings, verbose: bool) -> Result<Self> {
+        Self::build(
+            settings,
+            AuthenticationInfo::for_ambient_configuration(
+                settings.profile(),
+                PasswordPolicy::Reject,
+            )?,
+            verbose,
+            ResponseCache::Disabled,
         )
     }
 
@@ -218,17 +262,15 @@ impl AntithesisApi {
                 PasswordPolicy::WarnDeprecated,
             )?,
             verbose,
-            None,
+            ResponseCache::Default,
         )
     }
 
-    /// The response cache lives at `cache_dir`/api-cache-v1 when `Some`; pass
-    /// `None` to disable caching (used by tests that don't exercise it).
     pub(crate) fn build(
         settings: &Settings,
         authn_info: AuthenticationInfo,
         verbose: bool,
-        cache_dir: Option<PathBuf>,
+        cache: ResponseCache,
     ) -> Result<Self> {
         // base_url() is None exactly when neither an explicit base_url nor a
         // tenant resolved; surface the tenant diagnostic, since that's what a
@@ -238,7 +280,13 @@ impl AntithesisApi {
 
         let default_headers = default_request_headers()?;
         let http_client = build_http_client(default_headers.clone(), settings)?;
-        let cached = api_cache::build_cached_client(http_client.clone(), cache_dir);
+        let cached = match cache {
+            ResponseCache::Default => api_cache::build_cached_client(http_client.clone(), None),
+            ResponseCache::Disabled => None,
+            ResponseCache::Dir(dir) => {
+                Some(api_cache::build_cached_client_at(http_client.clone(), dir))
+            }
+        };
         let state = ClientState {
             authn_info,
             cached,
@@ -1211,7 +1259,9 @@ mod tests {
                 password: "pass".to_owned(),
             },
             false,
-            cache_dir.map(|d| d.path().to_path_buf()),
+            cache_dir.map_or(ResponseCache::Disabled, |d| {
+                ResponseCache::Dir(d.path().to_path_buf())
+            }),
         )
         .unwrap()
     }
@@ -1510,7 +1560,7 @@ mod tests {
                 password: "pass".to_owned(),
             },
             true,
-            None,
+            ResponseCache::Disabled,
         )
         .unwrap();
         assert_eq!(api.base_url, "http://example.com");
@@ -1525,7 +1575,7 @@ mod tests {
                 password: "pass".to_owned(),
             },
             true,
-            None,
+            ResponseCache::Disabled,
         )
         .unwrap();
         assert_eq!(api.base_url, "http://example.com");
@@ -2121,7 +2171,7 @@ mod tests {
             &Settings::for_test_base_url(mock_server.uri()),
             auth,
             false,
-            None,
+            ResponseCache::Disabled,
         )
         .unwrap();
 
@@ -2178,7 +2228,7 @@ mod tests {
             &Settings::for_test_base_url(mock_server.uri()),
             auth,
             false,
-            None,
+            ResponseCache::Disabled,
         )
         .unwrap();
 
@@ -2216,7 +2266,7 @@ mod tests {
                 api_key: "some-key".to_owned(),
             },
             false,
-            None,
+            ResponseCache::Disabled,
         )
         .unwrap();
 

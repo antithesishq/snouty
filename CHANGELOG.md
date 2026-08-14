@@ -1,5 +1,6 @@
 # Unreleased
 
+- Add `snouty runs wait`: poll a run until it reaches a terminal state (completed, cancelled, or incomplete), then print its details like `runs show`. The wait is unbounded unless `--timeout` is given, `--poll-interval` tunes the check frequency (30-second floor), a run that reports status `unknown` fails the command, and a run active for more than twice its scheduled duration gets a one-time warning ([#221](https://github.com/antithesishq/snouty/pull/221))
 - `snouty validate` reads the SDK output file from the start instead of tailing it, so a setup-complete event written over bytes snouty had already read is still detected ([#218](https://github.com/antithesishq/snouty/pull/218))
 - Add `snouty runs exec`: run a bash script in a run's live session at a given moment, on a fresh branch of the multiverse. The command is gated behind the `runs-exec` unstable feature (`SNOUTY_UNSTABLE_FEATURES=runs-exec`), because the API it calls is unstable and unavailable on most tenants ([#208](https://github.com/antithesishq/snouty/pull/208))
 - snouty now requires Docker Compose v2.24.7 or newer, checked up front ([#214](https://github.com/antithesishq/snouty/pull/214))

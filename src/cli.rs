@@ -179,12 +179,10 @@ Compose configs:
 
   The setup-complete event is watched through a temp directory bind-mounted
   into each container. If your container engine runs inside a VM or on
-  another machine and does not share this machine's temp directory (Lima
-  and Colima do not share it by default; Docker Desktop and podman machine
-  do), validate times out even though the container emits the event. Set
-  SNOUTY_TEMP_DIR to a directory under a path the VM shares with write
-  access, or share the temp directory with the VM. See the README section
-  "VM-backed container runtimes".
+  another machine and does not share this machine's temp directory, snouty
+  will not be able to see the setup-complete event. Set SNOUTY_TEMP_DIR to a
+  directory under a path the VM shares with write access, or share this
+  machine's temp directory with the VM.
 
 Kubernetes configs:
   Runs docker.io/antithesishq/k8s-validator against the manifests/

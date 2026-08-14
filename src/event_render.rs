@@ -56,6 +56,12 @@ const DETAIL_INDENT: usize = VTIME_WIDTH + 2;
 /// carry the full value.
 const VALUE_TRUNCATE_WIDTH: usize = 40;
 
+/// Source labels longer than this (generated k8s pod names run 60+ columns)
+/// are truncated in the event line, with the full value on a dim detail line
+/// beneath. Wide enough that compose container names and script paths fit
+/// whole; `--detail` keeps the label inline and untruncated.
+const SOURCE_TRUNCATE_WIDTH: usize = 40;
+
 fn ansi_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
@@ -933,19 +939,44 @@ fn format_duration(value: &Value) -> Option<String> {
     Some(format!("{seconds:.1}s"))
 }
 
+/// A rendered source label: the bracketed cell for the event line, plus the
+/// full value for a detail line when the cell had to truncate.
+struct RenderedSource {
+    cell: String,
+    /// `field=full-label`, present only when the cell is truncated.
+    overflow: Option<String>,
+}
+
 /// The bracketed source label: the container when the record names one,
 /// otherwise the source name with the `antithesis_` prefix dropped. The
 /// stream (info/error) is deliberately not shown; `--json` carries it.
-fn render_source(entry: &Value) -> String {
+///
+/// A label past [`SOURCE_TRUNCATE_WIDTH`] (generated k8s pod names) truncates
+/// in the cell and surfaces whole on a detail line, named by the field it
+/// came from — unless `detail`, which keeps every value inline and whole.
+fn render_source(entry: &Value, detail: bool) -> RenderedSource {
     let container = entry["source"]["container"].as_str().unwrap_or("");
     let name = entry["source"]["name"].as_str().unwrap_or("");
 
-    let label = if !container.trim().is_empty() {
-        sanitize(container)
+    let (field, label) = if !container.trim().is_empty() {
+        ("container", sanitize(container))
     } else {
-        sanitize(name.trim().strip_prefix("antithesis_").unwrap_or(name))
+        (
+            "name",
+            sanitize(name.trim().strip_prefix("antithesis_").unwrap_or(name)),
+        )
     };
-    format!("[{label}]")
+    let truncated = console::truncate_str(&label, SOURCE_TRUNCATE_WIDTH, "…");
+    if detail || truncated == label {
+        return RenderedSource {
+            cell: format!("[{label}]"),
+            overflow: None,
+        };
+    }
+    RenderedSource {
+        cell: format!("[{truncated}]"),
+        overflow: Some(format!("{field}={label}")),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1006,17 +1037,23 @@ impl EventStreamRenderer {
             format_vtime_cell(entry)
         };
         let vtime_cell = format!("{vtime:>VTIME_WIDTH$}");
+        let source = render_source(entry, self.detail);
         let rendered = render_payload(entry, self.detail);
         out.push_str(
             format!(
                 "{}  {} {}",
                 style(vtime_cell).dim(),
-                style(render_source(entry)).cyan(),
+                style(source.cell).cyan(),
                 rendered.headline
             )
             .trim_end(),
         );
-        for detail in rendered.details {
+        // The truncated source's full value leads the detail lines, right
+        // under the cell it overflowed.
+        let overflow = source
+            .overflow
+            .map(|overflow| style(overflow).dim().to_string());
+        for detail in overflow.into_iter().chain(rendered.details) {
             out.push('\n');
             out.push_str(&format!("{:DETAIL_INDENT$}{detail}", ""));
         }
@@ -1588,7 +1625,7 @@ mod tests {
             if let Some(stream) = stream {
                 entry["source"]["stream"] = json!(stream);
             }
-            render_source(&entry)
+            render_source(&entry, false).cell
         };
         assert_eq!(source("control", "", None), "[control]");
         assert_eq!(source("", "fault_injector", None), "[fault_injector]");
@@ -1602,6 +1639,43 @@ mod tests {
         assert_eq!(
             source("", "antithesis_test_composer", Some("info")),
             "[test_composer]"
+        );
+    }
+
+    #[test]
+    fn long_sources_truncate_with_the_full_value_on_a_detail_line() {
+        console::set_colors_enabled(false);
+        let pod = "dynamo-platform-dynamo-operator-controller-manager-7c94cc7dfxqh/manager";
+        let entry = json!({
+            "output_text": "Applied CRD",
+            "source": {"container": pod, "name": pod},
+            "moment": {"input_hash": "-1", "vtime": "25.6"}
+        });
+        let block = renderer(false).render_entry(&entry);
+        let mut lines = block.lines().skip(1);
+        assert_eq!(
+            lines.next().unwrap(),
+            "  25.600  [dynamo-platform-dynamo-operator-control…] Applied CRD"
+        );
+        assert_eq!(lines.next().unwrap(), format!("          container={pod}"));
+
+        // --detail keeps the label inline and whole.
+        let block = renderer(true).render_entry(&entry);
+        assert!(
+            block.contains(&format!("[{pod}] Applied CRD")),
+            "got: {block}"
+        );
+        assert!(!block.contains("container="), "got: {block}");
+
+        // A label that fits stays whole with no overflow line.
+        let block = renderer(false).render_entry(&json!({
+            "output_text": "hi",
+            "source": {"container": "bank/parallel_driver_tx.sh"},
+            "moment": {"input_hash": "-1", "vtime": "1.0"}
+        }));
+        assert!(
+            block.ends_with("[bank/parallel_driver_tx.sh] hi"),
+            "got: {block}"
         );
     }
 

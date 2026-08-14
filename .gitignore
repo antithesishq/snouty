@@ -10,3 +10,6 @@ __pycache__/
 
 # hegel property-testing server cache + failure database
 .hegel/
+
+# nix build artifacts
+/result

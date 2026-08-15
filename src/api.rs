@@ -391,15 +391,15 @@ impl AntithesisApi {
     pub async fn get_run_logs(
         &self,
         run_id: &str,
-        at: Moment,
+        moment: Moment,
         begin: Option<LogsBegin>,
     ) -> Result<ByteStream> {
         let mut request = self
             .client
             .get_run_logs()
             .run_id(run_id)
-            .input_hash(at.input_hash)
-            .vtime(at.vtime);
+            .input_hash(moment.input_hash)
+            .vtime(moment.vtime);
         if let Some(begin) = begin {
             request = request.begin_vtime(begin.vtime);
             if let Some(hash) = begin.input_hash {

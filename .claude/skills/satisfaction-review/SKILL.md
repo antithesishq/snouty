@@ -191,7 +191,16 @@ threshold.
   overlap), or is it reasonable?
 - **Density**: walls of near-identical lines, redundant repetition, no grouping.
 - **Stray control characters**: raw escape sequences (e.g. a literal `[K`) that
-  a terminal would hide but a piped or CI-captured log shows.
+  a terminal would hide but a piped or CI-captured log shows. One known
+  exception: in `validate-*` stories, Docker Compose prefixes each
+  `<container> exited with code <n>` line with `\r` + `ESC[K`. The escape is
+  compose's, not snouty's — `logConsumer.Status` writes it with no TTY check,
+  and no compose flag suppresses it (see
+  [#226](https://github.com/antithesishq/snouty/issues/226)). Do not report it.
+  Report every other escape sequence. That includes `ESC[K` on any other line, a
+  different sequence on the exit line, and any escape in a story that is not
+  `validate-*`. A change there means compose changed its behaviour, which is
+  worth knowing.
 
 ### TTY stories (`login-*`)
 These are `snouty login` runs, so reinterpret the axes — the deliverable is a

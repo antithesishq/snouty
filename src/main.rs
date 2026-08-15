@@ -125,7 +125,7 @@ async fn run(cli: Cli) -> Result<()> {
             Ok(())
         }
         Commands::Update(args) => cmd_update(args, &settings?),
-        Commands::Docs { offline, command } => docs::cmd_docs(command, offline, json).await,
+        Commands::Docs { offline, command } => docs::cmd_docs(command, offline, output).await,
         Commands::Login { tenant, repository } => {
             cmd_login(tenant, repository, profile.as_deref(), &settings?).await
         }

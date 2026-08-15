@@ -14,6 +14,7 @@ mod snippet;
 
 use crate::cli::DocsCommands;
 use crate::error::user_error;
+use crate::render::OutputOptions;
 
 const DEFAULT_DOCS_URL: &str = "https://antithesis.com/docs";
 /// Env-only override for the docs site (mainly a test seam pointing at a mock);
@@ -47,7 +48,11 @@ fn etag_path() -> Result<PathBuf> {
     Ok(cache_dir()?.join("docs.db.etag"))
 }
 
-pub async fn cmd_docs(command: DocsCommands, offline: bool, json: bool) -> Result<()> {
+pub async fn cmd_docs(
+    command: DocsCommands,
+    offline: bool,
+    OutputOptions { json, .. }: OutputOptions,
+) -> Result<()> {
     if !offline {
         update_with_fallback().await?;
     }

@@ -371,6 +371,9 @@ class TtySession:
         try:
             self.child.expect(pexpect.EOF)
         except pexpect.TIMEOUT:
+            # The child is still up after a dialogue that should have ended it —
+            # a stalled story, already recorded as a marker frame. Fall through
+            # to the forced close, which is what ends it.
             pass
         self.child.close(force=True)
         # A child killed after a stall has no exit status of its own; report it
@@ -426,9 +429,12 @@ def drive_tty(
             frames.append((f"[gallery] answering {prompt!r}: {e}", session.frame()))
             break
     returncode = session.finish()
-    frames.append(("[after it exits]", session.frame()))
+    # The child has exited, so nothing can feed the emulator from here: one
+    # closing screen serves as both the last frame and the story's output.
+    closing = session.frame()
+    frames.append(("[after it exits]", closing))
     return (
-        Result(args, session.frame(), "", returncode),
+        Result(args, closing, "", returncode),
         frames,
         session.cast(_command_line(args)),
     )

@@ -259,6 +259,16 @@ jobs:
       - name: Install Nextest
         uses: taiki-e/install-action@cargo-nextest
 
+      # `specs/doctor.txt` asserts that `snouty doctor` exits zero while testing
+      # API connectivity, and doctor fails when it finds no container runtime.
+      # A real one is impossible here, so these shims answer the two probes
+      # doctor makes and fail every other call. That lets the whole `specs/`
+      # suite run on this leg without pretending the engine works: the
+      # engine-backed tests resolve a runtime with `podman info`, which the shim
+      # fails, so they still refuse to run here. See scripts/macos-arm-shims.
+      - name: Shim the container runtime probes
+        run: echo "$GITHUB_WORKSPACE/scripts/macos-arm-shims" >> "$GITHUB_PATH"
+
       # There is deliberately no container engine here. A test that needs one
       # but is missing from the `container` group in .config/nextest.toml fails
       # this job rather than skipping quietly, because `skip_or_fail` panics

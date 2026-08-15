@@ -13,7 +13,9 @@
 # The set names tests explicitly, so a newly added engine-backed test is not in
 # it. That fails closed rather than silently: the arm64 job runs the new test,
 # finds no engine, and `skip_or_fail` panics because CI is set. Add the test here
-# when that happens.
+# when that happens. The shims in scripts/macos-arm-shims deliberately do not
+# weaken this — they answer only the two probes `snouty doctor` makes, and fail
+# the `podman info` that resolves a runtime for the tests.
 
 [test-groups]
 # Naming the group is the point; the cap is the default parallelism rather than
@@ -28,7 +30,6 @@ filter = """
    + test(/^compose::tests::pin_images_/)
    + test(=container::tests::build_and_push_to_mock_registry)
    + test(/_engine_.*_specs$/)
-   + test(=spec_tests)
 """
 test-group = "container"
 # These are the slowest tests in the suite by a wide margin, and nextest
@@ -39,9 +40,18 @@ test-group = "container"
 # Starting them first bounds the run by the slowest test instead.
 priority = 100
 
-# Not engine-backed, but a 30s outlier among the tests that are not: the rest of
-# that set finishes in under 4s. It runs on the arm64 leg, where it would
-# otherwise land last and set the floor for the whole job on its own.
+# The slowest tests that do NOT need an engine, started first for the same
+# reason. Both run on the arm64 leg, where they are the two longest by far:
+# 30s and roughly 6s, against under 4s for everything else.
+#
+# `spec_tests` drives every file in `specs/`. It is not in the group above
+# because it needs a runtime to be *detected*, not to work — `specs/doctor.txt`
+# asserts that `snouty doctor` exits zero while testing API connectivity, and
+# doctor fails when it finds no engine. The shims in scripts/macos-arm-shims
+# answer that probe on the arm64 leg.
 [[profile.default.overrides]]
-filter = 'test(=process::tests::output_with_timeout_kills_and_errors_on_overrun)'
+filter = """
+     test(=process::tests::output_with_timeout_kills_and_errors_on_overrun)
+   + test(=spec_tests)
+"""
 priority = 100

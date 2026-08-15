@@ -365,8 +365,12 @@ impl AntithesisApi {
     /// (HTTP status vs unreachable) rather than rendered, so the caller can
     /// decide how to present each case.
     pub async fn get_version(&self) -> std::result::Result<ApiVersion, VersionError> {
-        // The client's connect timeout (CONNECT_TIMEOUT) keeps a black-holed or
-        // unresolvable host from hanging this probe.
+        // The client's connect timeout (CONNECT_TIMEOUT) bounds each attempt,
+        // so a black-holed or unresolvable host cannot hang this probe. As a
+        // GET, the probe is retried on transient transport failures (see
+        // MAX_TRANSIENT_RETRIES), so an unreachable verdict can take several
+        // attempts plus backoff to surface — the trade is that a transient
+        // blip does not misreport a healthy API as unreachable.
         match self.client.get_version().send().await {
             Ok(response) => {
                 let v = response.into_inner();
@@ -1326,18 +1330,7 @@ mod tests {
         mock_server: &MockServer,
         cache_dir: Option<&TempDir>,
     ) -> AntithesisApi {
-        AntithesisApi::build(
-            &Settings::for_test_base_url(mock_server.uri()),
-            AuthenticationInfo::Password {
-                username: "user".to_owned(),
-                password: "pass".to_owned(),
-            },
-            false,
-            cache_dir.map_or(ResponseCache::Disabled, |d| {
-                ResponseCache::Dir(d.path().to_path_buf())
-            }),
-        )
-        .unwrap()
+        test_api_at(mock_server.uri(), cache_dir)
     }
 
     #[test]
@@ -1899,12 +1892,13 @@ mod tests {
         mock_endpoint("GET", "/api/version", status, body).await
     }
 
-    /// A raw TCP server that resets its first `resets` connections (SO_LINGER
-    /// 0, so the client sees a connection reset rather than a clean close) and
-    /// answers every later connection with a fixed `GET /api/version`
-    /// response. Returns the base URL and a counter of accepted connections —
-    /// the counter is how the retry tests observe how many attempts reached
-    /// the server.
+    /// A raw TCP server that resets its first `resets` connections — it reads
+    /// one byte, then drops the socket with the rest of the request unread,
+    /// so the kernel sends an RST and the client sees a connection reset
+    /// rather than a clean close — and answers every later connection with a
+    /// fixed `GET /api/version` response. Returns the base URL and a counter
+    /// of accepted connections — the counter is how the retry tests observe
+    /// how many attempts reached the server.
     async fn reset_then_serve_version(resets: usize) -> (String, Arc<AtomicUsize>) {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
 

@@ -2,6 +2,7 @@ use std::fmt::{self, Display, Formatter};
 use std::io::{BufWriter, IsTerminal, Read, Write};
 use std::path::Path;
 use std::sync::OnceLock;
+use std::time::Duration;
 
 use color_eyre::Section;
 use color_eyre::eyre::{Result, WrapErr, eyre};
@@ -16,8 +17,8 @@ use serde_json::{Map, Value, json};
 use chrono::{DateTime, Local, Utc};
 
 use crate::api::{
-    AntithesisApi, Event, EventProperty, Moment, NonEventProperty, Property, PropertyStatus,
-    RunDetail, RunStatus, RunSummary, RunsFilterOptions,
+    AntithesisApi, Event, EventProperty, LogsBegin, Moment, NonEventProperty, Property,
+    PropertyStatus, RunDetail, RunStatus, RunSummary, RunsFilterOptions,
 };
 use crate::cli::{RunsCommands, RunsListArgs};
 use crate::error::{api_error_status, user_error};
@@ -150,12 +151,17 @@ pub async fn cmd_runs(
             begin_input_hash,
             raw,
         }) => {
+            let moment = Moment { input_hash, vtime };
+            // clap enforces `begin_input_hash requires begin_vtime`, so mapping
+            // over the vtime cannot drop a supplied hash.
+            let begin = begin_vtime.map(|vtime| LogsBegin {
+                vtime,
+                input_hash: begin_input_hash,
+            });
             cmd_runs_logs(
                 &run_id,
-                &input_hash,
-                vtime,
-                begin_input_hash.as_deref(),
-                begin_vtime,
+                moment,
+                begin,
                 settings,
                 LogOutputOptions { json, verbose, raw },
             )
@@ -169,6 +175,9 @@ pub async fn cmd_runs(
             timeout,
         }) => {
             let moment = Moment { input_hash, vtime };
+            // The flag is a whole number of seconds; carry it as a Duration
+            // from here on.
+            let timeout = Duration::from_secs(timeout);
             cmd_runs_exec(&run_id, moment, script, timeout, settings, json, verbose).await
         }
         Some(RunsCommands::Events {
@@ -381,7 +390,7 @@ fn open_run_report(run: &RunDetail, json: bool) -> Result<()> {
 /// in api.rs) — so a hung request cannot outlive it.
 async fn cmd_runs_wait(
     run_id: &str,
-    poll_interval: std::time::Duration,
+    poll_interval: Duration,
     timeout: Option<HumanDuration>,
     settings: &Settings,
     json: bool,
@@ -427,7 +436,7 @@ async fn cmd_runs_wait(
 async fn wait_for_run(
     api: &AntithesisApi,
     run_id: &str,
-    poll_interval: std::time::Duration,
+    poll_interval: Duration,
 ) -> Result<RunDetail> {
     let mut poll = tokio::time::interval(poll_interval);
     // A poll delayed by a slow response schedules the next one a full
@@ -1629,20 +1638,15 @@ async fn cmd_runs_events(
 
 async fn cmd_runs_logs(
     run_id: &str,
-    input_hash: &str,
-    vtime: VTime,
-    begin_input_hash: Option<&str>,
-    begin_vtime: Option<VTime>,
+    moment: Moment,
+    begin: Option<LogsBegin>,
     settings: &Settings,
     LogOutputOptions { json, verbose, raw }: LogOutputOptions,
 ) -> Result<()> {
     debug!("streaming logs for run: {}", run_id);
 
     let api = AntithesisApi::new(settings, verbose)?;
-    let stream = match api
-        .get_run_logs(run_id, input_hash, vtime, begin_input_hash, begin_vtime)
-        .await
-    {
+    let stream = match api.get_run_logs(run_id, moment, begin).await {
         Ok(stream) => stream.into_inner(),
         Err(err) => return Err(explain_logs_error(&api, run_id, err).await),
     };
@@ -1846,7 +1850,7 @@ async fn cmd_runs_exec(
     run_id: &str,
     moment: Moment,
     script: Option<String>,
-    timeout: u64,
+    timeout: Duration,
     settings: &Settings,
     json: bool,
     verbose: bool,
@@ -1926,9 +1930,10 @@ async fn cmd_runs_exec(
                 None => Err(user_error("command exited without reporting an exit code")),
             }
         }
-        Some(ExecEvent::TimedOut { .. }) => {
-            Err(user_error(format!("command timed out after {timeout}s")))
-        }
+        Some(ExecEvent::TimedOut { .. }) => Err(user_error(format!(
+            "command timed out after {}",
+            HumanDuration::from_seconds(timeout.as_secs())
+        ))),
         // Exit 0 must mean "the script ran and exited 0", so a stream that
         // ends without a terminal event — truncation — is a failure.
         _ => Err(eyre!("stream ended before the command reported completion")

@@ -30,7 +30,7 @@ mod generated {
 pub(crate) use generated::types::Params as RunParams;
 pub use generated::types::{
     BuildLogLine, Event, EventProperty, Moment, NonEventProperty, Property, PropertyStatus,
-    RunDetail, RunSummary,
+    RunDetail, RunStatus, RunSummary,
 };
 pub use progenitor_client::ByteStream;
 
@@ -67,95 +67,15 @@ pub enum VersionError {
     Unreachable(String),
 }
 
-/// A run's lifecycle status.
-///
-/// The documented statuses get variants; any other value the server sends is
-/// preserved verbatim as [`RunStatus::Other`], so a status this snouty
-/// predates never fails a whole response parse. Wired into the generated
-/// client by the `run_status` conversion in build.rs, like [`VTime`].
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum RunStatus {
-    Starting,
-    InProgress,
-    Completed,
-    Cancelled,
-    Incomplete,
-    Unknown,
-    /// A status this snouty does not know, carried verbatim.
-    Other(String),
-}
-
 impl RunStatus {
-    /// The wire string, e.g. `in_progress`.
-    pub fn as_str(&self) -> &str {
-        match self {
-            RunStatus::Starting => "starting",
-            RunStatus::InProgress => "in_progress",
-            RunStatus::Completed => "completed",
-            RunStatus::Cancelled => "cancelled",
-            RunStatus::Incomplete => "incomplete",
-            RunStatus::Unknown => "unknown",
-            RunStatus::Other(raw) => raw,
-        }
-    }
-
     /// Whether the run has stopped and its status will not change again.
     /// `unknown` is not terminal: it is the server saying it cannot classify
-    /// the run. Neither is [`RunStatus::Other`], which snouty cannot judge.
-    pub(crate) fn is_terminal(&self) -> bool {
+    /// the run.
+    pub(crate) fn is_terminal(self) -> bool {
         matches!(
             self,
             RunStatus::Completed | RunStatus::Cancelled | RunStatus::Incomplete
         )
-    }
-}
-
-impl std::fmt::Display for RunStatus {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(self.as_str())
-    }
-}
-
-impl std::str::FromStr for RunStatus {
-    type Err = std::convert::Infallible;
-
-    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
-        Ok(match s {
-            "starting" => RunStatus::Starting,
-            "in_progress" => RunStatus::InProgress,
-            "completed" => RunStatus::Completed,
-            "cancelled" => RunStatus::Cancelled,
-            "incomplete" => RunStatus::Incomplete,
-            "unknown" => RunStatus::Unknown,
-            other => RunStatus::Other(other.to_string()),
-        })
-    }
-}
-
-impl From<RunStatus> for String {
-    fn from(status: RunStatus) -> Self {
-        match status {
-            RunStatus::Other(raw) => raw,
-            known => known.as_str().to_owned(),
-        }
-    }
-}
-
-impl serde::Serialize for RunStatus {
-    fn serialize<S: serde::Serializer>(
-        &self,
-        serializer: S,
-    ) -> std::result::Result<S::Ok, S::Error> {
-        serializer.serialize_str(self.as_str())
-    }
-}
-
-impl<'de> serde::Deserialize<'de> for RunStatus {
-    fn deserialize<D: serde::Deserializer<'de>>(
-        deserializer: D,
-    ) -> std::result::Result<Self, D::Error> {
-        let raw = String::deserialize(deserializer)?;
-        Ok(raw.parse().expect("RunStatus::from_str is infallible"))
     }
 }
 
@@ -582,7 +502,7 @@ impl AntithesisApi {
             request = request.after(cursor);
         }
         if let Some(ref status) = opts.status {
-            request = request.status(status.clone());
+            request = request.status(*status);
         }
         if let Some(ref launcher) = opts.launcher {
             request = request.launcher(launcher.clone());
@@ -2514,51 +2434,6 @@ mod tests {
 
         let api = test_api_optionally_with_cache(&mock_server, None);
         api.search_run_events("run-1", "slow", None).await.unwrap();
-    }
-
-    // A status the enum predates round-trips verbatim instead of failing the
-    // whole response parse — the point of the open RunStatus.
-    #[test]
-    fn run_status_preserves_unrecognized_values() {
-        let run: RunDetail = serde_json::from_value(serde_json::json!({
-            "run_id": "run-1",
-            "status": "paused",
-            "created_at": "2025-03-20T02:00:00Z",
-            "launcher": "nightly"
-        }))
-        .unwrap();
-        assert_eq!(run.status, RunStatus::Other("paused".to_string()));
-        assert_eq!(run.status.to_string(), "paused");
-        assert!(!run.status.is_terminal());
-        assert_eq!(
-            serde_json::to_value(&run.status).unwrap(),
-            serde_json::json!("paused")
-        );
-    }
-
-    #[test]
-    fn run_status_round_trips_documented_values() {
-        for (raw, status) in [
-            ("starting", RunStatus::Starting),
-            ("in_progress", RunStatus::InProgress),
-            ("completed", RunStatus::Completed),
-            ("cancelled", RunStatus::Cancelled),
-            ("incomplete", RunStatus::Incomplete),
-            ("unknown", RunStatus::Unknown),
-        ] {
-            assert_eq!(raw.parse::<RunStatus>().unwrap(), status);
-            assert_eq!(status.to_string(), raw);
-            assert_eq!(String::from(status.clone()), raw);
-            assert_eq!(
-                serde_json::to_value(&status).unwrap(),
-                serde_json::json!(raw)
-            );
-        }
-        assert!(RunStatus::Completed.is_terminal());
-        assert!(RunStatus::Cancelled.is_terminal());
-        assert!(RunStatus::Incomplete.is_terminal());
-        assert!(!RunStatus::Unknown.is_terminal());
-        assert!(!RunStatus::InProgress.is_terminal());
     }
 
     fn rid(version: u32) -> String {

@@ -442,24 +442,20 @@ async fn wait_for_run(
             Err(err) => return Err(explain_run_not_found(run_id, err)),
         };
 
-        match run.status {
-            RunStatus::Starting | RunStatus::InProgress => {}
-            ref status if status.is_terminal() => return Ok(run),
-            // `unknown`, or a status this snouty predates: either way snouty
-            // cannot tell whether the run will still make progress, so the
-            // caller decides what to do.
-            ref status => {
-                return Err(
-                    user_error(format!("run {run_id} reported status \"{status}\""))
-                        .note("snouty cannot tell whether this run will still make progress")
-                        .suggestion(format!("inspect the run with `snouty runs show {run_id}`")),
-                );
-            }
+        if run.status == RunStatus::Unknown {
+            return Err(
+                user_error(format!("run {run_id} reported status \"unknown\""))
+                    .note("snouty cannot tell whether this run will still make progress")
+                    .suggestion(format!("inspect the run with `snouty runs show {run_id}`")),
+            );
+        }
+        if run.status.is_terminal() {
+            return Ok(run);
         }
 
-        if last_status.as_ref() != Some(&run.status) {
+        if last_status != Some(run.status) {
             eprintln!("run {run_id} is {}", run.status);
-            last_status = Some(run.status.clone());
+            last_status = Some(run.status);
         }
 
         if !warned_over_schedule && let Some(warning) = over_schedule_warning(&run, Utc::now()) {
@@ -6344,18 +6340,6 @@ mod tests {
             let report = format!("{err:?}");
             assert!(report.contains("snouty runs show run-w"), "got: {report}");
             assert!(!report.contains("snouty runs wait"), "got: {report}");
-        }
-
-        #[tokio::test]
-        async fn wait_fails_on_a_status_snouty_predates() {
-            let server = MockServer::start().await;
-            mount_get_run_statuses(&server, &["in_progress", "paused"]).await;
-            let api = test_api(&server.uri());
-
-            let err = wait_for_run(&api, "run-w", fast_poll()).await.unwrap_err();
-
-            let msg = format!("{err:#}");
-            assert_eq!(msg, "run run-w reported status \"paused\"", "got: {msg}");
         }
 
         #[tokio::test]

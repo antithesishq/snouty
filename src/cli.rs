@@ -10,18 +10,15 @@ use crate::features::{self, Feature};
 use crate::time::HumanDuration;
 use crate::vtime::VTime;
 
-/// clap value parser for `--status`. `RunStatus::from_str` never fails — it
-/// preserves an unrecognized server value as `Other` — but a filter the user
-/// typed must name a documented status, so `Other` is rejected here.
+/// clap value parser for `--status` that keeps a friendly, enumerated error
+/// message (the generated `RunStatus::from_str` only says "invalid value").
 fn parse_run_status(value: &str) -> Result<RunStatus, String> {
-    let Ok(status) = value.parse::<RunStatus>();
-    if matches!(status, RunStatus::Other(_)) {
-        return Err(format!(
+    value.parse::<RunStatus>().map_err(|_| {
+        format!(
             "invalid status: '{value}'\n\
              valid values: starting, in_progress, completed, cancelled, incomplete, unknown"
-        ));
-    }
-    Ok(status)
+        )
+    })
 }
 
 /// clap value parser for `runs wait --poll-interval`: a [`HumanDuration`] of

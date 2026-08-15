@@ -6,11 +6,8 @@
 # from the output. A run that reports status `unknown` fails the command
 # instead of waiting forever on a run that may never make progress.
 #
-# The status transitions themselves (poll until in_progress becomes completed,
-# the timeout path mid-wait, the over-schedule warning) are covered by Rust
-# integration tests in src/runs.rs, where the test server can change the run's
-# status between polls. This spec pins the static behavior: argument
-# validation, terminal-state handling, output shapes, and errors.
+# Status transitions mid-wait are covered by Rust integration tests in
+# src/runs.rs, where the test server can change the run's status between polls.
 
 # Like every runs command, wait requires an API key.
 ! snouty runs wait some-run

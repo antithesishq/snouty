@@ -69,10 +69,9 @@ pub enum VersionError {
 }
 
 impl RunStatus {
-    /// Whether this status is final: the run has stopped and its status will
-    /// not change again. `unknown` is deliberately not terminal — it is the
-    /// server saying it cannot classify the run, and callers that poll must
-    /// decide for themselves what to do with it.
+    /// Whether the run has stopped and its status will not change again.
+    /// `unknown` is not terminal: it is the server saying it cannot classify
+    /// the run.
     pub(crate) fn is_terminal(self) -> bool {
         matches!(
             self,
@@ -198,19 +197,17 @@ fn normalize_property(property: Property) -> Result<Property> {
 /// to return (e.g. massive log files) and must not be aborted — the user can ctrl-c.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// Where API responses are cached, per [`AntithesisApi::build`].
+/// Where API responses are cached.
 #[derive(Debug)]
 pub(crate) enum ResponseCache {
     /// `$XDG_RUNTIME_DIR/snouty/api-cache-v1` — the default for every command.
     /// Caching is disabled when `XDG_RUNTIME_DIR` is unusable.
     Default,
-    /// No response cache: every request hits the server. For poll loops that
-    /// must observe fresh state — the server marks run detail cacheable
-    /// (`Cache-Control: private, max-age=3600`), so a cached poll could
-    /// re-read the same status for up to an hour.
+    /// No response cache: every request hits the server. Run detail is
+    /// cacheable (`Cache-Control: private, max-age=3600`), so a cached poll
+    /// can re-read the same status for up to an hour.
     Disabled,
-    /// Cache under this directory. Only tests construct this variant (the
-    /// commands all use `Default` or `Disabled`), hence the dead-code allow.
+    /// Cache under this directory. Only tests construct this variant.
     #[allow(dead_code)]
     Dir(PathBuf),
 }
@@ -236,8 +233,7 @@ impl AntithesisApi {
         )
     }
 
-    /// Like [`AntithesisApi::new`], but with the response cache disabled
-    /// ([`ResponseCache::Disabled`]), for commands that poll for fresh state.
+    /// Like [`AntithesisApi::new`], but with [`ResponseCache::Disabled`].
     pub fn new_uncached(settings: &Settings, verbose: bool) -> Result<Self> {
         Self::build(
             settings,

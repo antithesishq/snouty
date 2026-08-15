@@ -766,9 +766,8 @@ fn mock_run_not_found(run_id: &str) -> (u16, String) {
 }
 
 fn mock_route_get_run(run_id: &str) -> (u16, String) {
-    // `run-unknown-status` models a run the server cannot classify: `runs wait`
-    // must fail on it instead of polling forever. Kept out of MOCK_RUNS so the
-    // list-oriented specs don't see it.
+    // `run-unknown-status` is kept out of MOCK_RUNS so the list-oriented specs
+    // don't see it.
     if run_id == "run-unknown-status" {
         return (
             200,

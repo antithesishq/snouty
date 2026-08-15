@@ -380,9 +380,8 @@ fn open_run_report(run: &RunDetail, json: bool) -> Result<()> {
 }
 
 /// `runs wait`: poll the run until it reaches a terminal state, then print its
-/// detail exactly as `runs show` would. The poll uses an uncached API client —
-/// the server marks run detail cacheable for an hour, and a wait that re-reads
-/// a cached status would sleep through the very transition it exists to see.
+/// detail exactly as `runs show` would. The client is uncached (see
+/// [`crate::api::ResponseCache::Disabled`]) so every poll observes fresh state.
 async fn cmd_runs_wait(
     run_id: &str,
     poll_interval: std::time::Duration,
@@ -406,14 +405,12 @@ async fn cmd_runs_wait(
 }
 
 /// Poll `get_run` every `poll_interval` until the run reaches a terminal
-/// state, and return that final detail. Progress goes to stderr — one line per
-/// status change, plus a one-time warning when the run overshoots twice its
-/// scheduled duration — so stdout stays reserved for the final result.
+/// state. Status changes and warnings go to stderr; stdout stays reserved for
+/// the final result.
 ///
-/// A run that reports status `unknown` fails the wait: the server is saying it
-/// cannot classify the run, so waiting further could mean waiting forever, and
-/// the caller decides what to do instead. When `timeout` elapses, one final
-/// poll still runs before the wait fails.
+/// A run that reports `unknown` fails the wait (see
+/// [`RunStatus::is_terminal`]). When `timeout` elapses, one final poll still
+/// runs before the wait fails.
 async fn wait_for_run(
     api: &AntithesisApi,
     run_id: &str,
@@ -466,19 +463,18 @@ async fn wait_for_run(
                 ))
                 .suggestion(format!("resume waiting with `snouty runs wait {run_id}`")));
             }
-            // Never sleep past the deadline: the last poll lands at the
-            // deadline instead of up to a full interval later.
+            // Clip the final sleep so the last poll lands at the deadline,
+            // not up to a full interval later.
             Some(deadline) => tokio::time::sleep(poll_interval.min(deadline - now)).await,
             None => tokio::time::sleep(poll_interval).await,
         }
     }
 }
 
-/// The warning line for a run that has been active for more than twice its
-/// scheduled duration (`antithesis.duration`), or `None` while it hasn't. The
-/// wall clock also spans provisioning, setup, and teardown, so some overshoot
-/// is normal; twice the schedule is far enough out to be worth flagging once.
-/// Runs that haven't started or record no usable scheduled duration never warn.
+/// The warning line for a run active for more than twice its scheduled
+/// duration (`antithesis.duration`); the wall clock also spans provisioning,
+/// setup, and teardown, so some overshoot is normal. Runs that haven't started
+/// or record no usable scheduled duration never warn.
 fn over_schedule_warning(run: &RunDetail, now: DateTime<Utc>) -> Option<String> {
     let scheduled = run.requested_duration()?.parse::<ReportDuration>().ok()?;
     let elapsed = elapsed_duration(run.started_at?, run.completed_at.unwrap_or(now))?;
@@ -6253,12 +6249,10 @@ mod tests {
         }
     }
 
-    /// `runs wait`: the status transitions the specs can't exercise against a
-    /// static mock. Each test mounts a sequence of `get_run` responses —
-    /// wiremock matches mocks in mount order, and a mock whose `up_to_n_times`
-    /// budget is spent stops matching — so the run's status changes between
-    /// polls, exactly like a live run. Sub-30s intervals are fine here: the
-    /// CLI enforces the floor, `wait_for_run` takes any `Duration`.
+    /// `runs wait` status transitions: each test mounts a sequence of
+    /// `get_run` responses so the run's status changes between polls. Sub-30s
+    /// intervals are fine here: the CLI enforces the floor, `wait_for_run`
+    /// takes any `Duration`.
     mod wait {
         use super::*;
         use crate::auth::AuthenticationInfo;
@@ -6289,9 +6283,10 @@ mod tests {
             })
         }
 
-        /// Mount `get_run` responses that serve each status in order, the last
-        /// one indefinitely.
-        async fn mock_status_sequence(server: &MockServer, statuses: &[&str]) {
+        /// Serve each status in order, the last one indefinitely: wiremock
+        /// matches in mount order and skips a mock whose `up_to_n_times`
+        /// budget is spent.
+        async fn mount_get_run_statuses(server: &MockServer, statuses: &[&str]) {
             for (i, status) in statuses.iter().enumerate() {
                 let mock = Mock::given(method("GET"))
                     .and(path("/api/v0/runs/run-w"))
@@ -6305,15 +6300,15 @@ mod tests {
             }
         }
 
-        const FAST: Duration = Duration::from_millis(10);
+        const FAST_POLL: Duration = Duration::from_millis(10);
 
         #[tokio::test]
         async fn wait_polls_until_the_run_completes() {
             let server = MockServer::start().await;
-            mock_status_sequence(&server, &["starting", "in_progress", "completed"]).await;
+            mount_get_run_statuses(&server, &["starting", "in_progress", "completed"]).await;
             let api = test_api(&server.uri());
 
-            let run = wait_for_run(&api, "run-w", FAST, None).await.unwrap();
+            let run = wait_for_run(&api, "run-w", FAST_POLL, None).await.unwrap();
 
             assert_eq!(run.status, RunStatus::Completed);
             // One poll per status: the loop stopped at the first terminal one.
@@ -6325,10 +6320,10 @@ mod tests {
         async fn wait_treats_every_terminal_state_as_success() {
             for status in ["completed", "cancelled", "incomplete"] {
                 let server = MockServer::start().await;
-                mock_status_sequence(&server, &["in_progress", status]).await;
+                mount_get_run_statuses(&server, &["in_progress", status]).await;
                 let api = test_api(&server.uri());
 
-                let run = wait_for_run(&api, "run-w", FAST, None).await.unwrap();
+                let run = wait_for_run(&api, "run-w", FAST_POLL, None).await.unwrap();
                 assert_eq!(run.status.to_string(), status);
             }
         }
@@ -6336,10 +6331,12 @@ mod tests {
         #[tokio::test]
         async fn wait_fails_when_the_run_turns_unknown() {
             let server = MockServer::start().await;
-            mock_status_sequence(&server, &["in_progress", "unknown"]).await;
+            mount_get_run_statuses(&server, &["in_progress", "unknown"]).await;
             let api = test_api(&server.uri());
 
-            let err = wait_for_run(&api, "run-w", FAST, None).await.unwrap_err();
+            let err = wait_for_run(&api, "run-w", FAST_POLL, None)
+                .await
+                .unwrap_err();
 
             let msg = format!("{err:#}");
             assert_eq!(msg, "run run-w reported status \"unknown\"", "got: {msg}");
@@ -6352,15 +6349,12 @@ mod tests {
         #[tokio::test]
         async fn wait_times_out_on_a_run_that_never_finishes() {
             let server = MockServer::start().await;
-            mock_status_sequence(&server, &["in_progress"]).await;
+            mount_get_run_statuses(&server, &["in_progress"]).await;
             let api = test_api(&server.uri());
 
-            // A poll interval far past the timeout makes the poll count exact:
-            // the one sleep is clipped to the 25ms deadline, so there is the
-            // initial poll and one final poll at the deadline. Scheduler jitter
-            // can only delay the second poll, never add a third — an interval
-            // near the timeout would make the count jitter-dependent (it did,
-            // on a loaded CI runner).
+            // A poll interval far past the timeout pins the poll count at two
+            // (the initial poll and the final one at the clipped deadline):
+            // jitter can only delay the final poll, never add a third.
             let err = wait_for_run(
                 &api,
                 "run-w",
@@ -6393,14 +6387,15 @@ mod tests {
                 .await;
             let api = test_api(&server.uri());
 
-            let err = wait_for_run(&api, "BAD-ID", FAST, None).await.unwrap_err();
+            let err = wait_for_run(&api, "BAD-ID", FAST_POLL, None)
+                .await
+                .unwrap_err();
             assert_eq!(format!("{err:#}"), "run not found: BAD-ID");
         }
 
         #[tokio::test]
         async fn wait_passes_through_a_server_fault() {
-            // A 500 mid-wait is a genuine fault, not a missing run: it fails the
-            // wait with the API error intact so nothing masks a broken server.
+            // Unlike a 404, a 500 must not be reshaped into "run not found".
             let server = MockServer::start().await;
             Mock::given(method("GET"))
                 .and(path("/api/v0/runs/run-w"))
@@ -6409,13 +6404,16 @@ mod tests {
                 .await;
             let api = test_api(&server.uri());
 
-            let err = wait_for_run(&api, "run-w", FAST, None).await.unwrap_err();
+            let err = wait_for_run(&api, "run-w", FAST_POLL, None)
+                .await
+                .unwrap_err();
             assert_eq!(api_error_status(&err), Some(500));
         }
 
-        /// A `RunDetail` as the over-schedule check sees it: started at
-        /// 2025-03-20T02:00:00Z, still running, with the given
-        /// `antithesis.duration` (minutes, or absent).
+        const STARTED_AT: &str = "2025-03-20T02:00:00Z";
+
+        /// A still-running `RunDetail`, started at [`STARTED_AT`], with the
+        /// given `antithesis.duration` (minutes, or absent).
         fn active_run(duration_minutes: Option<&str>) -> RunDetail {
             let mut parameters = serde_json::Map::new();
             if let Some(d) = duration_minutes {
@@ -6424,26 +6422,24 @@ mod tests {
             serde_json::from_value(json!({
                 "run_id": "run-w",
                 "status": "in_progress",
-                "created_at": "2025-03-20T02:00:00Z",
-                "started_at": "2025-03-20T02:00:00Z",
+                "created_at": STARTED_AT,
+                "started_at": STARTED_AT,
                 "launcher": "nightly",
                 "parameters": parameters
             }))
             .unwrap()
         }
 
-        fn at(minutes_after_start: i64) -> DateTime<Utc> {
-            "2025-03-20T02:00:00Z".parse::<DateTime<Utc>>().unwrap()
-                + chrono::Duration::minutes(minutes_after_start)
+        fn minutes_after_start(minutes: i64) -> DateTime<Utc> {
+            STARTED_AT.parse::<DateTime<Utc>>().unwrap() + chrono::Duration::minutes(minutes)
         }
 
         #[test]
         fn over_schedule_warns_past_twice_the_scheduled_duration() {
             let run = active_run(Some("30"));
-            // At exactly twice the schedule there is no warning yet …
-            assert_eq!(over_schedule_warning(&run, at(60)), None);
-            // … one minute past it, the warning names both durations.
-            let warning = over_schedule_warning(&run, at(61)).unwrap();
+            // Strictly past twice the schedule: exactly 2x does not warn.
+            assert_eq!(over_schedule_warning(&run, minutes_after_start(60)), None);
+            let warning = over_schedule_warning(&run, minutes_after_start(61)).unwrap();
             assert!(warning.contains("run run-w"), "got: {warning}");
             assert!(warning.contains("1h1m"), "got: {warning}");
             assert!(warning.contains("30m"), "got: {warning}");
@@ -6451,28 +6447,24 @@ mod tests {
 
         #[test]
         fn over_schedule_needs_a_usable_schedule_and_a_start() {
-            // No duration parameter, an unparsable one, and a zero schedule
-            // (which would flag every run that has run at all) never warn.
-            assert_eq!(over_schedule_warning(&active_run(None), at(1000)), None);
+            let far_out = minutes_after_start(1000);
+            assert_eq!(over_schedule_warning(&active_run(None), far_out), None);
             assert_eq!(
-                over_schedule_warning(&active_run(Some("bogus")), at(1000)),
+                over_schedule_warning(&active_run(Some("bogus")), far_out),
                 None
             );
-            assert_eq!(
-                over_schedule_warning(&active_run(Some("0")), at(1000)),
-                None
-            );
+            assert_eq!(over_schedule_warning(&active_run(Some("0")), far_out), None);
 
             // A run that hasn't started has no elapsed time to compare.
             let unstarted: RunDetail = serde_json::from_value(json!({
                 "run_id": "run-w",
                 "status": "starting",
-                "created_at": "2025-03-20T02:00:00Z",
+                "created_at": STARTED_AT,
                 "launcher": "nightly",
                 "parameters": {"antithesis.duration": "30"}
             }))
             .unwrap();
-            assert_eq!(over_schedule_warning(&unstarted, at(1000)), None);
+            assert_eq!(over_schedule_warning(&unstarted, far_out), None);
         }
     }
 }

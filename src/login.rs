@@ -7,7 +7,7 @@ use base64::{Engine as _, prelude::BASE64_URL_SAFE_NO_PAD};
 use color_eyre::Section;
 use color_eyre::eyre::{Context, Result, eyre};
 use inquire::{Confirm, Password, PasswordDisplayMode, Select, Text};
-use log::warn;
+use log::{debug, warn};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -137,6 +137,9 @@ async fn do_cmd_login(
             ));
         }
     }
+    // The error has served its purpose (the warn-and-confirm above); everything
+    // past this point only cares whether settings resolved.
+    let current_settings = current_settings.ok();
 
     let profile_to_use = profile
         .map(|p| p.to_owned())
@@ -147,7 +150,7 @@ async fn do_cmd_login(
         Some(_) | None => prompt_for_value(
             prompter,
             "Antithesis tenant",
-            current_settings.as_ref().ok().and_then(|s| s.tenant()),
+            current_settings.as_ref().and_then(|s| s.tenant()),
         )?,
     };
     validate_tenant_host(&tenant_to_use)?;
@@ -157,24 +160,25 @@ async fn do_cmd_login(
         Some(_) | None => prompt_for_value(
             prompter,
             "container repository",
-            current_settings.as_ref().ok().and_then(|s| s.repository()),
+            current_settings.as_ref().and_then(|s| s.repository()),
         )?,
     };
 
     // Whatever credentials are already in reach, so the menu can default to the
-    // kind last used and the key prompt can offer the stored key back. The error
-    // is discarded on purpose: nothing reads it, and having none is the ordinary
-    // state on a first login rather than a failure.
+    // kind last used and the key prompt can offer the stored key back. Having
+    // none is the ordinary state on a first login rather than a failure, so the
+    // error is logged at debug level and then dropped.
     let current_credentials = AuthenticationInfo::for_ambient_configuration_with_attribution(
         profile_to_use.as_deref(),
         PasswordPolicy::Inspect,
     )
+    .inspect_err(|err| debug!("no ambient credentials to offer back: {err:#}"))
     .ok();
 
     // Capture the credential kind and where it was stored so the summary can name
     // both; `None` when the user chose to skip credential setup.
     let credential_summary = if prompter.is_interactive() {
-        match prompt_for_auth(prompter, &tenant_to_use, &current_credentials).await? {
+        match prompt_for_auth(prompter, &tenant_to_use, current_credentials.as_ref()).await? {
             Some(credentials) => {
                 let kind = match &credentials {
                     PersistableCredentials::ApiKey { .. } => "API key",
@@ -323,7 +327,7 @@ impl std::fmt::Display for AuthSetupType {
 async fn prompt_for_auth(
     prompter: &dyn Prompter,
     tenant: &str,
-    previous_value: &Option<AttributedValue<AuthenticationInfo>>,
+    previous_value: Option<&AttributedValue<AuthenticationInfo>>,
 ) -> Result<Option<PersistableCredentials>> {
     // ANTITHESIS_BASE_URL trumps the supplied tenant because the former is used by spec tests
     let base_url = env::var(settings::ANTITHESIS_BASE_URL_VAR_NAME)?
@@ -371,10 +375,10 @@ async fn prompt_for_auth(
         None => Ok(None),
         Some(index) => match credential_options[index] {
             AuthSetupType::ApiKey => {
-                prompt_for_api_key(prompter, stored_api_key(previous_value.as_ref())).map(Some)
+                prompt_for_api_key(prompter, stored_api_key(previous_value)).map(Some)
             }
 
-            AuthSetupType::Password => match previous_value.as_ref().map(AttributedValue::value) {
+            AuthSetupType::Password => match previous_value.map(AttributedValue::value) {
                 Some(AuthenticationInfo::Password { username, .. }) => {
                     prompt_for_username_password(prompter, Some(username))
                 }

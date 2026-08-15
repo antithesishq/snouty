@@ -215,7 +215,7 @@ fn accepts_an_api_key_longer_than_the_terminal_width() {
 /// characters, which is what makes the hint recognizable.
 #[test]
 fn bare_enter_keeps_the_stored_api_key() {
-    let stored = "sk-pty-stored-key";
+    let stored = "antithesis_api_key_v2_PTYSTORED_9Pgw";
     let (home, mut session) = start_login_with(&[(
         ".config/snouty/credentials.toml",
         &format!("[default]\ntype = \"ApiKey\"\napi_key = \"{stored}\"\n"),
@@ -226,8 +226,9 @@ fn bare_enter_keeps_the_stored_api_key() {
         "What kind of credentials would you like to use?",
     );
     send(&mut session, "\r");
-    // The hint: the key's own prefix, then a fixed run of stars.
-    let mut seen = expect(&mut session, "Please enter your API Key (sk-p********)");
+    // The hint: stars, then the key's own last characters. Antithesis keys
+    // share a constant prefix, so the tail is what tells two of them apart.
+    let mut seen = expect(&mut session, "Please enter your API Key (********9Pgw)");
     send(&mut session, "\r");
     seen += &finish(session);
 

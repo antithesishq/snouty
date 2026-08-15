@@ -2239,9 +2239,9 @@ def build_validate_stories(ephemeral: Path | None) -> list[Story]:
 
 # Fake, obviously-not-real secrets typed at the prompts — never a real
 # credential, and redacted again before embedding (see `_redact_secrets`).
-_FAKE_KEY = "sk-FAKE-not-a-real-key"
+_FAKE_KEY = "antithesis_api_key_v2_NOTAREALKEY_7Qxz"
 _FAKE_PASS = "FAKE-not-a-real-password"
-_SEED_KEY = "sk-SEED-not-a-real-key"
+_SEED_KEY = "antithesis_api_key_v2_NOTAREALSEED_9Pgw"
 _TENANT = "acme"
 _REPO = "registry.example.com/acme/app"
 _SETTINGS = ".config/snouty/settings.toml"

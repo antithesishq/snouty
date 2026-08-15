@@ -161,10 +161,15 @@ async fn do_cmd_login(
         )?,
     };
 
+    // Whatever credentials are already in reach, so the menu can default to the
+    // kind last used and the key prompt can offer the stored key back. The error
+    // is discarded on purpose: nothing reads it, and having none is the ordinary
+    // state on a first login rather than a failure.
     let current_credentials = AuthenticationInfo::for_ambient_configuration_with_attribution(
         profile_to_use.as_deref(),
         PasswordPolicy::Inspect,
-    );
+    )
+    .ok();
 
     // Capture the credential kind and where it was stored so the summary can name
     // both; `None` when the user chose to skip credential setup.
@@ -215,7 +220,7 @@ fn print_login_summary(
     profile: Option<&str>,
     settings_path: &Path,
     credentials: Option<AttributedValue<&str>>,
-    previous_credentials: Result<AttributedValue<AuthenticationInfo>>,
+    previous_credentials: Option<AttributedValue<AuthenticationInfo>>,
 ) {
     let scope = match profile {
         Some(p) => format!(" under profile `{p}`"),
@@ -244,12 +249,12 @@ fn print_login_summary(
             println!("Stored your {kind}{scope} in {}.", path.display());
         }
         _ => match previous_credentials {
-            Ok(AttributedValue::Keychain { .. }) => {
+            Some(AttributedValue::Keychain { .. }) => {
                 println!(
                     "Retained your previously stored credentials{scope} in the system keychain."
                 );
             }
-            Ok(AttributedValue::SettingsFile {
+            Some(AttributedValue::SettingsFile {
                 settings_file_path, ..
             }) => {
                 println!(
@@ -318,7 +323,7 @@ impl std::fmt::Display for AuthSetupType {
 async fn prompt_for_auth(
     prompter: &dyn Prompter,
     tenant: &str,
-    previous_value: &Result<AttributedValue<AuthenticationInfo>>,
+    previous_value: &Option<AttributedValue<AuthenticationInfo>>,
 ) -> Result<Option<PersistableCredentials>> {
     // ANTITHESIS_BASE_URL trumps the supplied tenant because the former is used by spec tests
     let base_url = env::var(settings::ANTITHESIS_BASE_URL_VAR_NAME)?
@@ -342,7 +347,7 @@ async fn prompt_for_auth(
     // highlight the first (preferred) option. Credentials from environment
     // variables are not stored, so they set no default.
     let previous_kind = match previous_value {
-        Ok(creds) if !matches!(creds, AttributedValue::EnvironmentVariable { .. }) => {
+        Some(creds) if !matches!(creds, AttributedValue::EnvironmentVariable { .. }) => {
             Some(creds.value())
         }
         _ => None,
@@ -366,11 +371,11 @@ async fn prompt_for_auth(
         None => Ok(None),
         Some(index) => match credential_options[index] {
             AuthSetupType::ApiKey => {
-                prompt_for_api_key(prompter, stored_api_key(previous_value)).map(Some)
+                prompt_for_api_key(prompter, stored_api_key(previous_value.as_ref())).map(Some)
             }
 
             AuthSetupType::Password => match previous_value.as_ref().map(AttributedValue::value) {
-                Ok(AuthenticationInfo::Password { username, .. }) => {
+                Some(AuthenticationInfo::Password { username, .. }) => {
                     prompt_for_username_password(prompter, Some(username))
                 }
                 _ => prompt_for_username_password(prompter, None),
@@ -383,7 +388,7 @@ async fn prompt_for_auth(
     }
 }
 
-/// How many leading characters of a stored secret its hint shows. Enough to
+/// How many trailing characters of a stored secret its hint shows. Enough to
 /// tell one key from another, far too few to reconstruct either.
 const HINT_VISIBLE_CHARS: usize = 4;
 
@@ -391,22 +396,27 @@ const HINT_VISIBLE_CHARS: usize = 4;
 /// the hint does not disclose how long the secret is.
 const HINT_STARS: usize = 8;
 
-/// A display-only stand-in for a stored secret — its first few characters, then
-/// stars, e.g. `sk-F********`. The prompt shows this so the user can see that
-/// there is a stored value to keep, and recognize which one it is.
+/// A display-only stand-in for a stored secret — stars, then its last few
+/// characters, e.g. `********9Pgw`. The prompt shows this so the user can see
+/// that there is a stored value to keep, and recognize which one it is.
+///
+/// The tail, not the head: every Antithesis API key opens with the same
+/// `antithesis_api_key_v2` prefix, so leading characters would distinguish
+/// nothing.
 fn secret_hint(secret: &str) -> String {
-    let visible: String = secret.chars().take(HINT_VISIBLE_CHARS).collect();
-    format!("{visible}{}", "*".repeat(HINT_STARS))
+    let skip = secret.chars().count().saturating_sub(HINT_VISIBLE_CHARS);
+    let tail: String = secret.chars().skip(skip).collect();
+    format!("{}{tail}", "*".repeat(HINT_STARS))
 }
 
 /// The API key already in storage, when that is what the previous credentials
 /// hold. Credentials read from the environment are left out on purpose: keeping
 /// one would copy an ambient secret into the credentials file. The menu's own
 /// default ignores them for the same reason.
-fn stored_api_key(previous: &Result<AttributedValue<AuthenticationInfo>>) -> Option<&str> {
+fn stored_api_key(previous: Option<&AttributedValue<AuthenticationInfo>>) -> Option<&str> {
     match previous {
-        Ok(AttributedValue::EnvironmentVariable { .. }) | Err(_) => None,
-        Ok(credentials) => match credentials.value() {
+        None | Some(AttributedValue::EnvironmentVariable { .. }) => None,
+        Some(credentials) => match credentials.value() {
             AuthenticationInfo::ApiKey { api_key } => Some(api_key),
             _ => None,
         },
@@ -882,16 +892,23 @@ mod tests {
 
     #[test]
     fn secret_hint_shows_a_prefix_and_a_fixed_run_of_stars() {
-        // The prefix is the key's own, so the user recognizes which key is
+        // The tail is the key's own, so the user recognizes which key is
         // stored; the star run is fixed, so two keys of different lengths hint
-        // identically.
-        assert_eq!(secret_hint("sk-FAKE-not-a-real-key"), "sk-F********");
-        assert_eq!(secret_hint("sk-FAKE-shorter"), "sk-F********");
+        // identically. Antithesis keys share a constant prefix, which is why the
+        // hint shows the end and not the start.
+        assert_eq!(
+            secret_hint("antithesis_api_key_v2_NOTREAL_9Pgw"),
+            "********9Pgw"
+        );
+        assert_eq!(
+            secret_hint("antithesis_api_key_v2_SHORTER_7Qxz"),
+            "********7Qxz"
+        );
     }
 
     #[test]
     fn secret_hint_never_shows_more_than_it_has() {
-        assert_eq!(secret_hint("ab"), "ab********");
+        assert_eq!(secret_hint("ab"), "********ab");
         assert_eq!(secret_hint(""), "********");
     }
 
@@ -918,31 +935,34 @@ mod tests {
 
     #[test]
     fn stored_api_key_reads_a_key_out_of_storage() {
-        let stored = Ok(AttributedValue::SettingsFile {
+        let stored = Some(AttributedValue::SettingsFile {
             value: AuthenticationInfo::ApiKey {
-                api_key: "sk-FAKE-not-a-real-key".to_owned(),
+                api_key: "antithesis_api_key_v2_NOTREAL_9Pgw".to_owned(),
             },
             settings_file_path: Path::new("/tmp/credentials.toml").to_path_buf(),
             profile: None,
         });
-        assert_eq!(stored_api_key(&stored), Some("sk-FAKE-not-a-real-key"));
+        assert_eq!(
+            stored_api_key(stored.as_ref()),
+            Some("antithesis_api_key_v2_NOTREAL_9Pgw")
+        );
     }
 
     #[test]
     fn stored_api_key_ignores_a_key_from_the_environment() {
         // Keeping it would copy an ambient secret into the credentials file.
-        let ambient = Ok(AttributedValue::EnvironmentVariable {
+        let ambient = Some(AttributedValue::EnvironmentVariable {
             value: AuthenticationInfo::ApiKey {
-                api_key: "sk-FAKE-not-a-real-key".to_owned(),
+                api_key: "antithesis_api_key_v2_NOTREAL_9Pgw".to_owned(),
             },
             environment_variable_names: vec!["ANTITHESIS_API_KEY"],
         });
-        assert_eq!(stored_api_key(&ambient), None);
+        assert_eq!(stored_api_key(ambient.as_ref()), None);
     }
 
     #[test]
     fn stored_api_key_ignores_credentials_of_another_kind() {
-        let password = Ok(AttributedValue::SettingsFile {
+        let password = Some(AttributedValue::SettingsFile {
             value: AuthenticationInfo::Password {
                 username: "user".to_owned(),
                 password: "FAKE-not-a-real-password".to_owned(),
@@ -950,8 +970,8 @@ mod tests {
             settings_file_path: Path::new("/tmp/credentials.toml").to_path_buf(),
             profile: None,
         });
-        assert_eq!(stored_api_key(&password), None);
-        assert_eq!(stored_api_key(&Err(eyre!("no credentials"))), None);
+        assert_eq!(stored_api_key(password.as_ref()), None);
+        assert_eq!(stored_api_key(None), None);
     }
 
     #[test]
@@ -1607,7 +1627,7 @@ mod tests {
         let env = LoginEnv::new();
         env.seed(
             ".config/snouty/credentials.toml",
-            "[default]\ntype = \"ApiKey\"\napi_key = \"sk-stored-key\"\n",
+            "[default]\ntype = \"ApiKey\"\napi_key = \"antithesis_api_key_v2_STORED_9Pgw\"\n",
         );
         let settings = env.resolve_settings(None);
         let prompter = Script::default()
@@ -1621,11 +1641,14 @@ mod tests {
 
         assert_eq!(
             prompter.password_hints(),
-            vec![Some("sk-s********".to_owned())],
+            vec![Some("********9Pgw".to_owned())],
             "the key prompt must show that a stored key is there to keep"
         );
         let creds = env.credentials();
-        assert!(creds.contains(r#"api_key = "sk-stored-key""#), "{creds}");
+        assert!(
+            creds.contains(r#"api_key = "antithesis_api_key_v2_STORED_9Pgw""#),
+            "{creds}"
+        );
         Ok(())
     }
 
@@ -1635,20 +1658,23 @@ mod tests {
         let env = LoginEnv::new();
         env.seed(
             ".config/snouty/credentials.toml",
-            "[default]\ntype = \"ApiKey\"\napi_key = \"sk-stored-key\"\n",
+            "[default]\ntype = \"ApiKey\"\napi_key = \"antithesis_api_key_v2_STORED_9Pgw\"\n",
         );
         let settings = env.resolve_settings(None);
         let prompter = Script::default()
             .input("mytenant")
             .input("myrepo")
             .select(0)
-            .password("sk-new-key")
+            .password("antithesis_api_key_v2_NEW_7Qxz")
             .build();
 
         do_cmd_login(None, None, None, settings, &prompter).await?;
 
         let creds = env.credentials();
-        assert!(creds.contains(r#"api_key = "sk-new-key""#), "{creds}");
+        assert!(
+            creds.contains(r#"api_key = "antithesis_api_key_v2_NEW_7Qxz""#),
+            "{creds}"
+        );
         Ok(())
     }
 
@@ -1659,7 +1685,7 @@ mod tests {
         let env = LoginEnv::new();
         // SAFETY: `LoginEnv` holds `ENV_LOCK` for this test's whole body, so no
         // other test reads or writes process env while this var is set.
-        unsafe { std::env::set_var("ANTITHESIS_API_KEY", "sk-ambient-key") };
+        unsafe { std::env::set_var("ANTITHESIS_API_KEY", "antithesis_api_key_v2_AMBIENT_5Kfn") };
         let settings = env.resolve_settings(None);
         let prompter = Script::default()
             .input("mytenant")

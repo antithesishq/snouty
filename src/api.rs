@@ -216,6 +216,16 @@ pub(crate) enum ResponseCache {
     Dir(std::path::PathBuf),
 }
 
+/// Where [`AntithesisApi::get_run_logs`] starts streaming from, instead of
+/// the timeline's earliest log entry. The vtime alone is enough; the input
+/// hash is an optimization the endpoint accepts only alongside it, which is
+/// why this is not a [`Moment`].
+#[derive(Clone, Debug)]
+pub struct LogsBegin {
+    pub vtime: VTime,
+    pub input_hash: Option<String>,
+}
+
 pub struct AntithesisApi {
     client: generated::Client,
     base_url: String,
@@ -381,22 +391,20 @@ impl AntithesisApi {
     pub async fn get_run_logs(
         &self,
         run_id: &str,
-        input_hash: &str,
-        vtime: VTime,
-        begin_input_hash: Option<&str>,
-        begin_vtime: Option<VTime>,
+        at: Moment,
+        begin: Option<LogsBegin>,
     ) -> Result<ByteStream> {
         let mut request = self
             .client
             .get_run_logs()
             .run_id(run_id)
-            .input_hash(input_hash)
-            .vtime(vtime);
-        if let Some(v) = begin_input_hash {
-            request = request.begin_input_hash(v);
-        }
-        if let Some(v) = begin_vtime {
-            request = request.begin_vtime(v);
+            .input_hash(at.input_hash)
+            .vtime(at.vtime);
+        if let Some(begin) = begin {
+            request = request.begin_vtime(begin.vtime);
+            if let Some(hash) = begin.input_hash {
+                request = request.begin_input_hash(hash);
+            }
         }
 
         match request.send().await {
@@ -419,14 +427,15 @@ impl AntithesisApi {
         run_id: &str,
         moment: Moment,
         script: String,
-        timeout_seconds: u64,
+        timeout: Duration,
     ) -> Result<ByteStream> {
         // No `use_otis`: `build.rs` drops that field from the generated type,
         // so snouty says nothing about it and the server applies its default.
         let body = generated::types::ExecuteCommandRequest {
             moment,
             script,
-            timeout_seconds,
+            // The wire field is a whole number of seconds.
+            timeout_seconds: timeout.as_secs(),
         };
         let request = self.client.execute_command().run_id(run_id).body(body);
         match request.send().await {

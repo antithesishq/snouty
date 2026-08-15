@@ -906,18 +906,32 @@ fn clear_from_file_if_present(profile: Option<&str>) {
             creds_file.default = None;
         }
 
-        if changed
-            && let Ok(mut temp) = NamedTempFile::new_in(&parent_dir)
-            && let Ok(to_write) = toml::to_string_pretty(&creds_file)
-            && temp.write_all(to_write.as_bytes()).is_ok()
-        {
-            warn!(
-                "The supplied credentials were stored in the keychain, but an entry under {} profile name was also present in the user credentials file. Clearing the entry from the credentials file in favor of what was committed to the keychain.",
-                if profile.is_some() { "the same" } else { "no" }
-            );
-            let _ = temp.persist(&path);
+        if changed {
+            let profile_phrase = if profile.is_some() { "the same" } else { "no" };
+            match rewrite_credentials_file(&creds_file, &parent_dir, &path) {
+                Ok(()) => warn!(
+                    "The supplied credentials were stored in the keychain, but an entry under {profile_phrase} profile name was also present in the user credentials file. Cleared the entry from the credentials file in favor of what was committed to the keychain."
+                ),
+                Err(err) => warn!(
+                    "The supplied credentials were stored in the keychain, but a stale entry under {profile_phrase} profile name could not be removed from the credentials file at {}: {err:#}. The plaintext entry remains on disk.",
+                    path.display()
+                ),
+            }
         }
     }
+}
+
+/// Atomically rewrite the credentials file with `creds_file` via a temp file
+/// in `parent_dir`.
+fn rewrite_credentials_file(
+    creds_file: &CredentialsFile,
+    parent_dir: &Path,
+    path: &Path,
+) -> Result<()> {
+    let mut temp = NamedTempFile::new_in(parent_dir)?;
+    temp.write_all(toml::to_string_pretty(creds_file)?.as_bytes())?;
+    temp.persist(path)?;
+    Ok(())
 }
 
 fn persist_to_file(
@@ -976,10 +990,7 @@ fn persist_to_file(
         current_contents.default = Some(credentials);
     }
 
-    let mut temp = NamedTempFile::new_in(&settings_dir)?;
-    temp.write_all(toml::to_string_pretty(&current_contents)?.as_bytes())?;
-
-    temp.persist(&path)?;
+    rewrite_credentials_file(&current_contents, &settings_dir, &path)?;
 
     Ok(path)
 }

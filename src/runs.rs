@@ -3,7 +3,6 @@ use std::io::{BufWriter, IsTerminal, Read, Write};
 use std::path::Path;
 use std::sync::OnceLock;
 use std::time::Duration;
-use std::time::Duration;
 
 use color_eyre::Section;
 use color_eyre::eyre::{Result, WrapErr, eyre};

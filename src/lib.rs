@@ -3,6 +3,7 @@ mod attributed_value;
 
 pub mod api;
 pub mod auth;
+pub mod browser;
 pub mod cli;
 pub mod compose;
 pub mod config;

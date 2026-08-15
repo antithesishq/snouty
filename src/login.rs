@@ -1,6 +1,5 @@
 use std::io::{self, IsTerminal};
 use std::path::Path;
-use std::process::{Command, Stdio};
 use std::time::Duration;
 
 use base64::{Engine as _, prelude::BASE64_URL_SAFE_NO_PAD};
@@ -497,7 +496,14 @@ async fn complete_oauth_login(
         request_login_redirect(client, base_url, port, &code_challenge, &cli_state).await?;
 
     println!("\nTo finish signing in, open the following URL in your browser:\n\n  {location}\n");
-    open_in_browser(&location)?;
+    // Best-effort: an opener that fails to launch is ignored — the URL is
+    // printed above, so a headless or opener-less environment can still
+    // complete the flow by hand. An invalid URL still aborts.
+    if crate::browser::open_in_browser(&location).is_err() {
+        return Err(eyre!(
+            "The supplied login URL is not a valid HTTP(S) URL: {location}"
+        ));
+    }
     println!("Waiting for you to complete sign-in in your browser...");
 
     let callback = wait_for_callback(listeners).await?;
@@ -828,45 +834,10 @@ fn generate_verifier_or_state() -> Result<String> {
     Ok(BASE64_URL_SAFE_NO_PAD.encode(bytes))
 }
 
-fn validate_browser_launch_url(url: &str) -> Option<String> {
-    reqwest::Url::parse(url)
-        .ok()
-        .filter(|parsed| matches!(parsed.scheme(), "http" | "https"))
-        .map(|parsed| parsed.as_str().to_owned())
-}
-
-/// Best-effort open of `url` in the user's default browser. Failures are
-/// intentionally ignored — the URL is always also printed, so a headless or
-/// opener-less environment can still complete the flow by hand.
-fn open_in_browser(url: &str) -> Result<()> {
-    let Some(url) = validate_browser_launch_url(url) else {
-        return Err(eyre!(
-            "The supplied login URL is not a valid HTTP(S) URL: {url}"
-        ));
-    };
-    let url = url.as_str();
-
-    #[cfg(target_os = "macos")]
-    let mut command = {
-        let mut c = Command::new("open");
-        c.arg(url);
-        c
-    };
-    // If Snouty ever supports Windows, another declaration of `command` will be needed here.
-    // Without it, Snouty will fail to compile on or for Windows
-    #[cfg(all(unix, not(target_os = "macos")))]
-    let mut command = {
-        let mut c = Command::new("xdg-open");
-        c.arg(url);
-        c
-    };
-
-    let _ = command.stdout(Stdio::null()).stderr(Stdio::null()).spawn();
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
+    use std::process::Command;
+
     use super::*;
 
     #[test]
@@ -1027,36 +998,6 @@ mod tests {
     fn parse_callback_requires_code_and_state() {
         assert!(parse_callback_params("/callback?state=only_state").is_err());
         assert!(parse_callback_params("/callback?code=only_code").is_err());
-    }
-
-    #[test]
-    fn browser_launch_url_accepts_only_http_and_https() {
-        // Real authorization URLs (http/https) pass through.
-        assert!(validate_browser_launch_url("https://idp.example.com/authorize?a=1&b=2").is_some());
-        assert!(validate_browser_launch_url("http://localhost:12345/callback").is_some());
-
-        // Anything else is dropped rather than handed to an OS launcher.
-        assert_eq!(validate_browser_launch_url("file:///etc/passwd"), None);
-        assert_eq!(validate_browser_launch_url("javascript:alert(1)"), None);
-        assert_eq!(validate_browser_launch_url("ftp://example.com/x"), None);
-        assert_eq!(validate_browser_launch_url("not a url"), None);
-        assert_eq!(validate_browser_launch_url(""), None);
-    }
-
-    #[test]
-    fn browser_launch_url_preserves_ampersand_query_params() {
-        // The `&`-separated params (what the unquoted Windows shell mangled)
-        // survive normalization intact.
-        let normalized = validate_browser_launch_url(
-            "https://idp/authorize?response_type=code&client_id=x&state=y",
-        )
-        .expect("valid https URL");
-        assert!(
-            normalized.contains("response_type=code"),
-            "got: {normalized}"
-        );
-        assert!(normalized.contains("&client_id=x"), "got: {normalized}");
-        assert!(normalized.contains("&state=y"), "got: {normalized}");
     }
 
     #[tokio::test]

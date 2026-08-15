@@ -608,6 +608,38 @@ e.g. `contains({{output_text: "raft"}})` or
 
 {verbs}
 
+Query snippets (each is a complete QUERY, ready to paste):
+
+  # log text contains a substring
+  contains({{output_text: "connection refused"}})
+
+  # log text matches a regex
+  filter(ev => /timed?.?out/i.test(ev.output_text || ""))
+
+  # a substring anywhere in the raw event JSON
+  filter(ev => JSON.stringify(ev).includes("needle"))
+
+  # one container's stderr
+  matches({{container: "etcd0", stream: "error"}})
+
+  # errors from everything except a noisy container
+  contains({{output_text: "error"}}).not_matches({{container: "setup"}})
+
+  # events in a vtime window
+  filter(ev => ev.moment.vtime > 100 && ev.moment.vtime < 150)
+
+  # failing assertion evaluations
+  filter(ev => ev.antithesis_assert?.hit && !ev.antithesis_assert?.condition)
+
+  # injected faults (drop the injector's status chatter)
+  matches({{source: "fault_injector"}}).filter(ev => ev.fault)
+
+  # each fault annotated with the fault before it (fault sequences)
+  filter(ev => ev.fault).with_last({{prev: filter(ev => ev.fault)}})
+
+  # each crash annotated with the nearest earlier fault
+  contains({{output_text: "fatal"}}).with_last({{fault: filter(ev => ev.fault)}})
+
 Each matching event prints as one line: `HASH VTIME SOURCE OUTPUT`. Rows
 reshaped by map/narrow/fold print as raw JSON. Feed a line's HASH and VTIME
 into `runs logs` to see the surrounding logs."#

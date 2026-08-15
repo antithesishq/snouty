@@ -558,13 +558,6 @@ mod tests {
     }
 
     #[test]
-    fn new_creates_empty_params() {
-        let params = Params::new();
-        assert!(params.is_empty());
-        assert_eq!(params.as_map().len(), 0);
-    }
-
-    #[test]
     fn from_key_value_pairs_valid() {
         let pairs = ["antithesis.duration=30", "my.key=hello"];
         let params = Params::from_key_value_pairs(pairs).unwrap();

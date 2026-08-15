@@ -1,6 +1,5 @@
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
-use std::path::Path;
 use std::process::{Child, Command, Stdio};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
@@ -430,15 +429,11 @@ fn describe_pull_failure(output: &std::process::Output) -> String {
 pub fn filtered_path_without_binary(binary: &str) -> Option<String> {
     let path = std::env::var_os("PATH")?;
     let filtered = std::env::split_paths(&path)
-        .filter(|dir| !directory_contains_binary(dir, binary))
+        .filter(|dir| !dir.join(binary).is_file())
         .collect::<Vec<_>>();
     std::env::join_paths(filtered)
         .ok()
         .map(|p| p.to_string_lossy().into_owned())
-}
-
-fn directory_contains_binary(dir: &Path, binary: &str) -> bool {
-    dir.join(binary).is_file()
 }
 
 /// A mock Antithesis API server for development and testing.
@@ -1207,15 +1202,15 @@ mod tests {
     }
 
     #[test]
-    fn directory_contains_plain_binary() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("snouty-update"), "").unwrap();
-        assert!(directory_contains_binary(dir.path(), "snouty-update"));
-    }
-
-    #[test]
-    fn docker_info_with_linux_os_type_supports_registry() {
+    fn docker_info_supports_linux_registry_decides_by_os_type() {
+        // Empty output is tolerated: an old or terse runtime still counts.
+        assert!(docker_info_supports_linux_registry(""));
+        assert!(docker_info_supports_linux_registry("\n"));
+        // Linux matches case-insensitively.
         assert!(docker_info_supports_linux_registry("linux\n"));
+        assert!(docker_info_supports_linux_registry("Linux\n"));
+        // Any other OSType is rejected.
+        assert!(!docker_info_supports_linux_registry("windows\n"));
     }
 
     #[cfg(unix)]

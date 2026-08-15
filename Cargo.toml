@@ -24,6 +24,7 @@ log = "0.4"
 progenitor-client = "0.14.0"
 reqwest = { version = "0.13.1", default-features = false, features = ["http2", "json", "query", "stream", "native-tls-vendored"] }
 reqwest-middleware = "0.5"
+reqwest-retry = "0.9.1"
 color-eyre = { version = "0.6", default-features = false }
 futures-util = "0.3"
 tokio = { version = "1", features = ["rt", "macros", "process", "time", "io-util", "io-std", "net", "signal", "sync"] }

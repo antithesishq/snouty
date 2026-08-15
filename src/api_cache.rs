@@ -3,27 +3,21 @@ use std::path::PathBuf;
 use http_cache_reqwest::{
     CACacheManager, Cache, CacheMode, CacheOptions, HttpCache, HttpCacheOptions,
 };
-use reqwest_middleware::{ClientBuilder, ClientWithMiddleware};
 
 use crate::env;
 
-pub(crate) fn build_cached_client(
-    client: reqwest::Client,
-    explicit_root: Option<PathBuf>,
-) -> Option<ClientWithMiddleware> {
-    // The cache is best-effort: an unusable XDG_RUNTIME_DIR (unset, empty, or
-    // non-Unicode — all collapsed by `env::var`/`.ok().flatten()`) just disables
-    // caching rather than failing the command.
-    let root = explicit_root
-        .or_else(|| cache_dir_from_runtime_dir(env::var("XDG_RUNTIME_DIR").ok().flatten()))?;
-    Some(build_cached_client_at(client, root))
+/// Where the default response cache lives:
+/// `$XDG_RUNTIME_DIR/snouty/api-cache-v1`. The cache is best-effort: an
+/// unusable XDG_RUNTIME_DIR (unset, empty, or non-Unicode — all collapsed by
+/// `env::var`/`.ok().flatten()`) just disables caching rather than failing the
+/// command.
+pub(crate) fn default_cache_dir() -> Option<PathBuf> {
+    cache_dir_from_runtime_dir(env::var("XDG_RUNTIME_DIR").ok().flatten())
 }
 
-pub(crate) fn build_cached_client_at(
-    client: reqwest::Client,
-    root: PathBuf,
-) -> ClientWithMiddleware {
-    let cache = Cache(HttpCache {
+/// The response-cache middleware, storing under `root`.
+pub(crate) fn cache_middleware(root: PathBuf) -> Cache<CACacheManager> {
+    Cache(HttpCache {
         mode: CacheMode::Default,
         manager: CACacheManager::new(root, false),
         options: HttpCacheOptions {
@@ -33,8 +27,7 @@ pub(crate) fn build_cached_client_at(
             }),
             ..Default::default()
         },
-    });
-    ClientBuilder::new(client).with(cache).build()
+    })
 }
 
 fn cache_dir_from_runtime_dir(runtime_dir: Option<String>) -> Option<PathBuf> {

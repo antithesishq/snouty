@@ -38,16 +38,12 @@ fn read_stdin() -> Result<String> {
     Ok(buf)
 }
 
-fn get_stdin_params(use_stdin: bool) -> Result<Option<Params>> {
-    if use_stdin {
-        let input = read_stdin()?;
-        debug!("parsing input as JSON");
-        let value: serde_json::Value =
-            json5::from_str(&input).wrap_err("invalid arguments: invalid JSON")?;
-        Ok(Some(Params::from_json(&value)?))
-    } else {
-        Ok(None)
-    }
+fn get_stdin_params() -> Result<Params> {
+    let input = read_stdin()?;
+    debug!("parsing input as JSON");
+    let value: serde_json::Value =
+        json5::from_str(&input).wrap_err("invalid arguments: invalid JSON")?;
+    Params::from_json(&value)
 }
 
 #[tokio::main(flavor = "current_thread")]
@@ -355,7 +351,11 @@ fn debug_typed_params(args: &DebugArgs) -> Params {
 }
 
 fn debug_params(args: DebugArgs) -> Result<Params> {
-    let mut params = get_stdin_params(args.stdin)?.unwrap_or_default();
+    let mut params = if args.stdin {
+        get_stdin_params()?
+    } else {
+        Params::default()
+    };
     params.merge(debug_typed_params(&args));
 
     if params.is_empty() {

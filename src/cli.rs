@@ -10,14 +10,41 @@ use crate::features::{self, Feature};
 use crate::time::HumanDuration;
 use crate::vtime::VTime;
 
+/// Every `RunStatus` variant, used to enumerate valid `--status` values in
+/// error output. The generated enum offers no iteration, so this array is the
+/// source of truth; [`assert_run_statuses_complete`] forces an update here
+/// whenever the generated enum gains a variant.
+const ALL_RUN_STATUSES: [RunStatus; 6] = [
+    RunStatus::Starting,
+    RunStatus::InProgress,
+    RunStatus::Completed,
+    RunStatus::Cancelled,
+    RunStatus::Incomplete,
+    RunStatus::Unknown,
+];
+
+/// Compile-time guard: matching every variant with no wildcard arm makes this
+/// fail to compile when the generated `RunStatus` gains a variant, which is
+/// the cue to extend [`ALL_RUN_STATUSES`].
+const fn assert_run_statuses_complete(status: RunStatus) {
+    match status {
+        RunStatus::Starting
+        | RunStatus::InProgress
+        | RunStatus::Completed
+        | RunStatus::Cancelled
+        | RunStatus::Incomplete
+        | RunStatus::Unknown => {}
+    }
+}
+
+const _: () = assert_run_statuses_complete(RunStatus::Starting);
+
 /// clap value parser for `--status` that keeps a friendly, enumerated error
 /// message (the generated `RunStatus::from_str` only says "invalid value").
 fn parse_run_status(value: &str) -> Result<RunStatus, String> {
     value.parse::<RunStatus>().map_err(|_| {
-        format!(
-            "invalid status: '{value}'\n\
-             valid values: starting, in_progress, completed, cancelled, incomplete, unknown"
-        )
+        let valid = ALL_RUN_STATUSES.map(|s| s.to_string()).join(", ");
+        format!("invalid status: '{value}'\nvalid values: {valid}")
     })
 }
 

@@ -632,18 +632,21 @@ stdout 'output_text.*starting'
 ! stdout '"error"'
 stderr 'the server reported an error mid-stream: mock stream failure'
 
-# `runs search` prints the rows it already received, then fails the same way.
-# (The command is feature-gated; the gate itself is covered above.)
+# `runs search` runs a user-written pipeline that can reshape rows into any
+# object — `map(ev => ({error: ev.output_text}))` is a legitimate result row —
+# so a `{"error": ...}` line is data on this stream, not the Stream_Error
+# abort every fixed-schema stream turns it into. The row prints as its own
+# JSON and the command exits 0. (The command is feature-gated; the gate
+# itself is covered above.)
 mock-runs-server
 env SNOUTY_UNSTABLE_FEATURES=runs-search
-! snouty runs search run-stream-error 'contains({output_text: "starting"})'
+snouty runs search run-stream-error 'contains({output_text: "starting"})'
 stdout -literal '{"level":"info","msg":"starting"}'
-! stdout 'No events matched'
-stderr 'the server reported an error mid-stream: mock stream failure'
+stdout -literal '{"error":"mock stream failure"}'
+! stderr 'mid-stream'
 
 mock-runs-server
-! snouty --json runs search run-stream-error 'contains({output_text: "starting"})'
+snouty --json runs search run-stream-error 'contains({output_text: "starting"})'
 stdout 'output_text.*starting'
-! stdout '"error"'
-stderr 'the server reported an error mid-stream: mock stream failure'
+stdout '"error":"mock stream failure"'
 env SNOUTY_UNSTABLE_FEATURES=

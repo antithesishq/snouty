@@ -31,7 +31,7 @@ use crate::features::{self, Feature};
 use crate::render::sanitize;
 
 use super::{
-    NdjsonLine, RenderedEventEntry, explain_run_scoped_error, render_event_entry,
+    ErrorRows, NdjsonLine, RenderedEventEntry, explain_run_scoped_error, render_event_entry,
     stream_ndjson_lines_capped,
 };
 
@@ -70,10 +70,19 @@ pub(super) async fn execute(
     search: EventSearch,
     json: bool,
 ) -> Result<()> {
+    // A user-written DSL pipeline can reshape rows into any object,
+    // `{"error": ...}` included, so its stream must not guess that such a
+    // row is the server's Stream_Error signal. The needles query cannot
+    // reshape (snouty generates a bare filter), so it keeps the abort.
+    let error_rows = match &search.query {
+        EventQuery::Dsl { .. } => ErrorRows::Data,
+        EventQuery::Needles(_) => ErrorRows::Abort,
+    };
     let (stream, cap) = dispatch(api, run_id, &search).await?;
     print_events(
         stream.into_inner(),
         cap,
+        error_rows,
         json,
         &empty_message(&search.query),
     )
@@ -286,6 +295,7 @@ async fn explain_search_error(
 async fn print_events<S, C>(
     stream: S,
     cap: Option<NonZeroU64>,
+    error_rows: ErrorRows,
     json: bool,
     empty_message: &str,
 ) -> Result<()>
@@ -294,7 +304,7 @@ where
     C: AsRef<[u8]>,
 {
     let mut stdout = BufWriter::new(std::io::stdout().lock());
-    let seen = stream_ndjson_lines_capped(stream, cap.map(NonZeroU64::get), |line| {
+    let seen = stream_ndjson_lines_capped(stream, cap.map(NonZeroU64::get), error_rows, |line| {
         writeln!(stdout, "{}", render_line(&line, json))?;
         stdout.flush()?;
         Ok(())
@@ -321,9 +331,13 @@ fn render_line(line: &NdjsonLine<'_>, json: bool) -> String {
         NdjsonLine::Entry(entry) => {
             if json {
                 entry.to_string()
-            } else if entry.get("moment").is_some() {
+            } else if entry.get("moment").is_some() && entry.get("source").is_some() {
                 event_line(&render_event_entry(entry))
             } else {
+                // A row reshaped by map/narrow/fold: without the source
+                // envelope the event columns would render half-empty, so the
+                // row's own JSON is the rendering — even when a `moment`
+                // survived the reshape.
                 sanitize(&entry.to_string())
             }
         }
@@ -383,6 +397,19 @@ mod tests {
         let json = render_line(&NdjsonLine::Entry(entry), true);
         assert!(json.contains(r#""vtime":1.5"#), "got: {json}");
         assert!(json.contains(r#"msg \"starting\""#), "got: {json}");
+    }
+
+    #[test]
+    fn render_line_requires_the_source_envelope_for_the_event_form() {
+        // narrow/map can keep `moment` while dropping the rest; without the
+        // source envelope the event columns would render half-empty, so the
+        // row prints as its own JSON instead.
+        let entry = entry(r#"{"moment":{"input_hash":"42","vtime":"1.5"},"KvstoreBytesUsed":"7"}"#);
+        let human = render_line(&NdjsonLine::Entry(entry), false);
+        assert_eq!(
+            human,
+            r#"{"moment":{"input_hash":"42","vtime":1.5},"KvstoreBytesUsed":"7"}"#
+        );
     }
 
     #[test]

@@ -1997,6 +1997,19 @@ fn parse_stream_error(line: &str) -> Option<String> {
     Some(stream_error_message(&value)?.to_string())
 }
 
+/// What a `{"error": "..."}` line without a data envelope means for a
+/// stream. Every fixed-schema stream (logs, build logs, events) aborts on
+/// one: it is the server's out-of-band failure signal
+/// ([`stream_error_message`]). A user-written event-set pipeline is the
+/// exception — map/narrow/fold can legitimately reshape a result row into
+/// exactly that shape (`map(ev => ({error: ev.output_text}))`), so a DSL
+/// query's stream passes such rows through as data rather than guessing.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum ErrorRows {
+    Abort,
+    Data,
+}
+
 /// The failure a `Stream_Error` line becomes.
 fn mid_stream_error(message: &str) -> color_eyre::eyre::Report {
     eyre!("the server reported an error mid-stream: {message}")
@@ -2017,7 +2030,7 @@ where
     S: futures_util::Stream<Item = reqwest::Result<C>> + Unpin,
     C: AsRef<[u8]>,
 {
-    stream_ndjson_lines_until(stream, |line| {
+    stream_ndjson_lines_until(stream, ErrorRows::Abort, |line| {
         process_line(line).map(|()| ControlFlow::Continue(()))
     })
     .await
@@ -2032,6 +2045,7 @@ where
 async fn stream_ndjson_lines_capped<S, C>(
     stream: S,
     cap: Option<u64>,
+    error_rows: ErrorRows,
     mut process_line: impl FnMut(NdjsonLine<'_>) -> Result<()>,
 ) -> Result<u64>
 where
@@ -2039,7 +2053,7 @@ where
     C: AsRef<[u8]>,
 {
     let mut seen: u64 = 0;
-    stream_ndjson_lines_until(stream, |line| {
+    stream_ndjson_lines_until(stream, error_rows, |line| {
         process_line(line)?;
         seen += 1;
         Ok(if cap.is_some_and(|cap| seen >= cap) {
@@ -2057,6 +2071,7 @@ where
 /// `ControlFlow::Break`: the connection drops on return.
 async fn stream_ndjson_lines_until<S, C>(
     stream: S,
+    error_rows: ErrorRows,
     mut process_line: impl FnMut(NdjsonLine<'_>) -> Result<ControlFlow<()>>,
 ) -> Result<()>
 where
@@ -2065,7 +2080,8 @@ where
 {
     split_stream_lines_until(stream, |line| {
         let classified = classify_line(line);
-        if let NdjsonLine::Entry(entry) = &classified
+        if error_rows == ErrorRows::Abort
+            && let NdjsonLine::Entry(entry) = &classified
             && let Some(message) = stream_error_message(entry)
         {
             return Err(mid_stream_error(message));

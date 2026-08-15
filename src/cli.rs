@@ -574,13 +574,11 @@ pub struct DebugArgs {
     pub recipients: Option<String>,
 }
 
-/// `runs search`'s long help, built at runtime so the verb list has one home
-/// ([`event_set_dsl::VERBS`]) and `--help` cannot go stale against it.
-fn search_long_about() -> String {
-    // Static text; the search_long_about test keeps it in sync with
-    // event_set_dsl::VERBS (every verb must appear) and holds every line to
-    // 78 columns, since clap prints long_about verbatim.
-    r#"Run an event-set DSL query against a run's events.
+/// `runs search`'s long help. Static text: the `search_long_about` test
+/// keeps it in sync with [`event_set_dsl::VERBS`] (every verb must appear)
+/// and holds every line to 78 columns, since clap prints long_about
+/// verbatim.
+const SEARCH_LONG_ABOUT: &str = r#"Run an event-set DSL query against a run's events.
 
 This command is gated behind the `runs-search` unstable feature, because the
 events-search API does not honor its documented contract yet on current
@@ -647,9 +645,7 @@ Query snippets (each is a complete QUERY, ready to paste):
 
 Each matching event prints as one line: `HASH VTIME SOURCE OUTPUT`. Rows
 reshaped by map/narrow/fold print as raw JSON. Feed a line's HASH and VTIME
-into `runs logs` to see the surrounding logs."#
-        .to_string()
-}
+into `runs logs` to see the surrounding logs."#;
 
 #[derive(Subcommand)]
 pub enum RunsCommands {
@@ -903,7 +899,7 @@ which is behind the `runs-search` unstable feature
     // invoking it while disabled is refused by [`gated_command_error`].
     #[command(
         hide = !features::is_enabled(Feature::RunsSearch),
-        long_about = search_long_about()
+        long_about = SEARCH_LONG_ABOUT
     )]
     Search(RunsSearchArgs),
 }
@@ -1273,7 +1269,7 @@ mod tests {
     // of the ~78-column help text.
     #[test]
     fn search_long_about_names_every_verb_and_wraps() {
-        let about = search_long_about();
+        let about = SEARCH_LONG_ABOUT;
         for verb in crate::event_set_dsl::VERBS {
             assert!(about.contains(verb), "missing verb {verb}");
         }

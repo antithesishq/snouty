@@ -142,11 +142,6 @@ impl Params {
         &self.inner
     }
 
-    /// Convert to a JSON value.
-    pub fn to_value(&self) -> Value {
-        Value::Object(self.inner.clone())
-    }
-
     /// Merge another Params into this one, with the other params taking priority.
     pub fn merge(&mut self, other: Params) {
         for (key, value) in other.inner {

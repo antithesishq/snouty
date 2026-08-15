@@ -353,7 +353,7 @@ fn resolve_settings(settings: &Settings, features: &[Feature]) -> Vec<Setting> {
     // Only when set: features are opt-in, so an empty row would be noise on
     // every ordinary run.
     if !features.is_empty() {
-        let ids: Vec<&str> = features.iter().map(Feature::as_str).collect();
+        let ids: Vec<String> = features.iter().map(Feature::to_string).collect();
         rows.push(Setting::new("features", ids.join(", ")));
     }
     rows

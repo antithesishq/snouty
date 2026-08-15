@@ -854,7 +854,7 @@ pub fn gated_command_error(command: &Commands, enabled: &[Feature]) -> Option<Re
         .note(format!(
             "enable it by setting {}={}",
             features::UNSTABLE_FEATURES_VAR_NAME,
-            feature.as_str()
+            feature
         ))
         .note("an unstable feature can change or go away in any release")
         .suggestion(format!("run `{path} --help` for what it does")),

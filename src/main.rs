@@ -20,7 +20,6 @@ use snouty::docs;
 use snouty::error::user_error;
 use snouty::features;
 use snouty::login::cmd_login;
-use snouty::moment;
 use snouty::params::{
     ANT_CONFIG_IMAGE, ANT_DEBUGGING_INPUT_HASH, ANT_DEBUGGING_RUN_ID, ANT_DEBUGGING_SESSION_ID,
     ANT_DEBUGGING_VTIME, ANT_DESCRIPTION, ANT_DURATION, ANT_EVENT_DESCRIPTION,
@@ -39,21 +38,12 @@ fn read_stdin() -> Result<String> {
     Ok(buf)
 }
 
-fn get_stdin_params(use_stdin: bool, support_moment: bool) -> Result<Option<Params>> {
-    if use_stdin {
-        let input = read_stdin()?;
-        if support_moment && moment::is_moment_format(&input) {
-            debug!("detected Moment.from on stdin");
-            Ok(Some(moment::parse(&input)?))
-        } else {
-            debug!("parsing input as JSON");
-            let value: serde_json::Value =
-                json5::from_str(&input).wrap_err("invalid arguments: invalid JSON")?;
-            Ok(Some(Params::from_json(&value)?))
-        }
-    } else {
-        Ok(None)
-    }
+fn get_stdin_params() -> Result<Params> {
+    let input = read_stdin()?;
+    debug!("parsing input as JSON");
+    let value: serde_json::Value =
+        json5::from_str(&input).wrap_err("invalid arguments: invalid JSON")?;
+    Params::from_json(&value)
 }
 
 #[tokio::main(flavor = "current_thread")]
@@ -361,7 +351,11 @@ fn debug_typed_params(args: &DebugArgs) -> Params {
 }
 
 fn debug_params(args: DebugArgs) -> Result<Params> {
-    let mut params = get_stdin_params(args.stdin, true)?.unwrap_or_default();
+    let mut params = if args.stdin {
+        get_stdin_params()?
+    } else {
+        Params::default()
+    };
     params.merge(debug_typed_params(&args));
 
     if params.is_empty() {
@@ -373,10 +367,10 @@ fn debug_params(args: DebugArgs) -> Result<Params> {
 
 async fn cmd_debug(args: DebugArgs, settings: &Settings, json: bool, verbose: bool) -> Result<()> {
     let mut params = debug_params(args)?;
-    // Every path into the moment has merged by now — the typed flags, a
-    // Moment.from on stdin, and raw JSON on stdin — so normalizing here makes
-    // all three send the same text. It runs before validation, so a bad vtime
-    // reports itself rather than surfacing as a schema error.
+    // Every path into the moment has merged by now — the typed flags and raw
+    // JSON on stdin — so normalizing here makes both send the same text. It
+    // runs before validation, so a bad vtime reports itself rather than
+    // surfacing as a schema error.
     params.normalize_debug_vtime()?;
     params.validate_debugging_params()?;
     params.ensure_single_debug_target()?;

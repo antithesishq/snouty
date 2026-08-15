@@ -6,8 +6,8 @@ use std::time::Duration;
 use base64::{Engine as _, prelude::BASE64_URL_SAFE_NO_PAD};
 use color_eyre::Section;
 use color_eyre::eyre::{Context, Result, eyre};
-use inquire::{Confirm, Password, PasswordDisplayMode, Select, Text};
-use log::warn;
+use inquire::{Password, PasswordDisplayMode, Select, Text};
+use log::{debug, warn};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -37,9 +37,6 @@ trait Prompter {
     /// Whether we're attached to an interactive terminal.
     fn is_interactive(&self) -> bool;
 
-    /// A yes/no confirmation with no default (the user must answer).
-    fn confirm(&self, prompt: &str) -> Result<bool>;
-
     /// A free-text line, pre-filled with `default` when the user just hits enter.
     fn input(&self, prompt: &str, default: Option<&str>) -> Result<String>;
 
@@ -64,10 +61,6 @@ struct InquirePrompter;
 impl Prompter for InquirePrompter {
     fn is_interactive(&self) -> bool {
         io::stdin().is_terminal()
-    }
-
-    fn confirm(&self, prompt: &str) -> Result<bool> {
-        Ok(Confirm::new(prompt).prompt()?)
     }
 
     fn input(&self, prompt: &str, default: Option<&str>) -> Result<String> {
@@ -106,7 +99,7 @@ pub async fn cmd_login(
     tenant: Option<String>,
     repository: Option<String>,
     profile: Option<&str>,
-    current_settings: Result<Settings>,
+    current_settings: &Settings,
 ) -> Result<()> {
     do_cmd_login(
         tenant,
@@ -122,33 +115,18 @@ async fn do_cmd_login(
     tenant: Option<String>,
     repository: Option<String>,
     profile: Option<&str>,
-    current_settings: Result<Settings>,
+    current_settings: &Settings,
     prompter: &dyn Prompter,
 ) -> Result<()> {
-    if let Err(report) = &current_settings {
-        warn!("The current settings failed to load with the following error: {report:#}");
-        if prompter.is_interactive()
-            && !prompter.confirm(
-                "Would you like to proceed with the login command? Doing so may cause your existing settings file to be replaced rather than updated.",
-            )?
-        {
-            return Err(eyre!(
-                "Exiting login command without completing per user request."
-            ));
-        }
-    }
-
     let profile_to_use = profile
         .map(|p| p.to_owned())
         .or_else(|| env::var(ANTITHESIS_PROFILE_ENV_VAR_NAME).ok().flatten());
 
     let tenant_to_use = match tenant {
         Some(arg_value) if !arg_value.is_empty() => arg_value,
-        Some(_) | None => prompt_for_value(
-            prompter,
-            "Antithesis tenant",
-            current_settings.as_ref().ok().and_then(|s| s.tenant()),
-        )?,
+        Some(_) | None => {
+            prompt_for_value(prompter, "Antithesis tenant", current_settings.tenant())?
+        }
     };
     validate_tenant_host(&tenant_to_use)?;
 
@@ -157,24 +135,25 @@ async fn do_cmd_login(
         Some(_) | None => prompt_for_value(
             prompter,
             "container repository",
-            current_settings.as_ref().ok().and_then(|s| s.repository()),
+            current_settings.repository(),
         )?,
     };
 
     // Whatever credentials are already in reach, so the menu can default to the
-    // kind last used and the key prompt can offer the stored key back. The error
-    // is discarded on purpose: nothing reads it, and having none is the ordinary
-    // state on a first login rather than a failure.
+    // kind last used and the key prompt can offer the stored key back. Having
+    // none is the ordinary state on a first login rather than a failure, so the
+    // error is logged at debug level and then dropped.
     let current_credentials = AuthenticationInfo::for_ambient_configuration_with_attribution(
         profile_to_use.as_deref(),
         PasswordPolicy::Inspect,
     )
+    .inspect_err(|err| debug!("no ambient credentials to offer back: {err:#}"))
     .ok();
 
     // Capture the credential kind and where it was stored so the summary can name
     // both; `None` when the user chose to skip credential setup.
     let credential_summary = if prompter.is_interactive() {
-        match prompt_for_auth(prompter, &tenant_to_use, &current_credentials).await? {
+        match prompt_for_auth(prompter, &tenant_to_use, current_credentials.as_ref()).await? {
             Some(credentials) => {
                 let kind = match &credentials {
                     PersistableCredentials::ApiKey { .. } => "API key",
@@ -323,7 +302,7 @@ impl std::fmt::Display for AuthSetupType {
 async fn prompt_for_auth(
     prompter: &dyn Prompter,
     tenant: &str,
-    previous_value: &Option<AttributedValue<AuthenticationInfo>>,
+    previous_value: Option<&AttributedValue<AuthenticationInfo>>,
 ) -> Result<Option<PersistableCredentials>> {
     // ANTITHESIS_BASE_URL trumps the supplied tenant because the former is used by spec tests
     let base_url = env::var(settings::ANTITHESIS_BASE_URL_VAR_NAME)?
@@ -371,10 +350,10 @@ async fn prompt_for_auth(
         None => Ok(None),
         Some(index) => match credential_options[index] {
             AuthSetupType::ApiKey => {
-                prompt_for_api_key(prompter, stored_api_key(previous_value.as_ref())).map(Some)
+                prompt_for_api_key(prompter, stored_api_key(previous_value)).map(Some)
             }
 
-            AuthSetupType::Password => match previous_value.as_ref().map(AttributedValue::value) {
+            AuthSetupType::Password => match previous_value.map(AttributedValue::value) {
                 Some(AuthenticationInfo::Password { username, .. }) => {
                     prompt_for_username_password(prompter, Some(username))
                 }
@@ -1117,7 +1096,6 @@ mod tests {
     use color_eyre::eyre::Result;
 
     enum Answer {
-        Confirm(bool),
         Input(String),
         Select(Option<usize>),
         Password(String),
@@ -1128,10 +1106,6 @@ mod tests {
     struct Script(Vec<Answer>);
 
     impl Script {
-        fn confirm(mut self, value: bool) -> Self {
-            self.0.push(Answer::Confirm(value));
-            self
-        }
         fn input(mut self, value: &str) -> Self {
             self.0.push(Answer::Input(value.to_owned()));
             self
@@ -1197,13 +1171,6 @@ mod tests {
     impl Prompter for ScriptedPrompter {
         fn is_interactive(&self) -> bool {
             true
-        }
-
-        fn confirm(&self, prompt: &str) -> Result<bool> {
-            match self.next("confirm", prompt) {
-                Answer::Confirm(value) => Ok(value),
-                _ => panic!("next scripted answer was not a confirm at {prompt:?}"),
-            }
         }
 
         fn input(&self, prompt: &str, _default: Option<&str>) -> Result<String> {
@@ -1354,7 +1321,7 @@ mod tests {
     #[tokio::test]
     async fn login_collects_and_persists_an_api_key() -> Result<()> {
         let env = LoginEnv::new();
-        let settings = env.resolve_settings(None);
+        let settings = env.resolve_settings(None)?;
         let prompter = Script::default()
             .input("mytenant")
             .input("myrepo")
@@ -1362,7 +1329,7 @@ mod tests {
             .password("sk-test-key")
             .build();
 
-        do_cmd_login(None, None, None, settings, &prompter).await?;
+        do_cmd_login(None, None, None, &settings, &prompter).await?;
 
         let stored = env.settings();
         assert!(stored.contains(r#"tenant = "mytenant""#), "{stored}");
@@ -1378,14 +1345,14 @@ mod tests {
     #[tokio::test]
     async fn login_flags_skip_the_tenant_and_repository_prompts() -> Result<()> {
         let env = LoginEnv::new();
-        let settings = env.resolve_settings(None);
+        let settings = env.resolve_settings(None)?;
         let prompter = Script::default().select(0).password("sk-test-key").build();
 
         do_cmd_login(
             Some("mytenant".to_owned()),
             Some("myrepo".to_owned()),
             None,
-            settings,
+            &settings,
             &prompter,
         )
         .await?;
@@ -1412,7 +1379,7 @@ mod tests {
     #[tokio::test]
     async fn login_collects_a_username_and_password() -> Result<()> {
         let env = LoginEnv::new();
-        let settings = env.resolve_settings(None);
+        let settings = env.resolve_settings(None)?;
         let prompter = Script::default()
             .input("ptenant")
             .input("prepo")
@@ -1421,7 +1388,7 @@ mod tests {
             .password("ppass")
             .build();
 
-        do_cmd_login(None, None, None, settings, &prompter).await?;
+        do_cmd_login(None, None, None, &settings, &prompter).await?;
 
         let creds = env.credentials();
         assert!(creds.contains(r#"type = "Password""#), "{creds}");
@@ -1434,7 +1401,7 @@ mod tests {
     #[tokio::test]
     async fn login_scopes_to_a_named_profile() -> Result<()> {
         let env = LoginEnv::new();
-        let settings = env.resolve_settings(Some("prod"));
+        let settings = env.resolve_settings(Some("prod"))?;
         let prompter = Script::default()
             .input("ptenant")
             .input("prepo")
@@ -1442,7 +1409,7 @@ mod tests {
             .password("pk-secret")
             .build();
 
-        do_cmd_login(None, None, Some("prod"), settings, &prompter).await?;
+        do_cmd_login(None, None, Some("prod"), &settings, &prompter).await?;
 
         let stored = env.settings();
         assert!(stored.contains("[profile.prod]"), "{stored}");
@@ -1454,12 +1421,12 @@ mod tests {
     #[tokio::test]
     async fn login_rejects_an_invalid_tenant() -> Result<()> {
         let env = LoginEnv::new();
-        let settings = env.resolve_settings(None);
+        let settings = env.resolve_settings(None)?;
         let prompter = Script::default()
             .input("underscores_are_not_allowed")
             .build();
 
-        let result = do_cmd_login(None, None, None, settings, &prompter).await;
+        let result = do_cmd_login(None, None, None, &settings, &prompter).await;
 
         let err = result.expect_err("an invalid tenant must fail the login");
         assert!(
@@ -1472,71 +1439,12 @@ mod tests {
         Ok(())
     }
 
-    /// When settings resolution fails (an unparsable settings file), login first
-    /// asks the user to confirm before proceeding; answering yes repairs it.
-    #[tokio::test]
-    async fn login_confirms_before_proceeding_past_broken_settings() -> Result<()> {
-        let env = LoginEnv::new();
-        env.seed(".config/snouty/settings.toml", "this is = = not valid toml");
-        // Resolution now fails, exactly as it would for the real command.
-        let settings = env.resolve_settings(None);
-        assert!(settings.is_err(), "seeded settings should fail to parse");
-
-        let prompter = Script::default()
-            .confirm(true)
-            .input("ptenant")
-            .input("prepo")
-            .select(0)
-            .password("sk-test-key")
-            .build();
-
-        do_cmd_login(None, None, None, settings, &prompter).await?;
-
-        let first_prompt = &prompter.prompts()[0];
-        assert!(
-            first_prompt.contains("Would you like to proceed with the login command"),
-            "the confirmation must come first: {first_prompt:?}"
-        );
-        assert!(
-            env.settings().contains(r#"tenant = "ptenant""#),
-            "{}",
-            env.settings()
-        );
-        // The unparsable file is kept, not destroyed, so the user can recover
-        // anything it held.
-        let backup = std::fs::read_to_string(env.config_dir().join("settings.toml.bak"))
-            .expect("the unparsable settings must be kept as a backup");
-        assert_eq!(backup, "this is = = not valid toml");
-        Ok(())
-    }
-
-    /// Answering "no" at the broken-settings confirmation aborts the login without
-    /// persisting anything.
-    #[tokio::test]
-    async fn login_aborts_when_user_declines_broken_settings() -> Result<()> {
-        let env = LoginEnv::new();
-        env.seed(".config/snouty/settings.toml", "this is = = not valid toml");
-        let settings = env.resolve_settings(None);
-
-        let prompter = Script::default().confirm(false).build();
-
-        let result = do_cmd_login(None, None, None, settings, &prompter).await;
-
-        assert!(
-            result.is_err(),
-            "declining the confirmation must abort login"
-        );
-        // Nothing beyond the confirmation was asked.
-        assert_eq!(prompter.prompts().len(), 1, "{:?}", prompter.prompts());
-        Ok(())
-    }
-
     /// When the backend reports OAuth is disabled for the CLI, the "Single sign-on
     /// (OAuth)" option is not offered in the credential menu.
     #[tokio::test]
     async fn login_hides_oauth_when_backend_disables_it() -> Result<()> {
         let env = LoginEnv::with_oauth_config(OAUTH_DISABLED);
-        let settings = env.resolve_settings(None);
+        let settings = env.resolve_settings(None)?;
         let prompter = Script::default()
             .input("mytenant")
             .input("myrepo")
@@ -1544,7 +1452,7 @@ mod tests {
             .password("sk-test-key")
             .build();
 
-        do_cmd_login(None, None, None, settings, &prompter).await?;
+        do_cmd_login(None, None, None, &settings, &prompter).await?;
 
         let (menu, default) = &prompter.selects()[0];
         assert_eq!(
@@ -1565,7 +1473,7 @@ mod tests {
     #[tokio::test]
     async fn login_offers_oauth_first_when_backend_supports_it() -> Result<()> {
         let env = LoginEnv::with_oauth_config(OAUTH_EPHEMERAL);
-        let settings = env.resolve_settings(None);
+        let settings = env.resolve_settings(None)?;
         // Finish via the API-key option rather than OAuth, which would start
         // the interactive browser flow.
         let prompter = Script::default()
@@ -1575,7 +1483,7 @@ mod tests {
             .password("sk-test-key")
             .build();
 
-        do_cmd_login(None, None, None, settings, &prompter).await?;
+        do_cmd_login(None, None, None, &settings, &prompter).await?;
 
         let (menu, default) = &prompter.selects()[0];
         assert_eq!(
@@ -1600,7 +1508,7 @@ mod tests {
             ".config/snouty/credentials.toml",
             "[default]\ntype = \"Password\"\nusername = \"puser\"\npassword = \"ppass\"\n",
         );
-        let settings = env.resolve_settings(None);
+        let settings = env.resolve_settings(None)?;
         let prompter = Script::default()
             .input("mytenant")
             .input("myrepo")
@@ -1608,7 +1516,7 @@ mod tests {
             .password("sk-test-key")
             .build();
 
-        do_cmd_login(None, None, None, settings, &prompter).await?;
+        do_cmd_login(None, None, None, &settings, &prompter).await?;
 
         let (menu, default) = &prompter.selects()[0];
         let password_index = menu
@@ -1629,7 +1537,7 @@ mod tests {
             ".config/snouty/credentials.toml",
             "[default]\ntype = \"ApiKey\"\napi_key = \"antithesis_api_key_v2_STORED_9Pgw\"\n",
         );
-        let settings = env.resolve_settings(None);
+        let settings = env.resolve_settings(None)?;
         let prompter = Script::default()
             .input("mytenant")
             .input("myrepo")
@@ -1637,7 +1545,7 @@ mod tests {
             .password("") // hit enter
             .build();
 
-        do_cmd_login(None, None, None, settings, &prompter).await?;
+        do_cmd_login(None, None, None, &settings, &prompter).await?;
 
         assert_eq!(
             prompter.password_hints(),
@@ -1660,7 +1568,7 @@ mod tests {
             ".config/snouty/credentials.toml",
             "[default]\ntype = \"ApiKey\"\napi_key = \"antithesis_api_key_v2_STORED_9Pgw\"\n",
         );
-        let settings = env.resolve_settings(None);
+        let settings = env.resolve_settings(None)?;
         let prompter = Script::default()
             .input("mytenant")
             .input("myrepo")
@@ -1668,7 +1576,7 @@ mod tests {
             .password("antithesis_api_key_v2_NEW_7Qxz")
             .build();
 
-        do_cmd_login(None, None, None, settings, &prompter).await?;
+        do_cmd_login(None, None, None, &settings, &prompter).await?;
 
         let creds = env.credentials();
         assert!(
@@ -1686,7 +1594,7 @@ mod tests {
         // SAFETY: `LoginEnv` holds `ENV_LOCK` for this test's whole body, so no
         // other test reads or writes process env while this var is set.
         unsafe { std::env::set_var("ANTITHESIS_API_KEY", "antithesis_api_key_v2_AMBIENT_5Kfn") };
-        let settings = env.resolve_settings(None);
+        let settings = env.resolve_settings(None)?;
         let prompter = Script::default()
             .input("mytenant")
             .input("myrepo")
@@ -1694,7 +1602,7 @@ mod tests {
             .password("sk-typed-key")
             .build();
 
-        let result = do_cmd_login(None, None, None, settings, &prompter).await;
+        let result = do_cmd_login(None, None, None, &settings, &prompter).await;
         // SAFETY: as above.
         unsafe { std::env::remove_var("ANTITHESIS_API_KEY") };
         result?;
@@ -1712,14 +1620,14 @@ mod tests {
     #[tokio::test]
     async fn login_skips_credential_storage_on_esc() -> Result<()> {
         let env = LoginEnv::new();
-        let settings = env.resolve_settings(None);
+        let settings = env.resolve_settings(None)?;
         let prompter = Script::default()
             .input("mytenant")
             .input("myrepo")
             .skip_select()
             .build();
 
-        do_cmd_login(None, None, None, settings, &prompter).await?;
+        do_cmd_login(None, None, None, &settings, &prompter).await?;
 
         assert!(env.settings().contains(r#"tenant = "mytenant""#));
         assert!(
@@ -1840,14 +1748,14 @@ mod tests {
         );
 
         // --- Write an API key; it must land in the keychain, not a file. ---
-        let settings = env.resolve_settings(None);
+        let settings = env.resolve_settings(None)?;
         let prompter = Script::default()
             .input("acme")
             .input("registry.example.com/acme/app")
             .select(0) // API Key
             .password("sk-KEYCHAIN-TEST")
             .build();
-        do_cmd_login(None, None, None, settings, &prompter).await?;
+        do_cmd_login(None, None, None, &settings, &prompter).await?;
 
         assert!(
             !env.config_dir().join("credentials.toml").exists(),
@@ -1893,14 +1801,14 @@ mod tests {
         }
 
         // --- Profile scoping uses a distinct keychain entry (`profile_<name>`). ---
-        let prof_settings = env.resolve_settings(Some("prod"));
+        let prof_settings = env.resolve_settings(Some("prod"))?;
         let prof_prompter = Script::default()
             .input("acme")
             .input("registry.example.com/acme/app")
             .select(0)
             .password("sk-PROD-KEY")
             .build();
-        do_cmd_login(None, None, Some("prod"), prof_settings, &prof_prompter).await?;
+        do_cmd_login(None, None, Some("prod"), &prof_settings, &prof_prompter).await?;
         assert!(
             security(
                 &home,

@@ -1392,12 +1392,12 @@ struct LogOutputOptions {
 }
 
 /// After streaming a log/event stream in human mode, print `empty_note` when the
-/// stream completed successfully but produced no lines, so the user isn't left
-/// wondering whether anything happened. In `--json` mode an empty stream is the
-/// correct machine answer, so stay quiet. Shared by `cmd_runs_logs` and
-/// `cmd_runs_build_logs`, which track `wrote_any` the same way.
-fn note_if_empty(result: &Result<()>, json: bool, wrote_any: bool, empty_note: &str) {
-    if result.is_ok() && !json && !wrote_any {
+/// stream completed successfully (`stream_ok`) but produced no lines, so the user
+/// isn't left wondering whether anything happened. In `--json` mode an empty
+/// stream is the correct machine answer, so stay quiet. Shared by `cmd_runs_logs`
+/// and `cmd_runs_build_logs`, which track `wrote_any` the same way.
+fn note_if_empty(stream_ok: bool, json: bool, wrote_any: bool, empty_note: &str) {
+    if stream_ok && !json && !wrote_any {
         eprintln!("{empty_note}");
     }
 }
@@ -1444,7 +1444,12 @@ async fn cmd_runs_build_logs(
     };
 
     stdout.flush()?;
-    note_if_empty(&result, json, wrote_any, "No build logs for this run.");
+    note_if_empty(
+        result.is_ok(),
+        json,
+        wrote_any,
+        "No build logs for this run.",
+    );
     result
 }
 
@@ -1685,7 +1690,12 @@ async fn cmd_runs_logs(
     stdout.flush()?;
     // A moment with no logs (e.g. a manually-supplied 0/0 placeholder) yields an
     // empty stream; say so in human mode rather than printing nothing.
-    note_if_empty(&result, json, wrote_any, "No log lines at this moment.");
+    note_if_empty(
+        result.is_ok(),
+        json,
+        wrote_any,
+        "No log lines at this moment.",
+    );
     result
 }
 

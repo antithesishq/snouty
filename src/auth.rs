@@ -990,10 +990,7 @@ fn persist_to_file(
         current_contents.default = Some(credentials);
     }
 
-    let mut temp = NamedTempFile::new_in(&settings_dir)?;
-    temp.write_all(toml::to_string_pretty(&current_contents)?.as_bytes())?;
-
-    temp.persist(&path)?;
+    rewrite_credentials_file(&current_contents, &settings_dir, &path)?;
 
     Ok(path)
 }

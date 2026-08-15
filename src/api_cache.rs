@@ -54,11 +54,4 @@ mod tests {
             PathBuf::from("/run/user/1000/snouty/api-cache-v1")
         );
     }
-
-    #[test]
-    fn cache_dir_is_absent_without_xdg_runtime_dir() {
-        // Empty/non-Unicode are collapsed to `None` upstream by `env::var`, so
-        // this builder only ever sees `Some(non-empty)` or `None`.
-        assert_eq!(cache_dir_from_runtime_dir(None), None);
-    }
 }

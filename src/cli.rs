@@ -8,7 +8,6 @@ use color_eyre::eyre::Report;
 
 use crate::api::RunStatus;
 use crate::error::user_error;
-use crate::event_set_dsl;
 use crate::features::{self, Feature};
 use crate::time::HumanDuration;
 use crate::vtime::VTime;
@@ -578,24 +577,10 @@ pub struct DebugArgs {
 /// `runs search`'s long help, built at runtime so the verb list has one home
 /// ([`event_set_dsl::VERBS`]) and `--help` cannot go stale against it.
 fn search_long_about() -> String {
-    // clap prints long_about verbatim, so the runtime-built verb list must be
-    // wrapped by hand or it prints as one long line among ~78-column text.
-    let mut verb_lines: Vec<String> = vec!["Verbs:".to_string()];
-    for verb in event_set_dsl::VERBS {
-        let line = verb_lines.last_mut().expect("starts non-empty");
-        if line.len() + verb.len() + 2 > 78 {
-            verb_lines.push(format!("{verb},"));
-        } else {
-            line.push(' ');
-            line.push_str(verb);
-            line.push(',');
-        }
-    }
-    let mut verbs = verb_lines.join("\n");
-    verbs.pop();
-    verbs.push('.');
-    format!(
-        r#"Run an event-set DSL query against a run's events.
+    // Static text; the search_long_about test keeps it in sync with
+    // event_set_dsl::VERBS (every verb must appear) and holds every line to
+    // 78 columns, since clap prints long_about verbatim.
+    r#"Run an event-set DSL query against a run's events.
 
 This command is gated behind the `runs-search` unstable feature, because the
 events-search API does not honor its documented contract yet on current
@@ -603,15 +588,35 @@ tenants. Enable it by setting SNOUTY_UNSTABLE_FEATURES=runs-search. An
 unstable feature can change or go away in any release.
 
 QUERY is a pipeline of dot-separated verbs applied to the run's event stream,
-e.g. `contains({{output_text: "raft"}})` or
-`matches({{container: "etcd0", stream: "error"}})`.
+evaluated left to right; each verb narrows, reshapes, or combines the set of
+events flowing through it.
 
-{verbs}
+Verbs:
+  matches({f: "x"})        keep events whose fields equal every given value
+  contains({f: "x"})       keep events whose fields contain every substring
+  not_matches({f: "x"})    drop exact matches
+  excludes({f: "x"})       drop substring matches
+  filter(ev => expr)       keep events where the JS expression is truthy
+  map(ev => expr)          reshape each event (ev.add_fields({...}) adds)
+  flatmap(ev => expr)      map, then flatten the result one level
+  narrow(["f1", "f2"])     keep only the listed fields
+  fold((s, ev) => e, s0)   thread state along each timeline, annotating
+  union(set, ...)          OR this set with others, deduplicated
+  intersect(set, ...)      AND this set with others
+  difference(set)          subtract another event set from this one
+  distinct_by_moment(set)  union, keeping one event per vtime
+  with_last({n: set})      annotate each event with the nearest earlier
+                           event from `set` in its own timeline
+  with_next({n: set})      the same, looking forward
+
+The string verbs (matches/contains/not_matches/excludes) address four fields:
+output_text, container, stream, and source (the emitter's name). Every other
+field is reachable from JS through `ev`, e.g. `ev.moment.vtime`.
 
 Query snippets (each is a complete QUERY, ready to paste):
 
   # log text contains a substring
-  contains({{output_text: "connection refused"}})
+  contains({output_text: "connection refused"})
 
   # log text matches a regex
   filter(ev => /timed?.?out/i.test(ev.output_text || ""))
@@ -620,30 +625,30 @@ Query snippets (each is a complete QUERY, ready to paste):
   filter(ev => JSON.stringify(ev).includes("needle"))
 
   # one container's stderr
-  matches({{container: "etcd0", stream: "error"}})
+  matches({container: "etcd0", stream: "error"})
 
   # errors from everything except a noisy container
-  contains({{output_text: "error"}}).not_matches({{container: "setup"}})
+  contains({output_text: "error"}).not_matches({container: "setup"})
 
   # events in a vtime window
   filter(ev => ev.moment.vtime > 100 && ev.moment.vtime < 150)
 
-  # failing assertion evaluations
-  filter(ev => ev.antithesis_assert?.hit && !ev.antithesis_assert?.condition)
+  # one assertion's evaluations, by id, that came up false
+  filter(ev => ev.antithesis_assert?.hit
+    && ev.antithesis_assert.id == "acks are durable"
+    && !ev.antithesis_assert.condition)
 
-  # injected faults (drop the injector's status chatter)
-  matches({{source: "fault_injector"}}).filter(ev => ev.fault)
-
-  # each fault annotated with the fault before it (fault sequences)
-  filter(ev => ev.fault).with_last({{prev: filter(ev => ev.fault)}})
+  # hit sometimes assertions that evaluated true (also: always, reachability)
+  filter(ev => ev.antithesis_assert?.assert_type == "sometimes"
+    && ev.antithesis_assert.hit && ev.antithesis_assert.condition)
 
   # each crash annotated with the nearest earlier fault
-  contains({{output_text: "fatal"}}).with_last({{fault: filter(ev => ev.fault)}})
+  contains({output_text: "fatal"}).with_last({fault: filter(ev => ev.fault)})
 
 Each matching event prints as one line: `HASH VTIME SOURCE OUTPUT`. Rows
 reshaped by map/narrow/fold print as raw JSON. Feed a line's HASH and VTIME
 into `runs logs` to see the surrounding logs."#
-    )
+        .to_string()
 }
 
 #[derive(Subcommand)]
@@ -1269,7 +1274,7 @@ mod tests {
     #[test]
     fn search_long_about_names_every_verb_and_wraps() {
         let about = search_long_about();
-        for verb in event_set_dsl::VERBS {
+        for verb in crate::event_set_dsl::VERBS {
             assert!(about.contains(verb), "missing verb {verb}");
         }
         for line in about.lines() {

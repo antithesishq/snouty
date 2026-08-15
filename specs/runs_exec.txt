@@ -59,6 +59,12 @@ stdout 'Linux antithesis 6.12.0'
 stderr 'warning: virtual clock drift detected'
 stderr 'end moment: -8206006569229276678 398.492'
 
+# The API also labels stderr output with the short form `err`. It routes to
+# stderr exactly like `stderr`, and never leaks onto stdout.
+snouty runs exec run-2 -3625518438076122494 398.4898056755774 short-stream-err
+stderr 'short-form stderr line'
+! stdout 'short-form stderr line'
+
 # Omitting SCRIPT reads the script from stdin. That is the only way to do it:
 # there is no `-` spelling, so there is one way to trigger a stdin read.
 stdin exec_script.txt

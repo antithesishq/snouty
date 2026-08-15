@@ -1039,6 +1039,13 @@ fn mock_route_execute_command(run_id: &str, req_body: &str) -> (u16, String) {
             mock_exec_exited(0),
         ],
         "truncate-stream" => vec![mock_exec_output("stdout", "partial output", "398.491")],
+        // The API also labels stderr output with the short form `err`
+        // (observed on the live endpoint). snouty must route it like
+        // `stderr`.
+        "short-stream-err" => vec![
+            mock_exec_output("err", "short-form stderr line", "398.491"),
+            mock_exec_exited(0),
+        ],
         // A frame type this build does not know, and a known frame carrying a
         // field it does not know. The stream must survive both.
         "unknown-frames" => vec![

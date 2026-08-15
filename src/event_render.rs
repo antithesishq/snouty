@@ -546,10 +546,10 @@ fn render_assert(summary: &AssertionSummary, detail: bool) -> RenderedPayload {
     RenderedPayload { headline, details }
 }
 
-/// Guidance rendering follows ~/guidance-rendering.md: `hit: false` is the
-/// catalog registration (dim, no data); an observation reconstructs the
-/// source expression from `guidance_data` — best effort, with the raw
-/// operands as the fallback when the expression cannot be recovered.
+/// `hit: false` is the catalog registration (dim, no data); an observation
+/// shows the drive on the tracked value, reconstructed from `guidance_data`
+/// — best effort, with the raw operands as the fallback when the direction
+/// cannot be recovered (see [`render_guidance_expression`]).
 fn render_guidance(guidance: &Value, detail: bool) -> RenderedPayload {
     // The message doubles as the display label and the key into the
     // assertion map (`id` and `message` carry identical values).

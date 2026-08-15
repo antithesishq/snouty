@@ -644,7 +644,7 @@ stderr 'the server reported an error mid-stream: mock stream failure'
 # never reported as "No events matched".
 mock-runs-server
 ! snouty runs events run-stream-error --match starting
-stdout '"output_text".*starting'
+stdout '\[app\] \{"level":"info","msg":"starting"\}'
 ! stdout 'No events matched'
 stderr 'the server reported an error mid-stream: mock stream failure'
 
@@ -686,7 +686,7 @@ stderr 'the server reported an error mid-stream: mock stream failure'
 mock-runs-server
 env SNOUTY_UNSTABLE_FEATURES=runs-search
 snouty runs search run-stream-error 'contains({output_text: "starting"})'
-stdout '"output_text".*starting'
+stdout '\[app\] \{"level":"info","msg":"starting"\}'
 stdout -literal '{"error":"mock stream failure"}'
 ! stderr 'mid-stream'
 

@@ -10,6 +10,7 @@ use progenitor_client::{
 };
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use reqwest::{Client, Proxy};
+use reqwest_conditional_middleware::ConditionalMiddleware;
 use reqwest_middleware::ClientWithMiddleware;
 use reqwest_retry::policies::ExponentialBackoff;
 use reqwest_retry::{
@@ -205,7 +206,9 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 /// exponential backoff between attempts (~1s, ~2s, ~4s, jittered). This keeps
 /// a brief network blip from killing a long-lived command like
 /// `snouty runs wait` (#230). A served HTTP response of any status is never
-/// retried, and mutations never reach the retry layer (see [`send_request`]).
+/// retried, and the retry layer is gated to GET requests inside the
+/// middleware chain (see [`build_middleware_client`]), so mutations never
+/// reach it.
 const MAX_TRANSIENT_RETRIES: u32 = 3;
 
 /// Retry classification for GET requests: a served HTTP response — any status
@@ -302,10 +305,10 @@ impl AntithesisApi {
 
         let default_headers = default_request_headers()?;
         let http_client = build_http_client(default_headers.clone(), settings)?;
-        let get_client = build_get_client(http_client.clone(), cache);
+        let middleware_client = build_middleware_client(http_client.clone(), cache);
         let state = ClientState {
             authn_info,
-            get_client,
+            middleware_client,
             default_headers: verbose.then_some(default_headers),
         };
         let client = generated::Client::new_with_client(&base_url, http_client, state);
@@ -572,10 +575,11 @@ impl AntithesisApi {
 #[derive(Clone, Debug)]
 pub struct ClientState {
     authn_info: AuthenticationInfo,
-    /// The middleware chain GET requests are sent through: transient-failure
-    /// retry, plus the response cache when one is configured. See
-    /// [`send_request`] for the routing.
-    get_client: ClientWithMiddleware,
+    /// The middleware chain every API request is sent through. Transient-
+    /// failure retry and the response cache (when one is configured) are both
+    /// gated to GET requests inside the chain; anything else passes through
+    /// untouched. See [`build_middleware_client`].
+    middleware_client: ClientWithMiddleware,
     /// Default headers reqwest will merge into the outgoing request at
     /// `Client::execute` time (after our `exec` hook runs). `Some` enables
     /// verbose request/response logging to stderr; we hold the headers here
@@ -618,7 +622,7 @@ impl ClientHooks<ClientState> for generated::Client {
             eprint!("{out}");
         }
 
-        let result = send_request(self.client(), &state.get_client, request).await;
+        let result = send_request(self.client(), &state.middleware_client, request).await;
 
         let result = match (result, retry_request) {
             (Ok(response), Some(mut retry_request))
@@ -638,7 +642,7 @@ impl ClientHooks<ClientState> for generated::Client {
                             format_request(&retry_request, default_headers, &mut out);
                             eprint!("{out}");
                         }
-                        send_request(self.client(), &state.get_client, retry_request).await
+                        send_request(self.client(), &state.middleware_client, retry_request).await
                     }
                     Ok(None) => Ok(response),
                     Err(err) => {
@@ -661,11 +665,20 @@ impl ClientHooks<ClientState> for generated::Client {
     }
 }
 
-/// The middleware chain GET requests are sent through: the response cache
-/// (when enabled) over transient-failure retry. Retry sits under the cache so
+/// Whether a request is safe to cache and retry. Every GET in the API is a
+/// pure read (verified against `openapi.json`); everything else is a mutation
+/// (the launch/debug/exec POST webhooks) that must be sent exactly once.
+fn is_get(request: &reqwest::Request) -> bool {
+    request.method() == reqwest::Method::GET
+}
+
+/// The middleware chain every API request is sent through: the response cache
+/// (when enabled) over transient-failure retry, each gated to GET requests by
+/// [`ConditionalMiddleware`] — non-GETs pass through both layers untouched, so
+/// a network blip can never replay a mutation. Retry sits under the cache so
 /// a cache hit answers without touching the retry layer, while a cache miss's
 /// network fetch is retried.
-fn build_get_client(http_client: Client, cache: ResponseCache) -> ClientWithMiddleware {
+fn build_middleware_client(http_client: Client, cache: ResponseCache) -> ClientWithMiddleware {
     let cache_dir = match cache {
         ResponseCache::Default => api_cache::default_cache_dir(),
         ResponseCache::Disabled => None,
@@ -674,47 +687,43 @@ fn build_get_client(http_client: Client, cache: ResponseCache) -> ClientWithMidd
     };
     let mut builder = reqwest_middleware::ClientBuilder::new(http_client);
     if let Some(dir) = cache_dir {
-        builder = builder.with(api_cache::cache_middleware(dir));
+        builder = builder.with(ConditionalMiddleware::new(
+            api_cache::cache_middleware(dir),
+            is_get,
+        ));
     }
     let policy = ExponentialBackoff::builder().build_with_max_retries(MAX_TRANSIENT_RETRIES);
     builder
-        .with(RetryTransientMiddleware::new_with_policy_and_strategy(
-            policy,
-            RetryTransportErrors,
+        .with(ConditionalMiddleware::new(
+            RetryTransientMiddleware::new_with_policy_and_strategy(policy, RetryTransportErrors),
+            is_get,
         ))
         .build()
 }
 
-/// Send `request`, routing by method.
+/// Send `request` through the middleware chain.
 ///
-/// Every GET in the API is a pure read (verified against `openapi.json`), so
-/// GETs go through [`ClientState::get_client`]: transient transport failures
-/// (connect errors, resets, DNS blips) are retried with backoff, and the
-/// response cache applies when enabled. A served HTTP response of any status
-/// is final — a 500 still fails, and 4xx semantics stay untouched.
-///
-/// Everything else is a mutation (the launch/debug/exec POST webhooks) and is
-/// sent exactly once via the raw client, so a network blip can never replay
-/// one.
+/// The chain retries transient transport failures (connect errors, resets,
+/// DNS blips) with backoff and applies the response cache when enabled — for
+/// GET requests only; see [`build_middleware_client`]. A served HTTP response
+/// of any status is final — a 500 still fails, and 4xx semantics stay
+/// untouched.
 async fn send_request(
     client: &Client,
-    get_client: &ClientWithMiddleware,
+    middleware_client: &ClientWithMiddleware,
     request: reqwest::Request,
 ) -> reqwest::Result<reqwest::Response> {
-    if request.method() != reqwest::Method::GET {
-        return client.execute(request).await;
-    }
-
     // Keep a raw-send fallback for failures that surface as `Error::Middleware`
     // without a transport error inside (cache I/O failures, and network errors
     // the cache layer stringified) and so can't be re-packaged as a
-    // `reqwest::Error`. A GET has no body, so the clone always succeeds; bypass
-    // the middleware entirely in the impossible case that it doesn't.
+    // `reqwest::Error`. Every request body in the API is static, so the clone
+    // always succeeds; bypass the middleware entirely in the impossible case
+    // that it doesn't.
     let Some(fallback) = request.try_clone() else {
         return client.execute(request).await;
     };
 
-    match get_client.execute(request).await {
+    match middleware_client.execute(request).await {
         Ok(response) => Ok(response),
         Err(reqwest_middleware::Error::Reqwest(err)) => Err(err),
         Err(reqwest_middleware::Error::Middleware(err)) => match err.downcast::<RetryError>() {

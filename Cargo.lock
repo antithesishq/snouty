@@ -2490,6 +2490,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "reqwest-conditional-middleware"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "51b1fc1521b1ec6eeebcf412357bfe28db3eb23008c91852bb69120a1d7ab6d0"
+dependencies = [
+ "async-trait",
+ "http",
+ "reqwest",
+ "reqwest-middleware",
+]
+
+[[package]]
 name = "reqwest-middleware"
 version = "0.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2945,6 +2957,7 @@ dependencies = [
  "quote",
  "regex",
  "reqwest",
+ "reqwest-conditional-middleware",
  "reqwest-middleware",
  "reqwest-retry",
  "rusqlite",

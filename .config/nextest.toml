@@ -1,0 +1,47 @@
+# Which tests need a real container engine, and how the suite is scheduled.
+#
+# The `container` test group is the single definition of that set. CI splits the
+# macOS work along it: an arm64 runner takes everything else, and an Intel runner
+# takes these. That split exists because arm64 macOS cannot run `podman machine`
+# at all — Apple's Virtualization Framework gives its guests no nested
+# virtualization — so the engine-backed tests can only run on Intel.
+#
+# Select the two halves with `--filterset 'group(container)'` and
+# `--filterset 'not group(container)'`. `group()` works only on the command
+# line, which is why the set lives here rather than in a profile filter.
+#
+# The set names tests explicitly, so a newly added engine-backed test is not in
+# it. That fails closed rather than silently: the arm64 job runs the new test,
+# finds no engine, and `skip_or_fail` panics because CI is set. Add the test here
+# when that happens.
+
+[test-groups]
+# Naming the group is the point; the cap is the default parallelism rather than
+# a narrower limit, so grouping does not itself serialize these tests.
+container = { max-threads = "num-cpus" }
+
+[[profile.default.overrides]]
+filter = """
+     test(=compose::tests::compose_config_resolves_env)
+   + test(=compose::tests::compose_contents_apply_overlays)
+   + test(=compose::tests::config_json_hermetic_env_scrubs_process_variables)
+   + test(/^compose::tests::pin_images_/)
+   + test(=container::tests::build_and_push_to_mock_registry)
+   + test(/_engine_.*_specs$/)
+   + test(=spec_tests)
+"""
+test-group = "container"
+# These are the slowest tests in the suite by a wide margin, and nextest
+# otherwise schedules them last: they sort into the `snouty::spec` binary, which
+# comes after every unit-test binary. On the macOS Intel leg that put the 85s
+# `podman_engine_launch_config_push_specs` at the very end of a 157s run, so the
+# run was 72s of fast tests followed by an 85s tail that ran almost alone.
+# Starting them first bounds the run by the slowest test instead.
+priority = 100
+
+# Not engine-backed, but a 30s outlier among the tests that are not: the rest of
+# that set finishes in under 4s. It runs on the arm64 leg, where it would
+# otherwise land last and set the floor for the whole job on its own.
+[[profile.default.overrides]]
+filter = 'test(=process::tests::output_with_timeout_kills_and_errors_on_overrun)'
+priority = 100

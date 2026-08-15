@@ -79,19 +79,26 @@ jobs:
           - os: ubuntu-latest
             runtime: docker
             timeout: 20
+            filter: all()
           - os: ubuntu-latest
             runtime: podman
             timeout: 20
-          # A larger runner, not the standard `macos-15-intel`. It is the only
-          # macOS runner that both fits and is fast: arm64 macOS cannot run
-          # `podman machine` at all, because Apple's Virtualization Framework
-          # gives its guests no nested virtualization. That rules out the free
-          # `macos-15` and the 5-core `macos-15-xlarge`, and leaves Intel, where
-          # 12 cores beat the standard runner's 4. Larger runners bill per
-          # minute even on a public repository.
-          - os: macos-15-large
+            filter: all()
+          # Intel, because arm64 macOS cannot run `podman machine` at all:
+          # Apple's Virtualization Framework gives its guests no nested
+          # virtualization. So this leg runs only the engine-backed tests, and
+          # `test-macos-arm` runs every other test on the free arm64 runner.
+          #
+          # Not the 12-core `macos-15-large`. Measured against this runner on
+          # the same commit it was slower everywhere: `podman machine start`
+          # took 166s against 90s, and every engine-backed test took 1.5x to
+          # 2.5x longer. Its Xeon W cores are slower per core, and this work is
+          # serial — boot a VM, then run tests that block on that VM — so more
+          # cores buy nothing. It also bills per minute on a public repository.
+          - os: macos-15-intel
             runtime: podman
             timeout: 35
+            filter: group(container)
     env:
       SNOUTY_TEST_RUNTIME: ${{ matrix.runtime }}
     steps:
@@ -193,41 +200,72 @@ jobs:
           fi
           docker-compose version
 
-      # Cache the k8s-validator image as a tarball. `snouty validate` (k8s) does
-      # a `podman run` that implicitly pulls this remote image with no timeout;
-      # pulling it from Docker Hub costs ~2m and, under the parallel spec run,
-      # several tests can saturate the single VM's gvproxy network proxy at once
-      # and that pull wedges indefinitely. Caching the tarball turns the fetch
-      # into a local `podman load` — fast and offline.
-      # Bump the key's version suffix when K8S_VALIDATOR_IMAGE changes.
-      - name: Cache k8s-validator image (macOS)
-        if: matrix.runtime == 'podman' && startsWith(matrix.os, 'macos')
+      # Cache every test image as a tarball, so the run loads them from disk
+      # instead of pulling them. `snouty validate` (k8s) does a `podman run`
+      # that implicitly pulls k8s-validator with no timeout, and on macOS every
+      # pull crosses the VM's gvproxy network proxy — under the parallel spec
+      # run several tests can saturate it at once, and a pull that does wedges
+      # indefinitely. Loading from a local tarball removes that failure mode,
+      # and GitHub's cache has far better tail latency than Docker Hub or quay.
+      # macOS only: on Linux this step already finishes in 8 to 18 seconds.
+      #
+      # The key tracks the script, so editing its image list re-primes the
+      # cache without anyone having to remember to bump a version.
+      - name: Cache test images (macOS)
+        if: startsWith(matrix.os, 'macos')
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
-          path: ~/k8s-validator.tar
-          key: k8s-validator-image-1.0.0
-
-      - name: Load or pull k8s-validator image (macOS)
-        if: matrix.runtime == 'podman' && startsWith(matrix.os, 'macos')
-        run: |
-          if [ -f ~/k8s-validator.tar ]; then
-            echo "Loading k8s-validator from cache"
-            podman load -i ~/k8s-validator.tar
-          else
-            echo "Pulling k8s-validator and saving for cache"
-            podman pull docker.io/antithesishq/k8s-validator:1.0.0
-            podman save docker.io/antithesishq/k8s-validator:1.0.0 -o ~/k8s-validator.tar
-          fi
+          path: ~/test-images
+          key: test-images-${{ matrix.runtime }}-${{ hashFiles('scripts/setup-test-images.sh') }}
 
       # Pre-fetch every remote image and start the registry tests push to, so a
       # slow or rate-limited pull fails here rather than inside a test.
       - name: Set up test images and registry
         shell: bash
         timeout-minutes: 10
-        run: scripts/setup-test-images.sh "${{ matrix.runtime }}"
+        run: |
+          if [ "${{ runner.os }}" = "macOS" ]; then
+            export SNOUTY_TEST_IMAGE_CACHE="$HOME/test-images"
+          fi
+          scripts/setup-test-images.sh "${{ matrix.runtime }}"
 
       - name: Test
-        run: cargo nextest run
+        run: cargo nextest run --filterset '${{ matrix.filter }}'
+
+  # The other half of the macOS split. arm64 macOS cannot run `podman machine`,
+  # so the engine-backed tests stay on the Intel leg in `test` above and every
+  # other test runs here: no VM to provision, no images to fetch, and no engine
+  # to install. This leg also builds snouty for Apple silicon, which nothing
+  # else in CI does.
+  test-macos-arm:
+    runs-on: macos-15
+    needs: skip-check
+    if: needs.skip-check.outputs.should_skip != 'true'
+    # Compiling the crate is nearly all of this job, and the first run builds
+    # for a new target with a cold cache. This is a safety net, not a budget.
+    timeout-minutes: 25
+    steps:
+      - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+        with:
+          toolchain: stable
+
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+        with:
+          token: ${{secrets.GITHUB_TOKEN}}
+          persist-credentials: false
+
+      - uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5 # v2
+
+      - name: Install Nextest
+        uses: taiki-e/install-action@cargo-nextest
+
+      # There is deliberately no container engine here. A test that needs one
+      # but is missing from the `container` group in .config/nextest.toml fails
+      # this job rather than skipping quietly, because `skip_or_fail` panics
+      # when CI is set. That is the intended way to find such a test.
+      - name: Test
+        run: cargo nextest run --filterset 'not group(container)'
+
   staging:
     runs-on: ubuntu-latest
     needs: skip-check
@@ -279,6 +317,7 @@ jobs:
     needs:
       - skip-check
       - test
+      - test-macos-arm
       - build-nix
       - staging
     if: always()
@@ -293,15 +332,15 @@ jobs:
           # one result. A failure or a cancellation still blocks the merge.
           staging="${{ needs.staging.result }}"
 
-          if [ "${{ needs.test.result }}" = "success" ]; then
-            if [ "${{ needs.build-nix.result }}" = "success" ]; then
-              if [ "$staging" = "success" ] || [ "$staging" = "skipped" ]; then
-                exit 0
-              fi
-            fi
+          if [ "${{ needs.test.result }}" = "success" ] \
+            && [ "${{ needs.test-macos-arm.result }}" = "success" ] \
+            && [ "${{ needs.build-nix.result }}" = "success" ] \
+            && { [ "$staging" = "success" ] || [ "$staging" = "skipped" ]; }; then
+            exit 0
           fi
 
           echo "test matrix result: ${{ needs.test.result }}"
+          echo "test-macos-arm result: ${{ needs.test-macos-arm.result }}"
           echo "build-nix result: ${{ needs.build-nix.result }}"
           echo "staging result: $staging"
           exit 1

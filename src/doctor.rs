@@ -267,12 +267,11 @@ fn enrich<T>(check: Check, attribution: AttributedValue<T>) -> Check {
         } => check.note(
             Level::Note,
             format!(
-                "read from settings file at [{:?}] {}",
-                settings_file_path,
-                match profile {
-                    Some(profile_name) => format!("under the [{profile_name}] profile"),
-                    None => "defaults".to_owned(),
-                }
+                // `Display`, not `Debug`: `{:?}` on a path adds quotes of its
+                // own, which read as a second set of brackets around the name.
+                "read from the [{}] profile in {}",
+                profile.as_deref().unwrap_or("default"),
+                settings_file_path.display(),
             ),
         ),
         AttributedValue::Keychain {
@@ -521,6 +520,39 @@ mod tests {
         assert_eq!(checks.len(), 1);
         assert_eq!(checks[0].status, Status::Ok);
         assert!(checks[0].message.contains("API key provided"));
+    }
+
+    /// A credential read from a file names the profile it came from and the
+    /// path, as a sentence. The path goes through `Display`, so it carries no
+    /// quotes of its own.
+    #[test]
+    fn auth_from_a_file_names_the_profile_and_the_path() {
+        let note = |profile: Option<&str>| {
+            let checks = authn_checks(Ok(AttributedValue::SettingsFile {
+                value: AuthenticationInfo::ApiKey {
+                    api_key: "api_key".to_owned(),
+                },
+                settings_file_path: std::path::PathBuf::from("/tmp/credentials.toml"),
+                profile: profile.map(str::to_owned),
+            }));
+            checks[0]
+                .notes
+                .iter()
+                .map(|n| n.text.clone())
+                .collect::<Vec<_>>()
+                .join(" ")
+        };
+        assert!(
+            note(None).contains("read from the [default] profile in /tmp/credentials.toml"),
+            "got: {}",
+            note(None)
+        );
+        assert!(
+            note(Some("prod")).contains("read from the [prod] profile in /tmp/credentials.toml"),
+            "got: {}",
+            note(Some("prod"))
+        );
+        assert!(!note(None).contains('"'), "the path must not be quoted");
     }
 
     #[test]

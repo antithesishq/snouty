@@ -1,9 +1,12 @@
 use std::collections::{HashMap, VecDeque};
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use color_eyre::eyre::{Context, Report, Result, eyre};
 use color_eyre::{Section, SectionExt};
 use futures_util::stream;
+use http::Extensions;
 use log::debug;
 use progenitor_client::{
     ClientHooks, ClientInfo, Error as ClientError, OperationInfo, ResponseValue,
@@ -226,6 +229,99 @@ impl RetryableStrategy for RetryTransportErrors {
     }
 }
 
+/// A per-request slot that carries a typed transport failure out of the
+/// middleware chain. The cache middleware stringifies any error its network
+/// fetch returns, so [`StashTransportError`] deposits the `reqwest::Error`
+/// here — through the request's [`Extensions`], which the chain shares with
+/// [`send_request`] — before the cache layer can flatten it.
+#[derive(Clone, Debug, Default)]
+struct TransportErrorStash(Arc<Mutex<Option<reqwest::Error>>>);
+
+impl TransportErrorStash {
+    fn put(&self, err: reqwest::Error) {
+        *self.0.lock().unwrap() = Some(err);
+    }
+
+    fn take(&self) -> Option<reqwest::Error> {
+        self.0.lock().unwrap().take()
+    }
+}
+
+/// The error [`StashTransportError`] propagates upward after stashing the
+/// real one. Its text is never user-visible: [`send_request`] recovers the
+/// stashed `reqwest::Error` whenever the chain fails with the stash filled.
+#[derive(Debug)]
+struct StashedTransportError;
+
+impl std::fmt::Display for StashedTransportError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("transport failure stashed for the caller")
+    }
+}
+
+impl std::error::Error for StashedTransportError {}
+
+/// Middleware that preserves typed transport errors across the cache layer.
+///
+/// It sits between the cache and the retry layer, so every error it sees
+/// carries a `reqwest::Error`: either directly, or inside the `RetryError`
+/// that the retry middleware wraps its final failure in. It moves that error
+/// into the request's [`TransportErrorStash`] and propagates a marker instead
+/// — the cache layer may stringify the marker, but the typed error survives
+/// for [`send_request`] to return.
+struct StashTransportError;
+
+#[async_trait::async_trait]
+impl reqwest_middleware::Middleware for StashTransportError {
+    async fn handle(
+        &self,
+        request: reqwest::Request,
+        extensions: &mut Extensions,
+        next: reqwest_middleware::Next<'_>,
+    ) -> reqwest_middleware::Result<reqwest::Response> {
+        let err = match next.run(request, extensions).await {
+            Ok(response) => return Ok(response),
+            Err(err) => err,
+        };
+        let err = match err {
+            reqwest_middleware::Error::Reqwest(err) => err,
+            reqwest_middleware::Error::Middleware(err) => match err.downcast::<RetryError>() {
+                Ok(
+                    RetryError::WithRetries {
+                        err: reqwest_middleware::Error::Reqwest(err),
+                        ..
+                    }
+                    | RetryError::Error(reqwest_middleware::Error::Reqwest(err)),
+                ) => err,
+                // Unreachable in this chain (only the retry layer and the raw
+                // client sit below), but pass anything else through untouched.
+                Ok(other) => return Err(reqwest_middleware::Error::Middleware(other.into())),
+                Err(err) => return Err(reqwest_middleware::Error::Middleware(err)),
+            },
+        };
+        match extensions.get::<TransportErrorStash>() {
+            Some(stash) => {
+                stash.put(err);
+                Err(reqwest_middleware::Error::middleware(StashedTransportError))
+            }
+            None => Err(reqwest_middleware::Error::Reqwest(err)),
+        }
+    }
+}
+
+/// A throwaway `reqwest::Error` for the cache-fault path. [`ClientHooks::exec`]
+/// must return a `reqwest::Result`, and a `reqwest::Error` cannot be built
+/// from an arbitrary error — so the real diagnosis travels via
+/// [`ClientState::cache_fault`], and the `post` hook rejects the operation
+/// with it before this value is ever inspected.
+fn placeholder_reqwest_error() -> reqwest::Error {
+    Client::new()
+        .get("http://cache-fault.invalid/")
+        .header("placeholder", "\u{0}")
+        .build()
+        .expect_err("a NUL header value cannot build")
+}
+
 /// Where API responses are cached.
 #[derive(Debug)]
 pub(crate) enum ResponseCache {
@@ -305,10 +401,18 @@ impl AntithesisApi {
 
         let default_headers = default_request_headers()?;
         let http_client = build_http_client(default_headers.clone(), settings)?;
-        let middleware_client = build_middleware_client(http_client.clone(), cache);
+        let cache_dir = match cache {
+            ResponseCache::Default => api_cache::default_cache_dir(),
+            ResponseCache::Disabled => None,
+            #[cfg(test)]
+            ResponseCache::Dir(dir) => Some(dir),
+        };
+        let middleware_client = build_middleware_client(http_client.clone(), cache_dir.clone());
         let state = ClientState {
             authn_info,
             middleware_client,
+            cache_dir,
+            cache_fault: Arc::default(),
             default_headers: verbose.then_some(default_headers),
         };
         let client = generated::Client::new_with_client(&base_url, http_client, state);
@@ -580,6 +684,15 @@ pub struct ClientState {
     /// gated to GET requests inside the chain; anything else passes through
     /// untouched. See [`build_middleware_client`].
     middleware_client: ClientWithMiddleware,
+    /// Where the response cache lives, when one is configured. Used to tell
+    /// the user which directory to clear when the cache fails.
+    cache_dir: Option<PathBuf>,
+    /// A cache failure recorded by [`send_request`], pending pickup by the
+    /// `post` hook, which rejects the operation with it. The slot is
+    /// client-wide, not request-scoped — under concurrent requests a fault
+    /// could be reported against a sibling operation, but either way the
+    /// command fails with the cache diagnosis, which is the point.
+    cache_fault: Arc<Mutex<Option<String>>>,
     /// Default headers reqwest will merge into the outgoing request at
     /// `Client::execute` time (after our `exec` hook runs). `Some` enables
     /// verbose request/response logging to stderr; we hold the headers here
@@ -622,7 +735,7 @@ impl ClientHooks<ClientState> for generated::Client {
             eprint!("{out}");
         }
 
-        let result = send_request(self.client(), &state.middleware_client, request).await;
+        let result = send_request(state, request).await;
 
         let result = match (result, retry_request) {
             (Ok(response), Some(mut retry_request))
@@ -642,7 +755,7 @@ impl ClientHooks<ClientState> for generated::Client {
                             format_request(&retry_request, default_headers, &mut out);
                             eprint!("{out}");
                         }
-                        send_request(self.client(), &state.middleware_client, retry_request).await
+                        send_request(state, retry_request).await
                     }
                     Ok(None) => Ok(response),
                     Err(err) => {
@@ -663,6 +776,30 @@ impl ClientHooks<ClientState> for generated::Client {
         }
         result
     }
+
+    /// Reject the operation when [`send_request`] recorded a cache failure.
+    /// This is the only hook that can carry a non-reqwest error out of the
+    /// request path — `exec` must return a `reqwest::Result` — and the
+    /// generated operations check it before they look at `exec`'s result, so
+    /// the placeholder error `exec` returned is never inspected.
+    async fn post<E>(
+        &self,
+        _result: &reqwest::Result<reqwest::Response>,
+        _info: &OperationInfo,
+    ) -> std::result::Result<(), ClientError<E>> {
+        let state = self.inner();
+        let Some(fault) = state.cache_fault.lock().unwrap().take() else {
+            return Ok(());
+        };
+        let dir = state
+            .cache_dir
+            .as_deref()
+            .map_or_else(|| "<unknown>".to_owned(), |d| d.display().to_string());
+        Err(ClientError::Custom(format!(
+            "the API response cache at {dir} failed: {fault}; \
+             clear the cache (rm -rf {dir}) and retry"
+        )))
+    }
 }
 
 /// Whether a request is safe to cache and retry. Every GET in the API is a
@@ -672,19 +809,17 @@ fn is_get(request: &reqwest::Request) -> bool {
     request.method() == reqwest::Method::GET
 }
 
-/// The middleware chain every API request is sent through: the response cache
-/// (when enabled) over transient-failure retry, each gated to GET requests by
-/// [`ConditionalMiddleware`] — non-GETs pass through both layers untouched, so
-/// a network blip can never replay a mutation. Retry sits under the cache so
-/// a cache hit answers without touching the retry layer, while a cache miss's
-/// network fetch is retried.
-fn build_middleware_client(http_client: Client, cache: ResponseCache) -> ClientWithMiddleware {
-    let cache_dir = match cache {
-        ResponseCache::Default => api_cache::default_cache_dir(),
-        ResponseCache::Disabled => None,
-        #[cfg(test)]
-        ResponseCache::Dir(dir) => Some(dir),
-    };
+/// The middleware chain every API request is sent through, outermost first:
+/// the response cache (when `cache_dir` is set), typed-error preservation
+/// ([`StashTransportError`]), then transient-failure retry. The cache and
+/// retry layers are gated to GET requests by [`ConditionalMiddleware`] —
+/// non-GETs pass through untouched, so a network blip can never replay a
+/// mutation. Retry sits under the cache so a cache hit answers without
+/// touching the retry layer, while a cache miss's network fetch is retried.
+fn build_middleware_client(
+    http_client: Client,
+    cache_dir: Option<PathBuf>,
+) -> ClientWithMiddleware {
     let mut builder = reqwest_middleware::ClientBuilder::new(http_client);
     if let Some(dir) = cache_dir {
         builder = builder.with(ConditionalMiddleware::new(
@@ -694,6 +829,7 @@ fn build_middleware_client(http_client: Client, cache: ResponseCache) -> ClientW
     }
     let policy = ExponentialBackoff::builder().build_with_max_retries(MAX_TRANSIENT_RETRIES);
     builder
+        .with(StashTransportError)
         .with(ConditionalMiddleware::new(
             RetryTransientMiddleware::new_with_policy_and_strategy(policy, RetryTransportErrors),
             is_get,
@@ -708,42 +844,37 @@ fn build_middleware_client(http_client: Client, cache: ResponseCache) -> ClientW
 /// GET requests only; see [`build_middleware_client`]. A served HTTP response
 /// of any status is final — a 500 still fails, and 4xx semantics stay
 /// untouched.
+///
+/// Failures come back in two shapes. A transport failure surfaces as the
+/// `reqwest::Error` it is, recovered from the request's
+/// [`TransportErrorStash`] when the cache layer flattened it on the way up. A
+/// middleware failure with an empty stash is the cache itself failing; that is
+/// recorded on [`ClientState::cache_fault`] for the `post` hook to reject the
+/// operation with, and a placeholder satisfies this function's return type.
 async fn send_request(
-    client: &Client,
-    middleware_client: &ClientWithMiddleware,
+    state: &ClientState,
     request: reqwest::Request,
 ) -> reqwest::Result<reqwest::Response> {
-    // Keep a raw-send fallback for failures that surface as `Error::Middleware`
-    // without a transport error inside (cache I/O failures, and network errors
-    // the cache layer stringified) and so can't be re-packaged as a
-    // `reqwest::Error`. Every request body in the API is static, so the clone
-    // always succeeds; bypass the middleware entirely in the impossible case
-    // that it doesn't.
-    let Some(fallback) = request.try_clone() else {
-        return client.execute(request).await;
-    };
+    let stash = TransportErrorStash::default();
+    let mut extensions = Extensions::new();
+    extensions.insert(stash.clone());
 
-    match middleware_client.execute(request).await {
+    match state
+        .middleware_client
+        .execute_with_extensions(request, &mut extensions)
+        .await
+    {
         Ok(response) => Ok(response),
         Err(reqwest_middleware::Error::Reqwest(err)) => Err(err),
-        Err(reqwest_middleware::Error::Middleware(err)) => match err.downcast::<RetryError>() {
-            // The retry middleware wraps the final failure; recover the
-            // transport error inside so it surfaces as itself rather than as
-            // a middleware failure.
-            Ok(
-                RetryError::WithRetries {
-                    err: reqwest_middleware::Error::Reqwest(err),
-                    ..
-                }
-                | RetryError::Error(reqwest_middleware::Error::Reqwest(err)),
-            ) => Err(err),
-            Ok(other) => {
-                log::warn!("API middleware failure, retrying without middleware: {other}");
-                client.execute(fallback).await
-            }
-            Err(err) => {
-                log::warn!("API cache failure, bypassing cache: {err}");
-                client.execute(fallback).await
+        Err(reqwest_middleware::Error::Middleware(err)) => match stash.take() {
+            Some(err) => Err(err),
+            None => {
+                state
+                    .cache_fault
+                    .lock()
+                    .unwrap()
+                    .replace(format!("{err:#}"));
+                Err(placeholder_reqwest_error())
             }
         },
     }
@@ -2019,6 +2150,73 @@ mod tests {
         assert_eq!(
             connections.load(Ordering::SeqCst),
             1 + MAX_TRANSIENT_RETRIES as usize
+        );
+    }
+
+    // A transport failure behind the cache layer keeps its type: the caller
+    // sees an unreachable API, never a cache diagnosis. This pins the
+    // TransportErrorStash wiring — without it, the cache layer stringifies
+    // the transport error and it would misclassify as a cache fault.
+    #[tokio::test]
+    async fn get_transport_failure_with_cache_is_not_a_cache_fault() {
+        let (base_url, connections) = reset_then_serve_version(usize::MAX).await;
+        let cache_dir = TempDir::new().unwrap();
+        let api = test_api_at(base_url, Some(&cache_dir));
+
+        match api.get_version().await {
+            Err(VersionError::Unreachable(message)) => {
+                assert!(
+                    !message.contains("cache"),
+                    "a transport failure must not diagnose the cache, got: {message}"
+                );
+            }
+            other => panic!("expected Unreachable, got {other:?}"),
+        }
+        assert_eq!(
+            connections.load(Ordering::SeqCst),
+            1 + MAX_TRANSIENT_RETRIES as usize
+        );
+    }
+
+    // A failing cache is an error with remediation, not a silent bypass: the
+    // command stops and tells the user which directory to clear. A regular
+    // file where the cache directory should be makes every cache write fail.
+    #[tokio::test]
+    async fn cache_fault_fails_with_clear_guidance() {
+        let mock_server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v0/runs/run-1"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("Cache-Control", "max-age=60")
+                    .set_body_json(serde_json::json!({
+                        "run_id": "run-1",
+                        "status": "completed",
+                        "created_at": "2025-03-20T02:00:00Z",
+                        "launcher": "nightly"
+                    })),
+            )
+            .mount(&mock_server)
+            .await;
+
+        let not_a_dir = tempfile::NamedTempFile::new().unwrap();
+        let api = AntithesisApi::build(
+            &Settings::for_test_base_url(mock_server.uri()),
+            AuthenticationInfo::Password {
+                username: "user".to_owned(),
+                password: "pass".to_owned(),
+            },
+            false,
+            ResponseCache::Dir(not_a_dir.path().to_path_buf()),
+        )
+        .unwrap();
+
+        let report = api.get_run("run-1").await.unwrap_err();
+        let message = format!("{report:#}");
+        assert!(message.contains("clear the cache"), "got: {message}");
+        assert!(
+            message.contains(&not_a_dir.path().display().to_string()),
+            "the message must name the cache directory, got: {message}"
         );
     }
 

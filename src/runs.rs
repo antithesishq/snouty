@@ -370,7 +370,7 @@ fn open_run_report(run: &RunDetail, json: bool) -> Result<()> {
         return Ok(());
     }
 
-    let launched = crate::browser::open_in_browser(url).unwrap_or(false);
+    let launched = crate::browser::open_in_browser(url).is_ok();
     if launched {
         outln!("Opening report for run {}…", run.run_id)?;
         outln!("If your browser didn't open, manually visit:")?;

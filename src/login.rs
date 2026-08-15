@@ -495,13 +495,20 @@ async fn complete_oauth_login(
     let location =
         request_login_redirect(client, base_url, port, &code_challenge, &cli_state).await?;
 
-    println!("\nTo finish signing in, open the following URL in your browser:\n\n  {location}\n");
-    // Best-effort: an opener that fails to launch is ignored — the URL is
-    // printed above, so a headless or opener-less environment can still
-    // complete the flow by hand. An invalid URL still aborts, carrying the
-    // validation detail from `browser` so the rule text lives in one place.
-    crate::browser::open_in_browser(&location)
-        .map_err(|err| eyre!("The supplied login URL is invalid: {err}"))?;
+    // Best-effort: any failure to open a browser (invalid URL, no opener) is
+    // not fatal — the URL is printed either way, so a headless or opener-less
+    // environment can still complete the flow by hand.
+    println!();
+    match crate::browser::open_in_browser(&location) {
+        Ok(()) => {
+            println!("Opening login url in browser... success.");
+            println!("If your browser didn't open, manually visit: {location}");
+        }
+        Err(err) => {
+            println!("Opening login url in browser... failed to open automatically ({err}).");
+            println!("Open the following url in your browser on this machine: {location}");
+        }
+    }
     println!("Waiting for you to complete sign-in in your browser...");
 
     let callback = wait_for_callback(listeners).await?;

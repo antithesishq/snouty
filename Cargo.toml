@@ -21,7 +21,6 @@ json5 = "1.3.0"
 json-patch = "4"
 jsonschema = { version = "0.37.4", default-features = false }
 log = "0.4"
-# Cross-platform "open a URL in the default browser" (see src/browser.rs).
 open = "5"
 progenitor-client = "0.14.0"
 reqwest = { version = "0.13.1", default-features = false, features = ["http2", "json", "query", "stream", "native-tls-vendored"] }

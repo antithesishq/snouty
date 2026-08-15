@@ -6,7 +6,7 @@
 snouty doctor --help
 stdout '.*Check environment configuration.*'
 stdout '.*container runtime.*'
-stdout '.*environment variables.*'
+stdout '(?s)environment\s+variables'
 stdout '.*--json.*'
 
 # With nothing configured, doctor steers the user to an API key only — it must

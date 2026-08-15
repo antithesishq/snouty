@@ -91,8 +91,8 @@ flags and the README). Environment variables take precedence.
 Environment variables (override any settings file):
   ANTITHESIS_TENANT       Your Antithesis tenant name (required).
   ANTITHESIS_API_KEY      API key authentication (preferred).
-  ANTITHESIS_USERNAME     Username (required when API key is not set).
-  ANTITHESIS_PASSWORD     Password (required when API key is not set).
+  ANTITHESIS_USERNAME     Username (deprecated; required when API key is not set).
+  ANTITHESIS_PASSWORD     Password (deprecated; required when API key is not set).
   ANTITHESIS_REPOSITORY   Container registry for pushing images (required with --config).
   SNOUTY_CONTAINER_ENGINE Force "docker" or "podman" (auto-detected by default)."#)]
     Launch(LaunchArgs),
@@ -201,10 +201,10 @@ Example:
     #[command(long_about = r#"Check environment configuration
 
 Verifies that your environment is properly configured for Antithesis testing.
-Runs health checks — container runtime, docker compose, the ANTITHESIS_*
-environment variables for authentication, and API connectivity — then prints
-the resolved settings (tenant, repository, container engine) so you can confirm
-what snouty will use.
+Runs health checks — container runtime, docker compose, your credentials
+(stored by `snouty login`, or set in the ANTITHESIS_* environment variables),
+and API connectivity — then prints the resolved settings (tenant, repository,
+container engine) so you can confirm what snouty will use.
 
 snouty prefers an API key (full API access); a username and password is
 deprecated auth, accepted only by `snouty launch` and `snouty debug`.
@@ -267,12 +267,13 @@ Examples:
         command: DocsCommands,
     },
 
-    /// Initialize Snouty configuration
-    #[command(long_about = r#"Initialize Snouty configuration and authentication
+    /// Sign in and store your snouty configuration
+    #[command(long_about = r#"Sign in and store your snouty configuration
 
-Provide configuration and authentication information to persist in the global 
-Snouty settings file, optionally under a named profile. Sensitive information and
-information not provided via args will be queried over stdin.
+Provide configuration and authentication information to persist in the global
+snouty settings file, optionally under a named profile. Sensitive information and
+information not provided via args are asked for at the terminal, so this command
+needs an interactive session.
 
 NOTE: `snouty login` will offer to reuse your existing configuration values, including
 any sourced from a local .snouty.toml file or the file specified by --settings or via

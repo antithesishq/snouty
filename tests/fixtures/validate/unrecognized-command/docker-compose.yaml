@@ -1,9 +1,16 @@
 # Bakes a test command (test/quickstart/run_workload) whose name has no
 # recognized Antithesis prefix (first_, parallel_driver_, serial_driver_,
 # singleton_driver_, anytime_, eventually_, finally_, or helper_) into the
-# image. snouty discovers it during `validate`, can't classify it, and fails —
-# caught during discovery, before the setup-complete wait, so the service only
-# needs to stay up. Expected: validation fails naming the unrecognized command.
+# image. snouty discovers it during `validate`, can't classify it, and fails.
+# Expected: validation fails naming the unrecognized command.
+#
+# `validate` discovers test commands only after it sees the setup-complete
+# event, so the service must emit that event before snouty can reach the
+# discovery failure this sample exists to show. It then stays up, like the
+# `valid` sample.
+#
+# `$$` escapes the dollar sign so docker-compose passes $ANTITHESIS_OUTPUT_DIR
+# through to the container shell instead of interpolating it at config time.
 #
 # Run scripts/build-validate-samples.sh to build the image — `snouty validate`
 # never builds or pulls.
@@ -11,4 +18,7 @@ services:
   app:
     image: snouty-sample-unrecognized-command:latest
     build: .
-    command: ["tail", "-f", "/dev/null"]
+    command:
+      - sh
+      - -c
+      - "echo '{\"antithesis_setup\": {\"status\": \"complete\"}}' >> \"$$ANTITHESIS_OUTPUT_DIR/sdk.jsonl\"; exec tail -f /dev/null"

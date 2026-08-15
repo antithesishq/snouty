@@ -71,19 +71,31 @@ _Automated check: PASS|FAIL — <detail>_
 (Help stories show an `Exit code:` line under each command block — the `--help`,
 the default output, and every variant.)
 
-**Interactive / stateful stories** (the `login-*` slugs) have a different shape.
-`snouty login` reads answers from stdin and *writes files*, so instead of a
-single output block these stories show:
+**TTY stories** (the `login-*` slugs) have a different shape. `snouty login`
+holds a conversation on a terminal and *writes files*, so instead of a single
+output block these stories show one **frame** per prompt — the screen exactly as
+the user saw it at that moment — then the persisted files:
 
 ```
-## Transcript
+## Conversation
 ```shell
 $ snouty login
-# stdin> acme                     ← the answers fed to each prompt, in order
-# stdin> registry.example.com/...
-<the prompt transcript snouty printed>
+```
+
+### At `What kind of credentials`   ← one frame per prompt, in order
+```
+> What Antithesis tenant would you like to use? acme
+? What kind of credentials would you like to use? (Hit Esc to skip)
+> API Key
+  Username & password (deprecated)
+```
+
+### At `[after it exits]`           ← the closing screen
+```
+...
 ```
 Exit code: `<n>`
+_Replay the session: `asciinema play login-fresh-apikey.cast`_
 
 ## Persisted state
 `~/.config/snouty/settings.toml`      ← the files login actually wrote,
@@ -92,14 +104,26 @@ Exit code: `<n>`
 ```                                      deliberately not created
 ```
 
-Judge these on the transcript **and** the persisted state together (see Step 3).
+Read the frames in order — they are the conversation. A menu is erased once
+chosen, so its options appear only in the frame taken while it was on screen;
+the closing frame shows just the answer that won. Any frame whose heading starts
+with `[gallery]` marks a harness problem, not a snouty defect — report it as
+such rather than judging the story. There are two: `[gallery] waiting for …`
+means a prompt never arrived, and `[gallery] answering …` means the screen did
+not offer what the step meant to choose (usually a changed menu).
+
+Each story also ships a `.cast` beside it. Run `asciinema play <slug>.cast` when
+a frame leaves you unsure how something felt to type — pacing and redraws show
+up there and nowhere else.
+
+Judge these on the frames **and** the persisted state together (see Step 3).
 They run in a throwaway `$HOME`, so the paths are temp dirs — judge the shape and
 content, not the exact path.
 
 Read every story file. For the **large** outputs (e.g. `runs-build-logs`,
 `runs-logs-incomplete` can be tens/hundreds of KB) do **not** read the whole
-file — measure its width with the tool below and read only the head and tail to
-judge structure. For everything else, read the full file.
+file — read the head and tail and judge the structure from those. For everything
+else, read the full file.
 
 ## Step 3 — Judge each story on three axes
 
@@ -136,26 +160,27 @@ command**? Concretely:
 If a needed coordinate is truncated, omitted, or buried, that's a follow-up
 failure even if the command "worked".
 
-### Axis C — Terminal rendering at ~140 columns
-Assume an average terminal is **140 characters wide**. Measure the widest line
-of actual command output per story:
+### Axis C — Terminal rendering
+Judge how the output reads in a terminal. There is no width threshold to check
+against and no measurement to run: a number tells you a line is long, not
+whether that hurts. Read the output and decide.
 
-```bash
-for f in "$GALLERY"/*.md; do
-  awk -v fn="$(basename "$f")" '
-    /^```/        { infence = !infence; next }
-    infence       { n++; if (length($0) > max) max = length($0) }
-    END           { printf "%-34s width=%-4d lines=%d\n", fn, max+0, n+0 }
-  ' "$f"
-done | sort -t= -k2 -rn
-```
+**Long lines.** A line longer than the terminal wraps, and wrapping is only
+sometimes a problem. Ask what the wrap does to the reader:
+- A wrapped **table row** is the bad case: continuation text lands under the
+  wrong columns and every row after it is harder to scan. Flag it.
+- A wrapped **prose field** (a run description, a `Details` paragraph) is worse
+  when it runs under the label column with no indent, and fine when snouty
+  wraps and indents it itself. Flag the first, not the second.
+- A long **opaque token** — a signed report URL, an image digest, a log line
+  from the tested system — has to be long. Do not flag it; snouty cannot
+  shorten it and truncating it would be worse.
+- Output behind a **debugging flag** (`--verbose`) is meant to be bulky. Do not
+  flag width there.
+Say what the wrap breaks and roughly how wide the line is, rather than quoting a
+threshold.
 
-Interpret the widest-line width:
-- **≤ 140** → fits cleanly (✅).
-- **141–160** → wraps a little; usually ⚠️ unless the wrap mangles a table.
-- **> 160** → likely wraps badly; tables become unreadable, columns desync (❌).
-
-Also judge rendering quality beyond raw width:
+**Also judge rendering quality beyond line length:**
 - **Wasted width**: mostly-empty columns padded to a huge fixed width (e.g. a
   `GROUP` column padded ~45 chars when most rows are blank), or full-precision
   floats (e.g. `vtime` printed as `18.310608921106905`) eating horizontal space.
@@ -165,24 +190,28 @@ Also judge rendering quality beyond raw width:
 - **Truncation**: is `…`-truncation hiding information the user needs (Axis B
   overlap), or is it reasonable?
 - **Density**: walls of near-identical lines, redundant repetition, no grouping.
+- **Stray control characters**: raw escape sequences (e.g. a literal `[K`) that
+  a terminal would hide but a piped or CI-captured log shows.
 
-### Interactive / stateful stories (`login-*`)
+### TTY stories (`login-*`)
 These are `snouty login` runs, so reinterpret the axes — the deliverable is a
 prompt conversation plus files written, not a table:
 - **Axis A (correctness):** were the prompts the right ones, in a sensible order,
   and *only* for values not already known (a flag or a stored previous value
   shouldn't be re-prompted)? Was invalid input rejected? And — judged against the
-  **Persisted state** section, not just stdout — did it write the *correct*
-  result (right tenant/repo, right credential type, right `[profile.x]` scope)?
+  **Persisted state** section, not just the closing frame — did it write the
+  *correct* result (right tenant/repo, right credential type, right
+  `[profile.x]` scope)?
 - **Axis B (follow-up readiness):** after it finishes, does the user know **what
   was saved, where, and the obvious next step** (e.g. "run `snouty doctor` to
   verify")? A login that exits `0` in silence — never confirming what it wrote —
   is an Axis B failure even though the file is correct. For the error/repair
   paths, does the message say what went wrong *and* how to recover?
-- **Axis C (rendering):** less about 140-col tables, more about **prompt clarity
+- **Axis C (rendering):** less about tables, more about **prompt clarity
   and secret hygiene** — is the menu readable, are previous-value defaults shown
-  legibly, and is the password never echoed into the transcript?
-- **Axis D — safety of a mutating command** (interactive/stateful stories only):
+  legibly, and is a secret never echoed into any frame? A stored secret should
+  appear only as a masked hint, never whole.
+- **Axis D — safety of a mutating command** (TTY stories only):
   before overwriting or discarding existing state, does it warn and/or back up
   (e.g. `settings.toml.bak`)? Does it scope writes to the intended profile? Does a
   rejected/aborted run leave nothing half-written? A mutating command that
@@ -219,9 +248,9 @@ Reviewed by: Claude (<model>), <date>
 
 ## Summary table
 
-| Story (slug) | Correct | Follow-up | Render (width) | Verdict | Top issue |
+| Story (slug) | Correct | Follow-up | Render | Verdict | Top issue |
 |---|---|---|---|---|---|
-| runs-list | ✅ | ⚠️ | ✅ (98) | partial | desc truncated with … |
+| runs-list | ✅ | ⚠️ | ✅ | partial | desc truncated with … |
 | ... |
 
 ## Per-story detail
@@ -230,7 +259,7 @@ Reviewed by: Claude (<model>), <date>
 `$ snouty <args>`
 - **Correct:** <✅/⚠️/❌> — <rationale>
 - **Follow-up:** <✅/⚠️/❌> — <rationale>
-- **Render:** <✅/⚠️/❌> (widest <N> cols) — <rationale>
+- **Render:** <✅/⚠️/❌> — <rationale; name what a wrap breaks, if anything>
 - **Fix:** <concrete suggestion, or "none — satisfied">
 ```
 
@@ -256,11 +285,17 @@ Guidance for a high-signal report:
 - The gallery is pinned to whatever live run IDs were fresh at generation time,
   so exact IDs/values differ between runs. Judge the *shape and quality* of the
   output, not the specific data.
-- Width and rendering are judged for a plain ~140-col terminal; snouty may
-  detect a wider TTY when run interactively, but the gallery captures
-  non-interactive output, which is the conservative case worth reviewing.
+- Rendering is judged for an ordinary terminal, without a fixed width to check
+  against. The gallery captures non-interactive output, which is the
+  conservative case: snouty may detect a wider TTY when run by hand. The TTY
+  stories are the exception — they run on a real 120-column terminal, so a line
+  that wraps there wraps for the user too.
 - The `login-*` stories run in a throwaway `$HOME` that is removed after capture,
   and are fed fake secrets that are redacted again in the file — so the "Persisted
   state" you review never contains a real credential or touches real config. On
   Linux these exercise the file-backed credential store (the keychain is a no-op
   there), which is the realistic default for a CI/gallery run.
+- The `login-*` stories contact the tenant for real: snouty asks it whether
+  single sign-on is available before drawing the credential menu. The menu you
+  see is therefore the menu that tenant gives, and it may differ between runs —
+  judge the menu you were shown, not the one you expected.

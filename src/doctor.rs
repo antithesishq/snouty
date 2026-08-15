@@ -148,12 +148,16 @@ struct Report<'a> {
 /// The tenant is required by every command, so a missing one fails doctor.
 /// (A broken settings file never reaches here — it fails at startup, before
 /// doctor runs — so the resolved value is simply present or absent.)
+/// `snouty login` sets tenant, repository, and credentials in one pass, so every
+/// check that reports one of them missing points at it. Each says so in its own
+/// words: on an unconfigured machine all three fire at once, and the same
+/// sentence three times reads as noise rather than as advice.
 fn tenant_check(tenant: Option<&str>) -> Check {
     match tenant {
         Some(_) => Check::ok("tenant", "tenant is set"),
         None => Check::fail("tenant", "tenant is not set").note(
             Level::Note,
-            "set ANTITHESIS_TENANT or add it to a settings file",
+            "run `snouty login` to set it, or set ANTITHESIS_TENANT or add it to a settings file",
         ),
     }
 }
@@ -165,7 +169,11 @@ fn repository_check(repository: Option<&str>) -> Check {
     match repository {
         Some(_) => Check::ok("repository", "repository is set"),
         None => Check::warn("repository", "repository is not set")
-            .note(Level::Warning, "repository is needed for `snouty launch`"),
+            .note(Level::Warning, "repository is needed for `snouty launch`")
+            .note(
+                Level::Note,
+                "run `snouty login` to set it, or set ANTITHESIS_REPOSITORY",
+            ),
     }
 }
 
@@ -225,6 +233,10 @@ fn authn_checks(authn_info: Result<AttributedValue<AuthenticationInfo>>) -> Vec<
                 )
                 .note(
                     Level::Note,
+                    "run `snouty login` to sign in and store credentials",
+                )
+                .note(
+                    Level::Note,
                     "ask Antithesis support for an API key if you don't have one",
                 ),
         ],
@@ -255,12 +267,11 @@ fn enrich<T>(check: Check, attribution: AttributedValue<T>) -> Check {
         } => check.note(
             Level::Note,
             format!(
-                "read from settings file at [{:?}] {}",
-                settings_file_path,
-                match profile {
-                    Some(profile_name) => format!("under the [{profile_name}] profile"),
-                    None => "defaults".to_owned(),
-                }
+                // `Display`, not `Debug`: `{:?}` on a path adds quotes of its
+                // own, which read as a second set of brackets around the name.
+                "read from the [{}] profile in {}",
+                profile.as_deref().unwrap_or("default"),
+                settings_file_path.display(),
             ),
         ),
         AttributedValue::Keychain {
@@ -511,6 +522,39 @@ mod tests {
         assert!(checks[0].message.contains("API key provided"));
     }
 
+    /// A credential read from a file names the profile it came from and the
+    /// path, as a sentence. The path goes through `Display`, so it carries no
+    /// quotes of its own.
+    #[test]
+    fn auth_from_a_file_names_the_profile_and_the_path() {
+        let note = |profile: Option<&str>| {
+            let checks = authn_checks(Ok(AttributedValue::SettingsFile {
+                value: AuthenticationInfo::ApiKey {
+                    api_key: "api_key".to_owned(),
+                },
+                settings_file_path: std::path::PathBuf::from("/tmp/credentials.toml"),
+                profile: profile.map(str::to_owned),
+            }));
+            checks[0]
+                .notes
+                .iter()
+                .map(|n| n.text.clone())
+                .collect::<Vec<_>>()
+                .join(" ")
+        };
+        assert!(
+            note(None).contains("read from the [default] profile in /tmp/credentials.toml"),
+            "got: {}",
+            note(None)
+        );
+        assert!(
+            note(Some("prod")).contains("read from the [prod] profile in /tmp/credentials.toml"),
+            "got: {}",
+            note(Some("prod"))
+        );
+        assert!(!note(None).contains('"'), "the path must not be quoted");
+    }
+
     #[test]
     fn auth_password_warns_on_key_and_notes_deprecation() {
         let checks = authn_checks(Ok(AttributedValue::EnvironmentVariable {
@@ -554,6 +598,13 @@ mod tests {
                 .iter()
                 .any(|n| n.text.contains("ask Antithesis support"))
         );
+        assert!(
+            checks[0]
+                .notes
+                .iter()
+                .any(|n| n.text.contains("snouty login")),
+            "an unconfigured machine must be told the command that configures it"
+        );
         let all = format!(
             "{} {}",
             checks[0].message,
@@ -586,6 +637,10 @@ mod tests {
                 .iter()
                 .any(|n| n.text.contains("ANTITHESIS_TENANT"))
         );
+        assert!(
+            check.notes.iter().any(|n| n.text.contains("snouty login")),
+            "an unset tenant must point at the command that sets it"
+        );
     }
 
     #[test]
@@ -601,6 +656,7 @@ mod tests {
         let check = repository_check(None);
         assert_eq!(check.status, Status::Warn);
         assert!(check.notes.iter().any(|n| n.text.contains("snouty launch")));
+        assert!(check.notes.iter().any(|n| n.text.contains("snouty login")));
     }
 
     // ---- resolved-settings table (informational, no status) ------------

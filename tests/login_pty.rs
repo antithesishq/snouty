@@ -50,7 +50,19 @@ const OAUTH_DISABLED: &str = r#"{"port_strategy":"disabled"}"#;
 /// isolated `$HOME` and a mock backend that answers the `/auth/cli/config`
 /// probe with [`OAUTH_DISABLED`].
 fn start_login() -> (tempfile::TempDir, OsSession) {
+    start_login_with(&[])
+}
+
+/// As [`start_login`], with each `(path, contents)` in `seed` written under the
+/// temp `$HOME` first — the pre-existing state a fresh login would not have.
+fn start_login_with(seed: &[(&str, &str)]) -> (tempfile::TempDir, OsSession) {
     let home = tempfile::TempDir::new().expect("temp HOME");
+    for (path, contents) in seed {
+        let path = home.path().join(path);
+        std::fs::create_dir_all(path.parent().expect("seed path has a parent"))
+            .expect("create the seed directory");
+        std::fs::write(path, contents).expect("write the seed file");
+    }
     let base_url = support::start_mock_server(OAUTH_DISABLED, 200);
 
     let mut command = Command::new(env!("CARGO_BIN_EXE_snouty"));
@@ -195,6 +207,39 @@ fn accepts_an_api_key_longer_than_the_terminal_width() {
     assert!(
         creds.contains(&format!(r#"api_key = "{expected}""#)),
         "{creds}"
+    );
+}
+
+/// A stored API key is offered back at the prompt as a masked hint, and a bare
+/// Enter keeps it. The stored key never reaches the screen — only its first few
+/// characters, which is what makes the hint recognizable.
+#[test]
+fn bare_enter_keeps_the_stored_api_key() {
+    let stored = "antithesis_api_key_v2_PTYSTORED_9Pgw";
+    let (home, mut session) = start_login_with(&[(
+        ".config/snouty/credentials.toml",
+        &format!("[default]\ntype = \"ApiKey\"\napi_key = \"{stored}\"\n"),
+    )]);
+
+    expect(
+        &mut session,
+        "What kind of credentials would you like to use?",
+    );
+    send(&mut session, "\r");
+    // The hint: stars, then the key's own last characters. Antithesis keys
+    // share a constant prefix, so the tail is what tells two of them apart.
+    let mut seen = expect(&mut session, "Please enter your API Key (********9Pgw)");
+    send(&mut session, "\r");
+    seen += &finish(session);
+
+    assert!(
+        !seen.contains(stored),
+        "the stored key must never be rendered whole"
+    );
+    let creds = credentials(home.path());
+    assert!(
+        creds.contains(&format!(r#"api_key = "{stored}""#)),
+        "a bare Enter must keep the stored key: {creds}"
     );
 }
 

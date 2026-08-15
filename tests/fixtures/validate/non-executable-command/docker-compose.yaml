@@ -1,8 +1,13 @@
 # Bakes a recognized test command (test/quickstart/first_setup) that is missing
 # its executable bit into the image. Antithesis could never run it, so snouty
-# fails discovery during `validate` and names the offending command. Like the
-# unrecognized-command sample, this fails during discovery, so the service only
-# needs to stay up.
+# fails discovery during `validate` and names the offending command.
+#
+# `validate` discovers test commands only after it sees the setup-complete
+# event, so — like the unrecognized-command sample — the service must emit that
+# event before snouty can reach the discovery failure. It then stays up.
+#
+# `$$` escapes the dollar sign so docker-compose passes $ANTITHESIS_OUTPUT_DIR
+# through to the container shell instead of interpolating it at config time.
 #
 # Run scripts/build-validate-samples.sh to build the image — `snouty validate`
 # never builds or pulls.
@@ -10,4 +15,7 @@ services:
   app:
     image: snouty-sample-non-executable-command:latest
     build: .
-    command: ["tail", "-f", "/dev/null"]
+    command:
+      - sh
+      - -c
+      - "echo '{\"antithesis_setup\": {\"status\": \"complete\"}}' >> \"$$ANTITHESIS_OUTPUT_DIR/sdk.jsonl\"; exec tail -f /dev/null"

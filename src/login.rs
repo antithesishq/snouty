@@ -50,7 +50,12 @@ trait Prompter {
     /// A masked secret (each character echoes as `*`). There is deliberately
     /// no confirmation round: Antithesis passwords are long generated strings
     /// that are pasted like API keys, not typed twice.
-    fn password(&self, prompt: &str) -> Result<String>;
+    ///
+    /// `hint` is a display-only stand-in for a secret already stored (see
+    /// [`secret_hint`]). When it is set, the prompt shows it and says that an
+    /// empty answer keeps the stored secret. The secret itself never reaches
+    /// the prompter.
+    fn password(&self, prompt: &str, hint: Option<&str>) -> Result<String>;
 }
 
 /// The production [`Prompter`]: `inquire` prompts reading the real terminal.
@@ -80,11 +85,20 @@ impl Prompter for InquirePrompter {
             .map(|choice| choice.index))
     }
 
-    fn password(&self, prompt: &str) -> Result<String> {
-        Ok(Password::new(prompt)
+    fn password(&self, prompt: &str, hint: Option<&str>) -> Result<String> {
+        // `inquire` has no default for a masked prompt, so the hint rides in
+        // the message, in the same `(value)` shape `Text` gives a default.
+        let message = match hint {
+            Some(hint) => format!("{prompt} ({hint})"),
+            None => prompt.to_owned(),
+        };
+        let mut password = Password::new(&message)
             .with_display_mode(PasswordDisplayMode::Masked)
-            .without_confirmation()
-            .prompt()?)
+            .without_confirmation();
+        if hint.is_some() {
+            password = password.with_help_message("hit enter to keep the stored value");
+        }
+        Ok(password.prompt()?)
     }
 }
 
@@ -147,10 +161,15 @@ async fn do_cmd_login(
         )?,
     };
 
+    // Whatever credentials are already in reach, so the menu can default to the
+    // kind last used and the key prompt can offer the stored key back. The error
+    // is discarded on purpose: nothing reads it, and having none is the ordinary
+    // state on a first login rather than a failure.
     let current_credentials = AuthenticationInfo::for_ambient_configuration_with_attribution(
         profile_to_use.as_deref(),
         PasswordPolicy::Inspect,
-    );
+    )
+    .ok();
 
     // Capture the credential kind and where it was stored so the summary can name
     // both; `None` when the user chose to skip credential setup.
@@ -201,7 +220,7 @@ fn print_login_summary(
     profile: Option<&str>,
     settings_path: &Path,
     credentials: Option<AttributedValue<&str>>,
-    previous_credentials: Result<AttributedValue<AuthenticationInfo>>,
+    previous_credentials: Option<AttributedValue<AuthenticationInfo>>,
 ) {
     let scope = match profile {
         Some(p) => format!(" under profile `{p}`"),
@@ -230,12 +249,12 @@ fn print_login_summary(
             println!("Stored your {kind}{scope} in {}.", path.display());
         }
         _ => match previous_credentials {
-            Ok(AttributedValue::Keychain { .. }) => {
+            Some(AttributedValue::Keychain { .. }) => {
                 println!(
                     "Retained your previously stored credentials{scope} in the system keychain."
                 );
             }
-            Ok(AttributedValue::SettingsFile {
+            Some(AttributedValue::SettingsFile {
                 settings_file_path, ..
             }) => {
                 println!(
@@ -304,7 +323,7 @@ impl std::fmt::Display for AuthSetupType {
 async fn prompt_for_auth(
     prompter: &dyn Prompter,
     tenant: &str,
-    previous_value: &Result<AttributedValue<AuthenticationInfo>>,
+    previous_value: &Option<AttributedValue<AuthenticationInfo>>,
 ) -> Result<Option<PersistableCredentials>> {
     // ANTITHESIS_BASE_URL trumps the supplied tenant because the former is used by spec tests
     let base_url = env::var(settings::ANTITHESIS_BASE_URL_VAR_NAME)?
@@ -328,7 +347,7 @@ async fn prompt_for_auth(
     // highlight the first (preferred) option. Credentials from environment
     // variables are not stored, so they set no default.
     let previous_kind = match previous_value {
-        Ok(creds) if !matches!(creds, AttributedValue::EnvironmentVariable { .. }) => {
+        Some(creds) if !matches!(creds, AttributedValue::EnvironmentVariable { .. }) => {
             Some(creds.value())
         }
         _ => None,
@@ -351,9 +370,12 @@ async fn prompt_for_auth(
     match selection {
         None => Ok(None),
         Some(index) => match credential_options[index] {
-            AuthSetupType::ApiKey => prompt_for_api_key(prompter).map(Some),
+            AuthSetupType::ApiKey => {
+                prompt_for_api_key(prompter, stored_api_key(previous_value.as_ref())).map(Some)
+            }
+
             AuthSetupType::Password => match previous_value.as_ref().map(AttributedValue::value) {
-                Ok(AuthenticationInfo::Password { username, .. }) => {
+                Some(AuthenticationInfo::Password { username, .. }) => {
                     prompt_for_username_password(prompter, Some(username))
                 }
                 _ => prompt_for_username_password(prompter, None),
@@ -366,9 +388,58 @@ async fn prompt_for_auth(
     }
 }
 
-fn prompt_for_api_key(prompter: &dyn Prompter) -> Result<PersistableCredentials> {
+/// How many trailing characters of a stored secret its hint shows. Enough to
+/// tell one key from another, far too few to reconstruct either.
+const HINT_VISIBLE_CHARS: usize = 4;
+
+/// How many stars stand in for the rest of a stored secret. A fixed count, so
+/// the hint does not disclose how long the secret is.
+const HINT_STARS: usize = 8;
+
+/// A display-only stand-in for a stored secret — stars, then its last few
+/// characters, e.g. `********9Pgw`. The prompt shows this so the user can see
+/// that there is a stored value to keep, and recognize which one it is.
+///
+/// The tail, not the head: every Antithesis API key opens with the same
+/// `antithesis_api_key_v2` prefix, so leading characters would distinguish
+/// nothing.
+fn secret_hint(secret: &str) -> String {
+    let skip = secret.chars().count().saturating_sub(HINT_VISIBLE_CHARS);
+    let tail: String = secret.chars().skip(skip).collect();
+    format!("{}{tail}", "*".repeat(HINT_STARS))
+}
+
+/// The API key already in storage, when that is what the previous credentials
+/// hold. Credentials read from the environment are left out on purpose: keeping
+/// one would copy an ambient secret into the credentials file. The menu's own
+/// default ignores them for the same reason.
+fn stored_api_key(previous: Option<&AttributedValue<AuthenticationInfo>>) -> Option<&str> {
+    match previous {
+        None | Some(AttributedValue::EnvironmentVariable { .. }) => None,
+        Some(credentials) => match credentials.value() {
+            AuthenticationInfo::ApiKey { api_key } => Some(api_key),
+            _ => None,
+        },
+    }
+}
+
+/// An empty answer at a masked prompt keeps the secret already stored — that is
+/// what the prompt's hint offers. With nothing stored, the empty answer stands.
+fn keep_stored_if_empty(entered: String, stored: Option<&str>) -> String {
+    match stored {
+        Some(stored) if entered.is_empty() => stored.to_owned(),
+        _ => entered,
+    }
+}
+
+fn prompt_for_api_key(
+    prompter: &dyn Prompter,
+    stored: Option<&str>,
+) -> Result<PersistableCredentials> {
+    let hint = stored.map(secret_hint);
+    let entered = prompter.password("Please enter your API Key", hint.as_deref())?;
     Ok(PersistableCredentials::ApiKey {
-        api_key: prompter.password("Please enter your API Key")?,
+        api_key: keep_stored_if_empty(entered, stored),
     })
 }
 
@@ -382,7 +453,7 @@ fn prompt_for_username_password(
     }
     // No confirmation round: like an API key, an Antithesis password is a
     // long generated string that is pasted, not typed.
-    let password = prompter.password("Please enter your password")?;
+    let password = prompter.password("Please enter your password", None)?;
 
     Ok(PersistableCredentials::Password { username, password })
 }
@@ -820,6 +891,90 @@ mod tests {
     use super::*;
 
     #[test]
+    fn secret_hint_shows_a_prefix_and_a_fixed_run_of_stars() {
+        // The tail is the key's own, so the user recognizes which key is
+        // stored; the star run is fixed, so two keys of different lengths hint
+        // identically. Antithesis keys share a constant prefix, which is why the
+        // hint shows the end and not the start.
+        assert_eq!(
+            secret_hint("antithesis_api_key_v2_NOTREAL_9Pgw"),
+            "********9Pgw"
+        );
+        assert_eq!(
+            secret_hint("antithesis_api_key_v2_SHORTER_7Qxz"),
+            "********7Qxz"
+        );
+    }
+
+    #[test]
+    fn secret_hint_never_shows_more_than_it_has() {
+        assert_eq!(secret_hint("ab"), "********ab");
+        assert_eq!(secret_hint(""), "********");
+    }
+
+    #[test]
+    fn empty_answer_keeps_the_stored_secret() {
+        assert_eq!(
+            keep_stored_if_empty(String::new(), Some("stored")),
+            "stored"
+        );
+    }
+
+    #[test]
+    fn a_typed_answer_replaces_the_stored_secret() {
+        assert_eq!(
+            keep_stored_if_empty("typed".to_owned(), Some("stored")),
+            "typed"
+        );
+    }
+
+    #[test]
+    fn empty_answer_stands_when_nothing_is_stored() {
+        assert_eq!(keep_stored_if_empty(String::new(), None), "");
+    }
+
+    #[test]
+    fn stored_api_key_reads_a_key_out_of_storage() {
+        let stored = Some(AttributedValue::SettingsFile {
+            value: AuthenticationInfo::ApiKey {
+                api_key: "antithesis_api_key_v2_NOTREAL_9Pgw".to_owned(),
+            },
+            settings_file_path: Path::new("/tmp/credentials.toml").to_path_buf(),
+            profile: None,
+        });
+        assert_eq!(
+            stored_api_key(stored.as_ref()),
+            Some("antithesis_api_key_v2_NOTREAL_9Pgw")
+        );
+    }
+
+    #[test]
+    fn stored_api_key_ignores_a_key_from_the_environment() {
+        // Keeping it would copy an ambient secret into the credentials file.
+        let ambient = Some(AttributedValue::EnvironmentVariable {
+            value: AuthenticationInfo::ApiKey {
+                api_key: "antithesis_api_key_v2_NOTREAL_9Pgw".to_owned(),
+            },
+            environment_variable_names: vec!["ANTITHESIS_API_KEY"],
+        });
+        assert_eq!(stored_api_key(ambient.as_ref()), None);
+    }
+
+    #[test]
+    fn stored_api_key_ignores_credentials_of_another_kind() {
+        let password = Some(AttributedValue::SettingsFile {
+            value: AuthenticationInfo::Password {
+                username: "user".to_owned(),
+                password: "FAKE-not-a-real-password".to_owned(),
+            },
+            settings_file_path: Path::new("/tmp/credentials.toml").to_path_buf(),
+            profile: None,
+        });
+        assert_eq!(stored_api_key(password.as_ref()), None);
+        assert_eq!(stored_api_key(None), None);
+    }
+
+    #[test]
     fn cli_config_deserializes_all_three_strategies() {
         let fixed: CliOAuthConfig =
             serde_json::from_str(r#"{"port_strategy":"fixed","ports":[12345,12346,12347]}"#)
@@ -985,6 +1140,11 @@ mod tests {
             self.0.push(Answer::Select(Some(index)));
             self
         }
+        /// Esc at a menu: the user skips it rather than choosing.
+        fn skip_select(mut self) -> Self {
+            self.0.push(Answer::Select(None));
+            self
+        }
         fn password(mut self, value: &str) -> Self {
             self.0.push(Answer::Password(value.to_owned()));
             self
@@ -994,6 +1154,7 @@ mod tests {
                 answers: RefCell::new(self.0.into()),
                 prompts: RefCell::new(Vec::new()),
                 selects: RefCell::new(Vec::new()),
+                password_hints: RefCell::new(Vec::new()),
             }
         }
     }
@@ -1005,6 +1166,8 @@ mod tests {
         prompts: RefCell<Vec<String>>,
         /// Each `select` call: its item list and its default index.
         selects: RefCell<Vec<(Vec<String>, usize)>>,
+        /// The hint shown by each `password` call, in order.
+        password_hints: RefCell<Vec<Option<String>>>,
     }
 
     impl ScriptedPrompter {
@@ -1023,6 +1186,11 @@ mod tests {
         /// The (items, default) pair passed to each `select`, in order.
         fn selects(&self) -> Vec<(Vec<String>, usize)> {
             self.selects.borrow().clone()
+        }
+
+        /// The hint shown by each `password` prompt, in order.
+        fn password_hints(&self) -> Vec<Option<String>> {
+            self.password_hints.borrow().clone()
         }
     }
 
@@ -1058,7 +1226,10 @@ mod tests {
             }
         }
 
-        fn password(&self, prompt: &str) -> Result<String> {
+        fn password(&self, prompt: &str, hint: Option<&str>) -> Result<String> {
+            self.password_hints
+                .borrow_mut()
+                .push(hint.map(str::to_owned));
             match self.next("password", prompt) {
                 Answer::Password(value) => Ok(value),
                 _ => panic!("next scripted answer was not a password at {prompt:?}"),
@@ -1331,6 +1502,11 @@ mod tests {
             "{}",
             env.settings()
         );
+        // The unparsable file is kept, not destroyed, so the user can recover
+        // anything it held.
+        let backup = std::fs::read_to_string(env.config_dir().join("settings.toml.bak"))
+            .expect("the unparsable settings must be kept as a backup");
+        assert_eq!(backup, "this is = = not valid toml");
         Ok(())
     }
 
@@ -1444,8 +1620,116 @@ mod tests {
         Ok(())
     }
 
-    // --- Real macOS Keychain -------------------------------------------------
+    /// A stored API key is offered back: the prompt shows a masked hint, and an
+    /// empty answer keeps the stored key rather than saving an empty one.
+    #[tokio::test]
+    async fn login_keeps_the_stored_api_key_on_an_empty_answer() -> Result<()> {
+        let env = LoginEnv::new();
+        env.seed(
+            ".config/snouty/credentials.toml",
+            "[default]\ntype = \"ApiKey\"\napi_key = \"antithesis_api_key_v2_STORED_9Pgw\"\n",
+        );
+        let settings = env.resolve_settings(None);
+        let prompter = Script::default()
+            .input("mytenant")
+            .input("myrepo")
+            .select(0) // API Key, the stored kind, is already the default
+            .password("") // hit enter
+            .build();
 
+        do_cmd_login(None, None, None, settings, &prompter).await?;
+
+        assert_eq!(
+            prompter.password_hints(),
+            vec![Some("********9Pgw".to_owned())],
+            "the key prompt must show that a stored key is there to keep"
+        );
+        let creds = env.credentials();
+        assert!(
+            creds.contains(r#"api_key = "antithesis_api_key_v2_STORED_9Pgw""#),
+            "{creds}"
+        );
+        Ok(())
+    }
+
+    /// A key typed at the prompt replaces the stored one.
+    #[tokio::test]
+    async fn login_replaces_the_stored_api_key_when_one_is_typed() -> Result<()> {
+        let env = LoginEnv::new();
+        env.seed(
+            ".config/snouty/credentials.toml",
+            "[default]\ntype = \"ApiKey\"\napi_key = \"antithesis_api_key_v2_STORED_9Pgw\"\n",
+        );
+        let settings = env.resolve_settings(None);
+        let prompter = Script::default()
+            .input("mytenant")
+            .input("myrepo")
+            .select(0)
+            .password("antithesis_api_key_v2_NEW_7Qxz")
+            .build();
+
+        do_cmd_login(None, None, None, settings, &prompter).await?;
+
+        let creds = env.credentials();
+        assert!(
+            creds.contains(r#"api_key = "antithesis_api_key_v2_NEW_7Qxz""#),
+            "{creds}"
+        );
+        Ok(())
+    }
+
+    /// An API key in the environment is not offered back, because keeping it
+    /// would copy an ambient secret into the credentials file.
+    #[tokio::test]
+    async fn login_does_not_offer_back_an_api_key_from_the_environment() -> Result<()> {
+        let env = LoginEnv::new();
+        // SAFETY: `LoginEnv` holds `ENV_LOCK` for this test's whole body, so no
+        // other test reads or writes process env while this var is set.
+        unsafe { std::env::set_var("ANTITHESIS_API_KEY", "antithesis_api_key_v2_AMBIENT_5Kfn") };
+        let settings = env.resolve_settings(None);
+        let prompter = Script::default()
+            .input("mytenant")
+            .input("myrepo")
+            .select(0)
+            .password("sk-typed-key")
+            .build();
+
+        let result = do_cmd_login(None, None, None, settings, &prompter).await;
+        // SAFETY: as above.
+        unsafe { std::env::remove_var("ANTITHESIS_API_KEY") };
+        result?;
+
+        assert_eq!(
+            prompter.password_hints(),
+            vec![None],
+            "an ambient key must not be offered as something to keep"
+        );
+        Ok(())
+    }
+
+    /// Esc at the credential menu skips credential storage: the tenant and
+    /// repository are still saved, and no credentials file is written.
+    #[tokio::test]
+    async fn login_skips_credential_storage_on_esc() -> Result<()> {
+        let env = LoginEnv::new();
+        let settings = env.resolve_settings(None);
+        let prompter = Script::default()
+            .input("mytenant")
+            .input("myrepo")
+            .skip_select()
+            .build();
+
+        do_cmd_login(None, None, None, settings, &prompter).await?;
+
+        assert!(env.settings().contains(r#"tenant = "mytenant""#));
+        assert!(
+            !env.config_dir().join("credentials.toml").exists(),
+            "Esc at the menu must write no credentials file"
+        );
+        Ok(())
+    }
+
+    // --- Real macOS Keychain -------------------------------------------------
     /// Run `/usr/bin/security` under `home` so its keychain preferences (default
     /// keychain, search list) land in the same `$HOME/Library/Preferences`
     /// snouty reads back — see [`login_persists_to_real_macos_keychain`].

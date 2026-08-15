@@ -11,6 +11,31 @@ use crate::vtime::{ParseVTimeError, VTime};
 
 const SCHEMA: &str = include_str!("params_schema.json");
 
+// Launch-parameter key names.
+//
+// These are the wire names the API accepts (see params_schema.json). Production
+// code references these constants so a typo fails to compile; tests that pin
+// the wire format keep the raw literals on purpose.
+pub const KEY_TEST_NAME: &str = "antithesis.test_name";
+pub const KEY_DESCRIPTION: &str = "antithesis.description";
+pub const KEY_DURATION: &str = "antithesis.duration";
+pub const KEY_CONFIG_IMAGE: &str = "antithesis.config_image";
+pub const KEY_IMAGES: &str = "antithesis.images";
+pub const KEY_SOURCE: &str = "antithesis.source";
+pub const KEY_IS_EPHEMERAL: &str = "antithesis.is_ephemeral";
+pub const KEY_REPORT_RECIPIENTS: &str = "antithesis.report.recipients";
+pub const KEY_EVENT_DESCRIPTION: &str = "antithesis.event_description";
+pub const KEY_FILTER_LOGS_MATCHING: &str = "antithesis.filter_logs_matching";
+
+/// Prefix for the `antithesis.debugging.*` family. Moment.from parsing
+/// synthesizes keys from it; the dedicated constants below name the members
+/// production code addresses directly.
+pub const DEBUGGING_KEY_PREFIX: &str = "antithesis.debugging.";
+pub const KEY_DEBUGGING_SESSION_ID: &str = "antithesis.debugging.session_id";
+pub const KEY_DEBUGGING_RUN_ID: &str = "antithesis.debugging.run_id";
+pub const KEY_DEBUGGING_INPUT_HASH: &str = "antithesis.debugging.input_hash";
+pub const KEY_DEBUGGING_VTIME: &str = "antithesis.debugging.vtime";
+
 /// Params parsed from CLI arguments and validated against the JSON schema.
 #[derive(Debug, Clone, Default)]
 pub struct Params {
@@ -92,7 +117,7 @@ impl Params {
     /// merged, is what makes them agree on the text sent to the API. Absent is
     /// fine: a missing required vtime is the schema's error to report.
     pub fn normalize_debug_vtime(&mut self) -> Result<()> {
-        let key = "antithesis.debugging.vtime";
+        let key = KEY_DEBUGGING_VTIME;
         let Some(value) = self.inner.get(key) else {
             return Ok(());
         };
@@ -113,8 +138,8 @@ impl Params {
     /// checked here, after schema validation, so a missing `input_hash`/`vtime`
     /// surfaces first and the identifier error gets a tailored message.
     pub fn ensure_single_debug_target(&self) -> Result<()> {
-        let has_run_id = self.inner.contains_key("antithesis.debugging.run_id");
-        let has_session_id = self.inner.contains_key("antithesis.debugging.session_id");
+        let has_run_id = self.inner.contains_key(KEY_DEBUGGING_RUN_ID);
+        let has_session_id = self.inner.contains_key(KEY_DEBUGGING_SESSION_ID);
         match (has_run_id, has_session_id) {
             (true, false) | (false, true) => Ok(()),
             (true, true) => Err(user_error("specify exactly one of --run-id / --session-id")),
@@ -168,7 +193,7 @@ impl Params {
 }
 
 fn is_sensitive_key(key: &str) -> bool {
-    key.ends_with(".token") || key == "antithesis.report.recipients"
+    key.ends_with(".token") || key == KEY_REPORT_RECIPIENTS
 }
 
 fn validate_against_def(params: &Map<String, Value>, def_name: &str) -> Result<()> {

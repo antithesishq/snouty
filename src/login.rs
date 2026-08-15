@@ -501,11 +501,11 @@ async fn complete_oauth_login(
     println!();
     match crate::browser::open_in_browser(&location) {
         Ok(()) => {
-            println!("Opening login url in browser... success.");
+            println!("Opening login url in your browser");
             println!("If your browser didn't open, manually visit: {location}");
         }
         Err(err) => {
-            println!("Opening login url in browser... failed to open automatically ({err}).");
+            println!("Failed to open login url automatically ({err}).");
             println!("Open the following url in your browser on this machine: {location}");
         }
     }

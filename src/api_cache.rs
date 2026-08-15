@@ -6,6 +6,29 @@ use http_cache_reqwest::{
 
 use crate::env;
 
+pub(crate) use http_cache_reqwest::HttpCacheError;
+
+/// Recover the transport error this cache-layer failure boxed, if it is one.
+/// The cache's network fetch boxes a `reqwest_middleware::Error`; its body
+/// buffering boxes a bare `reqwest::Error`. Both keep their source intact
+/// because snouty uses the spider fork of http-cache-reqwest (see Cargo.toml).
+/// A failure with no transport error inside is the cache's own fault and
+/// comes back as `Err`.
+pub(crate) fn transport_error_inside(
+    err: HttpCacheError,
+) -> Result<reqwest_middleware::Error, HttpCacheError> {
+    match err {
+        HttpCacheError::Client(inner) => match inner.downcast::<reqwest_middleware::Error>() {
+            Ok(inner) => Ok(*inner),
+            Err(inner) => match inner.downcast::<reqwest::Error>() {
+                Ok(inner) => Ok(reqwest_middleware::Error::Reqwest(*inner)),
+                Err(inner) => Err(HttpCacheError::Client(inner)),
+            },
+        },
+        other => Err(other),
+    }
+}
+
 /// Where the default response cache lives:
 /// `$XDG_RUNTIME_DIR/snouty/api-cache-v1`. An unusable XDG_RUNTIME_DIR
 /// (unset, empty, or non-Unicode — all collapsed by

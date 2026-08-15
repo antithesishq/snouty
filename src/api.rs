@@ -6,7 +6,6 @@ use std::time::Duration;
 use color_eyre::eyre::{Context, Report, Result, eyre};
 use color_eyre::{Section, SectionExt};
 use futures_util::stream;
-use http_cache_reqwest::HttpCacheError;
 use log::debug;
 use progenitor_client::{
     ClientHooks, ClientInfo, Error as ClientError, OperationInfo, ResponseValue,
@@ -22,6 +21,7 @@ use reqwest_retry::{
 use serde::de::DeserializeOwned;
 
 use crate::api_cache;
+use crate::api_cache::HttpCacheError;
 use crate::auth::{AuthenticationInfo, PasswordPolicy};
 use crate::env;
 use crate::error::{ApiError, user_error};
@@ -207,20 +207,16 @@ fn normalize_property(property: Property) -> Result<Property> {
 /// to return (e.g. massive log files) and must not be aborted — the user can ctrl-c.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// How many times a GET whose transport failed (connect error, reset, DNS
-/// blip) is re-sent before the failure surfaces, with the retry policy's
-/// exponential backoff between attempts (~1s, ~2s, ~4s, jittered). This keeps
-/// a brief network blip from killing a long-lived command like
-/// `snouty runs wait` (#230). A served HTTP response of any status is never
-/// retried, and the retry layer is gated to GET requests inside the
-/// middleware chain (see [`build_middleware_client`]), so mutations never
-/// reach it.
+/// How many times a GET whose transport failed is re-sent before the failure
+/// surfaces, with the retry policy's exponential backoff between attempts
+/// (~1s, ~2s, ~4s, jittered). This keeps a brief network blip from killing a
+/// long-lived command like `snouty runs wait` (#230). The full retry/cache
+/// contract lives on [`build_middleware_client`].
 const MAX_TRANSIENT_RETRIES: u32 = 3;
 
-/// Retry classification for GET requests: a served HTTP response — any status
-/// — is final, so a 500 still fails and 4xx semantics (404 probing, auth
-/// errors) stay untouched. Only transport-level failures classified transient
-/// by the crate (connect errors, resets, timeouts) are retried.
+/// Retry classification: a served HTTP response — any status — is final;
+/// only transport-level failures classified transient by the crate (connect
+/// errors, resets, timeouts) are retried.
 struct RetryTransportErrors;
 
 impl RetryableStrategy for RetryTransportErrors {
@@ -232,16 +228,15 @@ impl RetryableStrategy for RetryTransportErrors {
     }
 }
 
-/// Recover the `reqwest::Error` inside a failed middleware execution, if one
-/// is there. Each layer wraps it — reqwest-retry in [`RetryError`], the cache
-/// in [`HttpCacheError::Client`] with the source intact (the reason snouty
-/// uses the spider fork of http-cache-reqwest; see Cargo.toml) — in whatever
-/// nesting the request's path produced, so unwrap recursively. An error with
-/// no transport error inside (a cache I/O fault) comes back as `Err`,
-/// unchanged.
+/// Unpack a failed middleware execution to the `reqwest::Error` inside, if
+/// one is there. Each layer wraps it — reqwest-retry in [`RetryError`], the
+/// cache in an [`HttpCacheError`] that [`api_cache::transport_error_inside`]
+/// unwraps — in whatever nesting the request's path produced, so unwrap
+/// recursively. An error with no transport error inside comes back as the
+/// [`MiddlewareFault`] it is.
 fn unpack_transport_error(
     err: reqwest_middleware::Error,
-) -> std::result::Result<reqwest::Error, reqwest_middleware::Error> {
+) -> std::result::Result<reqwest::Error, MiddlewareFault> {
     let err = match err {
         reqwest_middleware::Error::Reqwest(err) => return Ok(err),
         reqwest_middleware::Error::Middleware(err) => err,
@@ -253,25 +248,28 @@ fn unpack_transport_error(
         }
         Err(err) => err,
     };
-    // The cache layer boxes errors from its network fetch and its body
-    // buffering without flattening them, so the error inside is recoverable
-    // by value. The fetch path boxes a `reqwest_middleware::Error`; the
-    // body-read path boxes a bare `reqwest::Error` — a connection dropped
-    // mid-body must classify as the transport failure it is, not as a cache
-    // fault.
     match err.downcast::<HttpCacheError>() {
-        Ok(HttpCacheError::Client(inner)) => match inner.downcast::<reqwest_middleware::Error>() {
-            Ok(inner) => unpack_transport_error(*inner),
-            Err(inner) => match inner.downcast::<reqwest::Error>() {
-                Ok(inner) => Ok(*inner),
-                Err(inner) => Err(reqwest_middleware::Error::Middleware(
-                    HttpCacheError::Client(inner).into(),
-                )),
-            },
+        Ok(err) => match api_cache::transport_error_inside(err) {
+            Ok(err) => unpack_transport_error(err),
+            Err(err) => Err(MiddlewareFault::Cache(err)),
         },
-        Ok(other) => Err(reqwest_middleware::Error::Middleware(other.into())),
-        Err(err) => Err(reqwest_middleware::Error::Middleware(err)),
+        Err(err) => Err(MiddlewareFault::Other(
+            reqwest_middleware::Error::Middleware(err),
+        )),
     }
+}
+
+/// A middleware failure that is not a transport error, classified by
+/// provenance so remediation is attached only to errors the cache provably
+/// produced.
+enum MiddlewareFault {
+    /// The response cache failed on its own (I/O, response conversion).
+    Cache(HttpCacheError),
+    /// Some other layer failed. Unreachable with the current chain — the
+    /// conditional gating produces no errors of its own, and the retry
+    /// wrapper is unpacked above — but a future layer's failure must never
+    /// be blamed on the cache.
+    Other(reqwest_middleware::Error),
 }
 
 /// The marker host inside [`placeholder_reqwest_error`]. `.invalid` is
@@ -308,8 +306,9 @@ fn is_placeholder_error(result: &reqwest::Result<reqwest::Response>) -> bool {
 /// Where API responses are cached.
 #[derive(Debug)]
 pub(crate) enum ResponseCache {
-    /// `$XDG_RUNTIME_DIR/snouty/api-cache-v1` — the default for every command.
-    /// Caching is disabled when `XDG_RUNTIME_DIR` is unusable.
+    /// The default response cache for every command; see
+    /// [`api_cache::default_cache_dir`] for where it lives and when it is
+    /// disabled.
     Default,
     /// No response cache: every request hits the server. Run detail is
     /// cacheable (`Cache-Control: private, max-age=3600`), so a cached poll
@@ -395,7 +394,7 @@ impl AntithesisApi {
             authn_info,
             middleware_client,
             cache_dir,
-            cache_fault: Arc::default(),
+            middleware_fault: Arc::default(),
             default_headers: verbose.then_some(default_headers),
         };
         let client = generated::Client::new_with_client(&base_url, http_client, state);
@@ -676,17 +675,41 @@ pub struct ClientState {
     /// Where the response cache lives, when one is configured. Used to tell
     /// the user which directory to clear when the cache fails.
     cache_dir: Option<PathBuf>,
-    /// A cache failure recorded by `exec`, pending pickup by the `post`
-    /// hook, which rejects the operation with it. The slot is client-wide,
-    /// but `post` consumes it only for the operation whose result carries
-    /// the placeholder marker ([`is_placeholder_error`]), so a fault cannot
-    /// fail an unrelated healthy request.
-    cache_fault: Arc<Mutex<Option<String>>>,
+    /// A middleware failure recorded by `exec`, rendered for the user and
+    /// pending pickup by the `post` hook, which rejects the operation with
+    /// it. The slot is client-wide, but `post` consumes it only for the
+    /// operation whose result carries the placeholder marker
+    /// ([`is_placeholder_error`]), so a fault cannot fail an unrelated
+    /// healthy request.
+    middleware_fault: Arc<Mutex<Option<String>>>,
     /// Default headers reqwest will merge into the outgoing request at
     /// `Client::execute` time (after our `exec` hook runs). `Some` enables
     /// verbose request/response logging to stderr; we hold the headers here
     /// so the log matches what's actually sent.
     default_headers: Option<HeaderMap>,
+}
+
+impl ClientState {
+    /// The `post`-hook rejection message for a [`MiddlewareFault`]. A cache
+    /// fault names the directory to clear.
+    fn middleware_fault_message(&self, fault: MiddlewareFault) -> String {
+        match fault {
+            MiddlewareFault::Cache(err) => {
+                // The cache middleware is installed only when a cache dir is
+                // configured, so a cache fault implies the dir exists.
+                let dir = self
+                    .cache_dir
+                    .as_deref()
+                    .expect("a cache fault implies a configured cache dir")
+                    .display();
+                format!(
+                    "the API response cache at {dir} failed: {err}; \
+                     clear the cache (rm -rf {dir}) and retry"
+                )
+            }
+            MiddlewareFault::Other(err) => format!("API client middleware failed: {err:#}"),
+        }
+    }
 }
 
 impl ClientHooks<ClientState> for generated::Client {
@@ -724,20 +747,27 @@ impl ClientHooks<ClientState> for generated::Client {
             eprint!("{out}");
         }
 
-        // Adapt send_request's result to this hook's reqwest-only signature:
-        // a cache fault is recorded for `post` to reject the operation with,
-        // and a marker placeholder — never inspected, `post` runs first —
-        // fills the slot.
-        let adapt = |result: std::result::Result<reqwest::Response, SendError>| match result {
+        // Adapt the middleware chain's result to this hook's reqwest-only
+        // signature: a transport failure unpacks to the `reqwest::Error` it
+        // is; a middleware fault is rendered and recorded for `post` to
+        // reject the operation with, and a marker placeholder — never
+        // inspected, `post` runs first — fills the slot.
+        let adapt = |result: reqwest_middleware::Result<reqwest::Response>| match result {
             Ok(response) => Ok(response),
-            Err(SendError::Transport(err)) => Err(err),
-            Err(SendError::CacheFault(fault)) => {
-                state.cache_fault.lock().unwrap().replace(fault);
-                Err(placeholder_reqwest_error())
-            }
+            Err(err) => match unpack_transport_error(err) {
+                Ok(err) => Err(err),
+                Err(fault) => {
+                    state
+                        .middleware_fault
+                        .lock()
+                        .unwrap()
+                        .replace(state.middleware_fault_message(fault));
+                    Err(placeholder_reqwest_error())
+                }
+            },
         };
 
-        let result = adapt(send_request(state, request).await);
+        let result = adapt(state.middleware_client.execute(request).await);
 
         let result = match (result, retry_request) {
             (Ok(response), Some(mut retry_request))
@@ -757,7 +787,7 @@ impl ClientHooks<ClientState> for generated::Client {
                             format_request(&retry_request, default_headers, &mut out);
                             eprint!("{out}");
                         }
-                        adapt(send_request(state, retry_request).await)
+                        adapt(state.middleware_client.execute(retry_request).await)
                     }
                     Ok(None) => Ok(response),
                     Err(err) => {
@@ -779,11 +809,11 @@ impl ClientHooks<ClientState> for generated::Client {
         result
     }
 
-    /// Reject the operation when [`send_request`] recorded a cache failure.
-    /// This is the only hook that can carry a non-reqwest error out of the
-    /// request path — `exec` must return a `reqwest::Result` — and the
-    /// generated operations check it before they look at `exec`'s result, so
-    /// the placeholder error `exec` returned is never inspected.
+    /// Reject the operation when `exec` recorded a middleware fault. This is
+    /// the only hook that can carry a non-reqwest error out of the request
+    /// path — `exec` must return a `reqwest::Result` — and the generated
+    /// operations check it before they look at `exec`'s result, so the
+    /// placeholder error `exec` returned is never inspected.
     async fn post<E>(
         &self,
         result: &reqwest::Result<reqwest::Response>,
@@ -795,21 +825,14 @@ impl ClientHooks<ClientState> for generated::Client {
         if !is_placeholder_error(result) {
             return Ok(());
         }
-        let state = self.inner();
-        let fault = state
-            .cache_fault
+        let fault = self
+            .inner()
+            .middleware_fault
             .lock()
             .unwrap()
             .take()
-            .unwrap_or_else(|| "cause taken by a concurrent request".to_owned());
-        let dir = state
-            .cache_dir
-            .as_deref()
-            .map_or_else(|| "<unknown>".to_owned(), |d| d.display().to_string());
-        Err(ClientError::Custom(format!(
-            "the API response cache at {dir} failed: {fault}; \
-             clear the cache (rm -rf {dir}) and retry"
-        )))
+            .unwrap_or_else(|| "middleware failure lost to a concurrent request".to_owned());
+        Err(ClientError::Custom(fault))
     }
 }
 
@@ -822,11 +845,17 @@ fn is_get(request: &reqwest::Request) -> bool {
 
 /// The middleware chain every API request is sent through, outermost first:
 /// the response cache (when `cache_dir` is set), then transient-failure
-/// retry. The cache and retry layers are gated to GET requests by
-/// [`ConditionalMiddleware`] — non-GETs pass through untouched, so a network
-/// blip can never replay a mutation. Retry sits under the cache so a cache
-/// hit answers without touching the retry layer, while a cache miss's network
-/// fetch is retried.
+/// retry. This function owns the retry/cache contract:
+///
+/// - The cache and retry layers are gated to GET requests by
+///   [`ConditionalMiddleware`] — non-GETs pass through untouched, so a
+///   network blip can never replay a mutation ([`is_get`]).
+/// - Transient transport failures (connect errors, resets, DNS blips) are
+///   retried with backoff ([`MAX_TRANSIENT_RETRIES`]); a served HTTP response
+///   of any status is final ([`RetryTransportErrors`]) — a 500 still fails,
+///   and 4xx semantics stay untouched.
+/// - Retry sits under the cache so a cache hit answers without touching the
+///   retry layer, while a cache miss's network fetch is retried.
 fn build_middleware_client(
     http_client: Client,
     cache_dir: Option<PathBuf>,
@@ -845,41 +874,6 @@ fn build_middleware_client(
             is_get,
         ))
         .build()
-}
-
-/// Send `request` through the middleware chain.
-///
-/// The chain retries transient transport failures (connect errors, resets,
-/// DNS blips) with backoff and applies the response cache when enabled — for
-/// GET requests only; see [`build_middleware_client`]. A served HTTP response
-/// of any status is final — a 500 still fails, and 4xx semantics stay
-/// untouched.
-///
-/// Failures come back in two shapes ([`SendError`]): a transport failure
-/// carries the `reqwest::Error` it is, unpacked from the layers that wrapped
-/// it (see [`unpack_transport_error`]); a middleware failure with no
-/// transport error inside is the cache itself failing, rendered for the
-/// `post` hook to reject the operation with.
-async fn send_request(
-    state: &ClientState,
-    request: reqwest::Request,
-) -> std::result::Result<reqwest::Response, SendError> {
-    match state.middleware_client.execute(request).await {
-        Ok(response) => Ok(response),
-        Err(err) => Err(match unpack_transport_error(err) {
-            Ok(err) => SendError::Transport(err),
-            Err(err) => SendError::CacheFault(format!("{err:#}")),
-        }),
-    }
-}
-
-/// How a [`send_request`] call failed.
-enum SendError {
-    /// The transport failed after any retries; the typed error.
-    Transport(reqwest::Error),
-    /// The middleware chain failed with no transport error inside — the
-    /// response cache itself is broken. Carries the rendered failure.
-    CacheFault(String),
 }
 
 fn format_response(response: &reqwest::Response, out: &mut String) {
@@ -1468,13 +1462,6 @@ mod tests {
     use wiremock::matchers::{method, path, query_param, query_param_is_missing};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
-    fn test_api_optionally_with_cache(
-        mock_server: &MockServer,
-        cache_dir: Option<&TempDir>,
-    ) -> AntithesisApi {
-        test_api_at(mock_server.uri(), cache_dir)
-    }
-
     #[test]
     fn format_request_redacts_authorization_and_dumps_text_body() {
         use reqwest::header::{AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderValue};
@@ -1794,7 +1781,7 @@ mod tests {
     async fn launch_test_sends_snouty_user_agent() {
         let mock_server = mock_launch_test(202, LAUNCH_OK_BODY).await;
 
-        let api = test_api_optionally_with_cache(&mock_server, None);
+        let api = test_api_at(mock_server.uri(), None);
         let params = Params::from_key_value_pairs(["antithesis.duration=30"]).unwrap();
         api.launch_test("basic_test", &params).await.unwrap();
 
@@ -1813,7 +1800,7 @@ mod tests {
     async fn launch_test_uses_basic_auth() {
         let mock_server = mock_launch_test(202, LAUNCH_OK_BODY).await;
 
-        let api = test_api_optionally_with_cache(&mock_server, None);
+        let api = test_api_at(mock_server.uri(), None);
         let params = Params::from_key_value_pairs(["antithesis.duration=30"]).unwrap();
 
         let response = api.launch_test("basic_test", &params).await.unwrap();
@@ -1848,7 +1835,7 @@ mod tests {
     async fn launch_test_accepts_200_webhook_envelope() {
         let mock_server = mock_launch_test(200, LAUNCH_OK_BODY).await;
 
-        let api = test_api_optionally_with_cache(&mock_server, None);
+        let api = test_api_at(mock_server.uri(), None);
         let params = Params::from_key_value_pairs(["antithesis.duration=30"]).unwrap();
 
         let response = api.launch_test("basic_test", &params).await.unwrap();
@@ -1897,7 +1884,7 @@ mod tests {
     #[tokio::test]
     async fn launch_debugging_ignores_the_body_status_code() {
         let mock_server = mock_debug_launch(200, r#"{"runId":"x","statusCode":202}"#).await;
-        let api = test_api_optionally_with_cache(&mock_server, None);
+        let api = test_api_at(mock_server.uri(), None);
 
         let response = api.launch_debugging(&debug_params()).await.unwrap();
         assert_eq!(response.run_id.as_deref(), Some("x"));
@@ -1915,7 +1902,7 @@ mod tests {
     async fn launch_debugging_rejects_success_body_on_error_status() {
         for status in [400, 403, 500] {
             let mock_server = mock_debug_launch(status, r#"{"statusCode":202}"#).await;
-            let api = test_api_optionally_with_cache(&mock_server, None);
+            let api = test_api_at(mock_server.uri(), None);
 
             let report = api.launch_debugging(&debug_params()).await.unwrap_err();
             assert_eq!(crate::error::api_error_status(&report), Some(status));
@@ -1932,7 +1919,7 @@ mod tests {
             r#"{"statusCode":404,"runId":null}"#,
         ] {
             let mock_server = mock_launch_test(404, body).await;
-            let api = test_api_optionally_with_cache(&mock_server, None);
+            let api = test_api_at(mock_server.uri(), None);
             let params = Params::from_key_value_pairs(["antithesis.duration=30"]).unwrap();
 
             let report = api.launch_test("basic_test", &params).await.unwrap_err();
@@ -1954,7 +1941,7 @@ mod tests {
     #[tokio::test]
     async fn launch_test_surfaces_the_error_message_body() {
         let mock_server = mock_launch_test(404, r#"{"message":"bad request"}"#).await;
-        let api = test_api_optionally_with_cache(&mock_server, None);
+        let api = test_api_at(mock_server.uri(), None);
         let params = Params::from_key_value_pairs(["antithesis.duration=30"]).unwrap();
 
         let report = api.launch_test("basic_test", &params).await.unwrap_err();
@@ -1978,7 +1965,7 @@ mod tests {
             .mount(&mock_server)
             .await;
 
-        let api = test_api_optionally_with_cache(&mock_server, None);
+        let api = test_api_at(mock_server.uri(), None);
         let params = Params::from_key_value_pairs([
             "antithesis.debugging.run_id=a2a4-53-1",
             "antithesis.debugging.input_hash=-1",
@@ -1997,7 +1984,7 @@ mod tests {
     #[tokio::test]
     async fn launch_debugging_accepts_200_without_run_id() {
         let mock_server = mock_debug_launch(200, r#"{"statusCode":202}"#).await;
-        let api = test_api_optionally_with_cache(&mock_server, None);
+        let api = test_api_at(mock_server.uri(), None);
 
         let response = api.launch_debugging(&debug_params()).await.unwrap();
         assert_eq!(response.run_id, None);
@@ -2009,7 +1996,7 @@ mod tests {
     async fn launch_debugging_accepts_202_documented() {
         let mock_server =
             mock_debug_launch(202, r#"{"statusCode":202,"runId":"debug-run-456"}"#).await;
-        let api = test_api_optionally_with_cache(&mock_server, None);
+        let api = test_api_at(mock_server.uri(), None);
 
         let response = api.launch_debugging(&debug_params()).await.unwrap();
         assert_eq!(response.run_id.as_deref(), Some("debug-run-456"));
@@ -2024,7 +2011,7 @@ mod tests {
     async fn launch_debugging_rejects_error_body_carrying_run_id() {
         let mock_server =
             mock_debug_launch(403, r#"{"statusCode":403,"runId":"not-a-launch"}"#).await;
-        let api = test_api_optionally_with_cache(&mock_server, None);
+        let api = test_api_at(mock_server.uri(), None);
 
         let report = api.launch_debugging(&debug_params()).await.unwrap_err();
         assert_eq!(crate::error::api_error_status(&report), Some(403));
@@ -2034,22 +2021,15 @@ mod tests {
         mock_endpoint("GET", "/api/version", status, body).await
     }
 
-    /// A raw TCP server that resets its first `resets` connections — it reads
-    /// one byte, then drops the socket with the rest of the request unread,
-    /// so the kernel sends an RST and the client sees a connection reset
-    /// rather than a clean close — and answers every later connection with a
-    /// fixed `GET /api/version` response. Returns the base URL and a counter
-    /// of accepted connections — the counter is how the retry tests observe
-    /// how many attempts reached the server.
-    async fn reset_then_serve_version(resets: usize) -> (String, Arc<AtomicUsize>) {
+    /// A raw TCP server for transport-fault tests. It resets its first
+    /// `resets` connections — it reads one byte, then drops the socket with
+    /// the rest of the request unread, so the kernel sends an RST and the
+    /// client sees a connection reset rather than a clean close. Every later
+    /// connection reads the request, writes `response`, and closes. Returns
+    /// the base URL and a counter of accepted connections — the counter is
+    /// how the retry tests observe how many attempts reached the server.
+    async fn raw_server(resets: usize, response: String) -> (String, Arc<AtomicUsize>) {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
-
-        let body = r#"{"latest_api_version":"v1","release_version":"60"}"#;
-        let response = format!(
-            "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n{}",
-            body.len(),
-            body
-        );
 
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let base_url = format!("http://{}", listener.local_addr().unwrap());
@@ -2062,10 +2042,6 @@ mod tests {
                 };
                 let n = counter.fetch_add(1, Ordering::SeqCst);
                 if n < resets {
-                    // Read one byte and drop the socket with the rest of the
-                    // request unread: closing with unread data in the receive
-                    // buffer makes the kernel send an RST, so the client sees
-                    // a connection reset rather than a clean close.
                     let mut byte = [0u8; 1];
                     let _ = socket.read(&mut byte).await;
                     drop(socket);
@@ -2079,31 +2055,36 @@ mod tests {
         (base_url, connections)
     }
 
-    /// A raw TCP server whose every response is truncated: it reads the
-    /// request, sends the headers and part of a body shorter than the
-    /// declared content-length, then closes. The client's body read fails
-    /// after the response headers already arrived.
-    async fn serve_truncated_version() -> (String, Arc<AtomicUsize>) {
-        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    /// A server whose first `resets` connections reset and whose later ones
+    /// answer `GET /api/version` completely.
+    async fn reset_then_serve_version(resets: usize) -> (String, Arc<AtomicUsize>) {
+        let body = r#"{"latest_api_version":"v1","release_version":"60"}"#;
+        let response = format!(
+            "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n{}",
+            body.len(),
+            body
+        );
+        raw_server(resets, response).await
+    }
 
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let base_url = format!("http://{}", listener.local_addr().unwrap());
-        let connections = Arc::new(AtomicUsize::new(0));
-        let counter = Arc::clone(&connections);
-        tokio::spawn(async move {
-            loop {
-                let Ok((mut socket, _)) = listener.accept().await else {
-                    return;
-                };
-                counter.fetch_add(1, Ordering::SeqCst);
-                let mut buf = [0u8; 4096];
-                let _ = socket.read(&mut buf).await;
-                let _ = socket
-                    .write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 4096\r\n\r\n{\"latest")
-                    .await;
-            }
-        });
-        (base_url, connections)
+    /// A server whose every response is truncated: the headers promise more
+    /// body than is sent, then the connection closes, so the client's body
+    /// read fails after the response headers already arrived.
+    async fn serve_truncated_version() -> (String, Arc<AtomicUsize>) {
+        raw_server(
+            0,
+            "HTTP/1.1 200 OK\r\ncontent-length: 4096\r\n\r\n{\"latest".to_owned(),
+        )
+        .await
+    }
+
+    /// Assert the version probe classified the failure as unreachable and
+    /// return its message.
+    async fn expect_unreachable(api: &AntithesisApi) -> String {
+        match api.get_version().await {
+            Err(VersionError::Unreachable(message)) => message,
+            other => panic!("expected Unreachable, got {other:?}"),
+        }
     }
 
     /// The one place tests build an `AntithesisApi`: password auth, quiet,
@@ -2129,22 +2110,6 @@ mod tests {
                 ResponseCache::Dir(d.path().to_path_buf())
             }),
         )
-    }
-
-    // A served HTTP error status is final: a 500 still fails, and 4xx
-    // semantics (404 probing, auth errors) stay untouched. `.expect(1)` inside
-    // the mock is the assertion — a retry would hit the endpoint twice.
-    #[tokio::test]
-    async fn get_does_not_retry_http_error_statuses() {
-        for status in [429, 500, 502] {
-            let mock_server = mock_version(status, "").await;
-            let api = test_api_optionally_with_cache(&mock_server, None);
-
-            match api.get_version().await {
-                Err(VersionError::Http(code)) => assert_eq!(code, status),
-                other => panic!("expected Http({status}), got {other:?}"),
-            }
-        }
     }
 
     // A transport-level failure on a GET is retried: the first connection is
@@ -2182,10 +2147,7 @@ mod tests {
         let (base_url, connections) = reset_then_serve_version(usize::MAX).await;
         let api = test_api_at(base_url, None);
 
-        match api.get_version().await {
-            Err(VersionError::Unreachable(_)) => {}
-            other => panic!("expected Unreachable, got {other:?}"),
-        }
+        expect_unreachable(&api).await;
         assert_eq!(
             connections.load(Ordering::SeqCst),
             1 + MAX_TRANSIENT_RETRIES as usize
@@ -2204,15 +2166,11 @@ mod tests {
         let cache_dir = TempDir::new().unwrap();
         let api = test_api_at(base_url, Some(&cache_dir));
 
-        match api.get_version().await {
-            Err(VersionError::Unreachable(message)) => {
-                assert!(
-                    !message.contains("cache"),
-                    "a transport failure must not diagnose the cache, got: {message}"
-                );
-            }
-            other => panic!("expected Unreachable, got {other:?}"),
-        }
+        let message = expect_unreachable(&api).await;
+        assert!(
+            !message.contains("cache"),
+            "a transport failure must not diagnose the cache, got: {message}"
+        );
         assert_eq!(
             connections.load(Ordering::SeqCst),
             1 + MAX_TRANSIENT_RETRIES as usize
@@ -2232,24 +2190,18 @@ mod tests {
         let cache_dir = TempDir::new().unwrap();
         let api = test_api_at(base_url, Some(&cache_dir));
 
-        match api.get_version().await {
-            Err(VersionError::Unreachable(message)) => {
-                assert!(
-                    !message.contains("cache"),
-                    "a body-read failure must not diagnose the cache, got: {message}"
-                );
-            }
-            other => panic!("expected Unreachable, got {other:?}"),
-        }
+        let message = expect_unreachable(&api).await;
+        assert!(
+            !message.contains("cache"),
+            "a body-read failure must not diagnose the cache, got: {message}"
+        );
         assert_eq!(connections.load(Ordering::SeqCst), 1);
     }
 
-    // A failing cache is an error with remediation, not a silent bypass: the
-    // command stops and tells the user which directory to clear. A regular
-    // file where the cache directory should be makes every cache write fail.
-    #[tokio::test]
-    async fn cache_fault_fails_with_clear_guidance() {
-        let mock_server = MockServer::start().await;
+    /// Mount `GET /api/v0/runs/run-1` answering a cacheable run-detail body
+    /// exactly `expected_hits` times — the hit count is the caller's
+    /// assertion about how often the cache lets the request through.
+    async fn mock_cacheable_run(mock_server: &MockServer, expected_hits: u64) {
         Mock::given(method("GET"))
             .and(path("/api/v0/runs/run-1"))
             .respond_with(
@@ -2262,8 +2214,18 @@ mod tests {
                         "launcher": "nightly"
                     })),
             )
-            .mount(&mock_server)
+            .expect(expected_hits)
+            .mount(mock_server)
             .await;
+    }
+
+    // A failing cache is an error with remediation, not a silent bypass: the
+    // command stops and tells the user which directory to clear. A regular
+    // file where the cache directory should be makes every cache write fail.
+    #[tokio::test]
+    async fn cache_fault_fails_with_clear_guidance() {
+        let mock_server = MockServer::start().await;
+        mock_cacheable_run(&mock_server, 1).await;
 
         let not_a_dir = tempfile::NamedTempFile::new().unwrap();
         let api = test_api(
@@ -2277,6 +2239,30 @@ mod tests {
         assert!(
             message.contains(&not_a_dir.path().display().to_string()),
             "the message must name the cache directory, got: {message}"
+        );
+    }
+
+    // is_get gates the retry and cache layers on the guarantee that every
+    // GET in the API is a pure read. Walk openapi.json and pin the spec's
+    // method↔operation mapping, so regenerating the spec with a new or
+    // changed operation forces this safety review to run again.
+    #[test]
+    fn every_non_get_operation_is_a_known_mutation() {
+        let spec: serde_json::Value = serde_json::from_str(include_str!("openapi.json")).unwrap();
+        let mut mutations: Vec<&str> = spec["paths"]
+            .as_object()
+            .unwrap()
+            .values()
+            .flat_map(|operations| operations.as_object().unwrap())
+            .filter(|(method, _)| ["post", "put", "patch", "delete"].contains(&method.as_str()))
+            .map(|(_, operation)| operation["operationId"].as_str().unwrap())
+            .collect();
+        mutations.sort_unstable();
+        assert_eq!(
+            mutations,
+            ["executeCommand", "launchMvd", "launchTest", "search"],
+            "openapi.json changed its non-GET operations; re-verify that \
+             every GET is a pure read before trusting is_get's gating"
         );
     }
 
@@ -2304,7 +2290,7 @@ mod tests {
             r#"{"latest_api_version":"v1","release_version":"58.6"}"#,
         )
         .await;
-        let api = test_api_optionally_with_cache(&mock_server, None);
+        let api = test_api_at(mock_server.uri(), None);
 
         let version = api.get_version().await.unwrap();
         assert_eq!(version.latest_api_version, "v1");
@@ -2317,6 +2303,10 @@ mod tests {
     // `snouty doctor` reporting the API as unreachable instead of as rejecting
     // authentication. Every non-conforming error body must keep its status:
     // empty, an intermediary's HTML page, or an unexpected JSON shape.
+    //
+    // The mocks' `.expect(1)` also pins the retry contract: a served error
+    // status — including 429 and 5xx, which reqwest-retry's default strategy
+    // would retry — is final and never re-sent.
     #[tokio::test]
     async fn get_version_keeps_the_status_for_non_conforming_error_bodies() {
         let cases = [
@@ -2325,10 +2315,11 @@ mod tests {
             (406, r#"{"statusCode":406}"#),
             (429, ""),
             (500, "<html><body>502 upstream</body></html>"),
+            (502, ""),
         ];
         for (status, body) in cases {
             let mock_server = mock_version(status, body).await;
-            let api = test_api_optionally_with_cache(&mock_server, None);
+            let api = test_api_at(mock_server.uri(), None);
 
             match api.get_version().await {
                 Err(VersionError::Http(code)) => assert_eq!(code, status),
@@ -2342,7 +2333,7 @@ mod tests {
     #[tokio::test]
     async fn get_version_keeps_the_status_for_an_undocumented_404() {
         let mock_server = mock_version(404, "").await;
-        let api = test_api_optionally_with_cache(&mock_server, None);
+        let api = test_api_at(mock_server.uri(), None);
 
         match api.get_version().await {
             Err(VersionError::Http(404)) => {}
@@ -2392,7 +2383,7 @@ mod tests {
             .mount(&mock_server)
             .await;
 
-        let api = test_api_optionally_with_cache(&mock_server, None);
+        let api = test_api_at(mock_server.uri(), None);
 
         let runs = api
             .stream_runs_filtered(&RunsFilterOptions::default(), 100)
@@ -2435,7 +2426,7 @@ mod tests {
             .mount(&mock_server)
             .await;
 
-        let api = test_api_optionally_with_cache(&mock_server, None);
+        let api = test_api_at(mock_server.uri(), None);
 
         let runs = api
             .stream_runs_filtered(&RunsFilterOptions::default(), 100)
@@ -2478,7 +2469,7 @@ mod tests {
             .mount(&mock_server)
             .await;
 
-        let api = test_api_optionally_with_cache(&mock_server, None);
+        let api = test_api_at(mock_server.uri(), None);
 
         let runs = api
             .stream_runs_filtered(&RunsFilterOptions::default(), 100)
@@ -2506,7 +2497,7 @@ mod tests {
             .mount(&mock_server)
             .await;
 
-        let api = test_api_optionally_with_cache(&mock_server, None);
+        let api = test_api_at(mock_server.uri(), None);
         let runs = api
             .stream_runs_filtered(&RunsFilterOptions::default(), 5)
             .try_collect::<Vec<_>>()
@@ -2556,25 +2547,11 @@ mod tests {
     #[tokio::test]
     async fn cache_serves_repeated_get_with_cache_control() {
         let mock_server = MockServer::start().await;
-
-        Mock::given(method("GET"))
-            .and(path("/api/v0/runs/run-1"))
-            .respond_with(
-                ResponseTemplate::new(200)
-                    .insert_header("Cache-Control", "max-age=60")
-                    .set_body_json(serde_json::json!({
-                        "run_id": "run-1",
-                        "status": "completed",
-                        "created_at": "2025-03-20T02:00:00Z",
-                        "launcher": "nightly"
-                    })),
-            )
-            .expect(1)
-            .mount(&mock_server)
-            .await;
+        // expect(1): the second get_run must be served from the cache.
+        mock_cacheable_run(&mock_server, 1).await;
 
         let cache_dir = TempDir::new().unwrap();
-        let api = test_api_optionally_with_cache(&mock_server, Some(&cache_dir));
+        let api = test_api_at(mock_server.uri(), Some(&cache_dir));
 
         let first = api.get_run("run-1").await.unwrap();
         let second = api.get_run("run-1").await.unwrap();
@@ -2796,7 +2773,7 @@ mod tests {
             .mount(&mock_server)
             .await;
 
-        let api = test_api_optionally_with_cache(&mock_server, None);
+        let api = test_api_at(mock_server.uri(), None);
 
         let properties = api
             .stream_run_properties("run-1", None)
@@ -2833,7 +2810,7 @@ mod tests {
             .mount(&mock_server)
             .await;
 
-        let api = test_api_optionally_with_cache(&mock_server, None);
+        let api = test_api_at(mock_server.uri(), None);
 
         let properties = api
             .stream_run_properties("run-1", Some(PropertyStatus::Failing))
@@ -2858,7 +2835,7 @@ mod tests {
             .mount(&mock_server)
             .await;
 
-        let api = test_api_optionally_with_cache(&mock_server, None);
+        let api = test_api_at(mock_server.uri(), None);
 
         let mut stream = api
             .search_run_events("run-1", "slow request", None)
@@ -2887,7 +2864,7 @@ mod tests {
             .mount(&mock_server)
             .await;
 
-        let api = test_api_optionally_with_cache(&mock_server, None);
+        let api = test_api_at(mock_server.uri(), None);
         api.search_run_events("run-1", "slow", Some(5))
             .await
             .unwrap();
@@ -2908,7 +2885,7 @@ mod tests {
             .mount(&mock_server)
             .await;
 
-        let api = test_api_optionally_with_cache(&mock_server, None);
+        let api = test_api_at(mock_server.uri(), None);
         api.search_run_events("run-1", "slow", None).await.unwrap();
     }
 

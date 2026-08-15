@@ -1,0 +1,201 @@
+name: slow tests
+
+# The two slowest legs, kept off pull requests.
+#
+# The macOS Intel job spends about two and a half minutes booting a Linux VM
+# before it can run a single container, and build-nix takes about seven. Between
+# them they set the pace of a pull request's CI while everything else finishes in
+# roughly two minutes. They run here instead, after merge.
+#
+# What still gates a pull request lives in build.yml: both Ubuntu legs run the
+# whole suite against a real engine, and the arm64 macOS leg runs every test that
+# does not need one. This workflow adds the two environments that costs the most
+# to reach — macOS with a working podman, and nix — on top of that.
+#
+# Run it against a branch before merging with `gh workflow run "slow tests"
+# --ref <branch>`, or from the Actions tab.
+on:
+  push:
+    branches: ["main"]
+  schedule:
+    - cron: "0 7 * * *"
+  workflow_dispatch:
+
+# A burst of merges collapses to one run: each push cancels the one before it, so
+# only the newest main pays for these legs. The trade is deliberate — an
+# intermediate commit can go untested when several land together.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: never
+  CLICOLOR: 0
+  NO_COLOR: "1"
+  RUST_BACKTRACE: 1
+
+permissions:
+  contents: read
+
+jobs:
+  skip-check:
+    runs-on: ubuntu-24.04
+    outputs:
+      should_skip: ${{ steps.skip_check.outputs.should_skip }}
+    steps:
+      - id: skip_check
+        uses: fkirc/skip-duplicate-actions@f75f66ce1886f00957d99748a42c724f4330bdcf # v5
+        with:
+          paths_ignore: '["**.md"]'
+
+  # The only leg that runs the engine-backed tests on macOS. Intel, because
+  # arm64 macOS cannot run `podman machine` at all: Apple's Virtualization
+  # Framework gives its guests no nested virtualization.
+  #
+  # Not the 12-core `macos-15-large`. Measured against this runner on the same
+  # commit it was slower everywhere: `podman machine start` took 166s against
+  # 90s, and every engine-backed test took 1.5x to 2.5x longer. Its Xeon W cores
+  # are slower per core, and this work is serial — boot a VM, then run tests that
+  # block on that VM — so more cores buy nothing. It also bills per minute even
+  # on a public repository.
+  test-macos-intel:
+    runs-on: macos-15-intel
+    needs: skip-check
+    if: needs.skip-check.outputs.should_skip != 'true'
+    # Safety net so a wedged container op cannot hang the runner for hours. It
+    # must exceed the sum of the step timeouts below, or it fires first and hides
+    # which step stalled.
+    timeout-minutes: 35
+    env:
+      SNOUTY_TEST_RUNTIME: podman
+    steps:
+      - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+        with:
+          toolchain: stable
+
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+        with:
+          token: ${{secrets.GITHUB_TOKEN}}
+          persist-credentials: false
+
+      - uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5 # v2
+
+      - name: Install Nextest
+        uses: taiki-e/install-action@cargo-nextest
+
+      # snouty always drives Docker Compose v2 via the `docker-compose` binary,
+      # independent of the image runtime. Here that binary reaches podman over
+      # its API socket via DOCKER_HOST.
+      - name: Install Podman + docker-compose
+        shell: bash
+        timeout-minutes: 8
+        run: |
+          # Time each portion so we can see where setup spends its time.
+          t=$SECONDS
+          # podman 6.0.0 dropped Intel macOS support, so `brew install podman`
+          # no longer yields a working amd64 binary on this runner. Install the
+          # last Intel-capable release (5.8.4) from its macOS pkg instead; still
+          # get docker-compose from brew.
+          brew install docker-compose
+          curl -fsSL -o /tmp/podman-installer.pkg \
+            https://github.com/podman-container-tools/podman/releases/download/v5.8.4/podman-installer-macos-amd64.pkg
+          sudo installer -pkg /tmp/podman-installer.pkg -target /
+          # The pkg installs the CLI under /opt/podman/bin, for this step and
+          # every step after it.
+          echo "/opt/podman/bin" >> "$GITHUB_PATH"
+          export PATH="/opt/podman/bin:$PATH"
+
+          printf '[timing] install: %ss\n' "$(( SECONDS - t ))"
+          echo "::notice title=podman install timing::install $(( SECONDS - t ))s"
+
+      # `podman machine init`/`start` have no timeout of their own and sometimes
+      # wedge. Its own step bounds that hang and names it; healthy runs take
+      # ~2.5m, so 8m is headroom.
+      - name: Provision podman machine
+        id: podman_machine
+        shell: bash
+        timeout-minutes: 8
+        continue-on-error: true
+        run: scripts/provision-podman-machine.sh
+
+      # A wedged start clears on a fresh machine, so retry once. A second step
+      # gives the retry its own timeout, and no `continue-on-error` here means a
+      # second failure fails the job.
+      - name: Recreate podman machine after a failed start
+        if: steps.podman_machine.outcome == 'failure'
+        shell: bash
+        timeout-minutes: 8
+        run: |
+          echo "::warning title=podman machine retry::provisioning did not finish in time; recreating the machine"
+          # The machine may be half-built or unresponsive, and neither teardown
+          # step is required to succeed for a fresh init to work.
+          podman machine stop || true
+          podman machine rm --force || true
+          scripts/provision-podman-machine.sh
+
+      - name: Runtime Info
+        shell: bash
+        run: |
+          podman info
+          docker-compose version
+
+      # Cache every test image as a tarball, so the run loads them from disk
+      # instead of pulling them. `snouty validate` (k8s) does a `podman run` that
+      # implicitly pulls k8s-validator with no timeout, and here every pull also
+      # crosses the VM's gvproxy network proxy — under the parallel spec run
+      # several tests can saturate it at once, and a pull that does wedges
+      # indefinitely. Loading from a local tarball removes that failure mode, and
+      # GitHub's cache has far better tail latency than Docker Hub or quay.
+      #
+      # The key tracks the script, so editing its image list re-primes the cache
+      # without anyone having to remember to bump a version.
+      - name: Cache test images
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ~/test-images
+          key: test-images-podman-${{ hashFiles('scripts/setup-test-images.sh') }}
+
+      # Pre-fetch every remote image and start the registry tests push to, so a
+      # slow or rate-limited pull fails here rather than inside a test.
+      - name: Set up test images and registry
+        shell: bash
+        timeout-minutes: 10
+        run: |
+          # Must match the cached path above. Set here rather than in `env:`,
+          # which does not expand `$HOME`.
+          export SNOUTY_TEST_IMAGE_CACHE="$HOME/test-images"
+          scripts/setup-test-images.sh podman
+
+      # Only the engine-backed tests. Everything else already ran on the arm64
+      # macOS leg in build.yml, against this same commit.
+      - name: Test
+        run: cargo nextest run --filterset 'group(container)'
+
+  build-nix:
+    runs-on: ubuntu-latest
+    needs: skip-check
+    if: needs.skip-check.outputs.should_skip != 'true'
+    steps:
+      - uses: samueldr/lix-gha-installer-action@7b7f14d320d6aacfb65bd1ef761566b3b69e474c # v2026-02-22
+
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+        with:
+          token: ${{secrets.GITHUB_TOKEN}}
+          persist-credentials: false
+
+      - name: Start Podman socket # required for docker-compose
+        run: |
+          systemctl --user start podman.socket
+
+      # This leg sets no SNOUTY_TEST_RUNTIME, so the suite exercises both
+      # engines and both need the images.
+      - name: Set up test images and registry
+        shell: bash
+        timeout-minutes: 10
+        run: scripts/setup-test-images.sh podman docker
+
+      - name: Build
+        run: nix-build
+
+      - name: Test
+        run: nix-shell --run "cargo nextest run"

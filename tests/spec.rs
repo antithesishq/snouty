@@ -174,12 +174,20 @@ fn cmd_snouty(
 
     let mut child = cmd.spawn().map_err(|e| err(format!("spawn snouty: {e}")))?;
     if let Some(data) = env.next_stdin.take() {
-        child
-            .stdin
-            .take()
-            .unwrap()
-            .write_all(&data)
-            .map_err(|e| err(format!("write stdin: {e}")))?;
+        // snouty is free to exit before it reads all of stdin — `runs exec` with
+        // a SCRIPT argument never reads it at all — and that breaks the pipe.
+        // A broken pipe here is not a failure, so let the spec's own assertions
+        // on exit status and output judge the run. Every other error still
+        // fails, because it means the write itself went wrong.
+        //
+        // Linux nearly always hides this: a small write lands in the pipe buffer
+        // and returns before snouty exits. macOS loses that race often enough to
+        // fail a spec about one run in three.
+        match child.stdin.take().unwrap().write_all(&data) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => {}
+            Err(e) => return Err(err(format!("write stdin: {e}"))),
+        }
     }
     let output = child
         .wait_with_output()

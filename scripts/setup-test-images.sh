@@ -16,6 +16,14 @@
 #
 # Pass every engine the suite will exercise; each needs its own copy of the
 # images. Under GitHub Actions the registry address is exported to later steps.
+#
+# Set SNOUTY_TEST_IMAGE_CACHE to a directory to cache the images as tarballs:
+# an image the engine does not have is loaded from a tarball there, and one that
+# had to be pulled is saved back for the next run. CI caches that directory,
+# because GitHub's cache has far better tail latency than Docker Hub and quay,
+# and because it takes their rate limits out of the run entirely. That matters
+# most on macOS, where every pull also crosses the podman VM's network proxy —
+# the pulls that wedge are the ones that cross it.
 set -euo pipefail
 
 if [ "$#" -eq 0 ]; then
@@ -36,16 +44,43 @@ REGISTRY_CONTAINER=snouty-test-registry
 # only skips TLS verification for localhost addresses.
 REGISTRY_ADDR=127.0.0.1:5000
 
+CACHE_DIR="${SNOUTY_TEST_IMAGE_CACHE:-}"
+if [ -n "$CACHE_DIR" ]; then
+  mkdir -p "$CACHE_DIR"
+fi
+
+# The tarball path for an image: its reference with the characters that cannot
+# appear in a filename replaced.
+image_tarball() {
+  printf '%s/%s.tar' "$CACHE_DIR" "$(printf '%s' "$1" | tr '/:' '__')"
+}
+
 for engine in "$@"; do
   for image in "${IMAGES[@]}"; do
-    # Already present is the common case on macOS, where k8s-validator is
-    # restored from a cache tarball before this runs.
+    # Already present is the common case for the second engine, which finds
+    # what the first one loaded or pulled.
     if "$engine" image inspect "$image" >/dev/null 2>&1; then
       echo "$engine: $image already present"
       continue
     fi
+
+    tarball=""
+    if [ -n "$CACHE_DIR" ]; then
+      tarball=$(image_tarball "$image")
+    fi
+
+    if [ -n "$tarball" ] && [ -f "$tarball" ]; then
+      echo "$engine: loading $image from $tarball"
+      "$engine" load -i "$tarball"
+      continue
+    fi
+
     echo "$engine: pulling $image"
     "$engine" pull "$image"
+    if [ -n "$tarball" ]; then
+      echo "$engine: saving $image to $tarball"
+      "$engine" save "$image" -o "$tarball"
+    fi
   done
 done
 

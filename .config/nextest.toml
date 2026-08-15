@@ -1,0 +1,58 @@
+# Which tests need a real container engine, and how the suite is scheduled.
+#
+# The `container` test group is the single definition of that set. CI splits the
+# macOS work along it: the arm64 leg in build.yml takes everything else on every
+# pull request, and the Intel leg in slow-tests.yml takes these after merge. That
+# split exists because arm64 macOS cannot run `podman machine` at all — Apple's
+# Virtualization Framework gives its guests no nested virtualization — so the
+# engine-backed tests can only run on Intel, which is also the slow half.
+#
+# Select the two halves with `--filterset 'group(container)'` and
+# `--filterset 'not group(container)'`. `group()` works only on the command
+# line, which is why the set lives here rather than in a profile filter.
+#
+# The set names tests explicitly, so a newly added engine-backed test is not in
+# it. That fails closed rather than silently: the arm64 job runs the new test,
+# finds no engine, and `skip_or_fail` panics because CI is set. Add the test here
+# when that happens. The shims in scripts/macos-arm-shims deliberately do not
+# weaken this — they answer only the two probes `snouty doctor` makes, and fail
+# the `podman info` that resolves a runtime for the tests.
+
+[test-groups]
+# Naming the group is the point; the cap is the default parallelism rather than
+# a narrower limit, so grouping does not itself serialize these tests.
+container = { max-threads = "num-cpus" }
+
+[[profile.default.overrides]]
+filter = """
+     test(=compose::tests::compose_config_resolves_env)
+   + test(=compose::tests::compose_contents_apply_overlays)
+   + test(=compose::tests::config_json_hermetic_env_scrubs_process_variables)
+   + test(/^compose::tests::pin_images_/)
+   + test(=container::tests::build_and_push_to_mock_registry)
+   + test(/_engine_.*_specs$/)
+"""
+test-group = "container"
+# These are the slowest tests in the suite by a wide margin, and nextest
+# otherwise schedules them last: they sort into the `snouty::spec` binary, which
+# comes after every unit-test binary. On the macOS Intel leg that put the 85s
+# `podman_engine_launch_config_push_specs` at the very end of a 157s run, so the
+# run was 72s of fast tests followed by an 85s tail that ran almost alone.
+# Starting them first bounds the run by the slowest test instead.
+priority = 100
+
+# The slowest tests that do NOT need an engine, started first for the same
+# reason. Both run on the arm64 leg, where they are the two longest by far:
+# 30s and roughly 6s, against under 4s for everything else.
+#
+# `spec_tests` drives every file in `specs/`. It is not in the group above
+# because it needs a runtime to be *detected*, not to work — `specs/doctor.txt`
+# asserts that `snouty doctor` exits zero while testing API connectivity, and
+# doctor fails when it finds no engine. The shims in scripts/macos-arm-shims
+# answer that probe on the arm64 leg.
+[[profile.default.overrides]]
+filter = """
+     test(=process::tests::output_with_timeout_kills_and_errors_on_overrun)
+   + test(=spec_tests)
+"""
+priority = 100

@@ -1,0 +1,31 @@
+#!/bin/sh
+# A stand-in for podman on the arm64 macOS CI leg.
+#
+# That runner cannot run a real podman: arm64 macOS has no nested
+# virtualization, because of a limit in Apple's Virtualization Framework, so
+# `podman machine` cannot start. But `snouty doctor` checks that a container
+# runtime exists, and `specs/doctor.txt` asserts that `snouty doctor` exits
+# zero while testing something unrelated — API connectivity and version
+# reporting. Without this shim that spec fails, and the whole `specs/` suite
+# with it, for a reason that has nothing to do with what it tests.
+#
+# So this answers the one probe snouty's detection makes — `podman --version`,
+# see `available_engines` in src/container.rs — and fails everything else. That
+# is deliberate. The engine-backed tests resolve a runtime with `podman info`
+# (see `available_runtimes` in src/testutils.rs), which fails here, so they
+# still refuse to run on this leg instead of half-running against a fake.
+#
+# It also means this shim cannot mask a regression. If snouty ever probes for a
+# runtime some other way, that probe lands here, fails, and the arm64 job goes
+# red — rather than reporting a healthy runtime that does not exist.
+case "$1" in
+  --version)
+    # Only the word "podman" matters to the caller (`version_output_is_podman`).
+    echo "podman version 5.8.4"
+    exit 0
+    ;;
+esac
+
+echo "podman shim: '$*' needs a podman machine, which the arm64 macOS runner cannot start" >&2
+echo "podman shim: engine-backed tests belong on the Intel leg; see .config/nextest.toml" >&2
+exit 1

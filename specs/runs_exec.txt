@@ -73,7 +73,12 @@ stdout 'Linux antithesis 6.12.0'
 
 # A literal `-` is therefore just a script, not a stdin marker. The mock's
 # default branch runs it like any other script.
-stdin exec_script.txt
+#
+# Deliberately no `stdin` line here, unlike the block above. `-` is a script, so
+# snouty never reads stdin, and feeding it some anyway races snouty's exit: the
+# harness's write gets EPIPE when snouty exits first, which it does often enough
+# on macOS to fail this spec. Nothing is lost — the mock answers every script
+# with the same default output, so stdin's presence proves nothing here.
 snouty runs exec run-2 -3625518438076122494 398.4898056755774 -
 stdout 'Linux antithesis 6.12.0'
 

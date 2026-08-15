@@ -370,7 +370,7 @@ fn open_run_report(run: &RunDetail, json: bool) -> Result<()> {
         return Ok(());
     }
 
-    let launched = launch_browser(url);
+    let launched = crate::browser::open_in_browser(url).is_ok();
     if launched {
         outln!("Opening report for run {}…", run.run_id)?;
         outln!("If your browser didn't open, manually visit:")?;
@@ -495,44 +495,6 @@ fn over_schedule_warning(run: &RunDetail, now: DateTime<Utc>) -> Option<String> 
     } else {
         None
     }
-}
-
-fn launch_browser(url: &str) -> bool {
-    use std::process::{Command, Stdio};
-
-    #[cfg(target_os = "windows")]
-    let mut command = {
-        use std::os::windows::process::CommandExt;
-        // cmd.exe's `start` doesn't parse Rust's `\"`-style arg escaping, so build
-        // the command line verbatim with `raw_arg`. The first quoted token is the
-        // window title (kept empty), and the URL is the second quoted token — the
-        // quotes survive intact, so `&` inside the URL isn't treated as a command
-        // separator.
-        let mut command = Command::new("cmd");
-        command.raw_arg(format!("/C start \"\" \"{url}\""));
-        command
-    };
-
-    #[cfg(target_os = "macos")]
-    let mut command = {
-        let mut command = Command::new("open");
-        command.arg(url);
-        command
-    };
-
-    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
-    let mut command = {
-        let mut command = Command::new("xdg-open");
-        command.arg(url);
-        command
-    };
-
-    command
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
 }
 
 /// Filters applied to `runs properties`. `status` is served by the API; `name`

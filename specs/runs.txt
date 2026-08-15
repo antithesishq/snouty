@@ -8,8 +8,13 @@
 # backend. Unprefixed assertions are structural and run in both modes.
 #
 # Run-id scoped read responses may be cached under
-# $XDG_RUNTIME_DIR/snouty/api-cache-v1. Caching is internal and must not change
-# command output or required arguments.
+# $XDG_RUNTIME_DIR/snouty/api-cache-v1. A healthy cache is internal and must
+# not change command output or required arguments; a cache that fails at
+# request time stops the command with an error that names the cache directory
+# to clear. GET requests that fail at the transport level (connect errors,
+# resets, DNS failures) are retried up to 3 times with backoff; a served HTTP
+# response of any status is never retried, and mutations (the launch, debug,
+# and exec webhooks) are sent exactly once (#230).
 
 # The command authenticates with the Antithesis API using
 #    ANTITHESIS_API_KEY and ANTITHESIS_TENANT env vars. Every endpoint other

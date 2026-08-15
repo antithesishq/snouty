@@ -424,6 +424,12 @@ fn version_check(host: &str, result: std::result::Result<ApiVersion, VersionErro
         Err(VersionError::Unreachable(err)) => Check::fail("api", "Antithesis API unreachable")
             .note(Level::Error, format!("could not connect to {host}"))
             .note(Level::Error, err),
+        // The probe failed for a local reason (e.g. the response cache
+        // failed) — reachability is unknown, so do not claim a connectivity
+        // problem.
+        Err(VersionError::Failed(err)) => {
+            Check::fail("api", "Antithesis API check failed").note(Level::Error, err)
+        }
     }
 }
 
@@ -813,6 +819,32 @@ mod tests {
                 .notes
                 .iter()
                 .any(|n| n.text.contains("connection refused"))
+        );
+    }
+
+    // A local probe failure (e.g. the response cache failed) says nothing
+    // about connectivity, so the check must not claim the API is unreachable.
+    #[test]
+    fn version_failed_does_not_claim_a_connectivity_problem() {
+        let check = version_check(
+            "tenant.antithesis.com",
+            Err(VersionError::Failed(
+                "the API response cache at /run/user/1000 failed".into(),
+            )),
+        );
+        assert_eq!(check.status, Status::Error);
+        assert!(!check.message.contains("unreachable"), "{}", check.message);
+        assert!(
+            check
+                .notes
+                .iter()
+                .all(|n| !n.text.contains("could not connect"))
+        );
+        assert!(
+            check
+                .notes
+                .iter()
+                .any(|n| n.text.contains("response cache"))
         );
     }
 

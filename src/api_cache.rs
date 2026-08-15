@@ -7,10 +7,11 @@ use http_cache_reqwest::{
 use crate::env;
 
 /// Where the default response cache lives:
-/// `$XDG_RUNTIME_DIR/snouty/api-cache-v1`. The cache is best-effort: an
-/// unusable XDG_RUNTIME_DIR (unset, empty, or non-Unicode — all collapsed by
-/// `env::var`/`.ok().flatten()`) just disables caching rather than failing the
-/// command.
+/// `$XDG_RUNTIME_DIR/snouty/api-cache-v1`. An unusable XDG_RUNTIME_DIR
+/// (unset, empty, or non-Unicode — all collapsed by
+/// `env::var`/`.ok().flatten()`) just disables caching rather than failing
+/// the command. A cache that fails at request time, by contrast, is a hard
+/// error with remediation (see the `post` hook in `api.rs`).
 pub(crate) fn default_cache_dir() -> Option<PathBuf> {
     cache_dir_from_runtime_dir(env::var("XDG_RUNTIME_DIR").ok().flatten())
 }

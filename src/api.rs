@@ -73,6 +73,9 @@ pub enum VersionError {
     Http(u16),
     /// The API could not be reached at all (DNS, connection, TLS, timeout).
     Unreachable(String),
+    /// The probe failed for a local reason (e.g. the response cache failed),
+    /// so reachability is unknown.
+    Failed(String),
 }
 
 impl RunStatus {
@@ -250,31 +253,56 @@ fn unpack_transport_error(
         }
         Err(err) => err,
     };
-    // The cache layer boxes errors from its network fetch without flattening
-    // them, so the middleware error inside is recoverable by value.
+    // The cache layer boxes errors from its network fetch and its body
+    // buffering without flattening them, so the error inside is recoverable
+    // by value. The fetch path boxes a `reqwest_middleware::Error`; the
+    // body-read path boxes a bare `reqwest::Error` — a connection dropped
+    // mid-body must classify as the transport failure it is, not as a cache
+    // fault.
     match err.downcast::<HttpCacheError>() {
         Ok(HttpCacheError::Client(inner)) => match inner.downcast::<reqwest_middleware::Error>() {
             Ok(inner) => unpack_transport_error(*inner),
-            Err(inner) => Err(reqwest_middleware::Error::Middleware(
-                HttpCacheError::Client(inner).into(),
-            )),
+            Err(inner) => match inner.downcast::<reqwest::Error>() {
+                Ok(inner) => Ok(*inner),
+                Err(inner) => Err(reqwest_middleware::Error::Middleware(
+                    HttpCacheError::Client(inner).into(),
+                )),
+            },
         },
         Ok(other) => Err(reqwest_middleware::Error::Middleware(other.into())),
         Err(err) => Err(reqwest_middleware::Error::Middleware(err)),
     }
 }
 
+/// The marker host inside [`placeholder_reqwest_error`]. `.invalid` is
+/// reserved (RFC 2606), so no real request can carry it.
+const PLACEHOLDER_HOST: &str = "cache-fault.invalid";
+
 /// A throwaway `reqwest::Error` for the cache-fault path. [`ClientHooks::exec`]
 /// must return a `reqwest::Result`, and a `reqwest::Error` cannot be built
 /// from an arbitrary error — so the real diagnosis travels via
 /// [`ClientState::cache_fault`], and the `post` hook rejects the operation
-/// with it before this value is ever inspected.
+/// with it before this value is ever inspected. The marker URL is how `post`
+/// recognizes the operation whose fault is pending ([`is_placeholder_error`]).
 fn placeholder_reqwest_error() -> reqwest::Error {
-    Client::new()
-        .get("http://cache-fault.invalid/")
-        .header("placeholder", "\u{0}")
-        .build()
-        .expect_err("a NUL header value cannot build")
+    use reqwest::ResponseBuilderExt;
+    let url = format!("http://{PLACEHOLDER_HOST}/")
+        .parse()
+        .expect("static url parses");
+    let response = http::Response::builder()
+        .status(599)
+        .url(url)
+        .body("")
+        .expect("static response parts are valid");
+    reqwest::Response::from(response)
+        .error_for_status()
+        .expect_err("599 is an error status")
+}
+
+/// Whether `result` is the placeholder from [`placeholder_reqwest_error`],
+/// i.e. this operation is the one whose cache fault is pending.
+fn is_placeholder_error(result: &reqwest::Result<reqwest::Response>) -> bool {
+    matches!(result, Err(err) if err.url().and_then(reqwest::Url::host_str) == Some(PLACEHOLDER_HOST))
 }
 
 /// Where API responses are cached.
@@ -441,9 +469,15 @@ impl AntithesisApi {
                     release_version: v.release_version,
                 })
             }
-            Err(err) => Err(match err.status() {
-                Some(code) => VersionError::Http(code.as_u16()),
-                None => VersionError::Unreachable(err.to_string()),
+            Err(err) => Err(match err {
+                // The post hook's cache-fault rejection: a local failure, so
+                // reachability is unknown — doctor must not call it a
+                // connectivity problem.
+                ClientError::Custom(message) => VersionError::Failed(message),
+                err => match err.status() {
+                    Some(code) => VersionError::Http(code.as_u16()),
+                    None => VersionError::Unreachable(err.to_string()),
+                },
             }),
         }
     }
@@ -642,11 +676,11 @@ pub struct ClientState {
     /// Where the response cache lives, when one is configured. Used to tell
     /// the user which directory to clear when the cache fails.
     cache_dir: Option<PathBuf>,
-    /// A cache failure recorded by [`send_request`], pending pickup by the
-    /// `post` hook, which rejects the operation with it. The slot is
-    /// client-wide, not request-scoped — under concurrent requests a fault
-    /// could be reported against a sibling operation, but either way the
-    /// command fails with the cache diagnosis, which is the point.
+    /// A cache failure recorded by `exec`, pending pickup by the `post`
+    /// hook, which rejects the operation with it. The slot is client-wide,
+    /// but `post` consumes it only for the operation whose result carries
+    /// the placeholder marker ([`is_placeholder_error`]), so a fault cannot
+    /// fail an unrelated healthy request.
     cache_fault: Arc<Mutex<Option<String>>>,
     /// Default headers reqwest will merge into the outgoing request at
     /// `Client::execute` time (after our `exec` hook runs). `Some` enables
@@ -690,7 +724,20 @@ impl ClientHooks<ClientState> for generated::Client {
             eprint!("{out}");
         }
 
-        let result = send_request(state, request).await;
+        // Adapt send_request's result to this hook's reqwest-only signature:
+        // a cache fault is recorded for `post` to reject the operation with,
+        // and a marker placeholder — never inspected, `post` runs first —
+        // fills the slot.
+        let adapt = |result: std::result::Result<reqwest::Response, SendError>| match result {
+            Ok(response) => Ok(response),
+            Err(SendError::Transport(err)) => Err(err),
+            Err(SendError::CacheFault(fault)) => {
+                state.cache_fault.lock().unwrap().replace(fault);
+                Err(placeholder_reqwest_error())
+            }
+        };
+
+        let result = adapt(send_request(state, request).await);
 
         let result = match (result, retry_request) {
             (Ok(response), Some(mut retry_request))
@@ -710,7 +757,7 @@ impl ClientHooks<ClientState> for generated::Client {
                             format_request(&retry_request, default_headers, &mut out);
                             eprint!("{out}");
                         }
-                        send_request(state, retry_request).await
+                        adapt(send_request(state, retry_request).await)
                     }
                     Ok(None) => Ok(response),
                     Err(err) => {
@@ -739,13 +786,22 @@ impl ClientHooks<ClientState> for generated::Client {
     /// the placeholder error `exec` returned is never inspected.
     async fn post<E>(
         &self,
-        _result: &reqwest::Result<reqwest::Response>,
+        result: &reqwest::Result<reqwest::Response>,
         _info: &OperationInfo,
     ) -> std::result::Result<(), ClientError<E>> {
-        let state = self.inner();
-        let Some(fault) = state.cache_fault.lock().unwrap().take() else {
+        // Act only on the operation carrying the placeholder, so a fault can
+        // neither be consumed by a concurrent healthy operation nor, left
+        // stale by a cancelled one, fail the next healthy request.
+        if !is_placeholder_error(result) {
             return Ok(());
-        };
+        }
+        let state = self.inner();
+        let fault = state
+            .cache_fault
+            .lock()
+            .unwrap()
+            .take()
+            .unwrap_or_else(|| "cause taken by a concurrent request".to_owned());
         let dir = state
             .cache_dir
             .as_deref()
@@ -799,30 +855,31 @@ fn build_middleware_client(
 /// of any status is final — a 500 still fails, and 4xx semantics stay
 /// untouched.
 ///
-/// Failures come back in two shapes. A transport failure surfaces as the
-/// `reqwest::Error` it is, unpacked from the layers that wrapped it (see
-/// [`unpack_transport_error`]). A middleware failure with no transport error
-/// inside is the cache itself failing; that is recorded on
-/// [`ClientState::cache_fault`] for the `post` hook to reject the operation
-/// with, and a placeholder satisfies this function's return type.
+/// Failures come back in two shapes ([`SendError`]): a transport failure
+/// carries the `reqwest::Error` it is, unpacked from the layers that wrapped
+/// it (see [`unpack_transport_error`]); a middleware failure with no
+/// transport error inside is the cache itself failing, rendered for the
+/// `post` hook to reject the operation with.
 async fn send_request(
     state: &ClientState,
     request: reqwest::Request,
-) -> reqwest::Result<reqwest::Response> {
+) -> std::result::Result<reqwest::Response, SendError> {
     match state.middleware_client.execute(request).await {
         Ok(response) => Ok(response),
-        Err(err) => match unpack_transport_error(err) {
-            Ok(err) => Err(err),
-            Err(err) => {
-                state
-                    .cache_fault
-                    .lock()
-                    .unwrap()
-                    .replace(format!("{err:#}"));
-                Err(placeholder_reqwest_error())
-            }
-        },
+        Err(err) => Err(match unpack_transport_error(err) {
+            Ok(err) => SendError::Transport(err),
+            Err(err) => SendError::CacheFault(format!("{err:#}")),
+        }),
     }
+}
+
+/// How a [`send_request`] call failed.
+enum SendError {
+    /// The transport failed after any retries; the typed error.
+    Transport(reqwest::Error),
+    /// The middleware chain failed with no transport error inside — the
+    /// response cache itself is broken. Carries the rendered failure.
+    CacheFault(String),
 }
 
 fn format_response(response: &reqwest::Response, out: &mut String) {
@@ -2022,7 +2079,37 @@ mod tests {
         (base_url, connections)
     }
 
-    fn test_api_at(base_url: String, cache_dir: Option<&TempDir>) -> AntithesisApi {
+    /// A raw TCP server whose every response is truncated: it reads the
+    /// request, sends the headers and part of a body shorter than the
+    /// declared content-length, then closes. The client's body read fails
+    /// after the response headers already arrived.
+    async fn serve_truncated_version() -> (String, Arc<AtomicUsize>) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base_url = format!("http://{}", listener.local_addr().unwrap());
+        let connections = Arc::new(AtomicUsize::new(0));
+        let counter = Arc::clone(&connections);
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut socket, _)) = listener.accept().await else {
+                    return;
+                };
+                counter.fetch_add(1, Ordering::SeqCst);
+                let mut buf = [0u8; 4096];
+                let _ = socket.read(&mut buf).await;
+                let _ = socket
+                    .write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 4096\r\n\r\n{\"latest")
+                    .await;
+            }
+        });
+        (base_url, connections)
+    }
+
+    /// The one place tests build an `AntithesisApi`: password auth, quiet,
+    /// against `base_url`, with the given cache. The wrappers below cover the
+    /// common shapes.
+    fn test_api(base_url: String, cache: ResponseCache) -> AntithesisApi {
         AntithesisApi::build(
             &Settings::for_test_base_url(base_url),
             AuthenticationInfo::Password {
@@ -2030,11 +2117,18 @@ mod tests {
                 password: "pass".to_owned(),
             },
             false,
+            cache,
+        )
+        .unwrap()
+    }
+
+    fn test_api_at(base_url: String, cache_dir: Option<&TempDir>) -> AntithesisApi {
+        test_api(
+            base_url,
             cache_dir.map_or(ResponseCache::Disabled, |d| {
                 ResponseCache::Dir(d.path().to_path_buf())
             }),
         )
-        .unwrap()
     }
 
     // A served HTTP error status is final: a 500 still fails, and 4xx
@@ -2099,9 +2193,11 @@ mod tests {
     }
 
     // A transport failure behind the cache layer keeps its type: the caller
-    // sees an unreachable API, never a cache diagnosis. This pins the
-    // TransportErrorStash wiring — without it, the cache layer stringifies
-    // the transport error and it would misclassify as a cache fault.
+    // sees an unreachable API, never a cache diagnosis. This pins
+    // unpack_transport_error's cache-layer arm — it works because the spider
+    // fork of http-cache-reqwest keeps the error source chain intact (see
+    // Cargo.toml); with the flattening upstream, the transport error would
+    // misclassify as a cache fault.
     #[tokio::test]
     async fn get_transport_failure_with_cache_is_not_a_cache_fault() {
         let (base_url, connections) = reset_then_serve_version(usize::MAX).await;
@@ -2121,6 +2217,31 @@ mod tests {
             connections.load(Ordering::SeqCst),
             1 + MAX_TRANSIENT_RETRIES as usize
         );
+    }
+
+    // A connection dropped while the body downloads — after the cache layer
+    // began buffering it — is a transport failure, not a cache fault. The
+    // cache boxes the body-read error as a bare reqwest::Error, and
+    // unpack_transport_error must classify it as transport; misclassifying
+    // it would tell the user to delete their cache over a network blip. The
+    // retry layer already returned when the headers arrived, so the failure
+    // surfaces without a retry.
+    #[tokio::test]
+    async fn get_body_truncation_with_cache_is_not_a_cache_fault() {
+        let (base_url, connections) = serve_truncated_version().await;
+        let cache_dir = TempDir::new().unwrap();
+        let api = test_api_at(base_url, Some(&cache_dir));
+
+        match api.get_version().await {
+            Err(VersionError::Unreachable(message)) => {
+                assert!(
+                    !message.contains("cache"),
+                    "a body-read failure must not diagnose the cache, got: {message}"
+                );
+            }
+            other => panic!("expected Unreachable, got {other:?}"),
+        }
+        assert_eq!(connections.load(Ordering::SeqCst), 1);
     }
 
     // A failing cache is an error with remediation, not a silent bypass: the
@@ -2145,16 +2266,10 @@ mod tests {
             .await;
 
         let not_a_dir = tempfile::NamedTempFile::new().unwrap();
-        let api = AntithesisApi::build(
-            &Settings::for_test_base_url(mock_server.uri()),
-            AuthenticationInfo::Password {
-                username: "user".to_owned(),
-                password: "pass".to_owned(),
-            },
-            false,
+        let api = test_api(
+            mock_server.uri(),
             ResponseCache::Dir(not_a_dir.path().to_path_buf()),
-        )
-        .unwrap();
+        );
 
         let report = api.get_run("run-1").await.unwrap_err();
         let message = format!("{report:#}");

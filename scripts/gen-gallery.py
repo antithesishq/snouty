@@ -1452,6 +1452,17 @@ def build_stories(d: Discovery) -> list[Story]:
             contains_all("cancelled"),
             json_capable=False,
         ),
+        Story(
+            "runs-wait",
+            "Block until a run reaches a terminal state",
+            "I scripted a launch and want one command that blocks until the run finishes, "
+            "instead of writing my own polling loop.",
+            "A single final-status line once the run is terminal — immediately here, since "
+            "this run is already completed.",
+            ["runs", "wait", d.success],
+            contains_all(d.success, "completed"),
+            json_capable=False,
+        ),
         # -- properties -----------------------------------------------------
         Story(
             "runs-properties",
@@ -1882,6 +1893,16 @@ def build_help_stories(d: Discovery) -> list[Story]:
             # show prints a key/value card (prose help vs Title-Case labels), not a
             # columnar table — no strict token alignment; the reviewer compares the
             # prose field list and the failure-moment claim against the two samples.
+        ),
+        _help_story(
+            "help-runs-wait",
+            "Learn how to wait for a run to finish",
+            "I want the help to explain the terminal states, that an `unknown` status "
+            "fails the command, and what --poll-interval and --timeout do.",
+            ["runs", "wait"],
+            ["runs", "wait", s],
+            # wait on a terminal run prints one status line; nothing columnar
+            # to align tokens against.
         ),
         _help_story(
             "help-runs-properties",

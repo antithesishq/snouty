@@ -766,6 +766,15 @@ fn mock_run_not_found(run_id: &str) -> (u16, String) {
 }
 
 fn mock_route_get_run(run_id: &str) -> (u16, String) {
+    // `run-unknown-status` is kept out of MOCK_RUNS so the list-oriented specs
+    // don't see it.
+    if run_id == "run-unknown-status" {
+        return (
+            200,
+            r#"{"run_id":"run-unknown-status","status":"unknown","created_at":"2025-03-20T02:00:00Z","launcher":"nightly"}"#
+                .to_string(),
+        );
+    }
     let Some(&(_, status, created, launcher, description)) =
         MOCK_RUNS.iter().find(|(id, ..)| *id == run_id)
     else {

@@ -21,6 +21,17 @@ fn parse_run_status(value: &str) -> Result<RunStatus, String> {
     })
 }
 
+/// clap value parser for `runs wait --poll-interval`: a [`HumanDuration`] of
+/// at least 1 minute — polling faster cannot observe a run (which takes
+/// minutes to hours) any sooner, and only hammers the API.
+fn parse_poll_interval(value: &str) -> Result<HumanDuration, String> {
+    let interval = value.parse::<HumanDuration>().map_err(|e| e.to_string())?;
+    if interval.seconds() < 60 {
+        return Err("poll interval must be at least 1 minute".to_string());
+    }
+    Ok(interval)
+}
+
 #[derive(Parser)]
 #[command(name = "snouty")]
 #[command(about = "CLI for the Antithesis API", long_about = None)]
@@ -113,6 +124,7 @@ Examples:
   snouty runs
   snouty runs list --status completed --launcher nightly
   snouty runs show <run_id>
+  snouty runs wait <run_id>
   snouty runs properties <run_id>
   snouty runs properties --failing <run_id>
   snouty runs properties <run_id> --name <substring> --detail
@@ -562,6 +574,40 @@ Incomplete runs also show the failure moment (Failure Hash/VTime) to pass to
         /// Open the run's triage report in a browser instead of printing details
         #[arg(short = 'w', long)]
         web: bool,
+    },
+
+    /// Wait for a run to reach a terminal state
+    #[command(
+        long_about = r#"Wait for a run to reach a terminal state (completed, cancelled, or incomplete).
+
+Polls the run's status until it is terminal, then reports the final status and
+exits 0 whatever that status is; the run's outcome is in the output, not the
+exit code. A run that reports status `unknown` fails the command instead:
+snouty cannot tell whether such a run will still make progress, so the caller
+decides what to do.
+
+The wait is unbounded unless --timeout is given, and the command is safe to
+interrupt and re-run: waiting holds no state beyond the run id, so re-running
+resumes the wait.
+
+Examples:
+  snouty runs wait <run_id>
+  snouty runs wait <run_id> --timeout 2h
+  snouty launch --json -w basic_test ... | jq -r .runId | xargs snouty runs wait"#
+    )]
+    Wait {
+        /// Run ID
+        run_id: String,
+
+        /// Time between status checks, in minutes or h/m/s units (e.g. 90s;
+        /// minimum 1 minute)
+        #[arg(long, default_value = "1m", value_parser = parse_poll_interval)]
+        poll_interval: HumanDuration,
+
+        /// Give up after this long (minutes, or h/m/s units, e.g. 2h);
+        /// without it the wait is unbounded
+        #[arg(long)]
+        timeout: Option<HumanDuration>,
     },
 
     /// List property results for a run

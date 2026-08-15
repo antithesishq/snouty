@@ -1,10 +1,11 @@
 # Which tests need a real container engine, and how the suite is scheduled.
 #
 # The `container` test group is the single definition of that set. CI splits the
-# macOS work along it: an arm64 runner takes everything else, and an Intel runner
-# takes these. That split exists because arm64 macOS cannot run `podman machine`
-# at all — Apple's Virtualization Framework gives its guests no nested
-# virtualization — so the engine-backed tests can only run on Intel.
+# macOS work along it: the arm64 leg in build.yml takes everything else on every
+# pull request, and the Intel leg in slow-tests.yml takes these after merge. That
+# split exists because arm64 macOS cannot run `podman machine` at all — Apple's
+# Virtualization Framework gives its guests no nested virtualization — so the
+# engine-backed tests can only run on Intel, which is also the slow half.
 #
 # Select the two halves with `--filterset 'group(container)'` and
 # `--filterset 'not group(container)'`. `group()` works only on the command

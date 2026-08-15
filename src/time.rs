@@ -1,7 +1,7 @@
-//! Run durations.
+//! Human-typed durations.
 //!
 //! Antithesis takes a run's duration in minutes, and has historically accepted
-//! a fractional value (e.g. `0.05` for three seconds). [`ReportDuration`]
+//! a fractional value (e.g. `0.05` for three seconds). [`HumanDuration`]
 //! preserves that, while also accepting the unit forms people reach for
 //! (`1h30m`, `2h`, `30s`).
 //!
@@ -18,28 +18,29 @@ use std::time::Duration;
 const SECS_PER_MINUTE: u64 = 60;
 const SECS_PER_HOUR: u64 = 60 * SECS_PER_MINUTE;
 
-/// A run's configured duration, carried in the `antithesis.duration` report
-/// parameter. Held internally as a [`Duration`] rounded to whole seconds.
+/// A duration in the forms people type (`90`, `1h30m`, `30s`), held as a
+/// [`Duration`] rounded to whole seconds. Carried in the `antithesis.duration`
+/// report parameter, among other uses.
 ///
 /// Parse one from the strings people type:
 /// ```
-/// # use snouty::time::ReportDuration;
-/// assert_eq!("1h30m".parse::<ReportDuration>().unwrap().minutes(), 90.0);
-/// assert_eq!("0.05".parse::<ReportDuration>().unwrap().minutes(), 0.05); // fractional minutes
-/// assert_eq!("7s".parse::<ReportDuration>().unwrap().minutes(), 0.12);   // rounded to 2 dp
-/// assert!("1.5h".parse::<ReportDuration>().is_err());                    // units stay whole
+/// # use snouty::time::HumanDuration;
+/// assert_eq!("1h30m".parse::<HumanDuration>().unwrap().minutes(), 90.0);
+/// assert_eq!("0.05".parse::<HumanDuration>().unwrap().minutes(), 0.05); // fractional minutes
+/// assert_eq!("7s".parse::<HumanDuration>().unwrap().minutes(), 0.12);   // rounded to 2 dp
+/// assert!("1.5h".parse::<HumanDuration>().is_err());                    // units stay whole
 /// // Display uses the minimized h/m/s form:
-/// assert_eq!("0.05".parse::<ReportDuration>().unwrap().to_string(), "3s");
-/// assert_eq!("90".parse::<ReportDuration>().unwrap().to_string(), "1h30m");
+/// assert_eq!("0.05".parse::<HumanDuration>().unwrap().to_string(), "3s");
+/// assert_eq!("90".parse::<HumanDuration>().unwrap().to_string(), "1h30m");
 /// ```
 ///
 /// [`Display`](fmt::Display) renders the minimized `h`/`m`/`s` form. For the
 /// `antithesis.duration` parameter use [`minutes()`](Self::minutes)`.to_string()`
 /// instead — that's the (possibly fractional) minute count the API expects.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub struct ReportDuration(Duration);
+pub struct HumanDuration(Duration);
 
-impl ReportDuration {
+impl HumanDuration {
     /// Build from a whole number of seconds.
     pub fn from_seconds(seconds: u64) -> Self {
         Self(Duration::from_secs(seconds))
@@ -79,7 +80,7 @@ impl ReportDuration {
     }
 }
 
-impl fmt::Display for ReportDuration {
+impl fmt::Display for HumanDuration {
     /// Minimized `h`/`m`/`s` form: each nonzero component in order (e.g.
     /// `1h30m`, `1m30s`, `1h1m1s`), or `0s` for zero.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -105,19 +106,19 @@ impl fmt::Display for ReportDuration {
     }
 }
 
-impl AsRef<Duration> for ReportDuration {
+impl AsRef<Duration> for HumanDuration {
     fn as_ref(&self) -> &Duration {
         &self.0
     }
 }
 
-impl From<ReportDuration> for Duration {
-    fn from(value: ReportDuration) -> Self {
+impl From<HumanDuration> for Duration {
+    fn from(value: HumanDuration) -> Self {
         value.0
     }
 }
 
-impl FromStr for ReportDuration {
+impl FromStr for HumanDuration {
     type Err = ParseDurationError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
@@ -136,7 +137,7 @@ impl FromStr for ReportDuration {
     }
 }
 
-/// Error from parsing a [`ReportDuration`]. Its message lists the accepted
+/// Error from parsing a [`HumanDuration`]. Its message lists the accepted
 /// forms; clap prefixes it with the offending value and flag name.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ParseDurationError;
@@ -195,11 +196,11 @@ mod tests {
     use super::*;
 
     fn minutes(s: &str) -> f64 {
-        s.parse::<ReportDuration>().unwrap().minutes()
+        s.parse::<HumanDuration>().unwrap().minutes()
     }
 
     fn seconds(s: &str) -> u64 {
-        s.parse::<ReportDuration>().unwrap().seconds()
+        s.parse::<HumanDuration>().unwrap().seconds()
     }
 
     #[test]
@@ -216,16 +217,13 @@ mod tests {
     #[test]
     fn minutes_rounds_to_two_decimals() {
         // Rounded in integer space, so no float drift and no long decimals.
-        assert_eq!(ReportDuration::from_seconds(3).minutes(), 0.05);
-        assert_eq!(ReportDuration::from_seconds(7).minutes(), 0.12); // 0.11666… rounded up
-        assert_eq!(ReportDuration::from_seconds(5).minutes(), 0.08); // 0.08333… rounded down
-        assert_eq!(ReportDuration::from_seconds(5442).minutes(), 90.7); // float-divide would give 90.69
-        assert_eq!(ReportDuration::from_seconds(5445).minutes(), 90.75);
+        assert_eq!(HumanDuration::from_seconds(3).minutes(), 0.05);
+        assert_eq!(HumanDuration::from_seconds(7).minutes(), 0.12); // 0.11666… rounded up
+        assert_eq!(HumanDuration::from_seconds(5).minutes(), 0.08); // 0.08333… rounded down
+        assert_eq!(HumanDuration::from_seconds(5442).minutes(), 90.7); // float-divide would give 90.69
+        assert_eq!(HumanDuration::from_seconds(5445).minutes(), 90.75);
         // ...and the string sent to the API stays clean.
-        assert_eq!(
-            ReportDuration::from_seconds(7).minutes().to_string(),
-            "0.12"
-        );
+        assert_eq!(HumanDuration::from_seconds(7).minutes().to_string(), "0.12");
     }
 
     #[test]
@@ -257,7 +255,7 @@ mod tests {
             "  ",
         ] {
             assert_eq!(
-                bad.parse::<ReportDuration>(),
+                bad.parse::<HumanDuration>(),
                 Err(ParseDurationError),
                 "expected {bad:?} to be rejected"
             );
@@ -266,14 +264,14 @@ mod tests {
 
     #[test]
     fn from_minutes_rejects_non_finite_and_negative() {
-        assert_eq!(ReportDuration::from_minutes(f64::NAN), None);
-        assert_eq!(ReportDuration::from_minutes(f64::INFINITY), None);
-        assert_eq!(ReportDuration::from_minutes(-1.0), None);
+        assert_eq!(HumanDuration::from_minutes(f64::NAN), None);
+        assert_eq!(HumanDuration::from_minutes(f64::INFINITY), None);
+        assert_eq!(HumanDuration::from_minutes(-1.0), None);
     }
 
     #[test]
     fn display_renders_minimized_hms() {
-        let display = |s: &str| s.parse::<ReportDuration>().unwrap().to_string();
+        let display = |s: &str| s.parse::<HumanDuration>().unwrap().to_string();
         assert_eq!(display("0"), "0s"); // zero
         assert_eq!(display("0.05"), "3s"); // sub-minute
         assert_eq!(display("90s"), "1m30s");
@@ -289,15 +287,15 @@ mod tests {
         for s in [
             "0", "0.05", "45", "60", "90", "120", "1h30m", "30s", "1h30m45s", "90m",
         ] {
-            let parsed = s.parse::<ReportDuration>().unwrap();
-            let reparsed = parsed.to_string().parse::<ReportDuration>().unwrap();
+            let parsed = s.parse::<HumanDuration>().unwrap();
+            let reparsed = parsed.to_string().parse::<HumanDuration>().unwrap();
             assert_eq!(parsed, reparsed, "{s:?} did not round-trip through Display");
         }
     }
 
     #[test]
     fn converts_to_duration() {
-        let d = "1h30m".parse::<ReportDuration>().unwrap();
+        let d = "1h30m".parse::<HumanDuration>().unwrap();
         assert_eq!(d.as_duration(), Duration::from_secs(5400));
         assert_eq!(Duration::from(d), Duration::from_secs(5400));
         assert_eq!(d.as_ref(), &Duration::from_secs(5400));
@@ -313,10 +311,10 @@ mod tests {
     #[hegel::test]
     fn display_round_trips_for_all_durations(tc: hegel::TestCase) {
         let seconds = tc.draw(generators::integers::<u64>());
-        let d = ReportDuration::from_seconds(seconds);
+        let d = HumanDuration::from_seconds(seconds);
         let reparsed = d
             .to_string()
-            .parse::<ReportDuration>()
+            .parse::<HumanDuration>()
             .expect("Display output must re-parse");
         assert_eq!(d, reparsed);
     }
@@ -328,7 +326,7 @@ mod tests {
     #[hegel::test]
     fn parse_never_panics(tc: hegel::TestCase) {
         let s = tc.draw(generators::text());
-        let _ = s.parse::<ReportDuration>();
+        let _ = s.parse::<HumanDuration>();
     }
 
     /// `from_minutes` is `Some` exactly for finite, non-negative inputs, and
@@ -339,7 +337,7 @@ mod tests {
     #[hegel::test]
     fn from_minutes_matches_contract(tc: hegel::TestCase) {
         let minutes = tc.draw(generators::floats::<f64>());
-        match ReportDuration::from_minutes(minutes) {
+        match HumanDuration::from_minutes(minutes) {
             Some(d) => {
                 assert!(minutes.is_finite() && minutes >= 0.0);
                 assert_eq!(d.seconds(), (minutes * 60.0).round() as u64);
@@ -356,7 +354,7 @@ mod tests {
     #[hegel::test]
     fn minutes_is_integer_space_rounding(tc: hegel::TestCase) {
         let seconds = tc.draw(generators::integers::<u32>()) as u64;
-        let d = ReportDuration::from_seconds(seconds);
+        let d = HumanDuration::from_seconds(seconds);
         let expected_hundredths = (seconds as u128 * 100 + 30) / 60;
         assert_eq!((d.minutes() * 100.0).round() as u128, expected_hundredths);
     }

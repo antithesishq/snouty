@@ -39,6 +39,7 @@ how snouty changes affect command output.
 from __future__ import annotations
 
 import argparse
+import codecs
 import fnmatch
 import json
 import os
@@ -302,17 +303,29 @@ class _Recorder:
     `pexpect` hands its `logfile_read` every byte it reads, once and in order —
     unlike `before`/`after`, which repeat whatever is still in its buffer. Each
     chunk is timestamped for the recording and fed to the terminal emulator for
-    the frames."""
+    the frames.
+
+    Both outputs decode incrementally, because a read can split a multi-byte
+    character: `pyte.ByteStream` carries the leftover bytes into the next chunk,
+    and the recording's own decoder does the same. Decoding each chunk on its own
+    would turn a split `↑` into replacement characters in the recording while the
+    frames still rendered it correctly."""
 
     def __init__(self, screen: pyte.Screen):
         self.started = time.monotonic()
-        self.events: list[tuple[float, bytes]] = []
+        self.events: list[tuple[float, str]] = []
         self.stream = pyte.ByteStream(screen)
+        self._decoder = codecs.getincrementaldecoder("utf-8")("replace")
 
     def write(self, data: bytes) -> None:
-        if data:
-            self.events.append((time.monotonic() - self.started, data))
-            self.stream.feed(data)
+        if not data:
+            return
+        self.stream.feed(data)
+        text = self._decoder.decode(data)
+        # A chunk that held only the first bytes of a split character decodes to
+        # nothing; its bytes arrive with the next one.
+        if text:
+            self.events.append((time.monotonic() - self.started, text))
 
     def flush(self) -> None:
         pass
@@ -366,10 +379,16 @@ class TtySession:
             rows.pop()
         return "\n".join(rows)
 
-    def finish(self) -> int:
-        """Wait for the child to exit and return its status."""
+    def finish(self, timeout: float) -> int:
+        """Wait up to `timeout` for the child to exit and return its status.
+
+        A dialogue that ran to the end leaves a child that is already exiting, so
+        the wait is short in practice. A story that broke off early leaves one
+        sitting at a prompt no one will answer, and waiting the full prompt
+        budget for an exit that cannot come only adds dead time to a run that has
+        already failed — such a caller passes a short timeout."""
         try:
-            self.child.expect(pexpect.EOF)
+            self.child.expect(pexpect.EOF, timeout=timeout)
         except pexpect.TIMEOUT:
             # The child is still up after a dialogue that should have ended it —
             # a stalled story, already recorded as a marker frame. Fall through
@@ -392,8 +411,8 @@ class TtySession:
             "env": {"TERM": "xterm-256color"},
         }
         lines = [json.dumps(header)]
-        for at, data in self.recorder.events:
-            lines.append(json.dumps([round(at, 6), "o", data.decode("utf-8", "replace")]))
+        for at, text in self.recorder.events:
+            lines.append(json.dumps([round(at, 6), "o", text]))
         return "\n".join(lines) + "\n"
 
 
@@ -415,20 +434,25 @@ def drive_tty(
     gallery."""
     session = TtySession(binary, args, env)
     frames: list[Frame] = []
+    completed = True
     for prompt, keys in dialogue:
         try:
             session.wait_for(prompt)
         except (pexpect.TIMEOUT, pexpect.EOF) as e:
             stalled = "no output" if isinstance(e, pexpect.TIMEOUT) else "snouty exited"
             frames.append((f"[gallery] waiting for {prompt!r}: {stalled}", session.frame()))
+            completed = False
             break
         frames.append((prompt, session.frame()))
         try:
             session.send(keys if isinstance(keys, str) else keys(session.screen.display))
         except GalleryError as e:
             frames.append((f"[gallery] answering {prompt!r}: {e}", session.frame()))
+            completed = False
             break
-    returncode = session.finish()
+    # A story that broke off leaves snouty waiting at a prompt, so give it only
+    # long enough to be sure rather than the whole prompt budget.
+    returncode = session.finish(PROMPT_TIMEOUT if completed else SETTLE)
     # The child has exited, so nothing can feed the emulator from here: one
     # closing screen serves as both the last frame and the story's output.
     closing = session.frame()

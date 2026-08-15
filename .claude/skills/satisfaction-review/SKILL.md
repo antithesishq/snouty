@@ -106,9 +106,11 @@ _Replay the session: `asciinema play login-fresh-apikey.cast`_
 
 Read the frames in order — they are the conversation. A menu is erased once
 chosen, so its options appear only in the frame taken while it was on screen;
-the closing frame shows just the answer that won. A frame headed
-`[gallery] waiting for …` means the harness stalled, not that snouty misbehaved:
-report it as a harness problem rather than judging the story.
+the closing frame shows just the answer that won. Any frame whose heading starts
+with `[gallery]` marks a harness problem, not a snouty defect — report it as
+such rather than judging the story. There are two: `[gallery] waiting for …`
+means a prompt never arrived, and `[gallery] answering …` means the screen did
+not offer what the step meant to choose (usually a changed menu).
 
 Each story also ships a `.cast` beside it. Run `asciinema play <slug>.cast` when
 a frame leaves you unsure how something felt to type — pacing and redraws show

@@ -6355,9 +6355,20 @@ mod tests {
             mock_status_sequence(&server, &["in_progress"]).await;
             let api = test_api(&server.uri());
 
-            let err = wait_for_run(&api, "run-w", FAST, Some(Duration::from_millis(25)))
-                .await
-                .unwrap_err();
+            // A poll interval far past the timeout makes the poll count exact:
+            // the one sleep is clipped to the 25ms deadline, so there is the
+            // initial poll and one final poll at the deadline. Scheduler jitter
+            // can only delay the second poll, never add a third — an interval
+            // near the timeout would make the count jitter-dependent (it did,
+            // on a loaded CI runner).
+            let err = wait_for_run(
+                &api,
+                "run-w",
+                Duration::from_secs(3600),
+                Some(Duration::from_millis(25)),
+            )
+            .await
+            .unwrap_err();
 
             let msg = format!("{err:#}");
             assert_eq!(
@@ -6368,10 +6379,8 @@ mod tests {
                 format!("{err:?}").contains("snouty runs wait run-w"),
                 "the timeout must hand back the resume command"
             );
-            // Polls at 0ms and 10ms, then a final one at the 25ms deadline
-            // (the last sleep is clipped to the deadline, not a full interval).
             let requests = server.received_requests().await.unwrap();
-            assert_eq!(requests.len(), 3);
+            assert_eq!(requests.len(), 2);
         }
 
         #[tokio::test]

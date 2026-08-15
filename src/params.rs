@@ -27,10 +27,6 @@ pub const ANT_REPORT_RECIPIENTS: &str = "antithesis.report.recipients";
 pub const ANT_EVENT_DESCRIPTION: &str = "antithesis.event_description";
 pub const ANT_FILTER_LOGS_MATCHING: &str = "antithesis.filter_logs_matching";
 
-/// Prefix for the `antithesis.debugging.*` family. Moment.from parsing
-/// synthesizes keys from it; the dedicated constants below name the members
-/// production code addresses directly.
-pub const ANT_DEBUGGING_KEY_PREFIX: &str = "antithesis.debugging.";
 pub const ANT_DEBUGGING_SESSION_ID: &str = "antithesis.debugging.session_id";
 pub const ANT_DEBUGGING_RUN_ID: &str = "antithesis.debugging.run_id";
 pub const ANT_DEBUGGING_INPUT_HASH: &str = "antithesis.debugging.input_hash";
@@ -111,11 +107,11 @@ impl Params {
     /// Rewrite `antithesis.debugging.vtime` as the exact print of the
     /// [`VTime`] it names, and reject one that isn't a vtime at all.
     ///
-    /// A debug moment arrives by several routes — typed flags, a `Moment.from`
-    /// on stdin, raw JSON on stdin — which spell the same moment differently
-    /// (`402`, `402.0`, `"402"`). Normalizing once, after those routes have
-    /// merged, is what makes them agree on the text sent to the API. Absent is
-    /// fine: a missing required vtime is the schema's error to report.
+    /// A debug moment arrives by several routes — typed flags, raw JSON on
+    /// stdin — which spell the same moment differently (`402`, `402.0`,
+    /// `"402"`). Normalizing once, after those routes have merged, is what
+    /// makes them agree on the text sent to the API. Absent is fine: a
+    /// missing required vtime is the schema's error to report.
     pub fn normalize_debug_vtime(&mut self) -> Result<()> {
         let key = ANT_DEBUGGING_VTIME;
         let Some(value) = self.inner.get(key) else {

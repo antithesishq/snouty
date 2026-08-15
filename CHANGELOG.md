@@ -1,5 +1,6 @@
 # Unreleased
 
+- Remove the `Moment.from({...})` input format; `snouty debug --stdin` now accepts JSON only ([#243](https://github.com/antithesishq/snouty/pull/243))
 - Add `snouty runs wait`: poll a run until it reaches a terminal state (completed, cancelled, or incomplete) ([#221](https://github.com/antithesishq/snouty/pull/221))
 - `snouty validate` reads the SDK output file from the start instead of tailing it, so a setup-complete event written over bytes snouty had already read is still detected ([#218](https://github.com/antithesishq/snouty/pull/218))
 - Add `snouty runs exec`: run a bash script in a run's live session at a given moment, on a fresh branch of the multiverse. The command is gated behind the `runs-exec` unstable feature (`SNOUTY_UNSTABLE_FEATURES=runs-exec`), because the API it calls is unstable and unavailable on most tenants ([#208](https://github.com/antithesishq/snouty/pull/208))

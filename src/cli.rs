@@ -177,11 +177,7 @@ Using CLI arguments:
     --input-hash 6057726200491963783 \
     --vtime 329.8037810830865 \
     --description "debug this moment" \
-    --recipients "team@example.com"
-
-Using Moment.from (copy from triage report):
-  echo 'Moment.from({ run_id: "...", input_hash: "...", vtime: ... })' | \
-    snouty debug --stdin --recipients "team@example.com""#)]
+    --recipients "team@example.com""#)]
     Debug(DebugArgs),
 
     /// Output shell completions
@@ -547,7 +543,7 @@ pub struct LaunchArgs {
 
 #[derive(Args)]
 pub struct DebugArgs {
-    /// Read parameters from stdin (JSON or Moment.from format)
+    /// Read parameters from stdin (JSON)
     #[arg(long)]
     pub stdin: bool,
 

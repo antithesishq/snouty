@@ -388,27 +388,6 @@ fn debug_with_json_flag() {
 }
 
 #[test]
-fn debug_with_moment_from_format() {
-    let mock_url = start_mock_server(r#"{"runId": "run-1", "statusCode": 202}"#, 200);
-    let moment_input = r#"Moment.from({ session_id: "f89d5c11f5e3bf5e4bb3641809800cee-44-22", input_hash: "6057726200491963783", vtime: 329.8037810830865 })"#;
-
-    snouty_with_mock(&mock_url)
-        .args(["debug", "--stdin"])
-        .write_stdin(moment_input)
-        .assert()
-        .success()
-        .stderr(predicate::str::contains(
-            r#""antithesis.debugging.session_id": "f89d5c11f5e3bf5e4bb3641809800cee-44-22""#,
-        ))
-        .stderr(predicate::str::contains(
-            r#""antithesis.debugging.input_hash": "6057726200491963783""#,
-        ))
-        .stderr(predicate::str::contains(
-            r#""antithesis.debugging.vtime": "329.8037810830865""#,
-        ));
-}
-
-#[test]
 fn debug_with_stdin_json() {
     let mock_url = start_mock_server(r#"{"runId": "run-1", "statusCode": 202}"#, 200);
     let json = r#"{
@@ -475,9 +454,13 @@ fn completions_unsupported_shell_fails() {
 }
 
 #[test]
-fn debug_merges_moment_with_cli_args() {
+fn debug_merges_stdin_with_cli_args() {
     let mock_url = start_mock_server(r#"{"runId": "run-1", "statusCode": 202}"#, 200);
-    let moment_input = r#"Moment.from({ session_id: "f89d5c11f5e3bf5e4bb3641809800cee-44-22", input_hash: "6057726200491963783", vtime: 329.8037810830865 })"#;
+    let json = r#"{
+         "antithesis.debugging.session_id": "f89d5c11f5e3bf5e4bb3641809800cee-44-22",
+         "antithesis.debugging.input_hash": "6057726200491963783",
+         "antithesis.debugging.vtime": 329.8037810830865
+     }"#;
 
     snouty_with_mock(&mock_url)
         .args([
@@ -488,7 +471,7 @@ fn debug_merges_moment_with_cli_args() {
             "--recipients",
             "team@example.com",
         ])
-        .write_stdin(moment_input)
+        .write_stdin(json)
         .assert()
         .success()
         .stderr(predicate::str::contains(

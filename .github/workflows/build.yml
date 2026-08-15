@@ -82,7 +82,14 @@ jobs:
           - os: ubuntu-latest
             runtime: podman
             timeout: 20
-          - os: macos-15-intel
+          # A larger runner, not the standard `macos-15-intel`. It is the only
+          # macOS runner that both fits and is fast: arm64 macOS cannot run
+          # `podman machine` at all, because Apple's Virtualization Framework
+          # gives its guests no nested virtualization. That rules out the free
+          # `macos-15` and the 5-core `macos-15-xlarge`, and leaves Intel, where
+          # 12 cores beat the standard runner's 4. Larger runners bill per
+          # minute even on a public repository.
+          - os: macos-15-large
             runtime: podman
             timeout: 35
     env:

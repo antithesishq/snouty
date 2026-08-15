@@ -1292,25 +1292,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "http-cache-reqwest"
-version = "1.0.0-alpha.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3ff1fa00fd5b0d38c26d5f24f1cf513e286a988b57880c2bf357304669268fa3"
-dependencies = [
- "anyhow",
- "async-trait",
- "bytes",
- "http",
- "http-body",
- "http-body-util",
- "http-cache",
- "http-cache-semantics",
- "reqwest",
- "reqwest-middleware",
- "url",
-]
-
-[[package]]
 name = "http-cache-semantics"
 version = "3.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2924,7 +2905,6 @@ version = "0.7.0-rc.2"
 dependencies = [
  "apple-native-keyring-store",
  "assert_cmd",
- "async-trait",
  "base64 0.22.1",
  "chrono",
  "clap",
@@ -2939,7 +2919,6 @@ dependencies = [
  "getrandom 0.3.4",
  "hegeltest",
  "http",
- "http-cache-reqwest",
  "indexmap",
  "inquire",
  "json-patch",
@@ -2968,6 +2947,7 @@ dependencies = [
  "serde_json",
  "serde_yaml",
  "sha2",
+ "spider-http-cache-reqwest",
  "strip-ansi-escapes",
  "syn 2.0.119",
  "tempfile",
@@ -2988,6 +2968,25 @@ checksum = "c3d1e2c7f27f8d4cb10542a02c49005dbd6e93095799d6f3be745fae9f8fedd4"
 dependencies = [
  "libc",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "spider-http-cache-reqwest"
+version = "1.0.0-alpha.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fb4768aed3241ba15eb1b2bd54f89195e2b0f30c4c33aff0a43df67092d96146"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "bytes",
+ "http",
+ "http-body",
+ "http-body-util",
+ "http-cache",
+ "http-cache-semantics",
+ "reqwest",
+ "reqwest-middleware",
+ "url",
 ]
 
 [[package]]

@@ -13,11 +13,14 @@ chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4", features = ["derive"] }
 clap_complete = "4"
 getrandom = "0.3"
-async-trait = "0.1"
 env_logger = "0.11"
 form_urlencoded = "1"
-# pinned: alpha API churn between releases
-http-cache-reqwest = "=1.0.0-alpha.6"
+# pinned: alpha API churn between releases. The spider-rs package is upstream
+# 1.0.0-alpha.6 plus one line: errors from the cache's network fetch keep their
+# source chain (HttpCacheError::Client(BoxError)) instead of being stringified,
+# so the API client can unpack the reqwest::Error inside (see api.rs
+# unpack_transport_error). Drop the fork when upstream takes the fix.
+http-cache-reqwest = { version = "=1.0.0-alpha.7", package = "spider-http-cache-reqwest" }
 json5 = "1.3.0"
 json-patch = "4"
 jsonschema = { version = "0.37.4", default-features = false }

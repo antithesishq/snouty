@@ -6,7 +6,7 @@ use std::time::Duration;
 use color_eyre::eyre::{Context, Report, Result, eyre};
 use color_eyre::{Section, SectionExt};
 use futures_util::stream;
-use http::Extensions;
+use http_cache_reqwest::HttpCacheError;
 use log::debug;
 use progenitor_client::{
     ClientHooks, ClientInfo, Error as ClientError, OperationInfo, ResponseValue,
@@ -229,83 +229,38 @@ impl RetryableStrategy for RetryTransportErrors {
     }
 }
 
-/// A per-request slot that carries a typed transport failure out of the
-/// middleware chain. The cache middleware stringifies any error its network
-/// fetch returns, so [`StashTransportError`] deposits the `reqwest::Error`
-/// here — through the request's [`Extensions`], which the chain shares with
-/// [`send_request`] — before the cache layer can flatten it.
-#[derive(Clone, Debug, Default)]
-struct TransportErrorStash(Arc<Mutex<Option<reqwest::Error>>>);
-
-impl TransportErrorStash {
-    fn put(&self, err: reqwest::Error) {
-        *self.0.lock().unwrap() = Some(err);
-    }
-
-    fn take(&self) -> Option<reqwest::Error> {
-        self.0.lock().unwrap().take()
-    }
-}
-
-/// The error [`StashTransportError`] propagates upward after stashing the
-/// real one. Its text is never user-visible: [`send_request`] recovers the
-/// stashed `reqwest::Error` whenever the chain fails with the stash filled.
-#[derive(Debug)]
-struct StashedTransportError;
-
-impl std::fmt::Display for StashedTransportError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("transport failure stashed for the caller")
-    }
-}
-
-impl std::error::Error for StashedTransportError {}
-
-/// Middleware that preserves typed transport errors across the cache layer.
-///
-/// It sits between the cache and the retry layer, so every error it sees
-/// carries a `reqwest::Error`: either directly, or inside the `RetryError`
-/// that the retry middleware wraps its final failure in. It moves that error
-/// into the request's [`TransportErrorStash`] and propagates a marker instead
-/// — the cache layer may stringify the marker, but the typed error survives
-/// for [`send_request`] to return.
-struct StashTransportError;
-
-#[async_trait::async_trait]
-impl reqwest_middleware::Middleware for StashTransportError {
-    async fn handle(
-        &self,
-        request: reqwest::Request,
-        extensions: &mut Extensions,
-        next: reqwest_middleware::Next<'_>,
-    ) -> reqwest_middleware::Result<reqwest::Response> {
-        let err = match next.run(request, extensions).await {
-            Ok(response) => return Ok(response),
-            Err(err) => err,
-        };
-        let err = match err {
-            reqwest_middleware::Error::Reqwest(err) => err,
-            reqwest_middleware::Error::Middleware(err) => match err.downcast::<RetryError>() {
-                Ok(
-                    RetryError::WithRetries {
-                        err: reqwest_middleware::Error::Reqwest(err),
-                        ..
-                    }
-                    | RetryError::Error(reqwest_middleware::Error::Reqwest(err)),
-                ) => err,
-                // Unreachable in this chain (only the retry layer and the raw
-                // client sit below), but pass anything else through untouched.
-                Ok(other) => return Err(reqwest_middleware::Error::Middleware(other.into())),
-                Err(err) => return Err(reqwest_middleware::Error::Middleware(err)),
-            },
-        };
-        match extensions.get::<TransportErrorStash>() {
-            Some(stash) => {
-                stash.put(err);
-                Err(reqwest_middleware::Error::middleware(StashedTransportError))
-            }
-            None => Err(reqwest_middleware::Error::Reqwest(err)),
+/// Recover the `reqwest::Error` inside a failed middleware execution, if one
+/// is there. Each layer wraps it — reqwest-retry in [`RetryError`], the cache
+/// in [`HttpCacheError::Client`] with the source intact (the reason snouty
+/// uses the spider fork of http-cache-reqwest; see Cargo.toml) — in whatever
+/// nesting the request's path produced, so unwrap recursively. An error with
+/// no transport error inside (a cache I/O fault) comes back as `Err`,
+/// unchanged.
+fn unpack_transport_error(
+    err: reqwest_middleware::Error,
+) -> std::result::Result<reqwest::Error, reqwest_middleware::Error> {
+    let err = match err {
+        reqwest_middleware::Error::Reqwest(err) => return Ok(err),
+        reqwest_middleware::Error::Middleware(err) => err,
+    };
+    // reqwest-retry wraps its final failure — retried or not — in RetryError.
+    let err = match err.downcast::<RetryError>() {
+        Ok(RetryError::WithRetries { err, .. } | RetryError::Error(err)) => {
+            return unpack_transport_error(err);
         }
+        Err(err) => err,
+    };
+    // The cache layer boxes errors from its network fetch without flattening
+    // them, so the middleware error inside is recoverable by value.
+    match err.downcast::<HttpCacheError>() {
+        Ok(HttpCacheError::Client(inner)) => match inner.downcast::<reqwest_middleware::Error>() {
+            Ok(inner) => unpack_transport_error(*inner),
+            Err(inner) => Err(reqwest_middleware::Error::Middleware(
+                HttpCacheError::Client(inner).into(),
+            )),
+        },
+        Ok(other) => Err(reqwest_middleware::Error::Middleware(other.into())),
+        Err(err) => Err(reqwest_middleware::Error::Middleware(err)),
     }
 }
 
@@ -810,12 +765,12 @@ fn is_get(request: &reqwest::Request) -> bool {
 }
 
 /// The middleware chain every API request is sent through, outermost first:
-/// the response cache (when `cache_dir` is set), typed-error preservation
-/// ([`StashTransportError`]), then transient-failure retry. The cache and
-/// retry layers are gated to GET requests by [`ConditionalMiddleware`] —
-/// non-GETs pass through untouched, so a network blip can never replay a
-/// mutation. Retry sits under the cache so a cache hit answers without
-/// touching the retry layer, while a cache miss's network fetch is retried.
+/// the response cache (when `cache_dir` is set), then transient-failure
+/// retry. The cache and retry layers are gated to GET requests by
+/// [`ConditionalMiddleware`] — non-GETs pass through untouched, so a network
+/// blip can never replay a mutation. Retry sits under the cache so a cache
+/// hit answers without touching the retry layer, while a cache miss's network
+/// fetch is retried.
 fn build_middleware_client(
     http_client: Client,
     cache_dir: Option<PathBuf>,
@@ -829,7 +784,6 @@ fn build_middleware_client(
     }
     let policy = ExponentialBackoff::builder().build_with_max_retries(MAX_TRANSIENT_RETRIES);
     builder
-        .with(StashTransportError)
         .with(ConditionalMiddleware::new(
             RetryTransientMiddleware::new_with_policy_and_strategy(policy, RetryTransportErrors),
             is_get,
@@ -846,29 +800,20 @@ fn build_middleware_client(
 /// untouched.
 ///
 /// Failures come back in two shapes. A transport failure surfaces as the
-/// `reqwest::Error` it is, recovered from the request's
-/// [`TransportErrorStash`] when the cache layer flattened it on the way up. A
-/// middleware failure with an empty stash is the cache itself failing; that is
-/// recorded on [`ClientState::cache_fault`] for the `post` hook to reject the
-/// operation with, and a placeholder satisfies this function's return type.
+/// `reqwest::Error` it is, unpacked from the layers that wrapped it (see
+/// [`unpack_transport_error`]). A middleware failure with no transport error
+/// inside is the cache itself failing; that is recorded on
+/// [`ClientState::cache_fault`] for the `post` hook to reject the operation
+/// with, and a placeholder satisfies this function's return type.
 async fn send_request(
     state: &ClientState,
     request: reqwest::Request,
 ) -> reqwest::Result<reqwest::Response> {
-    let stash = TransportErrorStash::default();
-    let mut extensions = Extensions::new();
-    extensions.insert(stash.clone());
-
-    match state
-        .middleware_client
-        .execute_with_extensions(request, &mut extensions)
-        .await
-    {
+    match state.middleware_client.execute(request).await {
         Ok(response) => Ok(response),
-        Err(reqwest_middleware::Error::Reqwest(err)) => Err(err),
-        Err(reqwest_middleware::Error::Middleware(err)) => match stash.take() {
-            Some(err) => Err(err),
-            None => {
+        Err(err) => match unpack_transport_error(err) {
+            Ok(err) => Err(err),
+            Err(err) => {
                 state
                     .cache_fault
                     .lock()

@@ -4,7 +4,7 @@ use log::debug;
 use serde_json::{Map, Value};
 
 use crate::error::user_error;
-use crate::params::{DEBUGGING_KEY_PREFIX, Params};
+use crate::params::{ANT_DEBUGGING_KEY_PREFIX, Params};
 use color_eyre::Section;
 use color_eyre::eyre::Result;
 
@@ -44,7 +44,7 @@ pub fn parse(input: &str) -> Result<Params> {
     // Convert keys to antithesis.debugging.* format
     let mut map = Map::new();
     for (key, val) in obj {
-        let new_key = format!("{DEBUGGING_KEY_PREFIX}{key}");
+        let new_key = format!("{ANT_DEBUGGING_KEY_PREFIX}{key}");
         debug!("converting key {} -> {}", key, new_key);
         // Convert numbers to strings; every param is sent as text.
         let string_val = match val {

@@ -22,9 +22,9 @@ use snouty::features;
 use snouty::login::cmd_login;
 use snouty::moment;
 use snouty::params::{
-    KEY_CONFIG_IMAGE, KEY_DEBUGGING_INPUT_HASH, KEY_DEBUGGING_RUN_ID, KEY_DEBUGGING_SESSION_ID,
-    KEY_DEBUGGING_VTIME, KEY_DESCRIPTION, KEY_DURATION, KEY_EVENT_DESCRIPTION,
-    KEY_FILTER_LOGS_MATCHING, KEY_IS_EPHEMERAL, KEY_REPORT_RECIPIENTS, KEY_SOURCE, KEY_TEST_NAME,
+    ANT_CONFIG_IMAGE, ANT_DEBUGGING_INPUT_HASH, ANT_DEBUGGING_RUN_ID, ANT_DEBUGGING_SESSION_ID,
+    ANT_DEBUGGING_VTIME, ANT_DESCRIPTION, ANT_DURATION, ANT_EVENT_DESCRIPTION,
+    ANT_FILTER_LOGS_MATCHING, ANT_IS_EPHEMERAL, ANT_REPORT_RECIPIENTS, ANT_SOURCE, ANT_TEST_NAME,
     Params,
 };
 use snouty::settings::Settings;
@@ -204,34 +204,34 @@ async fn cmd_launch(
     let mut params = Params::new();
 
     if let Some(test_name) = args.test_name {
-        params.insert(KEY_TEST_NAME, test_name);
+        params.insert(ANT_TEST_NAME, test_name);
     }
     if let Some(description) = args.description {
-        params.insert(KEY_DESCRIPTION, description);
+        params.insert(ANT_DESCRIPTION, description);
     }
     if let Some(duration) = args.duration {
         // The API wants a bare minute count, not the human `1h30m` Display form.
-        params.insert(KEY_DURATION, duration.minutes().to_string());
+        params.insert(ANT_DURATION, duration.minutes().to_string());
     }
     let has_source = if let Some(source) = args.source {
-        params.insert(KEY_SOURCE, source);
+        params.insert(ANT_SOURCE, source);
         true
     } else {
         false
     };
     if args.ephemeral {
-        params.insert(KEY_IS_EPHEMERAL, "true");
+        params.insert(ANT_IS_EPHEMERAL, "true");
     }
     if let Some(recipients) = args.recipients {
-        params.insert(KEY_REPORT_RECIPIENTS, recipients);
+        params.insert(ANT_REPORT_RECIPIENTS, recipients);
     }
 
     if let Some(config_image) = args.config_image {
-        params.insert(KEY_CONFIG_IMAGE, config_image);
+        params.insert(ANT_CONFIG_IMAGE, config_image);
     }
 
     if let Some(filter_logs_matching) = args.filter_logs_matching {
-        params.insert(KEY_FILTER_LOGS_MATCHING, filter_logs_matching);
+        params.insert(ANT_FILTER_LOGS_MATCHING, filter_logs_matching);
     }
 
     let config_image_ref = if let Some(config_dir) = args.config {
@@ -239,7 +239,7 @@ async fn cmd_launch(
         let registry = snouty::settings::require(settings.repository(), "repository")?;
 
         let image_ref = container::generate_image_ref(registry);
-        params.insert(KEY_CONFIG_IMAGE, &image_ref);
+        params.insert(ANT_CONFIG_IMAGE, &image_ref);
         Some((detected, registry.to_owned(), image_ref))
     } else {
         None
@@ -289,7 +289,7 @@ async fn cmd_launch(
                 rt.build_and_push_config_image(detected.dir(), &config_image)?
             }
         };
-        params.insert(KEY_CONFIG_IMAGE, pinned_config);
+        params.insert(ANT_CONFIG_IMAGE, pinned_config);
     }
 
     // No --source means the run is ephemeral. Set the flag and tell the user
@@ -297,7 +297,7 @@ async fn cmd_launch(
     // notice lands right before the run is sent rather than ahead of work that
     // might still fail.
     if !has_source {
-        params.insert(KEY_IS_EPHEMERAL, "true");
+        params.insert(ANT_IS_EPHEMERAL, "true");
         eprintln!(
             "Starting an ephemeral run; its findings will not be retained as historic \
              results. Pass --source to record property history across runs."
@@ -339,22 +339,22 @@ fn debug_typed_params(args: &DebugArgs) -> Params {
     let mut params = Params::new();
 
     if let Some(run_id) = &args.run_id {
-        params.insert(KEY_DEBUGGING_RUN_ID, run_id.as_str());
+        params.insert(ANT_DEBUGGING_RUN_ID, run_id.as_str());
     }
     if let Some(session_id) = &args.session_id {
-        params.insert(KEY_DEBUGGING_SESSION_ID, session_id.as_str());
+        params.insert(ANT_DEBUGGING_SESSION_ID, session_id.as_str());
     }
     if let Some(input_hash) = &args.input_hash {
-        params.insert(KEY_DEBUGGING_INPUT_HASH, input_hash.as_str());
+        params.insert(ANT_DEBUGGING_INPUT_HASH, input_hash.as_str());
     }
     if let Some(vtime) = &args.vtime {
-        params.insert(KEY_DEBUGGING_VTIME, vtime.to_string());
+        params.insert(ANT_DEBUGGING_VTIME, vtime.to_string());
     }
     if let Some(description) = &args.description {
-        params.insert(KEY_EVENT_DESCRIPTION, description.as_str());
+        params.insert(ANT_EVENT_DESCRIPTION, description.as_str());
     }
     if let Some(recipients) = &args.recipients {
-        params.insert(KEY_REPORT_RECIPIENTS, recipients.as_str());
+        params.insert(ANT_REPORT_RECIPIENTS, recipients.as_str());
     }
 
     params

@@ -18,10 +18,10 @@ use crate::auth::{AuthenticationInfo, PasswordPolicy};
 use crate::env;
 use crate::error::{ApiError, user_error};
 use crate::params::{
-    KEY_CONFIG_IMAGE, KEY_DEBUGGING_INPUT_HASH, KEY_DEBUGGING_RUN_ID, KEY_DEBUGGING_SESSION_ID,
-    KEY_DEBUGGING_VTIME, KEY_DESCRIPTION, KEY_DURATION, KEY_EVENT_DESCRIPTION,
-    KEY_FILTER_LOGS_MATCHING, KEY_IMAGES, KEY_IS_EPHEMERAL, KEY_REPORT_RECIPIENTS, KEY_SOURCE,
-    KEY_TEST_NAME, Params,
+    ANT_CONFIG_IMAGE, ANT_DEBUGGING_INPUT_HASH, ANT_DEBUGGING_RUN_ID, ANT_DEBUGGING_SESSION_ID,
+    ANT_DEBUGGING_VTIME, ANT_DESCRIPTION, ANT_DURATION, ANT_EVENT_DESCRIPTION,
+    ANT_FILTER_LOGS_MATCHING, ANT_IMAGES, ANT_IS_EPHEMERAL, ANT_REPORT_RECIPIENTS, ANT_SOURCE,
+    ANT_TEST_NAME, Params,
 };
 use crate::render::sanitize;
 use crate::settings::Settings;
@@ -85,7 +85,7 @@ impl RunStatus {
 }
 
 fn params_test_name(params: Option<&RunParams>) -> Option<&str> {
-    params.and_then(|p| p.extra.get(KEY_TEST_NAME).map(String::as_str))
+    params.and_then(|p| p.extra.get(ANT_TEST_NAME).map(String::as_str))
 }
 
 fn params_test_description(params: Option<&RunParams>) -> Option<&str> {
@@ -862,19 +862,19 @@ fn launch_request(params: &Params) -> Result<generated::types::LaunchRequest> {
             .ok_or_else(|| user_error(format!("launch params must be strings: {key}")))?;
 
         builder = match key.as_str() {
-            KEY_CONFIG_IMAGE => builder.antithesis_config_image(Some(value.to_string())),
-            KEY_DESCRIPTION => builder.antithesis_description(Some(value.to_string())),
-            KEY_DURATION => builder.antithesis_duration(Some(value.to_string())),
-            KEY_IMAGES => builder.antithesis_images(Some(value.to_string())),
-            KEY_IS_EPHEMERAL => builder.antithesis_is_ephemeral(Some(
+            ANT_CONFIG_IMAGE => builder.antithesis_config_image(Some(value.to_string())),
+            ANT_DESCRIPTION => builder.antithesis_description(Some(value.to_string())),
+            ANT_DURATION => builder.antithesis_duration(Some(value.to_string())),
+            ANT_IMAGES => builder.antithesis_images(Some(value.to_string())),
+            ANT_IS_EPHEMERAL => builder.antithesis_is_ephemeral(Some(
                 generated::types::ParamsAntithesisIsEphemeral::try_from(value)
                     .wrap_err("invalid antithesis.is_ephemeral value")?,
             )),
-            KEY_FILTER_LOGS_MATCHING => {
+            ANT_FILTER_LOGS_MATCHING => {
                 builder.antithesis_filter_logs_matching(Some(value.to_string()))
             }
-            KEY_REPORT_RECIPIENTS => builder.antithesis_report_recipients(Some(value.to_string())),
-            KEY_SOURCE => builder.antithesis_source(Some(value.to_string())),
+            ANT_REPORT_RECIPIENTS => builder.antithesis_report_recipients(Some(value.to_string())),
+            ANT_SOURCE => builder.antithesis_source(Some(value.to_string())),
             _ => {
                 extra.insert(key.clone(), value.to_string());
                 builder
@@ -928,13 +928,13 @@ fn launch_mvd_request(params: &Params) -> Result<generated::types::LaunchMvdRequ
         }
     };
 
-    let input_hash = get(KEY_DEBUGGING_INPUT_HASH)?
-        .ok_or_else(|| eyre!("missing {KEY_DEBUGGING_INPUT_HASH}"))?;
-    let vtime = get(KEY_DEBUGGING_VTIME)?.ok_or_else(|| eyre!("missing {KEY_DEBUGGING_VTIME}"))?;
-    let event_description = get(KEY_EVENT_DESCRIPTION)?;
-    let recipients = get(KEY_REPORT_RECIPIENTS)?;
-    let run_id = get(KEY_DEBUGGING_RUN_ID)?;
-    let session_id = get(KEY_DEBUGGING_SESSION_ID)?;
+    let input_hash = get(ANT_DEBUGGING_INPUT_HASH)?
+        .ok_or_else(|| eyre!("missing {ANT_DEBUGGING_INPUT_HASH}"))?;
+    let vtime = get(ANT_DEBUGGING_VTIME)?.ok_or_else(|| eyre!("missing {ANT_DEBUGGING_VTIME}"))?;
+    let event_description = get(ANT_EVENT_DESCRIPTION)?;
+    let recipients = get(ANT_REPORT_RECIPIENTS)?;
+    let run_id = get(ANT_DEBUGGING_RUN_ID)?;
+    let session_id = get(ANT_DEBUGGING_SESSION_ID)?;
 
     // The MVD_Params schema is a oneOf, so the target run is identified by
     // exactly one of run_id or session_id. cmd_debug enforces this with a

@@ -10,15 +10,29 @@ use crate::features::{self, Feature};
 use crate::time::HumanDuration;
 use crate::vtime::VTime;
 
-/// clap value parser for `--status` that keeps a friendly, enumerated error
-/// message (the generated `RunStatus::from_str` only says "invalid value").
+/// clap value parser for `--status`. `RunStatus::from_str` never fails — it
+/// preserves an unrecognized server value as `Other` — but a filter the user
+/// typed must name a documented status, so `Other` is rejected here.
 fn parse_run_status(value: &str) -> Result<RunStatus, String> {
-    value.parse::<RunStatus>().map_err(|_| {
-        format!(
+    let Ok(status) = value.parse::<RunStatus>();
+    if matches!(status, RunStatus::Other(_)) {
+        return Err(format!(
             "invalid status: '{value}'\n\
              valid values: starting, in_progress, completed, cancelled, incomplete, unknown"
-        )
-    })
+        ));
+    }
+    Ok(status)
+}
+
+/// clap value parser for `runs wait --poll-interval`: a [`HumanDuration`] of
+/// at least 1 minute — polling faster cannot observe a run (which takes
+/// minutes to hours) any sooner, and only hammers the API.
+fn parse_poll_interval(value: &str) -> Result<HumanDuration, String> {
+    let interval = value.parse::<HumanDuration>().map_err(|e| e.to_string())?;
+    if interval.seconds() < 60 {
+        return Err("poll interval must be at least 1 minute".to_string());
+    }
+    Ok(interval)
 }
 
 #[derive(Parser)]
@@ -569,11 +583,11 @@ Incomplete runs also show the failure moment (Failure Hash/VTime) to pass to
     #[command(
         long_about = r#"Wait for a run to reach a terminal state (completed, cancelled, or incomplete).
 
-Polls the run's status until it is terminal, then prints the run's details —
-the same output as `runs show` — and exits 0 whatever the terminal state is;
-the run's outcome is in the output, not the exit code. A run that reports
-status `unknown` fails the command instead: snouty cannot tell whether such a
-run will still make progress, so the caller decides what to do.
+Polls the run's status until it is terminal, then reports the final status and
+exits 0 whatever that status is; the run's outcome is in the output, not the
+exit code. A run that reports status `unknown` fails the command instead:
+snouty cannot tell whether such a run will still make progress, so the caller
+decides what to do.
 
 The wait is unbounded unless --timeout is given, and the command is safe to
 interrupt and re-run: waiting holds no state beyond the run id, so re-running
@@ -581,24 +595,22 @@ resumes the wait.
 
 Examples:
   snouty runs wait <run_id>
-  snouty runs wait <run_id> --timeout 7200
+  snouty runs wait <run_id> --timeout 2h
   snouty launch --json -w basic_test ... | jq -r .runId | xargs snouty runs wait"#
     )]
     Wait {
         /// Run ID
         run_id: String,
 
-        /// Seconds between status checks
-        // The 30-second floor keeps a scripted wait from hammering the API:
-        // polling faster cannot observe a run (which takes minutes to hours)
-        // any sooner.
-        #[arg(long, default_value_t = 60, value_parser = clap::value_parser!(u64).range(30..))]
-        poll_interval: u64,
+        /// Time between status checks, in minutes or h/m/s units (e.g. 90s;
+        /// minimum 1 minute)
+        #[arg(long, default_value = "1m", value_parser = parse_poll_interval)]
+        poll_interval: HumanDuration,
 
-        /// Maximum seconds to wait before the command fails; without it the
-        /// wait is unbounded
+        /// Give up after this long (minutes, or h/m/s units, e.g. 2h);
+        /// without it the wait is unbounded
         #[arg(long)]
-        timeout: Option<u64>,
+        timeout: Option<HumanDuration>,
     },
 
     /// List property results for a run

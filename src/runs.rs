@@ -105,17 +105,7 @@ pub async fn cmd_runs(
             run_id,
             poll_interval,
             timeout,
-        }) => {
-            cmd_runs_wait(
-                &run_id,
-                std::time::Duration::from_secs(poll_interval),
-                timeout.map(std::time::Duration::from_secs),
-                settings,
-                json,
-                verbose,
-            )
-            .await
-        }
+        }) => cmd_runs_wait(&run_id, poll_interval, timeout, settings, json, verbose).await,
         Some(RunsCommands::Properties {
             run_id,
             passing,
@@ -257,13 +247,6 @@ fn terminal_width() -> usize {
     term.size().1 as usize
 }
 
-/// Short human-readable run status word (e.g. `completed`, `in_progress`),
-/// reusing the canonical `RunStatus` display string so the term matches the
-/// API and `snouty runs show`.
-fn status_label(status: RunStatus) -> String {
-    status.to_string()
-}
-
 /// Compact relative age for the runs table ("21h ago", "2d ago"), trading
 /// prose ("21 hours ago") for column width. Rough by design: largest whole
 /// unit only. Future timestamps (clock skew) clamp to "0s ago".
@@ -379,13 +362,13 @@ fn open_run_report(run: &RunDetail, json: bool) -> Result<()> {
     Ok(())
 }
 
-/// `runs wait`: poll the run until it reaches a terminal state, then print its
-/// detail exactly as `runs show` would. The client is uncached (see
+/// `runs wait`: poll the run until it reaches a terminal state, then report
+/// the final status. The client is uncached (see
 /// [`crate::api::ResponseCache::Disabled`]) so every poll observes fresh state.
 async fn cmd_runs_wait(
     run_id: &str,
-    poll_interval: std::time::Duration,
-    timeout: Option<std::time::Duration>,
+    poll_interval: HumanDuration,
+    timeout: Option<HumanDuration>,
     settings: &Settings,
     json: bool,
     verbose: bool,
@@ -393,35 +376,65 @@ async fn cmd_runs_wait(
     debug!("waiting for run: {}", run_id);
 
     let api = AntithesisApi::new_uncached(settings, verbose)?;
-    let run = wait_for_run(&api, run_id, poll_interval, timeout).await?;
+    let run = wait_with_timeout(&api, run_id, poll_interval, timeout).await?;
 
     if json {
-        outln!("{}", serde_json::to_string_pretty(&run)?)?;
+        outln!(
+            "{}",
+            serde_json::to_string_pretty(&json!({
+                "run_id": run.run_id,
+                "status": run.status,
+            }))?
+        )?;
     } else {
-        print_run_detail(&run)?;
+        outln!("run {} is {}", run.run_id, run.status)?;
     }
 
     Ok(())
 }
 
+/// [`wait_for_run`] bounded by `timeout`. The timeout wraps the whole wait —
+/// including any in-flight request, since the HTTP client has no read timeout
+/// (see `CONNECT_TIMEOUT` in api.rs) — so a hung request cannot outlive it.
+async fn wait_with_timeout(
+    api: &AntithesisApi,
+    run_id: &str,
+    poll_interval: HumanDuration,
+    timeout: Option<HumanDuration>,
+) -> Result<RunDetail> {
+    let wait = wait_for_run(api, run_id, poll_interval);
+    match timeout {
+        Some(limit) => match tokio::time::timeout(limit.as_duration(), wait).await {
+            Ok(result) => result,
+            Err(_) => Err(user_error(format!(
+                "timed out waiting for run {run_id} after {limit}"
+            ))),
+        },
+        None => wait.await,
+    }
+}
+
 /// Poll `get_run` every `poll_interval` until the run reaches a terminal
 /// state. Status changes and warnings go to stderr; stdout stays reserved for
-/// the final result.
+/// the final result. A run that reports `unknown` fails the wait (see
+/// [`RunStatus::is_terminal`]).
 ///
-/// A run that reports `unknown` fails the wait (see
-/// [`RunStatus::is_terminal`]). When `timeout` elapses, one final poll still
-/// runs before the wait fails.
+/// Never returns on its own — callers bound it with [`wait_with_timeout`].
 async fn wait_for_run(
     api: &AntithesisApi,
     run_id: &str,
-    poll_interval: std::time::Duration,
-    timeout: Option<std::time::Duration>,
+    poll_interval: HumanDuration,
 ) -> Result<RunDetail> {
-    let deadline = timeout.map(|t| tokio::time::Instant::now() + t);
+    let mut poll = tokio::time::interval(poll_interval.as_duration());
+    // A poll delayed by a slow response schedules the next one a full
+    // interval later, instead of firing early to catch up.
+    poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     let mut last_status = None;
     let mut warned_over_schedule = false;
 
     loop {
+        poll.tick().await;
+
         let run = match api.get_run(run_id).await {
             Ok(run) => run,
             // A 404 here is unambiguous, exactly as in `runs show`: the run id
@@ -429,44 +442,29 @@ async fn wait_for_run(
             Err(err) => return Err(explain_run_not_found(run_id, err)),
         };
 
-        if last_status != Some(run.status) {
-            eprintln!("run {run_id} is {}", status_label(run.status));
-            last_status = Some(run.status);
+        match run.status {
+            RunStatus::Starting | RunStatus::InProgress => {}
+            ref status if status.is_terminal() => return Ok(run),
+            // `unknown`, or a status this snouty predates: either way snouty
+            // cannot tell whether the run will still make progress, so the
+            // caller decides what to do.
+            ref status => {
+                return Err(
+                    user_error(format!("run {run_id} reported status \"{status}\""))
+                        .note("snouty cannot tell whether this run will still make progress")
+                        .suggestion(format!("inspect the run with `snouty runs show {run_id}`")),
+                );
+            }
         }
 
-        if run.status == RunStatus::Unknown {
-            return Err(user_error(format!(
-                "run {run_id} reported status \"{}\"",
-                status_label(run.status)
-            ))
-            .note("snouty cannot tell whether this run will still make progress")
-            .suggestion(format!(
-                "inspect the run with `snouty runs show {run_id}`, or resume waiting with \
-                 `snouty runs wait {run_id}`"
-            )));
-        }
-        if run.status.is_terminal() {
-            return Ok(run);
+        if last_status.as_ref() != Some(&run.status) {
+            eprintln!("run {run_id} is {}", run.status);
+            last_status = Some(run.status.clone());
         }
 
         if !warned_over_schedule && let Some(warning) = over_schedule_warning(&run, Utc::now()) {
             eprintln!("warning: {warning}");
             warned_over_schedule = true;
-        }
-
-        let now = tokio::time::Instant::now();
-        match deadline {
-            Some(deadline) if now >= deadline => {
-                return Err(user_error(format!(
-                    "timed out waiting for run {run_id}; it is still {}",
-                    status_label(run.status)
-                ))
-                .suggestion(format!("resume waiting with `snouty runs wait {run_id}`")));
-            }
-            // Clip the final sleep so the last poll lands at the deadline,
-            // not up to a full interval later.
-            Some(deadline) => tokio::time::sleep(poll_interval.min(deadline - now)).await,
-            None => tokio::time::sleep(poll_interval).await,
         }
     }
 }
@@ -476,7 +474,7 @@ async fn wait_for_run(
 /// setup, and teardown, so some overshoot is normal. Runs that haven't started
 /// or record no usable scheduled duration never warn.
 fn over_schedule_warning(run: &RunDetail, now: DateTime<Utc>) -> Option<String> {
-    let scheduled = run.requested_duration()?.parse::<ReportDuration>().ok()?;
+    let scheduled = run.requested_duration()?.parse::<HumanDuration>().ok()?;
     let elapsed = elapsed_duration(run.started_at?, run.completed_at.unwrap_or(now))?;
     // A zero schedule would flag every run that has run at all.
     if scheduled.seconds() > 0 && elapsed.seconds() > 2 * scheduled.seconds() {
@@ -642,7 +640,7 @@ async fn explain_empty_properties(
     {
         return format!(
             "No properties found — this run is {}; properties are generated when a run completes.",
-            status_label(run.status)
+            run.status
         );
     }
     no_properties_message(filter)
@@ -762,7 +760,7 @@ async fn explain_properties_error(
             let report = user_error(format!("no properties for run {run_id}"))
                 .note(format!(
                     "properties are generated when a run completes; this run is {}",
-                    status_label(run.status)
+                    run.status
                 ))
                 .note(format!("inspect the run with `snouty runs show {run_id}`"));
             // A placeholder 0/0 moment streams no logs, so skip the "view logs"
@@ -1252,7 +1250,7 @@ fn print_run_detail(run: &RunDetail) -> Result<()> {
         rows.push(("Test Name", name.to_string()));
     }
 
-    rows.push(("Status", status_label(run.status)));
+    rows.push(("Status", run.status.to_string()));
     rows.push(("Created", format_local(run.created_at)));
 
     if let Some(t) = run.started_at {
@@ -1342,7 +1340,7 @@ fn render_runs_detail(runs: &[RunSummary]) -> String {
         .map(|run| {
             let mut rows: Vec<(&str, String)> = vec![
                 ("Run ID", run.run_id.clone()),
-                ("Status", status_label(run.status)),
+                ("Status", run.status.to_string()),
                 ("Created", format_local(run.created_at)),
                 ("Launcher", run.launcher.clone()),
             ];
@@ -3123,7 +3121,7 @@ fn render_runs_table(runs: &[RunSummary], width: usize) -> String {
             let test_name = run.test_name().map(sanitize).unwrap_or_else(|| "-".into());
             vec![
                 sanitize(&run.run_id),
-                status_label(run.status),
+                run.status.to_string(),
                 relative_time(run.created_at),
                 test_name,
             ]
@@ -5724,13 +5722,13 @@ mod tests {
     }
 
     #[test]
-    fn status_label_covers_every_variant() {
-        assert_eq!(status_label(RunStatus::Completed), "completed");
-        assert_eq!(status_label(RunStatus::Incomplete), "incomplete");
-        assert_eq!(status_label(RunStatus::InProgress), "in_progress");
-        assert_eq!(status_label(RunStatus::Starting), "starting");
-        assert_eq!(status_label(RunStatus::Cancelled), "cancelled");
-        assert_eq!(status_label(RunStatus::Unknown), "unknown");
+    fn run_status_display_covers_every_variant() {
+        assert_eq!(RunStatus::Completed.to_string(), "completed");
+        assert_eq!(RunStatus::Incomplete.to_string(), "incomplete");
+        assert_eq!(RunStatus::InProgress.to_string(), "in_progress");
+        assert_eq!(RunStatus::Starting.to_string(), "starting");
+        assert_eq!(RunStatus::Cancelled.to_string(), "cancelled");
+        assert_eq!(RunStatus::Unknown.to_string(), "unknown");
     }
 
     fn summary(
@@ -6300,7 +6298,11 @@ mod tests {
             }
         }
 
-        const FAST_POLL: Duration = Duration::from_millis(10);
+        /// Sub-minute polling is fine below the CLI: the 1-minute floor is
+        /// clap's, `wait_for_run` takes any interval.
+        fn fast_poll() -> HumanDuration {
+            "1s".parse().unwrap()
+        }
 
         #[tokio::test]
         async fn wait_polls_until_the_run_completes() {
@@ -6308,7 +6310,7 @@ mod tests {
             mount_get_run_statuses(&server, &["starting", "in_progress", "completed"]).await;
             let api = test_api(&server.uri());
 
-            let run = wait_for_run(&api, "run-w", FAST_POLL, None).await.unwrap();
+            let run = wait_for_run(&api, "run-w", fast_poll()).await.unwrap();
 
             assert_eq!(run.status, RunStatus::Completed);
             // One poll per status: the loop stopped at the first terminal one.
@@ -6323,7 +6325,7 @@ mod tests {
                 mount_get_run_statuses(&server, &["in_progress", status]).await;
                 let api = test_api(&server.uri());
 
-                let run = wait_for_run(&api, "run-w", FAST_POLL, None).await.unwrap();
+                let run = wait_for_run(&api, "run-w", fast_poll()).await.unwrap();
                 assert_eq!(run.status.to_string(), status);
             }
         }
@@ -6334,16 +6336,26 @@ mod tests {
             mount_get_run_statuses(&server, &["in_progress", "unknown"]).await;
             let api = test_api(&server.uri());
 
-            let err = wait_for_run(&api, "run-w", FAST_POLL, None)
-                .await
-                .unwrap_err();
+            let err = wait_for_run(&api, "run-w", fast_poll()).await.unwrap_err();
 
             let msg = format!("{err:#}");
             assert_eq!(msg, "run run-w reported status \"unknown\"", "got: {msg}");
             // The next steps ride along as notes on the full report.
             let report = format!("{err:?}");
             assert!(report.contains("snouty runs show run-w"), "got: {report}");
-            assert!(report.contains("snouty runs wait run-w"), "got: {report}");
+            assert!(!report.contains("snouty runs wait"), "got: {report}");
+        }
+
+        #[tokio::test]
+        async fn wait_fails_on_a_status_snouty_predates() {
+            let server = MockServer::start().await;
+            mount_get_run_statuses(&server, &["in_progress", "paused"]).await;
+            let api = test_api(&server.uri());
+
+            let err = wait_for_run(&api, "run-w", fast_poll()).await.unwrap_err();
+
+            let msg = format!("{err:#}");
+            assert_eq!(msg, "run run-w reported status \"paused\"", "got: {msg}");
         }
 
         #[tokio::test]
@@ -6352,29 +6364,49 @@ mod tests {
             mount_get_run_statuses(&server, &["in_progress"]).await;
             let api = test_api(&server.uri());
 
-            // A poll interval far past the timeout pins the poll count at two
-            // (the initial poll and the final one at the clipped deadline):
-            // jitter can only delay the final poll, never add a third.
-            let err = wait_for_run(
+            let err = wait_with_timeout(
                 &api,
                 "run-w",
-                Duration::from_secs(3600),
-                Some(Duration::from_millis(25)),
+                "1h".parse().unwrap(),
+                Some("1s".parse().unwrap()),
             )
             .await
             .unwrap_err();
 
             let msg = format!("{err:#}");
             assert_eq!(
-                msg, "timed out waiting for run run-w; it is still in_progress",
+                msg, "timed out waiting for run run-w after 1s",
                 "got: {msg}"
             );
-            assert!(
-                format!("{err:?}").contains("snouty runs wait run-w"),
-                "the timeout must hand back the resume command"
-            );
+            // One immediate poll, then a one-hour tick the timeout cuts short.
             let requests = server.received_requests().await.unwrap();
-            assert_eq!(requests.len(), 2);
+            assert_eq!(requests.len(), 1);
+        }
+
+        #[tokio::test]
+        async fn wait_timeout_cuts_off_a_hung_request() {
+            // The HTTP client has no read timeout, so only the wrapping
+            // tokio::time::timeout keeps a never-answering server from
+            // hanging the command forever.
+            let server = MockServer::start().await;
+            Mock::given(method("GET"))
+                .and(path("/api/v0/runs/run-w"))
+                .respond_with(
+                    ResponseTemplate::new(200)
+                        .set_body_json(run_body("in_progress"))
+                        .set_delay(Duration::from_secs(3600)),
+                )
+                .mount(&server)
+                .await;
+            let api = test_api(&server.uri());
+
+            let err = wait_with_timeout(&api, "run-w", fast_poll(), Some("1s".parse().unwrap()))
+                .await
+                .unwrap_err();
+            assert!(
+                format!("{err:#}").contains("timed out waiting for run run-w"),
+                "got: {err:#}"
+            );
         }
 
         #[tokio::test]
@@ -6387,9 +6419,7 @@ mod tests {
                 .await;
             let api = test_api(&server.uri());
 
-            let err = wait_for_run(&api, "BAD-ID", FAST_POLL, None)
-                .await
-                .unwrap_err();
+            let err = wait_for_run(&api, "BAD-ID", fast_poll()).await.unwrap_err();
             assert_eq!(format!("{err:#}"), "run not found: BAD-ID");
         }
 
@@ -6404,9 +6434,7 @@ mod tests {
                 .await;
             let api = test_api(&server.uri());
 
-            let err = wait_for_run(&api, "run-w", FAST_POLL, None)
-                .await
-                .unwrap_err();
+            let err = wait_for_run(&api, "run-w", fast_poll()).await.unwrap_err();
             assert_eq!(api_error_status(&err), Some(500));
         }
 

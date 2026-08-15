@@ -1457,8 +1457,8 @@ def build_stories(d: Discovery) -> list[Story]:
             "Block until a run reaches a terminal state",
             "I scripted a launch and want one command that blocks until the run finishes, "
             "instead of writing my own polling loop.",
-            "A status line on stderr, then the run's details (same as `runs show`) once the "
-            "run is terminal — immediately here, since this run is already completed.",
+            "A single final-status line once the run is terminal — immediately here, since "
+            "this run is already completed.",
             ["runs", "wait", d.success],
             contains_all(d.success, "completed"),
             json_capable=False,
@@ -1901,8 +1901,8 @@ def build_help_stories(d: Discovery) -> list[Story]:
             "fails the command, and what --poll-interval and --timeout do.",
             ["runs", "wait"],
             ["runs", "wait", s],
-            # wait on a terminal run prints the `runs show` card; like
-            # help-runs-show there is no columnar output to align tokens against.
+            # wait on a terminal run prints one status line; nothing columnar
+            # to align tokens against.
         ),
         _help_story(
             "help-runs-properties",

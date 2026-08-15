@@ -52,6 +52,7 @@ fn generate_api_client(out_dir: &Path) {
     untype_error_responses(&mut spec_value);
     drop_use_otis(&mut spec_value);
     mark_vtime_schema(&mut spec_value);
+    mark_run_status_schema(&mut spec_value);
     let spec: openapiv3::OpenAPI = serde_json::from_value(spec_value).unwrap();
 
     let mut settings = progenitor::GenerationSettings::default();
@@ -68,6 +69,17 @@ fn generate_api_client(out_dir: &Path) {
         "crate::vtime::VTime",
         std::iter::empty::<progenitor::TypeImpl>(),
     );
+    // Map the marked run-status schema onto the handwritten RunStatus, whose
+    // `Other` variant preserves a status value the enum doesn't name instead
+    // of failing the whole response parse.
+    let run_status_schema: schemars::schema::SchemaObject =
+        serde_json::from_value(serde_json::json!({"type": "string", "format": "run_status"}))
+            .unwrap();
+    settings.with_conversion(
+        run_status_schema,
+        "crate::api::RunStatus",
+        std::iter::empty::<progenitor::TypeImpl>(),
+    );
     let mut generator = progenitor::Generator::new(&settings);
     let tokens = generator.generate_tokens(&spec).unwrap();
     let ast = syn::parse2(tokens).unwrap();
@@ -82,6 +94,11 @@ fn generate_api_client(out_dir: &Path) {
     assert!(
         content.contains("pub vtime: crate::vtime::VTime"),
         "generated client does not use crate::vtime::VTime for Moment.vtime; \
+         the with_conversion schema match no longer applies"
+    );
+    assert!(
+        content.contains("pub status: crate::api::RunStatus"),
+        "generated client does not use crate::api::RunStatus for run statuses; \
          the with_conversion schema match no longer applies"
     );
 
@@ -174,6 +191,70 @@ fn drop_use_otis(spec: &mut serde_json::Value) {
         properties.remove("use_otis").is_some(),
         "Execute_Command_Request no longer has `use_otis`; delete `drop_use_otis` in build.rs"
     );
+}
+
+/// Replace every `Run_Status` reference with an inline string schema tagged
+/// for the `run_status` conversion mapping (see the registration above), and
+/// drop the named component. Generated as an enum, an undocumented status
+/// value fails the whole response parse; the handwritten
+/// `crate::api::RunStatus` preserves it instead. Inlining matters: typify
+/// wraps a *named* schema that hits a conversion in a needless newtype, while
+/// an inline schema maps to the conversion type directly (like `Moment.vtime`
+/// and `VTime`). The assertions pin the spec shape, so a refresh that changes
+/// it fails the build.
+fn mark_run_status_schema(spec: &mut serde_json::Value) {
+    let status = spec
+        .pointer("/components/schemas/Run_Status")
+        .expect("openapi spec has no Run_Status schema; update the RunStatus wiring in build.rs");
+    let known = serde_json::json!([
+        "starting",
+        "in_progress",
+        "completed",
+        "cancelled",
+        "incomplete",
+        "unknown"
+    ]);
+    assert_eq!(
+        status["enum"], known,
+        "Run_Status gained or lost values; give crate::api::RunStatus a matching variant, then \
+         update this pin"
+    );
+
+    let marker = serde_json::json!({"type": "string", "format": "run_status"});
+    let replaced = replace_refs(spec, "#/components/schemas/Run_Status", &marker);
+    assert!(
+        replaced > 0,
+        "nothing references Run_Status anymore; delete mark_run_status_schema in build.rs"
+    );
+    spec.pointer_mut("/components/schemas")
+        .and_then(serde_json::Value::as_object_mut)
+        .unwrap()
+        .remove("Run_Status");
+}
+
+/// Recursively replace every `{"$ref": target}` object with `replacement`,
+/// returning how many were replaced.
+fn replace_refs(
+    value: &mut serde_json::Value,
+    target: &str,
+    replacement: &serde_json::Value,
+) -> usize {
+    match value {
+        serde_json::Value::Object(map) => {
+            if map.get("$ref").and_then(serde_json::Value::as_str) == Some(target) {
+                *value = replacement.clone();
+                return 1;
+            }
+            map.values_mut()
+                .map(|v| replace_refs(v, target, replacement))
+                .sum()
+        }
+        serde_json::Value::Array(items) => items
+            .iter_mut()
+            .map(|v| replace_refs(v, target, replacement))
+            .sum(),
+        _ => 0,
+    }
 }
 
 fn mark_vtime_schema(spec: &mut serde_json::Value) {

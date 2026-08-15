@@ -5664,7 +5664,7 @@ mod tests {
     }
 
     #[test]
-    fn requested_duration_renders_via_report_duration() {
+    fn requested_duration_renders_via_human_duration() {
         // Whole minutes, the launcher's h/m vocabulary, and a fractional minute
         // count from older runs all render through HumanDuration.
         assert_eq!(format_requested_duration("30"), "30m");

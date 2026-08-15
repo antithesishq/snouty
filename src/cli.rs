@@ -873,7 +873,7 @@ mod tests {
     }
 
     #[test]
-    fn duration_flag_parses_into_report_duration() {
+    fn duration_flag_parses_into_human_duration() {
         // Parsing/validation lives in `crate::time`; here we just confirm clap
         // wires `--duration` through `HumanDuration: FromStr`.
         let cli = parse(&[

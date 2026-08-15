@@ -1,6 +1,18 @@
 //! Terminal-safe rendering helpers shared across human-facing output: aligned
 //! key/value blocks and control-character sanitization.
 
+/// The global output flags (`--json`, `--verbose`), resolved once at the
+/// dispatch boundary in main.rs and passed by value through the command
+/// layer. Carrying them as one named-field struct keeps the two bools from
+/// threading positionally, where a swapped pair compiles silently.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct OutputOptions {
+    /// Emit machine-readable JSON instead of human-facing text.
+    pub json: bool,
+    /// Log HTTP request/response detail to stderr.
+    pub verbose: bool,
+}
+
 /// Render aligned `Label  value` lines, sqlite `.mode line`–style. Each line is
 /// terminated with a newline; values are sanitized. Labels are padded to the
 /// widest label, but never narrower than `min_label_width` so a caller that also

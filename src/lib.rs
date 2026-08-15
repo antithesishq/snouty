@@ -17,7 +17,7 @@ pub mod login;
 pub mod params;
 pub mod process;
 pub(crate) mod render;
-pub use render::wrap_if_tty;
+pub use render::{OutputOptions, wrap_if_tty};
 pub mod runs;
 pub mod scripts;
 #[doc(hidden)]

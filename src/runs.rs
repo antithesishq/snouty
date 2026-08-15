@@ -22,7 +22,7 @@ use crate::cli::{RunsCommands, RunsListArgs};
 use crate::error::{api_error_status, user_error};
 use crate::render::{render_kv, sanitize, sanitize_multiline};
 use crate::settings::Settings;
-use crate::time::ReportDuration;
+use crate::time::HumanDuration;
 use crate::vtime::VTime;
 
 /// `print!`/`println!`, but routed through `write!`/`writeln!` to stdout so a
@@ -286,21 +286,21 @@ fn format_local_str(raw: &str) -> String {
 
 /// The requested run duration (`antithesis.duration`, a count of minutes),
 /// rendered in the same `1h30m` vocabulary the launcher accepts via
-/// [`ReportDuration`]. A value the backend somehow stored in a form we can't
+/// [`HumanDuration`]. A value the backend somehow stored in a form we can't
 /// parse falls back to the raw string, so it still shows something truthful
 /// rather than vanishing.
 fn format_requested_duration(raw: &str) -> String {
-    raw.parse::<ReportDuration>()
+    raw.parse::<HumanDuration>()
         .map_or_else(|_| raw.to_string(), |d| d.to_string())
 }
 
 /// Wall-clock time the run was (or has been) active, rendered through
-/// [`ReportDuration`] in the same `h`/`m`/`s` units as the requested duration
+/// [`HumanDuration`] in the same `h`/`m`/`s` units as the requested duration
 /// beside it. A still-running run counts up to `end` (`Utc::now()` at the call
 /// site). Returns `None` on clock skew (a negative span).
-fn elapsed_duration(started: DateTime<Utc>, end: DateTime<Utc>) -> Option<ReportDuration> {
+fn elapsed_duration(started: DateTime<Utc>, end: DateTime<Utc>) -> Option<HumanDuration> {
     let secs = (end - started).num_seconds();
-    (secs >= 0).then(|| ReportDuration::from_seconds(secs as u64))
+    (secs >= 0).then(|| HumanDuration::from_seconds(secs as u64))
 }
 
 async fn cmd_runs_show(
@@ -5664,9 +5664,9 @@ mod tests {
     }
 
     #[test]
-    fn requested_duration_renders_via_report_duration() {
+    fn requested_duration_renders_via_human_duration() {
         // Whole minutes, the launcher's h/m vocabulary, and a fractional minute
-        // count from older runs all render through ReportDuration.
+        // count from older runs all render through HumanDuration.
         assert_eq!(format_requested_duration("30"), "30m");
         assert_eq!(format_requested_duration("90"), "1h30m");
         assert_eq!(format_requested_duration("15.5"), "15m30s");

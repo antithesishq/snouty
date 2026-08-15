@@ -7,7 +7,7 @@ use color_eyre::eyre::Report;
 use crate::api::RunStatus;
 use crate::error::user_error;
 use crate::features::{self, Feature};
-use crate::time::ReportDuration;
+use crate::time::HumanDuration;
 use crate::vtime::VTime;
 
 /// clap value parser for `--status` that keeps a friendly, enumerated error
@@ -479,10 +479,10 @@ pub struct LaunchArgs {
     pub description: Option<String>,
 
     /// Test duration in minutes, or h/m units (e.g. 90m, 2h, 1h30m)
-    // `ReportDuration: FromStr` gives clap the parser; we send it to the API as
+    // `HumanDuration: FromStr` gives clap the parser; we send it to the API as
     // `.minutes().to_string()`, the (possibly fractional) minute count it wants.
     #[arg(long)]
-    pub duration: Option<ReportDuration>,
+    pub duration: Option<HumanDuration>,
 
     /// Mark the test run as ephemeral. Ephemeral runs will not appear in future reports as a historic result.
     #[arg(long)]
@@ -873,9 +873,9 @@ mod tests {
     }
 
     #[test]
-    fn duration_flag_parses_into_report_duration() {
+    fn duration_flag_parses_into_human_duration() {
         // Parsing/validation lives in `crate::time`; here we just confirm clap
-        // wires `--duration` through `ReportDuration: FromStr`.
+        // wires `--duration` through `HumanDuration: FromStr`.
         let cli = parse(&[
             "snouty",
             "launch",

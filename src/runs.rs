@@ -1759,7 +1759,10 @@ fn render_exec_frame(frame: &ExecFrame) -> Result<()> {
     match frame {
         ExecFrame::Known(ExecEvent::Output { stream, text, .. }) => {
             let text = normalize_terminal_text(text);
-            if stream == "stderr" {
+            // Parse via `Stream` so the short form `err` routes to stderr
+            // too. Anything else — stdout, info, or an unrecognized label —
+            // goes to stdout, as before.
+            if stream.parse::<Stream>() == Ok(Stream::Stderr) {
                 eprintln!("{text}");
             } else {
                 outln!("{text}")?;

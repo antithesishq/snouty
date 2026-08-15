@@ -198,18 +198,6 @@ fn full_vtime(entry: &Value) -> String {
     }
 }
 
-/// Render an event's vtime in seconds with exactly 3 decimal places,
-/// truncated — never rounded. Fixed precision keeps the decimal point and
-/// right edge aligned down the fixed [`VTIME_WIDTH`] column. Truncating
-/// rather than rounding means a vtime copied off the screen and pasted back
-/// as `--begin-vtime` lands on — never just past — the line you saw.
-fn format_vtime_cell(entry: &Value) -> String {
-    // Truncate the server's seconds string directly so f64 round-trips can't
-    // nudge the displayed value; a normalized JSON-number vtime goes through
-    // VTime's exact Display first, so truncating still cuts — never rounds.
-    truncate_decimals(&full_vtime(entry), 3)
-}
-
 // ---------------------------------------------------------------------------
 // Assertion summaries (the `antithesis_assert` payload)
 // ---------------------------------------------------------------------------
@@ -356,6 +344,23 @@ fn render_details_json(details: &Value) -> Option<String> {
     Some(sanitize(
         &serde_json::to_string(details).unwrap_or_default(),
     ))
+}
+
+/// The dim `details {json}` line every kind with attached user JSON shares.
+fn details_line(json: &str) -> String {
+    style(format!("details {json}")).dim().to_string()
+}
+
+/// [`details_line`] for a raw payload value, as the detail-line vector:
+/// empty when `detail` is off or there is nothing to read.
+fn details_detail_line(detail: bool, value: &Value) -> Vec<String> {
+    if !detail {
+        return Vec::new();
+    }
+    render_details_json(value)
+        .map(|json| details_line(&json))
+        .into_iter()
+        .collect()
 }
 
 fn render_assertion_location(location: AssertionLocation) -> Option<String> {
@@ -535,7 +540,7 @@ fn render_assert(summary: &AssertionSummary, detail: bool) -> RenderedPayload {
             details.push(style(format!("@ {location}")).dim().to_string());
         }
         if let Some(json) = &summary.details {
-            details.push(style(format!("details {json}")).dim().to_string());
+            details.push(details_line(json));
         }
     }
     RenderedPayload { headline, details }
@@ -687,17 +692,9 @@ fn render_setup(setup: &Value, detail: bool) -> RenderedPayload {
     );
     // The details are user-controlled, arbitrarily nested JSON: never
     // flattened to key=value, shown as JSON under --detail.
-    let details = if detail {
-        render_details_json(&setup["details"])
-            .map(|json| style(format!("details {json}")).dim().to_string())
-            .into_iter()
-            .collect()
-    } else {
-        Vec::new()
-    };
     RenderedPayload {
         headline: headline.trim_end().to_string(),
-        details,
+        details: details_detail_line(detail, &setup["details"]),
     }
 }
 
@@ -759,15 +756,10 @@ fn render_fault(fault: &Value, detail: bool) -> RenderedPayload {
         headline.push(' ');
         headline.push_str(&bits.join(" "));
     }
-    let details = if detail {
-        render_details_json(fault_details)
-            .map(|json| style(format!("details {json}")).dim().to_string())
-            .into_iter()
-            .collect()
-    } else {
-        Vec::new()
-    };
-    RenderedPayload { headline, details }
+    RenderedPayload {
+        headline,
+        details: details_detail_line(detail, fault_details),
+    }
 }
 
 fn render_fault_injector_info(info: &Value) -> RenderedPayload {
@@ -1016,6 +1008,10 @@ impl EventStreamRenderer {
             return sanitize(&entry.to_string());
         };
 
+        // Computed once: the divider needs the full precision, and the
+        // event line derives its cell from the same value.
+        let full_vtime = full_vtime(entry);
+
         let mut out = String::new();
         if self.last_input_hash.as_deref() != Some(hash) {
             if self.wrote_block {
@@ -1023,18 +1019,21 @@ impl EventStreamRenderer {
             }
             // The divider carries the segment's full-precision moment —
             // exactly what `runs logs`/`runs exec`/`snouty debug` take.
-            let divider = format!("moment {} {}", sanitize(hash), full_vtime(entry));
+            let divider = format!("moment {} {full_vtime}", sanitize(hash));
             out.push_str(&style(divider.trim_end().to_string()).yellow().to_string());
             out.push('\n');
             self.last_input_hash = Some(hash.to_string());
         }
 
         // Detail mode shows the exact vtime on every line; the default shows
-        // the aligned 3-decimal truncation.
+        // the aligned 3-decimal truncation — truncated, never rounded, so a
+        // vtime copied off the screen and pasted back as `--begin-vtime`
+        // lands on, never just past, the line you saw. (`full_vtime` starts
+        // from the server's own text, so f64 round-trips can't nudge it.)
         let vtime = if self.detail {
-            full_vtime(entry)
+            full_vtime
         } else {
-            format_vtime_cell(entry)
+            truncate_decimals(&full_vtime, 3)
         };
         let vtime_cell = format!("{vtime:>VTIME_WIDTH$}");
         let source = render_source(entry, self.detail);
@@ -1694,16 +1693,17 @@ mod tests {
         // output) must land on the same truncated text as the server's string
         // form, so a value copied off the screen and fed back as
         // --begin-vtime lands on the line you saw, never past it.
+        let cell = |entry: &Value| truncate_decimals(&full_vtime(entry), 3);
         for s in ["398.4898056755774", "311.8487535319291", "402.0", "1.9995"] {
             let vtime: VTime = s.parse().unwrap();
-            let from_string = format_vtime_cell(&json!({"moment": {"vtime": s}}));
-            let from_number = format_vtime_cell(&json!({"moment": {"vtime": vtime}}));
+            let from_string = cell(&json!({"moment": {"vtime": s}}));
+            let from_number = cell(&json!({"moment": {"vtime": vtime}}));
             assert_eq!(from_string, from_number, "for {s}");
             assert_eq!(from_string, truncate_decimals(s, 3), "for {s}");
         }
         // Spot-check the truncation: .4898… cuts to .489 (rounding gives .490).
         assert_eq!(
-            format_vtime_cell(&json!({"moment": {"vtime": "398.4898056755774"}})),
+            cell(&json!({"moment": {"vtime": "398.4898056755774"}})),
             "398.489"
         );
     }

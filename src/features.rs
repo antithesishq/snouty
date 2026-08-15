@@ -59,7 +59,7 @@ fn parse_list(value: &str) -> Vec<Feature> {
         .split(',')
         .map(str::trim)
         .filter(|id| !id.is_empty())
-        .map(Feature::from_id)
+        .map(Feature::from)
         .collect()
 }
 
@@ -81,20 +81,28 @@ pub enum Feature {
 impl Feature {
     pub const RUNS_EXEC: &'static str = "runs-exec";
 
-    /// The feature an id names. Every id maps to a feature, so this is total:
-    /// one this build does not know becomes [`Feature::Unknown`].
-    pub fn from_id(id: &str) -> Self {
-        match id {
-            Self::RUNS_EXEC => Feature::RunsExec,
-            other => Feature::Unknown(other.to_string()),
-        }
-    }
-
     pub fn as_str(&self) -> &str {
         match self {
             Feature::RunsExec => Self::RUNS_EXEC,
             Feature::Unknown(id) => id,
         }
+    }
+}
+
+/// The feature an id names. Every id maps to a feature, so this is total:
+/// one this build does not know becomes [`Feature::Unknown`].
+impl From<&str> for Feature {
+    fn from(id: &str) -> Self {
+        match id {
+            Self::RUNS_EXEC => Feature::RunsExec,
+            other => Feature::Unknown(other.to_string()),
+        }
+    }
+}
+
+impl std::fmt::Display for Feature {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
     }
 }
 
@@ -104,7 +112,7 @@ mod tests {
 
     #[test]
     fn known_id_parses_to_its_variant() {
-        assert_eq!(Feature::from_id("runs-exec"), Feature::RunsExec);
+        assert_eq!(Feature::from("runs-exec"), Feature::RunsExec);
         assert_eq!(Feature::RunsExec.as_str(), "runs-exec");
     }
 
@@ -113,7 +121,7 @@ mod tests {
         // One exported SNOUTY_UNSTABLE_FEATURES is shared by every snouty on the
         // machine: an id from a newer build, or one whose feature has
         // graduated, must not break this one.
-        let parsed = Feature::from_id("from-the-future");
+        let parsed = Feature::from("from-the-future");
         assert_eq!(parsed, Feature::Unknown("from-the-future".to_string()));
         assert_eq!(parsed.as_str(), "from-the-future");
     }

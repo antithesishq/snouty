@@ -1660,7 +1660,7 @@ async fn cmd_runs_logs(
             .await
         } else {
             let mut annotator = FaultAnnotator {
-                active_fault_windows: ActiveFaultWindows::new(),
+                active_fault_windows: ActiveFaultWindows::default(),
                 active_faults: json!({}),
             };
             stream_ndjson_lines(stream, |line| {
@@ -2387,6 +2387,7 @@ impl FaultWindowBounds {
     }
 }
 
+#[derive(Default)]
 struct ActiveFaultWindows {
     network: IndexMap<String, FaultWindowBounds>,
     node: IndexMap<String, IndexMap<String, FaultWindowBounds>>,
@@ -2395,14 +2396,6 @@ struct ActiveFaultWindows {
 }
 
 impl ActiveFaultWindows {
-    fn new() -> ActiveFaultWindows {
-        ActiveFaultWindows {
-            network: IndexMap::new(),
-            node: IndexMap::new(),
-            clock: Vec::new(),
-        }
-    }
-
     fn clear_network_faults(&mut self) -> bool {
         let did_something = !self.network.is_empty();
         self.network.clear();
@@ -2612,13 +2605,13 @@ enum AssertionStatus {
     Unhit,
 }
 
-impl AssertionStatus {
-    fn as_str(self) -> &'static str {
-        match self {
+impl std::fmt::Display for AssertionStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
             Self::Pass => "PASS",
             Self::Fail => "FAIL",
             Self::Unhit => "UNHIT",
-        }
+        })
     }
 }
 
@@ -2819,7 +2812,7 @@ fn render_source(container: &str, name: &str, stream: Option<&str>) -> String {
 fn render_assertion_summary(summary: &AssertionSummary) -> String {
     let mut output = format!(
         "{} {} \"{}\"",
-        summary.status.as_str(),
+        summary.status,
         sanitize(&summary.label),
         sanitize(&summary.message),
     );
@@ -4525,7 +4518,7 @@ mod tests {
     #[test]
     fn tracks_which_faults_are_active_based_on_vtime_and_max_duration() {
         let mut transformer = FaultAnnotator {
-            active_fault_windows: ActiveFaultWindows::new(),
+            active_fault_windows: ActiveFaultWindows::default(),
             active_faults: json!({}),
         };
 
@@ -4611,7 +4604,7 @@ mod tests {
     #[test]
     fn restore_closes_network_faults() {
         let mut transformer = FaultAnnotator {
-            active_fault_windows: ActiveFaultWindows::new(),
+            active_fault_windows: ActiveFaultWindows::default(),
             active_faults: json!({}),
         };
 
@@ -4693,7 +4686,7 @@ mod tests {
     #[test]
     fn fault_injector_pause_clears_network_and_node_faults() {
         let mut transformer = FaultAnnotator {
-            active_fault_windows: ActiveFaultWindows::new(),
+            active_fault_windows: ActiveFaultWindows::default(),
             active_faults: json!({}),
         };
 
@@ -4797,7 +4790,7 @@ mod tests {
     #[test]
     fn clock_offsets_are_combined() {
         let mut transformer = FaultAnnotator {
-            active_fault_windows: ActiveFaultWindows::new(),
+            active_fault_windows: ActiveFaultWindows::default(),
             active_faults: json!({}),
         };
 
@@ -4865,7 +4858,7 @@ mod tests {
     #[test]
     fn empty_affected_nodes_does_not_open_network_window() {
         let mut transformer = FaultAnnotator {
-            active_fault_windows: ActiveFaultWindows::new(),
+            active_fault_windows: ActiveFaultWindows::default(),
             active_faults: json!({}),
         };
 
@@ -4913,7 +4906,7 @@ mod tests {
     #[test]
     fn missing_affected_nodes_does_not_open_network_window() {
         let mut transformer = FaultAnnotator {
-            active_fault_windows: ActiveFaultWindows::new(),
+            active_fault_windows: ActiveFaultWindows::default(),
             active_faults: json!({}),
         };
 
@@ -4963,7 +4956,7 @@ mod tests {
     #[test]
     fn untracked_fault_names_produce_empty_active_faults() {
         let mut transformer = FaultAnnotator {
-            active_fault_windows: ActiveFaultWindows::new(),
+            active_fault_windows: ActiveFaultWindows::default(),
             active_faults: json!({}),
         };
 
@@ -5009,7 +5002,7 @@ mod tests {
     #[test]
     fn restore_after_only_untracked_faults_is_noop() {
         let mut transformer = FaultAnnotator {
-            active_fault_windows: ActiveFaultWindows::new(),
+            active_fault_windows: ActiveFaultWindows::default(),
             active_faults: json!({}),
         };
 
@@ -5053,7 +5046,7 @@ mod tests {
     #[test]
     fn fault_fields_from_non_fault_injector_source_are_ignored() {
         let mut transformer = FaultAnnotator {
-            active_fault_windows: ActiveFaultWindows::new(),
+            active_fault_windows: ActiveFaultWindows::default(),
             active_faults: json!({}),
         };
 
@@ -5089,7 +5082,7 @@ mod tests {
     #[test]
     fn event_without_vtime_still_gets_active_faults() {
         let mut transformer = FaultAnnotator {
-            active_fault_windows: ActiveFaultWindows::new(),
+            active_fault_windows: ActiveFaultWindows::default(),
             active_faults: json!({}),
         };
 
@@ -5131,7 +5124,7 @@ mod tests {
     #[test]
     fn fault_window_active_at_exact_end_vtime_expires_just_past_end() {
         let mut transformer = FaultAnnotator {
-            active_fault_windows: ActiveFaultWindows::new(),
+            active_fault_windows: ActiveFaultWindows::default(),
             active_faults: json!({}),
         };
 
@@ -5194,7 +5187,7 @@ mod tests {
     #[test]
     fn fault_annotator_emits_full_precision_vtime_byte_identically() {
         let mut transformer = FaultAnnotator {
-            active_fault_windows: ActiveFaultWindows::new(),
+            active_fault_windows: ActiveFaultWindows::default(),
             active_faults: json!({}),
         };
 
@@ -5282,7 +5275,7 @@ mod tests {
     #[test]
     fn partition_without_max_duration_never_expires() {
         let mut transformer = FaultAnnotator {
-            active_fault_windows: ActiveFaultWindows::new(),
+            active_fault_windows: ActiveFaultWindows::default(),
             active_faults: json!({}),
         };
 
@@ -5325,7 +5318,7 @@ mod tests {
     #[test]
     fn restore_before_natural_expiration_clears_network_faults() {
         let mut transformer = FaultAnnotator {
-            active_fault_windows: ActiveFaultWindows::new(),
+            active_fault_windows: ActiveFaultWindows::default(),
             active_faults: json!({}),
         };
 
@@ -5374,7 +5367,7 @@ mod tests {
     #[test]
     fn partition_and_clog_expire_independently() {
         let mut transformer = FaultAnnotator {
-            active_fault_windows: ActiveFaultWindows::new(),
+            active_fault_windows: ActiveFaultWindows::default(),
             active_faults: json!({}),
         };
 
@@ -5436,7 +5429,7 @@ mod tests {
     #[test]
     fn non_overlapping_windows_start_fresh_after_expiry() {
         let mut transformer = FaultAnnotator {
-            active_fault_windows: ActiveFaultWindows::new(),
+            active_fault_windows: ActiveFaultWindows::default(),
             active_faults: json!({}),
         };
 
@@ -5489,7 +5482,7 @@ mod tests {
     #[test]
     fn overlapping_windows_report_earliest_start_vtime() {
         let mut transformer = FaultAnnotator {
-            active_fault_windows: ActiveFaultWindows::new(),
+            active_fault_windows: ActiveFaultWindows::default(),
             active_faults: json!({}),
         };
 
@@ -5572,7 +5565,7 @@ mod tests {
     #[test]
     fn fault_injector_pause_preserves_clock_windows() {
         let mut transformer = FaultAnnotator {
-            active_fault_windows: ActiveFaultWindows::new(),
+            active_fault_windows: ActiveFaultWindows::default(),
             active_faults: json!({}),
         };
 
@@ -5633,7 +5626,7 @@ mod tests {
     #[test]
     fn multiple_containers_paused_simultaneously() {
         let mut transformer = FaultAnnotator {
-            active_fault_windows: ActiveFaultWindows::new(),
+            active_fault_windows: ActiveFaultWindows::default(),
             active_faults: json!({}),
         };
 
@@ -5677,7 +5670,7 @@ mod tests {
     #[test]
     fn node_fault_expires_via_max_duration() {
         let mut transformer = FaultAnnotator {
-            active_fault_windows: ActiveFaultWindows::new(),
+            active_fault_windows: ActiveFaultWindows::default(),
             active_faults: json!({}),
         };
 

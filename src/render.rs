@@ -103,12 +103,19 @@ fn wrap_line(line: &str) -> String {
         return line.to_string();
     }
     let indent: String = line.chars().take_while(|c| *c == ' ').collect();
-    let options = textwrap::Options::new(PROSE_WIDTH)
+    let options = wrap_options(PROSE_WIDTH)
         .initial_indent(&indent)
-        .subsequent_indent(&indent)
-        .break_words(false)
-        .word_splitter(textwrap::WordSplitter::NoHyphenation);
+        .subsequent_indent(&indent);
     textwrap::fill(line.trim_start(), options)
+}
+
+/// The one wrapping policy every snouty wrapper shares: words are never
+/// split mid-token (no hard breaks, no hyphenation) — an overlong token
+/// overflows instead. Callers layer width-specific settings (indent) on top.
+pub(crate) fn wrap_options<'a>(width: usize) -> textwrap::Options<'a> {
+    textwrap::Options::new(width.max(1))
+        .break_words(false)
+        .word_splitter(textwrap::WordSplitter::NoHyphenation)
 }
 
 pub(crate) fn sanitize(s: &str) -> String {

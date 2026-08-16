@@ -3166,15 +3166,17 @@ fn normalize_terminal_text(text: &str) -> String {
 /// measured with `textwrap`'s `display_width` — ANSI escape sequences count as
 /// zero columns and wide glyphs count as two — matching `render::wrap`.
 fn wrap_text(text: &str, width: usize) -> Vec<String> {
-    let options = textwrap::Options::new(width.max(1))
-        .break_words(false)
-        .word_splitter(textwrap::WordSplitter::NoHyphenation);
+    let options = crate::render::wrap_options(width);
     let mut lines = Vec::new();
     for paragraph in text.split('\n') {
         if paragraph.trim().is_empty() {
             lines.push(String::new());
             continue;
         }
+        // Tabs survive sanitize, but textwrap's AsciiSpace separator only
+        // breaks on spaces — normalize them so a tab-joined pair still wraps,
+        // as the previous split_whitespace-based wrapper did.
+        let paragraph = paragraph.replace('\t', " ");
         for line in textwrap::wrap(paragraph.trim_start(), &options) {
             lines.push(line.into_owned());
         }

@@ -2910,6 +2910,7 @@ dependencies = [
  "apple-native-keyring-store",
  "assert_cmd",
  "base64 0.22.1",
+ "bytes",
  "chrono",
  "clap",
  "clap_complete",

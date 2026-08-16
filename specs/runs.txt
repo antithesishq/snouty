@@ -215,8 +215,9 @@ snouty --json runs build-logs $R_run_id
 [!staging] stdout '"timestamp".*"text"'
 
 # `snouty runs events` filters by `--match` server-side and prints each
-# matching event as one `HASH VTIME SOURCE OUTPUT` line (no table: rows print
-# as the server sends them).
+# matching event as its JSON, one line per event with `moment.vtime`
+# normalized to an exact number (no table: rows print as the server sends
+# them; PR #222 layers the human rendering on this).
 #    Against staging the search matches `fault` and carries `--limit`: fault
 #    events are Antithesis-generated, exist in every fault-injecting run, and
 #    first appear near the start of the timeline, so the server stops after a
@@ -228,7 +229,8 @@ mock-runs-server
 [!staging] snouty runs events $R_run_id --match request
 [staging] snouty runs events $R_run_id --match fault --limit 3
 [!staging] ! stdout '^HASH\s+VTIME\s+SOURCE\s+OUTPUT'
-[!staging] stdout '^-456 2\.0 \[app:error\] \{"level":"warn","msg":"slow request"\}'
+[!staging] stdout '"output_text".*slow request'
+[!staging] stdout '"vtime":2\.0'
 
 # Multiple needles need the events-search API to AND them server-side. With
 # the `runs-search` feature off, the command refuses up front and names the
@@ -245,7 +247,7 @@ mock-runs-server
 env SNOUTY_UNSTABLE_FEATURES=runs-search
 [!staging] snouty runs events $R_run_id --match request --match slow
 [staging] snouty runs events $R_run_id --match fault --match network --limit 3
-[!staging] stdout '-456 2\.0 \[app:error\] \{"level":"warn","msg":"slow request"\}'
+[!staging] stdout '"output_text".*slow request'
 # A needle that isn't present excludes the event entirely.
 mock-runs-server
 snouty runs events $R_run_id --match starting --match nonexistent
@@ -460,7 +462,8 @@ stderr '.*empty search term.*'
 # whose terms are treated as additional needles.
 mock-runs-server
 snouty runs events $R_run_id request
-[!staging] stdout '-456.*2\.0.*\[app:error\].*\{"level":"warn","msg":"slow request"\}'
+[!staging] stdout '"output_text".*slow request'
+[!staging] stdout '"input_hash":"-456"'
 
 # `--limit` caps how many events the server returns. Three events match
 # parallel_driver_fetch; --limit 1 keeps only the first (vtime 400.5).
@@ -514,14 +517,16 @@ stderr 'SNOUTY_UNSTABLE_FEATURES=runs-search'
 env SNOUTY_UNSTABLE_FEATURES=runs-search
 
 # `snouty runs search` runs one event-set DSL query server-side and prints
-# each matching event as one `HASH VTIME SOURCE OUTPUT` line (no table: on a
-# live run the stream stays open, so rows print as they arrive).
+# each matching event as its JSON, one line per event with `moment.vtime`
+# normalized to an exact number (no table: on a live run the stream stays
+# open, so rows print as they arrive; PR #222 layers the human rendering).
 #    Against staging the query carries --limit for the same wall-time reason
 #    as the events specs above.
 mock-runs-server
 [!staging] snouty runs search $R_run_id 'contains({output_text: "slow request"})'
 [staging] snouty runs search $R_run_id 'contains({output_text: "fault"})' --limit 3
-[!staging] stdout '-456 2\.0 \[app:error\] \{"level":"warn","msg":"slow request"\}'
+[!staging] stdout '"output_text".*slow request'
+[!staging] stdout '"vtime":2\.0'
 ! stdout '^HASH\s+VTIME\s+SOURCE\s+OUTPUT'
 
 # `--json` passes the NDJSON through, vtime normalized to an exact JSON number.
@@ -599,7 +604,7 @@ stderr 'the server reported an error mid-stream: mock stream failure'
 # never reported as "No events matched".
 mock-runs-server
 ! snouty runs events run-stream-error --match starting
-stdout -literal '{"level":"info","msg":"starting"}'
+stdout '"output_text".*starting'
 ! stdout 'No events matched'
 stderr 'the server reported an error mid-stream: mock stream failure'
 
@@ -641,7 +646,7 @@ stderr 'the server reported an error mid-stream: mock stream failure'
 mock-runs-server
 env SNOUTY_UNSTABLE_FEATURES=runs-search
 snouty runs search run-stream-error 'contains({output_text: "starting"})'
-stdout -literal '{"level":"info","msg":"starting"}'
+stdout '"output_text".*starting'
 stdout -literal '{"error":"mock stream failure"}'
 ! stderr 'mid-stream'
 

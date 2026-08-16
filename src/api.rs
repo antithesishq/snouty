@@ -40,6 +40,8 @@ pub use generated::types::{
 };
 pub use progenitor_client::ByteStream;
 
+use crate::jsonl::JsonlStream;
+
 /// The outcome of a launch or debugging-launch request, and the `--json` output
 /// of `snouty launch` / `snouty debug`.
 ///
@@ -81,20 +83,10 @@ pub struct EventSearchOptions {
     pub limit: Option<NonZeroU64>,
 }
 
-/// The search endpoint's default for `limit`. The generated `Search_Request`
-/// body cannot omit the field: it always serializes the caller's value or
-/// this default (see `search_run_events_query`), so this is what the server
-/// was told whenever no limit was given.
+/// The server's default for the search `limit`, applied when the request
+/// names none. A non-streaming caller that enforces the limit client-side
+/// caps at this value when no explicit limit was given.
 pub const SEARCH_DEFAULT_LIMIT: NonZeroU64 = NonZeroU64::new(50).unwrap();
-
-impl EventSearchOptions {
-    /// The limit the request names: the caller's, or the default the
-    /// generated body serializes in its place. A caller that enforces the
-    /// limit client-side must cap at exactly this value.
-    pub fn effective_limit(&self) -> NonZeroU64 {
-        self.limit.unwrap_or(SEARCH_DEFAULT_LIMIT)
-    }
-}
 
 /// Why a `/api/version` probe failed, classified for `snouty doctor`.
 #[derive(Debug)]
@@ -411,10 +403,10 @@ impl AntithesisApi {
         }
     }
 
-    pub async fn get_run_build_logs(&self, run_id: &str) -> Result<ByteStream> {
+    pub async fn get_run_build_logs(&self, run_id: &str) -> Result<JsonlStream> {
         ensure_resource_supported(run_id, MIN_BUILD_LOGS_VERSION, "build logs")?;
         match self.client.get_run_build_logs().run_id(run_id).send().await {
-            Ok(response) => Ok(response.into_inner()),
+            Ok(response) => Ok(JsonlStream::new(response.into_inner())),
             Err(err) => Err(format_api_client_error(err).await),
         }
     }
@@ -427,7 +419,7 @@ impl AntithesisApi {
         run_id: &str,
         moment: Moment,
         begin: Option<LogsBegin>,
-    ) -> Result<ByteStream> {
+    ) -> Result<JsonlStream> {
         let mut request = self
             .client
             .get_run_logs()
@@ -442,7 +434,7 @@ impl AntithesisApi {
         }
 
         match request.send().await {
-            Ok(response) => Ok(response.into_inner()),
+            Ok(response) => Ok(JsonlStream::new(response.into_inner())),
             Err(err) => Err(format_api_client_error(err).await),
         }
     }
@@ -462,7 +454,7 @@ impl AntithesisApi {
         moment: Moment,
         script: String,
         timeout: Duration,
-    ) -> Result<ByteStream> {
+    ) -> Result<JsonlStream> {
         // No `use_otis`: `build.rs` drops that field from the generated type,
         // so snouty says nothing about it and the server applies its default.
         let body = generated::types::ExecuteCommandRequest {
@@ -473,7 +465,7 @@ impl AntithesisApi {
         };
         let request = self.client.execute_command().run_id(run_id).body(body);
         match request.send().await {
-            Ok(response) => Ok(response.into_inner()),
+            Ok(response) => Ok(JsonlStream::new(response.into_inner())),
             Err(err) => Err(format_api_client_error(err).await),
         }
     }
@@ -506,7 +498,7 @@ impl AntithesisApi {
         run_id: &str,
         query: &str,
         limit: Option<NonZeroU64>,
-    ) -> Result<ByteStream> {
+    ) -> Result<JsonlStream> {
         // The endpoint caps the returned events at `limit`. Only send the
         // parameter when the user asked for one: tenants that predate it would
         // otherwise receive a query param they may not accept, and omitting it
@@ -518,7 +510,7 @@ impl AntithesisApi {
             request = request.limit(limit);
         }
         match request.send().await {
-            Ok(response) => Ok(response.into_inner()),
+            Ok(response) => Ok(JsonlStream::new(response.into_inner())),
             Err(err) => Err(format_api_client_error(err).await),
         }
     }
@@ -534,23 +526,25 @@ impl AntithesisApi {
         run_id: &str,
         query: &str,
         opts: EventSearchOptions,
-    ) -> Result<ByteStream> {
+    ) -> Result<JsonlStream> {
         // `count_only` is left to the generated default (false): snouty does
         // not expose it (see `EventSearchOptions`).
         let mut body = generated::types::SearchRequest::builder()
             .query(query)
             .is_streaming(opts.is_streaming)
             .validate_only(opts.validate_only);
-        // The generated body type defaults `limit` to the server's default
-        // (50) and always serializes it — the field cannot be omitted. That
-        // is harmless here: unlike the GET events endpoint's `limit` query
-        // parameter, every tenant that serves this endpoint accepts the
-        // field, and the explicit 50 equals the server default.
+        // Only a caller-named limit reaches the request. An omitted limit is
+        // meaningful: a non-streaming request falls to the server default
+        // (50), and a streaming one stays unbounded — the server is starting
+        // to honor `limit` together with `is_streaming`, so naming a default
+        // here would cut a `--follow` off at 50 events. build.rs strips the
+        // schema's `default: 50` so the generated field is omittable at all
+        // (see `unrequire_search_limit_default` there).
         if let Some(limit) = opts.limit {
             body = body.limit(limit);
         }
         match self.client.search().run_id(run_id).body(body).send().await {
-            Ok(response) => Ok(response.into_inner()),
+            Ok(response) => Ok(JsonlStream::new(response.into_inner())),
             Err(err) => Err(format_api_client_error(err).await),
         }
     }
@@ -2466,13 +2460,14 @@ mod tests {
         let mut stream = api
             .search_run_events("run-1", "slow request", None)
             .await
-            .unwrap()
-            .into_inner();
-        let mut body = Vec::new();
-        while let Some(chunk) = futures_util::StreamExt::next(&mut stream).await {
-            body.extend_from_slice(&chunk.unwrap());
+            .unwrap();
+        let mut body = String::new();
+        while let Some(line) = stream.next_line().await.unwrap() {
+            match line {
+                crate::jsonl::JsonlLine::Value(value) => body.push_str(&value.to_string()),
+                crate::jsonl::JsonlLine::Raw(raw) => body.push_str(&raw),
+            }
         }
-        let body = String::from_utf8(body).unwrap();
 
         assert!(body.contains("slow request"));
     }
@@ -2515,10 +2510,11 @@ mod tests {
         api.search_run_events("run-1", "slow", None).await.unwrap();
     }
 
-    // The DSL search wrapper POSTs the full Search_Request body: the query,
-    // every mode switch (`count_only` always as its default of false), and
-    // the limit (the generated body type always serializes `limit`,
-    // defaulting to the server's own default of 50).
+    // The DSL search wrapper POSTs the Search_Request body: the query and
+    // every mode switch (`count_only` always as its default of false). An
+    // unset limit is OMITTED, not defaulted: the omission is meaningful (a
+    // streaming request stays unbounded; see build.rs's
+    // `unrequire_search_limit_default`).
     #[tokio::test]
     async fn search_run_events_query_posts_full_body() {
         let mock_server = MockServer::start().await;
@@ -2530,7 +2526,6 @@ mod tests {
                 "count_only": false,
                 "is_streaming": false,
                 "validate_only": false,
-                "limit": 50,
             })))
             .respond_with(ResponseTemplate::new(200).set_body_string(
                 r#"{"output_text":"raft","moment":{"input_hash":"-456","vtime":"2.0"}}"#,
@@ -2547,13 +2542,13 @@ mod tests {
                 EventSearchOptions::default(),
             )
             .await
-            .unwrap()
-            .into_inner();
-        let mut body = Vec::new();
-        while let Some(chunk) = futures_util::StreamExt::next(&mut stream).await {
-            body.extend_from_slice(&chunk.unwrap());
-        }
-        assert!(String::from_utf8(body).unwrap().contains("raft"));
+            .unwrap();
+        // The stream arrives parsed: the one response line is a Value.
+        let Some(crate::jsonl::JsonlLine::Value(value)) = stream.next_line().await.unwrap() else {
+            panic!("expected one parsed line");
+        };
+        assert_eq!(value["output_text"], "raft");
+        assert!(stream.next_line().await.unwrap().is_none());
     }
 
     #[tokio::test]

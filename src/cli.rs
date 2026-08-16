@@ -643,9 +643,10 @@ Query snippets (each is a complete QUERY, ready to paste):
   # each crash annotated with the nearest earlier fault
   contains({output_text: "fatal"}).with_last({fault: filter(ev => ev.fault)})
 
-Each matching event prints as one line: `HASH VTIME SOURCE OUTPUT`. Rows
-reshaped by map/narrow/fold print as raw JSON. Feed a line's HASH and VTIME
-into `runs logs` to see the surrounding logs."#;
+Each matching event prints as its JSON, one line per event, with
+`moment.vtime` normalized to an exact number. Feed an event's
+`moment.input_hash` and `moment.vtime` into `runs logs` to see the
+surrounding logs."#;
 
 #[derive(Subcommand)]
 pub enum RunsCommands {
@@ -862,8 +863,9 @@ Examples:
     #[command(
         long_about = r#"Search a run's events for one or more substrings (all must match).
 
-Each matching event prints as one line: `HASH VTIME SOURCE OUTPUT` (SOURCE is
-[container:stream]). Feed a line's HASH and VTIME into `runs logs` to see the
+Each matching event prints as its JSON, one line per event, with
+`moment.vtime` normalized to an exact number. Feed an event's
+`moment.input_hash` and `moment.vtime` into `runs logs` to see the
 surrounding logs.
 
 Matching runs server-side. More than one term requires the events-search API,

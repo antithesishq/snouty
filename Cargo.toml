@@ -27,6 +27,8 @@ reqwest = { version = "0.13.1", default-features = false, features = ["http2", "
 reqwest-middleware = "0.5"
 color-eyre = { version = "0.6", default-features = false }
 futures-util = "0.3"
+# Chunk type of reqwest response streams; JsonlStream buffers them.
+bytes = "1"
 tokio = { version = "1", features = ["rt", "macros", "process", "time", "io-util", "io-std", "net", "signal", "sync"] }
 serde = { version = "1", features = ["derive"] }
 # float_roundtrip makes serde_json's f64 parsing correctly-rounded, so a vtime

@@ -53,6 +53,7 @@ fn generate_api_client(out_dir: &Path) {
     drop_use_otis(&mut spec_value);
     mark_vtime_schema(&mut spec_value);
     untype_search_count_response(&mut spec_value);
+    unrequire_search_limit_default(&mut spec_value);
     let spec: openapiv3::OpenAPI = serde_json::from_value(spec_value).unwrap();
 
     let mut settings = progenitor::GenerationSettings::default();
@@ -178,6 +179,34 @@ fn untype_search_count_response(spec: &mut serde_json::Value) {
         content.contains_key("application/x-ndjson"),
         "events-search 200 response no longer offers `application/x-ndjson`; \
          revisit untype_search_count_response in build.rs"
+    );
+}
+
+/// Strip the `default: 50` from `Search_Request.limit`, so the generated
+/// field is an `Option` that is omitted from the request body when unset.
+///
+/// An omitted limit is meaningful to the server: a non-streaming request
+/// falls to the server-side default, and a streaming request stays unbounded.
+/// With the default in the schema, progenitor bakes 50 into the generated
+/// type and serializes it on every request — which would cut an unbounded
+/// `--follow` off at 50 events once the server honors `limit` together with
+/// `is_streaming`.
+///
+/// The pointer is asserted, so a spec refresh that drops the default (the
+/// upstream fix) fails the build. ACTION when that happens: delete this
+/// transform and its call.
+fn unrequire_search_limit_default(spec: &mut serde_json::Value) {
+    let limit = spec
+        .pointer_mut("/components/schemas/Search_Request/properties/limit")
+        .and_then(serde_json::Value::as_object_mut)
+        .expect(
+            "openapi spec has no Search_Request.limit property; \
+             update unrequire_search_limit_default in build.rs",
+        );
+    assert!(
+        limit.remove("default").is_some(),
+        "Search_Request.limit no longer carries a default; \
+         unrequire_search_limit_default in build.rs is a no-op and can be removed"
     );
 }
 

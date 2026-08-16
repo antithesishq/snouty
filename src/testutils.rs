@@ -928,6 +928,35 @@ fn mock_route_list_run_properties(run_id: &str, query: Option<&str>) -> (u16, St
     )
 }
 
+/// Every double-quoted string literal in `query`, with `\"` and `\\` escapes
+/// resolved. The mock server uses this to "interpret" a query without a DSL
+/// engine: requiring each literal somewhere in an event covers
+/// `contains({...})` needles and substring-filter pipelines alike. Test-only
+/// by construction — it lives here so nothing outside the mock reaches it.
+fn extract_quoted_literals(query: &str) -> Vec<String> {
+    let mut literals = Vec::new();
+    let mut chars = query.chars();
+    while let Some(c) = chars.next() {
+        if c != '"' {
+            continue;
+        }
+        let mut literal = String::new();
+        loop {
+            match chars.next() {
+                Some('\\') => {
+                    if let Some(escaped) = chars.next() {
+                        literal.push(escaped);
+                    }
+                }
+                Some('"') | None => break,
+                Some(other) => literal.push(other),
+            }
+        }
+        literals.push(literal);
+    }
+    literals
+}
+
 fn mock_route_search_run_events(run_id: &str, query_str: Option<&str>) -> (u16, String) {
     // The `run-stream-error` stream is returned unfiltered: a `Stream_Error`
     // line is a failure signal the server emits regardless of the query, not
@@ -1145,7 +1174,7 @@ fn mock_route_search_events(run_id: &str, body: &str) -> (u16, String, &'static 
 
     // Lowercased with Unicode `to_lowercase`, matching the JS
     // `.toLowerCase()` in the filter this route models.
-    let needles: Vec<String> = crate::event_set_dsl::extract_quoted_literals(query)
+    let needles: Vec<String> = extract_quoted_literals(query)
         .into_iter()
         .filter(|literal| !literal.trim().is_empty())
         .map(|literal| literal.to_lowercase())
@@ -1186,6 +1215,21 @@ mod tests {
 
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn extract_quoted_literals_resolves_escapes() {
+        assert_eq!(
+            extract_quoted_literals(r#"contains({output_text: "slow request"})"#),
+            vec!["slow request".to_string()]
+        );
+        // Escaped quotes and backslashes arrive resolved; the JS filter's
+        // bare " " separators come out as literals too (callers drop blanks).
+        assert_eq!(
+            extract_quoted_literals(r#"filter(ev => (a + " ").includes("say \"hi\"\\"))"#),
+            vec![" ".to_string(), r#"say "hi"\"#.to_string()]
+        );
+        assert!(extract_quoted_literals("matches({a: 1})").is_empty());
+    }
 
     #[test]
     fn mock_query_param_decodes_form_encoded_value() {

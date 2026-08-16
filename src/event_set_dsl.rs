@@ -55,34 +55,6 @@ pub fn substring_filter(needles: &[String]) -> String {
     format!("filter(ev => ((h) => {clauses})(JSON.stringify(ev).toLowerCase()))")
 }
 
-/// Every double-quoted string literal in `query`, with `\"` and `\\` escapes
-/// resolved. The mock API server uses this to "interpret" a query without a
-/// DSL engine: requiring each literal somewhere in an event covers
-/// `contains({...})` needles and [`substring_filter`] pipelines alike.
-pub fn extract_quoted_literals(query: &str) -> Vec<String> {
-    let mut literals = Vec::new();
-    let mut chars = query.chars();
-    while let Some(c) = chars.next() {
-        if c != '"' {
-            continue;
-        }
-        let mut literal = String::new();
-        loop {
-            match chars.next() {
-                Some('\\') => {
-                    if let Some(escaped) = chars.next() {
-                        literal.push(escaped);
-                    }
-                }
-                Some('"') | None => break,
-                Some(other) => literal.push(other),
-            }
-        }
-        literals.push(literal);
-    }
-    literals
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -106,20 +78,5 @@ mod tests {
         );
         assert_eq!(query.matches("h.includes(").count(), 2, "got: {query}");
         assert!(query.contains(" && "), "got: {query}");
-    }
-
-    #[test]
-    fn extract_quoted_literals_resolves_escapes() {
-        assert_eq!(
-            extract_quoted_literals(r#"contains({output_text: "slow request"})"#),
-            vec!["slow request".to_string()]
-        );
-        // Escaped quotes and backslashes arrive resolved; the JS filter's
-        // bare " " separators come out as literals too (callers drop blanks).
-        assert_eq!(
-            extract_quoted_literals(r#"filter(ev => (a + " ").includes("say \"hi\"\\"))"#),
-            vec![" ".to_string(), r#"say "hi"\"#.to_string()]
-        );
-        assert!(extract_quoted_literals("matches({a: 1})").is_empty());
     }
 }

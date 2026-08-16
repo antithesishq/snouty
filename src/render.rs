@@ -67,9 +67,10 @@ enum NewlinePolicy {
     KeepNewlineDropReturn,
 }
 
-/// The measure user-facing prose wraps to. Narrower than most terminals, so a
-/// wrapped message reads as a paragraph instead of hitting the terminal's own
-/// mid-word wrap; wide enough that short messages stay on one line.
+/// The widest measure user-facing prose wraps to. Even on a wider terminal a
+/// wrapped message reads better as a paragraph than as full-width lines; on a
+/// narrower terminal [`wrap_if_tty`] wraps to the terminal's own width so the
+/// terminal never re-wraps mid-word.
 const PROSE_WIDTH: usize = 100;
 
 /// Wrap prose for stderr when a person is reading it.
@@ -77,38 +78,54 @@ const PROSE_WIDTH: usize = 100;
 /// Wrapping is a property of printing, not of the message, and it applies only
 /// on a terminal: piped and captured output keeps whole lines, because a wrap
 /// point that moves with an embedded path length breaks any multi-word match
-/// that straddles it.
+/// that straddles it. The measure is the terminal's width, capped at
+/// [`PROSE_WIDTH`].
 pub fn wrap_if_tty(text: &str) -> String {
-    use std::io::IsTerminal;
-    if std::io::stderr().is_terminal() {
-        wrap(text)
-    } else {
-        text.to_string()
+    let term = console::Term::stderr();
+    if !term.is_term() {
+        return text.to_string();
     }
+    let width = PROSE_WIDTH.min(term.size().1 as usize);
+    wrap_text(text, width).join("\n")
 }
 
-/// Word-wrap each overlong line of `text` to [`PROSE_WIDTH`] visible columns.
+/// The one wrapping engine every snouty renderer shares. Greedy word-wrap of
+/// `text` to `width` display columns, one output line per element.
 ///
-/// A line that already fits is returned byte-identical, which keeps aligned
-/// content (tables, caret markers, indented listings) exactly as built.
-/// Continuation lines inherit the line's indent, ANSI escape sequences count
-/// as zero width, and words are never split — a path overflows rather than
-/// breaking.
-fn wrap(text: &str) -> String {
-    text.lines().map(wrap_line).collect::<Vec<_>>().join("\n")
-}
-
-fn wrap_line(line: &str) -> String {
-    if textwrap::core::display_width(line) <= PROSE_WIDTH {
-        return line.to_string();
+/// Each `\n` starts a new paragraph and blank lines are kept. A paragraph that
+/// already fits passes through byte-identical, which keeps aligned content
+/// (tables, caret markers, indented listings) exactly as built. An overlong
+/// paragraph keeps its leading-space indent on every wrapped line, has tabs
+/// normalized to spaces (textwrap's separator only breaks on spaces), and
+/// never splits a word — an overlong token overflows instead. Width is
+/// measured with `textwrap`'s `display_width`: ANSI escape sequences count as
+/// zero columns and wide glyphs count as two.
+pub(crate) fn wrap_text(text: &str, width: usize) -> Vec<String> {
+    let mut lines = Vec::new();
+    for paragraph in text.split('\n') {
+        if textwrap::core::display_width(paragraph) <= width {
+            lines.push(paragraph.to_string());
+            continue;
+        }
+        // Overlong yet nothing to wrap: whitespace-only collapses to a blank
+        // line rather than emitting an invisible overlong run.
+        if paragraph.trim().is_empty() {
+            lines.push(String::new());
+            continue;
+        }
+        let indent: String = paragraph.chars().take_while(|c| *c == ' ').collect();
+        // Words are never split mid-token (no hard breaks, no hyphenation) —
+        // an overlong token overflows instead.
+        let options = textwrap::Options::new(width.max(1))
+            .break_words(false)
+            .word_splitter(textwrap::WordSplitter::NoHyphenation)
+            .initial_indent(&indent)
+            .subsequent_indent(&indent);
+        for line in textwrap::wrap(paragraph.replace('\t', " ").trim_start(), options) {
+            lines.push(line.into_owned());
+        }
     }
-    let indent: String = line.chars().take_while(|c| *c == ' ').collect();
-    let options = textwrap::Options::new(PROSE_WIDTH)
-        .initial_indent(&indent)
-        .subsequent_indent(&indent)
-        .break_words(false)
-        .word_splitter(textwrap::WordSplitter::NoHyphenation);
-    textwrap::fill(line.trim_start(), options)
+    lines
 }
 
 pub(crate) fn sanitize(s: &str) -> String {
@@ -133,6 +150,59 @@ pub(crate) fn sanitize_multiline(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use hegel::generators;
+
+    /// `wrap_text` preserves the exact sequence of words — wrapping only inserts
+    /// line breaks, it never drops, splits, reorders, or invents a word.
+    #[hegel::test]
+    fn wrap_text_preserves_word_sequence(tc: hegel::TestCase) {
+        let text = tc.draw(generators::text());
+        let width = tc.draw(generators::integers::<usize>().min_value(1).max_value(40));
+        let lines = wrap_text(&text, width);
+        let words_in: Vec<&str> = text.split_whitespace().collect();
+        let words_out: Vec<&str> = lines.iter().flat_map(|l| l.split_whitespace()).collect();
+        assert_eq!(words_in, words_out);
+    }
+
+    /// Every wrapped line fits within `width` display columns (ANSI escapes
+    /// and control characters count as zero width, wide glyphs as two), with
+    /// the one documented exception: a single word longer than the remaining
+    /// width is kept intact rather than split mid-token (after the preserved
+    /// leading-space indent, such a line has no internal space).
+    #[hegel::test]
+    fn wrap_text_respects_width(tc: hegel::TestCase) {
+        let text = tc.draw(generators::text());
+        // Include 0 to exercise the `width.max(1)` clamp.
+        let width = tc.draw(generators::integers::<usize>().max_value(40));
+        let effective = width.max(1);
+        for line in wrap_text(&text, width) {
+            assert!(
+                textwrap::core::display_width(&line) <= effective
+                    || !line.trim_start().contains(' '),
+                "line {line:?} exceeds width {effective} but contains a space",
+            );
+        }
+    }
+
+    #[test]
+    fn wrap_text_wraps_words_and_preserves_blank_lines() {
+        let wrapped = wrap_text("the quick brown fox\n\njumps", 9);
+        assert_eq!(wrapped, vec!["the quick", "brown fox", "", "jumps"]);
+        // A word longer than the width is kept intact rather than split.
+        assert_eq!(
+            wrap_text("supercalifragilistic", 5),
+            vec!["supercalifragilistic"]
+        );
+    }
+
+    #[test]
+    fn wrap_text_keeps_fitting_paragraphs_byte_identical() {
+        // A paragraph that fits passes through untouched: internal alignment,
+        // leading spaces, and tabs all survive.
+        assert_eq!(wrap_text("  a\tb   c", 20), vec!["  a\tb   c"]);
+        // A tab in an overlong paragraph becomes a break opportunity.
+        assert_eq!(wrap_text("aaaa\tbbbb", 5), vec!["aaaa", "bbbb"]);
+    }
 
     #[test]
     fn render_kv_aligns_to_widest_label_and_min_width() {
@@ -147,6 +217,12 @@ mod tests {
     fn render_kv_sanitizes_values() {
         let rows = vec![("k", "a\nb".to_string())];
         assert_eq!(render_kv(&rows, 0), "k  a\\nb\n");
+    }
+
+    /// The prose shape [`wrap_if_tty`] produces on a wide terminal, minus the
+    /// tty detection, so the tests run identically under a captured stdout.
+    fn wrap(text: &str) -> String {
+        wrap_text(text, PROSE_WIDTH).join("\n")
     }
 
     #[test]

@@ -22,7 +22,7 @@ use crate::api::{
 };
 use crate::cli::{RunsCommands, RunsListArgs};
 use crate::error::{api_error_status, user_error};
-use crate::render::{OutputOptions, render_kv, sanitize, sanitize_multiline};
+use crate::render::{OutputOptions, render_kv, sanitize, sanitize_multiline, wrap_text};
 use crate::settings::Settings;
 use crate::time::HumanDuration;
 use crate::vtime::VTime;
@@ -3160,36 +3160,6 @@ fn normalize_terminal_text(text: &str) -> String {
     sanitize(&strip_ansi(text))
 }
 
-/// Greedy word-wrap to `width` columns, preserving existing line breaks (each
-/// `\n` starts a new paragraph; blank lines are kept). Words longer than
-/// `width` are left intact rather than split mid-token.
-fn wrap_text(text: &str, width: usize) -> Vec<String> {
-    let width = width.max(1);
-    let mut lines = Vec::new();
-    for paragraph in text.split('\n') {
-        if paragraph.trim().is_empty() {
-            lines.push(String::new());
-            continue;
-        }
-        let mut current = String::new();
-        for word in paragraph.split_whitespace() {
-            if current.is_empty() {
-                current.push_str(word);
-            } else if current.chars().count() + 1 + word.chars().count() <= width {
-                current.push(' ');
-                current.push_str(word);
-            } else {
-                lines.push(std::mem::take(&mut current));
-                current.push_str(word);
-            }
-        }
-        if !current.is_empty() {
-            lines.push(current);
-        }
-    }
-    lines
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3212,35 +3182,6 @@ mod tests {
                 }
                 NdjsonLine::Raw(_) => None,
             }
-        }
-    }
-
-    /// `wrap_text` preserves the exact sequence of words — wrapping only inserts
-    /// line breaks, it never drops, splits, reorders, or invents a word.
-    #[hegel::test]
-    fn wrap_text_preserves_word_sequence(tc: hegel::TestCase) {
-        let text = tc.draw(generators::text());
-        let width = tc.draw(generators::integers::<usize>().min_value(1).max_value(40));
-        let lines = wrap_text(&text, width);
-        let words_in: Vec<&str> = text.split_whitespace().collect();
-        let words_out: Vec<&str> = lines.iter().flat_map(|l| l.split_whitespace()).collect();
-        assert_eq!(words_in, words_out);
-    }
-
-    /// Every wrapped line fits within `width` columns, with the one documented
-    /// exception: a single word longer than `width` is kept intact rather than
-    /// split mid-token (such a line has no internal space).
-    #[hegel::test]
-    fn wrap_text_respects_width(tc: hegel::TestCase) {
-        let text = tc.draw(generators::text());
-        // Include 0 to exercise the `width.max(1)` clamp.
-        let width = tc.draw(generators::integers::<usize>().max_value(40));
-        let effective = width.max(1);
-        for line in wrap_text(&text, width) {
-            assert!(
-                line.chars().count() <= effective || !line.contains(' '),
-                "line {line:?} exceeds width {effective} but contains a space",
-            );
         }
     }
 
@@ -4332,17 +4273,6 @@ mod tests {
     fn render_moments_table_marks_unreachable_when_empty() {
         let p = event_prop(PropertyStatus::Passing, vec![], vec![]);
         assert!(render_moments_table(&p).contains("unreachable"));
-    }
-
-    #[test]
-    fn wrap_text_wraps_words_and_preserves_blank_lines() {
-        let wrapped = wrap_text("the quick brown fox\n\njumps", 9);
-        assert_eq!(wrapped, vec!["the quick", "brown fox", "", "jumps"]);
-        // A word longer than the width is kept intact rather than split.
-        assert_eq!(
-            wrap_text("supercalifragilistic", 5),
-            vec!["supercalifragilistic"]
-        );
     }
 
     #[test]

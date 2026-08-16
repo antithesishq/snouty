@@ -88,31 +88,50 @@ pub fn wrap_if_tty(text: &str) -> String {
 }
 
 /// Word-wrap each overlong line of `text` to [`PROSE_WIDTH`] visible columns.
-///
-/// A line that already fits is returned byte-identical, which keeps aligned
-/// content (tables, caret markers, indented listings) exactly as built.
-/// Continuation lines inherit the line's indent, ANSI escape sequences count
-/// as zero width, and words are never split — a path overflows rather than
-/// breaking.
+/// Thin adapter over [`wrap_text`] for prose that flows as one string.
 fn wrap(text: &str) -> String {
-    text.lines().map(wrap_line).collect::<Vec<_>>().join("\n")
+    wrap_text(text, PROSE_WIDTH).join("\n")
 }
 
-fn wrap_line(line: &str) -> String {
-    if textwrap::core::display_width(line) <= PROSE_WIDTH {
-        return line.to_string();
+/// The one wrapping engine every snouty renderer shares. Greedy word-wrap of
+/// `text` to `width` display columns, one output line per element.
+///
+/// Each `\n` starts a new paragraph and blank lines are kept. A paragraph that
+/// already fits passes through byte-identical, which keeps aligned content
+/// (tables, caret markers, indented listings) exactly as built. An overlong
+/// paragraph keeps its leading-space indent on every wrapped line, has tabs
+/// normalized to spaces (textwrap's separator only breaks on spaces), and
+/// never splits a word — an overlong token overflows instead. Width is
+/// measured with `textwrap`'s `display_width`: ANSI escape sequences count as
+/// zero columns and wide glyphs count as two.
+pub(crate) fn wrap_text(text: &str, width: usize) -> Vec<String> {
+    let mut lines = Vec::new();
+    for paragraph in text.split('\n') {
+        if textwrap::core::display_width(paragraph) <= width {
+            lines.push(paragraph.to_string());
+            continue;
+        }
+        // Overlong yet nothing to wrap: whitespace-only collapses to a blank
+        // line rather than emitting an invisible overlong run.
+        if paragraph.trim().is_empty() {
+            lines.push(String::new());
+            continue;
+        }
+        let indent: String = paragraph.chars().take_while(|c| *c == ' ').collect();
+        let options = wrap_options(width)
+            .initial_indent(&indent)
+            .subsequent_indent(&indent);
+        for line in textwrap::wrap(paragraph.replace('\t', " ").trim_start(), options) {
+            lines.push(line.into_owned());
+        }
     }
-    let indent: String = line.chars().take_while(|c| *c == ' ').collect();
-    let options = wrap_options(PROSE_WIDTH)
-        .initial_indent(&indent)
-        .subsequent_indent(&indent);
-    textwrap::fill(line.trim_start(), options)
+    lines
 }
 
-/// The one wrapping policy every snouty wrapper shares: words are never
-/// split mid-token (no hard breaks, no hyphenation) — an overlong token
-/// overflows instead. Callers layer width-specific settings (indent) on top.
-pub(crate) fn wrap_options<'a>(width: usize) -> textwrap::Options<'a> {
+/// The one wrapping policy [`wrap_text`] builds on: words are never split
+/// mid-token (no hard breaks, no hyphenation) — an overlong token overflows
+/// instead.
+fn wrap_options<'a>(width: usize) -> textwrap::Options<'a> {
     textwrap::Options::new(width.max(1))
         .break_words(false)
         .word_splitter(textwrap::WordSplitter::NoHyphenation)
@@ -140,6 +159,59 @@ pub(crate) fn sanitize_multiline(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use hegel::generators;
+
+    /// `wrap_text` preserves the exact sequence of words — wrapping only inserts
+    /// line breaks, it never drops, splits, reorders, or invents a word.
+    #[hegel::test]
+    fn wrap_text_preserves_word_sequence(tc: hegel::TestCase) {
+        let text = tc.draw(generators::text());
+        let width = tc.draw(generators::integers::<usize>().min_value(1).max_value(40));
+        let lines = wrap_text(&text, width);
+        let words_in: Vec<&str> = text.split_whitespace().collect();
+        let words_out: Vec<&str> = lines.iter().flat_map(|l| l.split_whitespace()).collect();
+        assert_eq!(words_in, words_out);
+    }
+
+    /// Every wrapped line fits within `width` display columns (ANSI escapes
+    /// and control characters count as zero width, wide glyphs as two), with
+    /// the one documented exception: a single word longer than the remaining
+    /// width is kept intact rather than split mid-token (after the preserved
+    /// leading-space indent, such a line has no internal space).
+    #[hegel::test]
+    fn wrap_text_respects_width(tc: hegel::TestCase) {
+        let text = tc.draw(generators::text());
+        // Include 0 to exercise the `width.max(1)` clamp.
+        let width = tc.draw(generators::integers::<usize>().max_value(40));
+        let effective = width.max(1);
+        for line in wrap_text(&text, width) {
+            assert!(
+                textwrap::core::display_width(&line) <= effective
+                    || !line.trim_start().contains(' '),
+                "line {line:?} exceeds width {effective} but contains a space",
+            );
+        }
+    }
+
+    #[test]
+    fn wrap_text_wraps_words_and_preserves_blank_lines() {
+        let wrapped = wrap_text("the quick brown fox\n\njumps", 9);
+        assert_eq!(wrapped, vec!["the quick", "brown fox", "", "jumps"]);
+        // A word longer than the width is kept intact rather than split.
+        assert_eq!(
+            wrap_text("supercalifragilistic", 5),
+            vec!["supercalifragilistic"]
+        );
+    }
+
+    #[test]
+    fn wrap_text_keeps_fitting_paragraphs_byte_identical() {
+        // A paragraph that fits passes through untouched: internal alignment,
+        // leading spaces, and tabs all survive.
+        assert_eq!(wrap_text("  a\tb   c", 20), vec!["  a\tb   c"]);
+        // A tab in an overlong paragraph becomes a break opportunity.
+        assert_eq!(wrap_text("aaaa\tbbbb", 5), vec!["aaaa", "bbbb"]);
+    }
 
     #[test]
     fn render_kv_aligns_to_widest_label_and_min_width() {

@@ -14,6 +14,7 @@ mod snippet;
 
 use crate::cli::DocsCommands;
 use crate::error::user_error;
+use crate::render::OutputOptions;
 
 const DEFAULT_DOCS_URL: &str = "https://antithesis.com/docs";
 /// Env-only override for the docs site (mainly a test seam pointing at a mock);
@@ -47,7 +48,11 @@ fn etag_path() -> Result<PathBuf> {
     Ok(cache_dir()?.join("docs.db.etag"))
 }
 
-pub async fn cmd_docs(command: DocsCommands, offline: bool, json: bool) -> Result<()> {
+pub async fn cmd_docs(
+    command: DocsCommands,
+    offline: bool,
+    OutputOptions { json, .. }: OutputOptions,
+) -> Result<()> {
     if !offline {
         update_with_fallback().await?;
     }
@@ -64,7 +69,20 @@ pub async fn cmd_docs(command: DocsCommands, offline: bool, json: bool) -> Resul
             if query.is_empty() {
                 return Err(user_error("search query required"));
             }
-            search(&query.join(" "), json, list, limit, match_mode)
+            let query_mode = if match_mode {
+                QueryMode::Fts5
+            } else {
+                QueryMode::Literal
+            };
+            search(
+                &query.join(" "),
+                SearchOptions {
+                    json,
+                    list,
+                    limit,
+                    query_mode,
+                },
+            )
         }
         DocsCommands::Sqlite => sqlite_path(),
         DocsCommands::Tree { depth, filter } => tree(depth.map(|d| d.get()), filter.as_deref()),
@@ -278,7 +296,37 @@ fn is_fts5_query_error(err: &rusqlite::Error) -> bool {
     )
 }
 
-fn search(query: &str, json: bool, list: bool, limit: usize, match_mode: bool) -> Result<()> {
+/// How [`search`] interprets the query argv (see the mode comment in the
+/// function body).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum QueryMode {
+    /// Quote every term so the argv is searched as literal text (the default).
+    Literal,
+    /// Pass the argv straight to FTS5 as a query expression (`--match`).
+    Fts5,
+}
+
+/// Options for [`search`], mirroring the CLI flags. `json` and `list` combine
+/// freely: `--json --list` prints a JSON array of paths.
+struct SearchOptions {
+    /// Global `--json`: structured output instead of human rendering.
+    json: bool,
+    /// `--list`: print only the matching page paths.
+    list: bool,
+    /// `--limit`: maximum number of results.
+    limit: usize,
+    query_mode: QueryMode,
+}
+
+fn search(
+    query: &str,
+    SearchOptions {
+        json,
+        list,
+        limit,
+        query_mode,
+    }: SearchOptions,
+) -> Result<()> {
     let conn = open_db()?;
 
     // Two distinct modes:
@@ -293,20 +341,21 @@ fn search(query: &str, json: bool, list: bool, limit: usize, match_mode: bool) -
     // must reflect what actually matched, so they're derived the same way the
     // MATCH query is (literal tokens vs. an FTS5 expression with its operators
     // stripped).
-    let (match_query, title_query, highlight_terms) = if match_mode {
-        (query.to_string(), None, snippet::fts5_query_terms(query))
-    } else {
-        let terms = literal_query_terms(query);
-        let highlight_terms = terms
-            .iter()
-            .copied()
-            .flat_map(snippet::word_tokens)
-            .collect();
-        (
-            literal_match_query(&terms),
-            literal_title_query(&terms),
-            highlight_terms,
-        )
+    let (match_query, title_query, highlight_terms) = match query_mode {
+        QueryMode::Fts5 => (query.to_string(), None, snippet::fts5_query_terms(query)),
+        QueryMode::Literal => {
+            let terms = literal_query_terms(query);
+            let highlight_terms = terms
+                .iter()
+                .copied()
+                .flat_map(snippet::word_tokens)
+                .collect();
+            (
+                literal_match_query(&terms),
+                literal_title_query(&terms),
+                highlight_terms,
+            )
+        }
     };
 
     let fetch_limit = limit.saturating_mul(5).max(limit);
@@ -318,7 +367,7 @@ fn search(query: &str, json: bool, list: bool, limit: usize, match_mode: bool) -
     } else {
         let rows = match run_search(&conn, &match_query, title_query.as_deref(), fetch_limit) {
             Ok(rows) => rows,
-            Err(e) if match_mode && is_fts5_query_error(&e) => {
+            Err(e) if query_mode == QueryMode::Fts5 && is_fts5_query_error(&e) => {
                 // In --match mode the caller controls the query syntax, so a
                 // parse failure is theirs to fix; point them back to the default.
                 return Err(user_error(format!("invalid --match query: {e}")).note(

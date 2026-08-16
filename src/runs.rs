@@ -22,7 +22,7 @@ use crate::api::{
 };
 use crate::cli::{RunsCommands, RunsListArgs};
 use crate::error::{api_error_status, user_error};
-use crate::render::{render_kv, sanitize, sanitize_multiline};
+use crate::render::{OutputOptions, render_kv, sanitize, sanitize_multiline};
 use crate::settings::Settings;
 use crate::time::HumanDuration;
 use crate::vtime::VTime;
@@ -83,8 +83,7 @@ impl std::str::FromStr for Stream {
 pub async fn cmd_runs(
     command: Option<RunsCommands>,
     settings: &Settings,
-    json: bool,
-    verbose: bool,
+    output: OutputOptions,
 ) -> Result<()> {
     // `--detail` produces human formatting, so it can't combine with `--json`.
     // It rides on more than one subcommand (`runs list`, `runs properties`), so
@@ -95,13 +94,13 @@ pub async fn cmd_runs(
         Some(RunsCommands::Properties { detail, .. }) => *detail,
         _ => false,
     };
-    reject_detail_with_json(json, detail)?;
+    reject_detail_with_json(output.json, detail)?;
 
     match command {
-        None => cmd_runs_list(RunsListArgs::default(), settings, json, verbose).await,
-        Some(RunsCommands::List(args)) => cmd_runs_list(args, settings, json, verbose).await,
+        None => cmd_runs_list(RunsListArgs::default(), settings, output).await,
+        Some(RunsCommands::List(args)) => cmd_runs_list(args, settings, output).await,
         Some(RunsCommands::Show { run_id, web }) => {
-            cmd_runs_show(&run_id, web, settings, json, verbose).await
+            cmd_runs_show(&run_id, web, settings, output).await
         }
         Some(RunsCommands::Wait {
             run_id,
@@ -113,8 +112,7 @@ pub async fn cmd_runs(
                 poll_interval.as_duration(),
                 timeout,
                 settings,
-                json,
-                verbose,
+                output,
             )
             .await
         }
@@ -138,10 +136,10 @@ pub async fn cmd_runs(
                 name: name.as_deref(),
                 group: group.as_deref(),
             };
-            cmd_runs_properties(&run_id, filter, detail, settings, json, verbose).await
+            cmd_runs_properties(&run_id, filter, detail, settings, output).await
         }
         Some(RunsCommands::BuildLogs { run_id }) => {
-            cmd_runs_build_logs(&run_id, settings, json, verbose).await
+            cmd_runs_build_logs(&run_id, settings, output).await
         }
         Some(RunsCommands::Logs {
             run_id,
@@ -163,7 +161,7 @@ pub async fn cmd_runs(
                 moment,
                 begin,
                 settings,
-                LogOutputOptions { json, verbose, raw },
+                LogOutputOptions { output, raw },
             )
             .await
         }
@@ -178,7 +176,7 @@ pub async fn cmd_runs(
             // The flag is a whole number of seconds; carry it as a Duration
             // from here on.
             let timeout = Duration::from_secs(timeout);
-            cmd_runs_exec(&run_id, moment, script, timeout, settings, json, verbose).await
+            cmd_runs_exec(&run_id, moment, script, timeout, settings, output).await
         }
         Some(RunsCommands::Events {
             run_id,
@@ -190,7 +188,7 @@ pub async fn cmd_runs(
             // `query` is a backward-compatible alias whose terms are additional
             // needles. Merge both into a single needle list.
             matches.extend(query);
-            cmd_runs_events(&run_id, &matches, limit, settings, json, verbose).await
+            cmd_runs_events(&run_id, &matches, limit, settings, output).await
         }
     }
 }
@@ -198,8 +196,7 @@ pub async fn cmd_runs(
 async fn cmd_runs_list(
     args: RunsListArgs,
     settings: &Settings,
-    json: bool,
-    verbose: bool,
+    OutputOptions { json, verbose }: OutputOptions,
 ) -> Result<()> {
     debug!("listing runs");
 
@@ -325,8 +322,7 @@ async fn cmd_runs_show(
     run_id: &str,
     web: bool,
     settings: &Settings,
-    json: bool,
-    verbose: bool,
+    OutputOptions { json, verbose }: OutputOptions,
 ) -> Result<()> {
     debug!("showing run: {}", run_id);
 
@@ -393,8 +389,7 @@ async fn cmd_runs_wait(
     poll_interval: Duration,
     timeout: Option<HumanDuration>,
     settings: &Settings,
-    json: bool,
-    verbose: bool,
+    OutputOptions { json, verbose }: OutputOptions,
 ) -> Result<()> {
     debug!("waiting for run: {}", run_id);
 
@@ -522,8 +517,7 @@ async fn cmd_runs_properties(
     filter: PropertyFilter<'_>,
     detail: bool,
     settings: &Settings,
-    json: bool,
-    verbose: bool,
+    OutputOptions { json, verbose }: OutputOptions,
 ) -> Result<()> {
     debug!("listing properties for run: {}", run_id);
 
@@ -1355,8 +1349,8 @@ fn render_runs_detail(runs: &[RunSummary]) -> String {
 }
 
 struct LogOutputOptions {
-    json: bool,
-    verbose: bool,
+    /// The global `--json`/`--verbose` flags.
+    output: OutputOptions,
     /// Skip all log post-processing: no fault annotation in JSON mode, and the
     /// human payload is rendered verbatim (no ANSI stripping or control-byte
     /// escaping).
@@ -1377,8 +1371,7 @@ fn note_if_empty(stream_ok: bool, json: bool, wrote_any: bool, empty_note: &str)
 async fn cmd_runs_build_logs(
     run_id: &str,
     settings: &Settings,
-    json: bool,
-    verbose: bool,
+    OutputOptions { json, verbose }: OutputOptions,
 ) -> Result<()> {
     debug!("streaming build logs for run: {}", run_id);
 
@@ -1456,8 +1449,7 @@ async fn cmd_runs_events(
     matches: &[String],
     limit: Option<usize>,
     settings: &Settings,
-    json: bool,
-    verbose: bool,
+    OutputOptions { json, verbose }: OutputOptions,
 ) -> Result<()> {
     debug!("searching events for run: {}", run_id);
 
@@ -1603,7 +1595,10 @@ async fn cmd_runs_logs(
     moment: Moment,
     begin: Option<LogsBegin>,
     settings: &Settings,
-    LogOutputOptions { json, verbose, raw }: LogOutputOptions,
+    LogOutputOptions {
+        output: OutputOptions { json, verbose },
+        raw,
+    }: LogOutputOptions,
 ) -> Result<()> {
     debug!("streaming logs for run: {}", run_id);
 
@@ -1814,8 +1809,7 @@ async fn cmd_runs_exec(
     script: Option<String>,
     timeout: Duration,
     settings: &Settings,
-    json: bool,
-    verbose: bool,
+    OutputOptions { json, verbose }: OutputOptions,
 ) -> Result<()> {
     let script = resolve_exec_script(script)?;
 

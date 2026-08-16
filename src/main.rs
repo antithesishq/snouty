@@ -8,6 +8,7 @@ use log::{debug, info};
 use color_eyre::Section;
 use color_eyre::eyre::{Context, Result};
 use semver::Version;
+use snouty::OutputOptions;
 use snouty::api::AntithesisApi;
 use snouty::auth::initialize_credential_store;
 use snouty::cli::{
@@ -95,6 +96,9 @@ async fn run(cli: Cli) -> Result<()> {
     if json && let Some(name) = json_unaware_command_name(&command) {
         eprintln!("warning: --json has no effect for `snouty {name}`");
     }
+    // The global output flags travel together from here on; every command
+    // takes them as one value instead of a swappable positional bool pair.
+    let output = OutputOptions { json, verbose };
 
     // A gated command hides itself as the parser is built (see the `hide`
     // attribute on `RunsCommands::Exec`), but a hidden subcommand is still
@@ -121,29 +125,27 @@ async fn run(cli: Cli) -> Result<()> {
             Ok(())
         }
         Commands::Update(args) => cmd_update(args, &settings?),
-        Commands::Docs { offline, command } => docs::cmd_docs(command, offline, json).await,
+        Commands::Docs { offline, command } => docs::cmd_docs(command, offline, output).await,
         Commands::Login { tenant, repository } => {
             cmd_login(tenant, repository, profile.as_deref(), &settings?).await
         }
         Commands::Launch(args) => {
             info!("launching test with webhook: {}", args.webhook);
-            cmd_launch(args, &settings?, json, verbose).await
+            cmd_launch(args, &settings?, output).await
         }
         Commands::Run(args) => {
             eprintln!("warning: `snouty run` is deprecated, use `snouty launch` instead");
             info!("launching test with webhook: {}", args.webhook);
-            cmd_launch(args, &settings?, json, verbose).await
+            cmd_launch(args, &settings?, output).await
         }
-        Commands::Runs { command } => {
-            snouty::runs::cmd_runs(command, &settings?, json, verbose).await
-        }
+        Commands::Runs { command } => snouty::runs::cmd_runs(command, &settings?, output).await,
         Commands::Debug(args) => {
             info!("starting debug session");
-            cmd_debug(args, &settings?, json, verbose).await
+            cmd_debug(args, &settings?, output).await
         }
         Commands::Validate(args) => validate::cmd_validate(args, &settings?).await,
         Commands::Doctor(args) => {
-            snouty::doctor::cmd_doctor(&settings?, json, verbose, args.offline).await
+            snouty::doctor::cmd_doctor(&settings?, output, args.offline).await
         }
     };
 
@@ -188,8 +190,7 @@ fn json_unaware_command_name(command: &Commands) -> Option<&'static str> {
 async fn cmd_launch(
     args: LaunchArgs,
     settings: &Settings,
-    json: bool,
-    verbose: bool,
+    OutputOptions { json, verbose }: OutputOptions,
 ) -> Result<()> {
     let mut params = Params::new();
 
@@ -365,7 +366,11 @@ fn debug_params(args: DebugArgs) -> Result<Params> {
     Ok(params)
 }
 
-async fn cmd_debug(args: DebugArgs, settings: &Settings, json: bool, verbose: bool) -> Result<()> {
+async fn cmd_debug(
+    args: DebugArgs,
+    settings: &Settings,
+    OutputOptions { json, verbose }: OutputOptions,
+) -> Result<()> {
     let mut params = debug_params(args)?;
     // Every path into the moment has merged by now — the typed flags and raw
     // JSON on stdin — so normalizing here makes both send the same text. It

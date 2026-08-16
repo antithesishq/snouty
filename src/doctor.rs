@@ -7,7 +7,7 @@ use crate::auth::{AuthenticationInfo, PasswordPolicy};
 use crate::compose;
 use crate::container;
 use crate::features::{self, Feature};
-use crate::render::render_kv;
+use crate::render::{OutputOptions, render_kv};
 use crate::settings::Settings;
 
 /// Outcome of a single health check. Only `Error` fails doctor; `Warn` is
@@ -429,8 +429,7 @@ fn version_check(host: &str, result: std::result::Result<ApiVersion, VersionErro
 
 pub async fn cmd_doctor(
     settings: &Settings,
-    json: bool,
-    verbose: bool,
+    OutputOptions { json, verbose }: OutputOptions,
     offline: bool,
 ) -> Result<()> {
     let mut checks = collect_checks(settings);

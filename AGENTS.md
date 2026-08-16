@@ -12,11 +12,11 @@ CLI tool for the Antithesis API. Written in Rust.
 
 ## Specs
 
-This project uses spec driven development. The `./specs` folder contains specs
+This project uses spec-driven development. The `./specs` folder contains specs
 for all features in the project.
 
 Any new subcommands or flags must have a spec accompanying them. Having to change
-an existing spec is a good sign of backwards incompatible breakage, which will
+an existing spec is a good sign of backward-incompatible breakage, which will
 be subject to extra review.
 
 ## Cookbook
@@ -46,29 +46,32 @@ writing down once. When you add one:
 ## Tests
 
 Internal functions should be accompanied by unit tests. For small, simple
-functions (e.g. trivial env/string/path plumbing) this is a judgement call —
+functions (e.g. trivial env/string/path plumbing) this is a judgment call —
 skip the test when it would add more indirection or complexity than the coverage
 is worth.
 
 - Delete tests that assert a derive, a std-library behavior, an enum variant's
   own spelling, or anything the compiler already guarantees.
-- Never extract a function only so a test can call it. Inline it and delete the
-  test.
+- Avoid creating many small functions just to be able to unit test them. Prefer
+  to cover behaviors via spec and integration tests whenever possible.
 - A test helper with more than three parameters takes a builder or `Default`.
 - Code whose only callers are tests lives in the test harness: the mock server,
   a test module, or behind `#[cfg(test)]`.
+- Use Hegel property tests to verify code that parses, converts, transforms,
+  validates, and normalizes. If the code has clear properties, use Hegel to
+  verify they hold.
 
 ## Checks and lints
 
-Run the following commands to validate code meets required standards:
+Run the following commands to validate that the code meets required standards:
 
 ```
-cargo test
+cargo nextest run
 cargo clippy
 cargo fmt
 ```
 
-If `cargo nextest` is available, always prefer to use `cargo nextest run` for testing.
+If `cargo nextest` is not available, you may use `cargo test`.
 
 ### Running spec tests against a staging backend
 
@@ -123,13 +126,11 @@ uvx pyright scripts/gen-gallery.py  # `[tool.pyright]` points it at ./.venv
 
 ## AI Coding Workflow
 
-1. ensure that all changes are reflected by a spec, update that first if needed,
-   but make sure to confirm changes with the developer.
-2. practice red-green TDD; write tests first, confirm that they demonstrate the
-   desired feature or change, then iterate on code until tests pass
-3. test, check, and format code before finishing
-
-Golden rule: always leave the project in a better state than when you started.
+1. Follow the Rust coding conventions in this file at all times
+2. Ensure that all user-visible changes are covered by a CLI spec or integration test
+3. Update gen-gallery.py when changing CLI behavior
+4. Verify all tests catch what you want them to catch via targeted mutation testing
+5. Test, check, and format code before finishing
 
 ## Rust coding conventions
 
@@ -139,6 +140,7 @@ All code must be simple and idiomatic.
 - Avoid unnecessary heap allocations
 - Use `eyre` for errors
 - Use `log` for debug logging
+- Do not use `unsafe` without explicit authorization
 
 ### Types
 
@@ -149,8 +151,8 @@ All code must be simple and idiomatic.
   parse sooner.
 - Every CLI argument uses its domain type as the `value_parser`. No dispatch arm
   parses a string.
-- A presentation type stops at the presentation boundary. `HumanDuration` parses
-  the flag and formats the error; everything past that takes a `Duration`.
+- Use the right type for the job. For example, prefer to convert `HumanDuration`
+  to `Duration` once you no longer need the additional behavior.
 - Implement the std trait rather than a bespoke method: `Display` not `as_str`,
   `FromStr` not `from_id`, `From`/`TryFrom` not `to_x`, `Default` not an
   argument-less `new()`. Keep an inherent method only when it returns a type the
@@ -180,9 +182,10 @@ All code must be simple and idiomatic.
 
 - Inline a function with one call site, unless it is recursive or it keeps a
   distinct responsibility out of its caller.
-- Search std, then crates.io, then write it yourself. Vet a candidate crate on
+- Use high-quality dependencies rather than implementing everything from scratch.
+  Search std, then crates.io, before writing it yourself. Vet a candidate crate on
   downloads, reverse dependencies, and last release date, and record that in the
-  PR. A utility you write goes in `util`, not in a domain module.
+  PR. Keep general purpose utilities separate from domain code.
 - Implement the ecosystem trait, then use its combinators. A type that yields a
   sequence implements `futures::Stream`; delete hand-written loops that
   duplicate `map`, `take`, or `filter`.
@@ -204,9 +207,10 @@ All code must be simple and idiomatic.
 
 - A comment states a precondition, an invariant, a non-obvious reason, or a TODO
   with a trigger. Delete anything else. Narration of how a change was
-  investigated belongs in the PR.
+  investigated belongs in the PR. Prefer to let the code speak for itself.
 - A changelog entry describes behavior the user can perceive, one entry per
   feature, with the PR link. Leave out implementation detail unless the reader
   needs it to understand the entry.
-- All prose is ASD-STE100 simplified technical english. Do not name one platform
-  when the problem is general. Use generic examples, not one machine's paths.
+- All prose is ASD-STE100 simplified technical English.
+- Do not name one platform when the problem is general. Use generic examples,
+  not one machine's paths.

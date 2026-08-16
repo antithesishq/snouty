@@ -170,16 +170,24 @@ impl Settings {
         };
 
         // Likewise a typed value: the largest API response body, in bytes, the
-        // response cache will store.
-        let cache_max_file_size = resolve("cache_max_file_size", CACHE_MAX_FILE_SIZE_VAR_NAME)?
-            .map(|value| {
-                value.parse::<u64>().map_err(|err| {
-                    user_error(format!(
-                        "invalid cache_max_file_size setting (expected a byte count): {err}"
-                    ))
-                })
+        // response cache will store. A byte count is naturally written as a
+        // bare TOML integer, so the file layers accept one (see
+        // `resolve_integer_value`).
+        let cache_max_file_size = resolve_integer_value(
+            "cache_max_file_size",
+            CACHE_MAX_FILE_SIZE_VAR_NAME,
+            profile.as_deref(),
+            project.as_ref(),
+            global.as_ref(),
+        )?
+        .map(|value| {
+            value.parse::<u64>().map_err(|err| {
+                user_error(format!(
+                    "invalid cache_max_file_size setting (expected a byte count): {err}"
+                ))
             })
-            .transpose()?;
+        })
+        .transpose()?;
 
         // A derived base URL interpolates the tenant into the request host
         // (`https://{tenant}.antithesis.com`) and we attach the API key to that
@@ -538,15 +546,46 @@ fn load_settings_file(path: &Path, required: bool) -> Result<Option<Table>> {
     parse_settings(&contents, path).map(Some)
 }
 
-/// Resolve a single setting with the precedence: environment variable, then the
-/// active profile (project file before global file), then top-level defaults
-/// (project file before global file). The first layer that has the key wins.
+/// Reads a setting out of one TOML table: [`string_value`] for text settings,
+/// [`integer_value`] for numeric ones. Environment variables are always plain
+/// text, so this only affects the file layers.
+type ValueReader = fn(&Table, &str, &str) -> Result<Option<String>>;
+
+/// Resolve a single text setting with the precedence: environment variable,
+/// then the active profile (project file before global file), then top-level
+/// defaults (project file before global file). The first layer that has the
+/// key wins.
 ///
 /// A layer that *has* the key but with a non-string value (or a malformed
 /// `profile` section) is a hard error rather than a silent skip — a typo like
 /// `tenant = 123` should be reported, not quietly ignored in favour of a
 /// lower-precedence value.
 fn resolve_value(
+    key: &str,
+    env_var: &str,
+    profile: Option<&str>,
+    project: Option<&Table>,
+    global: Option<&Table>,
+) -> Result<Option<String>> {
+    resolve_value_with(string_value, key, env_var, profile, project, global)
+}
+
+/// [`resolve_value`] for a numeric setting: the file layers accept a bare TOML
+/// integer (the natural form for a number) as well as a quoted string. The
+/// value still comes back as text — the caller owns the parse and its error
+/// message, exactly as for an environment variable.
+fn resolve_integer_value(
+    key: &str,
+    env_var: &str,
+    profile: Option<&str>,
+    project: Option<&Table>,
+    global: Option<&Table>,
+) -> Result<Option<String>> {
+    resolve_value_with(integer_value, key, env_var, profile, project, global)
+}
+
+fn resolve_value_with(
+    read: ValueReader,
     key: &str,
     env_var: &str,
     profile: Option<&str>,
@@ -561,7 +600,7 @@ fn resolve_value(
     // A named profile is consulted before defaults, project before global.
     if let Some(profile) = profile {
         for table in [project, global].into_iter().flatten() {
-            if let Some(value) = profile_value(table, profile, key)? {
+            if let Some(value) = profile_value(table, profile, key, read)? {
                 return Ok(Some(value));
             }
         }
@@ -569,7 +608,7 @@ fn resolve_value(
 
     // Finally fall back to top-level defaults, project before global.
     for table in [project, global].into_iter().flatten() {
-        if let Some(value) = default_value(table, key)? {
+        if let Some(value) = read(table, key, key)? {
             return Ok(Some(value));
         }
     }
@@ -579,9 +618,14 @@ fn resolve_value(
 
 /// A `[profile.<name>]` value: `profile.<profile>.<key>`. `Ok(None)` when the
 /// `profile` section, the named profile, or the key is absent; an error when
-/// `profile`/`profile.<name>` is present but not a table, or the value is
-/// present but not a string.
-fn profile_value(table: &Table, profile: &str, key: &str) -> Result<Option<String>> {
+/// `profile`/`profile.<name>` is present but not a table, or the value fails
+/// `read`'s type check.
+fn profile_value(
+    table: &Table,
+    profile: &str,
+    key: &str,
+    read: ValueReader,
+) -> Result<Option<String>> {
     let Some(profiles) = table.get(PROFILE_KEY) else {
         return Ok(None);
     };
@@ -594,13 +638,7 @@ fn profile_value(table: &Table, profile: &str, key: &str) -> Result<Option<Strin
     let selected = selected
         .as_table()
         .ok_or_else(|| eyre!("profile `{profile}` must be a table"))?;
-    string_value(selected, key, &format!("{PROFILE_KEY}.{profile}.{key}"))
-}
-
-/// A top-level default value: `<key>`. `Ok(None)` when absent; an error when
-/// present but not a string.
-fn default_value(table: &Table, key: &str) -> Result<Option<String>> {
-    string_value(table, key, key)
+    read(selected, key, &format!("{PROFILE_KEY}.{profile}.{key}"))
 }
 
 /// Read `key` from `table` as a string, naming the offending value `display` in
@@ -616,6 +654,21 @@ fn string_value(table: &Table, key: &str, display: &str) -> Result<Option<String
                 value.type_str()
             )),
         },
+    }
+}
+
+/// Read `key` from `table` as a whole number (a bare TOML integer or a quoted
+/// string), naming the offending value `display` in the error. The value comes
+/// back in text form; the caller parses it (see [`resolve_integer_value`]).
+fn integer_value(table: &Table, key: &str, display: &str) -> Result<Option<String>> {
+    match table.get(key) {
+        None => Ok(None),
+        Some(Value::Integer(number)) => Ok(Some(number.to_string())),
+        Some(Value::String(text)) => Ok(Some(text.clone())),
+        Some(value) => Err(eyre!(
+            "setting `{display}` must be an integer, but found {}",
+            value.type_str()
+        )),
     }
 }
 
@@ -687,7 +740,7 @@ mod tests {
         assert!(err.to_string().contains("was not found"));
     }
 
-    // ---- profile_value / default_value ---------------------------------
+    // ---- profile_value / string_value / integer_value --------------------
 
     #[test]
     fn profile_value_reads_nested_table() {
@@ -695,27 +748,30 @@ mod tests {
             .parse()
             .unwrap();
         assert_eq!(
-            profile_value(&table, "staging", "tenant")
+            profile_value(&table, "staging", "tenant", string_value)
                 .unwrap()
                 .as_deref(),
             Some("staging-tenant")
         );
         // missing profile and missing key both resolve to None
-        assert_eq!(profile_value(&table, "prod", "tenant").unwrap(), None);
         assert_eq!(
-            profile_value(&table, "staging", "repository").unwrap(),
+            profile_value(&table, "prod", "tenant", string_value).unwrap(),
+            None
+        );
+        assert_eq!(
+            profile_value(&table, "staging", "repository", string_value).unwrap(),
             None
         );
     }
 
     #[test]
-    fn default_value_reads_top_level_key() {
+    fn string_value_reads_top_level_key() {
         let table: Table = "tenant = \"acme\"\n".parse().unwrap();
         assert_eq!(
-            default_value(&table, "tenant").unwrap().as_deref(),
+            string_value(&table, "tenant", "tenant").unwrap().as_deref(),
             Some("acme")
         );
-        assert_eq!(default_value(&table, "missing").unwrap(), None);
+        assert_eq!(string_value(&table, "missing", "missing").unwrap(), None);
     }
 
     // ---- strict TOML typing --------------------------------------------
@@ -723,7 +779,7 @@ mod tests {
     #[test]
     fn non_string_default_value_is_an_error() {
         let table: Table = "tenant = 123\n".parse().unwrap();
-        let err = default_value(&table, "tenant").unwrap_err();
+        let err = string_value(&table, "tenant", "tenant").unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("tenant"), "unexpected error: {msg}");
         assert!(msg.contains("must be a string"), "unexpected error: {msg}");
@@ -732,17 +788,51 @@ mod tests {
     #[test]
     fn non_string_profile_value_is_an_error() {
         let table: Table = "[profile.p]\ntenant = true\n".parse().unwrap();
-        let err = profile_value(&table, "p", "tenant").unwrap_err();
+        let err = profile_value(&table, "p", "tenant", string_value).unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("profile.p.tenant"), "unexpected error: {msg}");
         assert!(msg.contains("must be a string"), "unexpected error: {msg}");
     }
 
     #[test]
+    fn integer_value_accepts_a_bare_toml_integer() {
+        let table: Table = "cache_max_file_size = 1234\n".parse().unwrap();
+        assert_eq!(
+            integer_value(&table, "cache_max_file_size", "cache_max_file_size")
+                .unwrap()
+                .as_deref(),
+            Some("1234")
+        );
+    }
+
+    #[test]
+    fn integer_value_accepts_a_quoted_string() {
+        let table: Table = "cache_max_file_size = \"1234\"\n".parse().unwrap();
+        assert_eq!(
+            integer_value(&table, "cache_max_file_size", "cache_max_file_size")
+                .unwrap()
+                .as_deref(),
+            Some("1234")
+        );
+    }
+
+    #[test]
+    fn non_numeric_integer_value_is_an_error() {
+        let table: Table = "cache_max_file_size = true\n".parse().unwrap();
+        let err = integer_value(&table, "cache_max_file_size", "cache_max_file_size").unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("must be an integer"),
+            "unexpected error: {msg}"
+        );
+        assert!(msg.contains("boolean"), "unexpected error: {msg}");
+    }
+
+    #[test]
     fn malformed_profile_section_is_an_error() {
         // `profile` present but not a table of profiles.
         let table: Table = "profile = \"oops\"\n".parse().unwrap();
-        let err = profile_value(&table, "p", "tenant").unwrap_err();
+        let err = profile_value(&table, "p", "tenant", string_value).unwrap_err();
         assert!(err.to_string().contains("table of profiles"));
     }
 
@@ -750,7 +840,7 @@ mod tests {
     fn non_table_profile_is_an_error() {
         // The named profile exists but isn't a table.
         let table: Table = "[profile]\np = \"oops\"\n".parse().unwrap();
-        let err = profile_value(&table, "p", "tenant").unwrap_err();
+        let err = profile_value(&table, "p", "tenant", string_value).unwrap_err();
         assert!(err.to_string().contains("profile `p` must be a table"));
     }
 
@@ -929,6 +1019,17 @@ mod tests {
         assert_eq!(
             resolve_value("update_channel", UNSET_ENV, None, Some(&project), None).unwrap(),
             Some("unstable".to_string())
+        );
+    }
+
+    #[test]
+    fn cache_max_file_size_resolves_from_a_settings_file() {
+        // The natural TOML form for a byte count is a bare integer.
+        let project = settings_file("cache_max_file_size = 1234\n");
+        assert_eq!(
+            resolve_integer_value("cache_max_file_size", UNSET_ENV, None, Some(&project), None)
+                .unwrap(),
+            Some("1234".to_string())
         );
     }
 

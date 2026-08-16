@@ -221,8 +221,8 @@ impl ApiCache {
             }
         };
 
-        let key = response.url().as_str().to_owned();
-        let writer = match cacache::Writer::create(&self.dir, &key).await {
+        let key = response.url().as_str();
+        let writer = match cacache::Writer::create(&self.dir, key).await {
             Ok(writer) => writer,
             Err(err) => {
                 warn!("API cache write failed for {key}, bypassing cache: {err}");

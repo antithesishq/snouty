@@ -33,12 +33,12 @@ mod generated {
     include!(concat!(env!("OUT_DIR"), "/antithesis_api.rs"));
 }
 
+use crate::jsonl::JsonStream;
 pub(crate) use generated::types::Params as RunParams;
 pub use generated::types::{
     BuildLogLine, Event, EventProperty, Moment, NonEventProperty, Property, PropertyStatus,
     RunDetail, RunStatus, RunSummary,
 };
-use crate::jsonl::JsonStream;
 
 /// The outcome of a launch or debugging-launch request, and the `--json` output
 /// of `snouty launch` / `snouty debug`.

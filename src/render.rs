@@ -67,9 +67,10 @@ enum NewlinePolicy {
     KeepNewlineDropReturn,
 }
 
-/// The measure user-facing prose wraps to. Narrower than most terminals, so a
-/// wrapped message reads as a paragraph instead of hitting the terminal's own
-/// mid-word wrap; wide enough that short messages stay on one line.
+/// The widest measure user-facing prose wraps to. Even on a wider terminal a
+/// wrapped message reads better as a paragraph than as full-width lines; on a
+/// narrower terminal [`wrap_if_tty`] wraps to the terminal's own width so the
+/// terminal never re-wraps mid-word.
 const PROSE_WIDTH: usize = 100;
 
 /// Wrap prose for stderr when a person is reading it.
@@ -77,20 +78,15 @@ const PROSE_WIDTH: usize = 100;
 /// Wrapping is a property of printing, not of the message, and it applies only
 /// on a terminal: piped and captured output keeps whole lines, because a wrap
 /// point that moves with an embedded path length breaks any multi-word match
-/// that straddles it.
+/// that straddles it. The measure is the terminal's width, capped at
+/// [`PROSE_WIDTH`].
 pub fn wrap_if_tty(text: &str) -> String {
-    use std::io::IsTerminal;
-    if std::io::stderr().is_terminal() {
-        wrap(text)
-    } else {
-        text.to_string()
+    let term = console::Term::stderr();
+    if !term.is_term() {
+        return text.to_string();
     }
-}
-
-/// Word-wrap each overlong line of `text` to [`PROSE_WIDTH`] visible columns.
-/// Thin adapter over [`wrap_text`] for prose that flows as one string.
-fn wrap(text: &str) -> String {
-    wrap_text(text, PROSE_WIDTH).join("\n")
+    let width = PROSE_WIDTH.min(term.size().1 as usize);
+    wrap_text(text, width).join("\n")
 }
 
 /// The one wrapping engine every snouty renderer shares. Greedy word-wrap of
@@ -118,7 +114,11 @@ pub(crate) fn wrap_text(text: &str, width: usize) -> Vec<String> {
             continue;
         }
         let indent: String = paragraph.chars().take_while(|c| *c == ' ').collect();
-        let options = wrap_options(width)
+        // Words are never split mid-token (no hard breaks, no hyphenation) —
+        // an overlong token overflows instead.
+        let options = textwrap::Options::new(width.max(1))
+            .break_words(false)
+            .word_splitter(textwrap::WordSplitter::NoHyphenation)
             .initial_indent(&indent)
             .subsequent_indent(&indent);
         for line in textwrap::wrap(paragraph.replace('\t', " ").trim_start(), options) {
@@ -126,15 +126,6 @@ pub(crate) fn wrap_text(text: &str, width: usize) -> Vec<String> {
         }
     }
     lines
-}
-
-/// The one wrapping policy [`wrap_text`] builds on: words are never split
-/// mid-token (no hard breaks, no hyphenation) — an overlong token overflows
-/// instead.
-fn wrap_options<'a>(width: usize) -> textwrap::Options<'a> {
-    textwrap::Options::new(width.max(1))
-        .break_words(false)
-        .word_splitter(textwrap::WordSplitter::NoHyphenation)
 }
 
 pub(crate) fn sanitize(s: &str) -> String {
@@ -226,6 +217,12 @@ mod tests {
     fn render_kv_sanitizes_values() {
         let rows = vec![("k", "a\nb".to_string())];
         assert_eq!(render_kv(&rows, 0), "k  a\\nb\n");
+    }
+
+    /// The prose shape [`wrap_if_tty`] produces on a wide terminal, minus the
+    /// tty detection, so the tests run identically under a captured stdout.
+    fn wrap(text: &str) -> String {
+        wrap_text(text, PROSE_WIDTH).join("\n")
     }
 
     #[test]

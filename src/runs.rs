@@ -3160,31 +3160,23 @@ fn normalize_terminal_text(text: &str) -> String {
     sanitize(&strip_ansi(text))
 }
 
-/// Greedy word-wrap to `width` columns, preserving existing line breaks (each
-/// `\n` starts a new paragraph; blank lines are kept). Words longer than
-/// `width` are left intact rather than split mid-token.
+/// Greedy word-wrap to `width` display columns, preserving existing line
+/// breaks (each `\n` starts a new paragraph; blank lines are kept). Words
+/// longer than `width` are left intact rather than split mid-token. Width is
+/// measured with `textwrap`'s `display_width` — ANSI escape sequences count as
+/// zero columns and wide glyphs count as two — matching `render::wrap`.
 fn wrap_text(text: &str, width: usize) -> Vec<String> {
-    let width = width.max(1);
+    let options = textwrap::Options::new(width.max(1))
+        .break_words(false)
+        .word_splitter(textwrap::WordSplitter::NoHyphenation);
     let mut lines = Vec::new();
     for paragraph in text.split('\n') {
         if paragraph.trim().is_empty() {
             lines.push(String::new());
             continue;
         }
-        let mut current = String::new();
-        for word in paragraph.split_whitespace() {
-            if current.is_empty() {
-                current.push_str(word);
-            } else if current.chars().count() + 1 + word.chars().count() <= width {
-                current.push(' ');
-                current.push_str(word);
-            } else {
-                lines.push(std::mem::take(&mut current));
-                current.push_str(word);
-            }
-        }
-        if !current.is_empty() {
-            lines.push(current);
+        for line in textwrap::wrap(paragraph.trim_start(), &options) {
+            lines.push(line.into_owned());
         }
     }
     lines
@@ -3227,9 +3219,10 @@ mod tests {
         assert_eq!(words_in, words_out);
     }
 
-    /// Every wrapped line fits within `width` columns, with the one documented
-    /// exception: a single word longer than `width` is kept intact rather than
-    /// split mid-token (such a line has no internal space).
+    /// Every wrapped line fits within `width` display columns (ANSI escapes
+    /// and control characters count as zero width, wide glyphs as two), with
+    /// the one documented exception: a single word longer than `width` is kept
+    /// intact rather than split mid-token (such a line has no internal space).
     #[hegel::test]
     fn wrap_text_respects_width(tc: hegel::TestCase) {
         let text = tc.draw(generators::text());
@@ -3238,7 +3231,7 @@ mod tests {
         let effective = width.max(1);
         for line in wrap_text(&text, width) {
             assert!(
-                line.chars().count() <= effective || !line.contains(' '),
+                textwrap::core::display_width(&line) <= effective || !line.contains(' '),
                 "line {line:?} exceeds width {effective} but contains a space",
             );
         }

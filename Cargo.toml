@@ -49,7 +49,7 @@ toml = "1.1.2"
 http = "1.4.2"
 which = "8"
 keyring-core = "1.0.0"
-textwrap = { version = "0.16.2", default-features = false }
+textwrap = { version = "0.16.2", default-features = false, features = ["unicode-width"] }
 sha2 = "0.10"
 # Only the crossterm backend: the default `fuzzy` filter (fuzzy-matcher) is
 # pointless for a three-entry menu, and the `macros`/`one-liners` sugar is unused.

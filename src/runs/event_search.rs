@@ -2,7 +2,7 @@
 //!
 //! Each command resolves its own backend up front — `runs events` from the
 //! `runs-search` feature flag, `runs search` always on the events-search
-//! endpoint — and hands the resulting [`JsonlStream`] here. From the stream
+//! endpoint — and hands the resulting [`JsonStream`] here. From the stream
 //! on, the two commands are identical: every line prints as it arrives, the
 //! caller's cap is enforced client-side where the server does not, and an
 //! empty result gets a friendly note.

@@ -492,10 +492,9 @@ snouty --json runs events $R_run_id --match parallel_driver_fetch --limit 1
 [!staging] stdout '"vtime":400\.5'
 [!staging] ! stdout '"vtime":401\.75'
 
-# Still with the feature on: a 404 from the search endpoint (a tenant that
-# predates it, or a bad run id) is settled before it is reported — a bad run
-# id still says "run not found", with one needle (the GET fallback answers)
-# or several (the run probe answers).
+# Still with the feature on: the tenant is assumed to serve the search
+# endpoint, so its 404 simply means the run — the error says "run not found"
+# and suggests turning the feature off on a tenant that predates the API.
 mock-runs-server
 ! snouty runs events no-such-run --match anything
 stderr 'run not found: no-such-run'

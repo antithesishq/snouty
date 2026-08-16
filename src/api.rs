@@ -38,8 +38,6 @@ pub use generated::types::{
     BuildLogLine, Event, EventProperty, Moment, NonEventProperty, Property, PropertyStatus,
     RunDetail, RunStatus, RunSummary,
 };
-pub use progenitor_client::ByteStream;
-
 use crate::jsonl::JsonStream;
 
 /// The outcome of a launch or debugging-launch request, and the `--json` output
@@ -2542,10 +2540,10 @@ mod tests {
     }
 
     // The DSL search wrapper POSTs the Search_Request body: the query and
-    // every mode switch (`count_only` always as its default of false). An
-    // unset limit is OMITTED, not defaulted: the omission is meaningful (a
-    // streaming request stays unbounded; see build.rs's
-    // `unrequire_search_limit_default`).
+    // both mode switches. `count_only` is omitted entirely (build.rs drops
+    // it from the generated type), and an unset limit is OMITTED, not
+    // defaulted: the omission is meaningful (a streaming request stays
+    // unbounded; see build.rs's `unrequire_search_limit_default`).
     #[tokio::test]
     async fn search_run_events_query_posts_full_body() {
         let mock_server = MockServer::start().await;

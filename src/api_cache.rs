@@ -95,11 +95,22 @@ fn run_detail_key(url: &str) -> Option<&str> {
     Some(run_detail)
 }
 
-/// The default cache directory: `$XDG_RUNTIME_DIR/snouty/api-cache-v2`,
-/// falling back to a per-user directory under the system temp dir. `None`
-/// disables caching (currently only when the temp-dir fallback cannot be made
-/// private; see [`private_fallback_root`]).
+/// Env var that overrides the cache directory outright (used as-is, no
+/// `snouty/api-cache-v2` suffix). This exists for test harnesses, which need
+/// an isolated cache but cannot repoint `XDG_RUNTIME_DIR`: rootless podman
+/// resolves its API socket under that variable, so overriding it breaks any
+/// container command snouty spawns.
+const API_CACHE_DIR_VAR_NAME: &str = "SNOUTY_API_CACHE_DIR";
+
+/// The default cache directory: `$SNOUTY_API_CACHE_DIR` if set, else
+/// `$XDG_RUNTIME_DIR/snouty/api-cache-v2`, falling back to a per-user
+/// directory under the system temp dir. `None` disables caching (currently
+/// only when the temp-dir fallback cannot be made private; see
+/// [`private_fallback_root`]).
 pub(crate) fn default_dir() -> Option<PathBuf> {
+    if let Some(dir) = env::var(API_CACHE_DIR_VAR_NAME).ok().flatten() {
+        return Some(PathBuf::from(dir));
+    }
     match env::var("XDG_RUNTIME_DIR").ok().flatten() {
         Some(dir) => Some(PathBuf::from(dir).join("snouty").join(CACHE_DIR_NAME)),
         None => private_fallback_root().map(|root| root.join(CACHE_DIR_NAME)),

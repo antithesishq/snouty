@@ -159,9 +159,9 @@ pub(crate) fn snouty() -> Command {
     // Keep the API response cache inside the target dir. Without this, snouty
     // falls back to the real system temp dir, and cached responses could leak
     // between test runs (mock servers reuse ephemeral localhost ports).
-    let runtime_dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("xdg-runtime");
-    let _ = std::fs::create_dir_all(&runtime_dir);
-    cmd.env("XDG_RUNTIME_DIR", &runtime_dir);
+    let cache_dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("api-cache");
+    let _ = std::fs::create_dir_all(&cache_dir);
+    cmd.env("SNOUTY_API_CACHE_DIR", &cache_dir);
 
     // Global settings can't leak (HOME/XDG_CONFIG_HOME aren't forwarded, so the
     // lookup resolves to nothing). Pin the project settings file to an empty

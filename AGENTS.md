@@ -50,6 +50,14 @@ functions (e.g. trivial env/string/path plumbing) this is a judgement call —
 skip the test when it would add more indirection or complexity than the coverage
 is worth.
 
+- Delete tests that assert a derive, a std-library behavior, an enum variant's
+  own spelling, or anything the compiler already guarantees.
+- Never extract a function only so a test can call it. Inline it and delete the
+  test.
+- A test helper with more than three parameters takes a builder or `Default`.
+- Code whose only callers are tests lives in the test harness: the mock server,
+  a test module, or behind `#[cfg(test)]`.
+
 ## Checks and lints
 
 Run the following commands to validate code meets required standards:
@@ -125,8 +133,80 @@ Golden rule: always leave the project in a better state than when you started.
 
 ## Rust coding conventions
 
-- All code must be simple and idiomatic
+All code must be simple and idiomatic.
+
 - Avoid taking a ref & cloning a value when you can just take the value
 - Avoid unnecessary heap allocations
 - Use `eyre` for errors
 - Use `log` for debug logging
+
+### Types
+
+- Model a fixed set of alternatives as an enum, never as two or more bools, a
+  string compared against literals, or an int. A variant carries its own data.
+- Parse eagerly. When a type is more precise than `String`, parse into it as
+  early as you can. Parsing a string late means the type is missing — add it and
+  parse sooner.
+- Every CLI argument uses its domain type as the `value_parser`. No dispatch arm
+  parses a string.
+- A presentation type stops at the presentation boundary. `HumanDuration` parses
+  the flag and formats the error; everything past that takes a `Duration`.
+- Implement the std trait rather than a bespoke method: `Display` not `as_str`,
+  `FromStr` not `from_id`, `From`/`TryFrom` not `to_x`, `Default` not an
+  argument-less `new()`. Keep an inherent method only when it returns a type the
+  trait cannot produce.
+
+### Duplication
+
+- Give a literal a constant when the compiler cannot catch a typo in it —
+  feature ids, env var names, param keys, tenant versions.
+- Derive a list of an enum's values from the enum. Add an exhaustive match so a
+  new variant fails the build.
+- Merge two implementations of one behavior. When both are needed, say why in a
+  comment on the survivor.
+- Fix a wrong shape in generated code in `build.rs`, not at the call site. Each
+  transform asserts its target exists, so a spec refresh fails the build.
+
+### Errors
+
+- Never pass a `Result` into a function. Resolve it where the error can be acted
+  on. To annotate an error, use `map_err`; do not pass the whole `Result`. When
+  no caller reads the error, map to `Option` where it is produced and note why
+  it is dropped.
+- An error's suggestion names an action the user can take, or there is no
+  suggestion.
+
+### Structure
+
+- Inline a function with one call site, unless it is recursive or it keeps a
+  distinct responsibility out of its caller.
+- Search std, then crates.io, then write it yourself. Vet a candidate crate on
+  downloads, reverse dependencies, and last release date, and record that in the
+  PR. A utility you write goes in `util`, not in a domain module.
+- Implement the ecosystem trait, then use its combinators. A type that yields a
+  sequence implements `futures::Stream`; delete hand-written loops that
+  duplicate `map`, `take`, or `filter`.
+- A module that drives an external tool exposes a typed API: one method per
+  subcommand, typed arguments in, typed values out. It never returns or accepts
+  `Command`, argument vectors, or raw process handles. Read the tool's
+  machine-readable output; never parse its human-facing text. Detect a version
+  by parsing a version number.
+
+### The server boundary
+
+- Send only what the user asked for. Never send a field to set the server's own
+  default; strip the field in `build.rs` when the generated type forces a value.
+- Handle only response shapes you have observed or found in the spec. A fixture
+  you wrote yourself is not evidence. Record the observation — endpoint, tenant,
+  actual response — in the PR or a doc comment.
+
+## Comments, changelog, and prose
+
+- A comment states a precondition, an invariant, a non-obvious reason, or a TODO
+  with a trigger. Delete anything else. Narration of how a change was
+  investigated belongs in the PR.
+- A changelog entry describes behavior the user can perceive, one entry per
+  feature, with the PR link. Leave out implementation detail unless the reader
+  needs it to understand the entry.
+- All prose is ASD-STE100 simplified technical english. Do not name one platform
+  when the problem is general. Use generic examples, not one machine's paths.

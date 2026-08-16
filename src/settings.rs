@@ -169,10 +169,10 @@ impl Settings {
             None => UpdateChannel::default(),
         };
 
-        // Likewise a typed value: the largest API response body, in bytes, the
-        // response cache will store. A byte count is naturally written as a
-        // bare TOML integer, so the file layers accept one (see
-        // `resolve_integer_value`).
+        // Likewise a typed value: the largest API response body the response
+        // cache will store, as a size such as "10 MB" or a bare byte count.
+        // A bare count is naturally written as a TOML integer, so the file
+        // layers accept one (see `resolve_integer_value`).
         let cache_max_file_size = resolve_integer_value(
             "cache_max_file_size",
             CACHE_MAX_FILE_SIZE_VAR_NAME,
@@ -180,13 +180,7 @@ impl Settings {
             project.as_ref(),
             global.as_ref(),
         )?
-        .map(|value| {
-            value.parse::<u64>().map_err(|err| {
-                user_error(format!(
-                    "invalid cache_max_file_size setting (expected a byte count): {err}"
-                ))
-            })
-        })
+        .map(|value| parse_byte_size(&value))
         .transpose()?;
 
         // A derived base URL interpolates the tenant into the request host
@@ -657,19 +651,34 @@ fn string_value(table: &Table, key: &str, display: &str) -> Result<Option<String
     }
 }
 
-/// Read `key` from `table` as a whole number (a bare TOML integer or a quoted
-/// string), naming the offending value `display` in the error. The value comes
-/// back in text form; the caller parses it (see [`resolve_integer_value`]).
+/// Read `key` from `table` as a number-like setting (a bare TOML integer or a
+/// quoted string), naming the offending value `display` in the error. The
+/// value comes back in text form; the caller parses it (see
+/// [`resolve_integer_value`]).
 fn integer_value(table: &Table, key: &str, display: &str) -> Result<Option<String>> {
     match table.get(key) {
         None => Ok(None),
         Some(Value::Integer(number)) => Ok(Some(number.to_string())),
         Some(Value::String(text)) => Ok(Some(text.clone())),
         Some(value) => Err(eyre!(
-            "setting `{display}` must be an integer, but found {}",
+            "setting `{display}` must be an integer or a string, but found {}",
             value.type_str()
         )),
     }
+}
+
+/// Parse the `cache_max_file_size` setting — a size such as "10 MB" or
+/// "1.5GiB", or a bare byte count — into bytes. SI units are decimal
+/// (MB = 10^6 bytes); IEC units are binary (MiB = 2^20 bytes).
+fn parse_byte_size(value: &str) -> Result<u64> {
+    value
+        .parse::<bytesize::ByteSize>()
+        .map(|size| size.as_u64())
+        .map_err(|err| {
+            user_error(format!(
+                "invalid cache_max_file_size setting (expected a size such as \"10 MB\"): {err}"
+            ))
+        })
 }
 
 pub(crate) fn read_to_string_if_file_exists(path: &Path) -> Result<Option<String>> {
@@ -1031,6 +1040,34 @@ mod tests {
                 .unwrap(),
             Some("1234".to_string())
         );
+    }
+
+    // ---- parse_byte_size -------------------------------------------------
+
+    #[test]
+    fn byte_sizes_parse_with_si_and_iec_units() {
+        assert_eq!(parse_byte_size("10 MB").unwrap(), 10_000_000);
+        assert_eq!(parse_byte_size("10 MiB").unwrap(), 10 * 1024 * 1024);
+        // Units are case-insensitive and the space is optional.
+        assert_eq!(parse_byte_size("1gb").unwrap(), 1_000_000_000);
+        assert_eq!(parse_byte_size("1.5 KB").unwrap(), 1_500);
+    }
+
+    #[test]
+    fn a_bare_number_parses_as_bytes() {
+        assert_eq!(parse_byte_size("10485760").unwrap(), 10_485_760);
+    }
+
+    #[test]
+    fn a_malformed_byte_size_names_the_setting() {
+        for bad in ["ten megabytes", "-1", ""] {
+            let err = parse_byte_size(bad).unwrap_err();
+            let msg = err.to_string();
+            assert!(
+                msg.contains("cache_max_file_size") && msg.contains("10 MB"),
+                "unexpected error for {bad:?}: {msg}"
+            );
+        }
     }
 
     // ---- validate_tenant_host -----------------------------------------

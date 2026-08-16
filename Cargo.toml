@@ -10,6 +10,7 @@ default-run = "snouty"
 [dependencies]
 base64 = "0.22"
 bytes = "1"
+bytesize = "2"
 # tokio-runtime instead of the default async-std; mmap keeps the fast read path.
 cacache = { version = "13", default-features = false, features = ["tokio-runtime", "mmap"] }
 chrono = { version = "0.4", features = ["serde"] }

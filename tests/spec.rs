@@ -120,6 +120,12 @@ fn snouty_cmd(env: &testscript_rs::TestEnvironment, args: &[String]) -> std::pro
         "XDG_CONFIG_HOME",
         isolated_xdg_config_home(&env.current_dir),
     );
+    // Isolate the API response cache per spec. Without this, snouty falls back
+    // to the real system temp dir, and a cached response from an earlier spec
+    // run (mock servers reuse ephemeral localhost ports) could leak in.
+    let runtime_dir = env.current_dir.join("xdg-runtime-isolation");
+    std::fs::create_dir_all(&runtime_dir).expect("create XDG_RUNTIME_DIR isolation dir");
+    cmd.env("XDG_RUNTIME_DIR", &runtime_dir);
     for (k, v) in &env.env_vars {
         cmd.env(k, v);
     }

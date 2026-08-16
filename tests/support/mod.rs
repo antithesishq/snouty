@@ -156,6 +156,13 @@ pub(crate) fn snouty() -> Command {
     // Disable keychain access -- this isn't something we can mock for each test case
     cmd.env("SNOUTY_DISABLE_KEYCHAIN_CREDENTIAL_STORAGE", "1");
 
+    // Keep the API response cache inside the target dir. Without this, snouty
+    // falls back to the real system temp dir, and cached responses could leak
+    // between test runs (mock servers reuse ephemeral localhost ports).
+    let runtime_dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("xdg-runtime");
+    let _ = std::fs::create_dir_all(&runtime_dir);
+    cmd.env("XDG_RUNTIME_DIR", &runtime_dir);
+
     // Global settings can't leak (HOME/XDG_CONFIG_HOME aren't forwarded, so the
     // lookup resolves to nothing). Pin the project settings file to an empty
     // but existing file so a ./.snouty.toml in the working tree can't leak in

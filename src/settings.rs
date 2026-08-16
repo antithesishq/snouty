@@ -20,6 +20,7 @@ pub const ANTITHESIS_BASE_URL_VAR_NAME: &str = "ANTITHESIS_BASE_URL";
 pub const ANTITHESIS_HTTPS_PROXY_VAR_NAME: &str = "ANTITHESIS_HTTPS_PROXY";
 pub const CONTAINER_ENGINE_VAR_NAME: &str = "SNOUTY_CONTAINER_ENGINE";
 pub const UPDATE_CHANNEL_VAR_NAME: &str = "SNOUTY_UPDATE_CHANNEL";
+pub const CACHE_MAX_FILE_SIZE_VAR_NAME: &str = "SNOUTY_CACHE_MAX_FILE_SIZE";
 const PROJECT_SETTINGS_FILENAME: &str = ".snouty.toml";
 const GLOBAL_SETTINGS_FILENAME: &str = "settings.toml";
 const PROFILE_KEY: &str = "profile";
@@ -78,9 +79,9 @@ pub fn cache_dir() -> Option<PathBuf> {
 /// Every command shares the same resolved instance (threaded by reference), so a
 /// value resolves identically no matter which code path reads it.
 ///
-/// `Default` is every setting unset (and the `stable` update channel) — handy
-/// when a caller needs a `Settings` without resolving anything.
-#[derive(Default)]
+/// `Default` is every setting unset (with the `stable` update channel and the
+/// default cache size cap) — handy when a caller needs a `Settings` without
+/// resolving anything.
 pub struct Settings {
     profile: Option<String>,
     tenant: Option<String>,
@@ -89,6 +90,13 @@ pub struct Settings {
     https_proxy: Option<String>,
     container_engine: Option<String>,
     update_channel: UpdateChannel,
+    cache_max_file_size: u64,
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Settings::builder().build()
+    }
 }
 
 impl Settings {
@@ -161,6 +169,18 @@ impl Settings {
             None => UpdateChannel::default(),
         };
 
+        // Likewise a typed value: the largest API response body, in bytes, the
+        // response cache will store.
+        let cache_max_file_size = resolve("cache_max_file_size", CACHE_MAX_FILE_SIZE_VAR_NAME)?
+            .map(|value| {
+                value.parse::<u64>().map_err(|err| {
+                    user_error(format!(
+                        "invalid cache_max_file_size setting (expected a byte count): {err}"
+                    ))
+                })
+            })
+            .transpose()?;
+
         // A derived base URL interpolates the tenant into the request host
         // (`https://{tenant}.antithesis.com`) and we attach the API key to that
         // host, so a malformed tenant would silently send credentials to an
@@ -180,13 +200,16 @@ impl Settings {
             https_proxy,
             container_engine,
             update_channel,
+            cache_max_file_size,
         ))
     }
 
     /// Assemble the final `Settings` from already-resolved layers, applying the
-    /// one derived value: `base_url` falls back to a tenant-derived host. Shared
-    /// by [`Settings::resolve`] and the test constructors so the derivation is
-    /// exercised the same way everywhere.
+    /// derived values: `base_url` falls back to a tenant-derived host, and the
+    /// cache size cap falls back to its default. Shared by [`Settings::resolve`]
+    /// and the test constructors so the derivation is exercised the same way
+    /// everywhere.
+    #[allow(clippy::too_many_arguments)]
     fn assemble(
         profile: Option<String>,
         tenant: Option<String>,
@@ -195,6 +218,7 @@ impl Settings {
         https_proxy: Option<String>,
         container_engine: Option<String>,
         update_channel: UpdateChannel,
+        cache_max_file_size: Option<u64>,
     ) -> Self {
         let base_url = base_url.or_else(|| {
             tenant
@@ -210,6 +234,8 @@ impl Settings {
             https_proxy,
             container_engine,
             update_channel,
+            cache_max_file_size: cache_max_file_size
+                .unwrap_or(crate::api_cache::DEFAULT_MAX_FILE_SIZE),
         }
     }
 
@@ -243,6 +269,13 @@ impl Settings {
     /// an invalid setting value fails in [`Settings::resolve`].
     pub fn update_channel(&self) -> UpdateChannel {
         self.update_channel
+    }
+
+    /// The largest API response body, in bytes, the response cache stores;
+    /// [`crate::api_cache::DEFAULT_MAX_FILE_SIZE`] when unset. Already
+    /// validated — an invalid setting value fails in [`Settings::resolve`].
+    pub fn cache_max_file_size(&self) -> u64 {
+        self.cache_max_file_size
     }
 
     pub(crate) fn profile(&self) -> Option<&str> {
@@ -279,6 +312,7 @@ pub struct SettingsBuilder {
     https_proxy: Option<String>,
     container_engine: Option<String>,
     update_channel: UpdateChannel,
+    cache_max_file_size: Option<u64>,
 }
 
 impl SettingsBuilder {
@@ -317,6 +351,11 @@ impl SettingsBuilder {
         self
     }
 
+    pub fn cache_max_file_size(mut self, value: u64) -> Self {
+        self.cache_max_file_size = Some(value);
+        self
+    }
+
     pub fn build(self) -> Settings {
         Settings::assemble(
             self.profile,
@@ -326,6 +365,7 @@ impl SettingsBuilder {
             self.https_proxy,
             self.container_engine,
             self.update_channel,
+            self.cache_max_file_size,
         )
     }
 }

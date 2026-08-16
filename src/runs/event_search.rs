@@ -19,18 +19,18 @@ use color_eyre::Section;
 use color_eyre::eyre::Result;
 use serde_json::json;
 
-use crate::api::{AntithesisApi, EventSearchOptions};
+use futures_util::{StreamExt, TryStreamExt};
+
+use crate::api::{AntithesisApi, MIN_SEARCH_RELEASE, SearchMode};
 use crate::error::{api_error_status, user_error};
 use crate::features::{self, Feature};
-use crate::jsonl::{JsonlLine, JsonlStream};
-use crate::render::sanitize;
+use crate::jsonl::JsonStream;
 
-use super::{ErrorRows, stream_ndjson_lines_capped};
+use super::{ErrorRows, event_lines};
 
 /// Print every line of the (already server-filtered) stream, one line out
-/// per line in: a parsed record as its JSON (vtime normalized), an
-/// unparsable line sanitized rather than dropped. Human and `--json` output
-/// are the same simple dump for now; only the human empty-state note
+/// per line in: each event as its JSON, vtime normalized. Human and `--json`
+/// output are the same simple dump for now; only the human empty-state note
 /// differs.
 ///
 /// Each row is flushed as it arrives: on a live run the search backend holds
@@ -41,29 +41,23 @@ use super::{ErrorRows, stream_ndjson_lines_capped};
 /// not this side's job — the limit is server-enforced, or an explicit
 /// `--follow` without a limit is unbounded by design.
 pub(super) async fn print_event_stream(
-    stream: JsonlStream,
+    stream: JsonStream,
     cap: Option<NonZeroU64>,
     error_rows: ErrorRows,
     json: bool,
     empty_message: &str,
 ) -> Result<()> {
+    let cap = cap.map_or(usize::MAX, |cap| {
+        usize::try_from(cap.get()).unwrap_or(usize::MAX)
+    });
+    let mut lines = event_lines(stream, error_rows).take(cap);
     let mut stdout = BufWriter::new(std::io::stdout().lock());
-    let seen = stream_ndjson_lines_capped(stream, cap.map(NonZeroU64::get), error_rows, |line| {
-        let rendered = match &line {
-            JsonlLine::Value(value) => value.to_string(),
-            JsonlLine::Raw(raw) => {
-                if json {
-                    raw.clone()
-                } else {
-                    sanitize(raw)
-                }
-            }
-        };
-        writeln!(stdout, "{rendered}")?;
+    let mut seen: u64 = 0;
+    while let Some(value) = lines.try_next().await? {
+        seen += 1;
+        writeln!(stdout, "{value}")?;
         stdout.flush()?;
-        Ok(())
-    })
-    .await?;
+    }
 
     // Only a successfully-empty stream earns the friendly empty state; a
     // mid-stream error propagated above instead.
@@ -83,11 +77,10 @@ pub(super) async fn check_query(
     query: &str,
     json: bool,
 ) -> Result<()> {
-    let opts = EventSearchOptions {
-        validate_only: true,
-        ..Default::default()
-    };
-    if let Err(err) = api.search_run_events_query(run_id, query, opts).await {
+    if let Err(err) = api
+        .search_run_events_query(run_id, query, SearchMode::Validate)
+        .await
+    {
         return Err(explain_search_error(run_id, err));
     }
     let mut stdout = std::io::stdout().lock();
@@ -128,7 +121,14 @@ pub(super) fn explain_search_error(
     err: color_eyre::eyre::Report,
 ) -> color_eyre::eyre::Report {
     match api_error_status(&err) {
-        Some(404) => user_error(format!("run not found: {run_id}")),
+        Some(404) => {
+            let (major, minor) = MIN_SEARCH_RELEASE;
+            user_error(format!("run not found: {run_id}")).suggestion(format!(
+                "tenant releases before {major}.{minor} do not serve the events-search \
+                 API; on an older tenant, remove `runs-search` from {} to fall back",
+                features::UNSTABLE_FEATURES_VAR_NAME
+            ))
+        }
         Some(400) => err.note(
             "the server rejected the request; its message above says which part \
              — for a query, check the event-set DSL syntax",

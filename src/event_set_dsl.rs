@@ -27,21 +27,10 @@ pub const VERBS: &[&str] = &[
 ];
 
 /// Build the event set that ANDs every needle as a case-insensitive
-/// substring of the raw event. The JS predicate matches each needle against
-/// the whole raw event JSON (`JSON.stringify`), lowercased on both sides, so
-/// the server prefilter sees every field — hash, vtime, source, output text,
-/// and the structured payloads (assertions, composer/fault fields) that
-/// carry no `output_text` at all. The haystack is bound once per event
-/// through an immediately-invoked arrow function, so the server stringifies
-/// and lowercases each event once, not once per needle (the form is accepted
-/// by the server's validator; verified on tenant release 60.1). The raw JSON
-/// — not snouty's rendered form — is the only haystack: a needle that exists
-/// only in the rendering (e.g. the assertion summary's `must-hit` marker for
-/// the raw `must_hit` field) finds nothing, and conversely a match inside a
-/// field the rendering elides still returns its event. That asymmetry is the
-/// accepted cost of filtering entirely server-side. Each needle is embedded
-/// as a JSON string literal (also a valid JS string literal), so escaping is
-/// serde's problem, not string surgery here.
+/// substring of the raw event JSON. The raw JSON — not snouty's rendered
+/// form — is the haystack: a needle that exists only in the rendering finds
+/// nothing, and a match inside a field the rendering elides still returns
+/// its event.
 pub fn substring_filter(needles: &[String]) -> String {
     let clauses = needles
         .iter()

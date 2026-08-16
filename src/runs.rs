@@ -1,6 +1,5 @@
 use std::io::{BufWriter, IsTerminal, Read, Write};
 use std::num::NonZeroU64;
-use std::ops::ControlFlow;
 use std::sync::OnceLock;
 use std::time::Duration;
 
@@ -17,15 +16,15 @@ use serde_json::{Map, Value, json};
 use chrono::{DateTime, Local, Utc};
 
 use crate::api::{
-    AntithesisApi, Event, EventProperty, EventSearchOptions, LogsBegin, Moment, NonEventProperty,
-    Property, PropertyStatus, RunDetail, RunStatus, RunSummary, RunsFilterOptions,
-    SEARCH_DEFAULT_LIMIT,
+    AntithesisApi, Event, EventProperty, LogsBegin, Moment, NonEventProperty, Property,
+    PropertyStatus, RunDetail, RunStatus, RunSummary, RunsFilterOptions, SEARCH_DEFAULT_LIMIT,
+    SearchMode,
 };
 use crate::cli::{RunsCommands, RunsListArgs, RunsSearchArgs};
 use crate::error::{api_error_status, user_error};
 use crate::event_set_dsl;
 use crate::features::{self, Feature};
-use crate::jsonl::{JsonlLine, JsonlStream};
+use crate::jsonl::JsonStream;
 use crate::render::{OutputOptions, render_kv, sanitize, sanitize_multiline, wrap_text};
 use crate::settings::Settings;
 use crate::time::HumanDuration;
@@ -1390,30 +1389,27 @@ async fn cmd_runs_build_logs(
     let mut stdout = BufWriter::new(std::io::stdout().lock());
 
     let mut wrote_any = false;
-    let result = if json {
-        // The --json contract is raw NDJSON passthrough.
-        stream_raw_lines(stream, |line| {
-            wrote_any = true;
-            writeln!(stdout, "{line}")?;
-            Ok(())
-        })
-        .await
-    } else {
-        stream_ndjson_lines(stream, |line| {
-            wrote_any = true;
-            match line {
-                JsonlLine::Value(entry) => {
-                    let ts = format_local_str(entry["timestamp"].as_str().unwrap_or(""));
-                    let stream = entry["stream"].as_str().unwrap_or("out");
-                    let text = sanitize(entry["text"].as_str().unwrap_or(""));
-                    writeln!(stdout, "{ts} [{stream}] {text}")?;
-                }
-                JsonlLine::Raw(line) => writeln!(stdout, "{line}")?,
+    let result: Result<()> = async {
+        if json {
+            // The --json contract is raw passthrough.
+            let mut lines = raw_lines(stream, ErrorRows::Abort);
+            while let Some(line) = lines.try_next().await? {
+                wrote_any = true;
+                writeln!(stdout, "{line}")?;
             }
-            Ok(())
-        })
-        .await
-    };
+        } else {
+            let mut lines = event_lines(stream, ErrorRows::Abort);
+            while let Some(entry) = lines.try_next().await? {
+                wrote_any = true;
+                let ts = format_local_str(entry["timestamp"].as_str().unwrap_or(""));
+                let stream = entry["stream"].as_str().unwrap_or("out");
+                let text = sanitize(entry["text"].as_str().unwrap_or(""));
+                writeln!(stdout, "{ts} [{stream}] {text}")?;
+            }
+        }
+        Ok(())
+    }
+    .await;
 
     stdout.flush()?;
     note_if_empty(
@@ -1436,13 +1432,12 @@ async fn cmd_runs_search(
     if args.check {
         return event_search::check_query(&api, &args.run_id, &args.query, json).await;
     }
-    let opts = EventSearchOptions {
-        is_streaming: args.follow,
-        validate_only: false,
+    let mode = SearchMode::Query {
+        stream: args.follow,
         limit: args.limit,
     };
     let stream = match api
-        .search_run_events_query(&args.run_id, &args.query, opts)
+        .search_run_events_query(&args.run_id, &args.query, mode)
         .await
     {
         Ok(stream) => stream,
@@ -1493,19 +1488,13 @@ async fn cmd_runs_events(
     }
 
     let api = AntithesisApi::new(settings, verbose)?;
-    // The backend is the feature flag's call, made here and nowhere else.
-    // With `runs-search` on, the events-search endpoint ANDs every needle
-    // server-side against the whole raw event JSON (the tenant is assumed to
-    // serve it; `snouty doctor` reports a tenant release that is too old).
-    // Without it, the GET events endpoint takes exactly one substring.
     let (stream, cap) = if features::is_enabled(Feature::RunsSearch) {
         let query = event_set_dsl::substring_filter(matches);
-        let opts = EventSearchOptions {
-            is_streaming: false,
-            validate_only: false,
+        let mode = SearchMode::Query {
+            stream: false,
             limit,
         };
-        let stream = match api.search_run_events_query(run_id, &query, opts).await {
+        let stream = match api.search_run_events_query(run_id, &query, mode).await {
             Ok(stream) => stream,
             Err(err) => return Err(event_search::explain_search_error(run_id, err)),
         };
@@ -1553,42 +1542,33 @@ async fn cmd_runs_logs(
 
     let mut stdout = BufWriter::new(std::io::stdout().lock());
     let mut wrote_any = false;
-    let result = if json {
-        // Fault annotation is the default; `--raw` opts out into a verbatim
-        // NDJSON passthrough.
-        if raw {
-            stream_raw_lines(stream, |line| {
+    let result: Result<()> = async {
+        if json && raw {
+            // Verbatim passthrough: no fault annotation, no normalization.
+            let mut lines = raw_lines(stream, ErrorRows::Abort);
+            while let Some(line) = lines.try_next().await? {
                 wrote_any = true;
                 writeln!(stdout, "{line}")?;
-                Ok(())
-            })
-            .await
-        } else {
-            let mut annotator = FaultAnnotator::default();
-            stream_ndjson_lines(stream, |line| {
-                wrote_any = true;
-                match line {
-                    JsonlLine::Value(mut entry) => {
-                        annotator.annotate(&mut entry);
-                        writeln!(stdout, "{entry}")?;
-                    }
-                    JsonlLine::Raw(line) => writeln!(stdout, "{line}")?,
-                }
-                Ok(())
-            })
-            .await
-        }
-    } else {
-        stream_ndjson_lines(stream, |line| {
-            wrote_any = true;
-            match line {
-                JsonlLine::Value(entry) => writeln!(stdout, "{}", format_log_entry(&entry, raw))?,
-                JsonlLine::Raw(line) => writeln!(stdout, "{line}")?,
             }
-            Ok(())
-        })
-        .await
-    };
+        } else if json {
+            // Fault annotation is the default.
+            let mut annotator = FaultAnnotator::default();
+            let mut lines = event_lines(stream, ErrorRows::Abort);
+            while let Some(mut entry) = lines.try_next().await? {
+                wrote_any = true;
+                annotator.annotate(&mut entry);
+                writeln!(stdout, "{entry}")?;
+            }
+        } else {
+            let mut lines = event_lines(stream, ErrorRows::Abort);
+            while let Some(entry) = lines.try_next().await? {
+                wrote_any = true;
+                writeln!(stdout, "{}", format_log_entry(&entry, raw))?;
+            }
+        }
+        Ok(())
+    }
+    .await;
     stdout.flush()?;
     // A moment with no logs (e.g. a manually-supplied 0/0 placeholder) yields an
     // empty stream; say so in human mode rather than printing nothing.
@@ -1771,42 +1751,34 @@ async fn cmd_runs_exec(
     // `timed_out` decide the command's outcome, so they are acted on only
     // once the stream is known to have completed.
     let mut terminal: Option<ExecEvent> = None;
-    let result = stream_ndjson_lines(stream, |line| {
-        match line {
-            JsonlLine::Value(mut entry) => {
-                // classify_line normalized `moment.vtime`; the exited event
-                // carries its moment under `end_moment` instead.
-                normalize_vtime_field(&mut entry, "end_moment");
-                let frame = ExecFrame::deserialize(&entry).map_err(|err| {
-                    eyre!("could not decode a line of the command's output: {err}")
-                        .note("every JSON object decodes, so this means the decoder itself failed")
-                })?;
+    let result: Result<()> = async {
+        let mut lines = event_lines(stream, ErrorRows::Abort);
+        while let Some(mut entry) = lines.try_next().await? {
+            // The stream normalized `moment.vtime`; the exited event carries
+            // its moment under `end_moment` instead.
+            normalize_vtime_field(&mut entry, "end_moment");
+            let frame = ExecFrame::deserialize(&entry).map_err(|err| {
+                eyre!("could not decode a line of the command's output: {err}")
+                    .note("every JSON object decodes, so this means the decoder itself failed")
+            })?;
 
-                if json {
-                    outln!("{entry}")?;
-                } else {
-                    render_exec_frame(&frame)?;
-                }
-
-                // Either mode: the terminal event decides the exit status, and
-                // is acted on once the stream is known to have completed.
-                if let ExecFrame::Known(
-                    event @ (ExecEvent::Exited { .. } | ExecEvent::TimedOut { .. }),
-                ) = frame
-                {
-                    terminal = Some(event);
-                }
+            if json {
+                outln!("{entry}")?;
+            } else {
+                render_exec_frame(&frame)?;
             }
-            JsonlLine::Raw(line) => {
-                if json {
-                    outln!("{line}")?;
-                } else {
-                    eprintln!("{line}");
-                }
+
+            // Either mode: the terminal event decides the exit status, and
+            // is acted on once the stream is known to have completed.
+            if let ExecFrame::Known(
+                event @ (ExecEvent::Exited { .. } | ExecEvent::TimedOut { .. }),
+            ) = frame
+            {
+                terminal = Some(event);
             }
         }
         Ok(())
-    })
+    }
     .await;
     result?;
 
@@ -2038,94 +2010,46 @@ fn mid_stream_error(message: &str) -> color_eyre::eyre::Report {
         .note("output produced before the error may be incomplete")
 }
 
-/// Iterate a [`JsonlStream`], handing each line to the callback with
-/// `moment.vtime` normalized on parsed records — except a `Stream_Error`
-/// record ([`stream_error_message`]), which becomes the command's failure
-/// instead of reaching the callback. Commands whose contract is *raw*
-/// output (`runs logs --json --raw`, `runs build-logs --json`) use
-/// [`stream_raw_lines`] instead — normalization is not their happy case.
-async fn stream_ndjson_lines(
-    stream: JsonlStream,
-    mut process_line: impl FnMut(JsonlLine) -> Result<()>,
-) -> Result<()> {
-    stream_ndjson_lines_until(stream, ErrorRows::Abort, |line| {
-        process_line(line).map(|()| ControlFlow::Continue(()))
-    })
-    .await
-}
-
-/// [`stream_ndjson_lines`], but stop reading — dropping the connection —
-/// once `cap` lines have reached the callback, and return how many did.
-/// Every line the server sends counts (parsed and raw lines alike),
-/// mirroring what a server-enforced limit would count; `None` means no cap.
-/// `runs search` and the search route of `runs events` use this to enforce
-/// the limit their request named against a server that ignores it.
-async fn stream_ndjson_lines_capped(
-    stream: JsonlStream,
-    cap: Option<u64>,
+/// Event lines ready to consume: the `Stream_Error` policy applied and
+/// `moment.vtime` normalized to an exact JSON number. Commands whose
+/// contract is *raw* output use [`raw_lines`] instead — normalization is not
+/// their happy case.
+fn event_lines(
+    stream: JsonStream,
     error_rows: ErrorRows,
-    mut process_line: impl FnMut(JsonlLine) -> Result<()>,
-) -> Result<u64> {
-    let mut seen: u64 = 0;
-    stream_ndjson_lines_until(stream, error_rows, |line| {
-        process_line(line)?;
-        seen += 1;
-        Ok(if cap.is_some_and(|cap| seen >= cap) {
-            ControlFlow::Break(())
-        } else {
-            ControlFlow::Continue(())
-        })
+) -> impl futures_util::Stream<Item = Result<Value>> + Unpin {
+    use futures_util::StreamExt;
+    stream.map(move |line| {
+        let mut value = line?;
+        if error_rows == ErrorRows::Abort
+            && let Some(message) = stream_error_message(&value)
+        {
+            return Err(mid_stream_error(message));
+        }
+        normalize_vtime_field(&mut value, "moment");
+        Ok(value)
     })
-    .await?;
-    Ok(seen)
 }
 
-/// [`stream_ndjson_lines`] (same normalization, same `Stream_Error`
-/// handling per `error_rows`), but the callback can end the stream early by
-/// returning `ControlFlow::Break`: the connection drops on return.
-async fn stream_ndjson_lines_until(
-    mut stream: JsonlStream,
+/// Raw lines: each parsed value serialized back out unmodified (no vtime
+/// normalization — serde_json's `float_roundtrip` keeps the round-trip
+/// faithful). A `Stream_Error` record still fails the command per
+/// `error_rows`: it is the server aborting the stream, so even raw modes
+/// must not present it (and whatever follows it never arrives) as data.
+fn raw_lines(
+    stream: JsonStream,
     error_rows: ErrorRows,
-    mut process_line: impl FnMut(JsonlLine) -> Result<ControlFlow<()>>,
-) -> Result<()> {
-    while let Some(mut line) = stream.next_line().await? {
-        if let JsonlLine::Value(value) = &mut line {
-            if error_rows == ErrorRows::Abort
-                && let Some(message) = stream_error_message(value)
-            {
-                return Err(mid_stream_error(message));
-            }
-            normalize_vtime_field(value, "moment");
+) -> impl futures_util::Stream<Item = Result<String>> + Unpin {
+    use futures_util::StreamExt;
+    stream.map(move |line| {
+        let value = line?;
+        if error_rows == ErrorRows::Abort
+            && let Some(message) = stream_error_message(&value)
+        {
+            return Err(mid_stream_error(message));
         }
-        if process_line(line)?.is_break() {
-            return Ok(());
-        }
-    }
-    Ok(())
-}
-
-/// Stream raw output: each parsed record serialized back out unmodified (no
-/// vtime normalization — serde_json's `preserve_order` and `float_roundtrip`
-/// make the round-trip faithful), unparsable lines verbatim. A
-/// `Stream_Error` record still becomes the command's failure: it is the
-/// server aborting the stream, so even raw modes must not present it (and
-/// whatever follows it never arrives) as data.
-async fn stream_raw_lines(
-    mut stream: JsonlStream,
-    mut process_line: impl FnMut(&str) -> Result<()>,
-) -> Result<()> {
-    while let Some(line) = stream.next_line().await? {
-        match line {
-            JsonlLine::Value(value) => {
-                if let Some(message) = stream_error_message(&value) {
-                    return Err(mid_stream_error(message));
-                }
-                process_line(&value.to_string())?;
-            }
-            JsonlLine::Raw(raw) => process_line(&raw)?,
-        }
-    }
-    Ok(())
+        Ok(value.to_string())
+    })
 }
 
 struct FaultAnnotator {

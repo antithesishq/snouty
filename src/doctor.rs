@@ -1,7 +1,7 @@
 use color_eyre::eyre::Result;
 use serde::Serialize;
 
-use crate::api::{AntithesisApi, ApiVersion, VersionError};
+use crate::api::{AntithesisApi, ApiVersion, MIN_SEARCH_RELEASE, VersionError};
 use crate::attributed_value::AttributedValue;
 use crate::auth::{AuthenticationInfo, PasswordPolicy};
 use crate::compose;
@@ -370,49 +370,35 @@ fn print_settings(settings: &[Setting]) {
     }
 }
 
-/// A tenant release version's comparable form: the leading `major.minor`
-/// pair of a string like `"60.1"`. `None` when the string does not lead with
-/// two integers.
-fn parse_release(version: &str) -> Option<(u64, u64)> {
-    let mut parts = version.split('.');
-    let major = parts.next()?.trim().parse().ok()?;
-    let minor = parts.next().unwrap_or("0").trim().parse().ok()?;
-    Some((major, minor))
-}
-
-/// The tenant release the events-search API ships with; see
-/// [`runs_search_release_check`].
-const RUNS_SEARCH_MIN_RELEASE: (u64, u64) = (58, 11);
-
 /// With the `runs-search` unstable feature enabled, `runs events` and
 /// `runs search` assume the tenant serves the events-search API instead of
 /// probing for it — this check is where that assumption gets verified. Only
-/// a confidently-known gap reports: the feature off, an unreachable version
-/// endpoint, or an unparsable release version all say nothing (the check
-/// would guess). Pure over the probe result so it can be unit-tested without
-/// the network.
-fn runs_search_release_check(
-    result: &std::result::Result<ApiVersion, VersionError>,
-    runs_search_enabled: bool,
-) -> Option<Check> {
-    if !runs_search_enabled {
+/// a confidently-known gap reports: the feature off or an unparsable release
+/// version say nothing (the check would guess). Pure so it can be
+/// unit-tested without the network.
+fn runs_search_release_check(version: &ApiVersion, runs_search_enabled: bool) -> Option<Check> {
+    if !runs_search_enabled || version.release? >= MIN_SEARCH_RELEASE {
         return None;
     }
-    let version = result.as_ref().ok()?;
-    let release = parse_release(&version.release_version)?;
-    if release >= RUNS_SEARCH_MIN_RELEASE {
-        return None;
-    }
+    let (major, minor) = MIN_SEARCH_RELEASE;
     Some(
-        Check::fail("runs-search", "tenant serves the events-search API").note(
-            Level::Error,
-            format!(
-                "the `runs-search` unstable feature is enabled, but tenant release {} \
-                 predates the events-search API (added in 58.11) — `runs events` and \
-                 `runs search` will fail",
-                version.release_version
+        Check::fail("runs-search", "tenant serves the events-search API")
+            .note(
+                Level::Error,
+                format!(
+                    "the `runs-search` unstable feature is enabled, but tenant release {} \
+                     predates the events-search API (added in {major}.{minor}) — \
+                     `runs events` and `runs search` will fail",
+                    version.release_version
+                ),
+            )
+            .note(
+                Level::Note,
+                format!(
+                    "remove `runs-search` from {} to fall back to the events API",
+                    features::UNSTABLE_FEATURES_VAR_NAME
+                ),
             ),
-        ),
     )
 }
 
@@ -491,8 +477,9 @@ pub async fn cmd_doctor(
     if !offline && let Ok(api) = AntithesisApi::new(settings, verbose) {
         let host = api.host();
         let version = api.get_version().await;
-        if let Some(check) =
-            runs_search_release_check(&version, features::is_enabled(Feature::RunsSearch))
+        if let Ok(version) = &version
+            && let Some(check) =
+                runs_search_release_check(version, features::is_enabled(Feature::RunsSearch))
         {
             checks.push(check);
         }
@@ -793,18 +780,14 @@ mod tests {
 
     #[test]
     fn runs_search_release_check_fires_only_on_a_known_gap() {
-        let version = |release: &str| {
-            Ok(ApiVersion {
-                latest_api_version: "v1".into(),
-                release_version: release.into(),
-            })
-        };
+        let version = |release: &str| ApiVersion::new("v1".into(), release.into());
         // Feature off: nothing, whatever the release.
         assert!(runs_search_release_check(&version("56.0"), false).is_none());
         // Recent enough (58.11 ships the endpoint): nothing.
         assert!(runs_search_release_check(&version("58.11"), true).is_none());
         assert!(runs_search_release_check(&version("60.1"), true).is_none());
-        // Too old: the check fails doctor and names the gap.
+        // Too old: the check fails doctor, names the gap, and suggests
+        // turning the feature off.
         let check = runs_search_release_check(&version("58.6"), true).unwrap();
         assert_eq!(check.status, Status::Error);
         assert!(
@@ -812,8 +795,12 @@ mod tests {
             "{}",
             check.notes[0].text
         );
-        // Unreachable probe or unparsable release: say nothing, don't guess.
-        assert!(runs_search_release_check(&Err(VersionError::Http(404)), true).is_none());
+        assert!(
+            check.notes[1].text.contains("remove `runs-search`"),
+            "{}",
+            check.notes[1].text
+        );
+        // An unparsable release says nothing rather than guessing.
         assert!(runs_search_release_check(&version("unknown"), true).is_none());
     }
 
@@ -821,10 +808,7 @@ mod tests {
     fn version_ok_reports_both_versions() {
         let check = version_check(
             "tenant.antithesis.com",
-            Ok(ApiVersion {
-                latest_api_version: "v1".into(),
-                release_version: "56.0".into(),
-            }),
+            Ok(ApiVersion::new("v1".into(), "56.0".into())),
         );
         assert_eq!(check.status, Status::Ok);
         let notes = check

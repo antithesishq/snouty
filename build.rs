@@ -54,6 +54,7 @@ fn generate_api_client(out_dir: &Path) {
     mark_vtime_schema(&mut spec_value);
     untype_search_count_response(&mut spec_value);
     unrequire_search_limit_default(&mut spec_value);
+    drop_search_count_only(&mut spec_value);
     let spec: openapiv3::OpenAPI = serde_json::from_value(spec_value).unwrap();
 
     let mut settings = progenitor::GenerationSettings::default();
@@ -179,6 +180,32 @@ fn untype_search_count_response(spec: &mut serde_json::Value) {
         content.contains_key("application/x-ndjson"),
         "events-search 200 response no longer offers `application/x-ndjson`; \
          revisit untype_search_count_response in build.rs"
+    );
+}
+
+/// Remove `count_only` from the events-search request schema, so the
+/// generated type has no such field and snouty never sends one.
+///
+/// snouty does not expose the switch: the API team is moving the count into
+/// a separate endpoint, and current tenants ignore it anyway (observed on
+/// releases 58.11 and 60.0-60.1, where the field-carrying request still
+/// streams events). Omitting the field defers to the server default and
+/// keeps the eventual removal free.
+///
+/// The pointer is asserted, so a spec refresh that drops the field fails the
+/// build. ACTION when that happens: delete this transform and its call.
+fn drop_search_count_only(spec: &mut serde_json::Value) {
+    let properties = spec
+        .pointer_mut("/components/schemas/Search_Request/properties")
+        .and_then(serde_json::Value::as_object_mut)
+        .expect(
+            "openapi spec has no Search_Request properties; \
+             update drop_search_count_only in build.rs",
+        );
+    assert!(
+        properties.remove("count_only").is_some(),
+        "Search_Request no longer carries count_only; \
+         drop_search_count_only in build.rs is a no-op and can be removed"
     );
 }
 

@@ -669,8 +669,9 @@ pub enum RunsCommands {
     #[command(
         long_about = r#"List recent runs (the default when `snouty runs` runs with no subcommand).
 
-Columns: RUN ID, STATUS, CREATED, TEST NAME. Use --detail or --json for the
-full description and launcher."#
+Columns: RUN ID, STATUS, CREATED, TEST NAME. With --launcher, a LAUNCHER
+column confirms the filter. Use --detail or --json for the full description
+and launcher."#
     )]
     List(RunsListArgs),
 

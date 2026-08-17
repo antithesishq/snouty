@@ -1,5 +1,6 @@
 //! `VTime`: a moment's virtual time, in seconds.
 
+use std::borrow::Cow;
 use std::cmp::Ordering;
 use std::fmt;
 use std::str::FromStr;
@@ -74,6 +75,59 @@ impl VTime {
     pub fn is_tick_aligned(self) -> bool {
         (self.0 * TICKS_PER_SECOND).fract() == 0.0
     }
+
+    /// An event's vtime as display text, at full precision: the server's own
+    /// string when it is still one, otherwise the exact print of the
+    /// normalized number. Starting from the server's text means an f64
+    /// round-trip can never nudge the displayed value.
+    pub(crate) fn full_text(raw: &serde_json::Value) -> Cow<'_, str> {
+        match raw.as_str() {
+            Some(s) => Cow::Borrowed(s),
+            None => Cow::Owned(
+                VTime::from_json(raw)
+                    .map(|v| v.to_string())
+                    .unwrap_or_default(),
+            ),
+        }
+    }
+
+    /// [`VTime::full_text`], truncated — never rounded — to `decimals`
+    /// fractional digits, so a value copied off the screen and pasted back
+    /// (e.g. as `--begin-vtime`) lands on, never past, the line it came from.
+    pub(crate) fn truncated_text(raw: &serde_json::Value, decimals: usize) -> String {
+        truncate_decimals(&Self::full_text(raw), decimals)
+    }
+}
+
+/// Truncate (never round) the decimal string `s` to exactly `decimals`
+/// fractional digits, zero-padding a short or missing fraction (`"19"` ->
+/// `"19.000"`, `"14.78"` -> `"14.780"`, `"1814.71357"` -> `"1814.713"`). Fixed
+/// width keeps a column of these aligned on the decimal point. Only a plain
+/// decimal string is sliced; anything else (scientific notation) falls back to
+/// rounded fixed-point, and a non-number is passed through verbatim.
+fn truncate_decimals(s: &str, decimals: usize) -> String {
+    let t = s.trim();
+    let (int_part, frac_part) = match t.split_once('.') {
+        Some((i, f)) => (i, f),
+        None => (t, ""),
+    };
+    let is_plain = !int_part.is_empty()
+        && int_part
+            .char_indices()
+            .all(|(i, c)| c.is_ascii_digit() || (i == 0 && (c == '-' || c == '+')))
+        && frac_part.chars().all(|c| c.is_ascii_digit());
+    if !is_plain {
+        return match t.parse::<f64>() {
+            Ok(v) => format!("{v:.decimals$}"),
+            Err(_) => t.to_string(),
+        };
+    }
+    if decimals == 0 {
+        return int_part.to_string();
+    }
+    // `is_plain` guarantees ASCII digits, so byte slicing is safe.
+    let kept = &frac_part[..frac_part.len().min(decimals)];
+    format!("{int_part}.{kept:0<decimals$}")
 }
 
 /// `total_cmp` is a total order over `f64`, which is what lets `VTime` be
@@ -352,5 +406,20 @@ mod tests {
         let from_string: VTime = serde_json::from_str(&format!("\"{text}\"")).unwrap();
         assert_eq!(from_number, vtime);
         assert_eq!(from_string, vtime);
+    }
+
+    #[test]
+    fn truncate_decimals_keeps_fixed_precision_without_rounding() {
+        // Always exactly 3 decimals, zero-padded, so a column aligns.
+        assert_eq!(truncate_decimals("19", 3), "19.000");
+        assert_eq!(truncate_decimals("19.0", 3), "19.000");
+        assert_eq!(truncate_decimals("14.78", 3), "14.780");
+        // Truncates, never rounds: 1814.7135… -> .713 (rounding would give .714).
+        assert_eq!(truncate_decimals("1814.7135719023645", 3), "1814.713");
+        assert_eq!(truncate_decimals("18.9148034489", 3), "18.914");
+        // Non-plain input: scientific notation falls back to fixed-point, and a
+        // non-number is passed through untouched.
+        assert_eq!(truncate_decimals("1e3", 3), "1000.000");
+        assert_eq!(truncate_decimals("n/a", 3), "n/a");
     }
 }

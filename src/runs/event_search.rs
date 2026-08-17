@@ -99,7 +99,13 @@ pub(super) async fn print_event_stream(
         EventOutput::Human { detail } => {
             let mut renderer = EventStreamRenderer::new(detail);
             event_lines(stream, error_rows)
-                .map_ok(move |entry| renderer.render_entry(&entry))
+                .map_ok(move |entry| {
+                    let mut line = String::new();
+                    renderer
+                        .render_entry(&entry, &mut line)
+                        .expect("writing to a String cannot fail");
+                    line
+                })
                 .boxed()
         }
     };

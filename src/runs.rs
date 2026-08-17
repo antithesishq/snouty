@@ -228,7 +228,10 @@ async fn cmd_runs_list(
         out!("{}", render_runs_detail(&runs))?;
     } else {
         let width = terminal_width();
-        outln!("{}", render_runs_table(&runs, width))?;
+        outln!(
+            "{}",
+            render_runs_table(&runs, width, opts.launcher.is_some())
+        )?;
     }
     Ok(())
 }
@@ -2247,30 +2250,38 @@ fn render_columns(
     }
 }
 
-fn render_runs_table(runs: &[RunSummary], width: usize) -> String {
+fn render_runs_table(runs: &[RunSummary], width: usize, show_launcher: bool) -> String {
     // The default view omits the description entirely — it never fit usefully
     // beside the (necessarily full) run id, and `runs list --detail` shows it in
     // full. Test name is the final, width-bounded column truncated with an
     // ellipsis (a `runs show RUN` follow-up still works off the full id). A
-    // launcher filter doesn't add a column — every row would carry the same
-    // value; `--detail`/`--json` surface the launcher when it's actually wanted.
-    let headers = vec![
+    // launcher column appears only under `--launcher`: the values are all the
+    // same by construction, but without the column nothing in the output
+    // confirms the filter applied (issue #237).
+    let mut headers = vec![
         "RUN ID".to_string(),
         "STATUS".to_string(),
         "CREATED".to_string(),
-        "TEST NAME".to_string(),
     ];
+    if show_launcher {
+        headers.push("LAUNCHER".to_string());
+    }
+    headers.push("TEST NAME".to_string());
 
     let rows: Vec<Vec<String>> = runs
         .iter()
         .map(|run| {
             let test_name = run.test_name().map(sanitize).unwrap_or_else(|| "-".into());
-            vec![
+            let mut row = vec![
                 sanitize(&run.run_id),
                 run.status.to_string(),
                 relative_time(run.created_at),
-                test_name,
-            ]
+            ];
+            if show_launcher {
+                row.push(sanitize(&run.launcher));
+            }
+            row.push(test_name);
+            row
         })
         .collect();
 
@@ -4256,7 +4267,7 @@ mod tests {
         )];
 
         let width = 80;
-        let table = render_runs_table(&runs, width);
+        let table = render_runs_table(&runs, width, false);
         let lines: Vec<&str> = table.lines().collect();
 
         assert!(lines[0].contains("RUN ID"));
@@ -4272,6 +4283,37 @@ mod tests {
         // Test name is the final column, truncated with an ellipsis to fit, and
         // every line stays within the terminal width.
         assert!(lines[1].contains('…'));
+        for line in &lines {
+            assert!(
+                line.chars().count() <= width,
+                "line exceeds width {width}: {line}"
+            );
+        }
+    }
+
+    #[test]
+    fn runs_table_shows_launcher_column_when_filter_active() {
+        // Under `--launcher` the table gains a LAUNCHER column so the output
+        // itself confirms the filter applied (issue #237) — especially when a
+        // row has no test name and would otherwise read as an unrelated `-`.
+        let runs = vec![summary(
+            "abc-54-1",
+            RunStatus::Completed,
+            "2024-01-01T00:00:00Z",
+            "basic_test",
+            None,
+            None,
+        )];
+
+        let width = 100;
+        let table = render_runs_table(&runs, width, true);
+        let lines: Vec<&str> = table.lines().collect();
+
+        // LAUNCHER sits before TEST NAME, which stays the final (bounded) column.
+        let header = lines[0];
+        assert!(header.contains("LAUNCHER"));
+        assert!(header.find("LAUNCHER").unwrap() < header.find("TEST NAME").unwrap());
+        assert!(lines[1].contains("basic_test"));
         for line in &lines {
             assert!(
                 line.chars().count() <= width,
@@ -4330,7 +4372,7 @@ mod tests {
             Some(long),
             None,
         )];
-        let table = render_runs_table(&runs, usize::MAX);
+        let table = render_runs_table(&runs, usize::MAX, false);
         assert!(table.contains(long), "name was truncated: {table}");
         assert!(!table.contains('…'));
     }
@@ -4357,7 +4399,7 @@ mod tests {
             None,
             None,
         )];
-        let table = render_runs_table(&runs, 100);
+        let table = render_runs_table(&runs, 100, false);
         let lines: Vec<&str> = table.lines().collect();
         assert!(lines[1].contains("incomplete"));
         // A placeholder dash stands in for the missing test name (final column).

@@ -961,7 +961,13 @@ def all_launcher(value: str):
     def chk(sr: StoryRun, reg: Registry) -> tuple[bool, str]:
         rows = sr.rows or []
         bad = [r for r in rows if r.get("launcher") != value]
-        return (bool(rows) and not bad, f"{len(rows)} rows, all launcher={value!r}")
+        # The table must confirm the filter itself: under --launcher it gains a
+        # LAUNCHER column (issue #237), not just matching --json rows.
+        column_shown = "LAUNCHER" in sr.result.stdout
+        return (
+            bool(rows) and not bad and column_shown,
+            f"{len(rows)} rows, all launcher={value!r}, LAUNCHER column={column_shown}",
+        )
 
     return chk
 
@@ -1363,7 +1369,7 @@ def build_stories(d: Discovery) -> list[Story]:
             "runs-list--launcher",
             f"Show only {d.launcher}-launched runs",
             "I want to see only the runs kicked off by one particular launcher.",
-            f"Non-empty, and every row's launcher is {d.launcher!r}.",
+            f"Non-empty, a LAUNCHER column confirms the filter, and every row's launcher is {d.launcher!r}.",
             ["runs", "list", "-n", "8", "--launcher", d.launcher],
             all_launcher(d.launcher),
         ),

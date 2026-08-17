@@ -36,6 +36,21 @@ use crate::{
 pub(crate) const API_KEY_VAR_NAME: &str = "ANTITHESIS_API_KEY";
 pub(crate) const USERNAME_VAR_NAME: &str = "ANTITHESIS_USERNAME";
 pub(crate) const PASSWORD_VAR_NAME: &str = "ANTITHESIS_PASSWORD";
+const OIDC_URL_VAR_NAME: &str = "ACTIONS_ID_TOKEN_REQUEST_URL";
+const OIDC_TOKEN_VAR_NAME: &str = "ACTIONS_ID_TOKEN_REQUEST_TOKEN";
+
+/// Every environment variable that ambient credential resolution reads. A test
+/// harness that isolates itself from the developer's shell must clear all of
+/// these, or an exported credential wins over the fixture it seeds.
+#[cfg(test)]
+pub(crate) const CREDENTIAL_ENV_VARS: [&str; 5] = [
+    API_KEY_VAR_NAME,
+    USERNAME_VAR_NAME,
+    PASSWORD_VAR_NAME,
+    OIDC_URL_VAR_NAME,
+    OIDC_TOKEN_VAR_NAME,
+];
+
 const CREDENTIALS_FILENAME: &str = "credentials.toml";
 
 const OIDC_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
@@ -293,11 +308,8 @@ impl AuthenticationInfo {
     }
 
     fn try_from_github_actions_environment() -> Result<Option<AttributedValue<Self>>> {
-        const TARGET_URL_VAR_NAME: &str = "ACTIONS_ID_TOKEN_REQUEST_URL";
-        const REQ_TOKEN_VAR_NAME: &str = "ACTIONS_ID_TOKEN_REQUEST_TOKEN";
-
-        if let Some(actions_id_request_token) = env::var(REQ_TOKEN_VAR_NAME)?
-            && let Some(actions_id_url) = env::var(TARGET_URL_VAR_NAME)?
+        if let Some(actions_id_request_token) = env::var(OIDC_TOKEN_VAR_NAME)?
+            && let Some(actions_id_url) = env::var(OIDC_URL_VAR_NAME)?
         {
             return Ok(Some(AttributedValue::EnvironmentVariable {
                 value: Self::GithubActionsOidc {
@@ -305,7 +317,7 @@ impl AuthenticationInfo {
                     request_token: actions_id_request_token,
                     cached: Arc::new(OnceCell::new()),
                 },
-                environment_variable_names: vec![TARGET_URL_VAR_NAME, REQ_TOKEN_VAR_NAME],
+                environment_variable_names: vec![OIDC_URL_VAR_NAME, OIDC_TOKEN_VAR_NAME],
             }));
         }
 

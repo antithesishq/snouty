@@ -25,7 +25,8 @@ impl<'a> Event<'a> for Log<'a> {
 }
 
 /// One build-log line, in the renderer's shared visual grammar: dim
-/// timestamp, cyan bracketed source, sanitized text (SUT colors kept). Build
+/// timestamp (sanitized — an unparsable timestamp falls back to the raw
+/// string), cyan bracketed source, sanitized text (SUT colors kept). Build
 /// logs are wall-clock events with no moment, so there is no divider and no
 /// classification — the stream label stands in for the source.
 pub(super) fn render_build_log(
@@ -37,7 +38,7 @@ pub(super) fn render_build_log(
     write!(
         out,
         "{} {} {}",
-        style(timestamp).dim(),
+        style(sanitize(timestamp)).dim(),
         style(super::DisplayWith(|f: &mut fmt::Formatter<'_>| write!(
             f,
             "[{}]",
@@ -76,5 +77,18 @@ mod tests {
             "timestamp": "2025-03-20T02:01:12Z", "text": "compiling"
         }));
         assert!(streamless.ends_with("[out] compiling"), "got: {streamless}");
+    }
+
+    #[test]
+    fn an_unparsable_timestamp_renders_with_escape_bytes_escaped() {
+        // `format_local_str` cannot parse this timestamp, so it falls back
+        // to the raw string — the sanitize here is what keeps the carried
+        // escape bytes from reaching the terminal.
+        console::set_colors_enabled(false);
+        let line = render_one(json!({
+            "timestamp": "2025-03-20\u{1b}[2J", "stream": "out", "text": "hi"
+        }));
+        assert_eq!(line, r"2025-03-20\x1B[2J [out] hi");
+        assert!(!line.contains('\u{1b}'), "escape byte leaked: {line:?}");
     }
 }

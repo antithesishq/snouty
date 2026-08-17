@@ -1,6 +1,5 @@
-use std::io::{BufWriter, IsTerminal, Read, Write};
+use std::io::{IsTerminal, Read, Write};
 use std::num::NonZeroU64;
-use std::sync::OnceLock;
 use std::time::Duration;
 
 use color_eyre::Section;
@@ -9,11 +8,10 @@ use futures_util::{StreamExt, TryStreamExt};
 use indexmap::IndexMap;
 use indexmap::map::Entry;
 use log::debug;
-use regex::Regex;
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
 
-use chrono::{DateTime, Local, Utc};
+use chrono::{DateTime, Utc};
 
 use crate::api::{
     AntithesisApi, Event, EventProperty, LogsBegin, Moment, NonEventProperty, Property,
@@ -22,15 +20,18 @@ use crate::api::{
 };
 use crate::cli::{RunsCommands, RunsListArgs, RunsSearchArgs};
 use crate::error::{api_error_status, user_error};
+use crate::event_render::{normalize_terminal_text, strip_ansi};
 use crate::event_set_dsl;
 use crate::features::{self, Feature};
 use crate::jsonl::JsonStream;
 use crate::render::{OutputOptions, render_kv, sanitize, sanitize_multiline, wrap_text};
 use crate::settings::Settings;
-use crate::time::HumanDuration;
+use crate::time::{HumanDuration, format_local};
 use crate::vtime::VTime;
 
 mod event_search;
+
+use event_search::EventOutput;
 
 /// `print!`/`println!`, but routed through `write!`/`writeln!` to stdout so a
 /// closed pipe (e.g. `snouty runs list | head`) surfaces as an `io::Error` the
@@ -44,62 +45,40 @@ macro_rules! outln {
     ($($arg:tt)*) => {{ writeln!(std::io::stdout(), $($arg)*) }};
 }
 
-/// Event stream classification. Variants match the canonical values that
-/// appear in an event's `source.stream` field.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Stream {
-    Stdout,
-    Stderr,
-    Info,
-    Error,
-}
-
-impl Stream {
-    /// Three-character display abbreviation used in the logs viewer.
-    pub fn abbreviated(self) -> &'static str {
-        match self {
-            Self::Stdout => "out",
-            Self::Stderr => "err",
-            Self::Info => "inf",
-            Self::Error => "err",
-        }
-    }
-}
-
-impl std::str::FromStr for Stream {
-    type Err = String;
-
-    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
-        // Accept the short forms too: the events/logs API reports app
-        // stdout/stderr as `out`/`err` (see `abbreviated`), so the logs viewer
-        // can normalize either form when rendering a stream label.
-        match s {
-            "stdout" | "out" => Ok(Self::Stdout),
-            "stderr" | "err" => Ok(Self::Stderr),
-            "info" | "inf" => Ok(Self::Info),
-            "error" => Ok(Self::Error),
-            other => Err(format!(
-                "invalid stream '{other}' (expected one of: stdout, stderr, info, error)"
-            )),
-        }
-    }
-}
-
 pub async fn cmd_runs(
     command: Option<RunsCommands>,
     settings: &Settings,
     output: OutputOptions,
 ) -> Result<()> {
-    // `--detail` produces human formatting, so it can't combine with `--json`.
-    // It rides on more than one subcommand (`runs list`, `runs properties`), so
-    // the conflict is checked once here — a global `--json` vs a per-subcommand
-    // flag can't be expressed with clap's `conflicts_with`.
-    let detail = match &command {
-        Some(RunsCommands::List(args)) => args.detail,
-        Some(RunsCommands::Properties { detail, .. }) => *detail,
-        _ => false,
+    // `--detail` produces human formatting, so it can't combine with
+    // `--json`; `--raw` IS the server's NDJSON, so it requires `--json`.
+    // Both flags ride on more than one subcommand, and a global `--json` vs
+    // a per-subcommand flag can't be expressed with clap's `conflicts_with`,
+    // so the two rules are checked once here.
+    let (raw, detail) = match &command {
+        Some(RunsCommands::List(args)) => (false, args.detail),
+        Some(RunsCommands::Properties { detail, .. }) => (false, *detail),
+        Some(RunsCommands::Logs { render, .. }) | Some(RunsCommands::Events { render, .. }) => {
+            (render.raw, render.detail)
+        }
+        Some(RunsCommands::Search(args)) => (args.render.raw, args.render.detail),
+        _ => (false, false),
     };
     reject_detail_with_json(output.json, detail)?;
+    if raw && !output.json {
+        return Err(raw_requires_json_error());
+    }
+    // The stream commands' output mode, resolved once the flags are known
+    // legal. Fault annotation is `runs logs`' default `--json` shape; the
+    // other stream commands carry no fault windows to thread.
+    let mode = if output.json {
+        EventOutput::Json {
+            raw,
+            annotate_faults: !raw && matches!(&command, Some(RunsCommands::Logs { .. })),
+        }
+    } else {
+        EventOutput::Human { detail }
+    };
 
     match command {
         None => cmd_runs_list(RunsListArgs::default(), settings, output).await,
@@ -144,7 +123,17 @@ pub async fn cmd_runs(
             cmd_runs_properties(&run_id, filter, detail, settings, output).await
         }
         Some(RunsCommands::BuildLogs { run_id }) => {
-            cmd_runs_build_logs(&run_id, settings, output).await
+            // `--json` on build-logs is the raw passthrough: the records
+            // carry no vtime to normalize and no faults to annotate.
+            let mode = if output.json {
+                EventOutput::Json {
+                    raw: true,
+                    annotate_faults: false,
+                }
+            } else {
+                EventOutput::Human { detail: false }
+            };
+            cmd_runs_build_logs(&run_id, settings, output.verbose, mode).await
         }
         Some(RunsCommands::Logs {
             run_id,
@@ -152,7 +141,7 @@ pub async fn cmd_runs(
             vtime,
             begin_vtime,
             begin_input_hash,
-            raw,
+            ..
         }) => {
             let moment = Moment { input_hash, vtime };
             // clap enforces `begin_input_hash requires begin_vtime`, so mapping
@@ -161,14 +150,7 @@ pub async fn cmd_runs(
                 vtime,
                 input_hash: begin_input_hash,
             });
-            cmd_runs_logs(
-                &run_id,
-                moment,
-                begin,
-                settings,
-                LogOutputOptions { output, raw },
-            )
-            .await
+            cmd_runs_logs(&run_id, moment, begin, settings, output.verbose, mode).await
         }
         Some(RunsCommands::Exec {
             run_id,
@@ -188,14 +170,17 @@ pub async fn cmd_runs(
             mut matches,
             limit,
             query,
+            ..
         }) => {
             // `-m/--match` is the documented form; the trailing positional
             // `query` is a backward-compatible alias whose terms are additional
             // needles. Merge both into a single needle list.
             matches.extend(query);
-            cmd_runs_events(&run_id, &matches, limit, settings, output).await
+            cmd_runs_events(&run_id, &matches, limit, settings, output.verbose, mode).await
         }
-        Some(RunsCommands::Search(args)) => cmd_runs_search(args, settings, output).await,
+        Some(RunsCommands::Search(args)) => {
+            cmd_runs_search(args, settings, output.verbose, mode).await
+        }
     }
 }
 
@@ -285,24 +270,6 @@ fn relative_time(then: DateTime<Utc>) -> String {
         s => (s / (365 * 86_400), "y"),
     };
     format!("{value}{unit} ago")
-}
-
-/// Format an absolute timestamp in the user's local timezone, without a
-/// timezone suffix (the times in snouty's output are always local, so showing
-/// the offset would just be noise). Example: `2026-05-27 08:25:13`.
-fn format_local(dt: DateTime<Utc>) -> String {
-    dt.with_timezone(&Local)
-        .format("%Y-%m-%d %H:%M:%S")
-        .to_string()
-}
-
-/// Reformat an RFC 3339 timestamp string into the local, suffix-less format.
-/// Falls back to the original string if it can't be parsed.
-fn format_local_str(raw: &str) -> String {
-    match DateTime::parse_from_rfc3339(raw) {
-        Ok(dt) => format_local(dt.with_timezone(&Utc)),
-        Err(_) => raw.to_string(),
-    }
 }
 
 /// The requested run duration (`antithesis.duration`, a count of minutes),
@@ -1354,30 +1321,19 @@ fn render_runs_detail(runs: &[RunSummary]) -> String {
     blocks.join("\n")
 }
 
-struct LogOutputOptions {
-    /// The global `--json`/`--verbose` flags.
-    output: OutputOptions,
-    /// Skip all log post-processing: no fault annotation in JSON mode, and the
-    /// human payload is rendered verbatim (no ANSI stripping or control-byte
-    /// escaping).
-    raw: bool,
-}
-
-/// After streaming a log/event stream in human mode, print `empty_note` when the
-/// stream completed successfully (`stream_ok`) but produced no lines, so the user
-/// isn't left wondering whether anything happened. In `--json` mode an empty
-/// stream is the correct machine answer, so stay quiet. Shared by `cmd_runs_logs`
-/// and `cmd_runs_build_logs`, which track `wrote_any` the same way.
-fn note_if_empty(stream_ok: bool, json: bool, wrote_any: bool, empty_note: &str) {
-    if stream_ok && !json && !wrote_any {
-        eprintln!("{empty_note}");
-    }
+/// The refusal for `--raw` without `--json`. Raw output IS the server's
+/// NDJSON stream; there is no raw human rendering to fall back to.
+fn raw_requires_json_error() -> color_eyre::eyre::Report {
+    user_error("--raw requires --json")
+        .note("--raw passes the server's NDJSON stream through verbatim")
+        .suggestion("add --json, or drop --raw for the rendered output")
 }
 
 async fn cmd_runs_build_logs(
     run_id: &str,
     settings: &Settings,
-    OutputOptions { json, verbose }: OutputOptions,
+    verbose: bool,
+    mode: EventOutput,
 ) -> Result<()> {
     debug!("streaming build logs for run: {}", run_id);
 
@@ -1386,58 +1342,35 @@ async fn cmd_runs_build_logs(
         Ok(stream) => stream,
         Err(err) => return Err(explain_run_scoped_error(&api, run_id, err).await),
     };
-    let mut stdout = BufWriter::new(std::io::stdout().lock());
-
-    let mut wrote_any = false;
-    let result: Result<()> = async {
-        if json {
-            // The --json contract is raw passthrough.
-            let mut lines = raw_lines(stream, ErrorRows::Abort);
-            while let Some(line) = lines.try_next().await? {
-                wrote_any = true;
-                writeln!(stdout, "{line}")?;
-            }
-        } else {
-            let mut lines = event_lines(stream, ErrorRows::Abort);
-            while let Some(entry) = lines.try_next().await? {
-                wrote_any = true;
-                let ts = format_local_str(entry["timestamp"].as_str().unwrap_or(""));
-                let stream = entry["stream"].as_str().unwrap_or("out");
-                let text = sanitize(entry["text"].as_str().unwrap_or(""));
-                writeln!(stdout, "{ts} [{stream}] {text}")?;
-            }
-        }
-        Ok(())
-    }
-    .await;
-
-    stdout.flush()?;
-    note_if_empty(
-        result.is_ok(),
-        json,
-        wrote_any,
+    event_search::print_event_stream(
+        stream,
+        None,
+        ErrorRows::Abort,
+        mode,
+        false,
         "No build logs for this run.",
-    );
-    result
+    )
+    .await
 }
 
 async fn cmd_runs_search(
     args: RunsSearchArgs,
     settings: &Settings,
-    OutputOptions { json, verbose }: OutputOptions,
+    verbose: bool,
+    mode: EventOutput,
 ) -> Result<()> {
     debug!("querying events for run: {}", args.run_id);
 
     let api = AntithesisApi::new(settings, verbose)?;
     if args.check {
-        return event_search::check_query(&api, &args.run_id, &args.query, json).await;
+        return event_search::check_query(&api, &args.run_id, &args.query, mode.json()).await;
     }
-    let mode = SearchMode::Query {
+    let search = SearchMode::Query {
         stream: args.follow,
         limit: args.limit,
     };
     let stream = match api
-        .search_run_events_query(&args.run_id, &args.query, mode)
+        .search_run_events_query(&args.run_id, &args.query, search)
         .await
     {
         Ok(stream) => stream,
@@ -1460,7 +1393,9 @@ async fn cmd_runs_search(
         stream,
         cap,
         ErrorRows::Data,
-        json,
+        mode,
+        // The search backend holds the connection open on a live run.
+        true,
         "No events matched the query.",
     )
     .await
@@ -1471,7 +1406,8 @@ async fn cmd_runs_events(
     matches: &[String],
     limit: Option<NonZeroU64>,
     settings: &Settings,
-    OutputOptions { json, verbose }: OutputOptions,
+    verbose: bool,
+    mode: EventOutput,
 ) -> Result<()> {
     debug!("searching events for run: {}", run_id);
 
@@ -1488,7 +1424,7 @@ async fn cmd_runs_events(
     }
 
     let api = AntithesisApi::new(settings, verbose)?;
-    let (stream, cap) = if features::is_enabled(Feature::RunsSearch) {
+    let (stream, cap, live) = if features::is_enabled(Feature::RunsSearch) {
         let query = event_set_dsl::substring_filter(matches);
         let mode = SearchMode::Query {
             stream: false,
@@ -1499,8 +1435,9 @@ async fn cmd_runs_events(
             Err(err) => return Err(event_search::explain_search_error(run_id, err)),
         };
         // The search backend ignores the limit (see `cmd_runs_search`);
-        // enforce it client-side.
-        (stream, Some(limit.unwrap_or(SEARCH_DEFAULT_LIMIT)))
+        // enforce it client-side. It also holds the connection open on a
+        // live run.
+        (stream, Some(limit.unwrap_or(SEARCH_DEFAULT_LIMIT)), true)
     } else {
         let [needle] = matches else {
             return Err(event_search::multi_needle_error());
@@ -1510,13 +1447,14 @@ async fn cmd_runs_events(
             Err(err) => return Err(explain_run_scoped_error(&api, run_id, err).await),
         };
         // The GET endpoint enforces `limit` server-side — no cap to add.
-        (stream, None)
+        (stream, None, false)
     };
     event_search::print_event_stream(
         stream,
         cap,
         ErrorRows::Abort,
-        json,
+        mode,
+        live,
         &format!("No events matched \"{}\".", matches.join(" ")),
     )
     .await
@@ -1527,10 +1465,8 @@ async fn cmd_runs_logs(
     moment: Moment,
     begin: Option<LogsBegin>,
     settings: &Settings,
-    LogOutputOptions {
-        output: OutputOptions { json, verbose },
-        raw,
-    }: LogOutputOptions,
+    verbose: bool,
+    mode: EventOutput,
 ) -> Result<()> {
     debug!("streaming logs for run: {}", run_id);
 
@@ -1539,46 +1475,18 @@ async fn cmd_runs_logs(
         Ok(stream) => stream,
         Err(err) => return Err(explain_logs_error(&api, run_id, err).await),
     };
-
-    let mut stdout = BufWriter::new(std::io::stdout().lock());
-    let mut wrote_any = false;
-    let result: Result<()> = async {
-        if json && raw {
-            // Verbatim passthrough: no fault annotation, no normalization.
-            let mut lines = raw_lines(stream, ErrorRows::Abort);
-            while let Some(line) = lines.try_next().await? {
-                wrote_any = true;
-                writeln!(stdout, "{line}")?;
-            }
-        } else if json {
-            // Fault annotation is the default.
-            let mut annotator = FaultAnnotator::default();
-            let mut lines = event_lines(stream, ErrorRows::Abort);
-            while let Some(mut entry) = lines.try_next().await? {
-                wrote_any = true;
-                annotator.annotate(&mut entry);
-                writeln!(stdout, "{entry}")?;
-            }
-        } else {
-            let mut lines = event_lines(stream, ErrorRows::Abort);
-            while let Some(entry) = lines.try_next().await? {
-                wrote_any = true;
-                writeln!(stdout, "{}", format_log_entry(&entry, raw))?;
-            }
-        }
-        Ok(())
-    }
-    .await;
-    stdout.flush()?;
-    // A moment with no logs (e.g. a manually-supplied 0/0 placeholder) yields an
-    // empty stream; say so in human mode rather than printing nothing.
-    note_if_empty(
-        result.is_ok(),
-        json,
-        wrote_any,
+    // A moment with no logs (e.g. a manually-supplied 0/0 placeholder)
+    // yields an empty stream; the pipeline says so in human mode rather
+    // than printing nothing.
+    event_search::print_event_stream(
+        stream,
+        None,
+        ErrorRows::Abort,
+        mode,
+        false,
         "No log lines at this moment.",
-    );
-    result
+    )
+    .await
 }
 
 /// One frame of an execute-command NDJSON stream.
@@ -1651,10 +1559,10 @@ fn render_exec_frame(frame: &ExecFrame) -> Result<()> {
     match frame {
         ExecFrame::Known(ExecEvent::Output { stream, text, .. }) => {
             let text = normalize_terminal_text(text);
-            // Parse via `Stream` so the short form `err` routes to stderr
-            // too. Anything else — stdout, info, or an unrecognized label —
-            // goes to stdout, as before.
-            if stream.parse::<Stream>() == Ok(Stream::Stderr) {
+            // The API labels stderr output as `stderr` or the short form
+            // `err`; both route to stderr. Anything else — stdout, info, or
+            // an unrecognized label — goes to stdout, as before.
+            if matches!(stream.as_str(), "stderr" | "err") {
                 eprintln!("{text}");
             } else {
                 outln!("{text}")?;
@@ -1812,53 +1720,6 @@ async fn cmd_runs_exec(
     }
 }
 
-/// The source column is sized to fit `antithesis_test_composer` — the built-in
-/// test-composer source present in nearly every run's logs — so those lines align
-/// instead of overflowing. Longer sources still overflow on their own lines
-/// rather than widening the column for everyone.
-const LOG_SOURCE_MIN_WIDTH: usize = "antithesis_test_composer".len();
-/// vtime is shown truncated to 3 decimals. Sized for runs up to ~9999 vsec
-/// (`"9999.999"`, 8 chars), which covers the vast majority; longer runs overflow
-/// this width on their lines rather than padding every shorter line to match.
-const LOG_VTIME_WIDTH: usize = 8;
-const LOG_STREAM_WIDTH: usize = 3;
-
-fn format_log_entry(entry: &Value, raw: bool) -> String {
-    let vtime = format_log_vtime(entry);
-    let container = entry["source"]["container"].as_str().unwrap_or("");
-    let name = entry["source"]["name"].as_str().unwrap_or("");
-    let source = if !container.is_empty() {
-        container
-    } else {
-        name
-    };
-    let stream_raw = entry["source"]["stream"].as_str().unwrap_or("");
-    let stream = abbreviate_stream(stream_raw);
-
-    // Web UI format: text records sit one space after the stream bracket.
-    // JSON records get an extra " - " separator before the body.
-    // Run the text payload through the shared terminal normalizer: strip ANSI
-    // color codes, then escape any remaining control bytes so a stray `\r`/BEL
-    // in container output can't corrupt the rendered stream. `--raw` skips the
-    // normalizer so colors and control bytes reach the terminal verbatim.
-    let payload = if let Some(text) = entry.get("output_text").and_then(Value::as_str) {
-        if raw {
-            text.to_string()
-        } else {
-            normalize_terminal_text(text)
-        }
-    } else {
-        format!(" - {}", strip_log_envelope(entry))
-    };
-
-    format!(
-        "[{vtime:>vw$}] [{source:>sw$}] [{stream:<stw$}] {payload}",
-        vw = LOG_VTIME_WIDTH,
-        sw = LOG_SOURCE_MIN_WIDTH,
-        stw = LOG_STREAM_WIDTH,
-    )
-}
-
 /// Convert the vtime under an NDJSON entry's `key` (`moment` for a log/event
 /// record, `end_moment` for an execute-command `exited` event) from the
 /// server's seconds string to an exact JSON number in place — the only
@@ -1868,104 +1729,6 @@ fn normalize_vtime_field(entry: &mut Value, key: &str) -> Option<VTime> {
     let vtime = VTime::from_json(&entry[key]["vtime"])?;
     entry[key]["vtime"] = json!(vtime);
     Some(vtime)
-}
-
-/// Render a log line's vtime in seconds with exactly 3 decimal places,
-/// truncated — never rounded. Fixed precision keeps the decimal point and right
-/// edge aligned down the fixed `LOG_VTIME_WIDTH` column (full-precision vtimes
-/// would overflow it and desync the source column). Truncating rather than
-/// rounding means a vtime copied off the screen and pasted back as
-/// `--begin-vtime` lands on — never just past — the line you saw.
-fn format_log_vtime(entry: &Value) -> String {
-    let raw = &entry["moment"]["vtime"];
-    match raw.as_str() {
-        // The API sends vtime as a seconds string; truncate it directly so f64
-        // round-trips can't nudge the displayed value.
-        Some(s) => truncate_decimals(s, 3),
-        // A JSON-number vtime: VTime's Display is the exact text the number
-        // was printed from, so truncating it cuts — never rounds.
-        None => match VTime::from_json(raw) {
-            Some(v) => truncate_decimals(&v.to_string(), 3),
-            None => String::new(),
-        },
-    }
-}
-
-/// Truncate (never round) the decimal string `s` to exactly `decimals`
-/// fractional digits, zero-padding a short or missing fraction (`"19"` ->
-/// `"19.000"`, `"14.78"` -> `"14.780"`, `"1814.71357"` -> `"1814.713"`). Fixed
-/// width keeps a column of these aligned on the decimal point. Only a plain
-/// decimal string is sliced; anything else (scientific notation) falls back to
-/// rounded fixed-point, and a non-number is passed through verbatim.
-fn truncate_decimals(s: &str, decimals: usize) -> String {
-    let t = s.trim();
-    let (int_part, frac_part) = match t.split_once('.') {
-        Some((i, f)) => (i, f),
-        None => (t, ""),
-    };
-    let is_plain = !int_part.is_empty()
-        && int_part
-            .char_indices()
-            .all(|(i, c)| c.is_ascii_digit() || (i == 0 && (c == '-' || c == '+')))
-        && frac_part.chars().all(|c| c.is_ascii_digit());
-    if !is_plain {
-        return match t.parse::<f64>() {
-            Ok(v) => format!("{v:.decimals$}"),
-            Err(_) => t.to_string(),
-        };
-    }
-    if decimals == 0 {
-        return int_part.to_string();
-    }
-    let mut frac: String = frac_part.chars().take(decimals).collect();
-    while frac.len() < decimals {
-        frac.push('0');
-    }
-    format!("{int_part}.{frac}")
-}
-
-fn abbreviate_stream(stream: &str) -> std::borrow::Cow<'static, str> {
-    if let Ok(s) = stream.parse::<Stream>() {
-        return std::borrow::Cow::Borrowed(s.abbreviated());
-    }
-    if stream.is_empty() {
-        return std::borrow::Cow::Borrowed("   ");
-    }
-    std::borrow::Cow::Owned(stream.chars().take(LOG_STREAM_WIDTH).collect())
-}
-
-/// Keys that wrap a log record's payload; dropped before rendering the body.
-const LOG_ENVELOPE_KEYS: [&str; 3] = ["moment", "source", "IPT_bytes_out"];
-
-/// Serialize-only view over a JSON object that emits every key except the
-/// envelope keys, borrowing the retained values rather than cloning them.
-struct StrippedEnvelope<'a>(&'a Map<String, Value>);
-
-impl serde::Serialize for StrippedEnvelope<'_> {
-    fn serialize<S: serde::Serializer>(
-        &self,
-        serializer: S,
-    ) -> std::result::Result<S::Ok, S::Error> {
-        use serde::ser::SerializeMap;
-        let mut map = serializer.serialize_map(None)?;
-        for (key, value) in self.0 {
-            if !LOG_ENVELOPE_KEYS.contains(&key.as_str()) {
-                map.serialize_entry(key, value)?;
-            }
-        }
-        map.end()
-    }
-}
-
-fn strip_log_envelope(entry: &Value) -> String {
-    // Serialize a borrowed, filtered view of the object rather than deep-cloning
-    // the whole Value just to drop three envelope keys — this runs per JSON log
-    // line. The view preserves the original key order (matching serde_json's
-    // preserve_order) without copying any of the retained subtrees.
-    match entry.as_object() {
-        Some(obj) => serde_json::to_string(&StrippedEnvelope(obj)).unwrap_or_default(),
-        None => serde_json::to_string(entry).unwrap_or_default(),
-    }
 }
 
 /// Extract the message from a `Stream_Error` record, the shape every
@@ -2109,7 +1872,7 @@ impl FaultAnnotator {
             self.active_fault_windows.clear_expired_faults(latest_vtime) || update_faults;
 
         if is_fault_injector && let Some(fault_name) = fault_name {
-            let max_duration = entry["fault"]["max_duration"].as_f64().filter(|d| *d > 0.0);
+            let max_duration = json_f64(&entry["fault"]["max_duration"]).filter(|d| *d > 0.0);
             let end_vtime = max_duration.map(|duration| latest_vtime.plus_seconds(duration));
             let fault_type = entry["fault"]["type"].as_str().unwrap_or("");
 
@@ -2142,7 +1905,7 @@ impl FaultAnnotator {
 
             if fault_name.eq("skip")
                 && fault_type.eq("clock")
-                && let Some(offset) = entry["fault"]["details"]["offset"].as_f64()
+                && let Some(offset) = json_f64(&entry["fault"]["details"]["offset"])
             {
                 update_faults = self.active_fault_windows.add_clock_fault(
                     offset,
@@ -2159,27 +1922,23 @@ impl FaultAnnotator {
         }
 
         if let Some(output_text) = entry["output_text"].as_str() {
-            entry["output_text"] = Value::String(strip_ansi(output_text));
+            entry["output_text"] = Value::String(strip_ansi(output_text).into_owned());
         }
 
         entry["active_faults"] = self.active_faults.clone();
     }
 }
 
-fn ansi_re() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| {
-        Regex::new(concat!(
-            r"\x1b\[[\x20-\x3f]*[\x40-\x7e]",      // CSI: ESC [ ... final
-            r"|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)", // OSC: ESC ] ... (BEL | ESC \)
-            r"|\x1b[\x20-\x7e]",                   // two-byte: ESC + single printable
-        ))
-        .unwrap()
-    })
-}
-
-fn strip_ansi(text: &str) -> String {
-    ansi_re().replace_all(text, "").to_string()
+/// A numeric fault field in either wire form the injector uses: a JSON
+/// number, or a stringified number (seen live on `max_duration`). A window
+/// built from `as_f64()` alone never expires when the duration arrives as a
+/// string.
+fn json_f64(value: &Value) -> Option<f64> {
+    match value {
+        Value::Number(n) => n.as_f64(),
+        Value::String(s) => s.trim().parse().ok(),
+        _ => None,
+    }
 }
 
 struct FaultWindowBounds {
@@ -2573,14 +2332,6 @@ fn push_table_row(output: &mut String, row: &[String], widths: &[usize], aligns:
     output.push('\n');
 }
 
-/// Single choke point for terminal-bound free text: strip ANSI escape sequences
-/// first, then escape any remaining control bytes so stray `\r`/`\x08`/BEL can't
-/// corrupt the terminal. Used by both the `runs logs` `output_text` path and the
-/// `runs events` OUTPUT column so the two render container output identically.
-fn normalize_terminal_text(text: &str) -> String {
-    sanitize(&strip_ansi(text))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2958,104 +2709,6 @@ mod tests {
     }
 
     #[test]
-    fn format_log_line_renders_json_record_with_stripped_envelope() {
-        let entry = json!({
-            "moment": {"input_hash": "6409410329507290816", "vtime": "9.093"},
-            "IPT_bytes_out": 126952,
-            "source": {"name": "fault_injector", "pid": 924},
-            "info": {"details": {"started": true}, "message": "status"}
-        });
-        assert_eq!(
-            format_log_entry(&entry, false),
-            "[   9.093] [          fault_injector] [   ]  - {\"info\":{\"details\":{\"started\":true},\"message\":\"status\"}}"
-        );
-    }
-
-    #[test]
-    fn format_log_line_renders_text_record_with_inf_stream() {
-        let entry = json!({
-            "moment": {"input_hash": "1", "vtime": "15.174"},
-            "source": {"container": "bank/first_setup.sh", "name": "bank/first_setup.sh", "stream": "info"},
-            "output_text": "NbmXgEki  INFO main lsm_tree::tree::ingest: Finished ingestion writer"
-        });
-        assert_eq!(
-            format_log_entry(&entry, false),
-            "[  15.174] [     bank/first_setup.sh] [inf] NbmXgEki  INFO main lsm_tree::tree::ingest: Finished ingestion writer"
-        );
-    }
-
-    #[test]
-    fn format_log_line_strips_ansi_from_output_text() {
-        let entry = json!({
-            "moment": {"input_hash": "1", "vtime": "14.118"},
-            "source": {"name": "setup", "stream": "error"},
-            "output_text": "\x1B[4m>>>> hello\x1B[0m"
-        });
-        let rendered = format_log_entry(&entry, false);
-        assert!(rendered.contains(">>>> hello"));
-        assert!(!rendered.contains('\x1B'));
-        assert!(rendered.contains("[err]"));
-    }
-
-    #[test]
-    fn format_log_entry_raw_preserves_ansi_in_output_text() {
-        // `--raw` opts out of the terminal normalizer: ANSI colors (and any
-        // other control bytes) in the payload reach the terminal verbatim.
-        let entry = json!({
-            "moment": {"input_hash": "1", "vtime": "14.118"},
-            "source": {"name": "setup", "stream": "error"},
-            "output_text": "\x1B[4m>>>> hello\x1B[0m"
-        });
-        let rendered = format_log_entry(&entry, true);
-        assert!(rendered.contains("\x1B[4m>>>> hello\x1B[0m"));
-        assert!(rendered.contains("[err]"));
-    }
-
-    #[test]
-    fn format_log_line_truncates_vtime_to_three_decimals() {
-        let entry = json!({
-            "moment": {"input_hash": "1", "vtime": "18.9148034489"},
-            "source": {"name": "client", "stream": "info"},
-            "output_text": "hello"
-        });
-        let rendered = format_log_entry(&entry, false);
-        // Fixed 3 decimals (so the column stays aligned), truncated not rounded:
-        // 18.9148… -> 18.914 (rounding would give 18.915).
-        assert!(rendered.starts_with("[  18.914] "), "got: {rendered}");
-    }
-
-    #[test]
-    fn format_log_line_accepts_numeric_vtime() {
-        // A JSON-number vtime (not a string) must still render, not blank out,
-        // and gets the same fixed-3-decimal treatment (12.5 -> 12.500).
-        let entry = json!({
-            "moment": {"input_hash": "1", "vtime": 12.5},
-            "source": {"name": "client", "stream": "info"},
-            "output_text": "hello"
-        });
-        assert!(
-            format_log_entry(&entry, false).starts_with("[  12.500] "),
-            "got: {}",
-            format_log_entry(&entry, false)
-        );
-    }
-
-    #[test]
-    fn truncate_decimals_keeps_fixed_precision_without_rounding() {
-        // Always exactly 3 decimals, zero-padded, so a column aligns.
-        assert_eq!(truncate_decimals("19", 3), "19.000");
-        assert_eq!(truncate_decimals("19.0", 3), "19.000");
-        assert_eq!(truncate_decimals("14.78", 3), "14.780");
-        // Truncates, never rounds: 1814.7135… -> .713 (rounding would give .714).
-        assert_eq!(truncate_decimals("1814.7135719023645", 3), "1814.713");
-        assert_eq!(truncate_decimals("18.9148034489", 3), "18.914");
-        // Non-plain input: scientific notation falls back to fixed-point, and a
-        // non-number is passed through untouched.
-        assert_eq!(truncate_decimals("1e3", 3), "1000.000");
-        assert_eq!(truncate_decimals("n/a", 3), "n/a");
-    }
-
-    #[test]
     fn exec_event_parses_each_stream_shape() {
         // Real event shapes captured from the live API (orbitinghail, r60).
         let output: ExecEvent = serde_json::from_str(
@@ -3295,58 +2948,6 @@ mod tests {
     }
 
     #[test]
-    fn format_log_vtime_agrees_between_string_and_number_forms() {
-        // A vtime rendered from the JSON-number form (snouty's own --json
-        // output) must land on the same truncated — never rounded — text as
-        // the server's string form, so a value copied off the screen and fed
-        // back as --begin-vtime lands on the line you saw, never past it.
-        for s in ["398.4898056755774", "311.8487535319291", "402.0", "1.9995"] {
-            let vtime: VTime = s.parse().unwrap();
-            let from_string = format_log_vtime(&json!({"moment": {"vtime": s}}));
-            let from_number = format_log_vtime(&json!({"moment": {"vtime": vtime}}));
-            assert_eq!(from_string, from_number, "for {s}");
-            assert_eq!(from_string, truncate_decimals(s, 3), "for {s}");
-        }
-        // Spot-check the truncation: .4898… cuts to .489 (rounding gives .490).
-        assert_eq!(
-            format_log_vtime(&json!({"moment": {"vtime": "398.4898056755774"}})),
-            "398.489"
-        );
-    }
-
-    #[test]
-    fn format_log_line_overflows_source_column_when_too_long() {
-        let entry = json!({
-            "moment": {"vtime": "14.284"},
-            "source": {
-                "container": "antithesis/pods/client/sdk.jsonl",
-                "name": "antithesis/pods/client/sdk.jsonl"
-            },
-            "antithesis_setup": {"details": null, "status": "complete"}
-        });
-        assert_eq!(
-            format_log_entry(&entry, false),
-            "[  14.284] [antithesis/pods/client/sdk.jsonl] [   ]  - {\"antithesis_setup\":{\"details\":null,\"status\":\"complete\"}}"
-        );
-    }
-
-    #[test]
-    fn format_log_line_fits_test_composer_source_exactly() {
-        // The source column is sized to `antithesis_test_composer`, a built-in
-        // source in nearly every run, so it fills the column exactly — no leading
-        // pad before it and no overflow past it.
-        let entry = json!({
-            "moment": {"vtime": "401.500"},
-            "source": {"name": "antithesis_test_composer"},
-            "output_text": "started"
-        });
-        assert_eq!(
-            format_log_entry(&entry, false),
-            "[ 401.500] [antithesis_test_composer] [   ] started"
-        );
-    }
-
-    #[test]
     fn render_moments_table_marks_unreachable_when_empty() {
         let p = event_prop(PropertyStatus::Passing, vec![], vec![]);
         assert!(render_moments_table(&p).contains("unreachable"));
@@ -3420,76 +3021,34 @@ mod tests {
         assert!(!out.contains("\nExamples"), "got: {out}");
     }
 
+    // The injector stringifies numeric fields on some tenants: a string
+    // max_duration must still bound the window, or the fault never expires
+    // (and a clock skip can never be cleared at all).
     #[test]
-    fn ansi_sgr() {
-        assert_eq!(strip_ansi("\x1b[1mbold\x1b[0m"), "bold");
-        assert_eq!(strip_ansi("\x1b[38;5;196mred\x1b[0m"), "red");
-        assert_eq!(strip_ansi("\x1b[38;2;255;0;0mred\x1b[0m"), "red");
-        assert_eq!(strip_ansi("\x1b[1;31;42mtext\x1b[0m"), "text");
-        assert_eq!(
-            strip_ansi(
-                "\x1b[2m2026-04-03T08:19:54Z\x1b[0m \x1b[32m INFO\x1b[0m \x1b[2mfoobar\x1b[0m\x1b[2m:\x1b[0m ready"
-            ),
-            "2026-04-03T08:19:54Z  INFO foobar: ready"
-        );
-    }
+    fn stringified_max_duration_still_expires_the_fault_window() {
+        let mut transformer = FaultAnnotator::default();
+        let opened = transformer
+            .try_transform(&format!(
+                "{}",
+                json!({
+                    "moment": {"vtime": "1"},
+                    "source": {"name": "fault_injector"},
+                    "fault": {
+                        "name": "clog", "type": "network",
+                        "affected_nodes": ["a"], "max_duration": "5.0"
+                    }
+                })
+            ))
+            .unwrap();
+        assert!(opened.contains("\"network_clog\""), "{opened}");
 
-    #[test]
-    fn ansi_csi_non_sgr() {
-        assert_eq!(strip_ansi("left\x1b[2Aright"), "leftright");
-        assert_eq!(strip_ansi("text\x1b[2K"), "text");
-        assert_eq!(strip_ansi("\x1b[?25hvisible"), "visible");
-        assert_eq!(strip_ansi("\x1b[?25l hidden"), " hidden");
-    }
-
-    #[test]
-    fn ansi_osc() {
-        assert_eq!(
-            strip_ansi("\x1b]0;my window title\x07text after"),
-            "text after"
-        );
-        assert_eq!(strip_ansi("\x1b]0;my title\x1b\\text after"), "text after");
-    }
-
-    #[test]
-    fn ansi_two_byte() {
-        assert_eq!(strip_ansi("\x1bcafter reset"), "after reset");
-        assert_eq!(strip_ansi("before\x1b7after"), "beforeafter");
-    }
-
-    #[test]
-    fn ansi_passthrough() {
-        let cases = [
-            "no escapes here",
-            r#"{"key": "value", "nested": {"a": [1,2,3]}}"#,
-            r#"{"url": "http://example.com/path?q=1&r=2", "count": 42}"#,
-            r#"Options { address: Some(0.0.0.0:3307), deployment: "mydb", mode: Standalone }"#,
-            r#"Settings { inner: Inner { values: [1, 2, 3] }, name: "test" }"#,
-            "[2026-04-03] [INFO] [main] started",
-            r#"path: "/nix/store/abc-pkg/bin/cmd""#,
-            r#"{"msg": "he said \"hello\""}"#,
-        ];
-        for c in cases {
-            assert_eq!(strip_ansi(c), c, "passthrough failed: {c:?}");
-        }
-    }
-
-    #[test]
-    fn ansi_mixed() {
-        assert_eq!(
-            strip_ansi("\x1b[2m{\"key\": \"value\"}\x1b[0m"),
-            r#"{"key": "value"}"#
-        );
-        assert_eq!(
-            strip_ansi("\x1b[3mOptions { mode: Standalone }\x1b[0m"),
-            "Options { mode: Standalone }"
-        );
-        assert_eq!(
-            strip_ansi(
-                "\x1b[2m2026-04-03T00:00:00Z\x1b[0m \x1b[32m INFO\x1b[0m request completed {\"status\": 200, \"latency_ms\": 42}"
-            ),
-            r#"2026-04-03T00:00:00Z  INFO request completed {"status": 200, "latency_ms": 42}"#
-        );
+        let later = transformer
+            .try_transform(&format!(
+                "{}",
+                json!({"moment": {"vtime": "20"}, "output_text": "hi"})
+            ))
+            .unwrap();
+        assert!(!later.contains("network_clog"), "{later}");
     }
 
     #[test]
@@ -4145,24 +3704,6 @@ mod tests {
                 .to_string()
             )
         );
-    }
-
-    /// The copy-paste contract of the log vtime column, over the whole tick
-    /// domain: the truncated text parses to a value at or before the real
-    /// vtime — never past it — and less than one millisecond behind. The
-    /// string and number wire forms render identically.
-    #[hegel::test]
-    fn truncated_log_vtime_never_lands_past_the_line(tc: hegel::TestCase) {
-        let ticks = tc.draw(generators::integers::<u64>().max_value((1 << 53) - 1));
-        let vtime = VTime::from_seconds(ticks as f64 / 4294967296.0).unwrap();
-
-        let truncated: f64 = truncate_decimals(&vtime.to_string(), 3).parse().unwrap();
-        assert!(truncated <= vtime.as_seconds());
-        assert!(vtime.as_seconds() - truncated < 0.001);
-
-        let from_string = format_log_vtime(&json!({"moment": {"vtime": vtime.to_string()}}));
-        let from_number = format_log_vtime(&json!({"moment": {"vtime": vtime}}));
-        assert_eq!(from_string, from_number);
     }
 
     /// The issue #191 guarantee over the whole tick domain: a vtime string

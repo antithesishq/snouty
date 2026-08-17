@@ -10,6 +10,8 @@
 //! whole-number components (`h`/`m`/`s`, in that order); fractional components
 //! like `1.5h` are rejected, since the bare-minutes form already covers that.
 
+use chrono::{DateTime, Local, Utc};
+
 use std::error::Error;
 use std::fmt;
 use std::str::FromStr;
@@ -189,6 +191,24 @@ fn split_unit(s: &str, unit: char) -> Option<(u64, &str)> {
         return None;
     }
     Some((number.parse().ok()?, &rest[unit.len_utf8()..]))
+}
+
+/// Format an absolute timestamp in the user's local timezone, without a
+/// timezone suffix (the times in snouty's output are always local, so showing
+/// the offset would just be noise). Example: `2026-05-27 08:25:13`.
+pub(crate) fn format_local(dt: DateTime<Utc>) -> String {
+    dt.with_timezone(&Local)
+        .format("%Y-%m-%d %H:%M:%S")
+        .to_string()
+}
+
+/// Reformat an RFC 3339 timestamp string into the local, suffix-less format.
+/// Falls back to the original string if it can't be parsed.
+pub(crate) fn format_local_str(raw: &str) -> String {
+    match DateTime::parse_from_rfc3339(raw) {
+        Ok(dt) => format_local(dt.with_timezone(&Utc)),
+        Err(_) => raw.to_string(),
+    }
 }
 
 #[cfg(test)]

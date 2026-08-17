@@ -90,16 +90,7 @@ pub async fn cmd_runs(
             run_id,
             poll_interval,
             timeout,
-        }) => {
-            cmd_runs_wait(
-                &run_id,
-                poll_interval.as_duration(),
-                timeout,
-                settings,
-                output,
-            )
-            .await
-        }
+        }) => cmd_runs_wait(&run_id, poll_interval.into(), timeout, settings, output).await,
         Some(RunsCommands::Properties {
             run_id,
             passing,
@@ -369,7 +360,7 @@ async fn cmd_runs_wait(
     let api = AntithesisApi::new_uncached(settings, verbose)?;
     let wait = wait_for_run(&api, run_id, poll_interval);
     let run = match timeout {
-        Some(limit) => match tokio::time::timeout(limit.as_duration(), wait).await {
+        Some(limit) => match tokio::time::timeout(limit.into(), wait).await {
             Ok(result) => result?,
             Err(_) => {
                 return Err(user_error(format!(

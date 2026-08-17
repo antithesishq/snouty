@@ -35,7 +35,10 @@ pub const VERBS: &[&str] = &[
 /// The event's own JSON is NOT the haystack. Matching that string matched
 /// field names and text spanning two fields, so `-m IPT_bytes_out` returned
 /// every event while the same command on the other backend returned none.
-const HAS_NEEDLE: &str = concat!(
+///
+/// [`substring_filter`] emits this before the needles, so a reader of the
+/// query can cut it away and be left with the needles alone.
+pub(crate) const HAS_NEEDLE: &str = concat!(
     r#"const m = (s, needle) => s != null && String(s).toLowerCase().includes(needle); "#,
     r#"const assert_hit = ev.antithesis_assert?.hit === true; "#,
     r#"const not_catalog = !ev.antithesis_assert || ev.antithesis_assert.hit !== false; "#,

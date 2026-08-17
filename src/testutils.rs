@@ -987,6 +987,27 @@ fn extract_quoted_literals(query: &str) -> Vec<String> {
     literals
 }
 
+/// The needles a query requires, lowercased to match the JS `.toLowerCase()`
+/// in the filter this mock models.
+///
+/// The `runs events` filter defines its helpers before it applies them, and
+/// those helpers hold string literals of their own. Cutting the query at
+/// [`event_set_dsl::HAS_NEEDLE`] leaves the needles alone, and leaves them
+/// quoted, so a needle that reads like the filter's own syntax stays one
+/// needle. Any other query keeps every literal, which is what
+/// `contains({...})` and a hand-written filter need.
+fn query_needles(query: &str) -> Vec<String> {
+    let needles = match query.split_once(crate::event_set_dsl::HAS_NEEDLE) {
+        Some((_, applied)) => applied,
+        None => query,
+    };
+    extract_quoted_literals(needles)
+        .into_iter()
+        .filter(|literal| !literal.trim().is_empty())
+        .map(|literal| literal.to_lowercase())
+        .collect()
+}
+
 fn mock_route_search_run_events(run_id: &str, query_str: Option<&str>) -> (u16, String) {
     // The `run-stream-error` stream is returned unfiltered: a `Stream_Error`
     // line is a failure signal the server emits regardless of the query, not
@@ -1139,12 +1160,12 @@ fn mock_route_execute_command(run_id: &str, req_body: &str) -> (u16, String) {
 /// `count_only` is not modelled: snouty does not send it (the count is
 /// moving to a separate endpoint).
 ///
-/// The mock carries no DSL engine. A query is "interpreted" by extracting
-/// every double-quoted string literal and requiring each, case-insensitively,
+/// The mock carries no DSL engine. A query is "interpreted" by taking its
+/// needles (see [`query_needles`]) and requiring each, case-insensitively,
 /// in the text [`mock_event_haystack`] collects — enough for
 /// `contains({...})` needles and for the multi-needle JS filter `runs events`
-/// builds, whose needles are the arguments of its `has(...)` calls. Validity
-/// checking is one rule: the pipeline must start with a known verb.
+/// builds. Validity checking is one rule: the pipeline must start with a
+/// known verb.
 fn mock_route_search_events(run_id: &str, body: &str) -> (u16, String, &'static str) {
     let json = "application/json";
     let ndjson = "application/x-ndjson";
@@ -1201,30 +1222,7 @@ fn mock_route_search_events(run_id: &str, body: &str) -> (u16, String, &'static 
         );
     }
 
-    // Lowercased with Unicode `to_lowercase`, matching the JS
-    // `.toLowerCase()` in the filter this route models. The needles of the
-    // `runs events` filter are the arguments of its `has(...)` calls; its
-    // other literals name fields and values the filter tests against, and
-    // requiring those in an event would match nothing. A query with no
-    // `has(` call keeps every literal, which is what `contains({...})` and a
-    // hand-written filter need.
-    let literals = if query.contains("has(") {
-        query
-            .match_indices("has(")
-            .filter_map(|(at, verb)| {
-                extract_quoted_literals(&query[at + verb.len()..])
-                    .into_iter()
-                    .next()
-            })
-            .collect()
-    } else {
-        extract_quoted_literals(query)
-    };
-    let needles: Vec<String> = literals
-        .into_iter()
-        .filter(|literal| !literal.trim().is_empty())
-        .map(|literal| literal.to_lowercase())
-        .collect();
+    let needles = query_needles(query);
     // A query that stringifies the event asks for the event's JSON as the
     // haystack, field names and all; every other query reads fields. The
     // mock honors what the query asked for, so a spec sees the difference
@@ -1285,6 +1283,26 @@ mod tests {
             vec![" ".to_string(), r#"say "hi"\"#.to_string()]
         );
         assert!(extract_quoted_literals("matches({a: 1})").is_empty());
+    }
+
+    // The needles of a `runs events` query are its search terms, never the
+    // literals its own helpers hold — even when a term reads like part of
+    // the filter's syntax.
+    #[test]
+    fn query_needles_takes_the_search_terms_only() {
+        let query = crate::event_set_dsl::substring_filter(&[
+            "Raft".to_string(),
+            r#"has("x")"#.to_string(),
+        ]);
+        assert_eq!(
+            query_needles(&query),
+            vec!["raft".to_string(), r#"has("x")"#.to_string()]
+        );
+        // A query snouty did not build keeps every literal it holds.
+        assert_eq!(
+            query_needles(r#"contains({output_text: "slow request"})"#),
+            vec!["slow request".to_string()]
+        );
     }
 
     #[test]

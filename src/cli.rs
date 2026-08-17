@@ -574,11 +574,26 @@ pub struct DebugArgs {
     pub recipients: Option<String>,
 }
 
+/// The block-rendering paragraph `runs events` and `runs search` share in
+/// their long help. A macro rather than a `const` so both call sites can
+/// splice it into their `concat!`-built literals (`concat!` takes literals
+/// only, and a macro expansion is one).
+macro_rules! classified_blocks_help {
+    () => {
+        "Matching events print as classified blocks: a `moment HASH VTIME` divider\n\
+         opens each timeline segment (feed its HASH and VTIME into `runs logs` to see\n\
+         the surrounding logs), and each event under it renders on one line with the\n\
+         Antithesis event shapes — SDK assertions, faults, container lifecycle, test\n\
+         composer — each in their own concise form."
+    };
+}
+
 /// `runs search`'s long help. Static text: the `search_long_about` test
 /// keeps it in sync with [`event_set_dsl::VERBS`] (every verb must appear)
 /// and holds every line to 78 columns, since clap prints long_about
 /// verbatim.
-const SEARCH_LONG_ABOUT: &str = r#"Run an event-set DSL query against a run's events.
+const SEARCH_LONG_ABOUT: &str = concat!(
+    r#"Run an event-set DSL query against a run's events.
 
 This command is gated behind the `runs-search` unstable feature, because the
 events-search API does not honor its documented contract yet on current
@@ -643,12 +658,10 @@ Query snippets (each is a complete QUERY, ready to paste):
   # each crash annotated with the nearest earlier fault
   contains({output_text: "fatal"}).with_last({fault: filter(ev => ev.fault)})
 
-Matching events print as classified blocks: a `moment HASH VTIME` divider
-opens each timeline segment (feed its HASH and VTIME into `runs logs` to see
-the surrounding logs), and each event under it renders on one line with the
-Antithesis event shapes — SDK assertions, faults, container lifecycle, test
-composer — each in their own concise form. Rows reshaped by map/narrow/fold
-print as raw JSON."#;
+"#,
+    classified_blocks_help!(),
+    " Rows reshaped by map/narrow/fold\nprint as raw JSON."
+);
 
 #[derive(Subcommand)]
 pub enum RunsCommands {
@@ -798,15 +811,8 @@ each in their own concise form. A moment (HASH/VTIME) comes from
         #[arg(long, allow_hyphen_values = true, requires = "begin_vtime")]
         begin_input_hash: Option<String>,
 
-        /// Pass the server's NDJSON through verbatim (no fault annotation,
-        /// no vtime normalization); requires --json
-        #[arg(short = 'r', long)]
-        raw: bool,
-
-        /// Detailed rendering: full-precision vtime on every line, source
-        /// locations, and each event's attached details JSON
-        #[arg(short = 'd', long, conflicts_with = "raw")]
-        detail: bool,
+        #[command(flatten)]
+        render: EventOutputArgs,
     },
 
     /// Execute a command in a run's live session
@@ -871,17 +877,13 @@ Examples:
 
     /// Search events in a run
     #[command(
-        long_about = r#"Search a run's events for one or more substrings (all must match).
-
-Matching events print as classified blocks: a `moment HASH VTIME` divider
-opens each timeline segment (feed its HASH and VTIME into `runs logs` to see
-the surrounding logs), and each event under it renders on one line with the
-Antithesis event shapes — SDK assertions, faults, container lifecycle, test
-composer — each in their own concise form.
-
-Matching runs server-side. More than one term requires the events-search API,
-which is behind the `runs-search` unstable feature
-(SNOUTY_UNSTABLE_FEATURES=runs-search)."#
+        long_about = concat!(
+            "Search a run's events for one or more substrings (all must match).\n\n",
+            classified_blocks_help!(),
+            "\n\nMatching runs server-side. More than one term requires the events-search API,\n\
+             which is behind the `runs-search` unstable feature\n\
+             (SNOUTY_UNSTABLE_FEATURES=runs-search)."
+        )
     )]
     Events {
         /// Run ID
@@ -904,15 +906,8 @@ which is behind the `runs-search` unstable feature
         /// At least one needle (via `-m` or here) is required.
         query: Vec<String>,
 
-        /// Pass the server's NDJSON through verbatim (no vtime
-        /// normalization); requires --json
-        #[arg(short = 'r', long)]
-        raw: bool,
-
-        /// Detailed rendering: full-precision vtime on every line, source
-        /// locations, and each event's attached details JSON
-        #[arg(short = 'd', long, conflicts_with = "raw")]
-        detail: bool,
+        #[command(flatten)]
+        render: EventOutputArgs,
     },
 
     /// Query events with the event-set DSL
@@ -950,7 +945,17 @@ pub struct RunsSearchArgs {
     #[arg(long, conflicts_with = "follow")]
     pub check: bool,
 
-    /// Pass the server's NDJSON through verbatim (no vtime normalization);
+    #[command(flatten)]
+    pub render: EventOutputArgs,
+}
+
+/// The output-depth flags every event-stream command (`runs logs`,
+/// `runs events`, `runs search`) shares. One definition keeps the flags, the
+/// help text, and the raw/detail conflict from drifting between commands.
+#[derive(Args)]
+pub struct EventOutputArgs {
+    /// Pass the server's NDJSON through verbatim, skipping snouty's
+    /// normalization (vtime, and fault annotation on `runs logs`);
     /// requires --json
     #[arg(short = 'r', long)]
     pub raw: bool,
@@ -1178,22 +1183,22 @@ mod tests {
     fn logs_accepts_raw_short_flag() {
         let cli = parse(&["snouty", "runs", "logs", "-r", "RUN", "-123", "-2.0"]);
         let Commands::Runs {
-            command: Some(RunsCommands::Logs { raw, vtime, .. }),
+            command: Some(RunsCommands::Logs { render, vtime, .. }),
         } = cli.command
         else {
             panic!("expected `runs logs`");
         };
-        assert!(raw);
+        assert!(render.raw);
         assert_eq!(vtime, "-2.0".parse::<VTime>().unwrap());
 
         let cli = parse(&["snouty", "runs", "logs", "RUN", "-123", "-2.0"]);
         let Commands::Runs {
-            command: Some(RunsCommands::Logs { raw, .. }),
+            command: Some(RunsCommands::Logs { render, .. }),
         } = cli.command
         else {
             panic!("expected `runs logs`");
         };
-        assert!(!raw);
+        assert!(!render.raw);
     }
 
     // `runs events` accepts both the documented `-m/--match` form and a

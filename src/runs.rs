@@ -52,20 +52,27 @@ pub async fn cmd_runs(
     settings: &Settings,
     output: OutputOptions,
 ) -> Result<()> {
-    // `--detail` produces human formatting, so it can't combine with `--json`.
-    // It rides on more than one subcommand (`runs list`, `runs properties`,
-    // `runs logs`, `runs events`, `runs search`), so the conflict is checked
-    // once here — a global `--json` vs a per-subcommand flag can't be
-    // expressed with clap's `conflicts_with`.
-    let detail = match &command {
-        Some(RunsCommands::List(args)) => args.detail,
-        Some(RunsCommands::Properties { detail, .. }) => *detail,
-        Some(RunsCommands::Logs { detail, .. }) => *detail,
-        Some(RunsCommands::Events { detail, .. }) => *detail,
-        Some(RunsCommands::Search(args)) => args.detail,
-        _ => false,
+    // `--detail` produces human formatting, so it can't combine with
+    // `--json`; `--raw` IS the server's NDJSON, so it requires `--json`.
+    // Both flags ride on more than one subcommand, and a global `--json` vs
+    // a per-subcommand flag can't be expressed with clap's `conflicts_with`,
+    // so the two rules are checked once here.
+    let (raw, detail) = match &command {
+        Some(RunsCommands::List(args)) => (false, args.detail),
+        Some(RunsCommands::Properties { detail, .. }) => (false, *detail),
+        Some(RunsCommands::Logs { render, .. }) | Some(RunsCommands::Events { render, .. }) => {
+            (render.raw, render.detail)
+        }
+        Some(RunsCommands::Search(args)) => (args.render.raw, args.render.detail),
+        _ => (false, false),
     };
     reject_detail_with_json(output.json, detail)?;
+    if raw && !output.json {
+        return Err(raw_requires_json_error());
+    }
+    // The stream commands' output mode, resolved once the flags are known
+    // legal.
+    let mode = EventOutput::new(output.json, raw, detail);
 
     match command {
         None => cmd_runs_list(RunsListArgs::default(), settings, output).await,
@@ -118,8 +125,7 @@ pub async fn cmd_runs(
             vtime,
             begin_vtime,
             begin_input_hash,
-            raw,
-            detail,
+            ..
         }) => {
             let moment = Moment { input_hash, vtime };
             // clap enforces `begin_input_hash requires begin_vtime`, so mapping
@@ -128,18 +134,7 @@ pub async fn cmd_runs(
                 vtime,
                 input_hash: begin_input_hash,
             });
-            cmd_runs_logs(
-                &run_id,
-                moment,
-                begin,
-                settings,
-                LogOutputOptions {
-                    output,
-                    raw,
-                    detail,
-                },
-            )
-            .await
+            cmd_runs_logs(&run_id, moment, begin, settings, output.verbose, mode).await
         }
         Some(RunsCommands::Exec {
             run_id,
@@ -159,16 +154,17 @@ pub async fn cmd_runs(
             mut matches,
             limit,
             query,
-            raw,
-            detail,
+            ..
         }) => {
             // `-m/--match` is the documented form; the trailing positional
             // `query` is a backward-compatible alias whose terms are additional
             // needles. Merge both into a single needle list.
             matches.extend(query);
-            cmd_runs_events(&run_id, &matches, limit, settings, output, raw, detail).await
+            cmd_runs_events(&run_id, &matches, limit, settings, output.verbose, mode).await
         }
-        Some(RunsCommands::Search(args)) => cmd_runs_search(args, settings, output).await,
+        Some(RunsCommands::Search(args)) => {
+            cmd_runs_search(args, settings, output.verbose, mode).await
+        }
     }
 }
 
@@ -1327,18 +1323,6 @@ fn render_runs_detail(runs: &[RunSummary]) -> String {
     blocks.join("\n")
 }
 
-struct LogOutputOptions {
-    /// The global `--json`/`--verbose` flags.
-    output: OutputOptions,
-    /// Pass the server's stream through without normalization: no fault
-    /// annotation, no vtime normalization. Only meaningful with `json`;
-    /// without it the command refuses (there is no "raw human" rendering).
-    raw: bool,
-    /// Detailed human rendering: full-precision vtime on every line, source
-    /// locations, and attached details JSON.
-    detail: bool,
-}
-
 /// The refusal for `--raw` without `--json`. Raw output IS the server's
 /// NDJSON stream; there is no raw human rendering to fall back to.
 fn raw_requires_json_error() -> color_eyre::eyre::Report {
@@ -1408,23 +1392,21 @@ async fn cmd_runs_build_logs(
 async fn cmd_runs_search(
     args: RunsSearchArgs,
     settings: &Settings,
-    OutputOptions { json, verbose }: OutputOptions,
+    verbose: bool,
+    mode: EventOutput,
 ) -> Result<()> {
     debug!("querying events for run: {}", args.run_id);
 
-    if args.raw && !json {
-        return Err(raw_requires_json_error());
-    }
     let api = AntithesisApi::new(settings, verbose)?;
     if args.check {
-        return event_search::check_query(&api, &args.run_id, &args.query, json).await;
+        return event_search::check_query(&api, &args.run_id, &args.query, mode.json()).await;
     }
-    let mode = SearchMode::Query {
+    let search = SearchMode::Query {
         stream: args.follow,
         limit: args.limit,
     };
     let stream = match api
-        .search_run_events_query(&args.run_id, &args.query, mode)
+        .search_run_events_query(&args.run_id, &args.query, search)
         .await
     {
         Ok(stream) => stream,
@@ -1440,11 +1422,6 @@ async fn cmd_runs_search(
         (true, None) => None,
         (_, limit) => Some(limit.unwrap_or(SEARCH_DEFAULT_LIMIT)),
     };
-    let output = EventOutput {
-        json,
-        raw: args.raw,
-        detail: args.detail,
-    };
     // A user-written DSL pipeline can reshape rows into any object,
     // `{"error": ...}` included, so this stream must not guess that such a
     // row is the server's Stream_Error signal.
@@ -1452,7 +1429,7 @@ async fn cmd_runs_search(
         stream,
         cap,
         ErrorRows::Data,
-        output,
+        mode,
         "No events matched the query.",
     )
     .await
@@ -1463,9 +1440,8 @@ async fn cmd_runs_events(
     matches: &[String],
     limit: Option<NonZeroU64>,
     settings: &Settings,
-    OutputOptions { json, verbose }: OutputOptions,
-    raw: bool,
-    detail: bool,
+    verbose: bool,
+    mode: EventOutput,
 ) -> Result<()> {
     debug!("searching events for run: {}", run_id);
 
@@ -1479,9 +1455,6 @@ async fn cmd_runs_events(
     if matches.iter().any(|m| m.is_empty()) {
         return Err(user_error("empty search term")
             .suggestion("each `-m/--match` needle must be a non-empty substring"));
-    }
-    if raw && !json {
-        return Err(raw_requires_json_error());
     }
 
     let api = AntithesisApi::new(settings, verbose)?;
@@ -1509,12 +1482,11 @@ async fn cmd_runs_events(
         // The GET endpoint enforces `limit` server-side — no cap to add.
         (stream, None)
     };
-    let output = EventOutput { json, raw, detail };
     event_search::print_event_stream(
         stream,
         cap,
         ErrorRows::Abort,
-        output,
+        mode,
         &format!("No events matched \"{}\".", matches.join(" ")),
     )
     .await
@@ -1525,17 +1497,11 @@ async fn cmd_runs_logs(
     moment: Moment,
     begin: Option<LogsBegin>,
     settings: &Settings,
-    LogOutputOptions {
-        output: OutputOptions { json, verbose },
-        raw,
-        detail,
-    }: LogOutputOptions,
+    verbose: bool,
+    mode: EventOutput,
 ) -> Result<()> {
     debug!("streaming logs for run: {}", run_id);
 
-    if raw && !json {
-        return Err(raw_requires_json_error());
-    }
     let api = AntithesisApi::new(settings, verbose)?;
     let stream = match api.get_run_logs(run_id, moment, begin).await {
         Ok(stream) => stream,
@@ -1545,28 +1511,32 @@ async fn cmd_runs_logs(
     let mut stdout = BufWriter::new(std::io::stdout().lock());
     let mut wrote_any = false;
     let result: Result<()> = async {
-        if json && raw {
-            // Verbatim passthrough: no fault annotation, no normalization.
-            let mut lines = raw_lines(stream, ErrorRows::Abort);
-            while let Some(line) = lines.try_next().await? {
-                wrote_any = true;
-                writeln!(stdout, "{line}")?;
+        match mode {
+            EventOutput::RawJson => {
+                // Verbatim passthrough: no fault annotation, no normalization.
+                let mut lines = raw_lines(stream, ErrorRows::Abort);
+                while let Some(line) = lines.try_next().await? {
+                    wrote_any = true;
+                    writeln!(stdout, "{line}")?;
+                }
             }
-        } else if json {
-            // Fault annotation is the default.
-            let mut annotator = FaultAnnotator::default();
-            let mut lines = event_lines(stream, ErrorRows::Abort);
-            while let Some(mut entry) = lines.try_next().await? {
-                wrote_any = true;
-                annotator.annotate(&mut entry);
-                writeln!(stdout, "{entry}")?;
+            EventOutput::Json => {
+                // Fault annotation is the default.
+                let mut annotator = FaultAnnotator::default();
+                let mut lines = event_lines(stream, ErrorRows::Abort);
+                while let Some(mut entry) = lines.try_next().await? {
+                    wrote_any = true;
+                    annotator.annotate(&mut entry);
+                    writeln!(stdout, "{entry}")?;
+                }
             }
-        } else {
-            let mut renderer = EventStreamRenderer::new(detail);
-            let mut lines = event_lines(stream, ErrorRows::Abort);
-            while let Some(entry) = lines.try_next().await? {
-                wrote_any = true;
-                writeln!(stdout, "{}", renderer.render_entry(&entry))?;
+            EventOutput::Human { detail } => {
+                let mut renderer = EventStreamRenderer::new(detail);
+                let mut lines = event_lines(stream, ErrorRows::Abort);
+                while let Some(entry) = lines.try_next().await? {
+                    wrote_any = true;
+                    writeln!(stdout, "{}", renderer.render_entry(&entry))?;
+                }
             }
         }
         Ok(())
@@ -1577,7 +1547,7 @@ async fn cmd_runs_logs(
     // empty stream; say so in human mode rather than printing nothing.
     note_if_empty(
         result.is_ok(),
-        json,
+        mode.json(),
         wrote_any,
         "No log lines at this moment.",
     );

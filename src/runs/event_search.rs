@@ -19,6 +19,7 @@ use color_eyre::Section;
 use color_eyre::eyre::Result;
 use serde_json::json;
 
+use futures_util::stream::BoxStream;
 use futures_util::{StreamExt, TryStreamExt};
 
 use crate::api::{AntithesisApi, MIN_SEARCH_RELEASE, SearchMode};
@@ -29,17 +30,33 @@ use crate::jsonl::JsonStream;
 
 use super::{ErrorRows, event_lines, raw_lines};
 
-/// How `runs events`/`runs search` print their matches.
+/// How an event-stream command prints its rows. Three legal modes — the
+/// illegal flag combinations (`--raw` without `--json`, `--detail` with
+/// `--json`) are rejected once in `cmd_runs`, so the type never carries them.
 #[derive(Clone, Copy)]
-pub(super) struct EventOutput {
-    pub json: bool,
-    /// Pass the server's stream through without normalization (parsed
-    /// records round-trip verbatim). Requires `json`; the commands refuse
-    /// the combination up front.
-    pub raw: bool,
-    /// Detailed human rendering: full-precision vtime on every line, source
-    /// locations, and attached details JSON.
-    pub detail: bool,
+pub(super) enum EventOutput {
+    /// `--json --raw`: the server's stream passed through without
+    /// normalization (parsed records round-trip verbatim).
+    RawJson,
+    /// `--json`: each event as its JSON, vtime normalized.
+    Json,
+    /// Human rendering through the shared [`EventStreamRenderer`]; `detail`
+    /// adds full-precision vtime, source locations, and details JSON.
+    Human { detail: bool },
+}
+
+impl EventOutput {
+    pub(super) fn new(json: bool, raw: bool, detail: bool) -> Self {
+        match (json, raw) {
+            (_, true) => Self::RawJson,
+            (true, false) => Self::Json,
+            (false, false) => Self::Human { detail },
+        }
+    }
+
+    pub(super) fn json(self) -> bool {
+        !matches!(self, Self::Human { .. })
+    }
 }
 
 /// Print every line of the (already server-filtered) stream, one line out
@@ -64,36 +81,34 @@ pub(super) async fn print_event_stream(
     let cap = cap.map_or(usize::MAX, |cap| {
         usize::try_from(cap.get()).unwrap_or(usize::MAX)
     });
+    // The per-row rendering resolves once, up front; the one loop below owns
+    // the cap, the row count, and the flush-per-row rule. The cap is ours to
+    // enforce even on the raw passthrough — the search backend ignores the
+    // limit.
+    let lines: BoxStream<'_, Result<String>> = match output {
+        EventOutput::RawJson => raw_lines(stream, error_rows).boxed(),
+        EventOutput::Json => event_lines(stream, error_rows)
+            .map_ok(|value| value.to_string())
+            .boxed(),
+        EventOutput::Human { detail } => {
+            let mut renderer = EventStreamRenderer::new(detail);
+            event_lines(stream, error_rows)
+                .map_ok(move |entry| renderer.render_entry(&entry))
+                .boxed()
+        }
+    };
+    let mut lines = lines.take(cap);
     let mut stdout = BufWriter::new(std::io::stdout().lock());
     let mut seen: u64 = 0;
-    if output.raw {
-        // Round-trip passthrough (the caller already required --json). The
-        // cap is still ours to enforce — the search backend ignores the
-        // limit.
-        let mut lines = raw_lines(stream, error_rows).take(cap);
-        while let Some(line) = lines.try_next().await? {
-            seen += 1;
-            writeln!(stdout, "{line}")?;
-            stdout.flush()?;
-        }
-    } else {
-        let mut renderer = EventStreamRenderer::new(output.detail);
-        let mut lines = event_lines(stream, error_rows).take(cap);
-        while let Some(value) = lines.try_next().await? {
-            seen += 1;
-            let rendered = if output.json {
-                value.to_string()
-            } else {
-                renderer.render_entry(&value)
-            };
-            writeln!(stdout, "{rendered}")?;
-            stdout.flush()?;
-        }
+    while let Some(line) = lines.try_next().await? {
+        seen += 1;
+        writeln!(stdout, "{line}")?;
+        stdout.flush()?;
     }
 
     // Only a successfully-empty stream earns the friendly empty state; a
     // mid-stream error propagated above instead.
-    if seen == 0 && !output.json {
+    if seen == 0 && !output.json() {
         writeln!(stdout, "{empty_message}")?;
         stdout.flush()?;
     }

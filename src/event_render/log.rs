@@ -69,5 +69,12 @@ mod tests {
         }));
         assert!(line.ends_with("[err]"), "got: {line}");
         assert!(!line.contains("moment"), "got: {line}");
+
+        // `stream` is optional in the build-log schema: a record without it
+        // still renders as a log line, defaulting to [out].
+        let streamless = render_one(json!({
+            "timestamp": "2025-03-20T02:01:12Z", "text": "compiling"
+        }));
+        assert!(streamless.ends_with("[out] compiling"), "got: {streamless}");
     }
 }

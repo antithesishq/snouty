@@ -15,7 +15,7 @@
 //! re-filtering that subset locally silently drops events that did match —
 //! absence from the subset is not absence from the run.
 
-use std::io::{BufWriter, Write};
+use std::io::{BufWriter, IsTerminal, Write};
 use std::num::NonZeroU64;
 
 use color_eyre::Section;
@@ -59,18 +59,23 @@ impl EventOutput {
 /// per line in — the one output pipeline behind every event-stream command
 /// (`runs logs`, `runs events`, `runs search`, `runs build-logs`).
 ///
-/// Each row is flushed as it arrives: on a live run the search backend holds
-/// the connection open, so rows must not sit in the buffer waiting for an
-/// EOF that may never come. The cap is the ONLY early exit: when the server
+/// The cap is the ONLY early exit: when the server
 /// has returned fewer events and holds the connection open, keep waiting
 /// rather than guess that the result is complete. `None` means the cap is
 /// not this side's job — the limit is server-enforced, or an explicit
 /// `--follow` without a limit is unbounded by design.
+/// `live` marks a stream whose server may hold the connection open (the
+/// events-search backend does, on an in-progress run) — its rows must flush
+/// as they arrive rather than sit in the buffer waiting for an EOF that may
+/// never come. A bounded dump (`runs logs`, `runs build-logs`, the GET
+/// events backend) buffers normally on a pipe; a terminal always gets each
+/// row as it lands.
 pub(super) async fn print_event_stream(
     stream: JsonStream,
     cap: Option<NonZeroU64>,
     error_rows: ErrorRows,
     output: EventOutput,
+    live: bool,
     empty_message: &str,
 ) -> Result<()> {
     let cap = cap.map_or(usize::MAX, |cap| {
@@ -109,14 +114,18 @@ pub(super) async fn print_event_stream(
                 .boxed()
         }
     };
+    let flush_per_row = live || std::io::stdout().is_terminal();
     let mut lines = lines.take(cap);
     let mut stdout = BufWriter::new(std::io::stdout().lock());
     let mut seen: u64 = 0;
     while let Some(line) = lines.try_next().await? {
         seen += 1;
         writeln!(stdout, "{line}")?;
-        stdout.flush()?;
+        if flush_per_row {
+            stdout.flush()?;
+        }
     }
+    stdout.flush()?;
 
     // Only a successfully-empty stream earns the friendly empty note; a
     // mid-stream error propagated above instead. The note goes to stderr —

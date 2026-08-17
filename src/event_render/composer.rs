@@ -40,22 +40,30 @@ impl<'a> Event<'a> for Task<'a> {
             return write!(block, "{}", style(text).blue());
         }
 
-        let return_code = entry["command_return_code"].as_str().unwrap_or("");
-        let ok = return_code == "0";
+        // The API mixes wire forms (command_runtime likewise): the return
+        // code arrives as a string or a number. Red is reserved for a KNOWN
+        // non-zero exit — an absent or unreadable code stays neutral rather
+        // than reporting a passing command as a failure.
+        let return_code = match &entry["command_return_code"] {
+            Value::String(code) => Some(sanitize(code)),
+            Value::Number(code) => Some(code.to_string()),
+            _ => None,
+        };
+        let failed = matches!(return_code.as_deref(), Some(code) if code != "0");
         let text = DisplayWith(|f: &mut fmt::Formatter<'_>| {
             write!(f, "task finished {}", sanitize(command))?;
-            if !return_code.is_empty() {
-                write!(f, " exit={}", sanitize(return_code))?;
+            if let Some(code) = &return_code {
+                write!(f, " exit={code}")?;
             }
             if let Some(duration) = format_duration(&entry["command_runtime"]) {
                 write!(f, " in {duration}")?;
             }
             Ok(())
         });
-        if ok {
-            write!(block, "{}", style(text).blue())?;
-        } else {
+        if failed {
             write!(block, "{}", style(text).red())?;
+        } else {
+            write!(block, "{}", style(text).blue())?;
         }
         if block.detail() {
             for (key, prefix) in [("additional_stdout", "out"), ("additional_stderr", "err")] {
@@ -85,27 +93,16 @@ impl<'a> Event<'a> for Chatter<'a> {
     }
 
     fn render(&self, block: &mut Block<'_>) -> fmt::Result {
-        let pairs = self.0.iter().filter_map(|(key, value)| {
-            if LOG_ENVELOPE_KEYS.contains(&key.as_str()) {
-                return None;
-            }
-            format_value(value).map(|rendered| (key, rendered))
-        });
         if block.detail() {
             // One pair per line, untruncated.
             write!(block, "{}", style("composer").dim())?;
-            for (key, rendered) in pairs {
+            for (key, rendered) in self.pairs() {
                 block.detail_line(format_args!("{}={rendered}", sanitize(key)))?;
             }
         } else {
             let line = DisplayWith(|f: &mut fmt::Formatter<'_>| {
                 write!(f, "composer")?;
-                for (key, rendered) in self.0.iter().filter_map(|(key, value)| {
-                    if LOG_ENVELOPE_KEYS.contains(&key.as_str()) {
-                        return None;
-                    }
-                    format_value(value).map(|rendered| (key, rendered))
-                }) {
+                for (key, rendered) in self.pairs() {
                     let truncated = console::truncate_str(&rendered, VALUE_TRUNCATE_WIDTH, "…");
                     write!(f, " {}={truncated}", sanitize(key))?;
                 }
@@ -114,6 +111,19 @@ impl<'a> Event<'a> for Chatter<'a> {
             write!(block, "{}", style(line).dim())?;
         }
         Ok(())
+    }
+}
+
+impl Chatter<'_> {
+    /// The renderable key=value pairs: everything but the envelope keys and
+    /// the empty values.
+    fn pairs(&self) -> impl Iterator<Item = (&String, String)> {
+        self.0.iter().filter_map(|(key, value)| {
+            if LOG_ENVELOPE_KEYS.contains(&key.as_str()) {
+                return None;
+            }
+            format_value(value).map(|rendered| (key, rendered))
+        })
     }
 }
 
@@ -156,6 +166,31 @@ mod tests {
             started.ends_with("[test_composer] task started git_walk/parallel_driver_walk"),
             "got: {started}"
         );
+    }
+
+    #[test]
+    fn a_missing_or_numeric_return_code_never_renders_as_failure() {
+        // A JSON-number 0 is a passing exit, not a wire-form accident.
+        let numeric = render_one(json!({
+            "task_status": "finished", "command": "ok.sh",
+            "command_return_code": 0,
+            "source": {"name": "antithesis_test_composer"},
+            "moment": {"input_hash": "-1", "vtime": "1.0"}
+        }));
+        assert!(
+            numeric.ends_with("task finished ok.sh exit=0"),
+            "got: {numeric}"
+        );
+
+        // No return code at all: neutral (the text carries no exit=), never
+        // styled as a failure. Colors are off in tests, so the invariant
+        // that matters here is the missing exit= suffix.
+        let absent = render_one(json!({
+            "task_status": "finished", "command": "ok.sh",
+            "source": {"name": "antithesis_test_composer"},
+            "moment": {"input_hash": "-1", "vtime": "1.0"}
+        }));
+        assert!(absent.ends_with("task finished ok.sh"), "got: {absent}");
     }
 
     #[test]

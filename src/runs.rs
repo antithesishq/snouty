@@ -1347,6 +1347,7 @@ async fn cmd_runs_build_logs(
         None,
         ErrorRows::Abort,
         mode,
+        false,
         "No build logs for this run.",
     )
     .await
@@ -1393,6 +1394,8 @@ async fn cmd_runs_search(
         cap,
         ErrorRows::Data,
         mode,
+        // The search backend holds the connection open on a live run.
+        true,
         "No events matched the query.",
     )
     .await
@@ -1421,7 +1424,7 @@ async fn cmd_runs_events(
     }
 
     let api = AntithesisApi::new(settings, verbose)?;
-    let (stream, cap) = if features::is_enabled(Feature::RunsSearch) {
+    let (stream, cap, live) = if features::is_enabled(Feature::RunsSearch) {
         let query = event_set_dsl::substring_filter(matches);
         let mode = SearchMode::Query {
             stream: false,
@@ -1432,8 +1435,9 @@ async fn cmd_runs_events(
             Err(err) => return Err(event_search::explain_search_error(run_id, err)),
         };
         // The search backend ignores the limit (see `cmd_runs_search`);
-        // enforce it client-side.
-        (stream, Some(limit.unwrap_or(SEARCH_DEFAULT_LIMIT)))
+        // enforce it client-side. It also holds the connection open on a
+        // live run.
+        (stream, Some(limit.unwrap_or(SEARCH_DEFAULT_LIMIT)), true)
     } else {
         let [needle] = matches else {
             return Err(event_search::multi_needle_error());
@@ -1443,13 +1447,14 @@ async fn cmd_runs_events(
             Err(err) => return Err(explain_run_scoped_error(&api, run_id, err).await),
         };
         // The GET endpoint enforces `limit` server-side — no cap to add.
-        (stream, None)
+        (stream, None, false)
     };
     event_search::print_event_stream(
         stream,
         cap,
         ErrorRows::Abort,
         mode,
+        live,
         &format!("No events matched \"{}\".", matches.join(" ")),
     )
     .await
@@ -1478,6 +1483,7 @@ async fn cmd_runs_logs(
         None,
         ErrorRows::Abort,
         mode,
+        false,
         "No log lines at this moment.",
     )
     .await
@@ -1866,7 +1872,7 @@ impl FaultAnnotator {
             self.active_fault_windows.clear_expired_faults(latest_vtime) || update_faults;
 
         if is_fault_injector && let Some(fault_name) = fault_name {
-            let max_duration = entry["fault"]["max_duration"].as_f64().filter(|d| *d > 0.0);
+            let max_duration = json_f64(&entry["fault"]["max_duration"]).filter(|d| *d > 0.0);
             let end_vtime = max_duration.map(|duration| latest_vtime.plus_seconds(duration));
             let fault_type = entry["fault"]["type"].as_str().unwrap_or("");
 
@@ -1899,7 +1905,7 @@ impl FaultAnnotator {
 
             if fault_name.eq("skip")
                 && fault_type.eq("clock")
-                && let Some(offset) = entry["fault"]["details"]["offset"].as_f64()
+                && let Some(offset) = json_f64(&entry["fault"]["details"]["offset"])
             {
                 update_faults = self.active_fault_windows.add_clock_fault(
                     offset,
@@ -1920,6 +1926,18 @@ impl FaultAnnotator {
         }
 
         entry["active_faults"] = self.active_faults.clone();
+    }
+}
+
+/// A numeric fault field in either wire form the injector uses: a JSON
+/// number, or a stringified number (seen live on `max_duration`). A window
+/// built from `as_f64()` alone never expires when the duration arrives as a
+/// string.
+fn json_f64(value: &Value) -> Option<f64> {
+    match value {
+        Value::Number(n) => n.as_f64(),
+        Value::String(s) => s.trim().parse().ok(),
+        _ => None,
     }
 }
 
@@ -3001,6 +3019,36 @@ mod tests {
         // No standalone Examples group (there are no satisfying examples). Guard
         // against the "Examples" inside "Counter-examples" by anchoring on `\n`.
         assert!(!out.contains("\nExamples"), "got: {out}");
+    }
+
+    // The injector stringifies numeric fields on some tenants: a string
+    // max_duration must still bound the window, or the fault never expires
+    // (and a clock skip can never be cleared at all).
+    #[test]
+    fn stringified_max_duration_still_expires_the_fault_window() {
+        let mut transformer = FaultAnnotator::default();
+        let opened = transformer
+            .try_transform(&format!(
+                "{}",
+                json!({
+                    "moment": {"vtime": "1"},
+                    "source": {"name": "fault_injector"},
+                    "fault": {
+                        "name": "clog", "type": "network",
+                        "affected_nodes": ["a"], "max_duration": "5.0"
+                    }
+                })
+            ))
+            .unwrap();
+        assert!(opened.contains("\"network_clog\""), "{opened}");
+
+        let later = transformer
+            .try_transform(&format!(
+                "{}",
+                json!({"moment": {"vtime": "20"}, "output_text": "hi"})
+            ))
+            .unwrap();
+        assert!(!later.contains("network_clog"), "{later}");
     }
 
     #[test]

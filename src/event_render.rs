@@ -50,7 +50,6 @@ mod sdk;
 
 pub(crate) use ansi::{normalize_terminal_text, strip_ansi};
 
-use std::borrow::Cow;
 use std::fmt::{self, Write};
 
 use console::style;
@@ -369,6 +368,9 @@ pub(crate) struct EventStreamRenderer {
     /// The current segment's hash; `Some` also means at least one block was
     /// written, so the next divider needs a blank line above it.
     last_input_hash: Option<String>,
+    /// The full label of the last truncated source whose overflow line was
+    /// emitted; consecutive events from the same source don't repeat it.
+    last_overflow: Option<String>,
 }
 
 impl EventStreamRenderer {
@@ -376,6 +378,7 @@ impl EventStreamRenderer {
         Self {
             detail,
             last_input_hash: None,
+            last_overflow: None,
         }
     }
 
@@ -394,11 +397,11 @@ impl EventStreamRenderer {
         // shared visual grammar without a divider or classification.
         let hash = entry["moment"]["input_hash"].as_str();
         let Some(hash) = hash.filter(|_| entry.get("source").is_some()) else {
-            if let (Some(timestamp), Some(stream), Some(text)) = (
-                entry["timestamp"].as_str(),
-                entry["stream"].as_str(),
-                entry["text"].as_str(),
-            ) {
+            if let (Some(timestamp), Some(text)) =
+                (entry["timestamp"].as_str(), entry["text"].as_str())
+            {
+                // `stream` is optional in the build-log schema.
+                let stream = entry["stream"].as_str().unwrap_or("out");
                 log::render_build_log(out, &format_local_str(timestamp), stream, text)?;
             } else {
                 write!(out, "{}", sanitize(&entry.to_string()))?;
@@ -408,8 +411,11 @@ impl EventStreamRenderer {
         };
 
         // Computed once: the divider needs the full precision, and the
-        // event line derives its cell from the same value.
-        let full_vtime = VTime::full_text(&entry["moment"]["vtime"]);
+        // event line derives its cell from the same value. The vtime is
+        // server-controlled text like every other field — an unparsable
+        // value passes through display verbatim — so it is sanitized before
+        // it can reach the terminal.
+        let full_vtime = sanitize(&VTime::full_text(&entry["moment"]["vtime"]));
 
         if self.last_input_hash.as_deref() != Some(hash) {
             if self.last_input_hash.is_some() {
@@ -436,9 +442,19 @@ impl EventStreamRenderer {
         let vtime = if self.detail {
             full_vtime
         } else {
-            Cow::Owned(VTime::truncated_text(&entry["moment"]["vtime"], 3))
+            sanitize(&VTime::truncated_text(&entry["moment"]["vtime"], 3))
         };
         let source = render_source(entry, self.detail);
+        // A truncated source's full value is worth one detail line per
+        // contiguous run of events from that source, not one per event — a
+        // long-named pod would otherwise double its whole stream.
+        let overflow = match source.overflow {
+            Some(overflow) if self.last_overflow.as_deref() == Some(overflow.as_str()) => None,
+            overflow => {
+                self.last_overflow.clone_from(&overflow);
+                overflow
+            }
+        };
         write!(
             out,
             "{}  {} ",
@@ -454,7 +470,7 @@ impl EventStreamRenderer {
             detail: self.detail,
             // The truncated source's full value leads the detail lines,
             // right under the cell it overflowed.
-            overflow: source.overflow,
+            overflow,
             headline_done: false,
         };
         render_payload(entry, &mut block)?;
@@ -641,6 +657,47 @@ mod tests {
             block.ends_with("[bank/parallel_driver_tx.sh] hi"),
             "got: {block}"
         );
+    }
+
+    #[test]
+    fn an_unparsable_vtime_is_sanitized_before_display() {
+        // An unparsable vtime passes through display verbatim, so a value
+        // carrying escape bytes must reach the terminal escaped, in the
+        // divider and in the cell alike.
+        let block = render_one(json!({
+            "moment": {"input_hash": "-1", "vtime": "1.0\u{1b}[2J"},
+            "source": {"container": "app"},
+            "output_text": "hi"
+        }));
+        assert!(!block.contains('\u{1b}'), "escape byte leaked: {block:?}");
+    }
+
+    #[test]
+    fn source_overflow_prints_once_per_contiguous_source_run() {
+        let long = "dynamo-platform-vllm-v1-agg-router-6cf9b55458-7c94cc7dfxqh/main";
+        let mut r = renderer(false);
+        let entry = json!({
+            "moment": {"input_hash": "-1", "vtime": "1.0"},
+            "source": {"container": long},
+            "output_text": "hi"
+        });
+        let first = render_entry(&mut r, &entry);
+        assert!(first.contains("container="), "got: {first}");
+        // The same source again: the cell still truncates, but the full
+        // value does not repeat.
+        let second = render_entry(&mut r, &entry);
+        assert!(!second.contains("container="), "got: {second}");
+        // A different source in between resets the memo.
+        render_entry(
+            &mut r,
+            &json!({
+                "moment": {"input_hash": "-1", "vtime": "1.1"},
+                "source": {"container": "app"},
+                "output_text": "hi"
+            }),
+        );
+        let again = render_entry(&mut r, &entry);
+        assert!(again.contains("container="), "got: {again}");
     }
 
     #[test]

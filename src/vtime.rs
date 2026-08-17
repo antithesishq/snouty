@@ -408,6 +408,26 @@ mod tests {
         assert_eq!(from_string, vtime);
     }
 
+    /// The copy-paste contract of the log vtime column, over the whole tick
+    /// domain: the truncated text parses to a value at or before the real
+    /// vtime — never past it — and less than one millisecond behind. The
+    /// string and number wire forms render identically.
+    #[hegel::test]
+    fn truncated_vtime_never_lands_past_the_line(tc: hegel::TestCase) {
+        use hegel::generators;
+
+        let ticks = tc.draw(generators::integers::<u64>().max_value((1 << 53) - 1));
+        let vtime = VTime::from_seconds(ticks as f64 / 4294967296.0).unwrap();
+
+        let truncated: f64 = truncate_decimals(&vtime.to_string(), 3).parse().unwrap();
+        assert!(truncated <= vtime.as_seconds());
+        assert!(vtime.as_seconds() - truncated < 0.001);
+
+        let from_string = VTime::truncated_text(&serde_json::json!(vtime.to_string()), 3);
+        let from_number = VTime::truncated_text(&serde_json::json!(vtime), 3);
+        assert_eq!(from_string, from_number);
+    }
+
     #[test]
     fn truncate_decimals_keeps_fixed_precision_without_rounding() {
         // Always exactly 3 decimals, zero-padded, so a column aligns.

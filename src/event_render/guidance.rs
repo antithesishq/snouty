@@ -13,7 +13,7 @@ use serde_json::Value;
 use crate::render::sanitize;
 
 use super::assert::{AssertionLocation, render_assertion_location};
-use super::{Block, DisplayWith, Event, render_details_json};
+use super::{Block, DisplayWith, Event, format_value, render_details_json};
 
 pub(super) struct Guidance<'a>(&'a Value);
 
@@ -124,20 +124,23 @@ fn render_guidance_expression(guidance: &Value) -> Option<String> {
         }
         Some("boolean") => {
             let propositions = data.as_object().filter(|map| !map.is_empty())?;
-            let connective = if guidance["maximize"].as_bool()? {
-                " && "
-            } else {
-                " || "
+            // Degrade, don't drop: a missing `maximize` still shows the
+            // propositions (space-separated, claiming no connective), and a
+            // non-bool value renders as itself rather than erasing every
+            // other proposition alongside it.
+            let connective = match guidance["maximize"].as_bool() {
+                Some(true) => " && ",
+                Some(false) => " || ",
+                None => " ",
             };
-            let terms: Option<Vec<String>> = propositions
+            let terms: Vec<String> = propositions
                 .iter()
                 .map(|(name, value)| {
-                    value
-                        .as_bool()
-                        .map(|value| format!("{}({value})", sanitize(name)))
+                    let value = format_value(value).unwrap_or_else(|| "null".to_string());
+                    format!("{}({value})", sanitize(name))
                 })
                 .collect();
-            Some(terms?.join(connective))
+            Some(terms.join(connective))
         }
         // Unknown guidance type: the raw data is the best available view.
         _ => render_details_json(data),
@@ -243,6 +246,41 @@ mod tests {
         assert!(
             block.ends_with(r#"GUIDANCE "m": acked(true) && durable(false)"#),
             "got: {block}"
+        );
+    }
+
+    #[test]
+    fn boolean_guidance_degrades_instead_of_dropping() {
+        // A non-bool proposition value renders as itself rather than erasing
+        // every proposition alongside it.
+        let mixed = render_one(json!({
+            "antithesis_guidance": {
+                "guidance_type": "boolean", "hit": true, "maximize": true,
+                "message": "m",
+                "guidance_data": {"acked": true, "durable": null}
+            },
+            "source": {"name": "antithesis_sdk"},
+            "moment": {"input_hash": "-1", "vtime": "1.0"}
+        }));
+        assert!(
+            mixed.ends_with("GUIDANCE \"m\": acked(true) && durable(null)"),
+            "got: {mixed}"
+        );
+
+        // A missing `maximize` shows the propositions without claiming a
+        // connective.
+        let no_direction = render_one(json!({
+            "antithesis_guidance": {
+                "guidance_type": "boolean", "hit": true,
+                "message": "m",
+                "guidance_data": {"acked": true, "durable": false}
+            },
+            "source": {"name": "antithesis_sdk"},
+            "moment": {"input_hash": "-1", "vtime": "1.0"}
+        }));
+        assert!(
+            no_direction.ends_with("GUIDANCE \"m\": acked(true) durable(false)"),
+            "got: {no_direction}"
         );
     }
 

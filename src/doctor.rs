@@ -395,7 +395,7 @@ fn runs_search_release_check(version: &ApiVersion, runs_search_enabled: bool) ->
             .note(
                 Level::Note,
                 format!(
-                    "remove `runs-search` from {} to fall back to the events API",
+                    "remove `runs-search` from {} or request that your Antithesis tenant is upgraded",
                     features::UNSTABLE_FEATURES_VAR_NAME
                 ),
             ),

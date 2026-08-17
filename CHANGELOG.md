@@ -3,8 +3,8 @@
 - Remove the `Moment.from({...})` input format; `snouty debug --stdin` now accepts JSON only ([#243](https://github.com/antithesishq/snouty/pull/243))
 - Add `snouty runs wait`: poll a run until it reaches a terminal state (completed, cancelled, or incomplete) ([#221](https://github.com/antithesishq/snouty/pull/221))
 - `snouty validate` reads the SDK output file from the start instead of tailing it, so a setup-complete event written over bytes snouty had already read is still detected ([#218](https://github.com/antithesishq/snouty/pull/218))
-- Add `snouty runs search`: run an event-set DSL query against a run's events, with `--follow`, `--check`, and `-n/--limit`. The command is gated behind the `runs-search` unstable feature (`SNOUTY_UNSTABLE_FEATURES=runs-search`), because the events-search API does not honor its documented contract yet on current tenants ([#206](https://github.com/antithesishq/snouty/pull/206))
-- `snouty runs events` now filters entirely server-side and prints each matching event as its JSON, one line per event as it arrives, replacing the buffered table. Multiple `--match` needles require the events-search API (behind the `runs-search` unstable feature); without it the command fails with the fix instead of approximating the match client-side. With the feature on, the tenant is assumed to serve that API — `snouty doctor` reports a tenant release that is too old. `--limit 0` is rejected up front ([#206](https://github.com/antithesishq/snouty/pull/206))
+- Add `snouty runs search`: run an event-set DSL query against a run's events. The command is gated behind the `runs-search` unstable feature (`SNOUTY_UNSTABLE_FEATURES=runs-search`) ([#206](https://github.com/antithesishq/snouty/pull/206))
+- `snouty runs events` now filters entirely server-side and prints each matching event as its JSON, one line per event as it arrives, replacing the buffered table. Multiple `--match` needles require the events-search API (behind the `runs-search` unstable feature) ([#206](https://github.com/antithesishq/snouty/pull/206))
 - Add `snouty runs exec`: run a bash script in a run's live session at a given moment, on a fresh branch of the multiverse. The command is gated behind the `runs-exec` unstable feature (`SNOUTY_UNSTABLE_FEATURES=runs-exec`), because the API it calls is unstable and unavailable on most tenants ([#208](https://github.com/antithesishq/snouty/pull/208))
 - snouty now requires Docker Compose v2.24.7 or newer, checked up front ([#214](https://github.com/antithesishq/snouty/pull/214))
 - `snouty validate` streams container logs in real time and in order, treats `--timeout` as a single budget (default 120 seconds), refuses to start when the project already has leftover containers, and reports compose failures as themselves instead of as environment divergence ([#214](https://github.com/antithesishq/snouty/pull/214))
@@ -23,7 +23,6 @@
 - Add an unstable update channel ([#195](https://github.com/antithesishq/snouty/pull/195))
 - Show vtime as an exact JSON number ([#192](https://github.com/antithesishq/snouty/pull/192))
 - Add `COOKBOOK.md` with the failure-moment logs recipe ([#185](https://github.com/antithesishq/snouty/pull/185))
-
 
 # Version 0.6.1 (2026-06-21)
 

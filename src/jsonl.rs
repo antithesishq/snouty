@@ -185,9 +185,16 @@ mod tests {
         }
 
         // ... split into arbitrary chunks, so line boundaries land anywhere.
+        // Empty chunks mix in too: HTTP/2 allows an empty DATA frame and
+        // hyper does not promise to filter one out, so the stream must
+        // treat an empty chunk as a no-op. Each iteration still consumes
+        // at least one byte, so the loop terminates.
         let mut chunks: Vec<reqwest::Result<Bytes>> = Vec::new();
         let mut rest = buf.as_slice();
         while !rest.is_empty() {
+            if tc.draw(generators::booleans()) {
+                chunks.push(Ok(Bytes::new()));
+            }
             let n = tc.draw(
                 generators::integers::<usize>()
                     .min_value(1)

@@ -990,18 +990,24 @@ fn extract_quoted_literals(query: &str) -> Vec<String> {
 /// The needles a query requires, lowercased to match the JS `.toLowerCase()`
 /// in the filter this mock models.
 ///
-/// The `runs events` filter defines its helpers before it applies them, and
-/// those helpers hold string literals of their own. Cutting the query at
-/// [`event_set_dsl::HAS_NEEDLE`] leaves the needles alone, and leaves them
-/// quoted, so a needle that reads like the filter's own syntax stays one
-/// needle. Any other query keeps every literal, which is what
+/// `runs events` applies [`event_set_dsl::NEEDLE_FILTER`] to a JSON array of
+/// needles, so cutting the query at that expression leaves the array; read it
+/// as JSON and the needles arrive exactly, however they are spelled. Any
+/// other query keeps every string literal it holds, which is what
 /// `contains({...})` and a hand-written filter need.
 fn query_needles(query: &str) -> Vec<String> {
-    let needles = match query.split_once(crate::event_set_dsl::HAS_NEEDLE) {
-        Some((_, applied)) => applied,
-        None => query,
+    let literals = match query.split_once(crate::event_set_dsl::NEEDLE_FILTER.trim()) {
+        Some((_, applied)) => {
+            let array = applied
+                .find('[')
+                .zip(applied.rfind(']'))
+                .map(|(open, close)| &applied[open..=close])
+                .expect("`runs events` applies the filter to a JSON array");
+            serde_json::from_str(array).expect("the array snouty wrote is JSON")
+        }
+        None => extract_quoted_literals(query),
     };
-    extract_quoted_literals(needles)
+    literals
         .into_iter()
         .filter(|literal| !literal.trim().is_empty())
         .map(|literal| literal.to_lowercase())
@@ -1223,12 +1229,13 @@ fn mock_route_search_events(run_id: &str, body: &str) -> (u16, String, &'static 
     }
 
     let needles = query_needles(query);
-    // A query that stringifies the event asks for the event's JSON as the
-    // haystack, field names and all; every other query reads fields. The
-    // mock honors what the query asked for, so a spec sees the difference
-    // between the two — that difference is what made `runs events` answer
-    // differently on each backend (issue #252).
-    let reads_event_json = query.contains("JSON.stringify(ev)");
+    // The haystack the query asked for. `runs events` reads an event's text
+    // fields; a query that stringifies the event asks for the event's JSON,
+    // field names and all. The mock honors what was asked, so a spec sees
+    // the difference between the two — that difference is what made `runs
+    // events` answer differently on each backend (issue #252).
+    let reads_event_json = !query.contains(crate::event_set_dsl::NEEDLE_FILTER.trim())
+        && query.contains("JSON.stringify(ev)");
     let (_, logs) = mock_route_get_run_logs(run_id);
     let matches: Vec<&str> = logs
         .lines()
@@ -1292,11 +1299,11 @@ mod tests {
     fn query_needles_takes_the_search_terms_only() {
         let query = crate::event_set_dsl::substring_filter(&[
             "Raft".to_string(),
-            r#"has("x")"#.to_string(),
+            r#"a "]) quote"#.to_string(),
         ]);
         assert_eq!(
             query_needles(&query),
-            vec!["raft".to_string(), r#"has("x")"#.to_string()]
+            vec!["raft".to_string(), r#"a "]) quote"#.to_string()]
         );
         // A query snouty did not build keeps every literal it holds.
         assert_eq!(

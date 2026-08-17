@@ -425,7 +425,18 @@ impl AntithesisApi {
             }
             Err(err) => Err(match err.status() {
                 Some(code) => VersionError::Http(code.as_u16()),
-                None => VersionError::Unreachable(err.to_string()),
+                None => {
+                    // The top-level display ("Communication Error: error
+                    // sending request for url (...)") only restates that the
+                    // request failed; the actionable cause — connection
+                    // refused, DNS failure, timeout — is the last error in
+                    // the source chain.
+                    let mut cause: &dyn std::error::Error = &err;
+                    while let Some(source) = cause.source() {
+                        cause = source;
+                    }
+                    VersionError::Unreachable(cause.to_string())
+                }
             }),
         }
     }

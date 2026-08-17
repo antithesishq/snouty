@@ -27,20 +27,10 @@ pub const VERBS: &[&str] = &[
 ];
 
 /// The event-set expression `(ev, needles)` that decides whether one event
-/// holds every needle. Kept as JavaScript in its own file: the DSL takes
-/// JavaScript, and a `.pangolin.js` file reads and reviews as the language
-/// it is.
-///
-/// It is a port of the matcher behind `GET /runs/{run_id}/events`, field for
-/// field and gate for gate, so `runs events` answers the same on either
-/// backend. The event's own JSON is deliberately not the haystack: matching
-/// the stringified event matched the names of an event's fields, and matched
-/// text spanning two fields (issue #252).
+/// holds every needle.
 pub(crate) const NEEDLE_FILTER: &str = include_str!("event_set_dsl/needle_filter.pangolin.js");
 
-/// Build the event set that keeps the events holding every needle. The
-/// needles ride as one JSON array, lowercased, because
-/// [`NEEDLE_FILTER`] folds only the haystack.
+/// Build the event set that keeps the events holding every needle.
 pub fn substring_filter(needles: &[String]) -> String {
     let lowercased: Vec<String> = needles.iter().map(|needle| needle.to_lowercase()).collect();
     let needles = serde_json::to_string(&lowercased).expect("strings serialize to JSON");

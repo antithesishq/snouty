@@ -69,7 +69,7 @@ mod tests {
         let mut lines = create.lines().skip(1);
         assert_eq!(
             lines.next().unwrap(),
-            "  12.600  [containers_meta] container create sqlite-init"
+            "12.6      [containers_meta] container create sqlite-init"
         );
         // The digest is dropped; the repository stays.
         assert_eq!(

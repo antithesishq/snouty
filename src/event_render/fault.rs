@@ -200,7 +200,7 @@ mod tests {
             "moment": {"input_hash": "-1", "vtime": "87.4"}
         }));
         assert!(
-            detailed.ends_with(r#"          details {"offset":-1.5}"#),
+            detailed.ends_with(r#"                    details {"offset":-1.5}"#),
             "got: {detailed}"
         );
     }

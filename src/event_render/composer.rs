@@ -146,7 +146,7 @@ mod tests {
         let block = render_one(entry.clone());
         assert_eq!(
             block.lines().nth(1).unwrap(),
-            "  16.100  [test_composer] task finished git_walk/parallel_driver_walk exit=1 in 0.0s"
+            "16.1      [test_composer] task finished git_walk/parallel_driver_walk exit=1 in 0.0s"
         );
         assert_eq!(block.lines().count(), 2, "got: {block}");
 
@@ -154,8 +154,11 @@ mod tests {
         // omitted.
         let block = render_one_detailed(entry);
         let mut lines = block.lines().skip(2);
-        assert_eq!(lines.next().unwrap(), "          err| boom");
-        assert_eq!(lines.next().unwrap(), "          err| second line");
+        assert_eq!(lines.next().unwrap(), "                    err| boom");
+        assert_eq!(
+            lines.next().unwrap(),
+            "                    err| second line"
+        );
 
         let started = render_one(json!({
             "task_status": "started", "command": "git_walk/parallel_driver_walk",
@@ -221,11 +224,11 @@ mod tests {
         );
         assert_eq!(
             lines.next().unwrap(),
-            "          new_command_path=git_walk/anytime_invariants"
+            "                    new_command_path=git_walk/anytime_invariants"
         );
         assert_eq!(
             lines.next().unwrap(),
-            "          container_id=22453394531ae33a6df72b8119fb9fd8338f8854d6a271fe736417fb35975013"
+            "                    container_id=22453394531ae33a6df72b8119fb9fd8338f8854d6a271fe736417fb35975013"
         );
     }
 

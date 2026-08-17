@@ -281,17 +281,20 @@ mod tests {
         let block = render_one(entry.clone());
         assert_eq!(
             block.lines().nth(1).unwrap(),
-            " 311.848  [control] FAIL Always \"Counter's value retrieved\""
+            "311.8487  [control] FAIL Always \"Counter's value retrieved\""
         );
         assert_eq!(block.lines().count(), 2, "got: {block}");
 
         // Detail: location line and the attached details JSON.
         let block = render_one_detailed(entry);
         let mut lines = block.lines().skip(2);
-        assert_eq!(lines.next().unwrap(), "          @ control.go:get:87");
         assert_eq!(
             lines.next().unwrap(),
-            r#"          details {"left":7,"right":{"limit":5}}"#
+            "                    @ control.go:get:87"
+        );
+        assert_eq!(
+            lines.next().unwrap(),
+            r#"                    details {"left":7,"right":{"limit":5}}"#
         );
     }
 

@@ -231,7 +231,7 @@ mock-runs-server
 [!staging] ! stdout '^HASH\s+VTIME\s+SOURCE\s+OUTPUT'
 stdout '^moment [0-9-]'
 [!staging] stdout '^moment -456 2\.0$'
-[!staging] stdout '^   2\.000  \[app\] \{"level":"warn","msg":"slow request"\}$'
+[!staging] stdout '^2\.0       \[app\] \{"level":"warn","msg":"slow request"\}$'
 
 # Multiple needles need the events-search API to AND them server-side. With
 # the `runs-search` feature off, the command refuses up front and names the
@@ -409,12 +409,12 @@ stderr '.*'
 mock-runs-server
 snouty runs logs run-1 -123 1.0
 stdout '^moment -123 1\.0$'
-stdout '^   1\.000  \[app\] \{"level":"info","msg":"starting"\}$'
+stdout '^1\.0       \[app\] \{"level":"info","msg":"starting"\}$'
 stdout '^moment -456 2\.0$'
-stdout '^   2\.000  \[app\] \{"level":"warn","msg":"slow request"\}$'
-stdout '^ 311\.848  \[control\] CATALOG AlwaysOrUnreachable "Counter'\''s value retrieved"$'
-stdout '^ 400\.500  \[test_composer\] task started core/parallel_driver_fetch$'
-stdout '^ 401\.500  \[fault_injector\] FAULT network/clog Stopped nodes=client2,setup max=0\.3s$'
+stdout '^2\.0       \[app\] \{"level":"warn","msg":"slow request"\}$'
+stdout '^311\.8487  \[control\] CATALOG AlwaysOrUnreachable "Counter'\''s value retrieved"$'
+stdout '^400\.5     \[test_composer\] task started core/parallel_driver_fetch$'
+stdout '^401\.5     \[fault_injector\] FAULT network/clog Stopped nodes=client2,setup max=0\.3s$'
 # Locations and attached details stay behind --detail.
 ! stdout '@ control\.go'
 # Consecutive timeline segments are separated by one blank line.
@@ -424,7 +424,7 @@ stdout '(?s)"starting"\}\n\nmoment -456'
 # the assertion's source location on an indented detail line.
 mock-runs-server
 snouty runs logs --detail run-1 -123 1.0
-stdout '^311\.8487535319291  \[control\] CATALOG AlwaysOrUnreachable "Counter'\''s value retrieved"$'
+stdout '^311\.8487535319291   \[control\] CATALOG AlwaysOrUnreachable "Counter'\''s value retrieved"$'
 stdout '^ +@ control\.go:get:87$'
 
 # `--detail` formats human output, so it cannot combine with `--json` (same
@@ -566,7 +566,7 @@ mock-runs-server
 [!staging] snouty runs search $R_run_id 'contains({output_text: "slow request"})'
 [staging] snouty runs search $R_run_id 'contains({output_text: "fault"})' --limit 3
 [!staging] stdout '^moment -456 2\.0$'
-[!staging] stdout '^   2\.000  \[app\] \{"level":"warn","msg":"slow request"\}$'
+[!staging] stdout '^2\.0       \[app\] \{"level":"warn","msg":"slow request"\}$'
 ! stdout '^HASH\s+VTIME\s+SOURCE\s+OUTPUT'
 
 # `--json` passes the NDJSON through, vtime normalized to an exact JSON number.

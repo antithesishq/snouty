@@ -84,7 +84,9 @@ mod tests {
         assert!(setup.ends_with("SETUP complete"), "got: {setup}");
         let setup = render_one_detailed(entry);
         assert!(
-            setup.ends_with(r#"          details {"db":"/data/test.db","nested":{"a":1}}"#),
+            setup.ends_with(
+                r#"                    details {"db":"/data/test.db","nested":{"a":1}}"#
+            ),
             "got: {setup}"
         );
     }

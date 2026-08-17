@@ -30,10 +30,11 @@
 //! touching this module.
 //!
 //! The renderer also owns the display conventions the streams share: vtime is
-//! normalized through [`VTime`] and shown truncated (never rounded) to 3
-//! decimals so a value copied off the screen and pasted back lands on — never
-//! past — the line you saw; the divider carries the segment's full-precision
-//! moment for exact `runs logs`/`runs exec`/`snouty debug` follow-ups.
+//! normalized through [`VTime`] and shown in a fixed-width cell, truncated —
+//! never rounded — so a value copied off the screen and pasted back lands on,
+//! never past, the line you saw; the divider carries the segment's
+//! full-precision moment for exact `runs logs`/`runs exec`/`snouty debug`
+//! follow-ups.
 //!
 //! Rendering writes into a caller-supplied buffer (see [`Block`]), in the
 //! style of `Display`/`Debug` formatters: one pass over each input, no
@@ -59,15 +60,34 @@ use crate::render::sanitize;
 use crate::time::format_local_str;
 use crate::vtime::VTime;
 
-/// vtime is shown truncated to 3 decimals. Sized for runs up to ~9999 vsec
-/// (`"9999.999"`, 8 chars), which covers the vast majority; longer runs
-/// overflow this width on their lines rather than padding every shorter line
-/// to match.
+/// The vtime cell is a fixed character budget, truncated — never rounded — so
+/// a value copied off the screen and pasted back as `--begin-vtime` lands on,
+/// never past, the line you saw. The default 8 columns hold `"1234.567"`,
+/// which covers runs up to ~9999 vsec at millisecond resolution; a wider
+/// integer part eats into the fraction rather than widening every line.
 const VTIME_WIDTH: usize = 8;
 
-/// Detail lines indent under the source column: vtime column plus its
-/// two-space gap.
-const DETAIL_INDENT: usize = VTIME_WIDTH + 2;
+/// `--detail` shows the vtime whole from one second up, which is every moment
+/// a real run reports: an `f64` round-trips in at most 17 significant digits,
+/// and a vtime tops out at 2^21 seconds (2^53 ticks, ~24.3 days), so those 17
+/// digits plus the decimal point are the widest such a value can print — e.g.
+/// `"2097151.9999999998"`. Below one second the leading zeros are not
+/// significant digits and the text can outrun the cell
+/// (`"0.0009999999310821295"`), so a sub-second vtime truncates here.
+const VTIME_WIDTH_DETAIL: usize = 18;
+
+/// The vtime column for a rendering depth. Detail lines indent under the
+/// source column, which sits one gap past this.
+const fn vtime_width(detail: bool) -> usize {
+    if detail {
+        VTIME_WIDTH_DETAIL
+    } else {
+        VTIME_WIDTH
+    }
+}
+
+/// The gap between the vtime cell and the source cell.
+const VTIME_GAP: usize = 2;
 
 /// Long opaque values (container ids, image digests) are truncated to this
 /// many columns in one-line key=value renderings; `--detail` and `--json`
@@ -114,13 +134,20 @@ impl Block<'_> {
         self.detail
     }
 
+    /// How far a detail line indents to sit under the source column. The
+    /// vtime cell is narrower in the default depth, so this follows it.
+    fn indent(&self) -> usize {
+        vtime_width(self.detail) + VTIME_GAP
+    }
+
     /// One dim detail line under the headline.
     fn detail_line(&mut self, content: impl fmt::Display) -> fmt::Result {
         self.end_headline();
+        let indent = self.indent();
         if let Some(overflow) = self.overflow.take() {
-            write!(self.out, "\n{:DETAIL_INDENT$}{}", "", style(overflow).dim())?;
+            write!(self.out, "\n{:indent$}{}", "", style(overflow).dim())?;
         }
-        write!(self.out, "\n{:DETAIL_INDENT$}{}", "", style(content).dim())
+        write!(self.out, "\n{:indent$}{}", "", style(content).dim())
     }
 
     /// The dim `details {json}` line every kind with attached user JSON
@@ -140,8 +167,9 @@ impl Block<'_> {
     /// still-pending source overflow even when no detail line followed.
     fn finish(mut self) -> fmt::Result {
         self.end_headline();
+        let indent = self.indent();
         if let Some(overflow) = self.overflow.take() {
-            write!(self.out, "\n{:DETAIL_INDENT$}{}", "", style(overflow).dim())?;
+            write!(self.out, "\n{:indent$}{}", "", style(overflow).dim())?;
         }
         Ok(())
     }
@@ -410,12 +438,10 @@ impl EventStreamRenderer {
             return Ok(());
         };
 
-        // Computed once: the divider needs the full precision, and the
-        // event line derives its cell from the same value. The vtime is
-        // server-controlled text like every other field — an unparsable
-        // value passes through display verbatim — so it is sanitized before
-        // it can reach the terminal.
-        let full_vtime = sanitize(&VTime::full_text(&entry["moment"]["vtime"]));
+        // The stream normalizes this to a JSON number, but an unparsable
+        // vtime is left as the server sent it — so this can still be `None`,
+        // and the cell below has to say so rather than print server text.
+        let vtime = VTime::from_json(&entry["moment"]["vtime"]);
 
         if self.last_input_hash.as_deref() != Some(hash) {
             if self.last_input_hash.is_some() {
@@ -425,8 +451,8 @@ impl EventStreamRenderer {
             // exactly what `runs logs`/`runs exec`/`snouty debug` take.
             let divider = DisplayWith(|f: &mut fmt::Formatter<'_>| {
                 write!(f, "moment {}", sanitize(hash))?;
-                if !full_vtime.is_empty() {
-                    write!(f, " {full_vtime}")?;
+                if let Some(vtime) = vtime.as_ref() {
+                    write!(f, " {vtime}")?;
                 }
                 Ok(())
             });
@@ -434,16 +460,6 @@ impl EventStreamRenderer {
             self.last_input_hash = Some(hash.to_string());
         }
 
-        // Detail mode shows the exact vtime on every line; the default shows
-        // the aligned 3-decimal truncation — truncated, never rounded, so a
-        // vtime copied off the screen and pasted back as `--begin-vtime`
-        // lands on, never just past, the line you saw. (`full_text` starts
-        // from the server's own text, so f64 round-trips can't nudge it.)
-        let vtime = if self.detail {
-            full_vtime
-        } else {
-            sanitize(&VTime::truncated_text(&entry["moment"]["vtime"], 3))
-        };
         let source = render_source(entry, self.detail);
         // A truncated source's full value is worth one detail line per
         // contiguous run of events from that source, not one per event — a
@@ -458,10 +474,13 @@ impl EventStreamRenderer {
         write!(
             out,
             "{}  {} ",
-            style(DisplayWith(|f: &mut fmt::Formatter<'_>| write!(
-                f,
-                "{vtime:>VTIME_WIDTH$}"
-            )))
+            style(DisplayWith(|f: &mut fmt::Formatter<'_>| {
+                let width = vtime_width(self.detail);
+                match vtime {
+                    Some(vtime) => write!(f, "{vtime:<width$.width$}"),
+                    None => write!(f, "{:<width$}", "NULL"),
+                }
+            }))
             .dim(),
             style(&source.cell).cyan(),
         )?;
@@ -533,11 +552,11 @@ mod tests {
             }),
         );
         // The divider carries the exact moment (pasteable into `runs logs`);
-        // the event line shows the truncated vtime and the source without
-        // its stream.
+        // the event line shows the vtime truncated to the cell width and the
+        // source without its stream.
         assert_eq!(
             first,
-            "moment -123 311.8487535319291\n 311.848  [app] starting"
+            "moment -123 311.8487535319291\n311.8487  [app] starting"
         );
 
         // Same hash: no divider, no blank line.
@@ -549,7 +568,7 @@ mod tests {
                 "output_text": "still here"
             }),
         );
-        assert_eq!(second, " 312.000  [app] still here");
+        assert_eq!(second, "312.0     [app] still here");
 
         // New hash: blank line, then the next divider.
         let third = render_entry(
@@ -560,7 +579,7 @@ mod tests {
                 "output_text": "branched"
             }),
         );
-        assert_eq!(third, "\nmoment 456 313.5\n 313.500  [app] branched");
+        assert_eq!(third, "\nmoment 456 313.5\n313.5     [app] branched");
     }
 
     #[test]
@@ -572,7 +591,7 @@ mod tests {
         }));
         assert_eq!(
             block,
-            "moment -123 311.8487535319291\n311.8487535319291  [app] starting"
+            "moment -123 311.8487535319291\n311.8487535319291   [app] starting"
         );
     }
 
@@ -632,7 +651,7 @@ mod tests {
         let mut lines = block.lines().skip(1);
         assert_eq!(
             lines.next().unwrap(),
-            "  25.600  [dynamo-platform-dynamo-operator-control…] Applied CRD"
+            "25.6      [dynamo-platform-dynamo-operator-control…] Applied CRD"
         );
         assert_eq!(lines.next().unwrap(), format!("          container={pod}"));
 
@@ -660,15 +679,17 @@ mod tests {
     }
 
     #[test]
-    fn an_unparsable_vtime_is_sanitized_before_display() {
-        // An unparsable vtime passes through display verbatim, so a value
-        // carrying escape bytes must reach the terminal escaped, in the
-        // divider and in the cell alike.
+    fn an_unparsable_vtime_renders_as_a_placeholder() {
+        // A vtime the stream could not normalize is never displayed as the
+        // server's own text: the cell holds a placeholder and the divider
+        // drops the vtime, so escape bytes carried in the value have no path
+        // to the terminal.
         let block = render_one(json!({
             "moment": {"input_hash": "-1", "vtime": "1.0\u{1b}[2J"},
             "source": {"container": "app"},
             "output_text": "hi"
         }));
+        assert_eq!(block, "moment -1\nNULL      [app] hi");
         assert!(!block.contains('\u{1b}'), "escape byte leaked: {block:?}");
     }
 
@@ -698,25 +719,5 @@ mod tests {
         );
         let again = render_entry(&mut r, &entry);
         assert!(again.contains("container="), "got: {again}");
-    }
-
-    #[test]
-    fn vtime_cell_truncates_never_rounds_in_both_forms() {
-        // A vtime rendered from the JSON-number form (snouty's own --json
-        // output) must land on the same truncated text as the server's string
-        // form, so a value copied off the screen and fed back as
-        // --begin-vtime lands on the line you saw, never past it.
-        let cell = |entry: &Value| VTime::truncated_text(&entry["moment"]["vtime"], 3);
-        for s in ["398.4898056755774", "311.8487535319291", "402.0", "1.9995"] {
-            let vtime: VTime = s.parse().unwrap();
-            let from_string = cell(&json!({"moment": {"vtime": s}}));
-            let from_number = cell(&json!({"moment": {"vtime": vtime}}));
-            assert_eq!(from_string, from_number, "for {s}");
-        }
-        // Spot-check the truncation: .4898… cuts to .489 (rounding gives .490).
-        assert_eq!(
-            cell(&json!({"moment": {"vtime": "398.4898056755774"}})),
-            "398.489"
-        );
     }
 }

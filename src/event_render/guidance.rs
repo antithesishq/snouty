@@ -185,7 +185,7 @@ mod tests {
         // --detail adds the location; there is no data on a registration.
         let block = render_one_detailed(entry);
         assert!(
-            block.ends_with("          @ actions.rs:checkpoint:439"),
+            block.ends_with("                    @ actions.rs:checkpoint:439"),
             "got: {block}"
         );
     }
@@ -303,11 +303,11 @@ mod tests {
         let mut lines = block.lines().skip(2);
         assert_eq!(
             lines.next().unwrap(),
-            r#"          numeric maximize {"left":48,"right":1000}"#
+            r#"                    numeric maximize {"left":48,"right":1000}"#
         );
         assert_eq!(
             lines.next().unwrap(),
-            "          @ actions.rs:checkpoint:439"
+            "                    @ actions.rs:checkpoint:439"
         );
     }
 }

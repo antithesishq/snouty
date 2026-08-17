@@ -1,6 +1,5 @@
 //! `VTime`: a moment's virtual time, in seconds.
 
-use std::borrow::Cow;
 use std::cmp::Ordering;
 use std::fmt;
 use std::str::FromStr;
@@ -75,59 +74,6 @@ impl VTime {
     pub fn is_tick_aligned(self) -> bool {
         (self.0 * TICKS_PER_SECOND).fract() == 0.0
     }
-
-    /// An event's vtime as display text, at full precision: the server's own
-    /// string when it is still one, otherwise the exact print of the
-    /// normalized number. Starting from the server's text means an f64
-    /// round-trip can never nudge the displayed value.
-    pub(crate) fn full_text(raw: &serde_json::Value) -> Cow<'_, str> {
-        match raw.as_str() {
-            Some(s) => Cow::Borrowed(s),
-            None => Cow::Owned(
-                VTime::from_json(raw)
-                    .map(|v| v.to_string())
-                    .unwrap_or_default(),
-            ),
-        }
-    }
-
-    /// [`VTime::full_text`], truncated — never rounded — to `decimals`
-    /// fractional digits, so a value copied off the screen and pasted back
-    /// (e.g. as `--begin-vtime`) lands on, never past, the line it came from.
-    pub(crate) fn truncated_text(raw: &serde_json::Value, decimals: usize) -> String {
-        truncate_decimals(&Self::full_text(raw), decimals)
-    }
-}
-
-/// Truncate (never round) the decimal string `s` to exactly `decimals`
-/// fractional digits, zero-padding a short or missing fraction (`"19"` ->
-/// `"19.000"`, `"14.78"` -> `"14.780"`, `"1814.71357"` -> `"1814.713"`). Fixed
-/// width keeps a column of these aligned on the decimal point. Only a plain
-/// decimal string is sliced; anything else (scientific notation) falls back to
-/// rounded fixed-point, and a non-number is passed through verbatim.
-fn truncate_decimals(s: &str, decimals: usize) -> String {
-    let t = s.trim();
-    let (int_part, frac_part) = match t.split_once('.') {
-        Some((i, f)) => (i, f),
-        None => (t, ""),
-    };
-    let is_plain = !int_part.is_empty()
-        && int_part
-            .char_indices()
-            .all(|(i, c)| c.is_ascii_digit() || (i == 0 && (c == '-' || c == '+')))
-        && frac_part.chars().all(|c| c.is_ascii_digit());
-    if !is_plain {
-        return match t.parse::<f64>() {
-            Ok(v) => format!("{v:.decimals$}"),
-            Err(_) => t.to_string(),
-        };
-    }
-    if decimals == 0 {
-        return int_part.to_string();
-    }
-    // `is_plain` guarantees ASCII digits, so byte slicing is safe.
-    let kept = &frac_part[..frac_part.len().min(decimals)];
-    format!("{int_part}.{kept:0<decimals$}")
 }
 
 /// `total_cmp` is a total order over `f64`, which is what lets `VTime` be
@@ -163,7 +109,32 @@ impl Eq for VTime {}
 /// `1e+16`.)
 impl fmt::Display for VTime {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(zmij::Buffer::new().format(self.0))
+        let mut buf = zmij::Buffer::new();
+        let s = buf.format(self.0);
+
+        // A precision bounds the text to that many characters, truncated so
+        // the displayed value never overshoots the real one. Exponent form
+        // (`1e+16`, `2.3283064365386963e-10`) is exempt: cutting its digits
+        // drops the exponent with them, which does not shorten the value but
+        // multiplies it — `2.3283064365386963e-10` to 8 characters would read
+        // `2.328306`, ten orders of magnitude past the value it names. An
+        // over-wide exponent is the lesser evil, so it prints whole. zmij
+        // always spells the exponent lowercase.
+        if let Some(precision) = f.precision()
+            && !s.contains('e')
+        {
+            // Never let a precision truncate the integer part: measure the
+            // width up to (and including) the decimal point and clamp there.
+            let integer_width = s.find('.').map_or(s.len(), |i| i + 1);
+            if integer_width > precision {
+                // truncate to just the integer
+                f.write_str(&s[..integer_width])
+            } else {
+                f.pad(s)
+            }
+        } else {
+            f.write_str(s)
+        }
     }
 }
 
@@ -396,6 +367,68 @@ mod tests {
         assert_eq!(vtime.to_string(), serde_json::to_string(&vtime).unwrap());
     }
 
+    #[test]
+    fn a_precision_truncates_the_text_and_never_rounds() {
+        // The event renderer's vtime cell is `{vtime:<WIDTH$.WIDTH$}`: a
+        // character budget, truncated so a value copied off the screen is
+        // never past the line it came from. Rounding .4898 to three decimals
+        // would give .490, which is past it.
+        let vtime: VTime = "398.4898056755774".parse().unwrap();
+        assert_eq!(format!("{vtime:.7}"), "398.489");
+        // Short values pad out to the cell width.
+        let whole: VTime = "402.0".parse().unwrap();
+        assert_eq!(format!("{whole:<8.8}"), "402.0   ");
+        // A precision narrower than the integer part keeps the integer whole
+        // rather than slicing it into a different number entirely.
+        let wide: VTime = "1814.7135719023645".parse().unwrap();
+        assert_eq!(format!("{wide:.3}"), "1814.");
+        // Without a precision the text is the exact value, at any width.
+        assert_eq!(format!("{wide}"), "1814.7135719023645");
+    }
+
+    #[test]
+    fn a_precision_never_bounds_an_exponent() {
+        // Truncating exponent form drops the exponent along with the digits,
+        // which multiplies the value instead of shortening it. Such a vtime
+        // overflows its cell whole rather than reading as a different moment.
+        let tiny = VTime::from_seconds(1.0 / TICKS_PER_SECOND).unwrap();
+        assert_eq!(format!("{tiny:<8.8}"), "2.3283064365386963e-10");
+        let huge = VTime::from_seconds(1e16).unwrap();
+        assert_eq!(format!("{huge:<8.8}"), "1e+16");
+        // Both stay exact, which is the point of leaving them alone.
+        assert_eq!(format!("{tiny:.8}").parse::<VTime>().unwrap(), tiny);
+        assert_eq!(format!("{huge:.8}").parse::<VTime>().unwrap(), huge);
+    }
+
+    /// The vtime cell's copy-paste contract, over every vtime the type can
+    /// hold: the truncated text parses to a value at or before the real vtime,
+    /// never past it, so pasting it back as `--begin-vtime` lands on the line
+    /// it came from. The tick domain reaches down to `2.3283064365386963e-10`
+    /// (one tick), where the text is exponent form and a character budget
+    /// cannot bound it without multiplying the value — so `Display` prints
+    /// those whole and the contract holds across the whole range.
+    #[hegel::test]
+    fn a_truncated_vtime_never_lands_past_the_line(tc: hegel::TestCase) {
+        let ticks = tc.draw(hegel::generators::integers::<u64>().max_value((1 << 53) - 1));
+        let vtime = VTime::from_seconds(ticks as f64 / TICKS_PER_SECOND).unwrap();
+
+        for width in [8usize, 18] {
+            let cell = format!("{vtime:<width$.width$}");
+            let truncated: f64 = cell.trim_end().parse().unwrap();
+            assert!(truncated <= vtime.as_seconds(), "{cell:?} is past {vtime}");
+        }
+
+        // From one second up, 18 columns hold the value whole: the integer
+        // part costs at most 7 digits (a vtime tops out at 2^21 seconds) and
+        // an f64 round-trips in 17 significant digits, so the text cannot
+        // exceed those 17 digits plus the decimal point. Below one second the
+        // leading zeros are not significant digits and the text can outrun
+        // the cell, so `--detail` truncates there.
+        if vtime.as_seconds() >= 1.0 {
+            assert_eq!(format!("{vtime:.18}").parse::<VTime>().unwrap(), vtime);
+        }
+    }
+
     /// The two wire shapes — the API's seconds string and snouty's JSON
     /// number — deserialize to the same vtime for every finite value.
     #[hegel::test]
@@ -406,40 +439,5 @@ mod tests {
         let from_string: VTime = serde_json::from_str(&format!("\"{text}\"")).unwrap();
         assert_eq!(from_number, vtime);
         assert_eq!(from_string, vtime);
-    }
-
-    /// The copy-paste contract of the log vtime column, over the whole tick
-    /// domain: the truncated text parses to a value at or before the real
-    /// vtime — never past it — and less than one millisecond behind. The
-    /// string and number wire forms render identically.
-    #[hegel::test]
-    fn truncated_vtime_never_lands_past_the_line(tc: hegel::TestCase) {
-        use hegel::generators;
-
-        let ticks = tc.draw(generators::integers::<u64>().max_value((1 << 53) - 1));
-        let vtime = VTime::from_seconds(ticks as f64 / 4294967296.0).unwrap();
-
-        let truncated: f64 = truncate_decimals(&vtime.to_string(), 3).parse().unwrap();
-        assert!(truncated <= vtime.as_seconds());
-        assert!(vtime.as_seconds() - truncated < 0.001);
-
-        let from_string = VTime::truncated_text(&serde_json::json!(vtime.to_string()), 3);
-        let from_number = VTime::truncated_text(&serde_json::json!(vtime), 3);
-        assert_eq!(from_string, from_number);
-    }
-
-    #[test]
-    fn truncate_decimals_keeps_fixed_precision_without_rounding() {
-        // Always exactly 3 decimals, zero-padded, so a column aligns.
-        assert_eq!(truncate_decimals("19", 3), "19.000");
-        assert_eq!(truncate_decimals("19.0", 3), "19.000");
-        assert_eq!(truncate_decimals("14.78", 3), "14.780");
-        // Truncates, never rounds: 1814.7135… -> .713 (rounding would give .714).
-        assert_eq!(truncate_decimals("1814.7135719023645", 3), "1814.713");
-        assert_eq!(truncate_decimals("18.9148034489", 3), "18.914");
-        // Non-plain input: scientific notation falls back to fixed-point, and a
-        // non-number is passed through untouched.
-        assert_eq!(truncate_decimals("1e3", 3), "1000.000");
-        assert_eq!(truncate_decimals("n/a", 3), "n/a");
     }
 }

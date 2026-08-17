@@ -75,11 +75,6 @@ impl HumanDuration {
     pub fn seconds(&self) -> u64 {
         self.0.as_secs()
     }
-
-    /// The underlying [`Duration`], for use with timers and the like.
-    pub fn as_duration(&self) -> Duration {
-        self.0
-    }
 }
 
 impl fmt::Display for HumanDuration {
@@ -108,12 +103,7 @@ impl fmt::Display for HumanDuration {
     }
 }
 
-impl AsRef<Duration> for HumanDuration {
-    fn as_ref(&self) -> &Duration {
-        &self.0
-    }
-}
-
+/// The underlying [`Duration`], for use with timers and the like.
 impl From<HumanDuration> for Duration {
     fn from(value: HumanDuration) -> Self {
         value.0
@@ -311,14 +301,6 @@ mod tests {
             let reparsed = parsed.to_string().parse::<HumanDuration>().unwrap();
             assert_eq!(parsed, reparsed, "{s:?} did not round-trip through Display");
         }
-    }
-
-    #[test]
-    fn converts_to_duration() {
-        let d = "1h30m".parse::<HumanDuration>().unwrap();
-        assert_eq!(d.as_duration(), Duration::from_secs(5400));
-        assert_eq!(Duration::from(d), Duration::from_secs(5400));
-        assert_eq!(d.as_ref(), &Duration::from_secs(5400));
     }
 
     use hegel::generators;

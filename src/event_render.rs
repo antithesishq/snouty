@@ -174,9 +174,9 @@ impl Block<'_> {
         if !self.detail {
             return Ok(());
         }
-        let rendered = AssertionLocation::deserialize(location)
+        let rendered = SourceLocation::deserialize(location)
             .ok()
-            .and_then(render_assertion_location);
+            .and_then(render_source_location);
         match rendered {
             Some(location) => self.detail_line(format_args!("@ {location}")),
             None => Ok(()),
@@ -323,20 +323,19 @@ fn render_details_json(details: &Value) -> Option<String> {
 /// `{file, function, begin_line}`, every field optional.
 /// [`Block::location_line`] parses and formats it.
 #[derive(Debug, Deserialize)]
-struct AssertionLocation {
+struct SourceLocation {
     file: Option<String>,
     function: Option<String>,
     begin_line: Option<serde_json::Number>,
 }
 
-fn render_assertion_location(location: AssertionLocation) -> Option<String> {
+fn render_source_location(location: SourceLocation) -> Option<String> {
     let file = location.file.as_deref().and_then(file_basename);
     let function = location
         .function
         .as_deref()
         .map(str::trim)
-        .filter(|function| !function.is_empty())
-        .map(sanitize);
+        .filter(|function| !function.is_empty());
     let line = location.begin_line.map(|line| line.to_string());
 
     let mut rendered = String::new();
@@ -348,7 +347,7 @@ fn render_assertion_location(location: AssertionLocation) -> Option<String> {
         if !rendered.is_empty() {
             rendered.push(':');
         }
-        rendered.push_str(&function);
+        rendered.push_str(&sanitize(function));
     }
     if let Some(line) = line {
         if !rendered.is_empty() {

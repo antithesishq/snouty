@@ -194,7 +194,9 @@ impl Settings {
             validate_tenant_host(tenant)?;
         }
 
-        Ok(Self::assemble(
+        // A named-field literal (not the setters) so the compiler flags this
+        // site whenever a new setting is added to the builder.
+        Ok(SettingsBuilder {
             profile,
             tenant,
             repository,
@@ -203,42 +205,8 @@ impl Settings {
             container_engine,
             update_channel,
             api_cache_max_file_size,
-        ))
-    }
-
-    /// Assemble the final `Settings` from already-resolved layers, applying the
-    /// derived values: `base_url` falls back to a tenant-derived host, and the
-    /// cache size cap falls back to its default. Shared by [`Settings::resolve`]
-    /// and the test constructors so the derivation is exercised the same way
-    /// everywhere.
-    #[allow(clippy::too_many_arguments)]
-    fn assemble(
-        profile: Option<String>,
-        tenant: Option<String>,
-        repository: Option<String>,
-        base_url: Option<String>,
-        https_proxy: Option<String>,
-        container_engine: Option<String>,
-        update_channel: UpdateChannel,
-        api_cache_max_file_size: Option<u64>,
-    ) -> Self {
-        let base_url = base_url.or_else(|| {
-            tenant
-                .as_ref()
-                .map(|tenant| format!("https://{tenant}.antithesis.com"))
-        });
-
-        Self {
-            profile,
-            tenant,
-            repository,
-            base_url,
-            https_proxy,
-            container_engine,
-            update_channel,
-            api_cache_max_file_size: api_cache_max_file_size
-                .unwrap_or(crate::api_cache::DEFAULT_MAX_FILE_SIZE),
         }
+        .build())
     }
 
     /// The resolved tenant, or `None` if unset. Call sites that require it turn
@@ -303,8 +271,8 @@ impl Settings {
 
 /// Builder behind [`Settings::builder`], so call sites name just the values
 /// they set instead of growing a positional argument for every new setting.
-/// It bypasses the resolution precedence chain entirely; `base_url` still
-/// derives from the tenant when left unset (see [`Settings::assemble`]).
+/// It bypasses the resolution precedence chain entirely; the derived values
+/// still apply in [`SettingsBuilder::build`].
 #[derive(Default)]
 pub struct SettingsBuilder {
     profile: Option<String>,
@@ -358,17 +326,29 @@ impl SettingsBuilder {
         self
     }
 
+    /// Finish the build, applying the derived values: `base_url` falls back to
+    /// a tenant-derived host, and the cache size cap falls back to its default.
+    /// [`Settings::resolve`] and the test constructors both finish here, so the
+    /// derivation is exercised the same way everywhere.
     pub fn build(self) -> Settings {
-        Settings::assemble(
-            self.profile,
-            self.tenant,
-            self.repository,
-            self.base_url,
-            self.https_proxy,
-            self.container_engine,
-            self.update_channel,
-            self.api_cache_max_file_size,
-        )
+        let base_url = self.base_url.or_else(|| {
+            self.tenant
+                .as_ref()
+                .map(|tenant| format!("https://{tenant}.antithesis.com"))
+        });
+
+        Settings {
+            profile: self.profile,
+            tenant: self.tenant,
+            repository: self.repository,
+            base_url,
+            https_proxy: self.https_proxy,
+            container_engine: self.container_engine,
+            update_channel: self.update_channel,
+            api_cache_max_file_size: self
+                .api_cache_max_file_size
+                .unwrap_or(crate::api_cache::DEFAULT_MAX_FILE_SIZE),
+        }
     }
 }
 

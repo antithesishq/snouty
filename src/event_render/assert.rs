@@ -3,7 +3,6 @@
 //! `CATALOG` chatter.
 
 use std::fmt::{self, Write};
-use std::path::Path;
 
 use console::style;
 use serde::Deserialize;
@@ -24,16 +23,9 @@ struct AssertionPayload {
     assert_type: Option<String>,
     display_type: Option<String>,
     #[serde(default)]
-    location: Option<AssertionLocation>,
+    location: Option<Value>,
     #[serde(default)]
     details: Option<Value>,
-}
-
-#[derive(Debug, Deserialize)]
-pub(super) struct AssertionLocation {
-    file: Option<String>,
-    function: Option<String>,
-    begin_line: Option<serde_json::Number>,
 }
 
 #[derive(Debug, PartialEq)]
@@ -41,7 +33,9 @@ struct AssertionSummary {
     label: String,
     verdict: AssertVerdict,
     message: String,
-    location: Option<String>,
+    /// The payload's attached `location`, as sent. [`Block::location_line`]
+    /// parses and formats it, skipping a location with nothing to show.
+    location: Option<Value>,
     /// The payload's attached `details`, as sent. [`Block::details_json`]
     /// renders it, skipping null and empty containers.
     details: Option<Value>,
@@ -131,7 +125,7 @@ impl AssertionSummary {
             verdict,
             label,
             message,
-            location: payload.location.and_then(render_assertion_location),
+            location: payload.location,
             details: payload.details,
         })
     }
@@ -185,49 +179,6 @@ impl Event<'_> for Assertion {
         }
         Ok(())
     }
-}
-
-pub(super) fn render_assertion_location(location: AssertionLocation) -> Option<String> {
-    let file = location.file.as_deref().and_then(file_basename);
-    let function = location
-        .function
-        .as_deref()
-        .map(str::trim)
-        .filter(|function| !function.is_empty())
-        .map(sanitize);
-    let line = location.begin_line.map(|line| line.to_string());
-
-    let mut rendered = String::new();
-
-    if let Some(file) = file {
-        rendered.push_str(&sanitize(file));
-    }
-    if let Some(function) = function {
-        if !rendered.is_empty() {
-            rendered.push(':');
-        }
-        rendered.push_str(&function);
-    }
-    if let Some(line) = line {
-        if !rendered.is_empty() {
-            rendered.push(':');
-        }
-        rendered.push_str(&line);
-    }
-
-    (!rendered.is_empty()).then_some(rendered)
-}
-
-fn file_basename(file: &str) -> Option<&str> {
-    let trimmed = file.trim();
-    if trimmed.is_empty() {
-        return None;
-    }
-
-    Path::new(trimmed)
-        .file_name()
-        .and_then(|name| name.to_str())
-        .or(Some(trimmed))
 }
 
 #[cfg(test)]
@@ -362,12 +313,16 @@ mod tests {
                 "message": "setup reached", "assert_type": "reachability",
                 "display_type": "SetupReached",
                 "location": {"function": "run_setup", "begin_line": 42}
-            }
+            },
+            "source": {"container": "app"},
+            "moment": {"input_hash": "-1", "vtime": "1.0"}
         });
         let summary = parse_assertion_summary(&entry).unwrap();
         assert_eq!(summary.verdict, AssertVerdict::Catalog);
         assert_eq!(summary.label, "SetupReached");
-        assert_eq!(summary.location.as_deref(), Some("run_setup:42"));
+        // A location without a file still renders from the fields it has.
+        let block = render_one_detailed(entry);
+        assert!(block.ends_with("@ run_setup:42"), "got: {block}");
 
         // Empty display_type falls back to assert_type.
         let entry = json!({

@@ -7,12 +7,10 @@
 use std::fmt::{self, Write};
 
 use console::style;
-use serde::Deserialize;
 use serde_json::Value;
 
 use crate::render::sanitize;
 
-use super::assert::{AssertionLocation, render_assertion_location};
 use super::{Block, DisplayWith, Event, format_value, render_details_json};
 
 pub(super) struct Guidance<'a>(&'a Value);
@@ -44,9 +42,7 @@ impl<'a> Event<'a> for Guidance<'a> {
                 )))
                 .dim()
             )?;
-            if block.detail() {
-                location_line(block, guidance)?;
-            }
+            block.location_line(&guidance["location"])?;
             return Ok(());
         }
 
@@ -74,19 +70,9 @@ impl<'a> Event<'a> for Guidance<'a> {
             if !info.is_empty() {
                 block.detail_line(info)?;
             }
-            location_line(block, guidance)?;
         }
+        block.location_line(&guidance["location"])?;
         Ok(())
-    }
-}
-
-fn location_line(block: &mut Block<'_>, guidance: &Value) -> fmt::Result {
-    let location = AssertionLocation::deserialize(&guidance["location"])
-        .ok()
-        .and_then(render_assertion_location);
-    match location {
-        Some(location) => block.location_line(&location),
-        None => Ok(()),
     }
 }
 

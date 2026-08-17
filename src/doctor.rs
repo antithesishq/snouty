@@ -882,7 +882,8 @@ mod tests {
         assert!(!check.message.contains("unreachable"));
         assert!(check.notes.iter().any(|n| {
             n.text.contains("tenant.antithesis.com")
-                && n.text.contains("invalid type: null, expected struct ApiVersion")
+                && n.text
+                    .contains("invalid type: null, expected struct ApiVersion")
         }));
         assert!(check.notes.iter().any(|n| n.text.contains("proxy")));
     }

@@ -20,7 +20,7 @@ pub const ANTITHESIS_BASE_URL_VAR_NAME: &str = "ANTITHESIS_BASE_URL";
 pub const ANTITHESIS_HTTPS_PROXY_VAR_NAME: &str = "ANTITHESIS_HTTPS_PROXY";
 pub const CONTAINER_ENGINE_VAR_NAME: &str = "SNOUTY_CONTAINER_ENGINE";
 pub const UPDATE_CHANNEL_VAR_NAME: &str = "SNOUTY_UPDATE_CHANNEL";
-pub const CACHE_MAX_FILE_SIZE_VAR_NAME: &str = "SNOUTY_CACHE_MAX_FILE_SIZE";
+pub const API_CACHE_MAX_FILE_SIZE_VAR_NAME: &str = "SNOUTY_API_CACHE_MAX_FILE_SIZE";
 const PROJECT_SETTINGS_FILENAME: &str = ".snouty.toml";
 const GLOBAL_SETTINGS_FILENAME: &str = "settings.toml";
 const PROFILE_KEY: &str = "profile";
@@ -90,7 +90,7 @@ pub struct Settings {
     https_proxy: Option<String>,
     container_engine: Option<String>,
     update_channel: UpdateChannel,
-    cache_max_file_size: u64,
+    api_cache_max_file_size: u64,
 }
 
 impl Default for Settings {
@@ -173,9 +173,9 @@ impl Settings {
         // cache will store, as a size such as "10 MB" or a bare byte count.
         // A bare count is naturally written as a TOML integer, so the file
         // layers accept one (see `resolve_integer_value`).
-        let cache_max_file_size = resolve_integer_value(
-            "cache_max_file_size",
-            CACHE_MAX_FILE_SIZE_VAR_NAME,
+        let api_cache_max_file_size = resolve_integer_value(
+            "api_cache_max_file_size",
+            API_CACHE_MAX_FILE_SIZE_VAR_NAME,
             profile.as_deref(),
             project.as_ref(),
             global.as_ref(),
@@ -202,7 +202,7 @@ impl Settings {
             https_proxy,
             container_engine,
             update_channel,
-            cache_max_file_size,
+            api_cache_max_file_size,
         ))
     }
 
@@ -220,7 +220,7 @@ impl Settings {
         https_proxy: Option<String>,
         container_engine: Option<String>,
         update_channel: UpdateChannel,
-        cache_max_file_size: Option<u64>,
+        api_cache_max_file_size: Option<u64>,
     ) -> Self {
         let base_url = base_url.or_else(|| {
             tenant
@@ -236,7 +236,7 @@ impl Settings {
             https_proxy,
             container_engine,
             update_channel,
-            cache_max_file_size: cache_max_file_size
+            api_cache_max_file_size: api_cache_max_file_size
                 .unwrap_or(crate::api_cache::DEFAULT_MAX_FILE_SIZE),
         }
     }
@@ -276,8 +276,8 @@ impl Settings {
     /// The largest API response body, in bytes, the response cache stores;
     /// [`crate::api_cache::DEFAULT_MAX_FILE_SIZE`] when unset. Already
     /// validated — an invalid setting value fails in [`Settings::resolve`].
-    pub fn cache_max_file_size(&self) -> u64 {
-        self.cache_max_file_size
+    pub fn api_cache_max_file_size(&self) -> u64 {
+        self.api_cache_max_file_size
     }
 
     pub(crate) fn profile(&self) -> Option<&str> {
@@ -314,7 +314,7 @@ pub struct SettingsBuilder {
     https_proxy: Option<String>,
     container_engine: Option<String>,
     update_channel: UpdateChannel,
-    cache_max_file_size: Option<u64>,
+    api_cache_max_file_size: Option<u64>,
 }
 
 impl SettingsBuilder {
@@ -353,8 +353,8 @@ impl SettingsBuilder {
         self
     }
 
-    pub fn cache_max_file_size(mut self, value: u64) -> Self {
-        self.cache_max_file_size = Some(value);
+    pub fn api_cache_max_file_size(mut self, value: u64) -> Self {
+        self.api_cache_max_file_size = Some(value);
         self
     }
 
@@ -367,7 +367,7 @@ impl SettingsBuilder {
             self.https_proxy,
             self.container_engine,
             self.update_channel,
-            self.cache_max_file_size,
+            self.api_cache_max_file_size,
         )
     }
 }
@@ -667,7 +667,7 @@ fn integer_value(table: &Table, key: &str, display: &str) -> Result<Option<Strin
     }
 }
 
-/// Parse the `cache_max_file_size` setting — a size such as "10 MB" or
+/// Parse the `api_cache_max_file_size` setting — a size such as "10 MB" or
 /// "1.5GiB", or a bare byte count — into bytes. SI units are decimal
 /// (MB = 10^6 bytes); IEC units are binary (MiB = 2^20 bytes).
 fn parse_byte_size(value: &str) -> Result<u64> {
@@ -676,7 +676,7 @@ fn parse_byte_size(value: &str) -> Result<u64> {
         .map(|size| size.as_u64())
         .map_err(|err| {
             user_error(format!(
-                "invalid cache_max_file_size setting (expected a size such as \"10 MB\"): {err}"
+                "invalid api_cache_max_file_size setting (expected a size such as \"10 MB\"): {err}"
             ))
         })
 }
@@ -805,9 +805,9 @@ mod tests {
 
     #[test]
     fn integer_value_accepts_a_bare_toml_integer() {
-        let table: Table = "cache_max_file_size = 1234\n".parse().unwrap();
+        let table: Table = "api_cache_max_file_size = 1234\n".parse().unwrap();
         assert_eq!(
-            integer_value(&table, "cache_max_file_size", "cache_max_file_size")
+            integer_value(&table, "api_cache_max_file_size", "api_cache_max_file_size")
                 .unwrap()
                 .as_deref(),
             Some("1234")
@@ -816,9 +816,9 @@ mod tests {
 
     #[test]
     fn integer_value_accepts_a_quoted_string() {
-        let table: Table = "cache_max_file_size = \"1234\"\n".parse().unwrap();
+        let table: Table = "api_cache_max_file_size = \"1234\"\n".parse().unwrap();
         assert_eq!(
-            integer_value(&table, "cache_max_file_size", "cache_max_file_size")
+            integer_value(&table, "api_cache_max_file_size", "api_cache_max_file_size")
                 .unwrap()
                 .as_deref(),
             Some("1234")
@@ -827,8 +827,9 @@ mod tests {
 
     #[test]
     fn non_numeric_integer_value_is_an_error() {
-        let table: Table = "cache_max_file_size = true\n".parse().unwrap();
-        let err = integer_value(&table, "cache_max_file_size", "cache_max_file_size").unwrap_err();
+        let table: Table = "api_cache_max_file_size = true\n".parse().unwrap();
+        let err = integer_value(&table, "api_cache_max_file_size", "api_cache_max_file_size")
+            .unwrap_err();
         let msg = err.to_string();
         assert!(
             msg.contains("must be an integer"),
@@ -1032,12 +1033,18 @@ mod tests {
     }
 
     #[test]
-    fn cache_max_file_size_resolves_from_a_settings_file() {
+    fn api_cache_max_file_size_resolves_from_a_settings_file() {
         // The natural TOML form for a byte count is a bare integer.
-        let project = settings_file("cache_max_file_size = 1234\n");
+        let project = settings_file("api_cache_max_file_size = 1234\n");
         assert_eq!(
-            resolve_integer_value("cache_max_file_size", UNSET_ENV, None, Some(&project), None)
-                .unwrap(),
+            resolve_integer_value(
+                "api_cache_max_file_size",
+                UNSET_ENV,
+                None,
+                Some(&project),
+                None
+            )
+            .unwrap(),
             Some("1234".to_string())
         );
     }
@@ -1064,7 +1071,7 @@ mod tests {
             let err = parse_byte_size(bad).unwrap_err();
             let msg = err.to_string();
             assert!(
-                msg.contains("cache_max_file_size") && msg.contains("10 MB"),
+                msg.contains("api_cache_max_file_size") && msg.contains("10 MB"),
                 "unexpected error for {bad:?}: {msg}"
             );
         }

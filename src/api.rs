@@ -356,7 +356,7 @@ impl AntithesisApi {
         };
         let state = ClientState {
             authn_info,
-            cache: cache_dir.map(|dir| ApiCache::new(dir, settings.cache_max_file_size())),
+            cache: cache_dir.map(|dir| ApiCache::new(dir, settings.api_cache_max_file_size())),
             default_headers: verbose.then_some(default_headers),
         };
         let client = generated::Client::new_with_client(&base_url, http_client, state);
@@ -2306,7 +2306,7 @@ mod tests {
         let api = AntithesisApi::build(
             &Settings::builder()
                 .base_url(&mock_server.uri())
-                .cache_max_file_size(4)
+                .api_cache_max_file_size(4)
                 .build(),
             AuthenticationInfo::Password {
                 username: "user".to_owned(),

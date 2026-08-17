@@ -4,8 +4,8 @@
 //! decides admission from what snouty knows about the domain: immutable
 //! resources (logs addressed by moment, properties, terminal run details) are
 //! cached forever; everything that can still change is never cached. There is
-//! no per-entry expiration — the cache lives in a transient runtime directory
-//! (`XDG_RUNTIME_DIR`, falling back to the system temp dir) that the OS clears
+//! no per-entry expiration — the cache lives in a transient per-user directory
+//! (`XDG_RUNTIME_DIR`; the user temp dir on macOS) that the OS clears
 //! periodically.
 //!
 //! The cache is infallible by construction: every cache error — unreadable
@@ -37,8 +37,8 @@ use crate::env;
 const CACHE_DIR_NAME: &str = "api-cache-v2";
 
 /// Bodies larger than this are not cached (see
-/// [`crate::settings::Settings::cache_max_file_size`] to override).
-pub(crate) const DEFAULT_MAX_FILE_SIZE: u64 = 10 * 1024 * 1024;
+/// [`crate::settings::Settings::api_cache_max_file_size`] to override).
+pub const DEFAULT_MAX_FILE_SIZE: u64 = 10 * 1024 * 1024;
 
 /// A whole-body admission check (see [`Admission::IfBody`]).
 type BodyCheck = fn(&[u8]) -> bool;
@@ -103,60 +103,32 @@ fn run_detail_key(url: &str) -> Option<&str> {
 const API_CACHE_DIR_VAR_NAME: &str = "SNOUTY_API_CACHE_DIR";
 
 /// The default cache directory: `$SNOUTY_API_CACHE_DIR` if set, else
-/// `$XDG_RUNTIME_DIR/snouty/api-cache-v2`, falling back to a per-user
-/// directory under the system temp dir. `None` disables caching (currently
-/// only when the temp-dir fallback cannot be made private; see
-/// [`private_fallback_root`]).
-pub(crate) fn default_dir() -> Option<PathBuf> {
+/// `$XDG_RUNTIME_DIR/snouty/api-cache-v2` — except on macOS, where
+/// `XDG_RUNTIME_DIR` is normally unset and the per-user temp dir
+/// (`std::env::temp_dir`) takes its place. `None` disables caching.
+pub fn default_dir() -> Option<PathBuf> {
     if let Some(dir) = env::var(API_CACHE_DIR_VAR_NAME).ok().flatten() {
         return Some(PathBuf::from(dir));
     }
-    match env::var("XDG_RUNTIME_DIR").ok().flatten() {
-        Some(dir) => Some(PathBuf::from(dir).join("snouty").join(CACHE_DIR_NAME)),
-        None => private_fallback_root().map(|root| root.join(CACHE_DIR_NAME)),
-    }
-}
-
-/// The temp-dir fallback root. Cached responses carry private run data, and
-/// unlike `XDG_RUNTIME_DIR` the system temp dir may be shared between users,
-/// so the root is a per-user directory created with mode `0700` — and on Unix
-/// it must actually be a private directory we own (not, say, a directory
-/// another user pre-created). `None` when that cannot be guaranteed.
-fn private_fallback_root() -> Option<PathBuf> {
-    #[cfg(unix)]
-    let root = {
-        let root = std::env::temp_dir().join(format!("snouty-{}", unsafe { libc::getuid() }));
-        if crate::settings::mkdir(&root, true, 0o700).is_err() {
-            return None;
-        }
-        use std::os::unix::fs::MetadataExt;
-        let private = std::fs::symlink_metadata(&root).is_ok_and(|meta| {
-            meta.is_dir() && meta.uid() == unsafe { libc::getuid() } && meta.mode() & 0o077 == 0
-        });
-        if !private {
-            debug!(
-                "API cache disabled: {} is not a private directory",
-                root.display()
-            );
-            return None;
-        }
-        root
-    };
-    // Non-Unix temp dirs (e.g. Windows %TEMP%) are already per-user.
-    #[cfg(not(unix))]
-    let root = std::env::temp_dir().join("snouty");
-    Some(root)
+    #[cfg(target_os = "macos")]
+    let base = Some(std::env::temp_dir());
+    #[cfg(not(target_os = "macos"))]
+    let base = env::var("XDG_RUNTIME_DIR")
+        .ok()
+        .flatten()
+        .map(PathBuf::from);
+    Some(base?.join("snouty").join(CACHE_DIR_NAME))
 }
 
 /// The logical API response cache. Cheap to clone; all state is on disk.
 #[derive(Clone, Debug)]
-pub(crate) struct ApiCache {
+pub struct ApiCache {
     dir: PathBuf,
     max_file_size: u64,
 }
 
 impl ApiCache {
-    pub(crate) fn new(dir: PathBuf, max_file_size: u64) -> Self {
+    pub fn new(dir: PathBuf, max_file_size: u64) -> Self {
         Self { dir, max_file_size }
     }
 
@@ -165,7 +137,7 @@ impl ApiCache {
     /// error. The returned response streams the cached body directly from
     /// disk with a synthetic `200 OK` status (only 200 responses are ever
     /// admitted).
-    pub(crate) async fn lookup(
+    pub async fn lookup(
         &self,
         request: &reqwest::Request,
         info: &OperationInfo,
@@ -201,7 +173,7 @@ impl ApiCache {
     /// caller abandons partway is never committed). Otherwise the response is
     /// returned untouched. Never fails: any cache error abandons the entry
     /// and the caller keeps streaming from the server.
-    pub(crate) async fn store(
+    pub async fn store(
         &self,
         info: &OperationInfo,
         response: reqwest::Response,

@@ -54,11 +54,6 @@ enum Admission {
     /// detail, which is immutable only once the run reaches a terminal
     /// status).
     IfBody(BodyCheck),
-    /// Cache only when the cache already proves the run is terminal: a run
-    /// detail entry exists for the same run, and run details are only
-    /// admitted in a terminal status. Used for build logs, whose response
-    /// carries no completion marker of its own.
-    IfRunTerminal,
 }
 
 /// The admission policy, by generated `operation_id`.
@@ -67,12 +62,13 @@ enum Admission {
 /// are deliberately absent: the cache ignores non-GET requests for now.
 /// `search_run_events` stays uncached until there is a reliable way to tell
 /// that no more events will show up. `list_runs` and `get_version` are live
-/// values.
+/// values. Build logs rely on the tee's general rule: the entry commits only
+/// when the stream reaches its end without error.
 fn admission(operation_id: &str) -> Admission {
     match operation_id {
         "get_run" => Admission::IfBody(run_detail_is_terminal),
         "get_run_logs" => Admission::Forever,
-        "get_run_build_logs" => Admission::IfRunTerminal,
+        "get_run_build_logs" => Admission::Forever,
         "list_run_properties" => Admission::Forever,
         _ => Admission::Never,
     }
@@ -85,14 +81,6 @@ fn run_detail_is_terminal(body: &[u8]) -> bool {
         .ok()
         .and_then(|detail| serde_json::from_value::<RunStatus>(detail.get("status")?.clone()).ok())
         .is_some_and(RunStatus::is_terminal)
-}
-
-/// The run-detail cache key for a run-scoped resource URL: the URL with its
-/// final path segment (e.g. `/build_logs`) removed. `None` when the URL does
-/// not have the expected shape.
-fn run_detail_key(url: &str) -> Option<&str> {
-    let (run_detail, _) = url.rsplit_once('/')?;
-    Some(run_detail)
 }
 
 /// Env var that overrides the cache directory outright (used as-is, no
@@ -185,12 +173,6 @@ impl ApiCache {
             Admission::Never => return response,
             Admission::Forever => None,
             Admission::IfBody(verify) => Some(verify),
-            Admission::IfRunTerminal => {
-                if !self.knows_run_is_terminal(response.url().as_str()).await {
-                    return response;
-                }
-                None
-            }
         };
 
         let key = response.url().as_str();
@@ -224,16 +206,6 @@ impl ApiCache {
             .body(reqwest::Body::wrap_stream(tee))
             .expect("a response rebuilt from valid parts builds")
             .into()
-    }
-
-    /// Whether the cache holds proof that the run owning `url` (a run-scoped
-    /// resource URL) is in a terminal state: its run detail entry exists, and
-    /// run details are only admitted when terminal.
-    async fn knows_run_is_terminal(&self, url: &str) -> bool {
-        match run_detail_key(url) {
-            Some(key) => matches!(cacache::metadata(&self.dir, key).await, Ok(Some(_))),
-            None => false,
-        }
     }
 }
 
@@ -364,7 +336,7 @@ mod tests {
         assert!(matches!(admission("get_run_logs"), Admission::Forever));
         assert!(matches!(
             admission("get_run_build_logs"),
-            Admission::IfRunTerminal
+            Admission::Forever
         ));
         assert!(matches!(
             admission("list_run_properties"),
@@ -399,14 +371,5 @@ mod tests {
         assert!(!run_detail_is_terminal(b"not json"));
         assert!(!run_detail_is_terminal(br#"{"run_id":"r"}"#));
         assert!(!run_detail_is_terminal(br#"{"status":"bogus"}"#));
-    }
-
-    #[test]
-    fn run_detail_key_strips_the_resource_segment() {
-        assert_eq!(
-            run_detail_key("https://t.antithesis.com/api/v0/runs/run-1/build_logs"),
-            Some("https://t.antithesis.com/api/v0/runs/run-1")
-        );
-        assert_eq!(run_detail_key("no-slashes"), None);
     }
 }

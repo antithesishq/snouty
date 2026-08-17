@@ -2184,15 +2184,8 @@ mod tests {
         })
     }
 
-    async fn read_stream(stream: ByteStream) -> Vec<u8> {
-        stream
-            .into_inner()
-            .try_collect::<Vec<_>>()
-            .await
-            .unwrap()
-            .into_iter()
-            .flatten()
-            .collect()
+    async fn read_stream(stream: crate::jsonl::JsonStream) -> Vec<serde_json::Value> {
+        stream.try_collect::<Vec<_>>().await.unwrap()
     }
 
     fn logs_moment() -> Moment {
@@ -2244,7 +2237,7 @@ mod tests {
         let mock_server = MockServer::start().await;
         Mock::given(method("GET"))
             .and(path("/api/v0/runs/run-1/logs"))
-            .respond_with(ResponseTemplate::new(200).set_body_string("log line\n"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("{\"text\":\"log line\"}\n"))
             .expect(1)
             .mount(&mock_server)
             .await;
@@ -2256,12 +2249,18 @@ mod tests {
             .get_run_logs("run-1", logs_moment(), None)
             .await
             .unwrap();
-        assert_eq!(read_stream(first).await, b"log line\n");
+        assert_eq!(
+            read_stream(first).await,
+            [serde_json::json!({"text": "log line"})]
+        );
         let second = api
             .get_run_logs("run-1", logs_moment(), None)
             .await
             .unwrap();
-        assert_eq!(read_stream(second).await, b"log line\n");
+        assert_eq!(
+            read_stream(second).await,
+            [serde_json::json!({"text": "log line"})]
+        );
     }
 
     #[tokio::test]
@@ -2269,7 +2268,7 @@ mod tests {
         let mock_server = MockServer::start().await;
         Mock::given(method("GET"))
             .and(path("/api/v0/runs/run-1/logs"))
-            .respond_with(ResponseTemplate::new(200).set_body_string("log line\n"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("{\"text\":\"log line\"}\n"))
             .expect(2)
             .mount(&mock_server)
             .await;
@@ -2289,7 +2288,10 @@ mod tests {
             .get_run_logs("run-1", logs_moment(), None)
             .await
             .unwrap();
-        assert_eq!(read_stream(replay).await, b"log line\n");
+        assert_eq!(
+            read_stream(replay).await,
+            [serde_json::json!({"text": "log line"})]
+        );
     }
 
     #[tokio::test]
@@ -2297,7 +2299,7 @@ mod tests {
         let mock_server = MockServer::start().await;
         Mock::given(method("GET"))
             .and(path("/api/v0/runs/run-1/logs"))
-            .respond_with(ResponseTemplate::new(200).set_body_string("log line\n"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("{\"text\":\"log line\"}\n"))
             .expect(2)
             .mount(&mock_server)
             .await;
@@ -2322,7 +2324,10 @@ mod tests {
                 .get_run_logs("run-1", logs_moment(), None)
                 .await
                 .unwrap();
-            assert_eq!(read_stream(stream).await, b"log line\n");
+            assert_eq!(
+                read_stream(stream).await,
+                [serde_json::json!({"text": "log line"})]
+            );
         }
     }
 
@@ -2353,17 +2358,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn build_logs_cache_only_once_the_run_is_known_terminal() {
+    async fn build_logs_replay_from_the_cache_once_fully_read() {
         let mock_server = MockServer::start().await;
         Mock::given(method("GET"))
             .and(path("/api/v0/runs/run-1/build_logs"))
-            .respond_with(ResponseTemplate::new(200).set_body_string("built\n"))
-            .expect(3)
-            .mount(&mock_server)
-            .await;
-        Mock::given(method("GET"))
-            .and(path("/api/v0/runs/run-1"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(run_detail_body("completed")))
+            .respond_with(ResponseTemplate::new(200).set_body_string("{\"text\":\"built\"}\n"))
             .expect(1)
             .mount(&mock_server)
             .await;
@@ -2371,20 +2370,13 @@ mod tests {
         let cache_dir = TempDir::new().unwrap();
         let api = test_api_optionally_with_cache(&mock_server, Some(&cache_dir));
 
-        let fetch_build_logs = || async {
+        for _ in 0..2 {
             let stream = api.get_run_build_logs("run-1").await.unwrap();
-            assert_eq!(read_stream(stream).await, b"built\n");
-        };
-
-        // Nothing proves the run is terminal yet: neither read is admitted.
-        fetch_build_logs().await;
-        fetch_build_logs().await;
-
-        // Caching the terminal run detail proves the run — and thus the build
-        // — is complete. The next read is admitted; the one after replays it.
-        api.get_run("run-1").await.unwrap();
-        fetch_build_logs().await;
-        fetch_build_logs().await;
+            assert_eq!(
+                read_stream(stream).await,
+                [serde_json::json!({"text": "built"})]
+            );
+        }
     }
 
     #[tokio::test]

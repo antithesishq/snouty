@@ -136,6 +136,82 @@ mod tests {
         );
     }
 
+    /// The whole-pipeline guarantee: any series of JSON values, serialized
+    /// to one JSONL buffer and split into arbitrary chunks, round-trips
+    /// through the stream back to the same series.
+    #[hegel::test]
+    fn round_trips_any_series_across_any_chunking(tc: hegel::TestCase) {
+        use hegel::generators;
+
+        /// A random JSON value, at most `2 - depth` levels of nesting deep.
+        fn json_value(tc: &hegel::TestCase, depth: u8) -> Value {
+            let max_tag = if depth < 2 { 6 } else { 4 };
+            match tc.draw(generators::integers::<u8>().max_value(max_tag)) {
+                0 => Value::Null,
+                1 => Value::Bool(tc.draw(generators::booleans())),
+                2 => Value::from(tc.draw(generators::integers::<i64>())),
+                3 => tc
+                    .draw(
+                        generators::floats::<f64>()
+                            .allow_nan(false)
+                            .allow_infinity(false),
+                    )
+                    .into(),
+                4 => Value::String(tc.draw(generators::text())),
+                5 => Value::Array(
+                    (0..tc.draw(generators::integers::<usize>().max_value(3)))
+                        .map(|_| json_value(tc, depth + 1))
+                        .collect(),
+                ),
+                _ => {
+                    let mut map = serde_json::Map::new();
+                    for _ in 0..tc.draw(generators::integers::<usize>().max_value(3)) {
+                        map.insert(tc.draw(generators::text()), json_value(tc, depth + 1));
+                    }
+                    Value::Object(map)
+                }
+            }
+        }
+
+        let count = tc.draw(generators::integers::<usize>().max_value(8));
+        let values: Vec<Value> = (0..count).map(|_| json_value(&tc, 0)).collect();
+
+        // One JSONL buffer (serialization escapes any newline inside a
+        // value, so the line structure is exactly one value per line) ...
+        let mut buf: Vec<u8> = Vec::new();
+        for value in &values {
+            buf.extend_from_slice(value.to_string().as_bytes());
+            buf.push(b'\n');
+        }
+
+        // ... split into arbitrary chunks, so line boundaries land anywhere.
+        let mut chunks: Vec<reqwest::Result<Bytes>> = Vec::new();
+        let mut rest = buf.as_slice();
+        while !rest.is_empty() {
+            let n = tc.draw(
+                generators::integers::<usize>()
+                    .min_value(1)
+                    .max_value(rest.len()),
+            );
+            let (head, tail) = rest.split_at(n);
+            chunks.push(Ok(Bytes::copy_from_slice(head)));
+            rest = tail;
+        }
+
+        let out = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap()
+            .block_on(async {
+                let mut stream = JsonStream::from_stream(stream::iter(chunks));
+                let mut out = Vec::new();
+                while let Some(value) = stream.try_next().await.unwrap() {
+                    out.push(value);
+                }
+                out
+            });
+        assert_eq!(out, values);
+    }
+
     #[tokio::test]
     async fn a_corrupted_line_fails_the_stream_and_names_it() {
         let mut stream = jsonl(&["{\"a\":1}\nnot json\n"]);

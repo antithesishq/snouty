@@ -928,6 +928,36 @@ fn mock_route_list_run_properties(run_id: &str, query: Option<&str>) -> (u16, St
     )
 }
 
+/// The text an events route matches a needle against: an event's log text,
+/// an assertion's message and source function, and a test-composer command
+/// and task, NUL-joined so a needle cannot span two fields. Both events
+/// routes share it, because `runs events` returns the same events whichever
+/// backend serves it.
+///
+/// The gates the live endpoints put on those fields — an assertion counts
+/// only once it was hit, a command only on a composer event — are not
+/// modelled here. The specs pin which FIELDS a needle reaches; which events
+/// the server then considers is the server's own answer, and a fixture
+/// written here is not evidence of it.
+fn mock_event_haystack(line: &str) -> String {
+    let Ok(event) = serde_json::from_str::<serde_json::Value>(line) else {
+        return line.to_lowercase();
+    };
+    [
+        &event["output_text"],
+        &event["antithesis_assert"]["message"],
+        &event["antithesis_assert"]["location"]["function"],
+        &event["source"]["name"],
+        &event["command"],
+        &event["started_task"],
+    ]
+    .iter()
+    .filter_map(|field| field.as_str())
+    .collect::<Vec<_>>()
+    .join("\0")
+    .to_lowercase()
+}
+
 /// Every double-quoted string literal in `query`, with `\"` and `\\` escapes
 /// resolved. The mock server uses this to "interpret" a query without a DSL
 /// engine: requiring each literal somewhere in an event covers
@@ -972,10 +1002,10 @@ fn mock_route_search_run_events(run_id: &str, query_str: Option<&str>) -> (u16, 
     };
 
     let (_, logs) = mock_route_get_run_logs(run_id);
-    let needle = needle.to_ascii_lowercase();
+    let needle = needle.to_lowercase();
     let mut matches = logs
         .lines()
-        .filter(|line| line.to_ascii_lowercase().contains(&needle))
+        .filter(|line| mock_event_haystack(line).contains(&needle))
         .collect::<Vec<_>>();
 
     // Cap the returned events at `limit` when present, mirroring the real
@@ -1111,11 +1141,10 @@ fn mock_route_execute_command(run_id: &str, req_body: &str) -> (u16, String) {
 ///
 /// The mock carries no DSL engine. A query is "interpreted" by extracting
 /// every double-quoted string literal and requiring each, case-insensitively,
-/// somewhere in the raw event line — enough for `contains({...})` needles and
-/// for the multi-needle JS filter `runs events` builds, where the quoted
-/// literals are exactly the needles (the filter's `" "` separators drop out
-/// as whitespace). Validity checking is one rule: the pipeline must start
-/// with a known verb.
+/// in the text [`mock_event_haystack`] collects — enough for
+/// `contains({...})` needles and for the multi-needle JS filter `runs events`
+/// builds, whose needles are the arguments of its `has(...)` calls. Validity
+/// checking is one rule: the pipeline must start with a known verb.
 fn mock_route_search_events(run_id: &str, body: &str) -> (u16, String, &'static str) {
     let json = "application/json";
     let ndjson = "application/x-ndjson";
@@ -1151,8 +1180,8 @@ fn mock_route_search_events(run_id: &str, body: &str) -> (u16, String, &'static 
         return (200, String::new(), ndjson);
     }
 
-    // The mock EXECUTES every query the same way: every quoted literal must
-    // be a substring of the raw event line, all at once. Those are the semantics
+    // The mock EXECUTES every query the same way: every needle must be a
+    // substring of the event's text, all at once. Those are the semantics
     // of `contains` and of the substring `filter` that `runs events` builds
     // — but not of `excludes`, `not_matches`, `fold`, and friends, which
     // would be answered with wrong (even inverted) results and let a spec
@@ -1173,18 +1202,45 @@ fn mock_route_search_events(run_id: &str, body: &str) -> (u16, String, &'static 
     }
 
     // Lowercased with Unicode `to_lowercase`, matching the JS
-    // `.toLowerCase()` in the filter this route models.
-    let needles: Vec<String> = extract_quoted_literals(query)
+    // `.toLowerCase()` in the filter this route models. The needles of the
+    // `runs events` filter are the arguments of its `has(...)` calls; its
+    // other literals name fields and values the filter tests against, and
+    // requiring those in an event would match nothing. A query with no
+    // `has(` call keeps every literal, which is what `contains({...})` and a
+    // hand-written filter need.
+    let literals = if query.contains("has(") {
+        query
+            .match_indices("has(")
+            .filter_map(|(at, verb)| {
+                extract_quoted_literals(&query[at + verb.len()..])
+                    .into_iter()
+                    .next()
+            })
+            .collect()
+    } else {
+        extract_quoted_literals(query)
+    };
+    let needles: Vec<String> = literals
         .into_iter()
         .filter(|literal| !literal.trim().is_empty())
         .map(|literal| literal.to_lowercase())
         .collect();
+    // A query that stringifies the event asks for the event's JSON as the
+    // haystack, field names and all; every other query reads fields. The
+    // mock honors what the query asked for, so a spec sees the difference
+    // between the two — that difference is what made `runs events` answer
+    // differently on each backend (issue #252).
+    let reads_event_json = query.contains("JSON.stringify(ev)");
     let (_, logs) = mock_route_get_run_logs(run_id);
     let matches: Vec<&str> = logs
         .lines()
         .filter(|line| {
-            let lowered = line.to_lowercase();
-            needles.iter().all(|needle| lowered.contains(needle))
+            let haystack = if reads_event_json {
+                line.to_lowercase()
+            } else {
+                mock_event_haystack(line)
+            };
+            needles.iter().all(|needle| haystack.contains(needle))
         })
         .collect();
 

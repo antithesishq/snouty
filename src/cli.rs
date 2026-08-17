@@ -879,6 +879,9 @@ Examples:
     #[command(
         long_about = concat!(
             "Search a run's events for one or more substrings (all must match).\n\n",
+            "A term is matched against the text an event carries: log output, an\n\
+             assertion's message and source function, and a test-composer command. The\n\
+             names of an event's JSON fields are not part of the search.\n\n",
             classified_blocks_help!(),
             "\n\nMatching runs server-side. More than one term requires the events-search API,\n\
              which is behind the `runs-search` unstable feature\n\

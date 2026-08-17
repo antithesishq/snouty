@@ -266,11 +266,11 @@ env SNOUTY_UNSTABLE_FEATURES=
 #    stopped matching against `JSON.stringify(ev)` (issue #252).
 mock-runs-server
 snouty runs events $R_run_id --match IPT_bytes_out
-stdout 'No events matched "IPT_bytes_out"\.'
+stderr 'No events matched "IPT_bytes_out"\.'
 mock-runs-server
 env SNOUTY_UNSTABLE_FEATURES=runs-search
 snouty runs events $R_run_id --match IPT_bytes_out
-stdout 'No events matched "IPT_bytes_out"\.'
+stderr 'No events matched "IPT_bytes_out"\.'
 env SNOUTY_UNSTABLE_FEATURES=
 
 # `snouty --json runs events` outputs raw NDJSON.

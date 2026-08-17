@@ -11,7 +11,10 @@
 # line is parsed, and a setting can't be read that early without first parsing
 # --settings/--profile — which would mean parsing the command line twice.
 #
-# Today the only feature is `runs-exec`, which gates `snouty runs exec`.
+# The gate mechanics are exercised through `runs-exec`, which gates
+# `snouty runs exec`; `runs-search` (gating `snouty runs search` and the
+# events-search routing of `snouty runs events`) rides the same machinery,
+# covered in runs.txt.
 
 # 1. With no features set, invoking `runs exec` says what is wrong and how to
 #    fix it. Whoever types the command knows it exists, so the error names the

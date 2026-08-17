@@ -52,6 +52,9 @@ fn generate_api_client(out_dir: &Path) {
     untype_error_responses(&mut spec_value);
     drop_use_otis(&mut spec_value);
     mark_vtime_schema(&mut spec_value);
+    untype_search_count_response(&mut spec_value);
+    unrequire_search_limit_default(&mut spec_value);
+    drop_search_count_only(&mut spec_value);
     let spec: openapiv3::OpenAPI = serde_json::from_value(spec_value).unwrap();
 
     let mut settings = progenitor::GenerationSettings::default();
@@ -146,6 +149,92 @@ fn untype_error_responses(spec: &mut serde_json::Value) {
             responses.retain(|status, _| status.starts_with('2'));
         }
     }
+}
+
+/// Drop the `application/json` variant from the events-search 200 response so
+/// progenitor generates a raw `ByteStream` method for it.
+///
+/// The operation serves two body shapes from one endpoint: an
+/// `application/x-ndjson` event stream, or a single `application/json` count
+/// object when the request sets `count_only`. progenitor types exactly one
+/// 200 body per operation and picks the JSON variant, so the generated
+/// `search()` would hardcode `Accept: application/json`, deserialize every
+/// response as the count object, and give no access to the stream — the
+/// endpoint's primary mode. With only the NDJSON variant left the method
+/// returns the raw byte stream; api.rs decodes the count and validate modes
+/// from that stream by hand.
+fn untype_search_count_response(spec: &mut serde_json::Value) {
+    let content = spec
+        .pointer_mut("/paths/~1api~1v0~1runs~1{run_id}~1events~1search/post/responses/200/content")
+        .and_then(serde_json::Value::as_object_mut)
+        .expect(
+            "openapi spec has no events-search 200 response content; \
+             update untype_search_count_response in build.rs",
+        );
+    assert!(
+        content.remove("application/json").is_some(),
+        "events-search 200 response no longer offers `application/json`; \
+         untype_search_count_response in build.rs is a no-op and can be removed"
+    );
+    assert!(
+        content.contains_key("application/x-ndjson"),
+        "events-search 200 response no longer offers `application/x-ndjson`; \
+         revisit untype_search_count_response in build.rs"
+    );
+}
+
+/// Remove `count_only` from the events-search request schema, so the
+/// generated type has no such field and snouty never sends one.
+///
+/// snouty does not expose the switch: the API team is moving the count into
+/// a separate endpoint, and current tenants ignore it anyway (observed on
+/// releases 58.11 and 60.0-60.1, where the field-carrying request still
+/// streams events). Omitting the field defers to the server default and
+/// keeps the eventual removal free.
+///
+/// The pointer is asserted, so a spec refresh that drops the field fails the
+/// build. ACTION when that happens: delete this transform and its call.
+fn drop_search_count_only(spec: &mut serde_json::Value) {
+    let properties = spec
+        .pointer_mut("/components/schemas/Search_Request/properties")
+        .and_then(serde_json::Value::as_object_mut)
+        .expect(
+            "openapi spec has no Search_Request properties; \
+             update drop_search_count_only in build.rs",
+        );
+    assert!(
+        properties.remove("count_only").is_some(),
+        "Search_Request no longer carries count_only; \
+         drop_search_count_only in build.rs is a no-op and can be removed"
+    );
+}
+
+/// Strip the `default: 50` from `Search_Request.limit`, so the generated
+/// field is an `Option` that is omitted from the request body when unset.
+///
+/// An omitted limit is meaningful to the server: a non-streaming request
+/// falls to the server-side default, and a streaming request stays unbounded.
+/// With the default in the schema, progenitor bakes 50 into the generated
+/// type and serializes it on every request — which would cut an unbounded
+/// `--follow` off at 50 events once the server honors `limit` together with
+/// `is_streaming`.
+///
+/// The pointer is asserted, so a spec refresh that drops the default (the
+/// upstream fix) fails the build. ACTION when that happens: delete this
+/// transform and its call.
+fn unrequire_search_limit_default(spec: &mut serde_json::Value) {
+    let limit = spec
+        .pointer_mut("/components/schemas/Search_Request/properties/limit")
+        .and_then(serde_json::Value::as_object_mut)
+        .expect(
+            "openapi spec has no Search_Request.limit property; \
+             update unrequire_search_limit_default in build.rs",
+        );
+    assert!(
+        limit.remove("default").is_some(),
+        "Search_Request.limit no longer carries a default; \
+         unrequire_search_limit_default in build.rs is a no-op and can be removed"
+    );
 }
 
 /// Tag `Moment.vtime` with a private `format: vtime` marker for the

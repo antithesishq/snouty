@@ -1,3 +1,5 @@
+use std::num::NonZeroU64;
+
 use chrono::{DateTime, Utc};
 use clap::{Args, Parser, Subcommand, ValueEnum};
 
@@ -572,6 +574,80 @@ pub struct DebugArgs {
     pub recipients: Option<String>,
 }
 
+/// `runs search`'s long help. Static text: the `search_long_about` test
+/// keeps it in sync with [`event_set_dsl::VERBS`] (every verb must appear)
+/// and holds every line to 78 columns, since clap prints long_about
+/// verbatim.
+const SEARCH_LONG_ABOUT: &str = r#"Run an event-set DSL query against a run's events.
+
+This command is gated behind the `runs-search` unstable feature, because the
+events-search API does not honor its documented contract yet on current
+tenants. Enable it by setting SNOUTY_UNSTABLE_FEATURES=runs-search. An
+unstable feature can change or go away in any release.
+
+QUERY is a pipeline of dot-separated verbs applied to the run's event stream,
+evaluated left to right; each verb narrows, reshapes, or combines the set of
+events flowing through it.
+
+Verbs:
+  matches({f: "x"})        keep events whose fields equal every given value
+  contains({f: "x"})       keep events whose fields contain every substring
+  not_matches({f: "x"})    drop exact matches
+  excludes({f: "x"})       drop substring matches
+  filter(ev => expr)       keep events where the JS expression is truthy
+  map(ev => expr)          reshape each event (ev.add_fields({...}) adds)
+  flatmap(ev => expr)      map, then flatten the result one level
+  narrow(["f1", "f2"])     keep only the listed fields
+  fold((s, ev) => e, s0)   thread state along each timeline, annotating
+  union(set, ...)          OR this set with others, deduplicated
+  intersect(set, ...)      AND this set with others
+  difference(set)          subtract another event set from this one
+  distinct_by_moment(set)  union, keeping one event per vtime
+  with_last({n: set})      annotate each event with the nearest earlier
+                           event from `set` in its own timeline
+  with_next({n: set})      the same, looking forward
+
+The string verbs (matches/contains/not_matches/excludes) address four fields:
+output_text, container, stream, and source (the emitter's name). Every other
+field is reachable from JS through `ev`, e.g. `ev.moment.vtime`.
+
+Query snippets (each is a complete QUERY, ready to paste):
+
+  # log text contains a substring
+  contains({output_text: "connection refused"})
+
+  # log text matches a regex
+  filter(ev => /timed?.?out/i.test(ev.output_text || ""))
+
+  # a substring anywhere in the raw event JSON
+  filter(ev => JSON.stringify(ev).includes("needle"))
+
+  # one container's stderr
+  matches({container: "etcd0", stream: "error"})
+
+  # errors from everything except a noisy container
+  contains({output_text: "error"}).not_matches({container: "setup"})
+
+  # events in a vtime window
+  filter(ev => ev.moment.vtime > 100 && ev.moment.vtime < 150)
+
+  # one assertion's evaluations, by id, that came up false
+  filter(ev => ev.antithesis_assert?.hit
+    && ev.antithesis_assert.id == "acks are durable"
+    && !ev.antithesis_assert.condition)
+
+  # hit sometimes assertions that evaluated true (also: always, reachability)
+  filter(ev => ev.antithesis_assert?.assert_type == "sometimes"
+    && ev.antithesis_assert.hit && ev.antithesis_assert.condition)
+
+  # each crash annotated with the nearest earlier fault
+  contains({output_text: "fatal"}).with_last({fault: filter(ev => ev.fault)})
+
+Each matching event prints as its JSON, one line per event, with
+`moment.vtime` normalized to an exact number. Feed an event's
+`moment.input_hash` and `moment.vtime` into `runs logs` to see the
+surrounding logs."#;
+
 #[derive(Subcommand)]
 pub enum RunsCommands {
     /// List all runs
@@ -787,8 +863,14 @@ Examples:
     #[command(
         long_about = r#"Search a run's events for one or more substrings (all must match).
 
-Columns: HASH, VTIME, SOURCE ([container:stream]), OUTPUT. Feed a row's HASH
-and VTIME into `runs logs` to see the surrounding logs."#
+Each matching event prints as its JSON, one line per event, with
+`moment.vtime` normalized to an exact number. Feed an event's
+`moment.input_hash` and `moment.vtime` into `runs logs` to see the
+surrounding logs.
+
+Matching runs server-side. More than one term requires the events-search API,
+which is behind the `runs-search` unstable feature
+(SNOUTY_UNSTABLE_FEATURES=runs-search)."#
     )]
     Events {
         /// Run ID
@@ -801,13 +883,51 @@ and VTIME into `runs logs` to see the surrounding logs."#
         /// Maximum number of events the server returns (default 50). Raise it
         /// to make a search more exhaustive. The server enforces the accepted
         /// range.
+        // NonZeroU64 matches the generated request types, so `--limit 0` is
+        // rejected by clap with a plain message instead of surfacing the
+        // request builder's conversion jargon.
         #[arg(short = 'n', long)]
-        limit: Option<usize>,
+        limit: Option<NonZeroU64>,
 
         /// Substrings to match, as a positional alias for `-m` (all must match).
         /// At least one needle (via `-m` or here) is required.
         query: Vec<String>,
     },
+
+    /// Query events with the event-set DSL
+    // Gated behind the `runs-search` feature (see `Feature::RunsSearch`): the
+    // events-search API does not honor its documented contract yet. Same
+    // mechanics as `runs exec` above — `hide` keeps it out of `--help`, and
+    // invoking it while disabled is refused by [`gated_command_error`].
+    #[command(
+        hide = !features::is_enabled(Feature::RunsSearch),
+        long_about = SEARCH_LONG_ABOUT
+    )]
+    Search(RunsSearchArgs),
+}
+
+#[derive(Args)]
+pub struct RunsSearchArgs {
+    /// Run ID
+    pub run_id: String,
+
+    /// Event-set DSL query
+    pub query: String,
+
+    /// Maximum number of events the server returns (default 50). The
+    /// server enforces the accepted range.
+    // NonZeroU64 for the same reason as `runs events --limit`.
+    #[arg(short = 'n', long)]
+    pub limit: Option<NonZeroU64>,
+
+    /// Keep the connection open and print new matches as they arrive
+    /// (the limit still caps the total)
+    #[arg(short = 'f', long)]
+    pub follow: bool,
+
+    /// Check the query's syntax without running it
+    #[arg(long, conflicts_with = "follow")]
+    pub check: bool,
 }
 
 #[derive(Args)]
@@ -863,6 +983,9 @@ pub fn gated_command_error(command: &Commands, enabled: &[Feature]) -> Option<Re
         Commands::Runs {
             command: Some(RunsCommands::Exec { .. }),
         } => (Feature::RunsExec, "snouty runs exec"),
+        Commands::Runs {
+            command: Some(RunsCommands::Search(_)),
+        } => (Feature::RunsSearch, "snouty runs search"),
         _ => return None,
     };
     let (feature, path) = gated;
@@ -931,6 +1054,17 @@ mod tests {
         assert!(gated_command_error(&exec, &[Feature::RunsExec]).is_none());
         // An unrelated feature does not enable it.
         assert!(gated_command_error(&exec, &[Feature::Unknown("other".to_string())]).is_some());
+
+        // `runs search` is gated the same way, behind its own feature.
+        let search = parse(&["snouty", "runs", "search", "RUN", "q"]).command;
+        let err = gated_command_error(&search, &[]).expect("a gated-off command is refused");
+        let rendered = format!("{err:?}");
+        assert!(
+            rendered.contains("SNOUTY_UNSTABLE_FEATURES=runs-search"),
+            "{rendered}"
+        );
+        assert!(gated_command_error(&search, &[Feature::RunsSearch]).is_none());
+        assert!(gated_command_error(&search, &[Feature::RunsExec]).is_some());
 
         // Sibling subcommands are never gated.
         for args in [
@@ -1058,7 +1192,7 @@ mod tests {
 
     // `runs events --limit` is unset unless given (so the parameter is left off
     // the request entirely) and otherwise takes the given value. Range checking
-    // is left to the server, so clap accepts any usize.
+    // beyond the NonZeroU64 floor is left to the server.
     #[test]
     fn events_limit_is_unset_by_default_and_parses() {
         let cli = parse(&["snouty", "runs", "events", "RUN", "-m", "request"]);
@@ -1079,6 +1213,70 @@ mod tests {
         else {
             panic!("expected `runs events`");
         };
-        assert_eq!(limit, Some(999));
+        assert_eq!(limit, NonZeroU64::new(999));
+
+        // The generated request types carry the limit as NonZeroU64, so clap
+        // rejects 0 up front with a plain message.
+        let parsed = Cli::try_parse_from(["snouty", "runs", "events", "RUN", "-n", "0"]);
+        assert!(parsed.is_err(), "expected --limit 0 to be rejected");
+    }
+
+    // `runs search` takes the run id and one raw DSL query positionally; the
+    // mode switches default off and the limit stays unset unless given.
+    #[test]
+    fn search_parses_query_and_defaults() {
+        let cli = parse(&[
+            "snouty",
+            "runs",
+            "search",
+            "RUN",
+            r#"contains({output_text: "raft"})"#,
+        ]);
+        let Commands::Runs {
+            command: Some(RunsCommands::Search(args)),
+        } = cli.command
+        else {
+            panic!("expected `runs search`");
+        };
+        assert_eq!(args.run_id, "RUN");
+        assert_eq!(args.query, r#"contains({output_text: "raft"})"#);
+        assert_eq!(args.limit, None);
+        assert!(!args.follow && !args.check);
+
+        let cli = parse(&["snouty", "runs", "search", "RUN", "q", "-n", "7", "-f"]);
+        let Commands::Runs {
+            command: Some(RunsCommands::Search(args)),
+        } = cli.command
+        else {
+            panic!("expected `runs search`");
+        };
+        assert_eq!(args.limit, NonZeroU64::new(7));
+        assert!(args.follow);
+    }
+
+    // The two mode switches pick different response modes, so clap rejects
+    // the pairing rather than letting the server precedence rules silently
+    // ignore one of them.
+    #[test]
+    fn search_mode_switches_conflict() {
+        let parsed = Cli::try_parse_from([
+            "snouty", "runs", "search", "RUN", "q", "--check", "--follow",
+        ]);
+        assert!(parsed.is_err(), "expected --check --follow to conflict");
+    }
+
+    // The help is built at runtime so the verb list has one home
+    // ([`event_set_dsl::VERBS`]); it must name every verb and stay wrapped —
+    // clap prints long_about verbatim, so an over-long line would stick out
+    // of the ~78-column help text.
+    #[test]
+    fn search_long_about_names_every_verb_and_wraps() {
+        let about = SEARCH_LONG_ABOUT;
+        for verb in crate::event_set_dsl::VERBS {
+            assert!(about.contains(verb), "missing verb {verb}");
+        }
+        for line in about.lines() {
+            assert!(line.len() <= 78, "over-long help line: {line}");
+        }
     }
 }

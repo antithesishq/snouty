@@ -1,6 +1,5 @@
-use std::fmt::{self, Display, Formatter};
 use std::io::{BufWriter, IsTerminal, Read, Write};
-use std::path::Path;
+use std::num::NonZeroU64;
 use std::sync::OnceLock;
 use std::time::Duration;
 
@@ -18,14 +17,20 @@ use chrono::{DateTime, Local, Utc};
 
 use crate::api::{
     AntithesisApi, Event, EventProperty, LogsBegin, Moment, NonEventProperty, Property,
-    PropertyStatus, RunDetail, RunStatus, RunSummary, RunsFilterOptions,
+    PropertyStatus, RunDetail, RunStatus, RunSummary, RunsFilterOptions, SEARCH_DEFAULT_LIMIT,
+    SearchMode,
 };
-use crate::cli::{RunsCommands, RunsListArgs};
+use crate::cli::{RunsCommands, RunsListArgs, RunsSearchArgs};
 use crate::error::{api_error_status, user_error};
+use crate::event_set_dsl;
+use crate::features::{self, Feature};
+use crate::jsonl::JsonStream;
 use crate::render::{OutputOptions, render_kv, sanitize, sanitize_multiline, wrap_text};
 use crate::settings::Settings;
 use crate::time::HumanDuration;
 use crate::vtime::VTime;
+
+mod event_search;
 
 /// `print!`/`println!`, but routed through `write!`/`writeln!` to stdout so a
 /// closed pipe (e.g. `snouty runs list | head`) surfaces as an `io::Error` the
@@ -190,6 +195,7 @@ pub async fn cmd_runs(
             matches.extend(query);
             cmd_runs_events(&run_id, &matches, limit, settings, output).await
         }
+        Some(RunsCommands::Search(args)) => cmd_runs_search(args, settings, output).await,
     }
 }
 
@@ -1377,36 +1383,33 @@ async fn cmd_runs_build_logs(
 
     let api = AntithesisApi::new(settings, verbose)?;
     let stream = match api.get_run_build_logs(run_id).await {
-        Ok(stream) => stream.into_inner(),
+        Ok(stream) => stream,
         Err(err) => return Err(explain_run_scoped_error(&api, run_id, err).await),
     };
     let mut stdout = BufWriter::new(std::io::stdout().lock());
 
     let mut wrote_any = false;
-    let result = if json {
-        // The --json contract is raw NDJSON passthrough.
-        stream_raw_lines(stream, |line| {
-            wrote_any = true;
-            writeln!(stdout, "{line}")?;
-            Ok(())
-        })
-        .await
-    } else {
-        stream_ndjson_lines(stream, |line| {
-            wrote_any = true;
-            match line {
-                NdjsonLine::Entry(entry) => {
-                    let ts = format_local_str(entry["timestamp"].as_str().unwrap_or(""));
-                    let stream = entry["stream"].as_str().unwrap_or("out");
-                    let text = sanitize(entry["text"].as_str().unwrap_or(""));
-                    writeln!(stdout, "{ts} [{stream}] {text}")?;
-                }
-                NdjsonLine::Raw(line) => writeln!(stdout, "{line}")?,
+    let result: Result<()> = async {
+        if json {
+            // The --json contract is raw passthrough.
+            let mut lines = raw_lines(stream, ErrorRows::Abort);
+            while let Some(line) = lines.try_next().await? {
+                wrote_any = true;
+                writeln!(stdout, "{line}")?;
             }
-            Ok(())
-        })
-        .await
-    };
+        } else {
+            let mut lines = event_lines(stream, ErrorRows::Abort);
+            while let Some(entry) = lines.try_next().await? {
+                wrote_any = true;
+                let ts = format_local_str(entry["timestamp"].as_str().unwrap_or(""));
+                let stream = entry["stream"].as_str().unwrap_or("out");
+                let text = sanitize(entry["text"].as_str().unwrap_or(""));
+                writeln!(stdout, "{ts} [{stream}] {text}")?;
+            }
+        }
+        Ok(())
+    }
+    .await;
 
     stdout.flush()?;
     note_if_empty(
@@ -1418,36 +1421,55 @@ async fn cmd_runs_build_logs(
     result
 }
 
-/// The text `runs events` searches a single NDJSON line against, built from the
-/// already-rendered event. We match the DECODED content the user actually sees
-/// in the table (input_hash, vtime, source, output), not the raw JSON-escaped
-/// line — so a needle containing quotes/backslashes copied from the OUTPUT
-/// column matches.
-///
-/// Client-side substring matching is the only filtering `runs events` does.
-/// Structural filters (source/stream/vtime) are intentionally unsupported: the
-/// server streams only a capped subset of matching events, so filtering it
-/// client-side would silently apply to that subset rather than to all of the
-/// run's events.
-fn event_haystack(rendered: &RenderedEventEntry) -> String {
-    format!(
-        "{} {} {} {}",
-        rendered.input_hash, rendered.vtime, rendered.source, rendered.output
-    )
-}
+async fn cmd_runs_search(
+    args: RunsSearchArgs,
+    settings: &Settings,
+    OutputOptions { json, verbose }: OutputOptions,
+) -> Result<()> {
+    debug!("querying events for run: {}", args.run_id);
 
-/// True when every needle (already lowercased) appears in `haystack`. Both sides
-/// are compared with Unicode `to_lowercase` so case-insensitivity holds for
-/// non-ASCII text the OUTPUT column may contain.
-fn haystack_matches_all_needles(haystack: &str, lowered_needles: &[String]) -> bool {
-    let haystack_lower = haystack.to_lowercase();
-    lowered_needles.iter().all(|n| haystack_lower.contains(n))
+    let api = AntithesisApi::new(settings, verbose)?;
+    if args.check {
+        return event_search::check_query(&api, &args.run_id, &args.query, json).await;
+    }
+    let mode = SearchMode::Query {
+        stream: args.follow,
+        limit: args.limit,
+    };
+    let stream = match api
+        .search_run_events_query(&args.run_id, &args.query, mode)
+        .await
+    {
+        Ok(stream) => stream,
+        Err(err) => return Err(event_search::explain_search_error(&args.run_id, err)),
+    };
+    // The server is supposed to end the stream at the limit the request
+    // names, but current releases ignore it (observed on 58.11 through
+    // 60.1), so the cap is enforced client-side: the caller's limit, or the
+    // server default for a request that named none. The one uncapped shape
+    // is `--follow` without an explicit limit — unbounded by design, and
+    // the request carries no limit at all.
+    let cap = match (args.follow, args.limit) {
+        (true, None) => None,
+        (_, limit) => Some(limit.unwrap_or(SEARCH_DEFAULT_LIMIT)),
+    };
+    // A user-written DSL pipeline can reshape rows into any object,
+    // `{"error": ...}` included, so this stream must not guess that such a
+    // row is the server's Stream_Error signal.
+    event_search::print_event_stream(
+        stream,
+        cap,
+        ErrorRows::Data,
+        json,
+        "No events matched the query.",
+    )
+    .await
 }
 
 async fn cmd_runs_events(
     run_id: &str,
     matches: &[String],
-    limit: Option<usize>,
+    limit: Option<NonZeroU64>,
     settings: &Settings,
     OutputOptions { json, verbose }: OutputOptions,
 ) -> Result<()> {
@@ -1457,137 +1479,47 @@ async fn cmd_runs_events(
         return Err(user_error("no search term given")
             .suggestion("pass at least one needle via `-m/--match` or as a positional argument"));
     }
-    // An empty needle matches every line (`contains("")` is always true), which
-    // would silently disable filtering, so reject it rather than dump the whole
-    // stream as if no filter were given.
+    // An empty needle matches every event (`contains("")` is always true on
+    // either backend), which would silently disable filtering, so reject it
+    // rather than dump the whole stream as if no filter were given.
     if matches.iter().any(|m| m.is_empty()) {
         return Err(user_error("empty search term")
             .suggestion("each `-m/--match` needle must be a non-empty substring"));
     }
 
-    // The server endpoint takes a single `q` substring and streams only a capped
-    // subset of matching events. Send the LONGEST needle (a crude selectivity
-    // proxy) so the cap is most likely to retain rare matches; any additional
-    // needles are AND-filtered client-side over that capped server subset.
-    let server_query = matches
-        .iter()
-        .max_by_key(|m| m.chars().count())
-        .cloned()
-        .unwrap_or_default();
-
-    // With more than one needle only `server_query` is filtered server-side, and
-    // the server caps how many events it returns; the remaining needles filter
-    // that capped subset locally. A true match the cap evicted would otherwise
-    // vanish silently, so make the limitation visible.
-    if matches.len() > 1 {
-        eprintln!(
-            "Note: only \"{server_query}\" is matched on the server (which returns a capped \
-             subset of events); the other terms filter that subset locally, so some matching \
-             events may not appear. Search a single, more specific term to be exhaustive, or \
-             raise the cap with --limit."
-        );
-    }
-
     let api = AntithesisApi::new(settings, verbose)?;
-    let stream = match api.search_run_events(run_id, &server_query, limit).await {
-        Ok(stream) => stream.into_inner(),
-        Err(err) => return Err(explain_run_scoped_error(&api, run_id, err).await),
-    };
-
-    let lowered_matches: Vec<String> = matches.iter().map(|m| m.to_lowercase()).collect();
-
-    let mut stdout = BufWriter::new(std::io::stdout().lock());
-
-    // Matching runs against the DECODED fields (see `event_haystack`) so it
-    // agrees with what the table shows; a raw line matches on its text.
-    if json {
-        let result = stream_ndjson_lines(stream, |line| {
-            match line {
-                NdjsonLine::Entry(entry) => {
-                    let haystack = event_haystack(&render_event_entry(&entry));
-                    if haystack_matches_all_needles(&haystack, &lowered_matches) {
-                        writeln!(stdout, "{entry}")?;
-                    }
-                }
-                NdjsonLine::Raw(line) => {
-                    if haystack_matches_all_needles(line, &lowered_matches) {
-                        writeln!(stdout, "{line}")?;
-                    }
-                }
-            }
-            Ok(())
-        })
-        .await;
-        stdout.flush()?;
-        return result;
-    }
-
-    // Human table: the event stream is small (the server already substring-
-    // filters), so buffer the matching rows and size the HASH/VTIME/SOURCE
-    // columns to the actual content rather than guessing fixed widths. A raw
-    // line surfaces sanitized in the OUTPUT column rather than being dropped.
-    let mut rows: Vec<Vec<String>> = Vec::new();
-    let result = stream_ndjson_lines(stream, |line| {
-        let (haystack, row) = match line {
-            NdjsonLine::Entry(entry) => {
-                let rendered = render_event_entry(&entry);
-                let haystack = event_haystack(&rendered);
-                let row = vec![
-                    rendered.input_hash,
-                    rendered.vtime,
-                    rendered.source,
-                    rendered.output,
-                ];
-                (haystack, row)
-            }
-            NdjsonLine::Raw(line) => (
-                line.to_string(),
-                vec![String::new(), String::new(), String::new(), sanitize(line)],
-            ),
+    let (stream, cap) = if features::is_enabled(Feature::RunsSearch) {
+        let query = event_set_dsl::substring_filter(matches);
+        let mode = SearchMode::Query {
+            stream: false,
+            limit,
         };
-        if !haystack_matches_all_needles(&haystack, &lowered_matches) {
-            return Ok(());
-        }
-        rows.push(row);
-        Ok(())
-    })
-    .await;
-
-    // A mid-stream error must not discard rows we already buffered: render them
-    // first, then propagate the error. The clean-empty "No events matched"
-    // message is only for a successful stream that yielded nothing.
-    if rows.is_empty() {
-        result?;
-        let query = matches.join(" ");
-        writeln!(stdout, "No events matched \"{query}\".")?;
-        stdout.flush()?;
-        return Ok(());
-    }
-
-    // Auto-width HASH/VTIME/SOURCE columns; OUTPUT is the final column, windowed
-    // around the matched needle so the hit stays visible on a narrow terminal. On
-    // a non-tty `terminal_width()` is `usize::MAX`, so piped output isn't truncated.
-    let headers = [
-        "HASH".to_string(),
-        "VTIME".to_string(),
-        "SOURCE".to_string(),
-        "OUTPUT".to_string(),
-    ];
-    let table = render_columns(
-        &headers,
-        &rows,
-        LastColumn::TruncateAround {
-            total_width: terminal_width(),
-            needles: matches.to_vec(),
-        },
-        &left_aligned(headers.len()),
-    );
-    writeln!(stdout, "{table}")?;
-    stdout.flush()?;
-
-    // Now that buffered rows are rendered, surface any mid-stream error.
-    result?;
-    Ok(())
+        let stream = match api.search_run_events_query(run_id, &query, mode).await {
+            Ok(stream) => stream,
+            Err(err) => return Err(event_search::explain_search_error(run_id, err)),
+        };
+        // The search backend ignores the limit (see `cmd_runs_search`);
+        // enforce it client-side.
+        (stream, Some(limit.unwrap_or(SEARCH_DEFAULT_LIMIT)))
+    } else {
+        let [needle] = matches else {
+            return Err(event_search::multi_needle_error());
+        };
+        let stream = match api.search_run_events(run_id, needle, limit).await {
+            Ok(stream) => stream,
+            Err(err) => return Err(explain_run_scoped_error(&api, run_id, err).await),
+        };
+        // The GET endpoint enforces `limit` server-side — no cap to add.
+        (stream, None)
+    };
+    event_search::print_event_stream(
+        stream,
+        cap,
+        ErrorRows::Abort,
+        json,
+        &format!("No events matched \"{}\".", matches.join(" ")),
+    )
+    .await
 }
 
 async fn cmd_runs_logs(
@@ -1604,48 +1536,39 @@ async fn cmd_runs_logs(
 
     let api = AntithesisApi::new(settings, verbose)?;
     let stream = match api.get_run_logs(run_id, moment, begin).await {
-        Ok(stream) => stream.into_inner(),
+        Ok(stream) => stream,
         Err(err) => return Err(explain_logs_error(&api, run_id, err).await),
     };
 
     let mut stdout = BufWriter::new(std::io::stdout().lock());
     let mut wrote_any = false;
-    let result = if json {
-        // Fault annotation is the default; `--raw` opts out into a verbatim
-        // NDJSON passthrough.
-        if raw {
-            stream_raw_lines(stream, |line| {
+    let result: Result<()> = async {
+        if json && raw {
+            // Verbatim passthrough: no fault annotation, no normalization.
+            let mut lines = raw_lines(stream, ErrorRows::Abort);
+            while let Some(line) = lines.try_next().await? {
                 wrote_any = true;
                 writeln!(stdout, "{line}")?;
-                Ok(())
-            })
-            .await
-        } else {
-            let mut annotator = FaultAnnotator::default();
-            stream_ndjson_lines(stream, |line| {
-                wrote_any = true;
-                match line {
-                    NdjsonLine::Entry(mut entry) => {
-                        annotator.annotate(&mut entry);
-                        writeln!(stdout, "{entry}")?;
-                    }
-                    NdjsonLine::Raw(line) => writeln!(stdout, "{line}")?,
-                }
-                Ok(())
-            })
-            .await
-        }
-    } else {
-        stream_ndjson_lines(stream, |line| {
-            wrote_any = true;
-            match line {
-                NdjsonLine::Entry(entry) => writeln!(stdout, "{}", format_log_entry(&entry, raw))?,
-                NdjsonLine::Raw(line) => writeln!(stdout, "{line}")?,
             }
-            Ok(())
-        })
-        .await
-    };
+        } else if json {
+            // Fault annotation is the default.
+            let mut annotator = FaultAnnotator::default();
+            let mut lines = event_lines(stream, ErrorRows::Abort);
+            while let Some(mut entry) = lines.try_next().await? {
+                wrote_any = true;
+                annotator.annotate(&mut entry);
+                writeln!(stdout, "{entry}")?;
+            }
+        } else {
+            let mut lines = event_lines(stream, ErrorRows::Abort);
+            while let Some(entry) = lines.try_next().await? {
+                wrote_any = true;
+                writeln!(stdout, "{}", format_log_entry(&entry, raw))?;
+            }
+        }
+        Ok(())
+    }
+    .await;
     stdout.flush()?;
     // A moment with no logs (e.g. a manually-supplied 0/0 placeholder) yields an
     // empty stream; say so in human mode rather than printing nothing.
@@ -1816,7 +1739,7 @@ async fn cmd_runs_exec(
     debug!("executing command in run: {}", run_id);
     let api = AntithesisApi::new(settings, verbose)?;
     let stream = match api.execute_command(run_id, moment, script, timeout).await {
-        Ok(stream) => stream.into_inner(),
+        Ok(stream) => stream,
         // Translate a bad run id's 404 into the shared "run not found"
         // message every sibling run-scoped command reports (the endpoint's
         // own 404 body is an unhelpful "Resource not found").
@@ -1828,42 +1751,34 @@ async fn cmd_runs_exec(
     // `timed_out` decide the command's outcome, so they are acted on only
     // once the stream is known to have completed.
     let mut terminal: Option<ExecEvent> = None;
-    let result = stream_ndjson_lines(stream, |line| {
-        match line {
-            NdjsonLine::Entry(mut entry) => {
-                // classify_line normalized `moment.vtime`; the exited event
-                // carries its moment under `end_moment` instead.
-                normalize_vtime_field(&mut entry, "end_moment");
-                let frame = ExecFrame::deserialize(&entry).map_err(|err| {
-                    eyre!("could not decode a line of the command's output: {err}")
-                        .note("every JSON object decodes, so this means the decoder itself failed")
-                })?;
+    let result: Result<()> = async {
+        let mut lines = event_lines(stream, ErrorRows::Abort);
+        while let Some(mut entry) = lines.try_next().await? {
+            // The stream normalized `moment.vtime`; the exited event carries
+            // its moment under `end_moment` instead.
+            normalize_vtime_field(&mut entry, "end_moment");
+            let frame = ExecFrame::deserialize(&entry).map_err(|err| {
+                eyre!("could not decode a line of the command's output: {err}")
+                    .note("every JSON object decodes, so this means the decoder itself failed")
+            })?;
 
-                if json {
-                    outln!("{entry}")?;
-                } else {
-                    render_exec_frame(&frame)?;
-                }
-
-                // Either mode: the terminal event decides the exit status, and
-                // is acted on once the stream is known to have completed.
-                if let ExecFrame::Known(
-                    event @ (ExecEvent::Exited { .. } | ExecEvent::TimedOut { .. }),
-                ) = frame
-                {
-                    terminal = Some(event);
-                }
+            if json {
+                outln!("{entry}")?;
+            } else {
+                render_exec_frame(&frame)?;
             }
-            NdjsonLine::Raw(line) => {
-                if json {
-                    outln!("{line}")?;
-                } else {
-                    eprintln!("{line}");
-                }
+
+            // Either mode: the terminal event decides the exit status, and
+            // is acted on once the stream is known to have completed.
+            if let ExecFrame::Known(
+                event @ (ExecEvent::Exited { .. } | ExecEvent::TimedOut { .. }),
+            ) = frame
+            {
+                terminal = Some(event);
             }
         }
         Ok(())
-    })
+    }
     .await;
     result?;
 
@@ -2053,30 +1968,6 @@ fn strip_log_envelope(entry: &Value) -> String {
     }
 }
 
-/// One line of an NDJSON stream, classified once at the stream boundary.
-enum NdjsonLine<'a> {
-    /// The happy case: the line parsed as a JSON *object* — the shape every
-    /// log/event record has — with `moment.vtime` already normalized to an
-    /// exact JSON number.
-    Entry(Value),
-    /// Everything else: a line that isn't valid JSON (a truncated final
-    /// chunk, a proxy-injected error blob, …) or valid JSON that isn't an
-    /// object. Carries the original text so callers surface it verbatim
-    /// rather than dropping it silently.
-    Raw(&'a str),
-}
-
-/// Classify one NDJSON line: see [`NdjsonLine`].
-fn classify_line(line: &str) -> NdjsonLine<'_> {
-    if let Ok(mut entry) = serde_json::from_str::<Value>(line)
-        && entry.is_object()
-    {
-        normalize_vtime_field(&mut entry, "moment");
-        return NdjsonLine::Entry(entry);
-    }
-    NdjsonLine::Raw(line)
-}
-
 /// Extract the message from a `Stream_Error` record, the shape every
 /// streaming endpoint (logs, events, build logs) uses to report a
 /// server-side failure that happens after the `200 OK` is already committed:
@@ -2100,16 +1991,17 @@ fn stream_error_message(entry: &Value) -> Option<&str> {
     obj.get("error")?.as_str()
 }
 
-/// [`stream_error_message`] for an undecoded line, used where no parsed
-/// record exists (the raw-passthrough path and tests).
-fn parse_stream_error(line: &str) -> Option<String> {
-    // Cheap pre-filter: skip JSON parsing for the vast majority of lines,
-    // which don't even contain the key's text.
-    if !line.contains(r#""error""#) {
-        return None;
-    }
-    let value: Value = serde_json::from_str(line).ok()?;
-    Some(stream_error_message(&value)?.to_string())
+/// What a `{"error": "..."}` line without a data envelope means for a
+/// stream. Every fixed-schema stream (logs, build logs, events) aborts on
+/// one: it is the server's out-of-band failure signal
+/// ([`stream_error_message`]). A user-written event-set pipeline is the
+/// exception — map/narrow/fold can legitimately reshape a result row into
+/// exactly that shape (`map(ev => ({error: ev.output_text}))`), so a DSL
+/// query's stream passes such rows through as data rather than guessing.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum ErrorRows {
+    Abort,
+    Data,
 }
 
 /// The failure a `Stream_Error` line becomes.
@@ -2118,92 +2010,46 @@ fn mid_stream_error(message: &str) -> color_eyre::eyre::Report {
         .note("output produced before the error may be incomplete")
 }
 
-/// Stream an NDJSON response, handing each line to the callback parsed and
-/// normalized (see [`NdjsonLine`]) — except a `Stream_Error` record
-/// ([`stream_error_message`]), which becomes the command's failure instead of
-/// reaching the callback. Commands whose contract is *raw* passthrough
-/// (`runs logs --json --raw`, `runs build-logs --json`) use
-/// [`stream_raw_lines`] instead — parsing is not their happy case.
-async fn stream_ndjson_lines<S, C>(
-    stream: S,
-    mut process_line: impl FnMut(NdjsonLine<'_>) -> Result<()>,
-) -> Result<()>
-where
-    S: futures_util::Stream<Item = reqwest::Result<C>> + Unpin,
-    C: AsRef<[u8]>,
-{
-    split_stream_lines(stream, |line| {
-        let classified = classify_line(line);
-        if let NdjsonLine::Entry(entry) = &classified
-            && let Some(message) = stream_error_message(entry)
+/// Event lines ready to consume: the `Stream_Error` policy applied and
+/// `moment.vtime` normalized to an exact JSON number. Commands whose
+/// contract is *raw* output use [`raw_lines`] instead — normalization is not
+/// their happy case.
+fn event_lines(
+    stream: JsonStream,
+    error_rows: ErrorRows,
+) -> impl futures_util::Stream<Item = Result<Value>> + Unpin {
+    use futures_util::StreamExt;
+    stream.map(move |line| {
+        let mut value = line?;
+        if error_rows == ErrorRows::Abort
+            && let Some(message) = stream_error_message(&value)
         {
             return Err(mid_stream_error(message));
         }
-        process_line(classified)
+        normalize_vtime_field(&mut value, "moment");
+        Ok(value)
     })
-    .await
 }
 
-/// Stream an NDJSON response, handing each line to the callback verbatim —
-/// except a `Stream_Error` line ([`stream_error_message`]), which becomes the
-/// command's failure instead of reaching the callback: it is the server
-/// aborting the stream, so even the raw-passthrough modes must not present it
-/// (and whatever follows it never arrives) as data. Detecting it is the one
-/// reason each line takes a decode pass here.
-async fn stream_raw_lines<S, C>(
-    stream: S,
-    mut process_line: impl FnMut(&str) -> Result<()>,
-) -> Result<()>
-where
-    S: futures_util::Stream<Item = reqwest::Result<C>> + Unpin,
-    C: AsRef<[u8]>,
-{
-    split_stream_lines(stream, |line| {
-        if let Some(message) = parse_stream_error(line) {
-            return Err(mid_stream_error(&message));
-        }
-        process_line(line)
-    })
-    .await
-}
-
-/// Split a byte stream into newline-delimited lines and hand each to the
-/// callback. Pure line splitting, no JSON awareness — the NDJSON wrappers
-/// above layer decoding and `Stream_Error` detection on top.
-async fn split_stream_lines<S, C>(
-    mut stream: S,
-    mut handle_line: impl FnMut(&str) -> Result<()>,
-) -> Result<()>
-where
-    S: futures_util::Stream<Item = reqwest::Result<C>> + Unpin,
-    C: AsRef<[u8]>,
-{
+/// Raw lines: each parsed value serialized back out unmodified (no vtime
+/// normalization — serde_json's `float_roundtrip` keeps the round-trip
+/// faithful). A `Stream_Error` record still fails the command per
+/// `error_rows`: it is the server aborting the stream, so even raw modes
+/// must not present it (and whatever follows it never arrives) as data.
+fn raw_lines(
+    stream: JsonStream,
+    error_rows: ErrorRows,
+) -> impl futures_util::Stream<Item = Result<String>> + Unpin {
     use futures_util::StreamExt;
-
-    let mut buf: Vec<u8> = Vec::new();
-
-    while let Some(chunk) = stream.next().await {
-        let chunk = chunk?;
-        buf.extend_from_slice(chunk.as_ref());
-
-        while let Some(pos) = buf.iter().position(|&b| b == b'\n') {
-            let line_bytes = &buf[..pos];
-            if !line_bytes.is_empty() {
-                let line = std::str::from_utf8(line_bytes)
-                    .map_err(|e| eyre!("invalid UTF-8 in response stream: {e}"))?;
-                handle_line(line)?;
-            }
-            buf.drain(..=pos);
+    stream.map(move |line| {
+        let value = line?;
+        if error_rows == ErrorRows::Abort
+            && let Some(message) = stream_error_message(&value)
+        {
+            return Err(mid_stream_error(message));
         }
-    }
-
-    if !buf.is_empty() {
-        let line = std::str::from_utf8(&buf)
-            .map_err(|e| eyre!("invalid UTF-8 in response stream: {e}"))?;
-        handle_line(line)?;
-    }
-
-    Ok(())
+        Ok(value.to_string())
+    })
 }
 
 struct FaultAnnotator {
@@ -2318,14 +2164,6 @@ impl FaultAnnotator {
 
         entry["active_faults"] = self.active_faults.clone();
     }
-}
-
-#[derive(Debug, PartialEq, Eq)]
-struct RenderedEventEntry {
-    input_hash: String,
-    vtime: String,
-    source: String,
-    output: String,
 }
 
 fn ansi_re() -> &'static Regex {
@@ -2539,309 +2377,6 @@ fn merge_fault_windows(
     }
 }
 
-#[derive(Debug, Deserialize)]
-struct AssertionPayload {
-    hit: Option<bool>,
-    condition: Option<bool>,
-    #[serde(default)]
-    must_hit: bool,
-    message: Option<String>,
-    assert_type: Option<String>,
-    display_type: Option<String>,
-    #[serde(default)]
-    location: Option<AssertionLocation>,
-}
-
-#[derive(Debug, Deserialize)]
-struct AssertionLocation {
-    file: Option<String>,
-    function: Option<String>,
-    begin_line: Option<serde_json::Number>,
-}
-
-#[derive(Debug, PartialEq, Eq)]
-struct AssertionSummary {
-    label: String,
-    status: AssertionStatus,
-    message: String,
-    must_hit: bool,
-    location: Option<String>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum AssertionStatus {
-    Pass,
-    Fail,
-    Unhit,
-}
-
-impl Display for AssertionStatus {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        f.write_str(match self {
-            Self::Pass => "PASS",
-            Self::Fail => "FAIL",
-            Self::Unhit => "UNHIT",
-        })
-    }
-}
-
-impl TryFrom<AssertionPayload> for AssertionSummary {
-    type Error = ();
-
-    fn try_from(payload: AssertionPayload) -> std::result::Result<Self, Self::Error> {
-        let hit = payload.hit.ok_or(())?;
-        let condition = payload.condition.ok_or(())?;
-        let message = payload
-            .message
-            .map(|message| message.trim().to_string())
-            .filter(|message| !message.is_empty())
-            .ok_or(())?;
-        let label = payload
-            .display_type
-            .map(|label| label.trim().to_string())
-            .filter(|label| !label.is_empty())
-            .or_else(|| {
-                payload
-                    .assert_type
-                    .map(|label| label.trim().to_string())
-                    .filter(|label| !label.is_empty())
-            })
-            .ok_or(())?;
-
-        let status = if !hit {
-            AssertionStatus::Unhit
-        } else if condition {
-            AssertionStatus::Pass
-        } else {
-            AssertionStatus::Fail
-        };
-
-        Ok(Self {
-            label,
-            status,
-            message,
-            must_hit: payload.must_hit,
-            location: payload.location.and_then(render_assertion_location),
-        })
-    }
-}
-
-fn render_event_entry(entry: &Value) -> RenderedEventEntry {
-    let input_hash = entry["moment"]["input_hash"]
-        .as_str()
-        .unwrap_or("")
-        .to_string();
-    // The stream normalizes vtime to a JSON number; VTime's Display prints
-    // the same text the server sent, so the column stays copy-paste exact.
-    let vtime = VTime::from_json(&entry["moment"]["vtime"])
-        .map(|v| v.to_string())
-        .unwrap_or_default();
-    let container = entry["source"]["container"].as_str().unwrap_or("");
-    let name = entry["source"]["name"].as_str().unwrap_or("");
-    let stream = entry["source"]["stream"].as_str().unwrap_or("");
-
-    // Trim the OUTPUT cell: container log lines often carry leading indentation
-    // (e.g. `    GORACE: …`) that would ragged-align the column against neighbours.
-    if let Some(summary) = parse_assertion_summary(entry) {
-        return RenderedEventEntry {
-            input_hash,
-            vtime,
-            source: render_source(container, name, Some("assert")),
-            output: render_assertion_summary(&summary).trim().to_string(),
-        };
-    }
-
-    RenderedEventEntry {
-        input_hash,
-        vtime,
-        source: render_source(container, name, (!stream.is_empty()).then_some(stream)),
-        output: render_event_output(entry).trim().to_string(),
-    }
-}
-
-fn render_event_output(entry: &Value) -> String {
-    if let Some(rendered) = render_known_event(entry) {
-        return rendered;
-    }
-    if let Some(output_text) = entry.get("output_text").and_then(Value::as_str) {
-        // Strip ANSI color codes before escaping controls so colorized container
-        // output shows the plain text, not visible `\x1B[…` escape noise.
-        return normalize_terminal_text(output_text);
-    }
-    sanitize(&serde_json::to_string(entry).unwrap_or_default())
-}
-
-struct EventKind {
-    source_name: &'static str,
-    fields: &'static [&'static str],
-}
-
-const EVENT_KINDS: &[EventKind] = &[
-    EventKind {
-        source_name: "antithesis_test_composer",
-        fields: &[
-            "task_status",
-            "command",
-            "container_id",
-            "command_return_code",
-            "command_runtime",
-            "additional_stderr",
-            "added_task",
-            "got_pid_back",
-            "tasks_len",
-            "weight",
-            "weight_type",
-        ],
-    },
-    EventKind {
-        source_name: "fault_injector",
-        fields: &[
-            "fault.name",
-            "fault.type",
-            "fault.details.disruption_type",
-            "fault.affected_nodes",
-            "fault.max_duration",
-        ],
-    },
-];
-
-fn render_known_event(entry: &Value) -> Option<String> {
-    let source_name = entry["source"]["name"].as_str()?;
-    let kind = EVENT_KINDS
-        .iter()
-        .find(|kind| kind.source_name == source_name)?;
-
-    let parts: Vec<String> = kind
-        .fields
-        .iter()
-        .filter_map(|path| {
-            let value = lookup_path(entry, path)?;
-            let rendered = format_event_value(value)?;
-            Some(format!("{path}={rendered}"))
-        })
-        .collect();
-
-    (!parts.is_empty()).then(|| parts.join(" "))
-}
-
-fn lookup_path<'a>(entry: &'a Value, path: &str) -> Option<&'a Value> {
-    path.split('.')
-        .try_fold(entry, |current, segment| current.get(segment))
-}
-
-fn format_event_value(value: &Value) -> Option<String> {
-    match value {
-        Value::Null => None,
-        Value::Bool(b) => Some(b.to_string()),
-        Value::Number(n) => Some(n.to_string()),
-        Value::String(s) if s.is_empty() => None,
-        Value::String(s) => Some(sanitize(s)),
-        Value::Array(items) => {
-            let scalars: Option<Vec<String>> = items
-                .iter()
-                .map(|item| match item {
-                    Value::Null => Some(String::new()),
-                    Value::Bool(b) => Some(b.to_string()),
-                    Value::Number(n) => Some(n.to_string()),
-                    Value::String(s) => Some(s.clone()),
-                    _ => None,
-                })
-                .collect();
-            let scalars = scalars?;
-            if scalars.is_empty() {
-                return None;
-            }
-            Some(sanitize(&scalars.join(",")))
-        }
-        Value::Object(_) => None,
-    }
-}
-
-fn parse_assertion_summary(entry: &Value) -> Option<AssertionSummary> {
-    let assertion = entry.get("antithesis_assert")?;
-    let payload = AssertionPayload::deserialize(assertion).ok()?;
-    AssertionSummary::try_from(payload).ok()
-}
-
-fn render_source(container: &str, name: &str, stream: Option<&str>) -> String {
-    let label = if !container.trim().is_empty() {
-        sanitize(container)
-    } else {
-        sanitize(name.trim().strip_prefix("antithesis_").unwrap_or(name))
-    };
-    let stream = stream.map(sanitize).filter(|stream| !stream.is_empty());
-
-    match (label.is_empty(), stream) {
-        (false, Some(stream)) => format!("[{label}:{stream}]"),
-        (false, None) => format!("[{label}]"),
-        (true, Some(stream)) => format!("[{stream}]"),
-        (true, None) => "[]".to_string(),
-    }
-}
-
-fn render_assertion_summary(summary: &AssertionSummary) -> String {
-    let mut output = format!(
-        "{} {} \"{}\"",
-        summary.status,
-        sanitize(&summary.label),
-        sanitize(&summary.message),
-    );
-
-    if summary.must_hit {
-        output.push_str(" must-hit");
-    }
-
-    if let Some(location) = &summary.location {
-        output.push_str(" @ ");
-        output.push_str(location);
-    }
-
-    output
-}
-
-fn render_assertion_location(location: AssertionLocation) -> Option<String> {
-    let file = location.file.as_deref().and_then(file_basename);
-    let function = location
-        .function
-        .as_deref()
-        .map(str::trim)
-        .filter(|function| !function.is_empty())
-        .map(sanitize);
-    let line = location.begin_line.map(|line| line.to_string());
-
-    let mut rendered = String::new();
-
-    if let Some(file) = file {
-        rendered.push_str(&sanitize(file));
-    }
-    if let Some(function) = function {
-        if !rendered.is_empty() {
-            rendered.push(':');
-        }
-        rendered.push_str(&function);
-    }
-    if let Some(line) = line {
-        if !rendered.is_empty() {
-            rendered.push(':');
-        }
-        rendered.push_str(&line);
-    }
-
-    (!rendered.is_empty()).then_some(rendered)
-}
-
-fn file_basename(file: &str) -> Option<&str> {
-    let trimmed = file.trim();
-    if trimmed.is_empty() {
-        return None;
-    }
-
-    Path::new(trimmed)
-        .file_name()
-        .and_then(|name| name.to_str())
-        .or(Some(trimmed))
-}
-
 /// How the final column of a table is laid out once the leading columns have
 /// been sized to their widest cell. The leading columns are always padded to
 /// their widest cell; only the final column's policy varies.
@@ -2856,14 +2391,6 @@ enum LastColumn {
     /// multiple lines with a hanging indent under the column start (floored at a
     /// readable minimum width).
     Wrap { total_width: usize },
-    /// Bound the final column like [`Truncate`], but window a too-long cell
-    /// *around* the first matching needle (centering on the match) rather than
-    /// always keeping the head — so the user sees the substring they searched for.
-    /// `needles` are the raw search terms, matched case-insensitively.
-    TruncateAround {
-        total_width: usize,
-        needles: Vec<String>,
-    },
 }
 
 /// Per-column horizontal alignment for the leading (fixed-width) columns. The
@@ -2967,113 +2494,7 @@ fn render_columns(
             }
             output.trim_end().to_string()
         }
-        LastColumn::TruncateAround {
-            total_width,
-            needles,
-        } => {
-            let last_width = total_width
-                .saturating_sub(prefix_width)
-                .max(headers[last].chars().count());
-            widths[last] = last_width;
-
-            let mut output = String::new();
-            push_table_row(&mut output, headers, &widths, aligns);
-            for row in rows {
-                let mut row = row.clone();
-                row[last] = truncate_around(&row[last], needles, last_width);
-                push_table_row(&mut output, &row, &widths, aligns);
-            }
-            output.trim_end().to_string()
-        }
     }
-}
-
-/// Earliest case-insensitive occurrence of any needle in `text`, as the
-/// `(char_start, char_len)` of the match. Used to keep a search hit visible when
-/// a cell is windowed.
-///
-/// The scan runs in the original text's char space — comparing char-by-char
-/// case-insensitively — so the returned index is always a valid offset into the
-/// same `chars()` vec the caller windows. (Searching a `to_lowercase()` copy and
-/// reusing its offsets would drift for the few characters whose lowercase form
-/// has a different char count, e.g. `İ` → `i` + a combining dot.)
-fn first_needle_span(text: &str, needles: &[String]) -> Option<(usize, usize)> {
-    let chars: Vec<char> = text.chars().collect();
-    needles
-        .iter()
-        .filter_map(|n| {
-            let needle: Vec<char> = n.chars().collect();
-            if needle.is_empty() || needle.len() > chars.len() {
-                return None;
-            }
-            (0..=chars.len() - needle.len())
-                .find(|&i| {
-                    chars[i..i + needle.len()]
-                        .iter()
-                        .zip(&needle)
-                        .all(|(a, b)| chars_eq_ignore_case(*a, *b))
-                })
-                .map(|start| (start, needle.len()))
-        })
-        .min_by_key(|(start, _)| *start)
-}
-
-/// Case-insensitive comparison of two characters, comparing their full lowercase
-/// mappings (so it works beyond ASCII).
-fn chars_eq_ignore_case(a: char, b: char) -> bool {
-    a == b || a.to_lowercase().eq(b.to_lowercase())
-}
-
-/// Truncate `text` to at most `width` characters, keeping the region around the
-/// first matching needle in view. A too-long cell is windowed and centered on the
-/// match, with `…` marking each truncated edge; when no needle lands in this cell
-/// (it matched another column) the head is kept instead. Returns `text` unchanged
-/// when it already fits. (Width is counted in characters, not display columns, so
-/// a cell of double-width glyphs can render wider — acceptable for the ASCII log
-/// output this serves.)
-fn truncate_around(text: &str, needles: &[String], width: usize) -> String {
-    const ELL: char = '…';
-    let chars: Vec<char> = text.chars().collect();
-    let len = chars.len();
-    if len <= width {
-        return text.to_string();
-    }
-    // Too narrow to fit an ellipsis beside content: just clip the head.
-    if width <= 1 {
-        return chars[..width].iter().collect();
-    }
-    let Some((m, mlen)) = first_needle_span(text, needles) else {
-        // No hit in this cell — keep the head, like a plain truncation.
-        let head: String = chars[..width - 1].iter().collect();
-        return format!("{head}{ELL}");
-    };
-
-    // Center an inner window on the match midpoint, reserving a column for an
-    // ellipsis on each (initially assumed) truncated edge.
-    let inner = width - 2;
-    let center = (m + mlen / 2).min(len - 1);
-    let mut start = center.saturating_sub(inner / 2);
-    if start + inner > len {
-        start = len - inner;
-    }
-    let mut end = start + inner;
-    // Reclaim the reserved ellipsis column on any edge that isn't truncated after
-    // all (the window reached the start or end of the text).
-    if start == 0 && end < len {
-        end = (end + 1).min(len);
-    } else if end == len && start > 0 {
-        start -= 1;
-    }
-
-    let mut out = String::new();
-    if start > 0 {
-        out.push(ELL);
-    }
-    out.extend(chars[start..end].iter());
-    if end < len {
-        out.push(ELL);
-    }
-    out
 }
 
 fn render_runs_table(runs: &[RunSummary], width: usize) -> String {
@@ -3175,364 +2596,16 @@ mod tests {
 
     impl TryTransform for FaultAnnotator {
         fn try_transform(&mut self, line: &str) -> Option<String> {
-            match classify_line(line) {
-                NdjsonLine::Entry(mut entry) => {
+            // Parse and normalize the way the stream helpers do.
+            match serde_json::from_str::<Value>(line) {
+                Ok(mut entry) if entry.is_object() => {
+                    normalize_vtime_field(&mut entry, "moment");
                     self.annotate(&mut entry);
                     Some(entry.to_string())
                 }
-                NdjsonLine::Raw(_) => None,
+                _ => None,
             }
         }
-    }
-
-    /// `truncate_around` never returns more than `width` characters (the `…`
-    /// markers are counted), and returns text unchanged when it already fits.
-    #[hegel::test]
-    fn truncate_around_stays_within_width(tc: hegel::TestCase) {
-        let text = tc.draw(generators::text());
-        let needles = tc.draw(generators::vecs(generators::text().max_size(6)).max_size(3));
-        let width = tc.draw(generators::integers::<usize>().max_value(50));
-        let out = truncate_around(&text, &needles, width);
-        assert!(
-            out.chars().count() <= width,
-            "output {out:?} ({} chars) exceeds width {width}",
-            out.chars().count()
-        );
-        if text.chars().count() <= width {
-            assert_eq!(
-                out, text,
-                "text that already fits must pass through unchanged"
-            );
-        }
-    }
-
-    /// `first_needle_span` returns a span that is a valid window into the text's
-    /// char vector — the returned `(start, len)` never runs off the end.
-    #[hegel::test]
-    fn first_needle_span_is_in_bounds(tc: hegel::TestCase) {
-        let text = tc.draw(generators::text());
-        let needles = tc.draw(generators::vecs(generators::text().max_size(6)).max_size(3));
-        let char_count = text.chars().count();
-        if let Some((start, len)) = first_needle_span(&text, &needles) {
-            assert!(
-                start + len <= char_count,
-                "span {start}+{len} > {char_count}"
-            );
-        }
-    }
-
-    #[test]
-    fn renders_assertion_records_in_compact_form() {
-        let entry = json!({
-            "antithesis_assert": {
-                "assert_type": "always",
-                "condition": false,
-                "details": null,
-                "display_type": "AlwaysOrUnreachable",
-                "hit": false,
-                "id": "Counter's value retrieved",
-                "location": {
-                    "begin_column": 0,
-                    "begin_line": 87,
-                    "class": "",
-                    "file": "/go/src/antithesis/control/control.go",
-                    "function": "get"
-                },
-                "message": "Counter's value retrieved",
-                "must_hit": false
-            },
-            "source": {
-                "container": "control",
-                "name": "control",
-                "pid": 1
-            },
-            "moment": {
-                "input_hash": "-4735081784258020614",
-                "vtime": "311.8487535319291"
-            }
-        });
-
-        assert_eq!(
-            render_event_entry(&entry),
-            RenderedEventEntry {
-                input_hash: "-4735081784258020614".to_string(),
-                vtime: "311.8487535319291".to_string(),
-                source: "[control:assert]".to_string(),
-                output:
-                    "UNHIT AlwaysOrUnreachable \"Counter's value retrieved\" @ control.go:get:87"
-                        .to_string(),
-            }
-        );
-    }
-
-    #[test]
-    fn falls_back_to_plain_output_for_non_assertion_records() {
-        let entry = json!({
-            "output_text": "starting",
-            "source": {
-                "container": "app",
-                "stream": "out"
-            },
-            "moment": {
-                "vtime": "1.0"
-            }
-        });
-
-        assert_eq!(
-            render_event_entry(&entry),
-            RenderedEventEntry {
-                input_hash: "".to_string(),
-                vtime: "1.0".to_string(),
-                source: "[app:out]".to_string(),
-                output: "starting".to_string(),
-            }
-        );
-    }
-
-    #[test]
-    fn ignores_schema_valid_but_incomplete_assertions() {
-        let entry = json!({
-            "antithesis_assert": {},
-            "output_text": "raw log line",
-            "source": {
-                "container": "control"
-            },
-            "moment": {
-                "vtime": "5.0"
-            }
-        });
-
-        assert_eq!(
-            render_event_entry(&entry),
-            RenderedEventEntry {
-                input_hash: "".to_string(),
-                vtime: "5.0".to_string(),
-                source: "[control]".to_string(),
-                output: "raw log line".to_string(),
-            }
-        );
-    }
-
-    #[test]
-    fn renders_must_hit_and_partial_location_details() {
-        let summary = AssertionSummary::try_from(AssertionPayload {
-            hit: Some(false),
-            condition: Some(false),
-            must_hit: true,
-            message: Some("setup reached".to_string()),
-            assert_type: Some("reachability".to_string()),
-            display_type: Some("SetupReached".to_string()),
-            location: Some(AssertionLocation {
-                file: None,
-                function: Some("run_setup".to_string()),
-                begin_line: Some(serde_json::Number::from(42)),
-            }),
-        })
-        .unwrap();
-
-        assert_eq!(
-            render_assertion_summary(&summary),
-            "UNHIT SetupReached \"setup reached\" must-hit @ run_setup:42"
-        );
-    }
-
-    #[test]
-    fn prefers_display_type_but_falls_back_to_assert_type() {
-        let summary = AssertionSummary::try_from(AssertionPayload {
-            hit: Some(true),
-            condition: Some(true),
-            must_hit: false,
-            message: Some("first_setup ran".to_string()),
-            assert_type: Some("sometimes".to_string()),
-            display_type: Some("".to_string()),
-            location: None,
-        })
-        .unwrap();
-
-        assert_eq!(
-            render_assertion_summary(&summary),
-            "PASS sometimes \"first_setup ran\""
-        );
-    }
-
-    #[test]
-    fn source_without_stream_omits_trailing_colon() {
-        assert_eq!(render_source("control", "", None), "[control]");
-    }
-
-    #[test]
-    fn source_falls_back_to_name_when_container_empty() {
-        assert_eq!(
-            render_source("", "fault_injector", None),
-            "[fault_injector]"
-        );
-    }
-
-    #[test]
-    fn source_strips_antithesis_prefix_from_name() {
-        assert_eq!(
-            render_source("", "antithesis_test_composer", None),
-            "[test_composer]"
-        );
-    }
-
-    #[test]
-    fn source_prefers_container_over_name() {
-        assert_eq!(render_source("client1", "python3.11", None), "[client1]");
-    }
-
-    #[test]
-    fn source_combines_name_fallback_with_stream() {
-        assert_eq!(
-            render_source("", "antithesis_test_composer", Some("info")),
-            "[test_composer:info]"
-        );
-    }
-
-    #[test]
-    fn renders_test_composer_event_with_name_fallback() {
-        let entry = json!({
-            "added_task": "parallel_driver_fetch",
-            "tasks_len": "1",
-            "source": {
-                "name": "antithesis_test_composer",
-                "pid": 974
-            },
-            "moment": {
-                "input_hash": "5181922178177328213",
-                "vtime": "315.41654103668407"
-            }
-        });
-
-        assert_eq!(
-            render_event_entry(&entry).source,
-            "[test_composer]".to_string()
-        );
-    }
-
-    #[test]
-    fn renders_started_task_as_key_value_pairs() {
-        let entry = json!({
-            "command": "core/parallel_driver_fetch",
-            "container_id": "d700ef3d05a263877d0d0c175f2954bdc8bc098faf501211b34bb20ba09f4435",
-            "started_task": "d700ef3d_parallel_driver_fetch",
-            "task_status": "started",
-            "tasks_len": "1",
-            "source": {"name": "antithesis_test_composer"},
-            "moment": {"vtime": "1.0"}
-        });
-
-        assert_eq!(
-            render_event_entry(&entry).output,
-            "task_status=started command=core/parallel_driver_fetch container_id=d700ef3d05a263877d0d0c175f2954bdc8bc098faf501211b34bb20ba09f4435 tasks_len=1"
-        );
-    }
-
-    #[test]
-    fn renders_finished_task_omitting_empty_stderr() {
-        let entry = json!({
-            "additional_stderr": "",
-            "additional_stdout": "",
-            "command": "core/parallel_driver_fetch",
-            "command_return_code": "0",
-            "command_runtime": "2.1254637241363525",
-            "finished_task": "abc",
-            "task_status": "finished",
-            "source": {"name": "antithesis_test_composer"},
-            "moment": {"vtime": "2.0"}
-        });
-
-        assert_eq!(
-            render_event_entry(&entry).output,
-            "task_status=finished command=core/parallel_driver_fetch command_return_code=0 command_runtime=2.1254637241363525"
-        );
-    }
-
-    #[test]
-    fn renders_weight_event_as_key_value_pairs() {
-        let entry = json!({
-            "command": "abc_/opt/antithesis/test/v1/core/parallel_driver_fetch",
-            "weight": "0.157917609630634",
-            "weight_type": "masked_for_step",
-            "source": {"name": "antithesis_test_composer"},
-            "moment": {"vtime": "7.0"}
-        });
-
-        assert_eq!(
-            render_event_entry(&entry).output,
-            "command=abc_/opt/antithesis/test/v1/core/parallel_driver_fetch weight=0.157917609630634 weight_type=masked_for_step"
-        );
-    }
-
-    #[test]
-    fn renders_fault_event_with_nested_paths_and_array() {
-        let entry = json!({
-            "fault": {
-                "name": "clog",
-                "type": "network",
-                "details": {"disruption_type": "Stopped"},
-                "affected_nodes": ["client2", "setup"],
-                "max_duration": 0.267319258
-            },
-            "source": {"name": "fault_injector"},
-            "moment": {"vtime": "3.0"}
-        });
-
-        assert_eq!(
-            render_event_entry(&entry).output,
-            "fault.name=clog fault.type=network fault.details.disruption_type=Stopped fault.affected_nodes=client2,setup fault.max_duration=0.267319258"
-        );
-    }
-
-    #[test]
-    fn renders_fault_event_with_empty_affected_nodes() {
-        let entry = json!({
-            "fault": {
-                "name": "clog",
-                "type": "network",
-                "details": {"disruption_type": "Stopped"},
-                "affected_nodes": [],
-                "max_duration": 0.259267334
-            },
-            "source": {"name": "fault_injector"},
-            "moment": {"vtime": "4.0"}
-        });
-
-        assert_eq!(
-            render_event_entry(&entry).output,
-            "fault.name=clog fault.type=network fault.details.disruption_type=Stopped fault.max_duration=0.259267334"
-        );
-    }
-
-    #[test]
-    fn falls_back_to_json_dump_for_unknown_source() {
-        let entry = json!({
-            "antithesis_sdk": {"sdk_version": "0.2.0"},
-            "source": {"container": "client1", "name": "python3.11"},
-            "moment": {"vtime": "6.0"}
-        });
-
-        // source.name is not in EVENT_KINDS; no output_text; fall back to JSON.
-        let output = render_event_entry(&entry).output;
-        assert!(output.starts_with('{'), "expected JSON dump, got: {output}");
-        assert!(output.contains("antithesis_sdk"));
-    }
-
-    #[test]
-    fn event_output_strips_ansi_and_escapes_remaining_controls() {
-        // The events OUTPUT column now runs through the shared terminal
-        // normalizer (item 7): ANSI color codes are stripped (no visible
-        // `\x1B[…` noise) and stray control bytes are escaped, not passed raw.
-        let entry = json!({
-            "output_text": "\x1B[4mhello\x1B[0m\u{0008}world\r\n",
-            "source": {"container": "app", "stream": "out"},
-            "moment": {"vtime": "1.0"}
-        });
-        let output = render_event_entry(&entry).output;
-        // ANSI sequences are gone, the backspace/CR are escaped, and the
-        // trailing newline is escaped as a single-line cell.
-        assert_eq!(output, r"hello\x08world\r\n");
-        assert!(!output.contains('\x1B'));
     }
 
     fn event(input_hash: &str, vtime: &str) -> Event {
@@ -4179,42 +3252,46 @@ mod tests {
     }
 
     #[test]
-    fn parse_stream_error_extracts_the_server_message() {
+    fn stream_error_message_extracts_the_server_message() {
+        let msg = |line: &str| {
+            stream_error_message(&serde_json::from_str::<Value>(line).unwrap()).map(str::to_string)
+        };
         assert_eq!(
-            parse_stream_error(r#"{"error":"mock stream failure"}"#).as_deref(),
+            msg(r#"{"error":"mock stream failure"}"#).as_deref(),
             Some("mock stream failure")
         );
         // additionalProperties is open on Stream_Error: extra keys don't
         // stop the line from being an error.
         assert_eq!(
-            parse_stream_error(r#"{"error":"boom","request_id":"r-1"}"#).as_deref(),
+            msg(r#"{"error":"boom","request_id":"r-1"}"#).as_deref(),
             Some("boom")
         );
     }
 
     #[test]
-    fn parse_stream_error_leaves_data_records_alone() {
+    fn stream_error_message_leaves_data_records_alone() {
+        let msg = |line: &str| {
+            stream_error_message(&serde_json::from_str::<Value>(line).unwrap()).map(str::to_string)
+        };
         // A log/event record carrying its own top-level `error` field is data:
         // the `moment` envelope identifies it.
         assert_eq!(
-            parse_stream_error(r#"{"error":"disk full","moment":{"vtime":"1.0"}}"#),
+            msg(r#"{"error":"disk full","moment":{"vtime":"1.0"}}"#),
             None
         );
         // A build log line is identified by its `timestamp`.
         assert_eq!(
-            parse_stream_error(r#"{"error":"x","timestamp":"2025-03-20T02:01:12Z"}"#),
+            msg(r#"{"error":"x","timestamp":"2025-03-20T02:01:12Z"}"#),
             None
         );
         // `error` under output_text (or any nested position) is not the signal.
         assert_eq!(
-            parse_stream_error(r#"{"output_text":"an \"error\" happened","moment":{}}"#),
+            msg(r#"{"output_text":"an \"error\" happened","moment":{}}"#),
             None
         );
-        // A non-string `error`, a non-object line, and a non-JSON line are not
-        // stream errors.
-        assert_eq!(parse_stream_error(r#"{"error":42}"#), None);
-        assert_eq!(parse_stream_error(r#"["error"]"#), None);
-        assert_eq!(parse_stream_error("plain text with \"error\" in it"), None);
+        // A non-string `error` and a non-object value are not stream errors.
+        assert_eq!(msg(r#"{"error":42}"#), None);
+        assert_eq!(stream_error_message(&json!(["error"])), None);
     }
 
     #[test]
@@ -5089,32 +4166,20 @@ mod tests {
     }
 
     /// The issue #191 guarantee over the whole tick domain: a vtime string
-    /// the server sends survives the stream's classify -> normalize ->
+    /// the server sends survives the stream's parse -> normalize ->
     /// serialize pipeline byte-identically, as a JSON number.
     #[hegel::test]
-    fn classify_line_preserves_any_real_vtime_byte_for_byte(tc: hegel::TestCase) {
+    fn normalize_vtime_preserves_any_real_vtime_byte_for_byte(tc: hegel::TestCase) {
         let ticks = tc.draw(generators::integers::<u64>().max_value((1 << 53) - 1));
         let vtime = VTime::from_seconds(ticks as f64 / 4294967296.0).unwrap();
 
         let line = format!(r#"{{"moment":{{"vtime":"{vtime}"}},"output_text":"x"}}"#);
-        let NdjsonLine::Entry(entry) = classify_line(&line) else {
-            panic!("an object line should classify as Entry");
-        };
+        let mut entry = serde_json::from_str::<Value>(&line).unwrap();
+        normalize_vtime_field(&mut entry, "moment");
         assert_eq!(
             entry.to_string(),
             format!(r#"{{"moment":{{"vtime":{vtime}}},"output_text":"x"}}"#)
         );
-    }
-
-    /// classify_line never panics, whatever the server sends; anything that
-    /// isn't a JSON object comes back Raw and untouched.
-    #[hegel::test]
-    fn classify_line_never_panics_and_returns_raw_for_non_objects(tc: hegel::TestCase) {
-        let line = tc.draw(generators::text());
-        match classify_line(&line) {
-            NdjsonLine::Entry(entry) => assert!(entry.is_object()),
-            NdjsonLine::Raw(raw) => assert_eq!(raw, line),
-        }
     }
 
     #[test]
@@ -5684,82 +4749,6 @@ mod tests {
     }
 
     #[test]
-    fn truncate_around_returns_short_text_unchanged() {
-        let n = vec!["err".to_string()];
-        assert_eq!(
-            truncate_around("short error here", &n, 80),
-            "short error here"
-        );
-        // Exactly at the width bound: still unchanged, no ellipsis.
-        assert_eq!(truncate_around("abcdef", &n, 6), "abcdef");
-    }
-
-    #[test]
-    fn truncate_around_centers_on_a_mid_string_match() {
-        let needles = vec!["NEEDLE".to_string()];
-        let text = "xxxxxxxxxxxxxxxxxxxxxxxxx NEEDLE yyyyyyyyyyyyyyyyyyyyyyyyy";
-        let out = truncate_around(text, &needles, 20);
-        // Windowed on both sides and the match stays visible.
-        assert!(out.starts_with('…'), "want leading ellipsis: {out:?}");
-        assert!(out.ends_with('…'), "want trailing ellipsis: {out:?}");
-        assert!(out.contains("NEEDLE"), "match must remain visible: {out:?}");
-        assert_eq!(out.chars().count(), 20);
-    }
-
-    #[test]
-    fn truncate_around_keeps_head_when_match_is_near_the_start() {
-        let needles = vec!["abc".to_string()];
-        let text = "abc def ghi jkl mno pqr stu vwx yz0 123 456 789";
-        let out = truncate_around(text, &needles, 20);
-        // No leading ellipsis (window reached the start); trailing edge truncated.
-        assert!(
-            !out.starts_with('…'),
-            "no leading ellipsis expected: {out:?}"
-        );
-        assert!(out.starts_with("abc"), "head retained: {out:?}");
-        assert!(out.ends_with('…'), "trailing ellipsis expected: {out:?}");
-        assert_eq!(out.chars().count(), 20);
-    }
-
-    #[test]
-    fn truncate_around_keeps_tail_when_match_is_near_the_end() {
-        let needles = vec!["xyz".to_string()];
-        let text = "000 111 222 333 444 555 666 777 888 999 last xyz";
-        let out = truncate_around(text, &needles, 20);
-        assert!(out.starts_with('…'), "leading ellipsis expected: {out:?}");
-        assert!(
-            !out.ends_with('…'),
-            "no trailing ellipsis expected: {out:?}"
-        );
-        assert!(out.ends_with("xyz"), "tail retained: {out:?}");
-        assert_eq!(out.chars().count(), 20);
-    }
-
-    #[test]
-    fn truncate_around_head_truncates_when_no_needle_in_cell() {
-        // The needle matched another column, so this cell has no hit — keep the
-        // head, like a plain ellipsis truncation.
-        let needles = vec!["error".to_string()];
-        let text = "[raft] failed to get previous log: previous-index=1 last-index=0";
-        let out = truncate_around(text, &needles, 24);
-        assert!(out.starts_with("[raft]"), "head retained: {out:?}");
-        assert!(out.ends_with('…'), "trailing ellipsis expected: {out:?}");
-        assert_eq!(out.chars().count(), 24);
-    }
-
-    #[test]
-    fn truncate_around_is_case_insensitive() {
-        let needles = vec!["ERROR".to_string()];
-        let text = "aaaaaaaaaaaaaaaaaaaaaaaaa fatal error occurred bbbbbbbbbbbbbbbbbbbbbbbbb";
-        let out = truncate_around(text, &needles, 24);
-        assert!(
-            out.to_lowercase().contains("error"),
-            "match visible: {out:?}"
-        );
-        assert_eq!(out.chars().count(), 24);
-    }
-
-    #[test]
     fn runs_long_view_renders_aligned_key_value_block() {
         let runs = vec![
             summary(
@@ -5794,37 +4783,6 @@ mod tests {
         assert!(out.contains("incomplete"));
         // A blank line separates the two run blocks.
         assert!(out.contains("\n\n"));
-    }
-
-    #[test]
-    fn event_matches_anding_of_multiple_needles() {
-        // `--match` is case-insensitive and every needle must be present (AND).
-        let line = "fault_injector: network partition started";
-
-        let needles = ["Network".to_string(), "partition".to_string()];
-        let lowered: Vec<String> = needles.iter().map(|n| n.to_lowercase()).collect();
-        assert!(haystack_matches_all_needles(line, &lowered));
-
-        let missing = ["network".to_string(), "missing".to_string()];
-        assert!(!haystack_matches_all_needles(line, &missing));
-    }
-
-    #[test]
-    fn event_haystack_matches_decoded_output_with_quotes() {
-        // A needle copied from the OUTPUT column contains literal quotes. The
-        // decoded haystack carries them unescaped, so the match succeeds even
-        // though the raw NDJSON line escapes them as `\"`.
-        let line = r#"{"moment":{"input_hash":"42","vtime":"1.0"},"source":{"container":"app","name":"app","stream":"out"},"output_text":"msg \"starting\""}"#;
-        let NdjsonLine::Entry(entry) = classify_line(line) else {
-            panic!("event line should classify as an entry");
-        };
-        let haystack = event_haystack(&render_event_entry(&entry));
-        assert!(haystack.contains(r#"msg "starting""#));
-
-        let needle = vec![r#""starting""#.to_lowercase()];
-        assert!(haystack_matches_all_needles(&haystack, &needle));
-        // The same needle does NOT match the raw escaped line.
-        assert!(!haystack_matches_all_needles(line, &needle));
     }
 
     #[test]

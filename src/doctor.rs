@@ -1,7 +1,7 @@
 use color_eyre::eyre::Result;
 use serde::Serialize;
 
-use crate::api::{AntithesisApi, ApiVersion, VersionError};
+use crate::api::{AntithesisApi, ApiVersion, MIN_SEARCH_RELEASE, VersionError};
 use crate::attributed_value::AttributedValue;
 use crate::auth::{AuthenticationInfo, PasswordPolicy};
 use crate::compose;
@@ -370,6 +370,38 @@ fn print_settings(settings: &[Setting]) {
     }
 }
 
+/// With the `runs-search` unstable feature enabled, `runs events` and
+/// `runs search` assume the tenant serves the events-search API instead of
+/// probing for it — this check is where that assumption gets verified. Only
+/// a confidently-known gap reports: the feature off or an unparsable release
+/// version say nothing (the check would guess). Pure so it can be
+/// unit-tested without the network.
+fn runs_search_release_check(version: &ApiVersion, runs_search_enabled: bool) -> Option<Check> {
+    if !runs_search_enabled || version.release? >= MIN_SEARCH_RELEASE {
+        return None;
+    }
+    let (major, minor) = MIN_SEARCH_RELEASE;
+    Some(
+        Check::fail("runs-search", "tenant serves the events-search API")
+            .note(
+                Level::Error,
+                format!(
+                    "the `runs-search` unstable feature is enabled, but tenant release {} \
+                     predates the events-search API (added in {major}.{minor}) — \
+                     `runs events` and `runs search` will fail",
+                    version.release_version
+                ),
+            )
+            .note(
+                Level::Note,
+                format!(
+                    "remove `runs-search` from {} or request that your Antithesis tenant is upgraded",
+                    features::UNSTABLE_FEATURES_VAR_NAME
+                ),
+            ),
+    )
+}
+
 /// Map a `GET /api/version` probe into a check. Reaching the endpoint at all —
 /// even a 404 on an older backend that lacks it — proves connectivity, so only
 /// rejected auth, an API error, or a failure to reach the API is a problem.
@@ -444,7 +476,14 @@ pub async fn cmd_doctor(
     // request/response.
     if !offline && let Ok(api) = AntithesisApi::new(settings, verbose) {
         let host = api.host();
-        checks.push(version_check(&host, api.get_version().await));
+        let version = api.get_version().await;
+        if let Ok(version) = &version
+            && let Some(check) =
+                runs_search_release_check(version, features::is_enabled(Feature::RunsSearch))
+        {
+            checks.push(check);
+        }
+        checks.push(version_check(&host, version));
     }
 
     let settings_rows = resolve_settings(settings, &features::enabled());
@@ -740,13 +779,36 @@ mod tests {
     // ---- version_check (network probe) ---------------------------------
 
     #[test]
+    fn runs_search_release_check_fires_only_on_a_known_gap() {
+        let version = |release: &str| ApiVersion::new("v1".into(), release.into());
+        // Feature off: nothing, whatever the release.
+        assert!(runs_search_release_check(&version("56.0"), false).is_none());
+        // Recent enough (58.11 ships the endpoint): nothing.
+        assert!(runs_search_release_check(&version("58.11"), true).is_none());
+        assert!(runs_search_release_check(&version("60.1"), true).is_none());
+        // Too old: the check fails doctor, names the gap, and suggests
+        // turning the feature off.
+        let check = runs_search_release_check(&version("58.6"), true).unwrap();
+        assert_eq!(check.status, Status::Error);
+        assert!(
+            check.notes[0].text.contains("58.6"),
+            "{}",
+            check.notes[0].text
+        );
+        assert!(
+            check.notes[1].text.contains("remove `runs-search`"),
+            "{}",
+            check.notes[1].text
+        );
+        // An unparsable release says nothing rather than guessing.
+        assert!(runs_search_release_check(&version("unknown"), true).is_none());
+    }
+
+    #[test]
     fn version_ok_reports_both_versions() {
         let check = version_check(
             "tenant.antithesis.com",
-            Ok(ApiVersion {
-                latest_api_version: "v1".into(),
-                release_version: "56.0".into(),
-            }),
+            Ok(ApiVersion::new("v1".into(), "56.0".into())),
         );
         assert_eq!(check.status, Status::Ok);
         let notes = check

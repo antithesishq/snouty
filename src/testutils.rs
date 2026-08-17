@@ -623,6 +623,10 @@ fn mock_route(
     let ndjson = "application/x-ndjson";
 
     match (method, path_part) {
+        ("POST", p) if p.starts_with("/api/v0/runs/") && p.ends_with("/events/search") => {
+            let run_id = &p["/api/v0/runs/".len()..p.len() - "/events/search".len()];
+            mock_route_search_events(run_id, req_body)
+        }
         ("GET", "/api/v0/runs") => {
             let (s, b) = mock_route_list_runs(query, empty);
             (s, b, json)
@@ -924,6 +928,35 @@ fn mock_route_list_run_properties(run_id: &str, query: Option<&str>) -> (u16, St
     )
 }
 
+/// Every double-quoted string literal in `query`, with `\"` and `\\` escapes
+/// resolved. The mock server uses this to "interpret" a query without a DSL
+/// engine: requiring each literal somewhere in an event covers
+/// `contains({...})` needles and substring-filter pipelines alike. Test-only
+/// by construction — it lives here so nothing outside the mock reaches it.
+fn extract_quoted_literals(query: &str) -> Vec<String> {
+    let mut literals = Vec::new();
+    let mut chars = query.chars();
+    while let Some(c) = chars.next() {
+        if c != '"' {
+            continue;
+        }
+        let mut literal = String::new();
+        loop {
+            match chars.next() {
+                Some('\\') => {
+                    if let Some(escaped) = chars.next() {
+                        literal.push(escaped);
+                    }
+                }
+                Some('"') | None => break,
+                Some(other) => literal.push(other),
+            }
+        }
+        literals.push(literal);
+    }
+    literals
+}
+
 fn mock_route_search_run_events(run_id: &str, query_str: Option<&str>) -> (u16, String) {
     // The `run-stream-error` stream is returned unfiltered: a `Stream_Error`
     // line is a failure signal the server emits regardless of the query, not
@@ -1065,6 +1098,103 @@ fn mock_route_execute_command(run_id: &str, req_body: &str) -> (u16, String) {
     (200, lines.join("\n") + "\n")
 }
 
+/// `POST /runs/{id}/events/search` — the events-search endpoint.
+/// `validate_only` returns an empty 200, and matching events stream back as
+/// NDJSON. Like the live server (observed on releases 58.11 and 60.0), the
+/// mock IGNORES `limit` and returns every match — the documented contract
+/// says the server terminates the stream at `limit`, but it does not, so
+/// specs that pass `--limit` exercise snouty's client-side cap. The one
+/// divergence from the live server: the mock's stream always closes (it is a
+/// plain HTTP response), where a live run's stream stays open forever.
+/// `count_only` is not modelled: snouty does not send it (the count is
+/// moving to a separate endpoint).
+///
+/// The mock carries no DSL engine. A query is "interpreted" by extracting
+/// every double-quoted string literal and requiring each, case-insensitively,
+/// somewhere in the raw event line — enough for `contains({...})` needles and
+/// for the multi-needle JS filter `runs events` builds, where the quoted
+/// literals are exactly the needles (the filter's `" "` separators drop out
+/// as whitespace). Validity checking is one rule: the pipeline must start
+/// with a known verb.
+fn mock_route_search_events(run_id: &str, body: &str) -> (u16, String, &'static str) {
+    let json = "application/json";
+    let ndjson = "application/x-ndjson";
+
+    // Like the other streaming routes: `run-stream-error` answers with a
+    // stream that ends in a `Stream_Error` line, whatever the query.
+    if run_id == "run-stream-error" {
+        let (status, body) = mock_route_get_run_logs(run_id);
+        return (status, body, ndjson);
+    }
+    if !mock_run_known(run_id) {
+        let (status, body) = mock_run_not_found(run_id);
+        return (status, body, json);
+    }
+
+    let Ok(request) = serde_json::from_str::<serde_json::Value>(body) else {
+        return (
+            400,
+            r#"{"message":"invalid request body"}"#.to_string(),
+            json,
+        );
+    };
+    let Some(query) = request["query"].as_str() else {
+        return (400, r#"{"message":"missing query"}"#.to_string(), json);
+    };
+    let starts_with_verb = crate::event_set_dsl::VERBS
+        .iter()
+        .any(|verb| query.trim_start().starts_with(&format!("{verb}(")));
+    if !starts_with_verb {
+        return (400, r#"{"message":"invalid query"}"#.to_string(), json);
+    }
+    if request["validate_only"].as_bool().unwrap_or(false) {
+        return (200, String::new(), ndjson);
+    }
+
+    // The mock EXECUTES every query the same way: every quoted literal must
+    // be a substring of the raw event line, all at once. Those are the semantics
+    // of `contains` and of the substring `filter` that `runs events` builds
+    // — but not of `excludes`, `not_matches`, `fold`, and friends, which
+    // would be answered with wrong (even inverted) results and let a spec
+    // pass for the wrong reason. Refuse them loudly instead. Validation
+    // above stays permissive: query VALIDITY spans the full verb list;
+    // execution is what the mock only partially models.
+    const EXECUTABLE_VERBS: &[&str] = &["contains", "filter", "matches"];
+    let executable = EXECUTABLE_VERBS
+        .iter()
+        .any(|verb| query.trim_start().starts_with(&format!("{verb}(")));
+    if !executable {
+        return (
+            501,
+            r#"{"message":"the mock API server does not model this verb's execution semantics"}"#
+                .to_string(),
+            json,
+        );
+    }
+
+    // Lowercased with Unicode `to_lowercase`, matching the JS
+    // `.toLowerCase()` in the filter this route models.
+    let needles: Vec<String> = extract_quoted_literals(query)
+        .into_iter()
+        .filter(|literal| !literal.trim().is_empty())
+        .map(|literal| literal.to_lowercase())
+        .collect();
+    let (_, logs) = mock_route_get_run_logs(run_id);
+    let matches: Vec<&str> = logs
+        .lines()
+        .filter(|line| {
+            let lowered = line.to_lowercase();
+            needles.iter().all(|needle| lowered.contains(needle))
+        })
+        .collect();
+
+    if matches.is_empty() {
+        (200, String::new(), ndjson)
+    } else {
+        (200, matches.join("\n") + "\n", ndjson)
+    }
+}
+
 fn mock_route_launch() -> (u16, String) {
     (
         200,
@@ -1085,6 +1215,21 @@ mod tests {
 
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn extract_quoted_literals_resolves_escapes() {
+        assert_eq!(
+            extract_quoted_literals(r#"contains({output_text: "slow request"})"#),
+            vec!["slow request".to_string()]
+        );
+        // Escaped quotes and backslashes arrive resolved; the JS filter's
+        // bare " " separators come out as literals too (callers drop blanks).
+        assert_eq!(
+            extract_quoted_literals(r#"filter(ev => (a + " ").includes("say \"hi\"\\"))"#),
+            vec![" ".to_string(), r#"say "hi"\"#.to_string()]
+        );
+        assert!(extract_quoted_literals("matches({a: 1})").is_empty());
+    }
 
     #[test]
     fn mock_query_param_decodes_form_encoded_value() {

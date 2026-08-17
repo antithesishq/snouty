@@ -420,7 +420,7 @@ stdout '^401\.5     \[fault_injector\] FAULT network/clog Stopped nodes=client2,
 # Consecutive timeline segments are separated by one blank line.
 stdout '(?s)"starting"\}\n\nmoment -456'
 
-# `--detail` upgrades the rendering: full-precision vtime on every line, and
+# `--detail` upgrades the rendering: a full-width vtime on every line, and
 # the assertion's source location on an indented detail line.
 mock-runs-server
 snouty runs logs --detail run-1 -123 1.0

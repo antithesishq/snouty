@@ -960,7 +960,7 @@ pub struct EventOutputArgs {
     #[arg(short = 'r', long)]
     pub raw: bool,
 
-    /// Detailed rendering: full-precision vtime on every line, source
+    /// Detailed rendering: a full-width vtime on every line, source
     /// locations, and each event's attached details JSON
     #[arg(short = 'd', long, conflicts_with = "raw")]
     pub detail: bool,

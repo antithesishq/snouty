@@ -20,7 +20,8 @@
 //!   guidance, fault injections, container lifecycle, test composer chatter)
 //!   each render in their own concise form; everything else falls back to
 //!   the log-text or raw-JSON renderer.
-//! - detail (`--detail`): full-precision vtime on every line, assertion and
+//! - detail (`--detail`): a full-width vtime cell that holds every moment a
+//!   real run reports whole (see [`VTIME_WIDTH_DETAIL`]), assertion and
 //!   guidance source locations, the payload's attached `details` JSON, the
 //!   composer's captured stdout/stderr, and composer chatter expanded to one
 //!   key=value per line, untruncated.

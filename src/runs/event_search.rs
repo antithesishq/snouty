@@ -45,7 +45,7 @@ pub(super) enum EventOutput {
     /// (`annotate_faults` — meaningless with `raw`, which touches nothing).
     Json { raw: bool, annotate_faults: bool },
     /// Human rendering through the shared [`EventStreamRenderer`]; `detail`
-    /// adds full-precision vtime, source locations, and details JSON.
+    /// adds a full-width vtime, source locations, and details JSON.
     Human { detail: bool },
 }
 

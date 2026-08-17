@@ -8,8 +8,8 @@
 # backend. Unprefixed assertions are structural and run in both modes.
 #
 # Run-id scoped read responses may be cached under
-# $XDG_RUNTIME_DIR/snouty/api-cache-v1. Caching is internal and must not change
-# command output or required arguments.
+# $XDG_RUNTIME_DIR/snouty/api-cache-v2 (under the user temp dir on macOS).
+# Caching is internal and must not change command output or required arguments.
 
 # The command authenticates with the Antithesis API using
 #    ANTITHESIS_API_KEY and ANTITHESIS_TENANT env vars. Every endpoint other

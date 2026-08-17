@@ -120,6 +120,15 @@ fn snouty_cmd(env: &testscript_rs::TestEnvironment, args: &[String]) -> std::pro
         "XDG_CONFIG_HOME",
         isolated_xdg_config_home(&env.current_dir),
     );
+    // Isolate the API response cache per spec. Without this, snouty falls back
+    // to the real system temp dir, and a cached response from an earlier spec
+    // run (mock servers reuse ephemeral localhost ports) could leak in. The
+    // snouty-specific variable leaves XDG_RUNTIME_DIR alone: rootless podman
+    // resolves its API socket under XDG_RUNTIME_DIR, so overriding that would
+    // break the podman engine specs.
+    let cache_dir = env.current_dir.join("api-cache-isolation");
+    std::fs::create_dir_all(&cache_dir).expect("create API cache isolation dir");
+    cmd.env("SNOUTY_API_CACHE_DIR", &cache_dir);
     for (k, v) in &env.env_vars {
         cmd.env(k, v);
     }

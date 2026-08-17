@@ -11,10 +11,9 @@ use progenitor_client::{
 };
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use reqwest::{Client, Proxy};
-use reqwest_middleware::ClientWithMiddleware;
 use serde::de::DeserializeOwned;
 
-use crate::api_cache;
+use crate::api_cache::{self, ApiCache};
 use crate::auth::{AuthenticationInfo, PasswordPolicy};
 use crate::env;
 use crate::error::{ApiError, user_error};
@@ -258,15 +257,17 @@ fn normalize_property(property: Property) -> Result<Property> {
 /// to return (e.g. massive log files) and must not be aborted — the user can ctrl-c.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// Where API responses are cached.
+/// Where API responses are cached. The cache itself is the logical,
+/// domain-aware cache in [`crate::api_cache`]: it decides per operation what
+/// may be cached and treats every cache error as a miss.
 #[derive(Debug)]
 pub(crate) enum ResponseCache {
-    /// `$XDG_RUNTIME_DIR/snouty/api-cache-v1` — the default for every command.
-    /// Caching is disabled when `XDG_RUNTIME_DIR` is unusable.
+    /// `$XDG_RUNTIME_DIR/snouty/api-cache-v2`, falling back to a per-user
+    /// directory under the system temp dir — the default for every command.
     Default,
-    /// No response cache: every request hits the server. Run detail is
-    /// cacheable (`Cache-Control: private, max-age=3600`), so a cached poll
-    /// can re-read the same status for up to an hour.
+    /// No response cache: every request hits the server. The admission policy
+    /// already keeps mutable resources out of the cache, so this exists for
+    /// callers that want no cache I/O at all (status polls, tests).
     Disabled,
     /// Cache under this directory.
     #[cfg(test)]
@@ -347,17 +348,15 @@ impl AntithesisApi {
 
         let default_headers = default_request_headers()?;
         let http_client = build_http_client(default_headers.clone(), settings)?;
-        let cached = match cache {
-            ResponseCache::Default => api_cache::build_cached_client(http_client.clone(), None),
+        let cache_dir = match cache {
+            ResponseCache::Default => api_cache::default_dir(),
             ResponseCache::Disabled => None,
             #[cfg(test)]
-            ResponseCache::Dir(dir) => {
-                Some(api_cache::build_cached_client_at(http_client.clone(), dir))
-            }
+            ResponseCache::Dir(dir) => Some(dir),
         };
         let state = ClientState {
             authn_info,
-            cached,
+            cache: cache_dir.map(|dir| ApiCache::new(dir, settings.api_cache_max_file_size())),
             default_headers: verbose.then_some(default_headers),
         };
         let client = generated::Client::new_with_client(&base_url, http_client, state);
@@ -653,7 +652,7 @@ impl AntithesisApi {
 #[derive(Clone, Debug)]
 pub struct ClientState {
     authn_info: AuthenticationInfo,
-    cached: Option<ClientWithMiddleware>,
+    cache: Option<ApiCache>,
     /// Default headers reqwest will merge into the outgoing request at
     /// `Client::execute` time (after our `exec` hook runs). `Some` enables
     /// verbose request/response logging to stderr; we hold the headers here
@@ -677,10 +676,23 @@ impl ClientHooks<ClientState> for generated::Client {
     async fn exec(
         &self,
         request: reqwest::Request,
-        _info: &OperationInfo,
+        info: &OperationInfo,
     ) -> reqwest::Result<reqwest::Response> {
         let state = self.inner();
         let verbose_headers = state.default_headers.as_ref();
+
+        // A cached response short-circuits the request entirely.
+        if let Some(cache) = &state.cache
+            && let Some(response) = cache.lookup(&request, info).await
+        {
+            if let Some(default_headers) = verbose_headers {
+                let mut out = String::new();
+                format_request(&request, default_headers, &mut out);
+                out.push_str("* response served from the local cache\n");
+                eprint!("{out}");
+            }
+            return Ok(response);
+        }
 
         // Keep a resendable copy so a token refresh can retry the request once if
         // the first attempt is rejected as unauthorized but we have a refreshable credential
@@ -696,7 +708,7 @@ impl ClientHooks<ClientState> for generated::Client {
             eprint!("{out}");
         }
 
-        let result = send_request(self.client(), state.cached.as_ref(), request).await;
+        let result = self.client().execute(request).await;
 
         let result = match (result, retry_request) {
             (Ok(response), Some(mut retry_request))
@@ -716,7 +728,7 @@ impl ClientHooks<ClientState> for generated::Client {
                             format_request(&retry_request, default_headers, &mut out);
                             eprint!("{out}");
                         }
-                        send_request(self.client(), state.cached.as_ref(), retry_request).await
+                        self.client().execute(retry_request).await
                     }
                     Ok(None) => Ok(response),
                     Err(err) => {
@@ -735,33 +747,11 @@ impl ClientHooks<ClientState> for generated::Client {
             format_response(response, &mut out);
             eprint!("{out}");
         }
-        result
-    }
-}
 
-async fn send_request(
-    client: &Client,
-    cached: Option<&ClientWithMiddleware>,
-    request: reqwest::Request,
-) -> reqwest::Result<reqwest::Response> {
-    let Some(cached) = cached else {
-        return client.execute(request).await;
-    };
-
-    // Bypass the cache for non-cloneable (streaming) bodies so the remaining
-    // path always has a fallback to retry against on cache I/O failures
-    // (which surface as `Error::Middleware` and can't be re-packaged as a
-    // `reqwest::Error`).
-    let Some(fallback) = request.try_clone() else {
-        return client.execute(request).await;
-    };
-
-    match cached.execute(request).await {
-        Ok(response) => Ok(response),
-        Err(reqwest_middleware::Error::Reqwest(err)) => Err(err),
-        Err(reqwest_middleware::Error::Middleware(err)) => {
-            log::warn!("API cache failure, bypassing cache: {err}");
-            client.execute(fallback).await
+        // Tee cacheable responses into the cache as the caller reads them.
+        match (result, &state.cache) {
+            (Ok(response), Some(cache)) => Ok(cache.store(info, response).await),
+            (result, _) => result,
         }
     }
 }
@@ -2179,22 +2169,38 @@ mod tests {
         assert_eq!(rendered, "API error: 400 Bad Request — vtime out of range");
     }
 
-    #[tokio::test]
-    async fn cache_serves_repeated_get_with_cache_control() {
-        let mock_server = MockServer::start().await;
+    // ---- logical response cache ------------------------------------------
+    //
+    // The admission policy itself is unit-tested in `crate::api_cache`; these
+    // tests pin the end-to-end behavior through the generated client: lookup
+    // before send, tee-on-read, commit only on a fully read 200 body.
 
+    fn run_detail_body(status: &str) -> serde_json::Value {
+        serde_json::json!({
+            "run_id": "run-1",
+            "status": status,
+            "created_at": "2025-03-20T02:00:00Z",
+            "launcher": "nightly"
+        })
+    }
+
+    async fn read_stream(stream: crate::jsonl::JsonStream) -> Vec<serde_json::Value> {
+        stream.try_collect::<Vec<_>>().await.unwrap()
+    }
+
+    fn logs_moment() -> Moment {
+        Moment {
+            input_hash: "hash-1".to_owned(),
+            vtime: VTime::ZERO,
+        }
+    }
+
+    #[tokio::test]
+    async fn terminal_run_detail_is_served_from_the_cache() {
+        let mock_server = MockServer::start().await;
         Mock::given(method("GET"))
             .and(path("/api/v0/runs/run-1"))
-            .respond_with(
-                ResponseTemplate::new(200)
-                    .insert_header("Cache-Control", "max-age=60")
-                    .set_body_json(serde_json::json!({
-                        "run_id": "run-1",
-                        "status": "completed",
-                        "created_at": "2025-03-20T02:00:00Z",
-                        "launcher": "nightly"
-                    })),
-            )
+            .respond_with(ResponseTemplate::new(200).set_body_json(run_detail_body("completed")))
             .expect(1)
             .mount(&mock_server)
             .await;
@@ -2207,6 +2213,230 @@ mod tests {
 
         assert_eq!(first.run_id, "run-1");
         assert_eq!(second.run_id, "run-1");
+    }
+
+    #[tokio::test]
+    async fn live_run_detail_is_not_cached() {
+        let mock_server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v0/runs/run-1"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(run_detail_body("in_progress")))
+            .expect(2)
+            .mount(&mock_server)
+            .await;
+
+        let cache_dir = TempDir::new().unwrap();
+        let api = test_api_optionally_with_cache(&mock_server, Some(&cache_dir));
+
+        api.get_run("run-1").await.unwrap();
+        api.get_run("run-1").await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn run_logs_replay_from_the_cache_once_fully_read() {
+        let mock_server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v0/runs/run-1/logs"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("{\"text\":\"log line\"}\n"))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let cache_dir = TempDir::new().unwrap();
+        let api = test_api_optionally_with_cache(&mock_server, Some(&cache_dir));
+
+        let first = api
+            .get_run_logs("run-1", logs_moment(), None)
+            .await
+            .unwrap();
+        assert_eq!(
+            read_stream(first).await,
+            [serde_json::json!({"text": "log line"})]
+        );
+        let second = api
+            .get_run_logs("run-1", logs_moment(), None)
+            .await
+            .unwrap();
+        assert_eq!(
+            read_stream(second).await,
+            [serde_json::json!({"text": "log line"})]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_partially_read_body_is_never_committed() {
+        let mock_server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v0/runs/run-1/logs"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("{\"text\":\"log line\"}\n"))
+            .expect(2)
+            .mount(&mock_server)
+            .await;
+
+        let cache_dir = TempDir::new().unwrap();
+        let api = test_api_optionally_with_cache(&mock_server, Some(&cache_dir));
+
+        // Drop the stream without reading it: nothing may be committed.
+        let abandoned = api
+            .get_run_logs("run-1", logs_moment(), None)
+            .await
+            .unwrap();
+        drop(abandoned);
+
+        // The next request must hit the server again.
+        let replay = api
+            .get_run_logs("run-1", logs_moment(), None)
+            .await
+            .unwrap();
+        assert_eq!(
+            read_stream(replay).await,
+            [serde_json::json!({"text": "log line"})]
+        );
+    }
+
+    #[tokio::test]
+    async fn oversized_bodies_are_not_cached() {
+        let mock_server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v0/runs/run-1/logs"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("{\"text\":\"log line\"}\n"))
+            .expect(2)
+            .mount(&mock_server)
+            .await;
+
+        let cache_dir = TempDir::new().unwrap();
+        let api = AntithesisApi::build(
+            &Settings::builder()
+                .base_url(&mock_server.uri())
+                .api_cache_max_file_size(4)
+                .build(),
+            AuthenticationInfo::Password {
+                username: "user".to_owned(),
+                password: "pass".to_owned(),
+            },
+            false,
+            ResponseCache::Dir(cache_dir.path().to_path_buf()),
+        )
+        .unwrap();
+
+        for _ in 0..2 {
+            let stream = api
+                .get_run_logs("run-1", logs_moment(), None)
+                .await
+                .unwrap();
+            assert_eq!(
+                read_stream(stream).await,
+                [serde_json::json!({"text": "log line"})]
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn the_run_list_is_never_cached() {
+        let mock_server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v0/runs"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "data": [run_detail_body("completed")],
+                "next_cursor": null
+            })))
+            .expect(2)
+            .mount(&mock_server)
+            .await;
+
+        let cache_dir = TempDir::new().unwrap();
+        let api = test_api_optionally_with_cache(&mock_server, Some(&cache_dir));
+
+        for _ in 0..2 {
+            let runs = api
+                .stream_runs_filtered(&RunsFilterOptions::default(), 100)
+                .try_collect::<Vec<_>>()
+                .await
+                .unwrap();
+            assert_eq!(runs.len(), 1);
+        }
+    }
+
+    #[tokio::test]
+    async fn build_logs_replay_from_the_cache_once_fully_read() {
+        let mock_server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v0/runs/run-1/build_logs"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("{\"text\":\"built\"}\n"))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let cache_dir = TempDir::new().unwrap();
+        let api = test_api_optionally_with_cache(&mock_server, Some(&cache_dir));
+
+        for _ in 0..2 {
+            let stream = api.get_run_build_logs("run-1").await.unwrap();
+            assert_eq!(
+                read_stream(stream).await,
+                [serde_json::json!({"text": "built"})]
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn error_responses_are_not_cached() {
+        let mock_server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v0/runs/run-1"))
+            .respond_with(ResponseTemplate::new(404).set_body_json(serde_json::json!({
+                "message": "not yet"
+            })))
+            .up_to_n_times(1)
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/v0/runs/run-1"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(run_detail_body("completed")))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let cache_dir = TempDir::new().unwrap();
+        let api = test_api_optionally_with_cache(&mock_server, Some(&cache_dir));
+
+        let error = api.get_run("run-1").await.unwrap_err();
+        assert!(error.to_string().contains("404"), "got: {error:#}");
+        // The 404 was not cached; this hits the server, succeeds, and caches.
+        api.get_run("run-1").await.unwrap();
+        // …and this one replays from the cache (the mocks allow no third hit).
+        api.get_run("run-1").await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn cache_errors_degrade_to_misses() {
+        let mock_server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v0/runs/run-1"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(run_detail_body("completed")))
+            .expect(2)
+            .mount(&mock_server)
+            .await;
+
+        // A cache "directory" that is actually a file: every cache read and
+        // write fails, and every request must still succeed via the server.
+        let dir = TempDir::new().unwrap();
+        let bogus = dir.path().join("not-a-dir");
+        std::fs::write(&bogus, b"").unwrap();
+        let api = AntithesisApi::build(
+            &Settings::for_test_base_url(mock_server.uri()),
+            AuthenticationInfo::Password {
+                username: "user".to_owned(),
+                password: "pass".to_owned(),
+            },
+            false,
+            ResponseCache::Dir(bogus),
+        )
+        .unwrap();
+
+        api.get_run("run-1").await.unwrap();
+        api.get_run("run-1").await.unwrap();
     }
 
     #[tokio::test]

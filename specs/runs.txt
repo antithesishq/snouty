@@ -253,7 +253,7 @@ env SNOUTY_UNSTABLE_FEATURES=runs-search
 # A needle that isn't present excludes the event entirely.
 mock-runs-server
 snouty runs events $R_run_id --match starting --match nonexistent
-stdout 'No events matched "starting nonexistent"\.'
+stderr 'No events matched "starting nonexistent"\.'
 env SNOUTY_UNSTABLE_FEATURES=
 
 # `snouty --json runs events` outputs raw NDJSON.
@@ -487,7 +487,7 @@ stderr 'invalid value .*not-a-number.*'
 # `snouty runs events` prints a friendly message when no events match.
 mock-runs-server
 snouty runs events run-1 --match nomatch
-stdout 'No events matched "nomatch"\.'
+stderr 'No events matched "nomatch"\.'
 
 # `snouty runs events` requires at least one search needle.
 mock-runs-server
@@ -592,7 +592,7 @@ stderr 'invalid value .0.'
 # live run this scans the whole event history.)
 mock-runs-server
 [!staging] snouty runs search $R_run_id 'contains({output_text: "zzz-no-such-needle"})'
-[!staging] stdout 'No events matched the query\.'
+[!staging] stderr 'No events matched the query\.'
 
 # `--check` validates the query without running it.
 mock-runs-server
@@ -645,7 +645,7 @@ stderr 'the server reported an error mid-stream: mock stream failure'
 mock-runs-server
 ! snouty runs events run-stream-error --match starting
 stdout '\[app\] \{"level":"info","msg":"starting"\}'
-! stdout 'No events matched'
+! stderr 'No events matched'
 stderr 'the server reported an error mid-stream: mock stream failure'
 
 mock-runs-server

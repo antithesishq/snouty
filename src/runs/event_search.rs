@@ -1,11 +1,14 @@
-//! The shared output pipeline behind `runs events` and `runs search`.
+//! The shared output pipeline behind the event-stream commands (`runs logs`,
+//! `runs events`, `runs search`, `runs build-logs`), plus the events-search
+//! helpers.
 //!
 //! Each command resolves its own backend up front — `runs events` from the
 //! `runs-search` feature flag, `runs search` always on the events-search
-//! endpoint — and hands the resulting [`JsonStream`] here. From the stream
-//! on, the two commands are identical: every line prints as it arrives, the
-//! caller's cap is enforced client-side where the server does not, and an
-//! empty result gets a friendly note.
+//! endpoint, `runs logs`/`runs build-logs` their GET endpoints — and hands
+//! the resulting [`JsonStream`] here. From the stream on, the commands are
+//! identical: every line prints as it arrives, the caller's cap is enforced
+//! client-side where the server does not, and an empty result gets a
+//! friendly note.
 //!
 //! Nothing here filters client-side. The output of a server-side filter IS
 //! the result: the server returns a capped subset of the matches, so
@@ -28,41 +31,33 @@ use crate::event_render::EventStreamRenderer;
 use crate::features::{self, Feature};
 use crate::jsonl::JsonStream;
 
-use super::{ErrorRows, event_lines, raw_lines};
+use super::{ErrorRows, FaultAnnotator, event_lines, raw_lines};
 
-/// How an event-stream command prints its rows. Three legal modes — the
-/// illegal flag combinations (`--raw` without `--json`, `--detail` with
-/// `--json`) are rejected once in `cmd_runs`, so the type never carries them.
+/// How an event-stream command prints its rows. The illegal flag
+/// combinations (`--raw` without `--json`, `--detail` with `--json`) are
+/// rejected once in `cmd_runs`, so the type never carries them.
 #[derive(Clone, Copy)]
 pub(super) enum EventOutput {
-    /// `--json --raw`: the server's stream passed through without
-    /// normalization (parsed records round-trip verbatim).
-    RawJson,
-    /// `--json`: each event as its JSON, vtime normalized.
-    Json,
+    /// `--json`: each event as its JSON line. `raw` passes the server's
+    /// stream through without normalization (parsed records round-trip
+    /// verbatim); otherwise vtime is normalized and, on `runs logs`, each
+    /// event is annotated with the faults active at its moment
+    /// (`annotate_faults` — meaningless with `raw`, which touches nothing).
+    Json { raw: bool, annotate_faults: bool },
     /// Human rendering through the shared [`EventStreamRenderer`]; `detail`
     /// adds full-precision vtime, source locations, and details JSON.
     Human { detail: bool },
 }
 
 impl EventOutput {
-    pub(super) fn new(json: bool, raw: bool, detail: bool) -> Self {
-        match (json, raw) {
-            (_, true) => Self::RawJson,
-            (true, false) => Self::Json,
-            (false, false) => Self::Human { detail },
-        }
-    }
-
     pub(super) fn json(self) -> bool {
-        !matches!(self, Self::Human { .. })
+        matches!(self, Self::Json { .. })
     }
 }
 
 /// Print every line of the (already server-filtered) stream, one line out
-/// per line in. `--json` dumps each event as its JSON (vtime normalized;
-/// with `raw`, round-tripped without normalization); human mode renders
-/// classified event blocks through the shared [`EventStreamRenderer`].
+/// per line in — the one output pipeline behind every event-stream command
+/// (`runs logs`, `runs events`, `runs search`, `runs build-logs`).
 ///
 /// Each row is flushed as it arrives: on a live run the search backend holds
 /// the connection open, so rows must not sit in the buffer waiting for an
@@ -86,10 +81,21 @@ pub(super) async fn print_event_stream(
     // enforce even on the raw passthrough — the search backend ignores the
     // limit.
     let lines: BoxStream<'_, Result<String>> = match output {
-        EventOutput::RawJson => raw_lines(stream, error_rows).boxed(),
-        EventOutput::Json => event_lines(stream, error_rows)
-            .map_ok(|value| value.to_string())
-            .boxed(),
+        EventOutput::Json { raw: true, .. } => raw_lines(stream, error_rows).boxed(),
+        EventOutput::Json {
+            raw: false,
+            annotate_faults,
+        } => {
+            let mut annotator = annotate_faults.then(FaultAnnotator::default);
+            event_lines(stream, error_rows)
+                .map_ok(move |mut entry| {
+                    if let Some(annotator) = &mut annotator {
+                        annotator.annotate(&mut entry);
+                    }
+                    entry.to_string()
+                })
+                .boxed()
+        }
         EventOutput::Human { detail } => {
             let mut renderer = EventStreamRenderer::new(detail);
             event_lines(stream, error_rows)
@@ -106,11 +112,12 @@ pub(super) async fn print_event_stream(
         stdout.flush()?;
     }
 
-    // Only a successfully-empty stream earns the friendly empty state; a
-    // mid-stream error propagated above instead.
+    // Only a successfully-empty stream earns the friendly empty note; a
+    // mid-stream error propagated above instead. The note goes to stderr —
+    // it is commentary, not output — and only in human mode: in `--json` an
+    // empty stream is the correct machine answer.
     if seen == 0 && !output.json() {
-        writeln!(stdout, "{empty_message}")?;
-        stdout.flush()?;
+        eprintln!("{empty_message}");
     }
     Ok(())
 }

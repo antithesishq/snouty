@@ -1,4 +1,4 @@
-use std::io::{BufWriter, IsTerminal, Read, Write};
+use std::io::{IsTerminal, Read, Write};
 use std::num::NonZeroU64;
 use std::time::Duration;
 
@@ -11,7 +11,7 @@ use log::debug;
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
 
-use chrono::{DateTime, Local, Utc};
+use chrono::{DateTime, Utc};
 
 use crate::api::{
     AntithesisApi, Event, EventProperty, LogsBegin, Moment, NonEventProperty, Property,
@@ -20,15 +20,13 @@ use crate::api::{
 };
 use crate::cli::{RunsCommands, RunsListArgs, RunsSearchArgs};
 use crate::error::{api_error_status, user_error};
-use crate::event_render::{
-    EventStreamRenderer, normalize_terminal_text, render_build_log_line, strip_ansi,
-};
+use crate::event_render::{normalize_terminal_text, strip_ansi};
 use crate::event_set_dsl;
 use crate::features::{self, Feature};
 use crate::jsonl::JsonStream;
 use crate::render::{OutputOptions, render_kv, sanitize, sanitize_multiline, wrap_text};
 use crate::settings::Settings;
-use crate::time::HumanDuration;
+use crate::time::{HumanDuration, format_local};
 use crate::vtime::VTime;
 
 mod event_search;
@@ -71,8 +69,16 @@ pub async fn cmd_runs(
         return Err(raw_requires_json_error());
     }
     // The stream commands' output mode, resolved once the flags are known
-    // legal.
-    let mode = EventOutput::new(output.json, raw, detail);
+    // legal. Fault annotation is `runs logs`' default `--json` shape; the
+    // other stream commands carry no fault windows to thread.
+    let mode = if output.json {
+        EventOutput::Json {
+            raw,
+            annotate_faults: !raw && matches!(&command, Some(RunsCommands::Logs { .. })),
+        }
+    } else {
+        EventOutput::Human { detail }
+    };
 
     match command {
         None => cmd_runs_list(RunsListArgs::default(), settings, output).await,
@@ -117,7 +123,17 @@ pub async fn cmd_runs(
             cmd_runs_properties(&run_id, filter, detail, settings, output).await
         }
         Some(RunsCommands::BuildLogs { run_id }) => {
-            cmd_runs_build_logs(&run_id, settings, output).await
+            // `--json` on build-logs is the raw passthrough: the records
+            // carry no vtime to normalize and no faults to annotate.
+            let mode = if output.json {
+                EventOutput::Json {
+                    raw: true,
+                    annotate_faults: false,
+                }
+            } else {
+                EventOutput::Human { detail: false }
+            };
+            cmd_runs_build_logs(&run_id, settings, output.verbose, mode).await
         }
         Some(RunsCommands::Logs {
             run_id,
@@ -254,24 +270,6 @@ fn relative_time(then: DateTime<Utc>) -> String {
         s => (s / (365 * 86_400), "y"),
     };
     format!("{value}{unit} ago")
-}
-
-/// Format an absolute timestamp in the user's local timezone, without a
-/// timezone suffix (the times in snouty's output are always local, so showing
-/// the offset would just be noise). Example: `2026-05-27 08:25:13`.
-fn format_local(dt: DateTime<Utc>) -> String {
-    dt.with_timezone(&Local)
-        .format("%Y-%m-%d %H:%M:%S")
-        .to_string()
-}
-
-/// Reformat an RFC 3339 timestamp string into the local, suffix-less format.
-/// Falls back to the original string if it can't be parsed.
-fn format_local_str(raw: &str) -> String {
-    match DateTime::parse_from_rfc3339(raw) {
-        Ok(dt) => format_local(dt.with_timezone(&Utc)),
-        Err(_) => raw.to_string(),
-    }
 }
 
 /// The requested run duration (`antithesis.duration`, a count of minutes),
@@ -1331,21 +1329,11 @@ fn raw_requires_json_error() -> color_eyre::eyre::Report {
         .suggestion("add --json, or drop --raw for the rendered output")
 }
 
-/// After streaming a log/event stream in human mode, print `empty_note` when the
-/// stream completed successfully (`stream_ok`) but produced no lines, so the user
-/// isn't left wondering whether anything happened. In `--json` mode an empty
-/// stream is the correct machine answer, so stay quiet. Shared by `cmd_runs_logs`
-/// and `cmd_runs_build_logs`, which track `wrote_any` the same way.
-fn note_if_empty(stream_ok: bool, json: bool, wrote_any: bool, empty_note: &str) {
-    if stream_ok && !json && !wrote_any {
-        eprintln!("{empty_note}");
-    }
-}
-
 async fn cmd_runs_build_logs(
     run_id: &str,
     settings: &Settings,
-    OutputOptions { json, verbose }: OutputOptions,
+    verbose: bool,
+    mode: EventOutput,
 ) -> Result<()> {
     debug!("streaming build logs for run: {}", run_id);
 
@@ -1354,39 +1342,14 @@ async fn cmd_runs_build_logs(
         Ok(stream) => stream,
         Err(err) => return Err(explain_run_scoped_error(&api, run_id, err).await),
     };
-    let mut stdout = BufWriter::new(std::io::stdout().lock());
-
-    let mut wrote_any = false;
-    let result: Result<()> = async {
-        if json {
-            // The --json contract is raw passthrough.
-            let mut lines = raw_lines(stream, ErrorRows::Abort);
-            while let Some(line) = lines.try_next().await? {
-                wrote_any = true;
-                writeln!(stdout, "{line}")?;
-            }
-        } else {
-            let mut lines = event_lines(stream, ErrorRows::Abort);
-            while let Some(entry) = lines.try_next().await? {
-                wrote_any = true;
-                let ts = format_local_str(entry["timestamp"].as_str().unwrap_or(""));
-                let stream = entry["stream"].as_str().unwrap_or("out");
-                let text = entry["text"].as_str().unwrap_or("");
-                writeln!(stdout, "{}", render_build_log_line(&ts, stream, text))?;
-            }
-        }
-        Ok(())
-    }
-    .await;
-
-    stdout.flush()?;
-    note_if_empty(
-        result.is_ok(),
-        json,
-        wrote_any,
+    event_search::print_event_stream(
+        stream,
+        None,
+        ErrorRows::Abort,
+        mode,
         "No build logs for this run.",
-    );
-    result
+    )
+    .await
 }
 
 async fn cmd_runs_search(
@@ -1507,51 +1470,17 @@ async fn cmd_runs_logs(
         Ok(stream) => stream,
         Err(err) => return Err(explain_logs_error(&api, run_id, err).await),
     };
-
-    let mut stdout = BufWriter::new(std::io::stdout().lock());
-    let mut wrote_any = false;
-    let result: Result<()> = async {
-        match mode {
-            EventOutput::RawJson => {
-                // Verbatim passthrough: no fault annotation, no normalization.
-                let mut lines = raw_lines(stream, ErrorRows::Abort);
-                while let Some(line) = lines.try_next().await? {
-                    wrote_any = true;
-                    writeln!(stdout, "{line}")?;
-                }
-            }
-            EventOutput::Json => {
-                // Fault annotation is the default.
-                let mut annotator = FaultAnnotator::default();
-                let mut lines = event_lines(stream, ErrorRows::Abort);
-                while let Some(mut entry) = lines.try_next().await? {
-                    wrote_any = true;
-                    annotator.annotate(&mut entry);
-                    writeln!(stdout, "{entry}")?;
-                }
-            }
-            EventOutput::Human { detail } => {
-                let mut renderer = EventStreamRenderer::new(detail);
-                let mut lines = event_lines(stream, ErrorRows::Abort);
-                while let Some(entry) = lines.try_next().await? {
-                    wrote_any = true;
-                    writeln!(stdout, "{}", renderer.render_entry(&entry))?;
-                }
-            }
-        }
-        Ok(())
-    }
-    .await;
-    stdout.flush()?;
-    // A moment with no logs (e.g. a manually-supplied 0/0 placeholder) yields an
-    // empty stream; say so in human mode rather than printing nothing.
-    note_if_empty(
-        result.is_ok(),
-        mode.json(),
-        wrote_any,
+    // A moment with no logs (e.g. a manually-supplied 0/0 placeholder)
+    // yields an empty stream; the pipeline says so in human mode rather
+    // than printing nothing.
+    event_search::print_event_stream(
+        stream,
+        None,
+        ErrorRows::Abort,
+        mode,
         "No log lines at this moment.",
-    );
-    result
+    )
+    .await
 }
 
 /// One frame of an execute-command NDJSON stream.

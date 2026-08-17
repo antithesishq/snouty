@@ -40,6 +40,7 @@ use serde::Deserialize;
 use serde_json::{Map, Value};
 
 use crate::render::sanitize;
+use crate::time::format_local_str;
 use crate::vtime::VTime;
 
 /// vtime is shown truncated to 3 decimals. Sized for runs up to ~9999 vsec
@@ -994,9 +995,19 @@ impl EventStreamRenderer {
         // row reshaped by an event-set DSL pipeline can lack either (narrow
         // can keep `moment` while dropping the rest); rendering it through
         // the event form would produce a half-empty hybrid line, so its JSON
-        // is the row — print it as such.
+        // is the row — print it as such. A build-log record (`runs
+        // build-logs`) has no moment either — a wall-clock
+        // `timestamp`/`stream`/`text` triple instead — and renders in the
+        // shared visual grammar without a divider or classification.
         let hash = entry["moment"]["input_hash"].as_str();
         let Some(hash) = hash.filter(|_| entry.get("source").is_some()) else {
+            if let (Some(timestamp), Some(stream), Some(text)) = (
+                entry["timestamp"].as_str(),
+                entry["stream"].as_str(),
+                entry["text"].as_str(),
+            ) {
+                return render_build_log_line(&format_local_str(timestamp), stream, text);
+            }
             return sanitize(&entry.to_string());
         };
 
@@ -1056,7 +1067,7 @@ impl EventStreamRenderer {
 /// timestamp, cyan bracketed source, sanitized text (SUT colors kept). Build
 /// logs are wall-clock events with no moment, so there is no divider and no
 /// classification — the stream label stands in for the source.
-pub(crate) fn render_build_log_line(timestamp: &str, stream: &str, text: &str) -> String {
+fn render_build_log_line(timestamp: &str, stream: &str, text: &str) -> String {
     let mut line = format!(
         "{} {} {}",
         style(timestamp).dim(),

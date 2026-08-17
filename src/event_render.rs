@@ -30,6 +30,7 @@
 //! past — the line you saw; the divider carries the segment's full-precision
 //! moment for exact `runs logs`/`runs exec`/`snouty debug` follow-ups.
 
+use std::borrow::Cow;
 use std::path::Path;
 use std::sync::OnceLock;
 
@@ -74,15 +75,16 @@ fn ansi_re() -> &'static Regex {
     })
 }
 
-pub(crate) fn strip_ansi(text: &str) -> String {
-    ansi_re().replace_all(text, "").to_string()
+pub(crate) fn strip_ansi(text: &str) -> Cow<'_, str> {
+    ansi_re().replace_all(text, "")
 }
 
-/// Single choke point for terminal-bound free text: strip ANSI escape
-/// sequences first, then escape any remaining control bytes so stray
-/// `\r`/`\x08`/BEL can't corrupt the terminal.
+/// Terminal-bound free text with no color policy: every escape sequence is
+/// dropped and the remaining control bytes are escaped so stray
+/// `\r`/`\x08`/BEL can't corrupt the terminal. The keep-colors case of the
+/// same mechanism is [`sanitize_log_text`].
 pub(crate) fn normalize_terminal_text(text: &str) -> String {
-    sanitize(&strip_ansi(text))
+    sanitize_log_text_inner(text, false)
 }
 
 /// Is `seq` an SGR sequence (`ESC [ params m`, digits and `;` only)? SGR only
@@ -179,22 +181,22 @@ fn truncate_decimals(s: &str, decimals: usize) -> String {
     if decimals == 0 {
         return int_part.to_string();
     }
-    let mut frac: String = frac_part.chars().take(decimals).collect();
-    while frac.len() < decimals {
-        frac.push('0');
-    }
-    format!("{int_part}.{frac}")
+    // `is_plain` guarantees ASCII digits, so byte slicing is safe.
+    let kept = &frac_part[..frac_part.len().min(decimals)];
+    format!("{int_part}.{kept:0<decimals$}")
 }
 
 /// An event's vtime at full precision: the server's own string when it is
 /// still one, otherwise [`VTime`]'s exact print of the normalized number.
-fn full_vtime(entry: &Value) -> String {
+fn full_vtime(entry: &Value) -> Cow<'_, str> {
     let raw = &entry["moment"]["vtime"];
     match raw.as_str() {
-        Some(s) => s.to_string(),
-        None => VTime::from_json(raw)
-            .map(|v| v.to_string())
-            .unwrap_or_default(),
+        Some(s) => Cow::Borrowed(s),
+        None => Cow::Owned(
+            VTime::from_json(raw)
+                .map(|v| v.to_string())
+                .unwrap_or_default(),
+        ),
     }
 }
 
@@ -258,59 +260,48 @@ impl AssertVerdict {
         if !hit {
             return Self::Catalog;
         }
-        let assert_type = assert_type.to_ascii_lowercase();
-        let display_type = display_type.to_ascii_lowercase();
-        if assert_type == "unreachable" || display_type == "unreachable" {
+        if assert_type.eq_ignore_ascii_case("unreachable")
+            || display_type.eq_ignore_ascii_case("unreachable")
+        {
             return Self::Fail;
         }
         // `always` covers AlwaysOrUnreachable too (its assert_type is
         // "always"); everything else (sometimes, reachability, unknown
         // future types) is informational.
-        if assert_type == "always" || display_type.starts_with("always") {
+        let always_prefixed = display_type
+            .get(..6)
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case("always"));
+        if assert_type.eq_ignore_ascii_case("always") || always_prefixed {
             return if condition { Self::Pass } else { Self::Fail };
         }
         Self::Hit
     }
-
-    /// The badge: FAIL only on a failing always/unreachable; CATALOG on a
-    /// catalog registration; HIT otherwise.
-    fn badge(self) -> &'static str {
-        match self {
-            Self::Catalog => "CATALOG",
-            Self::Fail => "FAIL",
-            Self::Pass | Self::Hit => "HIT",
-        }
-    }
 }
 
-impl TryFrom<AssertionPayload> for AssertionSummary {
-    type Error = ();
-
-    fn try_from(payload: AssertionPayload) -> std::result::Result<Self, Self::Error> {
-        let hit = payload.hit.ok_or(())?;
+impl AssertionSummary {
+    fn from_payload(payload: AssertionPayload) -> Option<Self> {
+        let hit = payload.hit?;
         // `condition` only means something on an evaluation; a catalog
         // registration (`hit: false`) classifies without one, so a missing
         // condition must not knock it down to the raw-JSON fallback.
         let condition = match payload.condition {
             Some(condition) => condition,
             None if !hit => false,
-            None => return Err(()),
+            None => return None,
         };
         let message = payload
             .message
             .or(payload.id)
             .map(|message| message.trim().to_string())
-            .filter(|message| !message.is_empty())
-            .ok_or(())?;
+            .filter(|message| !message.is_empty())?;
         let assert_type = payload.assert_type.unwrap_or_default();
         let display_type = payload.display_type.unwrap_or_default();
         let label = Some(display_type.trim())
             .filter(|label| !label.is_empty())
-            .or_else(|| Some(assert_type.trim()).filter(|label| !label.is_empty()))
-            .ok_or(())?
+            .or_else(|| Some(assert_type.trim()).filter(|label| !label.is_empty()))?
             .to_string();
 
-        Ok(Self {
+        Some(Self {
             verdict: AssertVerdict::classify(hit, condition, &assert_type, &display_type),
             label,
             message,
@@ -323,7 +314,7 @@ impl TryFrom<AssertionPayload> for AssertionSummary {
 fn parse_assertion_summary(entry: &Value) -> Option<AssertionSummary> {
     let assertion = entry.get("antithesis_assert")?;
     let payload = AssertionPayload::deserialize(assertion).ok()?;
-    AssertionSummary::try_from(payload).ok()
+    AssertionSummary::from_payload(payload)
 }
 
 /// A payload's attached `details` as compact JSON — `None` for null and empty
@@ -525,14 +516,15 @@ fn render_assert(summary: &AssertionSummary, detail: bool) -> RenderedPayload {
         sanitize(&summary.label),
         sanitize(&summary.message)
     );
-    let badge = summary.verdict.badge();
+    // FAIL only on a failing always/unreachable; CATALOG on a catalog
+    // registration; HIT otherwise.
     let headline = match summary.verdict {
         // A catalog registration is chatter: the whole line recedes.
-        AssertVerdict::Catalog => style(format!("{badge} {body}")).dim().to_string(),
-        AssertVerdict::Fail => format!("{} {body}", style(badge).red().bold()),
-        AssertVerdict::Pass => format!("{} {body}", style(badge).green().bold()),
+        AssertVerdict::Catalog => style(format!("CATALOG {body}")).dim().to_string(),
+        AssertVerdict::Fail => format!("{} {body}", style("FAIL").red().bold()),
+        AssertVerdict::Pass => format!("{} {body}", style("HIT").green().bold()),
         // A hit sometimes/reachable is neither good nor bad on its own.
-        AssertVerdict::Hit => format!("{} {body}", style(badge).bold()),
+        AssertVerdict::Hit => format!("{} {body}", style("HIT").bold()),
     };
     let mut details = Vec::new();
     if detail {
@@ -980,8 +972,9 @@ fn render_source(entry: &Value, detail: bool) -> RenderedSource {
 /// blank-line separation included.
 pub(crate) struct EventStreamRenderer {
     detail: bool,
+    /// The current segment's hash; `Some` also means at least one block was
+    /// written, so the next divider needs a blank line above it.
     last_input_hash: Option<String>,
-    wrote_block: bool,
 }
 
 impl EventStreamRenderer {
@@ -989,7 +982,6 @@ impl EventStreamRenderer {
         Self {
             detail,
             last_input_hash: None,
-            wrote_block: false,
         }
     }
 
@@ -1014,7 +1006,7 @@ impl EventStreamRenderer {
 
         let mut out = String::new();
         if self.last_input_hash.as_deref() != Some(hash) {
-            if self.wrote_block {
+            if self.last_input_hash.is_some() {
                 out.push('\n');
             }
             // The divider carries the segment's full-precision moment —
@@ -1033,7 +1025,7 @@ impl EventStreamRenderer {
         let vtime = if self.detail {
             full_vtime
         } else {
-            truncate_decimals(&full_vtime, 3)
+            Cow::Owned(truncate_decimals(&full_vtime, 3))
         };
         let vtime_cell = format!("{vtime:>VTIME_WIDTH$}");
         let source = render_source(entry, self.detail);
@@ -1056,7 +1048,6 @@ impl EventStreamRenderer {
             out.push('\n');
             out.push_str(&format!("{:DETAIL_INDENT$}{detail}", ""));
         }
-        self.wrote_block = true;
         out
     }
 }
@@ -1066,14 +1057,14 @@ impl EventStreamRenderer {
 /// logs are wall-clock events with no moment, so there is no divider and no
 /// classification — the stream label stands in for the source.
 pub(crate) fn render_build_log_line(timestamp: &str, stream: &str, text: &str) -> String {
-    format!(
+    let mut line = format!(
         "{} {} {}",
-        style(timestamp.to_string()).dim(),
+        style(timestamp).dim(),
         style(format!("[{}]", sanitize(stream))).cyan(),
         sanitize_log_text(text)
-    )
-    .trim_end()
-    .to_string()
+    );
+    line.truncate(line.trim_end().len());
+    line
 }
 
 #[cfg(test)]

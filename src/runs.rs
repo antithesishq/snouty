@@ -2017,7 +2017,7 @@ impl FaultAnnotator {
         }
 
         if let Some(output_text) = entry["output_text"].as_str() {
-            entry["output_text"] = Value::String(strip_ansi(output_text));
+            entry["output_text"] = Value::String(strip_ansi(output_text).into_owned());
         }
 
         entry["active_faults"] = self.active_faults.clone();

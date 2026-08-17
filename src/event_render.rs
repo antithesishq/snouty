@@ -164,6 +164,15 @@ impl Block<'_> {
         }
     }
 
+    /// The dim `@ location` source-location line the assertion-shaped kinds
+    /// share: only under `--detail`.
+    fn location_line(&mut self, location: &str) -> fmt::Result {
+        if !self.detail {
+            return Ok(());
+        }
+        self.detail_line(format_args!("@ {location}"))
+    }
+
     /// Close the block: trim the headline if nothing did yet, and emit a
     /// still-pending source overflow even when no detail line followed.
     fn finish(mut self) -> fmt::Result {

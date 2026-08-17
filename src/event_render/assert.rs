@@ -11,7 +11,7 @@ use serde_json::Value;
 
 use crate::render::sanitize;
 
-use super::{Block, DisplayWith, Event, render_details_json};
+use super::{Block, DisplayWith, Event};
 
 #[derive(Debug, Deserialize)]
 struct AssertionPayload {
@@ -36,15 +36,15 @@ pub(super) struct AssertionLocation {
     begin_line: Option<serde_json::Number>,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq)]
 struct AssertionSummary {
     label: String,
     verdict: AssertVerdict,
     message: String,
     location: Option<String>,
-    /// The payload's attached `details`, pre-rendered as compact JSON.
-    /// `None` when absent, null, or an empty container.
-    details: Option<String>,
+    /// The payload's attached `details`, as sent. [`Block::details_json`]
+    /// renders it, skipping null and empty containers.
+    details: Option<Value>,
 }
 
 /// What one assertion event means. `must_hit` is deliberately not surfaced —
@@ -64,11 +64,22 @@ enum AssertVerdict {
     Fail,
 }
 
+/// The payload's two type strings, named so a call site cannot swap them
+/// silently.
+struct AssertTypes<'a> {
+    assert_type: &'a str,
+    display_type: &'a str,
+}
+
 impl AssertVerdict {
-    fn classify(hit: bool, condition: bool, assert_type: &str, display_type: &str) -> Self {
-        if !hit {
-            return Self::Catalog;
-        }
+    /// Classify one evaluation (`hit: true`). A catalog registration
+    /// (`hit: false`) never reaches here — [`AssertionSummary::from_payload`]
+    /// maps it straight to [`Self::Catalog`].
+    fn classify(condition: bool, types: AssertTypes<'_>) -> Self {
+        let AssertTypes {
+            assert_type,
+            display_type,
+        } = types;
         if assert_type.eq_ignore_ascii_case("unreachable")
             || display_type.eq_ignore_ascii_case("unreachable")
         {
@@ -90,14 +101,6 @@ impl AssertVerdict {
 impl AssertionSummary {
     fn from_payload(payload: AssertionPayload) -> Option<Self> {
         let hit = payload.hit?;
-        // `condition` only means something on an evaluation; a catalog
-        // registration (`hit: false`) classifies without one, so a missing
-        // condition must not knock it down to the raw-JSON fallback.
-        let condition = match payload.condition {
-            Some(condition) => condition,
-            None if !hit => false,
-            None => return None,
-        };
         let message = payload
             .message
             .or(payload.id)
@@ -109,13 +112,27 @@ impl AssertionSummary {
             .filter(|label| !label.is_empty())
             .or_else(|| Some(assert_type.trim()).filter(|label| !label.is_empty()))?
             .to_string();
+        // `condition` only means something on an evaluation; a catalog
+        // registration (`hit: false`) classifies without one, so a missing
+        // condition must not knock it down to the raw-JSON fallback.
+        let verdict = if hit {
+            AssertVerdict::classify(
+                payload.condition?,
+                AssertTypes {
+                    assert_type: &assert_type,
+                    display_type: &display_type,
+                },
+            )
+        } else {
+            AssertVerdict::Catalog
+        };
 
         Some(Self {
-            verdict: AssertVerdict::classify(hit, condition, &assert_type, &display_type),
+            verdict,
             label,
             message,
             location: payload.location.and_then(render_assertion_location),
-            details: payload.details.as_ref().and_then(render_details_json),
+            details: payload.details,
         })
     }
 }
@@ -160,13 +177,11 @@ impl Event<'_> for Assertion {
             // A hit sometimes/reachable is neither good nor bad on its own.
             AssertVerdict::Hit => write!(block, "{} {body}", style("HIT").bold())?,
         }
-        if block.detail() {
-            if let Some(location) = &summary.location {
-                block.detail_line(format_args!("@ {location}"))?;
-            }
-            if let Some(json) = &summary.details {
-                block.detail_line(format_args!("details {json}"))?;
-            }
+        if let Some(location) = &summary.location {
+            block.location_line(location)?;
+        }
+        if let Some(details) = &summary.details {
+            block.details_json(details)?;
         }
         Ok(())
     }

@@ -85,7 +85,7 @@ fn location_line(block: &mut Block<'_>, guidance: &Value) -> fmt::Result {
         .ok()
         .and_then(render_assertion_location);
     match location {
-        Some(location) => block.detail_line(format_args!("@ {location}")),
+        Some(location) => block.location_line(&location),
         None => Ok(()),
     }
 }

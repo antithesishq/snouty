@@ -26,46 +26,46 @@ pub const VERBS: &[&str] = &[
     "with_next",
 ];
 
-/// Build the event set that ANDs every needle as a case-insensitive
-/// substring of the raw event JSON. The raw JSON — not snouty's rendered
-/// form — is the haystack: a needle that exists only in the rendering finds
-/// nothing, and a match inside a field the rendering elides still returns
-/// its event.
+/// The event-set expression `(ev, needles)` that decides whether one event
+/// holds every needle.
+pub(crate) const NEEDLE_FILTER: &str = include_str!("event_set_dsl/needle_filter.pangolin.js");
+
+/// Build the event set that keeps the events holding every needle.
 pub fn substring_filter(needles: &[String]) -> String {
-    let clauses = needles
-        .iter()
-        .map(|needle| {
-            let literal =
-                serde_json::to_string(&needle.to_lowercase()).expect("a string serializes to JSON");
-            format!("h.includes({literal})")
-        })
-        .collect::<Vec<_>>()
-        .join(" && ");
-    format!("filter(ev => ((h) => {clauses})(JSON.stringify(ev).toLowerCase()))")
+    let lowercased: Vec<String> = needles.iter().map(|needle| needle.to_lowercase()).collect();
+    let needles = serde_json::to_string(&lowercased).expect("strings serialize to JSON");
+    format!("filter(ev => ({})(ev, {needles}))", NEEDLE_FILTER.trim())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    // The substring filter binds the lowercased raw-JSON haystack once, then
-    // matches each needle against it, embedding needles as JSON string
-    // literals so quotes and backslashes arrive escaped rather than breaking
-    // the query.
+    // The needles ride as one JSON array, lowercased, with quotes and
+    // backslashes escaped rather than breaking the query.
     #[test]
-    fn substring_filter_conjoins_lowercased_escaped_needles() {
+    fn substring_filter_passes_lowercased_escaped_needles() {
         let query = substring_filter(&["Raft".to_string(), r#"say "hi"\"#.to_string()]);
-        assert!(query.starts_with("filter(ev => ((h) => "), "got: {query}");
         assert!(
-            query.ends_with(r#")(JSON.stringify(ev).toLowerCase()))"#),
+            query.ends_with(r#")(ev, ["raft","say \"hi\"\\"]))"#),
             "got: {query}"
         );
-        assert!(query.contains(r#"h.includes("raft")"#), "got: {query}");
-        assert!(
-            query.contains(r#"h.includes("say \"hi\"\\")"#),
-            "got: {query}"
-        );
-        assert_eq!(query.matches("h.includes(").count(), 2, "got: {query}");
-        assert!(query.contains(" && "), "got: {query}");
+    }
+
+    // A needle is matched against the event's text fields, never against the
+    // event's JSON: matching that string made a field name a needle.
+    #[test]
+    fn substring_filter_reads_fields_not_the_event_json() {
+        let query = substring_filter(&["raft".to_string()]);
+        assert!(query.contains(NEEDLE_FILTER.trim()), "got: {query}");
+        for field in [
+            "ev.output_text",
+            "ev.antithesis_assert.message",
+            "ev.antithesis_assert.location?.function",
+            "ev.command",
+            "ev.started_task",
+        ] {
+            assert!(query.contains(field), "{field} missing from: {query}");
+        }
     }
 }

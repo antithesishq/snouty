@@ -256,6 +256,23 @@ snouty runs events $R_run_id --match starting --match nonexistent
 stderr 'No events matched "starting nonexistent"\.'
 env SNOUTY_UNSTABLE_FEATURES=
 
+# A needle reaches the text an event carries — log output, an assertion's
+# message and source function, a test-composer command — and nothing else.
+# The name of a JSON field is not text the event reported, so it matches no
+# event. Both backends answer the same way: enabling the feature must not
+# change which events a search returns.
+#    `IPT_bytes_out` is a field every event carries. The events-search
+#    backend answered this needle with every event in the run until snouty
+#    stopped matching against `JSON.stringify(ev)` (issue #252).
+mock-runs-server
+snouty runs events $R_run_id --match IPT_bytes_out
+stderr 'No events matched "IPT_bytes_out"\.'
+mock-runs-server
+env SNOUTY_UNSTABLE_FEATURES=runs-search
+snouty runs events $R_run_id --match IPT_bytes_out
+stderr 'No events matched "IPT_bytes_out"\.'
+env SNOUTY_UNSTABLE_FEATURES=
+
 # `snouty --json runs events` outputs raw NDJSON.
 mock-runs-server
 [!staging] snouty --json runs events $R_run_id --match counter

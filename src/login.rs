@@ -1195,7 +1195,9 @@ mod tests {
                 std::env::set_var("HOME", home.path());
                 std::env::set_var("ANTITHESIS_BASE_URL", &base_url);
                 // A stray value for any of these in the developer's shell would leak
-                // into settings resolution; clear them for a clean baseline.
+                // into settings resolution; clear them for a clean baseline. The
+                // credential variables come from `auth::CREDENTIAL_ENV_VARS` so this
+                // list cannot drift from what ambient resolution actually reads.
                 for key in [
                     "XDG_CONFIG_HOME",
                     "ANTITHESIS_PROFILE",
@@ -1204,7 +1206,10 @@ mod tests {
                     "ANTITHESIS_HTTPS_PROXY",
                     "CONTAINER_ENGINE",
                     "SNOUTY_SETTINGS_PATH",
-                ] {
+                ]
+                .into_iter()
+                .chain(crate::auth::CREDENTIAL_ENV_VARS)
+                {
                     std::env::remove_var(key);
                 }
             }

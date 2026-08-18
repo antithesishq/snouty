@@ -63,16 +63,16 @@ uv run scripts/watch-prs.py <PR>
 ```
 
 The script prints one line per event and exits when every watched PR is
-merged or closed. On the first poll it reports every already-completed check
-once; treat that batch as a baseline, not as news. Flags: `-i seconds` sets
-the poll interval (default 45), `-u login` suppresses events from a login,
-`-R owner/repo` overrides the repository. Event lines:
+merged or closed. The first poll seeds the baseline silently; only changes
+after that emit. Flags: `-i seconds` sets the poll interval (default 45),
+`-u login` suppresses events from a login, `-R owner/repo` overrides the
+repository. Event lines:
 
 ```
-PR #123 comment by <login> (id <id>)
-PR #123 review comment by <login> on <path> (id <id>)
+PR #123 comment by <login> (<url>)
+PR #123 review comment by <login> on <path> (<url>)
 PR #123 review by <login>: <APPROVED|CHANGES_REQUESTED|COMMENTED> (id <id>)
-PR #123 check <name>: <pass|fail|skipping|cancel>
+PR #123 check <name>: <success|failure|skipped|cancelled>
 PR #123 merged
 PR #123 closed without merge
 ```

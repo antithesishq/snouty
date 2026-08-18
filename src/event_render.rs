@@ -98,9 +98,9 @@ const VTIME_GAP: usize = 2;
 const VALUE_TRUNCATE_WIDTH: usize = 40;
 
 /// Source labels longer than this (generated k8s pod names run 60+ columns)
-/// are truncated in the event line, with the full value on a dim detail line
-/// beneath. Wide enough that compose container names and script paths fit
-/// whole; `--detail` keeps the label inline and untruncated.
+/// are truncated in the event line. Wide enough that compose container names
+/// and script paths fit whole; `--detail` keeps the label inline and
+/// untruncated, and `--json` carries the raw source.
 const SOURCE_TRUNCATE_WIDTH: usize = 40;
 
 // ---------------------------------------------------------------------------
@@ -115,14 +115,10 @@ const SOURCE_TRUNCATE_WIDTH: usize = 40;
 ///
 /// The block owns the layout invariants so no kind has to: the headline's
 /// trailing whitespace is trimmed exactly once (when the first detail line
-/// starts, or at [`Block::finish`]), and a truncated source label's full
-/// value is held back to lead the detail lines, right under the cell it
-/// overflowed.
+/// starts, or at [`Block::finish`]).
 struct Block<'a> {
     out: &'a mut String,
     detail: bool,
-    /// A truncated source's `field=full-label`, still owed to the output.
-    overflow: Option<String>,
     headline_done: bool,
 }
 
@@ -147,9 +143,6 @@ impl Block<'_> {
     fn detail_line(&mut self, content: impl fmt::Display) -> fmt::Result {
         self.end_headline();
         let indent = self.indent();
-        if let Some(overflow) = self.overflow.take() {
-            write!(self.out, "\n{:indent$}{}", "", style(overflow).dim())?;
-        }
         write!(self.out, "\n{:indent$}{}", "", style(content).dim())
     }
 
@@ -183,14 +176,9 @@ impl Block<'_> {
         }
     }
 
-    /// Close the block: trim the headline if nothing did yet, and emit a
-    /// still-pending source overflow even when no detail line followed.
+    /// Close the block: trim the headline if nothing did yet.
     fn finish(mut self) -> fmt::Result {
         self.end_headline();
-        let indent = self.indent();
-        if let Some(overflow) = self.overflow.take() {
-            write!(self.out, "\n{:indent$}{}", "", style(overflow).dim())?;
-        }
         Ok(())
     }
 
@@ -415,44 +403,29 @@ fn format_duration(value: &Value) -> Option<String> {
     Some(format!("{seconds:.1}s"))
 }
 
-/// A rendered source label: the bracketed cell for the event line, plus the
-/// full value for a detail line when the cell had to truncate.
-struct RenderedSource {
-    cell: String,
-    /// `field=full-label`, present only when the cell is truncated.
-    overflow: Option<String>,
-}
-
 /// The bracketed source label: the container when the record names one,
 /// otherwise the source name with the `antithesis_` prefix dropped. The
 /// stream (info/error) is deliberately not shown; `--json` carries it.
 ///
 /// A label past [`SOURCE_TRUNCATE_WIDTH`] (generated k8s pod names) truncates
-/// in the cell and surfaces whole on a detail line, named by the field it
-/// came from — unless `detail`, which keeps every value inline and whole.
-fn render_source(entry: &Value, detail: bool) -> RenderedSource {
+/// in the cell — unless `detail`, which keeps every value inline and whole;
+/// `--detail` and `--json` carry the full label.
+fn render_source(entry: &Value, detail: bool) -> String {
     let container = entry["source"]["container"].as_str().unwrap_or("");
     let name = entry["source"]["name"].as_str().unwrap_or("");
 
-    let (field, label) = if !container.trim().is_empty() {
-        ("container", sanitize(container))
+    let label = if !container.trim().is_empty() {
+        sanitize(container)
     } else {
-        (
-            "name",
-            sanitize(name.trim().strip_prefix("antithesis_").unwrap_or(name)),
-        )
+        sanitize(name.trim().strip_prefix("antithesis_").unwrap_or(name))
     };
-    let truncated = console::truncate_str(&label, SOURCE_TRUNCATE_WIDTH, "…");
-    if detail || truncated == label {
-        return RenderedSource {
-            cell: format!("[{label}]"),
-            overflow: None,
-        };
+    if detail {
+        return format!("[{label}]");
     }
-    RenderedSource {
-        cell: format!("[{truncated}]"),
-        overflow: Some(format!("{field}={label}")),
-    }
+    format!(
+        "[{}]",
+        console::truncate_str(&label, SOURCE_TRUNCATE_WIDTH, "…")
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -468,9 +441,6 @@ pub(crate) struct EventStreamRenderer {
     /// The current segment's hash; `Some` also means at least one block was
     /// written, so the next divider needs a blank line above it.
     last_input_hash: Option<String>,
-    /// The full label of the last truncated source whose overflow line was
-    /// emitted; consecutive events from the same source don't repeat it.
-    last_overflow: Option<String>,
 }
 
 impl EventStreamRenderer {
@@ -478,7 +448,6 @@ impl EventStreamRenderer {
         Self {
             detail,
             last_input_hash: None,
-            last_overflow: None,
         }
     }
 
@@ -533,16 +502,6 @@ impl EventStreamRenderer {
         }
 
         let source = render_source(entry, self.detail);
-        // A truncated source's full value is worth one detail line per
-        // contiguous run of events from that source, not one per event — a
-        // long-named pod would otherwise double its whole stream.
-        let overflow = match source.overflow {
-            Some(overflow) if self.last_overflow.as_deref() == Some(overflow.as_str()) => None,
-            overflow => {
-                self.last_overflow.clone_from(&overflow);
-                overflow
-            }
-        };
         write!(
             out,
             "{}  {} ",
@@ -554,14 +513,11 @@ impl EventStreamRenderer {
                 }
             }))
             .dim(),
-            style(&source.cell).cyan(),
+            style(&source).cyan(),
         )?;
         let mut block = Block {
             out,
             detail: self.detail,
-            // The truncated source's full value leads the detail lines,
-            // right under the cell it overflowed.
-            overflow,
             headline_done: false,
         };
         render_payload(entry, &mut block)?;
@@ -693,7 +649,7 @@ mod tests {
             if let Some(stream) = stream {
                 entry["source"]["stream"] = json!(stream);
             }
-            render_source(&entry, false).cell
+            render_source(&entry, false)
         };
         assert_eq!(source("control", "", None), "[control]");
         assert_eq!(source("", "fault_injector", None), "[fault_injector]");
@@ -711,7 +667,7 @@ mod tests {
     }
 
     #[test]
-    fn long_sources_truncate_with_the_full_value_on_a_detail_line() {
+    fn long_sources_truncate_in_the_cell() {
         console::set_colors_enabled(false);
         let pod = "dynamo-platform-dynamo-operator-controller-manager-7c94cc7dfxqh/manager";
         let entry = json!({
@@ -725,7 +681,9 @@ mod tests {
             lines.next().unwrap(),
             "25.6      [dynamo-platform-dynamo-operator-control…] Applied CRD"
         );
-        assert_eq!(lines.next().unwrap(), format!("          container={pod}"));
+        // The full value stays out of the default depth; --detail and --json
+        // carry it.
+        assert_eq!(lines.next(), None);
 
         // --detail keeps the label inline and whole.
         let block = render_entry(&mut renderer(true), &entry);
@@ -733,9 +691,8 @@ mod tests {
             block.contains(&format!("[{pod}] Applied CRD")),
             "got: {block}"
         );
-        assert!(!block.contains("container="), "got: {block}");
 
-        // A label that fits stays whole with no overflow line.
+        // A label that fits stays whole.
         let block = render_entry(
             &mut renderer(false),
             &json!({
@@ -763,33 +720,5 @@ mod tests {
         }));
         assert_eq!(block, "moment -1\nNULL      [app] hi");
         assert!(!block.contains('\u{1b}'), "escape byte leaked: {block:?}");
-    }
-
-    #[test]
-    fn source_overflow_prints_once_per_contiguous_source_run() {
-        let long = "dynamo-platform-vllm-v1-agg-router-6cf9b55458-7c94cc7dfxqh/main";
-        let mut r = renderer(false);
-        let entry = json!({
-            "moment": {"input_hash": "-1", "vtime": "1.0"},
-            "source": {"container": long},
-            "output_text": "hi"
-        });
-        let first = render_entry(&mut r, &entry);
-        assert!(first.contains("container="), "got: {first}");
-        // The same source again: the cell still truncates, but the full
-        // value does not repeat.
-        let second = render_entry(&mut r, &entry);
-        assert!(!second.contains("container="), "got: {second}");
-        // A different source in between resets the memo.
-        render_entry(
-            &mut r,
-            &json!({
-                "moment": {"input_hash": "-1", "vtime": "1.1"},
-                "source": {"container": "app"},
-                "output_text": "hi"
-            }),
-        );
-        let again = render_entry(&mut r, &entry);
-        assert!(again.contains("container="), "got: {again}");
     }
 }

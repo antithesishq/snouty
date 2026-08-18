@@ -184,7 +184,7 @@ impl ApiCache {
 
     /// Replay the stream cached under `key`, or `None` on a miss or any
     /// cache error. The entry is parsed up front — it is already fully in
-    /// memory, and an unparseable entry becomes a miss instead of failing
+    /// memory, and an unparsable entry becomes a miss instead of failing
     /// the stream partway.
     pub async fn lookup_stream(&self, key: &CacheKey) -> Option<JsonStream> {
         let values: Vec<Value> = self
@@ -335,7 +335,7 @@ mod tests {
     // An entry the current type no longer parses is a miss, and it is
     // evicted so the fresh response can replace it.
     #[tokio::test]
-    async fn an_unparseable_entry_degrades_to_a_miss() {
+    async fn an_unparsable_entry_degrades_to_a_miss() {
         let dir = TempDir::new().unwrap();
         let cache = test_cache(&dir);
         let key = CacheKey::new("http://t", "get_run", &("run-1"));

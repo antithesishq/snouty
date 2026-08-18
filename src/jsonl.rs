@@ -24,9 +24,7 @@ use serde_json::Value;
 /// Empty lines are skipped; a final line without a trailing newline still
 /// counts.
 pub struct JsonStream {
-    inner: BoxStream<'static, reqwest::Result<Bytes>>,
-    buf: Vec<u8>,
-    done: bool,
+    inner: BoxStream<'static, Result<Value>>,
 }
 
 impl JsonStream {
@@ -39,14 +37,41 @@ impl JsonStream {
         stream: impl Stream<Item = reqwest::Result<Bytes>> + Send + 'static,
     ) -> Self {
         Self {
+            inner: LineParser {
+                inner: stream.boxed(),
+                buf: Vec::new(),
+                done: false,
+            }
+            .boxed(),
+        }
+    }
+
+    /// Wrap a stream whose items are already parsed values (the API cache
+    /// replays and tees entries at this level).
+    pub fn from_values(stream: impl Stream<Item = Result<Value>> + Send + 'static) -> Self {
+        Self {
             inner: stream.boxed(),
-            buf: Vec::new(),
-            done: false,
         }
     }
 }
 
 impl Stream for JsonStream {
+    type Item = Result<Value>;
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        self.get_mut().inner.poll_next_unpin(cx)
+    }
+}
+
+/// The byte-to-line half of [`JsonStream::from_stream`]: splits the HTTP
+/// chunk stream on newlines and parses each line.
+struct LineParser {
+    inner: BoxStream<'static, reqwest::Result<Bytes>>,
+    buf: Vec<u8>,
+    done: bool,
+}
+
+impl Stream for LineParser {
     type Item = Result<Value>;
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {

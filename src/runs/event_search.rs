@@ -39,8 +39,8 @@ use super::{ErrorRows, FaultAnnotator, event_lines, raw_lines};
 #[derive(Clone, Copy)]
 pub(super) enum EventOutput {
     /// `--json`: each event as its JSON line. `raw` passes the server's
-    /// stream through without normalization (parsed records round-trip
-    /// verbatim); otherwise vtime is normalized and, on `runs logs`, each
+    /// stream through without normalization (each record round-trips as
+    /// parsed); otherwise vtime is normalized and, on `runs logs`, each
     /// event is annotated with the faults active at its moment
     /// (`annotate_faults` — meaningless with `raw`, which touches nothing).
     Json { raw: bool, annotate_faults: bool },

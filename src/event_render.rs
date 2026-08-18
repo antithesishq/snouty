@@ -27,8 +27,8 @@
 //!   key=value per line, untruncated.
 //!
 //! There is no "raw" rendering here: `--raw` on the commands requires
-//! `--json` and passes the server's NDJSON stream through verbatim, without
-//! touching this module.
+//! `--json` and prints the server's events untouched, one JSON object per
+//! line, without touching this module.
 //!
 //! The renderer also owns the display conventions the streams share: vtime is
 //! normalized through [`VTime`] and shown in a fixed-width cell, truncated —

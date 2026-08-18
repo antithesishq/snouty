@@ -1,97 +1,55 @@
 //! A logical, domain-aware cache for Antithesis API responses.
 //!
-//! Unlike an HTTP cache, this cache ignores the server's cache headers and
-//! decides admission from what snouty knows about the domain: immutable
-//! resources (logs addressed by moment, properties, terminal run details) are
-//! cached forever; everything that can still change is never cached. There is
-//! no per-entry expiration — the cache lives in a transient per-user directory
-//! (`XDG_RUNTIME_DIR`; the user temp dir on macOS) that the OS clears
-//! periodically.
+//! Unlike an HTTP cache, this cache ignores the server's cache headers:
+//! each `AntithesisApi` handler decides whether its resource is immutable
+//! (logs addressed by moment, properties, terminal run details) and only
+//! those enter the cache. There is no per-entry expiration — the cache lives
+//! in a transient per-user directory (`XDG_RUNTIME_DIR`; the user temp dir
+//! on macOS) that the OS clears periodically.
 //!
 //! The cache is infallible by construction: every cache error — unreadable
 //! entry, unwritable directory, corrupt index — degrades to a cache miss and
 //! the request goes to the server. Storage is [`cacache`], which is safe for
-//! concurrent readers and writers across processes. The cache key is the full
-//! request URL (including query parameters); the value is the server's raw
-//! response body.
+//! concurrent readers and writers across processes.
+//!
+//! Keys are built from the handler's own typed parameters (see [`CacheKey`]).
+//! Values are snouty's serialization of the parsed response — a JSON object,
+//! or one JSON value per line for a stream — not the server's bytes, which is
+//! why every key carries the generated-client hash: an entry written by one
+//! build may not match the next build's types.
 
 use std::path::PathBuf;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
-use bytes::Bytes;
 use futures_util::future::BoxFuture;
-use futures_util::stream::BoxStream;
 use futures_util::{FutureExt, Stream, StreamExt};
 use log::{debug, warn};
-use progenitor_client::OperationInfo;
-use reqwest::ResponseBuilderExt;
-use tokio::io::AsyncWrite;
+use serde::Serialize;
+use serde::de::DeserializeOwned;
+use serde_json::Value;
 
-use crate::api::RunStatus;
 use crate::env;
+use crate::jsonl::JsonStream;
 
-/// Cache directory name under the runtime dir. The `v2` names the on-disk
-/// format (bare response bodies keyed by URL); bump it when the format
-/// changes so stale layouts are simply abandoned.
-const CACHE_DIR_NAME: &str = "api-cache-v2";
+/// Cache directory name under the runtime dir. The `v3` names the on-disk
+/// format (re-serialized values keyed by handler parameters); bump it when
+/// the format changes so stale layouts are simply abandoned.
+const CACHE_DIR_NAME: &str = "api-cache-v3";
 
 /// Bodies larger than this are not cached (see
 /// [`crate::settings::Settings::api_cache_max_file_size`] to override).
 pub const DEFAULT_MAX_FILE_SIZE: u64 = 10 * 1024 * 1024;
 
-/// A whole-body admission check (see [`Admission::IfBody`]).
-type BodyCheck = fn(&[u8]) -> bool;
-
-/// Whether and when a response may enter the cache.
-#[derive(Clone, Copy, Debug)]
-enum Admission {
-    /// Never cached: the resource can still change.
-    Never,
-    /// Immutable: cache the body forever.
-    Forever,
-    /// Cache only when the response body passes this check (used for run
-    /// detail, which is immutable only once the run reaches a terminal
-    /// status).
-    IfBody(BodyCheck),
-}
-
-/// The admission policy, by generated `operation_id`.
-///
-/// POST operations (`launch_test`, `launch_mvd`, `execute_command`, `search`)
-/// are deliberately absent: the cache ignores non-GET requests for now.
-/// `search_run_events` stays uncached until there is a reliable way to tell
-/// that no more events will show up. `list_runs` and `get_version` are live
-/// values. Build logs rely on the tee's general rule: the entry commits only
-/// when the stream reaches its end without error.
-fn admission(operation_id: &str) -> Admission {
-    match operation_id {
-        "get_run" => Admission::IfBody(run_detail_is_terminal),
-        "get_run_logs" => Admission::Forever,
-        "get_run_build_logs" => Admission::Forever,
-        "list_run_properties" => Admission::Forever,
-        _ => Admission::Never,
-    }
-}
-
-/// Whether a run detail body reports a terminal status. Malformed bodies are
-/// not terminal (and therefore not cached).
-fn run_detail_is_terminal(body: &[u8]) -> bool {
-    serde_json::from_slice::<serde_json::Value>(body)
-        .ok()
-        .and_then(|detail| serde_json::from_value::<RunStatus>(detail.get("status")?.clone()).ok())
-        .is_some_and(RunStatus::is_terminal)
-}
-
 /// Env var that overrides the cache directory outright (used as-is, no
-/// `snouty/api-cache-v2` suffix). This exists for test harnesses, which need
+/// `snouty/api-cache-v3` suffix). This exists for test harnesses, which need
 /// an isolated cache but cannot repoint `XDG_RUNTIME_DIR`: rootless podman
 /// resolves its API socket under that variable, so overriding it breaks any
 /// container command snouty spawns.
 const API_CACHE_DIR_VAR_NAME: &str = "SNOUTY_API_CACHE_DIR";
 
 /// The default cache directory: `$SNOUTY_API_CACHE_DIR` if set, else
-/// `$XDG_RUNTIME_DIR/snouty/api-cache-v2` — except on macOS, where
+/// `$XDG_RUNTIME_DIR/snouty/api-cache-v3` — except on macOS, where
 /// `XDG_RUNTIME_DIR` is normally unset and the per-user temp dir
 /// (`std::env::temp_dir`) takes its place. `None` disables caching.
 pub fn default_dir() -> Option<PathBuf> {
@@ -108,132 +66,159 @@ pub fn default_dir() -> Option<PathBuf> {
     Some(base?.join("snouty").join(CACHE_DIR_NAME))
 }
 
+/// A cache entry's identity: the operation, the handler's parameters, the
+/// base URL (two tenants must never share an entry), and the generated-client
+/// hash (entries never outlive the client that wrote them).
+///
+/// Handlers destructure their parameters exhaustively when building the key,
+/// so adding a parameter fails the build instead of silently aliasing entries
+/// that differ in it.
+pub struct CacheKey {
+    key: String,
+    /// The operation name, kept out of `key`'s opaque text for log messages.
+    operation: &'static str,
+}
+
+impl CacheKey {
+    pub fn new(base_url: &str, operation: &'static str, params: &impl Serialize) -> Self {
+        // JSON escapes any newline inside a string and a URL cannot carry a
+        // raw one, so '\n' cannot occur inside a segment.
+        let params =
+            serde_json::to_string(params).expect("handler cache-key parameters serialize to JSON");
+        let key = format!(
+            "{}\n{base_url}\n{operation}\n{params}",
+            env!("SNOUTY_GENERATED_API_HASH")
+        );
+        Self { key, operation }
+    }
+}
+
 /// The logical API response cache. Cheap to clone; all state is on disk.
 #[derive(Clone, Debug)]
 pub struct ApiCache {
     dir: PathBuf,
     max_file_size: u64,
+    /// Announce each hit on stderr (the `--verbose` request log has no
+    /// request to show for a hit, so this line takes its place).
+    verbose: bool,
 }
 
 impl ApiCache {
-    pub fn new(dir: PathBuf, max_file_size: u64) -> Self {
-        Self { dir, max_file_size }
+    pub fn new(dir: PathBuf, max_file_size: u64, verbose: bool) -> Self {
+        Self {
+            dir,
+            max_file_size,
+            verbose,
+        }
     }
 
-    /// Serve `request` from the cache if it has the response. `None` means
-    /// "send the request": a non-cacheable operation, a miss, or any cache
-    /// error. The returned response streams the cached body directly from
-    /// disk with a synthetic `200 OK` status (only 200 responses are ever
-    /// admitted).
-    pub async fn lookup(
-        &self,
-        request: &reqwest::Request,
-        info: &OperationInfo,
-    ) -> Option<reqwest::Response> {
-        if matches!(admission(info.operation_id), Admission::Never) {
-            return None;
-        }
-        let url = request.url();
-        let reader = match cacache::Reader::open(&self.dir, url.as_str()).await {
-            Ok(reader) => reader,
-            Err(cacache::Error::EntryNotFound(..)) => return None,
-            Err(err) => {
-                // A broken entry would otherwise stay broken forever; evict it
-                // so the next response can replace it.
-                warn!("API cache read failed for {url}, bypassing cache: {err}");
-                let _ = cacache::remove(&self.dir, url.as_str()).await;
-                return None;
+    /// Read `key`'s entry, evicting on any read error so a broken entry does
+    /// not stay broken forever. `cacache` verifies content integrity on read,
+    /// so bytes that come back are the bytes that were committed.
+    async fn read(&self, key: &CacheKey) -> Option<Vec<u8>> {
+        match cacache::read(&self.dir, &key.key).await {
+            Ok(bytes) => {
+                debug!("API cache hit for {}", key.operation);
+                if self.verbose {
+                    eprintln!("* {} response served from the local cache", key.operation);
+                }
+                Some(bytes)
             }
-        };
-        debug!("API cache hit for {url}");
-        let body = reqwest::Body::wrap_stream(tokio_util::io::ReaderStream::new(reader));
-        let response = http::Response::builder()
-            .status(http::StatusCode::OK)
-            .url(url.clone())
-            .body(body)
-            .expect("a bare 200 response builds");
-        Some(response.into())
+            Err(cacache::Error::EntryNotFound(..)) => None,
+            Err(err) => {
+                warn!(
+                    "API cache read failed for {}, bypassing cache: {err}",
+                    key.operation
+                );
+                let _ = cacache::remove(&self.dir, &key.key).await;
+                None
+            }
+        }
     }
 
-    /// Pass `response` through the admission policy: if it is cacheable, the
-    /// returned response tees its body into the cache as the caller reads it,
-    /// committing the entry only once the body is read to the end (a body the
-    /// caller abandons partway is never committed). Otherwise the response is
-    /// returned untouched. Never fails: any cache error abandons the entry
-    /// and the caller keeps streaming from the server.
-    pub async fn store(
-        &self,
-        info: &OperationInfo,
-        response: reqwest::Response,
-    ) -> reqwest::Response {
-        if response.status() != reqwest::StatusCode::OK {
-            return response;
+    async fn write(&self, key: &CacheKey, bytes: Vec<u8>) {
+        if bytes.len() as u64 > self.max_file_size {
+            debug!("API cache entry over the size limit, not caching");
+            return;
         }
-        let verify = match admission(info.operation_id) {
-            Admission::Never => return response,
-            Admission::Forever => None,
-            Admission::IfBody(verify) => Some(verify),
-        };
+        if let Err(err) = cacache::write(&self.dir, &key.key, bytes).await {
+            warn!(
+                "API cache write failed for {}, bypassing cache: {err}",
+                key.operation
+            );
+        }
+    }
 
-        let key = response.url().as_str();
-        let writer = match cacache::Writer::create(&self.dir, key).await {
-            Ok(writer) => writer,
+    /// The cached value under `key`, deserialized. `None` means "send the
+    /// request": a miss, any cache error, or an entry the current type no
+    /// longer parses (evicted, so the fresh response can replace it).
+    pub async fn lookup_value<T: DeserializeOwned>(&self, key: &CacheKey) -> Option<T> {
+        let bytes = self.read(key).await?;
+        match serde_json::from_slice(&bytes) {
+            Ok(value) => Some(value),
             Err(err) => {
-                warn!("API cache write failed for {key}, bypassing cache: {err}");
-                return response;
+                warn!(
+                    "API cache entry for {} does not parse, evicting: {err}",
+                    key.operation
+                );
+                let _ = cacache::remove(&self.dir, &key.key).await;
+                None
             }
-        };
+        }
+    }
 
-        let status = response.status();
-        let headers = response.headers().clone();
-        let url = response.url().clone();
-        let tee = TeeStream {
-            inner: response.bytes_stream().boxed(),
-            tee: Some(Tee {
-                writer,
-                remaining: self.max_file_size,
-                buffered: verify.map(|verify| (verify, Vec::new())),
-            }),
-            pending: None,
+    /// Store `value` under `key`. Never fails: an oversized or unwritable
+    /// entry is dropped and the caller keeps the value it already has.
+    pub async fn store_value<T: Serialize>(&self, key: &CacheKey, value: &T) {
+        match serde_json::to_vec(value) {
+            Ok(bytes) => self.write(key, bytes).await,
+            Err(err) => warn!(
+                "API cache entry for {} does not serialize, not caching: {err}",
+                key.operation
+            ),
+        }
+    }
+
+    /// Replay the stream cached under `key`, or `None` on a miss or any
+    /// cache error.
+    pub async fn lookup_stream(&self, key: &CacheKey) -> Option<JsonStream> {
+        let bytes = self.read(key).await?;
+        Some(JsonStream::from_stream(futures_util::stream::once(
+            async move { reqwest::Result::Ok(bytes.into()) },
+        )))
+    }
+
+    /// Tee `stream` into the cache as the caller reads it, committing the
+    /// entry only once the stream ends without an error (a stream the caller
+    /// abandons partway, or that fails mid-way, is never committed). Never
+    /// fails: an oversized or unwritable entry is dropped and the caller
+    /// keeps streaming.
+    pub fn store_stream(&self, key: CacheKey, stream: JsonStream) -> JsonStream {
+        JsonStream::from_values(StoreStream {
+            inner: stream,
+            cache: self.clone(),
+            entry: Some((key, Vec::new())),
             committing: None,
             done: false,
-        };
-        let mut builder = http::Response::builder().status(status).url(url);
-        *builder
-            .headers_mut()
-            .expect("a fresh response builder has no error") = headers;
-        builder
-            .body(reqwest::Body::wrap_stream(tee))
-            .expect("a response rebuilt from valid parts builds")
-            .into()
+        })
     }
 }
 
-/// The active half of a [`TeeStream`]: dropped (abandoning the entry) on any
-/// write error, on exceeding the size budget, or when the body verify check
-/// fails.
-struct Tee {
-    writer: cacache::Writer,
-    /// Size budget left before the entry is abandoned as too large.
-    remaining: u64,
-    /// For [`Admission::IfBody`]: the check plus a copy of the body so far.
-    /// The copy is bounded by `remaining`'s starting budget.
-    buffered: Option<(BodyCheck, Vec<u8>)>,
-}
-
-/// A body stream that forwards chunks unchanged while writing them into a
-/// [`cacache::Writer`], committing the cache entry once the source body ends.
-struct TeeStream {
-    inner: BoxStream<'static, reqwest::Result<Bytes>>,
-    tee: Option<Tee>,
-    /// A chunk not yet fully written to the cache: `(chunk, bytes written)`.
-    pending: Option<(Bytes, usize)>,
-    committing: Option<BoxFuture<'static, cacache::Result<cacache::Integrity>>>,
+/// A value stream that forwards items unchanged while buffering their
+/// serialized lines, writing the entry once the source ends cleanly.
+struct StoreStream {
+    inner: JsonStream,
+    cache: ApiCache,
+    /// The key and the entry so far, one serialized value per line; `None`
+    /// once the entry is abandoned (an error item, or the size budget
+    /// exceeded).
+    entry: Option<(CacheKey, Vec<u8>)>,
+    committing: Option<BoxFuture<'static, ()>>,
     done: bool,
 }
 
-impl Stream for TeeStream {
-    type Item = reqwest::Result<Bytes>;
+impl Stream for StoreStream {
+    type Item = color_eyre::Result<Value>;
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let this = self.get_mut();
@@ -242,16 +227,13 @@ impl Stream for TeeStream {
                 return Poll::Ready(None);
             }
 
-            // The source body has ended: finish the commit before ending the
-            // tee'd body, so a fully-read response is durably cached by the
-            // time the caller sees the end.
+            // The source has ended: finish the write before ending the tee'd
+            // stream, so a fully-read response is durably cached by the time
+            // the caller sees the end.
             if let Some(commit) = &mut this.committing {
                 match commit.poll_unpin(cx) {
                     Poll::Pending => return Poll::Pending,
-                    Poll::Ready(result) => {
-                        if let Err(err) = result {
-                            warn!("API cache commit failed: {err}");
-                        }
+                    Poll::Ready(()) => {
                         this.committing = None;
                         this.done = true;
                         return Poll::Ready(None);
@@ -259,64 +241,33 @@ impl Stream for TeeStream {
                 }
             }
 
-            // Finish writing the current chunk into the cache before handing
-            // it downstream. A write error abandons the entry (the chunk
-            // still goes downstream — the cache never breaks the response).
-            if let Some((chunk, written)) = &mut this.pending {
-                if let Some(tee) = &mut this.tee {
-                    while *written < chunk.len() {
-                        match Pin::new(&mut tee.writer).poll_write(cx, &chunk[*written..]) {
-                            Poll::Pending => return Poll::Pending,
-                            Poll::Ready(Ok(n)) => *written += n,
-                            Poll::Ready(Err(err)) => {
-                                warn!("API cache write failed, bypassing cache: {err}");
-                                this.tee = None;
-                                break;
-                            }
-                        }
-                    }
-                }
-                let (chunk, _) = this.pending.take().expect("pending was just matched");
-                return Poll::Ready(Some(Ok(chunk)));
-            }
-
             match this.inner.poll_next_unpin(cx) {
                 Poll::Pending => return Poll::Pending,
-                Poll::Ready(Some(Ok(chunk))) => {
-                    match &mut this.tee {
-                        Some(tee) if (chunk.len() as u64) <= tee.remaining => {
-                            tee.remaining -= chunk.len() as u64;
-                            if let Some((_, copy)) = &mut tee.buffered {
-                                copy.extend_from_slice(&chunk);
-                            }
-                            this.pending = Some((chunk, 0));
-                        }
-                        Some(_) => {
-                            // Over the size limit: abandon the entry, keep
-                            // streaming to the caller.
+                Poll::Ready(Some(Ok(value))) => {
+                    if let Some((_, buf)) = &mut this.entry {
+                        let line =
+                            serde_json::to_vec(&value).expect("a serde_json::Value serializes");
+                        if (buf.len() + line.len() + 1) as u64 > this.cache.max_file_size {
                             debug!("API cache entry over the size limit, not caching");
-                            this.tee = None;
-                            return Poll::Ready(Some(Ok(chunk)));
+                            this.entry = None;
+                        } else {
+                            buf.extend_from_slice(&line);
+                            buf.push(b'\n');
                         }
-                        None => return Poll::Ready(Some(Ok(chunk))),
                     }
+                    return Poll::Ready(Some(Ok(value)));
                 }
                 Poll::Ready(Some(Err(err))) => {
-                    // A transport error means the body is incomplete; never
-                    // commit it.
-                    this.tee = None;
+                    // An error means the stream is incomplete; never commit it.
+                    this.entry = None;
                     return Poll::Ready(Some(Err(err)));
                 }
-                Poll::Ready(None) => match this.tee.take() {
-                    Some(tee)
-                        if tee
-                            .buffered
-                            .as_ref()
-                            .is_none_or(|(verify, body)| verify(body)) =>
-                    {
-                        this.committing = Some(tee.writer.commit().boxed());
+                Poll::Ready(None) => match this.entry.take() {
+                    Some((key, buf)) => {
+                        let cache = this.cache.clone();
+                        this.committing = Some(async move { cache.write(&key, buf).await }.boxed());
                     }
-                    _ => {
+                    None => {
                         this.done = true;
                         return Poll::Ready(None);
                     }
@@ -329,47 +280,103 @@ impl Stream for TeeStream {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use futures_util::TryStreamExt;
+    use tempfile::TempDir;
 
-    #[test]
-    fn admission_matches_the_domain_policy() {
-        assert!(matches!(admission("get_run"), Admission::IfBody(_)));
-        assert!(matches!(admission("get_run_logs"), Admission::Forever));
-        assert!(matches!(
-            admission("get_run_build_logs"),
-            Admission::Forever
-        ));
-        assert!(matches!(
-            admission("list_run_properties"),
-            Admission::Forever
-        ));
-        for uncacheable in [
-            "list_runs",
-            "search_run_events",
-            "get_version",
-            "launch_test",
-            "launch_mvd",
-            "execute_command",
-            "search",
-        ] {
-            assert!(
-                matches!(admission(uncacheable), Admission::Never),
-                "{uncacheable} must not be cached"
-            );
-        }
+    fn test_cache(dir: &TempDir) -> ApiCache {
+        ApiCache::new(dir.path().to_path_buf(), DEFAULT_MAX_FILE_SIZE, false)
     }
 
+    fn values_stream(values: &[Value]) -> JsonStream {
+        let items: Vec<color_eyre::Result<Value>> = values.iter().cloned().map(Ok).collect();
+        JsonStream::from_values(futures_util::stream::iter(items))
+    }
+
+    // The key separates tenants, operations, and every parameter; only a
+    // full match replays another call's entry.
     #[test]
-    fn run_detail_terminality_gates_on_the_status_field() {
-        let body = |status: &str| format!(r#"{{"run_id":"r","status":"{status}"}}"#);
-        for terminal in ["completed", "cancelled", "incomplete"] {
-            assert!(run_detail_is_terminal(body(terminal).as_bytes()));
+    fn cache_keys_separate_tenants_operations_and_params() {
+        let key =
+            |base: &str, op: &'static str, params: &str| CacheKey::new(base, op, &(params)).key;
+        let reference = key("https://a.example.com", "get_run", "run-1");
+        assert_eq!(reference, key("https://a.example.com", "get_run", "run-1"));
+        assert_ne!(reference, key("https://b.example.com", "get_run", "run-1"));
+        assert_ne!(
+            reference,
+            key("https://a.example.com", "get_run_logs", "run-1")
+        );
+        assert_ne!(reference, key("https://a.example.com", "get_run", "run-2"));
+    }
+
+    #[tokio::test]
+    async fn a_stream_round_trips_through_the_cache() {
+        let dir = TempDir::new().unwrap();
+        let cache = test_cache(&dir);
+        let key = || CacheKey::new("http://t", "get_run_logs", &("run-1"));
+        let values = [
+            serde_json::json!({"text": "one"}),
+            serde_json::json!({"text": "two"}),
+        ];
+
+        let teed = cache.store_stream(key(), values_stream(&values));
+        assert_eq!(teed.try_collect::<Vec<_>>().await.unwrap(), values);
+
+        let replay = cache.lookup_stream(&key()).await.expect("a cache hit");
+        assert_eq!(replay.try_collect::<Vec<_>>().await.unwrap(), values);
+    }
+
+    #[tokio::test]
+    async fn a_failed_stream_is_never_committed() {
+        let dir = TempDir::new().unwrap();
+        let cache = test_cache(&dir);
+        let key = || CacheKey::new("http://t", "get_run_logs", &("run-1"));
+
+        let items: Vec<color_eyre::Result<Value>> = vec![
+            Ok(serde_json::json!({"text": "one"})),
+            Err(color_eyre::eyre::eyre!("mid-stream failure")),
+        ];
+        let teed = cache.store_stream(
+            key(),
+            JsonStream::from_values(futures_util::stream::iter(items)),
+        );
+        assert!(teed.try_collect::<Vec<_>>().await.is_err());
+
+        assert!(cache.lookup_stream(&key()).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn values_round_trip_through_the_cache() {
+        let dir = TempDir::new().unwrap();
+        let cache = test_cache(&dir);
+        let key = CacheKey::new("http://t", "get_run", &("run-1"));
+
+        assert_eq!(cache.lookup_value::<Value>(&key).await, None);
+        cache
+            .store_value(&key, &serde_json::json!({"run_id": "run-1"}))
+            .await;
+        assert_eq!(
+            cache.lookup_value::<Value>(&key).await,
+            Some(serde_json::json!({"run_id": "run-1"}))
+        );
+    }
+
+    // An entry the current type no longer parses is a miss, and it is
+    // evicted so the fresh response can replace it.
+    #[tokio::test]
+    async fn an_unparseable_entry_degrades_to_a_miss() {
+        let dir = TempDir::new().unwrap();
+        let cache = test_cache(&dir);
+        let key = CacheKey::new("http://t", "get_run", &("run-1"));
+
+        cache
+            .store_value(&key, &serde_json::json!("a string"))
+            .await;
+        #[derive(serde::Deserialize)]
+        struct Object {
+            #[allow(dead_code)]
+            run_id: String,
         }
-        for live in ["starting", "in_progress", "unknown"] {
-            assert!(!run_detail_is_terminal(body(live).as_bytes()));
-        }
-        // Malformed bodies are not cached.
-        assert!(!run_detail_is_terminal(b"not json"));
-        assert!(!run_detail_is_terminal(br#"{"run_id":"r"}"#));
-        assert!(!run_detail_is_terminal(br#"{"status":"bogus"}"#));
+        assert!(cache.lookup_value::<Object>(&key).await.is_none());
+        assert!(cache.lookup_value::<Value>(&key).await.is_none());
     }
 }

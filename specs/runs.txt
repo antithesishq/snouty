@@ -8,7 +8,7 @@
 # backend. Unprefixed assertions are structural and run in both modes.
 #
 # Run-id scoped read responses may be cached under
-# $XDG_RUNTIME_DIR/snouty/api-cache-v2 (under the user temp dir on macOS).
+# $XDG_RUNTIME_DIR/snouty/api-cache-v3 (under the user temp dir on macOS).
 # Caching is internal and must not change command output or required arguments.
 # GET requests that fail at the transport level (connect errors, resets, DNS
 # failures) are retried up to 3 times with backoff; a served HTTP response of
@@ -286,10 +286,10 @@ mock-runs-server
 # The vtime is an exact JSON number, full precision intact.
 [!staging] stdout '.*"moment".*"vtime":311\.8487535319291.*'
 
-# `--raw` means the server's NDJSON verbatim, so it requires --json; with it,
-# the stream passes through untouched — the vtime stays the server's string,
-# not the normalized JSON number. (`runs search` shares the flag and the
-# pipeline.)
+# `--raw` means the server's events untouched, one JSON object per line, so
+# it requires --json; with it, nothing is normalized — the vtime stays the
+# server's string, not the normalized JSON number. (`runs search` shares the
+# flag and the pipeline.)
 mock-runs-server
 ! snouty runs events run-1 --match counter --raw
 stderr '--raw requires --json'
@@ -477,8 +477,8 @@ snouty runs logs --json --raw run-1 -123 1.0
 stdout 'output_text.*starting'
 ! stdout 'active_faults'
 
-# `--raw` means the server's NDJSON verbatim, so it requires --json; there is
-# no raw human rendering.
+# `--raw` means the server's events as JSON lines, so it requires --json;
+# there is no raw human rendering.
 mock-runs-server
 ! snouty runs logs --raw run-1 -123 1.0
 stderr '--raw requires --json'
@@ -684,7 +684,7 @@ stdout -literal '[app] {"level":"info","msg":"starting"}'
 ! stdout 'mock stream failure'
 stderr 'the server reported an error mid-stream: mock stream failure'
 
-# `runs logs --json` (fault-annotated) and `--json --raw` (verbatim): the error
+# `runs logs --json` (fault-annotated) and `--json --raw` (unannotated): the error
 # line reaches neither stdout variant.
 mock-runs-server
 ! snouty --json runs logs run-stream-error -123 1.0

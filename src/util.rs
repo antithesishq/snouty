@@ -4,6 +4,20 @@ use std::path::Path;
 
 use color_eyre::eyre::{Context, Result};
 
+/// The first error of type `T` in `err`'s source chain, if any.
+pub fn source_error<'a, T: std::error::Error + 'static>(
+    err: &'a (dyn std::error::Error + 'static),
+) -> Option<&'a T> {
+    let mut source = err.source();
+    while let Some(err) = source {
+        if let Some(err) = err.downcast_ref::<T>() {
+            return Some(err);
+        }
+        source = err.source();
+    }
+    None
+}
+
 /// Recursively copy the contents of `src` into `dst` (which must already exist).
 ///
 /// Symlinks are recreated as-is (not dereferenced), so the copied tree is

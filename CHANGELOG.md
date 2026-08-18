@@ -1,6 +1,6 @@
 # Unreleased
 
-- GET requests that fail with a transient network error (a connect error, reset, or DNS blip) are retried up to 3 times with backoff, so a brief blip no longer kills a long-lived command. A served HTTP error status is never retried, and mutations such as launch are sent exactly once ([#249](https://github.com/antithesishq/snouty/issues/249))
+- GET requests that fail with a transient network error (a connect error, reset, or DNS blip) are retried up to 3 times with backoff ([#249](https://github.com/antithesishq/snouty/issues/249))
 
 - Converge the human output of `runs logs`, `runs events`, and `runs search` on one event-aware renderer. Each event is rendered as a concise colored block. A new `-d/--detail` flag on all three commands adds full-width vtimes, source locations, attached details JSON, and the composer's captured stdout/stderr. `runs build-logs` shares the same visual grammar. Three breaking changes: `--raw` on `runs logs` now requires `--json` (raw output IS the server's NDJSON stream); the human empty-result note ("No events matched…", "No log lines…") prints to stderr instead of stdout; and the human log line no longer shows the source's stream (out/err) — `--json` carries it ([#222](https://github.com/antithesishq/snouty/pull/222))
 - Replace the HTTP response cache with a logical, domain-aware cache. The cache skips bodies over 10MB (configurable with the `api_cache_max_file_size` setting) ([#248](https://github.com/antithesishq/snouty/issues/248))

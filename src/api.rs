@@ -25,6 +25,7 @@ use crate::params::{
 };
 use crate::render::sanitize;
 use crate::settings::Settings;
+use crate::util::source_error;
 use crate::vtime::VTime;
 
 #[allow(dead_code, unused_imports, private_interfaces)]
@@ -258,18 +259,10 @@ fn normalize_property(property: Property) -> Result<Property> {
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// How many times a GET whose transport failed is re-sent before the failure
-/// surfaces, with [`transient_retry_backoff`] between attempts. This keeps a
-/// brief network blip from killing a long-lived command like
-/// `snouty runs wait` (#249). Only transport-level failures are retried
-/// ([`is_transient_transport_error`]): a served HTTP response of any status
-/// is final, so a 500 still fails and 404 probing stays untouched. Only GETs
-/// are retried, so the launch, debug, and exec webhooks are never replayed.
+/// surfaces, with [`transient_retry_backoff`] between attempts.
 const MAX_TRANSIENT_RETRIES: u32 = 3;
 
-/// The wait before transient-retry attempt `retry` (0-based): 1, 2, 4 seconds.
-/// Unit tests shrink the unit to a millisecond so they replay the whole
-/// schedule without sleeping for real; they assert attempt counts, never
-/// durations, so the scaling costs no coverage.
+/// The wait before transient-retry attempt `retry` (0-based): 1, 2, 4, ... seconds
 fn transient_retry_backoff(retry: u32) -> Duration {
     #[cfg(not(test))]
     const UNIT: Duration = Duration::from_secs(1);
@@ -280,9 +273,7 @@ fn transient_retry_backoff(retry: u32) -> Duration {
 
 /// Whether a failed request is safe to re-send: true only for transport-level
 /// failures — connect errors and timeouts, resets, and connections that
-/// dropped mid-message — where no HTTP response arrived. Copied from
-/// `reqwest_retry::default_on_request_failure` (0.9.1), minus its middleware
-/// and wasm arms.
+/// dropped mid-message — where no HTTP response arrived.
 fn is_transient_transport_error(error: &reqwest::Error) -> bool {
     if error.is_timeout() || error.is_connect() {
         true
@@ -290,10 +281,7 @@ fn is_transient_transport_error(error: &reqwest::Error) -> bool {
         false
     } else if error.is_request() {
         // reqwest does not classify hyper's transport failures, so unwrap
-        // them here: IncompleteMessage (the connection closed with a response
-        // outstanding), Canceled (the request was never dispatched), and a
-        // reset or abort reported by the io layer all mean no response
-        // arrived, so the request is safe to re-send.
+        // them here
         if let Some(hyper_error) = source_error::<hyper::Error>(error) {
             hyper_error.is_incomplete_message()
                 || hyper_error.is_canceled()
@@ -309,20 +297,6 @@ fn is_transient_transport_error(error: &reqwest::Error) -> bool {
     } else {
         false
     }
-}
-
-/// The first error of type `T` in `err`'s source chain, if any.
-fn source_error<'a, T: std::error::Error + 'static>(
-    err: &'a (dyn std::error::Error + 'static),
-) -> Option<&'a T> {
-    let mut source = err.source();
-    while let Some(err) = source {
-        if let Some(err) = err.downcast_ref::<T>() {
-            return Some(err);
-        }
-        source = err.source();
-    }
-    None
 }
 
 /// Send `request`, re-sending a GET whose transport failed: up to

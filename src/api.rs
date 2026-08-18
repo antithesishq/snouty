@@ -267,8 +267,15 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const MAX_TRANSIENT_RETRIES: u32 = 3;
 
 /// The wait before transient-retry attempt `retry` (0-based): 1, 2, 4 seconds.
+/// Unit tests shrink the unit to a millisecond so they replay the whole
+/// schedule without sleeping for real; they assert attempt counts, never
+/// durations, so the scaling costs no coverage.
 fn transient_retry_backoff(retry: u32) -> Duration {
-    Duration::from_secs(1 << retry)
+    #[cfg(not(test))]
+    const UNIT: Duration = Duration::from_secs(1);
+    #[cfg(test)]
+    const UNIT: Duration = Duration::from_millis(1);
+    UNIT * (1 << retry)
 }
 
 /// Whether a failed request is safe to re-send: true only for transport-level
@@ -326,11 +333,13 @@ async fn execute_with_transient_retry(
     verbose: bool,
     mut request: reqwest::Request,
 ) -> reqwest::Result<reqwest::Response> {
+    if request.method() != reqwest::Method::GET {
+        return client.execute(request).await;
+    }
     let mut retries = 0;
     loop {
-        // GETs carry no body, so try_clone always succeeds for them.
-        let retry_clone = (retries < MAX_TRANSIENT_RETRIES
-            && request.method() == reqwest::Method::GET)
+        // GETs carry no body, so try_clone always succeeds.
+        let retry_clone = (retries < MAX_TRANSIENT_RETRIES)
             .then(|| request.try_clone())
             .flatten();
         match (client.execute(request).await, retry_clone) {
@@ -2137,35 +2146,25 @@ mod tests {
 
     // A transport-level failure on a GET is retried: the first connection is
     // reset, the second attempt succeeds, and the caller never sees the blip.
-    #[tokio::test]
-    async fn get_retries_a_transport_failure() {
-        let (base_url, connections) = reset_then_serve_version(1).await;
-        let api = test_api_at_url(base_url, None);
-
-        let version = api.get_version().await.unwrap();
-
-        assert_eq!(version.release_version, "60");
-        assert_eq!(connections.load(Ordering::SeqCst), 2);
-    }
-
-    // The same recovery with the response cache enabled: retry sits under the
+    // The same holds with the response cache enabled — retry sits under the
     // cache, so a cache miss's network fetch is retried too.
     #[tokio::test]
-    async fn get_retries_a_transport_failure_with_cache_enabled() {
-        let (base_url, connections) = reset_then_serve_version(1).await;
+    async fn get_retries_a_transport_failure() {
         let cache_dir = TempDir::new().unwrap();
-        let api = test_api_at_url(base_url, Some(&cache_dir));
+        for cache_dir in [None, Some(&cache_dir)] {
+            let (base_url, connections) = reset_then_serve_version(1).await;
+            let api = test_api_at_url(base_url, cache_dir);
 
-        let version = api.get_version().await.unwrap();
+            let version = api.get_version().await.unwrap();
 
-        assert_eq!(version.release_version, "60");
-        assert_eq!(connections.load(Ordering::SeqCst), 2);
+            assert_eq!(version.release_version, "60");
+            assert_eq!(connections.load(Ordering::SeqCst), 2);
+        }
     }
 
     // Retries are bounded: when every attempt fails at the transport level the
     // error surfaces after 1 + MAX_TRANSIENT_RETRIES attempts, classified as
-    // unreachable (no HTTP status), not swallowed. This test rides out the
-    // full backoff schedule, so it sleeps for several seconds.
+    // unreachable (no HTTP status), not swallowed.
     #[tokio::test]
     async fn get_surfaces_a_transport_failure_after_bounded_retries() {
         let (base_url, connections) = reset_then_serve_version(usize::MAX).await;
@@ -2212,26 +2211,43 @@ mod tests {
     }
 
     // The retry layer trusts that every GET in the API is a pure read. Walk
-    // openapi.json and pin the spec's method↔operation mapping, so
-    // regenerating the spec with a new or changed operation forces this
-    // safety review to run again.
+    // openapi.json and pin the spec's full method↔operation mapping, so a
+    // regenerated spec with a new or changed operation — a new GET included —
+    // forces this safety review to run again.
     #[test]
-    fn every_non_get_operation_is_a_known_mutation() {
+    fn every_operation_has_a_reviewed_method() {
         let spec: serde_json::Value = serde_json::from_str(include_str!("openapi.json")).unwrap();
-        let mut mutations: Vec<&str> = spec["paths"]
+        let methods = [
+            "get", "post", "put", "patch", "delete", "head", "options", "trace",
+        ];
+        let mut operations: Vec<String> = spec["paths"]
             .as_object()
             .unwrap()
             .values()
             .flat_map(|operations| operations.as_object().unwrap())
-            .filter(|(method, _)| ["post", "put", "patch", "delete"].contains(&method.as_str()))
-            .map(|(_, operation)| operation["operationId"].as_str().unwrap())
+            .filter(|(method, _)| methods.contains(&method.as_str()))
+            .map(|(method, operation)| {
+                format!("{method} {}", operation["operationId"].as_str().unwrap())
+            })
             .collect();
-        mutations.sort_unstable();
+        operations.sort_unstable();
         assert_eq!(
-            mutations,
-            ["executeCommand", "launchMvd", "launchTest", "search"],
-            "openapi.json changed its non-GET operations; re-verify that \
-             every GET is a pure read before trusting the retry gating"
+            operations,
+            [
+                "get getRun",
+                "get getRunBuildLogs",
+                "get getRunLogs",
+                "get getVersion",
+                "get listRunProperties",
+                "get listRuns",
+                "get searchRunEvents",
+                "post executeCommand",
+                "post launchMvd",
+                "post launchTest",
+                "post search",
+            ],
+            "openapi.json changed its method↔operation mapping; re-verify \
+             that every GET is a pure read before trusting the retry gating"
         );
     }
 

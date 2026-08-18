@@ -41,19 +41,53 @@ one so the next step reviews a clean diff.
 ## 4. Submit the PR
 
 1. Push the branch: `git push -u origin <branch>`.
-2. Create the PR. If `gh pr create` fails with HTTP 403 (a proxy that blocks
-   GraphQL writes), create it over REST:
+2. Write the PR body as prose that explains the change and why, per the
+   user's PR style. Put `fixes #<N>` on its own line so the merge closes the
+   issue.
+3. Create the PR with that body. If `gh pr create` fails with HTTP 403 (a
+   proxy that blocks GraphQL writes), create it over REST:
 
    ```sh
    gh api -X POST repos/OWNER/REPO/pulls \
      -f title="..." -f head=BRANCH -f base=main -F body=@body.md --jq '.html_url'
    ```
 
-3. Write the body as prose that explains the change and why, per the user's
-   PR style. Put `fixes #<N>` on its own line so the merge closes the issue.
-
 ## 5. Watch until close
 
-Invoke the watch-pr skill on the new PR number. React to every event —
-review comments, CI failures, questions — per that skill, until the PR is
-merged or closed.
+Run the PR watcher in the background — through the Monitor tool with
+`persistent: true` when the harness has it, otherwise through a background
+Bash task:
+
+```
+uv run scripts/watch-prs.py <PR>
+```
+
+The script prints one line per event and exits when every watched PR is
+merged or closed. On the first poll it reports every already-completed check
+once; treat that batch as a baseline, not as news. Flags: `-i seconds` sets
+the poll interval (default 45), `-u login` suppresses events from a login,
+`-R owner/repo` overrides the repository. Event lines:
+
+```
+PR #123 comment by <login>: <first 300 chars>
+PR #123 review comment by <login> on <path>: <first 300 chars>
+PR #123 review by <login>: <APPROVED|CHANGES_REQUESTED|COMMENTED> <body>
+PR #123 check <name>: <success|failure|skipped|cancelled>
+PR #123 merged
+PR #123 closed without merge
+```
+
+React to each event:
+
+- **Review comment or review**: triage it. If it asks for a change, make the
+  change, push, reply on the thread with the commit hash, and resolve the
+  thread (the `resolveReviewThread` GraphQL mutation works). If the comment
+  is unclear, ask on the thread instead of guessing.
+- **Issue comment**: answer questions; treat change requests like review
+  comments.
+- **Check failure**: read the failing log with
+  `gh run view <run-id> --log-failed`, fix it, and push.
+- **Merged or closed**: the script exits on its own. Stop related work.
+
+Ignore events you caused yourself: your own pushes re-run CI, and your own
+replies appear as comments.

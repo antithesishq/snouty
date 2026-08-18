@@ -15,6 +15,11 @@ dependencies = [
     # and one re-render per keystroke) back into the screen the user saw.
     "pexpect>=4.9",
     "pyte>=0.8.2",
+    # watch-prs.py polls pull requests through the GitHub REST API. githubkit
+    # builds every URL from its route table; a client that follows the URLs in
+    # response bodies (e.g. PyGithub) escapes the exe.dev auth proxy, which
+    # returns canonical api.github.com URLs it does not serve.
+    "githubkit>=0.16",
 ]
 
 [tool.uv]

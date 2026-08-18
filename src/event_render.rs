@@ -53,8 +53,10 @@ mod sdk;
 pub(crate) use ansi::{normalize_terminal_text, strip_ansi};
 
 use std::fmt::{self, Write};
+use std::path::Path;
 
 use console::style;
+use serde::Deserialize;
 use serde_json::{Map, Value};
 
 use crate::render::sanitize;
@@ -160,6 +162,23 @@ impl Block<'_> {
         }
         match render_details_json(value) {
             Some(json) => self.detail_line(format_args!("details {json}")),
+            None => Ok(()),
+        }
+    }
+
+    /// The dim `@ location` source-location line the assertion-shaped kinds
+    /// share: only under `--detail`. Takes the payload's `location` JSON
+    /// object and parses and formats it here; a location that does not parse
+    /// or renders empty prints nothing.
+    fn location_line(&mut self, location: &Value) -> fmt::Result {
+        if !self.detail {
+            return Ok(());
+        }
+        let rendered = SourceLocation::deserialize(location)
+            .ok()
+            .and_then(render_source_location);
+        match rendered {
+            Some(location) => self.detail_line(format_args!("@ {location}")),
             None => Ok(()),
         }
     }
@@ -298,6 +317,58 @@ fn render_details_json(details: &Value) -> Option<String> {
     Some(sanitize(
         &serde_json::to_string(details).unwrap_or_default(),
     ))
+}
+
+/// The source location the SDKs attach to assertion-shaped payloads:
+/// `{file, function, begin_line}`, every field optional.
+/// [`Block::location_line`] parses and formats it.
+#[derive(Debug, Deserialize)]
+struct SourceLocation {
+    file: Option<String>,
+    function: Option<String>,
+    begin_line: Option<serde_json::Number>,
+}
+
+fn render_source_location(location: SourceLocation) -> Option<String> {
+    let file = location.file.as_deref().and_then(file_basename);
+    let function = location
+        .function
+        .as_deref()
+        .map(str::trim)
+        .filter(|function| !function.is_empty());
+    let line = location.begin_line.map(|line| line.to_string());
+
+    let mut rendered = String::new();
+
+    if let Some(file) = file {
+        rendered.push_str(&sanitize(file));
+    }
+    if let Some(function) = function {
+        if !rendered.is_empty() {
+            rendered.push(':');
+        }
+        rendered.push_str(&sanitize(function));
+    }
+    if let Some(line) = line {
+        if !rendered.is_empty() {
+            rendered.push(':');
+        }
+        rendered.push_str(&line);
+    }
+
+    (!rendered.is_empty()).then_some(rendered)
+}
+
+fn file_basename(file: &str) -> Option<&str> {
+    let trimmed = file.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    Path::new(trimmed)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .or(Some(trimmed))
 }
 
 /// Render a JSON value for a key=value cell. Scalars render bare, arrays of

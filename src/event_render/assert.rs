@@ -3,7 +3,6 @@
 //! `CATALOG` chatter.
 
 use std::fmt::{self, Write};
-use std::path::Path;
 
 use console::style;
 use serde::Deserialize;
@@ -11,7 +10,7 @@ use serde_json::Value;
 
 use crate::render::sanitize;
 
-use super::{Block, DisplayWith, Event, render_details_json};
+use super::{Block, DisplayWith, Event};
 
 #[derive(Debug, Deserialize)]
 struct AssertionPayload {
@@ -24,27 +23,22 @@ struct AssertionPayload {
     assert_type: Option<String>,
     display_type: Option<String>,
     #[serde(default)]
-    location: Option<AssertionLocation>,
+    location: Option<Value>,
     #[serde(default)]
     details: Option<Value>,
 }
 
-#[derive(Debug, Deserialize)]
-pub(super) struct AssertionLocation {
-    file: Option<String>,
-    function: Option<String>,
-    begin_line: Option<serde_json::Number>,
-}
-
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq)]
 struct AssertionSummary {
     label: String,
     verdict: AssertVerdict,
     message: String,
-    location: Option<String>,
-    /// The payload's attached `details`, pre-rendered as compact JSON.
-    /// `None` when absent, null, or an empty container.
-    details: Option<String>,
+    /// The payload's attached `location`, as sent. [`Block::location_line`]
+    /// parses and formats it, skipping a location with nothing to show.
+    location: Option<Value>,
+    /// The payload's attached `details`, as sent. [`Block::details_json`]
+    /// renders it, skipping null and empty containers.
+    details: Option<Value>,
 }
 
 /// What one assertion event means. `must_hit` is deliberately not surfaced —
@@ -64,11 +58,22 @@ enum AssertVerdict {
     Fail,
 }
 
+/// The payload's two type strings, named so a call site cannot swap them
+/// silently.
+struct AssertTypes<'a> {
+    assert_type: &'a str,
+    display_type: &'a str,
+}
+
 impl AssertVerdict {
-    fn classify(hit: bool, condition: bool, assert_type: &str, display_type: &str) -> Self {
-        if !hit {
-            return Self::Catalog;
-        }
+    /// Classify one evaluation (`hit: true`). A catalog registration
+    /// (`hit: false`) never reaches here — [`AssertionSummary::from_payload`]
+    /// maps it straight to [`Self::Catalog`].
+    fn classify(condition: bool, types: AssertTypes<'_>) -> Self {
+        let AssertTypes {
+            assert_type,
+            display_type,
+        } = types;
         if assert_type.eq_ignore_ascii_case("unreachable")
             || display_type.eq_ignore_ascii_case("unreachable")
         {
@@ -90,14 +95,6 @@ impl AssertVerdict {
 impl AssertionSummary {
     fn from_payload(payload: AssertionPayload) -> Option<Self> {
         let hit = payload.hit?;
-        // `condition` only means something on an evaluation; a catalog
-        // registration (`hit: false`) classifies without one, so a missing
-        // condition must not knock it down to the raw-JSON fallback.
-        let condition = match payload.condition {
-            Some(condition) => condition,
-            None if !hit => false,
-            None => return None,
-        };
         let message = payload
             .message
             .or(payload.id)
@@ -109,13 +106,27 @@ impl AssertionSummary {
             .filter(|label| !label.is_empty())
             .or_else(|| Some(assert_type.trim()).filter(|label| !label.is_empty()))?
             .to_string();
+        // `condition` only means something on an evaluation; a catalog
+        // registration (`hit: false`) classifies without one, so a missing
+        // condition must not knock it down to the raw-JSON fallback.
+        let verdict = if hit {
+            AssertVerdict::classify(
+                payload.condition?,
+                AssertTypes {
+                    assert_type: &assert_type,
+                    display_type: &display_type,
+                },
+            )
+        } else {
+            AssertVerdict::Catalog
+        };
 
         Some(Self {
-            verdict: AssertVerdict::classify(hit, condition, &assert_type, &display_type),
+            verdict,
             label,
             message,
-            location: payload.location.and_then(render_assertion_location),
-            details: payload.details.as_ref().and_then(render_details_json),
+            location: payload.location,
+            details: payload.details,
         })
     }
 }
@@ -160,59 +171,14 @@ impl Event<'_> for Assertion {
             // A hit sometimes/reachable is neither good nor bad on its own.
             AssertVerdict::Hit => write!(block, "{} {body}", style("HIT").bold())?,
         }
-        if block.detail() {
-            if let Some(location) = &summary.location {
-                block.detail_line(format_args!("@ {location}"))?;
-            }
-            if let Some(json) = &summary.details {
-                block.detail_line(format_args!("details {json}"))?;
-            }
+        if let Some(location) = &summary.location {
+            block.location_line(location)?;
+        }
+        if let Some(details) = &summary.details {
+            block.details_json(details)?;
         }
         Ok(())
     }
-}
-
-pub(super) fn render_assertion_location(location: AssertionLocation) -> Option<String> {
-    let file = location.file.as_deref().and_then(file_basename);
-    let function = location
-        .function
-        .as_deref()
-        .map(str::trim)
-        .filter(|function| !function.is_empty())
-        .map(sanitize);
-    let line = location.begin_line.map(|line| line.to_string());
-
-    let mut rendered = String::new();
-
-    if let Some(file) = file {
-        rendered.push_str(&sanitize(file));
-    }
-    if let Some(function) = function {
-        if !rendered.is_empty() {
-            rendered.push(':');
-        }
-        rendered.push_str(&function);
-    }
-    if let Some(line) = line {
-        if !rendered.is_empty() {
-            rendered.push(':');
-        }
-        rendered.push_str(&line);
-    }
-
-    (!rendered.is_empty()).then_some(rendered)
-}
-
-fn file_basename(file: &str) -> Option<&str> {
-    let trimmed = file.trim();
-    if trimmed.is_empty() {
-        return None;
-    }
-
-    Path::new(trimmed)
-        .file_name()
-        .and_then(|name| name.to_str())
-        .or(Some(trimmed))
 }
 
 #[cfg(test)]
@@ -347,12 +313,16 @@ mod tests {
                 "message": "setup reached", "assert_type": "reachability",
                 "display_type": "SetupReached",
                 "location": {"function": "run_setup", "begin_line": 42}
-            }
+            },
+            "source": {"container": "app"},
+            "moment": {"input_hash": "-1", "vtime": "1.0"}
         });
         let summary = parse_assertion_summary(&entry).unwrap();
         assert_eq!(summary.verdict, AssertVerdict::Catalog);
         assert_eq!(summary.label, "SetupReached");
-        assert_eq!(summary.location.as_deref(), Some("run_setup:42"));
+        // A location without a file still renders from the fields it has.
+        let block = render_one_detailed(entry);
+        assert!(block.ends_with("@ run_setup:42"), "got: {block}");
 
         // Empty display_type falls back to assert_type.
         let entry = json!({

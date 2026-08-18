@@ -13,7 +13,7 @@ use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use reqwest::{Client, Proxy};
 use serde::de::DeserializeOwned;
 
-use crate::api_cache::{self, ApiCache, CacheKey};
+use crate::api_cache::{self, ApiCache};
 use crate::auth::{AuthenticationInfo, PasswordPolicy};
 use crate::env;
 use crate::error::{ApiError, user_error};
@@ -369,12 +369,9 @@ pub struct LogsBegin {
 pub struct AntithesisApi {
     client: generated::Client,
     base_url: String,
-    /// `None` disables caching. Each handler that serves an immutable
-    /// resource consults this itself; see [`crate::api_cache`].
-    cache: Option<ApiCache>,
-    /// Announce each cache hit on stderr (see
-    /// [`AntithesisApi::note_cache_hit`]).
-    verbose: bool,
+    /// Each handler that serves an immutable resource consults this itself;
+    /// see [`crate::api_cache`].
+    cache: ApiCache,
 }
 
 impl AntithesisApi {
@@ -442,7 +439,12 @@ impl AntithesisApi {
             #[cfg(test)]
             ResponseCache::Dir(dir) => Some(dir),
         };
-        let cache = cache_dir.map(|dir| ApiCache::new(dir, settings.api_cache_max_file_size()));
+        let cache = ApiCache::new(
+            cache_dir,
+            settings.api_cache_max_file_size(),
+            base_url.clone(),
+            verbose,
+        );
         let state = ClientState {
             authn_info,
             default_headers: verbose.then_some(default_headers),
@@ -453,7 +455,6 @@ impl AntithesisApi {
             client,
             base_url,
             cache,
-            verbose,
         })
     }
 
@@ -495,8 +496,8 @@ impl AntithesisApi {
     }
 
     pub async fn get_run(&self, run_id: &str) -> Result<RunDetail> {
-        let key = self.cache_key("get_run", &run_id);
-        if let Some(detail) = self.cached_value(&key).await {
+        let key = self.cache.key("get_run", &run_id);
+        if let Some(detail) = self.cache.lookup_value(&key).await {
             return Ok(detail);
         }
         let detail: RunDetail = match self.client.get_run().run_id(run_id).send().await {
@@ -506,7 +507,7 @@ impl AntithesisApi {
         // A run detail is immutable only once the run reaches a terminal
         // status; a live one is never cached.
         if detail.status.is_terminal() {
-            self.store_value(&key, &detail).await;
+            self.cache.store_value(&key, &detail).await;
         }
         Ok(detail)
     }
@@ -555,12 +556,14 @@ impl AntithesisApi {
 
     pub async fn get_run_build_logs(&self, run_id: &str) -> Result<JsonStream> {
         ensure_resource_supported(run_id, MIN_BUILD_LOGS_VERSION, "build logs")?;
-        let key = self.cache_key("get_run_build_logs", &run_id);
-        if let Some(stream) = self.cached_stream(&key).await {
+        let key = self.cache.key("get_run_build_logs", &run_id);
+        if let Some(stream) = self.cache.lookup_stream(&key).await {
             return Ok(stream);
         }
         match self.client.get_run_build_logs().run_id(run_id).send().await {
-            Ok(response) => Ok(self.tee_into_cache(key, JsonStream::new(response.into_inner()))),
+            Ok(response) => Ok(self
+                .cache
+                .store_stream(key, JsonStream::new(response.into_inner()))),
             Err(err) => Err(format_api_client_error(err).await),
         }
     }
@@ -576,8 +579,8 @@ impl AntithesisApi {
     ) -> Result<JsonStream> {
         // The key carries the parameter types themselves, so a field added
         // to `Moment` or `LogsBegin` enters the key automatically.
-        let key = self.cache_key("get_run_logs", &(run_id, &moment, &begin));
-        if let Some(stream) = self.cached_stream(&key).await {
+        let key = self.cache.key("get_run_logs", &(run_id, &moment, &begin));
+        if let Some(stream) = self.cache.lookup_stream(&key).await {
             return Ok(stream);
         }
 
@@ -595,54 +598,10 @@ impl AntithesisApi {
         }
 
         match request.send().await {
-            Ok(response) => Ok(self.tee_into_cache(key, JsonStream::new(response.into_inner()))),
+            Ok(response) => Ok(self
+                .cache
+                .store_stream(key, JsonStream::new(response.into_inner()))),
             Err(err) => Err(format_api_client_error(err).await),
-        }
-    }
-
-    /// The cache key for `operation` with `params`, bound to this client's
-    /// tenant.
-    fn cache_key(&self, operation: &'static str, params: &impl serde::Serialize) -> CacheKey {
-        CacheKey::new(&self.base_url, operation, params)
-    }
-
-    /// The cached value under `key`, or `None` on a miss or when caching is
-    /// disabled.
-    async fn cached_value<T: DeserializeOwned>(&self, key: &CacheKey) -> Option<T> {
-        let value = self.cache.as_ref()?.lookup_value(key).await?;
-        self.note_cache_hit(key);
-        Some(value)
-    }
-
-    /// The cached stream under `key`, or `None` on a miss or when caching is
-    /// disabled.
-    async fn cached_stream(&self, key: &CacheKey) -> Option<JsonStream> {
-        let stream = self.cache.as_ref()?.lookup_stream(key).await?;
-        self.note_cache_hit(key);
-        Some(stream)
-    }
-
-    /// Store `value` under `key`; a no-op when caching is disabled.
-    async fn store_value<T: serde::Serialize>(&self, key: &CacheKey, value: &T) {
-        if let Some(cache) = &self.cache {
-            cache.store_value(key, value).await;
-        }
-    }
-
-    /// Tee `stream` into the cache under `key`, or return it untouched when
-    /// caching is disabled.
-    fn tee_into_cache(&self, key: CacheKey, stream: JsonStream) -> JsonStream {
-        match &self.cache {
-            Some(cache) => cache.store_stream(key, stream),
-            None => stream,
-        }
-    }
-
-    /// The `--verbose` request log has no request to show for a cache hit,
-    /// so this line takes its place.
-    fn note_cache_hit(&self, key: &CacheKey) {
-        if self.verbose {
-            eprintln!("* response served from the local cache: {key}");
         }
     }
 
@@ -811,11 +770,10 @@ impl AntithesisApi {
         status: Option<PropertyStatus>,
     ) -> Result<generated::types::PropertyListResponse> {
         const PAGE_LIMIT: u64 = 100;
-        // Each page caches under its own key: the cursor and the status
-        // filter change what the server returns, so they are part of the
-        // parameters. The limit rides along in case it ever varies.
-        let key = self.cache_key("list_run_properties", &(run_id, after, status, PAGE_LIMIT));
-        if let Some(page) = self.cached_value(&key).await {
+        let key = self
+            .cache
+            .key("list_run_properties", &(run_id, after, status, PAGE_LIMIT));
+        if let Some(page) = self.cache.lookup_value(&key).await {
             return Ok(page);
         }
 
@@ -834,7 +792,7 @@ impl AntithesisApi {
         match request.send().await {
             Ok(response) => {
                 let page = response.into_inner();
-                self.store_value(&key, &page).await;
+                self.cache.store_value(&key, &page).await;
                 Ok(page)
             }
             Err(err) => Err(format_api_client_error(err).await),
@@ -2322,6 +2280,47 @@ mod tests {
         );
     }
 
+    // The cached operations' stores rely on the generated client accepting
+    // only the documented success status. Pin that status to exactly 200, so
+    // a spec refresh that documents another 2xx for a cached operation
+    // forces this admission review to run again.
+    #[test]
+    fn cached_operations_document_only_a_200() {
+        let spec: serde_json::Value = serde_json::from_str(include_str!("openapi.json")).unwrap();
+        let cached = [
+            "getRun",
+            "getRunBuildLogs",
+            "getRunLogs",
+            "listRunProperties",
+        ];
+        let mut seen = Vec::new();
+        for operations in spec["paths"].as_object().unwrap().values() {
+            for operation in operations.as_object().unwrap().values() {
+                let Some(id) = operation["operationId"].as_str() else {
+                    continue;
+                };
+                if !cached.contains(&id) {
+                    continue;
+                }
+                seen.push(id.to_owned());
+                let statuses: Vec<&String> = operation["responses"]
+                    .as_object()
+                    .unwrap()
+                    .keys()
+                    .filter(|status| status.starts_with('2'))
+                    .collect();
+                assert_eq!(
+                    statuses,
+                    ["200"],
+                    "{id} documents 2xx responses other than 200; \
+                     re-verify the cache admission before trusting its store"
+                );
+            }
+        }
+        seen.sort_unstable();
+        assert_eq!(seen, cached, "a cached operation left the spec");
+    }
+
     #[tokio::test]
     async fn stream_runs_follows_next_cursor() {
         let mock_server = MockServer::start().await;
@@ -2857,6 +2856,29 @@ mod tests {
         api.get_run("run-1").await.unwrap();
         // …and this one replays from the cache (the mocks allow no third hit).
         api.get_run("run-1").await.unwrap();
+    }
+
+    // The cache stores 200 bodies only. The generated client returns `Ok`
+    // only for the documented status, and `cached_operations_document_only_a_200`
+    // pins that status to 200 — so an undocumented 2xx is an error and its
+    // body never reaches a store.
+    #[tokio::test]
+    async fn an_undocumented_2xx_is_not_cached() {
+        let mock_server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v0/runs/run-1"))
+            .respond_with(ResponseTemplate::new(202).set_body_json(run_detail_body("completed")))
+            .expect(2)
+            .mount(&mock_server)
+            .await;
+
+        let cache_dir = TempDir::new().unwrap();
+        let api = test_api_optionally_with_cache(&mock_server, Some(&cache_dir));
+
+        for _ in 0..2 {
+            let report = api.get_run("run-1").await.unwrap_err();
+            assert_eq!(crate::error::api_error_status(&report), Some(202));
+        }
     }
 
     #[tokio::test]

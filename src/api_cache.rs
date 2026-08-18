@@ -79,7 +79,7 @@ pub struct CacheKey {
 }
 
 impl CacheKey {
-    pub fn new(base_url: &str, operation: &'static str, params: &impl Serialize) -> Self {
+    fn new(base_url: &str, operation: &'static str, params: &impl Serialize) -> Self {
         // JSON escapes any newline inside a string and a URL cannot carry a
         // raw one, so '\n' cannot occur inside a segment.
         let params =
@@ -105,24 +105,46 @@ impl std::fmt::Display for CacheKey {
 /// The logical API response cache. Cheap to clone; all state is on disk.
 #[derive(Clone, Debug)]
 pub struct ApiCache {
-    dir: PathBuf,
+    /// `None` disables the cache: every lookup misses and every store is a
+    /// no-op.
+    dir: Option<PathBuf>,
     max_file_size: u64,
+    /// The tenant every key is bound to.
+    base_url: String,
+    /// Announce each hit on stderr (the `--verbose` request log has no
+    /// request to show for a hit, so that line takes its place).
+    verbose: bool,
 }
 
 impl ApiCache {
-    pub fn new(dir: PathBuf, max_file_size: u64) -> Self {
-        Self { dir, max_file_size }
+    pub fn new(dir: Option<PathBuf>, max_file_size: u64, base_url: String, verbose: bool) -> Self {
+        Self {
+            dir,
+            max_file_size,
+            base_url,
+            verbose,
+        }
+    }
+
+    /// The cache key for `operation` with `params`, bound to this cache's
+    /// tenant.
+    pub fn key(&self, operation: &'static str, params: &impl Serialize) -> CacheKey {
+        CacheKey::new(&self.base_url, operation, params)
+    }
+
+    fn note_hit(&self, key: &CacheKey) {
+        debug!("API cache hit for {key}");
+        if self.verbose {
+            eprintln!("* response served from the local cache: {key}");
+        }
     }
 
     /// Read `key`'s entry, evicting on any read error. `cacache` verifies
     /// content integrity on read, so bytes that come back are the bytes that
     /// were committed.
     async fn read(&self, key: &CacheKey) -> Option<Vec<u8>> {
-        match cacache::read(&self.dir, &key.key).await {
-            Ok(bytes) => {
-                debug!("API cache hit for {key}");
-                Some(bytes)
-            }
+        match cacache::read(self.dir.as_ref()?, &key.key).await {
+            Ok(bytes) => Some(bytes),
             Err(cacache::Error::EntryNotFound(..)) => None,
             Err(err) => {
                 warn!("API cache read failed for {key}, bypassing cache: {err}");
@@ -134,15 +156,17 @@ impl ApiCache {
 
     /// Evict `key` so a broken entry does not stay broken forever.
     async fn evict(&self, key: &CacheKey) {
-        let _ = cacache::remove(&self.dir, &key.key).await;
+        let Some(dir) = &self.dir else { return };
+        let _ = cacache::remove(dir, &key.key).await;
     }
 
     async fn write(&self, key: &CacheKey, bytes: Vec<u8>) {
+        let Some(dir) = &self.dir else { return };
         if bytes.len() as u64 > self.max_file_size {
             debug!("API cache entry over the size limit, not caching");
             return;
         }
-        if let Err(err) = cacache::write(&self.dir, &key.key, bytes).await {
+        if let Err(err) = cacache::write(dir, &key.key, bytes).await {
             warn!("API cache write failed for {key}, bypassing cache: {err}");
         }
     }
@@ -169,13 +193,19 @@ impl ApiCache {
     /// request": a miss, any cache error, or an entry the current type no
     /// longer parses.
     pub async fn lookup_value<T: DeserializeOwned>(&self, key: &CacheKey) -> Option<T> {
-        self.read_parsed(key, |bytes| serde_json::from_slice(bytes))
-            .await
+        let value = self
+            .read_parsed(key, |bytes| serde_json::from_slice(bytes))
+            .await?;
+        self.note_hit(key);
+        Some(value)
     }
 
     /// Store `value` under `key`. Never fails: an oversized or unwritable
     /// entry is dropped and the caller keeps the value it already has.
     pub async fn store_value<T: Serialize>(&self, key: &CacheKey, value: &T) {
+        if self.dir.is_none() {
+            return;
+        }
         match serde_json::to_vec(value) {
             Ok(bytes) => self.write(key, bytes).await,
             Err(err) => warn!("API cache entry for {key} does not serialize, not caching: {err}"),
@@ -194,6 +224,7 @@ impl ApiCache {
                     .collect()
             })
             .await?;
+        self.note_hit(key);
         Some(JsonStream::from_values(futures_util::stream::iter(
             values.into_iter().map(Ok),
         )))
@@ -205,6 +236,9 @@ impl ApiCache {
     /// fails: an oversized or unwritable entry is dropped and the caller
     /// keeps streaming.
     pub fn store_stream(&self, key: CacheKey, stream: JsonStream) -> JsonStream {
+        if self.dir.is_none() {
+            return stream;
+        }
         // The state carries the entry so far, one serialized value per line;
         // the entry is dropped on an error item or over the size budget,
         // which bounds the buffer while the caller streams.
@@ -249,7 +283,12 @@ mod tests {
     use tempfile::TempDir;
 
     fn test_cache(dir: &TempDir) -> ApiCache {
-        ApiCache::new(dir.path().to_path_buf(), DEFAULT_MAX_FILE_SIZE)
+        ApiCache::new(
+            Some(dir.path().to_path_buf()),
+            DEFAULT_MAX_FILE_SIZE,
+            "http://t".to_owned(),
+            false,
+        )
     }
 
     fn values_stream(values: &[Value]) -> JsonStream {

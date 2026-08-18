@@ -247,6 +247,9 @@ impl Stream for StoreStream {
                     if let Some((_, buf)) = &mut this.entry {
                         let line =
                             serde_json::to_vec(&value).expect("a serde_json::Value serializes");
+                        // Abandoning here bounds the buffer while the caller
+                        // streams; [`ApiCache::write`] re-checks the limit at
+                        // commit.
                         if (buf.len() + line.len() + 1) as u64 > this.cache.max_file_size {
                             debug!("API cache entry over the size limit, not caching");
                             this.entry = None;
@@ -334,12 +337,19 @@ mod tests {
         let items: Vec<color_eyre::Result<Value>> = vec![
             Ok(serde_json::json!({"text": "one"})),
             Err(color_eyre::eyre::eyre!("mid-stream failure")),
+            Ok(serde_json::json!({"text": "after the failure"})),
         ];
-        let teed = cache.store_stream(
+        let mut teed = cache.store_stream(
             key(),
             JsonStream::from_values(futures_util::stream::iter(items)),
         );
-        assert!(teed.try_collect::<Vec<_>>().await.is_err());
+        // Drain past the error to the stream's end: even a caller that keeps
+        // reading must not commit the broken body.
+        let mut saw_error = false;
+        while let Some(item) = teed.next().await {
+            saw_error |= item.is_err();
+        }
+        assert!(saw_error);
 
         assert!(cache.lookup_stream(&key()).await.is_none());
     }

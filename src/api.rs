@@ -124,6 +124,10 @@ pub enum VersionError {
     /// The server replied with a non-success HTTP status (e.g. 404 when the
     /// endpoint is missing on an older backend, or 401/403 when auth is rejected).
     Http(u16),
+    /// The server answered with a success status, but the body did not parse
+    /// as the version payload — typically a proxy or captive portal serving
+    /// its own page. Reachability is proven; the response is wrong.
+    BadResponse(String),
     /// The API could not be reached at all (DNS, connection, TLS, timeout).
     Unreachable(String),
 }
@@ -425,7 +429,27 @@ impl AntithesisApi {
             }
             Err(err) => Err(match err.status() {
                 Some(code) => VersionError::Http(code.as_u16()),
-                None => VersionError::Unreachable(err.to_string()),
+                // A success response whose body did not parse also carries no
+                // status, but the server answered — most likely a proxy or
+                // captive portal serving its own page. Calling that
+                // "unreachable" would send the user debugging their network.
+                None => match err {
+                    ClientError::InvalidResponsePayload(_, err) => {
+                        VersionError::BadResponse(err.to_string())
+                    }
+                    err => {
+                        // The top-level display ("Communication Error: error
+                        // sending request for url (...)") only restates that
+                        // the request failed; the actionable cause —
+                        // connection refused, DNS failure, timeout — is the
+                        // last error in the source chain.
+                        let mut cause: &dyn std::error::Error = &err;
+                        while let Some(source) = cause.source() {
+                            cause = source;
+                        }
+                        VersionError::Unreachable(cause.to_string())
+                    }
+                },
             }),
         }
     }

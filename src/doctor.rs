@@ -452,10 +452,17 @@ fn version_check(host: &str, result: std::result::Result<ApiVersion, VersionErro
             Level::Error,
             format!("the API returned an unexpected HTTP {status}"),
         ),
+        // The server answered, but not with the version payload — the network
+        // is fine, so don't send the user debugging connectivity.
+        Err(VersionError::BadResponse(err)) => {
+            Check::fail("api", "Antithesis API sent an unexpected response").note(
+                Level::Error,
+                format!("{host} answered, but the response was invalid: {err}"),
+            )
+        }
         // Couldn't connect at all — connectivity is broken.
         Err(VersionError::Unreachable(err)) => Check::fail("api", "Antithesis API unreachable")
-            .note(Level::Error, format!("could not connect to {host}"))
-            .note(Level::Error, err),
+            .note(Level::Error, format!("could not connect to {host}: {err}")),
     }
 }
 
@@ -855,6 +862,24 @@ mod tests {
                     .any(|n| n.text.contains("ANTITHESIS_API_KEY"))
             );
         }
+    }
+
+    #[test]
+    fn version_bad_response_is_not_reported_as_unreachable() {
+        let check = version_check(
+            "tenant.antithesis.com",
+            Err(VersionError::BadResponse(
+                "invalid type: null, expected struct ApiVersion".into(),
+            )),
+        );
+        assert_eq!(check.status, Status::Error);
+        assert!(check.message.contains("unexpected response"));
+        assert!(!check.message.contains("unreachable"));
+        assert!(check.notes.iter().any(|n| {
+            n.text.contains("tenant.antithesis.com")
+                && n.text
+                    .contains("invalid type: null, expected struct ApiVersion")
+        }));
     }
 
     #[test]

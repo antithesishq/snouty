@@ -54,12 +54,20 @@ one so the next step reviews a clean diff.
 
 ## 5. Watch until close
 
-Run the PR watcher in the background — through the Monitor tool with
-`persistent: true` when the harness has it, otherwise through a background
-Bash task:
+Discover the login your writes post as, so the watcher does not echo your
+own comments back to you. You created the PR, so its author is that
+identity, whichever credential reads it:
 
 ```
-uv run scripts/watch-prs.py <PR>
+gh pr view <PR> --json author --jq .author.login
+```
+
+Run the PR watcher in the background with that login — through the Monitor
+tool with `persistent: true` when the harness has it, otherwise through a
+background Bash task:
+
+```
+uv run scripts/watch-prs.py -u <login> <PR>
 ```
 
 The script prints one line per event and exits when every watched PR is

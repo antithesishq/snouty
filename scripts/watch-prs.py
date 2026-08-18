@@ -40,7 +40,13 @@ def gh_json(args: list[str]) -> Any | None:
 
 
 def login_of(item: dict[str, Any]) -> str:
-    return (item.get("author") or {}).get("login", "")
+    return norm_login((item.get("author") or {}).get("login", ""))
+
+
+def norm_login(login: str) -> str:
+    # One app account renders three ways across the API: "app/name" as a PR
+    # author, "name" as a review author, "name[bot]" over REST.
+    return login.removeprefix("app/").removesuffix("[bot]")
 
 
 def poll_pr(
@@ -105,6 +111,7 @@ def main() -> int:
     args = ap.parse_args()
 
     repo_flag = ["-R", args.repo] if args.repo else []
+    ignore = norm_login(args.ignore)
     open_prs = set(args.prs)
     seeded: set[int] = set()
     seen: dict[int, set[str]] = {pr: set() for pr in args.prs}
@@ -112,7 +119,7 @@ def main() -> int:
 
     while open_prs:
         for pr in sorted(open_prs):
-            if not poll_pr(repo_flag, pr, args.ignore, seeded, seen[pr], checks[pr]):
+            if not poll_pr(repo_flag, pr, ignore, seeded, seen[pr], checks[pr]):
                 open_prs.discard(pr)
         if not open_prs:
             break

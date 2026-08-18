@@ -2793,6 +2793,7 @@ dependencies = [
  "getrandom 0.3.4",
  "hegeltest",
  "http",
+ "hyper",
  "indexmap",
  "inquire",
  "json-patch",

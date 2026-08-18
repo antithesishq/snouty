@@ -10,12 +10,6 @@ bar. Scope: comments added or changed in `git diff origin/main...HEAD`, plus
 comments made stale by code the branch changed. Do not sweep the rest of the
 repository.
 
-## Sources of truth
-
-1. AGENTS.md, section "Comments, changelog, and prose".
-2. Your persistent memory. Check it for comment-related feedback. Newer
-   feedback wins over this skill.
-
 ## The bar
 
 A comment earns its place only when it states something the code cannot show:

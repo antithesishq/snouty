@@ -67,9 +67,10 @@ pub fn default_dir() -> Option<PathBuf> {
 /// base URL (two tenants must never share an entry), and the generated-client
 /// hash (entries never outlive the client that wrote them).
 ///
-/// Handlers key on their parameter values themselves (serde-serialized), so
-/// a field added to a parameter type enters the key automatically instead of
-/// silently aliasing entries that differ in it.
+/// Handlers get their key from the `#[cached]` attribute (see
+/// [`snouty_macros::cached`]), which serializes every handler parameter into
+/// it — a parameter or field added to a handler enters the key automatically
+/// instead of silently aliasing entries that differ in it.
 pub struct CacheKey {
     key: String,
     /// The operation name and its parameters, kept out of `key`'s opaque

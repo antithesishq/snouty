@@ -27,6 +27,7 @@ use crate::render::sanitize;
 use crate::settings::Settings;
 use crate::util::source_error;
 use crate::vtime::VTime;
+use snouty_macros::cached;
 
 #[allow(dead_code, unused_imports, private_interfaces)]
 mod generated {
@@ -495,21 +496,14 @@ impl AntithesisApi {
         })
     }
 
+    // A run detail is immutable only once the run reaches a terminal
+    // status; a live one is never cached.
+    #[cached(value, admit = |detail: &RunDetail| detail.status.is_terminal())]
     pub async fn get_run(&self, run_id: &str) -> Result<RunDetail> {
-        let key = self.cache.key("get_run", &run_id);
-        if let Some(detail) = self.cache.lookup_value(&key).await {
-            return Ok(detail);
+        match self.client.get_run().run_id(run_id).send().await {
+            Ok(response) => Ok(response.into_inner()),
+            Err(err) => Err(format_api_client_error(err).await),
         }
-        let detail: RunDetail = match self.client.get_run().run_id(run_id).send().await {
-            Ok(response) => response.into_inner(),
-            Err(err) => return Err(format_api_client_error(err).await),
-        };
-        // A run detail is immutable only once the run reaches a terminal
-        // status; a live one is never cached.
-        if detail.status.is_terminal() {
-            self.cache.store_value(&key, &detail).await;
-        }
-        Ok(detail)
     }
 
     /// Probe `GET /api/version` for the API and tenant release versions. The
@@ -554,16 +548,13 @@ impl AntithesisApi {
         }
     }
 
+    #[cached(stream)]
     pub async fn get_run_build_logs(&self, run_id: &str) -> Result<JsonStream> {
+        // The version gate runs on misses only: a run it rejects never got a
+        // 200 from the server, so no cache entry can exist for it.
         ensure_resource_supported(run_id, MIN_BUILD_LOGS_VERSION, "build logs")?;
-        let key = self.cache.key("get_run_build_logs", &run_id);
-        if let Some(stream) = self.cache.lookup_stream(&key).await {
-            return Ok(stream);
-        }
         match self.client.get_run_build_logs().run_id(run_id).send().await {
-            Ok(response) => Ok(self
-                .cache
-                .store_stream(key, JsonStream::new(response.into_inner()))),
+            Ok(response) => Ok(JsonStream::new(response.into_inner())),
             Err(err) => Err(format_api_client_error(err).await),
         }
     }
@@ -571,19 +562,13 @@ impl AntithesisApi {
     /// The endpoint takes each vtime as a decimal-seconds query parameter. The
     /// generated setters accept anything that converts to `String`, and
     /// [`VTime`]'s conversion is its exact `Display` text.
+    #[cached(stream)]
     pub async fn get_run_logs(
         &self,
         run_id: &str,
         moment: Moment,
         begin: Option<LogsBegin>,
     ) -> Result<JsonStream> {
-        // The key carries the parameter types themselves, so a field added
-        // to `Moment` or `LogsBegin` enters the key automatically.
-        let key = self.cache.key("get_run_logs", &(run_id, &moment, &begin));
-        if let Some(stream) = self.cache.lookup_stream(&key).await {
-            return Ok(stream);
-        }
-
         let mut request = self
             .client
             .get_run_logs()
@@ -598,9 +583,7 @@ impl AntithesisApi {
         }
 
         match request.send().await {
-            Ok(response) => Ok(self
-                .cache
-                .store_stream(key, JsonStream::new(response.into_inner()))),
+            Ok(response) => Ok(JsonStream::new(response.into_inner())),
             Err(err) => Err(format_api_client_error(err).await),
         }
     }
@@ -767,6 +750,7 @@ impl AntithesisApi {
         }
     }
 
+    #[cached(value)]
     async fn fetch_run_properties_page(
         &self,
         run_id: &str,
@@ -774,13 +758,6 @@ impl AntithesisApi {
         status: Option<PropertyStatus>,
         limit: u64,
     ) -> Result<generated::types::PropertyListResponse> {
-        let key = self
-            .cache
-            .key("list_run_properties", &(run_id, after, status, limit));
-        if let Some(page) = self.cache.lookup_value(&key).await {
-            return Ok(page);
-        }
-
         let mut request = self
             .client
             .list_run_properties()
@@ -794,11 +771,7 @@ impl AntithesisApi {
         }
 
         match request.send().await {
-            Ok(response) => {
-                let page = response.into_inner();
-                self.cache.store_value(&key, &page).await;
-                Ok(page)
-            }
+            Ok(response) => Ok(response.into_inner()),
             Err(err) => Err(format_api_client_error(err).await),
         }
     }

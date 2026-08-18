@@ -642,7 +642,7 @@ impl AntithesisApi {
     /// so this line takes its place.
     fn note_cache_hit(&self, key: &CacheKey) {
         if self.verbose {
-            eprintln!("* {} response served from the local cache", key.operation());
+            eprintln!("* response served from the local cache: {key}");
         }
     }
 
@@ -2712,6 +2712,51 @@ mod tests {
                 .unwrap();
             assert_eq!(runs.len(), 1);
         }
+    }
+
+    // Event search stays uncached until there is a reliable way to tell that
+    // no more events will show up.
+    #[tokio::test]
+    async fn search_results_are_never_cached() {
+        let mock_server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v0/runs/run-1/events"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("{\"output_text\":\"x\"}\n"))
+            .expect(2)
+            .mount(&mock_server)
+            .await;
+
+        let cache_dir = TempDir::new().unwrap();
+        let api = test_api_optionally_with_cache(&mock_server, Some(&cache_dir));
+
+        for _ in 0..2 {
+            let stream = api.search_run_events("run-1", "x", None).await.unwrap();
+            assert_eq!(read_stream(stream).await.len(), 1);
+        }
+    }
+
+    // The #269 contract: a cache hit builds no request at all, so cached
+    // reads work with no reachable server (and so with no valid credential).
+    #[tokio::test]
+    async fn a_cache_hit_needs_no_server() {
+        let mock_server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v0/runs/run-1"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(run_detail_body("completed")))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let cache_dir = TempDir::new().unwrap();
+        let uri = mock_server.uri();
+        let api = test_api_at_url(uri.clone(), Some(&cache_dir));
+        api.get_run("run-1").await.unwrap();
+        drop(mock_server);
+        drop(api);
+
+        let api = test_api_at_url(uri, Some(&cache_dir));
+        let replay = api.get_run("run-1").await.unwrap();
+        assert_eq!(replay.run_id, "run-1");
     }
 
     #[tokio::test]

@@ -72,8 +72,10 @@ pub fn default_dir() -> Option<PathBuf> {
 /// silently aliasing entries that differ in it.
 pub struct CacheKey {
     key: String,
-    /// The operation name, kept out of `key`'s opaque text for log messages.
+    /// The operation name and its parameters, kept out of `key`'s opaque
+    /// text so log messages can name the request a hit or failure is about.
     operation: &'static str,
+    params: String,
 }
 
 impl CacheKey {
@@ -86,12 +88,17 @@ impl CacheKey {
             "{}\n{base_url}\n{operation}\n{params}",
             env!("SNOUTY_GENERATED_API_HASH")
         );
-        Self { key, operation }
+        Self {
+            key,
+            operation,
+            params,
+        }
     }
+}
 
-    /// The operation name, for log messages.
-    pub fn operation(&self) -> &'static str {
-        self.operation
+impl std::fmt::Display for CacheKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{} {}", self.operation, self.params)
     }
 }
 
@@ -107,21 +114,18 @@ impl ApiCache {
         Self { dir, max_file_size }
     }
 
-    /// Read `key`'s entry, evicting on any read error so a broken entry does
-    /// not stay broken forever. `cacache` verifies content integrity on read,
-    /// so bytes that come back are the bytes that were committed.
+    /// Read `key`'s entry, evicting on any read error. `cacache` verifies
+    /// content integrity on read, so bytes that come back are the bytes that
+    /// were committed.
     async fn read(&self, key: &CacheKey) -> Option<Vec<u8>> {
         match cacache::read(&self.dir, &key.key).await {
             Ok(bytes) => {
-                debug!("API cache hit for {}", key.operation);
+                debug!("API cache hit for {key}");
                 Some(bytes)
             }
             Err(cacache::Error::EntryNotFound(..)) => None,
             Err(err) => {
-                warn!(
-                    "API cache read failed for {}, bypassing cache: {err}",
-                    key.operation
-                );
+                warn!("API cache read failed for {key}, bypassing cache: {err}");
                 self.evict(key).await;
                 None
             }
@@ -139,10 +143,7 @@ impl ApiCache {
             return;
         }
         if let Err(err) = cacache::write(&self.dir, &key.key, bytes).await {
-            warn!(
-                "API cache write failed for {}, bypassing cache: {err}",
-                key.operation
-            );
+            warn!("API cache write failed for {key}, bypassing cache: {err}");
         }
     }
 
@@ -157,10 +158,7 @@ impl ApiCache {
         match parse(&bytes) {
             Ok(value) => Some(value),
             Err(err) => {
-                warn!(
-                    "API cache entry for {} does not parse, evicting: {err}",
-                    key.operation
-                );
+                warn!("API cache entry for {key} does not parse, evicting: {err}");
                 self.evict(key).await;
                 None
             }
@@ -180,10 +178,7 @@ impl ApiCache {
     pub async fn store_value<T: Serialize>(&self, key: &CacheKey, value: &T) {
         match serde_json::to_vec(value) {
             Ok(bytes) => self.write(key, bytes).await,
-            Err(err) => warn!(
-                "API cache entry for {} does not serialize, not caching: {err}",
-                key.operation
-            ),
+            Err(err) => warn!("API cache entry for {key} does not serialize, not caching: {err}"),
         }
     }
 

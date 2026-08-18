@@ -455,15 +455,10 @@ fn version_check(host: &str, result: std::result::Result<ApiVersion, VersionErro
         // The server answered, but not with the version payload — the network
         // is fine, so don't send the user debugging connectivity.
         Err(VersionError::BadResponse(err)) => {
-            Check::fail("api", "Antithesis API sent an unexpected response")
-                .note(
-                    Level::Error,
-                    format!("{host} answered, but the response was not the Antithesis API: {err}"),
-                )
-                .note(
-                    Level::Note,
-                    "a proxy or captive portal may be intercepting API requests",
-                )
+            Check::fail("api", "Antithesis API sent an unexpected response").note(
+                Level::Error,
+                format!("{host} answered, but the response was invalid: {err}"),
+            )
         }
         // Couldn't connect at all — connectivity is broken.
         Err(VersionError::Unreachable(err)) => Check::fail("api", "Antithesis API unreachable")
@@ -885,7 +880,6 @@ mod tests {
                 && n.text
                     .contains("invalid type: null, expected struct ApiVersion")
         }));
-        assert!(check.notes.iter().any(|n| n.text.contains("proxy")));
     }
 
     #[test]

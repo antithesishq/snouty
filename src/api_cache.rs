@@ -19,11 +19,8 @@
 //! build may not match the next build's types.
 
 use std::path::PathBuf;
-use std::pin::Pin;
-use std::task::{Context, Poll};
 
-use futures_util::future::BoxFuture;
-use futures_util::{FutureExt, Stream, StreamExt};
+use futures_util::StreamExt;
 use log::{debug, warn};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -70,9 +67,9 @@ pub fn default_dir() -> Option<PathBuf> {
 /// base URL (two tenants must never share an entry), and the generated-client
 /// hash (entries never outlive the client that wrote them).
 ///
-/// Handlers destructure their parameters exhaustively when building the key,
-/// so adding a parameter fails the build instead of silently aliasing entries
-/// that differ in it.
+/// Handlers key on their parameter values themselves (serde-serialized), so
+/// a field added to a parameter type enters the key automatically instead of
+/// silently aliasing entries that differ in it.
 pub struct CacheKey {
     key: String,
     /// The operation name, kept out of `key`'s opaque text for log messages.
@@ -91,6 +88,11 @@ impl CacheKey {
         );
         Self { key, operation }
     }
+
+    /// The operation name, for log messages.
+    pub fn operation(&self) -> &'static str {
+        self.operation
+    }
 }
 
 /// The logical API response cache. Cheap to clone; all state is on disk.
@@ -98,18 +100,11 @@ impl CacheKey {
 pub struct ApiCache {
     dir: PathBuf,
     max_file_size: u64,
-    /// Announce each hit on stderr (the `--verbose` request log has no
-    /// request to show for a hit, so this line takes its place).
-    verbose: bool,
 }
 
 impl ApiCache {
-    pub fn new(dir: PathBuf, max_file_size: u64, verbose: bool) -> Self {
-        Self {
-            dir,
-            max_file_size,
-            verbose,
-        }
+    pub fn new(dir: PathBuf, max_file_size: u64) -> Self {
+        Self { dir, max_file_size }
     }
 
     /// Read `key`'s entry, evicting on any read error so a broken entry does
@@ -119,9 +114,6 @@ impl ApiCache {
         match cacache::read(&self.dir, &key.key).await {
             Ok(bytes) => {
                 debug!("API cache hit for {}", key.operation);
-                if self.verbose {
-                    eprintln!("* {} response served from the local cache", key.operation);
-                }
                 Some(bytes)
             }
             Err(cacache::Error::EntryNotFound(..)) => None,
@@ -130,10 +122,15 @@ impl ApiCache {
                     "API cache read failed for {}, bypassing cache: {err}",
                     key.operation
                 );
-                let _ = cacache::remove(&self.dir, &key.key).await;
+                self.evict(key).await;
                 None
             }
         }
+    }
+
+    /// Evict `key` so a broken entry does not stay broken forever.
+    async fn evict(&self, key: &CacheKey) {
+        let _ = cacache::remove(&self.dir, &key.key).await;
     }
 
     async fn write(&self, key: &CacheKey, bytes: Vec<u8>) {
@@ -149,22 +146,33 @@ impl ApiCache {
         }
     }
 
-    /// The cached value under `key`, deserialized. `None` means "send the
-    /// request": a miss, any cache error, or an entry the current type no
-    /// longer parses (evicted, so the fresh response can replace it).
-    pub async fn lookup_value<T: DeserializeOwned>(&self, key: &CacheKey) -> Option<T> {
+    /// Read and parse `key`'s entry, evicting an entry that no longer parses
+    /// so the fresh response can replace it.
+    async fn read_parsed<T>(
+        &self,
+        key: &CacheKey,
+        parse: impl FnOnce(&[u8]) -> serde_json::Result<T>,
+    ) -> Option<T> {
         let bytes = self.read(key).await?;
-        match serde_json::from_slice(&bytes) {
+        match parse(&bytes) {
             Ok(value) => Some(value),
             Err(err) => {
                 warn!(
                     "API cache entry for {} does not parse, evicting: {err}",
                     key.operation
                 );
-                let _ = cacache::remove(&self.dir, &key.key).await;
+                self.evict(key).await;
                 None
             }
         }
+    }
+
+    /// The cached value under `key`, deserialized. `None` means "send the
+    /// request": a miss, any cache error, or an entry the current type no
+    /// longer parses.
+    pub async fn lookup_value<T: DeserializeOwned>(&self, key: &CacheKey) -> Option<T> {
+        self.read_parsed(key, |bytes| serde_json::from_slice(bytes))
+            .await
     }
 
     /// Store `value` under `key`. Never fails: an oversized or unwritable
@@ -180,11 +188,19 @@ impl ApiCache {
     }
 
     /// Replay the stream cached under `key`, or `None` on a miss or any
-    /// cache error.
+    /// cache error. The entry is parsed up front — it is already fully in
+    /// memory, and an unparseable entry becomes a miss instead of failing
+    /// the stream partway.
     pub async fn lookup_stream(&self, key: &CacheKey) -> Option<JsonStream> {
-        let bytes = self.read(key).await?;
-        Some(JsonStream::from_stream(futures_util::stream::once(
-            async move { reqwest::Result::Ok(bytes.into()) },
+        let values: Vec<Value> = self
+            .read_parsed(key, |bytes| {
+                serde_json::Deserializer::from_slice(bytes)
+                    .into_iter()
+                    .collect()
+            })
+            .await?;
+        Some(JsonStream::from_values(futures_util::stream::iter(
+            values.into_iter().map(Ok),
         )))
     }
 
@@ -194,89 +210,40 @@ impl ApiCache {
     /// fails: an oversized or unwritable entry is dropped and the caller
     /// keeps streaming.
     pub fn store_stream(&self, key: CacheKey, stream: JsonStream) -> JsonStream {
-        JsonStream::from_values(StoreStream {
-            inner: stream,
-            cache: self.clone(),
-            entry: Some((key, Vec::new())),
-            committing: None,
-            done: false,
-        })
-    }
-}
-
-/// A value stream that forwards items unchanged while buffering their
-/// serialized lines, writing the entry once the source ends cleanly.
-struct StoreStream {
-    inner: JsonStream,
-    cache: ApiCache,
-    /// The key and the entry so far, one serialized value per line; `None`
-    /// once the entry is abandoned (an error item, or the size budget
-    /// exceeded).
-    entry: Option<(CacheKey, Vec<u8>)>,
-    committing: Option<BoxFuture<'static, ()>>,
-    done: bool,
-}
-
-impl Stream for StoreStream {
-    type Item = color_eyre::Result<Value>;
-
-    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        let this = self.get_mut();
-        loop {
-            if this.done {
-                return Poll::Ready(None);
-            }
-
-            // The source has ended: finish the write before ending the tee'd
-            // stream, so a fully-read response is durably cached by the time
-            // the caller sees the end.
-            if let Some(commit) = &mut this.committing {
-                match commit.poll_unpin(cx) {
-                    Poll::Pending => return Poll::Pending,
-                    Poll::Ready(()) => {
-                        this.committing = None;
-                        this.done = true;
-                        return Poll::Ready(None);
+        // The state carries the entry so far, one serialized value per line;
+        // the entry is dropped on an error item or over the size budget,
+        // which bounds the buffer while the caller streams.
+        let state = (stream, self.clone(), Some((key, Vec::new())));
+        JsonStream::from_values(
+            futures_util::stream::unfold(state, |(mut stream, cache, mut entry)| async move {
+                let Some(item) = stream.next().await else {
+                    // The source has ended: finish the write before ending
+                    // the tee'd stream, so a fully-read response is durably
+                    // cached by the time the caller sees the end.
+                    if let Some((key, buf)) = entry {
+                        cache.write(&key, buf).await;
                     }
-                }
-            }
-
-            match this.inner.poll_next_unpin(cx) {
-                Poll::Pending => return Poll::Pending,
-                Poll::Ready(Some(Ok(value))) => {
-                    if let Some((_, buf)) = &mut this.entry {
-                        let line =
-                            serde_json::to_vec(&value).expect("a serde_json::Value serializes");
-                        // Abandoning here bounds the buffer while the caller
-                        // streams; [`ApiCache::write`] re-checks the limit at
-                        // commit.
-                        if (buf.len() + line.len() + 1) as u64 > this.cache.max_file_size {
-                            debug!("API cache entry over the size limit, not caching");
-                            this.entry = None;
-                        } else {
-                            buf.extend_from_slice(&line);
+                    return None;
+                };
+                match &item {
+                    Ok(value) => {
+                        if let Some((_, buf)) = &mut entry {
+                            serde_json::to_writer(&mut *buf, value)
+                                .expect("a serde_json::Value serializes");
                             buf.push(b'\n');
+                            if buf.len() as u64 > cache.max_file_size {
+                                debug!("API cache entry over the size limit, not caching");
+                                entry = None;
+                            }
                         }
                     }
-                    return Poll::Ready(Some(Ok(value)));
-                }
-                Poll::Ready(Some(Err(err))) => {
                     // An error means the stream is incomplete; never commit it.
-                    this.entry = None;
-                    return Poll::Ready(Some(Err(err)));
+                    Err(_) => entry = None,
                 }
-                Poll::Ready(None) => match this.entry.take() {
-                    Some((key, buf)) => {
-                        let cache = this.cache.clone();
-                        this.committing = Some(async move { cache.write(&key, buf).await }.boxed());
-                    }
-                    None => {
-                        this.done = true;
-                        return Poll::Ready(None);
-                    }
-                },
-            }
-        }
+                Some((item, (stream, cache, entry)))
+            })
+            .fuse(),
+        )
     }
 }
 
@@ -287,7 +254,7 @@ mod tests {
     use tempfile::TempDir;
 
     fn test_cache(dir: &TempDir) -> ApiCache {
-        ApiCache::new(dir.path().to_path_buf(), DEFAULT_MAX_FILE_SIZE, false)
+        ApiCache::new(dir.path().to_path_buf(), DEFAULT_MAX_FILE_SIZE)
     }
 
     fn values_stream(values: &[Value]) -> JsonStream {

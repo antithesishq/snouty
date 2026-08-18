@@ -360,7 +360,7 @@ pub(crate) enum ResponseCache {
 /// the timeline's earliest log entry. The vtime alone is enough; the input
 /// hash is an optimization the endpoint accepts only alongside it, which is
 /// why this is not a [`Moment`].
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize)]
 pub struct LogsBegin {
     pub vtime: VTime,
     pub input_hash: Option<String>,
@@ -372,6 +372,9 @@ pub struct AntithesisApi {
     /// `None` disables caching. Each handler that serves an immutable
     /// resource consults this itself; see [`crate::api_cache`].
     cache: Option<ApiCache>,
+    /// Announce each cache hit on stderr (see
+    /// [`AntithesisApi::note_cache_hit`]).
+    verbose: bool,
 }
 
 impl AntithesisApi {
@@ -439,8 +442,7 @@ impl AntithesisApi {
             #[cfg(test)]
             ResponseCache::Dir(dir) => Some(dir),
         };
-        let cache =
-            cache_dir.map(|dir| ApiCache::new(dir, settings.api_cache_max_file_size(), verbose));
+        let cache = cache_dir.map(|dir| ApiCache::new(dir, settings.api_cache_max_file_size()));
         let state = ClientState {
             authn_info,
             default_headers: verbose.then_some(default_headers),
@@ -451,6 +453,7 @@ impl AntithesisApi {
             client,
             base_url,
             cache,
+            verbose,
         })
     }
 
@@ -492,10 +495,8 @@ impl AntithesisApi {
     }
 
     pub async fn get_run(&self, run_id: &str) -> Result<RunDetail> {
-        let key = CacheKey::new(&self.base_url, "get_run", &run_id);
-        if let Some(cache) = &self.cache
-            && let Some(detail) = cache.lookup_value(&key).await
-        {
+        let key = self.cache_key("get_run", &run_id);
+        if let Some(detail) = self.cached_value(&key).await {
             return Ok(detail);
         }
         let detail: RunDetail = match self.client.get_run().run_id(run_id).send().await {
@@ -504,10 +505,8 @@ impl AntithesisApi {
         };
         // A run detail is immutable only once the run reaches a terminal
         // status; a live one is never cached.
-        if let Some(cache) = &self.cache
-            && detail.status.is_terminal()
-        {
-            cache.store_value(&key, &detail).await;
+        if detail.status.is_terminal() {
+            self.store_value(&key, &detail).await;
         }
         Ok(detail)
     }
@@ -556,10 +555,8 @@ impl AntithesisApi {
 
     pub async fn get_run_build_logs(&self, run_id: &str) -> Result<JsonStream> {
         ensure_resource_supported(run_id, MIN_BUILD_LOGS_VERSION, "build logs")?;
-        let key = CacheKey::new(&self.base_url, "get_run_build_logs", &run_id);
-        if let Some(cache) = &self.cache
-            && let Some(stream) = cache.lookup_stream(&key).await
-        {
+        let key = self.cache_key("get_run_build_logs", &run_id);
+        if let Some(stream) = self.cached_stream(&key).await {
             return Ok(stream);
         }
         match self.client.get_run_build_logs().run_id(run_id).send().await {
@@ -577,18 +574,10 @@ impl AntithesisApi {
         moment: Moment,
         begin: Option<LogsBegin>,
     ) -> Result<JsonStream> {
-        // Destructured exhaustively so a parameter added to either type
-        // cannot be left out of the cache key.
-        let Moment { input_hash, vtime } = moment;
-        let begin = begin.map(|LogsBegin { vtime, input_hash }| (vtime, input_hash));
-        let key = CacheKey::new(
-            &self.base_url,
-            "get_run_logs",
-            &(run_id, &input_hash, vtime, &begin),
-        );
-        if let Some(cache) = &self.cache
-            && let Some(stream) = cache.lookup_stream(&key).await
-        {
+        // The key carries the parameter types themselves, so a field added
+        // to `Moment` or `LogsBegin` enters the key automatically.
+        let key = self.cache_key("get_run_logs", &(run_id, &moment, &begin));
+        if let Some(stream) = self.cached_stream(&key).await {
             return Ok(stream);
         }
 
@@ -596,11 +585,11 @@ impl AntithesisApi {
             .client
             .get_run_logs()
             .run_id(run_id)
-            .input_hash(input_hash)
-            .vtime(vtime);
-        if let Some((begin_vtime, begin_input_hash)) = begin {
-            request = request.begin_vtime(begin_vtime);
-            if let Some(hash) = begin_input_hash {
+            .input_hash(moment.input_hash)
+            .vtime(moment.vtime);
+        if let Some(begin) = begin {
+            request = request.begin_vtime(begin.vtime);
+            if let Some(hash) = begin.input_hash {
                 request = request.begin_input_hash(hash);
             }
         }
@@ -611,12 +600,49 @@ impl AntithesisApi {
         }
     }
 
+    /// The cache key for `operation` with `params`, bound to this client's
+    /// tenant.
+    fn cache_key(&self, operation: &'static str, params: &impl serde::Serialize) -> CacheKey {
+        CacheKey::new(&self.base_url, operation, params)
+    }
+
+    /// The cached value under `key`, or `None` on a miss or when caching is
+    /// disabled.
+    async fn cached_value<T: DeserializeOwned>(&self, key: &CacheKey) -> Option<T> {
+        let value = self.cache.as_ref()?.lookup_value(key).await?;
+        self.note_cache_hit(key);
+        Some(value)
+    }
+
+    /// The cached stream under `key`, or `None` on a miss or when caching is
+    /// disabled.
+    async fn cached_stream(&self, key: &CacheKey) -> Option<JsonStream> {
+        let stream = self.cache.as_ref()?.lookup_stream(key).await?;
+        self.note_cache_hit(key);
+        Some(stream)
+    }
+
+    /// Store `value` under `key`; a no-op when caching is disabled.
+    async fn store_value<T: serde::Serialize>(&self, key: &CacheKey, value: &T) {
+        if let Some(cache) = &self.cache {
+            cache.store_value(key, value).await;
+        }
+    }
+
     /// Tee `stream` into the cache under `key`, or return it untouched when
     /// caching is disabled.
     fn tee_into_cache(&self, key: CacheKey, stream: JsonStream) -> JsonStream {
         match &self.cache {
             Some(cache) => cache.store_stream(key, stream),
             None => stream,
+        }
+    }
+
+    /// The `--verbose` request log has no request to show for a cache hit,
+    /// so this line takes its place.
+    fn note_cache_hit(&self, key: &CacheKey) {
+        if self.verbose {
+            eprintln!("* {} response served from the local cache", key.operation());
         }
     }
 
@@ -788,14 +814,8 @@ impl AntithesisApi {
         // Each page caches under its own key: the cursor and the status
         // filter change what the server returns, so they are part of the
         // parameters. The limit rides along in case it ever varies.
-        let key = CacheKey::new(
-            &self.base_url,
-            "list_run_properties",
-            &(run_id, after, status, PAGE_LIMIT),
-        );
-        if let Some(cache) = &self.cache
-            && let Some(page) = cache.lookup_value(&key).await
-        {
+        let key = self.cache_key("list_run_properties", &(run_id, after, status, PAGE_LIMIT));
+        if let Some(page) = self.cached_value(&key).await {
             return Ok(page);
         }
 
@@ -814,9 +834,7 @@ impl AntithesisApi {
         match request.send().await {
             Ok(response) => {
                 let page = response.into_inner();
-                if let Some(cache) = &self.cache {
-                    cache.store_value(&key, &page).await;
-                }
+                self.store_value(&key, &page).await;
                 Ok(page)
             }
             Err(err) => Err(format_api_client_error(err).await),

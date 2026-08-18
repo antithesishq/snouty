@@ -36,14 +36,11 @@ impl JsonStream {
     pub fn from_stream(
         stream: impl Stream<Item = reqwest::Result<Bytes>> + Send + 'static,
     ) -> Self {
-        Self {
-            inner: LineParser {
-                inner: stream.boxed(),
-                buf: Vec::new(),
-                done: false,
-            }
-            .boxed(),
-        }
+        Self::from_values(LineParser {
+            inner: stream.boxed(),
+            buf: Vec::new(),
+            done: false,
+        })
     }
 
     /// Wrap a stream whose items are already parsed values (the API cache

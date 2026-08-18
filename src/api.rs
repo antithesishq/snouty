@@ -641,13 +641,17 @@ impl AntithesisApi {
         run_id: &str,
         status: Option<PropertyStatus>,
     ) -> impl futures_util::Stream<Item = Result<Property>> + '_ {
+        // The stream walks every page, so ask for the server's maximum page
+        // size (the spec caps `limit` at 100) rather than spending round
+        // trips on smaller pages.
+        const MAX_PAGE_LIMIT: u64 = 100;
         let run_id = run_id.to_string();
         paginate(move |after| {
             let run_id = run_id.clone();
             async move {
                 ensure_resource_supported(&run_id, MIN_PROPERTIES_VERSION, "run properties")?;
                 let page = self
-                    .fetch_run_properties_page(&run_id, after.as_deref(), status)
+                    .fetch_run_properties_page(&run_id, after.as_deref(), status, MAX_PAGE_LIMIT)
                     .await?;
                 let generated::types::PropertyListResponse { data, next_cursor } = page;
                 let normalized = data
@@ -768,11 +772,11 @@ impl AntithesisApi {
         run_id: &str,
         after: Option<&str>,
         status: Option<PropertyStatus>,
+        limit: u64,
     ) -> Result<generated::types::PropertyListResponse> {
-        const PAGE_LIMIT: u64 = 100;
         let key = self
             .cache
-            .key("list_run_properties", &(run_id, after, status, PAGE_LIMIT));
+            .key("list_run_properties", &(run_id, after, status, limit));
         if let Some(page) = self.cache.lookup_value(&key).await {
             return Ok(page);
         }
@@ -781,7 +785,7 @@ impl AntithesisApi {
             .client
             .list_run_properties()
             .run_id(run_id)
-            .limit(PAGE_LIMIT);
+            .limit(limit);
         if let Some(cursor) = after {
             request = request.after(cursor);
         }

@@ -9,7 +9,8 @@ The script exits when every watched PR is closed.
 
 Comments and reviews by the PR's own author are suppressed: the watcher
 alerts the author's agent, so those are echoes of its own replies. Checks
-report failures only; a passing run is silent.
+report failures, plus one "all checks passed" line per head commit once
+every check on it concludes success or skipped.
 
 All requests go through the gh CLI, so the script works wherever gh works.
 The first poll emits the PR's existing comments, reviews, and failing checks
@@ -83,7 +84,7 @@ def poll_pr(
             str(pr),
             *repo_flag,
             "--json",
-            "state,author,comments,reviews,statusCheckRollup",
+            "state,author,comments,reviews,statusCheckRollup,headRefOid",
         ]
     )
     if view is None:
@@ -123,15 +124,24 @@ def poll_pr(
 
     failure_results = {"failure", "timed_out", "action_required", "cancelled", "error", "startup_failure"}
     cur = set()
+    results = []
     for c in view["statusCheckRollup"]:
         name = c.get("name") or c.get("context") or "?"
         result = (c.get("conclusion") or c.get("state") or "").lower()
+        results.append(result)
         if result in failure_results:
             cur.add(f"{name}: {result}")
     for line in sorted(cur - checks):
         emit(f"PR #{pr} check {line}")
     checks.clear()
     checks.update(cur)
+
+    # A check that has not concluded yet reports an empty conclusion (or a
+    # "pending" state), so any unfinished check keeps the SHA from passing.
+    sha = view["headRefOid"]
+    if results and all(r in {"success", "skipped"} for r in results) and f"passed:{sha}" not in seen:
+        seen.add(f"passed:{sha}")
+        emit(f"PR #{pr} all checks passed for {sha[:7]}")
 
     return True
 

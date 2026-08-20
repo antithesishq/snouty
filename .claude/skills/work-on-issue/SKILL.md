@@ -58,8 +58,9 @@ uv run scripts/watch-prs.py <PR>
 
 The script prints one line per event and exits when every watched PR is
 merged or closed. It suppresses comments and reviews by the PR's own author
-(your own replies), and it reports CI failures only — a passing run is
-silent, so read `gh pr checks` yourself when you need the green signal.
+(your own replies). It reports CI failures, and it prints one "all checks
+passed" line per head commit once every check on it concludes success or
+skipped.
 The first poll emits the PR's existing comments, reviews, and failing
 checks as a baseline: triage that batch like any other events.
 Flags: `-i seconds` sets the poll interval (default 45), `-R owner/repo`
@@ -70,6 +71,7 @@ PR #123 comment by <login> (id <id>)
 PR #123 review comment by <login> on <path> (id <id>)
 PR #123 review by <login>: <APPROVED|CHANGES_REQUESTED|COMMENTED>
 PR #123 check <name>: <failure|timed_out|cancelled|...>
+PR #123 all checks passed for <sha>
 PR #123 merged
 PR #123 closed without merge
 ```

@@ -197,6 +197,6 @@ stdout 'Test run started: run_id run-123'
 #    effect. The warning suggests the inline-flag spelling.
 mock-server 200 '{"runId":"run-123","statusCode":202}'
 snouty launch -w basic_test --duration 30 --filter-logs-matching /error/i
-stderr 'Warning: antithesis\.filter_logs_matching is raw regex text.*'
-stderr '\(\?i\)error'
+stderr 'Warning: antithesis\.filter_logs_matching is sent as raw regex text.*'
+stderr 'Write \(\?i\)error instead'
 stdout 'Test run started: run_id run-123'

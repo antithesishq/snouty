@@ -94,9 +94,13 @@ impl Params {
         Ok(Self { inner })
     }
 
-    /// Validate params against the test params schema.
+    /// Validate params against the test params schema, then validate the
+    /// `antithesis.filter_logs_matching` pattern. Both callers on the launch
+    /// path funnel through this, so a later mutation of the params cannot
+    /// skip the pattern check.
     pub fn validate_test_params(&self) -> Result<()> {
-        validate_against_def(&self.inner, "testParams")
+        validate_against_def(&self.inner, "testParams")?;
+        self.validate_filter_logs_matching()
     }
 
     /// Validate params against the debugging params schema.
@@ -132,10 +136,12 @@ impl Params {
     /// These checks mirror the platform's: the pattern must be non-empty, fit
     /// the guest's 1024-byte buffer (1023 bytes plus the NUL terminator),
     /// compile, and not match the empty string (which would suppress every
-    /// log line). The platform matches with RE2; the `regex` crate shares
-    /// RE2's syntax and rejects the same constructs, so a local compile is a
-    /// high-confidence pre-check, not the authority.
-    pub fn validate_filter_logs_matching(&self) -> Result<()> {
+    /// log line). The platform matches with RE2. The `regex` crate is the
+    /// same engine family and rejects lookaround and backreferences like RE2,
+    /// but the two are not identical — a pattern can pass here and still fail
+    /// on the platform — so a local compile is a high-confidence pre-check,
+    /// not the authority.
+    fn validate_filter_logs_matching(&self) -> Result<()> {
         let key = ANT_FILTER_LOGS_MATCHING;
         let Some(value) = self.inner.get(key).and_then(Value::as_str) else {
             return Ok(());
@@ -161,8 +167,8 @@ impl Params {
             if msg.contains("look-around") || msg.contains("backreference") {
                 report
                     .note(
-                        "the platform matches with RE2, which does not backtrack: \
-                         lookahead, lookbehind, and backreferences are not supported",
+                        "the platform matches with RE2; RE2 does not backtrack, \
+                         so it rejects lookahead, lookbehind, and backreferences",
                     )
                     .suggestion("rewrite the pattern without lookaround or backreferences")
             } else {
@@ -185,13 +191,24 @@ impl Params {
     pub fn filter_logs_warning(&self) -> Option<String> {
         let key = ANT_FILTER_LOGS_MATCHING;
         let value = self.inner.get(key).and_then(Value::as_str)?;
-        let body = js_regex_literal_body(value)?;
+        let (body, flags) = js_regex_literal_parts(value)?;
+        // Carry the user's own flags into the suggestion. Only i/m/s exist as
+        // inline flags; the others (g, u, ...) have no equivalent and g is
+        // implicit in filtering anyway.
+        let inline: String = ['i', 'm', 's']
+            .into_iter()
+            .filter(|f| flags.contains(*f))
+            .collect();
+        let suggestion = if inline.is_empty() {
+            body.to_string()
+        } else {
+            format!("(?{inline}){body}")
+        };
         Some(format!(
-            "Warning: {key} is raw regex text, so in {} the slashes are \
-             literal and the trailing flags never take effect; use inline \
-             flags instead, e.g. (?i){}.",
+            "Warning: {key} is sent as raw regex text. In {}, the slashes are \
+             literal and the trailing flags do not apply. Write {} instead.",
             crate::render::sanitize(value),
-            crate::render::sanitize(body)
+            crate::render::sanitize(&suggestion)
         ))
     }
 
@@ -258,16 +275,21 @@ impl Params {
     }
 }
 
-/// If the pattern is the JS regex-literal form `/body/flags` (flags
-/// non-empty, all from the JS flag set), return the body. The value is sent
-/// as raw regex text, so the slashes match literally and the flags never
-/// take effect. Flags must be non-empty and from the JS set so ordinary
-/// slash-delimited literals like `/usr/bin` are not flagged.
-fn js_regex_literal_body(pattern: &str) -> Option<&str> {
+/// If the pattern is the JS regex-literal form `/body/flags`, return the body
+/// and the flags. The value is sent as raw regex text, so the slashes match
+/// literally and the flags never take effect. The flags must be non-empty,
+/// from the JS flag set, and free of repeats (JS rejects a repeated flag), so
+/// ordinary slash-delimited literals like `/usr/bin` or `/proc/sys` are not
+/// flagged.
+fn js_regex_literal_parts(pattern: &str) -> Option<(&str, &str)> {
     let rest = pattern.strip_prefix('/')?;
     let (body, flags) = rest.rsplit_once('/')?;
-    if !body.is_empty() && !flags.is_empty() && flags.chars().all(|c| "dgimsuvy".contains(c)) {
-        Some(body)
+    let unique_js_flags = flags
+        .chars()
+        .enumerate()
+        .all(|(i, c)| "dgimsuvy".contains(c) && !flags[..i].contains(c));
+    if !body.is_empty() && !flags.is_empty() && unique_js_flags {
+        Some((body, flags))
     } else {
         None
     }
@@ -452,6 +474,18 @@ mod tests {
         let pairs = ["antithesis.duration=30", "antithesis.is_ephemeral=true"];
         let params = Params::from_key_value_pairs(pairs).unwrap();
         assert!(params.validate_test_params().is_ok());
+    }
+
+    #[test]
+    fn validate_test_params_checks_the_filter_pattern() {
+        // The filter check runs inside the schema funnel, so every launch
+        // path hits it — no separate call to forget.
+        let params = Params::from_key_value_pairs([
+            "antithesis.duration=30",
+            "antithesis.filter_logs_matching=x*",
+        ])
+        .unwrap();
+        assert!(params.validate_test_params().is_err());
     }
 
     #[test]
@@ -928,18 +962,30 @@ mod tests {
 
         params.insert(ANT_FILTER_LOGS_MATCHING, "/error/i");
         let warning = params.filter_logs_warning().unwrap();
-        assert!(warning.contains("(?i)error"), "{warning}");
+        assert!(warning.contains("Write (?i)error instead"), "{warning}");
+
+        // The suggestion carries the user's own flags, not a hardcoded (?i).
+        params.insert(ANT_FILTER_LOGS_MATCHING, "/^ready$/m");
+        let warning = params.filter_logs_warning().unwrap();
+        assert!(warning.contains("Write (?m)^ready$ instead"), "{warning}");
+
+        // Flags with no inline equivalent are dropped from the suggestion.
+        params.insert(ANT_FILTER_LOGS_MATCHING, "/error/g");
+        let warning = params.filter_logs_warning().unwrap();
+        assert!(warning.contains("Write error instead"), "{warning}");
     }
 
     #[test]
-    fn js_regex_literal_body_detects_the_slash_flags_form() {
-        assert_eq!(js_regex_literal_body("/error/i"), Some("error"));
-        assert_eq!(js_regex_literal_body("/a/b/gi"), Some("a/b"));
+    fn js_regex_literal_parts_detects_the_slash_flags_form() {
+        assert_eq!(js_regex_literal_parts("/error/i"), Some(("error", "i")));
+        assert_eq!(js_regex_literal_parts("/a/b/gi"), Some(("a/b", "gi")));
         // No flags: indistinguishable from a literal slash-delimited path.
-        assert_eq!(js_regex_literal_body("/error/"), None);
+        assert_eq!(js_regex_literal_parts("/error/"), None);
         // A path suffix is not a flag set.
-        assert_eq!(js_regex_literal_body("/usr/bin"), None);
-        assert_eq!(js_regex_literal_body("error"), None);
+        assert_eq!(js_regex_literal_parts("/usr/bin"), None);
+        // A repeated letter is not a valid JS flag set either.
+        assert_eq!(js_regex_literal_parts("/proc/sys"), None);
+        assert_eq!(js_regex_literal_parts("error"), None);
     }
 
     /// For *any* input — however far from a regex — validation and the

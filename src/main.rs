@@ -257,7 +257,6 @@ async fn cmd_launch(
     }
 
     params.validate_test_params()?;
-    params.validate_filter_logs_matching()?;
     if let Some(warning) = params.filter_logs_warning() {
         eprintln!("{}", snouty::wrap_if_tty(&warning));
     }

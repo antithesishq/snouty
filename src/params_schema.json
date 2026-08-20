@@ -64,7 +64,7 @@
         },
         "antithesis.filter_logs_matching": {
           "type": "string",
-          "description": "Regular Expression to filter out logs as part of test run. Filtered logs are recoverable in multi-verse debugging sessions"
+          "description": "RE2 pattern; the platform suppresses matching log lines during fuzzing. Matching is unanchored and case-sensitive. Suppressed lines stay available in multiverse debugging. Max 1023 bytes. Requires tenant release 59 or newer."
         }
       }
     },

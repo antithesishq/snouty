@@ -33,6 +33,7 @@ import time
 from collections.abc import Iterator
 from itertools import count
 from typing import Any
+from urllib.parse import quote
 
 
 def emit(line: str) -> None:
@@ -102,7 +103,7 @@ def poll_pr(
             str(pr),
             *repo_flag,
             "--json",
-            "state,author,comments,reviews,statusCheckRollup,headRefOid,baseRefName,baseRefOid",
+            "state,author,comments,reviews,statusCheckRollup,headRefOid,baseRefName",
         ]
     )
     if view is None:
@@ -114,8 +115,11 @@ def poll_pr(
 
     if changed(seen, "base", view["baseRefName"]):
         emit(f"PR #{pr} base changed to {view['baseRefName']}")
-    if changed(seen, "baseoid", view["baseRefOid"]):
-        emit(f"PR #{pr} base {view['baseRefName']} moved to {view['baseRefOid'][:7]}")
+    # The PR's own baseRefOid freezes at PR creation, so the live tip must
+    # come from the branch itself.
+    tip = ((gh_json(["api", f"repos/{slug}/branches/{quote(view['baseRefName'], safe='')}"]) or {}).get("commit") or {}).get("sha")
+    if tip and changed(seen, "baseoid", tip):
+        emit(f"PR #{pr} base {view['baseRefName']} moved to {tip[:7]}")
 
     events = [
         (

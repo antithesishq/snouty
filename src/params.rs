@@ -95,9 +95,8 @@ impl Params {
     }
 
     /// Validate params against the test params schema, then validate the
-    /// `antithesis.filter_logs_matching` pattern. Both callers on the launch
-    /// path funnel through this, so a later mutation of the params cannot
-    /// skip the pattern check.
+    /// `antithesis.filter_logs_matching` pattern. The pattern check runs here
+    /// so no launch path can skip it.
     pub fn validate_test_params(&self) -> Result<()> {
         validate_against_def(&self.inner, "testParams")?;
         self.validate_filter_logs_matching()
@@ -133,14 +132,10 @@ impl Params {
     ///
     /// The platform validates this pattern only after the run has started, so
     /// a bad value becomes a failed run minutes later, not a launch error.
-    /// These checks mirror the platform's: the pattern must be non-empty, fit
-    /// the guest's 1024-byte buffer (1023 bytes plus the NUL terminator),
-    /// compile, and not match the empty string (which would suppress every
-    /// log line). The platform matches with RE2. The `regex` crate is the
-    /// same engine family and rejects lookaround and backreferences like RE2,
-    /// but the two are not identical — a pattern can pass here and still fail
-    /// on the platform — so a local compile is a high-confidence pre-check,
-    /// not the authority.
+    /// The byte limit exists because the guest copies the pattern into a
+    /// 1024-byte buffer including the NUL terminator. The platform matches
+    /// with RE2; the `regex` crate is close but not identical, so the local
+    /// compile is a pre-check, not the authority.
     fn validate_filter_logs_matching(&self) -> Result<()> {
         let key = ANT_FILTER_LOGS_MATCHING;
         let Some(value) = self.inner.get(key).and_then(Value::as_str) else {
@@ -160,9 +155,9 @@ impl Params {
         }
         let re = regex::Regex::new(value).map_err(|err| {
             let report = user_error(format!("{key} is not a valid regular expression: {err}"));
-            // The regex crate names the two backtracking constructs RE2 also
-            // rejects; on those, explain the platform limit instead of leaving
-            // a bare parse error.
+            // The regex crate's error text names "look-around" and
+            // "backreference" — the two constructs RE2 also rejects — which
+            // is what justifies matching on the message.
             let msg = err.to_string();
             if msg.contains("look-around") || msg.contains("backreference") {
                 report
@@ -186,15 +181,13 @@ impl Params {
     /// Warn when `antithesis.filter_logs_matching` is the JS regex-literal
     /// form `/body/flags`: the value is sent as raw regex text, so the
     /// slashes match literally and the flags never take effect. Returns the
-    /// warning text for the command layer to print, `None` when the pattern
-    /// is absent or unremarkable.
+    /// warning text, or `None` when the pattern is absent or unremarkable.
     pub fn filter_logs_warning(&self) -> Option<String> {
         let key = ANT_FILTER_LOGS_MATCHING;
         let value = self.inner.get(key).and_then(Value::as_str)?;
         let (body, flags) = js_regex_literal_parts(value)?;
-        // Carry the user's own flags into the suggestion. Only i/m/s exist as
-        // inline flags; the others (g, u, ...) have no equivalent and g is
-        // implicit in filtering anyway.
+        // Only i/m/s exist as inline flags; the others (g, u, ...) have no
+        // equivalent and g is implicit in filtering anyway.
         let inline: String = ['i', 'm', 's']
             .into_iter()
             .filter(|f| flags.contains(*f))
@@ -276,11 +269,9 @@ impl Params {
 }
 
 /// If the pattern is the JS regex-literal form `/body/flags`, return the body
-/// and the flags. The value is sent as raw regex text, so the slashes match
-/// literally and the flags never take effect. The flags must be non-empty,
-/// from the JS flag set, and free of repeats (JS rejects a repeated flag), so
-/// ordinary slash-delimited literals like `/usr/bin` or `/proc/sys` are not
-/// flagged.
+/// and the flags. The flags must be non-empty, from the JS flag set, and free
+/// of repeats (JS rejects a repeated flag), so ordinary slash-delimited
+/// literals like `/usr/bin` or `/proc/sys` are not flagged.
 fn js_regex_literal_parts(pattern: &str) -> Option<(&str, &str)> {
     let rest = pattern.strip_prefix('/')?;
     let (body, flags) = rest.rsplit_once('/')?;
@@ -478,8 +469,6 @@ mod tests {
 
     #[test]
     fn validate_test_params_checks_the_filter_pattern() {
-        // The filter check runs inside the schema funnel, so every launch
-        // path hits it — no separate call to forget.
         let params = Params::from_key_value_pairs([
             "antithesis.duration=30",
             "antithesis.filter_logs_matching=x*",
@@ -872,7 +861,6 @@ mod tests {
         }
     }
 
-    /// Run `validate_filter_logs_matching` against a single pattern.
     fn validate_filter(pattern: &str) -> Result<()> {
         let mut params = Params::new();
         params.insert(ANT_FILTER_LOGS_MATCHING, pattern);
@@ -881,7 +869,6 @@ mod tests {
 
     #[test]
     fn validate_filter_logs_matching_accepts_valid_patterns() {
-        // Absent is fine — the param is optional.
         assert!(Params::new().validate_filter_logs_matching().is_ok());
         for pattern in ["debug", "(?i)error", "panic|fatal"] {
             assert!(
@@ -928,9 +915,7 @@ mod tests {
 
     #[test]
     fn validate_filter_logs_matching_explains_re2_limits() {
-        // Lookaround and backreferences fail to compile anyway; the report
-        // must say *why* (RE2 does not backtrack), not just echo the parse
-        // error. Notes are color_eyre sections, visible in the Debug format.
+        // Notes are color_eyre sections, visible in the Debug format.
         for pattern in ["(?=ready)", "(?!x)", "(?<=a)", "(?<!a)", r"(a)\1"] {
             let err = format!("{:?}", validate_filter(pattern).unwrap_err());
             assert!(
@@ -964,7 +949,7 @@ mod tests {
         let warning = params.filter_logs_warning().unwrap();
         assert!(warning.contains("Write (?i)error instead"), "{warning}");
 
-        // The suggestion carries the user's own flags, not a hardcoded (?i).
+        // The suggestion carries the user's own flags.
         params.insert(ANT_FILTER_LOGS_MATCHING, "/^ready$/m");
         let warning = params.filter_logs_warning().unwrap();
         assert!(warning.contains("Write (?m)^ready$ instead"), "{warning}");

@@ -31,8 +31,7 @@ stderr 'antithesis\.duration: .*'
 ! stderr 'Unevaluated properties.*'
 
 # `antithesis.filter_logs_matching` is validated client-side before any API
-#    call: the platform rejects a bad pattern only after the run has started,
-#    which turns a typo into a failed run minutes later.
+#    call. The platform rejects a bad pattern only after the run has started.
 ! snouty launch -w basic_test --duration 30 --filter-logs-matching '('
 stderr 'antithesis\.filter_logs_matching is not a valid regular expression.*'
 
@@ -40,13 +39,11 @@ stderr 'antithesis\.filter_logs_matching is not a valid regular expression.*'
 ! snouty launch -w basic_test --duration 30 --filter-logs-matching 'x*'
 stderr 'antithesis\.filter_logs_matching matches the empty string, which would suppress every log line'
 
-# An empty pattern makes the platform skip filtering silently, so it is
-#    rejected instead of launching a run that quietly does not filter.
+# An empty pattern makes the platform skip filtering silently.
 ! snouty launch -w basic_test --duration 30 --param antithesis.filter_logs_matching=
 stderr 'antithesis\.filter_logs_matching is empty'
 
-# The platform matches with RE2, which rejects lookaround and backreferences;
-#    the error says why instead of echoing a raw parse error.
+# The platform matches with RE2, which rejects lookaround and backreferences.
 ! snouty launch -w basic_test --duration 30 --filter-logs-matching '(?=ready)'
 stderr 'antithesis\.filter_logs_matching is not a valid regular expression.*'
 stderr 'RE2.*'
@@ -194,7 +191,7 @@ stdout 'Test run started: run_id run-123'
 
 # A JS-style `/pattern/flags` value still launches, with a warning: the value
 #    is raw regex text, so the slashes are literal and the flags never take
-#    effect. The warning suggests the inline-flag spelling.
+#    effect.
 mock-server 200 '{"runId":"run-123","statusCode":202}'
 snouty launch -w basic_test --duration 30 --filter-logs-matching /error/i
 stderr 'Warning: antithesis\.filter_logs_matching is sent as raw regex text.*'

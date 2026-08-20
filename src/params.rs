@@ -274,7 +274,25 @@ impl Params {
 /// literals like `/usr/bin` or `/proc/sys` are not flagged.
 fn js_regex_literal_parts(pattern: &str) -> Option<(&str, &str)> {
     let rest = pattern.strip_prefix('/')?;
-    let (body, flags) = rest.rsplit_once('/')?;
+    // The closing delimiter is the first unescaped slash: a backslash escapes
+    // the next character, so it never closes the literal. Scanning bytes is
+    // safe — `/` and `\` are ASCII and cannot appear inside a multi-byte
+    // UTF-8 character.
+    let bytes = rest.as_bytes();
+    let mut close = None;
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'\\' => i += 2,
+            b'/' => {
+                close = Some(i);
+                break;
+            }
+            _ => i += 1,
+        }
+    }
+    let close = close?;
+    let (body, flags) = (&rest[..close], &rest[close + 1..]);
     let unique_js_flags = flags
         .chars()
         .enumerate()
@@ -963,7 +981,16 @@ mod tests {
     #[test]
     fn js_regex_literal_parts_detects_the_slash_flags_form() {
         assert_eq!(js_regex_literal_parts("/error/i"), Some(("error", "i")));
-        assert_eq!(js_regex_literal_parts("/a/b/gi"), Some(("a/b", "gi")));
+        // A backslash escapes the next character, so an escaped slash never
+        // closes the literal.
+        assert_eq!(
+            js_regex_literal_parts(r"/foo\/bar/i"),
+            Some((r"foo\/bar", "i"))
+        );
+        assert_eq!(js_regex_literal_parts(r"/foo\/i"), None);
+        // An unescaped slash in the middle means the "flags" contain a slash,
+        // which disqualifies the literal form.
+        assert_eq!(js_regex_literal_parts("/a/b/gi"), None);
         // No flags: indistinguishable from a literal slash-delimited path.
         assert_eq!(js_regex_literal_parts("/error/"), None);
         // A path suffix is not a flag set.

@@ -73,8 +73,8 @@ pub fn default_dir() -> Option<PathBuf> {
 /// instead of silently aliasing entries that differ in it.
 pub struct CacheKey {
     key: String,
-    /// The operation name and its parameters, kept out of `key`'s opaque
-    /// text so log messages can name the request a hit or failure is about.
+    /// The operation and its parameters, duplicated out of `key`'s opaque
+    /// text so log messages can name the request.
     operation: &'static str,
     params: String,
 }

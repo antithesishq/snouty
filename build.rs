@@ -88,11 +88,11 @@ fn generate_api_client(out_dir: &Path) {
          the with_conversion schema match no longer applies"
     );
 
-    // The API cache buries this hash in every cache key, so entries written
-    // by one generated client never serve another: the generated file covers
-    // the spec, the progenitor version, and every build.rs transform in one
-    // value. The hasher only has to be deterministic within a build — the
-    // value is baked into the binary — so std's DefaultHasher suffices.
+    // The API cache buries this hash in every cache key: the generated file
+    // covers the spec, the progenitor version, and every build.rs transform,
+    // so entries written by one generated client never serve another. The
+    // value is baked into the binary, so DefaultHasher only has to be
+    // deterministic within one build.
     let client_hash = {
         use std::hash::{Hash, Hasher};
         let mut hasher = std::collections::hash_map::DefaultHasher::new();

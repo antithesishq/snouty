@@ -494,8 +494,7 @@ impl AntithesisApi {
         })
     }
 
-    // A run detail is immutable only once the run reaches a terminal
-    // status; a live one is never cached.
+    // A run detail is immutable only once the run reaches a terminal status.
     #[cached(value, admit = |detail: &RunDetail| detail.status.is_terminal())]
     pub async fn get_run(&self, run_id: &str) -> Result<RunDetail> {
         match self.client.get_run().run_id(run_id).send().await {
@@ -622,9 +621,8 @@ impl AntithesisApi {
         run_id: &str,
         status: Option<PropertyStatus>,
     ) -> impl futures_util::Stream<Item = Result<Property>> + '_ {
-        // The stream walks every page, so ask for the server's maximum page
-        // size (the spec caps `limit` at 100) rather than spending round
-        // trips on smaller pages.
+        // The stream walks every page, so ask for the server's maximum
+        // page size (the spec caps `limit` at 100).
         const MAX_PAGE_LIMIT: u64 = 100;
         let run_id = run_id.to_string();
         paginate(move |after| {
@@ -2708,8 +2706,8 @@ mod tests {
         }
     }
 
-    // Properties cache page by page: the second listing replays both pages
-    // (each mock allows one hit), cursor chaining included.
+    // Properties cache page by page: the second listing replays both
+    // pages, cursor chaining included.
     #[tokio::test]
     async fn run_properties_replay_from_the_cache_per_page() {
         let mock_server = MockServer::start().await;

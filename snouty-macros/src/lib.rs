@@ -1,4 +1,4 @@
-//! `#[cached]`, the attribute behind [`AntithesisApi`]'s response cache.
+//! `#[cached]`, the attribute behind `AntithesisApi`'s response cache.
 //!
 //! The attribute derives the cache key from the annotated method's own
 //! signature — the method name and every parameter — so a parameter added
@@ -20,10 +20,7 @@
 //! cached `JsonStream` and tees a fresh one. `admit` (value mode only) gates
 //! the store on the fetched payload; a stream needs no admission — it
 //! commits only when read to its end. The method must be async, take
-//! `&self` with a `cache` field of [`ApiCache`], and return a `Result`.
-//!
-//! [`AntithesisApi`]: ../snouty/api/struct.AntithesisApi.html
-//! [`ApiCache`]: ../snouty/api_cache/struct.ApiCache.html
+//! `&self` with a `cache` field of `ApiCache`, and return a `Result`.
 
 use proc_macro::TokenStream;
 use quote::quote;

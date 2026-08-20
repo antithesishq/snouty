@@ -1,16 +1,18 @@
 #!/usr/bin/env -S uv run
 """Poll one or more pull requests and print one line per new event.
 
-Events: comments, review comments, reviews, failed CI checks, and
-close/merge. Output is one line per event, so a background monitor can react
-line by line. An event line carries only metadata — the reader fetches the
-full content through gh.
+Events: comments, review comments, reviews, failed CI checks, all checks
+passed, base branch changes, and close/merge. Output is one line per event,
+so a background monitor can react line by line. An event line carries only
+metadata — the reader fetches the full content through gh.
 The script exits when every watched PR is closed.
 
 Comments and reviews by the PR's own author are suppressed: the watcher
 alerts the author's agent, so those are echoes of its own replies. Checks
-report failures, plus one "all checks passed" line per head commit once
-every check on it concludes success or skipped.
+report failures. The watcher also prints one "all checks passed" line per
+head commit once every check on it concludes success, skipped, or neutral.
+It prints that line only after two polls observe the green rollup, because
+a slow workflow can register its checks after the rollup first turns green.
 
 All requests go through the gh CLI, so the script works wherever gh works.
 The first poll emits the PR's existing comments, reviews, and failing checks
@@ -84,7 +86,7 @@ def poll_pr(
             str(pr),
             *repo_flag,
             "--json",
-            "state,author,comments,reviews,statusCheckRollup,headRefOid",
+            "state,author,comments,reviews,statusCheckRollup,headRefOid,baseRefName",
         ]
     )
     if view is None:
@@ -93,6 +95,14 @@ def poll_pr(
         emit(f"PR #{pr} merged" if view["state"] == "MERGED" else f"PR #{pr} closed without merge")
         return False
     ignore = login_of(view)
+
+    # The first poll records the base silently; later polls emit on a change.
+    base = f"base:{view['baseRefName']}"
+    if base not in seen:
+        if any(k.startswith("base:") for k in seen):
+            seen.difference_update({k for k in seen if k.startswith("base:")})
+            emit(f"PR #{pr} base changed to {view['baseRefName']}")
+        seen.add(base)
 
     events = [
         (
@@ -134,11 +144,17 @@ def poll_pr(
     checks.update(cur)
 
     # An unconcluded check reports an empty conclusion or a "pending" state.
+    # GitHub counts a "neutral" conclusion as passing.
     sha = view["headRefOid"]
     passed = f"passed:{sha}"
-    if passed not in seen and results and all(r in {"success", "skipped"} for _, r in results):
-        seen.add(passed)
-        emit(f"PR #{pr} all checks passed for {sha[:7]}")
+    if passed not in seen and results and all(r in {"success", "skipped", "neutral"} for _, r in results):
+        # A slow workflow can register its checks after a fast one turns the
+        # rollup green, so emit only once two polls observe the green rollup.
+        if f"green:{sha}" in seen:
+            seen.add(passed)
+            emit(f"PR #{pr} all checks passed for {sha[:7]}")
+        else:
+            seen.add(f"green:{sha}")
 
     return True
 

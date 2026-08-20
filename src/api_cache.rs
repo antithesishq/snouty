@@ -1,11 +1,14 @@
 //! A logical, domain-aware cache for Antithesis API responses.
 //!
-//! Unlike an HTTP cache, this cache ignores the server's cache headers:
-//! each `AntithesisApi` handler decides whether its resource is immutable
-//! (logs addressed by moment, properties, terminal run details) and only
-//! those enter the cache. There is no per-entry expiration — the cache lives
-//! in a transient per-user directory (`XDG_RUNTIME_DIR`; the user temp dir
-//! on macOS) that the OS clears periodically.
+//! Admission takes two signals, both required: the server's `Cache-Control`
+//! header must grant a positive freshness lifetime (see
+//! [`CachePolicy::from_headers`]; `api_cache_respect_headers = false` drops
+//! this requirement), and the `AntithesisApi` handler must judge its resource
+//! immutable (logs addressed by moment, properties, terminal run details).
+//! There is no per-entry expiration — the header's lifetime is read as a
+//! yes/no permission, and the cache lives in a transient per-user directory
+//! (`XDG_RUNTIME_DIR`; the user temp dir on macOS) that the OS clears
+//! periodically.
 //!
 //! The cache is infallible by construction: every cache error — unreadable
 //! entry, unwritable directory, corrupt index — degrades to a cache miss and
@@ -32,6 +35,9 @@ use tokio::io::AsyncWriteExt;
 use crate::env;
 use crate::jsonl::{JsonStream, json_lines};
 use crate::tag::Tagged;
+
+mod policy;
+pub use policy::CachePolicy;
 
 /// Cache directory name under the runtime dir. The `v3` names the on-disk
 /// format (re-serialized values keyed by handler parameters); bump it when
@@ -65,27 +71,6 @@ pub fn default_dir() -> Option<PathBuf> {
         .flatten()
         .map(PathBuf::from);
     Some(base?.join("snouty").join(CACHE_DIR_NAME))
-}
-
-/// A handler's admission verdict on the value it fetched. The cache stores
-/// nothing untagged: `#[cached]` requires the handler body to return a
-/// [`Tagged`] value, so admission lives in the handler — next to the
-/// response, where a future policy can also read its headers.
-#[derive(Clone, Copy, Debug)]
-pub enum CachePolicy {
-    Cacheable,
-    Uncacheable,
-}
-
-impl CachePolicy {
-    /// [`CachePolicy::Cacheable`] when `cacheable` is true.
-    pub fn cache_if(cacheable: bool) -> Self {
-        if cacheable {
-            Self::Cacheable
-        } else {
-            Self::Uncacheable
-        }
-    }
 }
 
 /// A cache entry's identity: the operation, the handler's parameters, the
@@ -138,6 +123,11 @@ pub struct ApiCache {
     /// no-op.
     dir: Option<PathBuf>,
     max_file_size: u64,
+    /// Require the server's cache headers to allow caching (the
+    /// `api_cache_respect_headers` setting). Off, [`ApiCache::headers_policy`]
+    /// is always neutral and admission falls back to the handlers' logical
+    /// checks alone — the escape hatch for a tenant with faulty headers.
+    respect_headers: bool,
     /// The tenant every key is bound to.
     base_url: String,
     /// Announce each hit on stderr (the `--verbose` request log has no
@@ -146,13 +136,42 @@ pub struct ApiCache {
 }
 
 impl ApiCache {
-    pub fn new(dir: Option<PathBuf>, max_file_size: u64, base_url: String, verbose: bool) -> Self {
+    pub fn new(
+        dir: Option<PathBuf>,
+        max_file_size: u64,
+        respect_headers: bool,
+        base_url: String,
+        verbose: bool,
+    ) -> Self {
         Self {
             dir,
             max_file_size,
+            respect_headers,
             base_url,
             verbose,
         }
+    }
+
+    /// The header half of admission: [`CachePolicy::from_headers`] on the
+    /// response, for handlers to [`CachePolicy::and`] with their own logical
+    /// verdict. A disabled cache short-circuits to
+    /// [`CachePolicy::Uncacheable`] — there is nothing to store into, so the
+    /// parse is skipped (`get_run` runs on every `runs wait` poll). The
+    /// `api_cache_respect_headers` opt-out turns the header signal off:
+    /// neutral ([`CachePolicy::Cacheable`]) so the logical verdict alone
+    /// decides.
+    pub fn headers_policy(&self, headers: &http::HeaderMap) -> CachePolicy {
+        if self.dir.is_none() {
+            return CachePolicy::Uncacheable;
+        }
+        if !self.respect_headers {
+            return CachePolicy::Cacheable;
+        }
+        let policy = CachePolicy::from_headers(headers);
+        if matches!(policy, CachePolicy::Uncacheable) {
+            debug!("response cache headers do not allow caching");
+        }
+        policy
     }
 
     /// The cache key for `operation` with `params`, bound to this cache's
@@ -359,6 +378,7 @@ mod tests {
         ApiCache::new(
             Some(dir.path().to_path_buf()),
             DEFAULT_MAX_FILE_SIZE,
+            true,
             "http://t".to_owned(),
             false,
         )

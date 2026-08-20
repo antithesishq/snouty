@@ -492,28 +492,32 @@ impl MockApiServer {
                     continue;
                 };
 
-                let (status, body, content_type) = if !mock_check_user_agent(&request) {
-                    (
-                        400,
-                        r#"{"message":"Missing User-Agent header."}"#.to_string(),
-                        "application/json",
-                    )
-                } else if !mock_check_auth(&request, &expected_token) {
-                    (
-                        401,
-                        r#"{"message":"Invalid or expired bearer token."}"#.to_string(),
-                        "application/json",
-                    )
-                } else {
-                    let (method, path) = mock_parse_request_line(&request);
-                    let req_body = mock_request_body(&request);
-                    mock_route(&method, &path, req_body, empty)
-                };
+                let (status, body, content_type, cache_control) =
+                    if !mock_check_user_agent(&request) {
+                        (
+                            400,
+                            r#"{"message":"Missing User-Agent header."}"#.to_string(),
+                            "application/json",
+                            NO_CACHE_CACHE_CONTROL,
+                        )
+                    } else if !mock_check_auth(&request, &expected_token) {
+                        (
+                            401,
+                            r#"{"message":"Invalid or expired bearer token."}"#.to_string(),
+                            "application/json",
+                            NO_CACHE_CACHE_CONTROL,
+                        )
+                    } else {
+                        let (method, path) = mock_parse_request_line(&request);
+                        let req_body = mock_request_body(&request);
+                        mock_route(&method, &path, req_body, empty)
+                    };
 
                 let response = format!(
-                    "HTTP/1.1 {} OK\r\nContent-Type: {}\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{}",
+                    "HTTP/1.1 {} OK\r\nContent-Type: {}\r\nCache-Control: {}\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{}",
                     status,
                     content_type,
+                    cache_control,
                     body.len(),
                     body
                 );
@@ -530,6 +534,15 @@ impl MockApiServer {
 }
 
 const MOCK_API_TOKEN: &str = "snouty-mock-api-token";
+
+/// The `Cache-Control` the real API sends on a cacheable read (observed on
+/// tenant release 61). The response cache admits nothing without such a
+/// header.
+pub const CACHEABLE_CACHE_CONTROL: &str = "private, max-age=3600";
+
+/// The `Cache-Control` the real API sends on everything else — writes,
+/// listings, errors (same observation).
+const NO_CACHE_CACHE_CONTROL: &str = "no-cache";
 
 /// Read one HTTP request off the socket: headers, then as many body bytes as
 /// Content-Length declares. A single `read` is not enough — the client may
@@ -606,13 +619,18 @@ fn mock_parse_request_line(request: &str) -> (String, String) {
     (method, path)
 }
 
-/// Route a request and return (status_code, response_body, content_type).
+/// Each route states its own `Cache-Control`, mirroring the real API
+/// (observed on tenant release 61): successful run-scoped GET reads carry
+/// [`CACHEABLE_CACHE_CONTROL`]; the run list, errors, and everything else
+/// carry `no-cache`. The real API also sends `no-cache` for a non-terminal
+/// run's detail; the mock skips that distinction — snouty's own admission
+/// checks already keep a non-terminal detail out of the cache.
 fn mock_route(
     method: &str,
     path: &str,
     req_body: &str,
     empty: bool,
-) -> (u16, String, &'static str) {
+) -> (u16, String, &'static str, &'static str) {
     // Split path and query string
     let (path_part, query) = match path.split_once('?') {
         Some((p, q)) => (p, Some(q)),
@@ -625,15 +643,16 @@ fn mock_route(
     match (method, path_part) {
         ("POST", p) if p.starts_with("/api/v0/runs/") && p.ends_with("/events/search") => {
             let run_id = &p["/api/v0/runs/".len()..p.len() - "/events/search".len()];
-            mock_route_search_events(run_id, req_body)
+            let (s, b, ct) = mock_route_search_events(run_id, req_body);
+            (s, b, ct, NO_CACHE_CACHE_CONTROL)
         }
         ("GET", "/api/v0/runs") => {
             let (s, b) = mock_route_list_runs(query, empty);
-            (s, b, json)
+            (s, b, json, NO_CACHE_CACHE_CONTROL)
         }
         ("GET", p) if p.starts_with("/api/v0/runs/") => {
             let rest = &p["/api/v0/runs/".len()..];
-            if let Some(run_id) = rest.strip_suffix("/build_logs") {
+            let (s, b, ct) = if let Some(run_id) = rest.strip_suffix("/build_logs") {
                 let (s, b) = mock_route_get_run_build_logs(run_id);
                 (s, b, ndjson)
             } else if let Some(run_id) = rest.strip_suffix("/logs") {
@@ -648,22 +667,38 @@ fn mock_route(
             } else {
                 let (s, b) = mock_route_get_run(rest);
                 (s, b, json)
-            }
+            };
+            let cache_control = if s == 200 {
+                CACHEABLE_CACHE_CONTROL
+            } else {
+                NO_CACHE_CACHE_CONTROL
+            };
+            (s, b, ct, cache_control)
         }
         ("POST", p) if p.starts_with("/api/v0/runs/") => {
             let rest = &p["/api/v0/runs/".len()..];
             if let Some(run_id) = rest.strip_suffix("/execute_command") {
                 let (s, b) = mock_route_execute_command(run_id, req_body);
-                (s, b, ndjson)
+                (s, b, ndjson, NO_CACHE_CACHE_CONTROL)
             } else {
-                (404, r#"{"message":"not found"}"#.to_string(), json)
+                (
+                    404,
+                    r#"{"message":"not found"}"#.to_string(),
+                    json,
+                    NO_CACHE_CACHE_CONTROL,
+                )
             }
         }
         ("POST", p) if p.starts_with("/api/v1/launch/") => {
             let (s, b) = mock_route_launch();
-            (s, b, json)
+            (s, b, json, NO_CACHE_CACHE_CONTROL)
         }
-        _ => (404, r#"{"message":"not found"}"#.to_string(), json),
+        _ => (
+            404,
+            r#"{"message":"not found"}"#.to_string(),
+            json,
+            NO_CACHE_CACHE_CONTROL,
+        ),
     }
 }
 

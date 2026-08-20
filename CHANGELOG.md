@@ -1,5 +1,6 @@
 # Unreleased
 
+- The response cache optionally respects the server's cache headers. Set `api_cache_respect_headers = false` to drop the header requirement. ([#263](https://github.com/antithesishq/snouty/issues/263))
 - Make VTIME optional on `snouty runs logs`: omit it to stream to the branch's current end. ([#264](https://github.com/antithesishq/snouty/issues/264))
 - GET requests that fail with a transient network error (a connect error, reset, or DNS blip) are retried up to 3 times with backoff ([#249](https://github.com/antithesishq/snouty/issues/249))
 

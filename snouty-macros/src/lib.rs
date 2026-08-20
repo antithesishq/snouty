@@ -11,8 +11,8 @@
 //! The cache stores nothing untagged: a cached handler returns
 //! `Result<Tagged<T, CachePolicy>>` — the fetched value plus the handler's
 //! own admission verdict, which the caller untags. Admission therefore
-//! lives in the handler, next to the response, where a future policy can
-//! also read the response's headers.
+//! lives in the handler, next to the response, whose cache headers carry
+//! the other half of the verdict (`ApiCache::headers_admit`).
 //!
 //! ```ignore
 //! #[cached(value)]

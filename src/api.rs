@@ -460,6 +460,7 @@ impl AntithesisApi {
         let cache = ApiCache::new(
             cache_dir,
             settings.api_cache_max_file_size(),
+            settings.api_cache_respect_headers(),
             base_url.clone(),
             verbose,
         );
@@ -517,11 +518,12 @@ impl AntithesisApi {
     pub async fn get_run(&self, run_id: &str) -> Result<Tagged<RunDetail, CachePolicy>> {
         match self.client.get_run().run_id(run_id).send().await {
             Ok(response) => {
+                let policy = self.cache.headers_policy(response.headers());
                 let detail = response.into_inner();
                 // A run detail is immutable only once the run reaches a
                 // terminal status.
-                let cache_policy = CachePolicy::cache_if(detail.status.is_terminal());
-                Ok(detail.with_tag(cache_policy))
+                let policy = policy.and(CachePolicy::cache_if(detail.status.is_terminal()));
+                Ok(detail.with_tag(policy))
             }
             Err(err) => Err(format_api_client_error(err).await),
         }
@@ -579,7 +581,8 @@ impl AntithesisApi {
         ensure_resource_supported(run_id, MIN_BUILD_LOGS_VERSION, "build logs")?;
         match self.client.get_run_build_logs().run_id(run_id).send().await {
             Ok(response) => {
-                Ok(json_lines(response.into_inner().into_inner()).with_tag(CachePolicy::Cacheable))
+                let policy = self.cache.headers_policy(response.headers());
+                Ok(json_lines(response.into_inner().into_inner()).with_tag(policy))
             }
             Err(err) => Err(format_api_client_error(err).await),
         }
@@ -617,12 +620,16 @@ impl AntithesisApi {
 
         match request.send().await {
             Ok(response) => {
+                let policy = self
+                    .cache
+                    .headers_policy(response.headers())
+                    .and(CachePolicy::cache_if(end.is_some()));
                 let stream = json_lines(response.into_inner().into_inner());
                 let stream = match end {
                     Some(end) => truncate_at_end_vtime(stream, end),
                     None => stream,
                 };
-                Ok(stream.with_tag(CachePolicy::cache_if(end.is_some())))
+                Ok(stream.with_tag(policy))
             }
             Err(err) => Err(format_api_client_error(err).await),
         }
@@ -809,7 +816,10 @@ impl AntithesisApi {
         }
 
         match request.send().await {
-            Ok(response) => Ok(response.into_inner().with_tag(CachePolicy::Cacheable)),
+            Ok(response) => {
+                let policy = self.cache.headers_policy(response.headers());
+                Ok(response.into_inner().with_tag(policy))
+            }
             Err(err) => Err(format_api_client_error(err).await),
         }
     }
@@ -1503,8 +1513,14 @@ mod tests {
     /// Like [`test_api_optionally_with_cache`], but against a raw base URL —
     /// the transport-fault tests serve from a raw TCP listener, not wiremock.
     fn test_api_at_url(base_url: String, cache_dir: Option<&TempDir>) -> AntithesisApi {
+        test_api_with_settings(&Settings::for_test_base_url(base_url), cache_dir)
+    }
+
+    /// Like [`test_api_at_url`], but with the caller's own [`Settings`] — for
+    /// tests that vary a setting beyond the base URL.
+    fn test_api_with_settings(settings: &Settings, cache_dir: Option<&TempDir>) -> AntithesisApi {
         AntithesisApi::build(
-            &Settings::for_test_base_url(base_url),
+            settings,
             AuthenticationInfo::Password {
                 username: "user".to_owned(),
                 password: "pass".to_owned(),
@@ -2557,6 +2573,14 @@ mod tests {
         stream.try_collect::<Vec<_>>().await.unwrap()
     }
 
+    /// A 200 response stamped with the `Cache-Control` the live API sends on
+    /// a cacheable read ([`CACHEABLE_CACHE_CONTROL`]). The cache admits
+    /// nothing without it.
+    fn cacheable() -> ResponseTemplate {
+        use crate::testutils::CACHEABLE_CACHE_CONTROL;
+        ResponseTemplate::new(200).insert_header("cache-control", CACHEABLE_CACHE_CONTROL)
+    }
+
     /// A moment with a pinned end vtime, past every mock log line: the
     /// stream is admissible to the cache and passes the truncation whole.
     fn logs_moment() -> Moment {
@@ -2571,7 +2595,7 @@ mod tests {
         let mock_server = MockServer::start().await;
         Mock::given(method("GET"))
             .and(path("/api/v0/runs/run-1"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(run_detail_body("completed")))
+            .respond_with(cacheable().set_body_json(run_detail_body("completed")))
             .expect(1)
             .mount(&mock_server)
             .await;
@@ -2588,10 +2612,12 @@ mod tests {
 
     #[tokio::test]
     async fn live_run_detail_is_not_cached() {
+        // Cacheable headers alone are not enough: the handler's own check
+        // (a terminal status) must also pass.
         let mock_server = MockServer::start().await;
         Mock::given(method("GET"))
             .and(path("/api/v0/runs/run-1"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(run_detail_body("in_progress")))
+            .respond_with(cacheable().set_body_json(run_detail_body("in_progress")))
             .expect(2)
             .mount(&mock_server)
             .await;
@@ -2604,11 +2630,53 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_response_without_cacheable_headers_is_not_cached() {
+        // The logical check (a terminal status) alone is not enough: the
+        // server's cache headers must also allow caching.
+        let mock_server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v0/runs/run-1"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(run_detail_body("completed")))
+            .expect(2)
+            .mount(&mock_server)
+            .await;
+
+        let cache_dir = TempDir::new().unwrap();
+        let api = test_api_optionally_with_cache(&mock_server, Some(&cache_dir));
+
+        api.get_run("run-1").await.unwrap();
+        api.get_run("run-1").await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn the_header_requirement_has_an_opt_out() {
+        let mock_server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v0/runs/run-1"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(run_detail_body("completed")))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let cache_dir = TempDir::new().unwrap();
+        let api = test_api_with_settings(
+            &Settings::builder()
+                .base_url(&mock_server.uri())
+                .api_cache_respect_headers(false)
+                .build(),
+            Some(&cache_dir),
+        );
+
+        api.get_run("run-1").await.unwrap();
+        api.get_run("run-1").await.unwrap();
+    }
+
+    #[tokio::test]
     async fn run_logs_replay_from_the_cache_once_fully_read() {
         let mock_server = MockServer::start().await;
         Mock::given(method("GET"))
             .and(path("/api/v0/runs/run-1/logs"))
-            .respond_with(ResponseTemplate::new(200).set_body_string("{\"text\":\"log line\"}\n"))
+            .respond_with(cacheable().set_body_string("{\"text\":\"log line\"}\n"))
             .expect(1)
             .mount(&mock_server)
             .await;
@@ -2643,7 +2711,7 @@ mod tests {
         let mock_server = MockServer::start().await;
         Mock::given(method("GET"))
             .and(path("/api/v0/runs/run-1/logs"))
-            .respond_with(ResponseTemplate::new(200).set_body_string("{\"text\":\"log line\"}\n"))
+            .respond_with(cacheable().set_body_string("{\"text\":\"log line\"}\n"))
             .expect(2)
             .mount(&mock_server)
             .await;
@@ -2677,7 +2745,7 @@ mod tests {
         let mock_server = MockServer::start().await;
         Mock::given(method("GET"))
             .and(path("/api/v0/runs/run-1/logs"))
-            .respond_with(ResponseTemplate::new(200).set_body_string(body))
+            .respond_with(cacheable().set_body_string(body))
             .expect(1)
             .mount(&mock_server)
             .await;
@@ -2746,7 +2814,7 @@ mod tests {
         let mock_server = MockServer::start().await;
         Mock::given(method("GET"))
             .and(path("/api/v0/runs/run-1/logs"))
-            .respond_with(ResponseTemplate::new(200).set_body_string("{\"text\":\"log line\"}\n"))
+            .respond_with(cacheable().set_body_string("{\"text\":\"log line\"}\n"))
             .expect(2)
             .mount(&mock_server)
             .await;
@@ -2779,25 +2847,19 @@ mod tests {
         let mock_server = MockServer::start().await;
         Mock::given(method("GET"))
             .and(path("/api/v0/runs/run-1/logs"))
-            .respond_with(ResponseTemplate::new(200).set_body_string("{\"text\":\"log line\"}\n"))
+            .respond_with(cacheable().set_body_string("{\"text\":\"log line\"}\n"))
             .expect(2)
             .mount(&mock_server)
             .await;
 
         let cache_dir = TempDir::new().unwrap();
-        let api = AntithesisApi::build(
+        let api = test_api_with_settings(
             &Settings::builder()
                 .base_url(&mock_server.uri())
                 .api_cache_max_file_size(4)
                 .build(),
-            AuthenticationInfo::Password {
-                username: "user".to_owned(),
-                password: "pass".to_owned(),
-            },
-            false,
-            ResponseCache::Dir(cache_dir.path().to_path_buf()),
-        )
-        .unwrap();
+            Some(&cache_dir),
+        );
 
         for _ in 0..2 {
             let stream = api
@@ -2814,10 +2876,13 @@ mod tests {
 
     #[tokio::test]
     async fn the_run_list_is_never_cached() {
+        // The live API sends `no-cache` on the list; the test stamps
+        // cacheable headers anyway to prove the exclusion is by design (the
+        // list is not a cached handler), not by the header gate.
         let mock_server = MockServer::start().await;
         Mock::given(method("GET"))
             .and(path("/api/v0/runs"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            .respond_with(cacheable().set_body_json(serde_json::json!({
                 "data": [run_detail_body("completed")],
                 "next_cursor": null
             })))
@@ -2843,7 +2908,7 @@ mod tests {
         let mock_server = MockServer::start().await;
         Mock::given(method("GET"))
             .and(path("/api/v0/runs/run-1/build_logs"))
-            .respond_with(ResponseTemplate::new(200).set_body_string("{\"text\":\"built\"}\n"))
+            .respond_with(cacheable().set_body_string("{\"text\":\"built\"}\n"))
             .expect(1)
             .mount(&mock_server)
             .await;
@@ -2880,14 +2945,14 @@ mod tests {
         Mock::given(method("GET"))
             .and(path("/api/v0/runs/run-1/properties"))
             .and(query_param_is_missing("after"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(page("first", Some("c1"))))
+            .respond_with(cacheable().set_body_json(page("first", Some("c1"))))
             .expect(1)
             .mount(&mock_server)
             .await;
         Mock::given(method("GET"))
             .and(path("/api/v0/runs/run-1/properties"))
             .and(query_param("after", "c1"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(page("second", None)))
+            .respond_with(cacheable().set_body_json(page("second", None)))
             .expect(1)
             .mount(&mock_server)
             .await;
@@ -2922,7 +2987,7 @@ mod tests {
             .await;
         Mock::given(method("GET"))
             .and(path("/api/v0/runs/run-1"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(run_detail_body("completed")))
+            .respond_with(cacheable().set_body_json(run_detail_body("completed")))
             .expect(1)
             .mount(&mock_server)
             .await;
@@ -2943,7 +3008,7 @@ mod tests {
         let mock_server = MockServer::start().await;
         Mock::given(method("GET"))
             .and(path("/api/v0/runs/run-1"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(run_detail_body("completed")))
+            .respond_with(cacheable().set_body_json(run_detail_body("completed")))
             .expect(2)
             .mount(&mock_server)
             .await;

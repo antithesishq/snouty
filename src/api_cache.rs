@@ -154,12 +154,17 @@ impl ApiCache {
 
     /// The header half of admission: [`CachePolicy::from_headers`] on the
     /// response, for handlers to [`CachePolicy::and`] with their own logical
-    /// verdict. Neutral ([`CachePolicy::Cacheable`]) when the cache is
-    /// disabled — the verdict is moot when every store is a no-op, and
-    /// `get_run` runs on every `runs wait` poll — or when the
-    /// `api_cache_respect_headers` setting turns the header signal off.
+    /// verdict. A disabled cache short-circuits to
+    /// [`CachePolicy::Uncacheable`] — there is nothing to store into, so the
+    /// parse is skipped (`get_run` runs on every `runs wait` poll). The
+    /// `api_cache_respect_headers` opt-out turns the header signal off:
+    /// neutral ([`CachePolicy::Cacheable`]) so the logical verdict alone
+    /// decides.
     pub fn headers_policy(&self, headers: &http::HeaderMap) -> CachePolicy {
-        if self.dir.is_none() || !self.respect_headers {
+        if self.dir.is_none() {
+            return CachePolicy::Uncacheable;
+        }
+        if !self.respect_headers {
             return CachePolicy::Cacheable;
         }
         let policy = CachePolicy::from_headers(headers);

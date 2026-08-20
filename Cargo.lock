@@ -2820,6 +2820,7 @@ dependencies = [
  "serde_json",
  "serde_yaml",
  "sha2",
+ "snouty-macros",
  "strip-ansi-escapes",
  "syn 2.0.119",
  "tempfile",
@@ -2831,6 +2832,15 @@ dependencies = [
  "which",
  "wiremock",
  "zmij",
+]
+
+[[package]]
+name = "snouty-macros"
+version = "0.7.0-rc.2"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
 ]
 
 [[package]]

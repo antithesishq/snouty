@@ -13,7 +13,7 @@ use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use reqwest::{Client, Proxy};
 use serde::de::DeserializeOwned;
 
-use crate::api_cache::{self, ApiCache};
+use crate::api_cache::{self, ApiCache, CachePolicy};
 use crate::auth::{AuthenticationInfo, PasswordPolicy};
 use crate::env;
 use crate::error::{ApiError, user_error};
@@ -25,15 +25,17 @@ use crate::params::{
 };
 use crate::render::sanitize;
 use crate::settings::Settings;
+use crate::tag::{Tag, Tagged};
 use crate::util::source_error;
 use crate::vtime::VTime;
+use snouty_macros::cached;
 
 #[allow(dead_code, unused_imports, private_interfaces)]
 mod generated {
     include!(concat!(env!("OUT_DIR"), "/antithesis_api.rs"));
 }
 
-use crate::jsonl::JsonStream;
+use crate::jsonl::{JsonStream, json_lines};
 pub(crate) use generated::types::Params as RunParams;
 pub use generated::types::{
     BuildLogLine, Event, EventProperty, Moment, NonEventProperty, Property, PropertyStatus,
@@ -340,15 +342,15 @@ async fn execute_with_transient_retry(
 }
 
 /// Where API responses are cached. The cache itself is the logical,
-/// domain-aware cache in [`crate::api_cache`]: it decides per operation what
-/// may be cached and treats every cache error as a miss.
+/// domain-aware cache in [`crate::api_cache`]: each handler that serves an
+/// immutable resource consults it, and every cache error is a miss.
 #[derive(Debug)]
 pub(crate) enum ResponseCache {
-    /// `$XDG_RUNTIME_DIR/snouty/api-cache-v2`, falling back to a per-user
+    /// `$XDG_RUNTIME_DIR/snouty/api-cache-v3`, falling back to a per-user
     /// directory under the system temp dir — the default for every command.
     Default,
-    /// No response cache: every request hits the server. The admission policy
-    /// already keeps mutable resources out of the cache, so this exists for
+    /// No response cache: every request hits the server. The handlers
+    /// already keep mutable resources out of the cache, so this exists for
     /// callers that want no cache I/O at all (status polls, tests).
     Disabled,
     /// Cache under this directory.
@@ -360,7 +362,7 @@ pub(crate) enum ResponseCache {
 /// the timeline's earliest log entry. The vtime alone is enough; the input
 /// hash is an optimization the endpoint accepts only alongside it, which is
 /// why this is not a [`Moment`].
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize)]
 pub struct LogsBegin {
     pub vtime: VTime,
     pub input_hash: Option<String>,
@@ -369,6 +371,7 @@ pub struct LogsBegin {
 pub struct AntithesisApi {
     client: generated::Client,
     base_url: String,
+    cache: ApiCache,
 }
 
 impl AntithesisApi {
@@ -436,14 +439,23 @@ impl AntithesisApi {
             #[cfg(test)]
             ResponseCache::Dir(dir) => Some(dir),
         };
+        let cache = ApiCache::new(
+            cache_dir,
+            settings.api_cache_max_file_size(),
+            base_url.clone(),
+            verbose,
+        );
         let state = ClientState {
             authn_info,
-            cache: cache_dir.map(|dir| ApiCache::new(dir, settings.api_cache_max_file_size())),
             default_headers: verbose.then_some(default_headers),
         };
         let client = generated::Client::new_with_client(&base_url, http_client, state);
 
-        Ok(Self { client, base_url })
+        Ok(Self {
+            client,
+            base_url,
+            cache,
+        })
     }
 
     pub fn base_url(&self) -> &str {
@@ -483,9 +495,16 @@ impl AntithesisApi {
         })
     }
 
-    pub async fn get_run(&self, run_id: &str) -> Result<RunDetail> {
+    #[cached(value)]
+    pub async fn get_run(&self, run_id: &str) -> Result<Tagged<RunDetail, CachePolicy>> {
         match self.client.get_run().run_id(run_id).send().await {
-            Ok(response) => Ok(response.into_inner()),
+            Ok(response) => {
+                let detail = response.into_inner();
+                // A run detail is immutable only once the run reaches a
+                // terminal status.
+                let cache_policy = CachePolicy::cache_if(detail.status.is_terminal());
+                Ok(detail.with_tag(cache_policy))
+            }
             Err(err) => Err(format_api_client_error(err).await),
         }
     }
@@ -532,10 +551,18 @@ impl AntithesisApi {
         }
     }
 
-    pub async fn get_run_build_logs(&self, run_id: &str) -> Result<JsonStream> {
+    #[cached(stream)]
+    pub async fn get_run_build_logs(
+        &self,
+        run_id: &str,
+    ) -> Result<Tagged<JsonStream, CachePolicy>> {
+        // The version gate runs on misses only: a run it rejects never got a
+        // 200 from the server, so no cache entry can exist for it.
         ensure_resource_supported(run_id, MIN_BUILD_LOGS_VERSION, "build logs")?;
         match self.client.get_run_build_logs().run_id(run_id).send().await {
-            Ok(response) => Ok(JsonStream::new(response.into_inner())),
+            Ok(response) => {
+                Ok(json_lines(response.into_inner().into_inner()).with_tag(CachePolicy::Cacheable))
+            }
             Err(err) => Err(format_api_client_error(err).await),
         }
     }
@@ -543,12 +570,13 @@ impl AntithesisApi {
     /// The endpoint takes each vtime as a decimal-seconds query parameter. The
     /// generated setters accept anything that converts to `String`, and
     /// [`VTime`]'s conversion is its exact `Display` text.
+    #[cached(stream)]
     pub async fn get_run_logs(
         &self,
         run_id: &str,
         moment: Moment,
         begin: Option<LogsBegin>,
-    ) -> Result<JsonStream> {
+    ) -> Result<Tagged<JsonStream, CachePolicy>> {
         let mut request = self
             .client
             .get_run_logs()
@@ -563,7 +591,9 @@ impl AntithesisApi {
         }
 
         match request.send().await {
-            Ok(response) => Ok(JsonStream::new(response.into_inner())),
+            Ok(response) => {
+                Ok(json_lines(response.into_inner().into_inner()).with_tag(CachePolicy::Cacheable))
+            }
             Err(err) => Err(format_api_client_error(err).await),
         }
     }
@@ -594,7 +624,7 @@ impl AntithesisApi {
         };
         let request = self.client.execute_command().run_id(run_id).body(body);
         match request.send().await {
-            Ok(response) => Ok(JsonStream::new(response.into_inner())),
+            Ok(response) => Ok(json_lines(response.into_inner().into_inner())),
             Err(err) => Err(format_api_client_error(err).await),
         }
     }
@@ -604,14 +634,16 @@ impl AntithesisApi {
         run_id: &str,
         status: Option<PropertyStatus>,
     ) -> impl futures_util::Stream<Item = Result<Property>> + '_ {
+        const MAX_PAGE_LIMIT: u64 = 100;
         let run_id = run_id.to_string();
         paginate(move |after| {
             let run_id = run_id.clone();
             async move {
                 ensure_resource_supported(&run_id, MIN_PROPERTIES_VERSION, "run properties")?;
                 let page = self
-                    .fetch_run_properties_page(&run_id, after.as_deref(), status)
-                    .await?;
+                    .fetch_run_properties_page(&run_id, after.as_deref(), status, MAX_PAGE_LIMIT)
+                    .await?
+                    .untag();
                 let generated::types::PropertyListResponse { data, next_cursor } = page;
                 let normalized = data
                     .into_iter()
@@ -639,7 +671,7 @@ impl AntithesisApi {
             request = request.limit(limit);
         }
         match request.send().await {
-            Ok(response) => Ok(JsonStream::new(response.into_inner())),
+            Ok(response) => Ok(json_lines(response.into_inner().into_inner())),
             Err(err) => Err(format_api_client_error(err).await),
         }
     }
@@ -674,7 +706,7 @@ impl AntithesisApi {
             body = body.limit(limit);
         }
         match self.client.search().run_id(run_id).body(body).send().await {
-            Ok(response) => Ok(JsonStream::new(response.into_inner())),
+            Ok(response) => Ok(json_lines(response.into_inner().into_inner())),
             Err(err) => Err(format_api_client_error(err).await),
         }
     }
@@ -726,17 +758,19 @@ impl AntithesisApi {
         }
     }
 
+    #[cached(value)]
     async fn fetch_run_properties_page(
         &self,
         run_id: &str,
         after: Option<&str>,
         status: Option<PropertyStatus>,
-    ) -> Result<generated::types::PropertyListResponse> {
+        limit: u64,
+    ) -> Result<Tagged<generated::types::PropertyListResponse, CachePolicy>> {
         let mut request = self
             .client
             .list_run_properties()
             .run_id(run_id)
-            .limit(100_u64);
+            .limit(limit);
         if let Some(cursor) = after {
             request = request.after(cursor);
         }
@@ -745,7 +779,7 @@ impl AntithesisApi {
         }
 
         match request.send().await {
-            Ok(response) => Ok(response.into_inner()),
+            Ok(response) => Ok(response.into_inner().with_tag(CachePolicy::Cacheable)),
             Err(err) => Err(format_api_client_error(err).await),
         }
     }
@@ -754,7 +788,6 @@ impl AntithesisApi {
 #[derive(Clone, Debug)]
 pub struct ClientState {
     authn_info: AuthenticationInfo,
-    cache: Option<ApiCache>,
     /// Default headers reqwest will merge into the outgoing request at
     /// `Client::execute` time (after our `exec` hook runs). `Some` enables
     /// verbose request/response logging to stderr; we hold the headers here
@@ -778,23 +811,10 @@ impl ClientHooks<ClientState> for generated::Client {
     async fn exec(
         &self,
         request: reqwest::Request,
-        info: &OperationInfo,
+        _info: &OperationInfo,
     ) -> reqwest::Result<reqwest::Response> {
         let state = self.inner();
         let verbose_headers = state.default_headers.as_ref();
-
-        // A cached response short-circuits the request entirely.
-        if let Some(cache) = &state.cache
-            && let Some(response) = cache.lookup(&request, info).await
-        {
-            if let Some(default_headers) = verbose_headers {
-                let mut out = String::new();
-                format_request(&request, default_headers, &mut out);
-                out.push_str("* response served from the local cache\n");
-                eprint!("{out}");
-            }
-            return Ok(response);
-        }
 
         // Keep a resendable copy so a token refresh can retry the request once if
         // the first attempt is rejected as unauthorized but we have a refreshable credential
@@ -810,8 +830,6 @@ impl ClientHooks<ClientState> for generated::Client {
             eprint!("{out}");
         }
 
-        // Transient-failure retry sits under the cache: a cache hit above
-        // answers without touching the network, while a miss's fetch retries.
         let result =
             execute_with_transient_retry(self.client(), verbose_headers.is_some(), request).await;
 
@@ -858,11 +876,7 @@ impl ClientHooks<ClientState> for generated::Client {
             eprint!("{out}");
         }
 
-        // Tee cacheable responses into the cache as the caller reads them.
-        match (result, &state.cache) {
-            (Ok(response), Some(cache)) => Ok(cache.store(info, response).await),
-            (result, _) => result,
-        }
+        result
     }
 }
 
@@ -2249,6 +2263,47 @@ mod tests {
         );
     }
 
+    // The cached operations' stores rely on the generated client accepting
+    // only the documented success status. Pin that status to exactly 200, so
+    // a spec refresh that documents another 2xx for a cached operation
+    // forces this admission review to run again.
+    #[test]
+    fn cached_operations_document_only_a_200() {
+        let spec: serde_json::Value = serde_json::from_str(include_str!("openapi.json")).unwrap();
+        let cached = [
+            "getRun",
+            "getRunBuildLogs",
+            "getRunLogs",
+            "listRunProperties",
+        ];
+        let mut seen = Vec::new();
+        for operations in spec["paths"].as_object().unwrap().values() {
+            for operation in operations.as_object().unwrap().values() {
+                let Some(id) = operation["operationId"].as_str() else {
+                    continue;
+                };
+                if !cached.contains(&id) {
+                    continue;
+                }
+                seen.push(id.to_owned());
+                let statuses: Vec<&String> = operation["responses"]
+                    .as_object()
+                    .unwrap()
+                    .keys()
+                    .filter(|status| status.starts_with('2'))
+                    .collect();
+                assert_eq!(
+                    statuses,
+                    ["200"],
+                    "{id} documents 2xx responses other than 200; \
+                     re-verify the cache admission before trusting its store"
+                );
+            }
+        }
+        seen.sort_unstable();
+        assert_eq!(seen, cached, "a cached operation left the spec");
+    }
+
     #[tokio::test]
     async fn stream_runs_follows_next_cursor() {
         let mock_server = MockServer::start().await;
@@ -2454,9 +2509,10 @@ mod tests {
 
     // ---- logical response cache ------------------------------------------
     //
-    // The admission policy itself is unit-tested in `crate::api_cache`; these
-    // tests pin the end-to-end behavior through the generated client: lookup
-    // before send, tee-on-read, commit only on a fully read 200 body.
+    // Key construction and the stream tee are unit-tested in
+    // `crate::api_cache`; these tests pin each handler's caching end to end:
+    // lookup before send, admission per handler, commit only on a fully read
+    // stream.
 
     fn run_detail_body(status: &str) -> serde_json::Value {
         serde_json::json!({
@@ -2491,8 +2547,8 @@ mod tests {
         let cache_dir = TempDir::new().unwrap();
         let api = test_api_optionally_with_cache(&mock_server, Some(&cache_dir));
 
-        let first = api.get_run("run-1").await.unwrap();
-        let second = api.get_run("run-1").await.unwrap();
+        let first = api.get_run("run-1").await.unwrap().untag();
+        let second = api.get_run("run-1").await.unwrap().untag();
 
         assert_eq!(first.run_id, "run-1");
         assert_eq!(second.run_id, "run-1");
@@ -2531,7 +2587,8 @@ mod tests {
         let first = api
             .get_run_logs("run-1", logs_moment(), None)
             .await
-            .unwrap();
+            .unwrap()
+            .untag();
         assert_eq!(
             read_stream(first).await,
             [serde_json::json!({"text": "log line"})]
@@ -2539,7 +2596,8 @@ mod tests {
         let second = api
             .get_run_logs("run-1", logs_moment(), None)
             .await
-            .unwrap();
+            .unwrap()
+            .untag();
         assert_eq!(
             read_stream(second).await,
             [serde_json::json!({"text": "log line"})]
@@ -2563,14 +2621,16 @@ mod tests {
         let abandoned = api
             .get_run_logs("run-1", logs_moment(), None)
             .await
-            .unwrap();
+            .unwrap()
+            .untag();
         drop(abandoned);
 
         // The next request must hit the server again.
         let replay = api
             .get_run_logs("run-1", logs_moment(), None)
             .await
-            .unwrap();
+            .unwrap()
+            .untag();
         assert_eq!(
             read_stream(replay).await,
             [serde_json::json!({"text": "log line"})]
@@ -2606,7 +2666,8 @@ mod tests {
             let stream = api
                 .get_run_logs("run-1", logs_moment(), None)
                 .await
-                .unwrap();
+                .unwrap()
+                .untag();
             assert_eq!(
                 read_stream(stream).await,
                 [serde_json::json!({"text": "log line"})]
@@ -2654,11 +2715,59 @@ mod tests {
         let api = test_api_optionally_with_cache(&mock_server, Some(&cache_dir));
 
         for _ in 0..2 {
-            let stream = api.get_run_build_logs("run-1").await.unwrap();
+            let stream = api.get_run_build_logs("run-1").await.unwrap().untag();
             assert_eq!(
                 read_stream(stream).await,
                 [serde_json::json!({"text": "built"})]
             );
+        }
+    }
+
+    // Properties cache page by page: the second listing replays both
+    // pages, cursor chaining included.
+    #[tokio::test]
+    async fn run_properties_replay_from_the_cache_per_page() {
+        let mock_server = MockServer::start().await;
+        let page = |name: &str, cursor: Option<&str>| {
+            serde_json::json!({
+                "data": [{
+                    "name": name,
+                    "status": "Passing",
+                    "is_event": false,
+                    "is_existential": true,
+                    "is_universal": false
+                }],
+                "next_cursor": cursor
+            })
+        };
+        Mock::given(method("GET"))
+            .and(path("/api/v0/runs/run-1/properties"))
+            .and(query_param_is_missing("after"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(page("first", Some("c1"))))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/v0/runs/run-1/properties"))
+            .and(query_param("after", "c1"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(page("second", None)))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let cache_dir = TempDir::new().unwrap();
+        let api = test_api_optionally_with_cache(&mock_server, Some(&cache_dir));
+
+        for _ in 0..2 {
+            let names: Vec<String> = api
+                .stream_run_properties("run-1", None)
+                .try_collect::<Vec<_>>()
+                .await
+                .unwrap()
+                .iter()
+                .map(|p| p.name().to_owned())
+                .collect();
+            assert_eq!(names, ["first", "second"]);
         }
     }
 
@@ -2787,7 +2896,7 @@ mod tests {
         .unwrap();
 
         // The initial 401 drives a refresh and a single retry, which succeeds.
-        let run = api.get_run("run-1").await.unwrap();
+        let run = api.get_run("run-1").await.unwrap().untag();
         assert_eq!(run.run_id, "run-1");
 
         // Request sequence: stale token → refresh → retry with the new token.
@@ -3028,7 +3137,8 @@ mod tests {
             .await;
 
         let api = test_api_optionally_with_cache(&mock_server, None);
-        api.search_run_events("run-1", "slow", NonZeroU64::new(5))
+        let _stream = api
+            .search_run_events("run-1", "slow", NonZeroU64::new(5))
             .await
             .unwrap();
     }
@@ -3049,7 +3159,7 @@ mod tests {
             .await;
 
         let api = test_api_optionally_with_cache(&mock_server, None);
-        api.search_run_events("run-1", "slow", None).await.unwrap();
+        let _stream = api.search_run_events("run-1", "slow", None).await.unwrap();
     }
 
     // The DSL search wrapper POSTs the Search_Request body: the query and
@@ -3113,16 +3223,17 @@ mod tests {
             .await;
 
         let api = test_api_optionally_with_cache(&mock_server, None);
-        api.search_run_events_query(
-            "run-1",
-            "contains({output_text: \"raft\"})",
-            SearchMode::Query {
-                stream: true,
-                limit: NonZeroU64::new(7),
-            },
-        )
-        .await
-        .unwrap();
+        let _stream = api
+            .search_run_events_query(
+                "run-1",
+                "contains({output_text: \"raft\"})",
+                SearchMode::Query {
+                    stream: true,
+                    limit: NonZeroU64::new(7),
+                },
+            )
+            .await
+            .unwrap();
 
         // Validate is its own mode: no stream, no limit.
         let mock_server = MockServer::start().await;
@@ -3139,13 +3250,14 @@ mod tests {
             .await;
 
         let api = test_api_optionally_with_cache(&mock_server, None);
-        api.search_run_events_query(
-            "run-1",
-            "contains({output_text: \"raft\"})",
-            SearchMode::Validate,
-        )
-        .await
-        .unwrap();
+        let _stream = api
+            .search_run_events_query(
+                "run-1",
+                "contains({output_text: \"raft\"})",
+                SearchMode::Validate,
+            )
+            .await
+            .unwrap();
     }
 
     // An error must keep its HTTP status so callers can classify it — the 404

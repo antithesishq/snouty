@@ -1,3 +1,6 @@
+[workspace]
+members = ["snouty-macros"]
+
 [package]
 name = "snouty"
 version = "0.7.0-rc.2"
@@ -33,6 +36,9 @@ bytes = "1"
 tokio = { version = "1", features = ["rt", "macros", "process", "time", "io-util", "io-std", "net", "signal", "sync"] }
 tokio-util = { version = "0.7", default-features = false, features = ["io"] }
 serde = { version = "1", features = ["derive"] }
+# The exact-version pin keeps a crates.io build of snouty on the macro
+# crate published for this exact release (the serde/serde_derive pattern).
+snouty-macros = { path = "snouty-macros", version = "=0.7.0-rc.2" }
 # float_roundtrip makes serde_json's f64 parsing correctly-rounded, so a vtime
 # read out of a JSON number is never off by one ULP (see src/vtime.rs).
 serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }

@@ -1,0 +1,16 @@
+[package]
+name = "snouty-macros"
+# Kept in lockstep with snouty's version; the release process bumps both.
+version = "0.7.0-rc.2"
+edition = "2024"
+description = "Procedural macros for snouty"
+license = "Apache-2.0"
+repository = "https://github.com/antithesishq/snouty"
+
+[lib]
+proc-macro = true
+
+[dependencies]
+proc-macro2 = "1"
+quote = "1"
+syn = { version = "2", features = ["full"] }

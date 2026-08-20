@@ -88,6 +88,19 @@ fn generate_api_client(out_dir: &Path) {
          the with_conversion schema match no longer applies"
     );
 
+    // The API cache buries this hash in every cache key: the generated file
+    // covers the spec, the progenitor version, and every build.rs transform,
+    // so entries written by one generated client never serve another. The
+    // value is baked into the binary, so DefaultHasher only has to be
+    // deterministic within one build.
+    let client_hash = {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        content.hash(&mut hasher);
+        hasher.finish()
+    };
+    println!("cargo:rustc-env=SNOUTY_GENERATED_API_HASH={client_hash:016x}");
+
     fs::write(out_dir.join("antithesis_api.rs"), content).unwrap();
 }
 

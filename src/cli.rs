@@ -956,9 +956,9 @@ pub struct RunsSearchArgs {
 /// help text, and the raw/detail conflict from drifting between commands.
 #[derive(Args)]
 pub struct EventOutputArgs {
-    /// Pass the server's NDJSON through verbatim, skipping snouty's
-    /// normalization (vtime, and fault annotation on `runs logs`);
-    /// requires --json
+    /// Print the server's events untouched, one JSON object per line,
+    /// skipping snouty's normalization (vtime, and fault annotation on
+    /// `runs logs`); requires --json
     #[arg(short = 'r', long)]
     pub raw: bool,
 

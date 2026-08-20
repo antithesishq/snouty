@@ -25,6 +25,7 @@ pub mod runs;
 pub mod scripts;
 #[doc(hidden)]
 pub mod settings;
+pub mod tag;
 #[doc(hidden)]
 pub mod testutils;
 pub mod time;

@@ -51,7 +51,7 @@ pub async fn cmd_runs(
     output: OutputOptions,
 ) -> Result<()> {
     // `--detail` produces human formatting, so it can't combine with
-    // `--json`; `--raw` IS the server's NDJSON, so it requires `--json`.
+    // `--json`; `--raw` is a JSON output shape, so it requires `--json`.
     // Both flags ride on more than one subcommand, and a global `--json` vs
     // a per-subcommand flag can't be expressed with clap's `conflicts_with`,
     // so the two rules are checked once here.
@@ -292,7 +292,7 @@ async fn cmd_runs_show(
 
     let api = AntithesisApi::new(settings, verbose)?;
     let run = match api.get_run(run_id).await {
-        Ok(run) => run,
+        Ok(run) => run.untag(),
         // A 404 here is unambiguous: the run id is bad. Say so instead of leaking
         // a bare "API error: 404 Not Found". Other errors pass through untouched.
         Err(err) => return Err(explain_run_not_found(run_id, err)),
@@ -408,7 +408,7 @@ async fn wait_for_run(
         poll.tick().await;
 
         let run = match api.get_run(run_id).await {
-            Ok(run) => run,
+            Ok(run) => run.untag(),
             // A 404 here is unambiguous, exactly as in `runs show`: the run id
             // is bad, so fail now rather than poll a typo until the timeout.
             Err(err) => return Err(explain_run_not_found(run_id, err)),
@@ -597,7 +597,7 @@ enum RunProbe {
 /// not found".
 async fn probe_run(api: &AntithesisApi, run_id: &str) -> RunProbe {
     match api.get_run(run_id).await {
-        Ok(run) => RunProbe::Exists(Box::new(run)),
+        Ok(run) => RunProbe::Exists(Box::new(run.untag())),
         Err(err) if api_error_status(&err) == Some(404) => RunProbe::NotFound,
         Err(err) => RunProbe::ProbeFailed(err),
     }
@@ -1312,11 +1312,11 @@ fn render_runs_detail(runs: &[RunSummary]) -> String {
     blocks.join("\n")
 }
 
-/// The refusal for `--raw` without `--json`. Raw output IS the server's
-/// NDJSON stream; there is no raw human rendering to fall back to.
+/// The refusal for `--raw` without `--json`. Raw output is the server's
+/// events as JSON lines; there is no raw human rendering to fall back to.
 fn raw_requires_json_error() -> color_eyre::eyre::Report {
     user_error("--raw requires --json")
-        .note("--raw passes the server's NDJSON stream through verbatim")
+        .note("--raw prints the server's events untouched, one JSON object per line")
         .suggestion("add --json, or drop --raw for the rendered output")
 }
 
@@ -1330,7 +1330,7 @@ async fn cmd_runs_build_logs(
 
     let api = AntithesisApi::new(settings, verbose)?;
     let stream = match api.get_run_build_logs(run_id).await {
-        Ok(stream) => stream,
+        Ok(stream) => stream.untag(),
         Err(err) => return Err(explain_run_scoped_error(&api, run_id, err).await),
     };
     event_search::print_event_stream(
@@ -1463,7 +1463,7 @@ async fn cmd_runs_logs(
 
     let api = AntithesisApi::new(settings, verbose)?;
     let stream = match api.get_run_logs(run_id, moment, begin).await {
-        Ok(stream) => stream,
+        Ok(stream) => stream.untag(),
         Err(err) => return Err(explain_logs_error(&api, run_id, err).await),
     };
     // A moment with no logs (e.g. a manually-supplied 0/0 placeholder)

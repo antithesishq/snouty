@@ -4,41 +4,6 @@ use std::path::Path;
 
 use color_eyre::eyre::{Context, Result};
 
-/// A value carrying a tag.
-#[derive(Debug)]
-pub struct Tagged<V, T> {
-    value: V,
-    tag: T,
-}
-
-impl<V, T> Tagged<V, T> {
-    pub fn new(value: V, tag: T) -> Self {
-        Self { value, tag }
-    }
-
-    pub fn value(&self) -> &V {
-        &self.value
-    }
-
-    pub fn tag(&self) -> &T {
-        &self.tag
-    }
-
-    /// The inner value, dropping the tag.
-    pub fn unwrap(self) -> V {
-        self.value
-    }
-}
-
-/// Wrap any value in a [`Tagged`].
-pub trait Tag: Sized {
-    fn with_tag<T>(self, tag: T) -> Tagged<Self, T> {
-        Tagged::new(self, tag)
-    }
-}
-
-impl<V> Tag for V {}
-
 /// The first error of type `T` in `err`'s source chain, if any.
 pub fn source_error<'a, T: std::error::Error + 'static>(
     err: &'a (dyn std::error::Error + 'static),

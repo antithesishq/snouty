@@ -292,7 +292,7 @@ async fn cmd_runs_show(
 
     let api = AntithesisApi::new(settings, verbose)?;
     let run = match api.get_run(run_id).await {
-        Ok(run) => run.unwrap(),
+        Ok(run) => run.untag(),
         // A 404 here is unambiguous: the run id is bad. Say so instead of leaking
         // a bare "API error: 404 Not Found". Other errors pass through untouched.
         Err(err) => return Err(explain_run_not_found(run_id, err)),
@@ -408,7 +408,7 @@ async fn wait_for_run(
         poll.tick().await;
 
         let run = match api.get_run(run_id).await {
-            Ok(run) => run.unwrap(),
+            Ok(run) => run.untag(),
             // A 404 here is unambiguous, exactly as in `runs show`: the run id
             // is bad, so fail now rather than poll a typo until the timeout.
             Err(err) => return Err(explain_run_not_found(run_id, err)),
@@ -597,7 +597,7 @@ enum RunProbe {
 /// not found".
 async fn probe_run(api: &AntithesisApi, run_id: &str) -> RunProbe {
     match api.get_run(run_id).await {
-        Ok(run) => RunProbe::Exists(Box::new(run.unwrap())),
+        Ok(run) => RunProbe::Exists(Box::new(run.untag())),
         Err(err) if api_error_status(&err) == Some(404) => RunProbe::NotFound,
         Err(err) => RunProbe::ProbeFailed(err),
     }
@@ -1330,7 +1330,7 @@ async fn cmd_runs_build_logs(
 
     let api = AntithesisApi::new(settings, verbose)?;
     let stream = match api.get_run_build_logs(run_id).await {
-        Ok(stream) => stream.unwrap(),
+        Ok(stream) => stream.untag(),
         Err(err) => return Err(explain_run_scoped_error(&api, run_id, err).await),
     };
     event_search::print_event_stream(
@@ -1463,7 +1463,7 @@ async fn cmd_runs_logs(
 
     let api = AntithesisApi::new(settings, verbose)?;
     let stream = match api.get_run_logs(run_id, moment, begin).await {
-        Ok(stream) => stream.unwrap(),
+        Ok(stream) => stream.untag(),
         Err(err) => return Err(explain_logs_error(&api, run_id, err).await),
     };
     // A moment with no logs (e.g. a manually-supplied 0/0 placeholder)

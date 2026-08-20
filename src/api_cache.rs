@@ -31,7 +31,7 @@ use tokio::io::AsyncWriteExt;
 
 use crate::env;
 use crate::jsonl::{JsonStream, json_lines};
-use crate::util::Tagged;
+use crate::tag::Tagged;
 
 /// Cache directory name under the runtime dir. The `v3` names the on-disk
 /// format (re-serialized values keyed by handler parameters); bump it when
@@ -77,9 +77,9 @@ pub enum CachePolicy {
     Uncacheable,
 }
 
-/// `true` is [`CachePolicy::Cacheable`].
-impl From<bool> for CachePolicy {
-    fn from(cacheable: bool) -> Self {
+impl CachePolicy {
+    /// [`CachePolicy::Cacheable`] when `cacheable` is true.
+    pub fn cache_if(cacheable: bool) -> Self {
         if cacheable {
             Self::Cacheable
         } else {
@@ -267,7 +267,7 @@ impl ApiCache {
             remaining: self.max_file_size,
         });
         let teed = futures_util::stream::unfold(
-            (tagged.unwrap(), tee),
+            (tagged.untag(), tee),
             |(mut stream, mut tee)| async move {
                 let Some(item) = stream.next().await else {
                     // The source has ended: finish the commit before ending
@@ -398,12 +398,12 @@ mod tests {
             serde_json::json!({"text": "two"}),
         ];
 
-        let teed = cache.store_stream(key(), values_stream(&values)).unwrap();
+        let teed = cache.store_stream(key(), values_stream(&values)).untag();
         assert_eq!(teed.try_collect::<Vec<_>>().await.unwrap(), values);
 
         let replay = cache.lookup_stream(&key()).await.expect("a cache hit");
         assert_eq!(
-            replay.unwrap().try_collect::<Vec<_>>().await.unwrap(),
+            replay.untag().try_collect::<Vec<_>>().await.unwrap(),
             values
         );
     }
@@ -427,7 +427,7 @@ mod tests {
                     CachePolicy::Cacheable,
                 ),
             )
-            .unwrap();
+            .untag();
         // Drain past the error to the stream's end: even a caller that keeps
         // reading must not commit the broken body.
         let mut saw_error = false;
@@ -452,7 +452,7 @@ mod tests {
         );
         cache.store_value(&key, &tagged).await;
         assert_eq!(
-            cache.lookup_value::<Value>(&key).await.map(Tagged::unwrap),
+            cache.lookup_value::<Value>(&key).await.map(Tagged::untag),
             Some(serde_json::json!({"run_id": "run-1"}))
         );
     }

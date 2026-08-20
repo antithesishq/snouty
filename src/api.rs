@@ -25,7 +25,8 @@ use crate::params::{
 };
 use crate::render::sanitize;
 use crate::settings::Settings;
-use crate::util::{Tag, Tagged, source_error};
+use crate::tag::{Tag, Tagged};
+use crate::util::source_error;
 use crate::vtime::VTime;
 use snouty_macros::cached;
 
@@ -501,7 +502,7 @@ impl AntithesisApi {
                 let detail = response.into_inner();
                 // A run detail is immutable only once the run reaches a
                 // terminal status.
-                let cache_policy = CachePolicy::from(detail.status.is_terminal());
+                let cache_policy = CachePolicy::cache_if(detail.status.is_terminal());
                 Ok(detail.with_tag(cache_policy))
             }
             Err(err) => Err(format_api_client_error(err).await),
@@ -642,7 +643,7 @@ impl AntithesisApi {
                 let page = self
                     .fetch_run_properties_page(&run_id, after.as_deref(), status, MAX_PAGE_LIMIT)
                     .await?
-                    .unwrap();
+                    .untag();
                 let generated::types::PropertyListResponse { data, next_cursor } = page;
                 let normalized = data
                     .into_iter()
@@ -2546,8 +2547,8 @@ mod tests {
         let cache_dir = TempDir::new().unwrap();
         let api = test_api_optionally_with_cache(&mock_server, Some(&cache_dir));
 
-        let first = api.get_run("run-1").await.unwrap().unwrap();
-        let second = api.get_run("run-1").await.unwrap().unwrap();
+        let first = api.get_run("run-1").await.unwrap().untag();
+        let second = api.get_run("run-1").await.unwrap().untag();
 
         assert_eq!(first.run_id, "run-1");
         assert_eq!(second.run_id, "run-1");
@@ -2587,7 +2588,7 @@ mod tests {
             .get_run_logs("run-1", logs_moment(), None)
             .await
             .unwrap()
-            .unwrap();
+            .untag();
         assert_eq!(
             read_stream(first).await,
             [serde_json::json!({"text": "log line"})]
@@ -2596,7 +2597,7 @@ mod tests {
             .get_run_logs("run-1", logs_moment(), None)
             .await
             .unwrap()
-            .unwrap();
+            .untag();
         assert_eq!(
             read_stream(second).await,
             [serde_json::json!({"text": "log line"})]
@@ -2621,7 +2622,7 @@ mod tests {
             .get_run_logs("run-1", logs_moment(), None)
             .await
             .unwrap()
-            .unwrap();
+            .untag();
         drop(abandoned);
 
         // The next request must hit the server again.
@@ -2629,7 +2630,7 @@ mod tests {
             .get_run_logs("run-1", logs_moment(), None)
             .await
             .unwrap()
-            .unwrap();
+            .untag();
         assert_eq!(
             read_stream(replay).await,
             [serde_json::json!({"text": "log line"})]
@@ -2666,7 +2667,7 @@ mod tests {
                 .get_run_logs("run-1", logs_moment(), None)
                 .await
                 .unwrap()
-                .unwrap();
+                .untag();
             assert_eq!(
                 read_stream(stream).await,
                 [serde_json::json!({"text": "log line"})]
@@ -2714,7 +2715,7 @@ mod tests {
         let api = test_api_optionally_with_cache(&mock_server, Some(&cache_dir));
 
         for _ in 0..2 {
-            let stream = api.get_run_build_logs("run-1").await.unwrap().unwrap();
+            let stream = api.get_run_build_logs("run-1").await.unwrap().untag();
             assert_eq!(
                 read_stream(stream).await,
                 [serde_json::json!({"text": "built"})]
@@ -2895,7 +2896,7 @@ mod tests {
         .unwrap();
 
         // The initial 401 drives a refresh and a single retry, which succeeds.
-        let run = api.get_run("run-1").await.unwrap().unwrap();
+        let run = api.get_run("run-1").await.unwrap().untag();
         assert_eq!(run.run_id, "run-1");
 
         // Request sequence: stale token → refresh → retry with the new token.

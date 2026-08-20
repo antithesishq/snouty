@@ -153,7 +153,7 @@ Snouty provides the following subcommands. Invoke `snouty <command> --help` to f
   - `snouty runs show <run_id>`: show details for a single run.
   - `snouty runs properties <run_id>`: list property (assertion) results.
   - `snouty runs build-logs <run_id>`: stream a run's build logs.
-  - `snouty runs logs <run_id> <hash> <vtime>`: stream logs for a moment.
+  - `snouty runs logs <run_id> <hash> [vtime]`: stream a run's logs along one branch.
   - `snouty runs events <run_id> <query>`: search events in a run.
 - `snouty debug`: start a debug session.
 - `snouty validate`: locally run and validate your docker-compose.yaml setup.

@@ -158,7 +158,7 @@ Examples:
   snouty runs properties --failing <run_id>
   snouty runs properties <run_id> --name <substring> --detail
   snouty runs build-logs <run_id>
-  snouty runs logs <run_id> <hash> <vtime>
+  snouty runs logs <run_id> <hash> [vtime]
   snouty runs events <run_id> -m <query>"#,
         subcommand_required = false
     )]
@@ -777,33 +777,36 @@ Examples:
     },
 
     /// Stream moment logs for a run
-    #[command(long_about = r#"Stream a timeline's logs up to a moment.
+    #[command(
+        long_about = r#"Stream the logs along one branch of the run's multiverse.
 
-INPUT_HASH and VTIME identify the moment and its timeline; logs are streamed up
-to that moment. Without --begin-vtime, streaming starts at the timeline's
-earliest log entry.
+INPUT_HASH identifies the branch: the hash of every input fed to the
+simulation from the root moment to the branch's start. Logs stream from the
+root (or --begin-vtime) to the branch's current end; a run in progress can
+extend the branch, so the same INPUT_HASH can return more logs later. Give
+VTIME to end the stream at that moment instead.
 
 Output: a `moment HASH VTIME` divider opens each timeline segment, and each
 event under it renders on one line as `VTIME [source] payload` — Antithesis
 event shapes (SDK assertions, faults, container lifecycle, test composer)
-each in their own concise form. A moment (HASH/VTIME) comes from
-`runs properties --detail` or `runs events`."#)]
+each in their own concise form."#
+    )]
     Logs {
         /// Run ID
         run_id: String,
 
-        /// Input hash of the moment to stream up to (with VTIME, picks the timeline)
+        /// Input hash identifying the branch to stream
         #[arg(allow_hyphen_values = true)]
         input_hash: String,
 
-        /// Virtual time of the moment to stream up to
+        /// Virtual time of the moment to end the stream at; omit it to stream to the branch's current end
         // Typed, so a malformed vtime is rejected by clap instead of by the
         // server. `allow_hyphen_values` is kept here (unlike `runs exec`),
         // because this command has always accepted a hyphen-led vtime.
         #[arg(allow_hyphen_values = true)]
-        vtime: VTime,
+        vtime: Option<VTime>,
 
-        /// Start from this virtual time instead of the timeline's earliest log entry
+        /// Start from this virtual time instead of the root
         #[arg(long, allow_hyphen_values = true)]
         begin_vtime: Option<VTime>,
 
@@ -1174,9 +1177,26 @@ mod tests {
             panic!("expected `runs logs`");
         };
         assert_eq!(input_hash, "-123");
-        assert_eq!(vtime, "-2.0".parse::<VTime>().unwrap());
+        assert_eq!(vtime, Some("-2.0".parse::<VTime>().unwrap()));
         assert_eq!(begin_vtime, Some("-2.0".parse::<VTime>().unwrap()));
         assert_eq!(begin_input_hash.as_deref(), Some("0"));
+    }
+
+    // VTIME is optional; without it the stream runs to the branch's current
+    // end.
+    #[test]
+    fn logs_accepts_a_missing_vtime() {
+        let cli = parse(&["snouty", "runs", "logs", "RUN", "-123"]);
+        let Commands::Runs {
+            command: Some(RunsCommands::Logs {
+                input_hash, vtime, ..
+            }),
+        } = cli.command
+        else {
+            panic!("expected `runs logs`");
+        };
+        assert_eq!(input_hash, "-123");
+        assert_eq!(vtime, None);
     }
 
     // `-r` is the short form of `--raw`; note `-r` must not swallow the
@@ -1191,7 +1211,7 @@ mod tests {
             panic!("expected `runs logs`");
         };
         assert!(render.raw);
-        assert_eq!(vtime, "-2.0".parse::<VTime>().unwrap());
+        assert_eq!(vtime, Some("-2.0".parse::<VTime>().unwrap()));
 
         let cli = parse(&["snouty", "runs", "logs", "RUN", "-123", "-2.0"]);
         let Commands::Runs {

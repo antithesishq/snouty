@@ -64,7 +64,8 @@ skipped, or neutral. A PR with no checks gets a "has no checks" line
 instead, so you never need to read `gh pr checks` yourself: silence on
 checks means a check still runs. The "all checks passed" line names the
 head commit; check that it names your latest push before you act on it.
-The watcher also emits a line when the PR's base branch changes.
+The watcher also emits a line when the PR is retargeted to another base
+branch, and a line when the base branch tip moves to a new commit.
 The first poll emits the PR's existing comments, reviews, and failing
 checks as a baseline: triage that batch like any other events.
 Flags: `-i seconds` sets the poll interval (default 45), `-R owner/repo`
@@ -78,6 +79,7 @@ PR #123 check <name>: <failure|timed_out|cancelled|...>
 PR #123 all checks passed for <short-sha>
 PR #123 has no checks
 PR #123 base changed to <branch>
+PR #123 base <branch> moved to <short-sha>
 PR #123 merged
 PR #123 closed without merge
 ```

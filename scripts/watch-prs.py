@@ -2,10 +2,11 @@
 """Poll one or more pull requests and print one line per new event.
 
 Events: comments, review comments, reviews, failed CI checks, check
-verdicts ("all checks passed", "has no checks"), base branch changes, and
-close/merge. Output is one line per event, so a background monitor can
-react line by line. An event line carries only metadata — the reader
-fetches the full content through gh.
+verdicts ("all checks passed", "has no checks"), base branch changes (a
+retarget, or the base branch tip moving to a new commit), and close/merge.
+Output is one line per event, so a background monitor can react line by
+line. An event line carries only metadata — the reader fetches the full
+content through gh.
 The script exits when every watched PR is closed.
 
 Comments and reviews by the PR's own author are suppressed: the watcher
@@ -71,6 +72,19 @@ def norm_login(login: str) -> str:
     return login.removeprefix("app/").removesuffix("[bot]")
 
 
+def changed(seen: set[str], key: str, value: str) -> bool:
+    """Track a current-value state in `seen`. The first observation is a
+    silent baseline; every later change of the value returns True.
+    """
+    tag = f"{key}:{value}"
+    if tag in seen:
+        return False
+    prior = {k for k in seen if k.startswith(f"{key}:")}
+    seen.difference_update(prior)
+    seen.add(tag)
+    return bool(prior)
+
+
 def poll_pr(
     repo_flag: list[str],
     slug: str,
@@ -88,7 +102,7 @@ def poll_pr(
             str(pr),
             *repo_flag,
             "--json",
-            "state,author,comments,reviews,statusCheckRollup,headRefOid,baseRefName",
+            "state,author,comments,reviews,statusCheckRollup,headRefOid,baseRefName,baseRefOid",
         ]
     )
     if view is None:
@@ -98,13 +112,10 @@ def poll_pr(
         return False
     ignore = login_of(view)
 
-    # The initial base is a baseline, not an event.
-    base = f"base:{view['baseRefName']}"
-    if base not in seen:
-        if any(k.startswith("base:") for k in seen):
-            seen.difference_update({k for k in seen if k.startswith("base:")})
-            emit(f"PR #{pr} base changed to {view['baseRefName']}")
-        seen.add(base)
+    if changed(seen, "base", view["baseRefName"]):
+        emit(f"PR #{pr} base changed to {view['baseRefName']}")
+    if changed(seen, "baseoid", view["baseRefOid"]):
+        emit(f"PR #{pr} base {view['baseRefName']} moved to {view['baseRefOid'][:7]}")
 
     events = [
         (

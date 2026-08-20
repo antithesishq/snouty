@@ -123,24 +123,21 @@ def poll_pr(
                 emit(line)
 
     failure_results = {"failure", "timed_out", "action_required", "cancelled", "error", "startup_failure"}
-    cur = set()
-    results = []
-    for c in view["statusCheckRollup"]:
-        name = c.get("name") or c.get("context") or "?"
-        result = (c.get("conclusion") or c.get("state") or "").lower()
-        results.append(result)
-        if result in failure_results:
-            cur.add(f"{name}: {result}")
+    results = [
+        (c.get("name") or c.get("context") or "?", (c.get("conclusion") or c.get("state") or "").lower())
+        for c in view["statusCheckRollup"]
+    ]
+    cur = {f"{name}: {result}" for name, result in results if result in failure_results}
     for line in sorted(cur - checks):
         emit(f"PR #{pr} check {line}")
     checks.clear()
     checks.update(cur)
 
-    # A check that has not concluded yet reports an empty conclusion (or a
-    # "pending" state), so any unfinished check keeps the SHA from passing.
+    # An unconcluded check reports an empty conclusion or a "pending" state.
     sha = view["headRefOid"]
-    if results and all(r in {"success", "skipped"} for r in results) and f"passed:{sha}" not in seen:
-        seen.add(f"passed:{sha}")
+    passed = f"passed:{sha}"
+    if passed not in seen and results and all(r in {"success", "skipped"} for _, r in results):
+        seen.add(passed)
         emit(f"PR #{pr} all checks passed for {sha[:7]}")
 
     return True

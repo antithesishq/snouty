@@ -71,7 +71,7 @@ PR #123 comment by <login> (id <id>)
 PR #123 review comment by <login> on <path> (id <id>)
 PR #123 review by <login>: <APPROVED|CHANGES_REQUESTED|COMMENTED>
 PR #123 check <name>: <failure|timed_out|cancelled|...>
-PR #123 all checks passed for <sha>
+PR #123 all checks passed for <short-sha>
 PR #123 merged
 PR #123 closed without merge
 ```

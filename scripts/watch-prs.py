@@ -96,7 +96,7 @@ def poll_pr(
         return False
     ignore = login_of(view)
 
-    # The first poll records the base silently; later polls emit on a change.
+    # The initial base is a baseline, not an event.
     base = f"base:{view['baseRefName']}"
     if base not in seen:
         if any(k.startswith("base:") for k in seen):
@@ -149,7 +149,7 @@ def poll_pr(
     passed = f"passed:{sha}"
     if passed not in seen and results and all(r in {"success", "skipped", "neutral"} for _, r in results):
         # A slow workflow can register its checks after a fast one turns the
-        # rollup green, so emit only once two polls observe the green rollup.
+        # rollup green.
         if f"green:{sha}" in seen:
             seen.add(passed)
             emit(f"PR #{pr} all checks passed for {sha[:7]}")

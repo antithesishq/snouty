@@ -64,7 +64,10 @@ Verify the result parses: `parse-changelog CHANGELOG.md X.Y.Z` must print the se
 
 ### 3. Bump the Version in Cargo.toml
 
-Edit the `version = "..."` line in `Cargo.toml` to the new version.
+Edit the `version = "..."` line in `Cargo.toml` to the new version. The
+`snouty-macros` crate is versioned in lockstep: bump its `version` in
+`snouty-macros/Cargo.toml` and the `=`-pinned version on the
+`snouty-macros` dependency in the root `Cargo.toml` to the same value.
 
 ### 4. Build
 
@@ -102,5 +105,9 @@ Tell the user to run the following once satisfied:
 
 ```
 git push && git push --tags
-cargo publish
+cargo publish -p snouty-macros
+cargo publish -p snouty
 ```
+
+`snouty-macros` publishes first: snouty's exact-version pin on it cannot
+resolve until that exact version exists on crates.io.

@@ -1,11 +1,11 @@
 [package]
 name = "snouty-macros"
-version = "0.1.0"
+# Kept in lockstep with snouty's version; the release process bumps both.
+version = "0.7.0-rc.2"
 edition = "2024"
 description = "Procedural macros for snouty"
 license = "Apache-2.0"
 repository = "https://github.com/antithesishq/snouty"
-publish = false
 
 [lib]
 proc-macro = true

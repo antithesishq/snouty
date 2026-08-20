@@ -4,8 +4,7 @@
 Events: comments, review comments, reviews, failed CI checks, and
 close/merge. Output is one line per event, so a background monitor can react
 line by line. An event line carries only metadata — the reader fetches the
-full content through gh. A COMMENTED review with an empty body is suppressed:
-its inline comments already emit their own events.
+full content through gh.
 The script exits when every watched PR is closed.
 
 Comments and reviews by the PR's own author are suppressed: the watcher
@@ -99,10 +98,15 @@ def poll_pr(
     ignore = login_of(view)
 
     events = [
-        (f"comment:{c['id']}", login_of(c), f"PR #{pr} comment by {login_of(c)} ({c['url']})")
+        (
+            f"comment:{c['id']}",
+            login_of(c),
+            # The numeric id (usable with gh api) only appears in the URL tail.
+            f"PR #{pr} comment by {login_of(c)} (id {c['url'].rpartition('issuecomment-')[2]})",
+        )
         for c in view["comments"]
     ] + [
-        (f"review:{r['id']}", login_of(r), f"PR #{pr} review by {login_of(r)}: {r['state']} (id {r['id']})")
+        (f"review:{r['id']}", login_of(r), f"PR #{pr} review by {login_of(r)}: {r['state']}")
         for r in view["reviews"]
         # An empty COMMENTED review only groups inline comments, which emit
         # their own events below.
@@ -111,7 +115,7 @@ def poll_pr(
         (
             f"rc:{rc['id']}",
             login_of(rc),
-            f"PR #{pr} review comment by {login_of(rc)} on {rc['path']} ({rc['html_url']})",
+            f"PR #{pr} review comment by {login_of(rc)} on {rc['path']} (id {rc['id']})",
         )
         for rc in paginate(f"repos/{slug}/pulls/{pr}/comments")
     ]

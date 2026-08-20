@@ -21,8 +21,6 @@ clap_complete = "4"
 getrandom = "0.3"
 env_logger = "0.11"
 form_urlencoded = "1"
-# Typed Cache-Control parsing; the response cache reads it as an admission
-# signal (see src/api_cache.rs).
 headers = "0.4"
 hyper = "1"
 json5 = "1.3.0"

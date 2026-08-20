@@ -2,8 +2,8 @@
 //!
 //! Admission takes two signals, both required: the server's `Cache-Control`
 //! header must grant a positive freshness lifetime (see
-//! [`cache_headers_allow`]; `api_cache_respect_headers = false` drops this
-//! requirement), and the `AntithesisApi` handler must judge its resource
+//! [`CachePolicy::from_headers`]; `api_cache_respect_headers = false` drops
+//! this requirement), and the `AntithesisApi` handler must judge its resource
 //! immutable (logs addressed by moment, properties, terminal run details).
 //! There is no per-entry expiration — the header's lifetime is read as a
 //! yes/no permission, and the cache lives in a transient per-user directory
@@ -35,6 +35,9 @@ use tokio::io::AsyncWriteExt;
 use crate::env;
 use crate::jsonl::{JsonStream, json_lines};
 use crate::tag::Tagged;
+
+mod policy;
+pub use policy::CachePolicy;
 
 /// Cache directory name under the runtime dir. The `v3` names the on-disk
 /// format (re-serialized values keyed by handler parameters); bump it when
@@ -68,58 +71,6 @@ pub fn default_dir() -> Option<PathBuf> {
         .flatten()
         .map(PathBuf::from);
     Some(base?.join("snouty").join(CACHE_DIR_NAME))
-}
-
-/// Whether `Cache-Control` lets a private client cache hold the response.
-/// Entries are never revalidated and never expire, so any directive that
-/// demands revalidation means "do not cache"; an absent or malformed header
-/// grants nothing. `private` is fine — the cache directory is per-user.
-fn cache_headers_allow(headers: &http::HeaderMap) -> bool {
-    use headers::{CacheControl, HeaderMapExt};
-    // Directive names are case-insensitive (RFC 9111 §5.2) but the parser
-    // matches lowercase only — a `No-Cache` veto would pass unrecognized.
-    // Lowercase each value first; none of the inspected directives carries a
-    // case-sensitive argument.
-    let mut lowered = http::HeaderMap::new();
-    for value in headers.get_all(http::header::CACHE_CONTROL) {
-        let normalized = value
-            .to_str()
-            .ok()
-            .and_then(|text| text.to_ascii_lowercase().parse().ok());
-        match normalized {
-            Some(value) => lowered.append(http::header::CACHE_CONTROL, value),
-            None => return false,
-        };
-    }
-    let Some(cache_control) = lowered.typed_get::<CacheControl>() else {
-        return false;
-    };
-    if cache_control.no_store() || cache_control.no_cache() || cache_control.must_revalidate() {
-        return false;
-    }
-    cache_control.immutable() || cache_control.max_age().is_some_and(|age| !age.is_zero())
-}
-
-/// A handler's admission verdict on the value it fetched. The cache stores
-/// nothing untagged: `#[cached]` requires the handler body to return a
-/// [`Tagged`] value, so admission lives in the handler — next to the
-/// response, whose headers carry the other half of the verdict
-/// (see [`ApiCache::headers_admit`]).
-#[derive(Clone, Copy, Debug)]
-pub enum CachePolicy {
-    Cacheable,
-    Uncacheable,
-}
-
-impl CachePolicy {
-    /// [`CachePolicy::Cacheable`] when `cacheable` is true.
-    pub fn cache_if(cacheable: bool) -> Self {
-        if cacheable {
-            Self::Cacheable
-        } else {
-            Self::Uncacheable
-        }
-    }
 }
 
 /// A cache entry's identity: the operation, the handler's parameters, the
@@ -173,8 +124,8 @@ pub struct ApiCache {
     dir: Option<PathBuf>,
     max_file_size: u64,
     /// Require the server's cache headers to allow caching (the
-    /// `api_cache_respect_headers` setting). Off, [`ApiCache::headers_admit`]
-    /// admits everything and admission falls back to the handlers' logical
+    /// `api_cache_respect_headers` setting). Off, [`ApiCache::headers_policy`]
+    /// is always neutral and admission falls back to the handlers' logical
     /// checks alone — the escape hatch for a tenant with faulty headers.
     respect_headers: bool,
     /// The tenant every key is bound to.
@@ -201,20 +152,21 @@ impl ApiCache {
         }
     }
 
-    /// The header half of admission: whether the response's cache headers
-    /// allow caching (see [`cache_headers_allow`]). Handlers AND this with
-    /// their own logical checks to build the [`CachePolicy`]. A disabled
-    /// cache skips the parse — the verdict is moot when every store is a
-    /// no-op (and `get_run` runs on every `runs wait` poll).
-    pub fn headers_admit(&self, headers: &http::HeaderMap) -> bool {
+    /// The header half of admission: [`CachePolicy::from_headers`] on the
+    /// response, for handlers to [`CachePolicy::and`] with their own logical
+    /// verdict. Neutral ([`CachePolicy::Cacheable`]) when the cache is
+    /// disabled — the verdict is moot when every store is a no-op, and
+    /// `get_run` runs on every `runs wait` poll — or when the
+    /// `api_cache_respect_headers` setting turns the header signal off.
+    pub fn headers_policy(&self, headers: &http::HeaderMap) -> CachePolicy {
         if self.dir.is_none() || !self.respect_headers {
-            return true;
+            return CachePolicy::Cacheable;
         }
-        let allowed = cache_headers_allow(headers);
-        if !allowed {
+        let policy = CachePolicy::from_headers(headers);
+        if matches!(policy, CachePolicy::Uncacheable) {
             debug!("response cache headers do not allow caching");
         }
-        allowed
+        policy
     }
 
     /// The cache key for `operation` with `params`, bound to this cache's
@@ -433,50 +385,6 @@ mod tests {
             futures_util::stream::iter(items).boxed(),
             CachePolicy::Cacheable,
         )
-    }
-
-    fn cache_control(value: &str) -> http::HeaderMap {
-        let mut headers = http::HeaderMap::new();
-        headers.insert("cache-control", value.parse().unwrap());
-        headers
-    }
-
-    #[test]
-    fn a_positive_freshness_lifetime_allows_caching() {
-        // The exact header the live API sends on cacheable reads.
-        assert!(cache_headers_allow(&cache_control(
-            crate::testutils::CACHEABLE_CACHE_CONTROL
-        )));
-        assert!(cache_headers_allow(&cache_control("max-age=1")));
-        assert!(cache_headers_allow(&cache_control("immutable")));
-        // Mixed case grants too, not only vetoes.
-        assert!(cache_headers_allow(&cache_control("Private, Max-Age=3600")));
-    }
-
-    #[test]
-    fn absent_or_non_positive_headers_deny_caching() {
-        assert!(!cache_headers_allow(&http::HeaderMap::new()));
-        assert!(!cache_headers_allow(&cache_control("max-age=0")));
-        assert!(!cache_headers_allow(&cache_control("private")));
-        assert!(!cache_headers_allow(&cache_control("not a directive ===")));
-    }
-
-    #[test]
-    fn revalidation_directives_deny_caching() {
-        assert!(!cache_headers_allow(&cache_control("no-cache")));
-        assert!(!cache_headers_allow(&cache_control("no-store")));
-        assert!(!cache_headers_allow(&cache_control(
-            "no-cache, max-age=3600"
-        )));
-        assert!(!cache_headers_allow(&cache_control("no-store, immutable")));
-        assert!(!cache_headers_allow(&cache_control(
-            "max-age=3600, must-revalidate"
-        )));
-        // Directive names are case-insensitive (RFC 9111 §5.2): a mixed-case
-        // veto must still veto.
-        assert!(!cache_headers_allow(&cache_control(
-            "No-Cache, max-age=3600"
-        )));
     }
 
     // The key separates tenants, operations, and every parameter; only a

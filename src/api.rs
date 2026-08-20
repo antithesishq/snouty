@@ -518,13 +518,12 @@ impl AntithesisApi {
     pub async fn get_run(&self, run_id: &str) -> Result<Tagged<RunDetail, CachePolicy>> {
         match self.client.get_run().run_id(run_id).send().await {
             Ok(response) => {
-                let headers_admit = self.cache.headers_admit(response.headers());
+                let policy = self.cache.headers_policy(response.headers());
                 let detail = response.into_inner();
                 // A run detail is immutable only once the run reaches a
                 // terminal status.
-                let cache_policy =
-                    CachePolicy::cache_if(headers_admit && detail.status.is_terminal());
-                Ok(detail.with_tag(cache_policy))
+                let policy = policy.and(CachePolicy::cache_if(detail.status.is_terminal()));
+                Ok(detail.with_tag(policy))
             }
             Err(err) => Err(format_api_client_error(err).await),
         }
@@ -582,9 +581,8 @@ impl AntithesisApi {
         ensure_resource_supported(run_id, MIN_BUILD_LOGS_VERSION, "build logs")?;
         match self.client.get_run_build_logs().run_id(run_id).send().await {
             Ok(response) => {
-                let cache_policy =
-                    CachePolicy::cache_if(self.cache.headers_admit(response.headers()));
-                Ok(json_lines(response.into_inner().into_inner()).with_tag(cache_policy))
+                let policy = self.cache.headers_policy(response.headers());
+                Ok(json_lines(response.into_inner().into_inner()).with_tag(policy))
             }
             Err(err) => Err(format_api_client_error(err).await),
         }
@@ -622,15 +620,16 @@ impl AntithesisApi {
 
         match request.send().await {
             Ok(response) => {
-                let cache_policy = CachePolicy::cache_if(
-                    end.is_some() && self.cache.headers_admit(response.headers()),
-                );
+                let policy = self
+                    .cache
+                    .headers_policy(response.headers())
+                    .and(CachePolicy::cache_if(end.is_some()));
                 let stream = json_lines(response.into_inner().into_inner());
                 let stream = match end {
                     Some(end) => truncate_at_end_vtime(stream, end),
                     None => stream,
                 };
-                Ok(stream.with_tag(cache_policy))
+                Ok(stream.with_tag(policy))
             }
             Err(err) => Err(format_api_client_error(err).await),
         }
@@ -818,9 +817,8 @@ impl AntithesisApi {
 
         match request.send().await {
             Ok(response) => {
-                let cache_policy =
-                    CachePolicy::cache_if(self.cache.headers_admit(response.headers()));
-                Ok(response.into_inner().with_tag(cache_policy))
+                let policy = self.cache.headers_policy(response.headers());
+                Ok(response.into_inner().with_tag(policy))
             }
             Err(err) => Err(format_api_client_error(err).await),
         }

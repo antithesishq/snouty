@@ -44,42 +44,30 @@ one so the next step reviews a clean diff.
 2. Write the PR body as prose that explains the change and why, per the
    user's PR style. Put `fixes #<N>` on its own line so the merge closes the
    issue.
-3. Create the PR with that body. If `gh pr create` fails with HTTP 403 (a
-   proxy that blocks GraphQL writes), create it over REST:
-
-   ```sh
-   gh api -X POST repos/OWNER/REPO/pulls \
-     -f title="..." -f head=BRANCH -f base=main -F body=@body.md --jq '.html_url'
-   ```
+3. Create the PR with that body.
 
 ## 5. Watch until close
 
-Discover the login your writes post as, so the watcher does not echo your
-own comments back to you. You created the PR, so its author is that
-identity, whichever credential reads it:
+Run the PR watcher in the background — through the Monitor tool with
+`persistent: true` when the harness has it, otherwise through a background
+Bash task:
 
 ```
-gh pr view <PR> --json author --jq .author.login
-```
-
-Run the PR watcher in the background with that login — through the Monitor
-tool with `persistent: true` when the harness has it, otherwise through a
-background Bash task:
-
-```
-uv run scripts/watch-prs.py -u <login> <PR>
+uv run scripts/watch-prs.py <PR>
 ```
 
 The script prints one line per event and exits when every watched PR is
-merged or closed. The first poll seeds the baseline silently; only changes
-after that emit. Flags: `-i seconds` sets the poll interval (default 45),
-`-u login` suppresses events from a login, `-R owner/repo` overrides the
-repository. Event lines:
+merged or closed. It suppresses comments and reviews by the PR's own author
+(your own replies), and it reports CI failures only — a passing run is
+silent, so read `gh pr checks` yourself when you need the green signal.
+The first poll seeds the baseline silently; only changes after that emit.
+Flags: `-i seconds` sets the poll interval (default 45), `-R owner/repo`
+overrides the repository. Event lines:
 
 ```
 PR #123 comment by <login> (<url>)
 PR #123 review by <login>: <APPROVED|CHANGES_REQUESTED|COMMENTED> (id <id>)
-PR #123 check <name>: <success|failure|skipped|cancelled>
+PR #123 check <name>: <failure|timed_out|cancelled|...>
 PR #123 merged
 PR #123 closed without merge
 ```
@@ -100,11 +88,6 @@ React to each event:
 - **Review comment or review**: triage it. If it asks for a change, make the
   change, push, reply on the thread with the commit hash, and resolve the
   thread. If the comment is unclear, ask on the thread instead of guessing.
-- **Issue comment**: answer questions; treat change requests like review
-  comments.
 - **Check failure**: read the failing log with
   `gh run view <run-id> --log-failed`, fix it, and push.
 - **Merged or closed**: the script exits on its own. Stop related work.
-
-Ignore events you caused yourself: your own pushes re-run CI, and your own
-replies appear as comments.

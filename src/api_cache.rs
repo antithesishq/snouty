@@ -76,7 +76,22 @@ pub fn default_dir() -> Option<PathBuf> {
 /// grants nothing. `private` is fine — the cache directory is per-user.
 fn cache_headers_allow(headers: &http::HeaderMap) -> bool {
     use headers::{CacheControl, HeaderMapExt};
-    let Some(cache_control) = headers.typed_get::<CacheControl>() else {
+    // Directive names are case-insensitive (RFC 9111 §5.2) but the parser
+    // matches lowercase only — a `No-Cache` veto would pass unrecognized.
+    // Lowercase each value first; none of the inspected directives carries a
+    // case-sensitive argument.
+    let mut lowered = http::HeaderMap::new();
+    for value in headers.get_all(http::header::CACHE_CONTROL) {
+        let normalized = value
+            .to_str()
+            .ok()
+            .and_then(|text| text.to_ascii_lowercase().parse().ok());
+        match normalized {
+            Some(value) => lowered.append(http::header::CACHE_CONTROL, value),
+            None => return false,
+        };
+    }
+    let Some(cache_control) = lowered.typed_get::<CacheControl>() else {
         return false;
     };
     if cache_control.no_store() || cache_control.no_cache() || cache_control.must_revalidate() {
@@ -434,6 +449,8 @@ mod tests {
         )));
         assert!(cache_headers_allow(&cache_control("max-age=1")));
         assert!(cache_headers_allow(&cache_control("immutable")));
+        // Mixed case grants too, not only vetoes.
+        assert!(cache_headers_allow(&cache_control("Private, Max-Age=3600")));
     }
 
     #[test]
@@ -454,6 +471,11 @@ mod tests {
         assert!(!cache_headers_allow(&cache_control("no-store, immutable")));
         assert!(!cache_headers_allow(&cache_control(
             "max-age=3600, must-revalidate"
+        )));
+        // Directive names are case-insensitive (RFC 9111 §5.2): a mixed-case
+        // veto must still veto.
+        assert!(!cache_headers_allow(&cache_control(
+            "No-Cache, max-age=3600"
         )));
     }
 

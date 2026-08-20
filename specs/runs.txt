@@ -66,6 +66,27 @@ mock-runs-server
 snouty runs list
 stdout 'RUN ID.*STATUS.*CREATED.*TEST NAME'
 
+# When more runs exist than `--limit`, the table stops at the limit and a
+# note on stderr says so. Detection reads one run past the limit and drops
+# it. The mock holds three runs.
+mock-runs-server
+[!staging] snouty runs list --limit 2
+[!staging] stdout 'run-1'
+[!staging] stdout 'run-2'
+[!staging] ! stdout 'run-3'
+[!staging] stderr 'note: output reached the limit of 2 runs; more may exist'
+# All runs fit within the limit: no note.
+mock-runs-server
+[!staging] snouty runs list
+[!staging] stdout 'run-3'
+[!staging] ! stderr 'note:'
+# `--json` never carries the note; the output itself is still capped.
+mock-runs-server
+[!staging] snouty --json runs list --limit 2
+[!staging] stdout 'run-2'
+[!staging] ! stdout 'run-3'
+[!staging] ! stderr 'note'
+
 # `snouty runs show` requires a run ID.
 ! snouty runs show
 stderr '.*'
@@ -546,10 +567,36 @@ snouty --json runs events $R_run_id --match parallel_driver_fetch --limit 1
 [!staging] stdout '"vtime":400\.5'
 [!staging] ! stdout '"vtime":401\.75'
 
-# Without --limit no cap is sent at all, so all three matches come back.
+# Without --limit the request still carries a cap: the default of 50 plus
+# the one-row truncation probe. All three matches fit, so all come back.
 mock-runs-server
 snouty --json runs events $R_run_id --match parallel_driver_fetch
 [!staging] stdout '"vtime":401\.75'
+
+# When more events match than `--limit`, a note on stderr says the output
+# stopped at the limit. Detection asks the server for one row past the cap
+# and drops it: three events match, the first two print.
+mock-runs-server
+[!staging] snouty runs events $R_run_id --match parallel_driver_fetch --limit 2
+[!staging] stdout '400\.5'
+[!staging] stdout '401\.75'
+[!staging] ! stdout '402\.0'
+[!staging] stderr 'note: output reached the limit of 2 events; more may exist'
+# The note reads correctly at --limit 1.
+mock-runs-server
+[!staging] snouty runs events $R_run_id --match parallel_driver_fetch --limit 1
+[!staging] stderr 'reached the limit of 1 event;'
+# All matches fit within the limit: no note.
+mock-runs-server
+[!staging] snouty runs events $R_run_id --match parallel_driver_fetch --limit 3
+[!staging] stdout '402\.0'
+[!staging] ! stderr 'note:'
+# `--json` never carries the note; the output itself is still capped.
+mock-runs-server
+[!staging] snouty --json runs events $R_run_id --match parallel_driver_fetch --limit 2
+[!staging] stdout '"vtime":401\.75'
+[!staging] ! stdout '"vtime":402\.0'
+[!staging] ! stderr 'note'
 
 # `--limit 0` is rejected by clap before any request: the server's accepted
 # range starts at 1.
@@ -565,6 +612,14 @@ env SNOUTY_UNSTABLE_FEATURES=runs-search
 snouty --json runs events $R_run_id --match parallel_driver_fetch --limit 1
 [!staging] stdout '"vtime":400\.5'
 [!staging] ! stdout '"vtime":401\.75'
+
+# The client-side cap prints the same truncation note in human mode: the
+# match that arrives past the cap is the signal, and it is dropped.
+mock-runs-server
+[!staging] snouty runs events $R_run_id --match parallel_driver_fetch --limit 1
+[!staging] stdout '400\.5'
+[!staging] ! stdout '401\.75'
+[!staging] stderr 'note: output reached the limit of 1 event; more may exist'
 
 # Still with the feature on: the tenant is assumed to serve the search
 # endpoint, so its 404 simply means the run — the error says "run not found"
@@ -615,6 +670,12 @@ mock-runs-server
 snouty --json runs search $R_run_id 'contains({output_text: "parallel_driver_fetch"})' --limit 1
 [!staging] stdout '"vtime":400\.5'
 [!staging] ! stdout '"vtime":401\.75'
+
+# In human mode the client-side cap prints a truncation note on stderr.
+mock-runs-server
+[!staging] snouty runs search $R_run_id 'contains({output_text: "parallel_driver_fetch"})' --limit 1
+[!staging] stdout '400\.5'
+[!staging] stderr 'note: output reached the limit of 1 event; more may exist'
 
 # `--limit 0` is rejected by clap before any request.
 mock-runs-server
@@ -686,6 +747,16 @@ mock-runs-server
 stdout 'output_text.*starting'
 ! stdout '"error"'
 stderr 'the server reported an error mid-stream: mock stream failure'
+
+# A Stream_Error that lands on the truncation-probe row — the disposable row
+# read one past `--limit` — must not fail the command: the requested rows were
+# all delivered. The failed probe means "truncation unknown", so no note
+# either. (The fixture streams one data row, then the error line.)
+mock-runs-server
+snouty runs events run-stream-error --match starting --limit 1
+stdout '\[app\] \{"level":"info","msg":"starting"\}'
+! stderr 'mid-stream'
+! stderr 'note:'
 
 # `runs logs`, human mode: the error must not render as a blank-columned log
 # line. (Column formatting itself is pinned by the run-1 block above; here it

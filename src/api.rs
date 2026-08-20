@@ -116,10 +116,14 @@ pub enum SearchMode {
     },
 }
 
-/// The server's default for the search `limit`, applied when the request
-/// names none. A non-streaming caller that enforces the limit client-side
-/// caps at this value when no explicit limit was given.
+/// The server's default `limit` on both events endpoints (the GET events
+/// endpoint and the events-search endpoint), applied when the request names
+/// none. A caller that enforces the limit client-side caps at this value
+/// when no explicit limit was given.
 pub const SEARCH_DEFAULT_LIMIT: NonZeroU64 = NonZeroU64::new(50).unwrap();
+
+/// The GET events endpoint's `limit` ceiling (the spec allows 1..=999).
+pub const GET_EVENTS_MAX_LIMIT: NonZeroU64 = NonZeroU64::new(999).unwrap();
 
 /// Why a `/api/version` probe failed, classified for `snouty doctor`.
 #[derive(Debug)]
@@ -695,18 +699,17 @@ impl AntithesisApi {
         &self,
         run_id: &str,
         query: &str,
-        limit: Option<NonZeroU64>,
+        limit: NonZeroU64,
     ) -> Result<JsonStream> {
-        // The endpoint caps the returned events at `limit`. Only send the
-        // parameter when the user asked for one: tenants that predate it would
-        // otherwise receive a query param they may not accept, and omitting it
-        // lets the server apply its default. The server validates the range;
-        // `NonZeroU64` (the generated parameter's own type) keeps a zero from
-        // ever reaching the request builder.
-        let mut request = self.client.search_run_events().run_id(run_id).q(query);
-        if let Some(limit) = limit {
-            request = request.limit(limit);
-        }
+        // The endpoint caps the returned events at `limit` and validates its
+        // range; `NonZeroU64` (the generated parameter's own type) keeps a
+        // zero from ever reaching the request builder.
+        let request = self
+            .client
+            .search_run_events()
+            .run_id(run_id)
+            .q(query)
+            .limit(limit);
         match request.send().await {
             Ok(response) => Ok(json_lines(response.into_inner().into_inner())),
             Err(err) => Err(format_api_client_error(err).await),
@@ -3311,7 +3314,7 @@ mod tests {
         let api = test_api_optionally_with_cache(&mock_server, None);
 
         let mut stream = api
-            .search_run_events("run-1", "slow request", None)
+            .search_run_events("run-1", "slow request", NonZeroU64::new(50).unwrap())
             .await
             .unwrap();
         let mut body = String::new();
@@ -3340,28 +3343,9 @@ mod tests {
 
         let api = test_api_optionally_with_cache(&mock_server, None);
         let _stream = api
-            .search_run_events("run-1", "slow", NonZeroU64::new(5))
+            .search_run_events("run-1", "slow", NonZeroU64::new(5).unwrap())
             .await
             .unwrap();
-    }
-
-    // Tenants that predate the `limit` parameter must not receive it, so an
-    // unset `--limit` leaves the query param off entirely.
-    #[tokio::test]
-    async fn search_run_events_omits_limit_when_unset() {
-        let mock_server = MockServer::start().await;
-
-        Mock::given(method("GET"))
-            .and(path("/api/v0/runs/run-1/events"))
-            .and(query_param("q", "slow"))
-            .and(query_param_is_missing("limit"))
-            .respond_with(ResponseTemplate::new(200).set_body_string(""))
-            .expect(1)
-            .mount(&mock_server)
-            .await;
-
-        let api = test_api_optionally_with_cache(&mock_server, None);
-        let _stream = api.search_run_events("run-1", "slow", None).await.unwrap();
     }
 
     // The DSL search wrapper POSTs the Search_Request body: the query and

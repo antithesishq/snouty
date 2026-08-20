@@ -898,9 +898,9 @@ Examples:
         #[arg(short = 'm', long = "match")]
         matches: Vec<String>,
 
-        /// Maximum number of events the server returns (default 50). Raise it
-        /// to make a search more exhaustive. The server enforces the accepted
-        /// range.
+        /// Maximum number of events to print (default 50). Raise it to make
+        /// a search more exhaustive; a note on stderr says when the output
+        /// stopped at the limit. The server enforces the accepted range.
         // NonZeroU64 matches the generated request types, so `--limit 0` is
         // rejected by clap with a plain message instead of surfacing the
         // request builder's conversion jargon.
@@ -935,8 +935,9 @@ pub struct RunsSearchArgs {
     /// Event-set DSL query
     pub query: String,
 
-    /// Maximum number of events the server returns (default 50). The
-    /// server enforces the accepted range.
+    /// Maximum number of events to print (default 50). A note on stderr
+    /// says when the output stopped at the limit. The server enforces the
+    /// accepted range.
     // NonZeroU64 for the same reason as `runs events --limit`.
     #[arg(short = 'n', long)]
     pub limit: Option<NonZeroU64>,
@@ -989,7 +990,8 @@ pub struct RunsListArgs {
     #[arg(long)]
     pub created_before: Option<DateTime<Utc>>,
 
-    /// Maximum number of runs to display
+    /// Maximum number of runs to display; a note on stderr says when the
+    /// output stopped at the limit
     #[arg(short = 'n', long, default_value = "10")]
     pub limit: usize,
 

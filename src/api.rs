@@ -751,13 +751,16 @@ impl AntithesisApi {
         }
     }
 
+    /// Stream at most `limit` runs, newest first, fetching pages as they are
+    /// consumed. The endpoint accepts pages of at most 100 runs; the last
+    /// page shrinks to what the limit still allows.
     pub fn stream_runs_filtered(
         &self,
         opts: &RunsFilterOptions,
-        page_limit: u64,
+        limit: u64,
     ) -> impl futures_util::Stream<Item = Result<RunSummary>> + '_ {
         let opts = opts.clone();
-        paginate(move |after| {
+        paginate_limited(limit, 100, move |after, page_limit| {
             let opts = opts.clone();
             async move {
                 let page = self
@@ -1023,23 +1026,42 @@ pub struct RunsFilterOptions {
     pub created_before: Option<chrono::DateTime<chrono::Utc>>,
 }
 
-fn paginate<'a, T, F, Fut>(fetch: F) -> impl futures_util::Stream<Item = Result<T>> + 'a
+fn paginate<'a, T, F, Fut>(mut fetch: F) -> impl futures_util::Stream<Item = Result<T>> + 'a
 where
     F: FnMut(Option<String>) -> Fut + 'a,
     Fut: std::future::Future<Output = Result<(Vec<T>, Option<String>)>> + 'a,
     T: 'a,
 {
+    paginate_limited(u64::MAX, u64::MAX, move |after, _| fetch(after))
+}
+
+/// [`paginate`], bounded: yields at most `limit` items, asking `fetch` for
+/// pages of at most `max_page` items and shrinking the last page to what
+/// remains. Items a server returns past the requested page size are dropped,
+/// and no page is fetched once the limit is reached.
+fn paginate_limited<'a, T, F, Fut>(
+    limit: u64,
+    max_page: u64,
+    fetch: F,
+) -> impl futures_util::Stream<Item = Result<T>> + 'a
+where
+    F: FnMut(Option<String>, u64) -> Fut + 'a,
+    Fut: std::future::Future<Output = Result<(Vec<T>, Option<String>)>> + 'a,
+    T: 'a,
+{
     stream::try_unfold(
-        (None::<String>, VecDeque::<T>::new(), false, fetch),
-        |(mut after, mut buffer, mut finished, mut fetch)| async move {
+        (None::<String>, VecDeque::<T>::new(), limit, false, fetch),
+        move |(mut after, mut buffer, mut remaining, mut finished, mut fetch)| async move {
             loop {
                 if let Some(item) = buffer.pop_front() {
-                    return Ok(Some((item, (after, buffer, finished, fetch))));
+                    return Ok(Some((item, (after, buffer, remaining, finished, fetch))));
                 }
-                if finished {
+                if finished || remaining == 0 {
                     return Ok(None);
                 }
-                let (items, next) = fetch(after.take()).await?;
+                let (mut items, next) = fetch(after.take(), remaining.min(max_page)).await?;
+                items.truncate(usize::try_from(remaining).unwrap_or(usize::MAX));
+                remaining -= items.len() as u64;
                 buffer.extend(items);
                 finished = next.is_none();
                 after = next;
@@ -2376,9 +2398,11 @@ mod tests {
             .mount(&mock_server)
             .await;
 
+        // The second page asks only for what the limit still allows: 100
+        // minus the one run the first page returned.
         Mock::given(method("GET"))
             .and(path("/api/v0/runs"))
-            .and(query_param("limit", "100"))
+            .and(query_param("limit", "99"))
             .and(query_param("after", "cursor-1"))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "data": [

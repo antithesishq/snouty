@@ -604,6 +604,13 @@ mock-runs-server
 ! snouty runs events run-1 --match x --limit 0
 stderr 'invalid value .0.'
 
+# The flag tops out one below the server's ceiling of 999: the command asks
+# for one row past the limit, and that request must stay in range.
+mock-runs-server
+! snouty runs events run-1 --match x --limit 999
+stderr 'invalid value .999.'
+stderr 'must be at most 998'
+
 # With the `runs-search` feature on, the limit is enforced client-side: the
 # search server is told the limit but ignores it and streams every match
 # (the mock models that), so this pins the cap in `runs events` itself.

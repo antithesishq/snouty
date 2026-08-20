@@ -103,7 +103,7 @@ pub(super) async fn print_event_stream(
     // the cap, the row count, and the flush-per-row rule. The cap is ours to
     // enforce even on the raw passthrough — the search backend ignores the
     // limit.
-    let lines: BoxStream<'_, Result<String>> = match output {
+    let mut lines: BoxStream<'_, Result<String>> = match output {
         EventOutput::Json { raw: true, .. } => raw_lines(stream, error_rows).boxed(),
         EventOutput::Json {
             raw: false,
@@ -133,12 +133,6 @@ pub(super) async fn print_event_stream(
         }
     };
     let flush_per_row = live || std::io::stdout().is_terminal();
-    let take_rows = if peek {
-        cap_rows.saturating_add(1)
-    } else {
-        cap_rows
-    };
-    let mut lines = lines.take(take_rows);
     let mut stdout = BufWriter::new(std::io::stdout().lock());
     let mut seen: usize = 0;
     let mut ended = false;

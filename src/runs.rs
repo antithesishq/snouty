@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use color_eyre::Section;
 use color_eyre::eyre::{Result, WrapErr, eyre};
-use futures_util::{StreamExt, TryStreamExt};
+use futures_util::TryStreamExt;
 use indexmap::IndexMap;
 use indexmap::map::Entry;
 use log::debug;
@@ -14,9 +14,9 @@ use serde_json::{Map, Value, json};
 use chrono::{DateTime, Utc};
 
 use crate::api::{
-    AntithesisApi, Event, EventProperty, GET_EVENTS_MAX_LIMIT, LogsBegin, Moment, NonEventProperty,
-    Property, PropertyStatus, RunDetail, RunStatus, RunSummary, RunsFilterOptions,
-    SEARCH_DEFAULT_LIMIT, SearchMode,
+    AntithesisApi, Event, EventProperty, LogsBegin, Moment, NonEventProperty, Property,
+    PropertyStatus, RunDetail, RunStatus, RunSummary, RunsFilterOptions, SEARCH_DEFAULT_LIMIT,
+    SearchMode,
 };
 use crate::cli::{RunsCommands, RunsListArgs, RunsSearchArgs};
 use crate::error::{api_error_status, user_error};
@@ -207,10 +207,6 @@ async fn cmd_runs_list(
         created_before: args.created_before,
     };
 
-    // The API caps `limit` at 100, so request only as many as we'll display and
-    // let the server do the trimming. For limits above 100 we still paginate,
-    // capping the total client-side with `.take(...)`.
-    //
     // In human mode, fetch one run past the limit: that row's existence is
     // the truncation signal for `limit_note`, and it is never displayed.
     // `--json` never prints the note, so it never reads past the limit.
@@ -219,13 +215,9 @@ async fn cmd_runs_list(
     } else {
         args.limit.saturating_add(1)
     };
-    let page_limit = fetch.clamp(1, 100) as u64;
 
-    // Server returns runs newest-first; .take(fetch) short-circuits pagination
-    // so we don't materialise the entire run history just to drop most of it.
     let mut runs: Vec<RunSummary> = api
-        .stream_runs_filtered(&opts, page_limit)
-        .take(fetch)
+        .stream_runs_filtered(&opts, fetch as u64)
         .try_collect::<Vec<_>>()
         .await?;
     let truncated = runs.len() > args.limit;
@@ -1424,7 +1416,7 @@ async fn cmd_runs_search(
 async fn cmd_runs_events(
     run_id: &str,
     matches: &[String],
-    limit: Option<NonZeroU64>,
+    limit: NonZeroU64,
     settings: &Settings,
     verbose: bool,
     mode: EventOutput,
@@ -1444,11 +1436,11 @@ async fn cmd_runs_events(
     }
 
     let api = AntithesisApi::new(settings, verbose)?;
-    let (stream, cap, live) = if features::is_enabled(Feature::RunsSearch) {
+    let (stream, live) = if features::is_enabled(Feature::RunsSearch) {
         let query = event_set_dsl::substring_filter(matches);
         let mode = SearchMode::Query {
             stream: false,
-            limit,
+            limit: Some(limit),
         };
         let stream = match api.search_run_events_query(run_id, &query, mode).await {
             Ok(stream) => stream,
@@ -1457,34 +1449,27 @@ async fn cmd_runs_events(
         // The search backend ignores the limit (see `cmd_runs_search`);
         // enforce it client-side. It also holds the connection open on a
         // live run.
-        (
-            stream,
-            Cap::Noted(limit.unwrap_or(SEARCH_DEFAULT_LIMIT)),
-            true,
-        )
+        (stream, true)
     } else {
         let [needle] = matches else {
             return Err(event_search::multi_needle_error());
         };
         // The GET endpoint enforces `limit` server-side, so ask for one row
-        // past the cap: that row's arrival is the truncation signal. At the
-        // endpoint's ceiling the cap is sent as-is and truncation goes
-        // undetected.
-        let cap = limit.unwrap_or(SEARCH_DEFAULT_LIMIT);
-        let request_limit = if cap < GET_EVENTS_MAX_LIMIT {
-            cap.saturating_add(1)
-        } else {
-            cap
-        };
-        let stream = match api.search_run_events(run_id, needle, request_limit).await {
+        // past the cap: that row's arrival is the truncation signal. The
+        // flag tops out one below the endpoint's ceiling, so the probe row
+        // always fits.
+        let stream = match api
+            .search_run_events(run_id, needle, limit.saturating_add(1))
+            .await
+        {
             Ok(stream) => stream,
             Err(err) => return Err(explain_run_scoped_error(&api, run_id, err).await),
         };
-        (stream, Cap::Noted(cap), false)
+        (stream, false)
     };
     event_search::print_event_stream(
         stream,
-        cap,
+        Cap::Noted(limit),
         ErrorRows::Abort,
         mode,
         live,

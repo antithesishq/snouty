@@ -6,7 +6,7 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
 use color_eyre::Section;
 use color_eyre::eyre::Report;
 
-use crate::api::RunStatus;
+use crate::api::{GET_EVENTS_MAX_LIMIT, RunStatus, SEARCH_DEFAULT_LIMIT};
 use crate::error::user_error;
 use crate::features::{self, Feature};
 use crate::time::HumanDuration;
@@ -59,6 +59,21 @@ fn parse_poll_interval(value: &str) -> Result<HumanDuration, String> {
         return Err("poll interval must be at least 1 minute".to_string());
     }
     Ok(interval)
+}
+
+/// clap value parser for `runs events --limit`: the GET events endpoint
+/// accepts limits up to [`GET_EVENTS_MAX_LIMIT`], and the command reserves
+/// one row past the flag for its truncation probe, so the flag tops out one
+/// below the ceiling. `NonZeroU64` matches the generated request type, so
+/// `--limit 0` is rejected here with a plain message instead of surfacing
+/// the request builder's conversion jargon.
+fn parse_events_limit(value: &str) -> Result<NonZeroU64, String> {
+    let max = GET_EVENTS_MAX_LIMIT.get() - 1;
+    let limit = value.parse::<NonZeroU64>().map_err(|e| e.to_string())?;
+    if limit.get() > max {
+        return Err(format!("must be at most {max}"));
+    }
+    Ok(limit)
 }
 
 #[derive(Parser)]
@@ -898,14 +913,11 @@ Examples:
         #[arg(short = 'm', long = "match")]
         matches: Vec<String>,
 
-        /// Maximum number of events to print (default 50). Raise it to make
-        /// a search more exhaustive; a note on stderr says when the output
-        /// stopped at the limit. The server enforces the accepted range.
-        // NonZeroU64 matches the generated request types, so `--limit 0` is
-        // rejected by clap with a plain message instead of surfacing the
-        // request builder's conversion jargon.
-        #[arg(short = 'n', long)]
-        limit: Option<NonZeroU64>,
+        /// Maximum number of events to print. Raise it to make a search more
+        /// exhaustive; a note on stderr says when the output stopped at the
+        /// limit.
+        #[arg(short = 'n', long, default_value_t = SEARCH_DEFAULT_LIMIT, value_parser = parse_events_limit)]
+        limit: NonZeroU64,
 
         /// Substrings to match, as a positional alias for `-m` (all must match).
         /// At least one needle (via `-m` or here) is required.
@@ -1250,11 +1262,10 @@ mod tests {
         assert_eq!(query, vec!["request".to_string(), "slow".to_string()]);
     }
 
-    // `runs events --limit` is unset unless given (so the parameter is left off
-    // the request entirely) and otherwise takes the given value. Range checking
-    // beyond the NonZeroU64 floor is left to the server.
+    // `runs events --limit` defaults to 50 and tops out one below the
+    // endpoint's ceiling, reserving a row for the truncation probe.
     #[test]
-    fn events_limit_is_unset_by_default_and_parses() {
+    fn events_limit_defaults_and_enforces_the_range() {
         let cli = parse(&["snouty", "runs", "events", "RUN", "-m", "request"]);
         let Commands::Runs {
             command: Some(RunsCommands::Events { limit, .. }),
@@ -1262,10 +1273,10 @@ mod tests {
         else {
             panic!("expected `runs events`");
         };
-        assert_eq!(limit, None);
+        assert_eq!(limit, SEARCH_DEFAULT_LIMIT);
 
         let cli = parse(&[
-            "snouty", "runs", "events", "RUN", "-m", "x", "--limit", "999",
+            "snouty", "runs", "events", "RUN", "-m", "x", "--limit", "998",
         ]);
         let Commands::Runs {
             command: Some(RunsCommands::Events { limit, .. }),
@@ -1273,12 +1284,15 @@ mod tests {
         else {
             panic!("expected `runs events`");
         };
-        assert_eq!(limit, NonZeroU64::new(999));
+        assert_eq!(limit, NonZeroU64::new(998).unwrap());
 
         // The generated request types carry the limit as NonZeroU64, so clap
         // rejects 0 up front with a plain message.
         let parsed = Cli::try_parse_from(["snouty", "runs", "events", "RUN", "-n", "0"]);
         assert!(parsed.is_err(), "expected --limit 0 to be rejected");
+
+        let parsed = Cli::try_parse_from(["snouty", "runs", "events", "RUN", "-n", "999"]);
+        assert!(parsed.is_err(), "expected --limit 999 to be rejected");
     }
 
     // `runs search` takes the run id and one raw DSL query positionally; the

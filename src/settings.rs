@@ -21,6 +21,7 @@ pub const ANTITHESIS_HTTPS_PROXY_VAR_NAME: &str = "ANTITHESIS_HTTPS_PROXY";
 pub const CONTAINER_ENGINE_VAR_NAME: &str = "SNOUTY_CONTAINER_ENGINE";
 pub const UPDATE_CHANNEL_VAR_NAME: &str = "SNOUTY_UPDATE_CHANNEL";
 pub const API_CACHE_MAX_FILE_SIZE_VAR_NAME: &str = "SNOUTY_API_CACHE_MAX_FILE_SIZE";
+pub const API_CACHE_RESPECT_HEADERS_VAR_NAME: &str = "SNOUTY_API_CACHE_RESPECT_HEADERS";
 const PROJECT_SETTINGS_FILENAME: &str = ".snouty.toml";
 const GLOBAL_SETTINGS_FILENAME: &str = "settings.toml";
 const PROFILE_KEY: &str = "profile";
@@ -91,6 +92,7 @@ pub struct Settings {
     container_engine: Option<String>,
     update_channel: UpdateChannel,
     api_cache_max_file_size: u64,
+    api_cache_respect_headers: bool,
 }
 
 impl Default for Settings {
@@ -183,6 +185,19 @@ impl Settings {
         .map(|value| parse_byte_size("api_cache_max_file_size", &value))
         .transpose()?;
 
+        // A typed boolean: whether the response cache requires the server's
+        // cache headers to allow caching. Set false to fall back to the
+        // handlers' logical admission checks alone (see `crate::api_cache`).
+        let api_cache_respect_headers = resolve_boolean_value(
+            "api_cache_respect_headers",
+            API_CACHE_RESPECT_HEADERS_VAR_NAME,
+            profile.as_deref(),
+            project.as_ref(),
+            global.as_ref(),
+        )?
+        .map(|value| parse_boolean("api_cache_respect_headers", &value))
+        .transpose()?;
+
         // A derived base URL interpolates the tenant into the request host
         // (`https://{tenant}.antithesis.com`) and we attach the API key to that
         // host, so a malformed tenant would silently send credentials to an
@@ -205,6 +220,7 @@ impl Settings {
             container_engine,
             update_channel,
             api_cache_max_file_size,
+            api_cache_respect_headers,
         }
         .build())
     }
@@ -248,6 +264,13 @@ impl Settings {
         self.api_cache_max_file_size
     }
 
+    /// Whether the response cache requires the server's cache headers to
+    /// allow caching; true when unset. Already validated — an invalid setting
+    /// value fails in [`Settings::resolve`].
+    pub fn api_cache_respect_headers(&self) -> bool {
+        self.api_cache_respect_headers
+    }
+
     pub(crate) fn profile(&self) -> Option<&str> {
         self.profile.as_deref()
     }
@@ -283,6 +306,7 @@ pub struct SettingsBuilder {
     container_engine: Option<String>,
     update_channel: UpdateChannel,
     api_cache_max_file_size: Option<u64>,
+    api_cache_respect_headers: Option<bool>,
 }
 
 impl SettingsBuilder {
@@ -326,6 +350,11 @@ impl SettingsBuilder {
         self
     }
 
+    pub fn api_cache_respect_headers(mut self, value: bool) -> Self {
+        self.api_cache_respect_headers = Some(value);
+        self
+    }
+
     /// Finish the build, applying the derived values: `base_url` falls back to
     /// a tenant-derived host, and the cache size cap falls back to its default.
     /// [`Settings::resolve`] and the test constructors both finish here, so the
@@ -348,6 +377,7 @@ impl SettingsBuilder {
             api_cache_max_file_size: self
                 .api_cache_max_file_size
                 .unwrap_or(crate::api_cache::DEFAULT_MAX_FILE_SIZE),
+            api_cache_respect_headers: self.api_cache_respect_headers.unwrap_or(true),
         }
     }
 }
@@ -558,6 +588,20 @@ fn resolve_integer_value(
     resolve_value_with(integer_value, key, env_var, profile, project, global)
 }
 
+/// [`resolve_value`] for a boolean setting: the file layers accept a bare
+/// TOML boolean as well as a quoted string. The value still comes back as
+/// text — the caller owns the parse (see [`parse_boolean`]), exactly as for
+/// an environment variable.
+fn resolve_boolean_value(
+    key: &str,
+    env_var: &str,
+    profile: Option<&str>,
+    project: Option<&Table>,
+    global: Option<&Table>,
+) -> Result<Option<String>> {
+    resolve_value_with(boolean_value, key, env_var, profile, project, global)
+}
+
 fn resolve_value_with(
     read: ValueReader,
     key: &str,
@@ -645,6 +689,32 @@ fn integer_value(table: &Table, key: &str, display: &str) -> Result<Option<Strin
             value.type_str()
         )),
     }
+}
+
+/// Read `key` from `table` as a boolean-like setting (a bare TOML boolean or
+/// a quoted string), naming the offending value `display` in the error. The
+/// value comes back in text form; the caller parses it (see
+/// [`resolve_boolean_value`]).
+fn boolean_value(table: &Table, key: &str, display: &str) -> Result<Option<String>> {
+    match table.get(key) {
+        None => Ok(None),
+        Some(Value::Boolean(flag)) => Ok(Some(flag.to_string())),
+        Some(Value::String(text)) => Ok(Some(text.clone())),
+        Some(value) => Err(eyre!(
+            "setting `{display}` must be a boolean or a string, but found {}",
+            value.type_str()
+        )),
+    }
+}
+
+/// Parse a boolean setting — exactly `true` or `false` — naming `setting` in
+/// the error.
+fn parse_boolean(setting: &str, value: &str) -> Result<bool> {
+    value.parse::<bool>().map_err(|_| {
+        user_error(format!(
+            "invalid {setting} setting (expected \"true\" or \"false\"): got `{value}`"
+        ))
+    })
 }
 
 /// Parse a byte-size setting — a size such as "10 MB" or "1.5GiB", or a bare
@@ -816,6 +886,52 @@ mod tests {
             "unexpected error: {msg}"
         );
         assert!(msg.contains("boolean"), "unexpected error: {msg}");
+    }
+
+    #[test]
+    fn boolean_value_accepts_a_bare_toml_boolean_or_a_quoted_string() {
+        let table: Table = "api_cache_respect_headers = false\n".parse().unwrap();
+        assert_eq!(
+            boolean_value(&table, "api_cache_respect_headers", "x")
+                .unwrap()
+                .as_deref(),
+            Some("false")
+        );
+        let table: Table = "api_cache_respect_headers = \"false\"\n".parse().unwrap();
+        assert_eq!(
+            boolean_value(&table, "api_cache_respect_headers", "x")
+                .unwrap()
+                .as_deref(),
+            Some("false")
+        );
+    }
+
+    #[test]
+    fn non_boolean_value_is_an_error() {
+        let table: Table = "api_cache_respect_headers = 1\n".parse().unwrap();
+        let err = boolean_value(
+            &table,
+            "api_cache_respect_headers",
+            "api_cache_respect_headers",
+        )
+        .unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("must be a boolean"), "unexpected error: {msg}");
+        assert!(msg.contains("integer"), "unexpected error: {msg}");
+    }
+
+    #[test]
+    fn parse_boolean_accepts_only_true_and_false() {
+        assert!(parse_boolean("api_cache_respect_headers", "true").unwrap());
+        assert!(!parse_boolean("api_cache_respect_headers", "false").unwrap());
+        for bad in ["1", "yes", "True", ""] {
+            let err = parse_boolean("api_cache_respect_headers", bad).unwrap_err();
+            let msg = err.to_string();
+            assert!(
+                msg.contains("api_cache_respect_headers"),
+                "unexpected error for {bad:?}: {msg}"
+            );
+        }
     }
 
     #[test]

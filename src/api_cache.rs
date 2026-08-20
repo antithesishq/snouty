@@ -1,11 +1,14 @@
 //! A logical, domain-aware cache for Antithesis API responses.
 //!
-//! Unlike an HTTP cache, this cache ignores the server's cache headers:
-//! each `AntithesisApi` handler decides whether its resource is immutable
-//! (logs addressed by moment, properties, terminal run details) and only
-//! those enter the cache. There is no per-entry expiration — the cache lives
-//! in a transient per-user directory (`XDG_RUNTIME_DIR`; the user temp dir
-//! on macOS) that the OS clears periodically.
+//! Admission takes two signals, both required: the server's `Cache-Control`
+//! header must grant a positive freshness lifetime (see
+//! [`cache_headers_allow`]; `api_cache_respect_headers = false` drops this
+//! requirement), and the `AntithesisApi` handler must judge its resource
+//! immutable (logs addressed by moment, properties, terminal run details).
+//! There is no per-entry expiration — the header's lifetime is read as a
+//! yes/no permission, and the cache lives in a transient per-user directory
+//! (`XDG_RUNTIME_DIR`; the user temp dir on macOS) that the OS clears
+//! periodically.
 //!
 //! The cache is infallible by construction: every cache error — unreadable
 //! entry, unwritable directory, corrupt index — degrades to a cache miss and
@@ -67,10 +70,27 @@ pub fn default_dir() -> Option<PathBuf> {
     Some(base?.join("snouty").join(CACHE_DIR_NAME))
 }
 
+/// Whether `Cache-Control` lets a private client cache hold the response:
+/// a positive freshness lifetime (`max-age` > 0, or `immutable`) and neither
+/// `no-store` nor `no-cache` (never revalidated, so "revalidate before use"
+/// means "do not cache"). An absent or malformed header grants nothing.
+/// `private` is fine — the cache directory is per-user.
+fn cache_headers_allow(headers: &http::HeaderMap) -> bool {
+    use headers::{CacheControl, HeaderMapExt};
+    let Some(cache_control) = headers.typed_get::<CacheControl>() else {
+        return false;
+    };
+    if cache_control.no_store() || cache_control.no_cache() {
+        return false;
+    }
+    cache_control.immutable() || cache_control.max_age().is_some_and(|age| !age.is_zero())
+}
+
 /// A handler's admission verdict on the value it fetched. The cache stores
 /// nothing untagged: `#[cached]` requires the handler body to return a
 /// [`Tagged`] value, so admission lives in the handler — next to the
-/// response, where a future policy can also read its headers.
+/// response, whose headers carry the other half of the verdict
+/// (see [`ApiCache::headers_admit`]).
 #[derive(Clone, Copy, Debug)]
 pub enum CachePolicy {
     Cacheable,
@@ -138,6 +158,11 @@ pub struct ApiCache {
     /// no-op.
     dir: Option<PathBuf>,
     max_file_size: u64,
+    /// Require the server's cache headers to allow caching (the
+    /// `api_cache_respect_headers` setting). Off, [`ApiCache::headers_admit`]
+    /// admits everything and admission falls back to the handlers' logical
+    /// checks alone — the escape hatch for a tenant with faulty headers.
+    respect_headers: bool,
     /// The tenant every key is bound to.
     base_url: String,
     /// Announce each hit on stderr (the `--verbose` request log has no
@@ -146,13 +171,34 @@ pub struct ApiCache {
 }
 
 impl ApiCache {
-    pub fn new(dir: Option<PathBuf>, max_file_size: u64, base_url: String, verbose: bool) -> Self {
+    pub fn new(
+        dir: Option<PathBuf>,
+        max_file_size: u64,
+        respect_headers: bool,
+        base_url: String,
+        verbose: bool,
+    ) -> Self {
         Self {
             dir,
             max_file_size,
+            respect_headers,
             base_url,
             verbose,
         }
+    }
+
+    /// The header half of admission: whether the response's cache headers
+    /// allow caching (see [`cache_headers_allow`]). Handlers AND this with
+    /// their own logical checks to build the [`CachePolicy`].
+    pub fn headers_admit(&self, headers: &http::HeaderMap) -> bool {
+        if !self.respect_headers {
+            return true;
+        }
+        let allowed = cache_headers_allow(headers);
+        if !allowed {
+            debug!("response cache headers do not allow caching");
+        }
+        allowed
     }
 
     /// The cache key for `operation` with `params`, bound to this cache's
@@ -359,6 +405,7 @@ mod tests {
         ApiCache::new(
             Some(dir.path().to_path_buf()),
             DEFAULT_MAX_FILE_SIZE,
+            true,
             "http://t".to_owned(),
             false,
         )
@@ -370,6 +417,42 @@ mod tests {
             futures_util::stream::iter(items).boxed(),
             CachePolicy::Cacheable,
         )
+    }
+
+    /// A `HeaderMap` with one `cache-control` value, as reqwest would carry it.
+    fn cache_control(value: &str) -> http::HeaderMap {
+        let mut headers = http::HeaderMap::new();
+        headers.insert("cache-control", value.parse().unwrap());
+        headers
+    }
+
+    #[test]
+    fn a_positive_freshness_lifetime_allows_caching() {
+        // The exact header the live API sends on cacheable reads (observed on
+        // tenant release 61).
+        assert!(cache_headers_allow(&cache_control("private, max-age=3600")));
+        assert!(cache_headers_allow(&cache_control("max-age=1")));
+        assert!(cache_headers_allow(&cache_control("immutable")));
+    }
+
+    #[test]
+    fn absent_or_non_positive_headers_deny_caching() {
+        assert!(!cache_headers_allow(&http::HeaderMap::new()));
+        assert!(!cache_headers_allow(&cache_control("max-age=0")));
+        assert!(!cache_headers_allow(&cache_control("private")));
+        assert!(!cache_headers_allow(&cache_control("not a directive ===")));
+    }
+
+    // snouty never revalidates an entry, so "cache but revalidate before use"
+    // must read as "do not cache" — even next to a positive lifetime.
+    #[test]
+    fn no_cache_and_no_store_deny_caching() {
+        assert!(!cache_headers_allow(&cache_control("no-cache")));
+        assert!(!cache_headers_allow(&cache_control("no-store")));
+        assert!(!cache_headers_allow(&cache_control(
+            "no-cache, max-age=3600"
+        )));
+        assert!(!cache_headers_allow(&cache_control("no-store, immutable")));
     }
 
     // The key separates tenants, operations, and every parameter; only a

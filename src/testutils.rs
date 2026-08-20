@@ -492,6 +492,7 @@ impl MockApiServer {
                     continue;
                 };
 
+                let (method, path) = mock_parse_request_line(&request);
                 let (status, body, content_type) = if !mock_check_user_agent(&request) {
                     (
                         400,
@@ -505,15 +506,15 @@ impl MockApiServer {
                         "application/json",
                     )
                 } else {
-                    let (method, path) = mock_parse_request_line(&request);
                     let req_body = mock_request_body(&request);
                     mock_route(&method, &path, req_body, empty)
                 };
 
                 let response = format!(
-                    "HTTP/1.1 {} OK\r\nContent-Type: {}\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{}",
+                    "HTTP/1.1 {} OK\r\nContent-Type: {}\r\nCache-Control: {}\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{}",
                     status,
                     content_type,
+                    mock_cache_control(&method, &path),
                     body.len(),
                     body
                 );
@@ -530,6 +531,19 @@ impl MockApiServer {
 }
 
 const MOCK_API_TOKEN: &str = "snouty-mock-api-token";
+
+/// The `Cache-Control` the real API sends (observed on tenant release 61):
+/// run-scoped GET reads carry `private, max-age=3600`, the run list and
+/// everything else `no-cache`. The real API also sends `no-cache` for a
+/// non-terminal run's detail; the mock skips that distinction — snouty's own
+/// admission checks already keep a non-terminal detail out of the cache.
+fn mock_cache_control(method: &str, path: &str) -> &'static str {
+    if method == "GET" && path.starts_with("/api/v0/runs/") {
+        "private, max-age=3600"
+    } else {
+        "no-cache"
+    }
+}
 
 /// Read one HTTP request off the socket: headers, then as many body bytes as
 /// Content-Length declares. A single `read` is not enough — the client may

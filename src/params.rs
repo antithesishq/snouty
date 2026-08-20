@@ -153,56 +153,14 @@ impl Params {
                 value.len()
             )));
         }
-        let re = regex::Regex::new(value).map_err(|err| {
-            let report = user_error(format!("{key} is not a valid regular expression: {err}"));
-            // The regex crate's error text names "look-around" and
-            // "backreference" — the two constructs RE2 also rejects — which
-            // is what justifies matching on the message.
-            let msg = err.to_string();
-            if msg.contains("look-around") || msg.contains("backreference") {
-                report
-                    .note(
-                        "the platform matches with RE2; RE2 does not backtrack, \
-                         so it rejects lookahead, lookbehind, and backreferences",
-                    )
-                    .suggestion("rewrite the pattern without lookaround or backreferences")
-            } else {
-                report
-            }
-        })?;
+        let re = regex::Regex::new(value)
+            .map_err(|err| user_error(format!("{key} is not a valid regular expression: {err}")))?;
         if re.is_match("") {
             return Err(user_error(format!(
                 "{key} matches the empty string, which would suppress every log line"
             )));
         }
         Ok(())
-    }
-
-    /// Warn when `antithesis.filter_logs_matching` is the JS regex-literal
-    /// form `/body/flags`: the value is sent as raw regex text, so the
-    /// slashes match literally and the flags never take effect. Returns the
-    /// warning text, or `None` when the pattern is absent or unremarkable.
-    pub fn filter_logs_warning(&self) -> Option<String> {
-        let key = ANT_FILTER_LOGS_MATCHING;
-        let value = self.inner.get(key).and_then(Value::as_str)?;
-        let (body, flags) = js_regex_literal_parts(value)?;
-        // Only i/m/s exist as inline flags; the others (g, u, ...) have no
-        // equivalent and g is implicit in filtering anyway.
-        let inline: String = ['i', 'm', 's']
-            .into_iter()
-            .filter(|f| flags.contains(*f))
-            .collect();
-        let suggestion = if inline.is_empty() {
-            body.to_string()
-        } else {
-            format!("(?{inline}){body}")
-        };
-        Some(format!(
-            "Warning: {key} is sent as raw regex text. In {}, the slashes are \
-             literal and the trailing flags do not apply. Write {} instead.",
-            crate::render::sanitize(value),
-            crate::render::sanitize(&suggestion)
-        ))
     }
 
     /// Ensure the debugging target run is identified by exactly one of
@@ -265,42 +223,6 @@ impl Params {
                 (k.clone(), value)
             })
             .collect()
-    }
-}
-
-/// If the pattern is the JS regex-literal form `/body/flags`, return the body
-/// and the flags. The flags must be non-empty, from the JS flag set, and free
-/// of repeats (JS rejects a repeated flag), so ordinary slash-delimited
-/// literals like `/usr/bin` or `/proc/sys` are not flagged.
-fn js_regex_literal_parts(pattern: &str) -> Option<(&str, &str)> {
-    let rest = pattern.strip_prefix('/')?;
-    // The closing delimiter is the first unescaped slash: a backslash escapes
-    // the next character, so it never closes the literal. Scanning bytes is
-    // safe — `/` and `\` are ASCII and cannot appear inside a multi-byte
-    // UTF-8 character.
-    let bytes = rest.as_bytes();
-    let mut close = None;
-    let mut i = 0;
-    while i < bytes.len() {
-        match bytes[i] {
-            b'\\' => i += 2,
-            b'/' => {
-                close = Some(i);
-                break;
-            }
-            _ => i += 1,
-        }
-    }
-    let close = close?;
-    let (body, flags) = (&rest[..close], &rest[close + 1..]);
-    let unique_js_flags = flags
-        .chars()
-        .enumerate()
-        .all(|(i, c)| "dgimsuvy".contains(c) && !flags[..i].contains(c));
-    if !body.is_empty() && !flags.is_empty() && unique_js_flags {
-        Some((body, flags))
-    } else {
-        None
     }
 }
 
@@ -932,18 +854,6 @@ mod tests {
     }
 
     #[test]
-    fn validate_filter_logs_matching_explains_re2_limits() {
-        // Notes are color_eyre sections, visible in the Debug format.
-        for pattern in ["(?=ready)", "(?!x)", "(?<=a)", "(?<!a)", r"(a)\1"] {
-            let err = format!("{:?}", validate_filter(pattern).unwrap_err());
-            assert!(
-                err.contains("RE2"),
-                "expected an RE2 note for {pattern}: {err}"
-            );
-        }
-    }
-
-    #[test]
     fn validate_filter_logs_matching_rejects_an_empty_string_match() {
         // These compile fine and then suppress every log line.
         for pattern in ["x*", "(foo)?"] {
@@ -955,60 +865,14 @@ mod tests {
         }
     }
 
-    #[test]
-    fn filter_logs_warning_flags_only_the_js_literal_form() {
-        assert!(Params::new().filter_logs_warning().is_none());
-
-        let mut params = Params::new();
-        params.insert(ANT_FILTER_LOGS_MATCHING, "debug");
-        assert!(params.filter_logs_warning().is_none());
-
-        params.insert(ANT_FILTER_LOGS_MATCHING, "/error/i");
-        let warning = params.filter_logs_warning().unwrap();
-        assert!(warning.contains("Write (?i)error instead"), "{warning}");
-
-        // The suggestion carries the user's own flags.
-        params.insert(ANT_FILTER_LOGS_MATCHING, "/^ready$/m");
-        let warning = params.filter_logs_warning().unwrap();
-        assert!(warning.contains("Write (?m)^ready$ instead"), "{warning}");
-
-        // Flags with no inline equivalent are dropped from the suggestion.
-        params.insert(ANT_FILTER_LOGS_MATCHING, "/error/g");
-        let warning = params.filter_logs_warning().unwrap();
-        assert!(warning.contains("Write error instead"), "{warning}");
-    }
-
-    #[test]
-    fn js_regex_literal_parts_detects_the_slash_flags_form() {
-        assert_eq!(js_regex_literal_parts("/error/i"), Some(("error", "i")));
-        // A backslash escapes the next character, so an escaped slash never
-        // closes the literal.
-        assert_eq!(
-            js_regex_literal_parts(r"/foo\/bar/i"),
-            Some((r"foo\/bar", "i"))
-        );
-        assert_eq!(js_regex_literal_parts(r"/foo\/i"), None);
-        // An unescaped slash in the middle means the "flags" contain a slash,
-        // which disqualifies the literal form.
-        assert_eq!(js_regex_literal_parts("/a/b/gi"), None);
-        // No flags: indistinguishable from a literal slash-delimited path.
-        assert_eq!(js_regex_literal_parts("/error/"), None);
-        // A path suffix is not a flag set.
-        assert_eq!(js_regex_literal_parts("/usr/bin"), None);
-        // A repeated letter is not a valid JS flag set either.
-        assert_eq!(js_regex_literal_parts("/proc/sys"), None);
-        assert_eq!(js_regex_literal_parts("error"), None);
-    }
-
-    /// For *any* input — however far from a regex — validation and the
-    /// warning check return instead of panicking.
+    /// For *any* input — however far from a regex — validation returns
+    /// instead of panicking.
     #[hegel::test]
     fn filter_validation_never_panics(tc: hegel::TestCase) {
         let pattern = tc.draw(generators::text());
         let mut params = Params::new();
         params.insert(ANT_FILTER_LOGS_MATCHING, pattern);
         let _ = params.validate_filter_logs_matching();
-        let _ = params.filter_logs_warning();
     }
 
     #[test]

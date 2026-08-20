@@ -43,11 +43,6 @@ stderr 'antithesis\.filter_logs_matching matches the empty string, which would s
 ! snouty launch -w basic_test --duration 30 --param antithesis.filter_logs_matching=
 stderr 'antithesis\.filter_logs_matching is empty'
 
-# The platform matches with RE2, which rejects lookaround and backreferences.
-! snouty launch -w basic_test --duration 30 --filter-logs-matching '(?=ready)'
-stderr 'antithesis\.filter_logs_matching is not a valid regular expression.*'
-stderr 'RE2.*'
-
 # `launch` does not accept --stdin.
 ! snouty launch -w basic_test --stdin --duration 30
 stderr 'unexpected argument.*'
@@ -187,13 +182,4 @@ mock-server 200 '{"runId":"run-123","statusCode":202}'
 snouty launch -w basic_test --duration 30 --filter-logs-matching debug
 stderr '"antithesis.duration": "30"'
 stderr '"antithesis.filter_logs_matching": "debug"'
-stdout 'Test run started: run_id run-123'
-
-# A JS-style `/pattern/flags` value still launches, with a warning: the value
-#    is raw regex text, so the slashes are literal and the flags never take
-#    effect.
-mock-server 200 '{"runId":"run-123","statusCode":202}'
-snouty launch -w basic_test --duration 30 --filter-logs-matching /error/i
-stderr 'Warning: antithesis\.filter_logs_matching is sent as raw regex text.*'
-stderr 'Write \(\?i\)error instead'
 stdout 'Test run started: run_id run-123'

@@ -189,9 +189,11 @@ impl ApiCache {
 
     /// The header half of admission: whether the response's cache headers
     /// allow caching (see [`cache_headers_allow`]). Handlers AND this with
-    /// their own logical checks to build the [`CachePolicy`].
+    /// their own logical checks to build the [`CachePolicy`]. A disabled
+    /// cache skips the parse — the verdict is moot when every store is a
+    /// no-op (and `get_run` runs on every `runs wait` poll).
     pub fn headers_admit(&self, headers: &http::HeaderMap) -> bool {
-        if !self.respect_headers {
+        if self.dir.is_none() || !self.respect_headers {
             return true;
         }
         let allowed = cache_headers_allow(headers);
@@ -428,9 +430,10 @@ mod tests {
 
     #[test]
     fn a_positive_freshness_lifetime_allows_caching() {
-        // The exact header the live API sends on cacheable reads (observed on
-        // tenant release 61).
-        assert!(cache_headers_allow(&cache_control("private, max-age=3600")));
+        // The exact header the live API sends on cacheable reads.
+        assert!(cache_headers_allow(&cache_control(
+            crate::testutils::CACHEABLE_CACHE_CONTROL
+        )));
         assert!(cache_headers_allow(&cache_control("max-age=1")));
         assert!(cache_headers_allow(&cache_control("immutable")));
     }

@@ -11,8 +11,9 @@ Comments and reviews by the PR's own author are suppressed: the watcher
 alerts the author's agent, so those are echoes of its own replies. Checks
 report failures. The watcher also prints one "all checks passed" line per
 head commit once every check on it concludes success, skipped, or neutral.
-It prints that line only after two polls observe the green rollup, because
-a slow workflow can register its checks after the rollup first turns green.
+It prints that line only after two consecutive polls observe the green
+rollup, because a slow workflow can register its checks after the rollup
+first turns green.
 
 All requests go through the gh CLI, so the script works wherever gh works.
 The first poll emits the PR's existing comments, reviews, and failing checks
@@ -147,14 +148,17 @@ def poll_pr(
     # GitHub counts a "neutral" conclusion as passing.
     sha = view["headRefOid"]
     passed = f"passed:{sha}"
+    green = f"green:{sha}"
     if passed not in seen and results and all(r in {"success", "skipped", "neutral"} for _, r in results):
         # A slow workflow can register its checks after a fast one turns the
-        # rollup green.
-        if f"green:{sha}" in seen:
+        # rollup green, so require green on two consecutive polls.
+        if green in seen:
             seen.add(passed)
             emit(f"PR #{pr} all checks passed for {sha[:7]}")
         else:
-            seen.add(f"green:{sha}")
+            seen.add(green)
+    else:
+        seen.discard(green)
 
     return True
 

@@ -61,7 +61,7 @@ merged or closed. It suppresses comments and reviews by the PR's own author
 (your own replies). It reports CI failures. It also prints one "all checks
 passed" line per head commit once every check on it concludes success,
 skipped, or neutral; the line arrives one poll late because the watcher
-confirms the green rollup on a second poll. A PR with no checks never
+requires the green rollup on two consecutive polls. A PR with no checks never
 prints that line, so read `gh pr checks` yourself when you are unsure.
 The first poll emits the PR's existing comments, reviews, and failing
 checks as a baseline: triage that batch like any other events. A PR that

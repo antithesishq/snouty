@@ -154,7 +154,11 @@ impl Params {
         }
         let re = regex::Regex::new(value).map_err(|err| {
             let report = user_error(format!("{key} is not a valid regular expression: {err}"));
-            if has_backtracking_construct(value) {
+            // The regex crate names the two backtracking constructs RE2 also
+            // rejects; on those, explain the platform limit instead of leaving
+            // a bare parse error.
+            let msg = err.to_string();
+            if msg.contains("look-around") || msg.contains("backreference") {
                 report
                     .note(
                         "the platform matches with RE2, which does not backtrack: \
@@ -170,15 +174,25 @@ impl Params {
                 "{key} matches the empty string, which would suppress every log line"
             )));
         }
-
-        if let Some(body) = js_regex_literal_body(value) {
-            eprintln!(
-                "Warning: {key} is raw regex text, so in {value} the slashes are \
-                 literal and the trailing flags never take effect; use inline \
-                 flags instead, e.g. (?i){body}."
-            );
-        }
         Ok(())
+    }
+
+    /// Warn when `antithesis.filter_logs_matching` is the JS regex-literal
+    /// form `/body/flags`: the value is sent as raw regex text, so the
+    /// slashes match literally and the flags never take effect. Returns the
+    /// warning text for the command layer to print, `None` when the pattern
+    /// is absent or unremarkable.
+    pub fn filter_logs_warning(&self) -> Option<String> {
+        let key = ANT_FILTER_LOGS_MATCHING;
+        let value = self.inner.get(key).and_then(Value::as_str)?;
+        let body = js_regex_literal_body(value)?;
+        Some(format!(
+            "Warning: {key} is raw regex text, so in {} the slashes are \
+             literal and the trailing flags never take effect; use inline \
+             flags instead, e.g. (?i){}.",
+            crate::render::sanitize(value),
+            crate::render::sanitize(body)
+        ))
     }
 
     /// Ensure the debugging target run is identified by exactly one of
@@ -242,19 +256,6 @@ impl Params {
             })
             .collect()
     }
-}
-
-/// Detect the constructs RE2 rejects because they require backtracking:
-/// lookahead/lookbehind and backreferences. Only consulted after the pattern
-/// already failed to compile, to pick a tailored note over a raw parse error.
-fn has_backtracking_construct(pattern: &str) -> bool {
-    ["(?=", "(?!", "(?<=", "(?<!"]
-        .iter()
-        .any(|t| pattern.contains(t))
-        || pattern
-            .as_bytes()
-            .windows(2)
-            .any(|w| w[0] == b'\\' && w[1].is_ascii_digit() && w[1] != b'0')
 }
 
 /// If the pattern is the JS regex-literal form `/body/flags` (flags
@@ -837,15 +838,20 @@ mod tests {
         }
     }
 
+    /// Run `validate_filter_logs_matching` against a single pattern.
+    fn validate_filter(pattern: &str) -> Result<()> {
+        let mut params = Params::new();
+        params.insert(ANT_FILTER_LOGS_MATCHING, pattern);
+        params.validate_filter_logs_matching()
+    }
+
     #[test]
     fn validate_filter_logs_matching_accepts_valid_patterns() {
         // Absent is fine — the param is optional.
         assert!(Params::new().validate_filter_logs_matching().is_ok());
         for pattern in ["debug", "(?i)error", "panic|fatal"] {
-            let mut params = Params::new();
-            params.insert(ANT_FILTER_LOGS_MATCHING, pattern);
             assert!(
-                params.validate_filter_logs_matching().is_ok(),
+                validate_filter(pattern).is_ok(),
                 "pattern should be accepted: {pattern}"
             );
         }
@@ -854,9 +860,7 @@ mod tests {
     #[test]
     fn validate_filter_logs_matching_rejects_a_blank_pattern() {
         for pattern in ["", "  "] {
-            let mut params = Params::new();
-            params.insert(ANT_FILTER_LOGS_MATCHING, pattern);
-            let err = params.validate_filter_logs_matching().unwrap_err();
+            let err = validate_filter(pattern).unwrap_err();
             assert!(
                 err.to_string().contains("is empty"),
                 "unexpected error for {pattern:?}: {err}"
@@ -869,24 +873,18 @@ mod tests {
         // The guest buffer is 1024 bytes including the NUL terminator, so the
         // limit is 1023 *bytes*: 512 two-byte chars (1024 bytes) must fail
         // even though the char count is far below the limit.
-        let mut params = Params::new();
-        params.insert(ANT_FILTER_LOGS_MATCHING, "é".repeat(512));
-        let err = params.validate_filter_logs_matching().unwrap_err();
+        let err = validate_filter(&"é".repeat(512)).unwrap_err();
         assert!(
             err.to_string().contains("1024 bytes (max 1023)"),
             "unexpected error: {err}"
         );
 
-        let mut params = Params::new();
-        params.insert(ANT_FILTER_LOGS_MATCHING, "a".repeat(1023));
-        assert!(params.validate_filter_logs_matching().is_ok());
+        assert!(validate_filter(&"a".repeat(1023)).is_ok());
     }
 
     #[test]
     fn validate_filter_logs_matching_rejects_an_invalid_regex() {
-        let mut params = Params::new();
-        params.insert(ANT_FILTER_LOGS_MATCHING, "(");
-        let err = params.validate_filter_logs_matching().unwrap_err();
+        let err = validate_filter("(").unwrap_err();
         assert!(
             err.to_string()
                 .contains("is not a valid regular expression"),
@@ -900,9 +898,7 @@ mod tests {
         // must say *why* (RE2 does not backtrack), not just echo the parse
         // error. Notes are color_eyre sections, visible in the Debug format.
         for pattern in ["(?=ready)", "(?!x)", "(?<=a)", "(?<!a)", r"(a)\1"] {
-            let mut params = Params::new();
-            params.insert(ANT_FILTER_LOGS_MATCHING, pattern);
-            let err = format!("{:?}", params.validate_filter_logs_matching().unwrap_err());
+            let err = format!("{:?}", validate_filter(pattern).unwrap_err());
             assert!(
                 err.contains("RE2"),
                 "expected an RE2 note for {pattern}: {err}"
@@ -914,14 +910,25 @@ mod tests {
     fn validate_filter_logs_matching_rejects_an_empty_string_match() {
         // These compile fine and then suppress every log line.
         for pattern in ["x*", "(foo)?"] {
-            let mut params = Params::new();
-            params.insert(ANT_FILTER_LOGS_MATCHING, pattern);
-            let err = params.validate_filter_logs_matching().unwrap_err();
+            let err = validate_filter(pattern).unwrap_err();
             assert!(
                 err.to_string().contains("matches the empty string"),
                 "unexpected error for {pattern}: {err}"
             );
         }
+    }
+
+    #[test]
+    fn filter_logs_warning_flags_only_the_js_literal_form() {
+        assert!(Params::new().filter_logs_warning().is_none());
+
+        let mut params = Params::new();
+        params.insert(ANT_FILTER_LOGS_MATCHING, "debug");
+        assert!(params.filter_logs_warning().is_none());
+
+        params.insert(ANT_FILTER_LOGS_MATCHING, "/error/i");
+        let warning = params.filter_logs_warning().unwrap();
+        assert!(warning.contains("(?i)error"), "{warning}");
     }
 
     #[test]
@@ -935,21 +942,15 @@ mod tests {
         assert_eq!(js_regex_literal_body("error"), None);
     }
 
-    /// A pattern `validate_filter_logs_matching` accepts is one the platform
-    /// accepts too: non-blank, within the guest's 1023-byte limit, compiled
-    /// by the RE2-family engine, and not a match for the empty string. And
-    /// for *any* input, valid or not, validation returns instead of panicking.
+    /// For *any* input — however far from a regex — validation and the
+    /// warning check return instead of panicking.
     #[hegel::test]
-    fn accepted_filter_patterns_satisfy_the_platform_checks(tc: hegel::TestCase) {
+    fn filter_validation_never_panics(tc: hegel::TestCase) {
         let pattern = tc.draw(generators::text());
         let mut params = Params::new();
-        params.insert(ANT_FILTER_LOGS_MATCHING, pattern.clone());
-        if params.validate_filter_logs_matching().is_ok() {
-            assert!(!pattern.trim().is_empty());
-            assert!(pattern.len() <= 1023);
-            let re = regex::Regex::new(&pattern).expect("accepted pattern must compile");
-            assert!(!re.is_match(""));
-        }
+        params.insert(ANT_FILTER_LOGS_MATCHING, pattern);
+        let _ = params.validate_filter_logs_matching();
+        let _ = params.filter_logs_warning();
     }
 
     #[test]

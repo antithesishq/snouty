@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use color_eyre::eyre::{Context, Report, Result, eyre};
 use color_eyre::{Section, SectionExt};
-use futures_util::stream;
+use futures_util::{StreamExt, stream};
 use log::debug;
 use progenitor_client::{
     ClientHooks, ClientInfo, Error as ClientError, OperationInfo, ResponseValue,
@@ -359,13 +359,31 @@ pub(crate) enum ResponseCache {
 }
 
 /// Where [`AntithesisApi::get_run_logs`] starts streaming from, instead of
-/// the timeline's earliest log entry. The vtime alone is enough; the input
+/// the root. The vtime alone is enough; the input
 /// hash is an optimization the endpoint accepts only alongside it, which is
 /// why this is not a [`Moment`].
 #[derive(Clone, Debug, serde::Serialize)]
 pub struct LogsBegin {
     pub vtime: VTime,
     pub input_hash: Option<String>,
+}
+
+/// End `stream` at the first line whose `moment.vtime` is past `end`. The
+/// endpoint streams in chronological order, so nothing at or before the end
+/// follows a line past it. A line with no vtime (a `Stream_Error`) is never
+/// past the end: error objects must reach the user.
+fn truncate_at_end_vtime(stream: JsonStream, end: VTime) -> JsonStream {
+    stream
+        .take_while(move |item| {
+            let keep = match item {
+                Ok(value) => {
+                    VTime::from_json(&value["moment"]["vtime"]).is_none_or(|vtime| vtime <= end)
+                }
+                Err(_) => true,
+            };
+            futures_util::future::ready(keep)
+        })
+        .boxed()
 }
 
 pub struct AntithesisApi {
@@ -570,6 +588,12 @@ impl AntithesisApi {
     /// The endpoint takes each vtime as a decimal-seconds query parameter. The
     /// generated setters accept anything that converts to `String`, and
     /// [`VTime`]'s conversion is its exact `Display` text.
+    ///
+    /// The endpoint streams the branch's logs past the moment's vtime, so a
+    /// nonzero vtime is enforced here as the stream's end, upstream of the
+    /// `#[cached]` tee — the truncation is what makes the cached stream
+    /// immutable. The `0` placeholder asks for the branch's current end,
+    /// which can still move forward: never cached.
     #[cached(stream)]
     pub async fn get_run_logs(
         &self,
@@ -577,6 +601,7 @@ impl AntithesisApi {
         moment: Moment,
         begin: Option<LogsBegin>,
     ) -> Result<Tagged<JsonStream, CachePolicy>> {
+        let end = (moment.vtime != VTime::ZERO).then_some(moment.vtime);
         let mut request = self
             .client
             .get_run_logs()
@@ -592,7 +617,12 @@ impl AntithesisApi {
 
         match request.send().await {
             Ok(response) => {
-                Ok(json_lines(response.into_inner().into_inner()).with_tag(CachePolicy::Cacheable))
+                let stream = json_lines(response.into_inner().into_inner());
+                let stream = match end {
+                    Some(end) => truncate_at_end_vtime(stream, end),
+                    None => stream,
+                };
+                Ok(stream.with_tag(CachePolicy::cache_if(end.is_some())))
             }
             Err(err) => Err(format_api_client_error(err).await),
         }
@@ -2527,10 +2557,12 @@ mod tests {
         stream.try_collect::<Vec<_>>().await.unwrap()
     }
 
+    /// A moment with a pinned end vtime, past every mock log line: the
+    /// stream is admissible to the cache and passes the truncation whole.
     fn logs_moment() -> Moment {
         Moment {
             input_hash: "hash-1".to_owned(),
-            vtime: VTime::ZERO,
+            vtime: "500.0".parse().unwrap(),
         }
     }
 
@@ -2602,6 +2634,111 @@ mod tests {
             read_stream(second).await,
             [serde_json::json!({"text": "log line"})]
         );
+    }
+
+    #[tokio::test]
+    async fn run_logs_without_an_end_vtime_are_not_cached() {
+        // The `0` placeholder means "no end vtime": the branch can still
+        // grow, so every request hits the server.
+        let mock_server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v0/runs/run-1/logs"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("{\"text\":\"log line\"}\n"))
+            .expect(2)
+            .mount(&mock_server)
+            .await;
+
+        let cache_dir = TempDir::new().unwrap();
+        let api = test_api_optionally_with_cache(&mock_server, Some(&cache_dir));
+
+        let moment = || Moment {
+            input_hash: "hash-1".to_owned(),
+            vtime: VTime::ZERO,
+        };
+        for _ in 0..2 {
+            let tagged = api.get_run_logs("run-1", moment(), None).await.unwrap();
+            assert!(matches!(tagged.tag(), CachePolicy::Uncacheable));
+            assert_eq!(
+                read_stream(tagged.untag()).await,
+                [serde_json::json!({"text": "log line"})]
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn run_logs_truncate_at_the_end_vtime_and_cache_the_truncation() {
+        // The server streams the branch past the end vtime; snouty cuts the
+        // stream at the first line past it, and the cache stores the
+        // truncated stream.
+        let line = |vtime: &str| {
+            format!(r#"{{"text":"at {vtime}","moment":{{"input_hash":"-1","vtime":"{vtime}"}}}}"#)
+        };
+        let body = format!("{}\n{}\n{}\n", line("1.0"), line("2.0"), line("3.0"));
+        let mock_server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v0/runs/run-1/logs"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(body))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let cache_dir = TempDir::new().unwrap();
+        let api = test_api_optionally_with_cache(&mock_server, Some(&cache_dir));
+
+        let moment = || Moment {
+            input_hash: "-1".to_owned(),
+            // The end vtime is inclusive: the moment's own events must print.
+            vtime: "2.0".parse().unwrap(),
+        };
+        let expected: Vec<serde_json::Value> = [line("1.0"), line("2.0")]
+            .iter()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect();
+        // First read truncates the live stream and commits it; the second is
+        // the cached replay of the truncated stream.
+        for _ in 0..2 {
+            let stream = api
+                .get_run_logs("run-1", moment(), None)
+                .await
+                .unwrap()
+                .untag();
+            assert_eq!(read_stream(stream).await, expected);
+        }
+    }
+
+    // ---- end-vtime truncation ---------------------------------------------
+
+    /// One parsed log line at `vtime`.
+    fn log_value(vtime: &str) -> serde_json::Value {
+        serde_json::json!({"text": format!("at {vtime}"), "moment": {"input_hash": "-1", "vtime": vtime}})
+    }
+
+    #[tokio::test]
+    async fn truncation_keeps_lines_at_or_before_the_end_and_stops_the_source() {
+        let source = stream::iter([
+            Ok(log_value("1.0")),
+            Ok(log_value("2.0")),
+            Ok(log_value("3.0")),
+        ])
+        // The tail panics if polled: reaching the line past the end must
+        // end the stream, not read on.
+        .chain(stream::once(async {
+            panic!("the source was polled past the truncation point")
+        }))
+        .boxed();
+        let kept = read_stream(truncate_at_end_vtime(source, "2.0".parse().unwrap())).await;
+        // The end vtime is inclusive: the moment's own events must print.
+        assert_eq!(kept, [log_value("1.0"), log_value("2.0")]);
+    }
+
+    #[tokio::test]
+    async fn truncation_passes_lines_without_a_vtime_through() {
+        // A Stream_Error has no moment; it must reach the user, not be
+        // swallowed by the truncation.
+        let error_line = serde_json::json!({"error": "boom"});
+        let source = stream::iter([Ok(log_value("1.0")), Ok(error_line.clone())]).boxed();
+        let kept = read_stream(truncate_at_end_vtime(source, "5.0".parse().unwrap())).await;
+        assert_eq!(kept, [log_value("1.0"), error_line]);
     }
 
     #[tokio::test]

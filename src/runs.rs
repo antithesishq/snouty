@@ -134,7 +134,12 @@ pub async fn cmd_runs(
             begin_input_hash,
             ..
         }) => {
-            let moment = Moment { input_hash, vtime };
+            // The endpoint requires a vtime; `0` is the placeholder for "no
+            // end moment".
+            let moment = Moment {
+                input_hash,
+                vtime: vtime.unwrap_or(VTime::ZERO),
+            };
             // clap enforces `begin_input_hash requires begin_vtime`, so mapping
             // over the vtime cannot drop a supplied hash.
             let begin = begin_vtime.map(|vtime| LogsBegin {

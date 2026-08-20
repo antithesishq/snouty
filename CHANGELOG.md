@@ -1,5 +1,6 @@
 # Unreleased
 
+- Make VTIME optional on `snouty runs logs`: omit it to stream to the branch's current end. ([#264](https://github.com/antithesishq/snouty/issues/264))
 - GET requests that fail with a transient network error (a connect error, reset, or DNS blip) are retried up to 3 times with backoff ([#249](https://github.com/antithesishq/snouty/issues/249))
 
 - Converge the human output of `runs logs`, `runs events`, and `runs search` on one event-aware renderer. Each event is rendered as a concise colored block. A new `-d/--detail` flag on all three commands adds full-width vtimes, source locations, attached details JSON, and the composer's captured stdout/stderr. `runs build-logs` shares the same visual grammar. Three breaking changes: `--raw` on `runs logs` now requires `--json` (raw output IS the server's NDJSON stream); the human empty-result note ("No events matched…", "No log lines…") prints to stderr instead of stdout; and the human log line no longer shows the source's stream (out/err) — `--json` carries it ([#222](https://github.com/antithesishq/snouty/pull/222))

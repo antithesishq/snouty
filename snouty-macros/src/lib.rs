@@ -8,24 +8,29 @@
 //! must take every request-shaping value as a parameter, never read one
 //! from a constant or global the key cannot see.
 //!
-//! ```ignore
-//! #[cached(value, admit = |detail: &RunDetail| detail.status.is_terminal())]
-//! pub async fn get_run(&self, run_id: &str) -> Result<RunDetail> { ... }
+//! The cache stores nothing untagged: the method's body must evaluate to
+//! `Result<Tagged<T>>` — the fetched value plus the handler's own admission
+//! verdict — while the signature declares the `Result<T>` the caller sees.
+//! Admission therefore lives in the handler, next to the response, where a
+//! future policy can also read the response's headers.
 //!
-//! #[cached(stream)]
-//! pub async fn get_run_logs(&self, run_id: &str, moment: Moment) -> Result<JsonStream> { ... }
+//! ```ignore
+//! #[cached(value)]
+//! pub async fn get_run(&self, run_id: &str) -> Result<RunDetail> {
+//!     // ...fetch, then tag:
+//!     Ok(Tagged { value: detail, cache_policy })
+//! }
 //! ```
 //!
 //! `value` caches the `Ok` payload as one JSON object; `stream` replays a
-//! cached `JsonStream` and tees a fresh one. `admit` (value mode only) gates
-//! the store on the fetched payload; a stream needs no admission — it
-//! commits only when read to its end. The method must be async, take
-//! `&self` with a `cache` field of `ApiCache`, and return a `Result`.
+//! cached `JsonStream` and tees a fresh one, committing only when it is
+//! read to its end. The method must be async and take `&self` with a
+//! `cache` field of `ApiCache`.
 
 use proc_macro::TokenStream;
 use quote::quote;
 use syn::parse::{Parse, ParseStream};
-use syn::{Expr, FnArg, ItemFn, Pat, ReturnType, Token, parse_macro_input};
+use syn::{FnArg, ItemFn, Pat, parse_macro_input};
 
 enum Mode {
     Value,
@@ -34,7 +39,6 @@ enum Mode {
 
 struct Args {
     mode: Mode,
-    admit: Option<Expr>,
 }
 
 impl Parse for Args {
@@ -45,30 +49,10 @@ impl Parse for Args {
             "stream" => Mode::Stream,
             _ => return Err(syn::Error::new(mode.span(), "expected `value` or `stream`")),
         };
-        let mut admit = None;
-        if input.peek(Token![,]) {
-            input.parse::<Token![,]>()?;
-            let name: syn::Ident = input.parse()?;
-            if name != "admit" {
-                return Err(syn::Error::new(
-                    name.span(),
-                    "expected `admit = <predicate>`",
-                ));
-            }
-            input.parse::<Token![=]>()?;
-            let predicate: Expr = input.parse()?;
-            if matches!(mode, Mode::Stream) {
-                return Err(syn::Error::new_spanned(
-                    &predicate,
-                    "`admit` applies to `value` mode only; a stream commits when it is read to its end",
-                ));
-            }
-            admit = Some(predicate);
-        }
         if !input.is_empty() {
             return Err(input.error("unexpected trailing tokens"));
         }
-        Ok(Self { mode, admit })
+        Ok(Self { mode })
     }
 }
 
@@ -118,12 +102,6 @@ fn expand(args: Args, func: ItemFn) -> syn::Result<proc_macro2::TokenStream> {
             "a cached handler takes &self; the cache lives on it",
         ));
     }
-    let ReturnType::Type(_, ret_ty) = &sig.output else {
-        return Err(syn::Error::new_spanned(
-            &sig,
-            "a cached handler returns a Result",
-        ));
-    };
     let operation = sig.ident.to_string();
 
     // The key is built before the body runs: the body may consume the
@@ -132,49 +110,43 @@ fn expand(args: Args, func: ItemFn) -> syn::Result<proc_macro2::TokenStream> {
         let __cache_key = self.cache.key(#operation, &( #( &#params, )* ));
     };
     // The body becomes an awaited block so every exit — tail expression,
-    // `?`, and `return` — funnels into `__result` and passes the store.
+    // `?`, and `return` — funnels into one `Result<Tagged<T>>` that passes
+    // the store.
     let body = quote! { (async move #block).await };
 
-    let expanded_block = match args.mode {
-        Mode::Value => {
-            let store = match args.admit {
-                Some(admit) => quote! {
-                    let __admit = #admit;
-                    if let ::std::result::Result::Ok(__value) = &__result
-                        && __admit(__value)
-                    {
-                        self.cache.store_value(&__cache_key, __value).await;
-                    }
-                },
-                None => quote! {
-                    if let ::std::result::Result::Ok(__value) = &__result {
-                        self.cache.store_value(&__cache_key, __value).await;
-                    }
-                },
-            };
-            quote! {{
-                #key
-                if let ::std::option::Option::Some(__cached) =
-                    self.cache.lookup_value(&__cache_key).await
-                {
-                    return ::std::result::Result::Ok(__cached);
-                }
-                let __result: #ret_ty = #body;
-                #store
-                __result
-            }}
-        }
-        Mode::Stream => quote! {{
-            #key
-            if let ::std::option::Option::Some(__stream) =
-                self.cache.lookup_stream(&__cache_key).await
-            {
-                return ::std::result::Result::Ok(__stream);
-            }
-            let __result: #ret_ty = #body;
-            __result.map(|__stream| self.cache.store_stream(__cache_key, __stream))
-        }},
+    let lookup = match args.mode {
+        Mode::Value => quote! { self.cache.lookup_value(&__cache_key).await },
+        Mode::Stream => quote! { self.cache.lookup_stream(&__cache_key).await },
     };
+    let store = match args.mode {
+        Mode::Value => quote! {
+            if ::std::matches!(
+                __tagged.cache_policy,
+                crate::api_cache::CachePolicy::Cacheable
+            ) {
+                self.cache.store_value(&__cache_key, &__tagged.value).await;
+            }
+            ::std::result::Result::Ok(__tagged.value)
+        },
+        Mode::Stream => quote! {
+            ::std::result::Result::Ok(match __tagged.cache_policy {
+                crate::api_cache::CachePolicy::Cacheable => {
+                    self.cache.store_stream(__cache_key, __tagged.value)
+                }
+                crate::api_cache::CachePolicy::Uncacheable => __tagged.value,
+            })
+        },
+    };
+    let expanded_block = quote! {{
+        #key
+        if let ::std::option::Option::Some(__cached) = #lookup {
+            return ::std::result::Result::Ok(__cached);
+        }
+        match #body {
+            ::std::result::Result::Ok(__tagged) => { #store }
+            ::std::result::Result::Err(__err) => ::std::result::Result::Err(__err),
+        }
+    }};
 
     Ok(quote! {
         #(#attrs)* #vis #sig #expanded_block

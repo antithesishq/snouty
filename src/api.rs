@@ -13,7 +13,7 @@ use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use reqwest::{Client, Proxy};
 use serde::de::DeserializeOwned;
 
-use crate::api_cache::{self, ApiCache};
+use crate::api_cache::{self, ApiCache, CachePolicy, Tagged};
 use crate::auth::{AuthenticationInfo, PasswordPolicy};
 use crate::env;
 use crate::error::{ApiError, user_error};
@@ -494,11 +494,23 @@ impl AntithesisApi {
         })
     }
 
-    // A run detail is immutable only once the run reaches a terminal status.
-    #[cached(value, admit = |detail: &RunDetail| detail.status.is_terminal())]
+    #[cached(value)]
     pub async fn get_run(&self, run_id: &str) -> Result<RunDetail> {
         match self.client.get_run().run_id(run_id).send().await {
-            Ok(response) => Ok(response.into_inner()),
+            Ok(response) => {
+                let detail = response.into_inner();
+                // A run detail is immutable only once the run reaches a
+                // terminal status.
+                let cache_policy = if detail.status.is_terminal() {
+                    CachePolicy::Cacheable
+                } else {
+                    CachePolicy::Uncacheable
+                };
+                Ok(Tagged {
+                    value: detail,
+                    cache_policy,
+                })
+            }
             Err(err) => Err(format_api_client_error(err).await),
         }
     }
@@ -551,7 +563,7 @@ impl AntithesisApi {
         // 200 from the server, so no cache entry can exist for it.
         ensure_resource_supported(run_id, MIN_BUILD_LOGS_VERSION, "build logs")?;
         match self.client.get_run_build_logs().run_id(run_id).send().await {
-            Ok(response) => Ok(JsonStream::new(response.into_inner())),
+            Ok(response) => Ok(Tagged::cacheable(JsonStream::new(response.into_inner()))),
             Err(err) => Err(format_api_client_error(err).await),
         }
     }
@@ -580,7 +592,7 @@ impl AntithesisApi {
         }
 
         match request.send().await {
-            Ok(response) => Ok(JsonStream::new(response.into_inner())),
+            Ok(response) => Ok(Tagged::cacheable(JsonStream::new(response.into_inner()))),
             Err(err) => Err(format_api_client_error(err).await),
         }
     }
@@ -621,8 +633,6 @@ impl AntithesisApi {
         run_id: &str,
         status: Option<PropertyStatus>,
     ) -> impl futures_util::Stream<Item = Result<Property>> + '_ {
-        // The stream walks every page, so ask for the server's maximum
-        // page size (the spec caps `limit` at 100).
         const MAX_PAGE_LIMIT: u64 = 100;
         let run_id = run_id.to_string();
         paginate(move |after| {
@@ -767,7 +777,7 @@ impl AntithesisApi {
         }
 
         match request.send().await {
-            Ok(response) => Ok(response.into_inner()),
+            Ok(response) => Ok(Tagged::cacheable(response.into_inner())),
             Err(err) => Err(format_api_client_error(err).await),
         }
     }

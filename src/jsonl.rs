@@ -13,7 +13,7 @@ use std::task::{Context, Poll};
 
 use bytes::Bytes;
 use color_eyre::Section;
-use color_eyre::eyre::{Result, eyre};
+use color_eyre::eyre::{Report, Result, eyre};
 use futures_util::stream::BoxStream;
 use futures_util::{Stream, StreamExt};
 use serde_json::Value;
@@ -33,11 +33,12 @@ impl JsonStream {
     }
 
     /// Wrap any chunk stream; the constructor tests and non-HTTP callers use.
-    pub fn from_stream(
-        stream: impl Stream<Item = reqwest::Result<Bytes>> + Send + 'static,
-    ) -> Self {
+    pub fn from_stream<E>(stream: impl Stream<Item = Result<Bytes, E>> + Send + 'static) -> Self
+    where
+        E: std::error::Error + Send + Sync + 'static,
+    {
         Self::from_values(LineParser {
-            inner: stream.boxed(),
+            inner: stream.map(|item| item.map_err(Report::from)).boxed(),
             buf: Vec::new(),
             done: false,
         })
@@ -63,7 +64,7 @@ impl Stream for JsonStream {
 /// The byte-to-line half of [`JsonStream::from_stream`]: splits the HTTP
 /// chunk stream on newlines and parses each line.
 struct LineParser {
-    inner: BoxStream<'static, reqwest::Result<Bytes>>,
+    inner: BoxStream<'static, Result<Bytes>>,
     buf: Vec<u8>,
     done: bool,
 }
@@ -90,7 +91,7 @@ impl Stream for LineParser {
             }
             match this.inner.poll_next_unpin(cx) {
                 Poll::Ready(Some(Ok(chunk))) => this.buf.extend_from_slice(&chunk),
-                Poll::Ready(Some(Err(err))) => return Poll::Ready(Some(Err(err.into()))),
+                Poll::Ready(Some(Err(err))) => return Poll::Ready(Some(Err(err))),
                 Poll::Ready(None) => this.done = true,
                 Poll::Pending => return Poll::Pending,
             }

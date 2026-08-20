@@ -24,7 +24,6 @@ use futures_util::StreamExt;
 use log::{debug, warn};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
-use serde_json::Value;
 
 use crate::env;
 use crate::jsonl::JsonStream;
@@ -61,6 +60,31 @@ pub fn default_dir() -> Option<PathBuf> {
         .flatten()
         .map(PathBuf::from);
     Some(base?.join("snouty").join(CACHE_DIR_NAME))
+}
+
+/// A handler's admission verdict on the value it fetched. The cache stores
+/// nothing untagged: `#[cached]` requires the handler body to return a
+/// [`Tagged`] value, so admission lives in the handler — next to the
+/// response, where a future policy can also read its headers.
+#[derive(Clone, Copy, Debug)]
+pub enum CachePolicy {
+    Cacheable,
+    Uncacheable,
+}
+
+/// A fetched value carrying its [`CachePolicy`].
+pub struct Tagged<T> {
+    pub value: T,
+    pub cache_policy: CachePolicy,
+}
+
+impl<T> Tagged<T> {
+    pub fn cacheable(value: T) -> Self {
+        Self {
+            value,
+            cache_policy: CachePolicy::Cacheable,
+        }
+    }
 }
 
 /// A cache entry's identity: the operation, the handler's parameters, the
@@ -140,21 +164,6 @@ impl ApiCache {
         }
     }
 
-    /// Read `key`'s entry, evicting on any read error. `cacache` verifies
-    /// content integrity on read, so bytes that come back are the bytes that
-    /// were committed.
-    async fn read(&self, key: &CacheKey) -> Option<Vec<u8>> {
-        match cacache::read(self.dir.as_ref()?, &key.key).await {
-            Ok(bytes) => Some(bytes),
-            Err(cacache::Error::EntryNotFound(..)) => None,
-            Err(err) => {
-                warn!("API cache read failed for {key}, bypassing cache: {err}");
-                self.evict(key).await;
-                None
-            }
-        }
-    }
-
     /// Evict `key` so a broken entry does not stay broken forever.
     async fn evict(&self, key: &CacheKey) {
         let Some(dir) = &self.dir else { return };
@@ -172,33 +181,29 @@ impl ApiCache {
         }
     }
 
-    /// Read and parse `key`'s entry, evicting an entry that no longer parses
-    /// so the fresh response can replace it.
-    async fn read_parsed<T>(
-        &self,
-        key: &CacheKey,
-        parse: impl FnOnce(&[u8]) -> serde_json::Result<T>,
-    ) -> Option<T> {
-        let bytes = self.read(key).await?;
-        match parse(&bytes) {
-            Ok(value) => Some(value),
+    /// The cached value under `key`, deserialized. Returns `None` if the key
+    /// doesn't exist or is unusable.
+    pub async fn lookup_value<T: DeserializeOwned>(&self, key: &CacheKey) -> Option<T> {
+        let bytes = match cacache::read(self.dir.as_ref()?, &key.key).await {
+            Ok(bytes) => bytes,
+            Err(cacache::Error::EntryNotFound(..)) => return None,
+            Err(err) => {
+                warn!("API cache read failed for {key}, bypassing cache: {err}");
+                self.evict(key).await;
+                return None;
+            }
+        };
+        match serde_json::from_slice(&bytes) {
+            Ok(value) => {
+                self.note_hit(key);
+                Some(value)
+            }
             Err(err) => {
                 warn!("API cache entry for {key} does not parse, evicting: {err}");
                 self.evict(key).await;
                 None
             }
         }
-    }
-
-    /// The cached value under `key`, deserialized. `None` means "send the
-    /// request": a miss, any cache error, or an entry the current type no
-    /// longer parses.
-    pub async fn lookup_value<T: DeserializeOwned>(&self, key: &CacheKey) -> Option<T> {
-        let value = self
-            .read_parsed(key, |bytes| serde_json::from_slice(bytes))
-            .await?;
-        self.note_hit(key);
-        Some(value)
     }
 
     /// Store `value` under `key`. Never fails: an oversized or unwritable
@@ -213,21 +218,22 @@ impl ApiCache {
         }
     }
 
-    /// Replay the stream cached under `key`, or `None` on a miss or any
-    /// cache error. The entry is parsed up front — it is already fully in
-    /// memory, and an unparsable entry becomes a miss instead of failing
-    /// the stream partway.
+    /// Replay the stream cached under `key`, or `None` if the key doesn't
+    /// exist or is unusable at open. The entry streams from disk; a read
+    /// failure after open fails the replayed stream.
     pub async fn lookup_stream(&self, key: &CacheKey) -> Option<JsonStream> {
-        let values: Vec<Value> = self
-            .read_parsed(key, |bytes| {
-                serde_json::Deserializer::from_slice(bytes)
-                    .into_iter()
-                    .collect()
-            })
-            .await?;
+        let reader = match cacache::Reader::open(self.dir.as_ref()?, &key.key).await {
+            Ok(reader) => reader,
+            Err(cacache::Error::EntryNotFound(..)) => return None,
+            Err(err) => {
+                warn!("API cache read failed for {key}, bypassing cache: {err}");
+                self.evict(key).await;
+                return None;
+            }
+        };
         self.note_hit(key);
-        Some(JsonStream::from_values(futures_util::stream::iter(
-            values.into_iter().map(Ok),
+        Some(JsonStream::from_stream(tokio_util::io::ReaderStream::new(
+            reader,
         )))
     }
 
@@ -281,6 +287,7 @@ impl ApiCache {
 mod tests {
     use super::*;
     use futures_util::TryStreamExt;
+    use serde_json::Value;
     use tempfile::TempDir;
 
     fn test_cache(dir: &TempDir) -> ApiCache {

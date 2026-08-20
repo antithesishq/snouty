@@ -71,16 +71,17 @@ pub fn default_dir() -> Option<PathBuf> {
 }
 
 /// Whether `Cache-Control` lets a private client cache hold the response:
-/// a positive freshness lifetime (`max-age` > 0, or `immutable`) and neither
-/// `no-store` nor `no-cache` (never revalidated, so "revalidate before use"
-/// means "do not cache"). An absent or malformed header grants nothing.
+/// a positive freshness lifetime (`max-age` > 0, or `immutable`) and none of
+/// `no-store`, `no-cache`, or `must-revalidate` — entries are never
+/// revalidated and never expire, so any directive that demands revalidation
+/// means "do not cache". An absent or malformed header grants nothing.
 /// `private` is fine — the cache directory is per-user.
 fn cache_headers_allow(headers: &http::HeaderMap) -> bool {
     use headers::{CacheControl, HeaderMapExt};
     let Some(cache_control) = headers.typed_get::<CacheControl>() else {
         return false;
     };
-    if cache_control.no_store() || cache_control.no_cache() {
+    if cache_control.no_store() || cache_control.no_cache() || cache_control.must_revalidate() {
         return false;
     }
     cache_control.immutable() || cache_control.max_age().is_some_and(|age| !age.is_zero())
@@ -446,16 +447,20 @@ mod tests {
         assert!(!cache_headers_allow(&cache_control("not a directive ===")));
     }
 
-    // snouty never revalidates an entry, so "cache but revalidate before use"
-    // must read as "do not cache" — even next to a positive lifetime.
+    // snouty never revalidates an entry and never expires one, so any
+    // directive that demands revalidation must read as "do not cache" —
+    // even next to a positive lifetime.
     #[test]
-    fn no_cache_and_no_store_deny_caching() {
+    fn revalidation_directives_deny_caching() {
         assert!(!cache_headers_allow(&cache_control("no-cache")));
         assert!(!cache_headers_allow(&cache_control("no-store")));
         assert!(!cache_headers_allow(&cache_control(
             "no-cache, max-age=3600"
         )));
         assert!(!cache_headers_allow(&cache_control("no-store, immutable")));
+        assert!(!cache_headers_allow(&cache_control(
+            "max-age=3600, must-revalidate"
+        )));
     }
 
     // The key separates tenants, operations, and every parameter; only a

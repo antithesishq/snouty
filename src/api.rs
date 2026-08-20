@@ -2882,10 +2882,13 @@ mod tests {
 
     #[tokio::test]
     async fn the_run_list_is_never_cached() {
+        // The live API sends `no-cache` on the list; the test stamps
+        // cacheable headers anyway to prove the exclusion is by design (the
+        // list is not a cached handler), not by the header gate.
         let mock_server = MockServer::start().await;
         Mock::given(method("GET"))
             .and(path("/api/v0/runs"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            .respond_with(cacheable().set_body_json(serde_json::json!({
                 "data": [run_detail_body("completed")],
                 "next_cursor": null
             })))

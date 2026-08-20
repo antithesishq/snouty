@@ -1,19 +1,20 @@
 #!/usr/bin/env -S uv run
 """Poll one or more pull requests and print one line per new event.
 
-Events: comments, review comments, reviews, failed CI checks, all checks
-passed, base branch changes, and close/merge. Output is one line per event,
-so a background monitor can react line by line. An event line carries only
-metadata — the reader fetches the full content through gh.
+Events: comments, review comments, reviews, failed CI checks, check
+verdicts ("all checks passed", "has no checks"), base branch changes, and
+close/merge. Output is one line per event, so a background monitor can
+react line by line. An event line carries only metadata — the reader
+fetches the full content through gh.
 The script exits when every watched PR is closed.
 
 Comments and reviews by the PR's own author are suppressed: the watcher
 alerts the author's agent, so those are echoes of its own replies. Checks
 report failures. The watcher also prints one "all checks passed" line per
 head commit once every check on it concludes success, skipped, or neutral.
-It prints that line only after two consecutive polls observe the green
-rollup, because a slow workflow can register its checks after the rollup
-first turns green.
+A PR with no checks gets a "has no checks" line instead. A verdict prints
+only after two consecutive polls agree on it, because checks can register
+a moment after the PR's creation or after a fast workflow concludes.
 
 All requests go through the gh CLI, so the script works wherever gh works.
 The first poll emits the PR's existing comments, reviews, and failing checks
@@ -147,18 +148,21 @@ def poll_pr(
     # An unconcluded check reports an empty conclusion or a "pending" state.
     # GitHub counts a "neutral" conclusion as passing.
     sha = view["headRefOid"]
-    passed = f"passed:{sha}"
-    green = f"green:{sha}"
-    if passed not in seen and results and all(r in {"success", "skipped", "neutral"} for _, r in results):
-        # A slow workflow can register its checks after a fast one turns the
-        # rollup green, so require green on two consecutive polls.
-        if green in seen:
-            seen.add(passed)
-            emit(f"PR #{pr} all checks passed for {sha[:7]}")
-        else:
-            seen.add(green)
+    if all(r in {"success", "skipped", "neutral"} for _, r in results):
+        verdict = f"all checks passed for {sha[:7]}" if results else "has no checks"
     else:
-        seen.discard(green)
+        verdict = None
+    # A green rollup can be premature: checks register a moment after the
+    # PR's creation, and a slow workflow can register its checks after a
+    # fast one concludes. A verdict emits only when two consecutive polls
+    # agree on it.
+    last = f"last:{sha}:{verdict}"
+    agreed = last in seen
+    seen.difference_update({k for k in seen if k.startswith("last:")})
+    seen.add(last)
+    if verdict and agreed and f"emitted:{last}" not in seen:
+        seen.add(f"emitted:{last}")
+        emit(f"PR #{pr} {verdict}")
 
     return True
 

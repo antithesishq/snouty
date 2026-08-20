@@ -58,16 +58,15 @@ uv run scripts/watch-prs.py <PR>
 
 The script prints one line per event and exits when every watched PR is
 merged or closed. It suppresses comments and reviews by the PR's own author
-(your own replies). It reports CI failures. It also prints one "all checks
+(your own replies). It reports CI failures. It prints one "all checks
 passed" line per head commit once every check on it concludes success,
-skipped, or neutral; the line arrives one poll late because the watcher
-requires the green rollup on two consecutive polls. A PR with no checks never
-prints that line, so read `gh pr checks` yourself when you are unsure.
+skipped, or neutral. A PR with no checks gets a "has no checks" line
+instead, so you never need to read `gh pr checks` yourself: silence on
+checks means a check still runs. The "all checks passed" line names the
+head commit; check that it names your latest push before you act on it.
+The watcher also emits a line when the PR's base branch changes.
 The first poll emits the PR's existing comments, reviews, and failing
-checks as a baseline: triage that batch like any other events. A PR that
-was already green gets its "all checks passed" line on the second poll:
-check which commit it names before you act on it. The watcher also emits a
-line when the PR's base branch changes.
+checks as a baseline: triage that batch like any other events.
 Flags: `-i seconds` sets the poll interval (default 45), `-R owner/repo`
 overrides the repository. Event lines:
 
@@ -77,6 +76,7 @@ PR #123 review comment by <login> on <path> (id <id>)
 PR #123 review by <login>: <APPROVED|CHANGES_REQUESTED|COMMENTED>
 PR #123 check <name>: <failure|timed_out|cancelled|...>
 PR #123 all checks passed for <short-sha>
+PR #123 has no checks
 PR #123 base changed to <branch>
 PR #123 merged
 PR #123 closed without merge

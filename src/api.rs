@@ -2656,13 +2656,10 @@ mod tests {
             vtime: VTime::ZERO,
         };
         for _ in 0..2 {
-            let stream = api
-                .get_run_logs("run-1", moment(), None)
-                .await
-                .unwrap()
-                .untag();
+            let tagged = api.get_run_logs("run-1", moment(), None).await.unwrap();
+            assert!(matches!(tagged.tag(), CachePolicy::Uncacheable));
             assert_eq!(
-                read_stream(stream).await,
+                read_stream(tagged.untag()).await,
                 [serde_json::json!({"text": "log line"})]
             );
         }

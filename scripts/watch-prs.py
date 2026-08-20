@@ -1,11 +1,11 @@
 #!/usr/bin/env -S uv run
 """Poll one or more pull requests and print one line per new event.
 
-Events: comments, reviews, failed CI checks, and close/merge. Output is
-one line per event, so a background monitor can react line by line. An event
-line carries only metadata — the reader fetches the full content through gh.
-Inline review comments always belong to a review, so the review event is
-their trigger: a COMMENTED review with an empty body usually carries them.
+Events: comments, review comments, reviews, failed CI checks, and
+close/merge. Output is one line per event, so a background monitor can react
+line by line. An event line carries only metadata — the reader fetches the
+full content through gh. A COMMENTED review with an empty body is suppressed:
+its inline comments already emit their own events.
 The script exits when every watched PR is closed.
 
 Comments and reviews by the PR's own author are suppressed: the watcher
@@ -25,6 +25,8 @@ import argparse
 import json
 import subprocess
 import time
+from collections.abc import Iterator
+from itertools import count
 from typing import Any
 
 
@@ -43,8 +45,20 @@ def gh_json(args: list[str]) -> Any | None:
         return None
 
 
+def paginate(path: str) -> Iterator[Any]:
+    # Page with explicit page params; --paginate follows Link headers, which
+    # a transparent auth proxy returns pointing at the upstream host.
+    for page in count(1):
+        items = gh_json(["api", f"{path}?per_page=100&page={page}"])
+        if items is None:
+            return
+        yield from items
+        if len(items) < 100:
+            return
+
+
 def login_of(item: dict[str, Any]) -> str:
-    return norm_login((item.get("author") or {}).get("login", ""))
+    return norm_login((item.get("author") or item.get("user") or {}).get("login", ""))
 
 
 def norm_login(login: str) -> str:
@@ -55,6 +69,7 @@ def norm_login(login: str) -> str:
 
 def poll_pr(
     repo_flag: list[str],
+    slug: str,
     pr: int,
     seeded: set[int],
     seen: set[str],
@@ -89,6 +104,16 @@ def poll_pr(
     ] + [
         (f"review:{r['id']}", login_of(r), f"PR #{pr} review by {login_of(r)}: {r['state']} (id {r['id']})")
         for r in view["reviews"]
+        # An empty COMMENTED review only groups inline comments, which emit
+        # their own events below.
+        if r["state"] != "COMMENTED" or r["body"]
+    ] + [
+        (
+            f"rc:{rc['id']}",
+            login_of(rc),
+            f"PR #{pr} review comment by {login_of(rc)} on {rc['path']} ({rc['html_url']})",
+        )
+        for rc in paginate(f"repos/{slug}/pulls/{pr}/comments")
     ]
     for key, who, line in events:
         if key not in seen:
@@ -122,6 +147,12 @@ def main() -> int:
     args = ap.parse_args()
 
     repo_flag = ["-R", args.repo] if args.repo else []
+    slug = args.repo
+    if not slug:
+        view = gh_json(["repo", "view", "--json", "nameWithOwner"])
+        if view is None:
+            ap.error("cannot resolve the repository; pass -R owner/repo")
+        slug = view["nameWithOwner"]
     open_prs = set(args.prs)
     seeded: set[int] = set()
     seen: dict[int, set[str]] = {pr: set() for pr in args.prs}
@@ -129,7 +160,7 @@ def main() -> int:
 
     while open_prs:
         for pr in sorted(open_prs):
-            if not poll_pr(repo_flag, pr, seeded, seen[pr], checks[pr]):
+            if not poll_pr(repo_flag, slug, pr, seeded, seen[pr], checks[pr]):
                 open_prs.discard(pr)
         if not open_prs:
             break

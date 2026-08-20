@@ -60,7 +60,8 @@ The script prints one line per event and exits when every watched PR is
 merged or closed. It suppresses comments and reviews by the PR's own author
 (your own replies), and it reports CI failures only — a passing run is
 silent, so read `gh pr checks` yourself when you need the green signal.
-The first poll seeds the baseline silently; only changes after that emit.
+The first poll emits the PR's existing comments, reviews, and failing
+checks as a baseline: triage that batch like any other events.
 Flags: `-i seconds` sets the poll interval (default 45), `-R owner/repo`
 overrides the repository. Event lines:
 

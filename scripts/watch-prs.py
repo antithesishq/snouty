@@ -12,8 +12,8 @@ alerts the author's agent, so those are echoes of its own replies. Checks
 report failures only; a passing run is silent.
 
 All requests go through the gh CLI, so the script works wherever gh works.
-The first poll seeds the baseline silently; the script reports what changes
-after it starts.
+The first poll emits the PR's existing comments, reviews, and failing checks
+as a baseline, so nothing that predates the watcher is missed.
 
 Usage: uv run scripts/watch-prs.py [-i seconds] [-R owner/repo] PR [PR ...]
 """
@@ -70,13 +70,11 @@ def poll_pr(
     repo_flag: list[str],
     slug: str,
     pr: int,
-    seeded: set[int],
     seen: set[str],
     checks: set[str],
 ) -> bool:
     """Emit the events on one PR that are new since the last poll. Return
-    False once the PR is closed. The first successful poll only seeds the
-    baseline.
+    False once the PR is closed.
     """
     view = gh_json(
         [
@@ -93,8 +91,6 @@ def poll_pr(
     if view["state"] != "OPEN":
         emit(f"PR #{pr} merged" if view["state"] == "MERGED" else f"PR #{pr} closed without merge")
         return False
-    first = pr not in seeded
-    seeded.add(pr)
     ignore = login_of(view)
 
     events = [
@@ -122,7 +118,7 @@ def poll_pr(
     for key, who, line in events:
         if key not in seen:
             seen.add(key)
-            if not first and who != ignore:
+            if who != ignore:
                 emit(line)
 
     failure_results = {"failure", "timed_out", "action_required", "cancelled", "error", "startup_failure"}
@@ -132,9 +128,8 @@ def poll_pr(
         result = (c.get("conclusion") or c.get("state") or "").lower()
         if result in failure_results:
             cur.add(f"{name}: {result}")
-    if not first:
-        for line in sorted(cur - checks):
-            emit(f"PR #{pr} check {line}")
+    for line in sorted(cur - checks):
+        emit(f"PR #{pr} check {line}")
     checks.clear()
     checks.update(cur)
 
@@ -158,13 +153,12 @@ def main() -> int:
             ap.error("cannot resolve the repository; pass -R owner/repo")
         slug = view["nameWithOwner"]
     open_prs = set(args.prs)
-    seeded: set[int] = set()
     seen: dict[int, set[str]] = {pr: set() for pr in args.prs}
     checks: dict[int, set[str]] = {pr: set() for pr in args.prs}
 
     while open_prs:
         for pr in sorted(open_prs):
-            if not poll_pr(repo_flag, slug, pr, seeded, seen[pr], checks[pr]):
+            if not poll_pr(repo_flag, slug, pr, seen[pr], checks[pr]):
                 open_prs.discard(pr)
         if not open_prs:
             break

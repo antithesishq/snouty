@@ -1,6 +1,6 @@
 ---
 name: Simplify Comments
-description: This skill should be used before a PR is submitted, or when the user asks to "fix the comments", "simplify comments", or "audit comments". Brings every comment touched by the current branch up to the project's comment bar — sparse, true, minimal; no narration, no discarded alternatives.
+description: This skill should be used before a PR is submitted, or when the user asks to "fix the comments" or "simplify comments".
 ---
 
 # Simplify Comments

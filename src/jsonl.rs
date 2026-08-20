@@ -4,99 +4,58 @@
 //! Every streaming endpoint — logs, build logs, events, event search,
 //! execute-command, and whatever comes next — answers with this shape, so
 //! every one of them comes out of [`crate::api`] as a [`JsonStream`]: a
-//! [`futures_util::Stream`] of parsed [`Value`]s, split from the HTTP byte
-//! stream and parsed with serde as early as possible. A line that is not
-//! valid JSON fails the stream with the corrupted line in the error.
-
-use std::pin::Pin;
-use std::task::{Context, Poll};
+//! boxed [`futures_util::Stream`] of parsed [`Value`]s, split from the HTTP
+//! byte stream and parsed with serde as early as possible. A line that is
+//! not valid JSON fails the stream with the corrupted line in the error.
 
 use bytes::Bytes;
 use color_eyre::Section;
 use color_eyre::eyre::{Report, Result, eyre};
 use futures_util::stream::BoxStream;
-use futures_util::{Stream, StreamExt};
+use futures_util::{Stream, StreamExt, stream};
 use serde_json::Value;
 
-/// A JSONL response stream: each item is one line, parsed. Lines are yielded
-/// as they arrive — a partial line buffers across chunks, so a live stream
-/// renders line by line rather than waiting for an EOF that may never come.
-/// Empty lines are skipped; a final line without a trailing newline still
-/// counts.
-pub struct JsonStream {
-    inner: BoxStream<'static, Result<Value>>,
-}
+/// A stream of parsed JSON values: what every streaming endpoint returns,
+/// and what the API cache replays and tees.
+pub type JsonStream = BoxStream<'static, Result<Value>>;
 
-impl JsonStream {
-    pub fn new(stream: progenitor_client::ByteStream) -> Self {
-        Self::from_stream(stream.into_inner())
-    }
-
-    /// Wrap any chunk stream; the constructor tests and non-HTTP callers use.
-    pub fn from_stream<E>(stream: impl Stream<Item = Result<Bytes, E>> + Send + 'static) -> Self
-    where
-        E: std::error::Error + Send + Sync + 'static,
-    {
-        Self::from_values(LineParser {
-            inner: stream.map(|item| item.map_err(Report::from)).boxed(),
-            buf: Vec::new(),
-            done: false,
-        })
-    }
-
-    /// Wrap a stream whose items are already parsed values (the API cache
-    /// replays and tees entries at this level).
-    pub fn from_values(stream: impl Stream<Item = Result<Value>> + Send + 'static) -> Self {
-        Self {
-            inner: stream.boxed(),
-        }
-    }
-}
-
-impl Stream for JsonStream {
-    type Item = Result<Value>;
-
-    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        self.get_mut().inner.poll_next_unpin(cx)
-    }
-}
-
-/// The byte-to-line half of [`JsonStream::from_stream`]: splits the HTTP
-/// chunk stream on newlines and parses each line.
-struct LineParser {
-    inner: BoxStream<'static, Result<Bytes>>,
-    buf: Vec<u8>,
-    done: bool,
-}
-
-impl Stream for LineParser {
-    type Item = Result<Value>;
-
-    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        let this = self.get_mut();
-        loop {
-            if let Some(pos) = this.buf.iter().position(|&b| b == b'\n') {
-                let line: Vec<u8> = this.buf.drain(..=pos).take(pos).collect();
-                if line.is_empty() {
-                    continue;
+/// Parse a JSONL chunk stream into a [`JsonStream`]: each item is one line,
+/// parsed. Lines are yielded as they arrive — a partial line buffers across
+/// chunks, so a live stream renders line by line rather than waiting for an
+/// EOF that may never come. Empty lines are skipped; a final line without a
+/// trailing newline still counts.
+pub fn json_lines<E>(chunks: impl Stream<Item = Result<Bytes, E>> + Send + 'static) -> JsonStream
+where
+    E: std::error::Error + Send + Sync + 'static,
+{
+    let chunks = chunks.map(|item| item.map_err(Report::from)).boxed();
+    stream::unfold(
+        (chunks, Vec::new(), false),
+        |(mut chunks, mut buf, mut done)| async move {
+            loop {
+                if let Some(pos) = buf.iter().position(|&b| b == b'\n') {
+                    let line: Vec<u8> = buf.drain(..=pos).take(pos).collect();
+                    if line.is_empty() {
+                        continue;
+                    }
+                    return Some((parse_line(&line), (chunks, buf, done)));
                 }
-                return Poll::Ready(Some(parse_line(&line)));
-            }
-            if this.done {
-                if this.buf.is_empty() {
-                    return Poll::Ready(None);
+                if done {
+                    if buf.is_empty() {
+                        return None;
+                    }
+                    let line = std::mem::take(&mut buf);
+                    return Some((parse_line(&line), (chunks, buf, done)));
                 }
-                let line = std::mem::take(&mut this.buf);
-                return Poll::Ready(Some(parse_line(&line)));
+                match chunks.next().await {
+                    Some(Ok(chunk)) => buf.extend_from_slice(&chunk),
+                    Some(Err(err)) => return Some((Err(err), (chunks, buf, done))),
+                    None => done = true,
+                }
             }
-            match this.inner.poll_next_unpin(cx) {
-                Poll::Ready(Some(Ok(chunk))) => this.buf.extend_from_slice(&chunk),
-                Poll::Ready(Some(Err(err))) => return Poll::Ready(Some(Err(err))),
-                Poll::Ready(None) => this.done = true,
-                Poll::Pending => return Poll::Pending,
-            }
-        }
-    }
+        },
+    )
+    .boxed()
 }
 
 fn parse_line(bytes: &[u8]) -> Result<Value> {
@@ -113,14 +72,14 @@ fn parse_line(bytes: &[u8]) -> Result<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use futures_util::{TryStreamExt, stream};
+    use futures_util::TryStreamExt;
 
     fn jsonl(chunks: &[&'static str]) -> JsonStream {
         let chunks: Vec<reqwest::Result<Bytes>> = chunks
             .iter()
             .map(|c| Ok(Bytes::from_static(c.as_bytes())))
             .collect();
-        JsonStream::from_stream(stream::iter(chunks))
+        json_lines(stream::iter(chunks))
     }
 
     async fn drain(mut stream: JsonStream) -> Vec<String> {
@@ -232,7 +191,7 @@ mod tests {
             .build()
             .unwrap()
             .block_on(async {
-                let mut stream = JsonStream::from_stream(stream::iter(chunks));
+                let mut stream = json_lines(stream::iter(chunks));
                 let mut out = Vec::new();
                 while let Some(value) = stream.try_next().await.unwrap() {
                     out.push(value);
@@ -255,7 +214,7 @@ mod tests {
     async fn invalid_utf8_is_an_error() {
         let chunks: Vec<reqwest::Result<Bytes>> =
             vec![Ok(Bytes::from_static(b"{\"a\":1}\n\xff\xfe\n"))];
-        let mut stream = JsonStream::from_stream(stream::iter(chunks));
+        let mut stream = json_lines(stream::iter(chunks));
         assert!(stream.try_next().await.unwrap().is_some());
         assert!(stream.try_next().await.is_err());
     }

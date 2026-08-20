@@ -13,7 +13,7 @@ use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use reqwest::{Client, Proxy};
 use serde::de::DeserializeOwned;
 
-use crate::api_cache::{self, ApiCache, CachePolicy, Tagged};
+use crate::api_cache::{self, ApiCache, CachePolicy};
 use crate::auth::{AuthenticationInfo, PasswordPolicy};
 use crate::env;
 use crate::error::{ApiError, user_error};
@@ -25,7 +25,7 @@ use crate::params::{
 };
 use crate::render::sanitize;
 use crate::settings::Settings;
-use crate::util::source_error;
+use crate::util::{Tag, Tagged, source_error};
 use crate::vtime::VTime;
 use snouty_macros::cached;
 
@@ -34,7 +34,7 @@ mod generated {
     include!(concat!(env!("OUT_DIR"), "/antithesis_api.rs"));
 }
 
-use crate::jsonl::JsonStream;
+use crate::jsonl::{JsonStream, json_lines};
 pub(crate) use generated::types::Params as RunParams;
 pub use generated::types::{
     BuildLogLine, Event, EventProperty, Moment, NonEventProperty, Property, PropertyStatus,
@@ -495,21 +495,14 @@ impl AntithesisApi {
     }
 
     #[cached(value)]
-    pub async fn get_run(&self, run_id: &str) -> Result<RunDetail> {
+    pub async fn get_run(&self, run_id: &str) -> Result<Tagged<RunDetail, CachePolicy>> {
         match self.client.get_run().run_id(run_id).send().await {
             Ok(response) => {
                 let detail = response.into_inner();
                 // A run detail is immutable only once the run reaches a
                 // terminal status.
-                let cache_policy = if detail.status.is_terminal() {
-                    CachePolicy::Cacheable
-                } else {
-                    CachePolicy::Uncacheable
-                };
-                Ok(Tagged {
-                    value: detail,
-                    cache_policy,
-                })
+                let cache_policy = CachePolicy::from(detail.status.is_terminal());
+                Ok(detail.with_tag(cache_policy))
             }
             Err(err) => Err(format_api_client_error(err).await),
         }
@@ -558,12 +551,17 @@ impl AntithesisApi {
     }
 
     #[cached(stream)]
-    pub async fn get_run_build_logs(&self, run_id: &str) -> Result<JsonStream> {
+    pub async fn get_run_build_logs(
+        &self,
+        run_id: &str,
+    ) -> Result<Tagged<JsonStream, CachePolicy>> {
         // The version gate runs on misses only: a run it rejects never got a
         // 200 from the server, so no cache entry can exist for it.
         ensure_resource_supported(run_id, MIN_BUILD_LOGS_VERSION, "build logs")?;
         match self.client.get_run_build_logs().run_id(run_id).send().await {
-            Ok(response) => Ok(Tagged::cacheable(JsonStream::new(response.into_inner()))),
+            Ok(response) => {
+                Ok(json_lines(response.into_inner().into_inner()).with_tag(CachePolicy::Cacheable))
+            }
             Err(err) => Err(format_api_client_error(err).await),
         }
     }
@@ -577,7 +575,7 @@ impl AntithesisApi {
         run_id: &str,
         moment: Moment,
         begin: Option<LogsBegin>,
-    ) -> Result<JsonStream> {
+    ) -> Result<Tagged<JsonStream, CachePolicy>> {
         let mut request = self
             .client
             .get_run_logs()
@@ -592,7 +590,9 @@ impl AntithesisApi {
         }
 
         match request.send().await {
-            Ok(response) => Ok(Tagged::cacheable(JsonStream::new(response.into_inner()))),
+            Ok(response) => {
+                Ok(json_lines(response.into_inner().into_inner()).with_tag(CachePolicy::Cacheable))
+            }
             Err(err) => Err(format_api_client_error(err).await),
         }
     }
@@ -623,7 +623,7 @@ impl AntithesisApi {
         };
         let request = self.client.execute_command().run_id(run_id).body(body);
         match request.send().await {
-            Ok(response) => Ok(JsonStream::new(response.into_inner())),
+            Ok(response) => Ok(json_lines(response.into_inner().into_inner())),
             Err(err) => Err(format_api_client_error(err).await),
         }
     }
@@ -641,7 +641,8 @@ impl AntithesisApi {
                 ensure_resource_supported(&run_id, MIN_PROPERTIES_VERSION, "run properties")?;
                 let page = self
                     .fetch_run_properties_page(&run_id, after.as_deref(), status, MAX_PAGE_LIMIT)
-                    .await?;
+                    .await?
+                    .unwrap();
                 let generated::types::PropertyListResponse { data, next_cursor } = page;
                 let normalized = data
                     .into_iter()
@@ -669,7 +670,7 @@ impl AntithesisApi {
             request = request.limit(limit);
         }
         match request.send().await {
-            Ok(response) => Ok(JsonStream::new(response.into_inner())),
+            Ok(response) => Ok(json_lines(response.into_inner().into_inner())),
             Err(err) => Err(format_api_client_error(err).await),
         }
     }
@@ -704,7 +705,7 @@ impl AntithesisApi {
             body = body.limit(limit);
         }
         match self.client.search().run_id(run_id).body(body).send().await {
-            Ok(response) => Ok(JsonStream::new(response.into_inner())),
+            Ok(response) => Ok(json_lines(response.into_inner().into_inner())),
             Err(err) => Err(format_api_client_error(err).await),
         }
     }
@@ -763,7 +764,7 @@ impl AntithesisApi {
         after: Option<&str>,
         status: Option<PropertyStatus>,
         limit: u64,
-    ) -> Result<generated::types::PropertyListResponse> {
+    ) -> Result<Tagged<generated::types::PropertyListResponse, CachePolicy>> {
         let mut request = self
             .client
             .list_run_properties()
@@ -777,7 +778,7 @@ impl AntithesisApi {
         }
 
         match request.send().await {
-            Ok(response) => Ok(Tagged::cacheable(response.into_inner())),
+            Ok(response) => Ok(response.into_inner().with_tag(CachePolicy::Cacheable)),
             Err(err) => Err(format_api_client_error(err).await),
         }
     }
@@ -2545,8 +2546,8 @@ mod tests {
         let cache_dir = TempDir::new().unwrap();
         let api = test_api_optionally_with_cache(&mock_server, Some(&cache_dir));
 
-        let first = api.get_run("run-1").await.unwrap();
-        let second = api.get_run("run-1").await.unwrap();
+        let first = api.get_run("run-1").await.unwrap().unwrap();
+        let second = api.get_run("run-1").await.unwrap().unwrap();
 
         assert_eq!(first.run_id, "run-1");
         assert_eq!(second.run_id, "run-1");
@@ -2585,6 +2586,7 @@ mod tests {
         let first = api
             .get_run_logs("run-1", logs_moment(), None)
             .await
+            .unwrap()
             .unwrap();
         assert_eq!(
             read_stream(first).await,
@@ -2593,6 +2595,7 @@ mod tests {
         let second = api
             .get_run_logs("run-1", logs_moment(), None)
             .await
+            .unwrap()
             .unwrap();
         assert_eq!(
             read_stream(second).await,
@@ -2617,6 +2620,7 @@ mod tests {
         let abandoned = api
             .get_run_logs("run-1", logs_moment(), None)
             .await
+            .unwrap()
             .unwrap();
         drop(abandoned);
 
@@ -2624,6 +2628,7 @@ mod tests {
         let replay = api
             .get_run_logs("run-1", logs_moment(), None)
             .await
+            .unwrap()
             .unwrap();
         assert_eq!(
             read_stream(replay).await,
@@ -2660,6 +2665,7 @@ mod tests {
             let stream = api
                 .get_run_logs("run-1", logs_moment(), None)
                 .await
+                .unwrap()
                 .unwrap();
             assert_eq!(
                 read_stream(stream).await,
@@ -2708,7 +2714,7 @@ mod tests {
         let api = test_api_optionally_with_cache(&mock_server, Some(&cache_dir));
 
         for _ in 0..2 {
-            let stream = api.get_run_build_logs("run-1").await.unwrap();
+            let stream = api.get_run_build_logs("run-1").await.unwrap().unwrap();
             assert_eq!(
                 read_stream(stream).await,
                 [serde_json::json!({"text": "built"})]
@@ -2889,7 +2895,7 @@ mod tests {
         .unwrap();
 
         // The initial 401 drives a refresh and a single retry, which succeeds.
-        let run = api.get_run("run-1").await.unwrap();
+        let run = api.get_run("run-1").await.unwrap().unwrap();
         assert_eq!(run.run_id, "run-1");
 
         // Request sequence: stale token → refresh → retry with the new token.
@@ -3130,7 +3136,8 @@ mod tests {
             .await;
 
         let api = test_api_optionally_with_cache(&mock_server, None);
-        api.search_run_events("run-1", "slow", NonZeroU64::new(5))
+        let _stream = api
+            .search_run_events("run-1", "slow", NonZeroU64::new(5))
             .await
             .unwrap();
     }
@@ -3151,7 +3158,7 @@ mod tests {
             .await;
 
         let api = test_api_optionally_with_cache(&mock_server, None);
-        api.search_run_events("run-1", "slow", None).await.unwrap();
+        let _stream = api.search_run_events("run-1", "slow", None).await.unwrap();
     }
 
     // The DSL search wrapper POSTs the Search_Request body: the query and
@@ -3215,16 +3222,17 @@ mod tests {
             .await;
 
         let api = test_api_optionally_with_cache(&mock_server, None);
-        api.search_run_events_query(
-            "run-1",
-            "contains({output_text: \"raft\"})",
-            SearchMode::Query {
-                stream: true,
-                limit: NonZeroU64::new(7),
-            },
-        )
-        .await
-        .unwrap();
+        let _stream = api
+            .search_run_events_query(
+                "run-1",
+                "contains({output_text: \"raft\"})",
+                SearchMode::Query {
+                    stream: true,
+                    limit: NonZeroU64::new(7),
+                },
+            )
+            .await
+            .unwrap();
 
         // Validate is its own mode: no stream, no limit.
         let mock_server = MockServer::start().await;
@@ -3241,13 +3249,14 @@ mod tests {
             .await;
 
         let api = test_api_optionally_with_cache(&mock_server, None);
-        api.search_run_events_query(
-            "run-1",
-            "contains({output_text: \"raft\"})",
-            SearchMode::Validate,
-        )
-        .await
-        .unwrap();
+        let _stream = api
+            .search_run_events_query(
+                "run-1",
+                "contains({output_text: \"raft\"})",
+                SearchMode::Validate,
+            )
+            .await
+            .unwrap();
     }
 
     // An error must keep its HTTP status so callers can classify it — the 404

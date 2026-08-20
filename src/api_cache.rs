@@ -20,13 +20,18 @@
 
 use std::path::PathBuf;
 
+use base64::{Engine as _, prelude::BASE64_URL_SAFE_NO_PAD};
 use futures_util::StreamExt;
 use log::{debug, warn};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
+use serde_json::Value;
+use sha2::{Digest, Sha256};
+use tokio::io::AsyncWriteExt;
 
 use crate::env;
-use crate::jsonl::JsonStream;
+use crate::jsonl::{JsonStream, json_lines};
+use crate::util::Tagged;
 
 /// Cache directory name under the runtime dir. The `v3` names the on-disk
 /// format (re-serialized values keyed by handler parameters); bump it when
@@ -72,17 +77,13 @@ pub enum CachePolicy {
     Uncacheable,
 }
 
-/// A fetched value carrying its [`CachePolicy`].
-pub struct Tagged<T> {
-    pub value: T,
-    pub cache_policy: CachePolicy,
-}
-
-impl<T> Tagged<T> {
-    pub fn cacheable(value: T) -> Self {
-        Self {
-            value,
-            cache_policy: CachePolicy::Cacheable,
+/// `true` is [`CachePolicy::Cacheable`].
+impl From<bool> for CachePolicy {
+    fn from(cacheable: bool) -> Self {
+        if cacheable {
+            Self::Cacheable
+        } else {
+            Self::Uncacheable
         }
     }
 }
@@ -109,10 +110,13 @@ impl CacheKey {
         // raw one, so '\n' cannot occur inside a segment.
         let params =
             serde_json::to_string(params).expect("handler cache-key parameters serialize to JSON");
-        let key = format!(
+        let identity = format!(
             "{}\n{base_url}\n{operation}\n{params}",
             env!("SNOUTY_GENERATED_API_HASH")
         );
+        // cacache stores each key verbatim in its index; hashing keeps the
+        // stored key fixed-length however large the parameters get.
+        let key = BASE64_URL_SAFE_NO_PAD.encode(Sha256::digest(identity));
         Self {
             key,
             operation,
@@ -170,20 +174,12 @@ impl ApiCache {
         let _ = cacache::remove(dir, &key.key).await;
     }
 
-    async fn write(&self, key: &CacheKey, bytes: Vec<u8>) {
-        let Some(dir) = &self.dir else { return };
-        if bytes.len() as u64 > self.max_file_size {
-            debug!("API cache entry over the size limit, not caching");
-            return;
-        }
-        if let Err(err) = cacache::write(dir, &key.key, bytes).await {
-            warn!("API cache write failed for {key}, bypassing cache: {err}");
-        }
-    }
-
     /// The cached value under `key`, deserialized. Returns `None` if the key
     /// doesn't exist or is unusable.
-    pub async fn lookup_value<T: DeserializeOwned>(&self, key: &CacheKey) -> Option<T> {
+    pub async fn lookup_value<T: DeserializeOwned>(
+        &self,
+        key: &CacheKey,
+    ) -> Option<Tagged<T, CachePolicy>> {
         let bytes = match cacache::read(self.dir.as_ref()?, &key.key).await {
             Ok(bytes) => bytes,
             Err(cacache::Error::EntryNotFound(..)) => return None,
@@ -196,7 +192,7 @@ impl ApiCache {
         match serde_json::from_slice(&bytes) {
             Ok(value) => {
                 self.note_hit(key);
-                Some(value)
+                Some(Tagged::new(value, CachePolicy::Cacheable))
             }
             Err(err) => {
                 warn!("API cache entry for {key} does not parse, evicting: {err}");
@@ -206,14 +202,23 @@ impl ApiCache {
         }
     }
 
-    /// Store `value` under `key`. Never fails: an oversized or unwritable
-    /// entry is dropped and the caller keeps the value it already has.
-    pub async fn store_value<T: Serialize>(&self, key: &CacheKey, value: &T) {
-        if self.dir.is_none() {
+    /// Store a [`CachePolicy::Cacheable`]-tagged value under `key`; anything
+    /// else is a no-op. Never fails: an oversized or unwritable entry is
+    /// dropped and the caller keeps the value it already has.
+    pub async fn store_value<T: Serialize>(&self, key: &CacheKey, tagged: &Tagged<T, CachePolicy>) {
+        let Some(dir) = &self.dir else { return };
+        if !matches!(tagged.tag(), CachePolicy::Cacheable) {
             return;
         }
-        match serde_json::to_vec(value) {
-            Ok(bytes) => self.write(key, bytes).await,
+        match serde_json::to_vec(tagged.value()) {
+            Ok(bytes) if bytes.len() as u64 > self.max_file_size => {
+                debug!("API cache entry over the size limit, not caching");
+            }
+            Ok(bytes) => {
+                if let Err(err) = cacache::write(dir, &key.key, bytes).await {
+                    warn!("API cache write failed for {key}, bypassing cache: {err}");
+                }
+            }
             Err(err) => warn!("API cache entry for {key} does not serialize, not caching: {err}"),
         }
     }
@@ -221,7 +226,7 @@ impl ApiCache {
     /// Replay the stream cached under `key`, or `None` if the key doesn't
     /// exist or is unusable at open. The entry streams from disk; a read
     /// failure after open fails the replayed stream.
-    pub async fn lookup_stream(&self, key: &CacheKey) -> Option<JsonStream> {
+    pub async fn lookup_stream(&self, key: &CacheKey) -> Option<Tagged<JsonStream, CachePolicy>> {
         let reader = match cacache::Reader::open(self.dir.as_ref()?, &key.key).await {
             Ok(reader) => reader,
             Err(cacache::Error::EntryNotFound(..)) => return None,
@@ -232,54 +237,114 @@ impl ApiCache {
             }
         };
         self.note_hit(key);
-        Some(JsonStream::from_stream(tokio_util::io::ReaderStream::new(
-            reader,
-        )))
+        Some(Tagged::new(
+            json_lines(tokio_util::io::ReaderStream::new(reader)),
+            CachePolicy::Cacheable,
+        ))
     }
 
-    /// Tee `stream` into the cache as the caller reads it, committing the
-    /// entry only once the stream ends without an error (a stream the caller
-    /// abandons partway, or that fails mid-way, is never committed). Never
-    /// fails: an oversized or unwritable entry is dropped and the caller
-    /// keeps streaming.
-    pub fn store_stream(&self, key: CacheKey, stream: JsonStream) -> JsonStream {
-        if self.dir.is_none() {
-            return stream;
+    /// Tee a [`CachePolicy::Cacheable`]-tagged stream into the cache as the
+    /// caller reads it, committing the entry only once the stream ends
+    /// without an error (a stream the caller abandons partway, or that fails
+    /// mid-way, is never committed). Anything else passes through untouched.
+    /// Never fails: an oversized or unwritable entry is dropped and the
+    /// caller keeps streaming.
+    pub fn store_stream(
+        &self,
+        key: CacheKey,
+        tagged: Tagged<JsonStream, CachePolicy>,
+    ) -> Tagged<JsonStream, CachePolicy> {
+        let Some(dir) = self.dir.clone() else {
+            return tagged;
+        };
+        if !matches!(tagged.tag(), CachePolicy::Cacheable) {
+            return tagged;
         }
-        // The state carries the entry so far, one serialized value per line;
-        // the entry is dropped on an error item or over the size budget,
-        // which bounds the buffer while the caller streams.
-        let state = (stream, self.clone(), Some((key, Vec::new())));
-        JsonStream::from_values(
-            futures_util::stream::unfold(state, |(mut stream, cache, mut entry)| async move {
+        let tee = Some(Tee {
+            dir,
+            key,
+            writer: None,
+            remaining: self.max_file_size,
+        });
+        let teed = futures_util::stream::unfold(
+            (tagged.unwrap(), tee),
+            |(mut stream, mut tee)| async move {
                 let Some(item) = stream.next().await else {
-                    // The source has ended: finish the write before ending
+                    // The source has ended: finish the commit before ending
                     // the tee'd stream, so a fully-read response is durably
                     // cached by the time the caller sees the end.
-                    if let Some((key, buf)) = entry {
-                        cache.write(&key, buf).await;
+                    if let Some(Tee {
+                        key,
+                        writer: Some(writer),
+                        ..
+                    }) = tee
+                        && let Err(err) = writer.commit().await
+                    {
+                        warn!("API cache commit failed for {key}: {err}");
                     }
                     return None;
                 };
                 match &item {
                     Ok(value) => {
-                        if let Some((_, buf)) = &mut entry {
-                            serde_json::to_writer(&mut *buf, value)
-                                .expect("a serde_json::Value serializes");
-                            buf.push(b'\n');
-                            if buf.len() as u64 > cache.max_file_size {
-                                debug!("API cache entry over the size limit, not caching");
-                                entry = None;
-                            }
+                        if let Some(active) = tee.take() {
+                            tee = active.append(value).await;
                         }
                     }
                     // An error means the stream is incomplete; never commit it.
-                    Err(_) => entry = None,
+                    Err(_) => tee = None,
                 }
-                Some((item, (stream, cache, entry)))
-            })
-            .fuse(),
+                Some((item, (stream, tee)))
+            },
         )
+        .fuse()
+        .boxed();
+        Tagged::new(teed, CachePolicy::Cacheable)
+    }
+}
+
+/// The active half of a stream tee: the writer opens on the first value,
+/// and dropping the tee (over the size budget, an error item, or any cache
+/// error) abandons the entry uncommitted.
+struct Tee {
+    dir: PathBuf,
+    key: CacheKey,
+    writer: Option<cacache::Writer>,
+    /// Size budget left before the entry is abandoned as too large.
+    remaining: u64,
+}
+
+impl Tee {
+    /// Write one serialized value into the entry. Returns `None` when the
+    /// entry is abandoned.
+    async fn append(mut self, value: &Value) -> Option<Self> {
+        let mut line = serde_json::to_vec(value).expect("a serde_json::Value serializes");
+        line.push(b'\n');
+        if line.len() as u64 > self.remaining {
+            debug!("API cache entry over the size limit, not caching");
+            return None;
+        }
+        self.remaining -= line.len() as u64;
+        if self.writer.is_none() {
+            match cacache::Writer::create(&self.dir, &self.key.key).await {
+                Ok(writer) => self.writer = Some(writer),
+                Err(err) => {
+                    warn!(
+                        "API cache write failed for {}, bypassing cache: {err}",
+                        self.key
+                    );
+                    return None;
+                }
+            }
+        }
+        let writer = self.writer.as_mut().expect("the writer was just opened");
+        if let Err(err) = writer.write_all(&line).await {
+            warn!(
+                "API cache write failed for {}, bypassing cache: {err}",
+                self.key
+            );
+            return None;
+        }
+        Some(self)
     }
 }
 
@@ -299,9 +364,12 @@ mod tests {
         )
     }
 
-    fn values_stream(values: &[Value]) -> JsonStream {
+    fn values_stream(values: &[Value]) -> Tagged<JsonStream, CachePolicy> {
         let items: Vec<color_eyre::Result<Value>> = values.iter().cloned().map(Ok).collect();
-        JsonStream::from_values(futures_util::stream::iter(items))
+        Tagged::new(
+            futures_util::stream::iter(items).boxed(),
+            CachePolicy::Cacheable,
+        )
     }
 
     // The key separates tenants, operations, and every parameter; only a
@@ -330,11 +398,14 @@ mod tests {
             serde_json::json!({"text": "two"}),
         ];
 
-        let teed = cache.store_stream(key(), values_stream(&values));
+        let teed = cache.store_stream(key(), values_stream(&values)).unwrap();
         assert_eq!(teed.try_collect::<Vec<_>>().await.unwrap(), values);
 
         let replay = cache.lookup_stream(&key()).await.expect("a cache hit");
-        assert_eq!(replay.try_collect::<Vec<_>>().await.unwrap(), values);
+        assert_eq!(
+            replay.unwrap().try_collect::<Vec<_>>().await.unwrap(),
+            values
+        );
     }
 
     #[tokio::test]
@@ -348,10 +419,15 @@ mod tests {
             Err(color_eyre::eyre::eyre!("mid-stream failure")),
             Ok(serde_json::json!({"text": "after the failure"})),
         ];
-        let mut teed = cache.store_stream(
-            key(),
-            JsonStream::from_values(futures_util::stream::iter(items)),
-        );
+        let mut teed = cache
+            .store_stream(
+                key(),
+                Tagged::new(
+                    futures_util::stream::iter(items).boxed(),
+                    CachePolicy::Cacheable,
+                ),
+            )
+            .unwrap();
         // Drain past the error to the stream's end: even a caller that keeps
         // reading must not commit the broken body.
         let mut saw_error = false;
@@ -369,14 +445,32 @@ mod tests {
         let cache = test_cache(&dir);
         let key = CacheKey::new("http://t", "get_run", &("run-1"));
 
-        assert_eq!(cache.lookup_value::<Value>(&key).await, None);
-        cache
-            .store_value(&key, &serde_json::json!({"run_id": "run-1"}))
-            .await;
+        assert!(cache.lookup_value::<Value>(&key).await.is_none());
+        let tagged = Tagged::new(
+            serde_json::json!({"run_id": "run-1"}),
+            CachePolicy::Cacheable,
+        );
+        cache.store_value(&key, &tagged).await;
         assert_eq!(
-            cache.lookup_value::<Value>(&key).await,
+            cache.lookup_value::<Value>(&key).await.map(Tagged::unwrap),
             Some(serde_json::json!({"run_id": "run-1"}))
         );
+    }
+
+    // An Uncacheable tag makes the store a no-op: the cache itself honors
+    // the handler's verdict.
+    #[tokio::test]
+    async fn an_uncacheable_value_is_not_stored() {
+        let dir = TempDir::new().unwrap();
+        let cache = test_cache(&dir);
+        let key = CacheKey::new("http://t", "get_run", &("run-1"));
+
+        let tagged = Tagged::new(
+            serde_json::json!({"run_id": "run-1"}),
+            CachePolicy::Uncacheable,
+        );
+        cache.store_value(&key, &tagged).await;
+        assert!(cache.lookup_value::<Value>(&key).await.is_none());
     }
 
     // An entry the current type no longer parses is a miss, and it is
@@ -388,7 +482,10 @@ mod tests {
         let key = CacheKey::new("http://t", "get_run", &("run-1"));
 
         cache
-            .store_value(&key, &serde_json::json!("a string"))
+            .store_value(
+                &key,
+                &Tagged::new(serde_json::json!("a string"), CachePolicy::Cacheable),
+            )
             .await;
         #[derive(serde::Deserialize)]
         struct Object {

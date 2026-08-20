@@ -8,29 +8,33 @@
 //! must take every request-shaping value as a parameter, never read one
 //! from a constant or global the key cannot see.
 //!
-//! The cache stores nothing untagged: the method's body must evaluate to
-//! `Result<Tagged<T>>` — the fetched value plus the handler's own admission
-//! verdict — while the signature declares the `Result<T>` the caller sees.
-//! Admission therefore lives in the handler, next to the response, where a
-//! future policy can also read the response's headers.
+//! The cache stores nothing untagged: a cached handler returns
+//! `Result<Tagged<T, CachePolicy>>` — the fetched value plus the handler's
+//! own admission verdict, which the caller unwraps. Admission therefore
+//! lives in the handler, next to the response, where a future policy can
+//! also read the response's headers.
 //!
 //! ```ignore
 //! #[cached(value)]
-//! pub async fn get_run(&self, run_id: &str) -> Result<RunDetail> {
+//! pub async fn get_run(&self, run_id: &str) -> Result<Tagged<RunDetail, CachePolicy>> {
 //!     // ...fetch, then tag:
-//!     Ok(Tagged { value: detail, cache_policy })
+//!     Ok(detail.with_tag(cache_policy))
 //! }
 //! ```
 //!
+//! (The example is `ignore` because the expansion calls the `ApiCache` on
+//! the receiver's `cache` field; a compiling doctest would need a stub of
+//! snouty's cache. The real handlers in `api.rs` are the tested example.)
+//!
 //! `value` caches the `Ok` payload as one JSON object; `stream` replays a
-//! cached `JsonStream` and tees a fresh one, committing only when it is
-//! read to its end. The method must be async and take `&self` with a
+//! cached tagged `JsonStream` and tees a fresh one, committing only when it
+//! is read to its end. The method must be async and take `&self` with a
 //! `cache` field of `ApiCache`.
 
 use proc_macro::TokenStream;
 use quote::quote;
 use syn::parse::{Parse, ParseStream};
-use syn::{FnArg, ItemFn, Pat, parse_macro_input};
+use syn::{FnArg, ItemFn, Pat, ReturnType, parse_macro_input};
 
 enum Mode {
     Value,
@@ -102,6 +106,17 @@ fn expand(args: Args, func: ItemFn) -> syn::Result<proc_macro2::TokenStream> {
             "a cached handler takes &self; the cache lives on it",
         ));
     }
+    let tagged_return = match &sig.output {
+        ReturnType::Type(_, ty) => quote!(#ty).to_string().contains("Tagged"),
+        ReturnType::Default => false,
+    };
+    if !tagged_return {
+        return Err(syn::Error::new_spanned(
+            &sig.output,
+            "a cached handler returns Result<Tagged<T, CachePolicy>>: \
+             the cache stores nothing untagged",
+        ));
+    }
     let operation = sig.ident.to_string();
 
     // The key is built before the body runs: the body may consume the
@@ -118,23 +133,15 @@ fn expand(args: Args, func: ItemFn) -> syn::Result<proc_macro2::TokenStream> {
         Mode::Value => quote! { self.cache.lookup_value(&__cache_key).await },
         Mode::Stream => quote! { self.cache.lookup_stream(&__cache_key).await },
     };
+    // The cache itself honors the tag: store_value stores only a Cacheable
+    // value, and store_stream tees only a Cacheable stream.
     let store = match args.mode {
         Mode::Value => quote! {
-            if ::std::matches!(
-                __tagged.cache_policy,
-                crate::api_cache::CachePolicy::Cacheable
-            ) {
-                self.cache.store_value(&__cache_key, &__tagged.value).await;
-            }
-            ::std::result::Result::Ok(__tagged.value)
+            self.cache.store_value(&__cache_key, &__tagged).await;
+            ::std::result::Result::Ok(__tagged)
         },
         Mode::Stream => quote! {
-            ::std::result::Result::Ok(match __tagged.cache_policy {
-                crate::api_cache::CachePolicy::Cacheable => {
-                    self.cache.store_stream(__cache_key, __tagged.value)
-                }
-                crate::api_cache::CachePolicy::Uncacheable => __tagged.value,
-            })
+            ::std::result::Result::Ok(self.cache.store_stream(__cache_key, __tagged))
         },
     };
     let expanded_block = quote! {{

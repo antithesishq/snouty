@@ -257,6 +257,7 @@ async fn cmd_launch(
     }
 
     params.validate_test_params()?;
+    params.validate_filter_logs_matching()?;
 
     if let Some((detected, registry, config_image)) = config_image_ref {
         let rt = container::runtime(settings)?;

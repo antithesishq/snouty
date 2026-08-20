@@ -125,6 +125,62 @@ impl Params {
         Ok(())
     }
 
+    /// Validate `antithesis.filter_logs_matching` before launch.
+    ///
+    /// The platform validates this pattern only after the run has started, so
+    /// a bad value becomes a failed run minutes later, not a launch error.
+    /// These checks mirror the platform's: the pattern must be non-empty, fit
+    /// the guest's 1024-byte buffer (1023 bytes plus the NUL terminator),
+    /// compile, and not match the empty string (which would suppress every
+    /// log line). The platform matches with RE2; the `regex` crate shares
+    /// RE2's syntax and rejects the same constructs, so a local compile is a
+    /// high-confidence pre-check, not the authority.
+    pub fn validate_filter_logs_matching(&self) -> Result<()> {
+        let key = ANT_FILTER_LOGS_MATCHING;
+        let Some(value) = self.inner.get(key).and_then(Value::as_str) else {
+            return Ok(());
+        };
+
+        if value.trim().is_empty() {
+            return Err(user_error(format!("{key} is empty"))
+                .note("the platform skips log filtering for an empty pattern")
+                .suggestion("provide a pattern or drop the flag"));
+        }
+        if value.len() > 1023 {
+            return Err(user_error(format!(
+                "{key} is too long: {} bytes (max 1023)",
+                value.len()
+            )));
+        }
+        let re = regex::Regex::new(value).map_err(|err| {
+            let report = user_error(format!("{key} is not a valid regular expression: {err}"));
+            if has_backtracking_construct(value) {
+                report
+                    .note(
+                        "the platform matches with RE2, which does not backtrack: \
+                         lookahead, lookbehind, and backreferences are not supported",
+                    )
+                    .suggestion("rewrite the pattern without lookaround or backreferences")
+            } else {
+                report
+            }
+        })?;
+        if re.is_match("") {
+            return Err(user_error(format!(
+                "{key} matches the empty string, which would suppress every log line"
+            )));
+        }
+
+        if let Some(body) = js_regex_literal_body(value) {
+            eprintln!(
+                "Warning: {key} is raw regex text, so in {value} the slashes are \
+                 literal and the trailing flags never take effect; use inline \
+                 flags instead, e.g. (?i){body}."
+            );
+        }
+        Ok(())
+    }
+
     /// Ensure the debugging target run is identified by exactly one of
     /// `antithesis.debugging.run_id` (preferred) or
     /// `antithesis.debugging.session_id`.
@@ -185,6 +241,34 @@ impl Params {
                 (k.clone(), value)
             })
             .collect()
+    }
+}
+
+/// Detect the constructs RE2 rejects because they require backtracking:
+/// lookahead/lookbehind and backreferences. Only consulted after the pattern
+/// already failed to compile, to pick a tailored note over a raw parse error.
+fn has_backtracking_construct(pattern: &str) -> bool {
+    ["(?=", "(?!", "(?<=", "(?<!"]
+        .iter()
+        .any(|t| pattern.contains(t))
+        || pattern
+            .as_bytes()
+            .windows(2)
+            .any(|w| w[0] == b'\\' && w[1].is_ascii_digit() && w[1] != b'0')
+}
+
+/// If the pattern is the JS regex-literal form `/body/flags` (flags
+/// non-empty, all from the JS flag set), return the body. The value is sent
+/// as raw regex text, so the slashes match literally and the flags never
+/// take effect. Flags must be non-empty and from the JS set so ordinary
+/// slash-delimited literals like `/usr/bin` are not flagged.
+fn js_regex_literal_body(pattern: &str) -> Option<&str> {
+    let rest = pattern.strip_prefix('/')?;
+    let (body, flags) = rest.rsplit_once('/')?;
+    if !body.is_empty() && !flags.is_empty() && flags.chars().all(|c| "dgimsuvy".contains(c)) {
+        Some(body)
+    } else {
+        None
     }
 }
 
@@ -275,6 +359,7 @@ fn unescape_pointer_token(token: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use hegel::generators::{self, Generator};
     use serde_json::json;
 
     fn debug_vtime(params: &Params) -> Option<&str> {
@@ -653,8 +738,6 @@ mod tests {
         assert!(params.as_map().contains_key("antithesis.source"));
     }
 
-    use hegel::generators::{self, Generator};
-
     /// `unescape_pointer_token` is the exact inverse of RFC 6901 escaping
     /// (`~` → `~0`, `/` → `~1`). For *any* string — including ones already
     /// containing `~0`/`~1` sequences, the case the order-sensitive replacement
@@ -751,6 +834,121 @@ mod tests {
                 original.as_str()
             };
             assert_eq!(redacted.get(k).and_then(Value::as_str), Some(expected));
+        }
+    }
+
+    #[test]
+    fn validate_filter_logs_matching_accepts_valid_patterns() {
+        // Absent is fine — the param is optional.
+        assert!(Params::new().validate_filter_logs_matching().is_ok());
+        for pattern in ["debug", "(?i)error", "panic|fatal"] {
+            let mut params = Params::new();
+            params.insert(ANT_FILTER_LOGS_MATCHING, pattern);
+            assert!(
+                params.validate_filter_logs_matching().is_ok(),
+                "pattern should be accepted: {pattern}"
+            );
+        }
+    }
+
+    #[test]
+    fn validate_filter_logs_matching_rejects_a_blank_pattern() {
+        for pattern in ["", "  "] {
+            let mut params = Params::new();
+            params.insert(ANT_FILTER_LOGS_MATCHING, pattern);
+            let err = params.validate_filter_logs_matching().unwrap_err();
+            assert!(
+                err.to_string().contains("is empty"),
+                "unexpected error for {pattern:?}: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn validate_filter_logs_matching_limits_bytes_not_chars() {
+        // The guest buffer is 1024 bytes including the NUL terminator, so the
+        // limit is 1023 *bytes*: 512 two-byte chars (1024 bytes) must fail
+        // even though the char count is far below the limit.
+        let mut params = Params::new();
+        params.insert(ANT_FILTER_LOGS_MATCHING, "é".repeat(512));
+        let err = params.validate_filter_logs_matching().unwrap_err();
+        assert!(
+            err.to_string().contains("1024 bytes (max 1023)"),
+            "unexpected error: {err}"
+        );
+
+        let mut params = Params::new();
+        params.insert(ANT_FILTER_LOGS_MATCHING, "a".repeat(1023));
+        assert!(params.validate_filter_logs_matching().is_ok());
+    }
+
+    #[test]
+    fn validate_filter_logs_matching_rejects_an_invalid_regex() {
+        let mut params = Params::new();
+        params.insert(ANT_FILTER_LOGS_MATCHING, "(");
+        let err = params.validate_filter_logs_matching().unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("is not a valid regular expression"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn validate_filter_logs_matching_explains_re2_limits() {
+        // Lookaround and backreferences fail to compile anyway; the report
+        // must say *why* (RE2 does not backtrack), not just echo the parse
+        // error. Notes are color_eyre sections, visible in the Debug format.
+        for pattern in ["(?=ready)", "(?!x)", "(?<=a)", "(?<!a)", r"(a)\1"] {
+            let mut params = Params::new();
+            params.insert(ANT_FILTER_LOGS_MATCHING, pattern);
+            let err = format!("{:?}", params.validate_filter_logs_matching().unwrap_err());
+            assert!(
+                err.contains("RE2"),
+                "expected an RE2 note for {pattern}: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn validate_filter_logs_matching_rejects_an_empty_string_match() {
+        // These compile fine and then suppress every log line.
+        for pattern in ["x*", "(foo)?"] {
+            let mut params = Params::new();
+            params.insert(ANT_FILTER_LOGS_MATCHING, pattern);
+            let err = params.validate_filter_logs_matching().unwrap_err();
+            assert!(
+                err.to_string().contains("matches the empty string"),
+                "unexpected error for {pattern}: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn js_regex_literal_body_detects_the_slash_flags_form() {
+        assert_eq!(js_regex_literal_body("/error/i"), Some("error"));
+        assert_eq!(js_regex_literal_body("/a/b/gi"), Some("a/b"));
+        // No flags: indistinguishable from a literal slash-delimited path.
+        assert_eq!(js_regex_literal_body("/error/"), None);
+        // A path suffix is not a flag set.
+        assert_eq!(js_regex_literal_body("/usr/bin"), None);
+        assert_eq!(js_regex_literal_body("error"), None);
+    }
+
+    /// A pattern `validate_filter_logs_matching` accepts is one the platform
+    /// accepts too: non-blank, within the guest's 1023-byte limit, compiled
+    /// by the RE2-family engine, and not a match for the empty string. And
+    /// for *any* input, valid or not, validation returns instead of panicking.
+    #[hegel::test]
+    fn accepted_filter_patterns_satisfy_the_platform_checks(tc: hegel::TestCase) {
+        let pattern = tc.draw(generators::text());
+        let mut params = Params::new();
+        params.insert(ANT_FILTER_LOGS_MATCHING, pattern.clone());
+        if params.validate_filter_logs_matching().is_ok() {
+            assert!(!pattern.trim().is_empty());
+            assert!(pattern.len() <= 1023);
+            let re = regex::Regex::new(&pattern).expect("accepted pattern must compile");
+            assert!(!re.is_match(""));
         }
     }
 

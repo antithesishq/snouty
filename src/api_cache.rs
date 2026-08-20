@@ -70,12 +70,10 @@ pub fn default_dir() -> Option<PathBuf> {
     Some(base?.join("snouty").join(CACHE_DIR_NAME))
 }
 
-/// Whether `Cache-Control` lets a private client cache hold the response:
-/// a positive freshness lifetime (`max-age` > 0, or `immutable`) and none of
-/// `no-store`, `no-cache`, or `must-revalidate` — entries are never
-/// revalidated and never expire, so any directive that demands revalidation
-/// means "do not cache". An absent or malformed header grants nothing.
-/// `private` is fine — the cache directory is per-user.
+/// Whether `Cache-Control` lets a private client cache hold the response.
+/// Entries are never revalidated and never expire, so any directive that
+/// demands revalidation means "do not cache"; an absent or malformed header
+/// grants nothing. `private` is fine — the cache directory is per-user.
 fn cache_headers_allow(headers: &http::HeaderMap) -> bool {
     use headers::{CacheControl, HeaderMapExt};
     let Some(cache_control) = headers.typed_get::<CacheControl>() else {
@@ -422,7 +420,6 @@ mod tests {
         )
     }
 
-    /// A `HeaderMap` with one `cache-control` value, as reqwest would carry it.
     fn cache_control(value: &str) -> http::HeaderMap {
         let mut headers = http::HeaderMap::new();
         headers.insert("cache-control", value.parse().unwrap());
@@ -447,9 +444,6 @@ mod tests {
         assert!(!cache_headers_allow(&cache_control("not a directive ===")));
     }
 
-    // snouty never revalidates an entry and never expires one, so any
-    // directive that demands revalidation must read as "do not cache" —
-    // even next to a positive lifetime.
     #[test]
     fn revalidation_directives_deny_caching() {
         assert!(!cache_headers_allow(&cache_control("no-cache")));

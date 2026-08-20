@@ -619,13 +619,12 @@ fn mock_parse_request_line(request: &str) -> (String, String) {
     (method, path)
 }
 
-/// Route a request and return (status_code, response_body, content_type,
-/// cache_control). Each route states its own `Cache-Control`, mirroring the
-/// real API (observed on tenant release 61): successful run-scoped GET reads
-/// carry [`CACHEABLE_CACHE_CONTROL`]; the run list, errors, and everything
-/// else carry `no-cache`. The real API also sends `no-cache` for a
-/// non-terminal run's detail; the mock skips that distinction — snouty's own
-/// admission checks already keep a non-terminal detail out of the cache.
+/// Each route states its own `Cache-Control`, mirroring the real API
+/// (observed on tenant release 61): successful run-scoped GET reads carry
+/// [`CACHEABLE_CACHE_CONTROL`]; the run list, errors, and everything else
+/// carry `no-cache`. The real API also sends `no-cache` for a non-terminal
+/// run's detail; the mock skips that distinction — snouty's own admission
+/// checks already keep a non-terminal detail out of the cache.
 fn mock_route(
     method: &str,
     path: &str,

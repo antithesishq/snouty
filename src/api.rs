@@ -622,8 +622,6 @@ impl AntithesisApi {
 
         match request.send().await {
             Ok(response) => {
-                // `end.is_some()` first: without an end vtime the stream is
-                // uncacheable regardless, so skip the header parse.
                 let cache_policy = CachePolicy::cache_if(
                     end.is_some() && self.cache.headers_admit(response.headers()),
                 );
@@ -2654,8 +2652,6 @@ mod tests {
 
     #[tokio::test]
     async fn the_header_requirement_has_an_opt_out() {
-        // `api_cache_respect_headers = false`: a response without cacheable
-        // headers is admitted on the logical checks alone.
         let mock_server = MockServer::start().await;
         Mock::given(method("GET"))
             .and(path("/api/v0/runs/run-1"))

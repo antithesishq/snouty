@@ -18,6 +18,7 @@ rustPlatform.buildRustPackage {
       ./Cargo.toml
       ./build.rs
       ./examples
+      ./snouty-macros
       ./src
     ];
   };

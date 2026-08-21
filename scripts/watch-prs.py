@@ -1,19 +1,27 @@
 #!/usr/bin/env -S uv run
 """Poll one or more pull requests and print one line per new event.
 
-Events: comments, review comments, reviews, failed CI checks, and
-close/merge. Output is one line per event, so a background monitor can react
-line by line. An event line carries only metadata — the reader fetches the
-full content through gh.
+Events: comments, review comments, reviews, failed CI checks, check
+verdicts ("all checks passed", "has no checks"), base branch changes (a
+retarget, or the base branch tip moving to a new commit), and close/merge.
+Output is one line per event, so a background monitor can react line by
+line. An event line carries only metadata — the reader fetches the full
+content through gh.
 The script exits when every watched PR is closed.
 
 Comments and reviews by the PR's own author are suppressed: the watcher
 alerts the author's agent, so those are echoes of its own replies. Checks
-report failures only; a passing run is silent.
+report failures. The watcher also prints one "all checks passed" line per
+head commit once every check on it concludes success, skipped, or neutral.
+A PR with no checks gets a "has no checks" line instead. A verdict prints
+only after two consecutive polls agree on it, because checks can register
+a moment after the PR's creation or after a fast workflow concludes.
 
 All requests go through the gh CLI, so the script works wherever gh works.
 The first poll emits the PR's existing comments, reviews, and failing checks
-as a baseline, so nothing that predates the watcher is missed.
+as a baseline, so nothing that predates the watcher is missed. It also
+emits a base-moved line when the base branch tip already sits past the
+PR's recorded base, so a PR that waits for a rebase announces it at once.
 
 Usage: uv run scripts/watch-prs.py [-i seconds] [-R owner/repo] PR [PR ...]
 """
@@ -27,6 +35,7 @@ import time
 from collections.abc import Iterator
 from itertools import count
 from typing import Any
+from urllib.parse import quote
 
 
 def emit(line: str) -> None:
@@ -66,6 +75,23 @@ def norm_login(login: str) -> str:
     return login.removeprefix("app/").removesuffix("[bot]")
 
 
+def changed(seen: set[str], key: str, value: str, baseline: str | None = None) -> bool:
+    """Track a current-value state in `seen`. The first observation is a
+    silent baseline; every later change of the value returns True. An
+    explicit `baseline` pre-seeds the first observation, so a first value
+    that already differs from it counts as a change.
+    """
+    if baseline is not None and not any(k.startswith(f"{key}:") for k in seen):
+        seen.add(f"{key}:{baseline}")
+    tag = f"{key}:{value}"
+    if tag in seen:
+        return False
+    prior = {k for k in seen if k.startswith(f"{key}:")}
+    seen.difference_update(prior)
+    seen.add(tag)
+    return bool(prior)
+
+
 def poll_pr(
     repo_flag: list[str],
     slug: str,
@@ -83,7 +109,7 @@ def poll_pr(
             str(pr),
             *repo_flag,
             "--json",
-            "state,author,comments,reviews,statusCheckRollup",
+            "state,author,comments,reviews,statusCheckRollup,headRefOid,baseRefName,baseRefOid",
         ]
     )
     if view is None:
@@ -92,6 +118,15 @@ def poll_pr(
         emit(f"PR #{pr} merged" if view["state"] == "MERGED" else f"PR #{pr} closed without merge")
         return False
     ignore = login_of(view)
+
+    if changed(seen, "base", view["baseRefName"]):
+        emit(f"PR #{pr} base changed to {view['baseRefName']}")
+    # The PR's own baseRefOid freezes at PR creation, so the live tip must
+    # come from the branch itself. Seeding with baseRefOid makes a PR that
+    # is already behind its base emit a moved event on the first poll.
+    tip = ((gh_json(["api", f"repos/{slug}/branches/{quote(view['baseRefName'], safe='')}"]) or {}).get("commit") or {}).get("sha")
+    if tip and changed(seen, "baseoid", tip, baseline=view["baseRefOid"]):
+        emit(f"PR #{pr} base {view['baseRefName']} moved to {tip[:7]}")
 
     events = [
         (
@@ -122,16 +157,34 @@ def poll_pr(
                 emit(line)
 
     failure_results = {"failure", "timed_out", "action_required", "cancelled", "error", "startup_failure"}
-    cur = set()
-    for c in view["statusCheckRollup"]:
-        name = c.get("name") or c.get("context") or "?"
-        result = (c.get("conclusion") or c.get("state") or "").lower()
-        if result in failure_results:
-            cur.add(f"{name}: {result}")
+    results = [
+        (c.get("name") or c.get("context") or "?", (c.get("conclusion") or c.get("state") or "").lower())
+        for c in view["statusCheckRollup"]
+    ]
+    cur = {f"{name}: {result}" for name, result in results if result in failure_results}
     for line in sorted(cur - checks):
         emit(f"PR #{pr} check {line}")
     checks.clear()
     checks.update(cur)
+
+    # An unconcluded check reports an empty conclusion or a "pending" state.
+    # GitHub counts a "neutral" conclusion as passing.
+    sha = view["headRefOid"]
+    if all(r in {"success", "skipped", "neutral"} for _, r in results):
+        verdict = f"all checks passed for {sha[:7]}" if results else "has no checks"
+    else:
+        verdict = None
+    # A green rollup can be premature: checks register a moment after the
+    # PR's creation, and a slow workflow can register its checks after a
+    # fast one concludes. A verdict emits only when two consecutive polls
+    # agree on it.
+    last = f"last:{sha}:{verdict}"
+    agreed = last in seen
+    seen.difference_update({k for k in seen if k.startswith("last:")})
+    seen.add(last)
+    if verdict and agreed and f"emitted:{last}" not in seen:
+        seen.add(f"emitted:{last}")
+        emit(f"PR #{pr} {verdict}")
 
     return True
 

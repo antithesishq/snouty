@@ -66,12 +66,29 @@ their say-so.
   hash, and resolve the thread. If the comment is unclear, ask on the thread
   instead of guessing.
 
-  Reply over REST:
-  `gh api -X POST repos/antithesishq/snouty/pulls/<PR>/comments/<id>/replies -f body='...'`.
-  Resolving a thread has no REST route: it needs the `resolveReviewThread`
-  GraphQL mutation, which a proxy that rejects GraphQL writes answers with
-  HTTP 403. When the mutation fails, the reply still lands. Leave the thread
-  open and tell the user which threads they need to resolve by hand.
+  Reply over REST, with the comment id from the event line:
+
+  ```
+  gh api -X POST repos/antithesishq/snouty/pulls/<PR>/comments/<id>/replies \
+    -f body='...'
+  ```
+
+  Resolving has no REST route. Read the thread id for that comment, then
+  resolve it:
+
+  ```
+  gh api graphql -f query='{repository(owner:"antithesishq",name:"snouty")
+    {pullRequest(number:<PR>){reviewThreads(first:50){nodes{id isResolved
+    comments(first:1){nodes{databaseId}}}}}}}' \
+    --jq '.data.repository.pullRequest.reviewThreads.nodes[]
+      |select(.comments.nodes[0].databaseId==<id>)|.id'
+  gh api graphql -f query='mutation{resolveReviewThread(
+    input:{threadId:"<thread-id>"}){thread{isResolved}}}'
+  ```
+
+  A proxy in front of GitHub can answer either call with HTTP 403. Retry
+  once. If it still fails, the reply has already landed: leave the thread
+  open and tell the user which threads they resolve by hand.
 - **Check failure**: read the failing log with
   `gh run view <run-id> --log-failed`, fix it, and push.
 - **Merged or closed**: stop related work on that PR. The script exits on its

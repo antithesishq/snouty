@@ -28,12 +28,7 @@ on:
 jobs:
   publish-crates:
     runs-on: "ubuntu-22.04"
-    # Hold the run here until a reviewer approves it. Give the `release`
-    # environment its required reviewers in the repository settings; GitHub
-    # creates an unprotected environment on first use, which gates nothing.
-    # The environment also lands in the OIDC token as the `environment` claim,
-    # so a crates.io config that names `release` rejects any run that skips
-    # this gate.
+    # Hold the run here until a reviewer approves it.
     environment: release
     # release.yml grants the publish job `id-token: write` and
     # `packages: write`. A called workflow can only narrow that grant, so this
@@ -56,11 +51,6 @@ jobs:
           # build against the registry until that exact version is in the index.
           # `cargo publish` waits for the index before it returns, so the second
           # crate sees the first one's upload.
-          #
-          # Skip a crate that is already up. `cargo publish` has no
-          # --skip-existing and fails on a version that exists, so a retry after
-          # a run that published one crate and then failed would never get past
-          # the first crate.
           for crate in snouty-macros snouty; do
             version=$(cargo pkgid -p "$crate" | sed 's/.*[@#]//')
             if cargo info --registry crates-io "$crate@$version" > /dev/null 2>&1; then

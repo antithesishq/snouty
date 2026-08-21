@@ -74,7 +74,7 @@ pub(super) enum Cap {
 /// How long the truncation probe waits for the row past the cap. On a
 /// healthy `Noted` stream that row (or EOF) follows the capped rows at once;
 /// see the probe in [`print_event_stream`] for what a timeout means.
-const PROBE_TIMEOUT: Duration = Duration::from_secs(2);
+const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Print every line of the (already server-filtered) stream, one line out
 /// per line in — the one output pipeline behind every event-stream command
@@ -165,10 +165,14 @@ pub(super) async fn print_event_stream(
     // to sit on an already-complete answer.
     if peek && !ended {
         match tokio::time::timeout(PROBE_TIMEOUT, lines.try_next()).await {
+            // The row arrived: more rows exist.
             Ok(Ok(Some(_))) => super::limit_note(cap_rows as u64, "event"),
-            // EOF at the cap, or an error on the disposable row.
-            Ok(_) => {}
-            Err(_) => {
+            // EOF at the cap: nothing was truncated.
+            Ok(Ok(None)) => {}
+            // An error on the disposable row: truncation unknown.
+            Ok(Err(_)) => {}
+            // `timeout` answers `Err` only for its elapsed deadline.
+            Err(_elapsed) => {
                 debug_assert!(false, "truncation probe timed out; see PROBE_TIMEOUT");
                 debug!("truncation probe timed out after {PROBE_TIMEOUT:?}; skipping the note");
             }

@@ -10,9 +10,10 @@
 # repository holds no long-lived `CARGO_REGISTRY_TOKEN` secret. crates.io reads
 # the workflow filename from the OIDC `workflow_ref` claim, which names the
 # entry-point workflow. Both crates must therefore list `release.yml` — not this
-# file — as the workflow in their Trusted Publishing config. crates.io attaches
-# a config only to a crate that already exists, so a crate with no published
-# version needs one manual `cargo publish` before this job can take it over.
+# file — as the workflow in their Trusted Publishing config, and name the
+# `release` environment. crates.io attaches a config only to a crate that
+# already exists, so a crate with no published version needs one manual
+# `cargo publish` before this job can take it over.
 name: Publish crates
 
 on:
@@ -27,6 +28,13 @@ on:
 jobs:
   publish-crates:
     runs-on: "ubuntu-22.04"
+    # Hold the run here until a reviewer approves it. Give the `release`
+    # environment its required reviewers in the repository settings; GitHub
+    # creates an unprotected environment on first use, which gates nothing.
+    # The environment also lands in the OIDC token as the `environment` claim,
+    # so a crates.io config that names `release` rejects any run that skips
+    # this gate.
+    environment: release
     # release.yml grants the publish job `id-token: write` and
     # `packages: write`. A called workflow can only narrow that grant, so this
     # job keeps the OIDC permission it needs and drops the rest. `contents`

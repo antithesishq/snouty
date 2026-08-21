@@ -63,35 +63,27 @@ pub(super) enum Cap {
     /// No cap: the server enforces the limit, or the stream is unbounded by
     /// design (`--follow` without `--limit`).
     None,
-    /// Stop at the cap at once — reading past it on a live `--follow` stream
-    /// could wait forever.
-    Silent(NonZeroU64),
     /// Stop at the cap; in human mode, read one row past it and print a
     /// truncation note when that row arrives.
     Noted(NonZeroU64),
 }
 
 impl Cap {
-    /// A cap that notes its truncation, paired with the `limit` its request
-    /// must name: one row past the cap.
+    /// A cap, paired with the `limit` its request must name: one row past the
+    /// cap.
     ///
     /// That row's arrival is the only truncation signal there is. On a server
     /// that honors `limit` (release 61 does), a request for exactly the cap
     /// makes a truncated result look complete and the note never prints. The
-    /// two are minted together so that they cannot drift apart.
-    ///
-    /// A cap at `ceiling` is the exception: the server rejects a request for
-    /// one row more, so the cap goes silent and prints no note.
-    pub(super) fn noted(cap: NonZeroU64, ceiling: NonZeroU64) -> (Self, NonZeroU64) {
-        match cap.checked_add(1) {
-            Some(probe) if probe <= ceiling => (Self::Noted(cap), probe),
-            _ => (Self::Silent(cap), cap),
-        }
+    /// two are minted together so that they cannot drift apart. The flags that
+    /// carry a cap top out one below the server's ceiling, so the row past it
+    /// always stays in range.
+    pub(super) fn noted(cap: NonZeroU64) -> (Self, NonZeroU64) {
+        (Self::Noted(cap), cap.saturating_add(1))
     }
 
     /// The `limit` a request must name for this cap, for the endpoints that
-    /// take an optional one. [`Cap::Silent`] never probes, so it asks for
-    /// exactly what it prints. [`Cap::None`] names no limit at all, which is
+    /// take an optional one. [`Cap::None`] names no limit at all, which is
     /// all an unbounded `--follow` can do: the request has no way to say
     /// "every event". Release 61 then applies its own default of 50
     /// (`Search_Request.limit` in `openapi.json`), so such a stream ends at 50
@@ -100,8 +92,7 @@ impl Cap {
     pub(super) fn request_limit(self) -> Option<NonZeroU64> {
         match self {
             Self::None => None,
-            Self::Silent(cap) => Some(cap),
-            Self::Noted(cap) => Some(cap.saturating_add(1)),
+            Self::Noted(cap) => Some(Self::noted(cap).1),
         }
     }
 }
@@ -135,7 +126,6 @@ pub(super) async fn print_event_stream(
     // The note is human-mode commentary; `--json` never reads past the cap.
     let (cap, peek) = match cap {
         Cap::None => (None, false),
-        Cap::Silent(cap) => (Some(cap), false),
         Cap::Noted(cap) => (Some(cap), !output.json()),
     };
     let cap_rows = cap.map_or(usize::MAX, |cap| {

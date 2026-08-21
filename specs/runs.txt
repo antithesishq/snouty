@@ -686,6 +686,13 @@ mock-runs-server
 [!staging] stdout '400\.5'
 [!staging] stderr 'note: output reached the limit of 1 event; more may exist'
 
+# `--follow` with a limit notes its truncation too: the stream stops at the
+# limit, so the user must be told that more matches exist.
+mock-runs-server
+[!staging] snouty runs search $R_run_id 'contains({output_text: "parallel_driver_fetch"})' --follow --limit 1
+[!staging] stdout '400\.5'
+[!staging] stderr 'note: output reached the limit of 1 event; more may exist'
+
 # The note is truncation-only: a limit the matches never reach prints no note.
 mock-runs-server
 [!staging] snouty runs search $R_run_id 'contains({output_text: "slow request"})' --limit 5
@@ -697,19 +704,12 @@ mock-runs-server
 ! snouty runs search run-1 'contains({output_text: "x"})' --limit 0
 stderr 'invalid value .0.'
 
-# `runs search --limit` accepts the server's whole range. At the ceiling of
-# 999 there is no room for the probe row, so the command asks for 999 and
-# prints no truncation note.
+# `runs search --limit` tops out one below the server's ceiling of 999: the
+# request asks for one row past the flag, and that row must stay in range.
 mock-runs-server
-[!staging] snouty runs search $R_run_id 'contains({output_text: "parallel_driver_fetch"})' --limit 999
-[!staging] stdout '400\.5'
-[!staging] ! stderr 'reached the limit'
-
-# A limit above the server's ceiling is rejected before any request.
-mock-runs-server
-! snouty runs search run-1 'contains({output_text: "x"})' --limit 1000
-stderr 'invalid value .1000.'
-stderr 'must be at most 999'
+! snouty runs search run-1 'contains({output_text: "x"})' --limit 999
+stderr 'invalid value .999.'
+stderr 'must be at most 998'
 
 # A query that matches nothing prints a friendly empty-state. (Mock-only: on a
 # live run this scans the whole event history.)

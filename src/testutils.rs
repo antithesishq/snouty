@@ -1450,6 +1450,11 @@ mod tests {
             capped.contains(r#""vtime":"400.5""#),
             "the first match should be retained, got: {capped}"
         );
+
+        // `limit` is documented as 1..=999, and the server rejects the rest.
+        let (status, out, _) = mock_route_search_events("run-1", &body(Some(1000)));
+        assert_eq!(status, 400, "got: {out}");
+        assert!(out.contains("out of the range"), "got: {out}");
     }
 
     #[test]

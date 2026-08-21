@@ -105,9 +105,6 @@ Tell the user to run the following once satisfied:
 
 ```
 git push && git push --tags
-cargo publish -p snouty-macros
-cargo publish -p snouty
 ```
 
-`snouty-macros` publishes first: snouty's exact-version pin on it cannot
-resolve until that exact version exists on crates.io.
+The tag push publishes the crates. There is no manual publish step.

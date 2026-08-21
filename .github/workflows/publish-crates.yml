@@ -48,6 +48,17 @@ jobs:
           # snouty-macros goes first. snouty pins it with `=`, so snouty cannot
           # build against the registry until that exact version is in the index.
           # `cargo publish` waits for the index before it returns, so the second
-          # command sees the first one's upload.
-          cargo publish -p snouty-macros
-          cargo publish -p snouty
+          # crate sees the first one's upload.
+          #
+          # Skip a crate that is already up. `cargo publish` has no
+          # --skip-existing and fails on a version that exists, so a retry after
+          # a run that published one crate and then failed would never get past
+          # the first crate.
+          for crate in snouty-macros snouty; do
+            version=$(cargo pkgid -p "$crate" | sed 's/.*[@#]//')
+            if cargo info --registry crates-io "$crate@$version" > /dev/null 2>&1; then
+              echo "$crate $version is already on crates.io"
+            else
+              cargo publish -p "$crate"
+            fi
+          done

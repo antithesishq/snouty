@@ -15,6 +15,12 @@ targets = ["aarch64-apple-darwin", "aarch64-unknown-linux-gnu", "aarch64-unknown
 install-path = "~/.local/bin"
 # Whether to install an updater program
 install-updater = true
+# Publish the crates to crates.io from CI (.github/workflows/publish-crates.yml)
+publish-jobs = ["./publish-crates"]
+# Publish -rc.N tags to crates.io as well as stable tags
+publish-prereleases = true
+# Produce build provenance attestations for the released artifacts
+github-attestations = true
 
 [dist.dependencies.apt]
 musl-tools = { targets = ["aarch64-unknown-linux-musl", "x86_64-unknown-linux-musl"] }

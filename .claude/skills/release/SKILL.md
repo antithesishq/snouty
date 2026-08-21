@@ -1,11 +1,11 @@
 ---
 name: Release Snouty
-description: This skill should be used when the user asks to "release snouty", "cut a release", "cut a pre-release", "cut an rc", "bump the version", "create a release", or provides a version like "release snouty v0.2.0" or "release snouty v0.7.0-rc.1". Handles version validation, changelog update, Cargo.toml bump, build, test, commit, and tagging, for releases and pre-releases.
+description: This skill should be used when the user asks to "release snouty", "cut a release", "cut a pre-release", "cut an rc", "bump the version", "create a release", or provides a version like "release snouty v0.2.0" or "release snouty v0.7.0-rc.1". Handles version validation, changelog update, Cargo.toml bump, build, test, the release PR, and tagging the merged commit, for releases and pre-releases.
 ---
 
 # Release Snouty
 
-Perform a versioned release of snouty by updating `CHANGELOG.md`, bumping `Cargo.toml`, building, testing, committing, and tagging. _Do not_ push the resulting commit so the user has a chance to audit it first.
+Perform a versioned release of snouty by updating `CHANGELOG.md`, bumping `Cargo.toml`, building, testing, and committing. The release commit lands on `main` through a pull request, so the user audits it before it merges. Tag the merged commit on `main` and push the tag; the tag push starts the release workflow.
 
 ## How the changelog reaches GitHub Releases
 
@@ -77,7 +77,13 @@ Run `cargo build` to update `Cargo.lock` and verify the project compiles.
 
 Run `cargo nextest run` to ensure everything passes. If tests fail, stop and report.
 
-### 6. Commit the Release
+### 6. Open a PR with the Release Commit
+
+Create a release branch off `main`:
+
+```
+git switch -c release-vX.Y.Z
+```
 
 Stage only `Cargo.toml`, `Cargo.lock`, and `CHANGELOG.md`. If there are any other changes abort. Then commit with message:
 
@@ -85,26 +91,47 @@ Stage only `Cargo.toml`, `Cargo.lock`, and `CHANGELOG.md`. If there are any othe
 chore: Release snouty version X.Y.Z
 ```
 
-### 7. Create an Annotated Tag
+Open the PR with the `open-pr` skill, which pushes the branch, writes the
+body, and creates the PR. The body says which version this releases and
+what the changelog section covers. There is no issue to close, so it carries
+no `fixes #` line.
 
-Create an annotated git tag:
+Do not tag anything yet. The tag belongs on the commit that lands on `main`.
+
+### 7. Wait for the PR to Merge
+
+Watch the PR with the `watch-pr` skill. Fix CI failures and review comments
+as they arrive. The merge is the user's call: they review the release commit
+in the PR, and the PR merges only after they approve it. Do not merge it
+yourself.
+
+### 8. Tag the Commit on main
+
+Once the PR merges, return to `main` and take the merged commit:
+
+```
+git switch main && git pull
+```
+
+Confirm `HEAD` is the release commit: the `version` in `Cargo.toml` must read
+`X.Y.Z`, and `git log --oneline -1` must show the release message. A squash
+merge rewrites the commit, so the sha on `main` differs from the sha on the
+branch. Tag `main` itself, never the branch commit.
+
+Create an annotated tag and push it:
 
 ```
 git tag -a vX.Y.Z -m "chore: Release snouty version X.Y.Z"
+git push origin vX.Y.Z
 ```
 
-### 8. Ask user to audit
+The tag push runs the release workflow, which publishes the crates and
+creates the GitHub Release. There is no manual publish step.
 
-Do NOT push. Show the user:
+### 9. Report the Result
 
-- The commit: `git log --oneline -1`
+Show the user:
+
+- The tagged commit: `git log --oneline -1`
 - The tag: `git show vX.Y.Z --no-patch`
-- The diff: `git diff HEAD~1`
-
-Tell the user to run the following once satisfied:
-
-```
-git push && git push --tags
-```
-
-The tag push publishes the crates. There is no manual publish step.
+- The release workflow run, so they can follow it: `gh run list --limit 3`

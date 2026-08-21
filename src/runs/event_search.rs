@@ -71,6 +71,33 @@ pub(super) enum Cap {
     Noted(NonZeroU64),
 }
 
+impl Cap {
+    /// A noted cap, paired with the `limit` its request must name: one row
+    /// past the cap.
+    ///
+    /// That row's arrival is the only truncation signal there is. On a server
+    /// that honors `limit` (release 61 does), a request for exactly the cap
+    /// makes a truncated result indistinguishable from a complete one and the
+    /// note never prints. Minting the two together keeps them from drifting —
+    /// a request limit missing its `+1` leaves the probe in
+    /// [`print_event_stream`] waiting for a row that never comes.
+    pub(super) fn noted(cap: NonZeroU64) -> (Self, NonZeroU64) {
+        (Self::Noted(cap), cap.saturating_add(1))
+    }
+
+    /// The `limit` a request must name for this cap, for the endpoints that
+    /// take an optional one. [`Cap::Silent`] never probes, so it asks for
+    /// exactly what it prints; [`Cap::None`] names no limit at all, which is
+    /// what stops the server closing an unbounded stream at its default of 50.
+    pub(super) fn request_limit(self) -> Option<NonZeroU64> {
+        match self {
+            Self::None => None,
+            Self::Silent(cap) => Some(cap),
+            Self::Noted(cap) => Some(Self::noted(cap).1),
+        }
+    }
+}
+
 /// How long the truncation probe waits for the row past the cap. On a
 /// healthy `Noted` stream that row (or EOF) follows the capped rows at once;
 /// see the probe in [`print_event_stream`] for what a timeout means.

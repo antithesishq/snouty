@@ -17,18 +17,39 @@ pub struct OutputOptions {
 /// terminated with a newline; values are sanitized. Labels are padded to the
 /// widest label, but never narrower than `min_label_width` so a caller that also
 /// renders a wider prose label below the block can keep every row aligned.
-pub(crate) fn render_kv(rows: &[(&str, String)], min_label_width: usize) -> String {
+pub(crate) fn render_kv<S: AsRef<str>>(rows: &[(S, String)], min_label_width: usize) -> String {
     let label_width = rows
         .iter()
-        .map(|(label, _)| label.len())
+        .map(|(label, _)| label.as_ref().len())
         .chain(std::iter::once(min_label_width))
         .max()
         .unwrap_or(0);
     let mut out = String::new();
     for (label, value) in rows {
-        out.push_str(&format!("{label:label_width$}  {}\n", sanitize(value)));
+        out.push_str(&format!(
+            "{:label_width$}  {}\n",
+            label.as_ref(),
+            sanitize(value)
+        ));
     }
     out
+}
+
+/// Prefix every line of `text` with `prefix`, so a multi-line block sits under
+/// the line that introduces it. Shared by the run/property renderers and by the
+/// API error formatter.
+pub(crate) fn indent_lines(text: &str, prefix: &str) -> String {
+    text.lines()
+        .map(|line| {
+            // Don't indent blank lines — that would leave trailing whitespace.
+            if line.is_empty() {
+                String::new()
+            } else {
+                format!("{prefix}{line}")
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// Escape one character into `out`, sharing the control-char policy between

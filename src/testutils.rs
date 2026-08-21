@@ -1280,7 +1280,6 @@ fn mock_route_search_events(run_id: &str, body: &str) -> (u16, String, &'static 
         );
     }
 
-    let limit = request["limit"].as_u64().map(|l| l as usize);
     let needles = query_needles(query);
     // The haystack the query asked for. `runs events` reads an event's text
     // fields; a query that stringifies the event asks for the event's JSON,
@@ -1301,8 +1300,10 @@ fn mock_route_search_events(run_id: &str, body: &str) -> (u16, String, &'static 
             needles.iter().all(|needle| haystack.contains(needle))
         })
         .collect();
-    if let Some(limit) = limit {
-        matches.truncate(limit);
+    // Cap at `limit` when present, as release 61 does; see the route's doc
+    // comment for the observation.
+    if let Some(limit) = request["limit"].as_u64() {
+        matches.truncate(limit as usize);
     }
 
     if matches.is_empty() {

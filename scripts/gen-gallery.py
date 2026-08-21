@@ -944,11 +944,8 @@ def rows_at_most(limit: int):
 def rows_at_most_with_limit_note(limit: int):
     """`rows_at_most`, plus the stderr note that says the output stopped there.
 
-    A capped listing that prints nothing else is ambiguous: `limit` rows can
-    mean "these are all the matches" or "there are more". Only the note tells
-    them apart, and it prints only when snouty asks the server for one row
-    past the cap — so checking the row count alone passes on a build that
-    never asks."""
+    The note prints only when snouty asks the server for one row past the cap,
+    so checking the row count alone passes on a build that never asks."""
 
     def chk(sr: StoryRun, reg: Registry) -> tuple[bool, str]:
         n = len(sr.rows or [])

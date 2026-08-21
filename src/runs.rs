@@ -24,7 +24,9 @@ use crate::event_render::{normalize_terminal_text, strip_ansi};
 use crate::event_set_dsl;
 use crate::features::{self, Feature};
 use crate::jsonl::JsonStream;
-use crate::render::{OutputOptions, render_kv, sanitize, sanitize_multiline, wrap_text};
+use crate::render::{
+    OutputOptions, indent_lines, render_kv, sanitize, sanitize_multiline, wrap_text,
+};
 use crate::settings::Settings;
 use crate::time::{HumanDuration, format_local};
 use crate::vtime::VTime;
@@ -1061,20 +1063,6 @@ fn sorted_by_vtime(events: &[Event]) -> Vec<&Event> {
     sorted
 }
 
-fn indent_lines(text: &str, prefix: &str) -> String {
-    text.lines()
-        .map(|line| {
-            // Don't indent blank lines — that would leave trailing whitespace.
-            if line.is_empty() {
-                String::new()
-            } else {
-                format!("{prefix}{line}")
-            }
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
 fn is_failing(p: &Property) -> bool {
     matches!(p.status(), PropertyStatus::Failing)
 }
@@ -1378,27 +1366,17 @@ async fn cmd_runs_search(
     }
     // The cap is enforced client-side whatever the server does: release 61
     // ends the stream at the requested `limit`, but releases 58.11 through
-    // 60.1 ignore it and stream every match.
-    //
-    // A `Cap::Noted` request asks for one row past the cap, because that
-    // row's arrival is the only truncation signal there is — on a server
-    // that honors `limit`, asking for exactly the cap makes a truncated
-    // result indistinguishable from a complete one, and the note never
-    // prints. `runs list` and `runs events` ask for one past the limit for
-    // the same reason. `--follow` never probes, so it asks for exactly what
-    // it prints; unbounded `--follow` names no limit at all, which is what
-    // stops the server closing the stream at its default of 50.
-    let (cap, requested) = match (args.follow, args.limit) {
-        (true, None) => (Cap::None, None),
-        (true, Some(limit)) => (Cap::Silent(limit), Some(limit)),
-        (false, limit) => {
-            let cap = limit.unwrap_or(SEARCH_DEFAULT_LIMIT);
-            (Cap::Noted(cap), Some(cap.saturating_add(1)))
-        }
+    // 60.1 ignore it and stream every match. `Cap::request_limit` derives
+    // what the request names from the cap itself, including the probe row a
+    // noted cap needs.
+    let cap = match (args.follow, args.limit) {
+        (true, None) => Cap::None,
+        (true, Some(limit)) => Cap::Silent(limit),
+        (false, limit) => Cap::Noted(limit.unwrap_or(SEARCH_DEFAULT_LIMIT)),
     };
     let search = SearchMode::Query {
         stream: args.follow,
-        limit: requested,
+        limit: cap.request_limit(),
     };
     let stream = match api
         .search_run_events_query(&args.run_id, &args.query, search)
@@ -1445,15 +1423,17 @@ async fn cmd_runs_events(
     }
 
     let api = AntithesisApi::new(settings, verbose)?;
+    // Both backends ask for `probe` rows — one past the cap — so the
+    // truncation note has its signal; the cap itself is still enforced
+    // client-side, because an older tenant ignores the field entirely. The
+    // flag tops out one below the endpoints' ceiling, so the probe row
+    // always fits.
+    let (cap, probe) = Cap::noted(limit);
     let (stream, live) = if features::is_enabled(Feature::RunsSearch) {
         let query = event_set_dsl::substring_filter(matches);
-        // One row past the cap, for the truncation probe — the same reason
-        // the GET path below adds one, and the same reason `cmd_runs_search`
-        // does. The limit is still enforced client-side: an older tenant
-        // ignores the field entirely.
         let mode = SearchMode::Query {
             stream: false,
-            limit: Some(limit.saturating_add(1)),
+            limit: Some(probe),
         };
         let stream = match api.search_run_events_query(run_id, &query, mode).await {
             Ok(stream) => stream,
@@ -1465,14 +1445,7 @@ async fn cmd_runs_events(
         let [needle] = matches else {
             return Err(event_search::multi_needle_error());
         };
-        // The GET endpoint enforces `limit` server-side, so ask for one row
-        // past the cap: that row's arrival is the truncation signal. The
-        // flag tops out one below the endpoint's ceiling, so the probe row
-        // always fits.
-        let stream = match api
-            .search_run_events(run_id, needle, limit.saturating_add(1))
-            .await
-        {
+        let stream = match api.search_run_events(run_id, needle, probe).await {
             Ok(stream) => stream,
             Err(err) => return Err(explain_run_scoped_error(&api, run_id, err).await),
         };
@@ -1480,7 +1453,7 @@ async fn cmd_runs_events(
     };
     event_search::print_event_stream(
         stream,
-        Cap::Noted(limit),
+        cap,
         ErrorRows::Abort,
         mode,
         live,

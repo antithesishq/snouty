@@ -6,7 +6,7 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
 use color_eyre::Section;
 use color_eyre::eyre::Report;
 
-use crate::api::{GET_EVENTS_MAX_LIMIT, RunStatus, SEARCH_DEFAULT_LIMIT};
+use crate::api::{EVENTS_MAX_LIMIT, RunStatus, SEARCH_DEFAULT_LIMIT};
 use crate::error::user_error;
 use crate::features::{self, Feature};
 use crate::time::HumanDuration;
@@ -62,13 +62,13 @@ fn parse_poll_interval(value: &str) -> Result<HumanDuration, String> {
 }
 
 /// clap value parser for `runs events --limit` and `runs search --limit`:
-/// both endpoints accept limits up to [`GET_EVENTS_MAX_LIMIT`], and both
+/// both endpoints accept limits up to [`EVENTS_MAX_LIMIT`], and both
 /// commands reserve one row past the flag for their truncation probe, so the
 /// flag tops out one below the ceiling. `NonZeroU64` matches the generated
 /// request type, so `--limit 0` is rejected here with a plain message
 /// instead of surfacing the request builder's conversion jargon.
 fn parse_events_limit(value: &str) -> Result<NonZeroU64, String> {
-    let max = GET_EVENTS_MAX_LIMIT.get() - 1;
+    let max = EVENTS_MAX_LIMIT.get() - 1;
     let limit = value.parse::<NonZeroU64>().map_err(|e| e.to_string())?;
     if limit.get() > max {
         return Err(format!("must be at most {max}"));

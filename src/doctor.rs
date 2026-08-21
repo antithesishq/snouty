@@ -380,11 +380,9 @@ fn resolve_settings(settings: &Settings, features: &[Feature]) -> Vec<Setting> {
 fn print_settings(settings: &[Setting]) {
     // The names are snake_case for `--json`; the table reads better with
     // spaces, and deriving the label here keeps one name for both.
-    let labels: Vec<String> = settings.iter().map(|s| s.name.replace('_', " ")).collect();
-    let rows: Vec<(&str, String)> = labels
+    let rows: Vec<(String, String)> = settings
         .iter()
-        .zip(settings)
-        .map(|(label, s)| (label.as_str(), s.value.clone()))
+        .map(|s| (s.name.replace('_', " "), s.value.clone()))
         .collect();
     for line in render_kv(&rows, 0).lines() {
         eprintln!("  {line}");
@@ -962,6 +960,6 @@ mod tests {
         // `jq .settings.https_proxy` needs no quoting.
         assert_eq!(value["settings"]["tenant"], "acme");
         assert_eq!(value["settings"]["https_proxy"], "not set");
-        assert!(value["settings"].as_object().unwrap().len() == 2);
+        assert_eq!(value["settings"].as_object().unwrap().len(), 2);
     }
 }

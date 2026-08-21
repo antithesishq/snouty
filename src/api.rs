@@ -23,7 +23,7 @@ use crate::params::{
     ANT_FILTER_LOGS_MATCHING, ANT_IMAGES, ANT_IS_EPHEMERAL, ANT_REPORT_RECIPIENTS, ANT_SOURCE,
     ANT_TEST_NAME, Params,
 };
-use crate::render::sanitize_multiline;
+use crate::render::{indent_lines, sanitize_multiline};
 use crate::settings::Settings;
 use crate::tag::{Tag, Tagged};
 use crate::util::source_error;
@@ -122,8 +122,10 @@ pub enum SearchMode {
 /// when no explicit limit was given.
 pub const SEARCH_DEFAULT_LIMIT: NonZeroU64 = NonZeroU64::new(50).unwrap();
 
-/// The GET events endpoint's `limit` ceiling (the spec allows 1..=999).
-pub const GET_EVENTS_MAX_LIMIT: NonZeroU64 = NonZeroU64::new(999).unwrap();
+/// The `limit` ceiling both events endpoints validate against (the spec
+/// allows 1..=999 on the GET events endpoint and on the events-search
+/// endpoint alike).
+pub const EVENTS_MAX_LIMIT: NonZeroU64 = NonZeroU64::new(999).unwrap();
 
 /// Why a `/api/version` probe failed, classified for `snouty doctor`.
 #[derive(Debug)]
@@ -1332,15 +1334,10 @@ fn format_api_error(status: u16, body: &str) -> Report {
     if !body.is_empty() {
         msg.push_str(" — ");
         // A body that spans lines keeps them, indented so the whole block
-        // reads as one error rather than as unrelated output after it.
-        let mut lines = body.lines();
-        if let Some(first) = lines.next() {
-            msg.push_str(first);
-        }
-        for line in lines {
-            msg.push_str("\n  ");
-            msg.push_str(line);
-        }
+        // reads as one error rather than as unrelated output after it. The
+        // first line follows the em dash, so its indent is trimmed back off
+        // (`body` is already trimmed, so nothing else goes with it).
+        msg.push_str(indent_lines(body, "  ").trim_start());
     }
     // Carry the HTTP status structurally so callers can classify the failure
     // (e.g. "was this a 404?") without sniffing the rendered message string.

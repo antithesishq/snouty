@@ -1240,7 +1240,20 @@ fn mock_route_search_events(run_id: &str, body: &str) -> (u16, String, &'static 
         .iter()
         .any(|verb| query.trim_start().starts_with(&format!("{verb}(")));
     if !starts_with_verb {
-        return (400, r#"{"message":"invalid query"}"#.to_string(), json);
+        // The live server lays the rejection out over three lines: the query,
+        // a caret under the offending token, and the reason (observed on
+        // tenant `orbitinghail`, release 61 — `bogus_verb({x: "y"})` answers
+        // 400 with `Bad request: failed to execute pangolin query due to a
+        // runtime error: Event set DSL error: <query>`, then `^`, then
+        // `invalid with_next`). The breaks are real newlines in the JSON
+        // string, so the mock writes them the same way: a mock that put the
+        // message on one line would let snouty escape them and still pass.
+        let message = format!(
+            "Bad request: failed to execute pangolin query due to a runtime error: \
+             Event set DSL error: {query}\n^\ninvalid with_next"
+        );
+        let body = serde_json::json!({ "message": message }).to_string();
+        return (400, body, json);
     }
     if request["validate_only"].as_bool().unwrap_or(false) {
         return (200, String::new(), ndjson);

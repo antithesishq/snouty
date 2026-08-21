@@ -23,7 +23,7 @@ use crate::params::{
     ANT_FILTER_LOGS_MATCHING, ANT_IMAGES, ANT_IS_EPHEMERAL, ANT_REPORT_RECIPIENTS, ANT_SOURCE,
     ANT_TEST_NAME, Params,
 };
-use crate::render::sanitize;
+use crate::render::sanitize_multiline;
 use crate::settings::Settings;
 use crate::tag::{Tag, Tagged};
 use crate::util::source_error;
@@ -1331,7 +1331,16 @@ fn format_api_error(status: u16, body: &str) -> Report {
     }
     if !body.is_empty() {
         msg.push_str(" — ");
-        msg.push_str(body);
+        // A body that spans lines keeps them, indented so the whole block
+        // reads as one error rather than as unrelated output after it.
+        let mut lines = body.lines();
+        if let Some(first) = lines.next() {
+            msg.push_str(first);
+        }
+        for line in lines {
+            msg.push_str("\n  ");
+            msg.push_str(line);
+        }
     }
     // Carry the HTTP status structurally so callers can classify the failure
     // (e.g. "was this a 404?") without sniffing the rendered message string.
@@ -1493,7 +1502,7 @@ async fn read_error_body(mut response: reqwest::Response) -> String {
     String::from_utf8_lossy(&body).into_owned()
 }
 
-/// The human-readable text of an error response body, as one terminal line.
+/// The human-readable text of an error response body.
 ///
 /// The standard endpoints answer with `{"message": "…"}`, so unwrap that when
 /// it's there. Anything else — an empty body, an HTML error page from an
@@ -1506,9 +1515,14 @@ async fn read_error_body(mut response: reqwest::Response) -> String {
 ///
 /// Runs of whitespace collapse to a single space before the cut, so that an
 /// indented error page spends the 200 characters on its text rather than on its
-/// margins. [`sanitize`] is the repo's policy for untrusted text on one line; it
-/// runs after the collapse, which leaves it nothing to do about newlines and
-/// only control characters to escape.
+/// margins. That collapse applies only to the unrecognized shapes; a `message`
+/// keeps its own line breaks, because a server writes them to lay the text out.
+/// The events-search endpoint does: an invalid query answers 400 with a caret
+/// line under the offending token (observed on tenant `orbitinghail`,
+/// release 61 — `… bogus_verb({x: "y"})`, then `^`, then `invalid with_next`),
+/// and escaping those breaks to a literal `\n` runs the caret into the text it
+/// points at. [`sanitize_multiline`] is the repo's policy for such text: real
+/// newlines stay, every other control character is escaped.
 fn error_body_message(body: &str) -> String {
     const MAX_LEN: usize = 200;
 
@@ -1522,7 +1536,7 @@ fn error_body_message(body: &str) -> String {
         })
         .unwrap_or_else(|| body.split_whitespace().collect::<Vec<_>>().join(" "));
 
-    let text = sanitize(text.trim());
+    let text = sanitize_multiline(text.trim());
     match text.char_indices().nth(MAX_LEN) {
         Some((offset, _)) => format!("{}…", &text[..offset]),
         None => text,
@@ -1775,6 +1789,19 @@ mod tests {
         assert!(!message.contains('\n'), "got: {message}");
         assert!(message.ends_with('…'), "got: {message}");
         assert_eq!(message.chars().count(), 201);
+    }
+
+    // A server writes line breaks into a `message` to lay the text out, so
+    // they are kept. The events-search endpoint does this: an invalid query
+    // answers with a caret line under the offending token.
+    #[test]
+    fn error_body_message_keeps_the_line_breaks_in_a_message() {
+        assert_eq!(
+            error_body_message(
+                r#"{"message":"Event set DSL error: bogus_verb({x: \"y\"})\n^\ninvalid with_next"}"#
+            ),
+            "Event set DSL error: bogus_verb({x: \"y\"})\n^\ninvalid with_next"
+        );
     }
 
     // The body goes straight to the terminal, so it gets the same control-char
@@ -2571,6 +2598,24 @@ mod tests {
         let rendered = format!("{:#}", format_api_error(404, "run not found"));
         assert!(rendered.contains("API error: 404"));
         assert!(rendered.contains("run not found"));
+    }
+
+    #[test]
+    fn format_api_error_indents_a_multiline_body() {
+        // An invalid event-set DSL query answers with a caret line under the
+        // offending token. The breaks have to survive, or the caret lands in
+        // the middle of the text it points at.
+        let rendered = format!(
+            "{:#}",
+            format_api_error(
+                400,
+                "Event set DSL error: bogus_verb({x: \"y\"})\n^\ninvalid with_next"
+            )
+        );
+        assert_eq!(
+            rendered,
+            "API error: 400 Bad Request — Event set DSL error: bogus_verb({x: \"y\"})\n  ^\n  invalid with_next"
+        );
     }
 
     #[test]

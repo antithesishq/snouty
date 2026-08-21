@@ -719,12 +719,15 @@ mock-runs-server
 snouty runs search $R_run_id 'contains({output_text: "x"})' --check
 stdout 'query is valid'
 
-# An invalid query fails with the server's rejection. (Mock-only: the live
-# tenant answers an invalid query with a generic 500 instead of the
-# documented 400.)
+# An invalid query fails with the server's rejection. The rejection is laid
+# out over three lines — the query, a caret under the offending token, the
+# reason — and the layout survives: the caret line is indented under the
+# message rather than escaped onto the end of it. (Mock-only: the live tenant
+# answers an invalid query with a generic 500 instead of the documented 400.)
 mock-runs-server
 [!staging] ! snouty runs search $R_run_id 'bogus_verb({x: "y"})' --check
-[!staging] stderr 'invalid query'
+[!staging] stderr 'Event set DSL error: bogus_verb'
+[!staging] stderr '\n  \^\n  invalid with_next'
 
 # The mode switches pick conflicting response modes, so clap rejects the pairing.
 mock-runs-server

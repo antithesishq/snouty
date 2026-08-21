@@ -19,7 +19,9 @@ a moment after the PR's creation or after a fast workflow concludes.
 
 All requests go through the gh CLI, so the script works wherever gh works.
 The first poll emits the PR's existing comments, reviews, and failing checks
-as a baseline, so nothing that predates the watcher is missed.
+as a baseline, so nothing that predates the watcher is missed. It also
+emits a base-moved line when the base branch tip already sits past the
+PR's recorded base, so a PR that waits for a rebase announces it at once.
 
 Usage: uv run scripts/watch-prs.py [-i seconds] [-R owner/repo] PR [PR ...]
 """
@@ -73,10 +75,14 @@ def norm_login(login: str) -> str:
     return login.removeprefix("app/").removesuffix("[bot]")
 
 
-def changed(seen: set[str], key: str, value: str) -> bool:
+def changed(seen: set[str], key: str, value: str, baseline: str | None = None) -> bool:
     """Track a current-value state in `seen`. The first observation is a
-    silent baseline; every later change of the value returns True.
+    silent baseline; every later change of the value returns True. An
+    explicit `baseline` pre-seeds the first observation, so a first value
+    that already differs from it counts as a change.
     """
+    if baseline is not None and not any(k.startswith(f"{key}:") for k in seen):
+        seen.add(f"{key}:{baseline}")
     tag = f"{key}:{value}"
     if tag in seen:
         return False
@@ -103,7 +109,7 @@ def poll_pr(
             str(pr),
             *repo_flag,
             "--json",
-            "state,author,comments,reviews,statusCheckRollup,headRefOid,baseRefName",
+            "state,author,comments,reviews,statusCheckRollup,headRefOid,baseRefName,baseRefOid",
         ]
     )
     if view is None:
@@ -116,9 +122,10 @@ def poll_pr(
     if changed(seen, "base", view["baseRefName"]):
         emit(f"PR #{pr} base changed to {view['baseRefName']}")
     # The PR's own baseRefOid freezes at PR creation, so the live tip must
-    # come from the branch itself.
+    # come from the branch itself. Seeding with baseRefOid makes a PR that
+    # is already behind its base emit a moved event on the first poll.
     tip = ((gh_json(["api", f"repos/{slug}/branches/{quote(view['baseRefName'], safe='')}"]) or {}).get("commit") or {}).get("sha")
-    if tip and changed(seen, "baseoid", tip):
+    if tip and changed(seen, "baseoid", tip, baseline=view["baseRefOid"]):
         emit(f"PR #{pr} base {view['baseRefName']} moved to {tip[:7]}")
 
     events = [

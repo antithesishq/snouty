@@ -67,7 +67,8 @@ head commit; check that it names your latest push before you act on it.
 The watcher also emits a line when the PR is retargeted to another base
 branch, and a line when the base branch tip moves to a new commit.
 The first poll emits the PR's existing comments, reviews, and failing
-checks as a baseline: triage that batch like any other events.
+checks as a baseline: triage that batch like any other events. The baseline
+includes a base-moved line when the PR is already behind its base branch.
 Flags: `-i seconds` sets the poll interval (default 45), `-R owner/repo`
 overrides the repository. Event lines:
 

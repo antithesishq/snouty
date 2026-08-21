@@ -1,8 +1,8 @@
 # Unreleased
 
-- An error from the API keeps the line breaks the server wrote. An invalid `runs search` query is rejected with a caret under the offending token, and the caret now sits under the token instead of on the same line as it (PR_LINK)
-- `snouty doctor --json` writes `settings` as an object keyed by setting name, so a caller reads one value with `jq .settings.tenant`. It was a list of `{name, value}` pairs, which is a breaking change for anything that read it (PR_LINK)
-- `snouty runs search --limit` rejects a value above 998, the same ceiling `runs events --limit` uses. The command reserves one row past the limit to detect truncation, and the server accepts at most 999 (PR_LINK)
+- An error from the API keeps the line breaks the server wrote. An invalid `runs search` query is rejected with a caret under the offending token, and the caret now sits under the token instead of on the same line as it ([#285](https://github.com/antithesishq/snouty/pull/285))
+- `snouty doctor --json` writes `settings` as an object keyed by setting name, so a caller reads one value with `jq .settings.tenant`. It was a list of `{name, value}` pairs, which is a breaking change for anything that read it ([#285](https://github.com/antithesishq/snouty/pull/285))
+- `snouty runs search --limit` rejects a value above 998, the same ceiling `runs events --limit` uses. The command reserves one row past the limit to detect truncation, and the server accepts at most 999 ([#285](https://github.com/antithesishq/snouty/pull/285))
 - `runs list`, `runs events`, and `runs search` print a note to stderr when their output stops at `--limit` while more rows exist. The note does not appear when `--json` is used ([#265](https://github.com/antithesishq/snouty/issues/265))
 - `snouty launch` validates `antithesis.filter_logs_matching` client-side before any API call ([#276](https://github.com/antithesishq/snouty/pull/276))
 - The response cache optionally respects the server's cache headers. Set `api_cache_respect_headers = false` to drop the header requirement. ([#263](https://github.com/antithesishq/snouty/issues/263))

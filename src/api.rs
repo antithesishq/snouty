@@ -1533,7 +1533,14 @@ fn error_body_message(body: &str) -> String {
         })
         .unwrap_or_else(|| body.split_whitespace().collect::<Vec<_>>().join(" "));
 
-    let text = sanitize_multiline(text.trim());
+    // A blank line would split the message in two where `render_report`
+    // separates the error from its `Note:`/`Suggestion:` tail, and the tail
+    // would then print twice. No server message needs one, so drop it.
+    let text = sanitize_multiline(text.trim())
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .collect::<Vec<_>>()
+        .join("\n");
     match text.char_indices().nth(MAX_LEN) {
         Some((offset, _)) => format!("{}…", &text[..offset]),
         None => text,
@@ -1798,6 +1805,16 @@ mod tests {
                 r#"{"message":"Event set DSL error: bogus_verb({x: \"y\"})\n^\ninvalid with_next"}"#
             ),
             "Event set DSL error: bogus_verb({x: \"y\"})\n^\ninvalid with_next"
+        );
+    }
+
+    #[test]
+    fn error_body_message_drops_a_blank_line() {
+        // `render_report` splits the error from its tail at the first blank
+        // line, so a message that carries one prints its tail twice.
+        assert_eq!(
+            error_body_message(r#"{"message":"first\n\nsecond"}"#),
+            "first\nsecond"
         );
     }
 

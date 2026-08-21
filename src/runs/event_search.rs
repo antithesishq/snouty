@@ -87,8 +87,12 @@ impl Cap {
 
     /// The `limit` a request must name for this cap, for the endpoints that
     /// take an optional one. [`Cap::Silent`] never probes, so it asks for
-    /// exactly what it prints; [`Cap::None`] names no limit at all, which is
-    /// what stops the server closing an unbounded stream at its default of 50.
+    /// exactly what it prints. [`Cap::None`] names no limit at all, which is
+    /// all an unbounded `--follow` can do: the request has no way to say
+    /// "every event". A release that honors `limit` applies its own default
+    /// of 50 instead (`Search_Request.limit` in `openapi.json`), so such a
+    /// stream ends at 50 events on release 61 and runs on without a bound on
+    /// releases 58.11 through 60.1, which ignore the field.
     pub(super) fn request_limit(self) -> Option<NonZeroU64> {
         match self {
             Self::None => None,
@@ -187,9 +191,7 @@ pub(super) async fn print_event_stream(
     // printed. An error on it must not fail a command whose requested rows
     // were all delivered, so a failed probe means no note, not an error.
     // The timeout guards against probing a stream that will not end
-    // promptly — a request limit missing its +1, or `Cap::Noted` on a live
-    // stream. That is a caller bug (hence the debug assert), never a reason
-    // to sit on an already-complete answer.
+    // promptly, and never sits on an already-complete answer.
     if peek && !ended {
         match tokio::time::timeout(PROBE_TIMEOUT, lines.try_next()).await {
             // The row arrived: more rows exist.
@@ -198,9 +200,14 @@ pub(super) async fn print_event_stream(
             Ok(Ok(None)) => {}
             // An error on the disposable row: truncation unknown.
             Ok(Err(_)) => {}
-            // `timeout` answers `Err` only for its elapsed deadline.
+            // `timeout` answers `Err` only for its elapsed deadline. A live
+            // stream can reach it legitimately: the search backend holds the
+            // connection open on an in-progress run, so a result that lands
+            // exactly on the cap has no row past it to send. A bounded
+            // stream that stalls is a caller bug instead — a request limit
+            // missing its +1 — hence the assert.
             Err(_elapsed) => {
-                debug_assert!(false, "truncation probe timed out; see PROBE_TIMEOUT");
+                debug_assert!(live, "truncation probe timed out; see PROBE_TIMEOUT");
                 debug!("truncation probe timed out after {PROBE_TIMEOUT:?}; skipping the note");
             }
         }

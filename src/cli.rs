@@ -976,8 +976,8 @@ pub struct RunsSearchArgs {
     /// Event-set DSL query
     pub query: String,
 
-    /// Maximum number of events to print (default 50). A note on stderr
-    /// says when the output stopped at the limit.
+    /// Maximum number of events to print (default 50). Without --follow, a
+    /// note on stderr says when the output stopped at the limit.
     // Same parser as `runs events --limit`: this command also asks for one
     // row past the limit to detect truncation, so the flag must stay one
     // below the server's ceiling for that request to stay in range.

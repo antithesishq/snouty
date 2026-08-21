@@ -1,5 +1,6 @@
 # Unreleased
 
+- `runs list`, `runs events`, and `runs search` print a note to stderr when their output stops at `--limit` while more rows exist. The note does not appear when `--json` is used ([#265](https://github.com/antithesishq/snouty/issues/265))
 - `snouty launch` validates `antithesis.filter_logs_matching` client-side before any API call ([#276](https://github.com/antithesishq/snouty/pull/276))
 - The response cache optionally respects the server's cache headers. Set `api_cache_respect_headers = false` to drop the header requirement. ([#263](https://github.com/antithesishq/snouty/issues/263))
 - Make VTIME optional on `snouty runs logs`: omit it to stream to the branch's current end. ([#264](https://github.com/antithesishq/snouty/issues/264))

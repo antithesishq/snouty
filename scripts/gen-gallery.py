@@ -1316,7 +1316,8 @@ def build_stories(d: Discovery) -> list[Story]:
             "runs-list",
             "List recent runs to find one to inspect",
             "I want to scan recent runs and pick one to dig into.",
-            "Up to 10 recent runs, newest first, with legible id/status/title/time columns.",
+            "Up to 10 recent runs, newest first, with legible id/status/title/time columns; "
+            "when more runs exist, a stderr note says the output stopped at the limit.",
             ["runs", "list", "-n", "10"],
             rows_at_most(10),
         ),
@@ -1324,7 +1325,8 @@ def build_stories(d: Discovery) -> list[Story]:
             "runs-list--limit",
             "Show me just the last three runs",
             "I only care about the very latest handful of runs.",
-            "At most 3 rows, the most recent ones.",
+            "At most 3 rows, the most recent ones; when more runs exist, a stderr note "
+            "says the output stopped at the limit.",
             ["runs", "list", "-n", "3"],
             rows_at_most(3),
         ),
@@ -1544,7 +1546,8 @@ def build_stories(d: Discovery) -> list[Story]:
             "I want to find events that mention a particular keyword.",
             f"At least one matching event row, and the keyword '{kw}' appears in the output. "
             "Each row is one `HASH VTIME SOURCE OUTPUT` line whose HASH and VTIME are "
-            "copyable into `runs logs`.",
+            "copyable into `runs logs`. When more events match than the default limit of "
+            "50, a stderr note says the output stopped at the limit.",
             ["runs", "events", d.success, "--match", kw],
             event_keyword_present(kw),
         ),
@@ -1554,7 +1557,9 @@ def build_stories(d: Discovery) -> list[Story]:
             "I want to narrow results to events that mention BOTH of two terms. "
             "Several terms route through the events-search API (the `runs-search` "
             "unstable feature), which ANDs them server-side against the raw event JSON.",
-            f"At least one row, and every row's raw JSON contains both '{kw}' and '{kw2}'.",
+            f"At least one row, and every row's raw JSON contains both '{kw}' and '{kw2}'. "
+            "When more events match than the default limit of 50, a stderr note says "
+            "the output stopped at the limit.",
             ["runs", "events", d.success, "--match", kw, "--match", kw2],
             event_multi_match(kw, kw2),
             env={"SNOUTY_UNSTABLE_FEATURES": "runs-search"},
@@ -1596,7 +1601,9 @@ def build_stories(d: Discovery) -> list[Story]:
             "I want to run an event-set DSL query and read the matching events.",
             f"At least one matching event line, keyword '{kw}' visible. Each row is one "
             "`HASH VTIME SOURCE OUTPUT` line whose HASH and VTIME are copyable into "
-            "`runs logs`; output should be legible without a table header.",
+            "`runs logs`; output should be legible without a table header. When more "
+            "events match than the default limit of 50, a stderr note says the output "
+            "stopped at the limit.",
             ["runs", "search", d.success, f'contains({{output_text: "{kw}"}})'],
             event_keyword_present(kw),
             env={"SNOUTY_UNSTABLE_FEATURES": "runs-search"},
@@ -1606,7 +1613,8 @@ def build_stories(d: Discovery) -> list[Story]:
             "Cap a DSL query at -n 3",
             "I want only the first few matches, not the whole stream — the limit must "
             "hold even though the server ignores it (snouty enforces it client-side).",
-            "Exactly at most 3 event lines, then the command exits promptly.",
+            "Exactly at most 3 event lines, then the command exits promptly; when more "
+            "matches exist, a stderr note says the output stopped at the limit.",
             ["runs", "search", d.success, f'contains({{output_text: "{kw}"}})', "-n", "3"],
             rows_at_most(3),
             env={"SNOUTY_UNSTABLE_FEATURES": "runs-search"},

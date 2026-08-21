@@ -1,6 +1,6 @@
 ---
 name: Open PR
-description: Use this skill to turn the current branch into a pull request — "open a PR", "put this up for review", "send this up" — or as the PR step of a larger workflow such as work-on-task or release.
+description: Use this skill to turn the current branch into a pull request.
 ---
 
 # Open PR

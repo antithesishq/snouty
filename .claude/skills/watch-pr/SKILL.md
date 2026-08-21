@@ -1,6 +1,6 @@
 ---
 name: Watch PR
-description: Use this skill to watch one or more open pull requests until they merge or close — "watch PR #N", "babysit these PRs", "keep an eye on #12 and #13", or after you open a PR yourself. It runs scripts/watch-prs.py and explains how to react to each event.
+description: Use this skill to watch one or more open pull requests until they merge or close — "watch PR #N", "babysit these PRs", "keep an eye on #12 and #13", or after you open a PR yourself.
 ---
 
 # Watch PR

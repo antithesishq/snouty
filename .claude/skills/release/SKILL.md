@@ -1,6 +1,6 @@
 ---
 name: Release Snouty
-description: This skill should be used when the user asks to "release snouty", "cut a release", "cut a pre-release", "cut an rc", "bump the version", "create a release", or provides a version like "release snouty v0.2.0" or "release snouty v0.7.0-rc.1". Handles version validation, changelog update, Cargo.toml bump, build, test, the release PR, and tagging the merged commit, for releases and pre-releases.
+description: This skill should be used when the user asks to "release snouty", "cut a release", "cut a pre-release", "cut an rc", "bump the version", "create a release", or provides a version like "release snouty v0.2.0" or "release snouty v0.7.0-rc.1".
 ---
 
 # Release Snouty

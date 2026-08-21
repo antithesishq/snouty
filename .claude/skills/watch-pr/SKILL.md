@@ -65,6 +65,13 @@ their say-so.
   that PR's branch, make the change, push, reply on the thread with the commit
   hash, and resolve the thread. If the comment is unclear, ask on the thread
   instead of guessing.
+
+  Reply over REST:
+  `gh api -X POST repos/antithesishq/snouty/pulls/<PR>/comments/<id>/replies -f body='...'`.
+  Resolving a thread has no REST route: it needs the `resolveReviewThread`
+  GraphQL mutation, which a proxy that rejects GraphQL writes answers with
+  HTTP 403. When the mutation fails, the reply still lands. Leave the thread
+  open and tell the user which threads they need to resolve by hand.
 - **Check failure**: read the failing log with
   `gh run view <run-id> --log-failed`, fix it, and push.
 - **Merged or closed**: stop related work on that PR. The script exits on its

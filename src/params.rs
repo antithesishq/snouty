@@ -94,9 +94,12 @@ impl Params {
         Ok(Self { inner })
     }
 
-    /// Validate params against the test params schema.
+    /// Validate params against the test params schema, then validate the
+    /// `antithesis.filter_logs_matching` pattern. The pattern check runs here
+    /// so no launch path can skip it.
     pub fn validate_test_params(&self) -> Result<()> {
-        validate_against_def(&self.inner, "testParams")
+        validate_against_def(&self.inner, "testParams")?;
+        self.validate_filter_logs_matching()
     }
 
     /// Validate params against the debugging params schema.
@@ -122,6 +125,41 @@ impl Params {
                 .note(format!("{key} = {value}"))
         })?;
         self.insert(key, vtime.to_string());
+        Ok(())
+    }
+
+    /// Validate `antithesis.filter_logs_matching` before launch.
+    ///
+    /// The platform validates this pattern only after the run has started, so
+    /// a bad value becomes a failed run minutes later, not a launch error.
+    /// The byte limit exists because the guest copies the pattern into a
+    /// 1024-byte buffer including the NUL terminator. The platform matches
+    /// with RE2; the `regex` crate is close but not identical, so the local
+    /// compile is a pre-check, not the authority.
+    fn validate_filter_logs_matching(&self) -> Result<()> {
+        let key = ANT_FILTER_LOGS_MATCHING;
+        let Some(value) = self.inner.get(key).and_then(Value::as_str) else {
+            return Ok(());
+        };
+
+        if value.trim().is_empty() {
+            return Err(user_error(format!("{key} is empty"))
+                .note("the platform skips log filtering for an empty pattern")
+                .suggestion("provide a pattern or drop the flag"));
+        }
+        if value.len() > 1023 {
+            return Err(user_error(format!(
+                "{key} is too long: {} bytes (max 1023)",
+                value.len()
+            )));
+        }
+        let re = regex::Regex::new(value)
+            .map_err(|err| user_error(format!("{key} is not a valid regular expression: {err}")))?;
+        if re.is_match("") {
+            return Err(user_error(format!(
+                "{key} matches the empty string, which would suppress every log line"
+            )));
+        }
         Ok(())
     }
 
@@ -275,6 +313,7 @@ fn unescape_pointer_token(token: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use hegel::generators::{self, Generator};
     use serde_json::json;
 
     fn debug_vtime(params: &Params) -> Option<&str> {
@@ -366,6 +405,16 @@ mod tests {
         let pairs = ["antithesis.duration=30", "antithesis.is_ephemeral=true"];
         let params = Params::from_key_value_pairs(pairs).unwrap();
         assert!(params.validate_test_params().is_ok());
+    }
+
+    #[test]
+    fn validate_test_params_checks_the_filter_pattern() {
+        let params = Params::from_key_value_pairs([
+            "antithesis.duration=30",
+            "antithesis.filter_logs_matching=x*",
+        ])
+        .unwrap();
+        assert!(params.validate_test_params().is_err());
     }
 
     #[test]
@@ -653,8 +702,6 @@ mod tests {
         assert!(params.as_map().contains_key("antithesis.source"));
     }
 
-    use hegel::generators::{self, Generator};
-
     /// `unescape_pointer_token` is the exact inverse of RFC 6901 escaping
     /// (`~` → `~0`, `/` → `~1`). For *any* string — including ones already
     /// containing `~0`/`~1` sequences, the case the order-sensitive replacement
@@ -752,6 +799,80 @@ mod tests {
             };
             assert_eq!(redacted.get(k).and_then(Value::as_str), Some(expected));
         }
+    }
+
+    fn validate_filter(pattern: &str) -> Result<()> {
+        let mut params = Params::new();
+        params.insert(ANT_FILTER_LOGS_MATCHING, pattern);
+        params.validate_filter_logs_matching()
+    }
+
+    #[test]
+    fn validate_filter_logs_matching_accepts_valid_patterns() {
+        assert!(Params::new().validate_filter_logs_matching().is_ok());
+        for pattern in ["debug", "(?i)error", "panic|fatal"] {
+            assert!(
+                validate_filter(pattern).is_ok(),
+                "pattern should be accepted: {pattern}"
+            );
+        }
+    }
+
+    #[test]
+    fn validate_filter_logs_matching_rejects_a_blank_pattern() {
+        for pattern in ["", "  "] {
+            let err = validate_filter(pattern).unwrap_err();
+            assert!(
+                err.to_string().contains("is empty"),
+                "unexpected error for {pattern:?}: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn validate_filter_logs_matching_limits_bytes_not_chars() {
+        // The guest buffer is 1024 bytes including the NUL terminator, so the
+        // limit is 1023 *bytes*: 512 two-byte chars (1024 bytes) must fail
+        // even though the char count is far below the limit.
+        let err = validate_filter(&"é".repeat(512)).unwrap_err();
+        assert!(
+            err.to_string().contains("1024 bytes (max 1023)"),
+            "unexpected error: {err}"
+        );
+
+        assert!(validate_filter(&"a".repeat(1023)).is_ok());
+    }
+
+    #[test]
+    fn validate_filter_logs_matching_rejects_an_invalid_regex() {
+        let err = validate_filter("(").unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("is not a valid regular expression"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn validate_filter_logs_matching_rejects_an_empty_string_match() {
+        // These compile fine and then suppress every log line.
+        for pattern in ["x*", "(foo)?"] {
+            let err = validate_filter(pattern).unwrap_err();
+            assert!(
+                err.to_string().contains("matches the empty string"),
+                "unexpected error for {pattern}: {err}"
+            );
+        }
+    }
+
+    /// For *any* input — however far from a regex — validation returns
+    /// instead of panicking.
+    #[hegel::test]
+    fn filter_validation_never_panics(tc: hegel::TestCase) {
+        let pattern = tc.draw(generators::text());
+        let mut params = Params::new();
+        params.insert(ANT_FILTER_LOGS_MATCHING, pattern);
+        let _ = params.validate_filter_logs_matching();
     }
 
     #[test]

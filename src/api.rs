@@ -677,7 +677,7 @@ impl AntithesisApi {
     ) -> impl futures_util::Stream<Item = Result<Property>> + '_ {
         const MAX_PAGE_LIMIT: u64 = 100;
         let run_id = run_id.to_string();
-        paginate(move |after| {
+        paginate_exhaust(move |after| {
             let run_id = run_id.clone();
             async move {
                 ensure_resource_supported(&run_id, MIN_PROPERTIES_VERSION, "run properties")?;
@@ -1026,7 +1026,7 @@ pub struct RunsFilterOptions {
     pub created_before: Option<chrono::DateTime<chrono::Utc>>,
 }
 
-fn paginate<'a, T, F, Fut>(mut fetch: F) -> impl futures_util::Stream<Item = Result<T>> + 'a
+fn paginate_exhaust<'a, T, F, Fut>(mut fetch: F) -> impl futures_util::Stream<Item = Result<T>> + 'a
 where
     F: FnMut(Option<String>) -> Fut + 'a,
     Fut: std::future::Future<Output = Result<(Vec<T>, Option<String>)>> + 'a,
@@ -1035,10 +1035,10 @@ where
     paginate_limited(u64::MAX, u64::MAX, move |after, _| fetch(after))
 }
 
-/// [`paginate`], bounded: yields at most `limit` items, asking `fetch` for
-/// pages of at most `max_page` items and shrinking the last page to what
-/// remains. Items a server returns past the requested page size are dropped,
-/// and no page is fetched once the limit is reached.
+/// [`paginate_exhaust`], bounded: yields at most `limit` items, asking
+/// `fetch` for pages of at most `max_page` items and shrinking the last page
+/// to what remains. Items a server returns past the requested page size are
+/// dropped, and no page is fetched once the limit is reached.
 fn paginate_limited<'a, T, F, Fut>(
     limit: u64,
     max_page: u64,
@@ -1049,25 +1049,37 @@ where
     Fut: std::future::Future<Output = Result<(Vec<T>, Option<String>)>> + 'a,
     T: 'a,
 {
-    stream::try_unfold(
-        (None::<String>, VecDeque::<T>::new(), limit, false, fetch),
-        move |(mut after, mut buffer, mut remaining, mut finished, mut fetch)| async move {
-            loop {
-                if let Some(item) = buffer.pop_front() {
-                    return Ok(Some((item, (after, buffer, remaining, finished, fetch))));
-                }
-                if finished || remaining == 0 {
-                    return Ok(None);
-                }
-                let (mut items, next) = fetch(after.take(), remaining.min(max_page)).await?;
-                items.truncate(usize::try_from(remaining).unwrap_or(usize::MAX));
-                remaining -= items.len() as u64;
-                buffer.extend(items);
-                finished = next.is_none();
-                after = next;
+    struct State<T, F> {
+        after: Option<String>,
+        buffer: VecDeque<T>,
+        remaining: u64,
+        finished: bool,
+        fetch: F,
+    }
+    let state = State {
+        after: None,
+        buffer: VecDeque::new(),
+        remaining: limit,
+        finished: false,
+        fetch,
+    };
+    stream::try_unfold(state, move |mut state| async move {
+        loop {
+            if let Some(item) = state.buffer.pop_front() {
+                return Ok(Some((item, state)));
             }
-        },
-    )
+            if state.finished || state.remaining == 0 {
+                return Ok(None);
+            }
+            let page_limit = state.remaining.min(max_page);
+            let (mut items, next) = (state.fetch)(state.after.take(), page_limit).await?;
+            items.truncate(usize::try_from(state.remaining).unwrap_or(usize::MAX));
+            state.remaining -= items.len() as u64;
+            state.buffer.extend(items);
+            state.finished = next.is_none();
+            state.after = next;
+        }
+    })
 }
 
 fn normalize_base_url(base_url: impl Into<String>) -> String {

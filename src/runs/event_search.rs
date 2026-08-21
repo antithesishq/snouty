@@ -17,9 +17,11 @@
 
 use std::io::{BufWriter, IsTerminal, Write};
 use std::num::NonZeroU64;
+use std::time::Duration;
 
 use color_eyre::Section;
 use color_eyre::eyre::Result;
+use log::debug;
 use serde_json::json;
 
 use futures_util::stream::BoxStream;
@@ -68,6 +70,11 @@ pub(super) enum Cap {
     /// truncation note when that row arrives.
     Noted(NonZeroU64),
 }
+
+/// How long the truncation probe waits for the row past the cap. On a
+/// healthy `Noted` stream that row (or EOF) follows the capped rows at once;
+/// see the probe in [`print_event_stream`] for what a timeout means.
+const PROBE_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// Print every line of the (already server-filtered) stream, one line out
 /// per line in — the one output pipeline behind every event-stream command
@@ -152,8 +159,20 @@ pub(super) async fn print_event_stream(
     // The probe row past the cap only proves more rows exist; it is never
     // printed. An error on it must not fail a command whose requested rows
     // were all delivered, so a failed probe means no note, not an error.
-    if peek && !ended && matches!(lines.try_next().await, Ok(Some(_))) {
-        super::limit_note(cap_rows as u64, "event");
+    // The timeout guards against probing a stream that will not end
+    // promptly — a request limit missing its +1, or `Cap::Noted` on a live
+    // stream. That is a caller bug (hence the debug assert), never a reason
+    // to sit on an already-complete answer.
+    if peek && !ended {
+        match tokio::time::timeout(PROBE_TIMEOUT, lines.try_next()).await {
+            Ok(Ok(Some(_))) => super::limit_note(cap_rows as u64, "event"),
+            // EOF at the cap, or an error on the disposable row.
+            Ok(_) => {}
+            Err(_) => {
+                debug_assert!(false, "truncation probe timed out; see PROBE_TIMEOUT");
+                debug!("truncation probe timed out after {PROBE_TIMEOUT:?}; skipping the note");
+            }
+        }
     }
     // Only a successfully-empty stream earns the friendly empty note; a
     // mid-stream error propagated above instead. The note goes to stderr —

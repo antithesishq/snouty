@@ -11,6 +11,8 @@ rustPlatform.buildRustPackage {
   version = "${(lib.importTOML ./Cargo.toml).package.version}-unstable";
   __structuredAttrs = true;
 
+  # Every path that Cargo.toml declares must appear here: workspace members,
+  # path dependencies, and [[example]] paths.
   src = lib.fileset.toSource {
     root = ./.;
     fileset = lib.fileset.unions [
@@ -18,6 +20,7 @@ rustPlatform.buildRustPackage {
       ./Cargo.toml
       ./build.rs
       ./examples
+      ./snouty-macros
       ./src
     ];
   };

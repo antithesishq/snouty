@@ -2802,7 +2802,7 @@ checksum = "8ed6a63f02c8539c91a8685a86f4099661ba3da017932f6ebbea6de3f0fa7c90"
 
 [[package]]
 name = "snouty"
-version = "0.7.0-rc.2"
+version = "0.7.0-rc.3"
 dependencies = [
  "apple-native-keyring-store",
  "assert_cmd",
@@ -2867,7 +2867,7 @@ dependencies = [
 
 [[package]]
 name = "snouty-macros"
-version = "0.7.0-rc.2"
+version = "0.7.0-rc.3"
 dependencies = [
  "proc-macro2",
  "quote",

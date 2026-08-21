@@ -612,10 +612,8 @@ stderr 'invalid value .999.'
 stderr 'must be at most 998'
 
 # With the `runs-search` feature on, `runs events` routes through the search
-# endpoint and asks for one row past the limit: that row is the truncation
-# signal, and without it a server that honors `limit` (release 61 does) makes
-# a truncated result look complete. The limit is still enforced client-side,
-# because an older tenant ignores the field.
+# endpoint. It asks for one row past the limit — the truncation signal — and
+# caps the output client-side, because an older tenant ignores `limit`.
 mock-runs-server
 env SNOUTY_UNSTABLE_FEATURES=runs-search
 snouty --json runs events $R_run_id --match parallel_driver_fetch --limit 1
@@ -672,24 +670,23 @@ mock-runs-server
 [staging] snouty --json runs search $R_run_id 'contains({output_text: "fault"})' --limit 3
 [!staging] stdout '"moment":\{"input_hash":"-456","vtime":2\.0'
 
-# `--limit` caps the returned events. snouty asks the server for one row past
-# the limit, so the extra row that comes back must be dropped, not printed:
-# three events match here and only the first is shown.
+# `--limit` caps the returned events. snouty asks for one row past the limit,
+# so the extra row must be dropped, not printed: three events match here and
+# only the first is shown.
 mock-runs-server
 snouty --json runs search $R_run_id 'contains({output_text: "parallel_driver_fetch"})' --limit 1
 [!staging] stdout '"vtime":400\.5'
 [!staging] ! stdout '"vtime":401\.75'
 
 # In human mode the truncation note goes to stderr. The row past the limit is
-# what proves more matches exist, so this fails if the request stops asking
-# for it — the regression that hid the note on a server honoring `limit`.
+# what proves more matches exist, so this case pins the request that asks for
+# it.
 mock-runs-server
 [!staging] snouty runs search $R_run_id 'contains({output_text: "parallel_driver_fetch"})' --limit 1
 [!staging] stdout '400\.5'
 [!staging] stderr 'note: output reached the limit of 1 event; more may exist'
 
 # The note is truncation-only: a limit the matches never reach prints no note.
-# Without this, a note printed unconditionally would pass the case above.
 mock-runs-server
 [!staging] snouty runs search $R_run_id 'contains({output_text: "slow request"})' --limit 5
 [!staging] stdout '2\.0'
@@ -700,9 +697,8 @@ mock-runs-server
 ! snouty runs search run-1 'contains({output_text: "x"})' --limit 0
 stderr 'invalid value .0.'
 
-# `runs search --limit` tops out one below the server's ceiling of 999, for
-# the same reason as `runs events --limit`: the request asks for one row past
-# the flag and that row must stay in range.
+# `runs search --limit` tops out one below the server's ceiling of 999: the
+# request asks for one row past the flag, and that row must stay in range.
 mock-runs-server
 ! snouty runs search run-1 'contains({output_text: "x"})' --limit 999
 stderr 'invalid value .999.'
@@ -719,11 +715,11 @@ mock-runs-server
 snouty runs search $R_run_id 'contains({output_text: "x"})' --check
 stdout 'query is valid'
 
-# An invalid query fails with the server's rejection. The rejection is laid
-# out over three lines — the query, a caret under the offending token, the
-# reason — and the layout survives: the caret line is indented under the
-# message rather than escaped onto the end of it. (Mock-only: the live tenant
-# answers an invalid query with a generic 500 instead of the documented 400.)
+# An invalid query fails with the server's rejection. The rejection spans three
+# lines — the query, a caret under the offending token, the reason — and the
+# caret line stays indented under the message instead of escaped onto the end
+# of it. (Mock-only: the live tenant answers an invalid query with a generic
+# 500 instead of the documented 400.)
 mock-runs-server
 [!staging] ! snouty runs search $R_run_id 'bogus_verb({x: "y"})' --check
 [!staging] stderr 'Event set DSL error: bogus_verb'

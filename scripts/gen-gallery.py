@@ -944,12 +944,10 @@ def rows_at_most(limit: int):
 def rows_at_most_with_limit_note(limit: int, uncapped_slug: str):
     """`rows_at_most`, plus the stderr note that says the output stopped there.
 
-    The note prints only when snouty asks the server for one row past the cap,
-    so checking the row count alone passes on a build that never asks. The
-    note is also truncation-only, and the discovered run decides how many
-    events match: `uncapped_slug` names the story that ran the same query
-    without a limit, so the note is required only when that story found more
-    rows than this one prints."""
+    The note is truncation-only, and the discovered run decides how many events
+    match. `uncapped_slug` names the story that ran the same query without a
+    limit: the note is required only when that story found more rows than this
+    one prints."""
 
     def chk(sr: StoryRun, reg: Registry) -> tuple[bool, str]:
         n = len(sr.rows or [])

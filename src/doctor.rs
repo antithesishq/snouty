@@ -122,10 +122,9 @@ impl Check {
 /// resolved for it. Purely informational — it carries no status; whether a value
 /// is required or optional is a [`Check`] concern.
 ///
-/// `name` is snake_case: it is the key `--json` emits, so it must be readable
-/// by `jq .settings.https_proxy` without quoting. The human table derives its
-/// label from the same string (see [`print_settings`]), so the two cannot
-/// drift apart.
+/// `name` is snake_case: `--json` emits it as a key, so
+/// `jq .settings.https_proxy` needs no quoting. [`print_settings`] derives the
+/// table label from the same string.
 struct Setting {
     name: &'static str,
     value: String,
@@ -146,15 +145,13 @@ impl Setting {
 struct Report<'a> {
     ok: bool,
     checks: &'a [Check],
-    /// A JSON object keyed by setting name, not a list of `{name, value}`
-    /// pairs: a caller reads one value with `.settings.tenant` rather than
-    /// searching the list for it.
+    /// Serialized as a JSON object keyed by name, so a caller reads one value
+    /// with `.settings.tenant`.
     #[serde(serialize_with = "settings_as_map")]
     settings: &'a [Setting],
 }
 
-/// Serialize the settings rows as a JSON object keyed by name. The rows keep
-/// their resolution order, which `serde_json` preserves on write.
+/// Serialize the rows as a JSON object keyed by name, in resolution order.
 fn settings_as_map<S: Serializer>(settings: &&[Setting], serializer: S) -> Result<S::Ok, S::Error> {
     serializer.collect_map(settings.iter().map(|s| (s.name, &s.value)))
 }
@@ -378,8 +375,7 @@ fn resolve_settings(settings: &Settings, features: &[Feature]) -> Vec<Setting> {
 /// pass/warn/fail; this table just reports what snouty resolved, indented to sit
 /// under the "Resolved settings" heading.
 fn print_settings(settings: &[Setting]) {
-    // The names are snake_case for `--json`; the table reads better with
-    // spaces, and deriving the label here keeps one name for both.
+    // The names are snake_case for `--json`; the table reads better with spaces.
     let rows: Vec<(String, String)> = settings
         .iter()
         .map(|s| (s.name.replace('_', " "), s.value.clone()))
@@ -955,9 +951,6 @@ mod tests {
         assert_eq!(value["checks"][0]["name"], "api_key");
         assert_eq!(value["checks"][0]["status"], "error");
         assert_eq!(value["checks"][0]["notes"][0]["level"], "error");
-        // Settings are a map keyed by name, so a caller reads one value
-        // directly instead of searching a list. The names stay snake_case so
-        // `jq .settings.https_proxy` needs no quoting.
         assert_eq!(value["settings"]["tenant"], "acme");
         assert_eq!(value["settings"]["https_proxy"], "not set");
         assert_eq!(value["settings"].as_object().unwrap().len(), 2);

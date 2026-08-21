@@ -1196,12 +1196,9 @@ fn mock_route_execute_command(run_id: &str, req_body: &str) -> (u16, String) {
 /// releases 58.11 and 60.0 ignored the field and streamed every match, and
 /// release 61 honors it (observed on tenant `orbitinghail`, run
 /// `bafc3d6cb0ff883696153e2a8e30aee7-61-1`: a query matching six events
-/// returned three under `-n 3`). snouty caps client-side either way, so
-/// modelling the honoring server is what keeps a spec honest — a caller
-/// that asks for exactly its limit can no longer tell a truncated result
-/// from a complete one. The one divergence from the live server: the mock's
-/// stream always closes (it is a plain HTTP response), where a live run's
-/// stream stays open forever.
+/// returned three under `-n 3`). The one divergence from the live server: the
+/// mock's stream always closes (it is a plain HTTP response), where a live
+/// run's stream stays open forever.
 /// `count_only` is not modelled: snouty does not send it (the count is
 /// moving to a separate endpoint).
 ///
@@ -1246,8 +1243,7 @@ fn mock_route_search_events(run_id: &str, body: &str) -> (u16, String, &'static 
         // 400 with `Bad request: failed to execute pangolin query due to a
         // runtime error: Event set DSL error: <query>`, then `^`, then
         // `invalid with_next`). The breaks are real newlines in the JSON
-        // string, so the mock writes them the same way: a mock that put the
-        // message on one line would let snouty escape them and still pass.
+        // string, so the mock writes them the same way.
         let message = format!(
             "Bad request: failed to execute pangolin query due to a runtime error: \
              Event set DSL error: {query}\n^\ninvalid with_next"
@@ -1300,8 +1296,7 @@ fn mock_route_search_events(run_id: &str, body: &str) -> (u16, String, &'static 
             needles.iter().all(|needle| haystack.contains(needle))
         })
         .collect();
-    // Cap at `limit` when present, as release 61 does; see the route's doc
-    // comment for the observation.
+    // Release 61 ends the stream at `limit`; see the route's doc comment.
     if let Some(limit) = request["limit"].as_u64() {
         matches.truncate(limit as usize);
     }
@@ -1421,9 +1416,6 @@ mod tests {
 
     #[test]
     fn mock_route_search_events_ends_the_stream_at_limit() {
-        // Release 61 honors `limit`; the mock models that, so a caller that
-        // asks for exactly its limit cannot tell a truncated result from a
-        // complete one. See the route's doc comment for the observation.
         let body = |limit: Option<u64>| {
             let mut request = serde_json::json!({
                 "query": r#"contains({output_text: "parallel_driver_fetch"})"#,

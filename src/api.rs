@@ -122,9 +122,8 @@ pub enum SearchMode {
 /// when no explicit limit was given.
 pub const SEARCH_DEFAULT_LIMIT: NonZeroU64 = NonZeroU64::new(50).unwrap();
 
-/// The `limit` ceiling both events endpoints validate against (the spec
-/// allows 1..=999 on the GET events endpoint and on the events-search
-/// endpoint alike).
+/// The `limit` ceiling the spec sets on both events endpoints: the GET events
+/// endpoint and the events-search endpoint.
 pub const EVENTS_MAX_LIMIT: NonZeroU64 = NonZeroU64::new(999).unwrap();
 
 /// Why a `/api/version` probe failed, classified for `snouty doctor`.
@@ -1333,10 +1332,8 @@ fn format_api_error(status: u16, body: &str) -> Report {
     }
     if !body.is_empty() {
         msg.push_str(" — ");
-        // A body that spans lines keeps them, indented so the whole block
-        // reads as one error rather than as unrelated output after it. The
-        // first line follows the em dash, so its indent is trimmed back off
-        // (`body` is already trimmed, so nothing else goes with it).
+        // Indent a multi-line body so the block reads as one error. The first
+        // line follows the em dash, so its indent comes back off.
         msg.push_str(indent_lines(body, "  ").trim_start());
     }
     // Carry the HTTP status structurally so callers can classify the failure
@@ -1512,14 +1509,12 @@ async fn read_error_body(mut response: reqwest::Response) -> String {
 ///
 /// Runs of whitespace collapse to a single space before the cut, so that an
 /// indented error page spends the 200 characters on its text rather than on its
-/// margins. That collapse applies only to the unrecognized shapes; a `message`
-/// keeps its own line breaks, because a server writes them to lay the text out.
-/// The events-search endpoint does: an invalid query answers 400 with a caret
-/// line under the offending token (observed on tenant `orbitinghail`,
-/// release 61 — `… bogus_verb({x: "y"})`, then `^`, then `invalid with_next`),
-/// and escaping those breaks to a literal `\n` runs the caret into the text it
-/// points at. [`sanitize_multiline`] is the repo's policy for such text: real
-/// newlines stay, every other control character is escaped.
+/// margins. That collapse applies only to the unrecognized shapes. A `message`
+/// keeps its own line breaks, because a server writes them to lay the text out:
+/// the events-search endpoint answers an invalid query with 400 and a caret line
+/// under the offending token (observed on tenant `orbitinghail`, release 61 —
+/// `… bogus_verb({x: "y"})`, then `^`, then `invalid with_next`). Escaped to a
+/// literal `\n`, the caret runs into the text it points at.
 fn error_body_message(body: &str) -> String {
     const MAX_LEN: usize = 200;
 
@@ -1533,9 +1528,8 @@ fn error_body_message(body: &str) -> String {
         })
         .unwrap_or_else(|| body.split_whitespace().collect::<Vec<_>>().join(" "));
 
-    // A blank line would split the message in two where `render_report`
-    // separates the error from its `Note:`/`Suggestion:` tail, and the tail
-    // would then print twice. No server message needs one, so drop it.
+    // `render_report` splits the error from its `Note:`/`Suggestion:` tail at
+    // the first blank line, so a message that carries one prints its tail twice.
     let text = sanitize_multiline(text.trim())
         .lines()
         .filter(|line| !line.trim().is_empty())
@@ -1795,9 +1789,6 @@ mod tests {
         assert_eq!(message.chars().count(), 201);
     }
 
-    // A server writes line breaks into a `message` to lay the text out, so
-    // they are kept. The events-search endpoint does this: an invalid query
-    // answers with a caret line under the offending token.
     #[test]
     fn error_body_message_keeps_the_line_breaks_in_a_message() {
         assert_eq!(
@@ -1810,8 +1801,6 @@ mod tests {
 
     #[test]
     fn error_body_message_drops_a_blank_line() {
-        // `render_report` splits the error from its tail at the first blank
-        // line, so a message that carries one prints its tail twice.
         assert_eq!(
             error_body_message(r#"{"message":"first\n\nsecond"}"#),
             "first\nsecond"
@@ -2616,9 +2605,6 @@ mod tests {
 
     #[test]
     fn format_api_error_indents_a_multiline_body() {
-        // An invalid event-set DSL query answers with a caret line under the
-        // offending token. The breaks have to survive, or the caret lands in
-        // the middle of the text it points at.
         let rendered = format!(
             "{:#}",
             format_api_error(

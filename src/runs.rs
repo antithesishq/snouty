@@ -1366,9 +1366,7 @@ async fn cmd_runs_search(
     }
     // The cap is enforced client-side whatever the server does: release 61
     // ends the stream at the requested `limit`, but releases 58.11 through
-    // 60.1 ignore it and stream every match. `Cap::request_limit` derives
-    // what the request names from the cap itself, including the probe row a
-    // noted cap needs.
+    // 60.1 ignore it and stream every match.
     let cap = match (args.follow, args.limit) {
         (true, None) => Cap::None,
         (true, Some(limit)) => Cap::Silent(limit),
@@ -1423,11 +1421,6 @@ async fn cmd_runs_events(
     }
 
     let api = AntithesisApi::new(settings, verbose)?;
-    // Both backends ask for `probe` rows — one past the cap — so the
-    // truncation note has its signal; the cap itself is still enforced
-    // client-side, because an older tenant ignores the field entirely. The
-    // flag tops out one below the endpoints' ceiling, so the probe row
-    // always fits.
     let (cap, probe) = Cap::noted(limit);
     let (stream, live) = if features::is_enabled(Feature::RunsSearch) {
         let query = event_set_dsl::substring_filter(matches);

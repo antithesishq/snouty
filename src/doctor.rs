@@ -1,5 +1,5 @@
 use color_eyre::eyre::Result;
-use serde::Serialize;
+use serde::{Serialize, Serializer};
 
 use crate::api::{AntithesisApi, ApiVersion, MIN_SEARCH_RELEASE, VersionError};
 use crate::attributed_value::AttributedValue;
@@ -121,7 +121,11 @@ impl Check {
 /// One row of the resolved-settings table: a setting and the value snouty
 /// resolved for it. Purely informational — it carries no status; whether a value
 /// is required or optional is a [`Check`] concern.
-#[derive(Serialize)]
+///
+/// `name` is snake_case: it is the key `--json` emits, so it must be readable
+/// by `jq .settings.https_proxy` without quoting. The human table derives its
+/// label from the same string (see [`print_settings`]), so the two cannot
+/// drift apart.
 struct Setting {
     name: &'static str,
     value: String,
@@ -142,7 +146,17 @@ impl Setting {
 struct Report<'a> {
     ok: bool,
     checks: &'a [Check],
+    /// A JSON object keyed by setting name, not a list of `{name, value}`
+    /// pairs: a caller reads one value with `.settings.tenant` rather than
+    /// searching the list for it.
+    #[serde(serialize_with = "settings_as_map")]
     settings: &'a [Setting],
+}
+
+/// Serialize the settings rows as a JSON object keyed by name. The rows keep
+/// their resolution order, which `serde_json` preserves on write.
+fn settings_as_map<S: Serializer>(settings: &&[Setting], serializer: S) -> Result<S::Ok, S::Error> {
+    serializer.collect_map(settings.iter().map(|s| (s.name, &s.value)))
 }
 
 /// The tenant is required by every command, so a missing one fails doctor.
@@ -342,13 +356,13 @@ fn resolve_settings(settings: &Settings, features: &[Feature]) -> Vec<Setting> {
         Setting::new("profile", settings.profile().unwrap_or("(none)")),
         Setting::new("tenant", settings.tenant().unwrap_or("not set")),
         Setting::new("repository", settings.repository().unwrap_or("not set")),
-        Setting::new("https proxy", settings.https_proxy().unwrap_or("not set")),
+        Setting::new("https_proxy", settings.https_proxy().unwrap_or("not set")),
         // The explicit override, otherwise auto-detected.
         Setting::new(
-            "container engine",
+            "container_engine",
             settings.container_engine().unwrap_or("auto-detect"),
         ),
-        Setting::new("update channel", settings.update_channel().as_str()),
+        Setting::new("update_channel", settings.update_channel().as_str()),
     ];
     // Only when set: features are opt-in, so an empty row would be noise on
     // every ordinary run.
@@ -364,7 +378,14 @@ fn resolve_settings(settings: &Settings, features: &[Feature]) -> Vec<Setting> {
 /// pass/warn/fail; this table just reports what snouty resolved, indented to sit
 /// under the "Resolved settings" heading.
 fn print_settings(settings: &[Setting]) {
-    let rows: Vec<(&str, String)> = settings.iter().map(|s| (s.name, s.value.clone())).collect();
+    // The names are snake_case for `--json`; the table reads better with
+    // spaces, and deriving the label here keeps one name for both.
+    let labels: Vec<String> = settings.iter().map(|s| s.name.replace('_', " ")).collect();
+    let rows: Vec<(&str, String)> = labels
+        .iter()
+        .zip(settings)
+        .map(|(label, s)| (label.as_str(), s.value.clone()))
+        .collect();
     for line in render_kv(&rows, 0).lines() {
         eprintln!("  {line}");
     }
@@ -729,20 +750,20 @@ mod tests {
             .https_proxy("http://proxy.corp:8080")
             .build();
         let rows = resolve_settings(&settings, &[]);
-        assert_eq!(row(&rows, "https proxy").value, "http://proxy.corp:8080");
+        assert_eq!(row(&rows, "https_proxy").value, "http://proxy.corp:8080");
     }
 
     #[test]
     fn https_proxy_row_defaults_to_not_set() {
         let rows = resolve_settings(&Settings::default(), &[]);
-        assert_eq!(row(&rows, "https proxy").value, "not set");
+        assert_eq!(row(&rows, "https_proxy").value, "not set");
     }
 
     #[test]
     fn container_engine_row_auto_detects_when_unset() {
         let settings = Settings::builder().tenant("acme").build();
         let rows = resolve_settings(&settings, &[]);
-        assert_eq!(row(&rows, "container engine").value, "auto-detect");
+        assert_eq!(row(&rows, "container_engine").value, "auto-detect");
     }
 
     #[test]
@@ -765,7 +786,7 @@ mod tests {
     #[test]
     fn update_channel_row_defaults_to_stable() {
         let rows = resolve_settings(&Settings::default(), &[]);
-        assert_eq!(row(&rows, "update channel").value, "stable");
+        assert_eq!(row(&rows, "update_channel").value, "stable");
     }
 
     #[test]
@@ -774,7 +795,7 @@ mod tests {
             .update_channel(UpdateChannel::Unstable)
             .build();
         let rows = resolve_settings(&settings, &[]);
-        assert_eq!(row(&rows, "update channel").value, "unstable");
+        assert_eq!(row(&rows, "update_channel").value, "unstable");
     }
 
     #[test]
@@ -922,7 +943,10 @@ mod tests {
     #[test]
     fn json_report_carries_checks_and_informational_settings() {
         let checks = authn_checks(Err(eyre!("PANIC PANIC PANIC")));
-        let settings = vec![Setting::new("tenant", "acme")];
+        let settings = vec![
+            Setting::new("tenant", "acme"),
+            Setting::new("https_proxy", "not set"),
+        ];
         let report = Report {
             ok: false,
             checks: &checks,
@@ -933,9 +957,11 @@ mod tests {
         assert_eq!(value["checks"][0]["name"], "api_key");
         assert_eq!(value["checks"][0]["status"], "error");
         assert_eq!(value["checks"][0]["notes"][0]["level"], "error");
-        // Settings rows are informational: a name and a value, no status.
-        assert_eq!(value["settings"][0]["name"], "tenant");
-        assert_eq!(value["settings"][0]["value"], "acme");
-        assert!(value["settings"][0].get("status").is_none());
+        // Settings are a map keyed by name, so a caller reads one value
+        // directly instead of searching a list. The names stay snake_case so
+        // `jq .settings.https_proxy` needs no quoting.
+        assert_eq!(value["settings"]["tenant"], "acme");
+        assert_eq!(value["settings"]["https_proxy"], "not set");
+        assert!(value["settings"].as_object().unwrap().len() == 2);
     }
 }

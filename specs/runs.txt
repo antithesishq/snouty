@@ -87,6 +87,11 @@ mock-runs-server
 [!staging] ! stdout 'run-3'
 [!staging] ! stderr 'note'
 
+# `--limit 0` asks for nothing, so clap rejects it before any request.
+mock-runs-server
+! snouty runs list --limit 0
+stderr 'invalid value .0.'
+
 # `snouty runs show` requires a run ID.
 ! snouty runs show
 stderr '.*'

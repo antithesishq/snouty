@@ -13,6 +13,10 @@ use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use reqwest::{Client, Proxy};
 use serde::de::DeserializeOwned;
 
+mod limit;
+
+pub use limit::{EventsLimit, RunsLimit};
+
 use crate::api_cache::{self, ApiCache, CachePolicy};
 use crate::auth::{AuthenticationInfo, PasswordPolicy};
 use crate::env;
@@ -120,11 +124,7 @@ pub enum SearchMode {
 /// endpoint and the events-search endpoint), applied when the request names
 /// none. A caller that enforces the limit client-side caps at this value
 /// when no explicit limit was given.
-pub const SEARCH_DEFAULT_LIMIT: NonZeroU64 = NonZeroU64::new(50).unwrap();
-
-/// The `limit` ceiling the spec sets on both events endpoints: the GET events
-/// endpoint and the events-search endpoint.
-pub const EVENTS_MAX_LIMIT: NonZeroU64 = NonZeroU64::new(999).unwrap();
+pub const SEARCH_DEFAULT_LIMIT: EventsLimit = EventsLimit::new(50);
 
 /// Why a `/api/version` probe failed, classified for `snouty doctor`.
 #[derive(Debug)]

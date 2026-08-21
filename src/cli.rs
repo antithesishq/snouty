@@ -1,12 +1,10 @@
-use std::num::NonZeroU64;
-
 use chrono::{DateTime, Utc};
 use clap::{Args, Parser, Subcommand, ValueEnum};
 
 use color_eyre::Section;
 use color_eyre::eyre::Report;
 
-use crate::api::{EVENTS_MAX_LIMIT, RunStatus, SEARCH_DEFAULT_LIMIT};
+use crate::api::{EventsLimit, RunStatus, RunsLimit, SEARCH_DEFAULT_LIMIT};
 use crate::error::user_error;
 use crate::features::{self, Feature};
 use crate::time::HumanDuration;
@@ -59,20 +57,6 @@ fn parse_poll_interval(value: &str) -> Result<HumanDuration, String> {
         return Err("poll interval must be at least 1 minute".to_string());
     }
     Ok(interval)
-}
-
-/// clap value parser for `runs events --limit` and `runs search --limit`. Both
-/// commands reserve one row past the flag for their truncation probe, so the
-/// flag tops out one below [`EVENTS_MAX_LIMIT`]. `NonZeroU64` matches the
-/// generated request type, so `--limit 0` is rejected here with a plain message
-/// instead of the request builder's conversion jargon.
-fn parse_events_limit(value: &str) -> Result<NonZeroU64, String> {
-    let max = EVENTS_MAX_LIMIT.get() - 1;
-    let limit = value.parse::<NonZeroU64>().map_err(|e| e.to_string())?;
-    if limit.get() > max {
-        return Err(format!("must be at most {max}"));
-    }
-    Ok(limit)
 }
 
 #[derive(Parser)]
@@ -944,8 +928,8 @@ Examples:
         /// Maximum number of events to print. Raise it to make a search more
         /// exhaustive; a note on stderr says when the output stopped at the
         /// limit.
-        #[arg(short = 'n', long, default_value_t = SEARCH_DEFAULT_LIMIT, value_parser = parse_events_limit)]
-        limit: NonZeroU64,
+        #[arg(short = 'n', long, default_value_t = SEARCH_DEFAULT_LIMIT)]
+        limit: EventsLimit,
 
         /// Substrings to match, as a positional alias for `-m` (all must match).
         /// At least one needle (via `-m` or here) is required.
@@ -977,8 +961,8 @@ pub struct RunsSearchArgs {
 
     /// Maximum number of events to print (default 50). A note on stderr says
     /// when the output stopped at the limit.
-    #[arg(short = 'n', long, value_parser = parse_events_limit)]
-    pub limit: Option<NonZeroU64>,
+    #[arg(short = 'n', long)]
+    pub limit: Option<EventsLimit>,
 
     /// Keep the connection open and print new matches as they arrive
     /// (the limit still caps the total)
@@ -1030,8 +1014,8 @@ pub struct RunsListArgs {
 
     /// Maximum number of runs to display; a note on stderr says when the
     /// output stopped at the limit
-    #[arg(short = 'n', long, default_value = "10")]
-    pub limit: usize,
+    #[arg(short = 'n', long, default_value_t = RunsLimit::new(10))]
+    pub limit: RunsLimit,
 
     /// Show a detailed key-value block per run, including the full description
     #[arg(short, long)]
@@ -1045,7 +1029,7 @@ impl Default for RunsListArgs {
             launcher: None,
             created_after: None,
             created_before: None,
-            limit: 10,
+            limit: RunsLimit::new(10),
             detail: false,
         }
     }
@@ -1310,7 +1294,7 @@ mod tests {
         else {
             panic!("expected `runs events`");
         };
-        assert_eq!(limit, NonZeroU64::new(998).unwrap());
+        assert_eq!(limit.get(), 998);
 
         // The generated request types carry the limit as NonZeroU64, so clap
         // rejects 0 up front with a plain message.
@@ -1334,7 +1318,7 @@ mod tests {
         else {
             panic!("expected `runs search`");
         };
-        assert_eq!(args.limit, Some(NonZeroU64::new(998).unwrap()));
+        assert_eq!(args.limit.map(EventsLimit::get), Some(998));
 
         let parsed = Cli::try_parse_from(["snouty", "runs", "search", "RUN", "q", "-n", "999"]);
         assert!(parsed.is_err(), "expected --limit 999 to be rejected");
@@ -1372,7 +1356,7 @@ mod tests {
         else {
             panic!("expected `runs search`");
         };
-        assert_eq!(args.limit, NonZeroU64::new(7));
+        assert_eq!(args.limit.map(EventsLimit::get), Some(7));
         assert!(args.follow);
     }
 

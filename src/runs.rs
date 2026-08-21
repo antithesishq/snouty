@@ -1,5 +1,4 @@
 use std::io::{IsTerminal, Read, Write};
-use std::num::NonZeroU64;
 use std::time::Duration;
 
 use color_eyre::Section;
@@ -14,9 +13,9 @@ use serde_json::{Map, Value, json};
 use chrono::{DateTime, Utc};
 
 use crate::api::{
-    AntithesisApi, Event, EventProperty, LogsBegin, Moment, NonEventProperty, Property,
-    PropertyStatus, RunDetail, RunStatus, RunSummary, RunsFilterOptions, SEARCH_DEFAULT_LIMIT,
-    SearchMode,
+    AntithesisApi, Event, EventProperty, EventsLimit, LogsBegin, Moment, NonEventProperty,
+    Property, PropertyStatus, RunDetail, RunStatus, RunSummary, RunsFilterOptions,
+    SEARCH_DEFAULT_LIMIT, SearchMode,
 };
 use crate::cli::{RunsCommands, RunsListArgs, RunsSearchArgs};
 use crate::error::{api_error_status, user_error};
@@ -33,7 +32,7 @@ use crate::vtime::VTime;
 
 mod event_search;
 
-use event_search::{Cap, EventOutput};
+use event_search::EventOutput;
 
 /// The note a listing command prints to stderr when its output stops at
 /// `--limit` while more rows exist. Callers print it in human mode only.
@@ -212,18 +211,15 @@ async fn cmd_runs_list(
     // In human mode, fetch one run past the limit: that row's existence is
     // the truncation signal for `limit_note`, and it is never displayed.
     // `--json` never prints the note, so it never reads past the limit.
-    let fetch = if json {
-        args.limit
-    } else {
-        args.limit.saturating_add(1)
-    };
+    let limit = usize::try_from(args.limit.get()).unwrap_or(usize::MAX);
+    let fetch = args.limit.for_request(!json);
 
     let mut runs: Vec<RunSummary> = api
-        .stream_runs_filtered(&opts, fetch as u64)
+        .stream_runs_filtered(&opts, fetch.get())
         .try_collect::<Vec<_>>()
         .await?;
-    let truncated = runs.len() > args.limit;
-    runs.truncate(args.limit);
+    let truncated = runs.len() > limit;
+    runs.truncate(limit);
 
     runs.sort_by(|a, b| {
         b.created_at
@@ -250,7 +246,7 @@ async fn cmd_runs_list(
         outln!("{}", render_runs_table(&runs, width))?;
     }
     if truncated {
-        limit_note(args.limit as u64, "run");
+        limit_note(args.limit.get(), "run");
     }
     Ok(())
 }
@@ -1343,10 +1339,9 @@ async fn cmd_runs_build_logs(
     };
     event_search::print_event_stream(
         stream,
-        Cap::None,
+        None,
         ErrorRows::Abort,
         mode,
-        false,
         "No build logs for this run.",
     )
     .await
@@ -1364,16 +1359,17 @@ async fn cmd_runs_search(
     if args.check {
         return event_search::check_query(&api, &args.run_id, &args.query, mode.json()).await;
     }
-    // The cap is enforced client-side whatever the server does: release 61
+    // The limit is enforced client-side whatever the server does: release 61
     // ends the stream at the requested `limit`, but releases 58.11 through
-    // 60.1 ignore it and stream every match.
-    let cap = match (args.follow, args.limit) {
-        (true, None) => Cap::None,
-        (_, limit) => Cap::noted(limit.unwrap_or(SEARCH_DEFAULT_LIMIT)).0,
+    // 60.1 ignore it and stream every match. `--follow` with no limit is the
+    // one unbounded case.
+    let limit = match (args.follow, args.limit) {
+        (true, None) => None,
+        (_, limit) => Some(limit.unwrap_or(SEARCH_DEFAULT_LIMIT)),
     };
     let search = SearchMode::Query {
         stream: args.follow,
-        limit: cap.request_limit(),
+        limit: event_search::request_limit(limit, mode),
     };
     let stream = match api
         .search_run_events_query(&args.run_id, &args.query, search)
@@ -1387,11 +1383,9 @@ async fn cmd_runs_search(
     // row is the server's Stream_Error signal.
     event_search::print_event_stream(
         stream,
-        cap,
+        limit,
         ErrorRows::Data,
         mode,
-        // The search backend holds the connection open on a live run.
-        true,
         "No events matched the query.",
     )
     .await
@@ -1400,7 +1394,7 @@ async fn cmd_runs_search(
 async fn cmd_runs_events(
     run_id: &str,
     matches: &[String],
-    limit: NonZeroU64,
+    limit: EventsLimit,
     settings: &Settings,
     verbose: bool,
     mode: EventOutput,
@@ -1420,35 +1414,31 @@ async fn cmd_runs_events(
     }
 
     let api = AntithesisApi::new(settings, verbose)?;
-    let (cap, probe) = Cap::noted(limit);
-    let (stream, live) = if features::is_enabled(Feature::RunsSearch) {
+    let probe = limit.for_request(!mode.json());
+    let stream = if features::is_enabled(Feature::RunsSearch) {
         let query = event_set_dsl::substring_filter(matches);
-        let mode = SearchMode::Query {
+        let search = SearchMode::Query {
             stream: false,
             limit: Some(probe),
         };
-        let stream = match api.search_run_events_query(run_id, &query, mode).await {
+        match api.search_run_events_query(run_id, &query, search).await {
             Ok(stream) => stream,
             Err(err) => return Err(event_search::explain_search_error(run_id, err)),
-        };
-        // The search backend holds the connection open on a live run.
-        (stream, true)
+        }
     } else {
         let [needle] = matches else {
             return Err(event_search::multi_needle_error());
         };
-        let stream = match api.search_run_events(run_id, needle, probe).await {
+        match api.search_run_events(run_id, needle, probe).await {
             Ok(stream) => stream,
             Err(err) => return Err(explain_run_scoped_error(&api, run_id, err).await),
-        };
-        (stream, false)
+        }
     };
     event_search::print_event_stream(
         stream,
-        cap,
+        Some(limit),
         ErrorRows::Abort,
         mode,
-        live,
         &format!("No events matched \"{}\".", matches.join(" ")),
     )
     .await
@@ -1474,10 +1464,9 @@ async fn cmd_runs_logs(
     // than printing nothing.
     event_search::print_event_stream(
         stream,
-        Cap::None,
+        None,
         ErrorRows::Abort,
         mode,
-        false,
         "No log lines at this moment.",
     )
     .await

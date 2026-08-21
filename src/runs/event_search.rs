@@ -15,7 +15,7 @@
 //! re-filtering that subset locally silently drops events that did match —
 //! absence from the subset is not absence from the run.
 
-use std::io::{BufWriter, IsTerminal, Write};
+use std::io::Write;
 use std::num::NonZeroU64;
 use std::time::Duration;
 
@@ -27,7 +27,7 @@ use serde_json::json;
 use futures_util::stream::BoxStream;
 use futures_util::{StreamExt, TryStreamExt};
 
-use crate::api::{AntithesisApi, MIN_SEARCH_RELEASE, SearchMode};
+use crate::api::{AntithesisApi, EventsLimit, MIN_SEARCH_RELEASE, SearchMode};
 use crate::error::{api_error_status, user_error};
 use crate::event_render::EventStreamRenderer;
 use crate::features::{self, Feature};
@@ -57,84 +57,54 @@ impl EventOutput {
     }
 }
 
-/// The client-side row cap for [`print_event_stream`].
-#[derive(Clone, Copy)]
-pub(super) enum Cap {
-    /// No cap: the server enforces the limit, or the stream is unbounded by
-    /// design (`--follow` without `--limit`).
-    None,
-    /// Stop at the cap; in human mode, read one row past it and print a
-    /// truncation note when that row arrives.
-    Noted(NonZeroU64),
+/// The `limit` a request must name to serve `limit_rows`, for the endpoints
+/// that take an optional one. `None` names no limit at all, which is all an
+/// unbounded `--follow` can do: the request has no way to say "every event".
+/// Release 61 then applies its own default of 50 (`Search_Request.limit` in
+/// `openapi.json`), so such a stream ends at 50 events there and runs on
+/// unbounded against releases 58.11 through 60.1, which ignore the field.
+///
+/// The probe row comes along only when [`print_event_stream`] will read it,
+/// and the rule for that is the same one written there: the truncation note
+/// is human-mode commentary.
+pub(super) fn request_limit(
+    limit_rows: Option<EventsLimit>,
+    output: EventOutput,
+) -> Option<NonZeroU64> {
+    limit_rows.map(|limit| limit.for_request(!output.json()))
 }
 
-impl Cap {
-    /// A cap, paired with the `limit` its request must name: one row past the
-    /// cap.
-    ///
-    /// That row's arrival is the only truncation signal there is. On a server
-    /// that honors `limit` (release 61 does), a request for exactly the cap
-    /// makes a truncated result look complete and the note never prints. The
-    /// two are minted together so that they cannot drift apart. The flags that
-    /// carry a cap top out one below the server's ceiling, so the row past it
-    /// always stays in range.
-    pub(super) fn noted(cap: NonZeroU64) -> (Self, NonZeroU64) {
-        (Self::Noted(cap), cap.saturating_add(1))
-    }
-
-    /// The `limit` a request must name for this cap, for the endpoints that
-    /// take an optional one. [`Cap::None`] names no limit at all, which is
-    /// all an unbounded `--follow` can do: the request has no way to say
-    /// "every event". Release 61 then applies its own default of 50
-    /// (`Search_Request.limit` in `openapi.json`), so such a stream ends at 50
-    /// events there and runs on unbounded against releases 58.11 through 60.1,
-    /// which ignore the field.
-    pub(super) fn request_limit(self) -> Option<NonZeroU64> {
-        match self {
-            Self::None => None,
-            Self::Noted(cap) => Some(Self::noted(cap).1),
-        }
-    }
-}
-
-/// How long the truncation probe waits for the row past the cap. On a
-/// healthy `Noted` stream that row (or EOF) follows the capped rows at once;
-/// see the probe in [`print_event_stream`] for what a timeout means.
+/// How long the truncation probe waits for the row past the limit. On a
+/// stream the server has finished with, that row (or EOF) follows the last
+/// printed row at once; see the probe in [`print_event_stream`] for what a
+/// timeout means.
 const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Print every line of the (already server-filtered) stream, one line out
 /// per line in — the one output pipeline behind every event-stream command
 /// (`runs logs`, `runs events`, `runs search`, `runs build-logs`).
 ///
-/// The cap is the ONLY early exit: when the server
-/// has returned fewer events and holds the connection open, keep waiting
-/// rather than guess that the result is complete.
-/// `live` marks a stream whose server may hold the connection open (the
-/// events-search backend does, on an in-progress run) — its rows must flush
-/// as they arrive rather than sit in the buffer waiting for an EOF that may
-/// never come. A bounded dump (`runs logs`, `runs build-logs`, the GET
-/// events backend) buffers normally on a pipe; a terminal always gets each
-/// row as it lands.
+/// `limit_rows` is the ONLY early exit: when the server has returned fewer
+/// events and holds the connection open, keep waiting rather than guess that
+/// the result is complete. Rows go out one at a time, because the search
+/// backend holds the connection open on an in-progress run and a row that
+/// sits in a buffer waiting for EOF may never be seen.
 pub(super) async fn print_event_stream(
     stream: JsonStream,
-    cap: Cap,
+    limit_rows: Option<EventsLimit>,
     error_rows: ErrorRows,
     output: EventOutput,
-    live: bool,
     empty_message: &str,
 ) -> Result<()> {
-    // The note is human-mode commentary; `--json` never reads past the cap.
-    let (cap, peek) = match cap {
-        Cap::None => (None, false),
-        Cap::Noted(cap) => (Some(cap), !output.json()),
-    };
-    let cap_rows = cap.map_or(usize::MAX, |cap| {
-        usize::try_from(cap.get()).unwrap_or(usize::MAX)
+    // The note is human-mode commentary; `--json` asked for no probe row (see
+    // `request_limit`), so it must not wait for one either.
+    let peek = limit_rows.is_some() && !output.json();
+    let rows = limit_rows.map_or(usize::MAX, |limit| {
+        usize::try_from(limit.get()).unwrap_or(usize::MAX)
     });
     // The per-row rendering resolves once, up front; the one loop below owns
-    // the cap, the row count, and the flush-per-row rule. The cap is ours to
-    // enforce even on the raw passthrough — the search backend ignores the
-    // limit.
+    // the limit and the row count. The limit is ours to enforce even on the
+    // raw passthrough — an older search backend ignores it.
     let mut lines: BoxStream<'_, Result<String>> = match output {
         EventOutput::Json { raw: true, .. } => raw_lines(stream, error_rows).boxed(),
         EventOutput::Json {
@@ -164,24 +134,20 @@ pub(super) async fn print_event_stream(
                 .boxed()
         }
     };
-    let flush_per_row = live || std::io::stdout().is_terminal();
-    let mut stdout = BufWriter::new(std::io::stdout().lock());
+    // `Stdout` is line-buffered, so each row leaves as it is written.
+    let mut stdout = std::io::stdout().lock();
     let mut seen: usize = 0;
     let mut ended = false;
-    while seen < cap_rows {
+    while seen < rows {
         let Some(line) = lines.try_next().await? else {
             ended = true;
             break;
         };
         seen += 1;
         writeln!(stdout, "{line}")?;
-        if flush_per_row {
-            stdout.flush()?;
-        }
     }
-    stdout.flush()?;
 
-    // The probe row past the cap only proves more rows exist; it is never
+    // The probe row past the limit only proves more rows exist; it is never
     // printed. An error on it must not fail a command whose requested rows
     // were all delivered, so a failed probe means no note, not an error.
     // The timeout guards against probing a stream that will not end
@@ -189,18 +155,16 @@ pub(super) async fn print_event_stream(
     if peek && !ended {
         match tokio::time::timeout(PROBE_TIMEOUT, lines.try_next()).await {
             // The row arrived: more rows exist.
-            Ok(Ok(Some(_))) => super::limit_note(cap_rows as u64, "event"),
+            Ok(Ok(Some(_))) => super::limit_note(rows as u64, "event"),
             // EOF at the cap: nothing was truncated.
             Ok(Ok(None)) => {}
             // An error on the disposable row: truncation unknown.
             Ok(Err(_)) => {}
-            // `timeout` answers `Err` only for its elapsed deadline. A live
-            // stream reaches it legitimately: the search backend holds the
-            // connection open on an in-progress run, so a result that lands
-            // exactly on the cap has no row past it to send. A bounded stream
-            // that stalls is a caller bug instead, hence the assert.
+            // `timeout` answers `Err` only for its elapsed deadline. The
+            // search backend holds the connection open on an in-progress run,
+            // so a result that lands exactly on the limit has no row past it
+            // to send and nothing to end the stream either.
             Err(_elapsed) => {
-                debug_assert!(live, "truncation probe timed out; see PROBE_TIMEOUT");
                 debug!("truncation probe timed out after {PROBE_TIMEOUT:?}; skipping the note");
             }
         }

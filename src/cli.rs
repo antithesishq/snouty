@@ -304,7 +304,10 @@ requires --force."#)]
     #[command(long_about = r#"Search Antithesis documentation
 
 Full-text search over a local copy of the Antithesis docs, auto-updated before
-each use unless --offline. Subcommands: search, tree, show, sqlite.
+each use unless --offline.
+
+Search for a page, browse the tree to find one, then show it. `sqlite` prints
+the path to the local database for querying it directly.
 
 Examples:
   snouty docs search fault injection
@@ -391,12 +394,6 @@ Examples:
         /// Search query
         query: Vec<String>,
     },
-    /// Print the path to the cached SQLite database
-    #[command(long_about = r#"Print the path to the cached SQLite database
-
-Useful for directly querying the documentation database with external tools."#)]
-    Sqlite,
-
     /// Print a tree of documentation paths
     #[command(long_about = r#"Print a tree of documentation paths
 
@@ -425,6 +422,12 @@ If the exact path is not found, suggests similar pages."#)]
         /// Page path (e.g. "getting_started/overview")
         path: String,
     },
+
+    /// Print the path to the cached SQLite database
+    #[command(long_about = r#"Print the path to the cached SQLite database
+
+Useful for directly querying the documentation database with external tools."#)]
+    Sqlite,
 }
 
 #[derive(Args)]
@@ -697,8 +700,18 @@ full description and launcher."#
     #[command(
         long_about = r#"Show a run's metadata: id, status, timestamps, launcher, and description.
 
+Two fields report time and they mean different things. Duration is the
+workload length requested at launch. Elapsed is wall-clock time, which also
+spans provisioning, setup and teardown, so the two legitimately differ.
+Source is the `antithesis.source` the run was launched from, when the
+launcher recorded one.
+
 Incomplete runs also show the failure moment (Failure Hash/VTime) to pass to
-`runs logs`. Use --web to open the triage report in a browser."#
+`runs logs`. Use --web to open the triage report in a browser.
+
+Examples:
+  snouty runs show <run_id>
+  snouty runs show <run_id> --web"#
     )]
     Show {
         /// Run ID
@@ -788,8 +801,20 @@ Examples:
     },
 
     /// Stream build logs for a run
-    #[command(long_about = "Stream a run's build and setup logs.\n\n\
-        Output: `timestamp [stream] line`.")]
+    #[command(
+        long_about = r#"Stream a run's build and setup logs: everything the platform did
+before the test started.
+
+Output: each line is `timestamp [stream] line`, where stream is `stdout` or
+`stderr`. The whole build is streamed, so expect thousands of lines on a real
+run. Grep the stream tag to narrow it, and read `[stderr]` first when a
+launch failed.
+
+Examples:
+  snouty runs build-logs <run_id>
+  snouty runs build-logs <run_id> | grep '\[stderr\]'
+  snouty runs build-logs <run_id> | grep -i 'error\|denied'"#
+    )]
     BuildLogs {
         /// Run ID
         run_id: String,

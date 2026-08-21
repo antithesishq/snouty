@@ -1376,9 +1376,29 @@ async fn cmd_runs_search(
     if args.check {
         return event_search::check_query(&api, &args.run_id, &args.query, mode.json()).await;
     }
+    // The cap is enforced client-side whatever the server does: release 61
+    // ends the stream at the requested `limit`, but releases 58.11 through
+    // 60.1 ignore it and stream every match.
+    //
+    // A `Cap::Noted` request asks for one row past the cap, because that
+    // row's arrival is the only truncation signal there is — on a server
+    // that honors `limit`, asking for exactly the cap makes a truncated
+    // result indistinguishable from a complete one, and the note never
+    // prints. `runs list` and `runs events` ask for one past the limit for
+    // the same reason. `--follow` never probes, so it asks for exactly what
+    // it prints; unbounded `--follow` names no limit at all, which is what
+    // stops the server closing the stream at its default of 50.
+    let (cap, requested) = match (args.follow, args.limit) {
+        (true, None) => (Cap::None, None),
+        (true, Some(limit)) => (Cap::Silent(limit), Some(limit)),
+        (false, limit) => {
+            let cap = limit.unwrap_or(SEARCH_DEFAULT_LIMIT);
+            (Cap::Noted(cap), Some(cap.saturating_add(1)))
+        }
+    };
     let search = SearchMode::Query {
         stream: args.follow,
-        limit: args.limit,
+        limit: requested,
     };
     let stream = match api
         .search_run_events_query(&args.run_id, &args.query, search)
@@ -1386,17 +1406,6 @@ async fn cmd_runs_search(
     {
         Ok(stream) => stream,
         Err(err) => return Err(event_search::explain_search_error(&args.run_id, err)),
-    };
-    // The server is supposed to end the stream at the limit the request
-    // names, but current releases ignore it (observed on 58.11 through
-    // 60.1), so the cap is enforced client-side: the caller's limit, or the
-    // server default for a request that named none. The one uncapped shape
-    // is `--follow` without an explicit limit — unbounded by design, and
-    // the request carries no limit at all.
-    let cap = match (args.follow, args.limit) {
-        (true, None) => Cap::None,
-        (true, Some(limit)) => Cap::Silent(limit),
-        (false, limit) => Cap::Noted(limit.unwrap_or(SEARCH_DEFAULT_LIMIT)),
     };
     // A user-written DSL pipeline can reshape rows into any object,
     // `{"error": ...}` included, so this stream must not guess that such a
@@ -1438,17 +1447,19 @@ async fn cmd_runs_events(
     let api = AntithesisApi::new(settings, verbose)?;
     let (stream, live) = if features::is_enabled(Feature::RunsSearch) {
         let query = event_set_dsl::substring_filter(matches);
+        // One row past the cap, for the truncation probe — the same reason
+        // the GET path below adds one, and the same reason `cmd_runs_search`
+        // does. The limit is still enforced client-side: an older tenant
+        // ignores the field entirely.
         let mode = SearchMode::Query {
             stream: false,
-            limit: Some(limit),
+            limit: Some(limit.saturating_add(1)),
         };
         let stream = match api.search_run_events_query(run_id, &query, mode).await {
             Ok(stream) => stream,
             Err(err) => return Err(event_search::explain_search_error(run_id, err)),
         };
-        // The search backend ignores the limit (see `cmd_runs_search`);
-        // enforce it client-side. It also holds the connection open on a
-        // live run.
+        // The search backend holds the connection open on a live run.
         (stream, true)
     } else {
         let [needle] = matches else {

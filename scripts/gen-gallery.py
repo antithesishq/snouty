@@ -941,6 +941,23 @@ def rows_at_most(limit: int):
     return chk
 
 
+def rows_at_most_with_limit_note(limit: int):
+    """`rows_at_most`, plus the stderr note that says the output stopped there.
+
+    A capped listing that prints nothing else is ambiguous: `limit` rows can
+    mean "these are all the matches" or "there are more". Only the note tells
+    them apart, and it prints only when snouty asks the server for one row
+    past the cap — so checking the row count alone passes on a build that
+    never asks."""
+
+    def chk(sr: StoryRun, reg: Registry) -> tuple[bool, str]:
+        n = len(sr.rows or [])
+        noted = "reached the limit" in sr.result.stderr
+        return (1 <= n <= limit and noted, f"{n} rows (limit {limit}), note={noted}")
+
+    return chk
+
+
 def all_status(status: str):
     def chk(sr: StoryRun, reg: Registry) -> tuple[bool, str]:
         rows = sr.rows or []
@@ -1611,12 +1628,12 @@ def build_stories(d: Discovery) -> list[Story]:
         Story(
             "runs-search-limit",
             "Cap a DSL query at -n 3",
-            "I want only the first few matches, not the whole stream — the limit must "
-            "hold even though the server ignores it (snouty enforces it client-side).",
-            "Exactly at most 3 event lines, then the command exits promptly; when more "
-            "matches exist, a stderr note says the output stopped at the limit.",
+            "I want only the first few matches, not the whole stream — and I want to "
+            "know whether the first few are all of them.",
+            "Exactly at most 3 event lines, then the command exits promptly; because "
+            "more matches exist, a stderr note says the output stopped at the limit.",
             ["runs", "search", d.success, f'contains({{output_text: "{kw}"}})', "-n", "3"],
-            rows_at_most(3),
+            rows_at_most_with_limit_note(3),
             env={"SNOUTY_UNSTABLE_FEATURES": "runs-search"},
         ),
         Story(

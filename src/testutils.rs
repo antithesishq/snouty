@@ -1192,12 +1192,16 @@ fn mock_route_execute_command(run_id: &str, req_body: &str) -> (u16, String) {
 
 /// `POST /runs/{id}/events/search` — the events-search endpoint.
 /// `validate_only` returns an empty 200, and matching events stream back as
-/// NDJSON. Like the live server (observed on releases 58.11 and 60.0), the
-/// mock IGNORES `limit` and returns every match — the documented contract
-/// says the server terminates the stream at `limit`, but it does not, so
-/// specs that pass `--limit` exercise snouty's client-side cap. The one
-/// divergence from the live server: the mock's stream always closes (it is a
-/// plain HTTP response), where a live run's stream stays open forever.
+/// NDJSON. The mock ends the stream at `limit`, as the live server does:
+/// releases 58.11 and 60.0 ignored the field and streamed every match, and
+/// release 61 honors it (observed on tenant `orbitinghail`, run
+/// `bafc3d6cb0ff883696153e2a8e30aee7-61-1`: a query matching six events
+/// returned three under `-n 3`). snouty caps client-side either way, so
+/// modelling the honoring server is what keeps a spec honest — a caller
+/// that asks for exactly its limit can no longer tell a truncated result
+/// from a complete one. The one divergence from the live server: the mock's
+/// stream always closes (it is a plain HTTP response), where a live run's
+/// stream stays open forever.
 /// `count_only` is not modelled: snouty does not send it (the count is
 /// moving to a separate endpoint).
 ///
@@ -1263,6 +1267,7 @@ fn mock_route_search_events(run_id: &str, body: &str) -> (u16, String, &'static 
         );
     }
 
+    let limit = request["limit"].as_u64().map(|l| l as usize);
     let needles = query_needles(query);
     // The haystack the query asked for. `runs events` reads an event's text
     // fields; a query that stringifies the event asks for the event's JSON,
@@ -1272,7 +1277,7 @@ fn mock_route_search_events(run_id: &str, body: &str) -> (u16, String, &'static 
     let reads_event_json = !query.contains(crate::event_set_dsl::NEEDLE_FILTER.trim())
         && query.contains("JSON.stringify(ev)");
     let (_, logs) = mock_route_get_run_logs(run_id);
-    let matches: Vec<&str> = logs
+    let mut matches: Vec<&str> = logs
         .lines()
         .filter(|line| {
             let haystack = if reads_event_json {
@@ -1283,6 +1288,9 @@ fn mock_route_search_events(run_id: &str, body: &str) -> (u16, String, &'static 
             needles.iter().all(|needle| haystack.contains(needle))
         })
         .collect();
+    if let Some(limit) = limit {
+        matches.truncate(limit);
+    }
 
     if matches.is_empty() {
         (200, String::new(), ndjson)
@@ -1389,6 +1397,34 @@ mod tests {
 
         let (status, capped) =
             mock_route_search_run_events("run-1", Some("q=parallel_driver_fetch&limit=1"));
+        assert_eq!(status, 200);
+        assert_eq!(capped.lines().count(), 1);
+        assert!(
+            capped.contains(r#""vtime":"400.5""#),
+            "the first match should be retained, got: {capped}"
+        );
+    }
+
+    #[test]
+    fn mock_route_search_events_ends_the_stream_at_limit() {
+        // Release 61 honors `limit`; the mock models that, so a caller that
+        // asks for exactly its limit cannot tell a truncated result from a
+        // complete one. See the route's doc comment for the observation.
+        let body = |limit: Option<u64>| {
+            let mut request = serde_json::json!({
+                "query": r#"contains({output_text: "parallel_driver_fetch"})"#,
+            });
+            if let Some(limit) = limit {
+                request["limit"] = limit.into();
+            }
+            request.to_string()
+        };
+
+        let (status, all, _) = mock_route_search_events("run-1", &body(None));
+        assert_eq!(status, 200);
+        assert_eq!(all.lines().count(), 3, "fixture should match three events");
+
+        let (status, capped, _) = mock_route_search_events("run-1", &body(Some(1)));
         assert_eq!(status, 200);
         assert_eq!(capped.lines().count(), 1);
         assert!(

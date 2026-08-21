@@ -61,12 +61,12 @@ fn parse_poll_interval(value: &str) -> Result<HumanDuration, String> {
     Ok(interval)
 }
 
-/// clap value parser for `runs events --limit`: the GET events endpoint
-/// accepts limits up to [`GET_EVENTS_MAX_LIMIT`], and the command reserves
-/// one row past the flag for its truncation probe, so the flag tops out one
-/// below the ceiling. `NonZeroU64` matches the generated request type, so
-/// `--limit 0` is rejected here with a plain message instead of surfacing
-/// the request builder's conversion jargon.
+/// clap value parser for `runs events --limit` and `runs search --limit`:
+/// both endpoints accept limits up to [`GET_EVENTS_MAX_LIMIT`], and both
+/// commands reserve one row past the flag for their truncation probe, so the
+/// flag tops out one below the ceiling. `NonZeroU64` matches the generated
+/// request type, so `--limit 0` is rejected here with a plain message
+/// instead of surfacing the request builder's conversion jargon.
 fn parse_events_limit(value: &str) -> Result<NonZeroU64, String> {
     let max = GET_EVENTS_MAX_LIMIT.get() - 1;
     let limit = value.parse::<NonZeroU64>().map_err(|e| e.to_string())?;
@@ -952,10 +952,11 @@ pub struct RunsSearchArgs {
     pub query: String,
 
     /// Maximum number of events to print (default 50). A note on stderr
-    /// says when the output stopped at the limit. The server enforces the
-    /// accepted range.
-    // NonZeroU64 for the same reason as `runs events --limit`.
-    #[arg(short = 'n', long)]
+    /// says when the output stopped at the limit.
+    // Same parser as `runs events --limit`: this command also asks for one
+    // row past the limit to detect truncation, so the flag must stay one
+    // below the server's ceiling for that request to stay in range.
+    #[arg(short = 'n', long, value_parser = parse_events_limit)]
     pub limit: Option<NonZeroU64>,
 
     /// Keep the connection open and print new matches as they arrive

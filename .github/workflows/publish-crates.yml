@@ -10,7 +10,9 @@
 # repository holds no long-lived `CARGO_REGISTRY_TOKEN` secret. crates.io reads
 # the workflow filename from the OIDC `workflow_ref` claim, which names the
 # entry-point workflow. Both crates must therefore list `release.yml` — not this
-# file — as the workflow in their Trusted Publishing config.
+# file — as the workflow in their Trusted Publishing config. crates.io attaches
+# a config only to a crate that already exists, so a crate with no published
+# version needs one manual `cargo publish` before this job can take it over.
 name: Publish crates
 
 on:

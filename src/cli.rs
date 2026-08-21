@@ -61,13 +61,25 @@ fn parse_poll_interval(value: &str) -> Result<HumanDuration, String> {
     Ok(interval)
 }
 
-/// clap value parser for `runs events --limit` and `runs search --limit`. Both
-/// commands reserve one row past the flag for their truncation probe, so the
-/// flag tops out one below [`EVENTS_MAX_LIMIT`]. `NonZeroU64` matches the
-/// generated request type, so `--limit 0` is rejected here with a plain message
-/// instead of the request builder's conversion jargon.
+/// clap value parser for `runs events --limit`. The command always reserves one
+/// row past the flag for its truncation probe, so the flag tops out one below
+/// [`EVENTS_MAX_LIMIT`].
 fn parse_events_limit(value: &str) -> Result<NonZeroU64, String> {
-    let max = EVENTS_MAX_LIMIT.get() - 1;
+    parse_limit(value, EVENTS_MAX_LIMIT.get() - 1)
+}
+
+/// clap value parser for `runs search --limit`. The whole server range is
+/// allowed here, because `--follow` sends the limit as it stands and reserves
+/// no probe row. Without `--follow` a limit of [`EVENTS_MAX_LIMIT`] leaves no
+/// room for the probe, and the command prints no truncation note.
+fn parse_search_limit(value: &str) -> Result<NonZeroU64, String> {
+    parse_limit(value, EVENTS_MAX_LIMIT.get())
+}
+
+/// `NonZeroU64` matches the generated request type, so `--limit 0` is rejected
+/// here with a plain message instead of the request builder's conversion
+/// jargon.
+fn parse_limit(value: &str, max: u64) -> Result<NonZeroU64, String> {
     let limit = value.parse::<NonZeroU64>().map_err(|e| e.to_string())?;
     if limit.get() > max {
         return Err(format!("must be at most {max}"));
@@ -977,7 +989,7 @@ pub struct RunsSearchArgs {
 
     /// Maximum number of events to print (default 50). Without --follow, a
     /// note on stderr says when the output stopped at the limit.
-    #[arg(short = 'n', long, value_parser = parse_events_limit)]
+    #[arg(short = 'n', long, value_parser = parse_search_limit)]
     pub limit: Option<NonZeroU64>,
 
     /// Keep the connection open and print new matches as they arrive
@@ -1319,6 +1331,28 @@ mod tests {
 
         let parsed = Cli::try_parse_from(["snouty", "runs", "events", "RUN", "-n", "999"]);
         assert!(parsed.is_err(), "expected --limit 999 to be rejected");
+    }
+
+    // `runs search --limit` takes the endpoint's whole range, because
+    // `--follow` sends the limit as it stands and reserves no probe row.
+    #[test]
+    fn search_limit_takes_the_whole_server_range() {
+        let cli = parse(&[
+            "snouty", "runs", "search", "RUN", "q", "--follow", "--limit", "999",
+        ]);
+        let Commands::Runs {
+            command: Some(RunsCommands::Search(args)),
+        } = cli.command
+        else {
+            panic!("expected `runs search`");
+        };
+        assert_eq!(args.limit, Some(NonZeroU64::new(999).unwrap()));
+
+        let parsed = Cli::try_parse_from(["snouty", "runs", "search", "RUN", "q", "-n", "1000"]);
+        assert!(parsed.is_err(), "expected --limit 1000 to be rejected");
+
+        let parsed = Cli::try_parse_from(["snouty", "runs", "search", "RUN", "q", "-n", "0"]);
+        assert!(parsed.is_err(), "expected --limit 0 to be rejected");
     }
 
     // `runs search` takes the run id and one raw DSL query positionally; the

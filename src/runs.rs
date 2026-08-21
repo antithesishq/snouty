@@ -14,9 +14,9 @@ use serde_json::{Map, Value, json};
 use chrono::{DateTime, Utc};
 
 use crate::api::{
-    AntithesisApi, Event, EventProperty, LogsBegin, Moment, NonEventProperty, Property,
-    PropertyStatus, RunDetail, RunStatus, RunSummary, RunsFilterOptions, SEARCH_DEFAULT_LIMIT,
-    SearchMode,
+    AntithesisApi, EVENTS_MAX_LIMIT, Event, EventProperty, LogsBegin, Moment, NonEventProperty,
+    Property, PropertyStatus, RunDetail, RunStatus, RunSummary, RunsFilterOptions,
+    SEARCH_DEFAULT_LIMIT, SearchMode,
 };
 use crate::cli::{RunsCommands, RunsListArgs, RunsSearchArgs};
 use crate::error::{api_error_status, user_error};
@@ -1370,7 +1370,7 @@ async fn cmd_runs_search(
     let cap = match (args.follow, args.limit) {
         (true, None) => Cap::None,
         (true, Some(limit)) => Cap::Silent(limit),
-        (false, limit) => Cap::Noted(limit.unwrap_or(SEARCH_DEFAULT_LIMIT)),
+        (false, limit) => Cap::noted(limit.unwrap_or(SEARCH_DEFAULT_LIMIT), EVENTS_MAX_LIMIT).0,
     };
     let search = SearchMode::Query {
         stream: args.follow,
@@ -1421,7 +1421,7 @@ async fn cmd_runs_events(
     }
 
     let api = AntithesisApi::new(settings, verbose)?;
-    let (cap, probe) = Cap::noted(limit);
+    let (cap, probe) = Cap::noted(limit, EVENTS_MAX_LIMIT);
     let (stream, live) = if features::is_enabled(Feature::RunsSearch) {
         let query = event_set_dsl::substring_filter(matches);
         let mode = SearchMode::Query {

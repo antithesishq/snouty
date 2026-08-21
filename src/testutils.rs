@@ -1276,6 +1276,19 @@ fn mock_route_search_events(run_id: &str, body: &str) -> (u16, String, &'static 
         );
     }
 
+    // `limit` is documented as 1..=999; the server rejects anything outside
+    // that range, so a client that asks for one row past a limit of 999 gets
+    // an error rather than a stream.
+    if let Some(limit) = request["limit"].as_u64()
+        && !(1..=999).contains(&limit)
+    {
+        let body = serde_json::json!({
+            "message": format!("Bad request: limit {limit} is out of the range 1..=999"),
+        })
+        .to_string();
+        return (400, body, json);
+    }
+
     let needles = query_needles(query);
     // The haystack the query asked for. `runs events` reads an event's text
     // fields; a query that stringifies the event asks for the event's JSON,

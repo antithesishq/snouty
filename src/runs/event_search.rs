@@ -72,15 +72,21 @@ pub(super) enum Cap {
 }
 
 impl Cap {
-    /// A noted cap, paired with the `limit` its request must name: one row
-    /// past the cap.
+    /// A cap that notes its truncation, paired with the `limit` its request
+    /// must name: one row past the cap.
     ///
     /// That row's arrival is the only truncation signal there is. On a server
     /// that honors `limit` (release 61 does), a request for exactly the cap
     /// makes a truncated result look complete and the note never prints. The
     /// two are minted together so that they cannot drift apart.
-    pub(super) fn noted(cap: NonZeroU64) -> (Self, NonZeroU64) {
-        (Self::Noted(cap), cap.saturating_add(1))
+    ///
+    /// A cap at `ceiling` is the exception: the server rejects a request for
+    /// one row more, so the cap goes silent and prints no note.
+    pub(super) fn noted(cap: NonZeroU64, ceiling: NonZeroU64) -> (Self, NonZeroU64) {
+        match cap.checked_add(1) {
+            Some(probe) if probe <= ceiling => (Self::Noted(cap), probe),
+            _ => (Self::Silent(cap), cap),
+        }
     }
 
     /// The `limit` a request must name for this cap, for the endpoints that
@@ -95,7 +101,7 @@ impl Cap {
         match self {
             Self::None => None,
             Self::Silent(cap) => Some(cap),
-            Self::Noted(cap) => Some(Self::noted(cap).1),
+            Self::Noted(cap) => Some(cap.saturating_add(1)),
         }
     }
 }

@@ -66,10 +66,12 @@ their say-so.
   commit hash. Leave the thread open; the reviewer resolves it. If the
   comment is unclear, ask on the thread instead of guessing.
 
-  Reply over REST, with the comment id from the event line:
+  Reply over REST, with the comment id from the event line. Name the repo
+  the watcher watches: the `-R owner/repo` target, or this repo when the
+  watcher ran without it.
 
   ```
-  gh api -X POST repos/antithesishq/snouty/pulls/<PR>/comments/<id>/replies \
+  gh api -X POST repos/<owner>/<repo>/pulls/<PR>/comments/<id>/replies \
     -f body='...'
   ```
 - **Check failure**: read the failing log with

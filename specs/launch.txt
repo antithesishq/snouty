@@ -30,6 +30,19 @@ stderr 'validation failed.*'
 stderr 'antithesis\.duration: .*'
 ! stderr 'Unevaluated properties.*'
 
+# `antithesis.filter_logs_matching` is validated client-side before any API
+#    call. The platform rejects a bad pattern only after the run has started.
+! snouty launch -w basic_test --duration 30 --filter-logs-matching '('
+stderr 'antithesis\.filter_logs_matching is not a valid regular expression.*'
+
+# A pattern that matches the empty string would suppress every log line.
+! snouty launch -w basic_test --duration 30 --filter-logs-matching 'x*'
+stderr 'antithesis\.filter_logs_matching matches the empty string, which would suppress every log line'
+
+# An empty pattern makes the platform skip filtering silently.
+! snouty launch -w basic_test --duration 30 --param antithesis.filter_logs_matching=
+stderr 'antithesis\.filter_logs_matching is empty'
+
 # `launch` does not accept --stdin.
 ! snouty launch -w basic_test --stdin --duration 30
 stderr 'unexpected argument.*'

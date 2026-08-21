@@ -62,9 +62,18 @@ their say-so.
 ## 3. React to each event
 
 - **Review comment or review**: triage it. If it asks for a change, check out
-  that PR's branch, make the change, push, reply on the thread with the commit
-  hash, and resolve the thread. If the comment is unclear, ask on the thread
-  instead of guessing.
+  that PR's branch, make the change, push, and reply on the thread with the
+  commit hash. Leave the thread open; the reviewer resolves it. If the
+  comment is unclear, ask on the thread instead of guessing.
+
+  Reply over REST, with the comment id from the event line. Name the repo
+  the watcher watches: the `-R owner/repo` target, or this repo when the
+  watcher ran without it.
+
+  ```
+  gh api -X POST repos/<owner>/<repo>/pulls/<PR>/comments/<id>/replies \
+    -f body='...'
+  ```
 - **Check failure**: read the failing log with
   `gh run view <run-id> --log-failed`, fix it, and push.
 - **Merged or closed**: stop related work on that PR. The script exits on its

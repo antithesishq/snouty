@@ -12,7 +12,7 @@ rustPlatform.buildRustPackage {
   __structuredAttrs = true;
 
   # Every path that Cargo.toml declares must appear here: workspace members,
-  # path dependencies, and [[example]] paths. A missing path fails the build.
+  # path dependencies, and [[example]] paths.
   src = lib.fileset.toSource {
     root = ./.;
     fileset = lib.fileset.unions [

@@ -1,5 +1,4 @@
 use std::io::{IsTerminal, Read, Write};
-use std::num::NonZeroU64;
 use std::time::Duration;
 
 use color_eyre::Section;
@@ -14,9 +13,9 @@ use serde_json::{Map, Value, json};
 use chrono::{DateTime, Utc};
 
 use crate::api::{
-    AntithesisApi, Event, EventProperty, LogsBegin, Moment, NonEventProperty, Property,
-    PropertyStatus, RunDetail, RunStatus, RunSummary, RunsFilterOptions, SEARCH_DEFAULT_LIMIT,
-    SearchMode,
+    AntithesisApi, Event, EventProperty, EventsLimit, Limit, LogsBegin, Moment, NonEventProperty,
+    Property, PropertyStatus, RunDetail, RunStatus, RunSummary, RunsFilterOptions,
+    SEARCH_DEFAULT_LIMIT, SearchMode,
 };
 use crate::cli::{RunsCommands, RunsListArgs, RunsSearchArgs};
 use crate::error::{api_error_status, user_error};
@@ -24,18 +23,21 @@ use crate::event_render::{normalize_terminal_text, strip_ansi};
 use crate::event_set_dsl;
 use crate::features::{self, Feature};
 use crate::jsonl::JsonStream;
-use crate::render::{OutputOptions, render_kv, sanitize, sanitize_multiline, wrap_text};
+use crate::render::{
+    OutputOptions, indent_lines, render_kv, sanitize, sanitize_multiline, wrap_text,
+};
 use crate::settings::Settings;
 use crate::time::{HumanDuration, format_local};
 use crate::vtime::VTime;
 
 mod event_search;
 
-use event_search::{Cap, EventOutput};
+use event_search::EventOutput;
 
 /// The note a listing command prints to stderr when its output stops at
 /// `--limit` while more rows exist. Callers print it in human mode only.
-fn limit_note(limit: u64, unit: &str) {
+fn limit_note<const SERVER_MAX: usize>(limit: Limit<SERVER_MAX>, unit: &str) {
+    let limit = limit.get();
     let plural = if limit == 1 { "" } else { "s" };
     eprintln!(
         "note: output reached the limit of {limit} {unit}{plural}; more may exist — raise --limit"
@@ -207,34 +209,40 @@ async fn cmd_runs_list(
         created_before: args.created_before,
     };
 
-    // In human mode, fetch one run past the limit: that row's existence is
-    // the truncation signal for `limit_note`, and it is never displayed.
-    // `--json` never prints the note, so it never reads past the limit.
-    let fetch = if json {
-        args.limit
-    } else {
-        args.limit.saturating_add(1)
-    };
+    // The server returns runs newest first, so every mode prints them in the
+    // order they arrive.
+    let limit = args.limit.get();
+    let stream = api.stream_runs_filtered(&opts, args.limit);
+    let mut stream = std::pin::pin!(stream);
 
-    let mut runs: Vec<RunSummary> = api
-        .stream_runs_filtered(&opts, fetch as u64)
-        .try_collect::<Vec<_>>()
-        .await?;
-    let truncated = runs.len() > args.limit;
-    runs.truncate(args.limit);
-
-    runs.sort_by(|a, b| {
-        b.created_at
-            .cmp(&a.created_at)
-            .then(a.status.cmp(&b.status))
-    });
-
+    // `--json` prints no note, so it leaves the reserved run on the stream.
+    // The stream fetches a page only on demand, so the page that run sits on
+    // is never fetched.
     if json {
-        for run in &runs {
-            outln!("{}", serde_json::to_string(run)?)?;
+        let mut printed = 0;
+        while printed < limit {
+            let Some(run) = stream.try_next().await? else {
+                break;
+            };
+            outln!("{}", serde_json::to_string(&run)?)?;
+            printed += 1;
         }
         return Ok(());
     }
+
+    // The table sizes its columns from the rows it holds, so the human modes
+    // collect first.
+    let mut runs: Vec<RunSummary> = Vec::new();
+    while runs.len() < limit {
+        let Some(run) = stream.try_next().await? else {
+            break;
+        };
+        runs.push(run);
+    }
+
+    // The request reserved one run past the limit, and pulling it is the only
+    // proof that more runs exist. It is never displayed.
+    let truncated = runs.len() == limit && stream.try_next().await?.is_some();
 
     if runs.is_empty() {
         outln!("No runs found.")?;
@@ -248,7 +256,7 @@ async fn cmd_runs_list(
         outln!("{}", render_runs_table(&runs, width))?;
     }
     if truncated {
-        limit_note(args.limit as u64, "run");
+        limit_note(args.limit, "run");
     }
     Ok(())
 }
@@ -1061,20 +1069,6 @@ fn sorted_by_vtime(events: &[Event]) -> Vec<&Event> {
     sorted
 }
 
-fn indent_lines(text: &str, prefix: &str) -> String {
-    text.lines()
-        .map(|line| {
-            // Don't indent blank lines — that would leave trailing whitespace.
-            if line.is_empty() {
-                String::new()
-            } else {
-                format!("{prefix}{line}")
-            }
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
 fn is_failing(p: &Property) -> bool {
     matches!(p.status(), PropertyStatus::Failing)
 }
@@ -1355,10 +1349,9 @@ async fn cmd_runs_build_logs(
     };
     event_search::print_event_stream(
         stream,
-        Cap::None,
+        None,
         ErrorRows::Abort,
         mode,
-        false,
         "No build logs for this run.",
     )
     .await
@@ -1376,9 +1369,17 @@ async fn cmd_runs_search(
     if args.check {
         return event_search::check_query(&api, &args.run_id, &args.query, mode.json()).await;
     }
+    // The limit is enforced client-side whatever the server does: release 61
+    // ends the stream at the requested `limit`, but releases 58.11 through
+    // 60.1 ignore it and stream every match. `--follow` with no limit is the
+    // one unbounded case.
+    let limit = match (args.follow, args.limit) {
+        (true, None) => None,
+        (_, limit) => Some(limit.unwrap_or(SEARCH_DEFAULT_LIMIT)),
+    };
     let search = SearchMode::Query {
         stream: args.follow,
-        limit: args.limit,
+        limit,
     };
     let stream = match api
         .search_run_events_query(&args.run_id, &args.query, search)
@@ -1387,27 +1388,14 @@ async fn cmd_runs_search(
         Ok(stream) => stream,
         Err(err) => return Err(event_search::explain_search_error(&args.run_id, err)),
     };
-    // The server is supposed to end the stream at the limit the request
-    // names, but current releases ignore it (observed on 58.11 through
-    // 60.1), so the cap is enforced client-side: the caller's limit, or the
-    // server default for a request that named none. The one uncapped shape
-    // is `--follow` without an explicit limit — unbounded by design, and
-    // the request carries no limit at all.
-    let cap = match (args.follow, args.limit) {
-        (true, None) => Cap::None,
-        (true, Some(limit)) => Cap::Silent(limit),
-        (false, limit) => Cap::Noted(limit.unwrap_or(SEARCH_DEFAULT_LIMIT)),
-    };
     // A user-written DSL pipeline can reshape rows into any object,
     // `{"error": ...}` included, so this stream must not guess that such a
     // row is the server's Stream_Error signal.
     event_search::print_event_stream(
         stream,
-        cap,
+        limit,
         ErrorRows::Data,
         mode,
-        // The search backend holds the connection open on a live run.
-        true,
         "No events matched the query.",
     )
     .await
@@ -1416,7 +1404,7 @@ async fn cmd_runs_search(
 async fn cmd_runs_events(
     run_id: &str,
     matches: &[String],
-    limit: NonZeroU64,
+    limit: EventsLimit,
     settings: &Settings,
     verbose: bool,
     mode: EventOutput,
@@ -1436,43 +1424,30 @@ async fn cmd_runs_events(
     }
 
     let api = AntithesisApi::new(settings, verbose)?;
-    let (stream, live) = if features::is_enabled(Feature::RunsSearch) {
+    let stream = if features::is_enabled(Feature::RunsSearch) {
         let query = event_set_dsl::substring_filter(matches);
-        let mode = SearchMode::Query {
+        let search = SearchMode::Query {
             stream: false,
             limit: Some(limit),
         };
-        let stream = match api.search_run_events_query(run_id, &query, mode).await {
+        match api.search_run_events_query(run_id, &query, search).await {
             Ok(stream) => stream,
             Err(err) => return Err(event_search::explain_search_error(run_id, err)),
-        };
-        // The search backend ignores the limit (see `cmd_runs_search`);
-        // enforce it client-side. It also holds the connection open on a
-        // live run.
-        (stream, true)
+        }
     } else {
         let [needle] = matches else {
             return Err(event_search::multi_needle_error());
         };
-        // The GET endpoint enforces `limit` server-side, so ask for one row
-        // past the cap: that row's arrival is the truncation signal. The
-        // flag tops out one below the endpoint's ceiling, so the probe row
-        // always fits.
-        let stream = match api
-            .search_run_events(run_id, needle, limit.saturating_add(1))
-            .await
-        {
+        match api.search_run_events(run_id, needle, limit).await {
             Ok(stream) => stream,
             Err(err) => return Err(explain_run_scoped_error(&api, run_id, err).await),
-        };
-        (stream, false)
+        }
     };
     event_search::print_event_stream(
         stream,
-        Cap::Noted(limit),
+        Some(limit),
         ErrorRows::Abort,
         mode,
-        live,
         &format!("No events matched \"{}\".", matches.join(" ")),
     )
     .await
@@ -1498,10 +1473,9 @@ async fn cmd_runs_logs(
     // than printing nothing.
     event_search::print_event_stream(
         stream,
-        Cap::None,
+        None,
         ErrorRows::Abort,
         mode,
-        false,
         "No log lines at this moment.",
     )
     .await

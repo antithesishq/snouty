@@ -61,10 +61,12 @@ stdout 'Run ID +[^ ]'
 [!staging] stdout 'Run ID .*run-1'
 ! stdout 'RUN ID.*STATUS.*CREATED.*TEST NAME'
 
-# `snouty runs list` is the same as bare `snouty runs`.
+# `snouty runs list` is the same as bare `snouty runs`. The rows keep the
+# order the server sent, newest first; snouty never re-sorts them.
 mock-runs-server
 snouty runs list
 stdout 'RUN ID.*STATUS.*CREATED.*TEST NAME'
+[!staging] stdout '(?s)run-1.*run-2.*run-3'
 
 # When more runs exist than `--limit`, the table stops at the limit and a
 # note on stderr says so. Detection reads one run past the limit and drops
@@ -86,6 +88,11 @@ mock-runs-server
 [!staging] stdout 'run-2'
 [!staging] ! stdout 'run-3'
 [!staging] ! stderr 'note'
+
+# `--limit 0` asks for nothing, so clap rejects it before any request.
+mock-runs-server
+! snouty runs list --limit 0
+stderr 'invalid value .0.'
 
 # `snouty runs show` requires a run ID.
 ! snouty runs show
@@ -611,9 +618,9 @@ mock-runs-server
 stderr 'invalid value .999.'
 stderr 'must be at most 998'
 
-# With the `runs-search` feature on, the limit is enforced client-side: the
-# search server is told the limit but ignores it and streams every match
-# (the mock models that), so this pins the cap in `runs events` itself.
+# With the `runs-search` feature on, `runs events` routes through the search
+# endpoint. It asks for one row past the limit — the truncation signal — and
+# caps the output client-side, because an older tenant ignores `limit`.
 mock-runs-server
 env SNOUTY_UNSTABLE_FEATURES=runs-search
 snouty --json runs events $R_run_id --match parallel_driver_fetch --limit 1
@@ -670,24 +677,46 @@ mock-runs-server
 [staging] snouty --json runs search $R_run_id 'contains({output_text: "fault"})' --limit 3
 [!staging] stdout '"moment":\{"input_hash":"-456","vtime":2\.0'
 
-# `--limit` caps the returned events. The mock, like the live server, ignores
-# the request's `limit` and streams every match (three here), so this pins the
-# client-side cap in `runs search`, not server truncation.
+# `--limit` caps the returned events. snouty asks for one row past the limit,
+# so the extra row must be dropped, not printed: three events match here and
+# only the first is shown.
 mock-runs-server
 snouty --json runs search $R_run_id 'contains({output_text: "parallel_driver_fetch"})' --limit 1
 [!staging] stdout '"vtime":400\.5'
 [!staging] ! stdout '"vtime":401\.75'
 
-# In human mode the client-side cap prints a truncation note on stderr.
+# In human mode the truncation note goes to stderr. The row past the limit is
+# what proves more matches exist, so this case pins the request that asks for
+# it.
 mock-runs-server
 [!staging] snouty runs search $R_run_id 'contains({output_text: "parallel_driver_fetch"})' --limit 1
 [!staging] stdout '400\.5'
 [!staging] stderr 'note: output reached the limit of 1 event; more may exist'
 
+# `--follow` with a limit notes its truncation too: the stream stops at the
+# limit, so the user must be told that more matches exist.
+mock-runs-server
+[!staging] snouty runs search $R_run_id 'contains({output_text: "parallel_driver_fetch"})' --follow --limit 1
+[!staging] stdout '400\.5'
+[!staging] stderr 'note: output reached the limit of 1 event; more may exist'
+
+# The note is truncation-only: a limit the matches never reach prints no note.
+mock-runs-server
+[!staging] snouty runs search $R_run_id 'contains({output_text: "slow request"})' --limit 5
+[!staging] stdout '2\.0'
+[!staging] ! stderr 'reached the limit'
+
 # `--limit 0` is rejected by clap before any request.
 mock-runs-server
 ! snouty runs search run-1 'contains({output_text: "x"})' --limit 0
 stderr 'invalid value .0.'
+
+# `runs search --limit` tops out one below the server's ceiling of 999: the
+# request asks for one row past the flag, and that row must stay in range.
+mock-runs-server
+! snouty runs search run-1 'contains({output_text: "x"})' --limit 999
+stderr 'invalid value .999.'
+stderr 'must be at most 998'
 
 # A query that matches nothing prints a friendly empty-state. (Mock-only: on a
 # live run this scans the whole event history.)
@@ -700,12 +729,15 @@ mock-runs-server
 snouty runs search $R_run_id 'contains({output_text: "x"})' --check
 stdout 'query is valid'
 
-# An invalid query fails with the server's rejection. (Mock-only: the live
-# tenant answers an invalid query with a generic 500 instead of the
-# documented 400.)
+# An invalid query fails with the server's rejection. The rejection spans three
+# lines — the query, a caret under the offending token, the reason. The block
+# starts on its own line and every line of it takes the same indent, so the
+# caret keeps pointing at the token above it. (Mock-only: the live tenant
+# answers an invalid query with a generic 500 instead of the documented 400.)
 mock-runs-server
 [!staging] ! snouty runs search $R_run_id 'bogus_verb({x: "y"})' --check
-[!staging] stderr 'invalid query'
+[!staging] stderr 'API error: 400 Bad Request\n  failed to execute.*Event set DSL error: bogus_verb'
+[!staging] stderr '\n  \^\n  invalid with_next'
 
 # The mode switches pick conflicting response modes, so clap rejects the pairing.
 mock-runs-server

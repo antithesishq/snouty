@@ -1,12 +1,10 @@
-use std::num::NonZeroU64;
-
 use chrono::{DateTime, Utc};
 use clap::{Args, Parser, Subcommand, ValueEnum};
 
 use color_eyre::Section;
 use color_eyre::eyre::Report;
 
-use crate::api::{GET_EVENTS_MAX_LIMIT, RunStatus, SEARCH_DEFAULT_LIMIT};
+use crate::api::{EventsLimit, RunStatus, RunsLimit, SEARCH_DEFAULT_LIMIT};
 use crate::error::user_error;
 use crate::features::{self, Feature};
 use crate::time::HumanDuration;
@@ -59,21 +57,6 @@ fn parse_poll_interval(value: &str) -> Result<HumanDuration, String> {
         return Err("poll interval must be at least 1 minute".to_string());
     }
     Ok(interval)
-}
-
-/// clap value parser for `runs events --limit`: the GET events endpoint
-/// accepts limits up to [`GET_EVENTS_MAX_LIMIT`], and the command reserves
-/// one row past the flag for its truncation probe, so the flag tops out one
-/// below the ceiling. `NonZeroU64` matches the generated request type, so
-/// `--limit 0` is rejected here with a plain message instead of surfacing
-/// the request builder's conversion jargon.
-fn parse_events_limit(value: &str) -> Result<NonZeroU64, String> {
-    let max = GET_EVENTS_MAX_LIMIT.get() - 1;
-    let limit = value.parse::<NonZeroU64>().map_err(|e| e.to_string())?;
-    if limit.get() > max {
-        return Err(format!("must be at most {max}"));
-    }
-    Ok(limit)
 }
 
 #[derive(Parser)]
@@ -139,6 +122,10 @@ list:
   snouty launch -w basic_k8s_test --config ./config --duration 30 \
     --param 'antithesis.images=app@sha256:...;db:latest'
 
+Add --json for machine-readable output. The launch response prints as one
+JSON object:
+  snouty launch --json -w basic_test --duration 30 | jq -r .runId
+
 Tenant and repository may be set via the environment variables below, or in a
 settings file (./.snouty.toml by default; see the global --settings/--profile
 flags and the README). Environment variables take precedence.
@@ -174,7 +161,11 @@ Examples:
   snouty runs properties <run_id> --name <substring> --detail
   snouty runs build-logs <run_id>
   snouty runs logs <run_id> <hash> [vtime]
-  snouty runs events <run_id> -m <query>"#,
+  snouty runs events <run_id> -m <query>
+
+Add --json for machine-readable output. Every subcommand prints JSON in place
+of its table or its rendered events:
+  snouty --json runs list | jq -r .run_id"#,
         subcommand_required = false
     )]
     Runs {
@@ -194,7 +185,12 @@ Using CLI arguments:
     --input-hash 6057726200491963783 \
     --vtime 329.8037810830865 \
     --description "debug this moment" \
-    --recipients "team@example.com""#)]
+    --recipients "team@example.com"
+
+Add --json for machine-readable output. The response prints as one JSON
+object:
+  snouty debug --json --run-id <run_id> --input-hash <hash> --vtime <vtime> |
+    jq -r .runId"#)]
     Debug(DebugArgs),
 
     /// Output shell completions
@@ -270,7 +266,7 @@ report (e.g. to gate CI).
 
 Example:
   snouty doctor
-  snouty doctor --json
+  snouty doctor --json | jq -r .settings.tenant
   snouty doctor --offline"#)]
     Doctor(DoctorArgs),
 
@@ -304,12 +300,19 @@ requires --force."#)]
     #[command(long_about = r#"Search Antithesis documentation
 
 Full-text search over a local copy of the Antithesis docs, auto-updated before
-each use unless --offline. Subcommands: search, tree, show, sqlite.
+each use unless --offline.
+
+Search for a page, browse the tree to find one, then show it. `sqlite` prints
+the path to the local database for querying it directly.
 
 Examples:
   snouty docs search fault injection
   snouty docs tree sdk
-  snouty docs show getting_started"#)]
+  snouty docs show getting_started
+
+Add --json for machine-readable output. Only `search` prints JSON; the other
+subcommands print text either way:
+  snouty --json docs search fault injection | jq -r '.[].path'"#)]
     Docs {
         /// Don't check for documentation updates
         #[arg(long)]
@@ -373,7 +376,11 @@ Examples:
   snouty docs search "config image"
   snouty docs search moment.branch
   snouty docs search sdk setup
-  snouty docs search --match 'sdk NOT java'"#)]
+  snouty docs search --match 'sdk NOT java'
+
+Add --json for machine-readable output. The matches print as one JSON array
+of {path, title, snippet} objects, or of paths with --list:
+  snouty --json docs search fault injection | jq -r '.[].path'"#)]
     Search {
         /// Print only matching page paths, one per line
         #[arg(short = 'l', long)]
@@ -391,12 +398,6 @@ Examples:
         /// Search query
         query: Vec<String>,
     },
-    /// Print the path to the cached SQLite database
-    #[command(long_about = r#"Print the path to the cached SQLite database
-
-Useful for directly querying the documentation database with external tools."#)]
-    Sqlite,
-
     /// Print a tree of documentation paths
     #[command(long_about = r#"Print a tree of documentation paths
 
@@ -406,7 +407,9 @@ Examples:
   snouty docs tree
   snouty docs tree --depth 2
   snouty docs tree -d 2
-  snouty docs tree sdk"#)]
+  snouty docs tree sdk
+
+This command prints text only. --json has no effect on it."#)]
     Tree {
         /// Limit output to nodes at this depth or shallower
         #[arg(short = 'd', long)]
@@ -420,11 +423,21 @@ Examples:
     #[command(long_about = r#"Show full contents of a documentation page
 
 Displays the full markdown content of a page by its path.
-If the exact path is not found, suggests similar pages."#)]
+If the exact path is not found, suggests similar pages.
+
+This command prints text only. --json has no effect on it."#)]
     Show {
         /// Page path (e.g. "getting_started/overview")
         path: String,
     },
+
+    /// Print the path to the cached SQLite database
+    #[command(long_about = r#"Print the path to the cached SQLite database
+
+Useful for directly querying the documentation database with external tools.
+
+This command prints the path only. --json has no effect on it."#)]
+    Sqlite,
 }
 
 #[derive(Args)]
@@ -679,7 +692,11 @@ Query snippets (each is a complete QUERY, ready to paste):
 
 "#,
     classified_blocks_help!(),
-    " Rows reshaped by map/narrow/fold\nprint as raw JSON."
+    " Rows reshaped by map/narrow/fold\nprint as raw JSON.\n\n\
+     Add --json for machine-readable output. Each event prints as one JSON\n\
+     object on its own line:\n\
+     \x20 snouty --json runs search <run_id> 'contains({output_text: \"err\"})' \\\n\
+     \x20   | jq -r .moment.vtime"
 );
 
 #[derive(Subcommand)]
@@ -688,8 +705,12 @@ pub enum RunsCommands {
     #[command(
         long_about = r#"List recent runs (the default when `snouty runs` runs with no subcommand).
 
-Columns: RUN ID, STATUS, CREATED, TEST NAME. Use --detail or --json for the
-full description and launcher."#
+Columns: RUN ID, STATUS, CREATED, TEST NAME. Use --detail for the full
+description and launcher.
+
+Add --json for machine-readable output. Each run prints as one JSON object on
+its own line, in the order the server returns them:
+  snouty --json runs list | jq -r .run_id"#
     )]
     List(RunsListArgs),
 
@@ -697,8 +718,22 @@ full description and launcher."#
     #[command(
         long_about = r#"Show a run's metadata: id, status, timestamps, launcher, and description.
 
+Two fields report time and they mean different things. Duration is the
+workload length requested at launch. Elapsed is wall-clock time, which also
+spans provisioning, setup and teardown, so the two legitimately differ.
+Source is the `antithesis.source` the run was launched from, when the
+launcher recorded one.
+
 Incomplete runs also show the failure moment (Failure Hash/VTime) to pass to
-`runs logs`. Use --web to open the triage report in a browser."#
+`runs logs`. Use --web to open the triage report in a browser.
+
+Examples:
+  snouty runs show <run_id>
+  snouty runs show <run_id> --web
+
+Add --json for machine-readable output. The run prints as one JSON object.
+With --web it prints the report URL as {"url": ...} and opens no browser:
+  snouty --json runs show <run_id> | jq -r .status"#
     )]
     Show {
         /// Run ID
@@ -726,7 +761,11 @@ resumes the wait.
 Examples:
   snouty runs wait <run_id>
   snouty runs wait <run_id> --timeout 2h
-  snouty launch --json -w basic_test ... | jq -r .runId | xargs snouty runs wait"#
+  snouty launch --json -w basic_test ... | jq -r .runId | xargs snouty runs wait
+
+Add --json for machine-readable output. The final status prints as one JSON
+object:
+  snouty --json runs wait <run_id> | jq -r .status"#
     )]
     Wait {
         /// Run ID
@@ -753,13 +792,16 @@ property has counterexamples.
 
 Narrow with --name and/or --group (both case-insensitive substring matches);
 add --detail to expand the matches into their examples and counter-example
-moments instead of the table. Use --json for automation. --json is mutually
-exclusive with --detail.
+moments instead of the table.
 
 Examples:
   snouty runs properties <run_id> --failing
   snouty runs properties <run_id> --name eventually_validate --detail
-  snouty runs properties <run_id> --group Unreachable --detail"#
+  snouty runs properties <run_id> --group Unreachable --detail
+
+Add --json for machine-readable output. Each property prints as one JSON
+object on its own line. --json is mutually exclusive with --detail:
+  snouty --json runs properties <run_id> --failing | jq -r .name"#
     )]
     Properties {
         /// Run ID
@@ -788,8 +830,24 @@ Examples:
     },
 
     /// Stream build logs for a run
-    #[command(long_about = "Stream a run's build and setup logs.\n\n\
-        Output: `timestamp [stream] line`.")]
+    #[command(
+        long_about = r#"Stream a run's build and setup logs: everything the platform did
+before the test started.
+
+Output: each line is `timestamp [stream] line`, where stream is `stdout` or
+`stderr`. The whole build is streamed, so expect thousands of lines on a real
+run. Grep the stream tag to narrow it, and read `[stderr]` first when a
+launch failed.
+
+Examples:
+  snouty runs build-logs <run_id>
+  snouty runs build-logs <run_id> | grep '\[stderr\]'
+  snouty runs build-logs <run_id> | grep -i 'error\|denied'
+
+Add --json for machine-readable output. Each log line prints as one JSON
+object on its own line:
+  snouty --json runs build-logs <run_id> | jq -r .text"#
+    )]
     BuildLogs {
         /// Run ID
         run_id: String,
@@ -808,7 +866,11 @@ VTIME to end the stream at that moment instead.
 Output: a `moment HASH VTIME` divider opens each timeline segment, and each
 event under it renders on one line as `VTIME [source] payload` — Antithesis
 event shapes (SDK assertions, faults, container lifecycle, test composer)
-each in their own concise form."#
+each in their own concise form.
+
+Add --json for machine-readable output. Each event prints as one JSON object
+on its own line, and --raw passes the server's events through unchanged:
+  snouty --json runs logs <run_id> <hash> | jq -r .moment.vtime"#
     )]
     Logs {
         /// Run ID
@@ -867,7 +929,12 @@ Omit SCRIPT to read the script from stdin — a pipe, a redirect, or a heredoc.
 Examples:
   snouty runs exec <run_id> <hash> <vtime> 'uname -a'
   echo 'ps aux' | snouty runs exec <run_id> <hash> <vtime>
-  snouty runs exec <run_id> <hash> <vtime> < script.sh"#
+  snouty runs exec <run_id> <hash> <vtime> < script.sh
+
+Add --json for machine-readable output. Each frame of the stream prints as one
+JSON object on its own line, and the trailer is left out:
+  snouty --json runs exec <run_id> <hash> <vtime> 'ls' \
+    | jq -r 'select(.type == "output").text'"#
     )]
     Exec {
         /// Run ID
@@ -906,7 +973,10 @@ Examples:
             classified_blocks_help!(),
             "\n\nMatching runs server-side. More than one term requires the events-search API,\n\
              which is behind the `runs-search` unstable feature\n\
-             (SNOUTY_UNSTABLE_FEATURES=runs-search)."
+             (SNOUTY_UNSTABLE_FEATURES=runs-search).\n\n\
+             Add --json for machine-readable output. Each event prints as one\n\
+             JSON object on its own line:\n\
+             \x20 snouty --json runs events <run_id> -m error | jq -r .moment.vtime"
         )
     )]
     Events {
@@ -920,8 +990,8 @@ Examples:
         /// Maximum number of events to print. Raise it to make a search more
         /// exhaustive; a note on stderr says when the output stopped at the
         /// limit.
-        #[arg(short = 'n', long, default_value_t = SEARCH_DEFAULT_LIMIT, value_parser = parse_events_limit)]
-        limit: NonZeroU64,
+        #[arg(short = 'n', long, default_value_t = SEARCH_DEFAULT_LIMIT)]
+        limit: EventsLimit,
 
         /// Substrings to match, as a positional alias for `-m` (all must match).
         /// At least one needle (via `-m` or here) is required.
@@ -951,12 +1021,10 @@ pub struct RunsSearchArgs {
     /// Event-set DSL query
     pub query: String,
 
-    /// Maximum number of events to print (default 50). A note on stderr
-    /// says when the output stopped at the limit. The server enforces the
-    /// accepted range.
-    // NonZeroU64 for the same reason as `runs events --limit`.
+    /// Maximum number of events to print (default 50). A note on stderr says
+    /// when the output stopped at the limit.
     #[arg(short = 'n', long)]
-    pub limit: Option<NonZeroU64>,
+    pub limit: Option<EventsLimit>,
 
     /// Keep the connection open and print new matches as they arrive
     /// (the limit still caps the total)
@@ -1008,8 +1076,8 @@ pub struct RunsListArgs {
 
     /// Maximum number of runs to display; a note on stderr says when the
     /// output stopped at the limit
-    #[arg(short = 'n', long, default_value = "10")]
-    pub limit: usize,
+    #[arg(short = 'n', long, default_value_t = RunsLimit::new(10))]
+    pub limit: RunsLimit,
 
     /// Show a detailed key-value block per run, including the full description
     #[arg(short, long)]
@@ -1023,7 +1091,7 @@ impl Default for RunsListArgs {
             launcher: None,
             created_after: None,
             created_before: None,
-            limit: 10,
+            limit: RunsLimit::new(10),
             detail: false,
         }
     }
@@ -1288,7 +1356,7 @@ mod tests {
         else {
             panic!("expected `runs events`");
         };
-        assert_eq!(limit, NonZeroU64::new(998).unwrap());
+        assert_eq!(limit.get(), 998);
 
         // The generated request types carry the limit as NonZeroU64, so clap
         // rejects 0 up front with a plain message.
@@ -1297,6 +1365,28 @@ mod tests {
 
         let parsed = Cli::try_parse_from(["snouty", "runs", "events", "RUN", "-n", "999"]);
         assert!(parsed.is_err(), "expected --limit 999 to be rejected");
+    }
+
+    // `runs search --limit` shares the range `runs events --limit` uses: the
+    // command probes one row past the flag in every mode.
+    #[test]
+    fn search_limit_enforces_the_same_range() {
+        let cli = parse(&[
+            "snouty", "runs", "search", "RUN", "q", "--follow", "--limit", "998",
+        ]);
+        let Commands::Runs {
+            command: Some(RunsCommands::Search(args)),
+        } = cli.command
+        else {
+            panic!("expected `runs search`");
+        };
+        assert_eq!(args.limit.map(EventsLimit::get), Some(998));
+
+        let parsed = Cli::try_parse_from(["snouty", "runs", "search", "RUN", "q", "-n", "999"]);
+        assert!(parsed.is_err(), "expected --limit 999 to be rejected");
+
+        let parsed = Cli::try_parse_from(["snouty", "runs", "search", "RUN", "q", "-n", "0"]);
+        assert!(parsed.is_err(), "expected --limit 0 to be rejected");
     }
 
     // `runs search` takes the run id and one raw DSL query positionally; the
@@ -1328,7 +1418,7 @@ mod tests {
         else {
             panic!("expected `runs search`");
         };
-        assert_eq!(args.limit, NonZeroU64::new(7));
+        assert_eq!(args.limit.map(EventsLimit::get), Some(7));
         assert!(args.follow);
     }
 
@@ -1356,5 +1446,32 @@ mod tests {
         for line in about.lines() {
             assert!(line.len() <= 78, "over-long help line: {line}");
         }
+    }
+
+    /// `--json` is a global flag, so every long help says what the command
+    /// does with it — prints JSON, or ignores the flag. The commands that
+    /// warn "--json has no effect" at runtime are the exception: their help
+    /// never raises the subject.
+    #[test]
+    fn every_long_help_says_what_json_does() {
+        const NO_JSON: [&str; 5] = ["validate", "completions", "version", "update", "login"];
+
+        fn walk(command: &clap::Command) {
+            for sub in command.get_subcommands() {
+                if !NO_JSON.contains(&sub.get_name())
+                    && let Some(about) = sub.get_long_about()
+                {
+                    let about = about.to_string();
+                    assert!(
+                        about.contains("--json"),
+                        "`{}` long help says nothing about --json",
+                        sub.get_name()
+                    );
+                }
+                walk(sub);
+            }
+        }
+
+        walk(&<Cli as clap::CommandFactory>::command());
     }
 }

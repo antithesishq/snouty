@@ -66,28 +66,21 @@ const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 /// per line in — the one output pipeline behind every event-stream command
 /// (`runs logs`, `runs events`, `runs search`, `runs build-logs`).
 ///
-/// `limit_rows` is the ONLY early exit: when the server has returned fewer
+/// `limit` is the ONLY early exit: when the server has returned fewer
 /// events and holds the connection open, keep waiting rather than guess that
 /// the result is complete. Rows go out one at a time, because the search
 /// backend holds the connection open on an in-progress run and a row that
 /// sits in a buffer waiting for EOF may never be seen.
 pub(super) async fn print_event_stream(
     stream: JsonStream,
-    limit_rows: Option<EventsLimit>,
+    limit: Option<EventsLimit>,
     error_rows: ErrorRows,
     output: EventOutput,
     empty_message: &str,
 ) -> Result<()> {
-    // The note is human-mode commentary, so only human mode reads the row the
-    // request reserved past the limit. `--json` stops at the limit and leaves
-    // that row on the stream.
-    let peek = limit_rows.is_some() && !output.json();
-    let rows = limit_rows.map_or(usize::MAX, |limit| {
-        usize::try_from(limit.get()).unwrap_or(usize::MAX)
-    });
-    // The per-row rendering resolves once, up front; the one loop below owns
-    // the limit and the row count. The limit is ours to enforce even on the
-    // raw passthrough — an older search backend ignores it.
+    let rows = limit.map(EventsLimit::get);
+    // The limit is ours to enforce even on the raw passthrough: an older
+    // search backend ignores it.
     let mut lines: BoxStream<'_, Result<String>> = match output {
         EventOutput::Json { raw: true, .. } => raw_lines(stream, error_rows).boxed(),
         EventOutput::Json {
@@ -121,7 +114,7 @@ pub(super) async fn print_event_stream(
     let mut stdout = std::io::stdout().lock();
     let mut seen: usize = 0;
     let mut ended = false;
-    while seen < rows {
+    while rows.is_none_or(|rows| seen < rows) {
         let Some(line) = lines.try_next().await? else {
             ended = true;
             break;
@@ -130,16 +123,15 @@ pub(super) async fn print_event_stream(
         writeln!(stdout, "{line}")?;
     }
 
-    // The probe row past the limit only proves more rows exist; it is never
-    // printed. An error on it must not fail a command whose requested rows
-    // were all delivered, so a failed probe means no note, not an error.
-    // The timeout guards against probing a stream that will not end
-    // promptly, and never sits on an already-complete answer.
-    if peek && !ended {
+    // The note is human-mode commentary, so only human mode probes for the row
+    // the request reserved past the limit; `--json` leaves it on the stream.
+    // The row only proves more rows exist and is never printed, so an error on
+    // it means no note rather than a failed command.
+    if let Some(limit) = limit.filter(|_| !ended && !output.json()) {
         match tokio::time::timeout(PROBE_TIMEOUT, lines.try_next()).await {
             // The row arrived: more rows exist.
-            Ok(Ok(Some(_))) => super::limit_note(rows as u64, "event"),
-            // EOF at the cap: nothing was truncated.
+            Ok(Ok(Some(_))) => super::limit_note(limit, "event"),
+            // EOF at the limit: nothing was truncated.
             Ok(Ok(None)) => {}
             // An error on the disposable row: truncation unknown.
             Ok(Err(_)) => {}

@@ -13,7 +13,7 @@ use serde_json::{Map, Value, json};
 use chrono::{DateTime, Utc};
 
 use crate::api::{
-    AntithesisApi, Event, EventProperty, EventsLimit, LogsBegin, Moment, NonEventProperty,
+    AntithesisApi, Event, EventProperty, EventsLimit, Limit, LogsBegin, Moment, NonEventProperty,
     Property, PropertyStatus, RunDetail, RunStatus, RunSummary, RunsFilterOptions,
     SEARCH_DEFAULT_LIMIT, SearchMode,
 };
@@ -36,7 +36,8 @@ use event_search::EventOutput;
 
 /// The note a listing command prints to stderr when its output stops at
 /// `--limit` while more rows exist. Callers print it in human mode only.
-fn limit_note(limit: u64, unit: &str) {
+fn limit_note<const SERVER_MAX: usize>(limit: Limit<SERVER_MAX>, unit: &str) {
+    let limit = limit.get();
     let plural = if limit == 1 { "" } else { "s" };
     eprintln!(
         "note: output reached the limit of {limit} {unit}{plural}; more may exist — raise --limit"
@@ -208,31 +209,35 @@ async fn cmd_runs_list(
         created_before: args.created_before,
     };
 
-    let limit = usize::try_from(args.limit.get()).unwrap_or(usize::MAX);
-    let stream = api.stream_runs_filtered(&opts, args.limit.for_request().get());
+    // The server returns runs newest first, so every mode prints them in the
+    // order they arrive.
+    let limit = args.limit.get();
+    let stream = api.stream_runs_filtered(&opts, args.limit);
     let mut stream = std::pin::pin!(stream);
 
+    // `--json` prints no note, so it leaves the reserved run on the stream.
+    // The stream fetches a page only on demand, so the page that run sits on
+    // is never fetched.
+    if json {
+        let mut printed = 0;
+        while printed < limit {
+            let Some(run) = stream.try_next().await? else {
+                break;
+            };
+            outln!("{}", serde_json::to_string(&run)?)?;
+            printed += 1;
+        }
+        return Ok(());
+    }
+
+    // The table sizes its columns from the rows it holds, so the human modes
+    // collect first.
     let mut runs: Vec<RunSummary> = Vec::new();
     while runs.len() < limit {
         let Some(run) = stream.try_next().await? else {
             break;
         };
         runs.push(run);
-    }
-    runs.sort_by(|a, b| {
-        b.created_at
-            .cmp(&a.created_at)
-            .then(a.status.cmp(&b.status))
-    });
-
-    // `--json` prints no note, so it leaves the reserved run on the stream and
-    // returns here — and the stream fetches a page only on demand, so the page
-    // that run would come from is never fetched either.
-    if json {
-        for run in &runs {
-            outln!("{}", serde_json::to_string(run)?)?;
-        }
-        return Ok(());
     }
 
     // The request reserved one run past the limit, and pulling it is the only
@@ -251,7 +256,7 @@ async fn cmd_runs_list(
         outln!("{}", render_runs_table(&runs, width))?;
     }
     if truncated {
-        limit_note(args.limit.get(), "run");
+        limit_note(args.limit, "run");
     }
     Ok(())
 }
@@ -1374,7 +1379,7 @@ async fn cmd_runs_search(
     };
     let search = SearchMode::Query {
         stream: args.follow,
-        limit: limit.map(EventsLimit::for_request),
+        limit,
     };
     let stream = match api
         .search_run_events_query(&args.run_id, &args.query, search)
@@ -1419,12 +1424,11 @@ async fn cmd_runs_events(
     }
 
     let api = AntithesisApi::new(settings, verbose)?;
-    let probe = limit.for_request();
     let stream = if features::is_enabled(Feature::RunsSearch) {
         let query = event_set_dsl::substring_filter(matches);
         let search = SearchMode::Query {
             stream: false,
-            limit: Some(probe),
+            limit: Some(limit),
         };
         match api.search_run_events_query(run_id, &query, search).await {
             Ok(stream) => stream,
@@ -1434,7 +1438,7 @@ async fn cmd_runs_events(
         let [needle] = matches else {
             return Err(event_search::multi_needle_error());
         };
-        match api.search_run_events(run_id, needle, probe).await {
+        match api.search_run_events(run_id, needle, limit).await {
             Ok(stream) => stream,
             Err(err) => return Err(explain_run_scoped_error(&api, run_id, err).await),
         }

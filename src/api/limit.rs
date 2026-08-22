@@ -2,68 +2,63 @@
 //!
 //! A limited listing asks the server for one row more than it prints. That
 //! row's arrival is the only proof that more rows exist, and it drives the
-//! truncation note; it is never displayed. Reserving it is the whole reason
-//! this type exists: the reservation is easy to write on one path and forget
-//! on the next, and the bug it causes is silent — the output looks complete.
+//! truncation note; it is never displayed.
 //!
-//! So the arithmetic lives here and nowhere else. [`PROBE_ROW`] is subtracted
+//! The arithmetic lives here and nowhere else. [`PROBE_ROW`] is subtracted
 //! once, to derive the largest value a flag accepts, and added once, in
-//! [`Limit::for_request`]. Everything outside this file — the clap parser, the
-//! commands, the render pipeline — deals in the number of rows the user asked
-//! for.
+//! [`Limit::for_request`]. Everything else — the clap parser, the commands,
+//! the render pipeline — deals in the number of rows the user asked for.
 
 use std::fmt;
-use std::num::NonZeroU64;
+use std::num::NonZeroUsize;
 use std::str::FromStr;
 
 /// The row a limited listing asks for beyond the rows it prints.
-const PROBE_ROW: u64 = 1;
+const PROBE_ROW: usize = 1;
 
 /// A row limit for an endpoint whose spec caps `limit` at `SERVER_MAX`.
 ///
 /// The value inside is what the user asked to see. It stops one row below
 /// `SERVER_MAX` so that the probe row stays inside the server's range.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub struct Limit<const SERVER_MAX: u64>(NonZeroU64);
+pub struct Limit<const SERVER_MAX: usize>(NonZeroUsize);
 
-impl<const SERVER_MAX: u64> Limit<SERVER_MAX> {
+impl<const SERVER_MAX: usize> Limit<SERVER_MAX> {
     /// The largest number of rows the flag accepts.
-    pub const MAX: u64 = SERVER_MAX - PROBE_ROW;
+    pub const MAX: usize = SERVER_MAX - PROBE_ROW;
 
     /// A limit checked at compile time — for the defaults the flags declare.
-    pub const fn new(rows: u64) -> Self {
+    pub const fn new(rows: usize) -> Self {
         assert!(rows >= 1, "a limit of 0 rows asks for nothing");
         assert!(rows <= Self::MAX, "limit above the endpoint's ceiling");
-        match NonZeroU64::new(rows) {
+        match NonZeroUsize::new(rows) {
             Some(rows) => Self(rows),
             None => unreachable!(),
         }
     }
 
     /// The number of rows to print.
-    pub fn get(self) -> u64 {
+    pub fn get(self) -> usize {
         self.0.get()
     }
 
-    /// The `limit` a request must name: one row past what gets printed — the
-    /// reservation the flag's ceiling already leaves room for, so the sum
-    /// stays within `SERVER_MAX`.
+    /// The `limit` a request must name: one row past what gets printed. The
+    /// flag's ceiling leaves room for it, so the sum stays within
+    /// `SERVER_MAX`.
     ///
-    /// Reserving the row costs nothing on its own. Both endpoints stream,
-    /// and a caller that prints no truncation note simply stops pulling at
-    /// the limit, so the reserved row is never fetched.
-    pub fn for_request(self) -> NonZeroU64 {
+    /// Both endpoints stream, and a caller that prints no truncation note
+    /// stops pulling at the limit, so the reserved row is never fetched.
+    pub fn for_request(self) -> NonZeroUsize {
         self.0.saturating_add(PROBE_ROW)
     }
 }
 
-impl<const SERVER_MAX: u64> FromStr for Limit<SERVER_MAX> {
+impl<const SERVER_MAX: usize> FromStr for Limit<SERVER_MAX> {
     type Err = String;
 
     fn from_str(value: &str) -> Result<Self, Self::Err> {
-        // `NonZeroU64` rejects 0 with a plain message, and it is the type the
-        // generated request builders carry.
-        let rows: NonZeroU64 = value
+        // `NonZeroUsize` rejects 0 with a plain message of its own.
+        let rows: NonZeroUsize = value
             .parse()
             .map_err(|e: std::num::ParseIntError| e.to_string())?;
         if rows.get() > Self::MAX {
@@ -73,7 +68,7 @@ impl<const SERVER_MAX: u64> FromStr for Limit<SERVER_MAX> {
     }
 }
 
-impl<const SERVER_MAX: u64> fmt::Display for Limit<SERVER_MAX> {
+impl<const SERVER_MAX: usize> fmt::Display for Limit<SERVER_MAX> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.0)
     }
@@ -86,7 +81,7 @@ pub type EventsLimit = Limit<999>;
 
 /// `runs list --limit`. The runs endpoint is paged and sets no ceiling on the
 /// total, so only the probe row bounds this one.
-pub type RunsLimit = Limit<{ u64::MAX }>;
+pub type RunsLimit = Limit<{ usize::MAX }>;
 
 #[cfg(test)]
 mod tests {
@@ -112,7 +107,21 @@ mod tests {
 
     #[test]
     fn an_unbounded_endpoint_still_reserves_the_probe_row() {
-        assert_eq!(RunsLimit::MAX, u64::MAX - 1);
-        assert_eq!(RunsLimit::new(RunsLimit::MAX).for_request().get(), u64::MAX);
+        assert_eq!(RunsLimit::MAX, usize::MAX - 1);
+        assert_eq!(
+            RunsLimit::new(RunsLimit::MAX).for_request().get(),
+            usize::MAX
+        );
+    }
+
+    #[test]
+    fn an_optional_limit_costs_no_extra_word() {
+        // The inner `NonZeroUsize` gives `Option<Limit>` a niche, so an
+        // absent limit costs no discriminant. A single-field struct inherits
+        // that without `repr(transparent)`.
+        assert_eq!(
+            std::mem::size_of::<Option<EventsLimit>>(),
+            std::mem::size_of::<EventsLimit>()
+        );
     }
 }

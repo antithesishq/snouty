@@ -61,10 +61,12 @@ stdout 'Run ID +[^ ]'
 [!staging] stdout 'Run ID .*run-1'
 ! stdout 'RUN ID.*STATUS.*CREATED.*TEST NAME'
 
-# `snouty runs list` is the same as bare `snouty runs`.
+# `snouty runs list` is the same as bare `snouty runs`. The rows keep the
+# order the server sent, newest first; snouty never re-sorts them.
 mock-runs-server
 snouty runs list
 stdout 'RUN ID.*STATUS.*CREATED.*TEST NAME'
+[!staging] stdout '(?s)run-1.*run-2.*run-3'
 
 # When more runs exist than `--limit`, the table stops at the limit and a
 # note on stderr says so. Detection reads one run past the limit and drops

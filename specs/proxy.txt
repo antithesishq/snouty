@@ -21,7 +21,7 @@ env ANTITHESIS_TENANT=testtenant
 env ANTITHESIS_API_KEY=placeholder-key
 env ANTITHESIS_HTTPS_PROXY=http://127.0.0.1:9
 snouty doctor --offline
-stderr '\s*https proxy\s*http://127\.0\.0\.1:9'
+stderr '\s*https_proxy\s*http://127\.0\.0\.1:9'
 
 # Clear the proxy again, so the negative control below has no proxy. snouty
 # reads an empty environment variable as unset (see `env::interpret`).

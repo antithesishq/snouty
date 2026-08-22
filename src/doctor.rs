@@ -375,11 +375,7 @@ fn resolve_settings(settings: &Settings, features: &[Feature]) -> Vec<Setting> {
 /// pass/warn/fail; this table just reports what snouty resolved, indented to sit
 /// under the "Resolved settings" heading.
 fn print_settings(settings: &[Setting]) {
-    // The names are snake_case for `--json`; the table reads better with spaces.
-    let rows: Vec<(String, String)> = settings
-        .iter()
-        .map(|s| (s.name.replace('_', " "), s.value.clone()))
-        .collect();
+    let rows: Vec<(&str, String)> = settings.iter().map(|s| (s.name, s.value.clone())).collect();
     for line in render_kv(&rows, 0).lines() {
         eprintln!("  {line}");
     }

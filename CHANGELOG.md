@@ -1,6 +1,7 @@
 # Unreleased
 
 - An error from the API keeps the line breaks the server wrote. A body that spans several lines — the rejection of an invalid `runs search` query, for one — starts on its own line and takes the same indent on every line, so a caret the server drew still points at the token above it ([#285](https://github.com/antithesishq/snouty/pull/285))
+- `snouty doctor` prints each setting under its own key, such as `container_engine`, in human output as well. It used to print `Container Engine`, which named nothing you could set ([#285](https://github.com/antithesishq/snouty/pull/285))
 - `snouty runs list --limit 0` is rejected instead of printing an empty listing ([#285](https://github.com/antithesishq/snouty/pull/285))
 - `snouty runs logs` and `snouty runs build-logs` print each line as it arrives when the output goes to a pipe or a file. They used to hold up to 8 KiB back, so `snouty runs build-logs RUN | grep error` reported a build in bursts ([#285](https://github.com/antithesishq/snouty/pull/285))
 - `snouty runs search --limit` rejects a value above 998, the same ceiling `runs events --limit` uses. The command reserves one row past the limit to detect truncation, and the server accepts at most 999 ([#285](https://github.com/antithesishq/snouty/pull/285))

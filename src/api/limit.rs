@@ -45,9 +45,6 @@ impl<const SERVER_MAX: usize> Limit<SERVER_MAX> {
     /// The `limit` a request must name: one row past what gets printed. The
     /// flag's ceiling leaves room for it, so the sum stays within
     /// `SERVER_MAX`.
-    ///
-    /// Both endpoints stream, and a caller that prints no truncation note
-    /// stops pulling at the limit, so the reserved row is never fetched.
     pub fn for_request(self) -> NonZeroUsize {
         self.0.saturating_add(PROBE_ROW)
     }

@@ -79,8 +79,6 @@ pub(super) async fn print_event_stream(
     empty_message: &str,
 ) -> Result<()> {
     let rows = limit.map(EventsLimit::get);
-    // The limit is ours to enforce even on the raw passthrough: an older
-    // search backend ignores it.
     let mut lines: BoxStream<'_, Result<String>> = match output {
         EventOutput::Json { raw: true, .. } => raw_lines(stream, error_rows).boxed(),
         EventOutput::Json {

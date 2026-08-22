@@ -1552,6 +1552,32 @@ mod tests {
     use wiremock::matchers::{body_json, method, path, query_param, query_param_is_missing};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
+    // A caller that stops at its limit must not pay for the page the
+    // reserved row would come from: `runs list --json` asks for `limit + 1`
+    // and pulls only `limit`.
+    #[tokio::test]
+    async fn paginate_limited_fetches_a_page_only_when_an_item_is_pulled() {
+        let pages = Arc::new(AtomicUsize::new(0));
+        let counted = Arc::clone(&pages);
+        let stream = paginate_limited(101, 100, move |_after, page_limit| {
+            counted.fetch_add(1, Ordering::SeqCst);
+            let items = (0..page_limit).collect::<Vec<u64>>();
+            async move { Ok((items, Some("next".to_string()))) }
+        });
+        let mut stream = std::pin::pin!(stream);
+
+        let mut pulled = 0;
+        while pulled < 100 {
+            assert!(stream.try_next().await.unwrap().is_some());
+            pulled += 1;
+        }
+        assert_eq!(pages.load(Ordering::SeqCst), 1, "one page serves 100 items");
+
+        // The 101st item is on the next page, and asking for it fetches one.
+        assert!(stream.try_next().await.unwrap().is_some());
+        assert_eq!(pages.load(Ordering::SeqCst), 2);
+    }
+
     fn test_api_optionally_with_cache(
         mock_server: &MockServer,
         cache_dir: Option<&TempDir>,

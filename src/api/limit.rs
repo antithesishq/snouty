@@ -45,17 +45,15 @@ impl<const SERVER_MAX: u64> Limit<SERVER_MAX> {
         self.0.get()
     }
 
-    /// The `limit` a request must name. With `probe`, that is one row past
-    /// what gets printed — the reservation the flag's ceiling already leaves
-    /// room for, so the sum stays within `SERVER_MAX`. Without it the caller
-    /// prints no truncation note (`--json` does not), so the extra row would
-    /// be fetched and thrown away.
-    pub fn for_request(self, probe: bool) -> NonZeroU64 {
-        if probe {
-            self.0.saturating_add(PROBE_ROW)
-        } else {
-            self.0
-        }
+    /// The `limit` a request must name: one row past what gets printed — the
+    /// reservation the flag's ceiling already leaves room for, so the sum
+    /// stays within `SERVER_MAX`.
+    ///
+    /// Reserving the row costs nothing on its own. Both endpoints stream,
+    /// and a caller that prints no truncation note simply stops pulling at
+    /// the limit, so the reserved row is never fetched.
+    pub fn for_request(self) -> NonZeroU64 {
+        self.0.saturating_add(PROBE_ROW)
     }
 }
 
@@ -107,17 +105,14 @@ mod tests {
     }
 
     #[test]
-    fn a_probing_request_asks_for_one_row_more_and_stays_in_range() {
-        let limit = EventsLimit::new(998);
-        assert_eq!(limit.for_request(true).get(), 999);
-        assert_eq!(limit.for_request(false).get(), 998);
-        assert_eq!(EventsLimit::new(1).for_request(true).get(), 2);
+    fn a_request_asks_for_one_row_more_and_stays_in_range() {
+        assert_eq!(EventsLimit::new(998).for_request().get(), 999);
+        assert_eq!(EventsLimit::new(1).for_request().get(), 2);
     }
 
     #[test]
     fn an_unbounded_endpoint_still_reserves_the_probe_row() {
         assert_eq!(RunsLimit::MAX, u64::MAX - 1);
-        let limit = RunsLimit::new(RunsLimit::MAX);
-        assert_eq!(limit.for_request(true).get(), u64::MAX);
+        assert_eq!(RunsLimit::new(RunsLimit::MAX).for_request().get(), u64::MAX);
     }
 }

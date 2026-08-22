@@ -16,7 +16,6 @@
 //! absence from the subset is not absence from the run.
 
 use std::io::Write;
-use std::num::NonZeroU64;
 use std::time::Duration;
 
 use color_eyre::Section;
@@ -57,23 +56,6 @@ impl EventOutput {
     }
 }
 
-/// The `limit` a request must name to serve `limit_rows`, for the endpoints
-/// that take an optional one. `None` names no limit at all, which is all an
-/// unbounded `--follow` can do: the request has no way to say "every event".
-/// Release 61 then applies its own default of 50 (`Search_Request.limit` in
-/// `openapi.json`), so such a stream ends at 50 events there and runs on
-/// unbounded against releases 58.11 through 60.1, which ignore the field.
-///
-/// The probe row comes along only when [`print_event_stream`] will read it,
-/// and the rule for that is the same one written there: the truncation note
-/// is human-mode commentary.
-pub(super) fn request_limit(
-    limit_rows: Option<EventsLimit>,
-    output: EventOutput,
-) -> Option<NonZeroU64> {
-    limit_rows.map(|limit| limit.for_request(!output.json()))
-}
-
 /// How long the truncation probe waits for the row past the limit. On a
 /// stream the server has finished with, that row (or EOF) follows the last
 /// printed row at once; see the probe in [`print_event_stream`] for what a
@@ -96,8 +78,9 @@ pub(super) async fn print_event_stream(
     output: EventOutput,
     empty_message: &str,
 ) -> Result<()> {
-    // The note is human-mode commentary; `--json` asked for no probe row (see
-    // `request_limit`), so it must not wait for one either.
+    // The note is human-mode commentary, so only human mode reads the row the
+    // request reserved past the limit. `--json` stops at the limit and leaves
+    // that row on the stream.
     let peek = limit_rows.is_some() && !output.json();
     let rows = limit_rows.map_or(usize::MAX, |limit| {
         usize::try_from(limit.get()).unwrap_or(usize::MAX)

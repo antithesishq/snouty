@@ -208,31 +208,36 @@ async fn cmd_runs_list(
         created_before: args.created_before,
     };
 
-    // In human mode, fetch one run past the limit: that row's existence is
-    // the truncation signal for `limit_note`, and it is never displayed.
-    // `--json` never prints the note, so it never reads past the limit.
     let limit = usize::try_from(args.limit.get()).unwrap_or(usize::MAX);
-    let fetch = args.limit.for_request(!json);
+    let stream = api.stream_runs_filtered(&opts, args.limit.for_request().get());
+    let mut stream = std::pin::pin!(stream);
 
-    let mut runs: Vec<RunSummary> = api
-        .stream_runs_filtered(&opts, fetch.get())
-        .try_collect::<Vec<_>>()
-        .await?;
-    let truncated = runs.len() > limit;
-    runs.truncate(limit);
-
+    let mut runs: Vec<RunSummary> = Vec::new();
+    while runs.len() < limit {
+        let Some(run) = stream.try_next().await? else {
+            break;
+        };
+        runs.push(run);
+    }
     runs.sort_by(|a, b| {
         b.created_at
             .cmp(&a.created_at)
             .then(a.status.cmp(&b.status))
     });
 
+    // `--json` prints no note, so it leaves the reserved run on the stream and
+    // returns here — and the stream fetches a page only on demand, so the page
+    // that run would come from is never fetched either.
     if json {
         for run in &runs {
             outln!("{}", serde_json::to_string(run)?)?;
         }
         return Ok(());
     }
+
+    // The request reserved one run past the limit, and pulling it is the only
+    // proof that more runs exist. It is never displayed.
+    let truncated = runs.len() == limit && stream.try_next().await?.is_some();
 
     if runs.is_empty() {
         outln!("No runs found.")?;
@@ -1369,7 +1374,7 @@ async fn cmd_runs_search(
     };
     let search = SearchMode::Query {
         stream: args.follow,
-        limit: event_search::request_limit(limit, mode),
+        limit: limit.map(EventsLimit::for_request),
     };
     let stream = match api
         .search_run_events_query(&args.run_id, &args.query, search)
@@ -1414,7 +1419,7 @@ async fn cmd_runs_events(
     }
 
     let api = AntithesisApi::new(settings, verbose)?;
-    let probe = limit.for_request(!mode.json());
+    let probe = limit.for_request();
     let stream = if features::is_enabled(Feature::RunsSearch) {
         let query = event_set_dsl::substring_filter(matches);
         let search = SearchMode::Query {

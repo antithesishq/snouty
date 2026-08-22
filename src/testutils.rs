@@ -1192,11 +1192,10 @@ fn mock_route_execute_command(run_id: &str, req_body: &str) -> (u16, String) {
 
 /// `POST /runs/{id}/events/search` — the events-search endpoint.
 /// `validate_only` returns an empty 200, and matching events stream back as
-/// NDJSON. The mock ends the stream at `limit`, as the live server does:
-/// releases 58.11 and 60.0 ignored the field and streamed every match, and
-/// release 61 honors it (observed on tenant `orbitinghail`, run
-/// `bafc3d6cb0ff883696153e2a8e30aee7-61-1`: a query matching six events
-/// returned three under `-n 3`). The one divergence from the live server: the
+/// NDJSON. The mock ends the stream at `limit`, as release 61 does (observed
+/// on tenant `orbitinghail`, run `bafc3d6cb0ff883696153e2a8e30aee7-61-1`: a
+/// query matching six events returned three under `-n 3`). The one divergence
+/// from the live server: the
 /// mock's stream always closes (it is a plain HTTP response), where a live
 /// run's stream stays open forever.
 /// `count_only` is not modelled: snouty does not send it (the count is
@@ -1239,11 +1238,7 @@ fn mock_route_search_events(run_id: &str, body: &str) -> (u16, String, &'static 
     if !starts_with_verb {
         // The live server lays the rejection out over three lines: the query,
         // a caret under the offending token, and the reason (observed on
-        // tenant `orbitinghail`, release 61 — `bogus_verb({x: "y"})` answers
-        // 400 with `Bad request: failed to execute pangolin query due to a
-        // runtime error: Event set DSL error: <query>`, then `^`, then
-        // `invalid with_next`). The breaks are real newlines in the JSON
-        // string, so the mock writes them the same way.
+        // tenant `orbitinghail`, release 61).
         let message = format!(
             "Bad request: failed to execute pangolin query due to a runtime error: \
              Event set DSL error: {query}\n^\ninvalid with_next"
@@ -1276,9 +1271,7 @@ fn mock_route_search_events(run_id: &str, body: &str) -> (u16, String, &'static 
         );
     }
 
-    // `limit` is documented as 1..=999; the server rejects anything outside
-    // that range, so a client that asks for one row past a limit of 999 gets
-    // an error rather than a stream.
+    // `limit` is documented as 1..=999, and the server rejects the rest.
     if let Some(limit) = request["limit"].as_u64()
         && !(1..=999).contains(&limit)
     {
@@ -1309,7 +1302,6 @@ fn mock_route_search_events(run_id: &str, body: &str) -> (u16, String, &'static 
             needles.iter().all(|needle| haystack.contains(needle))
         })
         .collect();
-    // Release 61 ends the stream at `limit`; see the route's doc comment.
     if let Some(limit) = request["limit"].as_u64() {
         matches.truncate(limit as usize);
     }
@@ -1451,7 +1443,6 @@ mod tests {
             "the first match should be retained, got: {capped}"
         );
 
-        // `limit` is documented as 1..=999, and the server rejects the rest.
         let (status, out, _) = mock_route_search_events("run-1", &body(Some(1000)));
         assert_eq!(status, 400, "got: {out}");
         assert!(out.contains("out of the range"), "got: {out}");

@@ -129,7 +129,6 @@ pub(super) async fn print_event_stream(
     // it means no note rather than a failed command.
     if let Some(limit) = limit.filter(|_| !ended && !output.json()) {
         match tokio::time::timeout(PROBE_TIMEOUT, lines.try_next()).await {
-            // The row arrived: more rows exist.
             Ok(Ok(Some(_))) => super::limit_note(limit, "event"),
             // EOF at the limit: nothing was truncated.
             Ok(Ok(None)) => {}

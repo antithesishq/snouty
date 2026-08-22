@@ -35,9 +35,8 @@ pub(crate) fn render_kv<S: AsRef<str>>(rows: &[(S, String)], min_label_width: us
     out
 }
 
-/// Prefix every line of `text` with `prefix`, so a multi-line block sits under
-/// the line that introduces it. A blank line stays blank, so no line ends in
-/// trailing whitespace.
+/// Prefix every line of `text` with `prefix`. A blank line stays blank, so no
+/// line ends in trailing whitespace.
 pub(crate) fn indent_lines(text: &str, prefix: &str) -> String {
     text.lines()
         .map(|line| {

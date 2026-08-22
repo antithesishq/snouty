@@ -123,8 +123,8 @@ impl Check {
 /// is required or optional is a [`Check`] concern.
 ///
 /// `name` is snake_case: `--json` emits it as a key, so
-/// `jq .settings.https_proxy` needs no quoting. [`print_settings`] derives the
-/// table label from the same string.
+/// `jq .settings.https_proxy` needs no quoting. The human table prints the
+/// same string.
 struct Setting {
     name: &'static str,
     value: String,
@@ -145,13 +145,12 @@ impl Setting {
 struct Report<'a> {
     ok: bool,
     checks: &'a [Check],
-    /// Serialized as a JSON object keyed by name, so a caller reads one value
-    /// with `.settings.tenant`.
     #[serde(serialize_with = "settings_as_map")]
     settings: &'a [Setting],
 }
 
-/// Serialize the rows as a JSON object keyed by name, in resolution order.
+/// Serialize the rows as a JSON object keyed by name, in resolution order, so
+/// a caller reads one value with `.settings.tenant`.
 fn settings_as_map<S: Serializer>(settings: &&[Setting], serializer: S) -> Result<S::Ok, S::Error> {
     serializer.collect_map(settings.iter().map(|s| (s.name, &s.value)))
 }

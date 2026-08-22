@@ -1,6 +1,7 @@
 # Unreleased
 
 - An error from the API keeps the line breaks the server wrote. A body that spans several lines — the rejection of an invalid `runs search` query, for one — starts on its own line and takes the same indent on every line, so a caret the server drew still points at the token above it ([#285](https://github.com/antithesishq/snouty/pull/285))
+- The long help of every command says what `--json` does for it, with an example. A command that has no JSON output says so ([#285](https://github.com/antithesishq/snouty/pull/285))
 - `snouty runs list` prints the runs in the order the server returns them, newest first. It used to sort the page it held, which reordered a listing that `--limit` had cut short. With `--json` each run now prints as it arrives ([#285](https://github.com/antithesishq/snouty/pull/285))
 - `snouty doctor` prints each setting under its own key, such as `container_engine`, in human output as well. It used to print `Container Engine`, which named nothing you could set ([#285](https://github.com/antithesishq/snouty/pull/285))
 - `snouty runs list --limit 0` is rejected instead of printing an empty listing ([#285](https://github.com/antithesishq/snouty/pull/285))

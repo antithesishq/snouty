@@ -122,6 +122,10 @@ list:
   snouty launch -w basic_k8s_test --config ./config --duration 30 \
     --param 'antithesis.images=app@sha256:...;db:latest'
 
+Add --json for machine-readable output. The launch response prints as one
+JSON object:
+  snouty launch --json -w basic_test --duration 30 | jq -r .runId
+
 Tenant and repository may be set via the environment variables below, or in a
 settings file (./.snouty.toml by default; see the global --settings/--profile
 flags and the README). Environment variables take precedence.
@@ -157,7 +161,11 @@ Examples:
   snouty runs properties <run_id> --name <substring> --detail
   snouty runs build-logs <run_id>
   snouty runs logs <run_id> <hash> [vtime]
-  snouty runs events <run_id> -m <query>"#,
+  snouty runs events <run_id> -m <query>
+
+Add --json for machine-readable output. Every subcommand prints JSON in place
+of its table or its rendered events:
+  snouty --json runs list | jq -r .run_id"#,
         subcommand_required = false
     )]
     Runs {
@@ -177,7 +185,12 @@ Using CLI arguments:
     --input-hash 6057726200491963783 \
     --vtime 329.8037810830865 \
     --description "debug this moment" \
-    --recipients "team@example.com""#)]
+    --recipients "team@example.com"
+
+Add --json for machine-readable output. The response prints as one JSON
+object:
+  snouty debug --json --run-id <run_id> --input-hash <hash> --vtime <vtime> |
+    jq -r .runId"#)]
     Debug(DebugArgs),
 
     /// Output shell completions
@@ -253,7 +266,7 @@ report (e.g. to gate CI).
 
 Example:
   snouty doctor
-  snouty doctor --json
+  snouty doctor --json | jq -r .settings.tenant
   snouty doctor --offline"#)]
     Doctor(DoctorArgs),
 
@@ -295,7 +308,11 @@ the path to the local database for querying it directly.
 Examples:
   snouty docs search fault injection
   snouty docs tree sdk
-  snouty docs show getting_started"#)]
+  snouty docs show getting_started
+
+Add --json for machine-readable output. Only `search` prints JSON; the other
+subcommands print text either way:
+  snouty --json docs search fault injection | jq -r '.[].path'"#)]
     Docs {
         /// Don't check for documentation updates
         #[arg(long)]
@@ -359,7 +376,11 @@ Examples:
   snouty docs search "config image"
   snouty docs search moment.branch
   snouty docs search sdk setup
-  snouty docs search --match 'sdk NOT java'"#)]
+  snouty docs search --match 'sdk NOT java'
+
+Add --json for machine-readable output. The matches print as one JSON array
+of {path, title, snippet} objects, or of paths with --list:
+  snouty --json docs search fault injection | jq -r '.[].path'"#)]
     Search {
         /// Print only matching page paths, one per line
         #[arg(short = 'l', long)]
@@ -386,7 +407,9 @@ Examples:
   snouty docs tree
   snouty docs tree --depth 2
   snouty docs tree -d 2
-  snouty docs tree sdk"#)]
+  snouty docs tree sdk
+
+This command prints text only. --json has no effect on it."#)]
     Tree {
         /// Limit output to nodes at this depth or shallower
         #[arg(short = 'd', long)]
@@ -400,7 +423,9 @@ Examples:
     #[command(long_about = r#"Show full contents of a documentation page
 
 Displays the full markdown content of a page by its path.
-If the exact path is not found, suggests similar pages."#)]
+If the exact path is not found, suggests similar pages.
+
+This command prints text only. --json has no effect on it."#)]
     Show {
         /// Page path (e.g. "getting_started/overview")
         path: String,
@@ -409,7 +434,9 @@ If the exact path is not found, suggests similar pages."#)]
     /// Print the path to the cached SQLite database
     #[command(long_about = r#"Print the path to the cached SQLite database
 
-Useful for directly querying the documentation database with external tools."#)]
+Useful for directly querying the documentation database with external tools.
+
+This command prints the path only. --json has no effect on it."#)]
     Sqlite,
 }
 
@@ -665,7 +692,11 @@ Query snippets (each is a complete QUERY, ready to paste):
 
 "#,
     classified_blocks_help!(),
-    " Rows reshaped by map/narrow/fold\nprint as raw JSON."
+    " Rows reshaped by map/narrow/fold\nprint as raw JSON.\n\n\
+     Add --json for machine-readable output. Each event prints as one JSON\n\
+     object on its own line:\n\
+     \x20 snouty --json runs search <run_id> 'contains({output_text: \"err\"})' \\\n\
+     \x20   | jq -r .moment.vtime"
 );
 
 #[derive(Subcommand)]
@@ -674,8 +705,12 @@ pub enum RunsCommands {
     #[command(
         long_about = r#"List recent runs (the default when `snouty runs` runs with no subcommand).
 
-Columns: RUN ID, STATUS, CREATED, TEST NAME. Use --detail or --json for the
-full description and launcher."#
+Columns: RUN ID, STATUS, CREATED, TEST NAME. Use --detail for the full
+description and launcher.
+
+Add --json for machine-readable output. Each run prints as one JSON object on
+its own line, in the order the server returns them:
+  snouty --json runs list | jq -r .run_id"#
     )]
     List(RunsListArgs),
 
@@ -694,7 +729,11 @@ Incomplete runs also show the failure moment (Failure Hash/VTime) to pass to
 
 Examples:
   snouty runs show <run_id>
-  snouty runs show <run_id> --web"#
+  snouty runs show <run_id> --web
+
+Add --json for machine-readable output. The run prints as one JSON object.
+With --web it prints the report URL as {"url": ...} and opens no browser:
+  snouty --json runs show <run_id> | jq -r .status"#
     )]
     Show {
         /// Run ID
@@ -722,7 +761,11 @@ resumes the wait.
 Examples:
   snouty runs wait <run_id>
   snouty runs wait <run_id> --timeout 2h
-  snouty launch --json -w basic_test ... | jq -r .runId | xargs snouty runs wait"#
+  snouty launch --json -w basic_test ... | jq -r .runId | xargs snouty runs wait
+
+Add --json for machine-readable output. The final status prints as one JSON
+object:
+  snouty --json runs wait <run_id> | jq -r .status"#
     )]
     Wait {
         /// Run ID
@@ -749,13 +792,16 @@ property has counterexamples.
 
 Narrow with --name and/or --group (both case-insensitive substring matches);
 add --detail to expand the matches into their examples and counter-example
-moments instead of the table. Use --json for automation. --json is mutually
-exclusive with --detail.
+moments instead of the table.
 
 Examples:
   snouty runs properties <run_id> --failing
   snouty runs properties <run_id> --name eventually_validate --detail
-  snouty runs properties <run_id> --group Unreachable --detail"#
+  snouty runs properties <run_id> --group Unreachable --detail
+
+Add --json for machine-readable output. Each property prints as one JSON
+object on its own line. --json is mutually exclusive with --detail:
+  snouty --json runs properties <run_id> --failing | jq -r .name"#
     )]
     Properties {
         /// Run ID
@@ -796,7 +842,11 @@ launch failed.
 Examples:
   snouty runs build-logs <run_id>
   snouty runs build-logs <run_id> | grep '\[stderr\]'
-  snouty runs build-logs <run_id> | grep -i 'error\|denied'"#
+  snouty runs build-logs <run_id> | grep -i 'error\|denied'
+
+Add --json for machine-readable output. Each log line prints as one JSON
+object on its own line:
+  snouty --json runs build-logs <run_id> | jq -r .text"#
     )]
     BuildLogs {
         /// Run ID
@@ -816,7 +866,11 @@ VTIME to end the stream at that moment instead.
 Output: a `moment HASH VTIME` divider opens each timeline segment, and each
 event under it renders on one line as `VTIME [source] payload` — Antithesis
 event shapes (SDK assertions, faults, container lifecycle, test composer)
-each in their own concise form."#
+each in their own concise form.
+
+Add --json for machine-readable output. Each event prints as one JSON object
+on its own line, and --raw passes the server's events through unchanged:
+  snouty --json runs logs <run_id> <hash> | jq -r .moment.vtime"#
     )]
     Logs {
         /// Run ID
@@ -875,7 +929,12 @@ Omit SCRIPT to read the script from stdin — a pipe, a redirect, or a heredoc.
 Examples:
   snouty runs exec <run_id> <hash> <vtime> 'uname -a'
   echo 'ps aux' | snouty runs exec <run_id> <hash> <vtime>
-  snouty runs exec <run_id> <hash> <vtime> < script.sh"#
+  snouty runs exec <run_id> <hash> <vtime> < script.sh
+
+Add --json for machine-readable output. Each frame of the stream prints as one
+JSON object on its own line, and the trailer is left out:
+  snouty --json runs exec <run_id> <hash> <vtime> 'ls' \
+    | jq -r 'select(.type == "output").text'"#
     )]
     Exec {
         /// Run ID
@@ -914,7 +973,10 @@ Examples:
             classified_blocks_help!(),
             "\n\nMatching runs server-side. More than one term requires the events-search API,\n\
              which is behind the `runs-search` unstable feature\n\
-             (SNOUTY_UNSTABLE_FEATURES=runs-search)."
+             (SNOUTY_UNSTABLE_FEATURES=runs-search).\n\n\
+             Add --json for machine-readable output. Each event prints as one\n\
+             JSON object on its own line:\n\
+             \x20 snouty --json runs events <run_id> -m error | jq -r .moment.vtime"
         )
     )]
     Events {
@@ -1384,5 +1446,32 @@ mod tests {
         for line in about.lines() {
             assert!(line.len() <= 78, "over-long help line: {line}");
         }
+    }
+
+    /// `--json` is a global flag, so every long help says what the command
+    /// does with it — prints JSON, or ignores the flag. The commands that
+    /// warn "--json has no effect" at runtime are the exception: their help
+    /// never raises the subject.
+    #[test]
+    fn every_long_help_says_what_json_does() {
+        const NO_JSON: [&str; 5] = ["validate", "completions", "version", "update", "login"];
+
+        fn walk(command: &clap::Command) {
+            for sub in command.get_subcommands() {
+                if !NO_JSON.contains(&sub.get_name())
+                    && let Some(about) = sub.get_long_about()
+                {
+                    let about = about.to_string();
+                    assert!(
+                        about.contains("--json"),
+                        "`{}` long help says nothing about --json",
+                        sub.get_name()
+                    );
+                }
+                walk(sub);
+            }
+        }
+
+        walk(&<Cli as clap::CommandFactory>::command());
     }
 }

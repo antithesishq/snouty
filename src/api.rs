@@ -1331,10 +1331,17 @@ fn format_api_error(status: u16, body: &str) -> Report {
         msg.push_str(reason);
     }
     if !body.is_empty() {
-        msg.push_str(" — ");
-        // Indent a multi-line body so the block reads as one error. The first
-        // line follows the em dash, so its indent comes back off.
-        msg.push_str(indent_lines(body, "  ").trim_start());
+        // A multi-line body carries a layout of its own — a caret under the
+        // offending token, for one. It goes on its own line, so every line of
+        // it starts at the same column and the caret keeps pointing at what it
+        // was written to point at. A one-line body follows the em dash.
+        if body.contains('\n') {
+            msg.push('\n');
+            msg.push_str(&indent_lines(body, "  "));
+        } else {
+            msg.push_str(" — ");
+            msg.push_str(body);
+        }
     }
     // Carry the HTTP status structurally so callers can classify the failure
     // (e.g. "was this a 404?") without sniffing the rendered message string.
@@ -2640,7 +2647,7 @@ mod tests {
         );
         assert_eq!(
             rendered,
-            "API error: 400 Bad Request — Event set DSL error: bogus_verb({x: \"y\"})\n  ^\n  invalid with_next"
+            "API error: 400 Bad Request\n  Event set DSL error: bogus_verb({x: \"y\"})\n  ^\n  invalid with_next"
         );
     }
 

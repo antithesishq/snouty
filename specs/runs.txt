@@ -728,13 +728,13 @@ snouty runs search $R_run_id 'contains({output_text: "x"})' --check
 stdout 'query is valid'
 
 # An invalid query fails with the server's rejection. The rejection spans three
-# lines — the query, a caret under the offending token, the reason — and the
-# caret line stays indented under the message instead of escaped onto the end
-# of it. (Mock-only: the live tenant answers an invalid query with a generic
-# 500 instead of the documented 400.)
+# lines — the query, a caret under the offending token, the reason. The block
+# starts on its own line and every line of it takes the same indent, so the
+# caret keeps pointing at the token above it. (Mock-only: the live tenant
+# answers an invalid query with a generic 500 instead of the documented 400.)
 mock-runs-server
 [!staging] ! snouty runs search $R_run_id 'bogus_verb({x: "y"})' --check
-[!staging] stderr 'Event set DSL error: bogus_verb'
+[!staging] stderr 'API error: 400 Bad Request\n  failed to execute.*Event set DSL error: bogus_verb'
 [!staging] stderr '\n  \^\n  invalid with_next'
 
 # The mode switches pick conflicting response modes, so clap rejects the pairing.

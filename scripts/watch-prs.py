@@ -3,7 +3,8 @@
 
 Events: comments, review comments, reviews, failed CI checks, check
 verdicts ("all checks passed", "has no checks"), base branch changes (a
-retarget, or the base branch tip moving to a new commit), and close/merge.
+retarget, or the base branch tip moving to a new commit), close/merge, and
+a failure of gh itself.
 Output is one line per event, so a background monitor can react line by
 line. An event line carries only metadata — the reader fetches the full
 content through gh.
@@ -42,14 +43,26 @@ def emit(line: str) -> None:
     print(line, flush=True)
 
 
+# Every gh failure already reported. A gh that fails on every poll prints
+# one line, not one line per tick.
+reported_failures: set[str] = set()
+
+
 def gh_json(args: list[str]) -> Any | None:
-    """Run gh and parse its JSON output. None means a transient failure:
-    the caller skips this poll and retries on the next tick.
+    """Run gh and parse its JSON output. None means the call failed: the
+    caller skips this poll and retries on the next tick. Each distinct
+    failure prints one line, because a gh that fails on every poll reads
+    exactly like a quiet PR — an old gh that rejects a --json field kept
+    the watcher silent for a whole day.
     """
     proc = subprocess.run(["gh", *args], capture_output=True, text=True)
     try:
         return json.loads(proc.stdout)
     except json.JSONDecodeError:
+        message = next((ln for ln in proc.stderr.splitlines() if ln.strip()), "no output")
+        if message not in reported_failures:
+            reported_failures.add(message)
+            emit(f"gh failed: {message}")
         return None
 
 

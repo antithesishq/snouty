@@ -47,7 +47,12 @@ PR #123 base changed to <branch>
 PR #123 base <branch> moved to <short-sha>
 PR #123 merged
 PR #123 closed without merge
+gh failed: <message>
 ```
+
+A `gh failed:` line means the watcher cannot reach the API, so silence
+after it proves nothing. Fix gh, then restart the watcher. The line prints
+once per distinct message, so a permanent failure does not repeat.
 
 Every line names its PR, so one watcher can cover several PRs at once.
 

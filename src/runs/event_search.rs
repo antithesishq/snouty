@@ -6,8 +6,7 @@
 //! `runs-search` feature flag, `runs search` always on the events-search
 //! endpoint, `runs logs`/`runs build-logs` their GET endpoints — and hands
 //! the resulting [`JsonStream`] here. From the stream on, the commands are
-//! identical: every line prints as it arrives, the caller's cap is enforced
-//! client-side where the server does not, and an empty result gets a
+//! identical: every line prints as it arrives, and an empty result gets a
 //! friendly note.
 //!
 //! Nothing here filters client-side. The output of a server-side filter IS
@@ -16,17 +15,15 @@
 //! absence from the subset is not absence from the run.
 
 use std::io::Write;
-use std::time::Duration;
 
 use color_eyre::Section;
 use color_eyre::eyre::Result;
-use log::debug;
 use serde_json::json;
 
 use futures_util::stream::BoxStream;
 use futures_util::{StreamExt, TryStreamExt};
 
-use crate::api::{AntithesisApi, EventsLimit, MIN_SEARCH_RELEASE, SearchMode};
+use crate::api::{AntithesisApi, MIN_SEARCH_RELEASE, SearchMode};
 use crate::error::{api_error_status, user_error};
 use crate::event_render::EventStreamRenderer;
 use crate::features::{self, Feature};
@@ -56,29 +53,23 @@ impl EventOutput {
     }
 }
 
-/// How long the truncation probe waits for the row past the limit. On a
-/// stream the server has finished with, that row (or EOF) follows the last
-/// printed row at once; see the probe in [`print_event_stream`] for what a
-/// timeout means.
-const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
-
 /// Print every line of the (already server-filtered) stream, one line out
 /// per line in — the one output pipeline behind every event-stream command
 /// (`runs logs`, `runs events`, `runs search`, `runs build-logs`).
 ///
-/// `limit` is the ONLY early exit: when the server has returned fewer
-/// events and holds the connection open, keep waiting rather than guess that
-/// the result is complete. Rows go out one at a time, because the search
-/// backend holds the connection open on an in-progress run and a row that
-/// sits in a buffer waiting for EOF may never be seen.
+/// The stream ends the output: the caller's `--limit` reaches the request,
+/// and [`crate::api`] caps the stream at it. Rows go out one at a time,
+/// because the search backend holds the connection open on an in-progress run
+/// and a row that sits in a buffer waiting for EOF may never be seen.
+///
+/// Returns the number of rows printed, so a caller can hold back its own
+/// commentary on an empty result.
 pub(super) async fn print_event_stream(
     stream: JsonStream,
-    limit: Option<EventsLimit>,
     error_rows: ErrorRows,
     output: EventOutput,
     empty_message: &str,
-) -> Result<()> {
-    let rows = limit.map(EventsLimit::get);
+) -> Result<usize> {
     let mut lines: BoxStream<'_, Result<String>> = match output {
         EventOutput::Json { raw: true, .. } => raw_lines(stream, error_rows).boxed(),
         EventOutput::Json {
@@ -111,36 +102,11 @@ pub(super) async fn print_event_stream(
     // `Stdout` is line-buffered, so each row leaves as it is written.
     let mut stdout = std::io::stdout().lock();
     let mut seen: usize = 0;
-    let mut ended = false;
-    while rows.is_none_or(|rows| seen < rows) {
-        let Some(line) = lines.try_next().await? else {
-            ended = true;
-            break;
-        };
+    while let Some(line) = lines.try_next().await? {
         seen += 1;
         writeln!(stdout, "{line}")?;
     }
 
-    // The note is human-mode commentary, so only human mode probes for the row
-    // the request reserved past the limit; `--json` leaves it on the stream.
-    // The row only proves more rows exist and is never printed, so an error on
-    // it means no note rather than a failed command.
-    if let Some(limit) = limit.filter(|_| !ended && !output.json()) {
-        match tokio::time::timeout(PROBE_TIMEOUT, lines.try_next()).await {
-            Ok(Ok(Some(_))) => super::limit_note(limit, "event"),
-            // EOF at the limit: nothing was truncated.
-            Ok(Ok(None)) => {}
-            // An error on the disposable row: truncation unknown.
-            Ok(Err(_)) => {}
-            // `timeout` answers `Err` only for its elapsed deadline. The
-            // search backend holds the connection open on an in-progress run,
-            // so a result that lands exactly on the limit has no row past it
-            // to send and nothing to end the stream either.
-            Err(_elapsed) => {
-                debug!("truncation probe timed out after {PROBE_TIMEOUT:?}; skipping the note");
-            }
-        }
-    }
     // Only a successfully-empty stream earns the friendly empty note; a
     // mid-stream error propagated above instead. The note goes to stderr —
     // it is commentary, not output — and only in human mode: in `--json` an
@@ -148,7 +114,7 @@ pub(super) async fn print_event_stream(
     if seen == 0 && !output.json() {
         eprintln!("{empty_message}");
     }
-    Ok(())
+    Ok(seen)
 }
 
 /// Ask the search backend whether `query` parses, without running it

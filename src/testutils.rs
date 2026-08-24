@@ -766,12 +766,17 @@ fn mock_route_list_runs(query: Option<&str>, empty: bool) -> (u16, String) {
     }
 
     // Paginate: return one run per page when no filters are active and starting from the beginning.
-    let (data, next_cursor) =
+    let (mut data, next_cursor) =
         if status_filter.is_none() && launcher_filter.is_none() && start == 0 && runs.len() > 1 {
             (vec![runs[0].clone()], Some("cursor-1"))
         } else {
             (runs, None)
         };
+
+    // The real endpoint returns at most `limit` runs per page.
+    if let Some(limit) = mock_query_param(query, "limit").and_then(|l| l.parse::<usize>().ok()) {
+        data.truncate(limit);
+    }
 
     let data_json = data.join(",");
     let cursor_json = match next_cursor {
@@ -1062,6 +1067,15 @@ fn mock_route_search_run_events(run_id: &str, query_str: Option<&str>) -> (u16, 
     let Some(needle) = mock_query_param(query_str, "q") else {
         return (400, r#"{"message":"missing q"}"#.to_string());
     };
+    // `limit` is documented as 1..=999, and the server rejects the rest.
+    if let Some(limit) = mock_query_param(query_str, "limit").and_then(|l| l.parse::<u64>().ok())
+        && !(1..=999).contains(&limit)
+    {
+        return (
+            400,
+            format!(r#"{{"message":"Bad request: limit {limit} is out of the range 1..=999"}}"#),
+        );
+    }
 
     let (_, logs) = mock_route_get_run_logs(run_id);
     let needle = needle.to_lowercase();

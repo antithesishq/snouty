@@ -1,5 +1,5 @@
 use std::collections::{HashMap, VecDeque};
-use std::num::{NonZeroU64, NonZeroUsize};
+use std::num::NonZeroU64;
 use std::time::Duration;
 
 use color_eyre::eyre::{Context, Report, Result, eyre};
@@ -12,10 +12,6 @@ use progenitor_client::{
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use reqwest::{Client, Proxy};
 use serde::de::DeserializeOwned;
-
-mod limit;
-
-pub use limit::{EventsLimit, Limit, RunsLimit, SEARCH_DEFAULT_LIMIT};
 
 use crate::api_cache::{self, ApiCache, CachePolicy};
 use crate::auth::{AuthenticationInfo, PasswordPolicy};
@@ -116,9 +112,13 @@ pub enum SearchMode {
     /// a closed request, and a streaming one stays unbounded.
     Query {
         stream: bool,
-        limit: Option<EventsLimit>,
+        limit: Option<NonZeroU64>,
     },
 }
+
+/// The server's default `limit` on both events endpoints, applied when the
+/// request names none.
+pub const SEARCH_DEFAULT_LIMIT: NonZeroU64 = NonZeroU64::new(50).unwrap();
 
 /// Why a `/api/version` probe failed, classified for `snouty doctor`.
 #[derive(Debug)]
@@ -389,6 +389,19 @@ pub struct AntithesisApi {
     client: generated::Client,
     base_url: String,
     cache: ApiCache,
+}
+
+/// Stop a stream at the `limit` its request named. Release 61 ends the stream
+/// itself, but releases 58.11 through 60.1 ignore the field and send every
+/// match, so the cap is applied here as well. A request that names no limit
+/// stays open.
+fn cap_stream(stream: JsonStream, limit: Option<NonZeroU64>) -> JsonStream {
+    match limit {
+        Some(limit) => stream
+            .take(usize::try_from(limit.get()).unwrap_or(usize::MAX))
+            .boxed(),
+        None => stream,
+    }
 }
 
 impl AntithesisApi {
@@ -670,7 +683,7 @@ impl AntithesisApi {
         run_id: &str,
         status: Option<PropertyStatus>,
     ) -> impl futures_util::Stream<Item = Result<Property>> + '_ {
-        const MAX_PAGE_LIMIT: NonZeroUsize = NonZeroUsize::new(100).unwrap();
+        const MAX_PAGE_LIMIT: NonZeroU64 = NonZeroU64::new(100).unwrap();
         let run_id = run_id.to_string();
         paginate_exhaust(move |after| {
             let run_id = run_id.clone();
@@ -694,19 +707,20 @@ impl AntithesisApi {
         &self,
         run_id: &str,
         query: &str,
-        limit: EventsLimit,
+        limit: NonZeroU64,
     ) -> Result<JsonStream> {
-        // The endpoint caps the returned events at `limit` and validates its
-        // range. The request asks for the probe row too, and the flag's own
-        // ceiling leaves room for it.
+        // The endpoint documents `limit` as 1..=999 and rejects the rest.
         let request = self
             .client
             .search_run_events()
             .run_id(run_id)
             .q(query)
-            .limit(limit.for_request());
+            .limit(limit);
         match request.send().await {
-            Ok(response) => Ok(json_lines(response.into_inner().into_inner())),
+            Ok(response) => Ok(cap_stream(
+                json_lines(response.into_inner().into_inner()),
+                Some(limit),
+            )),
             Err(err) => Err(format_api_client_error(err).await),
         }
     }
@@ -734,18 +748,18 @@ impl AntithesisApi {
         // would cut a `--follow` off at 50 events. build.rs strips the
         // schema's `default: 50` so the generated field is omittable at all
         // (see `unrequire_search_limit_default` there).
-        if let SearchMode::Query {
-            limit: Some(limit), ..
-        } = mode
-        {
-            // Every generated `limit` setter takes a `NonZeroU64`: the spec
-            // leaves the field unformatted. The query setters convert from
-            // `NonZeroUsize` on their own; this one holds an `Option`, which
-            // has no such conversion, so the width is named here.
-            body = body.limit(NonZeroU64::try_from(limit.for_request())?);
+        let limit = match mode {
+            SearchMode::Query { limit, .. } => limit,
+            SearchMode::Validate => None,
+        };
+        if let Some(limit) = limit {
+            body = body.limit(limit);
         }
         match self.client.search().run_id(run_id).body(body).send().await {
-            Ok(response) => Ok(json_lines(response.into_inner().into_inner())),
+            Ok(response) => Ok(cap_stream(
+                json_lines(response.into_inner().into_inner()),
+                limit,
+            )),
             Err(err) => Err(format_api_client_error(err).await),
         }
     }
@@ -756,10 +770,10 @@ impl AntithesisApi {
     pub fn stream_runs_filtered(
         &self,
         opts: &RunsFilterOptions,
-        limit: RunsLimit,
+        limit: NonZeroU64,
     ) -> impl futures_util::Stream<Item = Result<RunSummary>> + '_ {
         let opts = opts.clone();
-        paginate_limited(limit.for_request().get(), 100, move |after, page_limit| {
+        paginate_limited(limit.get(), 100, move |after, page_limit| {
             let opts = opts.clone();
             async move {
                 let page = self
@@ -775,7 +789,7 @@ impl AntithesisApi {
         &self,
         after: Option<&str>,
         opts: &RunsFilterOptions,
-        page_limit: NonZeroUsize,
+        page_limit: NonZeroU64,
     ) -> Result<generated::types::RunListResponse> {
         let mut request = self.client.list_runs().limit(page_limit);
         if let Some(cursor) = after {
@@ -806,7 +820,7 @@ impl AntithesisApi {
         run_id: &str,
         after: Option<&str>,
         status: Option<PropertyStatus>,
-        limit: NonZeroUsize,
+        limit: NonZeroU64,
     ) -> Result<Tagged<generated::types::PropertyListResponse, CachePolicy>> {
         let mut request = self
             .client
@@ -1031,7 +1045,7 @@ where
     Fut: std::future::Future<Output = Result<(Vec<T>, Option<String>)>> + 'a,
     T: 'a,
 {
-    paginate_limited(usize::MAX, usize::MAX, move |after, _| fetch(after))
+    paginate_limited(u64::MAX, u64::MAX, move |after, _| fetch(after))
 }
 
 /// [`paginate_exhaust`], bounded: asks `fetch` for pages of at most
@@ -1040,19 +1054,19 @@ where
 /// yields at most `limit` items; one that over-fills a page yields every item
 /// it sent, because dropping a row the server returned hides output.
 fn paginate_limited<'a, T, F, Fut>(
-    limit: usize,
-    max_page: usize,
+    limit: u64,
+    max_page: u64,
     fetch: F,
 ) -> impl futures_util::Stream<Item = Result<T>> + 'a
 where
-    F: FnMut(Option<String>, NonZeroUsize) -> Fut + 'a,
+    F: FnMut(Option<String>, NonZeroU64) -> Fut + 'a,
     Fut: std::future::Future<Output = Result<(Vec<T>, Option<String>)>> + 'a,
     T: 'a,
 {
     struct State<T, F> {
         after: Option<String>,
         buffer: VecDeque<T>,
-        remaining: usize,
+        remaining: u64,
         finished: bool,
         fetch: F,
     }
@@ -1070,7 +1084,7 @@ where
             }
             // A page of no items would ask the server for nothing, so an
             // exhausted limit ends the stream here.
-            let Some(page_limit) = NonZeroUsize::new(state.remaining.min(max_page)) else {
+            let Some(page_limit) = NonZeroU64::new(state.remaining.min(max_page)) else {
                 return Ok(None);
             };
             if state.finished {
@@ -1078,11 +1092,11 @@ where
             }
             let (items, next) = (state.fetch)(state.after.take(), page_limit).await?;
             debug_assert!(
-                items.len() <= page_limit.get(),
+                items.len() as u64 <= page_limit.get(),
                 "the server returned {} items for a page limit of {page_limit}",
                 items.len()
             );
-            state.remaining = state.remaining.saturating_sub(items.len());
+            state.remaining = state.remaining.saturating_sub(items.len() as u64);
             state.buffer.extend(items);
             state.finished = next.is_none();
             state.after = next;
@@ -1571,16 +1585,15 @@ mod tests {
     use wiremock::matchers::{body_json, method, path, query_param, query_param_is_missing};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
-    // A caller that stops at its limit must not pay for the page the reserved
-    // row would come from: `runs list --json` asks for `limit + 1` and pulls
-    // only `limit`.
+    // The stream fetches a page only when an item is pulled from it, so a
+    // caller that stops early never pays for the next page.
     #[tokio::test]
     async fn paginate_limited_fetches_a_page_only_when_an_item_is_pulled() {
         let pages = Arc::new(AtomicUsize::new(0));
         let counted = Arc::clone(&pages);
         let stream = paginate_limited(101, 100, move |_after, page_limit| {
             counted.fetch_add(1, Ordering::SeqCst);
-            let items = (0..page_limit.get()).collect::<Vec<usize>>();
+            let items = (0..page_limit.get()).collect::<Vec<u64>>();
             async move { Ok((items, Some("next".to_string()))) }
         });
         let mut stream = std::pin::pin!(stream);
@@ -2501,12 +2514,11 @@ mod tests {
             .mount(&mock_server)
             .await;
 
-        // The second page asks only for what the limit still allows: the
-        // request budget of 101 (100 rows plus the probe row) minus the one
-        // run the first page returned, capped at the 100-run page size.
+        // The second page asks only for what the limit still allows: 100 minus
+        // the one run the first page returned.
         Mock::given(method("GET"))
             .and(path("/api/v0/runs"))
-            .and(query_param("limit", "100"))
+            .and(query_param("limit", "99"))
             .and(query_param("after", "cursor-1"))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "data": [
@@ -2526,7 +2538,7 @@ mod tests {
         let api = test_api_optionally_with_cache(&mock_server, None);
 
         let runs = api
-            .stream_runs_filtered(&RunsFilterOptions::default(), RunsLimit::new(100))
+            .stream_runs_filtered(&RunsFilterOptions::default(), NonZeroU64::new(100).unwrap())
             .try_collect::<Vec<_>>()
             .await
             .unwrap();
@@ -2569,7 +2581,7 @@ mod tests {
         let api = test_api_optionally_with_cache(&mock_server, None);
 
         let runs = api
-            .stream_runs_filtered(&RunsFilterOptions::default(), RunsLimit::new(100))
+            .stream_runs_filtered(&RunsFilterOptions::default(), NonZeroU64::new(100).unwrap())
             .try_collect::<Vec<_>>()
             .await
             .unwrap();
@@ -2612,7 +2624,7 @@ mod tests {
         let api = test_api_optionally_with_cache(&mock_server, None);
 
         let runs = api
-            .stream_runs_filtered(&RunsFilterOptions::default(), RunsLimit::new(100))
+            .stream_runs_filtered(&RunsFilterOptions::default(), NonZeroU64::new(100).unwrap())
             .try_collect::<Vec<_>>()
             .await
             .unwrap();
@@ -2628,8 +2640,7 @@ mod tests {
         // trimming client-side.
         Mock::given(method("GET"))
             .and(path("/api/v0/runs"))
-            // One row past the flag's 5: the probe row the request reserves.
-            .and(query_param("limit", "6"))
+            .and(query_param("limit", "5"))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "data": [],
                 "next_cursor": null
@@ -2640,7 +2651,7 @@ mod tests {
 
         let api = test_api_optionally_with_cache(&mock_server, None);
         let runs = api
-            .stream_runs_filtered(&RunsFilterOptions::default(), RunsLimit::new(5))
+            .stream_runs_filtered(&RunsFilterOptions::default(), NonZeroU64::new(5).unwrap())
             .try_collect::<Vec<_>>()
             .await
             .unwrap();
@@ -3042,7 +3053,7 @@ mod tests {
 
         for _ in 0..2 {
             let runs = api
-                .stream_runs_filtered(&RunsFilterOptions::default(), RunsLimit::new(100))
+                .stream_runs_filtered(&RunsFilterOptions::default(), NonZeroU64::new(100).unwrap())
                 .try_collect::<Vec<_>>()
                 .await
                 .unwrap();
@@ -3458,7 +3469,7 @@ mod tests {
         let api = test_api_optionally_with_cache(&mock_server, None);
 
         let mut stream = api
-            .search_run_events("run-1", "slow request", EventsLimit::new(50))
+            .search_run_events("run-1", "slow request", NonZeroU64::new(50).unwrap())
             .await
             .unwrap();
         let mut body = String::new();
@@ -3479,8 +3490,7 @@ mod tests {
         Mock::given(method("GET"))
             .and(path("/api/v0/runs/run-1/events"))
             .and(query_param("q", "slow"))
-            // One row past the flag's 5: the probe row the request reserves.
-            .and(query_param("limit", "6"))
+            .and(query_param("limit", "5"))
             .respond_with(ResponseTemplate::new(200).set_body_string(""))
             .expect(1)
             .mount(&mock_server)
@@ -3488,7 +3498,7 @@ mod tests {
 
         let api = test_api_optionally_with_cache(&mock_server, None);
         let _stream = api
-            .search_run_events("run-1", "slow", EventsLimit::new(5))
+            .search_run_events("run-1", "slow", NonZeroU64::new(5).unwrap())
             .await
             .unwrap();
     }
@@ -3546,8 +3556,7 @@ mod tests {
                 "query": "contains({output_text: \"raft\"})",
                 "is_streaming": true,
                 "validate_only": false,
-                // One past the caller's 7: the probe row.
-                "limit": 8,
+                "limit": 7,
             })))
             .respond_with(ResponseTemplate::new(200).set_body_string(""))
             .expect(1)
@@ -3561,7 +3570,7 @@ mod tests {
                 "contains({output_text: \"raft\"})",
                 SearchMode::Query {
                     stream: true,
-                    limit: Some(EventsLimit::new(7)),
+                    limit: NonZeroU64::new(7),
                 },
             )
             .await

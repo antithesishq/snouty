@@ -1,10 +1,12 @@
+use std::num::NonZeroU64;
+
 use chrono::{DateTime, Utc};
 use clap::{Args, Parser, Subcommand, ValueEnum};
 
 use color_eyre::Section;
 use color_eyre::eyre::Report;
 
-use crate::api::{EventsLimit, RunStatus, RunsLimit, SEARCH_DEFAULT_LIMIT};
+use crate::api::{RunStatus, SEARCH_DEFAULT_LIMIT};
 use crate::error::user_error;
 use crate::features::{self, Feature};
 use crate::time::HumanDuration;
@@ -988,10 +990,9 @@ JSON object on its own line, and the trailer is left out:
         matches: Vec<String>,
 
         /// Maximum number of events to print. Raise it to make a search more
-        /// exhaustive; a note on stderr says when the output stopped at the
-        /// limit.
+        /// exhaustive.
         #[arg(short = 'n', long, default_value_t = SEARCH_DEFAULT_LIMIT)]
-        limit: EventsLimit,
+        limit: NonZeroU64,
 
         /// Substrings to match, as a positional alias for `-m` (all must match).
         /// At least one needle (via `-m` or here) is required.
@@ -1021,10 +1022,9 @@ pub struct RunsSearchArgs {
     /// Event-set DSL query
     pub query: String,
 
-    /// Maximum number of events to print (default 50). A note on stderr says
-    /// when the output stopped at the limit.
+    /// Maximum number of events to print (default 50)
     #[arg(short = 'n', long)]
-    pub limit: Option<EventsLimit>,
+    pub limit: Option<NonZeroU64>,
 
     /// Keep the connection open and print new matches as they arrive
     /// (the limit still caps the total)
@@ -1056,6 +1056,9 @@ pub struct EventOutputArgs {
     pub detail: bool,
 }
 
+/// The number of runs `runs list` prints when `--limit` names none.
+pub const DEFAULT_RUNS_LIMIT: NonZeroU64 = NonZeroU64::new(10).unwrap();
+
 #[derive(Args)]
 pub struct RunsListArgs {
     /// Filter by status (starting, in_progress, completed, cancelled, incomplete, unknown)
@@ -1074,10 +1077,9 @@ pub struct RunsListArgs {
     #[arg(long)]
     pub created_before: Option<DateTime<Utc>>,
 
-    /// Maximum number of runs to display; a note on stderr says when the
-    /// output stopped at the limit
-    #[arg(short = 'n', long, default_value_t = RunsLimit::new(10))]
-    pub limit: RunsLimit,
+    /// Maximum number of runs to display
+    #[arg(short = 'n', long, default_value_t = DEFAULT_RUNS_LIMIT)]
+    pub limit: NonZeroU64,
 
     /// Show a detailed key-value block per run, including the full description
     #[arg(short, long)]
@@ -1091,7 +1093,7 @@ impl Default for RunsListArgs {
             launcher: None,
             created_after: None,
             created_before: None,
-            limit: RunsLimit::new(10),
+            limit: DEFAULT_RUNS_LIMIT,
             detail: false,
         }
     }
@@ -1334,10 +1336,9 @@ mod tests {
         assert_eq!(query, vec!["request".to_string(), "slow".to_string()]);
     }
 
-    // `runs events --limit` defaults to 50 and tops out one below the
-    // endpoint's ceiling, reserving a row for the truncation probe.
+    // `runs events --limit` defaults to 50; the server enforces the ceiling.
     #[test]
-    fn events_limit_defaults_and_enforces_the_range() {
+    fn events_limit_defaults_and_rejects_zero() {
         let cli = parse(&["snouty", "runs", "events", "RUN", "-m", "request"]);
         let Commands::Runs {
             command: Some(RunsCommands::Events { limit, .. }),
@@ -1358,19 +1359,15 @@ mod tests {
         };
         assert_eq!(limit.get(), 998);
 
-        // The generated request types carry the limit as NonZeroU64, so clap
-        // rejects 0 up front with a plain message.
+        // The limit is a `NonZeroU64`, so clap rejects 0 up front with a plain
+        // message.
         let parsed = Cli::try_parse_from(["snouty", "runs", "events", "RUN", "-n", "0"]);
         assert!(parsed.is_err(), "expected --limit 0 to be rejected");
-
-        let parsed = Cli::try_parse_from(["snouty", "runs", "events", "RUN", "-n", "999"]);
-        assert!(parsed.is_err(), "expected --limit 999 to be rejected");
     }
 
-    // `runs search --limit` shares the range `runs events --limit` uses: the
-    // command probes one row past the flag in every mode.
+    // `runs search --limit` stays unset unless given, and rejects 0.
     #[test]
-    fn search_limit_enforces_the_same_range() {
+    fn search_limit_rejects_zero() {
         let cli = parse(&[
             "snouty", "runs", "search", "RUN", "q", "--follow", "--limit", "998",
         ]);
@@ -1380,10 +1377,7 @@ mod tests {
         else {
             panic!("expected `runs search`");
         };
-        assert_eq!(args.limit.map(EventsLimit::get), Some(998));
-
-        let parsed = Cli::try_parse_from(["snouty", "runs", "search", "RUN", "q", "-n", "999"]);
-        assert!(parsed.is_err(), "expected --limit 999 to be rejected");
+        assert_eq!(args.limit.map(NonZeroU64::get), Some(998));
 
         let parsed = Cli::try_parse_from(["snouty", "runs", "search", "RUN", "q", "-n", "0"]);
         assert!(parsed.is_err(), "expected --limit 0 to be rejected");
@@ -1418,7 +1412,7 @@ mod tests {
         else {
             panic!("expected `runs search`");
         };
-        assert_eq!(args.limit.map(EventsLimit::get), Some(7));
+        assert_eq!(args.limit.map(NonZeroU64::get), Some(7));
         assert!(args.follow);
     }
 

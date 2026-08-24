@@ -1,4 +1,5 @@
 use std::io::{IsTerminal, Read, Write};
+use std::num::NonZeroU64;
 use std::time::Duration;
 
 use color_eyre::Section;
@@ -13,9 +14,9 @@ use serde_json::{Map, Value, json};
 use chrono::{DateTime, Utc};
 
 use crate::api::{
-    AntithesisApi, Event, EventProperty, EventsLimit, Limit, LogsBegin, Moment, NonEventProperty,
-    Property, PropertyStatus, RunDetail, RunStatus, RunSummary, RunsFilterOptions,
-    SEARCH_DEFAULT_LIMIT, SearchMode,
+    AntithesisApi, Event, EventProperty, LogsBegin, Moment, NonEventProperty, Property,
+    PropertyStatus, RunDetail, RunStatus, RunSummary, RunsFilterOptions, SEARCH_DEFAULT_LIMIT,
+    SearchMode,
 };
 use crate::cli::{RunsCommands, RunsListArgs, RunsSearchArgs};
 use crate::error::{api_error_status, user_error};
@@ -34,14 +35,12 @@ mod event_search;
 
 use event_search::EventOutput;
 
-/// The note a listing command prints to stderr when its output stops at
-/// `--limit` while more rows exist. Callers print it in human mode only.
-fn limit_note<const SERVER_MAX: usize>(limit: Limit<SERVER_MAX>, unit: &str) {
-    let limit = limit.get();
-    let plural = if limit == 1 { "" } else { "s" };
-    eprintln!(
-        "note: output reached the limit of {limit} {unit}{plural}; more may exist — raise --limit"
-    );
+/// The note a limited command prints to stderr under its output. The command
+/// asks the server for at most `limit` rows and cannot tell whether more
+/// match, so the note names the limit instead of a truncation. Callers print
+/// it in human mode only.
+fn limit_note(limit: NonZeroU64) {
+    eprintln!("Showing up to {limit} results. Additional results may be available.");
 }
 
 /// `print!`/`println!`, but routed through `write!`/`writeln!` to stdout so a
@@ -211,21 +210,12 @@ async fn cmd_runs_list(
 
     // The server returns runs newest first, so every mode prints them in the
     // order they arrive.
-    let limit = args.limit.get();
     let stream = api.stream_runs_filtered(&opts, args.limit);
     let mut stream = std::pin::pin!(stream);
 
-    // `--json` prints no note, so it leaves the reserved run on the stream.
-    // The stream fetches a page only on demand, so the page that run sits on
-    // is never fetched.
     if json {
-        let mut printed = 0;
-        while printed < limit {
-            let Some(run) = stream.try_next().await? else {
-                break;
-            };
+        while let Some(run) = stream.try_next().await? {
             outln!("{}", serde_json::to_string(&run)?)?;
-            printed += 1;
         }
         return Ok(());
     }
@@ -233,16 +223,9 @@ async fn cmd_runs_list(
     // The table sizes its columns from the rows it holds, so the human modes
     // collect first.
     let mut runs: Vec<RunSummary> = Vec::new();
-    while runs.len() < limit {
-        let Some(run) = stream.try_next().await? else {
-            break;
-        };
+    while let Some(run) = stream.try_next().await? {
         runs.push(run);
     }
-
-    // The request reserved one run past the limit, and pulling it is the only
-    // proof that more runs exist. It is never displayed.
-    let truncated = runs.len() == limit && stream.try_next().await?.is_some();
 
     if runs.is_empty() {
         outln!("No runs found.")?;
@@ -255,9 +238,7 @@ async fn cmd_runs_list(
         let width = terminal_width();
         outln!("{}", render_runs_table(&runs, width))?;
     }
-    if truncated {
-        limit_note(args.limit, "run");
-    }
+    limit_note(args.limit);
     Ok(())
 }
 
@@ -1349,12 +1330,12 @@ async fn cmd_runs_build_logs(
     };
     event_search::print_event_stream(
         stream,
-        None,
         ErrorRows::Abort,
         mode,
         "No build logs for this run.",
     )
-    .await
+    .await?;
+    Ok(())
 }
 
 async fn cmd_runs_search(
@@ -1369,10 +1350,8 @@ async fn cmd_runs_search(
     if args.check {
         return event_search::check_query(&api, &args.run_id, &args.query, mode.json()).await;
     }
-    // The limit is enforced client-side whatever the server does: release 61
-    // ends the stream at the requested `limit`, but releases 58.11 through
-    // 60.1 ignore it and stream every match. `--follow` with no limit is the
-    // one unbounded case.
+    // `--follow` with no limit is the one unbounded case: the caller asked to
+    // watch an in-progress run, so the stream stays open.
     let limit = match (args.follow, args.limit) {
         (true, None) => None,
         (_, limit) => Some(limit.unwrap_or(SEARCH_DEFAULT_LIMIT)),
@@ -1391,20 +1370,23 @@ async fn cmd_runs_search(
     // A user-written DSL pipeline can reshape rows into any object,
     // `{"error": ...}` included, so this stream must not guess that such a
     // row is the server's Stream_Error signal.
-    event_search::print_event_stream(
+    let printed = event_search::print_event_stream(
         stream,
-        limit,
         ErrorRows::Data,
         mode,
         "No events matched the query.",
     )
-    .await
+    .await?;
+    if let Some(limit) = limit.filter(|_| printed > 0 && !mode.json()) {
+        limit_note(limit);
+    }
+    Ok(())
 }
 
 async fn cmd_runs_events(
     run_id: &str,
     matches: &[String],
-    limit: EventsLimit,
+    limit: NonZeroU64,
     settings: &Settings,
     verbose: bool,
     mode: EventOutput,
@@ -1443,14 +1425,17 @@ async fn cmd_runs_events(
             Err(err) => return Err(explain_run_scoped_error(&api, run_id, err).await),
         }
     };
-    event_search::print_event_stream(
+    let printed = event_search::print_event_stream(
         stream,
-        Some(limit),
         ErrorRows::Abort,
         mode,
         &format!("No events matched \"{}\".", matches.join(" ")),
     )
-    .await
+    .await?;
+    if printed > 0 && !mode.json() {
+        limit_note(limit);
+    }
+    Ok(())
 }
 
 async fn cmd_runs_logs(
@@ -1473,12 +1458,12 @@ async fn cmd_runs_logs(
     // than printing nothing.
     event_search::print_event_stream(
         stream,
-        None,
         ErrorRows::Abort,
         mode,
         "No log lines at this moment.",
     )
-    .await
+    .await?;
+    Ok(())
 }
 
 /// One frame of an execute-command NDJSON stream.

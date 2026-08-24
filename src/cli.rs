@@ -694,11 +694,13 @@ Query snippets (each is a complete QUERY, ready to paste):
 
 "#,
     classified_blocks_help!(),
-    " Rows reshaped by map/narrow/fold\nprint as raw JSON.\n\n\
-     Add --json for machine-readable output. Each event prints as one JSON\n\
-     object on its own line:\n\
-     \x20 snouty --json runs search <run_id> 'contains({output_text: \"err\"})' \\\n\
-     \x20   | jq -r .moment.vtime"
+    r#" Rows reshaped by map/narrow/fold
+print as raw JSON.
+
+Add --json for machine-readable output. Each event prints as one JSON
+object on its own line:
+  snouty --json runs search <run_id> 'contains({output_text: "err"})' \
+    | jq -r .moment.vtime"#
 );
 
 #[derive(Subcommand)]

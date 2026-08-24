@@ -1,12 +1,8 @@
 # Unreleased
 
-- `snouty runs list` prints the runs in the order the server returns them, newest first. With `--json` each run prints as it arrives ([#285](https://github.com/antithesishq/snouty/pull/285))
-- `snouty doctor` prints each setting under its own key, such as `container_engine`, in human output as well ([#285](https://github.com/antithesishq/snouty/pull/285))
 - `snouty runs list --limit 0` is rejected ([#285](https://github.com/antithesishq/snouty/pull/285))
 - `snouty runs logs` and `snouty runs build-logs` print each line as it arrives when the output goes to a pipe or a file ([#285](https://github.com/antithesishq/snouty/pull/285))
 - `snouty doctor --json` writes `settings` as an object keyed by setting name, so a caller reads one value with `jq .settings.tenant`. This is a breaking change for anything that read `settings` ([#285](https://github.com/antithesishq/snouty/pull/285))
-- `runs list`, `runs events`, and `runs search` print a note to stderr under their output: "Showing up to N results. Additional results may be available." The note does not appear when `--json` is used ([#265](https://github.com/antithesishq/snouty/issues/265))
-- `runs events --limit` and `runs search --limit` accept any value the server accepts. The server rejects a value above 999; snouty no longer caps the flag at 998 ([#285](https://github.com/antithesishq/snouty/pull/285))
 - `snouty launch` validates `antithesis.filter_logs_matching` client-side before any API call ([#276](https://github.com/antithesishq/snouty/pull/276))
 - The response cache optionally respects the server's cache headers. Set `api_cache_respect_headers = false` to drop the header requirement. ([#263](https://github.com/antithesishq/snouty/issues/263))
 - Make VTIME optional on `snouty runs logs`: omit it to stream to the branch's current end. ([#264](https://github.com/antithesishq/snouty/issues/264))

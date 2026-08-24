@@ -5,6 +5,7 @@ use std::time::Duration;
 use color_eyre::Section;
 use color_eyre::eyre::{Result, WrapErr, eyre};
 use futures_util::TryStreamExt;
+use futures_util::stream::BoxStream;
 use indexmap::IndexMap;
 use indexmap::map::Entry;
 use log::debug;
@@ -41,6 +42,39 @@ use event_search::EventOutput;
 /// it in human mode only.
 fn limit_note(limit: NonZeroU64) {
     eprintln!("Showing up to {limit} results. Additional results may be available.");
+}
+
+/// Print a rendered event stream, then the human-mode commentary under it.
+/// Rows go out one at a time, because the search backend holds the connection
+/// open on an in-progress run and a row that sits in a buffer waiting for EOF
+/// may never be seen.
+///
+/// Commentary goes to stderr and only in human mode: under `--json` the rows
+/// are the whole answer. An empty stream gets `empty_message`; any other gets
+/// the limit note when the request named a `limit`.
+async fn print_event_lines(
+    mut lines: BoxStream<'_, Result<String>>,
+    output: EventOutput,
+    empty_message: &str,
+    limit: Option<NonZeroU64>,
+) -> Result<()> {
+    let mut stdout = std::io::stdout().lock();
+    let mut seen: usize = 0;
+    while let Some(line) = lines.try_next().await? {
+        seen += 1;
+        writeln!(stdout, "{line}")?;
+    }
+    if output.json() {
+        return Ok(());
+    }
+    // Only a successfully-empty stream earns the friendly empty note; a
+    // mid-stream error propagated above instead.
+    if seen == 0 {
+        eprintln!("{empty_message}");
+    } else if let Some(limit) = limit {
+        limit_note(limit);
+    }
+    Ok(())
 }
 
 /// `print!`/`println!`, but routed through `write!`/`writeln!` to stdout so a
@@ -1328,14 +1362,8 @@ async fn cmd_runs_build_logs(
         Ok(stream) => stream.untag(),
         Err(err) => return Err(explain_run_scoped_error(&api, run_id, err).await),
     };
-    event_search::print_event_stream(
-        stream,
-        ErrorRows::Abort,
-        mode,
-        "No build logs for this run.",
-    )
-    .await?;
-    Ok(())
+    let lines = event_search::render_event_stream(stream, ErrorRows::Abort, mode);
+    print_event_lines(lines, mode, "No build logs for this run.", None).await
 }
 
 async fn cmd_runs_search(
@@ -1370,17 +1398,8 @@ async fn cmd_runs_search(
     // A user-written DSL pipeline can reshape rows into any object,
     // `{"error": ...}` included, so this stream must not guess that such a
     // row is the server's Stream_Error signal.
-    let printed = event_search::print_event_stream(
-        stream,
-        ErrorRows::Data,
-        mode,
-        "No events matched the query.",
-    )
-    .await?;
-    if let Some(limit) = limit.filter(|_| printed > 0 && !mode.json()) {
-        limit_note(limit);
-    }
-    Ok(())
+    let lines = event_search::render_event_stream(stream, ErrorRows::Data, mode);
+    print_event_lines(lines, mode, "No events matched the query.", limit).await
 }
 
 async fn cmd_runs_events(
@@ -1425,17 +1444,14 @@ async fn cmd_runs_events(
             Err(err) => return Err(explain_run_scoped_error(&api, run_id, err).await),
         }
     };
-    let printed = event_search::print_event_stream(
-        stream,
-        ErrorRows::Abort,
+    let lines = event_search::render_event_stream(stream, ErrorRows::Abort, mode);
+    print_event_lines(
+        lines,
         mode,
         &format!("No events matched \"{}\".", matches.join(" ")),
+        Some(limit),
     )
-    .await?;
-    if printed > 0 && !mode.json() {
-        limit_note(limit);
-    }
-    Ok(())
+    .await
 }
 
 async fn cmd_runs_logs(
@@ -1456,14 +1472,8 @@ async fn cmd_runs_logs(
     // A moment with no logs (e.g. a manually-supplied 0/0 placeholder)
     // yields an empty stream; the pipeline says so in human mode rather
     // than printing nothing.
-    event_search::print_event_stream(
-        stream,
-        ErrorRows::Abort,
-        mode,
-        "No log lines at this moment.",
-    )
-    .await?;
-    Ok(())
+    let lines = event_search::render_event_stream(stream, ErrorRows::Abort, mode);
+    print_event_lines(lines, mode, "No log lines at this moment.", None).await
 }
 
 /// One frame of an execute-command NDJSON stream.

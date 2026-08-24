@@ -1,4 +1,4 @@
-//! The shared output pipeline behind the event-stream commands (`runs logs`,
+//! The shared rendering pipeline behind the event-stream commands (`runs logs`,
 //! `runs events`, `runs search`, `runs build-logs`), plus the events-search
 //! helpers.
 //!
@@ -6,8 +6,7 @@
 //! `runs-search` feature flag, `runs search` always on the events-search
 //! endpoint, `runs logs`/`runs build-logs` their GET endpoints — and hands
 //! the resulting [`JsonStream`] here. From the stream on, the commands are
-//! identical: every line prints as it arrives, and an empty result gets a
-//! friendly note.
+//! identical: every event renders to one output line.
 //!
 //! Nothing here filters client-side. The output of a server-side filter IS
 //! the result: the server returns a capped subset of the matches, so
@@ -53,24 +52,17 @@ impl EventOutput {
     }
 }
 
-/// Print every line of the (already server-filtered) stream, one line out
-/// per line in — the one output pipeline behind every event-stream command
-/// (`runs logs`, `runs events`, `runs search`, `runs build-logs`).
-///
-/// The stream ends the output: the caller's `--limit` reaches the request,
-/// and [`crate::api`] caps the stream at it. Rows go out one at a time,
-/// because the search backend holds the connection open on an in-progress run
-/// and a row that sits in a buffer waiting for EOF may never be seen.
-///
-/// Returns the number of rows printed, so a caller can hold back its own
-/// commentary on an empty result.
-pub(super) async fn print_event_stream(
+/// Render an (already server-filtered) event stream into output lines, one
+/// line out per line in — the one rendering pipeline behind every
+/// event-stream command (`runs logs`, `runs events`, `runs search`,
+/// `runs build-logs`). The caller prints what comes back; see
+/// [`super::print_event_lines`].
+pub(super) fn render_event_stream(
     stream: JsonStream,
     error_rows: ErrorRows,
     output: EventOutput,
-    empty_message: &str,
-) -> Result<usize> {
-    let mut lines: BoxStream<'_, Result<String>> = match output {
+) -> BoxStream<'static, Result<String>> {
+    match output {
         EventOutput::Json { raw: true, .. } => raw_lines(stream, error_rows).boxed(),
         EventOutput::Json {
             raw: false,
@@ -98,23 +90,7 @@ pub(super) async fn print_event_stream(
                 })
                 .boxed()
         }
-    };
-    // `Stdout` is line-buffered, so each row leaves as it is written.
-    let mut stdout = std::io::stdout().lock();
-    let mut seen: usize = 0;
-    while let Some(line) = lines.try_next().await? {
-        seen += 1;
-        writeln!(stdout, "{line}")?;
     }
-
-    // Only a successfully-empty stream earns the friendly empty note; a
-    // mid-stream error propagated above instead. The note goes to stderr —
-    // it is commentary, not output — and only in human mode: in `--json` an
-    // empty stream is the correct machine answer.
-    if seen == 0 && !output.json() {
-        eprintln!("{empty_message}");
-    }
-    Ok(seen)
 }
 
 /// Ask the search backend whether `query` parses, without running it

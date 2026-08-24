@@ -37,13 +37,13 @@ impl<const SERVER_MAX: usize> Limit<SERVER_MAX> {
         }
     }
 
-    /// The number of rows to print.
+    /// The requested limit.
     pub fn get(self) -> usize {
         self.0.get()
     }
 
-    /// The `limit` a request must name: one row past what gets printed. The
-    /// flag's ceiling leaves room for it, so the sum stays within
+    /// The `limit` a request must name: one row past what gets printed.
+    /// [`Limit::MAX`] leaves room for it, so the sum stays within
     /// `SERVER_MAX`.
     pub fn for_request(self) -> NonZeroUsize {
         self.0.saturating_add(PROBE_ROW)
@@ -79,6 +79,11 @@ pub type EventsLimit = Limit<999>;
 /// `runs list --limit`. The runs endpoint is paged and sets no ceiling on the
 /// total, so only the probe row bounds this one.
 pub type RunsLimit = Limit<{ usize::MAX }>;
+
+/// The server's default `limit` on both events endpoints, applied when the
+/// request names none. A caller that enforces the limit client-side caps at
+/// this value when no explicit limit was given.
+pub const SEARCH_DEFAULT_LIMIT: EventsLimit = EventsLimit::new(50);
 
 #[cfg(test)]
 mod tests {

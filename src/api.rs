@@ -15,7 +15,7 @@ use serde::de::DeserializeOwned;
 
 mod limit;
 
-pub use limit::{EventsLimit, Limit, RunsLimit};
+pub use limit::{EventsLimit, Limit, RunsLimit, SEARCH_DEFAULT_LIMIT};
 
 use crate::api_cache::{self, ApiCache, CachePolicy};
 use crate::auth::{AuthenticationInfo, PasswordPolicy};
@@ -119,12 +119,6 @@ pub enum SearchMode {
         limit: Option<EventsLimit>,
     },
 }
-
-/// The server's default `limit` on both events endpoints (the GET events
-/// endpoint and the events-search endpoint), applied when the request names
-/// none. A caller that enforces the limit client-side caps at this value
-/// when no explicit limit was given.
-pub const SEARCH_DEFAULT_LIMIT: EventsLimit = EventsLimit::new(50);
 
 /// Why a `/api/version` probe failed, classified for `snouty doctor`.
 #[derive(Debug)]
@@ -744,12 +738,11 @@ impl AntithesisApi {
             limit: Some(limit), ..
         } = mode
         {
-            // The generated body carries `limit` as a `u64`. No target
-            // snouty builds for has a wider `usize`, and an events limit
-            // stays under a thousand besides.
-            let rows = NonZeroU64::try_from(limit.for_request())
-                .map_err(|_| user_error("--limit is too large for this platform"))?;
-            body = body.limit(rows);
+            // Every generated `limit` setter takes a `NonZeroU64`: the spec
+            // leaves the field unformatted. The query setters convert from
+            // `NonZeroUsize` on their own; this one holds an `Option`, which
+            // has no such conversion, so the width is named here.
+            body = body.limit(NonZeroU64::try_from(limit.for_request())?);
         }
         match self.client.search().run_id(run_id).body(body).send().await {
             Ok(response) => Ok(json_lines(response.into_inner().into_inner())),
@@ -1041,10 +1034,11 @@ where
     paginate_limited(usize::MAX, usize::MAX, move |after, _| fetch(after))
 }
 
-/// [`paginate_exhaust`], bounded: yields at most `limit` items, asking
-/// `fetch` for pages of at most `max_page` items and shrinking the last page
-/// to what remains. Items a server returns past the requested page size are
-/// dropped, and no page is fetched once the limit is reached.
+/// [`paginate_exhaust`], bounded: asks `fetch` for pages of at most
+/// `max_page` items and shrinks the last page to what remains, so no page is
+/// fetched once the limit is reached. A server that honors the page limit
+/// yields at most `limit` items; one that over-fills a page yields every item
+/// it sent, because dropping a row the server returned hides output.
 fn paginate_limited<'a, T, F, Fut>(
     limit: usize,
     max_page: usize,
@@ -1082,9 +1076,13 @@ where
             if state.finished {
                 return Ok(None);
             }
-            let (mut items, next) = (state.fetch)(state.after.take(), page_limit).await?;
-            items.truncate(state.remaining);
-            state.remaining -= items.len();
+            let (items, next) = (state.fetch)(state.after.take(), page_limit).await?;
+            debug_assert!(
+                items.len() <= page_limit.get(),
+                "the server returned {} items for a page limit of {page_limit}",
+                items.len()
+            );
+            state.remaining = state.remaining.saturating_sub(items.len());
             state.buffer.extend(items);
             state.finished = next.is_none();
             state.after = next;
@@ -1524,13 +1522,14 @@ async fn read_error_body(mut response: reqwest::Response) -> String {
 /// made on its behalf.
 ///
 /// Runs of whitespace collapse to a single space before the cut, so that an
-/// indented error page spends the 200 characters on its text rather than on its
+/// indented error page spends its 200 characters on text rather than on
 /// margins. That collapse applies only to the unrecognized shapes. A `message`
 /// keeps its own line breaks: the events-search endpoint answers an invalid
 /// query with 400 and a caret line under the offending token (observed on
 /// tenant `orbitinghail`, release 61 — `… bogus_verb({x: "y"})`, then `^`, then
 /// `invalid with_next`), and a caret on one line runs into the text it points
-/// at.
+/// at. Every line gets the 200 characters, because the last line of such a
+/// body carries the reason.
 fn error_body_message(body: &str) -> String {
     const MAX_LEN: usize = 200;
 
@@ -1544,17 +1543,21 @@ fn error_body_message(body: &str) -> String {
         })
         .unwrap_or_else(|| body.split_whitespace().collect::<Vec<_>>().join(" "));
 
+    fn truncate(line: &str) -> String {
+        match line.char_indices().nth(MAX_LEN) {
+            Some((offset, _)) => format!("{}…", &line[..offset]),
+            None => line.to_string(),
+        }
+    }
+
     // `render_report` splits the error from its `Note:`/`Suggestion:` tail at
     // the first blank line, so a message that carries one prints its tail twice.
-    let text = sanitize_multiline(text.trim())
+    sanitize_multiline(text.trim())
         .lines()
         .filter(|line| !line.trim().is_empty())
+        .map(truncate)
         .collect::<Vec<_>>()
-        .join("\n");
-    match text.char_indices().nth(MAX_LEN) {
-        Some((offset, _)) => format!("{}…", &text[..offset]),
-        None => text,
-    }
+        .join("\n")
 }
 
 #[cfg(test)]
@@ -1839,6 +1842,22 @@ mod tests {
             ),
             "Event set DSL error: bogus_verb({x: \"y\"})\n^\ninvalid with_next"
         );
+    }
+
+    // A long query pushes the caret and the reason past a flat 200-character
+    // cut. Each line gets the cap, so the reason still arrives.
+    #[test]
+    fn error_body_message_truncates_each_line_of_a_message() {
+        let query = "y".repeat(500);
+        let message = error_body_message(&format!(
+            r#"{{"message":"error: {query}\n^\ninvalid verb"}}"#
+        ));
+        let lines: Vec<&str> = message.lines().collect();
+        assert_eq!(lines.len(), 3, "got: {message}");
+        assert!(lines[0].ends_with('…'), "got: {}", lines[0]);
+        assert_eq!(lines[0].chars().count(), 201);
+        assert_eq!(lines[1], "^");
+        assert_eq!(lines[2], "invalid verb");
     }
 
     #[test]

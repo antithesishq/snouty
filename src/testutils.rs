@@ -766,12 +766,17 @@ fn mock_route_list_runs(query: Option<&str>, empty: bool) -> (u16, String) {
     }
 
     // Paginate: return one run per page when no filters are active and starting from the beginning.
-    let (data, next_cursor) =
+    let (mut data, next_cursor) =
         if status_filter.is_none() && launcher_filter.is_none() && start == 0 && runs.len() > 1 {
             (vec![runs[0].clone()], Some("cursor-1"))
         } else {
             (runs, None)
         };
+
+    // The real endpoint returns at most `limit` runs per page.
+    if let Some(limit) = mock_query_param(query, "limit").and_then(|l| l.parse::<usize>().ok()) {
+        data.truncate(limit);
+    }
 
     let data_json = data.join(",");
     let cursor_json = match next_cursor {
@@ -1062,6 +1067,15 @@ fn mock_route_search_run_events(run_id: &str, query_str: Option<&str>) -> (u16, 
     let Some(needle) = mock_query_param(query_str, "q") else {
         return (400, r#"{"message":"missing q"}"#.to_string());
     };
+    // `limit` is documented as 1..=999, and the server rejects the rest.
+    if let Some(limit) = mock_query_param(query_str, "limit").and_then(|l| l.parse::<u64>().ok())
+        && !(1..=999).contains(&limit)
+    {
+        return (
+            400,
+            format!(r#"{{"message":"Bad request: limit {limit} is out of the range 1..=999"}}"#),
+        );
+    }
 
     let (_, logs) = mock_route_get_run_logs(run_id);
     let needle = needle.to_lowercase();
@@ -1192,12 +1206,12 @@ fn mock_route_execute_command(run_id: &str, req_body: &str) -> (u16, String) {
 
 /// `POST /runs/{id}/events/search` — the events-search endpoint.
 /// `validate_only` returns an empty 200, and matching events stream back as
-/// NDJSON. Like the live server (observed on releases 58.11 and 60.0), the
-/// mock IGNORES `limit` and returns every match — the documented contract
-/// says the server terminates the stream at `limit`, but it does not, so
-/// specs that pass `--limit` exercise snouty's client-side cap. The one
-/// divergence from the live server: the mock's stream always closes (it is a
-/// plain HTTP response), where a live run's stream stays open forever.
+/// NDJSON. The mock ends the stream at `limit`, as release 61 does (observed
+/// on tenant `orbitinghail`, run `bafc3d6cb0ff883696153e2a8e30aee7-61-1`: a
+/// query matching six events returned three under `-n 3`). The one divergence
+/// from the live server: the
+/// mock's stream always closes (it is a plain HTTP response), where a live
+/// run's stream stays open forever.
 /// `count_only` is not modelled: snouty does not send it (the count is
 /// moving to a separate endpoint).
 ///
@@ -1236,7 +1250,15 @@ fn mock_route_search_events(run_id: &str, body: &str) -> (u16, String, &'static 
         .iter()
         .any(|verb| query.trim_start().starts_with(&format!("{verb}(")));
     if !starts_with_verb {
-        return (400, r#"{"message":"invalid query"}"#.to_string(), json);
+        // The live server lays the rejection out over three lines: the query,
+        // a caret under the offending token, and the reason (observed on
+        // tenant `orbitinghail`, release 61).
+        let message = format!(
+            "Bad request: failed to execute pangolin query due to a runtime error: \
+             Event set DSL error: {query}\n^\ninvalid with_next"
+        );
+        let body = serde_json::json!({ "message": message }).to_string();
+        return (400, body, json);
     }
     if request["validate_only"].as_bool().unwrap_or(false) {
         return (200, String::new(), ndjson);
@@ -1263,6 +1285,17 @@ fn mock_route_search_events(run_id: &str, body: &str) -> (u16, String, &'static 
         );
     }
 
+    // `limit` is documented as 1..=999, and the server rejects the rest.
+    if let Some(limit) = request["limit"].as_u64()
+        && !(1..=999).contains(&limit)
+    {
+        let body = serde_json::json!({
+            "message": format!("Bad request: limit {limit} is out of the range 1..=999"),
+        })
+        .to_string();
+        return (400, body, json);
+    }
+
     let needles = query_needles(query);
     // The haystack the query asked for. `runs events` reads an event's text
     // fields; a query that stringifies the event asks for the event's JSON,
@@ -1272,7 +1305,7 @@ fn mock_route_search_events(run_id: &str, body: &str) -> (u16, String, &'static 
     let reads_event_json = !query.contains(crate::event_set_dsl::NEEDLE_FILTER.trim())
         && query.contains("JSON.stringify(ev)");
     let (_, logs) = mock_route_get_run_logs(run_id);
-    let matches: Vec<&str> = logs
+    let mut matches: Vec<&str> = logs
         .lines()
         .filter(|line| {
             let haystack = if reads_event_json {
@@ -1283,6 +1316,9 @@ fn mock_route_search_events(run_id: &str, body: &str) -> (u16, String, &'static 
             needles.iter().all(|needle| haystack.contains(needle))
         })
         .collect();
+    if let Some(limit) = request["limit"].as_u64() {
+        matches.truncate(limit as usize);
+    }
 
     if matches.is_empty() {
         (200, String::new(), ndjson)
@@ -1395,6 +1431,35 @@ mod tests {
             capped.contains(r#""vtime":"400.5""#),
             "the first match should be retained, got: {capped}"
         );
+    }
+
+    #[test]
+    fn mock_route_search_events_ends_the_stream_at_limit() {
+        let body = |limit: Option<u64>| {
+            let mut request = serde_json::json!({
+                "query": r#"contains({output_text: "parallel_driver_fetch"})"#,
+            });
+            if let Some(limit) = limit {
+                request["limit"] = limit.into();
+            }
+            request.to_string()
+        };
+
+        let (status, all, _) = mock_route_search_events("run-1", &body(None));
+        assert_eq!(status, 200);
+        assert_eq!(all.lines().count(), 3, "fixture should match three events");
+
+        let (status, capped, _) = mock_route_search_events("run-1", &body(Some(1)));
+        assert_eq!(status, 200);
+        assert_eq!(capped.lines().count(), 1);
+        assert!(
+            capped.contains(r#""vtime":"400.5""#),
+            "the first match should be retained, got: {capped}"
+        );
+
+        let (status, out, _) = mock_route_search_events("run-1", &body(Some(1000)));
+        assert_eq!(status, 400, "got: {out}");
+        assert!(out.contains("out of the range"), "got: {out}");
     }
 
     #[test]

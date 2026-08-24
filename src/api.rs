@@ -23,7 +23,7 @@ use crate::params::{
     ANT_FILTER_LOGS_MATCHING, ANT_IMAGES, ANT_IS_EPHEMERAL, ANT_REPORT_RECIPIENTS, ANT_SOURCE,
     ANT_TEST_NAME, Params,
 };
-use crate::render::sanitize;
+use crate::render::{indent_lines, sanitize_multiline};
 use crate::settings::Settings;
 use crate::tag::{Tag, Tagged};
 use crate::util::source_error;
@@ -116,14 +116,9 @@ pub enum SearchMode {
     },
 }
 
-/// The server's default `limit` on both events endpoints (the GET events
-/// endpoint and the events-search endpoint), applied when the request names
-/// none. A caller that enforces the limit client-side caps at this value
-/// when no explicit limit was given.
+/// The server's default `limit` on both events endpoints, applied when the
+/// request names none.
 pub const SEARCH_DEFAULT_LIMIT: NonZeroU64 = NonZeroU64::new(50).unwrap();
-
-/// The GET events endpoint's `limit` ceiling (the spec allows 1..=999).
-pub const GET_EVENTS_MAX_LIMIT: NonZeroU64 = NonZeroU64::new(999).unwrap();
 
 /// Why a `/api/version` probe failed, classified for `snouty doctor`.
 #[derive(Debug)]
@@ -394,6 +389,19 @@ pub struct AntithesisApi {
     client: generated::Client,
     base_url: String,
     cache: ApiCache,
+}
+
+/// Stop a stream at the `limit` its request named. Release 61 ends the stream
+/// itself, but releases 58.11 through 60.1 ignore the field and send every
+/// match, so the cap is applied here as well. A request that names no limit
+/// stays open.
+fn cap_stream(stream: JsonStream, limit: Option<NonZeroU64>) -> JsonStream {
+    match limit {
+        Some(limit) => stream
+            .take(usize::try_from(limit.get()).unwrap_or(usize::MAX))
+            .boxed(),
+        None => stream,
+    }
 }
 
 impl AntithesisApi {
@@ -675,7 +683,7 @@ impl AntithesisApi {
         run_id: &str,
         status: Option<PropertyStatus>,
     ) -> impl futures_util::Stream<Item = Result<Property>> + '_ {
-        const MAX_PAGE_LIMIT: u64 = 100;
+        const MAX_PAGE_LIMIT: NonZeroU64 = NonZeroU64::new(100).unwrap();
         let run_id = run_id.to_string();
         paginate_exhaust(move |after| {
             let run_id = run_id.clone();
@@ -701,9 +709,7 @@ impl AntithesisApi {
         query: &str,
         limit: NonZeroU64,
     ) -> Result<JsonStream> {
-        // The endpoint caps the returned events at `limit` and validates its
-        // range; `NonZeroU64` (the generated parameter's own type) keeps a
-        // zero from ever reaching the request builder.
+        // The endpoint documents `limit` as 1..=999 and rejects the rest.
         let request = self
             .client
             .search_run_events()
@@ -711,7 +717,10 @@ impl AntithesisApi {
             .q(query)
             .limit(limit);
         match request.send().await {
-            Ok(response) => Ok(json_lines(response.into_inner().into_inner())),
+            Ok(response) => Ok(cap_stream(
+                json_lines(response.into_inner().into_inner()),
+                Some(limit),
+            )),
             Err(err) => Err(format_api_client_error(err).await),
         }
     }
@@ -739,14 +748,18 @@ impl AntithesisApi {
         // would cut a `--follow` off at 50 events. build.rs strips the
         // schema's `default: 50` so the generated field is omittable at all
         // (see `unrequire_search_limit_default` there).
-        if let SearchMode::Query {
-            limit: Some(limit), ..
-        } = mode
-        {
+        let limit = match mode {
+            SearchMode::Query { limit, .. } => limit,
+            SearchMode::Validate => None,
+        };
+        if let Some(limit) = limit {
             body = body.limit(limit);
         }
         match self.client.search().run_id(run_id).body(body).send().await {
-            Ok(response) => Ok(json_lines(response.into_inner().into_inner())),
+            Ok(response) => Ok(cap_stream(
+                json_lines(response.into_inner().into_inner()),
+                limit,
+            )),
             Err(err) => Err(format_api_client_error(err).await),
         }
     }
@@ -757,10 +770,10 @@ impl AntithesisApi {
     pub fn stream_runs_filtered(
         &self,
         opts: &RunsFilterOptions,
-        limit: u64,
+        limit: NonZeroU64,
     ) -> impl futures_util::Stream<Item = Result<RunSummary>> + '_ {
         let opts = opts.clone();
-        paginate_limited(limit, 100, move |after, page_limit| {
+        paginate_limited(limit.get(), 100, move |after, page_limit| {
             let opts = opts.clone();
             async move {
                 let page = self
@@ -776,7 +789,7 @@ impl AntithesisApi {
         &self,
         after: Option<&str>,
         opts: &RunsFilterOptions,
-        page_limit: u64,
+        page_limit: NonZeroU64,
     ) -> Result<generated::types::RunListResponse> {
         let mut request = self.client.list_runs().limit(page_limit);
         if let Some(cursor) = after {
@@ -807,7 +820,7 @@ impl AntithesisApi {
         run_id: &str,
         after: Option<&str>,
         status: Option<PropertyStatus>,
-        limit: u64,
+        limit: NonZeroU64,
     ) -> Result<Tagged<generated::types::PropertyListResponse, CachePolicy>> {
         let mut request = self
             .client
@@ -1035,17 +1048,18 @@ where
     paginate_limited(u64::MAX, u64::MAX, move |after, _| fetch(after))
 }
 
-/// [`paginate_exhaust`], bounded: yields at most `limit` items, asking
-/// `fetch` for pages of at most `max_page` items and shrinking the last page
-/// to what remains. Items a server returns past the requested page size are
-/// dropped, and no page is fetched once the limit is reached.
+/// [`paginate_exhaust`], bounded: asks `fetch` for pages of at most
+/// `max_page` items and shrinks the last page to what remains, so no page is
+/// fetched once the limit is reached. A server that honors the page limit
+/// yields at most `limit` items; one that over-fills a page yields every item
+/// it sent, because dropping a row the server returned hides output.
 fn paginate_limited<'a, T, F, Fut>(
     limit: u64,
     max_page: u64,
     fetch: F,
 ) -> impl futures_util::Stream<Item = Result<T>> + 'a
 where
-    F: FnMut(Option<String>, u64) -> Fut + 'a,
+    F: FnMut(Option<String>, NonZeroU64) -> Fut + 'a,
     Fut: std::future::Future<Output = Result<(Vec<T>, Option<String>)>> + 'a,
     T: 'a,
 {
@@ -1068,13 +1082,21 @@ where
             if let Some(item) = state.buffer.pop_front() {
                 return Ok(Some((item, state)));
             }
-            if state.finished || state.remaining == 0 {
+            // A page of no items would ask the server for nothing, so an
+            // exhausted limit ends the stream here.
+            let Some(page_limit) = NonZeroU64::new(state.remaining.min(max_page)) else {
+                return Ok(None);
+            };
+            if state.finished {
                 return Ok(None);
             }
-            let page_limit = state.remaining.min(max_page);
-            let (mut items, next) = (state.fetch)(state.after.take(), page_limit).await?;
-            items.truncate(usize::try_from(state.remaining).unwrap_or(usize::MAX));
-            state.remaining -= items.len() as u64;
+            let (items, next) = (state.fetch)(state.after.take(), page_limit).await?;
+            debug_assert!(
+                items.len() as u64 <= page_limit.get(),
+                "the server returned {} items for a page limit of {page_limit}",
+                items.len()
+            );
+            state.remaining = state.remaining.saturating_sub(items.len() as u64);
             state.buffer.extend(items);
             state.finished = next.is_none();
             state.after = next;
@@ -1330,8 +1352,17 @@ fn format_api_error(status: u16, body: &str) -> Report {
         msg.push_str(reason);
     }
     if !body.is_empty() {
-        msg.push_str(" — ");
-        msg.push_str(body);
+        // A multi-line body carries a layout of its own — a caret under the
+        // offending token, for one. It goes on its own line and takes the same
+        // indent on every line, so the caret keeps pointing at the token above
+        // it.
+        if body.contains('\n') {
+            msg.push('\n');
+            msg.push_str(&indent_lines(body, "  "));
+        } else {
+            msg.push_str(" — ");
+            msg.push_str(body);
+        }
     }
     // Carry the HTTP status structurally so callers can classify the failure
     // (e.g. "was this a 404?") without sniffing the rendered message string.
@@ -1493,7 +1524,7 @@ async fn read_error_body(mut response: reqwest::Response) -> String {
     String::from_utf8_lossy(&body).into_owned()
 }
 
-/// The human-readable text of an error response body, as one terminal line.
+/// The human-readable text of an error response body.
 ///
 /// The standard endpoints answer with `{"message": "…"}`, so unwrap that when
 /// it's there. Anything else — an empty body, an HTML error page from an
@@ -1505,10 +1536,14 @@ async fn read_error_body(mut response: reqwest::Response) -> String {
 /// made on its behalf.
 ///
 /// Runs of whitespace collapse to a single space before the cut, so that an
-/// indented error page spends the 200 characters on its text rather than on its
-/// margins. [`sanitize`] is the repo's policy for untrusted text on one line; it
-/// runs after the collapse, which leaves it nothing to do about newlines and
-/// only control characters to escape.
+/// indented error page spends its 200 characters on text rather than on
+/// margins. That collapse applies only to the unrecognized shapes. A `message`
+/// keeps its own line breaks: the events-search endpoint answers an invalid
+/// query with 400 and a caret line under the offending token (observed on
+/// tenant `orbitinghail`, release 61 — `… bogus_verb({x: "y"})`, then `^`, then
+/// `invalid with_next`), and a caret on one line runs into the text it points
+/// at. Every line gets the 200 characters, because the last line of such a
+/// body carries the reason.
 fn error_body_message(body: &str) -> String {
     const MAX_LEN: usize = 200;
 
@@ -1522,11 +1557,21 @@ fn error_body_message(body: &str) -> String {
         })
         .unwrap_or_else(|| body.split_whitespace().collect::<Vec<_>>().join(" "));
 
-    let text = sanitize(text.trim());
-    match text.char_indices().nth(MAX_LEN) {
-        Some((offset, _)) => format!("{}…", &text[..offset]),
-        None => text,
+    fn truncate(line: &str) -> String {
+        match line.char_indices().nth(MAX_LEN) {
+            Some((offset, _)) => format!("{}…", &line[..offset]),
+            None => line.to_string(),
+        }
     }
+
+    // `render_report` splits the error from its `Note:`/`Suggestion:` tail at
+    // the first blank line, so a message that carries one prints its tail twice.
+    sanitize_multiline(text.trim())
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(truncate)
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 #[cfg(test)]
@@ -1539,6 +1584,31 @@ mod tests {
     use tempfile::TempDir;
     use wiremock::matchers::{body_json, method, path, query_param, query_param_is_missing};
     use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    // The stream fetches a page only when an item is pulled from it, so a
+    // caller that stops early never pays for the next page.
+    #[tokio::test]
+    async fn paginate_limited_fetches_a_page_only_when_an_item_is_pulled() {
+        let pages = Arc::new(AtomicUsize::new(0));
+        let counted = Arc::clone(&pages);
+        let stream = paginate_limited(101, 100, move |_after, page_limit| {
+            counted.fetch_add(1, Ordering::SeqCst);
+            let items = (0..page_limit.get()).collect::<Vec<u64>>();
+            async move { Ok((items, Some("next".to_string()))) }
+        });
+        let mut stream = std::pin::pin!(stream);
+
+        let mut pulled = 0;
+        while pulled < 100 {
+            assert!(stream.try_next().await.unwrap().is_some());
+            pulled += 1;
+        }
+        assert_eq!(pages.load(Ordering::SeqCst), 1, "one page serves 100 items");
+
+        // The 101st item is on the next page, and asking for it fetches one.
+        assert!(stream.try_next().await.unwrap().is_some());
+        assert_eq!(pages.load(Ordering::SeqCst), 2);
+    }
 
     fn test_api_optionally_with_cache(
         mock_server: &MockServer,
@@ -1775,6 +1845,40 @@ mod tests {
         assert!(!message.contains('\n'), "got: {message}");
         assert!(message.ends_with('…'), "got: {message}");
         assert_eq!(message.chars().count(), 201);
+    }
+
+    #[test]
+    fn error_body_message_keeps_the_line_breaks_in_a_message() {
+        assert_eq!(
+            error_body_message(
+                r#"{"message":"Event set DSL error: bogus_verb({x: \"y\"})\n^\ninvalid with_next"}"#
+            ),
+            "Event set DSL error: bogus_verb({x: \"y\"})\n^\ninvalid with_next"
+        );
+    }
+
+    // A long query pushes the caret and the reason past a flat 200-character
+    // cut. Each line gets the cap, so the reason still arrives.
+    #[test]
+    fn error_body_message_truncates_each_line_of_a_message() {
+        let query = "y".repeat(500);
+        let message = error_body_message(&format!(
+            r#"{{"message":"error: {query}\n^\ninvalid verb"}}"#
+        ));
+        let lines: Vec<&str> = message.lines().collect();
+        assert_eq!(lines.len(), 3, "got: {message}");
+        assert!(lines[0].ends_with('…'), "got: {}", lines[0]);
+        assert_eq!(lines[0].chars().count(), 201);
+        assert_eq!(lines[1], "^");
+        assert_eq!(lines[2], "invalid verb");
+    }
+
+    #[test]
+    fn error_body_message_drops_a_blank_line() {
+        assert_eq!(
+            error_body_message(r#"{"message":"first\n\nsecond"}"#),
+            "first\nsecond"
+        );
     }
 
     // The body goes straight to the terminal, so it gets the same control-char
@@ -2410,8 +2514,8 @@ mod tests {
             .mount(&mock_server)
             .await;
 
-        // The second page asks only for what the limit still allows: 100
-        // minus the one run the first page returned.
+        // The second page asks only for what the limit still allows: 100 minus
+        // the one run the first page returned.
         Mock::given(method("GET"))
             .and(path("/api/v0/runs"))
             .and(query_param("limit", "99"))
@@ -2434,7 +2538,7 @@ mod tests {
         let api = test_api_optionally_with_cache(&mock_server, None);
 
         let runs = api
-            .stream_runs_filtered(&RunsFilterOptions::default(), 100)
+            .stream_runs_filtered(&RunsFilterOptions::default(), NonZeroU64::new(100).unwrap())
             .try_collect::<Vec<_>>()
             .await
             .unwrap();
@@ -2477,7 +2581,7 @@ mod tests {
         let api = test_api_optionally_with_cache(&mock_server, None);
 
         let runs = api
-            .stream_runs_filtered(&RunsFilterOptions::default(), 100)
+            .stream_runs_filtered(&RunsFilterOptions::default(), NonZeroU64::new(100).unwrap())
             .try_collect::<Vec<_>>()
             .await
             .unwrap();
@@ -2520,7 +2624,7 @@ mod tests {
         let api = test_api_optionally_with_cache(&mock_server, None);
 
         let runs = api
-            .stream_runs_filtered(&RunsFilterOptions::default(), 100)
+            .stream_runs_filtered(&RunsFilterOptions::default(), NonZeroU64::new(100).unwrap())
             .try_collect::<Vec<_>>()
             .await
             .unwrap();
@@ -2547,7 +2651,7 @@ mod tests {
 
         let api = test_api_optionally_with_cache(&mock_server, None);
         let runs = api
-            .stream_runs_filtered(&RunsFilterOptions::default(), 5)
+            .stream_runs_filtered(&RunsFilterOptions::default(), NonZeroU64::new(5).unwrap())
             .try_collect::<Vec<_>>()
             .await
             .unwrap();
@@ -2571,6 +2675,21 @@ mod tests {
         let rendered = format!("{:#}", format_api_error(404, "run not found"));
         assert!(rendered.contains("API error: 404"));
         assert!(rendered.contains("run not found"));
+    }
+
+    #[test]
+    fn format_api_error_indents_a_multiline_body() {
+        let rendered = format!(
+            "{:#}",
+            format_api_error(
+                400,
+                "Event set DSL error: bogus_verb({x: \"y\"})\n^\ninvalid with_next"
+            )
+        );
+        assert_eq!(
+            rendered,
+            "API error: 400 Bad Request\n  Event set DSL error: bogus_verb({x: \"y\"})\n  ^\n  invalid with_next"
+        );
     }
 
     #[test]
@@ -2934,7 +3053,7 @@ mod tests {
 
         for _ in 0..2 {
             let runs = api
-                .stream_runs_filtered(&RunsFilterOptions::default(), 100)
+                .stream_runs_filtered(&RunsFilterOptions::default(), NonZeroU64::new(100).unwrap())
                 .try_collect::<Vec<_>>()
                 .await
                 .unwrap();

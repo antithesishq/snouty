@@ -41,14 +41,14 @@ stderr 'tenant.*from-env'
 # 6. The container engine override is reported in the table.
 env SNOUTY_CONTAINER_ENGINE=podman
 ! snouty doctor
-stderr 'container engine.*podman'
+stderr 'container_engine.*podman'
 
 # 7. The update channel is reported in the table; unset resolves to stable.
 ! snouty doctor
-stderr 'update channel.*stable'
+stderr 'update_channel.*stable'
 env SNOUTY_UPDATE_CHANNEL=unstable
 ! snouty doctor
-stderr 'update channel.*unstable'
+stderr 'update_channel.*unstable'
 
 # 8. SNOUTY_SETTINGS_PATH selects the project file in place of ./.snouty.toml.
 #    Observed via repository, since no earlier step set ANTITHESIS_REPOSITORY

@@ -941,6 +941,17 @@ def rows_at_most(limit: int):
     return chk
 
 
+def rows_at_most_with_limit_note(limit: int):
+    """`rows_at_most`, plus the stderr note that names the limit."""
+
+    def chk(sr: StoryRun, reg: Registry) -> tuple[bool, str]:
+        n = len(sr.rows or [])
+        noted = f"Showing up to {limit} results." in sr.result.stderr
+        return (1 <= n <= limit and noted, f"{n} rows (limit {limit}), note={noted}")
+
+    return chk
+
+
 def all_status(status: str):
     def chk(sr: StoryRun, reg: Registry) -> tuple[bool, str]:
         rows = sr.rows or []
@@ -1611,12 +1622,12 @@ def build_stories(d: Discovery) -> list[Story]:
         Story(
             "runs-search-limit",
             "Cap a DSL query at -n 3",
-            "I want only the first few matches, not the whole stream — the limit must "
-            "hold even though the server ignores it (snouty enforces it client-side).",
-            "Exactly at most 3 event lines, then the command exits promptly; when more "
-            "matches exist, a stderr note says the output stopped at the limit.",
+            "I want only the first few matches, not the whole stream — and I want to "
+            "know whether the first few are all of them.",
+            "Exactly at most 3 event lines, then the command exits promptly; a stderr "
+            "note names the limit and says more results may be available.",
             ["runs", "search", d.success, f'contains({{output_text: "{kw}"}})', "-n", "3"],
-            rows_at_most(3),
+            rows_at_most_with_limit_note(3),
             env={"SNOUTY_UNSTABLE_FEATURES": "runs-search"},
         ),
         Story(

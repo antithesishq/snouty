@@ -247,11 +247,12 @@ environment takes precedence over it.
 
 #### Credential injection by an HTTPS proxy
 
-Some development platforms — exe.dev and Replit, for example — hold your
-credentials for you and inject them into outbound requests. The platform gives
-you a hostname that stands in for `https://<tenant>.antithesis.com`. That
-hostname terminates TLS, replaces the `Authorization` header with the real
-credential, and forwards the request. Your machine never holds the secret.
+Some VM and development platforms hold your credentials for you, and inject
+them into outbound requests. The platform gives you a hostname that stands in
+for `https://<tenant>.antithesis.com`. That hostname terminates TLS, replaces
+the `Authorization` header with the real credential, and forwards the request.
+Your machine never holds the secret. Replit and exe.dev work this way; check
+your platform's documentation for the hostname it gives you.
 
 Point snouty at that hostname, and give it a placeholder API key:
 
@@ -327,7 +328,7 @@ Snouty provides the following subcommands. Invoke `snouty <command> --help` to f
   - `snouty runs logs <run_id> <hash> [vtime]`: stream a run's logs along one branch.
   - `snouty runs events <run_id> -m <needle>`: search events in a run.
   - `snouty runs search <run_id> <query>`: run an event-set DSL query against a run's events (unstable; enable with `SNOUTY_UNSTABLE_FEATURES=runs-search`).
-  - `snouty runs exec <run_id>`: run a bash script in a run's live session at a given moment (unstable; enable with `SNOUTY_UNSTABLE_FEATURES=runs-exec`).
+  - `snouty runs exec <run_id> <hash> <vtime> [script]`: run a bash script in a run's live session at a given moment (unstable; enable with `SNOUTY_UNSTABLE_FEATURES=runs-exec`).
 - `snouty debug`: start a debug session.
 - `snouty validate`: locally run and validate your docker-compose.yaml setup.
 - `snouty doctor`: check your environment is configured correctly.

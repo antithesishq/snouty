@@ -1,6 +1,6 @@
 # Unreleased
 
-- Document authentication in the README: browser sign-in with `snouty login`, API keys, GitHub Actions OIDC, and credential injection by an HTTPS proxy (`ANTITHESIS_BASE_URL` plus a placeholder `ANTITHESIS_API_KEY`), as platforms such as exe.dev and Replit provide
+- Document authentication in the README: browser sign-in with `snouty login`, API keys, GitHub Actions OIDC, and credential injection by an HTTPS proxy (`ANTITHESIS_BASE_URL` plus a placeholder `ANTITHESIS_API_KEY`), as some VM and development platforms provide ([#287](https://github.com/antithesishq/snouty/pull/287))
 - `snouty runs list --limit 0` is rejected ([#285](https://github.com/antithesishq/snouty/pull/285))
 - `snouty runs logs` and `snouty runs build-logs` print each line as it arrives when the output goes to a pipe or a file ([#285](https://github.com/antithesishq/snouty/pull/285))
 - `snouty doctor --json` writes `settings` as an object keyed by setting name, so a caller reads one value with `jq .settings.tenant`. This is a breaking change for anything that read `settings` ([#285](https://github.com/antithesishq/snouty/pull/285))

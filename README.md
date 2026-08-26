@@ -2,6 +2,58 @@
 
 A CLI for the [Antithesis](https://antithesis.com) API. See the [webhook documentation](https://antithesis.com/docs/webhook/) for details on available endpoints and parameters.
 
+## Usage
+
+Snouty provides the following subcommands. Invoke `snouty <command> --help` to find out more.
+
+- `snouty login`: sign in and store your tenant, repository, and credentials.
+- `snouty launch`: push images and kick off an Antithesis run.
+- `snouty runs`: list and inspect Antithesis test runs and their results.
+  - `snouty runs list`: list runs, with status/launcher/date filters.
+  - `snouty runs show <run_id>`: show details for a single run.
+  - `snouty runs wait <run_id>`: poll a run until it reaches a terminal state.
+  - `snouty runs properties <run_id>`: list property (assertion) results.
+  - `snouty runs build-logs <run_id>`: stream a run's build logs.
+  - `snouty runs logs <run_id> <hash> [vtime]`: stream a run's logs along one branch.
+  - `snouty runs events <run_id> -m <needle>`: search events in a run.
+  - `snouty runs search <run_id> <query>`: run an event-set DSL query against a run's events.
+  - `snouty runs exec <run_id> <hash> <vtime> [script]`: run a bash script in a run's live session at a given moment.
+- `snouty debug`: start a debug session.
+- `snouty validate`: locally run and validate your docker-compose.yaml setup.
+- `snouty doctor`: check your environment is configured correctly.
+- `snouty docs`: search the Antithesis documentation locally (auto-refreshes the local copy over the network; pass `--offline` to skip).
+- `snouty completions <shell>`: generate shell completion scripts.
+- `snouty version`: print version and build information.
+- `snouty update`: install the latest version. Set `update_channel = "unstable"` (or `SNOUTY_UPDATE_CHANNEL=unstable`) to also consider pre-releases; override the setting for one run with `--channel stable|unstable`.
+
+Add `--json` for machine-readable output. See [COOKBOOK.md](COOKBOOK.md) for worked recipes.
+
+## Requirements
+
+Commands that work with `docker-compose.yaml` files (e.g. `launch`, `validate`) require:
+
+- **Docker Compose v2** — snouty drives either the standalone `docker-compose` binary or the `docker compose` CLI plugin (bundled with Docker Desktop/Engine), whichever it finds on your `PATH`. podman-compose is no longer supported.
+  - Linux: [Install Docker Compose](https://docs.docker.com/compose/install/) or check your package manager.
+  - macOS: [Install Docker Desktop](https://docs.docker.com/desktop/setup/install/mac-install/) (includes Compose v2) or `brew install docker-compose`.
+- **A container engine** — Docker or Podman, used to build and push images.
+
+If both engines are installed, Podman is preferred. Override the engine with `SNOUTY_CONTAINER_ENGINE=docker` or `container_engine` in a settings file (see below); an explicit `DOCKER_HOST` in your environment is always respected.
+
+### VM-backed and remote container engines
+
+`snouty validate` bind-mounts a temp directory from this machine into each container. It watches this directory for the setup-complete event. Some container engines run inside a VM or on another machine. If the engine does not share this machine's temp directory, the engine creates the bind source on its own side and reports no error. The directory on this machine stays empty. Validate then fails with `timed out waiting for setup-complete event`, even though the system under test emits the event.
+
+There are two fixes:
+
+- Share this machine's temp directory with the engine. See the mount documentation for your engine.
+- Set `SNOUTY_TEMP_DIR` to a directory under a path the engine already shares with write access:
+
+  ```sh
+  SNOUTY_TEMP_DIR=/path/shared/with/the/vm/snouty snouty validate ./config
+  ```
+
+  `SNOUTY_TEMP_DIR` must point to an empty or non-existent directory. This prevents validate from reading events that a previous run left behind. Snouty does not remove the directory after the run, so remove it before the next run.
+
 ## Install snouty
 
 ### Install prebuilt binaries via shell script
@@ -37,32 +89,6 @@ cargo install snouty
 ```
 cargo uninstall snouty || rm -f "$(which snouty)" "$(which snouty-update)"
 ```
-
-## Requirements
-
-Commands that work with `docker-compose.yaml` files (e.g. `launch`, `validate`) require:
-
-- **Docker Compose v2** — snouty drives either the standalone `docker-compose` binary or the `docker compose` CLI plugin (bundled with Docker Desktop/Engine), whichever it finds on your `PATH`. podman-compose is no longer supported.
-  - Linux: [Install Docker Compose](https://docs.docker.com/compose/install/) or check your package manager.
-  - macOS: [Install Docker Desktop](https://docs.docker.com/desktop/setup/install/mac-install/) (includes Compose v2) or `brew install docker-compose`.
-- **A container engine** — Docker or Podman, used to build and push images.
-
-If both engines are installed, Podman is preferred. Override the engine with `SNOUTY_CONTAINER_ENGINE=docker` or `container_engine` in a settings file (see below); an explicit `DOCKER_HOST` in your environment is always respected.
-
-### VM-backed and remote container engines
-
-`snouty validate` bind-mounts a temp directory from this machine into each container. It watches this directory for the setup-complete event. Some container engines run inside a VM or on another machine. If the engine does not share this machine's temp directory, the engine creates the bind source on its own side and reports no error. The directory on this machine stays empty. Validate then fails with `timed out waiting for setup-complete event`, even though the system under test emits the event.
-
-There are two fixes:
-
-- Share this machine's temp directory with the engine. See the mount documentation for your engine.
-- Set `SNOUTY_TEMP_DIR` to a directory under a path the engine already shares with write access:
-
-  ```sh
-  SNOUTY_TEMP_DIR=/path/shared/with/the/vm/snouty snouty validate ./config
-  ```
-
-  `SNOUTY_TEMP_DIR` must point to an empty or non-existent directory. This prevents validate from reading events that a previous run left behind. Snouty does not remove the directory after the run, so remove it before the next run.
 
 ## Configuration
 
@@ -137,32 +163,6 @@ For any one setting, snouty uses the first value it finds, highest precedence fi
 3. the selected profile in the global settings file
 4. the top-level default in the project settings file
 5. the top-level default in the global settings file
-
-## Usage
-
-Snouty provides the following subcommands. Invoke `snouty <command> --help` to find out more.
-
-- `snouty login`: sign in and store your tenant, repository, and credentials.
-- `snouty launch`: push images and kick off an Antithesis run.
-- `snouty runs`: list and inspect Antithesis test runs and their results.
-  - `snouty runs list`: list runs, with status/launcher/date filters.
-  - `snouty runs show <run_id>`: show details for a single run.
-  - `snouty runs wait <run_id>`: poll a run until it reaches a terminal state.
-  - `snouty runs properties <run_id>`: list property (assertion) results.
-  - `snouty runs build-logs <run_id>`: stream a run's build logs.
-  - `snouty runs logs <run_id> <hash> [vtime]`: stream a run's logs along one branch.
-  - `snouty runs events <run_id> -m <needle>`: search events in a run.
-  - `snouty runs search <run_id> <query>`: run an event-set DSL query against a run's events.
-  - `snouty runs exec <run_id> <hash> <vtime> [script]`: run a bash script in a run's live session at a given moment.
-- `snouty debug`: start a debug session.
-- `snouty validate`: locally run and validate your docker-compose.yaml setup.
-- `snouty doctor`: check your environment is configured correctly.
-- `snouty docs`: search the Antithesis documentation locally (auto-refreshes the local copy over the network; pass `--offline` to skip).
-- `snouty completions <shell>`: generate shell completion scripts.
-- `snouty version`: print version and build information.
-- `snouty update`: install the latest version. Set `update_channel = "unstable"` (or `SNOUTY_UPDATE_CHANNEL=unstable`) to also consider pre-releases; override the setting for one run with `--channel stable|unstable`.
-
-Add `--json` for machine-readable output. See [COOKBOOK.md](COOKBOOK.md) for worked recipes.
 
 ### Unstable features
 

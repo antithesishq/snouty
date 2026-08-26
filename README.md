@@ -130,7 +130,6 @@ A matching environment variable always overrides the file. The supported keys an
 | `tenant`                    | `ANTITHESIS_TENANT`               | Your Antithesis tenant. Becomes the API host, `https://<tenant>.antithesis.com`.  |
 | `repository`                | `ANTITHESIS_REPOSITORY`           | Container registry that `snouty launch` pushes the config image to.              |
 | `base_url`                  | `ANTITHESIS_BASE_URL`             | API URL, replacing the one derived from the tenant. See the proxy section below. |
-| `https_proxy`               | `ANTITHESIS_HTTPS_PROXY`          | Forwarding proxy for snouty's API requests only.                                 |
 | `container_engine`          | `SNOUTY_CONTAINER_ENGINE`         | Force `docker` or `podman` instead of auto-detecting.                            |
 | `update_channel`            | `SNOUTY_UPDATE_CHANNEL`           | `stable` (default) or `unstable`, for `snouty update`.                           |
 | `api_cache_max_file_size`   | `SNOUTY_API_CACHE_MAX_FILE_SIZE`  | Largest response the API cache stores, as `10 MB` or a byte count.               |
@@ -260,19 +259,11 @@ Three things to know:
 
 `snouty doctor` confirms the whole setup: it reports the API key as provided, and it contacts the API through the proxy to report the API and tenant versions.
 
-Two related settings help with platform proxies:
+`ANTITHESIS_EXTRA_HEADERS` adds headers to every API request, as one `Name: value` pair per line. Use it when the platform expects a header of its own.
 
-- `ANTITHESIS_HTTPS_PROXY` sends snouty's API requests through a conventional forwarding proxy, one that does not change the API's hostname. Give it an HTTP or HTTPS proxy URL; snouty is built without SOCKS support, so a `socks5://` URL does not work.
-
-  ```sh
-  export ANTITHESIS_HTTPS_PROXY="http://proxy.corp:8080"
-  ```
-
-- `ANTITHESIS_EXTRA_HEADERS` adds headers to every API request, as one `Name: value` pair per line. Use it when the platform expects a header of its own.
-
-  ```sh
-  export ANTITHESIS_EXTRA_HEADERS="X-Proxy-Token: abc123"
-  ```
+```sh
+export ANTITHESIS_EXTRA_HEADERS="X-Proxy-Token: abc123"
+```
 
 ### Username and password (deprecated)
 

@@ -127,18 +127,17 @@ impl Check {
 /// same string.
 struct Setting {
     name: &'static str,
-    /// `None` when the setting is not configured. The human table prints
-    /// [`Setting::unset`] in its place, and `--json` prints `null`, so a script
+    /// `None` when the setting is not configured. The human table prints a
+    /// stand-in word in its place, and `--json` prints `null`, so a script
     /// tests the field instead of matching a sentence.
     value: Option<String>,
-    /// The word the human table shows for an unset value.
-    unset: &'static str,
 }
 
 /// The human table's stand-in for a setting that is not configured.
 const NOT_SET: &str = "not set";
-/// The same, for the profile: no profile means the default one, not a gap.
-const NO_PROFILE: &str = "(none)";
+/// The same, for the profile: no profile means snouty uses the default one,
+/// not that a value is missing.
+const DEFAULT_PROFILE: &str = "default";
 
 impl Setting {
     /// A setting snouty resolved to a value.
@@ -146,23 +145,25 @@ impl Setting {
         Self {
             name,
             value: Some(value.into()),
-            unset: NOT_SET,
         }
     }
 
-    /// A setting that may not be configured, with the word the human table
-    /// shows when it is not.
-    fn maybe(name: &'static str, value: Option<impl Into<String>>, unset: &'static str) -> Self {
+    /// A setting that may not be configured.
+    fn maybe(name: &'static str, value: Option<impl Into<String>>) -> Self {
         Self {
             name,
             value: value.map(Into::into),
-            unset,
         }
     }
 
-    /// What the human table prints for this setting.
-    fn display(&self) -> &str {
-        self.value.as_deref().unwrap_or(self.unset)
+    /// What the human table prints for this setting. An unset one gets the
+    /// stand-in word that reads right for it: no profile means the default
+    /// profile, whereas no tenant means a gap the user has to fill.
+    fn render_value(&self) -> &str {
+        self.value.as_deref().unwrap_or(match self.name {
+            "profile" => DEFAULT_PROFILE,
+            _ => NOT_SET,
+        })
     }
 }
 
@@ -377,10 +378,10 @@ fn collect_checks(settings: &Settings) -> Vec<Check> {
 /// informational — required/optional semantics are reported by [`collect_checks`].
 fn resolve_settings(settings: &Settings, features: &[Feature]) -> Vec<Setting> {
     let mut rows = vec![
-        Setting::maybe("profile", settings.profile(), NO_PROFILE),
-        Setting::maybe("tenant", settings.tenant(), NOT_SET),
-        Setting::maybe("repository", settings.repository(), NOT_SET),
-        Setting::maybe("https_proxy", settings.https_proxy(), NOT_SET),
+        Setting::maybe("profile", settings.profile()),
+        Setting::maybe("tenant", settings.tenant()),
+        Setting::maybe("repository", settings.repository()),
+        Setting::maybe("https_proxy", settings.https_proxy()),
         // The explicit override, otherwise auto-detected.
         Setting::new(
             "container_engine",
@@ -404,7 +405,7 @@ fn resolve_settings(settings: &Settings, features: &[Feature]) -> Vec<Setting> {
 fn print_settings(settings: &[Setting]) {
     let rows: Vec<(&str, String)> = settings
         .iter()
-        .map(|s| (s.name, s.display().to_string()))
+        .map(|s| (s.name, s.render_value().to_string()))
         .collect();
     for line in render_kv(&rows, 0).lines() {
         eprintln!("  {line}");
@@ -755,13 +756,13 @@ mod tests {
     fn tenant_row_shows_value() {
         let settings = Settings::builder().tenant("acme").build();
         let rows = resolve_settings(&settings, &[]);
-        assert_eq!(row(&rows, "tenant").display(), "acme");
+        assert_eq!(row(&rows, "tenant").render_value(), "acme");
     }
 
     #[test]
     fn missing_settings_render_as_not_set() {
         let rows = resolve_settings(&Settings::default(), &[]);
-        assert_eq!(row(&rows, "tenant").display(), "not set");
+        assert_eq!(row(&rows, "tenant").render_value(), "not set");
     }
 
     #[test]
@@ -771,7 +772,7 @@ mod tests {
             .build();
         let rows = resolve_settings(&settings, &[]);
         assert_eq!(
-            row(&rows, "https_proxy").display(),
+            row(&rows, "https_proxy").render_value(),
             "http://proxy.corp:8080"
         );
     }
@@ -779,14 +780,14 @@ mod tests {
     #[test]
     fn https_proxy_row_defaults_to_not_set() {
         let rows = resolve_settings(&Settings::default(), &[]);
-        assert_eq!(row(&rows, "https_proxy").display(), "not set");
+        assert_eq!(row(&rows, "https_proxy").render_value(), "not set");
     }
 
     #[test]
     fn container_engine_row_auto_detects_when_unset() {
         let settings = Settings::builder().tenant("acme").build();
         let rows = resolve_settings(&settings, &[]);
-        assert_eq!(row(&rows, "container_engine").display(), "auto-detect");
+        assert_eq!(row(&rows, "container_engine").render_value(), "auto-detect");
     }
 
     #[test]
@@ -803,13 +804,13 @@ mod tests {
             .find(|r| r.name == "features")
             .expect("the row appears when a feature is on");
         // An id this build doesn't know is echoed, not dropped.
-        assert_eq!(row.display(), "runs-exec, other");
+        assert_eq!(row.render_value(), "runs-exec, other");
     }
 
     #[test]
     fn update_channel_row_defaults_to_stable() {
         let rows = resolve_settings(&Settings::default(), &[]);
-        assert_eq!(row(&rows, "update_channel").display(), "stable");
+        assert_eq!(row(&rows, "update_channel").render_value(), "stable");
     }
 
     #[test]
@@ -818,13 +819,13 @@ mod tests {
             .update_channel(UpdateChannel::Unstable)
             .build();
         let rows = resolve_settings(&settings, &[]);
-        assert_eq!(row(&rows, "update_channel").display(), "unstable");
+        assert_eq!(row(&rows, "update_channel").render_value(), "unstable");
     }
 
     #[test]
     fn profile_row_reflects_no_active_profile() {
         let rows = resolve_settings(&Settings::default(), &[]);
-        assert_eq!(row(&rows, "profile").display(), "(none)");
+        assert_eq!(row(&rows, "profile").render_value(), "default");
     }
 
     // ---- version_check (network probe) ---------------------------------
@@ -968,7 +969,7 @@ mod tests {
         let checks = authn_checks(Err(eyre!("PANIC PANIC PANIC")));
         let settings = vec![
             Setting::new("tenant", "acme"),
-            Setting::maybe("https_proxy", None::<String>, NOT_SET),
+            Setting::maybe("https_proxy", None::<String>),
         ];
         let report = Report {
             ok: false,

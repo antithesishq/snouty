@@ -942,12 +942,18 @@ def rows_at_most(limit: int):
 
 
 def rows_at_most_with_limit_note(limit: int):
-    """`rows_at_most`, plus the stderr note that names the limit."""
+    """`rows_at_most`, plus the stderr note that names the limit.
+
+    The note claims more results may exist, so it belongs only when the server
+    filled the limit. Fewer rows than asked for means the result set is
+    exhausted, and the note must be absent.
+    """
 
     def chk(sr: StoryRun, reg: Registry) -> tuple[bool, str]:
         n = len(sr.rows or [])
         noted = f"Showing up to {limit} results." in sr.result.stderr
-        return (1 <= n <= limit and noted, f"{n} rows (limit {limit}), note={noted}")
+        ok = 1 <= n <= limit and noted == (n == limit)
+        return (ok, f"{n} rows (limit {limit}), note={noted}")
 
     return chk
 

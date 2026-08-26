@@ -38,9 +38,16 @@ use event_search::EventOutput;
 
 /// The note a limited command prints to stderr under its output. The command
 /// asks the server for at most `limit` rows and cannot tell whether more
-/// match, so the note names the limit instead of a truncation. Callers print
-/// it in human mode only.
-fn limit_note(limit: NonZeroU64) {
+/// match, so the note names the limit instead of a truncation.
+///
+/// It only applies when the server filled the limit. Fewer rows than asked for
+/// means the result set is exhausted, and the note would send the user back for
+/// rows that do not exist, so `shown` below `limit` prints nothing. Callers
+/// print it in human mode only.
+fn limit_note(shown: usize, limit: NonZeroU64) {
+    if (shown as u64) < limit.get() {
+        return;
+    }
     eprintln!("Showing up to {limit} results. Additional results may be available.");
 }
 
@@ -72,7 +79,7 @@ async fn print_event_lines(
     if seen == 0 {
         eprintln!("{empty_message}");
     } else if let Some(limit) = limit {
-        limit_note(limit);
+        limit_note(seen, limit);
     }
     Ok(())
 }
@@ -272,7 +279,7 @@ async fn cmd_runs_list(
         let width = terminal_width();
         outln!("{}", render_runs_table(&runs, width))?;
     }
-    limit_note(args.limit);
+    limit_note(runs.len(), args.limit);
     Ok(())
 }
 
@@ -1308,10 +1315,14 @@ fn render_runs_detail(runs: &[RunSummary]) -> String {
 
             // The description can be a multi-paragraph blob, so it wraps to the
             // terminal with a hanging indent under the value column (matching
-            // `runs show`) instead of running off as one giant line. Include its
-            // label in the width so every key-value row stays aligned with it.
+            // `runs show`) instead of running off as one giant line.
+            //
+            // Every block reserves its label, present or not. A run that is
+            // still `starting` carries no description, and sizing that block to
+            // its own labels alone would make it narrower than its neighbours,
+            // so the values would step in and out down the page.
             let description = run.test_description();
-            let min_label_width = description.map_or(0, |_| "Description".len());
+            let min_label_width = "Description".len();
             let label_width = rows
                 .iter()
                 .map(|(label, _)| label.len())
@@ -4298,17 +4309,18 @@ mod tests {
         ];
 
         let out = render_runs_detail(&runs);
-        // No table header — each field sits on its own aligned line. Labels are
-        // padded to the widest label *within each block*, so the first block
-        // (which has a "Description" label) is wider than the second.
+        // No table header — each field sits on its own aligned line. Every
+        // block reserves the "Description" label whether or not it has one, so
+        // the two blocks align with each other.
         assert!(!out.contains("RUN ID  "));
         assert!(out.contains("Run ID       abc-54-1"));
         assert!(out.contains("Status       completed"));
         assert!(out.contains("Test Name    snouty-empty-tt"));
         assert!(out.contains("Description  full description goes here"));
-        // Second run omits the empty Test Name / Description fields.
-        assert!(out.contains("def-54-2"));
-        assert!(out.contains("incomplete"));
+        // Second run omits the empty Test Name / Description rows, but keeps
+        // the same label width.
+        assert!(out.contains("Run ID       def-54-2"));
+        assert!(out.contains("Status       incomplete"));
         // A blank line separates the two run blocks.
         assert!(out.contains("\n\n"));
     }

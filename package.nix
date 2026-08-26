@@ -6,7 +6,7 @@
   sqlite,
 }:
 
-rustPlatform.buildRustPackage {
+rustPlatform.buildRustPackage (finalAttrs: {
   pname = "snouty";
   version = "${(lib.importTOML ./Cargo.toml).package.version}-unstable";
   __structuredAttrs = true;
@@ -55,4 +55,4 @@ rustPlatform.buildRustPackage {
     license = lib.licenses.asl20;
     mainProgram = "snouty";
   };
-}
+})

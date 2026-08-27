@@ -854,17 +854,15 @@ fn is_registry_host(segment: &str) -> bool {
 /// segment: `ghcr.io/org/app:v1` becomes `ghcr-io/org/app:v1`. A reference
 /// that names no host is returned unchanged.
 ///
-/// The result carries the same information but no runtime reads it as a host,
-/// so it can serve as a path inside another repository and still be pulled by
-/// name from there.
+/// No runtime reads the result as a host, so it can serve as a path inside
+/// another repository and still be pulled by name from there. The mapping is
+/// not reversible: `ghcr.io` and `ghcr-io` both flatten to `ghcr-io`.
 pub fn flatten_registry_host(image: &str) -> String {
     match image.split_once('/') {
         // `localhost` is a host by name rather than by punctuation, so
-        // replacing the separators leaves it a host. podman writes it on
-        // every locally built image, so this arm is the common one.
+        // replacing the separators leaves it a host.
         Some(("localhost", rest)) => format!("local/{rest}"),
-        // A host may carry uppercase letters, a repository path segment may
-        // not, so the flattened segment is lowercased.
+        // A host may carry uppercase letters, a repository path segment may not.
         Some((host, rest)) if is_registry_host(host) => {
             format!(
                 "{}/{rest}",
@@ -1194,8 +1192,6 @@ mod tests {
             flatten_registry_host("Registry.Example.com/org/app:v1"),
             "registry-example-com/org/app:v1"
         );
-        // No host to flatten: a Docker Hub shorthand is left alone, tag,
-        // digest and all.
         assert_eq!(flatten_registry_host("myapp:latest"), "myapp:latest");
         assert_eq!(flatten_registry_host("org/app:v1"), "org/app:v1");
         assert_eq!(
@@ -1206,8 +1202,6 @@ mod tests {
 
     #[test]
     fn flatten_registry_host_output_names_no_host() {
-        // The point of flattening: the result is a name a runtime resolves
-        // against its configured registries, never a second registry.
         for image in [
             "ghcr.io/org/app:v1",
             "localhost:5000/app:v1",

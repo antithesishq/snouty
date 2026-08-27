@@ -502,14 +502,16 @@ impl DockerCompose {
     /// of band, or previously pulled). Each image is then pinned to its local
     /// digest in a registry confirmed to serve it ([`find_remote_pin`]),
     /// or — when no registry has it — tagged into `registry` and pushed, so
-    /// the platform always pulls exactly what was resolved here. An image
-    /// that names its own registry is pushed under a flattened path
-    /// (`ghcr.io/org/app` → `ghcr-io/org/app`), so the pin stays a name the
-    /// platform resolves rather than a second host.
+    /// the platform always pulls exactly what was resolved here.
     ///
     /// A pin into `registry` itself drops that prefix (`name:tag@sha256:...`),
     /// because the platform resolves a bare name against the tenant's own
     /// repository. A pin into any other registry stays fully qualified.
+    ///
+    /// The platform reads the first segment of a compose image as an address,
+    /// so a pin it must resolve may not open with a registry host. Every image
+    /// pushed into `registry` therefore lands under a flattened path
+    /// (`ghcr.io/org/app` → `ghcr-io/org/app`).
     pub fn pin_images(&self, rt: &dyn ContainerRuntime, registry: &str) -> Result<String> {
         let contents = self.contents(None)?;
         with_config_image_escape_hatch(validate_images_are_available(rt, &contents))?;
@@ -519,8 +521,7 @@ impl DockerCompose {
         // Resolve each distinct image once: pin it from a registry that
         // already serves the local digest, or schedule it for push.
         let mut resolution: BTreeMap<&str, Option<String>> = BTreeMap::new();
-        // Push destination -> the image that claims it. Flattening is not
-        // injective, so two images can want one path.
+        // Flattening is not injective, so two images can want one path.
         let mut claims: BTreeMap<String, &str> = BTreeMap::new();
         for service in &contents.services {
             let image = service.image.as_str();
@@ -584,10 +585,6 @@ impl DockerCompose {
         // The prefix ties the compose file to the spelling this machine uses
         // to reach the registry — a proxy or mirror alias that a test run need
         // not resolve.
-        //
-        // Every pin into our registry names a flattened path, so what
-        // remains never opens with a host, and the platform reads it as a
-        // name to resolve rather than as a second address.
         for pinned_ref in pinned.values_mut() {
             if let Some(rest) = pinned_ref.strip_prefix(&prefix) {
                 *pinned_ref = rest.to_string();
@@ -600,16 +597,13 @@ impl DockerCompose {
 
 /// Where `image` goes inside the registry `prefix` names.
 ///
-/// The path below `prefix` never opens with a registry host: a reference that
-/// already names `prefix` keeps only what follows it, and the first segment of
-/// what remains is flattened ([`flatten_registry_host`]). That lets the compose
-/// pin drop the prefix and still name the same bytes.
+/// The path below `prefix` never opens with a registry host, so the compose
+/// pin can drop the prefix and still name the same bytes.
 ///
 /// A dotted path segment such as `{prefix}team.a/app` is flattened too, to
 /// `{prefix}team-a/app`. The registry reads that segment as a path, but the
-/// platform reads the first segment of a compose image as an address, so the
-/// pin has to lose the dot. The image is pushed once more, under the flattened
-/// path, and every later launch finds it there.
+/// pin has to lose the dot, so the image is pushed once more under the
+/// flattened path.
 fn push_destination(image: &str, prefix: &str) -> String {
     let relative = image.strip_prefix(prefix).unwrap_or(image);
     format!("{prefix}{}", flatten_registry_host(relative))
@@ -635,10 +629,9 @@ fn find_remote_pin(rt: &dyn ContainerRuntime, image: &str, prefix: &str) -> Resu
     let tag = image_ref_tag(image);
 
     let mut repos = Vec::new();
-    // The image's own repository, unless it lies inside `prefix`: a pin there
-    // keeps the registry address this machine uses, which is what the caller
-    // strips, and the push destination names the same bytes under a path that
-    // survives the strip.
+    // The image's own repository, unless it lies inside `prefix`. The caller
+    // strips `prefix` off the pin, and only the push destination is spelled so
+    // that it survives the strip.
     if !image.starts_with(prefix) {
         repos.push(normalize_repo(image_repo(image)));
     }
@@ -1545,9 +1538,8 @@ services:
             "reg.example.com",
         )
         .unwrap();
-        // `ghcr.io` becomes `ghcr-io`, so the pin drops our prefix and still
-        // names one path. A pin of `ghcr.io/org/app` would send the platform
-        // to the real ghcr.io for a digest only we hold.
+        // A pin of `ghcr.io/org/app` would send the platform to the real
+        // ghcr.io for a digest only we hold.
         assert!(
             out.contains("image: ghcr-io/org/app:v1@sha256:fakepushdigest"),
             "expected the flattened pin without our prefix, got: {out}"
@@ -1561,15 +1553,11 @@ services:
     #[test]
     fn pin_images_flattens_a_host_the_author_wrote_below_our_registry() {
         if !has_compose() {
-            // Loud in CI (skip_or_fail panics there) so a runner missing
-            // docker-compose can't silently drop this coverage.
             skip_or_fail("docker-compose (Docker Compose v2) is not available");
             return;
         }
-        // The compose file names our registry and a host below it. The
-        // registry serves that exact path, but a pin of it would carry the
-        // registry address, so snouty pushes the flattened path instead and
-        // pins a name the platform resolves.
+        // The registry serves the author's path, but a pin of it would carry
+        // the registry address, so snouty pushes the flattened path instead.
         let rt = FakeRuntime {
             available_images: BTreeMap::from([(
                 "reg.example.com/ghcr.io/org/app:v1".to_string(),
@@ -1641,8 +1629,6 @@ services:
             skip_or_fail("docker-compose (Docker Compose v2) is not available");
             return;
         }
-        // The compose file already names our registry, and no registry serves
-        // the local bytes.
         let rt = FakeRuntime {
             available_images: BTreeMap::from([("reg.example.com/myapp:v1".to_string(), true)]),
             architectures: BTreeMap::from([(

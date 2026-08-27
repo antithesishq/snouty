@@ -225,7 +225,7 @@ fn authn_checks(sources: &[AttributedValue<AuthenticationInfo>]) -> Vec<Check> {
 
     let mut checks = match credentials.value() {
         AuthenticationInfo::GithubActionsOidc { .. } => {
-            vec![enrich(
+            vec![enrich_with_origin(
                 Check::ok(
                     "github_actions_oidc_token",
                     "Github Actions OIDC token provided",
@@ -234,28 +234,29 @@ fn authn_checks(sources: &[AttributedValue<AuthenticationInfo>]) -> Vec<Check> {
             )]
         }
         AuthenticationInfo::OAuth { .. } => {
-            vec![enrich(
+            vec![enrich_with_origin(
                 Check::ok("oauth_credentials", "OAuth credentials used"),
                 credentials,
             )]
         }
         AuthenticationInfo::ApiKey { .. } => {
-            vec![enrich(
+            vec![enrich_with_origin(
                 Check::ok("api_key", "API key provided"),
                 credentials,
             )]
         }
         AuthenticationInfo::Password { username, .. } => vec![
-            Check::warn("api_key", "API key not provided")
-                .note(
-                    Level::Warning,
-                    "`snouty runs` and other API commands require an API key",
+            with_credential_remedy(
+                Check::warn(
+                    CREDENTIALS_CHECK_NAME,
+                    "No credentials the API commands accept",
                 )
                 .note(
-                    Level::Note,
-                    "ask Antithesis support for an API key if you don't have one",
+                    Level::Warning,
+                    "`snouty runs` and other API commands refuse username/password",
                 ),
-            enrich(
+            ),
+            enrich_with_origin(
                 Check::ok(
                     "basic_auth",
                     format!("Using password credentials for user [{username}]"),
@@ -274,19 +275,29 @@ fn authn_checks(sources: &[AttributedValue<AuthenticationInfo>]) -> Vec<Check> {
     checks
 }
 
+/// The check that reports a credential shortfall: no credential at all, or
+/// only the deprecated username and password.
+const CREDENTIALS_CHECK_NAME: &str = "credentials";
+
 fn missing_credentials_check(message: impl Into<String>) -> Check {
-    Check::fail("api_key", message)
-        .note(
-            Level::Error,
-            "snouty requires an API key to authenticate with Antithesis",
-        )
+    with_credential_remedy(Check::fail(CREDENTIALS_CHECK_NAME, message).note(
+        Level::Error,
+        "snouty needs credentials to authenticate with Antithesis",
+    ))
+}
+
+/// The remedy notes for a credential shortfall. Every credential kind except
+/// username and password is accepted, so the notes name the ways to get one
+/// rather than naming an API key alone.
+fn with_credential_remedy(check: Check) -> Check {
+    check
         .note(
             Level::Note,
             "run `snouty login` to sign in and store credentials",
         )
         .note(
             Level::Note,
-            "ask Antithesis support for an API key if you don't have one",
+            "or set ANTITHESIS_API_KEY; ask Antithesis support for an API key if you don't have one",
         )
 }
 
@@ -382,7 +393,7 @@ fn drop_action<T>(attribution: &AttributedValue<T>) -> String {
     }
 }
 
-fn enrich<T>(check: Check, attribution: &AttributedValue<T>) -> Check {
+fn enrich_with_origin<T>(check: Check, attribution: &AttributedValue<T>) -> Check {
     check.note(
         Level::Note,
         format!("read from {}", describe_origin(attribution)),
@@ -705,7 +716,7 @@ mod tests {
     }
 
     #[test]
-    fn auth_password_warns_on_key_and_notes_deprecation() {
+    fn auth_password_warns_on_credentials_and_notes_deprecation() {
         let checks = authn_checks(&[AttributedValue::EnvironmentVariable {
             value: AuthenticationInfo::Password {
                 username: "user".to_owned(),
@@ -715,7 +726,15 @@ mod tests {
         }]);
         assert_eq!(checks.len(), 2);
         assert_eq!(checks[0].status, Status::Warn);
-        assert!(checks[0].message.contains("API key not provided"));
+        assert_eq!(checks[0].name, CREDENTIALS_CHECK_NAME);
+        assert!(checks[0].message.contains("No credentials"));
+        // The remedy must name `snouty login` too, not an API key alone.
+        assert!(
+            checks[0]
+                .notes
+                .iter()
+                .any(|n| n.text.contains("snouty login"))
+        );
         assert!(checks[0].notes.iter().any(|n| n.level == Level::Warning));
         assert!(
             checks[0]
@@ -1138,7 +1157,7 @@ mod tests {
         };
         let value = serde_json::to_value(&report).unwrap();
         assert_eq!(value["ok"], false);
-        assert_eq!(value["checks"][0]["name"], "api_key");
+        assert_eq!(value["checks"][0]["name"], "credentials");
         assert_eq!(value["checks"][0]["status"], "error");
         assert_eq!(value["checks"][0]["notes"][0]["level"], "error");
         assert_eq!(value["settings"]["tenant"], "acme");

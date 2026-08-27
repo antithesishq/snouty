@@ -399,8 +399,6 @@ impl AuthenticationInfo {
         profile: Option<&str>,
         policy: PasswordPolicy,
     ) -> Result<AttributedValue<Self>> {
-        // Reading past the first credential would open the system keychain,
-        // which prompts the user on some platforms, for a value no command uses.
         for origin in CredentialOrigin::in_resolution_order(profile) {
             if let Some(found) = origin.resolve()? {
                 return apply_password_policy(found, policy);

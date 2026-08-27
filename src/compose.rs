@@ -572,21 +572,15 @@ impl DockerCompose {
             pinned.insert(name.clone(), digests[dest.as_str()].clone());
         }
 
-        // Drop the `registry` prefix from every pin that points into it. The
-        // prefix adds nothing, and it ties the compose file to the spelling
-        // this machine uses to reach the registry — a proxy or mirror alias
-        // that a test run need not resolve.
+        // The prefix ties the compose file to the spelling this machine uses
+        // to reach the registry — a proxy or mirror alias that a test run need
+        // not resolve.
         //
-        // Only when what remains resolves against the platform's registries.
         // Our repository can hold a path that itself opens with a host, as
         // `{registry}/ghcr.io/org/app` does whenever ghcr.io did not serve the
         // local bytes. The platform reads a host in a compose image as
         // authoritative, so stripping there would send it to ghcr.io for a
-        // digest only we hold. That pin stays fully qualified.
-        //
-        // A pin whose repo came back from `normalize_repo` in another spelling
-        // than `registry` keeps its prefix too. That is today's behavior, so
-        // the miss costs nothing.
+        // digest only we hold.
         for pinned_ref in pinned.values_mut() {
             match pinned_ref.strip_prefix(&prefix) {
                 Some(rest) if !has_registry_host(rest) => *pinned_ref = rest.to_string(),
@@ -1520,9 +1514,7 @@ services:
             "reg.example.com",
         )
         .unwrap();
-        // The pin keeps our prefix, because what follows it opens with a
-        // host. The platform would read a stripped `ghcr.io/org/app` as
-        // authoritative and ask ghcr.io for a digest only we hold.
+        // The pin keeps our prefix, because what follows it opens with a host.
         assert!(
             out.contains("image: reg.example.com/ghcr.io/org/app:v1@sha256:fakepushdigest"),
             "expected the push digest pinned with our prefix kept, got: {out}"
@@ -1541,8 +1533,7 @@ services:
             return;
         }
         // The compose file already names our registry, and no registry serves
-        // the local bytes. `dest` equals the image, so nothing is re-tagged,
-        // and the push digest is pinned with the prefix dropped.
+        // the local bytes.
         let rt = FakeRuntime {
             available_images: BTreeMap::from([("reg.example.com/myapp:v1".to_string(), true)]),
             architectures: BTreeMap::from([(
@@ -1707,7 +1698,6 @@ services:
                     .unwrap()
                     .to_string())
             };
-            // The pin drops our prefix, so it starts with the bare local name.
             let pinned_prefix = format!("{local}@sha256:");
 
             // Case 1 — build stanza: the local build is pushed and pinned.

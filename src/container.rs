@@ -844,10 +844,8 @@ pub fn image_ref_tag(image_ref: &str) -> &str {
     }
 }
 
-/// Whether a leading path segment names a registry host rather than the first
-/// component of a Docker Hub repository. A host carries a dot or a port, or is
-/// exactly `localhost`; this is the rule a container runtime uses to read
-/// `ghcr.io/org/app` as hosted and `org/app` as Hub shorthand.
+/// The rule a container runtime uses to read `ghcr.io/org/app` as hosted and
+/// `org/app` as Docker Hub shorthand.
 fn is_registry_host(segment: &str) -> bool {
     segment.contains('.') || segment.contains(':') || segment == "localhost"
 }

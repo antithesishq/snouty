@@ -892,9 +892,11 @@ class Story:
     # step per prompt. It runs in a throwaway `$HOME` so the credentials and
     # settings it persists never touch the operator's real config.
     dialogue: tuple[Step, ...] | None = None
-    # Files to pre-write into the throwaway HOME before running, keyed by
-    # HOME-relative path — models pre-existing state (a prior login, a broken
-    # settings file). Mirrors the spec fixtures' txtar `-- path --` sections.
+    # Files to pre-write into the throwaway directory before running, keyed by
+    # relative path — models pre-existing state (a prior login, a broken settings
+    # file). Mirrors the spec fixtures' txtar `-- path --` sections. The path is
+    # relative to the throwaway HOME for a TTY story, and to the throwaway
+    # `$XDG_CONFIG_HOME` for an `isolate_config` story.
     seed_files: dict[str, str] | None = None
     # HOME-relative files to read back after the run and render under a
     # "Persisted state" section (secrets are redacted before embedding).
@@ -1871,6 +1873,32 @@ def build_stories(d: Discovery) -> list[Story]:
             env=_doctor_env(api_key=False, username=True, password=True, tenant=True, repo=True),
         ),
         Story(
+            "doctor-shadowed-credentials",
+            "I ran `snouty login` but doctor still reports my old credentials",
+            "I stored an API key with `snouty login`, but a username and password are still "
+            "exported in my shell; I want to know why doctor keeps reporting the old ones.",
+            "doctor warns that more than one credential source is available, names the credential "
+            "it uses and where it comes from, names the stored credential it ignores, and states "
+            "the action that hands the run to the stored one (issue #292).",
+            ["doctor", "--offline"],
+            doctor_check(
+                contains=(
+                    "more than one credential source is available",
+                    "snouty uses the username and password",
+                    "snouty ignores the API key",
+                    "unset [ANTITHESIS_USERNAME, ANTITHESIS_PASSWORD]",
+                ),
+            ),
+            json_capable=False,
+            env=_doctor_env(api_key=False, username=True, password=True, tenant=True, repo=True),
+            isolate_config=True,
+            seed_files={
+                "snouty/credentials.toml": (
+                    f'[default]\ntype = "ApiKey"\napi_key = "{_SEED_KEY}"\n'
+                )
+            },
+        ),
+        Story(
             "doctor-json",
             "Gate CI on a ready environment with --json",
             "I want to check my environment in a script/CI step and parse the result, "
@@ -2648,14 +2676,20 @@ def run_tty_story(sn: Snouty, story: Story) -> StoryRun:
 
 
 def _run_isolated_story(sn: Snouty, story: Story) -> StoryRun:
-    """Run a story that models an unconfigured machine with the global config dir
-    pointed at an empty throwaway `$XDG_CONFIG_HOME`, so no persisted `snouty
-    login` credentials (`credentials.toml` / `settings.toml`) leak in. The
-    `--json` rows aren't captured (`json_lines` can't take an env override, and
-    the only isolated stories — the no-auth `doctor` stories — validate on
+    """Run a story with the global config dir pointed at a throwaway
+    `$XDG_CONFIG_HOME`, so no persisted `snouty login` credentials
+    (`credentials.toml` / `settings.toml`) leak in. The directory starts empty,
+    which models an unconfigured machine; `seed_files` writes the persisted state
+    a story needs. The `--json` rows aren't captured (`json_lines` can't take an
+    env override, and the isolated stories — all `doctor` stories — validate on
     rendered text anyway)."""
-    config_home = Path(tempfile.mkdtemp(prefix="snouty-gallery-noauth."))
+    config_home = Path(tempfile.mkdtemp(prefix="snouty-gallery-config."))
     try:
+        for rel_path, contents in (story.seed_files or {}).items():
+            dest = config_home / rel_path
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_text(contents)
+
         env = {**(story.env or {}), "XDG_CONFIG_HOME": str(config_home)}
         result = sn.run(story.args, env)
         return StoryRun(story, result, None)

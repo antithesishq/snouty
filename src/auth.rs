@@ -53,6 +53,11 @@ pub(crate) const CREDENTIAL_ENV_VARS: [&str; 5] = [
 
 const CREDENTIALS_FILENAME: &str = "credentials.toml";
 
+/// The message every command raises when it finds no credential at all.
+/// `snouty doctor` renders the same words when its own scan comes up empty, so
+/// the two cannot drift apart.
+pub(crate) const NO_CREDENTIALS_MESSAGE: &str = "No Antithesis credentials found";
+
 const OIDC_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[derive(Clone)]
@@ -271,6 +276,64 @@ impl std::fmt::Debug for AuthenticationInfo {
     }
 }
 
+/// The kind of credential, never the secret. `snouty doctor` names the kind it
+/// uses and the kinds it ignores.
+impl std::fmt::Display for AuthenticationInfo {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::ApiKey { .. } => "API key",
+            Self::GithubActionsOidc { .. } => "GitHub Actions OIDC token",
+            Self::OAuth { .. } => "OAuth credentials",
+            Self::Password { .. } => "username and password",
+        })
+    }
+}
+
+/// A place snouty reads credentials from. More than one origin can hold a
+/// credential at once — an exported environment variable next to the
+/// credentials file `snouty login` wrote, for example. The first origin in
+/// resolution order then wins, and the others are ignored.
+enum CredentialOrigin {
+    Environment,
+    Keychain { profile: Option<String> },
+    CredentialsFile { profile: Option<String> },
+    GithubActionsOidc,
+}
+
+impl CredentialOrigin {
+    /// Every origin, in the order snouty reads them. An explicit profile owns a
+    /// keychain entry and a section of the credentials file of its own, and
+    /// both come before the default ones.
+    fn in_resolution_order(profile: Option<&str>) -> Vec<Self> {
+        let mut origins = vec![Self::Environment];
+        if let Some(profile) = profile {
+            origins.push(Self::Keychain {
+                profile: Some(profile.to_owned()),
+            });
+            origins.push(Self::CredentialsFile {
+                profile: Some(profile.to_owned()),
+            });
+        }
+        origins.push(Self::Keychain { profile: None });
+        origins.push(Self::CredentialsFile { profile: None });
+        origins.push(Self::GithubActionsOidc);
+        origins
+    }
+
+    /// The credential this origin holds. `None` means the origin is empty,
+    /// which is ordinary: resolution then moves on to the next origin.
+    fn resolve(&self) -> Result<Option<AttributedValue<AuthenticationInfo>>> {
+        match self {
+            Self::Environment => AuthenticationInfo::try_from_env(),
+            Self::Keychain { profile } => AuthenticationInfo::try_from_keychain(profile.as_deref()),
+            Self::CredentialsFile { profile } => {
+                AuthenticationInfo::try_from_credentials_file(profile.as_deref())
+            }
+            Self::GithubActionsOidc => AuthenticationInfo::try_from_github_actions_environment(),
+        }
+    }
+}
+
 impl AuthenticationInfo {
     fn try_from_env() -> Result<Option<AttributedValue<Self>>> {
         if let Some(api_key) = env::var(API_KEY_VAR_NAME)? {
@@ -324,81 +387,57 @@ impl AuthenticationInfo {
         Ok(None)
     }
 
+    /// The credential stored in the credentials file, under `profile` when one
+    /// is named and under the default section otherwise.
+    fn try_from_credentials_file(profile: Option<&str>) -> Result<Option<AttributedValue<Self>>> {
+        let Some((path, parsed)) = try_load_credentials_file()? else {
+            return Ok(None);
+        };
+        let found = match profile {
+            Some(name) => parsed
+                .profile
+                .and_then(|by_profile| by_profile.get(name).cloned()),
+            None => parsed.default,
+        };
+        Ok(found.map(|credentials| AttributedValue::SettingsFile {
+            value: credentials.convert_to_authentication_info(OAuthRefreshInfo::CredentialsFile {
+                path: path.clone(),
+                profile: profile.map(str::to_owned),
+            }),
+            settings_file_path: path,
+            profile: profile.map(str::to_owned),
+        }))
+    }
+
     pub(crate) fn for_ambient_configuration_with_attribution(
         profile: Option<&str>,
         policy: PasswordPolicy,
     ) -> Result<AttributedValue<Self>> {
-        if let Some(from_env) = Self::try_from_env()? {
-            return apply_password_policy(from_env, policy);
-        }
-
-        let credentials_file: Option<(PathBuf, CredentialsFile)>;
-        if let Some(profile_name) = profile {
-            if let Some(from_keychain) = Self::try_from_keychain(profile)? {
-                return apply_password_policy(from_keychain, policy);
+        // Stop at the first origin that holds a credential. Reading the rest
+        // would open the system keychain, which prompts the user on some
+        // platforms, for a value no command would use.
+        for origin in CredentialOrigin::in_resolution_order(profile) {
+            if let Some(found) = origin.resolve()? {
+                return apply_password_policy(found, policy);
             }
-
-            credentials_file = match try_load_credentials_file()? {
-                Some((path, parsed)) => {
-                    if let Some(from_credentials_file) = parsed
-                        .profile
-                        .as_ref()
-                        .and_then(|by_profile| by_profile.get(profile_name))
-                    {
-                        return apply_password_policy(
-                            AttributedValue::SettingsFile {
-                                value: from_credentials_file
-                                    .clone()
-                                    .convert_to_authentication_info(
-                                        OAuthRefreshInfo::CredentialsFile {
-                                            path: path.clone(),
-                                            profile: Some(profile_name.to_owned()),
-                                        },
-                                    ),
-                                settings_file_path: path,
-                                profile: Some(profile_name.to_owned()),
-                            },
-                            policy,
-                        );
-                    }
-                    Some((path, parsed))
-                }
-                None => None,
-            };
-        } else {
-            credentials_file = try_load_credentials_file()?;
         }
 
-        if let Some(from_keychain) = Self::try_from_keychain(None)? {
-            return apply_password_policy(from_keychain, policy);
-        }
-
-        if let Some((path, parsed)) = credentials_file
-            && let Some(from_credentials_file) = parsed.default
-        {
-            return apply_password_policy(
-                AttributedValue::SettingsFile {
-                    value: from_credentials_file.convert_to_authentication_info(
-                        OAuthRefreshInfo::CredentialsFile {
-                            path: path.clone(),
-                            profile: None,
-                        },
-                    ),
-                    settings_file_path: path,
-                    profile: None,
-                },
-                policy,
-            );
-        }
-
-        if let Some(from_github_actions_environment) = Self::try_from_github_actions_environment()?
-        {
-            return Ok(from_github_actions_environment);
-        }
-
-        Err(user_error("No Antithesis credentials found").suggestion(
+        Err(user_error(NO_CREDENTIALS_MESSAGE).suggestion(
             "set ANTITHESIS_API_KEY; ask Antithesis support for an API key if you don't have one",
         ))
+    }
+
+    /// Every origin that holds a credential, in resolution order. The first is
+    /// the one every command uses; each later one is ignored. `snouty doctor`
+    /// reads the whole list, so it can report a stored credential that an
+    /// exported one hides.
+    pub(crate) fn available_ambient_credentials(
+        profile: Option<&str>,
+    ) -> Result<Vec<AttributedValue<Self>>> {
+        CredentialOrigin::in_resolution_order(profile)
+            .iter()
+            .filter_map(|origin| origin.resolve().transpose())
+            .collect()
     }
 
     pub(crate) fn for_ambient_configuration(

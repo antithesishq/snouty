@@ -36,6 +36,8 @@ stderr '.*deprecated.*'
 stderr '.*snouty login.*'
 stderr '.*snouty launch.*'
 stderr '.*ANTITHESIS_PASSWORD.*'
+# One source only, so doctor says nothing about a conflict.
+! stderr '.*more than one credential source.*'
 
 # --- API connectivity + version check (issue #146) ---
 # Cases that fabricate a status via mock-server are [!staging]-gated: under
@@ -97,3 +99,24 @@ env ANTITHESIS_BASE_URL=http://127.0.0.1:1
 ! snouty doctor
 stderr '.*Antithesis API unreachable.*'
 stderr '.*could not connect to 127.0.0.1.*'
+
+# --- conflicting credential sources (issue #292) ---
+# A credential exported in the environment hides one that `snouty login` stored
+# in the credentials file. snouty still authenticates, so this is a warning:
+# doctor names the credential it uses, the one it ignores, and the action that
+# hands the run to the stored one. `--offline` keeps the check local.
+isolate-home credential_conflict
+env ANTITHESIS_API_KEY=
+env ANTITHESIS_USERNAME=testuser
+env ANTITHESIS_PASSWORD=testpass
+env ANTITHESIS_TENANT=testtenant
+snouty doctor --offline
+stderr '.*more than one credential source is available.*'
+stderr 'snouty uses the username and password from the \[ANTITHESIS_USERNAME, ANTITHESIS_PASSWORD\] environment variables'
+stderr 'snouty ignores the API key from the \[default\] profile in .*credentials.toml'
+stderr 'unset \[ANTITHESIS_USERNAME, ANTITHESIS_PASSWORD\] to use the next source'
+
+-- credential_conflict/.config/snouty/credentials.toml --
+[default]
+type = "ApiKey"
+api_key = "spec-stored-key"

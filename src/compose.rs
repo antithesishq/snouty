@@ -1715,11 +1715,8 @@ services:
             let digest = built.rsplit_once('@').unwrap().1;
             let repo = local.rsplit_once(':').unwrap().0;
             assert!(
-                !matches!(
-                    rt.remote_manifest(&format!("{addr}/{repo}@{digest}")),
-                    RemoteManifest::NotFound
-                ),
-                "{}: registry {addr} should serve the pushed digest {digest}",
+                registry.serves_digest(repo, digest),
+                "{}: registry {addr} should serve {repo}@{digest}",
                 rt.name()
             );
 

@@ -844,6 +844,20 @@ pub fn image_ref_tag(image_ref: &str) -> &str {
     }
 }
 
+/// Whether a leading path segment names a registry host rather than the first
+/// component of a Docker Hub repository. A host carries a dot or a port, or is
+/// exactly `localhost`; this is the rule a container runtime uses to read
+/// `ghcr.io/org/app` as hosted and `org/app` as Hub shorthand.
+fn is_registry_host(segment: &str) -> bool {
+    segment.contains('.') || segment.contains(':') || segment == "localhost"
+}
+
+/// Whether `repo` names its own registry, as opposed to a name a runtime
+/// resolves against its configured registries.
+pub fn has_registry_host(repo: &str) -> bool {
+    matches!(repo.split_once('/'), Some((first, _)) if is_registry_host(first))
+}
+
 /// Expand Docker Hub shorthand so repository names compare reliably across
 /// runtimes and reference styles: `nginx` → `docker.io/library/nginx`,
 /// `user/app` → `docker.io/user/app`, `index.docker.io/...` → `docker.io/...`.
@@ -851,9 +865,7 @@ pub fn image_ref_tag(image_ref: &str) -> &str {
 /// port, or `localhost`) pass through unchanged.
 pub fn normalize_repo(repo: &str) -> String {
     let (registry, rest) = match repo.split_once('/') {
-        Some((first, rest))
-            if first.contains('.') || first.contains(':') || first == "localhost" =>
-        {
+        Some((first, rest)) if is_registry_host(first) => {
             let registry = if first == "index.docker.io" {
                 "docker.io"
             } else {

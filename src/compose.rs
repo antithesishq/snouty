@@ -16,7 +16,8 @@ use color_eyre::{
 use crate::config::ComposeConfig;
 use crate::container::{
     Architecture, ContainerRuntime, DISCOVERY_COMMAND_TIMEOUT, RemoteManifest, available_engines,
-    digests_for_repo, image_ref_tag, image_repo, is_podman_in_disguise, normalize_repo,
+    digests_for_repo, has_registry_host, image_ref_tag, image_repo, is_podman_in_disguise,
+    normalize_repo,
 };
 use crate::error::user_error;
 use crate::process::{ProcessGroupChild, output_with_timeout};
@@ -575,9 +576,21 @@ impl DockerCompose {
         // prefix adds nothing, and it ties the compose file to the spelling
         // this machine uses to reach the registry — a proxy or mirror alias
         // that a test run need not resolve.
+        //
+        // Only when what remains resolves against the platform's registries.
+        // Our repository can hold a path that itself opens with a host, as
+        // `{registry}/ghcr.io/org/app` does whenever ghcr.io did not serve the
+        // local bytes. The platform reads a host in a compose image as
+        // authoritative, so stripping there would send it to ghcr.io for a
+        // digest only we hold. That pin stays fully qualified.
+        //
+        // A pin whose repo came back from `normalize_repo` in another spelling
+        // than `registry` keeps its prefix too. That is today's behavior, so
+        // the miss costs nothing.
         for pinned_ref in pinned.values_mut() {
-            if let Some(unqualified) = pinned_ref.strip_prefix(&prefix) {
-                *pinned_ref = unqualified.to_string();
+            match pinned_ref.strip_prefix(&prefix) {
+                Some(rest) if !has_registry_host(rest) => *pinned_ref = rest.to_string(),
+                _ => {}
             }
         }
 
@@ -1507,13 +1520,50 @@ services:
             "reg.example.com",
         )
         .unwrap();
+        // The pin keeps our prefix, because what follows it opens with a
+        // host. The platform would read a stripped `ghcr.io/org/app` as
+        // authoritative and ask ghcr.io for a digest only we hold.
         assert!(
-            out.contains("image: ghcr.io/org/app:v1@sha256:fakepushdigest"),
-            "expected the push digest pinned without our prefix, got: {out}"
+            out.contains("image: reg.example.com/ghcr.io/org/app:v1@sha256:fakepushdigest"),
+            "expected the push digest pinned with our prefix kept, got: {out}"
         );
         assert_eq!(
             *rt.pushed.lock().unwrap(),
             vec!["reg.example.com/ghcr.io/org/app:v1".to_string()]
+        );
+    }
+    #[test]
+    fn pin_images_strips_prefix_from_an_already_prefixed_source_image() {
+        if !has_compose() {
+            // Loud in CI (skip_or_fail panics there) so a runner missing
+            // docker-compose can't silently drop this coverage.
+            skip_or_fail("docker-compose (Docker Compose v2) is not available");
+            return;
+        }
+        // The compose file already names our registry, and no registry serves
+        // the local bytes. `dest` equals the image, so nothing is re-tagged,
+        // and the push digest is pinned with the prefix dropped.
+        let rt = FakeRuntime {
+            available_images: BTreeMap::from([("reg.example.com/myapp:v1".to_string(), true)]),
+            architectures: BTreeMap::from([(
+                "reg.example.com/myapp:v1".to_string(),
+                "amd64".to_string(),
+            )]),
+            ..Default::default()
+        };
+        let out = pin_with_fake(
+            &rt,
+            "services:\n  app:\n    image: reg.example.com/myapp:v1\n",
+            "reg.example.com",
+        )
+        .unwrap();
+        assert!(
+            out.contains("image: myapp:v1@sha256:fakepushdigest"),
+            "expected the push digest pinned without our prefix, got: {out}"
+        );
+        assert_eq!(
+            *rt.pushed.lock().unwrap(),
+            vec!["reg.example.com/myapp:v1".to_string()]
         );
     }
     #[test]

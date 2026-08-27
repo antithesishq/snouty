@@ -1,6 +1,7 @@
 # Unreleased
 
 - `snouty doctor` reports more than one credential source. snouty uses the first source it finds, so an exported `ANTITHESIS_USERNAME` and `ANTITHESIS_PASSWORD` hide the API key that `snouty login` stored. doctor now warns, names the credential it uses and the credentials it ignores, and states the action that hands the run to the next source ([#292](https://github.com/antithesishq/snouty/issues/292))
+- A compose service image that snouty pushes to the Antithesis repository is pinned without that repository's host (`name:tag@sha256:...`). The platform resolves an unqualified image against the tenant's own repository, so the host added nothing, and naming it tied the compose file to the spelling the launching machine used to reach the registry — a proxy or mirror alias that need not resolve from inside a test run. An image pinned in any other registry keeps its host
 
 # Version 0.7.0 (2026-08-26)
 

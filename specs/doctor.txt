@@ -104,19 +104,37 @@ stderr '.*could not connect to 127.0.0.1.*'
 # A credential exported in the environment hides one that `snouty login` stored
 # in the credentials file. snouty still authenticates, so this is a warning:
 # doctor names the credential it uses, the one it ignores, and the action that
-# hands the run to the stored one. `--offline` keeps the check local.
+# hands the run to the stored one. The scan reads no network, and without an
+# API key doctor makes no API call, so this block needs no mock and no
+# `--offline`.
 isolate-home credential_conflict
 env ANTITHESIS_API_KEY=
 env ANTITHESIS_USERNAME=testuser
 env ANTITHESIS_PASSWORD=testpass
 env ANTITHESIS_TENANT=testtenant
-snouty doctor --offline
+snouty doctor
 stderr '.*more than one credential source is available.*'
 stderr 'snouty uses the username and password from the \[ANTITHESIS_USERNAME, ANTITHESIS_PASSWORD\] environment variables'
 stderr 'snouty ignores the API key from the \[default\] profile in .*credentials.toml'
 stderr 'unset \[ANTITHESIS_USERNAME, ANTITHESIS_PASSWORD\] to use the next source'
 
+# A credentials file snouty cannot parse sits behind the exported API key. No
+# command reads that far, so doctor reports the key it uses and stays green
+# rather than failing on a file that stops nothing. `--offline` is needed here:
+# the API key makes doctor call the API, and `testtenant` resolves nowhere.
+isolate-home broken_credentials
+env ANTITHESIS_API_KEY=testkey
+env ANTITHESIS_TENANT=testtenant
+env ANTITHESIS_USERNAME=
+env ANTITHESIS_PASSWORD=
+snouty doctor --offline
+stderr '.*API key provided.*'
+! stderr '(?s).*credentials.toml.*'
+
 -- credential_conflict/.config/snouty/credentials.toml --
 [default]
 type = "ApiKey"
 api_key = "spec-stored-key"
+
+-- broken_credentials/.config/snouty/credentials.toml --
+this is not valid TOML {{{

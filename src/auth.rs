@@ -198,12 +198,7 @@ impl OAuthRefreshInfo {
                     return Ok(None);
                 };
                 let parsed = parse_credentials_file_toml(contents, path)?;
-                Ok(match profile {
-                    Some(profile) => parsed
-                        .profile
-                        .and_then(|by_profile| by_profile.get(profile).cloned()),
-                    None => parsed.default,
-                })
+                Ok(parsed.for_profile(profile.as_deref()))
             }
         }
     }
@@ -293,41 +288,45 @@ impl std::fmt::Display for AuthenticationInfo {
 /// credential at once — an exported environment variable next to the
 /// credentials file `snouty login` wrote, for example. The first origin in
 /// resolution order then wins, and the others are ignored.
-enum CredentialOrigin {
+#[derive(Clone, Copy)]
+enum CredentialOrigin<'a> {
     Environment,
-    Keychain { profile: Option<String> },
-    CredentialsFile { profile: Option<String> },
+    Keychain { profile: Option<&'a str> },
+    CredentialsFile { profile: Option<&'a str> },
     GithubActionsOidc,
 }
 
-impl CredentialOrigin {
-    /// Every origin, in the order snouty reads them. An explicit profile owns a
-    /// keychain entry and a section of the credentials file of its own, and
-    /// both come before the default ones.
-    fn in_resolution_order(profile: Option<&str>) -> Vec<Self> {
-        let mut origins = vec![Self::Environment];
-        if let Some(profile) = profile {
-            origins.push(Self::Keychain {
-                profile: Some(profile.to_owned()),
-            });
-            origins.push(Self::CredentialsFile {
-                profile: Some(profile.to_owned()),
-            });
-        }
-        origins.push(Self::Keychain { profile: None });
-        origins.push(Self::CredentialsFile { profile: None });
-        origins.push(Self::GithubActionsOidc);
-        origins
+impl<'a> CredentialOrigin<'a> {
+    /// An explicit profile owns a keychain entry and a section of the
+    /// credentials file of its own, and both come before the default ones.
+    fn in_resolution_order(profile: Option<&'a str>) -> impl Iterator<Item = Self> {
+        [Self::Environment]
+            .into_iter()
+            .chain(profile.into_iter().flat_map(|profile| {
+                [
+                    Self::Keychain {
+                        profile: Some(profile),
+                    },
+                    Self::CredentialsFile {
+                        profile: Some(profile),
+                    },
+                ]
+            }))
+            .chain([
+                Self::Keychain { profile: None },
+                Self::CredentialsFile { profile: None },
+                Self::GithubActionsOidc,
+            ])
     }
 
-    /// The credential this origin holds. `None` means the origin is empty,
-    /// which is ordinary: resolution then moves on to the next origin.
-    fn resolve(&self) -> Result<Option<AttributedValue<AuthenticationInfo>>> {
+    /// `None` means the origin is empty, which is ordinary: resolution then
+    /// moves on to the next origin.
+    fn resolve(self) -> Result<Option<AttributedValue<AuthenticationInfo>>> {
         match self {
             Self::Environment => AuthenticationInfo::try_from_env(),
-            Self::Keychain { profile } => AuthenticationInfo::try_from_keychain(profile.as_deref()),
+            Self::Keychain { profile } => AuthenticationInfo::try_from_keychain(profile),
             Self::CredentialsFile { profile } => {
-                AuthenticationInfo::try_from_credentials_file(profile.as_deref())
+                AuthenticationInfo::try_from_credentials_file(profile)
             }
             Self::GithubActionsOidc => AuthenticationInfo::try_from_github_actions_environment(),
         }
@@ -387,26 +386,22 @@ impl AuthenticationInfo {
         Ok(None)
     }
 
-    /// The credential stored in the credentials file, under `profile` when one
-    /// is named and under the default section otherwise.
     fn try_from_credentials_file(profile: Option<&str>) -> Result<Option<AttributedValue<Self>>> {
         let Some((path, parsed)) = try_load_credentials_file()? else {
             return Ok(None);
         };
-        let found = match profile {
-            Some(name) => parsed
-                .profile
-                .and_then(|by_profile| by_profile.get(name).cloned()),
-            None => parsed.default,
-        };
-        Ok(found.map(|credentials| AttributedValue::SettingsFile {
-            value: credentials.convert_to_authentication_info(OAuthRefreshInfo::CredentialsFile {
-                path: path.clone(),
+        Ok(parsed
+            .for_profile(profile)
+            .map(|credentials| AttributedValue::SettingsFile {
+                value: credentials.convert_to_authentication_info(
+                    OAuthRefreshInfo::CredentialsFile {
+                        path: path.clone(),
+                        profile: profile.map(str::to_owned),
+                    },
+                ),
+                settings_file_path: path,
                 profile: profile.map(str::to_owned),
-            }),
-            settings_file_path: path,
-            profile: profile.map(str::to_owned),
-        }))
+            }))
     }
 
     pub(crate) fn for_ambient_configuration_with_attribution(
@@ -431,13 +426,29 @@ impl AuthenticationInfo {
     /// the one every command uses; each later one is ignored. `snouty doctor`
     /// reads the whole list, so it can report a stored credential that an
     /// exported one hides.
+    ///
+    /// This reads every origin, so unlike
+    /// [`Self::for_ambient_configuration_with_attribution`] it always opens the
+    /// system keychain. Only a command that reports on the credentials should
+    /// call it, and only one that never uses the result to authenticate: the
+    /// [`PasswordPolicy`] gate does not run here.
     pub(crate) fn available_ambient_credentials(
         profile: Option<&str>,
     ) -> Result<Vec<AttributedValue<Self>>> {
-        CredentialOrigin::in_resolution_order(profile)
-            .iter()
-            .filter_map(|origin| origin.resolve().transpose())
-            .collect()
+        let mut found = Vec::new();
+        for origin in CredentialOrigin::in_resolution_order(profile) {
+            match origin.resolve() {
+                Ok(Some(credential)) => found.push(credential),
+                Ok(None) => {}
+                // An origin that fails before the first credential is the error
+                // every command meets, so the scan raises it too. Past that
+                // point no command reads any further, so an origin snouty
+                // cannot read hides nothing and stays out of the report.
+                Err(_) if !found.is_empty() => {}
+                Err(err) => return Err(err),
+            }
+        }
+        Ok(found)
     }
 
     pub(crate) fn for_ambient_configuration(
@@ -1102,6 +1113,21 @@ fn apply_password_policy(
 struct CredentialsFile {
     default: Option<PersistableCredentials>,
     profile: Option<HashMap<String, PersistableCredentials>>,
+}
+
+impl CredentialsFile {
+    /// A named profile reads its own `[profile.<name>]` section, and never
+    /// falls back to `[default]`. Ambient resolution and an OAuth refresh both
+    /// read the file through here, so the two cannot disagree on which section
+    /// a profile owns.
+    fn for_profile(self, profile: Option<&str>) -> Option<PersistableCredentials> {
+        match profile {
+            Some(name) => self
+                .profile
+                .and_then(|by_profile| by_profile.get(name).cloned()),
+            None => self.default,
+        }
+    }
 }
 
 #[cfg(test)]

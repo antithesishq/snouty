@@ -219,18 +219,12 @@ fn repository_check(repository: Option<&str>) -> Check {
 /// The auth section of doctor's report, built from every origin that holds a
 /// credential: one or two checks for the credential in use, plus a warning when
 /// another origin holds one that this one hides.
-fn authn_checks(sources: Result<Vec<AttributedValue<AuthenticationInfo>>>) -> Vec<Check> {
-    let sources = match sources {
-        Ok(sources) => sources,
-        Err(err) => return vec![missing_credentials_check(err.to_string())],
-    };
-    let mut sources = sources.into_iter();
-    let Some(credentials) = sources.next() else {
+fn authn_checks(sources: &[AttributedValue<AuthenticationInfo>]) -> Vec<Check> {
+    let Some((credentials, shadowed)) = sources.split_first() else {
         return vec![missing_credentials_check(
-            crate::auth::NO_CREDENTIALS_MESSAGE.to_owned(),
+            crate::auth::NO_CREDENTIALS_MESSAGE,
         )];
     };
-    let shadowed: Vec<_> = sources.collect();
 
     let mut checks = match credentials.value() {
         AuthenticationInfo::GithubActionsOidc { .. } => {
@@ -239,19 +233,19 @@ fn authn_checks(sources: Result<Vec<AttributedValue<AuthenticationInfo>>>) -> Ve
                     "github_actions_oidc_token",
                     "Github Actions OIDC token provided",
                 ),
-                &credentials,
+                credentials,
             )]
         }
         AuthenticationInfo::OAuth { .. } => {
             vec![enrich(
                 Check::ok("oauth_credentials", "OAuth credentials used"),
-                &credentials,
+                credentials,
             )]
         }
         AuthenticationInfo::ApiKey { .. } => {
             vec![enrich(
                 Check::ok("api_key", "API key provided"),
-                &credentials,
+                credentials,
             )]
         }
         AuthenticationInfo::Password { username, .. } => vec![
@@ -274,19 +268,16 @@ fn authn_checks(sources: Result<Vec<AttributedValue<AuthenticationInfo>>>) -> Ve
                     Level::Note,
                     "username/password only enables `snouty launch` and `snouty debug`",
                 ),
-                &credentials,
+                credentials,
             ),
         ],
     };
 
-    checks.extend(shadowed_credentials_check(&credentials, &shadowed));
+    checks.extend(shadowed_credentials_check(credentials, shadowed));
     checks
 }
 
-/// The check for a machine with no credential anywhere. The message comes from
-/// the caller: a scan that found nothing states the shared "no credentials"
-/// wording, and a scan that failed states why it failed.
-fn missing_credentials_check(message: String) -> Check {
+fn missing_credentials_check(message: impl Into<String>) -> Check {
     Check::fail("api_key", message)
         .note(
             Level::Error,
@@ -302,13 +293,10 @@ fn missing_credentials_check(message: String) -> Check {
         )
 }
 
-/// snouty reads the environment, then the system keychain, then the credentials
-/// file, then the GitHub Actions OIDC token, and uses the first credential it
-/// finds. A credential in a later origin is then ignored without a word — which
-/// is what a user meets who runs `snouty login` while a credential environment
-/// variable is still exported. Name every origin and the action that drops the
-/// one in use, so the precedence is visible. This is a warning, not a failure:
-/// snouty is authenticated, just not with the credential the user expected.
+/// snouty uses the first credential it finds and ignores the rest without a
+/// word, so name every origin and the action that drops the one in use. This is
+/// a warning, not a failure: snouty is authenticated, just not with the
+/// credential the user expected.
 fn shadowed_credentials_check(
     in_use: &AttributedValue<AuthenticationInfo>,
     shadowed: &[AttributedValue<AuthenticationInfo>],
@@ -368,7 +356,7 @@ fn describe_origin<T>(attribution: &AttributedValue<T>) -> String {
             // `Display`, not `Debug`: `{:?}` on a path adds quotes of its
             // own, which read as a second set of brackets around the name.
             "the [{}] profile in {}",
-            profile.as_deref().unwrap_or("default"),
+            profile.as_deref().unwrap_or(DEFAULT_PROFILE),
             settings_file_path.display(),
         ),
         AttributedValue::Keychain { entry_name, .. } => {
@@ -391,7 +379,7 @@ fn drop_action<T>(attribution: &AttributedValue<T>) -> String {
             ..
         } => format!(
             "remove the [{}] profile from {}",
-            profile.as_deref().unwrap_or("default"),
+            profile.as_deref().unwrap_or(DEFAULT_PROFILE),
             settings_file_path.display(),
         ),
         AttributedValue::Keychain { entry_name, .. } => {
@@ -449,9 +437,10 @@ fn collect_checks(settings: &Settings) -> Vec<Check> {
     // Authentication (synchronous-only by design). doctor reads every origin,
     // not only the winning one, so it can report a credential that another one
     // hides.
-    checks.extend(authn_checks(
-        AuthenticationInfo::available_ambient_credentials(settings.profile()),
-    ));
+    match AuthenticationInfo::available_ambient_credentials(settings.profile()) {
+        Ok(sources) => checks.extend(authn_checks(&sources)),
+        Err(err) => checks.push(missing_credentials_check(err.to_string())),
+    }
 
     checks
 }
@@ -670,8 +659,6 @@ pub async fn cmd_doctor(
 
 #[cfg(test)]
 mod tests {
-    use color_eyre::eyre::eyre;
-
     use crate::auth::{API_KEY_VAR_NAME, PASSWORD_VAR_NAME, USERNAME_VAR_NAME};
     use crate::cli::UpdateChannel;
 
@@ -681,12 +668,12 @@ mod tests {
 
     #[test]
     fn auth_api_key_set_is_a_single_bare_ok_check() {
-        let checks = authn_checks(Ok(vec![AttributedValue::EnvironmentVariable {
+        let checks = authn_checks(&[AttributedValue::EnvironmentVariable {
             value: AuthenticationInfo::ApiKey {
                 api_key: "api_key".to_owned(),
             },
             environment_variable_names: vec![API_KEY_VAR_NAME],
-        }]));
+        }]);
         assert_eq!(checks.len(), 1);
         assert_eq!(checks[0].status, Status::Ok);
         assert!(checks[0].message.contains("API key provided"));
@@ -698,13 +685,13 @@ mod tests {
     #[test]
     fn auth_from_a_file_names_the_profile_and_the_path() {
         let note = |profile: Option<&str>| {
-            let checks = authn_checks(Ok(vec![AttributedValue::SettingsFile {
+            let checks = authn_checks(&[AttributedValue::SettingsFile {
                 value: AuthenticationInfo::ApiKey {
                     api_key: "api_key".to_owned(),
                 },
                 settings_file_path: std::path::PathBuf::from("/tmp/credentials.toml"),
                 profile: profile.map(str::to_owned),
-            }]));
+            }]);
             checks[0]
                 .notes
                 .iter()
@@ -727,13 +714,13 @@ mod tests {
 
     #[test]
     fn auth_password_warns_on_key_and_notes_deprecation() {
-        let checks = authn_checks(Ok(vec![AttributedValue::EnvironmentVariable {
+        let checks = authn_checks(&[AttributedValue::EnvironmentVariable {
             value: AuthenticationInfo::Password {
                 username: "user".to_owned(),
                 password: "pass".to_owned(),
             },
             environment_variable_names: vec![USERNAME_VAR_NAME, PASSWORD_VAR_NAME],
-        }]));
+        }]);
         assert_eq!(checks.len(), 2);
         assert_eq!(checks[0].status, Status::Warn);
         assert!(checks[0].message.contains("API key not provided"));
@@ -757,7 +744,7 @@ mod tests {
 
     #[test]
     fn auth_nothing_set_errors_and_only_mentions_api_key() {
-        let checks = authn_checks(Err(eyre!("PANIC PANIC PANIC")));
+        let checks = [missing_credentials_check("PANIC PANIC PANIC")];
         assert_eq!(checks.len(), 1);
         assert_eq!(checks[0].status, Status::Error);
         assert!(checks[0].message.contains("PANIC PANIC PANIC"));
@@ -793,7 +780,7 @@ mod tests {
     /// command raises, so a user who sees both reads one message.
     #[test]
     fn auth_no_source_reports_the_shared_no_credentials_message() {
-        let checks = authn_checks(Ok(Vec::new()));
+        let checks = authn_checks(&[]);
         assert_eq!(checks.len(), 1);
         assert_eq!(checks[0].status, Status::Error);
         assert_eq!(checks[0].message, crate::auth::NO_CREDENTIALS_MESSAGE);
@@ -830,7 +817,7 @@ mod tests {
 
     #[test]
     fn one_credential_source_reports_no_conflict() {
-        let checks = authn_checks(Ok(vec![file_api_key_source()]));
+        let checks = authn_checks(&[file_api_key_source()]);
         assert!(!checks.iter().any(|c| c.name == "credential_sources"));
     }
 
@@ -839,7 +826,7 @@ mod tests {
     /// action that hands the run to the stored key.
     #[test]
     fn a_shadowed_credential_is_reported_with_the_action_that_frees_it() {
-        let checks = authn_checks(Ok(vec![env_password_source(), file_api_key_source()]));
+        let checks = authn_checks(&[env_password_source(), file_api_key_source()]);
         let check = checks
             .iter()
             .find(|c| c.name == "credential_sources")
@@ -875,7 +862,7 @@ mod tests {
             },
             entry_name: "_default_".to_owned(),
         };
-        let checks = authn_checks(Ok(vec![keychain, env_password_source()]));
+        let checks = authn_checks(&[keychain, env_password_source()]);
         let check = checks
             .iter()
             .find(|c| c.name == "credential_sources")
@@ -1151,7 +1138,7 @@ mod tests {
 
     #[test]
     fn json_report_carries_checks_and_informational_settings() {
-        let checks = authn_checks(Err(eyre!("PANIC PANIC PANIC")));
+        let checks = vec![missing_credentials_check("PANIC PANIC PANIC")];
         let settings = vec![
             Setting::new("tenant", "acme"),
             Setting::maybe("https_proxy", None::<String>),

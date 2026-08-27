@@ -865,6 +865,10 @@ pub fn has_registry_host(repo: &str) -> bool {
 /// name from there.
 pub fn flatten_registry_host(image: &str) -> String {
     match image.split_once('/') {
+        // `localhost` is a host by name rather than by punctuation, so
+        // replacing the separators leaves it a host. podman writes it on
+        // every locally built image, so this arm is the common one.
+        Some(("localhost", rest)) => format!("local/{rest}"),
         Some((host, rest)) if is_registry_host(host) => {
             format!("{}/{rest}", host.replace(['.', ':'], "-"))
         }
@@ -1186,6 +1190,7 @@ mod tests {
             flatten_registry_host("localhost:5000/app:v1"),
             "localhost-5000/app:v1"
         );
+        assert_eq!(flatten_registry_host("localhost/app:v1"), "local/app:v1");
         // No host to flatten: a Docker Hub shorthand is left alone, tag,
         // digest and all.
         assert_eq!(flatten_registry_host("myapp:latest"), "myapp:latest");
@@ -1204,6 +1209,7 @@ mod tests {
             "ghcr.io/org/app:v1",
             "localhost:5000/app:v1",
             "us-central1-docker.pkg.dev/proj/repo/app:v1",
+            "localhost/app:v1",
         ] {
             let flat = flatten_registry_host(image);
             assert!(!has_registry_host(&flat), "{image} flattened to {flat}");

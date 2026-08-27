@@ -337,6 +337,11 @@ fn registry_v2_ping_addr(addr: &str) -> bool {
 /// itself fails. Accepts every manifest media type, so a manifest list counts.
 fn registry_v2_get_status(addr: &str, path: &str) -> Option<u16> {
     let mut stream = TcpStream::connect(addr).ok()?;
+    // A registry that accepts the connection and then says nothing must fail
+    // the caller, not hang the test run.
+    let limit = Some(Duration::from_secs(10));
+    stream.set_read_timeout(limit).ok()?;
+    stream.set_write_timeout(limit).ok()?;
 
     let request = format!(
         "GET {path} HTTP/1.1\r\n\

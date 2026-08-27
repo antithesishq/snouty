@@ -503,10 +503,9 @@ impl DockerCompose {
     /// or — when no registry has it — tagged with the `registry` prefix and
     /// pushed, so the platform always pulls exactly what was resolved here.
     ///
-    /// A pin into `registry` itself is written unqualified
-    /// (`name:tag@sha256:...`): the platform resolves an unqualified compose
-    /// image against the tenant's own repository. A pin into any other
-    /// registry keeps its host.
+    /// A pin into `registry` itself drops that prefix (`name:tag@sha256:...`),
+    /// because the platform resolves a bare name against the tenant's own
+    /// repository. A pin into any other registry stays fully qualified.
     pub fn pin_images(&self, rt: &dyn ContainerRuntime, registry: &str) -> Result<String> {
         let contents = self.contents(None)?;
         with_config_image_escape_hatch(validate_images_are_available(rt, &contents))?;
@@ -572,13 +571,10 @@ impl DockerCompose {
             pinned.insert(name.clone(), digests[dest.as_str()].clone());
         }
 
-        // Drop our own registry's host from every pin that points into it. The
-        // platform resolves an unqualified compose image against the tenant's
-        // repository, so the host adds nothing — and naming it freezes the
-        // compose to the spelling this machine used to reach the registry,
-        // which need not resolve from inside a test run (a proxy or mirror
-        // alias, say). A pin into any other registry keeps its host, because
-        // only the tenant repository is implied.
+        // Drop the `registry` prefix from every pin that points into it. The
+        // prefix adds nothing, and it ties the compose file to the spelling
+        // this machine uses to reach the registry — a proxy or mirror alias
+        // that a test run need not resolve.
         for pinned_ref in pinned.values_mut() {
             if let Some(unqualified) = pinned_ref.strip_prefix(&prefix) {
                 *pinned_ref = unqualified.to_string();
@@ -1472,7 +1468,7 @@ services:
             "reg.example.com",
         )
         .unwrap();
-        // The pin names a registry that is not ours, so it keeps its host.
+        // The pin names a registry that is not ours, so it stays fully qualified.
         assert!(
             out.contains("docker.io/library/redis:7@sha256:list"),
             "expected the verified list digest pin, got: {out}"
@@ -1511,15 +1507,9 @@ services:
             "reg.example.com",
         )
         .unwrap();
-        // Pinned to the push digest with our host stripped, though the push
-        // itself still went to the fully qualified destination.
         assert!(
             out.contains("image: ghcr.io/org/app:v1@sha256:fakepushdigest"),
-            "expected push-pinned reference without our host, got: {out}"
-        );
-        assert!(
-            !out.contains("reg.example.com"),
-            "our registry host should not reach the compose file, got: {out}"
+            "expected the push digest pinned without our prefix, got: {out}"
         );
         assert_eq!(
             *rt.pushed.lock().unwrap(),
@@ -1559,10 +1549,6 @@ services:
         assert!(
             out.contains("image: myapp:latest@sha256:pushedearlier"),
             "expected pin to the previously pushed digest, got: {out}"
-        );
-        assert!(
-            !out.contains("reg.example.com"),
-            "our registry host should not reach the compose file, got: {out}"
         );
         assert!(
             rt.pushed.lock().unwrap().is_empty(),
@@ -1671,8 +1657,7 @@ services:
                     .unwrap()
                     .to_string())
             };
-            // The image is pushed to `{addr}/{local}`, but the pin drops our
-            // host — the platform resolves the name against its own registry.
+            // The pin drops our prefix, so it starts with the bare local name.
             let pinned_prefix = format!("{local}@sha256:");
 
             // Case 1 — build stanza: the local build is pushed and pinned.

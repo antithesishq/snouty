@@ -12,11 +12,19 @@ name: slow tests
 # does not need one. This workflow adds the two environments that costs the most
 # to reach — macOS with a working podman, and nix — on top of that.
 #
-# Run it against a branch before merging with `gh workflow run "slow tests"
-# --ref <branch>`, or from the Actions tab.
+# A release branch is the exception: it runs these legs before the merge, not
+# after. A release ships the exact tree on that branch, so the two environments
+# this workflow covers must pass before the release PR merges, not after the tag
+# is already cut.
+#
+# Run it against any other branch before merging with `gh workflow run "slow
+# tests" --ref <branch>`, or from the Actions tab.
 on:
   push:
-    branches: ["main"]
+    branches:
+      - main
+      - "release/**"
+      - "release-v*"
   schedule:
     - cron: "0 7 * * *"
   workflow_dispatch:

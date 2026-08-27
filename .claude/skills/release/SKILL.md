@@ -79,10 +79,13 @@ Run `cargo nextest run` to ensure everything passes. If tests fail, stop and rep
 
 ### 6. Open a PR with the Release Commit
 
-Create a release branch off `main`:
+Create a release branch off `main`. The name must start with `release/`,
+because `.github/workflows/slow-tests.yml` triggers on that prefix: a
+release ships the exact tree on this branch, so the nix and macOS Intel
+legs must pass before the PR merges rather than after the tag is cut.
 
 ```
-git switch -c release-vX.Y.Z
+git switch -c release/vX.Y.Z
 ```
 
 Stage only `Cargo.toml`, `Cargo.lock`, and `CHANGELOG.md`. If there are any other changes abort. Then commit with message:

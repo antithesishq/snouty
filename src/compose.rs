@@ -516,22 +516,13 @@ impl DockerCompose {
 
         let prefix = format!("{}/", registry.trim_end_matches('/'));
 
-        // Where each distinct image goes inside `registry` when we push it.
-        let mut destinations: BTreeMap<&str, String> = BTreeMap::new();
-        for service in &contents.services {
-            let image = service.image.as_str();
-            destinations
-                .entry(image)
-                .or_insert_with(|| push_destination(image, &prefix));
-        }
-
         // Resolve each distinct image once: pin it from a registry that
         // already serves the local digest, or schedule it for push.
         let mut resolution: BTreeMap<&str, Option<String>> = BTreeMap::new();
         for service in &contents.services {
             let image = service.image.as_str();
             if !resolution.contains_key(image) {
-                let pin = find_remote_pin(rt, image, &destinations[image])?;
+                let pin = find_remote_pin(rt, image, &push_destination(image, &prefix))?;
                 if let Some(pinned_ref) = &pin {
                     eprintln!("Image already in a registry, skipping push: {pinned_ref}");
                 }
@@ -551,7 +542,7 @@ impl DockerCompose {
                 pinned.insert(service.name.clone(), remote.clone());
                 continue;
             }
-            let dest = destinations[image].clone();
+            let dest = push_destination(image, &prefix);
             if dest != image && tagged.insert(image) {
                 rt.image_tag(image, &dest)?;
             }
@@ -592,9 +583,10 @@ impl DockerCompose {
         // stripping there would send it to ghcr.io for a digest we may be
         // alone in holding. That spelling is the author's, not ours.
         for pinned_ref in pinned.values_mut() {
-            match pinned_ref.strip_prefix(&prefix) {
-                Some(rest) if !has_registry_host(rest) => *pinned_ref = rest.to_string(),
-                _ => {}
+            if let Some(rest) = pinned_ref.strip_prefix(&prefix)
+                && !has_registry_host(rest)
+            {
+                *pinned_ref = rest.to_string();
             }
         }
 
@@ -619,12 +611,12 @@ fn push_destination(image: &str, prefix: &str) -> String {
 ///
 /// Candidate digests come from the local store's repo digests, for two
 /// repositories: the image's own (e.g. `docker.io/library/redis` for
-/// `redis:7`) and its `prefix`ed name from a previous snouty push. A
-/// candidate counts only when the registry confirms it serves the digest
-/// (a manifest-only round trip — never a pull or push) AND the platform
-/// can run amd64 from it: a manifest list must offer an amd64 entry,
-/// while a single manifest shares the local image's architecture, so the
-/// local image must be amd64.
+/// `redis:7`) and `dest`'s, where a previous snouty push would have put
+/// it. A candidate counts only when the registry confirms it serves the
+/// digest (a manifest-only round trip — never a pull or push) AND the
+/// platform can run amd64 from it: a manifest list must offer an amd64
+/// entry, while a single manifest shares the local image's architecture,
+/// so the local image must be amd64.
 ///
 /// Depends only on the container engine, not on compose state, so it is a
 /// free function rather than a [`DockerCompose`] method.
@@ -1780,7 +1772,7 @@ services:
             // The pin no longer names the destination, so ask the registry
             // itself whether the bytes arrived.
             let digest = built.rsplit_once('@').unwrap().1;
-            let repo = local.rsplit_once(':').unwrap().0;
+            let repo = image_repo(local);
             assert!(
                 registry.serves_digest(repo, digest),
                 "{}: registry {addr} should serve {repo}@{digest}",

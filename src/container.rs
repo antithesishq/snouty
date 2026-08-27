@@ -850,12 +850,6 @@ fn is_registry_host(segment: &str) -> bool {
     segment.contains('.') || segment.contains(':') || segment == "localhost"
 }
 
-/// Whether `repo` names its own registry, as opposed to a name a runtime
-/// resolves against its configured registries.
-pub fn has_registry_host(repo: &str) -> bool {
-    matches!(repo.split_once('/'), Some((first, _)) if is_registry_host(first))
-}
-
 /// `image` with its leading registry host turned into an ordinary path
 /// segment: `ghcr.io/org/app:v1` becomes `ghcr-io/org/app:v1`. A reference
 /// that names no host is returned unchanged.
@@ -869,8 +863,13 @@ pub fn flatten_registry_host(image: &str) -> String {
         // replacing the separators leaves it a host. podman writes it on
         // every locally built image, so this arm is the common one.
         Some(("localhost", rest)) => format!("local/{rest}"),
+        // A host may carry uppercase letters, a repository path segment may
+        // not, so the flattened segment is lowercased.
         Some((host, rest)) if is_registry_host(host) => {
-            format!("{}/{rest}", host.replace(['.', ':'], "-"))
+            format!(
+                "{}/{rest}",
+                host.replace(['.', ':'], "-").to_ascii_lowercase()
+            )
         }
         _ => image.to_string(),
     }
@@ -1191,6 +1190,10 @@ mod tests {
             "localhost-5000/app:v1"
         );
         assert_eq!(flatten_registry_host("localhost/app:v1"), "local/app:v1");
+        assert_eq!(
+            flatten_registry_host("Registry.Example.com/org/app:v1"),
+            "registry-example-com/org/app:v1"
+        );
         // No host to flatten: a Docker Hub shorthand is left alone, tag,
         // digest and all.
         assert_eq!(flatten_registry_host("myapp:latest"), "myapp:latest");
@@ -1212,7 +1215,8 @@ mod tests {
             "localhost/app:v1",
         ] {
             let flat = flatten_registry_host(image);
-            assert!(!has_registry_host(&flat), "{image} flattened to {flat}");
+            let first = flat.split('/').next().unwrap();
+            assert!(!is_registry_host(first), "{image} flattened to {flat}");
         }
     }
 

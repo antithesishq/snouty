@@ -1720,6 +1720,18 @@ services:
                 "{}: build image should be pushed, got: {built}",
                 rt.name()
             );
+            // The pin no longer names the destination, so ask the registry
+            // itself whether the bytes arrived.
+            let digest = built.rsplit_once('@').unwrap().1;
+            let repo = local.rsplit_once(':').unwrap().0;
+            assert!(
+                !matches!(
+                    rt.remote_manifest(&format!("{addr}/{repo}@{digest}")),
+                    RemoteManifest::NotFound
+                ),
+                "{}: registry {addr} should serve the pushed digest {digest}",
+                rt.name()
+            );
 
             // Case 2 — local without a build stanza (prebuilt/loaded out of
             // band): local availability is enough; pushed and pinned the same.

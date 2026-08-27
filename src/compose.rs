@@ -16,8 +16,8 @@ use color_eyre::{
 use crate::config::ComposeConfig;
 use crate::container::{
     Architecture, ContainerRuntime, DISCOVERY_COMMAND_TIMEOUT, RemoteManifest, available_engines,
-    digests_for_repo, has_registry_host, image_ref_tag, image_repo, is_podman_in_disguise,
-    normalize_repo,
+    digests_for_repo, flatten_registry_host, has_registry_host, image_ref_tag, image_repo,
+    is_podman_in_disguise, normalize_repo,
 };
 use crate::error::user_error;
 use crate::process::{ProcessGroupChild, output_with_timeout};
@@ -501,8 +501,11 @@ impl DockerCompose {
     /// is present locally (built via its `build:` stanza, built or loaded out
     /// of band, or previously pulled). Each image is then pinned to its local
     /// digest in a registry confirmed to serve it ([`find_remote_pin`]),
-    /// or — when no registry has it — tagged with the `registry` prefix and
-    /// pushed, so the platform always pulls exactly what was resolved here.
+    /// or — when no registry has it — tagged into `registry` and pushed, so
+    /// the platform always pulls exactly what was resolved here. An image
+    /// that names its own registry is pushed under a flattened path
+    /// (`ghcr.io/org/app` → `ghcr-io/org/app`), so the pin stays a name the
+    /// platform resolves rather than a second host.
     ///
     /// A pin into `registry` itself drops that prefix (`name:tag@sha256:...`),
     /// because the platform resolves a bare name against the tenant's own
@@ -513,13 +516,22 @@ impl DockerCompose {
 
         let prefix = format!("{}/", registry.trim_end_matches('/'));
 
+        // Where each distinct image goes inside `registry` when we push it.
+        let mut destinations: BTreeMap<&str, String> = BTreeMap::new();
+        for service in &contents.services {
+            let image = service.image.as_str();
+            destinations
+                .entry(image)
+                .or_insert_with(|| push_destination(image, &prefix));
+        }
+
         // Resolve each distinct image once: pin it from a registry that
         // already serves the local digest, or schedule it for push.
         let mut resolution: BTreeMap<&str, Option<String>> = BTreeMap::new();
         for service in &contents.services {
             let image = service.image.as_str();
             if !resolution.contains_key(image) {
-                let pin = find_remote_pin(rt, image, &prefix)?;
+                let pin = find_remote_pin(rt, image, &destinations[image])?;
                 if let Some(pinned_ref) = &pin {
                     eprintln!("Image already in a registry, skipping push: {pinned_ref}");
                 }
@@ -539,11 +551,7 @@ impl DockerCompose {
                 pinned.insert(service.name.clone(), remote.clone());
                 continue;
             }
-            let dest = if image.starts_with(&prefix) {
-                image.to_string()
-            } else {
-                format!("{prefix}{image}")
-            };
+            let dest = destinations[image].clone();
             if dest != image && tagged.insert(image) {
                 rt.image_tag(image, &dest)?;
             }
@@ -576,11 +584,13 @@ impl DockerCompose {
         // to reach the registry — a proxy or mirror alias that a test run need
         // not resolve.
         //
-        // Our repository can hold a path that itself opens with a host, as
-        // `{registry}/ghcr.io/org/app` does whenever ghcr.io did not serve the
-        // local bytes. The platform reads a host in a compose image as
-        // authoritative, so stripping there would send it to ghcr.io for a
-        // digest only we hold.
+        // An image we push lands under a flattened path, which never opens
+        // with a host, so its prefix always comes off. The guard covers the
+        // one path we do not build: a compose file that names our registry
+        // and a host below it, such as `{registry}/ghcr.io/org/app`. The
+        // platform reads a host in a compose image as authoritative, so
+        // stripping there would send it to ghcr.io for a digest we may be
+        // alone in holding. That spelling is the author's, not ours.
         for pinned_ref in pinned.values_mut() {
             match pinned_ref.strip_prefix(&prefix) {
                 Some(rest) if !has_registry_host(rest) => *pinned_ref = rest.to_string(),
@@ -590,6 +600,17 @@ impl DockerCompose {
 
         rewrite_compose_images(&self.canonical_contents()?, &pinned)
     }
+}
+
+/// Where `image` goes inside the registry `prefix` names.
+///
+/// The path never opens with a registry host: a host in the source reference
+/// is flattened ([`flatten_registry_host`]), and a reference that already
+/// names `prefix` keeps only what follows it. That lets the compose pin drop
+/// the prefix and still name the same bytes.
+fn push_destination(image: &str, prefix: &str) -> String {
+    let relative = image.strip_prefix(prefix).unwrap_or(image);
+    format!("{prefix}{}", flatten_registry_host(relative))
 }
 
 /// Find a registry that already serves `image`'s local bytes, returning
@@ -607,13 +628,14 @@ impl DockerCompose {
 ///
 /// Depends only on the container engine, not on compose state, so it is a
 /// free function rather than a [`DockerCompose`] method.
-fn find_remote_pin(rt: &dyn ContainerRuntime, image: &str, prefix: &str) -> Result<Option<String>> {
+fn find_remote_pin(rt: &dyn ContainerRuntime, image: &str, dest: &str) -> Result<Option<String>> {
     let repo_digests = rt.image_repo_digests(image)?;
     let tag = image_ref_tag(image);
 
     let mut repos = vec![normalize_repo(image_repo(image))];
-    if !image.starts_with(prefix) {
-        repos.push(normalize_repo(image_repo(&format!("{prefix}{image}"))));
+    let dest_repo = normalize_repo(image_repo(dest));
+    if dest_repo != repos[0] {
+        repos.push(dest_repo);
     }
 
     for repo in &repos {
@@ -1486,7 +1508,7 @@ services:
         );
     }
     #[test]
-    fn pin_images_pushes_when_no_registry_serves_digest() {
+    fn pin_images_flattens_a_registry_host_into_the_path() {
         if !has_compose() {
             // Loud in CI (skip_or_fail panics there) so a runner missing
             // docker-compose can't silently drop this coverage.
@@ -1499,7 +1521,7 @@ services:
         let rt = FakeRuntime {
             available_images: BTreeMap::from([("ghcr.io/org/app:v1".to_string(), true)]),
             architectures: BTreeMap::from([(
-                "reg.example.com/ghcr.io/org/app:v1".to_string(),
+                "reg.example.com/ghcr-io/org/app:v1".to_string(),
                 "amd64".to_string(),
             )]),
             repo_digests: BTreeMap::from([(
@@ -1514,14 +1536,59 @@ services:
             "reg.example.com",
         )
         .unwrap();
-        // The pin keeps our prefix, because what follows it opens with a host.
+        // `ghcr.io` becomes `ghcr-io`, so the pin drops our prefix and still
+        // names one path. A pin of `ghcr.io/org/app` would send the platform
+        // to the real ghcr.io for a digest only we hold.
         assert!(
-            out.contains("image: reg.example.com/ghcr.io/org/app:v1@sha256:fakepushdigest"),
-            "expected the push digest pinned with our prefix kept, got: {out}"
+            out.contains("image: ghcr-io/org/app:v1@sha256:fakepushdigest"),
+            "expected the flattened pin without our prefix, got: {out}"
         );
         assert_eq!(
             *rt.pushed.lock().unwrap(),
-            vec!["reg.example.com/ghcr.io/org/app:v1".to_string()]
+            vec!["reg.example.com/ghcr-io/org/app:v1".to_string()]
+        );
+    }
+
+    #[test]
+    fn pin_images_keeps_the_prefix_the_author_wrote_above_a_host() {
+        if !has_compose() {
+            // Loud in CI (skip_or_fail panics there) so a runner missing
+            // docker-compose can't silently drop this coverage.
+            skip_or_fail("docker-compose (Docker Compose v2) is not available");
+            return;
+        }
+        // The compose file names our registry and a host below it. We never
+        // write that path, so the spelling is the author's; the registry
+        // serves it, and the pin keeps the prefix rather than becoming a
+        // reference to the real ghcr.io.
+        let rt = FakeRuntime {
+            available_images: BTreeMap::from([(
+                "reg.example.com/ghcr.io/org/app:v1".to_string(),
+                true,
+            )]),
+            repo_digests: BTreeMap::from([(
+                "reg.example.com/ghcr.io/org/app:v1".to_string(),
+                vec!["reg.example.com/ghcr.io/org/app@sha256:served".to_string()],
+            )]),
+            remote_manifests: BTreeMap::from([(
+                "reg.example.com/ghcr.io/org/app@sha256:served".to_string(),
+                RemoteManifest::List { has_amd64: true },
+            )]),
+            ..Default::default()
+        };
+        let out = pin_with_fake(
+            &rt,
+            "services:\n  app:\n    image: reg.example.com/ghcr.io/org/app:v1\n",
+            "reg.example.com",
+        )
+        .unwrap();
+        assert!(
+            out.contains("image: reg.example.com/ghcr.io/org/app:v1@sha256:served"),
+            "expected the author's prefix kept, got: {out}"
+        );
+        assert!(
+            rt.pushed.lock().unwrap().is_empty(),
+            "the registry serves it already, so nothing should be pushed"
         );
     }
     #[test]

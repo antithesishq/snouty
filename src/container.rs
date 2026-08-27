@@ -856,6 +856,22 @@ pub fn has_registry_host(repo: &str) -> bool {
     matches!(repo.split_once('/'), Some((first, _)) if is_registry_host(first))
 }
 
+/// `image` with its leading registry host turned into an ordinary path
+/// segment: `ghcr.io/org/app:v1` becomes `ghcr-io/org/app:v1`. A reference
+/// that names no host is returned unchanged.
+///
+/// The result carries the same information but no runtime reads it as a host,
+/// so it can serve as a path inside another repository and still be pulled by
+/// name from there.
+pub fn flatten_registry_host(image: &str) -> String {
+    match image.split_once('/') {
+        Some((host, rest)) if is_registry_host(host) => {
+            format!("{}/{rest}", host.replace(['.', ':'], "-"))
+        }
+        _ => image.to_string(),
+    }
+}
+
 /// Expand Docker Hub shorthand so repository names compare reliably across
 /// runtimes and reference styles: `nginx` → `docker.io/library/nginx`,
 /// `user/app` → `docker.io/user/app`, `index.docker.io/...` → `docker.io/...`.
@@ -1157,6 +1173,41 @@ mod tests {
         );
         assert_eq!(normalize_repo("localhost:5000/app"), "localhost:5000/app");
         assert_eq!(normalize_repo("ghcr.io/org/app"), "ghcr.io/org/app");
+    }
+
+    #[test]
+    fn flatten_registry_host_turns_a_host_into_a_path_segment() {
+        assert_eq!(
+            flatten_registry_host("ghcr.io/org/app:v1"),
+            "ghcr-io/org/app:v1"
+        );
+        // A port is part of the host, so it flattens with it.
+        assert_eq!(
+            flatten_registry_host("localhost:5000/app:v1"),
+            "localhost-5000/app:v1"
+        );
+        // No host to flatten: a Docker Hub shorthand is left alone, tag,
+        // digest and all.
+        assert_eq!(flatten_registry_host("myapp:latest"), "myapp:latest");
+        assert_eq!(flatten_registry_host("org/app:v1"), "org/app:v1");
+        assert_eq!(
+            flatten_registry_host("app:v1@sha256:abc"),
+            "app:v1@sha256:abc"
+        );
+    }
+
+    #[test]
+    fn flatten_registry_host_output_names_no_host() {
+        // The point of flattening: the result is a name a runtime resolves
+        // against its configured registries, never a second registry.
+        for image in [
+            "ghcr.io/org/app:v1",
+            "localhost:5000/app:v1",
+            "us-central1-docker.pkg.dev/proj/repo/app:v1",
+        ] {
+            let flat = flatten_registry_host(image);
+            assert!(!has_registry_host(&flat), "{image} flattened to {flat}");
+        }
     }
 
     #[test]

@@ -1,7 +1,7 @@
 # Unreleased
 
 - `snouty doctor` reports more than one credential source. snouty uses the first source it finds, so an exported `ANTITHESIS_USERNAME` and `ANTITHESIS_PASSWORD` hide the API key that `snouty login` stored. doctor now warns, names the credential it uses and the credentials it ignores, and states the action that hands the run to the next source ([#292](https://github.com/antithesishq/snouty/issues/292))
-- A compose service image that snouty pushes to the Antithesis repository is pinned without the repository address. The platform resolves the name against that repository, so a launch through a registry alias that only the launching machine resolves now works. An image in any other registry stays fully qualified ([#291](https://github.com/antithesishq/snouty/pull/291))
+- A compose service image is pinned without the address of the Antithesis repository. The platform resolves the bare name against that repository, so a launch through a registry alias that only the launching machine resolves now works. An image that names its own registry is pushed under a flattened path, and `ghcr.io/org/app:v1` is pinned as `ghcr-io/org/app:v1@sha256:...`, which keeps the source registry in the name without making the platform read it as an address ([#291](https://github.com/antithesishq/snouty/pull/291))
 
 # Version 0.7.0 (2026-08-26)
 

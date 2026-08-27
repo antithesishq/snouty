@@ -7,7 +7,7 @@ let
 in
 pkgs.mkShell {
   # Take openssl, sqlite, and pkg-config from the package itself, so the shell
-  # cannot drift from what package.nix needs to compile.
+  # cannot drift from the libraries package.nix builds against.
   inputsFrom = [ snouty ];
 
   # Only what the package does not already bring: the toolchain, and the tools
@@ -21,8 +21,14 @@ pkgs.mkShell {
     docker-compose
   ];
 
+  # `inputsFrom` carries packages, not environment. mkShell folds only
+  # buildInputs, nativeBuildInputs, their propagated variants, and shellHook out
+  # of it, so everything package.nix sets in `env` must be repeated here. Left
+  # out, cargo links its own vendored copy of a library that the shell already
+  # provides: rusqlite has the `bundled` feature, so it compiles the sqlite C
+  # sources rather than the sqlite above.
   env = {
-    # Match package.nix: link against the openssl above, not a vendored copy.
+    LIBSQLITE3_SYS_USE_PKG_CONFIG = true;
     OPENSSL_NO_VENDOR = true;
   };
 }

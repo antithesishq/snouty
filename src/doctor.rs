@@ -216,9 +216,6 @@ fn repository_check(repository: Option<&str>) -> Check {
     }
 }
 
-/// The auth section of doctor's report, built from every origin that holds a
-/// credential: one or two checks for the credential in use, plus a warning when
-/// another origin holds one that this one hides.
 fn authn_checks(sources: &[AttributedValue<AuthenticationInfo>]) -> Vec<Check> {
     let Some((credentials, shadowed)) = sources.split_first() else {
         return vec![missing_credentials_check(
@@ -293,9 +290,7 @@ fn missing_credentials_check(message: impl Into<String>) -> Check {
         )
 }
 
-/// snouty uses the first credential it finds and ignores the rest without a
-/// word, so name every origin and the action that drops the one in use. This is
-/// a warning, not a failure: snouty is authenticated, just not with the
+/// A warning, not a failure: snouty is authenticated, just not with the
 /// credential the user expected.
 fn shadowed_credentials_check(
     in_use: &AttributedValue<AuthenticationInfo>,
@@ -332,8 +327,8 @@ fn shadowed_credentials_check(
     ))
 }
 
-/// Where a resolved value came from, as a phrase that reads after "read from"
-/// or after the name of a credential kind.
+/// A phrase that reads after "read from" or after the name of a credential
+/// kind.
 fn describe_origin<T>(attribution: &AttributedValue<T>) -> String {
     match attribution {
         AttributedValue::EnvironmentVariable {
@@ -365,8 +360,7 @@ fn describe_origin<T>(attribution: &AttributedValue<T>) -> String {
     }
 }
 
-/// What the user does to drop the credential in use, so that the next origin
-/// takes over.
+/// An imperative phrase that reads before "to use the next source".
 fn drop_action<T>(attribution: &AttributedValue<T>) -> String {
     match attribution {
         AttributedValue::EnvironmentVariable {
@@ -434,9 +428,7 @@ fn collect_checks(settings: &Settings) -> Vec<Check> {
     checks.push(tenant_check(settings.tenant()));
     checks.push(repository_check(settings.repository()));
 
-    // Authentication (synchronous-only by design). doctor reads every origin,
-    // not only the winning one, so it can report a credential that another one
-    // hides.
+    // Authentication (synchronous-only by design).
     match AuthenticationInfo::available_ambient_credentials(settings.profile()) {
         Ok(sources) => checks.extend(authn_checks(&sources)),
         Err(err) => checks.push(missing_credentials_check(err.to_string())),
@@ -776,8 +768,7 @@ mod tests {
         assert!(!all.contains("PASSWORD"));
     }
 
-    /// A scan that finds no origin at all reports the same words every other
-    /// command raises, so a user who sees both reads one message.
+    /// A user who meets both messages reads one wording, not two.
     #[test]
     fn auth_no_source_reports_the_shared_no_credentials_message() {
         let checks = authn_checks(&[]);
@@ -821,9 +812,8 @@ mod tests {
         assert!(!checks.iter().any(|c| c.name == "credential_sources"));
     }
 
-    /// The reported case: `snouty login` stored an API key while a legacy
-    /// username/password was still exported. doctor names both origins and the
-    /// action that hands the run to the stored key.
+    /// The case issue #292 reported: `snouty login` stored an API key while a
+    /// legacy username/password was still exported.
     #[test]
     fn a_shadowed_credential_is_reported_with_the_action_that_frees_it() {
         let checks = authn_checks(&[env_password_source(), file_api_key_source()]);
@@ -852,8 +842,6 @@ mod tests {
         );
     }
 
-    /// Each origin names its own way out: an entry in the keychain is removed
-    /// from the keychain, not unset.
     #[test]
     fn the_action_that_frees_a_credential_matches_its_origin() {
         let keychain = AttributedValue::Keychain {

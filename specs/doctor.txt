@@ -102,11 +102,8 @@ stderr '.*could not connect to 127.0.0.1.*'
 
 # --- conflicting credential sources (issue #292) ---
 # A credential exported in the environment hides one that `snouty login` stored
-# in the credentials file. snouty still authenticates, so this is a warning:
-# doctor names the credential it uses, the one it ignores, and the action that
-# hands the run to the stored one. The scan reads no network, and without an
-# API key doctor makes no API call, so this block needs no mock and no
-# `--offline`.
+# in the credentials file. The scan reads no network, and without an API key
+# doctor makes no API call, so this block needs no mock and no `--offline`.
 isolate-home credential_conflict
 env ANTITHESIS_API_KEY=
 env ANTITHESIS_USERNAME=testuser

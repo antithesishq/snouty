@@ -2392,8 +2392,7 @@ _TENANT = "acme"
 _REPO = "registry.example.com/acme/app"
 _SETTINGS = ".config/snouty/settings.toml"
 _CREDS = ".config/snouty/credentials.toml"
-# A `credentials.toml` as `snouty login` writes it, for a story that starts from
-# a machine that already has a stored key.
+# A `credentials.toml` exactly as `snouty login` writes it.
 _SEED_CREDS_TOML = f'[default]\ntype = "ApiKey"\napi_key = "{_SEED_KEY}"\n'
 
 # Prompts the dialogues wait for, and the credential-menu labels they choose

@@ -53,9 +53,7 @@ pub(crate) const CREDENTIAL_ENV_VARS: [&str; 5] = [
 
 const CREDENTIALS_FILENAME: &str = "credentials.toml";
 
-/// The message every command raises when it finds no credential at all.
-/// `snouty doctor` renders the same words when its own scan comes up empty, so
-/// the two cannot drift apart.
+/// Every command and `snouty doctor` state these words for an empty result.
 pub(crate) const NO_CREDENTIALS_MESSAGE: &str = "No Antithesis credentials found";
 
 const OIDC_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
@@ -271,8 +269,7 @@ impl std::fmt::Debug for AuthenticationInfo {
     }
 }
 
-/// The kind of credential, never the secret. `snouty doctor` names the kind it
-/// uses and the kinds it ignores.
+/// The kind of credential, never the secret.
 impl std::fmt::Display for AuthenticationInfo {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
@@ -284,10 +281,8 @@ impl std::fmt::Display for AuthenticationInfo {
     }
 }
 
-/// A place snouty reads credentials from. More than one origin can hold a
-/// credential at once — an exported environment variable next to the
-/// credentials file `snouty login` wrote, for example. The first origin in
-/// resolution order then wins, and the others are ignored.
+/// A place snouty reads credentials from. More than one can hold a credential
+/// at once, and the first in resolution order then wins.
 #[derive(Clone, Copy)]
 enum CredentialOrigin<'a> {
     Environment,
@@ -297,8 +292,6 @@ enum CredentialOrigin<'a> {
 }
 
 impl<'a> CredentialOrigin<'a> {
-    /// An explicit profile owns a keychain entry and a section of the
-    /// credentials file of its own, and both come before the default ones.
     fn in_resolution_order(profile: Option<&'a str>) -> impl Iterator<Item = Self> {
         [Self::Environment]
             .into_iter()
@@ -319,8 +312,6 @@ impl<'a> CredentialOrigin<'a> {
             ])
     }
 
-    /// `None` means the origin is empty, which is ordinary: resolution then
-    /// moves on to the next origin.
     fn resolve(self) -> Result<Option<AttributedValue<AuthenticationInfo>>> {
         match self {
             Self::Environment => AuthenticationInfo::try_from_env(),
@@ -408,9 +399,8 @@ impl AuthenticationInfo {
         profile: Option<&str>,
         policy: PasswordPolicy,
     ) -> Result<AttributedValue<Self>> {
-        // Stop at the first origin that holds a credential. Reading the rest
-        // would open the system keychain, which prompts the user on some
-        // platforms, for a value no command would use.
+        // Reading past the first credential would open the system keychain,
+        // which prompts the user on some platforms, for a value no command uses.
         for origin in CredentialOrigin::in_resolution_order(profile) {
             if let Some(found) = origin.resolve()? {
                 return apply_password_policy(found, policy);
@@ -422,16 +412,12 @@ impl AuthenticationInfo {
         ))
     }
 
-    /// Every origin that holds a credential, in resolution order. The first is
-    /// the one every command uses; each later one is ignored. `snouty doctor`
-    /// reads the whole list, so it can report a stored credential that an
-    /// exported one hides.
+    /// Every origin that holds a credential, in resolution order: the first is
+    /// the one every command uses, and each later one is ignored.
     ///
-    /// This reads every origin, so unlike
-    /// [`Self::for_ambient_configuration_with_attribution`] it always opens the
-    /// system keychain. Only a command that reports on the credentials should
-    /// call it, and only one that never uses the result to authenticate: the
-    /// [`PasswordPolicy`] gate does not run here.
+    /// This always opens the system keychain, and the [`PasswordPolicy`] gate
+    /// does not run. Only a command that reports on the credentials may call
+    /// it, and only one that never authenticates with the result.
     pub(crate) fn available_ambient_credentials(
         profile: Option<&str>,
     ) -> Result<Vec<AttributedValue<Self>>> {
@@ -440,10 +426,9 @@ impl AuthenticationInfo {
             match origin.resolve() {
                 Ok(Some(credential)) => found.push(credential),
                 Ok(None) => {}
-                // An origin that fails before the first credential is the error
-                // every command meets, so the scan raises it too. Past that
-                // point no command reads any further, so an origin snouty
-                // cannot read hides nothing and stays out of the report.
+                // Past the first credential no command reads any further, so
+                // an unreadable origin there hides nothing. Before it, the
+                // failure is the one every command meets.
                 Err(_) if !found.is_empty() => {}
                 Err(err) => return Err(err),
             }
@@ -1117,9 +1102,7 @@ struct CredentialsFile {
 
 impl CredentialsFile {
     /// A named profile reads its own `[profile.<name>]` section, and never
-    /// falls back to `[default]`. Ambient resolution and an OAuth refresh both
-    /// read the file through here, so the two cannot disagree on which section
-    /// a profile owns.
+    /// falls back to `[default]`.
     fn for_profile(self, profile: Option<&str>) -> Option<PersistableCredentials> {
         match profile {
             Some(name) => self

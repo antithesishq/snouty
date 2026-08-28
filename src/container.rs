@@ -863,8 +863,8 @@ pub const MIRROR_PREFIX: &str = "snouty-mirror";
 /// an ordinary path segment rather than an address. The rest of the reference
 /// stays legible, and a reader restores the original by deleting the prefix.
 ///
-/// One edit satisfies the reference grammar. A port takes `__` in place of its
-/// colon, which is a separator no author writes by hand, and an uppercase host
+/// Two edits satisfy the reference grammar. A port takes `__` in place of its
+/// colon, which is a separator no author writes by hand. An uppercase host
 /// folds to lowercase, which names the same registry either way. Neither edit
 /// merges two hosts that hold different bytes.
 pub fn mirror_path(image: &str) -> String {
@@ -1207,13 +1207,13 @@ mod tests {
             mirror_path("localhost/app:v1"),
             "snouty-mirror/localhost/app:v1"
         );
-        // A reference that names no host names no source to copy from.
         // A path segment cannot carry uppercase, and the fold names the same
         // registry.
         assert_eq!(
             mirror_path("Registry.Example.com/org/app:v1"),
             "snouty-mirror/registry.example.com/org/app:v1"
         );
+        // A reference that names no host names no source to copy from.
         assert_eq!(mirror_path("myapp:latest"), "myapp:latest");
         assert_eq!(mirror_path("org/app:v1"), "org/app:v1");
         assert_eq!(mirror_path("app:v1@sha256:abc"), "app:v1@sha256:abc");

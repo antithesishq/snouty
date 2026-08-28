@@ -1,7 +1,6 @@
 # Unreleased
 
 - `snouty doctor` reports more than one credential source. snouty uses the first source it finds, so an exported `ANTITHESIS_USERNAME` and `ANTITHESIS_PASSWORD` hide the API key that `snouty login` stored. doctor now warns, names the credential it uses and the credentials it ignores, and states the action that hands the run to the next source ([#292](https://github.com/antithesishq/snouty/issues/292))
-- **Breaking**: `snouty doctor` names the credential shortfall check `credentials`, not `api_key`, and its text names every credential kind the API commands accept. An API key is one of them; `snouty login` stores the others. A caller that gates on `.checks[] | select(.name == "api_key")` reads `"credentials"` instead ([#292](https://github.com/antithesishq/snouty/issues/292))
 
 # Version 0.7.0 (2026-08-26)
 

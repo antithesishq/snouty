@@ -516,7 +516,9 @@ impl DockerCompose {
         // Resolve each distinct image once: pin it from a registry that
         // already serves the local digest, or schedule it for push.
         let mut resolution: BTreeMap<&str, Option<String>> = BTreeMap::new();
-        // Flattening is not injective, so two images we push can want one path.
+        // Flattening is not injective. snouty tags each pushed image onto its
+        // destination and pushes that path once, so two images that want one
+        // path leave every service pinned to whichever was tagged last.
         let mut claims: BTreeMap<String, &str> = BTreeMap::new();
         for service in &contents.services {
             let image = service.image.as_str();
@@ -526,14 +528,15 @@ impl DockerCompose {
                     Some(pinned_ref) => {
                         eprintln!("Image already in a registry, skipping push: {pinned_ref}")
                     }
-                    // Only a push can overwrite another image's bytes.
+                    // A remote pin is never tagged onto a destination, so it
+                    // cannot take one.
                     None => {
-                        if let Some(other) = claims.insert(push_destination(image, &prefix), image)
-                        {
+                        let dest = push_destination(image, &prefix);
+                        if let Some(other) = claims.insert(dest.clone(), image) {
                             bail!(user_error(format!(
-                                "`{other}` and `{image}` both resolve to one path in \
-                                 the registry, so one would overwrite the other. \
-                                 Rename one of them."
+                                "`{other}` and `{image}` both flatten to `{dest}`, so \
+                                 snouty would push one of them and pin both services \
+                                 to it. Rename one of them."
                             )));
                         }
                     }
@@ -1640,9 +1643,8 @@ services:
             skip_or_fail("docker-compose (Docker Compose v2) is not available");
             return;
         }
-        // `localhost/app` and `local/app` both land on `{registry}/local/app`,
-        // so one push would overwrite the other and a service would run bytes
-        // that are not its own.
+        // `localhost/app` and `local/app` both land on `{registry}/local/app`.
+        // snouty pushes that path once, so both services would run one image.
         let rt = FakeRuntime {
             available_images: BTreeMap::from([
                 ("localhost/app:v1".to_string(), true),
@@ -1658,7 +1660,7 @@ services:
         .unwrap_err()
         .to_string();
         assert!(
-            err.contains("both resolve to one path"),
+            err.contains("both flatten to `reg.example.com/local/app:v1`"),
             "expected a collision error, got: {err}"
         );
     }

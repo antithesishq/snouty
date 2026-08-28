@@ -1222,12 +1222,10 @@ mod tests {
             ),
             "snouty-config@sha256:abc"
         );
-        // A trailing slash on the configured repository must not defeat the match.
         assert_eq!(
             strip_registry("reg.example.com/repo/app:v1", "reg.example.com/repo/"),
             "app:v1"
         );
-        // Another registry keeps its address; nothing else names those bytes.
         assert_eq!(
             strip_registry("ghcr.io/org/app:v1", registry),
             "ghcr.io/org/app:v1"

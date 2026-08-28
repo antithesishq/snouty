@@ -336,9 +336,7 @@ fn registry_v2_ping_addr(addr: &str) -> bool {
 /// The status code the registry answers for `path`, or `None` when the request
 /// itself fails. Accepts every manifest media type, so a manifest list counts.
 fn registry_v2_get_status(addr: &str, path: &str) -> Option<u16> {
-    // A registry that never completes the handshake, or that accepts the
-    // connection and then says nothing, must fail the caller rather than hang
-    // the test run.
+    // A silent or half-open registry must fail the caller, not hang the run.
     let limit = Duration::from_secs(10);
     let socket = addr.to_socket_addrs().ok()?.next()?;
     let mut stream = TcpStream::connect_timeout(&socket, limit).ok()?;

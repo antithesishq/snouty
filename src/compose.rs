@@ -504,14 +504,9 @@ impl DockerCompose {
     /// or — when no registry has it — tagged into `registry` and pushed, so
     /// the platform always pulls exactly what was resolved here.
     ///
-    /// A pin into `registry` itself drops that prefix (`name:tag@sha256:...`),
-    /// because the platform resolves a bare name against the tenant's own
+    /// A pin into `registry` itself comes back bare (`name:tag@sha256:...`),
+    /// because the platform resolves such a name against the tenant's own
     /// repository. A pin into any other registry stays fully qualified.
-    ///
-    /// The platform reads the first segment of a compose image as an address,
-    /// so a pin it must resolve may not open with a registry host. Every image
-    /// pushed into `registry` therefore lands under a flattened path
-    /// (`ghcr.io/org/app` → `ghcr-io/org/app`).
     pub fn pin_images(&self, rt: &dyn ContainerRuntime, registry: &str) -> Result<String> {
         let contents = self.contents(None)?;
         with_config_image_escape_hatch(validate_images_are_available(rt, &contents))?;
@@ -590,15 +585,10 @@ impl DockerCompose {
     }
 }
 
-/// Where `image` goes inside the registry `prefix` names.
-///
 /// The path below `prefix` never opens with a registry host, so the compose
-/// pin can drop the prefix and still name the same bytes.
-///
-/// A dotted path segment such as `{prefix}team.a/app` is flattened too, to
-/// `{prefix}team-a/app`. The registry reads that segment as a path, but the
-/// pin has to lose the dot, so the image is pushed once more under the
-/// flattened path.
+/// pin can drop `prefix` and still name the same bytes. A dotted segment that
+/// is already below `prefix` is flattened too: `{prefix}team.a/app` goes to
+/// `{prefix}team-a/app`.
 fn push_destination(image: &str, prefix: &str) -> String {
     let relative = image.strip_prefix(prefix).unwrap_or(image);
     format!("{prefix}{}", flatten_registry_host(relative))
@@ -611,9 +601,9 @@ fn push_destination(image: &str, prefix: &str) -> String {
 /// Candidate digests come from the local store's repo digests, for two
 /// repositories: the image's own (e.g. `docker.io/library/redis` for
 /// `redis:7`) and its push destination under `prefix`, where a previous
-/// snouty push would have put it. A candidate counts only when the registry confirms it serves the
-/// digest (a manifest-only round trip — never a pull or push) AND the
-/// platform can run amd64 from it: a manifest list must offer an amd64
+/// snouty push would have put it. A candidate counts only when the registry
+/// confirms it serves the digest (a manifest-only round trip — never a pull or
+/// push) AND the platform can run amd64 from it: a manifest list must offer an
 /// entry, while a single manifest shares the local image's architecture,
 /// so the local image must be amd64.
 ///
@@ -1594,9 +1584,9 @@ services:
             skip_or_fail("docker-compose (Docker Compose v2) is not available");
             return;
         }
-        // Flattening is not injective: `localhost/app` and `local/app` both
-        // land on `{registry}/local/app`. One push would overwrite the other,
-        // so a service would run bytes that are not its own.
+        // `localhost/app` and `local/app` both land on `{registry}/local/app`,
+        // so one push would overwrite the other and a service would run bytes
+        // that are not its own.
         let rt = FakeRuntime {
             available_images: BTreeMap::from([
                 ("localhost/app:v1".to_string(), true),
@@ -1619,8 +1609,6 @@ services:
     #[test]
     fn pin_images_strips_prefix_from_an_already_prefixed_source_image() {
         if !has_compose() {
-            // Loud in CI (skip_or_fail panics there) so a runner missing
-            // docker-compose can't silently drop this coverage.
             skip_or_fail("docker-compose (Docker Compose v2) is not available");
             return;
         }

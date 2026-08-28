@@ -3,7 +3,7 @@ use serde::{Serialize, Serializer};
 
 use crate::api::{AntithesisApi, ApiVersion, MIN_SEARCH_RELEASE, VersionError};
 use crate::attributed_value::AttributedValue;
-use crate::auth::{AuthenticationInfo, PasswordPolicy};
+use crate::auth::AuthenticationInfo;
 use crate::compose;
 use crate::container;
 use crate::features::{self, Feature};
@@ -216,111 +216,188 @@ fn repository_check(repository: Option<&str>) -> Check {
     }
 }
 
-fn authn_checks(authn_info: Result<AttributedValue<AuthenticationInfo>>) -> Vec<Check> {
-    match authn_info {
-        Ok(credentials) => match credentials.value() {
-            AuthenticationInfo::GithubActionsOidc { .. } => {
-                vec![enrich(
-                    Check::ok(
-                        "github_actions_oidc_token",
-                        "Github Actions OIDC token provided",
-                    ),
-                    credentials,
-                )]
-            }
-            AuthenticationInfo::OAuth { .. } => {
-                vec![enrich(
-                    Check::ok("oauth_credentials", "OAuth credentials used"),
-                    credentials,
-                )]
-            }
-            AuthenticationInfo::ApiKey { .. } => {
-                vec![enrich(
-                    Check::ok("api_key", "API key provided"),
-                    credentials,
-                )]
-            }
-            AuthenticationInfo::Password { username, .. } => vec![
-                Check::warn("api_key", "API key not provided")
-                    .note(
-                        Level::Warning,
-                        "`snouty runs` and other API commands require an API key",
-                    )
-                    .note(
-                        Level::Note,
-                        "ask Antithesis support for an API key if you don't have one",
-                    ),
-                enrich(
-                    Check::ok(
-                        "basic_auth",
-                        format!("Using password credentials for user [{username}]"),
-                    )
-                    .note(Level::Warning, crate::auth::PASSWORD_DEPRECATION_SUGGESTION)
-                    .note(
-                        Level::Note,
-                        "username/password only enables `snouty launch` and `snouty debug`",
-                    ),
-                    credentials,
+fn authn_checks(sources: &[AttributedValue<AuthenticationInfo>]) -> Vec<Check> {
+    let Some((credentials, shadowed)) = sources.split_first() else {
+        return vec![missing_credentials_check(
+            crate::auth::NO_CREDENTIALS_MESSAGE,
+        )];
+    };
+
+    let mut checks = match credentials.value() {
+        AuthenticationInfo::GithubActionsOidc { .. } => {
+            vec![enrich_with_origin(
+                Check::ok(
+                    "github_actions_oidc_token",
+                    "Github Actions OIDC token provided",
                 ),
-            ],
-        },
-        Err(err) => vec![
-            Check::fail("api_key", err.to_string())
-                .note(
-                    Level::Error,
-                    "snouty requires an API key to authenticate with Antithesis",
+                credentials,
+            )]
+        }
+        AuthenticationInfo::OAuth { .. } => {
+            vec![enrich_with_origin(
+                Check::ok("oauth_credentials", "OAuth credentials used"),
+                credentials,
+            )]
+        }
+        AuthenticationInfo::ApiKey { .. } => {
+            vec![enrich_with_origin(
+                Check::ok("api_key", "API key provided"),
+                credentials,
+            )]
+        }
+        AuthenticationInfo::Password { username, .. } => vec![
+            with_credential_remedy(
+                Check::warn(
+                    CREDENTIALS_CHECK_NAME,
+                    "No credentials the API commands accept",
                 )
                 .note(
-                    Level::Note,
-                    "run `snouty login` to sign in and store credentials",
+                    Level::Warning,
+                    "`snouty runs` and other API commands refuse username/password",
+                ),
+            ),
+            enrich_with_origin(
+                Check::ok(
+                    "basic_auth",
+                    format!("Using password credentials for user [{username}]"),
                 )
+                .note(Level::Warning, crate::auth::PASSWORD_DEPRECATION_SUGGESTION)
                 .note(
                     Level::Note,
-                    "ask Antithesis support for an API key if you don't have one",
+                    "username/password only enables `snouty launch` and `snouty debug`",
                 ),
+                credentials,
+            ),
         ],
+    };
+
+    checks.extend(shadowed_credentials_check(credentials, shadowed));
+    checks
+}
+
+/// The check that reports a credential shortfall: no credential at all, or
+/// only the deprecated username and password.
+const CREDENTIALS_CHECK_NAME: &str = "credentials";
+
+fn missing_credentials_check(message: impl Into<String>) -> Check {
+    with_credential_remedy(Check::fail(CREDENTIALS_CHECK_NAME, message).note(
+        Level::Error,
+        "snouty needs credentials to authenticate with Antithesis",
+    ))
+}
+
+/// The remedy notes for a credential shortfall. Every credential kind except
+/// username and password is accepted, so the notes name the ways to get one
+/// rather than naming an API key alone.
+fn with_credential_remedy(check: Check) -> Check {
+    check
+        .note(
+            Level::Note,
+            "run `snouty login` to sign in and store credentials",
+        )
+        .note(
+            Level::Note,
+            "or set ANTITHESIS_API_KEY; ask Antithesis support for an API key if you don't have one",
+        )
+}
+
+/// A warning, not a failure: snouty is authenticated, just not with the
+/// credential the user expected.
+fn shadowed_credentials_check(
+    in_use: &AttributedValue<AuthenticationInfo>,
+    shadowed: &[AttributedValue<AuthenticationInfo>],
+) -> Option<Check> {
+    if shadowed.is_empty() {
+        return None;
+    }
+    let mut check = Check::warn(
+        "credential_sources",
+        "more than one credential source is available",
+    )
+    .note(
+        Level::Warning,
+        format!(
+            "snouty uses the {} from {}",
+            in_use.value(),
+            describe_origin(in_use)
+        ),
+    );
+    for other in shadowed {
+        check = check.note(
+            Level::Note,
+            format!(
+                "snouty ignores the {} from {}",
+                other.value(),
+                describe_origin(other)
+            ),
+        );
+    }
+    Some(check.note(
+        Level::Note,
+        format!("{} to use the next source", drop_action(in_use)),
+    ))
+}
+
+/// A phrase that reads after "read from" or after the name of a credential
+/// kind.
+fn describe_origin<T>(attribution: &AttributedValue<T>) -> String {
+    match attribution {
+        AttributedValue::EnvironmentVariable {
+            environment_variable_names,
+            ..
+        } => format!(
+            "the [{}] environment variable{}",
+            environment_variable_names.join(", "),
+            if environment_variable_names.len() == 1 {
+                ""
+            } else {
+                "s"
+            }
+        ),
+        AttributedValue::SettingsFile {
+            settings_file_path,
+            profile,
+            ..
+        } => format!(
+            // `Display`, not `Debug`: `{:?}` on a path adds quotes of its
+            // own, which read as a second set of brackets around the name.
+            "the [{}] profile in {}",
+            profile.as_deref().unwrap_or(DEFAULT_PROFILE),
+            settings_file_path.display(),
+        ),
+        AttributedValue::Keychain { entry_name, .. } => {
+            format!("system keychain entry named [{entry_name}]")
+        }
     }
 }
 
-fn enrich<T>(check: Check, attribution: AttributedValue<T>) -> Check {
+/// An imperative phrase that reads before "to use the next source".
+fn drop_action<T>(attribution: &AttributedValue<T>) -> String {
     match attribution {
         AttributedValue::EnvironmentVariable {
-            value: _,
             environment_variable_names,
-        } => check.note(
-            Level::Note,
-            format!(
-                "read from the [{}] environment variable{}",
-                environment_variable_names.join(", "),
-                if environment_variable_names.len() == 1 {
-                    ""
-                } else {
-                    "s"
-                }
-            ),
-        ),
+            ..
+        } => format!("unset [{}]", environment_variable_names.join(", ")),
         AttributedValue::SettingsFile {
-            value: _,
             settings_file_path,
             profile,
-        } => check.note(
-            Level::Note,
-            format!(
-                // `Display`, not `Debug`: `{:?}` on a path adds quotes of its
-                // own, which read as a second set of brackets around the name.
-                "read from the [{}] profile in {}",
-                profile.as_deref().unwrap_or("default"),
-                settings_file_path.display(),
-            ),
+            ..
+        } => format!(
+            "remove the [{}] profile from {}",
+            profile.as_deref().unwrap_or(DEFAULT_PROFILE),
+            settings_file_path.display(),
         ),
-        AttributedValue::Keychain {
-            value: _,
-            entry_name,
-        } => check.note(
-            Level::Note,
-            format!("read from system keychain entry named [{entry_name}]",),
-        ),
+        AttributedValue::Keychain { entry_name, .. } => {
+            format!("remove the [{entry_name}] entry from the system keychain")
+        }
     }
+}
+
+fn enrich_with_origin<T>(check: Check, attribution: &AttributedValue<T>) -> Check {
+    check.note(
+        Level::Note,
+        format!("read from {}", describe_origin(attribution)),
+    )
 }
 
 /// Binary health checks: local tooling, the required settings
@@ -363,12 +440,10 @@ fn collect_checks(settings: &Settings) -> Vec<Check> {
     checks.push(repository_check(settings.repository()));
 
     // Authentication (synchronous-only by design).
-    checks.extend(authn_checks(
-        AuthenticationInfo::for_ambient_configuration_with_attribution(
-            settings.profile(),
-            PasswordPolicy::Inspect,
-        ),
-    ));
+    match AuthenticationInfo::available_ambient_credentials(settings.profile()) {
+        Ok(sources) => checks.extend(authn_checks(&sources)),
+        Err(err) => checks.push(missing_credentials_check(err.to_string())),
+    }
 
     checks
 }
@@ -587,8 +662,6 @@ pub async fn cmd_doctor(
 
 #[cfg(test)]
 mod tests {
-    use color_eyre::eyre::eyre;
-
     use crate::auth::{API_KEY_VAR_NAME, PASSWORD_VAR_NAME, USERNAME_VAR_NAME};
     use crate::cli::UpdateChannel;
 
@@ -598,12 +671,12 @@ mod tests {
 
     #[test]
     fn auth_api_key_set_is_a_single_bare_ok_check() {
-        let checks = authn_checks(Ok(AttributedValue::EnvironmentVariable {
+        let checks = authn_checks(&[AttributedValue::EnvironmentVariable {
             value: AuthenticationInfo::ApiKey {
                 api_key: "api_key".to_owned(),
             },
             environment_variable_names: vec![API_KEY_VAR_NAME],
-        }));
+        }]);
         assert_eq!(checks.len(), 1);
         assert_eq!(checks[0].status, Status::Ok);
         assert!(checks[0].message.contains("API key provided"));
@@ -615,13 +688,13 @@ mod tests {
     #[test]
     fn auth_from_a_file_names_the_profile_and_the_path() {
         let note = |profile: Option<&str>| {
-            let checks = authn_checks(Ok(AttributedValue::SettingsFile {
+            let checks = authn_checks(&[AttributedValue::SettingsFile {
                 value: AuthenticationInfo::ApiKey {
                     api_key: "api_key".to_owned(),
                 },
                 settings_file_path: std::path::PathBuf::from("/tmp/credentials.toml"),
                 profile: profile.map(str::to_owned),
-            }));
+            }]);
             checks[0]
                 .notes
                 .iter()
@@ -643,17 +716,25 @@ mod tests {
     }
 
     #[test]
-    fn auth_password_warns_on_key_and_notes_deprecation() {
-        let checks = authn_checks(Ok(AttributedValue::EnvironmentVariable {
+    fn auth_password_warns_on_credentials_and_notes_deprecation() {
+        let checks = authn_checks(&[AttributedValue::EnvironmentVariable {
             value: AuthenticationInfo::Password {
                 username: "user".to_owned(),
                 password: "pass".to_owned(),
             },
             environment_variable_names: vec![USERNAME_VAR_NAME, PASSWORD_VAR_NAME],
-        }));
+        }]);
         assert_eq!(checks.len(), 2);
         assert_eq!(checks[0].status, Status::Warn);
-        assert!(checks[0].message.contains("API key not provided"));
+        assert_eq!(checks[0].name, CREDENTIALS_CHECK_NAME);
+        assert!(checks[0].message.contains("No credentials"));
+        // The remedy must name `snouty login` too, not an API key alone.
+        assert!(
+            checks[0]
+                .notes
+                .iter()
+                .any(|n| n.text.contains("snouty login"))
+        );
         assert!(checks[0].notes.iter().any(|n| n.level == Level::Warning));
         assert!(
             checks[0]
@@ -674,7 +755,7 @@ mod tests {
 
     #[test]
     fn auth_nothing_set_errors_and_only_mentions_api_key() {
-        let checks = authn_checks(Err(eyre!("PANIC PANIC PANIC")));
+        let checks = [missing_credentials_check("PANIC PANIC PANIC")];
         assert_eq!(checks.len(), 1);
         assert_eq!(checks[0].status, Status::Error);
         assert!(checks[0].message.contains("PANIC PANIC PANIC"));
@@ -704,6 +785,104 @@ mod tests {
         );
         assert!(!all.contains("USERNAME"));
         assert!(!all.contains("PASSWORD"));
+    }
+
+    /// A user who meets both messages reads one wording, not two.
+    #[test]
+    fn auth_no_source_reports_the_shared_no_credentials_message() {
+        let checks = authn_checks(&[]);
+        assert_eq!(checks.len(), 1);
+        assert_eq!(checks[0].status, Status::Error);
+        assert_eq!(checks[0].message, crate::auth::NO_CREDENTIALS_MESSAGE);
+    }
+
+    fn env_password_source() -> AttributedValue<AuthenticationInfo> {
+        AttributedValue::EnvironmentVariable {
+            value: AuthenticationInfo::Password {
+                username: "user".to_owned(),
+                password: "pass".to_owned(),
+            },
+            environment_variable_names: vec![USERNAME_VAR_NAME, PASSWORD_VAR_NAME],
+        }
+    }
+
+    fn file_api_key_source() -> AttributedValue<AuthenticationInfo> {
+        AttributedValue::SettingsFile {
+            value: AuthenticationInfo::ApiKey {
+                api_key: "api_key".to_owned(),
+            },
+            settings_file_path: std::path::PathBuf::from("/tmp/credentials.toml"),
+            profile: None,
+        }
+    }
+
+    fn note_text(check: &Check) -> String {
+        check
+            .notes
+            .iter()
+            .map(|n| n.text.as_str())
+            .collect::<Vec<_>>()
+            .join(" | ")
+    }
+
+    #[test]
+    fn one_credential_source_reports_no_conflict() {
+        let checks = authn_checks(&[file_api_key_source()]);
+        assert!(!checks.iter().any(|c| c.name == "credential_sources"));
+    }
+
+    /// The case issue #292 reported: `snouty login` stored an API key while a
+    /// legacy username/password was still exported.
+    #[test]
+    fn a_shadowed_credential_is_reported_with_the_action_that_frees_it() {
+        let checks = authn_checks(&[env_password_source(), file_api_key_source()]);
+        let check = checks
+            .iter()
+            .find(|c| c.name == "credential_sources")
+            .expect("the conflict is reported");
+        assert_eq!(check.status, Status::Warn);
+        let notes = note_text(check);
+        assert!(
+            notes.contains(
+                "snouty uses the username and password from the \
+                 [ANTITHESIS_USERNAME, ANTITHESIS_PASSWORD] environment variables"
+            ),
+            "got: {notes}"
+        );
+        assert!(
+            notes.contains(
+                "snouty ignores the API key from the [default] profile in /tmp/credentials.toml"
+            ),
+            "got: {notes}"
+        );
+        assert!(
+            notes.contains("unset [ANTITHESIS_USERNAME, ANTITHESIS_PASSWORD]"),
+            "got: {notes}"
+        );
+    }
+
+    #[test]
+    fn the_action_that_frees_a_credential_matches_its_origin() {
+        let keychain = AttributedValue::Keychain {
+            value: AuthenticationInfo::ApiKey {
+                api_key: "api_key".to_owned(),
+            },
+            entry_name: "_default_".to_owned(),
+        };
+        let checks = authn_checks(&[keychain, env_password_source()]);
+        let check = checks
+            .iter()
+            .find(|c| c.name == "credential_sources")
+            .expect("the conflict is reported");
+        let notes = note_text(check);
+        assert!(
+            notes.contains("remove the [_default_] entry from the system keychain"),
+            "got: {notes}"
+        );
+        assert!(
+            notes.contains("snouty ignores the username and password"),
+            "got: {notes}"
+        );
     }
 
     // ---- required-settings checks --------------------------------------
@@ -966,7 +1145,7 @@ mod tests {
 
     #[test]
     fn json_report_carries_checks_and_informational_settings() {
-        let checks = authn_checks(Err(eyre!("PANIC PANIC PANIC")));
+        let checks = vec![missing_credentials_check("PANIC PANIC PANIC")];
         let settings = vec![
             Setting::new("tenant", "acme"),
             Setting::maybe("https_proxy", None::<String>),
@@ -978,7 +1157,7 @@ mod tests {
         };
         let value = serde_json::to_value(&report).unwrap();
         assert_eq!(value["ok"], false);
-        assert_eq!(value["checks"][0]["name"], "api_key");
+        assert_eq!(value["checks"][0]["name"], "credentials");
         assert_eq!(value["checks"][0]["status"], "error");
         assert_eq!(value["checks"][0]["notes"][0]["level"], "error");
         assert_eq!(value["settings"]["tenant"], "acme");

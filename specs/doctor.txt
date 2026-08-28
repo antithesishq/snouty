@@ -9,12 +9,12 @@ stdout '.*container runtime.*'
 stdout '(?s)environment\s+variables'
 stdout '.*--json.*'
 
-# With nothing configured, doctor steers the user to an API key only — it must
-# not suggest username/password, which is legacy auth (issue #145). The headline
-# states the bare problem; notes explain it and say where to get a key.
+# With nothing configured, doctor names the ways to get a credential the API
+# commands accept — it must not suggest username/password, which is legacy auth
+# (issue #145). The headline states the bare problem; the notes explain it.
 ! snouty doctor
 stderr '.*No Antithesis credentials found.*'
-stderr '.*requires an API key.*'
+stderr '.*needs credentials to authenticate.*'
 stderr '.*ask Antithesis support.*'
 ! stderr '.*ANTITHESIS_USERNAME.*'
 
@@ -22,12 +22,12 @@ stderr '.*ask Antithesis support.*'
 # required credential is missing (so CI can gate on it).
 ! snouty doctor --json
 stdout '.*"ok": false.*'
-stdout '.*"name": "api_key".*'
+stdout '.*"name": "credentials".*'
 stdout '.*"status": "error".*'
 stdout '.*"level": "error".*'
 
-# With only username/password set, the missing API key downgrades to a warning
-# and the deprecated creds are flagged as launch/debug-only.
+# With only username/password set, the credential shortfall downgrades to a
+# warning and the deprecated creds are flagged as launch/debug-only.
 env ANTITHESIS_USERNAME=testuser
 env ANTITHESIS_PASSWORD=testpass
 ! snouty doctor
@@ -36,6 +36,8 @@ stderr '.*deprecated.*'
 stderr '.*snouty login.*'
 stderr '.*snouty launch.*'
 stderr '.*ANTITHESIS_PASSWORD.*'
+# One source only, so doctor says nothing about a conflict.
+! stderr '.*more than one credential source.*'
 
 # --- API connectivity + version check (issue #146) ---
 # Cases that fabricate a status via mock-server are [!staging]-gated: under
@@ -97,3 +99,39 @@ env ANTITHESIS_BASE_URL=http://127.0.0.1:1
 ! snouty doctor
 stderr '.*Antithesis API unreachable.*'
 stderr '.*could not connect to 127.0.0.1.*'
+
+# --- conflicting credential sources (issue #292) ---
+# A credential exported in the environment hides one that `snouty login` stored
+# in the credentials file. The scan reads no network, and without an API key
+# doctor makes no API call, so this block needs no mock and no `--offline`.
+isolate-home credential_conflict
+env ANTITHESIS_API_KEY=
+env ANTITHESIS_USERNAME=testuser
+env ANTITHESIS_PASSWORD=testpass
+env ANTITHESIS_TENANT=testtenant
+snouty doctor
+stderr '.*more than one credential source is available.*'
+stderr 'snouty uses the username and password from the \[ANTITHESIS_USERNAME, ANTITHESIS_PASSWORD\] environment variables'
+stderr 'snouty ignores the API key from the \[default\] profile in .*credentials.toml'
+stderr 'unset \[ANTITHESIS_USERNAME, ANTITHESIS_PASSWORD\] to use the next source'
+
+# A credentials file snouty cannot parse sits behind the exported API key. No
+# command reads that far, so doctor reports the key it uses and stays green
+# rather than failing on a file that stops nothing. `--offline` is needed here:
+# the API key makes doctor call the API, and `testtenant` resolves nowhere.
+isolate-home broken_credentials
+env ANTITHESIS_API_KEY=testkey
+env ANTITHESIS_TENANT=testtenant
+env ANTITHESIS_USERNAME=
+env ANTITHESIS_PASSWORD=
+snouty doctor --offline
+stderr '.*API key provided.*'
+! stderr '(?s).*credentials.toml.*'
+
+-- credential_conflict/.config/snouty/credentials.toml --
+[default]
+type = "ApiKey"
+api_key = "spec-stored-key"
+
+-- broken_credentials/.config/snouty/credentials.toml --
+this is not valid TOML {{{

@@ -192,7 +192,7 @@ Snouty looks for a credential in this order, and uses the first one it finds:
 
 An environment variable always wins over a stored credential. Unset `ANTITHESIS_API_KEY` when you want snouty to use what `snouty login` stored.
 
-Run `snouty doctor` to see which credential snouty resolves, and where it comes from.
+Run `snouty doctor` to see which credential snouty resolves, and where it comes from. doctor also warns when more than one source holds a credential, and names the action that hands the run to the next source.
 
 ### Browser sign-in with `snouty login`
 

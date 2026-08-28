@@ -1871,6 +1871,28 @@ def build_stories(d: Discovery) -> list[Story]:
             env=_doctor_env(api_key=False, username=True, password=True, tenant=True, repo=True),
         ),
         Story(
+            "doctor-shadowed-credentials",
+            "I ran `snouty login` but doctor still reports my old credentials",
+            "I stored an API key with `snouty login`, but a username and password are still "
+            "exported in my shell; I want to know why doctor keeps reporting the old ones.",
+            "doctor warns that more than one credential source is available, names the credential "
+            "it uses and where it comes from, names the stored credential it ignores, and states "
+            "the action that hands the run to the stored one (issue #292).",
+            ["doctor"],
+            doctor_check(
+                contains=(
+                    "more than one credential source is available",
+                    "snouty uses the username and password",
+                    "snouty ignores the API key",
+                    "unset [ANTITHESIS_USERNAME, ANTITHESIS_PASSWORD]",
+                ),
+            ),
+            json_capable=False,
+            env=_doctor_env(api_key=False, username=True, password=True, tenant=True, repo=True),
+            isolate_config=True,
+            seed_files={_CREDS: _SEED_CREDS_TOML},
+        ),
+        Story(
             "doctor-json",
             "Gate CI on a ready environment with --json",
             "I want to check my environment in a script/CI step and parse the result, "
@@ -2370,6 +2392,8 @@ _TENANT = "acme"
 _REPO = "registry.example.com/acme/app"
 _SETTINGS = ".config/snouty/settings.toml"
 _CREDS = ".config/snouty/credentials.toml"
+# A `credentials.toml` exactly as `snouty login` writes it.
+_SEED_CREDS_TOML = f'[default]\ntype = "ApiKey"\napi_key = "{_SEED_KEY}"\n'
 
 # Prompts the dialogues wait for, and the credential-menu labels they choose
 # between (these match the `Display` impl on snouty's `AuthSetupType`).
@@ -2464,7 +2488,7 @@ def build_tty_stories() -> list[Story]:
             ),
             seed_files={
                 _SETTINGS: f'tenant = "{_TENANT}"\nrepository = "{_REPO}"\n',
-                _CREDS: f'[default]\ntype = "ApiKey"\napi_key = "{_SEED_KEY}"\n',
+                _CREDS: _SEED_CREDS_TOML,
             },
         ),
         _tty_story(
@@ -2605,6 +2629,14 @@ def write_story(out_dir: Path, story: Story, sr: StoryRun, passed: bool, detail:
     (out_dir / f"{story.slug}.md").write_text(md)
 
 
+def _write_seed_files(root: Path, seed_files: dict[str, str] | None) -> None:
+    """Pre-write a story's `seed_files` under `root`, creating parent dirs."""
+    for rel_path, contents in (seed_files or {}).items():
+        dest = root / rel_path
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_text(contents)
+
+
 def run_tty_story(sn: Snouty, story: Story) -> StoryRun:
     """Run a TTY story in a throwaway `$HOME` so the credentials and settings it
     persists never touch the operator's real config. The home is seeded with
@@ -2616,10 +2648,7 @@ def run_tty_story(sn: Snouty, story: Story) -> StoryRun:
     home = Path(tempfile.mkdtemp(prefix="snouty-tty."))
 
     try:
-        for rel_path, contents in (story.seed_files or {}).items():
-            dest = home / rel_path
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            dest.write_text(contents)
+        _write_seed_files(home, story.seed_files)
 
         # Pin HOME, clear XDG_CONFIG_HOME (snouty treats empty as unset), and
         # drop any ambient ANTITHESIS_* credentials, so the story shows the state
@@ -2648,19 +2677,23 @@ def run_tty_story(sn: Snouty, story: Story) -> StoryRun:
 
 
 def _run_isolated_story(sn: Snouty, story: Story) -> StoryRun:
-    """Run a story that models an unconfigured machine with the global config dir
-    pointed at an empty throwaway `$XDG_CONFIG_HOME`, so no persisted `snouty
-    login` credentials (`credentials.toml` / `settings.toml`) leak in. The
-    `--json` rows aren't captured (`json_lines` can't take an env override, and
-    the only isolated stories — the no-auth `doctor` stories — validate on
-    rendered text anyway)."""
-    config_home = Path(tempfile.mkdtemp(prefix="snouty-gallery-noauth."))
+    """Run a story with the global config dir pointed at a throwaway home, so no
+    persisted `snouty login` credentials (`credentials.toml` / `settings.toml`)
+    leak in. The home starts empty, which models an unconfigured machine;
+    `seed_files` writes the persisted state a story needs. `$XDG_CONFIG_HOME`
+    points at `<home>/.config`, so a seed path means the same here as in
+    `run_tty_story`. The `--json` rows aren't captured (`json_lines` can't take
+    an env override, and the isolated stories — all `doctor` stories — validate
+    on rendered text anyway)."""
+    home = Path(tempfile.mkdtemp(prefix="snouty-gallery-config."))
     try:
-        env = {**(story.env or {}), "XDG_CONFIG_HOME": str(config_home)}
+        _write_seed_files(home, story.seed_files)
+
+        env = {**(story.env or {}), "XDG_CONFIG_HOME": str(home / ".config")}
         result = sn.run(story.args, env)
         return StoryRun(story, result, None)
     finally:
-        shutil.rmtree(config_home, ignore_errors=True)
+        shutil.rmtree(home, ignore_errors=True)
 
 
 def run_story(sn: Snouty, story: Story) -> StoryRun:

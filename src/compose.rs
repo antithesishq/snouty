@@ -17,7 +17,7 @@ use crate::config::ComposeConfig;
 use crate::container::{
     Architecture, ContainerRuntime, DISCOVERY_COMMAND_TIMEOUT, RemoteManifest, available_engines,
     digests_for_repo, flatten_registry_host, image_ref_tag, image_repo, is_podman_in_disguise,
-    normalize_repo,
+    normalize_repo, strip_registry,
 };
 use crate::error::user_error;
 use crate::process::{ProcessGroupChild, output_with_timeout};
@@ -582,13 +582,8 @@ impl DockerCompose {
             pinned.insert(name.clone(), digests[dest.as_str()].clone());
         }
 
-        // The prefix ties the compose file to the spelling this machine uses
-        // to reach the registry — a proxy or mirror alias that a test run need
-        // not resolve.
         for pinned_ref in pinned.values_mut() {
-            if let Some(rest) = pinned_ref.strip_prefix(&prefix) {
-                *pinned_ref = rest.to_string();
-            }
+            *pinned_ref = strip_registry(pinned_ref, registry);
         }
 
         rewrite_compose_images(&self.canonical_contents()?, &pinned)

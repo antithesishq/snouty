@@ -280,7 +280,13 @@ async fn cmd_launch(
                 rt.build_and_push_config_image(detected.dir(), &config_image)?
             }
         };
-        params.insert(ANT_CONFIG_IMAGE, pinned_config);
+        // The platform resolves a bare name against the tenant's own
+        // repository, and the address snouty pushed to is a spelling only this
+        // machine has to resolve. Same rule as the compose pins.
+        params.insert(
+            ANT_CONFIG_IMAGE,
+            container::strip_registry(&pinned_config, &registry),
+        );
     }
 
     // No --source means the run is ephemeral. Set the flag and tell the user

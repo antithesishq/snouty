@@ -873,6 +873,18 @@ pub fn flatten_registry_host(image: &str) -> String {
     }
 }
 
+/// `image` without the address of `registry`, which is the spelling this
+/// machine uses to reach that registry — often a proxy or mirror alias that a
+/// test run cannot resolve. The platform resolves the bare name that remains
+/// against the tenant's own repository.
+///
+/// An image outside `registry` keeps its address, because nothing else names
+/// those bytes.
+pub fn strip_registry(image: &str, registry: &str) -> String {
+    let prefix = format!("{}/", registry.trim_end_matches('/'));
+    image.strip_prefix(&prefix).unwrap_or(image).to_string()
+}
+
 /// Expand Docker Hub shorthand so repository names compare reliably across
 /// runtimes and reference styles: `nginx` → `docker.io/library/nginx`,
 /// `user/app` → `docker.io/user/app`, `index.docker.io/...` → `docker.io/...`.
@@ -1197,6 +1209,33 @@ mod tests {
         assert_eq!(
             flatten_registry_host("app:v1@sha256:abc"),
             "app:v1@sha256:abc"
+        );
+    }
+
+    #[test]
+    fn strip_registry_drops_only_our_own_address() {
+        let registry = "us-central1-docker.pkg.dev/proj/repo";
+        assert_eq!(
+            strip_registry(
+                "us-central1-docker.pkg.dev/proj/repo/snouty-config@sha256:abc",
+                registry
+            ),
+            "snouty-config@sha256:abc"
+        );
+        // A trailing slash on the configured repository must not defeat the match.
+        assert_eq!(
+            strip_registry("reg.example.com/repo/app:v1", "reg.example.com/repo/"),
+            "app:v1"
+        );
+        // Another registry keeps its address; nothing else names those bytes.
+        assert_eq!(
+            strip_registry("ghcr.io/org/app:v1", registry),
+            "ghcr.io/org/app:v1"
+        );
+        // A prefix that matches only as text, not as a whole path segment.
+        assert_eq!(
+            strip_registry("reg.example.com/repository/app:v1", "reg.example.com/repo"),
+            "reg.example.com/repository/app:v1"
         );
     }
 

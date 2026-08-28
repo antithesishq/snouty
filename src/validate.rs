@@ -366,10 +366,32 @@ fn check_compose_divergence(
     let hermetic = compose.config_json_hermetic_env()?;
 
     let detail = if hermetic.status.success() {
-        let local: Value = serde_json::from_str(&local)
-            .wrap_err("failed to parse 'docker-compose config' output")?;
-        let hermetic: Value = serde_json::from_slice(&hermetic.stdout)
-            .wrap_err("failed to parse 'docker-compose config' output")?;
+        let cli = compose.cli_name();
+        let renders = parse_config_json(&cli, LOCAL_RENDER, local.as_bytes()).and_then(|local| {
+            parse_config_json(&cli, HERMETIC_RENDER, &hermetic.stdout)
+                .map(|hermetic| (local, hermetic))
+        });
+        let (local, hermetic) = match renders {
+            Ok(renders) => renders,
+            // Without both renders there is nothing to compare, so the check
+            // cannot run at all. --allow-compose-divergence says the user
+            // accepts an unchecked compose file, and a check that cannot run
+            // leaves them with exactly that, so the flag covers this too —
+            // otherwise the escape hatch is unreachable for the one failure a
+            // user cannot fix in their compose file. Docker Compose v2.25.0 is
+            // that failure: it ignores `--format json` and prints YAML
+            // (docker/compose#11627, fixed in v2.26.0). The quoted output line
+            // is left to the fatal path; a user who opted out needs to know
+            // the check was skipped, not to debug it.
+            Err(error) if allow_compose_divergence => {
+                eprintln!(
+                    "Warning: cannot check whether {DIVERGENCE_HEADLINE}\n{error:#}\n\
+                     Proceeding anyway because --allow-compose-divergence was set."
+                );
+                return Ok(());
+            }
+            Err(error) => return Err(error),
+        };
         let fields = diverging_config_fields(&local, &hermetic);
         (!fields.is_empty()).then(|| fields.join("\n"))
     } else {
@@ -421,6 +443,66 @@ fn check_compose_divergence(
                 || "re-run with --allow-compose-divergence to treat this as a warning",
             ))
     }
+}
+
+/// How each render of the compose file is described in an error: the two runs
+/// differ only in the environment they use, so the environment names them.
+const LOCAL_RENDER: &str = "rendered with your shell environment";
+const HERMETIC_RENDER: &str = "rendered with a scrubbed environment, as Antithesis does";
+
+/// Parse one `compose config --format json` render, quoting what compose
+/// actually printed when the output is not JSON.
+///
+/// The bare parse error names neither the command that ran nor a character of
+/// its output: `failed to parse 'docker-compose config' output` followed by
+/// `expected ident at line 1 column 2` leaves the user with nothing to act on
+/// (issue #294). Output that is not JSON means compose printed something else
+/// entirely — a YAML render from a CLI that ignored `--format json`, or a log
+/// banner ahead of the document — and the line the parser stopped on says
+/// which, so show it.
+fn parse_config_json(cli: &str, render: &str, stdout: &[u8]) -> Result<Value> {
+    // Lossy: output that is not even UTF-8 is still output worth quoting, and
+    // the replacement characters are themselves a clue.
+    let text = String::from_utf8_lossy(stdout);
+    serde_json::from_str(&text).or_else(|error| {
+        let section = unparsable_output(&text, error.line());
+        let reproduce = format!("{cli} config --format json");
+        Err(error)
+            .wrap_err(format!(
+                "'{cli} config --format json' printed output that is not JSON ({render})"
+            ))
+            .with_section(move || section.header("Output:"))
+            .with_suggestion(move || {
+                format!("run '{reproduce}' in the config directory to see what it prints")
+            })
+    })
+}
+
+/// The one output line a JSON parse stopped on, numbered, for an error section.
+///
+/// One line, capped: a full render is the whole resolved compose model, and its
+/// values can be secrets (see [`diverging_config_fields`]). The line that broke
+/// the parse is the one that identifies the problem.
+fn unparsable_output(text: &str, line_number: usize) -> String {
+    const MAX_LEN: usize = 200;
+
+    if text.trim().is_empty() {
+        return "(compose printed nothing)".to_string();
+    }
+    // serde_json numbers lines from 1, and reports 0 when it has no position;
+    // then the first line is the best guess, and is labelled as line 1.
+    let index = line_number.saturating_sub(1);
+    let mut line = text
+        .lines()
+        .nth(index)
+        .unwrap_or_default()
+        .trim_end()
+        .to_string();
+    if let Some((offset, _)) = line.char_indices().nth(MAX_LEN) {
+        line.truncate(offset);
+        line.push('\u{2026}');
+    }
+    format!("line {}: {line}", index + 1)
 }
 
 /// Whether a failed `compose config` failed *because* interpolation could not
@@ -941,6 +1023,61 @@ mod tests {
             broken.to_string().contains("failed to wait for compose"),
             "unexpected message: {broken}"
         );
+    }
+
+    /// The failure users hit reads `expected ident at line 1 column 2` and
+    /// says nothing else (issue #294). The report has to name the command, the
+    /// environment it ran in, and the line compose actually printed.
+    #[test]
+    fn parse_config_json_quotes_output_that_is_not_json() {
+        // A compose CLI that ignores `--format json` prints the YAML render.
+        let yaml = "name: myproject\nservices:\n  app:\n    image: alpine\n";
+        let report =
+            parse_config_json("docker-compose", LOCAL_RENDER, yaml.as_bytes()).unwrap_err();
+        let rendered = format!("{report:#}");
+        assert!(
+            rendered.contains(
+                "'docker-compose config --format json' printed output that is not JSON \
+                 (rendered with your shell environment)"
+            ),
+            "got: {rendered}"
+        );
+        // The parse error stays in the chain as the cause.
+        assert!(rendered.contains("line 1 column 2"), "got: {rendered}");
+        assert!(
+            format!("{report:?}").contains("line 1: name: myproject"),
+            "got: {report:?}"
+        );
+
+        let json = br#"{"name": "myproject"}"#;
+        assert_eq!(
+            parse_config_json("docker compose", HERMETIC_RENDER, json).unwrap(),
+            json!({"name": "myproject"})
+        );
+    }
+
+    #[test]
+    fn unparsable_output_shows_the_offending_line_only() {
+        let text = "{\n  \"name\": oops\n}\n";
+        assert_eq!(unparsable_output(text, 2), r#"line 2:   "name": oops"#);
+
+        // No position (line 0) falls back to the first line.
+        assert_eq!(unparsable_output(text, 0), "line 1: {");
+
+        // A line past the end cannot be quoted, but the label still reports it.
+        assert_eq!(unparsable_output(text, 9), "line 9: ");
+
+        assert_eq!(unparsable_output("   \n", 1), "(compose printed nothing)");
+    }
+
+    /// A render line can be thousands of characters of resolved model, so the
+    /// quoted line is capped.
+    #[test]
+    fn unparsable_output_caps_a_long_line() {
+        let long = "x".repeat(500);
+        let quoted = unparsable_output(&long, 1);
+        assert!(quoted.ends_with('\u{2026}'), "got: {quoted}");
+        assert_eq!(quoted.chars().count(), "line 1: ".len() + 200 + 1);
     }
 
     #[test]

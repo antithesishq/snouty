@@ -850,25 +850,29 @@ fn is_registry_host(segment: &str) -> bool {
     segment.contains('.') || segment.contains(':') || segment == "localhost"
 }
 
-/// `image` with its leading registry host turned into an ordinary path
-/// segment: `ghcr.io/org/app:v1` becomes `ghcr-io/org/app:v1`. A reference
-/// that names no host is returned unchanged.
+/// The path segment that holds copies of images from other registries. It
+/// carries no dot and no colon, so no runtime reads it as a registry host.
+pub const MIRROR_PREFIX: &str = "snouty-mirror";
+
+/// The name a copy of `image` takes below the tenant's repository:
+/// `ghcr.io/org/app:v1` becomes `snouty-mirror/ghcr.io/org/app:v1`. A
+/// reference that names no host is a copy of nothing and is returned
+/// unchanged.
 ///
-/// No runtime reads the result as a host, so it can serve as a path inside
-/// another repository and still be pulled by name from there. The mapping is
-/// not reversible: `ghcr.io` and `ghcr-io` both flatten to `ghcr-io`.
-pub fn flatten_registry_host(image: &str) -> String {
+/// [`MIRROR_PREFIX`] opens the path, so the source registry that follows it is
+/// an ordinary path segment rather than an address. The rest of the reference
+/// stays legible, and a reader restores the original by deleting the prefix.
+///
+/// One edit satisfies the reference grammar. A port takes `__` in place of its
+/// colon, which is a separator no author writes by hand, and an uppercase host
+/// folds to lowercase, which names the same registry either way. Neither edit
+/// merges two hosts that hold different bytes.
+pub fn mirror_path(image: &str) -> String {
     match image.split_once('/') {
-        // `localhost` is a host by name rather than by punctuation, so
-        // replacing the separators leaves it a host.
-        Some(("localhost", rest)) => format!("local/{rest}"),
-        // A host may carry uppercase letters, a repository path segment may not.
-        Some((host, rest)) if is_registry_host(host) => {
-            format!(
-                "{}/{rest}",
-                host.replace(['.', ':'], "-").to_ascii_lowercase()
-            )
-        }
+        Some((host, rest)) if is_registry_host(host) => format!(
+            "{MIRROR_PREFIX}/{}/{rest}",
+            host.replace(':', "__").to_ascii_lowercase()
+        ),
         _ => image.to_string(),
     }
 }
@@ -1189,27 +1193,30 @@ mod tests {
     }
 
     #[test]
-    fn flatten_registry_host_turns_a_host_into_a_path_segment() {
+    fn mirror_path_keeps_the_source_registry_readable() {
         assert_eq!(
-            flatten_registry_host("ghcr.io/org/app:v1"),
-            "ghcr-io/org/app:v1"
+            mirror_path("ghcr.io/org/app:v1"),
+            "snouty-mirror/ghcr.io/org/app:v1"
         );
-        // A port is part of the host, so it flattens with it.
+        // A port cannot keep its colon inside a path, so it takes `__`.
         assert_eq!(
-            flatten_registry_host("localhost:5000/app:v1"),
-            "localhost-5000/app:v1"
+            mirror_path("localhost:5000/app:v1"),
+            "snouty-mirror/localhost__5000/app:v1"
         );
-        assert_eq!(flatten_registry_host("localhost/app:v1"), "local/app:v1");
         assert_eq!(
-            flatten_registry_host("Registry.Example.com/org/app:v1"),
-            "registry-example-com/org/app:v1"
+            mirror_path("localhost/app:v1"),
+            "snouty-mirror/localhost/app:v1"
         );
-        assert_eq!(flatten_registry_host("myapp:latest"), "myapp:latest");
-        assert_eq!(flatten_registry_host("org/app:v1"), "org/app:v1");
+        // A reference that names no host names no source to copy from.
+        // A path segment cannot carry uppercase, and the fold names the same
+        // registry.
         assert_eq!(
-            flatten_registry_host("app:v1@sha256:abc"),
-            "app:v1@sha256:abc"
+            mirror_path("Registry.Example.com/org/app:v1"),
+            "snouty-mirror/registry.example.com/org/app:v1"
         );
+        assert_eq!(mirror_path("myapp:latest"), "myapp:latest");
+        assert_eq!(mirror_path("org/app:v1"), "org/app:v1");
+        assert_eq!(mirror_path("app:v1@sha256:abc"), "app:v1@sha256:abc");
     }
 
     /// `generate_image_ref` spells the config image, `strip_registry` takes the
@@ -1253,16 +1260,16 @@ mod tests {
     }
 
     #[test]
-    fn flatten_registry_host_output_names_no_host() {
+    fn mirror_path_output_names_no_host() {
         for image in [
             "ghcr.io/org/app:v1",
             "localhost:5000/app:v1",
             "us-central1-docker.pkg.dev/proj/repo/app:v1",
             "localhost/app:v1",
         ] {
-            let flat = flatten_registry_host(image);
-            let first = flat.split('/').next().unwrap();
-            assert!(!is_registry_host(first), "{image} flattened to {flat}");
+            let path = mirror_path(image);
+            let first = path.split('/').next().unwrap();
+            assert!(!is_registry_host(first), "{image} mirrored to {path}");
         }
     }
 

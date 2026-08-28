@@ -16,7 +16,7 @@ use color_eyre::{
 use crate::config::ComposeConfig;
 use crate::container::{
     Architecture, ContainerRuntime, DISCOVERY_COMMAND_TIMEOUT, RemoteManifest, available_engines,
-    digests_for_repo, flatten_registry_host, image_ref_tag, image_repo, is_podman_in_disguise,
+    digests_for_repo, image_ref_tag, image_repo, is_podman_in_disguise, mirror_path,
     normalize_repo, strip_registry,
 };
 use crate::error::user_error;
@@ -516,9 +516,11 @@ impl DockerCompose {
         // Resolve each distinct image once: pin it from a registry that
         // already serves the local digest, or schedule it for push.
         let mut resolution: BTreeMap<&str, Option<String>> = BTreeMap::new();
-        // Flattening is not injective. snouty tags each pushed image onto its
-        // destination and pushes that path once, so two images that want one
-        // path leave every service pinned to whichever was tagged last.
+        // Two images reach one destination only when the compose file already
+        // names a mirror path, which happens when an author copies a pinned
+        // reference back into the source. snouty tags each pushed image onto
+        // its destination and pushes that path once, so two images that want
+        // one path leave every service pinned to whichever was tagged last.
         let mut claims: BTreeMap<String, &str> = BTreeMap::new();
         for service in &contents.services {
             let image = service.image.as_str();
@@ -534,7 +536,7 @@ impl DockerCompose {
                         let dest = push_destination(image, &prefix);
                         if let Some(other) = claims.insert(dest.clone(), image) {
                             bail!(user_error(format!(
-                                "`{other}` and `{image}` both flatten to `{dest}`, so \
+                                "`{other}` and `{image}` both push to `{dest}`, so \
                                  snouty would push one of them and pin both services \
                                  to it. Rename one of them."
                             )));
@@ -594,15 +596,14 @@ impl DockerCompose {
     }
 }
 
+/// Where snouty pushes `image` inside the tenant repository at `prefix`.
+///
 /// The path below `prefix` never opens with a registry host, so the compose
-/// pin can drop `prefix` and still name the same bytes. A dotted segment that
-/// is already below `prefix` is flattened too: `{prefix}team.a/app` goes to
-/// `{prefix}team-a/app`.
+/// pin can drop `prefix` and still name the same bytes. A host the author
+/// wrote below `prefix` is mirrored too: `{prefix}ghcr.io/org/app` goes to
+/// `{prefix}snouty-mirror/ghcr.io/org/app`.
 fn push_destination(image: &str, prefix: &str) -> String {
-    format!(
-        "{prefix}{}",
-        flatten_registry_host(&strip_registry(image, prefix))
-    )
+    format!("{prefix}{}", mirror_path(&strip_registry(image, prefix)))
 }
 
 /// Find a registry that already serves `image`'s local bytes, returning
@@ -1506,7 +1507,7 @@ services:
         );
     }
     #[test]
-    fn pin_images_flattens_a_registry_host_into_the_path() {
+    fn pin_images_mirrors_a_registry_host_into_the_path() {
         if !has_compose() {
             // Loud in CI (skip_or_fail panics there) so a runner missing
             // docker-compose can't silently drop this coverage.
@@ -1519,7 +1520,7 @@ services:
         let rt = FakeRuntime {
             available_images: BTreeMap::from([("ghcr.io/org/app:v1".to_string(), true)]),
             architectures: BTreeMap::from([(
-                "reg.example.com/ghcr-io/org/app:v1".to_string(),
+                "reg.example.com/snouty-mirror/ghcr.io/org/app:v1".to_string(),
                 "amd64".to_string(),
             )]),
             repo_digests: BTreeMap::from([(
@@ -1537,30 +1538,31 @@ services:
         // A pin of `ghcr.io/org/app` would send the platform to the real
         // ghcr.io for a digest only we hold.
         assert!(
-            out.contains("image: ghcr-io/org/app:v1@sha256:fakepushdigest"),
-            "expected the flattened pin without our prefix, got: {out}"
+            out.contains("image: snouty-mirror/ghcr.io/org/app:v1@sha256:fakepushdigest"),
+            "expected the mirrored pin without our prefix, got: {out}"
         );
         assert_eq!(
             *rt.pushed.lock().unwrap(),
-            vec!["reg.example.com/ghcr-io/org/app:v1".to_string()]
+            vec!["reg.example.com/snouty-mirror/ghcr.io/org/app:v1".to_string()]
         );
     }
 
     #[test]
-    fn pin_images_flattens_a_host_the_author_wrote_below_our_registry() {
+    fn pin_images_mirrors_a_host_the_author_wrote_below_our_registry() {
         if !has_compose() {
             skip_or_fail("docker-compose (Docker Compose v2) is not available");
             return;
         }
-        // The registry serves the author's path, but a pin of it would carry
-        // the registry address, so snouty pushes the flattened path instead.
+        // The registry serves the author's path, but a pin of it would open
+        // with `ghcr.io`, which the platform reads as an address. snouty
+        // pushes the mirrored path instead.
         let rt = FakeRuntime {
             available_images: BTreeMap::from([(
                 "reg.example.com/ghcr.io/org/app:v1".to_string(),
                 true,
             )]),
             architectures: BTreeMap::from([(
-                "reg.example.com/ghcr-io/org/app:v1".to_string(),
+                "reg.example.com/snouty-mirror/ghcr.io/org/app:v1".to_string(),
                 "amd64".to_string(),
             )]),
             repo_digests: BTreeMap::from([(
@@ -1580,12 +1582,12 @@ services:
         )
         .unwrap();
         assert!(
-            out.contains("image: ghcr-io/org/app:v1@sha256:fakepushdigest"),
-            "expected the flattened pin, got: {out}"
+            out.contains("image: snouty-mirror/ghcr.io/org/app:v1@sha256:fakepushdigest"),
+            "expected the mirrored pin, got: {out}"
         );
         assert_eq!(
             *rt.pushed.lock().unwrap(),
-            vec!["reg.example.com/ghcr-io/org/app:v1".to_string()]
+            vec!["reg.example.com/snouty-mirror/ghcr.io/org/app:v1".to_string()]
         );
     }
 
@@ -1643,24 +1645,29 @@ services:
             skip_or_fail("docker-compose (Docker Compose v2) is not available");
             return;
         }
-        // `localhost/app` and `local/app` both land on `{registry}/local/app`.
-        // snouty pushes that path once, so both services would run one image.
+        // An author who copies a pinned reference back into the source has
+        // both spellings of one mirror path. snouty pushes that path once, so
+        // both services would run one image.
         let rt = FakeRuntime {
             available_images: BTreeMap::from([
-                ("localhost/app:v1".to_string(), true),
-                ("local/app:v1".to_string(), true),
+                ("ghcr.io/org/app:v1".to_string(), true),
+                (
+                    "reg.example.com/snouty-mirror/ghcr.io/org/app:v1".to_string(),
+                    true,
+                ),
             ]),
             ..Default::default()
         };
         let err = pin_with_fake(
             &rt,
-            "services:\n  a:\n    image: localhost/app:v1\n  b:\n    image: local/app:v1\n",
+            "services:\n  a:\n    image: ghcr.io/org/app:v1\n  \
+             b:\n    image: reg.example.com/snouty-mirror/ghcr.io/org/app:v1\n",
             "reg.example.com",
         )
         .unwrap_err()
         .to_string();
         assert!(
-            err.contains("both flatten to `reg.example.com/local/app:v1`"),
+            err.contains("both push to `reg.example.com/snouty-mirror/ghcr.io/org/app:v1`"),
             "expected a collision error, got: {err}"
         );
     }

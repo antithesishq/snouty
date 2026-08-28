@@ -1,0 +1,107 @@
+# snouty launch --config — dropping the registry address from every pin
+#
+# The Antithesis builder does not have to resolve the address this machine
+# uses to reach the tenant repository, so snouty writes no address into
+# `antithesis.config_image` or into a compose pin that names that repository.
+# An image from another registry cannot simply lose its address, because the
+# platform would then read the bare name as the tenant's own. snouty copies
+# such an image to `snouty-mirror/<address>/<path>` below the tenant
+# repository, where `snouty-mirror` carries no dot and no colon, so no runtime
+# reads the address that follows it as an address.
+
+# Keep the harness registry address, because the cases below point
+# ANTITHESIS_REPOSITORY at paths inside it.
+set-env REGISTRY ${ANTITHESIS_REPOSITORY}
+
+# An image that names another registry is copied below `snouty-mirror/`, and
+# the config image pin carries no address.
+mock-server 200 '{"runId":"run-123","statusCode":200}'
+build-image --platform linux/amd64 ghcr.io/snouty-spec/mirrored:v1 images/myapp
+snouty launch -w basic_test -c mirror_config --duration 30
+stderr 'Pushing image: .*/snouty-mirror/ghcr.io/snouty-spec/mirrored:v1'
+stderr '"antithesis.config_image": "snouty-config@sha256:'
+
+# The copy keeps one address across launches, so a second launch finds it
+# rather than pushing again. docker-only — podman's push digest differs from
+# its local digest (recompression), so podman re-pushes by design.
+[docker] mock-server 200 '{"runId":"run-123","statusCode":200}'
+[docker] snouty launch -w basic_test -c mirror_config --duration 30
+[docker] stderr 'Image already in a registry, skipping push: .*/snouty-mirror/ghcr.io/snouty-spec/mirrored:v1'
+
+# A runtime reads an uppercase first segment as an address, because a path
+# segment carries no uppercase. snouty reads it the same way, and folds it to
+# lowercase so the copy is a legal path.
+mock-server 200 '{"runId":"run-123","statusCode":200}'
+build-image --platform linux/amd64 MyRegistry/uppercase:v1 images/myapp
+snouty launch -w basic_test -c uppercase_config --duration 30
+stderr 'Pushing image: .*/snouty-mirror/myregistry/uppercase:v1'
+
+# An IPv6 literal keeps its brackets after the port and case edits, and no
+# path segment carries a bracket. snouty names the problem instead of handing
+# the runtime a reference it rejects.
+mock-server 200 '{"runId":"run-123","statusCode":200}'
+build-image --platform linux/amd64 [::1]:5000/literal:v1 images/myapp
+! snouty launch -w basic_test -c ipv6_config --duration 30
+stderr 'not a legal image path segment'
+! stderr 'Pushing image:'
+
+# Two images that reach one path are refused. snouty tags each pushed image
+# onto its destination and pushes that path once, so it would otherwise pin
+# both services to whichever image was tagged last.
+mock-server 200 '{"runId":"run-123","statusCode":200}'
+build-image --platform linux/amd64 ghcr.io/snouty-spec/collide:v1 images/myapp
+build-image --platform linux/amd64 snouty-mirror/ghcr.io/snouty-spec/collide:v1 images/sidecar
+! snouty launch -w basic_test -c collide_config --duration 30
+stderr 'both push to .*/snouty-mirror/ghcr.io/snouty-spec/collide:v1'
+! stderr 'Pushing image:'
+
+# A repository beside the tenant's own, at the same address: the registry
+# serves those bytes, but only under the address this machine uses. Seed it by
+# launching with the neighbour as the repository, so the registry holds
+# `<address>/other-team/neighbour:v1` and the local store records that digest.
+mock-server 200 '{"runId":"run-123","statusCode":200}'
+set-env ANTITHESIS_REPOSITORY ${REGISTRY}/other-team
+build-image --platform linux/amd64 neighbour:v1 images/sidecar
+snouty launch -w basic_test -c neighbour_seed_config --duration 30
+stderr 'Pushing image: .*/other-team/neighbour:v1'
+
+# Now launch from the tenant repository beside it. A pin of the neighbour
+# would carry the address, so snouty copies the image into the tenant
+# repository instead.
+mock-server 200 '{"runId":"run-123","statusCode":200}'
+set-env ANTITHESIS_REPOSITORY ${REGISTRY}/tenant
+substitute neighbour_config/docker-compose.yaml
+snouty launch -w basic_test -c neighbour_config --duration 30
+stderr 'Pushing image: .*/tenant/snouty-mirror/.*/other-team/neighbour:v1'
+! stderr 'Image already in a registry, skipping push:'
+
+-- images/myapp/content --
+placeholder
+-- images/sidecar/content --
+other placeholder
+-- mirror_config/docker-compose.yaml --
+services:
+  app:
+    image: ghcr.io/snouty-spec/mirrored:v1
+-- uppercase_config/docker-compose.yaml --
+services:
+  app:
+    image: MyRegistry/uppercase:v1
+-- ipv6_config/docker-compose.yaml --
+services:
+  app:
+    image: "[::1]:5000/literal:v1"
+-- collide_config/docker-compose.yaml --
+services:
+  app:
+    image: ghcr.io/snouty-spec/collide:v1
+  sidecar:
+    image: snouty-mirror/ghcr.io/snouty-spec/collide:v1
+-- neighbour_seed_config/docker-compose.yaml --
+services:
+  app:
+    image: neighbour:v1
+-- neighbour_config/docker-compose.yaml --
+services:
+  app:
+    image: ${REGISTRY}/other-team/neighbour:v1

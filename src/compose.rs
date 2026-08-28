@@ -17,7 +17,7 @@ use crate::config::ComposeConfig;
 use crate::container::{
     Architecture, ContainerRuntime, DISCOVERY_COMMAND_TIMEOUT, RemoteManifest, available_engines,
     digests_for_repo, image_ref_tag, image_repo, is_podman_in_disguise, mirror_path,
-    normalize_repo, strip_registry,
+    normalize_repo, registry_host, strip_registry,
 };
 use crate::error::user_error;
 use crate::process::{ProcessGroupChild, output_with_timeout};
@@ -530,7 +530,7 @@ impl DockerCompose {
                         eprintln!("Image already in a registry, skipping push: {pinned_ref}")
                     }
                     None => {
-                        let dest = push_destination(image, &prefix);
+                        let dest = push_destination(image, &prefix)?;
                         if let Some(other) = claims.insert(dest.clone(), image) {
                             bail!(user_error(format!(
                                 "`{other}` and `{image}` both push to `{dest}`, so \
@@ -556,7 +556,7 @@ impl DockerCompose {
                 pinned.insert(service.name.clone(), remote.clone());
                 continue;
             }
-            let dest = push_destination(image, &prefix);
+            let dest = push_destination(image, &prefix)?;
             if dest != image && tagged.insert(image) {
                 rt.image_tag(image, &dest)?;
             }
@@ -599,8 +599,11 @@ impl DockerCompose {
 /// pin can drop `prefix` and still name the same bytes. A host the author
 /// wrote below `prefix` is mirrored too: `{prefix}ghcr.io/org/app` goes to
 /// `{prefix}snouty-mirror/ghcr.io/org/app`.
-fn push_destination(image: &str, prefix: &str) -> String {
-    format!("{prefix}{}", mirror_path(&strip_registry(image, prefix)))
+fn push_destination(image: &str, prefix: &str) -> Result<String> {
+    Ok(format!(
+        "{prefix}{}",
+        mirror_path(&strip_registry(image, prefix))?
+    ))
 }
 
 /// Find a registry that already serves `image`'s local bytes, returning
@@ -624,11 +627,15 @@ fn find_remote_pin(rt: &dyn ContainerRuntime, image: &str, prefix: &str) -> Resu
 
     let mut repos = Vec::new();
     // The caller strips `prefix` off the pin, and only the push destination
-    // is spelled so that it survives the strip.
-    if !image.starts_with(prefix) {
+    // is spelled so that it survives the strip. A repository at the
+    // registry's own address never survives it either, because the strip
+    // matches `prefix` whole — and that address is the one a test run cannot
+    // resolve, so those bytes go to the push path.
+    let registry_address = registry_host(prefix);
+    if registry_address.is_none() || registry_host(image) != registry_address {
         repos.push(normalize_repo(image_repo(image)));
     }
-    let dest_repo = normalize_repo(image_repo(&push_destination(image, prefix)));
+    let dest_repo = normalize_repo(image_repo(&push_destination(image, prefix)?));
     if !repos.contains(&dest_repo) {
         repos.push(dest_repo);
     }
@@ -1733,6 +1740,111 @@ services:
             "nothing should be pushed"
         );
     }
+    /// A second launch of a mirrored image finds the copy the first launch
+    /// pushed, so the mirror path is a stable address rather than a new path
+    /// per run.
+    #[test]
+    fn pin_images_skips_push_for_a_previously_mirrored_image() {
+        if !has_compose() {
+            skip_or_fail("docker-compose (Docker Compose v2) is not available");
+            return;
+        }
+        let rt = FakeRuntime {
+            available_images: BTreeMap::from([("ghcr.io/org/app:v1".to_string(), true)]),
+            architectures: BTreeMap::from([(
+                "ghcr.io/org/app:v1".to_string(),
+                "amd64".to_string(),
+            )]),
+            repo_digests: BTreeMap::from([(
+                "ghcr.io/org/app:v1".to_string(),
+                vec!["reg.example.com/snouty-mirror/ghcr.io/org/app@sha256:mirrored".to_string()],
+            )]),
+            remote_manifests: BTreeMap::from([(
+                "reg.example.com/snouty-mirror/ghcr.io/org/app@sha256:mirrored".to_string(),
+                RemoteManifest::Single,
+            )]),
+            ..Default::default()
+        };
+        let out = pin_with_fake(
+            &rt,
+            "services:\n  app:\n    image: ghcr.io/org/app:v1\n",
+            "reg.example.com",
+        )
+        .unwrap();
+        assert!(
+            out.contains("image: snouty-mirror/ghcr.io/org/app:v1@sha256:mirrored"),
+            "expected the pin to the earlier copy, got: {out}"
+        );
+        assert!(
+            rt.pushed.lock().unwrap().is_empty(),
+            "nothing should be pushed"
+        );
+    }
+
+    /// A repository beside the tenant's own, at the same address: the
+    /// registry serves those bytes, but only under the address this machine
+    /// uses, and a test run cannot resolve it. snouty copies the image into
+    /// the tenant repository instead of pinning the address.
+    #[test]
+    fn pin_images_copies_a_neighbour_repository_at_our_own_address() {
+        if !has_compose() {
+            skip_or_fail("docker-compose (Docker Compose v2) is not available");
+            return;
+        }
+        let rt = FakeRuntime {
+            available_images: BTreeMap::from([("proxy.local/other-team/app:v1".to_string(), true)]),
+            architectures: BTreeMap::from([(
+                "proxy.local/tenant/snouty-mirror/proxy.local/other-team/app:v1".to_string(),
+                "amd64".to_string(),
+            )]),
+            repo_digests: BTreeMap::from([(
+                "proxy.local/other-team/app:v1".to_string(),
+                vec!["proxy.local/other-team/app@sha256:served".to_string()],
+            )]),
+            remote_manifests: BTreeMap::from([(
+                "proxy.local/other-team/app@sha256:served".to_string(),
+                RemoteManifest::List { has_amd64: true },
+            )]),
+            ..Default::default()
+        };
+        let out = pin_with_fake(
+            &rt,
+            "services:\n  app:\n    image: proxy.local/other-team/app:v1\n",
+            "proxy.local/tenant",
+        )
+        .unwrap();
+        assert!(
+            out.contains(
+                "image: snouty-mirror/proxy.local/other-team/app:v1@sha256:fakepushdigest"
+            ),
+            "expected the copy pinned bare, got: {out}"
+        );
+        assert_eq!(
+            *rt.pushed.lock().unwrap(),
+            vec!["proxy.local/tenant/snouty-mirror/proxy.local/other-team/app:v1".to_string()]
+        );
+    }
+
+    #[test]
+    fn push_destination_puts_every_image_below_our_prefix() {
+        let dest = |image: &str| push_destination(image, "reg.example.com/tenant/").unwrap();
+        assert_eq!(dest("myapp:v1"), "reg.example.com/tenant/myapp:v1");
+        assert_eq!(
+            dest("reg.example.com/tenant/myapp:v1"),
+            "reg.example.com/tenant/myapp:v1"
+        );
+        assert_eq!(
+            dest("ghcr.io/org/app:v1"),
+            "reg.example.com/tenant/snouty-mirror/ghcr.io/org/app:v1"
+        );
+        // The strip runs first, so a host below our prefix is mirrored once,
+        // not twice.
+        assert_eq!(
+            dest("reg.example.com/tenant/ghcr.io/org/app:v1"),
+            "reg.example.com/tenant/snouty-mirror/ghcr.io/org/app:v1"
+        );
+    }
+
     #[test]
     fn pin_images_rejects_arm_only_images() {
         if !has_compose() {

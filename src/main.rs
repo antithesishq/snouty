@@ -280,7 +280,6 @@ async fn cmd_launch(
                 rt.build_and_push_config_image(detected.dir(), &config_image)?
             }
         };
-        // The config image follows the same rule as the compose pins.
         params.insert(
             ANT_CONFIG_IMAGE,
             container::strip_registry(&pinned_config, &registry),

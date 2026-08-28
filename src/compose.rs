@@ -516,22 +516,19 @@ impl DockerCompose {
         // Resolve each distinct image once: pin it from a registry that
         // already serves the local digest, or schedule it for push.
         let mut resolution: BTreeMap<&str, Option<String>> = BTreeMap::new();
-        // Two images reach one destination only when the compose file already
-        // names a mirror path, which happens when an author copies a pinned
-        // reference back into the source. snouty tags each pushed image onto
-        // its destination and pushes that path once, so two images that want
-        // one path leave every service pinned to whichever was tagged last.
+        // One destination holds one source image: snouty tags each pushed
+        // image onto its destination and pushes that path once.
         let mut claims: BTreeMap<String, &str> = BTreeMap::new();
         for service in &contents.services {
             let image = service.image.as_str();
             if !resolution.contains_key(image) {
                 let pin = find_remote_pin(rt, image, &prefix)?;
                 match &pin {
+                    // A remote pin is never tagged onto a destination, so it
+                    // claims none.
                     Some(pinned_ref) => {
                         eprintln!("Image already in a registry, skipping push: {pinned_ref}")
                     }
-                    // A remote pin is never tagged onto a destination, so it
-                    // cannot take one.
                     None => {
                         let dest = push_destination(image, &prefix);
                         if let Some(other) = claims.insert(dest.clone(), image) {
@@ -547,8 +544,8 @@ impl DockerCompose {
             }
         }
 
-        // service name -> final pinned reference (filled in for push targets
-        // after their pushes complete).
+        // service name -> pinned reference (filled in for push targets after
+        // their pushes complete, then stripped of `registry` below).
         let mut pinned: BTreeMap<String, String> = BTreeMap::new();
         // (service name, registry reference) for images we push ourselves.
         let mut push_targets: Vec<(String, String)> = Vec::new();
@@ -626,9 +623,8 @@ fn find_remote_pin(rt: &dyn ContainerRuntime, image: &str, prefix: &str) -> Resu
     let tag = image_ref_tag(image);
 
     let mut repos = Vec::new();
-    // The image's own repository, unless it lies inside `prefix`. The caller
-    // strips `prefix` off the pin, and only the push destination is spelled so
-    // that it survives the strip.
+    // The caller strips `prefix` off the pin, and only the push destination
+    // is spelled so that it survives the strip.
     if !image.starts_with(prefix) {
         repos.push(normalize_repo(image_repo(image)));
     }
@@ -1516,7 +1512,7 @@ services:
         }
         // The local store fabricates digest entries for registry-qualified
         // tags that were never pushed; the registry round trip rejects them
-        // (NotFound) and the image is pushed to our registry instead.
+        // (NotFound), so the image needs a push and therefore a mirror path.
         let rt = FakeRuntime {
             available_images: BTreeMap::from([("ghcr.io/org/app:v1".to_string(), true)]),
             architectures: BTreeMap::from([(
@@ -1554,8 +1550,7 @@ services:
             return;
         }
         // The registry serves the author's path, but a pin of it would open
-        // with `ghcr.io`, which the platform reads as an address. snouty
-        // pushes the mirrored path instead.
+        // with `ghcr.io`, which the platform reads as an address.
         let rt = FakeRuntime {
             available_images: BTreeMap::from([(
                 "reg.example.com/ghcr.io/org/app:v1".to_string(),
@@ -1597,9 +1592,8 @@ services:
             skip_or_fail("docker-compose (Docker Compose v2) is not available");
             return;
         }
-        // `redis:7` and `reg.example.com/redis:7` share a destination, but the
-        // registry already serves `redis:7`, so only one image is pushed and
-        // nothing is overwritten.
+        // `redis:7` and `reg.example.com/redis:7` share a destination, and
+        // the registry already serves `redis:7`.
         let rt = FakeRuntime {
             available_images: BTreeMap::from([
                 ("redis:7".to_string(), true),
@@ -1646,8 +1640,7 @@ services:
             return;
         }
         // An author who copies a pinned reference back into the source has
-        // both spellings of one mirror path. snouty pushes that path once, so
-        // both services would run one image.
+        // both spellings of one mirror path.
         let rt = FakeRuntime {
             available_images: BTreeMap::from([
                 ("ghcr.io/org/app:v1".to_string(), true),

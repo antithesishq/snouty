@@ -516,21 +516,27 @@ impl DockerCompose {
         // Resolve each distinct image once: pin it from a registry that
         // already serves the local digest, or schedule it for push.
         let mut resolution: BTreeMap<&str, Option<String>> = BTreeMap::new();
-        // Flattening is not injective, so two images can want one path.
+        // Flattening is not injective, so two images we push can want one path.
         let mut claims: BTreeMap<String, &str> = BTreeMap::new();
         for service in &contents.services {
             let image = service.image.as_str();
             if !resolution.contains_key(image) {
-                if let Some(other) = claims.insert(push_destination(image, &prefix), image) {
-                    bail!(user_error(format!(
-                        "`{other}` and `{image}` both resolve to one path in the \
-                         registry, so one would overwrite the other. Rename one \
-                         of them."
-                    )));
-                }
                 let pin = find_remote_pin(rt, image, &prefix)?;
-                if let Some(pinned_ref) = &pin {
-                    eprintln!("Image already in a registry, skipping push: {pinned_ref}");
+                match &pin {
+                    Some(pinned_ref) => {
+                        eprintln!("Image already in a registry, skipping push: {pinned_ref}")
+                    }
+                    // Only a push can overwrite another image's bytes.
+                    None => {
+                        if let Some(other) = claims.insert(push_destination(image, &prefix), image)
+                        {
+                            bail!(user_error(format!(
+                                "`{other}` and `{image}` both resolve to one path in \
+                                 the registry, so one would overwrite the other. \
+                                 Rename one of them."
+                            )));
+                        }
+                    }
                 }
                 resolution.insert(image, pin);
             }
@@ -590,8 +596,10 @@ impl DockerCompose {
 /// is already below `prefix` is flattened too: `{prefix}team.a/app` goes to
 /// `{prefix}team-a/app`.
 fn push_destination(image: &str, prefix: &str) -> String {
-    let relative = image.strip_prefix(prefix).unwrap_or(image);
-    format!("{prefix}{}", flatten_registry_host(relative))
+    format!(
+        "{prefix}{}",
+        flatten_registry_host(&strip_registry(image, prefix))
+    )
 }
 
 /// Find a registry that already serves `image`'s local bytes, returning
@@ -604,7 +612,7 @@ fn push_destination(image: &str, prefix: &str) -> String {
 /// snouty push would have put it. A candidate counts only when the registry
 /// confirms it serves the digest (a manifest-only round trip — never a pull or
 /// push) AND the platform can run amd64 from it: a manifest list must offer an
-/// entry, while a single manifest shares the local image's architecture,
+/// amd64 entry, while a single manifest shares the local image's architecture,
 /// so the local image must be amd64.
 ///
 /// Depends only on the container engine, not on compose state, so it is a
@@ -1579,6 +1587,54 @@ services:
     }
 
     #[test]
+    fn pin_images_allows_one_path_when_only_one_image_is_pushed() {
+        if !has_compose() {
+            skip_or_fail("docker-compose (Docker Compose v2) is not available");
+            return;
+        }
+        // `redis:7` and `reg.example.com/redis:7` share a destination, but the
+        // registry already serves `redis:7`, so only one image is pushed and
+        // nothing is overwritten.
+        let rt = FakeRuntime {
+            available_images: BTreeMap::from([
+                ("redis:7".to_string(), true),
+                ("reg.example.com/redis:7".to_string(), true),
+            ]),
+            architectures: BTreeMap::from([(
+                "reg.example.com/redis:7".to_string(),
+                "amd64".to_string(),
+            )]),
+            repo_digests: BTreeMap::from([(
+                "redis:7".to_string(),
+                vec!["docker.io/library/redis@sha256:list".to_string()],
+            )]),
+            remote_manifests: BTreeMap::from([(
+                "docker.io/library/redis@sha256:list".to_string(),
+                RemoteManifest::List { has_amd64: true },
+            )]),
+            ..Default::default()
+        };
+        let out = pin_with_fake(
+            &rt,
+            "services:\n  a:\n    image: redis:7\n  b:\n    image: reg.example.com/redis:7\n",
+            "reg.example.com",
+        )
+        .unwrap();
+        assert!(
+            out.contains("docker.io/library/redis:7@sha256:list"),
+            "expected the remote pin, got: {out}"
+        );
+        assert!(
+            out.contains("image: redis:7@sha256:fakepushdigest"),
+            "expected the pushed image pinned bare, got: {out}"
+        );
+        assert_eq!(
+            *rt.pushed.lock().unwrap(),
+            vec!["reg.example.com/redis:7".to_string()]
+        );
+    }
+
+    #[test]
     fn pin_images_rejects_two_images_that_want_one_path() {
         if !has_compose() {
             skip_or_fail("docker-compose (Docker Compose v2) is not available");
@@ -1606,6 +1662,7 @@ services:
             "expected a collision error, got: {err}"
         );
     }
+
     #[test]
     fn pin_images_strips_prefix_from_an_already_prefixed_source_image() {
         if !has_compose() {

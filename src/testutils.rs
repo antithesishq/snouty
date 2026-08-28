@@ -338,8 +338,12 @@ fn registry_v2_ping_addr(addr: &str) -> bool {
 fn registry_v2_get_status(addr: &str, path: &str) -> Option<u16> {
     // A silent or half-open registry must fail the caller, not hang the run.
     let limit = Duration::from_secs(10);
-    let socket = addr.to_socket_addrs().ok()?.next()?;
-    let mut stream = TcpStream::connect_timeout(&socket, limit).ok()?;
+    // `localhost` can resolve to both `[::1]` and `127.0.0.1` while the
+    // registry listens on one of them, so try every address.
+    let mut stream = addr
+        .to_socket_addrs()
+        .ok()?
+        .find_map(|socket| TcpStream::connect_timeout(&socket, limit).ok())?;
     stream.set_read_timeout(Some(limit)).ok()?;
     stream.set_write_timeout(Some(limit)).ok()?;
 

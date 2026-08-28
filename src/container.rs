@@ -1212,6 +1212,21 @@ mod tests {
         );
     }
 
+    /// `generate_image_ref` spells the config image, `strip_registry` takes the
+    /// address back off, and the platform never sees the address it was pushed
+    /// to. The two have to agree on the separator for that to hold.
+    #[test]
+    fn a_generated_config_ref_strips_back_to_a_bare_name() {
+        for registry in [
+            "us-central1-docker.pkg.dev/proj/repo",
+            "us-central1-docker.pkg.dev/proj/repo/",
+        ] {
+            let bare = strip_registry(&generate_image_ref(registry), registry);
+            assert!(bare.starts_with("snouty-config:"), "got: {bare}");
+            assert!(!bare.contains('/'), "got: {bare}");
+        }
+    }
+
     #[test]
     fn strip_registry_drops_only_our_own_address() {
         let registry = "us-central1-docker.pkg.dev/proj/repo";

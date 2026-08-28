@@ -30,20 +30,22 @@ stderr '"antithesis.config_image": "snouty-config@sha256:'
 
 # A runtime reads an uppercase first segment as an address, because a path
 # segment carries no uppercase. snouty reads it the same way, and folds it to
-# lowercase so the copy is a legal path.
-mock-server 200 '{"runId":"run-123","statusCode":200}'
-build-image --platform linux/amd64 MyRegistry/uppercase:v1 images/myapp
-snouty launch -w basic_test -c uppercase_config --duration 30
-stderr 'Pushing image: .*/snouty-mirror/myregistry/uppercase:v1'
+# lowercase so the copy is a legal path. docker-only — podman refuses to build
+# an uppercase tag at all, so the case cannot arise there.
+[docker] mock-server 200 '{"runId":"run-123","statusCode":200}'
+[docker] build-image --platform linux/amd64 MyRegistry/uppercase:v1 images/myapp
+[docker] snouty launch -w basic_test -c uppercase_config --duration 30
+[docker] stderr 'Pushing image: .*/snouty-mirror/myregistry/uppercase:v1'
 
 # An IPv6 literal keeps its brackets after the port and case edits, and no
 # path segment carries a bracket. snouty names the problem instead of handing
-# the runtime a reference it rejects.
-mock-server 200 '{"runId":"run-123","statusCode":200}'
-build-image --platform linux/amd64 [::1]:5000/literal:v1 images/myapp
-! snouty launch -w basic_test -c ipv6_config --duration 30
-stderr 'not a legal image path segment'
-! stderr 'Pushing image:'
+# the runtime a reference it rejects. docker-only for the same reason as the
+# case above: the local tag is what podman rejects, not the copy.
+[docker] mock-server 200 '{"runId":"run-123","statusCode":200}'
+[docker] build-image --platform linux/amd64 [::1]:5000/literal:v1 images/myapp
+[docker] ! snouty launch -w basic_test -c ipv6_config --duration 30
+[docker] stderr 'not a legal image path segment'
+[docker] ! stderr 'Pushing image:'
 
 # Two images that reach one path are refused. snouty tags each pushed image
 # onto its destination and pushes that path once, so it would otherwise pin

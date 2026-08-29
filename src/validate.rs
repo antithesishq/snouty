@@ -16,6 +16,7 @@ use crate::compose;
 use crate::config::{self, ComposeConfig, Config, KubernetesConfig};
 use crate::container;
 use crate::error::user_error;
+use crate::render::sanitize;
 use crate::scripts::{ScriptType, TestScript, scan_scripts};
 use crate::settings::Settings;
 
@@ -366,10 +367,27 @@ fn check_compose_divergence(
     let hermetic = compose.config_json_hermetic_env()?;
 
     let detail = if hermetic.status.success() {
-        let local: Value = serde_json::from_str(&local)
-            .wrap_err("failed to parse 'docker-compose config' output")?;
-        let hermetic: Value = serde_json::from_slice(&hermetic.stdout)
-            .wrap_err("failed to parse 'docker-compose config' output")?;
+        let cli = compose.cli_name();
+        let renders = parse_config_json(&cli, local.as_bytes()).and_then(|local| {
+            parse_config_json(&cli, &hermetic.stdout).map(|hermetic| (local, hermetic))
+        });
+        let (local, hermetic) = match renders {
+            Ok(renders) => renders,
+            // Without both renders there is nothing to compare, so the check
+            // cannot run. --allow-compose-divergence says the user accepts an
+            // unchecked compose file, which is what a check that cannot run
+            // leaves them with. Docker Compose v2.25.0 needs this path: it
+            // ignores `--format json` and prints YAML (docker/compose#11627,
+            // fixed in v2.26.0).
+            Err(error) if allow_compose_divergence => {
+                eprintln!(
+                    "Warning: cannot check whether {DIVERGENCE_HEADLINE}\n{error:#}\n\
+                     Proceeding anyway because --allow-compose-divergence was set."
+                );
+                return Ok(());
+            }
+            Err(error) => return Err(error),
+        };
         let fields = diverging_config_fields(&local, &hermetic);
         (!fields.is_empty()).then(|| fields.join("\n"))
     } else {
@@ -421,6 +439,55 @@ fn check_compose_divergence(
                 || "re-run with --allow-compose-divergence to treat this as a warning",
             ))
     }
+}
+
+/// Parse one `compose config --format json` render.
+///
+/// Output that is not JSON means compose printed something else: a YAML render
+/// from a CLI that ignores `--format json`, or a log banner ahead of the
+/// document. The error quotes the line the parser stopped on, which tells the
+/// user which one it is.
+fn parse_config_json(cli: &str, stdout: &[u8]) -> Result<Value> {
+    // Output that is not UTF-8 is still worth quoting, and the replacement
+    // characters are themselves a clue.
+    let text = String::from_utf8_lossy(stdout);
+    serde_json::from_str(&text).or_else(|error| {
+        let section = unparsable_output(&text, error.line());
+        let reproduce = format!("{cli} config --format json");
+        Err(error)
+            .wrap_err(format!(
+                "'{cli} config --format json' printed unparsable output"
+            ))
+            .with_section(move || section.header("Output:"))
+            .with_suggestion(move || {
+                format!("run '{reproduce}' in the config directory to see what it prints")
+            })
+    })
+}
+
+/// The one output line a JSON parse stopped on, numbered, for an error section.
+///
+/// A full render is the whole resolved compose model, and its values can be
+/// secrets (see [`diverging_config_fields`]), so the section shows one capped
+/// line. The line carries whatever the compose file carries, so [`sanitize`]
+/// escapes terminal control sequences before the cap counts what a person sees.
+fn unparsable_output(text: &str, line_number: usize) -> String {
+    const MAX_LEN: usize = 200;
+
+    if text.trim().is_empty() {
+        return "(compose printed nothing)".to_string();
+    }
+    // serde_json numbers lines from 1, and reports 0 when it has no position.
+    // Then the first line is the best guess.
+    let index = line_number.saturating_sub(1);
+    let mut line = sanitize(text.lines().nth(index).unwrap_or_default().trim_end());
+    // Cut on a character boundary, and mark the cut so the reader knows the
+    // line goes on.
+    if let Some((offset, _)) = line.char_indices().nth(MAX_LEN) {
+        line.truncate(offset);
+        line.push('\u{2026}');
+    }
+    format!("line {}: {line}", index + 1)
 }
 
 /// Whether a failed `compose config` failed *because* interpolation could not
@@ -941,6 +1008,57 @@ mod tests {
             broken.to_string().contains("failed to wait for compose"),
             "unexpected message: {broken}"
         );
+    }
+
+    #[test]
+    fn parse_config_json_quotes_output_that_is_not_json() {
+        // A compose CLI that ignores `--format json` prints the YAML render.
+        let yaml = "name: myproject\nservices:\n  app:\n    image: alpine\n";
+        let report = parse_config_json("docker-compose", yaml.as_bytes()).unwrap_err();
+        let rendered = format!("{report:#}");
+        assert!(
+            rendered.contains("'docker-compose config --format json' printed unparsable output"),
+            "got: {rendered}"
+        );
+        assert!(rendered.contains("line 1 column 2"), "got: {rendered}");
+        assert!(
+            format!("{report:?}").contains("line 1: name: myproject"),
+            "got: {report:?}"
+        );
+
+        let json = br#"{"name": "myproject"}"#;
+        assert_eq!(
+            parse_config_json("docker compose", json).unwrap(),
+            json!({"name": "myproject"})
+        );
+    }
+
+    #[test]
+    fn unparsable_output_shows_the_offending_line_only() {
+        let text = "{\n  \"name\": oops\n}\n";
+        assert_eq!(unparsable_output(text, 2), r#"line 2:   "name": oops"#);
+
+        // No position (line 0) falls back to the first line.
+        assert_eq!(unparsable_output(text, 0), "line 1: {");
+
+        // A line past the end cannot be quoted; the label still reports it.
+        assert_eq!(unparsable_output(text, 9), "line 9: ");
+
+        assert_eq!(unparsable_output("   \n", 1), "(compose printed nothing)");
+    }
+
+    #[test]
+    fn unparsable_output_escapes_terminal_control_sequences() {
+        let text = "name: \u{1b}[2Kspoofed\n";
+        assert_eq!(unparsable_output(text, 1), r"line 1: name: \x1B[2Kspoofed");
+    }
+
+    #[test]
+    fn unparsable_output_caps_a_long_line() {
+        let long = "x".repeat(500);
+        let quoted = unparsable_output(&long, 1);
+        assert!(quoted.ends_with('\u{2026}'), "got: {quoted}");
+        assert_eq!(quoted.chars().count(), "line 1: ".len() + 200 + 1);
     }
 
     #[test]

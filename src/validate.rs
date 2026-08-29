@@ -16,6 +16,7 @@ use crate::compose;
 use crate::config::{self, ComposeConfig, Config, KubernetesConfig};
 use crate::container;
 use crate::error::user_error;
+use crate::render::sanitize;
 use crate::scripts::{ScriptType, TestScript, scan_scripts};
 use crate::settings::Settings;
 
@@ -483,6 +484,12 @@ fn parse_config_json(cli: &str, render: &str, stdout: &[u8]) -> Result<Value> {
 /// One line, capped: a full render is the whole resolved compose model, and its
 /// values can be secrets (see [`diverging_config_fields`]). The line that broke
 /// the parse is the one that identifies the problem.
+///
+/// The line is compose output, so it carries whatever the compose file carries.
+/// A service name or an environment value can hold terminal escape sequences,
+/// which would let a crafted repository hide or spoof what `snouty validate`
+/// prints. [`sanitize`] escapes them, and the cap then counts the characters
+/// that actually reach the terminal.
 fn unparsable_output(text: &str, line_number: usize) -> String {
     const MAX_LEN: usize = 200;
 
@@ -492,12 +499,7 @@ fn unparsable_output(text: &str, line_number: usize) -> String {
     // serde_json numbers lines from 1, and reports 0 when it has no position;
     // then the first line is the best guess, and is labelled as line 1.
     let index = line_number.saturating_sub(1);
-    let mut line = text
-        .lines()
-        .nth(index)
-        .unwrap_or_default()
-        .trim_end()
-        .to_string();
+    let mut line = sanitize(text.lines().nth(index).unwrap_or_default().trim_end());
     if let Some((offset, _)) = line.char_indices().nth(MAX_LEN) {
         line.truncate(offset);
         line.push('\u{2026}');
@@ -1068,6 +1070,15 @@ mod tests {
         assert_eq!(unparsable_output(text, 9), "line 9: ");
 
         assert_eq!(unparsable_output("   \n", 1), "(compose printed nothing)");
+    }
+
+    /// The quoted line is compose output, and compose output carries whatever
+    /// the compose file carries. An escape sequence in a service name must not
+    /// reach the terminal, where it could hide or spoof what validate prints.
+    #[test]
+    fn unparsable_output_escapes_terminal_control_sequences() {
+        let text = "name: \u{1b}[2Kspoofed\n";
+        assert_eq!(unparsable_output(text, 1), r"line 1: name: \x1B[2Kspoofed");
     }
 
     /// A render line can be thousands of characters of resolved model, so the

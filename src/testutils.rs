@@ -1,5 +1,5 @@
 use std::io::{Read, Write};
-use std::net::{TcpListener, TcpStream};
+use std::net::{TcpListener, TcpStream, ToSocketAddrs};
 use std::process::{Child, Command, Stdio};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
@@ -154,6 +154,13 @@ impl OCIRegistry {
 
     pub fn host_port(&self) -> String {
         self.host_port.clone()
+    }
+
+    /// Whether the registry serves `digest` under `repo`. Asked over plain
+    /// HTTP, because `manifest inspect` answers differently per runtime.
+    pub fn serves_digest(&self, repo: &str, digest: &str) -> bool {
+        registry_v2_get_status(&self.host_port, &format!("/v2/{repo}/manifests/{digest}"))
+            == Some(200)
     }
 
     /// Wait for the container to publish its port and answer `/v2/`, returning
@@ -323,21 +330,37 @@ pub fn require_runtimes_with_compose() -> Vec<Box<dyn ContainerRuntime>> {
 
 /// Whether an OCI registry answers `/v2/` at `addr` (a `host:port`).
 fn registry_v2_ping_addr(addr: &str) -> bool {
-    let Ok(mut stream) = TcpStream::connect(addr) else {
-        return false;
-    };
+    registry_v2_get_status(addr, "/v2/") == Some(200)
+}
 
-    let request = format!("GET /v2/ HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\n\r\n");
-    if std::io::Write::write_all(&mut stream, request.as_bytes()).is_err() {
-        return false;
-    }
+/// The status code the registry answers for `path`, or `None` when the request
+/// itself fails. Accepts every manifest media type, so a manifest list counts.
+fn registry_v2_get_status(addr: &str, path: &str) -> Option<u16> {
+    // A silent or half-open registry must fail the caller, not hang the run.
+    let limit = Duration::from_secs(10);
+    // `localhost` can resolve to both `[::1]` and `127.0.0.1` while the
+    // registry listens on one of them, so try every address.
+    let mut stream = addr
+        .to_socket_addrs()
+        .ok()?
+        .find_map(|socket| TcpStream::connect_timeout(&socket, limit).ok())?;
+    stream.set_read_timeout(Some(limit)).ok()?;
+    stream.set_write_timeout(Some(limit)).ok()?;
+
+    let request = format!(
+        "GET {path} HTTP/1.1\r\n\
+         Host: {addr}\r\n\
+         Accept: application/vnd.oci.image.index.v1+json, \
+         application/vnd.oci.image.manifest.v1+json, \
+         application/vnd.docker.distribution.manifest.list.v2+json, \
+         application/vnd.docker.distribution.manifest.v2+json\r\n\
+         Connection: close\r\n\r\n"
+    );
+    std::io::Write::write_all(&mut stream, request.as_bytes()).ok()?;
 
     let mut response = String::new();
-    if std::io::Read::read_to_string(&mut stream, &mut response).is_err() {
-        return false;
-    }
-
-    response.starts_with("HTTP/1.1 200") || response.starts_with("HTTP/1.0 200")
+    std::io::Read::read_to_string(&mut stream, &mut response).ok()?;
+    response.split_whitespace().nth(1)?.parse().ok()
 }
 
 fn runtime_supports_linux_registry_image(runtime: &str) -> bool {

@@ -1,6 +1,7 @@
 # Unreleased
 
 - `snouty doctor` reports more than one credential source. snouty uses the first source it finds, so an exported `ANTITHESIS_USERNAME` and `ANTITHESIS_PASSWORD` hide the API key that `snouty login` stored. doctor now warns, names the credential it uses and the credentials it ignores, and states the action that hands the run to the next source ([#292](https://github.com/antithesishq/snouty/issues/292))
+- snouty now supports proxied repository urls ([#291](https://github.com/antithesishq/snouty/pull/291))
 
 # Version 0.7.0 (2026-08-26)
 

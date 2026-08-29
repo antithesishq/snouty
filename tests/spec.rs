@@ -68,6 +68,42 @@ fn cmd_file(
     Ok(())
 }
 
+fn cmd_set_env(
+    env: &mut testscript_rs::TestEnvironment,
+    args: &[String],
+) -> testscript_rs::Result<()> {
+    // Usage: set-env KEY value...
+    // Interpolates ${VAR} references in value using env.env_vars.
+    if args.len() < 2 {
+        return Err(err("set-env requires KEY and value".to_string()));
+    }
+    let key = &args[0];
+    let raw_value = args[1..].join(" ");
+    let value = env.substitute_env_vars(&raw_value);
+    env.set_env_var(key, &value);
+    Ok(())
+}
+
+fn cmd_substitute(
+    env: &mut testscript_rs::TestEnvironment,
+    args: &[String],
+) -> testscript_rs::Result<()> {
+    // Usage: substitute <path>
+    // Replaces ${VAR} references inside <path> with the environment's values.
+    // A txtar fixture is written verbatim, so this is the only way a compose
+    // fixture can name the registry the harness starts on a free port.
+    let [path_arg] = args else {
+        return Err(err("substitute requires <path>".to_string()));
+    };
+    let path = resolve_spec_path(env, path_arg)?;
+    let contents = std::fs::read_to_string(&path)
+        .map_err(|e| err(format!("could not read {}: {e}", path.display())))?;
+    let substituted = env.substitute_env_vars(&contents);
+    std::fs::write(&path, substituted)
+        .map_err(|e| err(format!("could not write {}: {e}", path.display())))?;
+    Ok(())
+}
+
 // --- Engine context (thread-local so fn-pointer commands can access it) ---
 
 struct EngineContext {
@@ -664,6 +700,8 @@ fn run_engine_spec_case(runtime_name: &'static str, case: EngineSpecCase) {
         .command("mock-server", cmd_mock_server)
         .command("env_from_json", cmd_env_from_json)
         .command("build-image", cmd_build_image)
+        .command("set-env", cmd_set_env)
+        .command("substitute", cmd_substitute)
         .execute();
 
     let built_images = ENGINE_CTX
@@ -706,18 +744,7 @@ fn spec_tests() {
             .command("mock-proxy", cmd_mock_proxy)
             .command("env_from_json", cmd_env_from_json)
             .command("file", cmd_file)
-            .command("set-env", |env, args| {
-                // Usage: set-env KEY value...
-                // Interpolates ${VAR} references in value using env.env_vars.
-                if args.len() < 2 {
-                    return Err(err("set-env requires KEY and value".to_string()));
-                }
-                let key = &args[0];
-                let raw_value = args[1..].join(" ");
-                let value = env.substitute_env_vars(&raw_value);
-                env.set_env_var(key, &value);
-                Ok(())
-            })
+            .command("set-env", cmd_set_env)
             .command("snouty-bg", |env, args| {
                 let child = snouty_cmd(env, args)
                     .spawn()
@@ -799,6 +826,12 @@ engine_spec_case_test!(
     true
 );
 engine_spec_case_test!(
+    podman_engine_launch_config_mirror_specs,
+    "podman",
+    "launch_config_mirror.txt",
+    true
+);
+engine_spec_case_test!(
     podman_engine_validate_setup_specs,
     "podman",
     "validate_setup.txt",
@@ -832,6 +865,12 @@ engine_spec_case_test!(
     docker_engine_launch_config_push_specs,
     "docker",
     "launch_config_push.txt",
+    true
+);
+engine_spec_case_test!(
+    docker_engine_launch_config_mirror_specs,
+    "docker",
+    "launch_config_mirror.txt",
     true
 );
 engine_spec_case_test!(

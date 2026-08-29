@@ -9,6 +9,7 @@ use color_eyre::{
     eyre::{Context, Result, eyre},
 };
 
+use crate::error::user_error;
 use crate::process::output_with_timeout;
 use crate::settings::Settings;
 
@@ -844,6 +845,85 @@ pub fn image_ref_tag(image_ref: &str) -> &str {
     }
 }
 
+/// The rule a container runtime uses to read `ghcr.io/org/app` as hosted and
+/// `org/app` as Docker Hub shorthand. An uppercase letter marks a host too,
+/// because a path segment holds no uppercase.
+fn is_registry_host(segment: &str) -> bool {
+    segment.contains('.')
+        || segment.contains(':')
+        || segment == "localhost"
+        || segment.chars().any(|c| c.is_ascii_uppercase())
+}
+
+/// The address `image` names, or `None` when `image` names no address and a
+/// runtime reads it as Docker Hub shorthand.
+pub fn registry_host(image: &str) -> Option<&str> {
+    match image.split_once('/') {
+        Some((host, _)) if is_registry_host(host) => Some(host),
+        _ => None,
+    }
+}
+
+/// The path segment that holds copies of images from other registries. It
+/// carries no dot and no colon, so no runtime reads it as a registry host.
+pub const MIRROR_PREFIX: &str = "snouty-mirror";
+
+/// Whether `segment` satisfies the reference grammar for one path segment: an
+/// alphanumeric opens and closes it, and `.`, `_`, and `-` join the rest.
+fn is_path_segment(segment: &str) -> bool {
+    let alnum = |c: char| c.is_ascii_lowercase() || c.is_ascii_digit();
+    segment.starts_with(alnum)
+        && segment.ends_with(alnum)
+        && segment
+            .chars()
+            .all(|c| alnum(c) || matches!(c, '.' | '_' | '-'))
+}
+
+/// The name a copy of `image` takes below the tenant's repository:
+/// `ghcr.io/org/app:v1` becomes `snouty-mirror/ghcr.io/org/app:v1`. A
+/// reference that names no host is a copy of nothing and is returned
+/// unchanged.
+///
+/// [`MIRROR_PREFIX`] opens the path, so the host that follows it is a path
+/// segment rather than an address, and deleting the prefix restores the
+/// original reference.
+///
+/// Two edits satisfy the reference grammar: a port takes `__` in place of its
+/// colon, and an uppercase host folds to lowercase. Neither edit merges two
+/// hosts that hold different bytes.
+///
+/// # Errors
+///
+/// An address that the two edits leave illegal, such as the IPv6 literal
+/// `[::1]:5000`.
+pub fn mirror_path(image: &str) -> Result<String> {
+    let Some(host) = registry_host(image) else {
+        return Ok(image.to_string());
+    };
+    let rest = &image[host.len() + 1..];
+    let segment = host.replace(':', "__").to_ascii_lowercase();
+    if !is_path_segment(&segment) {
+        return Err(user_error(format!(
+            "snouty copies `{image}` to `{MIRROR_PREFIX}/{segment}/{rest}` in your \
+             repository, and `{segment}` is not a legal image path segment. Push the \
+             image to your repository yourself, and name that copy in the compose file."
+        )));
+    }
+    Ok(format!("{MIRROR_PREFIX}/{segment}/{rest}"))
+}
+
+/// `image` without the address of `registry`, which is the spelling this
+/// machine uses to reach that registry — often a proxy or mirror alias that a
+/// test run cannot resolve. The platform resolves the bare name that remains
+/// against the tenant's own repository.
+///
+/// An image outside `registry` keeps its address, because nothing else names
+/// those bytes.
+pub fn strip_registry(image: &str, registry: &str) -> String {
+    let prefix = format!("{}/", registry.trim_end_matches('/'));
+    image.strip_prefix(&prefix).unwrap_or(image).to_string()
+}
+
 /// Expand Docker Hub shorthand so repository names compare reliably across
 /// runtimes and reference styles: `nginx` → `docker.io/library/nginx`,
 /// `user/app` → `docker.io/user/app`, `index.docker.io/...` → `docker.io/...`.
@@ -851,9 +931,7 @@ pub fn image_ref_tag(image_ref: &str) -> &str {
 /// port, or `localhost`) pass through unchanged.
 pub fn normalize_repo(repo: &str) -> String {
     let (registry, rest) = match repo.split_once('/') {
-        Some((first, rest))
-            if first.contains('.') || first.contains(':') || first == "localhost" =>
-        {
+        Some((first, rest)) if is_registry_host(first) => {
             let registry = if first == "index.docker.io" {
                 "docker.io"
             } else {
@@ -962,6 +1040,42 @@ mod tests {
         let once = normalize_repo(&repo);
         let twice = normalize_repo(&once);
         assert_eq!(once, twice);
+    }
+
+    /// A copy always hides the address it came from — that is the whole
+    /// reason the copy exists — and copying an address-free path changes
+    /// nothing, so a second launch reuses the first launch's path. Run over
+    /// arbitrary text because `mirror_path` slices on the byte offset of the
+    /// first `/`, which must never split a multi-byte character.
+    #[hegel::test]
+    fn mirror_path_hides_the_address_and_is_idempotent(tc: hegel::TestCase) {
+        let image = tc.draw(generators::text());
+        let Ok(once) = mirror_path(&image) else {
+            return;
+        };
+        assert_eq!(registry_host(&once), None, "{image} copied to {once}");
+        let twice = mirror_path(&once).expect("a copy names no address to rewrite");
+        assert_eq!(once, twice);
+    }
+
+    /// The copy renames no image: everything below the address survives the
+    /// copy byte for byte, so deleting `MIRROR_PREFIX` and the address
+    /// segment names the source repository again.
+    #[hegel::test]
+    fn mirror_path_keeps_the_repository_path(tc: hegel::TestCase) {
+        let image = tc.draw(generators::text());
+        let Ok(copy) = mirror_path(&image) else {
+            return;
+        };
+        let Some(host) = registry_host(&image) else {
+            assert_eq!(copy, image);
+            return;
+        };
+        let rest = copy
+            .strip_prefix(&format!("{MIRROR_PREFIX}/"))
+            .expect("a copy opens with the prefix");
+        let (_, path) = rest.split_once('/').expect("the address is one segment");
+        assert_eq!(path, &image[host.len() + 1..]);
     }
 
     /// `image_repo` and `image_ref_tag` slice on byte offsets found with
@@ -1147,6 +1261,87 @@ mod tests {
         );
         assert_eq!(normalize_repo("localhost:5000/app"), "localhost:5000/app");
         assert_eq!(normalize_repo("ghcr.io/org/app"), "ghcr.io/org/app");
+    }
+
+    #[test]
+    fn mirror_path_keeps_the_source_registry_readable() {
+        let mirror = |image: &str| mirror_path(image).expect("legal address");
+        assert_eq!(
+            mirror("ghcr.io/org/app:v1"),
+            "snouty-mirror/ghcr.io/org/app:v1"
+        );
+        // A port cannot keep its colon inside a path, so it takes `__`.
+        assert_eq!(
+            mirror("localhost:5000/app:v1"),
+            "snouty-mirror/localhost__5000/app:v1"
+        );
+        assert_eq!(mirror("localhost/app:v1"), "snouty-mirror/localhost/app:v1");
+        // A path segment cannot carry uppercase, and the fold names the same
+        // registry. A runtime reads `MyRegistry` as an address for the same
+        // reason: only an address carries uppercase.
+        assert_eq!(
+            mirror("Registry.Example.com/org/app:v1"),
+            "snouty-mirror/registry.example.com/org/app:v1"
+        );
+        assert_eq!(
+            mirror("MyRegistry/app:v1"),
+            "snouty-mirror/myregistry/app:v1"
+        );
+        assert_eq!(mirror("myapp:latest"), "myapp:latest");
+        assert_eq!(mirror("org/app:v1"), "org/app:v1");
+        assert_eq!(mirror("app:v1@sha256:abc"), "app:v1@sha256:abc");
+    }
+
+    /// An IPv6 literal address keeps its brackets after the two edits, and no
+    /// path segment carries a bracket. snouty says so instead of handing the
+    /// runtime a reference it rejects.
+    #[test]
+    fn mirror_path_refuses_an_address_with_no_legal_spelling() {
+        let error = mirror_path("[::1]:5000/app:v1").expect_err("brackets are illegal");
+        assert!(
+            error.to_string().contains("not a legal image path segment"),
+            "{error}"
+        );
+    }
+
+    /// `generate_image_ref` spells the config image, `strip_registry` takes the
+    /// address back off, and the platform never sees the address it was pushed
+    /// to. The two have to agree on the separator for that to hold.
+    #[test]
+    fn a_generated_config_ref_strips_back_to_a_bare_name() {
+        for registry in [
+            "us-central1-docker.pkg.dev/proj/repo",
+            "us-central1-docker.pkg.dev/proj/repo/",
+        ] {
+            let bare = strip_registry(&generate_image_ref(registry), registry);
+            assert!(bare.starts_with("snouty-config:"), "got: {bare}");
+            assert!(!bare.contains('/'), "got: {bare}");
+        }
+    }
+
+    #[test]
+    fn strip_registry_drops_only_our_own_address() {
+        let registry = "us-central1-docker.pkg.dev/proj/repo";
+        assert_eq!(
+            strip_registry(
+                "us-central1-docker.pkg.dev/proj/repo/snouty-config@sha256:abc",
+                registry
+            ),
+            "snouty-config@sha256:abc"
+        );
+        assert_eq!(
+            strip_registry("reg.example.com/repo/app:v1", "reg.example.com/repo/"),
+            "app:v1"
+        );
+        assert_eq!(
+            strip_registry("ghcr.io/org/app:v1", registry),
+            "ghcr.io/org/app:v1"
+        );
+        // A prefix that matches only as text, not as a whole path segment.
+        assert_eq!(
+            strip_registry("reg.example.com/repository/app:v1", "reg.example.com/repo"),
+            "reg.example.com/repository/app:v1"
+        );
     }
 
     #[test]

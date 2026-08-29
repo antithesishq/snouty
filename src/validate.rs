@@ -375,15 +375,11 @@ fn check_compose_divergence(
         let (local, hermetic) = match renders {
             Ok(renders) => renders,
             // Without both renders there is nothing to compare, so the check
-            // cannot run at all. --allow-compose-divergence says the user
-            // accepts an unchecked compose file, and a check that cannot run
-            // leaves them with exactly that, so the flag covers this too —
-            // otherwise the escape hatch is unreachable for the one failure a
-            // user cannot fix in their compose file. Docker Compose v2.25.0 is
-            // that failure: it ignores `--format json` and prints YAML
-            // (docker/compose#11627, fixed in v2.26.0). The quoted output line
-            // is left to the fatal path; a user who opted out needs to know
-            // the check was skipped, not to debug it.
+            // cannot run. --allow-compose-divergence says the user accepts an
+            // unchecked compose file, which is what a check that cannot run
+            // leaves them with. Docker Compose v2.25.0 needs this path: it
+            // ignores `--format json` and prints YAML (docker/compose#11627,
+            // fixed in v2.26.0).
             Err(error) if allow_compose_divergence => {
                 eprintln!(
                     "Warning: cannot check whether {DIVERGENCE_HEADLINE}\n{error:#}\n\
@@ -446,24 +442,19 @@ fn check_compose_divergence(
     }
 }
 
-/// How each render of the compose file is described in an error: the two runs
-/// differ only in the environment they use, so the environment names them.
+/// How an error names each render of the compose file.
 const LOCAL_RENDER: &str = "rendered with your shell environment";
 const HERMETIC_RENDER: &str = "rendered with a scrubbed environment, as Antithesis does";
 
-/// Parse one `compose config --format json` render, quoting what compose
-/// actually printed when the output is not JSON.
+/// Parse one `compose config --format json` render.
 ///
-/// The bare parse error names neither the command that ran nor a character of
-/// its output: `failed to parse 'docker-compose config' output` followed by
-/// `expected ident at line 1 column 2` leaves the user with nothing to act on
-/// (issue #294). Output that is not JSON means compose printed something else
-/// entirely — a YAML render from a CLI that ignored `--format json`, or a log
-/// banner ahead of the document — and the line the parser stopped on says
-/// which, so show it.
+/// Output that is not JSON means compose printed something else: a YAML render
+/// from a CLI that ignores `--format json`, or a log banner ahead of the
+/// document. The error quotes the line the parser stopped on, which tells the
+/// user which one it is.
 fn parse_config_json(cli: &str, render: &str, stdout: &[u8]) -> Result<Value> {
-    // Lossy: output that is not even UTF-8 is still output worth quoting, and
-    // the replacement characters are themselves a clue.
+    // Output that is not UTF-8 is still worth quoting, and the replacement
+    // characters are themselves a clue.
     let text = String::from_utf8_lossy(stdout);
     serde_json::from_str(&text).or_else(|error| {
         let section = unparsable_output(&text, error.line());
@@ -481,23 +472,18 @@ fn parse_config_json(cli: &str, render: &str, stdout: &[u8]) -> Result<Value> {
 
 /// The one output line a JSON parse stopped on, numbered, for an error section.
 ///
-/// One line, capped: a full render is the whole resolved compose model, and its
-/// values can be secrets (see [`diverging_config_fields`]). The line that broke
-/// the parse is the one that identifies the problem.
-///
-/// The line is compose output, so it carries whatever the compose file carries.
-/// A service name or an environment value can hold terminal escape sequences,
-/// which would let a crafted repository hide or spoof what `snouty validate`
-/// prints. [`sanitize`] escapes them, and the cap then counts the characters
-/// that actually reach the terminal.
+/// A full render is the whole resolved compose model, and its values can be
+/// secrets (see [`diverging_config_fields`]), so the section shows one capped
+/// line. The line carries whatever the compose file carries, so [`sanitize`]
+/// escapes terminal control sequences before the cap counts what a person sees.
 fn unparsable_output(text: &str, line_number: usize) -> String {
     const MAX_LEN: usize = 200;
 
     if text.trim().is_empty() {
         return "(compose printed nothing)".to_string();
     }
-    // serde_json numbers lines from 1, and reports 0 when it has no position;
-    // then the first line is the best guess, and is labelled as line 1.
+    // serde_json numbers lines from 1, and reports 0 when it has no position.
+    // Then the first line is the best guess.
     let index = line_number.saturating_sub(1);
     let mut line = sanitize(text.lines().nth(index).unwrap_or_default().trim_end());
     if let Some((offset, _)) = line.char_indices().nth(MAX_LEN) {
@@ -1027,9 +1013,6 @@ mod tests {
         );
     }
 
-    /// The failure users hit reads `expected ident at line 1 column 2` and
-    /// says nothing else (issue #294). The report has to name the command, the
-    /// environment it ran in, and the line compose actually printed.
     #[test]
     fn parse_config_json_quotes_output_that_is_not_json() {
         // A compose CLI that ignores `--format json` prints the YAML render.
@@ -1044,7 +1027,6 @@ mod tests {
             ),
             "got: {rendered}"
         );
-        // The parse error stays in the chain as the cause.
         assert!(rendered.contains("line 1 column 2"), "got: {rendered}");
         assert!(
             format!("{report:?}").contains("line 1: name: myproject"),
@@ -1066,23 +1048,18 @@ mod tests {
         // No position (line 0) falls back to the first line.
         assert_eq!(unparsable_output(text, 0), "line 1: {");
 
-        // A line past the end cannot be quoted, but the label still reports it.
+        // A line past the end cannot be quoted; the label still reports it.
         assert_eq!(unparsable_output(text, 9), "line 9: ");
 
         assert_eq!(unparsable_output("   \n", 1), "(compose printed nothing)");
     }
 
-    /// The quoted line is compose output, and compose output carries whatever
-    /// the compose file carries. An escape sequence in a service name must not
-    /// reach the terminal, where it could hide or spoof what validate prints.
     #[test]
     fn unparsable_output_escapes_terminal_control_sequences() {
         let text = "name: \u{1b}[2Kspoofed\n";
         assert_eq!(unparsable_output(text, 1), r"line 1: name: \x1B[2Kspoofed");
     }
 
-    /// A render line can be thousands of characters of resolved model, so the
-    /// quoted line is capped.
     #[test]
     fn unparsable_output_caps_a_long_line() {
         let long = "x".repeat(500);

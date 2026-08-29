@@ -368,10 +368,11 @@ fn check_compose_divergence(
 
     let detail = if hermetic.status.success() {
         let cli = compose.cli_name();
-        let renders = parse_config_json(&cli, LOCAL_RENDER, local.as_bytes()).and_then(|local| {
-            parse_config_json(&cli, HERMETIC_RENDER, &hermetic.stdout)
-                .map(|hermetic| (local, hermetic))
-        });
+        let renders =
+            parse_config_json(&cli, "your shell environment", local.as_bytes()).and_then(|local| {
+                parse_config_json(&cli, "a scrubbed environment", &hermetic.stdout)
+                    .map(|hermetic| (local, hermetic))
+            });
         let (local, hermetic) = match renders {
             Ok(renders) => renders,
             // Without both renders there is nothing to compare, so the check
@@ -442,17 +443,13 @@ fn check_compose_divergence(
     }
 }
 
-/// How an error names each render of the compose file.
-const LOCAL_RENDER: &str = "rendered with your shell environment";
-const HERMETIC_RENDER: &str = "rendered with a scrubbed environment, as Antithesis does";
-
-/// Parse one `compose config --format json` render.
+/// Parse one `compose config --format json` render, made with `env`.
 ///
 /// Output that is not JSON means compose printed something else: a YAML render
 /// from a CLI that ignores `--format json`, or a log banner ahead of the
 /// document. The error quotes the line the parser stopped on, which tells the
 /// user which one it is.
-fn parse_config_json(cli: &str, render: &str, stdout: &[u8]) -> Result<Value> {
+fn parse_config_json(cli: &str, env: &str, stdout: &[u8]) -> Result<Value> {
     // Output that is not UTF-8 is still worth quoting, and the replacement
     // characters are themselves a clue.
     let text = String::from_utf8_lossy(stdout);
@@ -461,7 +458,7 @@ fn parse_config_json(cli: &str, render: &str, stdout: &[u8]) -> Result<Value> {
         let reproduce = format!("{cli} config --format json");
         Err(error)
             .wrap_err(format!(
-                "'{cli} config --format json' printed output that is not JSON ({render})"
+                "'{cli} config --format json' printed unparsable output (rendered with {env})"
             ))
             .with_section(move || section.header("Output:"))
             .with_suggestion(move || {
@@ -486,6 +483,8 @@ fn unparsable_output(text: &str, line_number: usize) -> String {
     // Then the first line is the best guess.
     let index = line_number.saturating_sub(1);
     let mut line = sanitize(text.lines().nth(index).unwrap_or_default().trim_end());
+    // Cut on a character boundary, and mark the cut so the reader knows the
+    // line goes on.
     if let Some((offset, _)) = line.char_indices().nth(MAX_LEN) {
         line.truncate(offset);
         line.push('\u{2026}');
@@ -1017,12 +1016,12 @@ mod tests {
     fn parse_config_json_quotes_output_that_is_not_json() {
         // A compose CLI that ignores `--format json` prints the YAML render.
         let yaml = "name: myproject\nservices:\n  app:\n    image: alpine\n";
-        let report =
-            parse_config_json("docker-compose", LOCAL_RENDER, yaml.as_bytes()).unwrap_err();
+        let report = parse_config_json("docker-compose", "your shell environment", yaml.as_bytes())
+            .unwrap_err();
         let rendered = format!("{report:#}");
         assert!(
             rendered.contains(
-                "'docker-compose config --format json' printed output that is not JSON \
+                "'docker-compose config --format json' printed unparsable output \
                  (rendered with your shell environment)"
             ),
             "got: {rendered}"
@@ -1035,7 +1034,7 @@ mod tests {
 
         let json = br#"{"name": "myproject"}"#;
         assert_eq!(
-            parse_config_json("docker compose", HERMETIC_RENDER, json).unwrap(),
+            parse_config_json("docker compose", "a scrubbed environment", json).unwrap(),
             json!({"name": "myproject"})
         );
     }

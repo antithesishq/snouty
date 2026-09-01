@@ -1,5 +1,9 @@
 # Unreleased
 
+Nothing Yet!
+
+# Version 0.7.1 (2026-09-01)
+
 - `snouty validate` diagnoses a compose render that is not JSON: the error names the compose CLI that ran and quotes the line the parser stopped on. `--allow-compose-divergence` now covers this failure, so a compose CLI that ignores `--format json` no longer blocks the check ([#294](https://github.com/antithesishq/snouty/issues/294))
 - `snouty doctor` reports more than one credential source. snouty uses the first source it finds, so an exported `ANTITHESIS_USERNAME` and `ANTITHESIS_PASSWORD` hide the API key that `snouty login` stored. doctor now warns, names the credential it uses and the credentials it ignores, and states the action that hands the run to the next source ([#292](https://github.com/antithesishq/snouty/issues/292))
 - snouty now supports proxied repository urls ([#291](https://github.com/antithesishq/snouty/pull/291))

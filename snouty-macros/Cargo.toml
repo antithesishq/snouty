@@ -1,7 +1,7 @@
 [package]
 name = "snouty-macros"
 # Kept in lockstep with snouty's version; the release process bumps both.
-version = "0.7.1-rc.1"
+version = "0.7.1"
 edition = "2024"
 description = "Procedural macros for snouty"
 license = "Apache-2.0"

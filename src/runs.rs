@@ -1498,15 +1498,17 @@ async fn cmd_runs_logs(
 /// rather than failing the stream. Tighten this to a closed type once the
 /// command stabilizes.
 ///
-/// The variants exclude each other by their required fields: a result
-/// carries a known `status` and no `Event` envelope, an output event carries
-/// the `Event` envelope (`moment`, `output_text`) and no `status`. Whatever
-/// fits neither is unknown.
+/// The variants exclude each other by their required fields: an output event
+/// carries the `Event` envelope (`moment`, `output_text`), a result carries a
+/// known `status` and no envelope. Output is tried first because an event's
+/// payload is open-ended workload data, so an output line may legitimately
+/// carry a `status` field of its own; no result carries the envelope.
+/// Whatever fits neither is unknown.
 #[derive(Debug, Deserialize)]
 #[serde(untagged)]
 enum ExecFrame {
-    Result(ExecResult),
     Output(ExecOutput),
+    Result(ExecResult),
     /// A frame with an unknown `status`, or a known one whose shape did not
     /// fit.
     Unknown(Value),
@@ -1523,27 +1525,34 @@ enum ExecFrame {
 struct ExecOutput {
     moment: Moment,
     output_text: String,
-    #[serde(default)]
-    source: ExecSource,
+    /// `Option` so a missing or null envelope is still the script's output.
+    source: Option<ExecSource>,
 }
 
 /// The `source` envelope of a command-output event. Only the stream label is
 /// read: a command runs on the guest machine, so there is no container or
 /// source name to show.
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Deserialize)]
 struct ExecSource {
-    #[serde(default)]
-    stream: ExecStream,
+    stream: Option<ExecStream>,
 }
 
-/// Where an output line goes. The run-logs shape labels a stderr line
-/// `error` (the release 61.3 spec examples); every other label — `info`, one
-/// this build does not know, or none — is the script's stdout.
-#[derive(Debug, Default, Deserialize)]
+impl ExecOutput {
+    /// Where the line goes. The run-logs shape labels a stderr line `error`
+    /// (the release 61.3 spec examples); every other label — `info`, one this
+    /// build does not know, or none — is the script's stdout.
+    fn stream(&self) -> ExecStream {
+        self.source
+            .as_ref()
+            .and_then(|source| source.stream)
+            .unwrap_or(ExecStream::Other)
+    }
+}
+
+#[derive(Debug, Clone, Copy, Deserialize)]
 #[serde(rename_all = "snake_case")]
 enum ExecStream {
     Error,
-    #[default]
     #[serde(other)]
     Other,
 }
@@ -1577,13 +1586,9 @@ enum ExecResult {
 /// status, which the caller settles after the stream ends.
 fn render_exec_frame(frame: &ExecFrame) -> Result<()> {
     match frame {
-        ExecFrame::Output(ExecOutput {
-            output_text,
-            source,
-            ..
-        }) => {
-            let text = normalize_terminal_text(output_text);
-            match source.stream {
+        ExecFrame::Output(output) => {
+            let text = normalize_terminal_text(&output.output_text);
+            match output.stream() {
                 ExecStream::Error => eprintln!("{text}"),
                 ExecStream::Other => outln!("{text}")?,
             }
@@ -2735,32 +2740,37 @@ mod tests {
             r#"{"moment":{"input_hash":"-3160476794197372487","vtime":"16.304728139657527"},"output_text":"hello-err","source":{"stream":"error"}}"#,
         )
         .unwrap();
-        let ExecFrame::Output(ExecOutput {
-            moment,
-            output_text,
-            source,
-            ..
-        }) = frame
-        else {
+        let ExecFrame::Output(output) = frame else {
             panic!("expected an output event");
         };
-        assert!(matches!(source.stream, ExecStream::Error));
-        assert_eq!(output_text, "hello-err");
-        // The output moment is kept, not discarded — the rendered JSON form
-        // will show it.
-        assert_eq!(moment.input_hash, "-3160476794197372487");
-        assert_eq!(moment.vtime.to_string(), "16.304728139657527");
+        assert!(matches!(output.stream(), ExecStream::Error));
+        assert_eq!(output.output_text, "hello-err");
+        // The envelope is what makes the line an output event.
+        assert_eq!(output.moment.input_hash, "-3160476794197372487");
+        assert_eq!(output.moment.vtime.to_string(), "16.304728139657527");
 
-        // `source` is not required by the `Event` schema; a line without it
-        // is still the script's output.
-        let frame: ExecFrame = serde_json::from_str(
+        // `source` is not required by the `Event` schema, and the schema is
+        // open, so a missing, null, or unlabelled envelope — or one with a
+        // label this build does not know — is still the script's stdout.
+        for line in [
             r#"{"moment":{"input_hash":"-1","vtime":"1.0"},"output_text":"bare"}"#,
+            r#"{"moment":{"input_hash":"-1","vtime":"1.0"},"output_text":"bare","source":null}"#,
+            r#"{"moment":{"input_hash":"-1","vtime":"1.0"},"output_text":"bare","source":{"stream":null}}"#,
+            r#"{"moment":{"input_hash":"-1","vtime":"1.0"},"output_text":"bare","source":{"stream":"info"}}"#,
+        ] {
+            let ExecFrame::Output(output) = serde_json::from_str(line).unwrap() else {
+                panic!("expected an output event: {line}");
+            };
+            assert!(matches!(output.stream(), ExecStream::Other), "{line}");
+        }
+
+        // An output line whose workload payload carries a `status` of its own
+        // is still output, not a result.
+        let frame: ExecFrame = serde_json::from_str(
+            r#"{"moment":{"input_hash":"-1","vtime":"1.0"},"output_text":"{\"status\":\"exited\"}","status":"exited"}"#,
         )
         .unwrap();
-        let ExecFrame::Output(ExecOutput { source, .. }) = frame else {
-            panic!("expected an output event");
-        };
-        assert!(matches!(source.stream, ExecStream::Other));
+        assert!(matches!(frame, ExecFrame::Output(_)), "got: {frame:?}");
 
         let frame: ExecFrame = serde_json::from_str(
             r#"{"status":"exited","exit_code":5,"end_moment":{"input_hash":"-316","vtime":"16.3"}}"#,

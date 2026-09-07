@@ -196,8 +196,8 @@ fn unrequire_search_limit_default(spec: &mut serde_json::Value) {
 ///
 /// The schema gives the field `default: false`, which progenitor bakes into a
 /// plain `bool` that serializes on every request. snouty does not expose the
-/// switch (the server rejects a request that sets it), so it would only ever
-/// send the server's own default — and naming a field is not the same as
+/// switch (the server rejects a request that sets it to `true`), so it would
+/// only ever send the server's own default — and naming a field is not the same as
 /// saying nothing. Leaving it out defers to the server.
 ///
 /// The pointer is asserted, so a spec refresh that drops the field or its

@@ -729,7 +729,8 @@ Source is the `antithesis.source` the run was launched from, when the
 launcher recorded one.
 
 Incomplete runs also show the failure moment (Failure Hash/VTime) to pass to
-`runs logs`. Use --web to open the triage report in a browser.
+`runs logs`, and the Failure Reason when the run reports one. Use --web to
+open the triage report in a browser.
 
 Examples:
   snouty runs show <run_id>
@@ -938,7 +939,7 @@ Examples:
 Add --json for machine-readable output. Each frame of the stream prints as one
 JSON object on its own line, and the trailer is left out:
   snouty --json runs exec <run_id> <hash> <vtime> 'ls' \
-    | jq -r 'select(.type == "output").text'"#
+    | jq -r 'select(.output_text != null).output_text'"#
     )]
     Exec {
         /// Run ID

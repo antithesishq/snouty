@@ -2009,7 +2009,14 @@ mod tests {
         let mock_server = mock_launch_test(202, LAUNCH_OK_BODY).await;
 
         let api = test_api_optionally_with_cache(&mock_server, None);
-        let params = Params::from_key_value_pairs(["antithesis.duration=30"]).unwrap();
+        // `antithesis.filter_logs_matching` left the spec's `Params` schema
+        // in release 61.3, so it travels through the untyped map like any
+        // other unknown param; the wire form is the same either way.
+        let params = Params::from_key_value_pairs([
+            "antithesis.duration=30",
+            "antithesis.filter_logs_matching=debug",
+        ])
+        .unwrap();
 
         let response = api.launch_test("basic_test", &params).await.unwrap();
         let requests = mock_server.received_requests().await.unwrap();
@@ -2031,7 +2038,8 @@ mod tests {
             requests[0].body_json::<serde_json::Value>().unwrap(),
             serde_json::json!({
                 "params": {
-                    "antithesis.duration": "30"
+                    "antithesis.duration": "30",
+                    "antithesis.filter_logs_matching": "debug"
                 }
             })
         );

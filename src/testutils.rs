@@ -1501,7 +1501,9 @@ mod tests {
 
         let (_, out) = mock_route_execute_command("run-2", &body("sleep 60", 30));
         assert!(
-            out.ends_with(&(mock_exec_timed_out("398.491") + "\n")),
+            out.ends_with(
+                "{\"status\":\"timed_out\",\"last_moment\":{\"input_hash\":\"-8206006569229276678\",\"vtime\":\"398.491\"}}\n"
+            ),
             "got: {out}"
         );
 

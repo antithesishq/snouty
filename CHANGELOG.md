@@ -1,6 +1,8 @@
 # Unreleased
 
-- snouty follows API release 61.3. `snouty runs show` prints a `Failure Reason` row for an incomplete run that reports one, and `snouty runs events --limit` accepts up to 1000. `snouty runs exec` (unstable) calls the renamed command endpoint and reads its new stream: each output line arrives in the same event shape as `runs logs`, and the terminal record is discriminated by `status` ([#298](https://github.com/antithesishq/snouty/pull/300))
+- `snouty runs show` prints a `Failure Reason` row for an incomplete run that reports one ([#300](https://github.com/antithesishq/snouty/pull/300))
+- `snouty runs events --limit` accepts up to 1000 ([#300](https://github.com/antithesishq/snouty/pull/300))
+- `snouty runs exec` (unstable) follows API release 61.3: it calls the renamed command endpoint and reads its new stream, where each output line arrives in the same event shape as `runs logs` and the terminal record is discriminated by `status` ([#300](https://github.com/antithesishq/snouty/pull/300))
 
 # Version 0.7.1 (2026-09-01)
 

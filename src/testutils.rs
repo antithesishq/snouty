@@ -1136,10 +1136,20 @@ fn mock_exec_output(stream: &str, text: &str, vtime: &str) -> String {
     )
 }
 
-/// The terminal `exited` result of a mock execution.
-fn mock_exec_exited(exit_code: i64) -> String {
+/// The terminal `exited` result of a mock execution. `None` is the nullable
+/// `exit_code` of a command the session killed.
+fn mock_exec_exited(exit_code: Option<i64>) -> String {
+    let exit_code = exit_code.map_or_else(|| "null".to_string(), |code| code.to_string());
     format!(
         r#"{{"status":"exited","exit_code":{exit_code},"end_moment":{{"input_hash":"{MOCK_EXEC_BRANCH_HASH}","vtime":"398.492"}}}}"#
+    )
+}
+
+/// The terminal `timed_out` result of a mock execution, reporting the latest
+/// output moment it saw.
+fn mock_exec_timed_out(vtime: &str) -> String {
+    format!(
+        r#"{{"status":"timed_out","last_moment":{{"input_hash":"{MOCK_EXEC_BRANCH_HASH}","vtime":"{vtime}"}}}}"#
     )
 }
 
@@ -1181,35 +1191,18 @@ fn mock_route_execute_command(run_id: &str, req_body: &str) -> (u16, String) {
     let timeout = request["timeout_seconds"].as_u64().unwrap_or(30);
 
     let lines = match script.trim() {
-        "true" => vec![mock_exec_exited(0)],
-        "exit 5" => vec![mock_exec_exited(5)],
-        // A command the session killed reports no exit code (`exit_code` is
-        // nullable in the spec).
-        "no-exit-code" => {
-            vec![format!(
-                r#"{{"status":"exited","exit_code":null,"end_moment":{{"input_hash":"{MOCK_EXEC_BRANCH_HASH}","vtime":"398.492"}}}}"#
-            )]
-        }
-        // A timeout reports the latest output moment it saw, when it saw one.
+        "true" => vec![mock_exec_exited(Some(0))],
+        "exit 5" => vec![mock_exec_exited(Some(5))],
+        "no-exit-code" => vec![mock_exec_exited(None)],
         "sleep 60" => vec![
             mock_exec_output("info", "still working", "398.491"),
-            format!(
-                r#"{{"status":"timed_out","last_moment":{{"input_hash":"{MOCK_EXEC_BRANCH_HASH}","vtime":"398.491"}}}}"#
-            ),
+            mock_exec_timed_out("398.491"),
         ],
         "print-timeout" => vec![
             mock_exec_output("info", &format!("timeout_seconds={timeout}"), "398.491"),
-            mock_exec_exited(0),
+            mock_exec_exited(Some(0)),
         ],
         "truncate-stream" => vec![mock_exec_output("info", "partial output", "398.491")],
-        // The earlier stream shape labelled stderr output `stderr` or the
-        // short form `err` (observed on release 60.0). snouty must still
-        // route both like `error`.
-        "short-stream-err" => vec![
-            mock_exec_output("err", "short-form stderr line", "398.491"),
-            mock_exec_output("stderr", "long-form stderr line", "398.4912"),
-            mock_exec_exited(0),
-        ],
         // A result status this build does not know, and a known frame
         // carrying a field it does not know. The stream must survive both.
         "unknown-frames" => vec![
@@ -1219,12 +1212,12 @@ fn mock_route_execute_command(run_id: &str, req_body: &str) -> (u16, String) {
             format!(
                 r#"{{"moment":{{"input_hash":"{MOCK_EXEC_BRANCH_HASH}","vtime":"398.491"}},"output_text":"known with extras","source":{{"stream":"info"}},"truncated":true}}"#
             ),
-            mock_exec_exited(0),
+            mock_exec_exited(Some(0)),
         ],
         _ => vec![
             mock_exec_output("info", "Linux antithesis 6.12.0", "398.491"),
             mock_exec_output("error", "warning: virtual clock drift detected", "398.4915"),
-            mock_exec_exited(0),
+            mock_exec_exited(Some(0)),
         ],
     };
     (200, lines.join("\n") + "\n")
@@ -1508,9 +1501,7 @@ mod tests {
 
         let (_, out) = mock_route_execute_command("run-2", &body("sleep 60", 30));
         assert!(
-            out.ends_with(&format!(
-                "{{\"status\":\"timed_out\",\"last_moment\":{{\"input_hash\":\"{MOCK_EXEC_BRANCH_HASH}\",\"vtime\":\"398.491\"}}}}\n"
-            )),
+            out.ends_with(&(mock_exec_timed_out("398.491") + "\n")),
             "got: {out}"
         );
 

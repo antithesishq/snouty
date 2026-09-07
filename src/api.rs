@@ -660,10 +660,9 @@ impl AntithesisApi {
         script: String,
         timeout: Duration,
     ) -> Result<JsonStream> {
-        // `container` and `wait_until` are not exposed: the server rejects a
-        // request that names either. `include_filtered_logs` is absent from
-        // the generated type (`build.rs` drops it), so snouty says nothing
-        // about it and the server applies its default.
+        // The spec marks `container` and `wait_until` not yet implemented: the
+        // server rejects a request that sets either. `build.rs` strips
+        // `include_filtered_logs` for the same reason.
         let body = generated::types::ExecuteCommandRequest {
             moment,
             script,
@@ -2009,9 +2008,9 @@ mod tests {
         let mock_server = mock_launch_test(202, LAUNCH_OK_BODY).await;
 
         let api = test_api_optionally_with_cache(&mock_server, None);
-        // `antithesis.filter_logs_matching` left the spec's `Params` schema
-        // in release 61.3, so it travels through the untyped map like any
-        // other unknown param; the wire form is the same either way.
+        // `antithesis.filter_logs_matching` left the `Params` schema in release
+        // 61.3. It now travels through the untyped map, and the wire form does
+        // not change.
         let params = Params::from_key_value_pairs([
             "antithesis.duration=30",
             "antithesis.filter_logs_matching=debug",

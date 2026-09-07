@@ -1127,9 +1127,8 @@ fn mock_route_search_run_events(run_id: &str, query_str: Option<&str>) -> (u16, 
 /// input hash (verified against the live API).
 const MOCK_EXEC_BRANCH_HASH: &str = "-8206006569229276678";
 
-/// One command-output event of a mock execution, in the run-logs `Event`
-/// shape the release 61.3 spec documents for the stream: the text under
-/// `output_text`, the stream label under `source`.
+/// One command-output event of a mock execution, in the release 61.3
+/// spec's `Event` shape.
 fn mock_exec_output(stream: &str, text: &str, vtime: &str) -> String {
     format!(
         r#"{{"moment":{{"input_hash":"{MOCK_EXEC_BRANCH_HASH}","vtime":"{vtime}"}},"output_text":"{text}","source":{{"stream":"{stream}"}}}}"#
@@ -1145,8 +1144,7 @@ fn mock_exec_exited(exit_code: Option<i64>) -> String {
     )
 }
 
-/// The terminal `timed_out` result of a mock execution, reporting the latest
-/// output moment it saw.
+/// The terminal `timed_out` result of a mock execution.
 fn mock_exec_timed_out(vtime: &str) -> String {
     format!(
         r#"{{"status":"timed_out","last_moment":{{"input_hash":"{MOCK_EXEC_BRANCH_HASH}","vtime":"{vtime}"}}}}"#

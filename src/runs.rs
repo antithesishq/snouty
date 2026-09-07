@@ -1498,12 +1498,10 @@ async fn cmd_runs_logs(
 /// rather than failing the stream. Tighten this to a closed type once the
 /// command stabilizes.
 ///
-/// The variants exclude each other by their required fields: an output event
-/// carries the `Event` envelope (`moment`, `output_text`), a result carries a
-/// known `status` and no envelope. Output is tried first because an event's
-/// payload is open-ended workload data, so an output line may legitimately
-/// carry a `status` field of its own; no result carries the envelope.
-/// Whatever fits neither is unknown.
+/// Variant order matters: serde tries `Output` first. An output line's
+/// payload is open workload data and may carry a `status` of its own, so
+/// `Result` must not get the first look. The `Event` envelope (`moment`,
+/// `output_text`) keeps the two apart: no result carries one.
 #[derive(Debug, Deserialize)]
 #[serde(untagged)]
 enum ExecFrame {
@@ -1514,11 +1512,10 @@ enum ExecFrame {
     Unknown(Value),
 }
 
-/// One line the script wrote: an `Event` in the run-logs shape, so the text
-/// sits in `output_text` and the stream label under `source`.
+/// One line the script wrote, as a run-logs `Event`.
 ///
-/// `moment` is not read (`--json` passes the raw line through), but it is
-/// required: the `Event` envelope is what tells an output line from an
+/// `moment` is never read (`--json` prints the raw line), but it stays
+/// required: the envelope is what separates an output line from an
 /// unknown frame.
 #[allow(dead_code)]
 #[derive(Debug, Deserialize)]
@@ -1529,18 +1526,16 @@ struct ExecOutput {
     source: Option<ExecSource>,
 }
 
-/// The `source` envelope of a command-output event. Only the stream label is
-/// read: a command runs on the guest machine, so there is no container or
-/// source name to show.
+/// Only `stream` is read: a command runs on the guest machine, so there is
+/// no container or source name to show.
 #[derive(Debug, Deserialize)]
 struct ExecSource {
     stream: Option<ExecStream>,
 }
 
 impl ExecOutput {
-    /// Where the line goes. The run-logs shape labels a stderr line `error`
-    /// (the release 61.3 spec examples); every other label — `info`, one this
-    /// build does not know, or none — is the script's stdout.
+    /// The release 61.3 spec examples label a stderr line `error`. Every other
+    /// label, or none, is the script's stdout.
     fn stream(&self) -> ExecStream {
         self.source
             .as_ref()
@@ -1557,7 +1552,7 @@ enum ExecStream {
     Other,
 }
 
-/// The terminal record of a successful stream, discriminated by `status`.
+/// The terminal record of a successful stream.
 ///
 /// Hand-written rather than the generated `CommandTerminationResult`: that
 /// type is an untagged enum whose variants progenitor names `Variant0/1`,
@@ -1571,9 +1566,8 @@ enum ExecResult {
         /// costs the trailer rather than the whole result.
         end_moment: Option<Moment>,
     },
-    /// The result's `last_moment` is informational — the command may still be
-    /// running — so nothing is chained from it and this build does not read
-    /// it.
+    /// `last_moment` is not read: the spec marks it informational, so nothing
+    /// chains from it.
     TimedOut,
 }
 
@@ -1679,10 +1673,8 @@ async fn cmd_runs_exec(
         Err(err) => return Err(explain_run_scoped_error(&api, run_id, err).await),
     };
 
-    // The terminal result the stream ended with, kept for the exit decision
-    // below: an output event is rendered as it arrives, but the result
-    // decides the command's outcome, so it is acted on only once the stream
-    // is known to have completed.
+    // The terminal result is held until the stream ends, so a stream error
+    // after it still wins.
     let mut terminal: Option<ExecResult> = None;
     let result: Result<()> = async {
         let mut lines = event_lines(stream, ErrorRows::Abort);
@@ -1702,8 +1694,6 @@ async fn cmd_runs_exec(
                 render_exec_frame(&frame)?;
             }
 
-            // Either mode: the terminal result decides the exit status, and
-            // is acted on once the stream is known to have completed.
             if let ExecFrame::Result(result) = frame {
                 terminal = Some(result);
             }
@@ -2733,9 +2723,7 @@ mod tests {
 
     #[test]
     fn exec_frame_parses_each_stream_shape() {
-        // The shapes the release 61.3 spec documents for the command stream:
-        // an output line in the run-logs `Event` shape, then one result
-        // discriminated by `status`.
+        // Shapes from the release 61.3 spec examples for the command stream.
         let frame: ExecFrame = serde_json::from_str(
             r#"{"moment":{"input_hash":"-3160476794197372487","vtime":"16.304728139657527"},"output_text":"hello-err","source":{"stream":"error"}}"#,
         )
@@ -2745,13 +2733,11 @@ mod tests {
         };
         assert!(matches!(output.stream(), ExecStream::Error));
         assert_eq!(output.output_text, "hello-err");
-        // The envelope is what makes the line an output event.
         assert_eq!(output.moment.input_hash, "-3160476794197372487");
         assert_eq!(output.moment.vtime.to_string(), "16.304728139657527");
 
-        // `source` is not required by the `Event` schema, and the schema is
-        // open, so a missing, null, or unlabelled envelope — or one with a
-        // label this build does not know — is still the script's stdout.
+        // `Event` does not require `source`, so a missing, null, or unknown
+        // label is still stdout.
         for line in [
             r#"{"moment":{"input_hash":"-1","vtime":"1.0"},"output_text":"bare"}"#,
             r#"{"moment":{"input_hash":"-1","vtime":"1.0"},"output_text":"bare","source":null}"#,
@@ -2846,8 +2832,7 @@ mod tests {
         assert_eq!(value["status"], json!("heartbeat"));
         assert_eq!(value["at"], json!("12.5"));
 
-        // A known frame with a field this build doesn't know is still known;
-        // `--json` prints the raw line, so the field is not lost.
+        // A known frame with a field this build does not know is still known.
         let frame: ExecFrame = serde_json::from_str(
             r#"{"moment":{"input_hash":"-1","vtime":"1.0"},"output_text":"hi","source":{"stream":"info"},"truncated":true}"#,
         )

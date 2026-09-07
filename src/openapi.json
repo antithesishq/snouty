@@ -37,6 +37,10 @@
       "description": "Launch a test run or debugging session."
     },
     {
+      "name": "Usage",
+      "description": "Information about usage"
+    },
+    {
       "name": "Version",
       "description": "API and release version information."
     }
@@ -251,33 +255,40 @@
                         {
                           "name": "etcd-config-k8s",
                           "image": "us-central1-docker.pkg.dev/molten-verve-216720/antithesis-pdev-repository/etcd-config-k8s@sha256:16f57a2ec79c0d61886c28774264ab1d027e51a9301e014941404a35dcf8c631",
-                          "tag": "latest"
+                          "tag": "latest",
+                          "created": "2026-05-13T18:42:07Z"
                         },
                         {
                           "name": "mirrored-coredns-coredns",
-                          "image": "docker.io/rancher/mirrored-coredns-coredns@sha256:4f7a57135719628cf2070c5e3cbde64b013e90d4c560c5ecbf14004181f91998"
+                          "image": "docker.io/rancher/mirrored-coredns-coredns@sha256:4f7a57135719628cf2070c5e3cbde64b013e90d4c560c5ecbf14004181f91998",
+                          "created": "2024-07-08T00:00:00Z"
                         },
                         {
                           "name": "etcd",
                           "image": "docker.io/bitnamilegacy/etcd@sha256:4abe38869d5919c9ec70b2008713c2eb90c1b26d9e6700e126875894681b5b99",
-                          "tag": "3.5"
+                          "tag": "3.5",
+                          "created": "2024-10-01T12:15:33Z"
                         },
                         {
                           "name": "local-path-provisioner",
-                          "image": "docker.io/rancher/local-path-provisioner@sha256:5fb0394abf87407a27cc56db94334eb0c92d0b5de2636683a7ec51f38143dfc9"
+                          "image": "docker.io/rancher/local-path-provisioner@sha256:5fb0394abf87407a27cc56db94334eb0c92d0b5de2636683a7ec51f38143dfc9",
+                          "created": "2024-03-19T09:01:44Z"
                         },
                         {
                           "name": "busybox",
-                          "image": "docker.io/library/busybox@sha256:e56bc0f7fc7d4452b17eb4ac0a9261ff4c9a469afa45d2b673e03650716d095d"
+                          "image": "docker.io/library/busybox@sha256:e56bc0f7fc7d4452b17eb4ac0a9261ff4c9a469afa45d2b673e03650716d095d",
+                          "created": "2025-01-22T05:30:00Z"
                         },
                         {
                           "name": "mirrored-pause",
-                          "image": "docker.io/rancher/mirrored-pause@sha256:7c38f24774e3cbd906d2d33c38354ccf787635581c122965132c9bd309754d4a"
+                          "image": "docker.io/rancher/mirrored-pause@sha256:7c38f24774e3cbd906d2d33c38354ccf787635581c122965132c9bd309754d4a",
+                          "created": "2023-11-02T21:11:09Z"
                         },
                         {
                           "name": "etcd-client-k8s",
                           "image": "us-central1-docker.pkg.dev/molten-verve-216720/antithesis-pdev-repository/etcd-client-k8s@sha256:112394d9bacd070df4a8d18db3b7575d6e314220ee2462a31dc24df2e98373cc",
-                          "tag": "latest"
+                          "tag": "latest",
+                          "created": "2026-05-13T18:42:07Z"
                         }
                       ]
                     }
@@ -313,11 +324,11 @@
         }
       }
     },
-    "/api/v0/runs/{run_id}/execute_command": {
+    "/api/v0/runs/{run_id}/command": {
       "post": {
         "operationId": "executeCommand",
         "summary": "Execute a command in a test run",
-        "description": "Executes a bash command in the live session associated with the test run, starting at the requested moment. Output is streamed as newline-delimited JSON (NDJSON). Each line is an `output` event followed by a terminal `exited` or `timed_out` event, unless the stream ends with an error.",
+        "description": "Executes a bash command in the live session associated with the test run, starting at the requested moment. When `container` is specified, the command executes inside that container; otherwise, it executes directly on the guest machine. When `include_filtered_logs` is `true`, all log events selected by the command's log filter are included in the output. When `wait_until` is specified, the command continues executing until an event matching that event-set DSL query is observed or the explicitly specified timeout elapses. Output is streamed as newline-delimited JSON (NDJSON). Command output uses the same `Event` shape returned by the run logs endpoint, without an additional wrapper. A successful stream ends with exactly one command result whose `status` is `exited` or `timed_out`; a stream that fails after the response begins ends with a `Stream_Error`.",
         "tags": [
           "Test runs"
         ],
@@ -328,7 +339,8 @@
             "description": "Unique identifier of the test run whose live session should execute the command.",
             "required": true,
             "schema": {
-              "type": "string"
+              "type": "string",
+              "example": "9325f006ffd3a399a8497bc888878b97-50-1"
             }
           }
         ],
@@ -345,21 +357,23 @@
                   "vtime": "398.4898056755774"
                 },
                 "script": "uname -a",
-                "timeout_seconds": 30,
-                "use_otis": false
+                "timeout_seconds": 30
               }
             }
           }
         },
         "responses": {
           "200": {
-            "description": "A stream of command output and one terminal event in NDJSON format. Each line is a self-contained JSON object.",
+            "description": "An NDJSON stream containing zero or more command-output `Event` records followed by exactly one terminal `Command_Termination_Result`. If an error occurs after the response begins, the stream instead ends with a `Stream_Error`. Each line is a self-contained JSON object.",
             "content": {
               "application/x-ndjson": {
                 "schema": {
                   "oneOf": [
                     {
-                      "$ref": "#/components/schemas/Execute_Command_Stream_Event"
+                      "$ref": "#/components/schemas/Event"
+                    },
+                    {
+                      "$ref": "#/components/schemas/Command_Termination_Result"
                     },
                     {
                       "$ref": "#/components/schemas/Stream_Error"
@@ -370,19 +384,20 @@
                   "output": {
                     "summary": "A line written to stdout",
                     "value": {
-                      "type": "output",
-                      "stream": "stdout",
-                      "text": "Linux antithesis 6.12.0",
                       "moment": {
                         "input_hash": "-3625518438076122494",
                         "vtime": "398.491"
+                      },
+                      "output_text": "Linux antithesis 6.12.0",
+                      "source": {
+                        "stream": "info"
                       }
                     }
                   },
                   "exited": {
                     "summary": "The command exited",
                     "value": {
-                      "type": "exited",
+                      "status": "exited",
                       "exit_code": 0,
                       "end_moment": {
                         "input_hash": "-3625518438076122494",
@@ -393,7 +408,11 @@
                   "timed_out": {
                     "summary": "The command timed out",
                     "value": {
-                      "type": "timed_out"
+                      "status": "timed_out",
+                      "last_moment": {
+                        "input_hash": "-3625518438076122494",
+                        "vtime": "398.491"
+                      }
                     }
                   }
                 }
@@ -804,13 +823,13 @@
           {
             "name": "limit",
             "in": "query",
-            "description": "Maximum number of results to return. Must be between 1 and 999. Defaults to 50.",
+            "description": "Maximum number of results to return. Must be between 1 and 1000. Defaults to 50.",
             "required": false,
             "schema": {
               "type": "integer",
               "default": 50,
               "minimum": 1,
-              "maximum": 999
+              "maximum": 1000
             }
           }
         ],
@@ -876,7 +895,7 @@
       "post": {
         "operationId": "search",
         "summary": "Search events with event sets",
-        "description": "Runs a search query across a single test run's events and returns either the matching events or, when `count_only` is `true`, an aggregate count. The test run to search is identified by the `run_id` path parameter.\n\n### Search query\n\nThe `query` field is an event set. An event set is a pipeline of verbs separated by `.`, applied left to right to the underlying event stream. The [event set reference](/docs/reference/event-set-reference/) has the full grammar.\n\n### Validating a query\n\nWhen `validate_only` is `true` the server checks only that `query` is syntactically valid and does not execute it; no events are returned and no count is computed. The server responds with `200 OK` and an empty body for a syntactically valid query, and for an invalid query, the server responds with `400 Bad Request`. `validate_only` takes precedence over `count_only` and `is_streaming`.\n\n### Streaming\n\nWhen `is_streaming` is `true` the connection remains open and the server continues to emit events as they are observed in live test runs. When `false` the server closes the connection once it has returned the current matching set.",
+        "description": "Runs a search query across a single test run's events and returns the matching events. The test run to search is identified by the `run_id` path parameter. To count matching events instead, use `/api/v0/runs/{run_id}/events/search/count`.\n\n### Search query\n\nThe `query` field is an event set. An event set is a pipeline of verbs separated by `.`, applied left to right to the underlying event stream. The [event set reference](/docs/reference/event-set-reference/) has the full grammar.\n\n### Validating a query\n\nWhen `validate_only` is `true` the server checks only that `query` is syntactically valid and does not execute it; no events are returned. The server responds with `200 OK` and an empty body for a syntactically valid query, and for an invalid query, the server responds with `400 Bad Request`. `validate_only` takes precedence over `is_streaming`.\n\n### Streaming\n\nWhen `is_streaming` is `true` the connection remains open and the server continues to emit events as they are observed in live test runs. When `false` the server closes the connection once it has returned the current matching set.",
         "tags": [
           "Test runs"
         ],
@@ -906,14 +925,6 @@
                     "is_streaming": false
                   }
                 },
-                "count_only": {
-                  "summary": "Count raft-related log lines in a single run",
-                  "value": {
-                    "query": "contains({output_text: \"raft\"})",
-                    "is_streaming": false,
-                    "count_only": true
-                  }
-                },
                 "streaming_events": {
                   "summary": "Stream slow-request warnings as they happen",
                   "value": {
@@ -934,7 +945,7 @@
         },
         "responses": {
           "200": {
-            "description": "Search results. When `validate_only` is `true` and the query is valid, the body is empty. Otherwise the content type is NDJSON of `Event` objects when `count_only` is `false`, or a single JSON object when `count_only` is `true`.",
+            "description": "Matching events as NDJSON. When `validate_only` is `true` and the query is valid, the body is empty.",
             "content": {
               "application/x-ndjson": {
                 "schema": {
@@ -952,7 +963,87 @@
                     "stream": "error"
                   }
                 }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "405": {
+            "$ref": "#/components/responses/MethodNotAllowed"
+          },
+          "406": {
+            "$ref": "#/components/responses/NotAcceptable"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "503": {
+            "$ref": "#/components/responses/ServiceUnavailable"
+          }
+        }
+      }
+    },
+    "/api/v0/runs/{run_id}/events/search/count": {
+      "post": {
+        "operationId": "searchCount",
+        "summary": "Count events with event sets",
+        "description": "Runs a search query across a single test run's events and returns the number of matching events. The test run to search is identified by the `run_id` path parameter.\n\n### Search query\n\nThe `query` field is an event set. An event set is a pipeline of verbs separated by `.`, applied left to right to the underlying event stream. The [event set reference](/docs/reference/event-set-reference/) has the full grammar.\n\n### Validating a query\n\nWhen `validate_only` is `true` the server checks only that `query` is syntactically valid and does not execute it; no count is computed. The server responds with `200 OK` and an empty body for a syntactically valid query, and for an invalid query, the server responds with `400 Bad Request`.",
+        "tags": [
+          "Test runs"
+        ],
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "description": "Unique identifier of the test run whose matching events should be counted.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Search_Count_Request"
               },
+              "examples": {
+                "count_events": {
+                  "summary": "Count raft-related log lines in a single run",
+                  "value": {
+                    "query": "contains({output_text: \"raft\"})"
+                  }
+                },
+                "validate_only": {
+                  "summary": "Validate a query without running it",
+                  "value": {
+                    "query": "matches({container: \"etcd0\"})",
+                    "validate_only": true
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The number of matching events. When `validate_only` is `true` and the query is valid, the body is empty.",
+            "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Search_Count_Response"
@@ -986,6 +1077,9 @@
           },
           "500": {
             "$ref": "#/components/responses/InternalError"
+          },
+          "503": {
+            "$ref": "#/components/responses/ServiceUnavailable"
           }
         }
       }
@@ -1185,6 +1279,253 @@
           }
         }
       }
+    },
+    "/api/v0/usage": {
+      "get": {
+        "operationId": "listUsage",
+        "summary": "Lists all usage entries",
+        "description": "Returns a paginated list of usage line items. Results are ordered by creation time, newest first",
+        "tags": [
+          "Usage"
+        ],
+        "parameters": [
+          {
+            "name": "start_time",
+            "in": "query",
+            "description": "Only return usage from runs started after this timestamp (ISO 8601).",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          {
+            "name": "end_time",
+            "in": "query",
+            "description": "Only return usage from runs started before this timestamp (ISO 8601).",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Maximum number of results to return. Server-capped at 100.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "default": 50,
+              "minimum": 1,
+              "maximum": 100
+            }
+          },
+          {
+            "name": "after",
+            "in": "query",
+            "description": "Cursor for pagination. Pass the `next_cursor` value (as well as any filter parameters) from a previous response to fetch the next page.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "A paginated list of usage line items",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Usage_List_Response"
+                },
+                "example": {
+                  "data": [
+                    {
+                      "run_id": "9043254f65c9c65d63fe043a0abfc7fc-53-1",
+                      "hours": 200,
+                      "start_time": "2026-04-28T13:49:49Z",
+                      "end_time": "2026-04-28T14:14:07Z"
+                    },
+                    {
+                      "run_id": "ced73597f5f6499a6041f4c7f2329cf1-53-1",
+                      "hours": 350,
+                      "start_time": "2026-04-28T13:49:49Z",
+                      "end_time": "2026-04-28T14:07:36Z"
+                    },
+                    {
+                      "run_id": "ff0192ee9607f8ffa39187731d359c43-54-0",
+                      "hours": 60,
+                      "start_time": "2026-04-28T14:00:00Z",
+                      "end_time": "2026-04-28T14:15:00Z"
+                    }
+                  ],
+                  "next_cursor": "MjAyNi0wNC0yOFQxMzo0OTo0NVosMDM2MDc0MjdmMDg0NmE0OGE3ZjY2ZTQyYTUxOTY3ODktNTMtMQ=="
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "405": {
+            "$ref": "#/components/responses/MethodNotAllowed"
+          },
+          "406": {
+            "$ref": "#/components/responses/NotAcceptable"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      }
+    },
+    "/api/v0/usage/summary": {
+      "get": {
+        "operationId": "getUsageSummary",
+        "summary": "Gets a total of usage hours used",
+        "description": "Gets the total number of runs and usage hours used by all runs, bounded by the optional start and end limits",
+        "tags": [
+          "Usage"
+        ],
+        "parameters": [
+          {
+            "name": "start_time",
+            "in": "query",
+            "description": "Only return usage from runs started after this timestamp (ISO 8601).",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          {
+            "name": "end_time",
+            "in": "query",
+            "description": "Only return usage from runs started before this timestamp (ISO 8601).",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The total number of runs and usage hours for the requested period",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Usage_Summary"
+                },
+                "example": {
+                  "total_hours": 243.67,
+                  "run_count": 15
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "405": {
+            "$ref": "#/components/responses/MethodNotAllowed"
+          },
+          "406": {
+            "$ref": "#/components/responses/NotAcceptable"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      }
+    },
+    "/api/v0/usage/{run_id}": {
+      "get": {
+        "operationId": "getUsage",
+        "summary": "Gets usage for a run",
+        "description": "Returns the usage for a specific run id",
+        "tags": [
+          "Usage"
+        ],
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "description": "Unique identifier of the test run to retrieve usage for.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The usage hour info for the given run",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Usage_Entry"
+                },
+                "example": {
+                  "run_id": "9043254f65c9c65d63fe043a0abfc7fc-53-1",
+                  "hours": 200,
+                  "start_time": "2026-04-28T13:49:49Z",
+                  "end_time": "2026-04-28T14:14:07Z"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "405": {
+            "$ref": "#/components/responses/MethodNotAllowed"
+          },
+          "406": {
+            "$ref": "#/components/responses/NotAcceptable"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      }
     }
   },
   "components": {
@@ -1339,6 +1680,11 @@
                     "$ref": "#/components/schemas/Moment"
                   }
                 ]
+              },
+              "failure_reason": {
+                "type": "string",
+                "nullable": true,
+                "description": "The reason the run became incomplete. Populated only when the run is incomplete."
               }
             }
           }
@@ -1466,7 +1812,7 @@
       },
       "Execute_Command_Request": {
         "type": "object",
-        "description": "Request body for executing a command in a test run's live session.",
+        "description": "Request body for executing a command in a test run's live session, either directly on the guest machine or inside a specified container. `timeout_seconds` must be explicitly specified whenever `wait_until` is present; this is enforced by the server rather than expressed structurally in this schema.",
         "required": [
           "moment",
           "script"
@@ -1480,66 +1826,45 @@
             "description": "Bash script to execute in the live session.",
             "example": "uname -a"
           },
+          "container": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Name of the container in which to execute the command. When omitted, the command executes directly on the guest machine. Not yet implemented: requests specifying this field are rejected.",
+            "example": "etcd0"
+          },
+          "include_filtered_logs": {
+            "type": "boolean",
+            "default": false,
+            "description": "When true, includes all log events selected by the command's log filter in the streamed output. Defaults to false. Not yet implemented: requests setting this to true are rejected."
+          },
+          "wait_until": {
+            "type": "string",
+            "minLength": 1,
+            "description": "An event-set DSL query identifying the event to wait for. When specified, the command continues executing until a matching event is observed or `timeout_seconds` elapses. `timeout_seconds` must be explicitly specified whenever `wait_until` is present. Not yet implemented: requests specifying this field are rejected.",
+            "example": "matches({container: \"etcd0\"}).filter(ev => ev.output_text.includes(\"ready\"))"
+          },
           "timeout_seconds": {
             "type": "integer",
             "format": "uint64",
             "minimum": 0,
             "default": 30,
-            "description": "Maximum number of seconds to wait for the command to exit before emitting a `timed_out` event."
-          },
-          "use_otis": {
-            "type": "boolean",
-            "default": false,
-            "description": "When true, reads command output through the tenant coordinator rather than the live per-session Pangolin service. Intended for local testing."
+            "description": "Maximum number of seconds to wait for the command to exit or for the `wait_until` query to match before emitting a `timed_out` result. Defaults to 30 when `wait_until` is omitted and must be explicitly specified when `wait_until` is present."
           }
         },
         "additionalProperties": true
       },
-      "Execute_Command_Stream_Event": {
-        "description": "One NDJSON event emitted while executing a command.",
+      "Command_Termination_Result": {
+        "description": "The terminal record in a successful execute-command stream. Exactly one result is emitted after all command-output events, and the stream closes after it.",
         "oneOf": [
           {
             "type": "object",
             "required": [
-              "type",
-              "stream",
-              "text",
-              "moment"
-            ],
-            "properties": {
-              "type": {
-                "type": "string",
-                "enum": [
-                  "output"
-                ]
-              },
-              "stream": {
-                "type": "string",
-                "enum": [
-                  "stdout",
-                  "stderr"
-                ],
-                "description": "The output stream that produced this line."
-              },
-              "text": {
-                "type": "string",
-                "description": "One line of command output without its trailing newline."
-              },
-              "moment": {
-                "$ref": "#/components/schemas/Moment"
-              }
-            },
-            "additionalProperties": true
-          },
-          {
-            "type": "object",
-            "required": [
-              "type",
+              "status",
               "exit_code",
               "end_moment"
             ],
             "properties": {
-              "type": {
+              "status": {
                 "type": "string",
                 "enum": [
                   "exited"
@@ -1552,7 +1877,12 @@
                 "description": "The command's exit code, or null if no exit code was available."
               },
               "end_moment": {
-                "$ref": "#/components/schemas/Moment"
+                "description": "The moment immediately after the command finished. Pass it as the `moment` of a subsequent request to chain commands.",
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/Moment"
+                  }
+                ]
               }
             },
             "additionalProperties": true
@@ -1560,13 +1890,21 @@
           {
             "type": "object",
             "required": [
-              "type"
+              "status"
             ],
             "properties": {
-              "type": {
+              "status": {
                 "type": "string",
                 "enum": [
                   "timed_out"
+                ]
+              },
+              "last_moment": {
+                "description": "The latest command-output moment observed before the timeout, if any. This is informational and does not imply that the command stopped executing.",
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/Moment"
+                  }
                 ]
               }
             },
@@ -1574,7 +1912,7 @@
           }
         ],
         "discriminator": {
-          "propertyName": "type"
+          "propertyName": "status"
         }
       },
       "Search_Request": {
@@ -1594,14 +1932,9 @@
             "description": "When `true`, the connection stays open and the server keeps emitting newly observed events as they arrive. When `false`, the server closes the connection after returning the current matching set. Defaults to `false`.",
             "default": false
           },
-          "count_only": {
-            "type": "boolean",
-            "description": "When `true`, the response is a single JSON object with the total number of matching events instead of the events themselves. When `false`, the response is an NDJSON stream of matching events. Defaults to `false`.",
-            "default": false
-          },
           "limit": {
             "type": "integer",
-            "description": "Maximum number of events to return. Must be between 1 and 999. Defaults to 50. Once the requested number of events have been returned the server terminates the connection; this applies whether or not `is_streaming` is `true`. The limit doesn't apply when `count_only` is `true`.",
+            "description": "Maximum number of events to return. Must be between 1 and 999. Defaults to 50. Once the requested number of events have been returned the server terminates the connection; this applies whether or not `is_streaming` is `true`.",
             "default": 50,
             "minimum": 1,
             "maximum": 999
@@ -1612,11 +1945,31 @@
             "default": false
           }
         },
-        "additionalProperties": false
+        "additionalProperties": true
+      },
+      "Search_Count_Request": {
+        "type": "object",
+        "description": "Request body for counting events that match an event set query.",
+        "required": [
+          "query"
+        ],
+        "properties": {
+          "query": {
+            "type": "string",
+            "description": "An event set query. A pipeline of dot-separated verbs (`matches`, `contains`, `not_matches`, `excludes`, `map`, `filter`, `flatmap`, `fold`, `narrow`, `union`, `intersect`, `difference`, `distinct_by_moment`, `with_last`, `with_next`) applied to the underlying event stream. See the [event sets reference](/docs/reference/event-set-reference/) for the full grammar.",
+            "example": "matches({container: \"etcd0\", stream: \"error\"}).filter(ev => ev.output_text.includes(\"raft\"))"
+          },
+          "validate_only": {
+            "type": "boolean",
+            "description": "When `true`, the server only validates the syntax of `query` without executing it. The server responds with `200 OK` and an empty body for a syntactically valid query, and for an invalid query, the server responds with `400 Bad Request`. No count is computed. Defaults to `false`.",
+            "default": false
+          }
+        },
+        "additionalProperties": true
       },
       "Search_Count_Response": {
         "type": "object",
-        "description": "Response returned when `count_only` is `true`.",
+        "description": "Response returned by the event search count endpoint.",
         "required": [
           "count"
         ],
@@ -1628,7 +1981,7 @@
             "description": "The total number of events matching the query."
           }
         },
-        "additionalProperties": false
+        "additionalProperties": true
       },
       "Params": {
         "type": "object",
@@ -1672,11 +2025,6 @@
             "type": "string",
             "description": "An identifier used to separate property history in reports. Each property's history is generated from all previous runs sharing the same source value. Useful for tracking test history per branch.",
             "example": "main"
-          },
-          "antithesis.filter_logs_matching" : {
-            "type": "string",
-            "description": "Regular Expression to filter out logs as part of test run. Filtered logs are recoverable in multi-verse debugging sessions",
-            "example": "debug"
           }
         },
         "additionalProperties": {
@@ -2014,6 +2362,79 @@
           }
         },
         "additionalProperties": true
+      },
+      "Usage_List_Response": {
+        "type": "object",
+        "description": "A page of usage line items returned by the list endpoint. Use `next_cursor` to iterate through all available results.",
+        "required": [
+          "data"
+        ],
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Usage_Entry"
+            }
+          },
+          "next_cursor": {
+            "type": "string",
+            "nullable": true,
+            "description": "Opaque pagination cursor. Pass as the `after` query parameter to fetch the next page. Null if no more pages."
+          }
+        }
+      },
+      "Usage_Entry": {
+        "type": "object",
+        "description": "A line item entry for the usage hours associated with a specific run.",
+        "required": [
+          "run_id",
+          "hours",
+          "start_time",
+          "end_time"
+        ],
+        "properties": {
+          "run_id": {
+            "type": "string",
+            "description": "Unique identifier for the run of this usage entry.",
+            "example": "9325f006ffd3a399a8497bc888878b97-50-1"
+          },
+          "hours": {
+            "type": "number",
+            "description": "The number of usage hours associated with the run.",
+            "example": 200.535
+          },
+          "start_time": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Timestamp when the run's billable usage began (ISO 8601).",
+            "example": "2024-01-15T10:14:20Z"
+          },
+          "end_time": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Timestamp when the run's billable usage ended (ISO 8601).",
+            "example": "2024-01-15T12:34:56Z"
+          }
+        }
+      },
+      "Usage_Summary": {
+        "type": "object",
+        "description": "A summary of the total number of billable runs and usage hours for the requested period.",
+        "required": [
+          "total_hours",
+          "run_count"
+        ],
+        "properties": {
+          "total_hours": {
+            "type": "number",
+            "description": "The total number of usage hours for the requested period.",
+            "example": 3200.62
+          },
+          "run_count": {
+            "type": "integer",
+            "description": "The total number of billable runs for the requested period."
+          }
+        }
       }
     },
     "responses": {
@@ -2114,6 +2535,29 @@
             },
             "example": {
               "message": "Too many requests."
+            }
+          }
+        }
+      },
+      "ServiceUnavailable": {
+        "description": "The API is temporarily unavailable. The response may include a `Retry-After` header indicating the number of seconds to wait before retrying. This is a transient condition; retry with exponential backoff.",
+        "headers": {
+          "Retry-After": {
+            "description": "The number of seconds to wait before retrying the request.",
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "example": 30
+            }
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error_Response"
+            },
+            "example": {
+              "message": "The events query backend is temporarily unavailable. The API is reachable but could not query stored events right now. Please retry with backoff."
             }
           }
         }

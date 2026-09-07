@@ -339,14 +339,22 @@ mock-runs-server
 snouty runs show $R_run_id
 stdout 'Failure VTime.*'
 stdout 'Failure Hash.*'
+stdout 'Failure Reason +the workload container exited early'
 
 mock-runs-server
 snouty --json runs show $R_run_id
 stdout '"failure_moment".*'
+stdout '"failure_reason": "the workload container exited early"'
 stdout '"input_hash".*'
 stdout '"vtime".*'
 # failure_moment.vtime is an exact JSON number, full precision intact.
 [!staging] stdout '"vtime": 398\.4898056755774'
+
+# A completed run has no failure reason, so the row is absent.
+mock-runs-server
+snouty runs show run-1
+stdout 'Status +completed'
+! stdout 'Failure Reason'
 
 # If no runs are returned, the command prints a friendly empty-state message.
 mock-runs-server empty
@@ -600,10 +608,10 @@ mock-runs-server
 ! snouty runs events run-1 --match x --limit 0
 stderr 'invalid value .0.'
 
-# The server enforces the ceiling of 999 and answers 400 above it.
+# The server enforces the ceiling of 1000 and answers 400 above it.
 mock-runs-server
-[!staging] ! snouty runs events $R_run_id --match x --limit 1000
-[!staging] stderr 'out of the range 1\.\.=999'
+[!staging] ! snouty runs events $R_run_id --match x --limit 1001
+[!staging] stderr 'out of the range 1\.\.=1000'
 
 # With the `runs-search` feature on, `runs events` routes through the search
 # endpoint, which caps its stream at the same limit.

@@ -19,9 +19,8 @@ use crate::env;
 use crate::error::{ApiError, user_error};
 use crate::params::{
     ANT_CONFIG_IMAGE, ANT_DEBUGGING_INPUT_HASH, ANT_DEBUGGING_RUN_ID, ANT_DEBUGGING_SESSION_ID,
-    ANT_DEBUGGING_VTIME, ANT_DESCRIPTION, ANT_DURATION, ANT_EVENT_DESCRIPTION,
-    ANT_FILTER_LOGS_MATCHING, ANT_IMAGES, ANT_IS_EPHEMERAL, ANT_REPORT_RECIPIENTS, ANT_SOURCE,
-    ANT_TEST_NAME, Params,
+    ANT_DEBUGGING_VTIME, ANT_DESCRIPTION, ANT_DURATION, ANT_EVENT_DESCRIPTION, ANT_IMAGES,
+    ANT_IS_EPHEMERAL, ANT_REPORT_RECIPIENTS, ANT_SOURCE, ANT_TEST_NAME, Params,
 };
 use crate::render::{indent_lines, sanitize_multiline};
 use crate::settings::Settings;
@@ -96,10 +95,7 @@ fn parse_release(version: &str) -> Option<(u64, u64)> {
 
 /// What an events-search request asks the server to do, mirroring the
 /// `Search_Request` body of `POST /runs/{run_id}/events/search` minus the
-/// required `query`. (The body's `count_only` switch is not exposed and
-/// build.rs strips it from the generated type: the API team is moving the
-/// count into a separate endpoint, and current tenants ignore the switch
-/// anyway.)
+/// required `query`.
 #[derive(Debug, Clone, Copy)]
 pub enum SearchMode {
     /// Validate the query's syntax without executing it: an empty 200 body
@@ -648,8 +644,9 @@ impl AntithesisApi {
     }
 
     /// Execute a bash script in the run's live session, starting at `moment`.
-    /// Returns the NDJSON response stream: `output` events, then a terminal
-    /// `exited` or `timed_out` event.
+    /// Returns the NDJSON response stream: command-output `Event` records in
+    /// the run-logs shape, then one terminal `Command_Termination_Result`
+    /// whose `status` is `exited` or `timed_out`.
     ///
     /// The request body carries `moment.vtime` as a JSON number ([`VTime`]'s
     /// wire form), where the spec documents a string. The server accepts both
@@ -663,13 +660,17 @@ impl AntithesisApi {
         script: String,
         timeout: Duration,
     ) -> Result<JsonStream> {
-        // No `use_otis`: `build.rs` drops that field from the generated type,
-        // so snouty says nothing about it and the server applies its default.
+        // `container` and `wait_until` are not exposed: the server rejects a
+        // request that names either. `include_filtered_logs` is absent from
+        // the generated type (`build.rs` drops it), so snouty says nothing
+        // about it and the server applies its default.
         let body = generated::types::ExecuteCommandRequest {
             moment,
             script,
             // The wire field is a whole number of seconds.
             timeout_seconds: timeout.as_secs(),
+            container: None,
+            wait_until: None,
         };
         let request = self.client.execute_command().run_id(run_id).body(body);
         match request.send().await {
@@ -709,7 +710,7 @@ impl AntithesisApi {
         query: &str,
         limit: NonZeroU64,
     ) -> Result<JsonStream> {
-        // The endpoint documents `limit` as 1..=999 and rejects the rest.
+        // The endpoint documents `limit` as 1..=1000 and rejects the rest.
         let request = self
             .client
             .search_run_events()
@@ -728,9 +729,7 @@ impl AntithesisApi {
     /// POST an event-set DSL query to the events-search endpoint and return
     /// the response stream. Every mode's answer arrives through the stream
     /// (see [`SearchMode`]): matching events as JSONL, the `Validate` answer
-    /// as an empty body. build.rs drops the operation's `application/json`
-    /// response variant so the generated method exposes the stream (see
-    /// `untype_search_count_response` there).
+    /// as an empty body.
     pub async fn search_run_events_query(
         &self,
         run_id: &str,
@@ -1183,9 +1182,6 @@ fn launch_request(params: &Params) -> Result<generated::types::LaunchRequest> {
                 generated::types::ParamsAntithesisIsEphemeral::try_from(value)
                     .wrap_err("invalid antithesis.is_ephemeral value")?,
             )),
-            ANT_FILTER_LOGS_MATCHING => {
-                builder.antithesis_filter_logs_matching(Some(value.to_string()))
-            }
             ANT_REPORT_RECIPIENTS => builder.antithesis_report_recipients(Some(value.to_string())),
             ANT_SOURCE => builder.antithesis_source(Some(value.to_string())),
             _ => {
@@ -2436,14 +2432,18 @@ mod tests {
                 "get getRun",
                 "get getRunBuildLogs",
                 "get getRunLogs",
+                "get getUsage",
+                "get getUsageSummary",
                 "get getVersion",
                 "get listRunProperties",
                 "get listRuns",
+                "get listUsage",
                 "get searchRunEvents",
                 "post executeCommand",
                 "post launchMvd",
                 "post launchTest",
                 "post search",
+                "post searchCount",
             ],
             "openapi.json changed its method↔operation mapping; re-verify \
              that every GET is a pure read before trusting the retry gating"
@@ -3504,10 +3504,9 @@ mod tests {
     }
 
     // The DSL search wrapper POSTs the Search_Request body: the query and
-    // both mode switches. `count_only` is omitted entirely (build.rs drops
-    // it from the generated type), and an unset limit is OMITTED, not
-    // defaulted: the omission is meaningful (a streaming request stays
-    // unbounded; see build.rs's `unrequire_search_limit_default`).
+    // both mode switches. An unset limit is OMITTED, not defaulted: the
+    // omission is meaningful (a streaming request stays unbounded; see
+    // build.rs's `unrequire_search_limit_default`).
     #[tokio::test]
     async fn search_run_events_query_posts_full_body() {
         let mock_server = MockServer::start().await;

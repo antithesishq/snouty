@@ -17,8 +17,8 @@ fn main() {
 }
 
 /// How many `"additionalProperties": false` occurrences the vendored spec
-/// carries (tenant release 60.0: `Search_Request`, `Search_Count_Response`).
-const EXPECTED_ADDITIONAL_PROPERTIES_FALSE: usize = 2;
+/// carries (tenant release 61.3: none).
+const EXPECTED_ADDITIONAL_PROPERTIES_FALSE: usize = 0;
 
 fn generate_api_client(out_dir: &Path) {
     let file = std::fs::File::open("src/openapi.json").unwrap();
@@ -50,11 +50,9 @@ fn generate_api_client(out_dir: &Path) {
          EXPECTED_ADDITIONAL_PROPERTIES_FALSE in build.rs to {stripped}."
     );
     untype_error_responses(&mut spec_value);
-    drop_use_otis(&mut spec_value);
+    drop_include_filtered_logs(&mut spec_value);
     mark_vtime_schema(&mut spec_value);
-    untype_search_count_response(&mut spec_value);
     unrequire_search_limit_default(&mut spec_value);
-    drop_search_count_only(&mut spec_value);
     let spec: openapiv3::OpenAPI = serde_json::from_value(spec_value).unwrap();
 
     let mut settings = progenitor::GenerationSettings::default();
@@ -164,64 +162,6 @@ fn untype_error_responses(spec: &mut serde_json::Value) {
     }
 }
 
-/// Drop the `application/json` variant from the events-search 200 response so
-/// progenitor generates a raw `ByteStream` method for it.
-///
-/// The operation serves two body shapes from one endpoint: an
-/// `application/x-ndjson` event stream, or a single `application/json` count
-/// object when the request sets `count_only`. progenitor types exactly one
-/// 200 body per operation and picks the JSON variant, so the generated
-/// `search()` would hardcode `Accept: application/json`, deserialize every
-/// response as the count object, and give no access to the stream — the
-/// endpoint's primary mode. With only the NDJSON variant left the method
-/// returns the raw byte stream; api.rs decodes the count and validate modes
-/// from that stream by hand.
-fn untype_search_count_response(spec: &mut serde_json::Value) {
-    let content = spec
-        .pointer_mut("/paths/~1api~1v0~1runs~1{run_id}~1events~1search/post/responses/200/content")
-        .and_then(serde_json::Value::as_object_mut)
-        .expect(
-            "openapi spec has no events-search 200 response content; \
-             update untype_search_count_response in build.rs",
-        );
-    assert!(
-        content.remove("application/json").is_some(),
-        "events-search 200 response no longer offers `application/json`; \
-         untype_search_count_response in build.rs is a no-op and can be removed"
-    );
-    assert!(
-        content.contains_key("application/x-ndjson"),
-        "events-search 200 response no longer offers `application/x-ndjson`; \
-         revisit untype_search_count_response in build.rs"
-    );
-}
-
-/// Remove `count_only` from the events-search request schema, so the
-/// generated type has no such field and snouty never sends one.
-///
-/// snouty does not expose the switch: the API team is moving the count into
-/// a separate endpoint, and current tenants ignore it anyway (observed on
-/// releases 58.11 and 60.0-60.1, where the field-carrying request still
-/// streams events). Omitting the field defers to the server default and
-/// keeps the eventual removal free.
-///
-/// The pointer is asserted, so a spec refresh that drops the field fails the
-/// build. ACTION when that happens: delete this transform and its call.
-fn drop_search_count_only(spec: &mut serde_json::Value) {
-    let properties = spec
-        .pointer_mut("/components/schemas/Search_Request/properties")
-        .and_then(serde_json::Value::as_object_mut)
-        .expect(
-            "openapi spec has no Search_Request properties; \
-             update drop_search_count_only in build.rs",
-        );
-    assert!(
-        properties.remove("count_only").is_some(),
-        "Search_Request no longer carries count_only; \
-         drop_search_count_only in build.rs is a no-op and can be removed"
-    );
-}
-
 /// Strip the `default: 50` from `Search_Request.limit`, so the generated
 /// field is an `Option` that is omitted from the request body when unset.
 ///
@@ -250,34 +190,40 @@ fn unrequire_search_limit_default(spec: &mut serde_json::Value) {
     );
 }
 
+/// Remove `include_filtered_logs` from the execute-command request schema,
+/// so the generated request type has no such field and snouty never sends
+/// one.
+///
+/// The schema gives the field `default: false`, which progenitor bakes into a
+/// plain `bool` that serializes on every request. snouty does not expose the
+/// switch (the server rejects a request that sets it), so it would only ever
+/// send the server's own default — and naming a field is not the same as
+/// saying nothing. Leaving it out defers to the server.
+///
+/// The pointer is asserted, so a spec refresh that drops the field or its
+/// default fails the build. ACTION when that happens: delete this transform
+/// and its call.
+fn drop_include_filtered_logs(spec: &mut serde_json::Value) {
+    let properties = spec
+        .pointer_mut("/components/schemas/Execute_Command_Request/properties")
+        .and_then(serde_json::Value::as_object_mut)
+        .expect("openapi spec has no Execute_Command_Request.properties");
+    let removed = properties.remove("include_filtered_logs").expect(
+        "Execute_Command_Request no longer has `include_filtered_logs`; \
+         delete `drop_include_filtered_logs` in build.rs",
+    );
+    assert!(
+        removed.get("default").is_some(),
+        "Execute_Command_Request.include_filtered_logs no longer carries a default; \
+         the generated field is omittable, so delete `drop_include_filtered_logs` in build.rs"
+    );
+}
+
 /// Tag `Moment.vtime` with a private `format: vtime` marker for the
 /// `with_conversion` mapping registered above. The marker is injected here
 /// rather than edited into `src/openapi.json`, because that file is a
 /// vendored upstream artifact — the next spec refresh would silently drop the
 /// edit.
-/// Remove `use_otis` from the execute-command request schema, so the generated
-/// request type has no such field and snouty never sends one.
-///
-/// The field is a server-side testing knob that routes output through the
-/// tenant coordinator; snouty always wants the live session's output, so it
-/// would only ever send `false`. Sending `false` is not the same as saying
-/// nothing: the API team expects to retire the field, and a client that keeps
-/// naming it makes that harder. Leaving it out defers to whatever the server
-/// defaults to, and the eventual removal costs us nothing.
-///
-/// The pointer is asserted, so a spec refresh that drops the field fails the
-/// build. ACTION when that happens: delete this transform and its call.
-fn drop_use_otis(spec: &mut serde_json::Value) {
-    let properties = spec
-        .pointer_mut("/components/schemas/Execute_Command_Request/properties")
-        .and_then(serde_json::Value::as_object_mut)
-        .expect("openapi spec has no Execute_Command_Request.properties");
-    assert!(
-        properties.remove("use_otis").is_some(),
-        "Execute_Command_Request no longer has `use_otis`; delete `drop_use_otis` in build.rs"
-    );
-}
-
 fn mark_vtime_schema(spec: &mut serde_json::Value) {
     let vtime = spec
         .pointer_mut("/components/schemas/Moment/properties/vtime")

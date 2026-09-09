@@ -14,10 +14,12 @@
 # disturbed.
 #
 # The stream shape follows the release 61.3 spec (`POST
-# /runs/{run_id}/command`): zero or more command-output events in the same
-# `Event` shape `runs logs` receives (`moment`, `output_text`, `source.stream`),
-# then exactly one result whose `status` is `exited` or `timed_out`, unless the
-# stream ends with a `Stream_Error` line.
+# /runs/{run_id}/command`), verified against the live API (orbitinghail,
+# release 61.3): zero or more command-output events in the same `Event` shape
+# `runs logs` receives (`moment`, `output_text`, `source.stream`, with `info`
+# for stdout and `error` for stderr), then exactly one result whose `status`
+# is `exited` or `timed_out`, unless the stream ends with a `Stream_Error`
+# line.
 #
 # snouty's contract:
 #

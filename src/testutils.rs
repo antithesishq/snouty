@@ -1130,25 +1130,32 @@ const MOCK_EXEC_BRANCH_HASH: &str = "-8206006569229276678";
 /// One command-output event of a mock execution, in the release 61.3
 /// spec's `Event` shape.
 fn mock_exec_output(stream: &str, text: &str, vtime: &str) -> String {
-    format!(
-        r#"{{"moment":{{"input_hash":"{MOCK_EXEC_BRANCH_HASH}","vtime":"{vtime}"}},"output_text":"{text}","source":{{"stream":"{stream}"}}}}"#
-    )
+    serde_json::json!({
+        "moment": {"input_hash": MOCK_EXEC_BRANCH_HASH, "vtime": vtime},
+        "output_text": text,
+        "source": {"stream": stream},
+    })
+    .to_string()
 }
 
 /// The terminal `exited` result of a mock execution. `None` is the nullable
 /// `exit_code` of a command the session killed.
 fn mock_exec_exited(exit_code: Option<i64>) -> String {
-    let exit_code = exit_code.map_or_else(|| "null".to_string(), |code| code.to_string());
-    format!(
-        r#"{{"status":"exited","exit_code":{exit_code},"end_moment":{{"input_hash":"{MOCK_EXEC_BRANCH_HASH}","vtime":"398.492"}}}}"#
-    )
+    serde_json::json!({
+        "status": "exited",
+        "exit_code": exit_code,
+        "end_moment": {"input_hash": MOCK_EXEC_BRANCH_HASH, "vtime": "398.492"},
+    })
+    .to_string()
 }
 
 /// The terminal `timed_out` result of a mock execution.
 fn mock_exec_timed_out(vtime: &str) -> String {
-    format!(
-        r#"{{"status":"timed_out","last_moment":{{"input_hash":"{MOCK_EXEC_BRANCH_HASH}","vtime":"{vtime}"}}}}"#
-    )
+    serde_json::json!({
+        "status": "timed_out",
+        "last_moment": {"input_hash": MOCK_EXEC_BRANCH_HASH, "vtime": vtime},
+    })
+    .to_string()
 }
 
 fn mock_route_execute_command(run_id: &str, req_body: &str) -> (u16, String) {

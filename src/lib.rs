@@ -141,4 +141,21 @@ mod user_agent_tests {
         let hint = agent_hint(env_of(&[("AI_AGENT", &long)])).unwrap();
         assert_eq!(hint.len(), AGENT_HINT_MAX_LEN);
     }
+
+    /// Whatever the environment holds, the hint that reaches the wire fits
+    /// the User-Agent comment grammar and the length cap, and a hint that
+    /// already passed is left alone.
+    #[hegel::test]
+    fn sanitize_agent_hint_is_safe_and_idempotent(tc: hegel::TestCase) {
+        let raw = tc.draw(hegel::generators::text());
+        let Some(once) = sanitize_agent_hint(&raw) else {
+            return;
+        };
+        assert!(once.len() <= AGENT_HINT_MAX_LEN);
+        assert!(
+            once.chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | '/'))
+        );
+        assert_eq!(sanitize_agent_hint(&once).as_deref(), Some(once.as_str()));
+    }
 }

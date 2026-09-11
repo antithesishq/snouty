@@ -21,14 +21,19 @@ fn docs_update_sets_custom_user_agent() {
 
     set_docs_cache_env(&mut snouty(), &cache_dir)
         .env("ANTITHESIS_DOCS_URL", mock_server.url())
+        .env("AI_AGENT", "test-harness_1-2-3")
         .args(["docs", "search", "docker"])
         .assert()
         .success()
         .stdout(predicate::str::contains("/docs/guides/docker_basics/"));
 
-    assert_eq!(
-        mock_server.user_agent().as_deref(),
-        Some(snouty::user_agent().as_str()),
+    let user_agent = mock_server
+        .user_agent()
+        .expect("request should carry a User-Agent");
+    assert!(user_agent.starts_with("snouty/"), "{user_agent}");
+    assert!(
+        user_agent.ends_with("; agent=test-harness_1-2-3)"),
+        "{user_agent}"
     );
 }
 

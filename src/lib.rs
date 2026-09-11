@@ -35,14 +35,14 @@ pub mod vtime;
 
 /// User-Agent string sent with every HTTP request snouty makes.
 ///
-/// When an AI agent harness runs snouty, the harness name (and version, when
-/// the harness exposes one) is appended as a trailing `agent=<value>` field.
+/// When an AI agent harness runs snouty, the string ends with an
+/// `agent=<value>` field that names the harness.
 pub fn user_agent() -> String {
     user_agent_with(agent_hint(|name| env::var(name).ok().flatten()).as_deref())
 }
 
-/// The User-Agent string for a given agent hint. Factored out of the
-/// environment read so a test can compute the exact string it expects.
+/// The User-Agent string with `agent` as the trailing `agent=` field. `None`
+/// omits the field.
 pub fn user_agent_with(agent: Option<&str>) -> String {
     let agent = agent.map(|a| format!("; agent={a}")).unwrap_or_default();
     format!(
@@ -54,26 +54,18 @@ pub fn user_agent_with(agent: Option<&str>) -> String {
     )
 }
 
-/// Longest agent hint we put on the wire; longer values are truncated.
 const AGENT_HINT_MAX_LEN: usize = 64;
 
-/// Harness-specific marker variables and the bare harness name each implies.
-/// Consulted in order when `AI_AGENT` is unset.
+/// The variable each harness sets, paired with the harness name.
 const AGENT_MARKERS: &[(&str, &str)] = &[
     ("CLAUDECODE", "claude-code"),
     ("CODEX_SANDBOX", "codex"),
     ("CODEX_THREAD_ID", "codex"),
 ];
 
-/// Identify the AI agent harness running snouty, if any, from its environment.
-///
-/// `AI_AGENT` is the cross-harness convention (Claude Code sets it to e.g.
-/// `claude-code_2-1-267_agent`, name and version included) and is passed
-/// through as-is. Without a usable value we fall back to [`AGENT_MARKERS`].
-/// The User-Agent comment grammar reserves `;`, `(` and `)`, so the value is
-/// restricted to `[A-Za-z0-9._/-]`, and it is capped so it cannot bloat the
-/// request. `env` stands in for [`env::var`] so the selection can be tested
-/// without mutating process-global state.
+/// Identify the AI agent harness that runs snouty, if any. `AI_AGENT` wins;
+/// Claude Code sets it to a value such as `claude-code_2-1-267_agent`. `env`
+/// replaces [`env::var`] so a test does not change the process environment.
 fn agent_hint(env: impl Fn(&str) -> Option<String>) -> Option<String> {
     env("AI_AGENT")
         .and_then(|raw| sanitize_agent_hint(&raw))
@@ -85,6 +77,9 @@ fn agent_hint(env: impl Fn(&str) -> Option<String>) -> Option<String> {
         })
 }
 
+/// The User-Agent comment grammar reserves `;`, `(` and `)`, so only
+/// `[A-Za-z0-9._/-]` survives, and the result is capped at
+/// [`AGENT_HINT_MAX_LEN`] so it cannot bloat the request.
 fn sanitize_agent_hint(raw: &str) -> Option<String> {
     let cleaned: String = raw
         .chars()

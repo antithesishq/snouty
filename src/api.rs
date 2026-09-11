@@ -648,11 +648,9 @@ impl AntithesisApi {
     /// the run-logs shape, then one terminal `Command_Termination_Result`
     /// whose `status` is `exited` or `timed_out`.
     ///
-    /// The request body carries `moment.vtime` as a JSON number ([`VTime`]'s
-    /// wire form), where the spec documents a string. The server accepts both
-    /// — verified against the live API (orbitinghail, release 60.0) with this
-    /// exact request path — and the number form keeps the moment value-exact
-    /// end to end instead of round-tripping through a second text form.
+    /// The server accepts `moment.vtime` as an exact JSON number, although
+    /// the schema documents a string. See the orbitinghail release 61.3
+    /// command verification in `specs/runs_exec.txt`.
     pub async fn execute_command(
         &self,
         run_id: &str,
@@ -660,9 +658,7 @@ impl AntithesisApi {
         script: String,
         timeout: Duration,
     ) -> Result<JsonStream> {
-        // The spec marks `container` and `wait_until` not yet implemented: the
-        // server rejects a request that sets either. `build.rs` strips
-        // `include_filtered_logs` for the same reason.
+        // The server rejects `container` and `wait_until`; neither is implemented.
         let body = generated::types::ExecuteCommandRequest {
             moment,
             script,

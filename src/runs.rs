@@ -1568,8 +1568,6 @@ fn render_exec_frame(frame: &ExecFrame) -> Result<()> {
             ..
         } => {
             let text = normalize_terminal_text(output_text);
-            // Release 61.3 labels stderr `error`; other or absent labels
-            // are stdout.
             match source.as_ref().and_then(|source| source.stream) {
                 Some(ExecStream::Error) => eprintln!("{text}"),
                 Some(ExecStream::Other) | None => outln!("{text}")?,

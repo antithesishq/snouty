@@ -1127,8 +1127,6 @@ fn mock_route_search_run_events(run_id: &str, query_str: Option<&str>) -> (u16, 
 /// input hash (verified against the live API).
 const MOCK_EXEC_BRANCH_HASH: &str = "-8206006569229276678";
 
-/// One command-output event of a mock execution, in the release 61.3
-/// spec's `Event` shape.
 fn mock_exec_output(stream: &str, text: &str, vtime: &str) -> String {
     serde_json::json!({
         "moment": {"input_hash": MOCK_EXEC_BRANCH_HASH, "vtime": vtime},
@@ -1138,8 +1136,7 @@ fn mock_exec_output(stream: &str, text: &str, vtime: &str) -> String {
     .to_string()
 }
 
-/// The terminal `exited` result of a mock execution. `None` is the nullable
-/// `exit_code` of a command the session killed.
+/// A command killed by the session can have no exit code.
 fn mock_exec_exited(exit_code: Option<i64>) -> String {
     serde_json::json!({
         "status": "exited",
@@ -1149,7 +1146,6 @@ fn mock_exec_exited(exit_code: Option<i64>) -> String {
     .to_string()
 }
 
-/// The terminal `timed_out` result of a mock execution.
 fn mock_exec_timed_out(vtime: &str) -> String {
     serde_json::json!({
         "status": "timed_out",

@@ -190,16 +190,11 @@ fn unrequire_search_limit_default(spec: &mut serde_json::Value) {
     );
 }
 
-/// Remove `include_filtered_logs` from the execute-command request schema,
-/// so the generated type has no such field and snouty never sends one.
+/// The schema default makes progenitor serialize `include_filtered_logs`
+/// on every request. snouty does not expose this option, so omit it to use
+/// the server default.
 ///
-/// The schema gives the field `default: false`, so progenitor generates a
-/// plain `bool` that serializes on every request. snouty does not expose the
-/// switch (the spec says the server rejects `true`), so the field would only
-/// repeat the server's default. Leaving it out defers to the server.
-///
-/// The asserts fail the build when a spec refresh drops the field or its
-/// default. Delete this transform and its call when that happens.
+/// TODO: remove this transform when the schema drops the field or its default.
 fn drop_include_filtered_logs(spec: &mut serde_json::Value) {
     let properties = spec
         .pointer_mut("/components/schemas/Execute_Command_Request/properties")

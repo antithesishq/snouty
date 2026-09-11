@@ -27,13 +27,9 @@ fn docs_update_sets_custom_user_agent() {
         .success()
         .stdout(predicate::str::contains("/docs/guides/docker_basics/"));
 
-    let user_agent = mock_server
-        .user_agent()
-        .expect("request should carry a User-Agent");
-    assert!(user_agent.starts_with("snouty/"), "{user_agent}");
-    assert!(
-        user_agent.ends_with("; agent=test-harness_1-2-3)"),
-        "{user_agent}"
+    assert_eq!(
+        mock_server.user_agent(),
+        Some(snouty::user_agent_with(Some("test-harness_1-2-3")))
     );
 }
 

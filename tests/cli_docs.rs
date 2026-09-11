@@ -34,6 +34,23 @@ fn docs_update_sets_custom_user_agent() {
 }
 
 #[test]
+fn docs_update_user_agent_omits_agent_without_harness() {
+    let cache_dir = TempDir::new().unwrap();
+    let mock_server = MockDocsServer::start();
+
+    set_docs_cache_env(&mut snouty(), &cache_dir)
+        .env("ANTITHESIS_DOCS_URL", mock_server.url())
+        .args(["docs", "search", "docker"])
+        .assert()
+        .success();
+
+    assert_eq!(
+        mock_server.user_agent(),
+        Some(snouty::user_agent_with(None))
+    );
+}
+
+#[test]
 fn docs_update_failure_with_cached_db_warns_and_uses_cache() {
     let cache_dir = TempDir::new().unwrap();
     let mock_server = MockDocsServer::start();

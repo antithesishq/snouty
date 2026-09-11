@@ -69,17 +69,23 @@ const AGENT_MARKERS: &[(&str, &str)] = &[
 ///
 /// `AI_AGENT` is the cross-harness convention (Claude Code sets it to e.g.
 /// `claude-code_2-1-267_agent`, name and version included) and is passed
-/// through as-is. Without it we fall back to [`AGENT_MARKERS`]. The value is
-/// restricted to header-safe characters and capped so it cannot bloat the
+/// through as-is. Without a usable value we fall back to [`AGENT_MARKERS`].
+/// The User-Agent comment grammar reserves `;`, `(` and `)`, so the value is
+/// restricted to `[A-Za-z0-9._/-]`, and it is capped so it cannot bloat the
 /// request. `env` stands in for [`env::var`] so the selection can be tested
 /// without mutating process-global state.
 fn agent_hint(env: impl Fn(&str) -> Option<String>) -> Option<String> {
-    let raw = env("AI_AGENT").or_else(|| {
-        AGENT_MARKERS
-            .iter()
-            .find(|(marker, _)| env(marker).is_some())
-            .map(|(_, name)| name.to_string())
-    })?;
+    env("AI_AGENT")
+        .and_then(|raw| sanitize_agent_hint(&raw))
+        .or_else(|| {
+            AGENT_MARKERS
+                .iter()
+                .find(|(marker, _)| env(marker).is_some())
+                .map(|(_, name)| name.to_string())
+        })
+}
+
+fn sanitize_agent_hint(raw: &str) -> Option<String> {
     let cleaned: String = raw
         .chars()
         .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | '/'))
@@ -127,6 +133,10 @@ mod user_agent_tests {
             Some("codex")
         );
         assert_eq!(agent_hint(env_of(&[("AI_AGENT", "  ")])), None);
+        assert_eq!(
+            agent_hint(env_of(&[("AI_AGENT", "()"), ("CLAUDECODE", "1")])).as_deref(),
+            Some("claude-code")
+        );
         assert_eq!(agent_hint(env_of(&[])), None);
     }
 

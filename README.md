@@ -134,6 +134,13 @@ A matching environment variable always overrides the file. The supported keys an
 | `update_channel`            | `SNOUTY_UPDATE_CHANNEL`           | `stable` (default) or `unstable`, for `snouty update`.                           |
 | `api_cache_max_file_size`   | `SNOUTY_API_CACHE_MAX_FILE_SIZE`  | Largest response the API cache stores, as `10 MB` or a byte count.               |
 | `api_cache_respect_headers` | `SNOUTY_API_CACHE_RESPECT_HEADERS`| Set `false` to ignore server caching directives.                                 |
+| `private_registries`        | `SNOUTY_PRIVATE_REGISTRIES`       | Registries a test run cannot pull from. See below.                               |
+
+`private_registries` lists registries, or repository paths below a registry, that need your credentials. `snouty launch --config` never pins a compose service image below a listed prefix at its own address. It copies the image into your repository instead, so the test run pulls from a registry it can reach. An image at a private registry that is not listed keeps its own address in the pin, because your container engine confirms the image with your credentials, and the test run then fails to pull it. In a settings file the value is a TOML array; in the environment variable, separate the entries with commas. snouty does not pull the image itself: see [the cookbook](COOKBOOK.md#launch-with-images-from-a-private-registry).
+
+```toml
+private_registries = ["ghcr.io/your-org", "123456789012.dkr.ecr.us-east-1.amazonaws.com"]
+```
 
 A credential is never read from a settings file. `snouty login` keeps credentials apart from settings — see [Authentication](#authentication).
 

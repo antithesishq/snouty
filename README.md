@@ -265,7 +265,7 @@ Three things to know:
 export ANTITHESIS_EXTRA_HEADERS="X-Proxy-Token: abc123"
 ```
 
-When an AI agent harness such as Claude Code or Codex runs snouty, the `User-Agent` header ends with `agent=<value>`. snouty reads the value from the `AI_AGENT` variable, which Claude Code sets with its version, and falls back to the harness name from its marker variables. Set `AI_AGENT` to name a different harness.
+When an AI agent harness runs snouty, the `User-Agent` header ends with `agent=<value>`. snouty reads the value from the `AI_AGENT` variable, which Claude Code sets with its version, and falls back to the harness name from its marker variables. It knows the markers of Claude Code, Codex, Gemini CLI, OpenCode, Replit, Pi, Auggie, Goose, Junie, Devin, Cursor, and Kiro. Set `AI_AGENT` to name a different harness.
 
 ### Username and password (deprecated)
 

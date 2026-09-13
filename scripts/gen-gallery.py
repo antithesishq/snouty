@@ -9,6 +9,11 @@ story is also gated by a programmatic check; a degenerate example (an empty
 table, an unintended error, a filter that didn't narrow) fails the run rather
 than being silently emitted.
 
+Human output, including help and isolated configuration stories, runs in a
+120-column, 40-row terminal. Markdown contains the terminal's text and full
+scrollback; adjacent asciinema recordings preserve colors and redraws. JSON
+commands use pipes so their structured output stays separate from stderr.
+
 There are three kinds of story:
 
   * goal stories — capture one command's output and judge it against a user goal
@@ -106,6 +111,7 @@ class Result:
     stdout: str
     stderr: str
     returncode: int
+    cast: str | None = None
 
     @property
     def ok(self) -> bool:
@@ -113,7 +119,8 @@ class Result:
 
     @property
     def combined(self) -> str:
-        # Stories showcase verbose/error output, which snouty writes to stderr.
+        # Terminal captures already merge both streams in stdout in display
+        # order. JSON captures keep stderr separate from the structured data.
         return self.stdout if not self.stderr else f"{self.stdout}{self.stderr}"
 
 
@@ -156,6 +163,22 @@ class Snouty:
         args: list[str],
         env: dict[str, str | None] | None = None,
     ) -> Result:
+        if "--json" not in args:
+            screen = pyte.HistoryScreen(TTY_COLS, TTY_ROWS, history=sys.maxsize)
+            session = TtySession(
+                self.binary,
+                args,
+                self.env_with({**(env or {}), "TERM": "xterm-256color"}),
+                screen=screen,
+            )
+            returncode = session.finish(timeout=None)
+            return Result(
+                args,
+                _terminal_transcript(screen),
+                "",
+                returncode,
+                session.cast(_command_line(args)),
+            )
         proc = subprocess.run(
             [str(self.binary), *args],
             capture_output=True,
@@ -330,13 +353,20 @@ class _Recorder:
 
 
 class TtySession:
-    """One interactive snouty run on a pseudo-terminal.
+    """One snouty run on a pseudo-terminal.
 
     Holds the child, the bytes it has written (kept whole, for the recording),
     and a terminal emulator fed the same bytes (for the frames)."""
 
-    def __init__(self, binary: Path, args: list[str], env: dict[str, str]):
-        self.screen = pyte.Screen(TTY_COLS, TTY_ROWS)
+    def __init__(
+        self,
+        binary: Path,
+        args: list[str],
+        env: dict[str, str],
+        *,
+        screen: pyte.Screen | None = None,
+    ):
+        self.screen = screen if screen is not None else pyte.Screen(TTY_COLS, TTY_ROWS)
         self.recorder = _Recorder(self.screen)
         # `echo=False` stops the terminal driver echoing what we type, so a
         # secret can only reach the screen if snouty itself renders it — which
@@ -377,14 +407,12 @@ class TtySession:
             rows.pop()
         return "\n".join(rows)
 
-    def finish(self, timeout: float) -> int:
-        """Wait up to `timeout` for the child to exit and return its status.
+    def finish(self, timeout: float | None) -> int:
+        """Wait for the child to exit and return its status.
 
-        A dialogue that ran to the end leaves a child that is already exiting, so
-        the wait is short in practice. A story that broke off early leaves one
-        sitting at a prompt no one will answer, and waiting the full prompt
-        budget for an exit that cannot come only adds dead time to a run that has
-        already failed — such a caller passes a short timeout."""
+        Ordinary commands use no capture timeout, as with pipe capture. The CLI
+        controls API and validation timeouts. Interactive dialogues use a short
+        timeout because an unanswered prompt cannot finish by itself."""
         try:
             self.child.expect(pexpect.EOF, timeout=timeout)
         except pexpect.TIMEOUT:
@@ -392,10 +420,11 @@ class TtySession:
             # a stalled story, already recorded as a marker frame. Fall through
             # to the forced close, which is what ends it.
             pass
-        self.child.close(force=True)
-        # A child killed after a stall has no exit status of its own; report it
-        # as a failure so the story's check fails rather than reading as clean.
-        return 1 if self.child.exitstatus is None else self.child.exitstatus
+        finally:
+            self.child.close(force=True)
+        if self.child.exitstatus is not None:
+            return self.child.exitstatus
+        return -self.child.signalstatus if self.child.signalstatus is not None else 1
 
     def cast(self, command: str) -> str:
         """The session as an asciinema v2 recording: a header line, then one
@@ -412,6 +441,15 @@ class TtySession:
         for at, text in self.recorder.events:
             lines.append(json.dumps([round(at, 6), "o", text]))
         return "\n".join(lines) + "\n"
+
+
+def _terminal_transcript(screen: pyte.HistoryScreen) -> str:
+    """Keep scrollback as well as the final screen. Screen.display handles wide
+    and combining characters; joining character cells directly would not."""
+    lines = [*screen.history.top, *(screen.buffer[y] for y in range(screen.lines))]
+    transcript = pyte.Screen(screen.columns, len(lines))
+    transcript.buffer.update(enumerate(lines))
+    return "\n".join(row.rstrip() for row in transcript.display).rstrip("\n")
 
 
 def drive_tty(
@@ -942,7 +980,7 @@ def rows_at_most(limit: int):
 
 
 def rows_at_most_with_limit_note(limit: int):
-    """`rows_at_most`, plus the stderr note that names the limit.
+    """`rows_at_most`, plus the note that names the limit.
 
     The note claims more results may exist, so it belongs only when the server
     filled the limit. Fewer rows than asked for means the result set is
@@ -951,7 +989,7 @@ def rows_at_most_with_limit_note(limit: int):
 
     def chk(sr: StoryRun, reg: Registry) -> tuple[bool, str]:
         n = len(sr.rows or [])
-        noted = f"Showing up to {limit} results." in sr.result.stderr
+        noted = f"Showing up to {limit} results." in sr.result.combined
         ok = 1 <= n <= limit and noted == (n == limit)
         return (ok, f"{n} rows (limit {limit}), note={noted}")
 
@@ -1003,10 +1041,15 @@ def all_created_within(after: str, before: str):
     return chk
 
 
+def contains_text(text: str, needle: str) -> bool:
+    """Match wording across terminal line breaks without changing the capture."""
+    return " ".join(needle.split()) in " ".join(text.split())
+
+
 def expect_message(*needles: str):
     def chk(sr: StoryRun, reg: Registry) -> tuple[bool, str]:
         text = sr.result.combined.lower()
-        hit = [n for n in needles if n.lower() in text]
+        hit = [n for n in needles if contains_text(text, n.lower())]
         return (bool(hit), f"matched {hit!r}" if hit else f"expected one of {needles!r}")
 
     return chk
@@ -1015,7 +1058,7 @@ def expect_message(*needles: str):
 def contains_all(*needles: str):
     def chk(sr: StoryRun, reg: Registry) -> tuple[bool, str]:
         text = sr.result.combined
-        missing = [n for n in needles if n not in text]
+        missing = [n for n in needles if not contains_text(text, n)]
         return (not missing, "all present" if not missing else f"missing {missing!r}")
 
     return chk
@@ -1108,8 +1151,8 @@ def doctor_check(
 
     def chk(sr: StoryRun, reg: Registry) -> tuple[bool, str]:
         text = sr.result.combined
-        missing = [n for n in contains if n not in text]
-        unexpected = [n for n in absent if n in text]
+        missing = [n for n in contains if not contains_text(text, n)]
+        unexpected = [n for n in absent if contains_text(text, n)]
         exit_matches = ok is None or sr.result.ok == ok
         passed = not missing and not unexpected and exit_matches
         bits = []
@@ -1221,7 +1264,7 @@ def _exit_with(*needles: str, want_ok: bool):
 
     def chk(sr: StoryRun, reg: Registry) -> tuple[bool, str]:
         text = sr.result.combined
-        missing = [n for n in needles if n not in text]
+        missing = [n for n in needles if not contains_text(text, n)]
         ok = (sr.result.ok == want_ok) and not missing
         return (ok, f"exit={sr.result.returncode}, missing={missing!r}")
 
@@ -1285,8 +1328,8 @@ def help_story_check(sr: StoryRun, reg: Registry) -> tuple[bool, str]:
         return (False, f"default command failed (exit {sr.result.returncode})")
 
     if story.align_tokens:
-        miss_help = [t for t in story.align_tokens if t not in help_text]
-        miss_out = [t for t in story.align_tokens if t not in out]
+        miss_help = [t for t in story.align_tokens if not contains_text(help_text, t)]
+        miss_out = [t for t in story.align_tokens if not contains_text(out, t)]
         if miss_help or miss_out:
             return (False, f"misaligned — absent from help={miss_help} output={miss_out}")
         return (True, f"help + output aligned on {list(story.align_tokens)}")
@@ -2590,26 +2633,42 @@ def _shell_block(args: list[str], text: str, returncode: int, cap: int | None = 
     return f"```shell\n$ {_command_line(args)}\n{body}\n```\nExit code: `{returncode}`"
 
 
+def _captured_block(
+    out_dir: Path, name: str, result: Result, *, cap: int | None = None
+) -> str:
+    block = _shell_block(result.args, result.combined, result.returncode, cap)
+    if result.cast is None:
+        return block + "\n\n_Capture: pipes (JSON); no terminal emulation._"
+    cast_name = f"{name}.cast"
+    (out_dir / cast_name).write_text(result.cast)
+    return (
+        block
+        + f"\n\n_Capture: terminal, {TTY_COLS} columns × {TTY_ROWS} rows; "
+        "plain-text screen and scrollback._"
+        + f"\n\n_Replay colors and redraws: `asciinema play {cast_name}`_"
+        + f"\n\n[Download recording]({cast_name})"
+    )
+
+
 def _write_help_story(out_dir: Path, story: Story, sr: StoryRun, verdict: str, detail: str) -> None:
-    help_text = (sr.help_result.combined if sr.help_result else "").rstrip("\n")
-    help_rc = sr.help_result.returncode if sr.help_result else 0
+    assert sr.help_result is not None
     parts = [
         f"# {story.title}",
         f"**User goal:** {story.goal}",
         f"**Judge satisfaction by:** {story.judge}",
         "## Help text",
-        _shell_block([*(story.help_cmd or []), "--help"], help_text, help_rc),
+        _captured_block(out_dir, f"{story.slug}-help", sr.help_result),
     ]
     if story.args:
         parts.append("## Default output")
         parts.append(
-            _shell_block(
-                story.args, sr.result.combined, sr.result.returncode, cap=HELP_SAMPLE_MAX_LINES
+            _captured_block(
+                out_dir, f"{story.slug}-default", sr.result, cap=HELP_SAMPLE_MAX_LINES
             )
         )
-        for label, res in sr.sample_results or []:
+        for index, (label, res) in enumerate(sr.sample_results or [], 1):
             parts.append(f"### Variant: {label}")
-            parts.append(_shell_block(res.args, res.combined, res.returncode, cap=HELP_SAMPLE_MAX_LINES))
+            parts.append(_captured_block(out_dir, f"{story.slug}-variant-{index}", res, cap=HELP_SAMPLE_MAX_LINES))
     parts.append(f"_Automated check: {verdict} — {detail}_")
     (out_dir / f"{story.slug}.md").write_text("\n\n".join(parts) + "\n")
 
@@ -2632,6 +2691,7 @@ def _write_tty_story(out_dir: Path, story: Story, sr: StoryRun, verdict: str, de
         f"# {story.title}",
         f"**User goal:** {story.goal}",
         f"**Judge satisfaction by:** {story.judge}",
+        f"_Capture: terminal, {TTY_COLS} columns × {TTY_ROWS} rows; prompt frames._",
         "## Conversation",
         f"```shell\n$ {_command_line(story.args)}\n```",
     ]
@@ -2642,6 +2702,7 @@ def _write_tty_story(out_dir: Path, story: Story, sr: StoryRun, verdict: str, de
         cast_name = f"{story.slug}.cast"
         (out_dir / cast_name).write_text(sr.cast)
         parts.append(f"_Replay the session: `asciinema play {cast_name}`_")
+        parts.append(f"[Download recording]({cast_name})")
     if story.post_capture:
         parts.append("## Persisted state")
         for rel_path, contents in sr.captured_files or []:
@@ -2666,7 +2727,7 @@ def write_story(out_dir: Path, story: Story, sr: StoryRun, passed: bool, detail:
         f"# {story.title}\n\n"
         f"**User goal:** {story.goal}\n\n"
         f"**Judge satisfaction by:** {story.judge}\n\n"
-        f"{_shell_block(story.args, sr.result.combined, sr.result.returncode)}\n\n"
+        f"{_captured_block(out_dir, story.slug, sr.result)}\n\n"
         f"_Automated check: {verdict} — {detail}_\n"
     )
     (out_dir / f"{story.slug}.md").write_text(md)
@@ -2725,9 +2786,8 @@ def _run_isolated_story(sn: Snouty, story: Story) -> StoryRun:
     leak in. The home starts empty, which models an unconfigured machine;
     `seed_files` writes the persisted state a story needs. `$XDG_CONFIG_HOME`
     points at `<home>/.config`, so a seed path means the same here as in
-    `run_tty_story`. The `--json` rows aren't captured (`json_lines` can't take
-    an env override, and the isolated stories — all `doctor` stories — validate
-    on rendered text anyway)."""
+    `run_tty_story`. These stories validate their primary result directly;
+    they do not need a second JSON command."""
     home = Path(tempfile.mkdtemp(prefix="snouty-gallery-config."))
     try:
         _write_seed_files(home, story.seed_files)

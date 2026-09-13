@@ -1,10 +1,139 @@
 import copy
 import importlib
 import json
+import os
+from pathlib import Path
+import sys
+import tempfile
+import textwrap
 import unittest
 
 
 gallery = importlib.import_module("gen-gallery")
+
+
+class TerminalCapture(unittest.TestCase):
+    def setUp(self):
+        self.snouty = gallery.Snouty(Path(sys.executable))
+        self.addCleanup(self.snouty.cleanup)
+
+    def test_human_capture_uses_terminal_dimensions_and_preserves_wrapping(self):
+        result = self.snouty.run(["-c", textwrap.dedent('''
+            import os
+            import textwrap
+            print('tty:', *(os.isatty(fd) for fd in (0, 1, 2)))
+            columns, rows = os.get_terminal_size()
+            print(f'size: {columns} {rows}')
+            print(textwrap.fill('A long description with many words. ' * 12,
+                  width=columns, initial_indent='Details   ', subsequent_indent=' ' * 10))
+        ''')])
+        lines = result.combined.splitlines()
+        self.assertEqual(lines[0], "tty: True True True")
+        self.assertEqual(lines[1], f"size: {gallery.TTY_COLS} {gallery.TTY_ROWS}")
+        self.assertTrue(lines[2].startswith("Details   "))
+        self.assertGreater(len(lines[3:]), 1)
+        self.assertTrue(all(line.startswith(" " * 10) for line in lines[3:]))
+        self.assertTrue(all(len(line) <= gallery.TTY_COLS for line in lines))
+
+    def test_terminal_redraw_unicode_stream_order_and_scrollback(self):
+        result = self.snouty.run(["-c", textwrap.dedent('''
+            import os
+            import sys
+            os.write(1, b'old progress\\r\\x1b[2K')
+            os.write(2, '\\x1b[32m完成 e\\u0301\\x1b[0m\\n'.encode())
+            arrow = '↑'.encode()
+            os.write(1, arrow[:1])
+            os.write(1, arrow[1:] + b'\\n')
+            for i in range(1200):
+                os.write(1 if i % 2 == 0 else 2, f'row {i:04}\\n'.encode())
+            os.write(1, b'X' * (os.get_terminal_size().columns + 5) + b'\\n')
+            sys.exit(7)
+        ''')])
+        lines = result.combined.splitlines()
+        self.assertEqual(lines[:2], ["完成 é", "↑"])
+        self.assertEqual(lines[2:1202], [f"row {i:04}" for i in range(1200)])
+        self.assertEqual(lines[1202:], ["X" * gallery.TTY_COLS, "X" * 5])
+        self.assertEqual(result.returncode, 7)
+        self.assertFalse(result.ok)
+        self.assertNotIn("\x1b", result.combined)
+        self.assertNotIn("old progress", result.combined)
+        cast = [json.loads(line) for line in result.cast.splitlines()]
+        self.assertEqual((cast[0]["width"], cast[0]["height"]), (gallery.TTY_COLS, gallery.TTY_ROWS))
+        raw = "".join(event[2] for event in cast[1:])
+        self.assertIn("\x1b[32m", raw)
+        self.assertIn("old progress", raw)
+        self.assertIn("↑", raw)
+        self.assertNotIn("�", raw)
+
+    def test_json_remains_exact_and_separate_from_stderr(self):
+        result = self.snouty.run(["-c", textwrap.dedent('''
+            import json
+            import os
+            print(json.dumps({'tty': [os.isatty(1), os.isatty(2)], 'value': 'x' * 250}))
+            os.write(2, b'diagnostic\\n')
+        '''), "--json"])
+        self.assertTrue(result.ok)
+        self.assertEqual(result.stdout, json.dumps({"tty": [False, False], "value": "x" * 250}) + "\n")
+        self.assertEqual(result.stderr, "diagnostic\n")
+        self.assertIsNone(result.cast)
+
+    def test_limit_note_is_checked_in_the_merged_terminal_output(self):
+        result = self.snouty.run(["-c", "import os; os.write(2, b'Showing up to 2 results.\\n')"])
+        story = next(s for s in gallery.build_stories(gallery.Discovery()) if s.slug == "runs-list--limit")
+        run = gallery.StoryRun(story, result, [{}, {}])
+        self.assertTrue(gallery.rows_at_most_with_limit_note(2)(run, gallery.Registry())[0])
+
+    def test_stalled_dialogue_fails_and_closes_the_child(self):
+        with tempfile.TemporaryDirectory() as directory:
+            pidfile = Path(directory) / "child.pid"
+            code = "import os, pathlib, sys, time; pathlib.Path(sys.argv[1]).write_text(str(os.getpid())); time.sleep(30)"
+            session = gallery.TtySession(
+                self.snouty.binary, ["-c", code, str(pidfile)], self.snouty.env_with({})
+            )
+            self.assertNotEqual(session.finish(timeout=0.5), 0)
+            with self.assertRaises(ProcessLookupError):
+                os.kill(int(pidfile.read_text()), 0)
+
+    def test_signal_exit_keeps_the_output_and_failure_status(self):
+        result = self.snouty.run(["-c", "import os, signal; os.write(1, b'before signal\\n'); os.kill(os.getpid(), signal.SIGTERM)"])
+        self.assertEqual(result.returncode, -15)
+        self.assertEqual(result.combined, "before signal")
+        self.assertFalse(result.ok)
+
+    def test_story_writes_capture_mode_and_recordings_for_each_help_sample(self):
+        result = self.snouty.run(["-c", "print('Usage: sample')"])
+        story = gallery.Story(
+            "sample", "Sample", "Read help", "Readable output", result.args,
+            gallery.non_empty_table, help_cmd=["sample"],
+        )
+        run = gallery.StoryRun(story, result, None, result, [("variant", result)])
+        with tempfile.TemporaryDirectory() as directory:
+            out = Path(directory)
+            gallery.write_story(out, story, run, True, "ok")
+            markdown = (out / "sample.md").read_text()
+            self.assertEqual(markdown.count("Capture: terminal"), 3)
+            for name in ("sample-help", "sample-default", "sample-variant-1"):
+                self.assertIn(f"asciinema play {name}.cast", markdown)
+                self.assertIn(f"[Download recording]({name}.cast)", markdown)
+                self.assertEqual((out / f"{name}.cast").read_text(), result.cast)
+            story.help_cmd = None
+            gallery.write_story(out, story, run, True, "ok")
+            self.assertIn("asciinema play sample.cast", (out / "sample.md").read_text())
+            self.assertEqual((out / "sample.cast").read_text(), result.cast)
+            run.result = gallery.Result(["doctor", "--json"], '{}\n', "", 0)
+            gallery.write_story(out, story, run, True, "ok")
+            self.assertIn("Capture: pipes (JSON)", (out / "sample.md").read_text())
+
+    def test_wording_checks_accept_wrapping_but_require_the_text_and_exit(self):
+        story = next(s for s in gallery.build_stories(gallery.Discovery(fail="run-1")) if s.slug == "runs-properties-incomplete")
+        output = "No properties found.\n\nInspect the run with\n`snouty runs show run-1`."
+        run = gallery.StoryRun(story, gallery.Result(story.args, output, "", 0), None)
+        self.assertTrue(story.check(run, gallery.Registry())[0])
+        run.result.returncode = 1
+        self.assertFalse(story.check(run, gallery.Registry())[0])
+        run.result.returncode = 0
+        run.result.stdout = output.replace("runs show", "runs logs")
+        self.assertFalse(story.check(run, gallery.Registry())[0])
 
 
 class DoctorGalleryChecks(unittest.TestCase):

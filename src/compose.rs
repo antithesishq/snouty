@@ -1924,8 +1924,13 @@ services:
                 crate::testutils::unique_image_prefix(&format!("pin-{}", rt.name()))
             );
             let local = local.as_str();
-            rt.build_image(img_dir.path(), local, None, Some("linux/amd64"))
-                .unwrap_or_else(|e| panic!("{}: build: {e:?}", rt.name()));
+            rt.build_image(
+                img_dir.path(),
+                local,
+                None,
+                Some(crate::container::AMD64_PLATFORM),
+            )
+            .unwrap_or_else(|e| panic!("{}: build: {e:?}", rt.name()));
 
             // Resolve `app`'s pinned image after running pin_images over `yaml`.
             let pinned_app = |yaml: &str| -> Result<String> {
@@ -2059,6 +2064,10 @@ services:
 
         fn image_tag(&self, _src: &str, _dst: &str) -> Result<()> {
             Ok(())
+        }
+
+        fn insecure_registry_flag(&self) -> &'static str {
+            unreachable!("the fake answers remote_manifest itself")
         }
 
         fn remote_manifest(&self, image_ref: &str) -> RemoteManifest {

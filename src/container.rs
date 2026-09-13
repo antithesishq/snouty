@@ -22,6 +22,9 @@ use crate::settings::Settings;
 /// only exists to convert an indefinite hang into a clear error.
 pub const DISCOVERY_COMMAND_TIMEOUT: Duration = Duration::from_secs(60);
 
+/// The platform a test run executes.
+pub const AMD64_PLATFORM: &str = "linux/amd64";
+
 /// A container image's CPU architecture, as reported by the runtime.
 ///
 /// snouty only cares whether an image is runnable on Antithesis, which is
@@ -185,7 +188,21 @@ pub trait ContainerRuntime: Send + Sync {
     /// single-platform manifests) maps to [`RemoteManifest::NotFound`]:
     /// callers fall back to pushing, so degraded networks or runtime quirks
     /// can only cause extra uploads, never a bad pin.
-    fn remote_manifest(&self, image_ref: &str) -> RemoteManifest;
+    fn remote_manifest(&self, image_ref: &str) -> RemoteManifest {
+        let mut args = vec!["manifest", "inspect"];
+        if is_plain_http_registry(image_ref) {
+            args.push(self.insecure_registry_flag());
+        }
+        args.push(image_ref);
+        match self.command(&args).output() {
+            Ok(output) if output.status.success() => classify_manifest_json(&output.stdout),
+            _ => RemoteManifest::NotFound,
+        }
+    }
+
+    /// The runtime's flag that lets `manifest inspect` and `push` reach a
+    /// plain-HTTP registry.
+    fn insecure_registry_flag(&self) -> &'static str;
 
     /// Tag an image with a new reference.
     fn image_tag(&self, src: &str, dst: &str) -> Result<()> {
@@ -271,7 +288,7 @@ pub trait ContainerRuntime: Send + Sync {
     /// does not support arm64, and the host may well be an arm machine.
     fn build_and_push_config_image(&self, config_dir: &Path, image_ref: &str) -> Result<String> {
         eprintln!("Building config image: {}", image_ref);
-        self.build_image(config_dir, image_ref, None, Some("linux/amd64"))?;
+        self.build_image(config_dir, image_ref, None, Some(AMD64_PLATFORM))?;
 
         eprintln!("Pushing config image: {}", image_ref);
         // image_push pins to `name:tag@digest`, but Antithesis's config-image
@@ -505,16 +522,14 @@ impl ContainerRuntime for PodmanRuntime {
         Ok(Some(format!("unix://{path}")))
     }
 
-    fn remote_manifest(&self, image_ref: &str) -> RemoteManifest {
-        remote_manifest_via_cli(&self.cmd, "--tls-verify=false", image_ref)
+    fn insecure_registry_flag(&self) -> &'static str {
+        "--tls-verify=false"
     }
 
     fn image_push(&self, image_ref: &str) -> Result<String> {
         let mut args = vec!["push"];
-
-        // Podman requires --tls-verify=false for plain HTTP registries.
-        if image_ref.starts_with("localhost") || image_ref.starts_with("127.0.0.1") {
-            args.push("--tls-verify=false");
+        if is_plain_http_registry(image_ref) {
+            args.push(self.insecure_registry_flag());
         }
 
         let digestfile =
@@ -569,8 +584,8 @@ impl ContainerRuntime for DockerRuntime {
         "docker"
     }
 
-    fn remote_manifest(&self, image_ref: &str) -> RemoteManifest {
-        remote_manifest_via_cli(&self.cmd, "--insecure", image_ref)
+    fn insecure_registry_flag(&self) -> &'static str {
+        "--insecure"
     }
 
     fn image_push(&self, image_ref: &str) -> Result<String> {
@@ -777,19 +792,10 @@ pub enum RemoteManifest {
     Single,
 }
 
-/// Run `{runtime} manifest inspect` and classify the result. `insecure_flag`
-/// is the runtime's spelling for plain-HTTP registries (`--insecure` for
-/// docker, `--tls-verify=false` for podman), applied only to local registries.
-fn remote_manifest_via_cli(runtime: &str, insecure_flag: &str, image_ref: &str) -> RemoteManifest {
-    let mut args = vec!["manifest", "inspect"];
-    if image_ref.starts_with("localhost") || image_ref.starts_with("127.0.0.1") {
-        args.push(insecure_flag);
-    }
-    args.push(image_ref);
-    match Command::new(runtime).args(&args).output() {
-        Ok(output) if output.status.success() => classify_manifest_json(&output.stdout),
-        _ => RemoteManifest::NotFound,
-    }
+/// Whether `image_ref` names a local registry. The test harness serves its
+/// registry over plain HTTP.
+fn is_plain_http_registry(image_ref: &str) -> bool {
+    image_ref.starts_with("localhost") || image_ref.starts_with("127.0.0.1")
 }
 
 /// Classify `manifest inspect` JSON output: a `manifests` array marks a
@@ -930,21 +936,24 @@ pub fn strip_registry(image: &str, registry: &str) -> String {
 /// Repositories naming any other registry (first component with a dot, a
 /// port, or `localhost`) pass through unchanged.
 pub fn normalize_repo(repo: &str) -> String {
-    let (registry, rest) = match repo.split_once('/') {
-        Some((first, rest)) if is_registry_host(first) => {
-            let registry = if first == "index.docker.io" {
-                "docker.io"
-            } else {
-                first
-            };
-            (registry, rest)
-        }
-        _ => ("docker.io", repo),
+    let (registry, rest) = match registry_host(repo) {
+        Some(host) => (canonical_host(host), &repo[host.len() + 1..]),
+        None => ("docker.io", repo),
     };
     if registry == "docker.io" && !rest.contains('/') {
         format!("{registry}/library/{rest}")
     } else {
         format!("{registry}/{rest}")
+    }
+}
+
+/// A runtime reads `index.docker.io` as `docker.io`, so repository names
+/// compare by `docker.io`.
+fn canonical_host(host: &str) -> &str {
+    if host == "index.docker.io" {
+        "docker.io"
+    } else {
+        host
     }
 }
 

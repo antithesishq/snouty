@@ -133,11 +133,11 @@ settings file (./.snouty.toml by default; see the global --settings/--profile
 flags and the README). Environment variables take precedence.
 
 Environment variables (override any settings file):
-  ANTITHESIS_TENANT       Your Antithesis tenant name (required).
-  ANTITHESIS_API_KEY      API key authentication (preferred).
+  ANTITHESIS_TENANT       Your Antithesis tenant name.
+  ANTITHESIS_API_KEY      API key authentication.
   ANTITHESIS_USERNAME     Username (deprecated).
   ANTITHESIS_PASSWORD     Password (deprecated).
-  ANTITHESIS_REPOSITORY   Container registry for pushing images (required with --config).
+  ANTITHESIS_REPOSITORY   Container registry for pushing images.
   SNOUTY_CONTAINER_ENGINE Force "docker" or "podman" (auto-detected by default)."#)]
     Launch(LaunchArgs),
 

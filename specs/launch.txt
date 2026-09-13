@@ -10,10 +10,13 @@
 # checks above the skip (arg parsing, schema validation) fail before any API
 # call and run in both modes.
 
-# Legacy credentials are deprecated, not required when the API key is unset.
+# Environment variables are optional sources for settings and credentials.
 snouty launch --help
+stdout '^  ANTITHESIS_TENANT +Your Antithesis tenant name\.$'
+stdout '^  ANTITHESIS_API_KEY +API key authentication\.$'
 stdout '^  ANTITHESIS_USERNAME +Username \(deprecated\)\.$'
 stdout '^  ANTITHESIS_PASSWORD +Password \(deprecated\)\.$'
+stdout '^  ANTITHESIS_REPOSITORY +Container registry for pushing images\.$'
 ! stdout 'required when API key is not set'
 
 # The user specifies a webhook endpoint name via -w / --webhook (required).

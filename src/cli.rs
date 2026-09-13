@@ -198,9 +198,18 @@ object:
     /// Output shell completions
     #[command(long_about = r#"Output shell completions
 
-Writes a completion script for SHELL to stdout; install it by sourcing it from
-your shell config, e.g.:
-  snouty completions zsh > ~/.zfunc/_snouty
+Writes a completion script for SHELL to stdout.
+
+For zsh, add this to ~/.zshrc:
+  autoload -Uz compinit
+  compinit
+  source <(snouty completions zsh)
+
+If your shell already initializes completion, add only the source line after
+that initialization. Completions are generated at shell startup.
+Open a new shell to load the setup.
+
+For bash:
   snouty completions bash | sudo tee /etc/bash_completion.d/snouty"#)]
     Completions {
         /// Shell to generate completions for

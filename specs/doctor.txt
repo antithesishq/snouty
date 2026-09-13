@@ -110,10 +110,17 @@ env ANTITHESIS_USERNAME=testuser
 env ANTITHESIS_PASSWORD=testpass
 env ANTITHESIS_TENANT=testtenant
 snouty doctor
-stderr '.*more than one credential source is available.*'
-stderr 'snouty uses the username and password from the \[ANTITHESIS_USERNAME, ANTITHESIS_PASSWORD\] environment variables'
-stderr 'snouty ignores the API key from the \[default\] profile in .*credentials.toml'
-stderr 'unset \[ANTITHESIS_USERNAME, ANTITHESIS_PASSWORD\] to use the next source'
+stderr '^  ⚠ more than one credential source is available$'
+stderr '^      WARNING: snouty is using the username and password from the `ANTITHESIS_USERNAME` and `ANTITHESIS_PASSWORD` environment variables$'
+stderr '^      NOTE: an API key is configured in .+credentials\.toml$'
+stderr '^      NOTE: `unset ANTITHESIS_USERNAME ANTITHESIS_PASSWORD` to use the next source$'
+
+snouty doctor --json
+stdout '"name": "credential_sources"'
+stdout '"text": "snouty is using the username and password from the `ANTITHESIS_USERNAME` and `ANTITHESIS_PASSWORD` environment variables"'
+stdout '"text": "an API key is configured in .*credentials\.toml"'
+stdout '"text": "`unset ANTITHESIS_USERNAME ANTITHESIS_PASSWORD` to use the next source"'
+! stdout 'spec-stored-key|testpass'
 
 # A credentials file snouty cannot parse sits behind the exported API key. No
 # command reads that far, so doctor reports the key it uses and stays green

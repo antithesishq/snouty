@@ -9,6 +9,11 @@ story is also gated by a programmatic check; a degenerate example (an empty
 table, an unintended error, a filter that didn't narrow) fails the run rather
 than being silently emitted.
 
+Human output, including help and isolated configuration stories, runs in a
+120-column, 40-row terminal. Markdown contains the terminal's text and full
+scrollback; adjacent asciinema recordings preserve colors and redraws. JSON
+commands use pipes so their structured output stays separate from stderr.
+
 There are three kinds of story:
 
   * goal stories — capture one command's output and judge it against a user goal
@@ -106,6 +111,7 @@ class Result:
     stdout: str
     stderr: str
     returncode: int
+    cast: str | None = None
 
     @property
     def ok(self) -> bool:
@@ -113,7 +119,8 @@ class Result:
 
     @property
     def combined(self) -> str:
-        # Stories showcase verbose/error output, which snouty writes to stderr.
+        # Terminal captures already merge both streams in stdout in display
+        # order. JSON captures keep stderr separate from the structured data.
         return self.stdout if not self.stderr else f"{self.stdout}{self.stderr}"
 
 
@@ -156,6 +163,22 @@ class Snouty:
         args: list[str],
         env: dict[str, str | None] | None = None,
     ) -> Result:
+        if "--json" not in args:
+            screen = pyte.HistoryScreen(TTY_COLS, TTY_ROWS, history=sys.maxsize)
+            session = TtySession(
+                self.binary,
+                args,
+                self.env_with({**(env or {}), "TERM": "xterm-256color"}),
+                screen=screen,
+            )
+            returncode = session.finish(timeout=None)
+            return Result(
+                args,
+                _terminal_transcript(screen),
+                "",
+                returncode,
+                session.cast(_command_line(args)),
+            )
         proc = subprocess.run(
             [str(self.binary), *args],
             capture_output=True,
@@ -330,13 +353,20 @@ class _Recorder:
 
 
 class TtySession:
-    """One interactive snouty run on a pseudo-terminal.
+    """One snouty run on a pseudo-terminal.
 
     Holds the child, the bytes it has written (kept whole, for the recording),
     and a terminal emulator fed the same bytes (for the frames)."""
 
-    def __init__(self, binary: Path, args: list[str], env: dict[str, str]):
-        self.screen = pyte.Screen(TTY_COLS, TTY_ROWS)
+    def __init__(
+        self,
+        binary: Path,
+        args: list[str],
+        env: dict[str, str],
+        *,
+        screen: pyte.Screen | None = None,
+    ):
+        self.screen = screen if screen is not None else pyte.Screen(TTY_COLS, TTY_ROWS)
         self.recorder = _Recorder(self.screen)
         # `echo=False` stops the terminal driver echoing what we type, so a
         # secret can only reach the screen if snouty itself renders it — which
@@ -377,14 +407,12 @@ class TtySession:
             rows.pop()
         return "\n".join(rows)
 
-    def finish(self, timeout: float) -> int:
-        """Wait up to `timeout` for the child to exit and return its status.
+    def finish(self, timeout: float | None) -> int:
+        """Wait for the child to exit and return its status.
 
-        A dialogue that ran to the end leaves a child that is already exiting, so
-        the wait is short in practice. A story that broke off early leaves one
-        sitting at a prompt no one will answer, and waiting the full prompt
-        budget for an exit that cannot come only adds dead time to a run that has
-        already failed — such a caller passes a short timeout."""
+        Ordinary commands use no capture timeout, as with pipe capture. The CLI
+        controls API and validation timeouts. Interactive dialogues use a short
+        timeout because an unanswered prompt cannot finish by itself."""
         try:
             self.child.expect(pexpect.EOF, timeout=timeout)
         except pexpect.TIMEOUT:
@@ -392,10 +420,11 @@ class TtySession:
             # a stalled story, already recorded as a marker frame. Fall through
             # to the forced close, which is what ends it.
             pass
-        self.child.close(force=True)
-        # A child killed after a stall has no exit status of its own; report it
-        # as a failure so the story's check fails rather than reading as clean.
-        return 1 if self.child.exitstatus is None else self.child.exitstatus
+        finally:
+            self.child.close(force=True)
+        if self.child.exitstatus is not None:
+            return self.child.exitstatus
+        return -self.child.signalstatus if self.child.signalstatus is not None else 1
 
     def cast(self, command: str) -> str:
         """The session as an asciinema v2 recording: a header line, then one
@@ -412,6 +441,15 @@ class TtySession:
         for at, text in self.recorder.events:
             lines.append(json.dumps([round(at, 6), "o", text]))
         return "\n".join(lines) + "\n"
+
+
+def _terminal_transcript(screen: pyte.HistoryScreen) -> str:
+    """Keep scrollback as well as the final screen. Screen.display handles wide
+    and combining characters; joining character cells directly would not."""
+    lines = [*screen.history.top, *(screen.buffer[y] for y in range(screen.lines))]
+    transcript = pyte.Screen(screen.columns, len(lines))
+    transcript.buffer.update(enumerate(lines))
+    return "\n".join(row.rstrip() for row in transcript.display).rstrip("\n")
 
 
 def drive_tty(
@@ -942,7 +980,7 @@ def rows_at_most(limit: int):
 
 
 def rows_at_most_with_limit_note(limit: int):
-    """`rows_at_most`, plus the stderr note that names the limit.
+    """`rows_at_most`, plus the note that names the limit.
 
     The note claims more results may exist, so it belongs only when the server
     filled the limit. Fewer rows than asked for means the result set is
@@ -951,7 +989,7 @@ def rows_at_most_with_limit_note(limit: int):
 
     def chk(sr: StoryRun, reg: Registry) -> tuple[bool, str]:
         n = len(sr.rows or [])
-        noted = f"Showing up to {limit} results." in sr.result.stderr
+        noted = f"Showing up to {limit} results." in sr.result.combined
         ok = 1 <= n <= limit and noted == (n == limit)
         return (ok, f"{n} rows (limit {limit}), note={noted}")
 
@@ -1003,10 +1041,15 @@ def all_created_within(after: str, before: str):
     return chk
 
 
+def contains_text(text: str, needle: str) -> bool:
+    """Match wording across terminal line breaks without changing the capture."""
+    return " ".join(needle.split()) in " ".join(text.split())
+
+
 def expect_message(*needles: str):
     def chk(sr: StoryRun, reg: Registry) -> tuple[bool, str]:
         text = sr.result.combined.lower()
-        hit = [n for n in needles if n.lower() in text]
+        hit = [n for n in needles if contains_text(text, n.lower())]
         return (bool(hit), f"matched {hit!r}" if hit else f"expected one of {needles!r}")
 
     return chk
@@ -1015,7 +1058,7 @@ def expect_message(*needles: str):
 def contains_all(*needles: str):
     def chk(sr: StoryRun, reg: Registry) -> tuple[bool, str]:
         text = sr.result.combined
-        missing = [n for n in needles if n not in text]
+        missing = [n for n in needles if not contains_text(text, n)]
         return (not missing, "all present" if not missing else f"missing {missing!r}")
 
     return chk
@@ -1108,8 +1151,8 @@ def doctor_check(
 
     def chk(sr: StoryRun, reg: Registry) -> tuple[bool, str]:
         text = sr.result.combined
-        missing = [n for n in contains if n not in text]
-        unexpected = [n for n in absent if n in text]
+        missing = [n for n in contains if not contains_text(text, n)]
+        unexpected = [n for n in absent if contains_text(text, n)]
         exit_matches = ok is None or sr.result.ok == ok
         passed = not missing and not unexpected and exit_matches
         bits = []
@@ -1125,26 +1168,44 @@ def doctor_check(
 
 
 def doctor_json_check(sr: StoryRun, reg: Registry) -> tuple[bool, str]:
-    """Gate the `doctor --json` story: stdout must be a parseable report with a
-    boolean `ok` and a non-empty `checks` array of well-formed records (name,
-    status, message), it must include the api_key check, and a missing required
-    credential must drive `ok` false."""
+    """The report, required checks, and exit status must agree with the setup
+    described by the story."""
     try:
         data = json.loads(sr.result.stdout)
     except json.JSONDecodeError as e:
         return (False, f"stdout is not valid JSON: {e}")
+    if not isinstance(data, dict):
+        return (False, "report is not a JSON object")
     checks = data.get("checks")
     if not isinstance(data.get("ok"), bool) or not isinstance(checks, list) or not checks:
-        return (False, f"missing ok/checks ({data!r:.80})")
+        return (False, "report needs a boolean ok and a non-empty checks array")
     well_formed = all(
-        isinstance(c.get("name"), str)
+        isinstance(c, dict)
+        and isinstance(c.get("name"), str)
         and c.get("status") in ("ok", "warn", "error")
         and isinstance(c.get("message"), str)
         for c in checks
     )
-    names = {c.get("name") for c in checks}
-    passed = well_formed and "api_key" in names and data["ok"] is False
-    return (passed, f"ok={data['ok']}, {len(checks)} checks, well_formed={well_formed}")
+    if not well_formed:
+        return (False, "checks need string names/messages and ok/warn/error statuses")
+    expected = (
+        {"tenant": "ok", "api_key": "ok"}
+        if sr.story.expect_ok
+        else {"tenant": "error", "credentials": "error"}
+    )
+    statuses = {c["name"]: c["status"] for c in checks}
+    required_match = all(statuses.get(name) == status for name, status in expected.items())
+    consistent = data["ok"] == all(c["status"] != "error" for c in checks)
+    passed = (
+        data["ok"] == sr.result.ok == sr.story.expect_ok
+        and required_match
+        and consistent
+    )
+    return (
+        passed,
+        f"ok={data['ok']} (want {sr.story.expect_ok}), exit={sr.result.returncode}, "
+        f"{len(checks)} checks, required_match={required_match}, consistent={consistent}",
+    )
 
 
 def verbose_api_calls(sr: StoryRun, reg: Registry) -> tuple[bool, str]:
@@ -1203,7 +1264,7 @@ def _exit_with(*needles: str, want_ok: bool):
 
     def chk(sr: StoryRun, reg: Registry) -> tuple[bool, str]:
         text = sr.result.combined
-        missing = [n for n in needles if n not in text]
+        missing = [n for n in needles if not contains_text(text, n)]
         ok = (sr.result.ok == want_ok) and not missing
         return (ok, f"exit={sr.result.returncode}, missing={missing!r}")
 
@@ -1267,8 +1328,8 @@ def help_story_check(sr: StoryRun, reg: Registry) -> tuple[bool, str]:
         return (False, f"default command failed (exit {sr.result.returncode})")
 
     if story.align_tokens:
-        miss_help = [t for t in story.align_tokens if t not in help_text]
-        miss_out = [t for t in story.align_tokens if t not in out]
+        miss_help = [t for t in story.align_tokens if not contains_text(help_text, t)]
+        miss_out = [t for t in story.align_tokens if not contains_text(out, t)]
         if miss_help or miss_out:
             return (False, f"misaligned — absent from help={miss_help} output={miss_out}")
         return (True, f"help + output aligned on {list(story.align_tokens)}")
@@ -1499,14 +1560,12 @@ def build_stories(d: Discovery) -> list[Story]:
             "runs-properties-incomplete",
             "Properties for a run that never finished",
             "I try to view properties on an incomplete run.",
-            "A clean error explaining the properties aren't available (because the run is incomplete) — not a crash or stack trace.",
+            "An empty property set exits zero and shows `snouty runs show <run ID>` "
+            "to inspect the run.",
             ["runs", "properties", d.fail],
-            # The friendly error (explain_properties_error in src/runs.rs) says the
-            # run "is incomplete"; require that distinctive word. A bare "404"/"not
-            # found" would mean the friendly message regressed, and "no properties"
-            # also matches the success-path "No properties found." — so neither is
-            # a safe needle here.
-            expect_message("incomplete"),
+            succeeds_with(
+                f"No properties found.\n\nInspect the run with `snouty runs show {d.fail}`."
+            ),
             json_capable=False,
         ),
         # -- property detail (`properties --name <x> --detail`) -------------
@@ -1562,8 +1621,9 @@ def build_stories(d: Discovery) -> list[Story]:
             f"Find events that mention '{kw}'",
             "I want to find events that mention a particular keyword.",
             f"At least one matching event row, and the keyword '{kw}' appears in the output. "
-            "Each row is one `HASH VTIME SOURCE OUTPUT` line whose HASH and VTIME are "
-            "copyable into `runs logs`. When more events match than the default limit of "
+            "A `moment HASH` divider groups `VTIME [source] payload` lines. Its hash "
+            "is sufficient for `runs logs` to stream to the branch's current end. "
+            "When more events match than the default limit of "
             "50, a stderr note says the output stopped at the limit.",
             ["runs", "events", d.success, "--match", kw],
             event_keyword_present(kw),
@@ -1616,9 +1676,9 @@ def build_stories(d: Discovery) -> list[Story]:
             "runs-search-contains",
             f"Query events with the DSL: contains '{kw}'",
             "I want to run an event-set DSL query and read the matching events.",
-            f"At least one matching event line, keyword '{kw}' visible. Each row is one "
-            "`HASH VTIME SOURCE OUTPUT` line whose HASH and VTIME are copyable into "
-            "`runs logs`; output should be legible without a table header. When more "
+            f"At least one matching event line, keyword '{kw}' visible. A `moment HASH` "
+            "divider groups `VTIME [source] payload` lines. Its hash is sufficient for "
+            "`runs logs` to stream to the branch's current end. When more "
             "events match than the default limit of 50, a stderr note says the output "
             "stopped at the limit.",
             ["runs", "search", d.success, f'contains({{output_text: "{kw}"}})'],
@@ -1692,10 +1752,11 @@ def build_stories(d: Discovery) -> list[Story]:
         # -- logs -----------------------------------------------------------
         Story(
             "runs-logs",
-            "Stream logs at a specific moment",
-            "I want the log lines at a particular moment of the run.",
-            "At least one log line is streamed at/around the moment.",
-            ["runs", "logs", d.success, d.event_hash, d.event_vtime],
+            "Stream logs using the hash from an event divider",
+            "I copy a divider's input hash to read logs through the end of that moment.",
+            "Logs stream to the branch's current end without a vtime argument. "
+            "Each divider shows only `moment HASH`; event lines keep their vtimes.",
+            ["runs", "logs", d.success, d.event_hash],
             logs_non_empty,
         ),
         Story(
@@ -1720,10 +1781,16 @@ def build_stories(d: Discovery) -> list[Story]:
             "runs-logs-bad-moment",
             "Try logs with a moment that doesn't exist",
             "I ask for a moment that isn't in this run; I want a clean error.",
-            "A clean error, not a crash or stack trace.",
+            "A clean error with two suggestion lines: the run exists but the moment does not; "
+            "search with `snouty runs events <run ID> <search query>`. Non-zero exit.",
             ["runs", "logs", d.success, "0", "999999.0"],
-            expect_message("error", "not found", "no ", "invalid", "bad"),
+            fails_with(
+                "Error: API error: 404 Not Found — Resource not found",
+                "Suggestion: the run exists but no moment matches this hash and vtime\n"
+                f"Suggestion: search for a moment using `snouty runs events {d.success} <search query>`",
+            ),
             json_capable=False,
+            expect_ok=False,
         ),
         Story(
             "runs-logs-incomplete",
@@ -1832,13 +1899,15 @@ def build_stories(d: Discovery) -> list[Story]:
             "doctor-no-auth",
             "Fresh install — doctor tells me what to configure",
             "I just installed snouty and haven't set any credentials; I want doctor to tell me what I need.",
-            "doctor states an API key is required and points ONLY at ANTITHESIS_API_KEY — it must not "
-            "steer me toward username/password, which is legacy auth (issue #145).",
+            "doctor identifies the missing credentials and offers `snouty login` or "
+            "ANTITHESIS_API_KEY, with a support contact for obtaining a key. It must not "
+            "recommend legacy username/password authentication (issue #145).",
             ["doctor"],
             doctor_check(
                 contains=(
                     "No Antithesis credentials found",
-                    "requires an API key",
+                    "snouty login",
+                    "ANTITHESIS_API_KEY",
                     "ask Antithesis support",
                 ),
                 absent=("ANTITHESIS_USERNAME", "ANTITHESIS_PASSWORD"),
@@ -1854,16 +1923,20 @@ def build_stories(d: Discovery) -> list[Story]:
             "doctor-legacy-auth",
             "I only have a legacy username and password",
             "I authenticate with a username/password and no API key; I want doctor to tell me whether that's enough.",
-            "doctor warns the API key is missing (so `snouty runs` and other API commands won't work), "
-            "flags username/password as deprecated and limited to `snouty launch`/`snouty debug`, and "
-            "steers me toward setting an API key.",
+            "doctor states that API commands refuse username/password, marks it as deprecated "
+            "and limited to `snouty launch`/`snouty debug`, and offers `snouty login` or "
+            "ANTITHESIS_API_KEY to change credentials.",
             ["doctor"],
             doctor_check(
                 contains=(
-                    "API key not provided",
+                    "snouty runs",
+                    "refuse username/password",
                     "ANTITHESIS_USERNAME",
                     "deprecated",
                     "snouty launch",
+                    "snouty debug",
+                    "snouty login",
+                    "ANTITHESIS_API_KEY",
                     "ask Antithesis support",
                 ),
             ),
@@ -1876,15 +1949,16 @@ def build_stories(d: Discovery) -> list[Story]:
             "I stored an API key with `snouty login`, but a username and password are still "
             "exported in my shell; I want to know why doctor keeps reporting the old ones.",
             "doctor warns that more than one credential source is available, names the credential "
-            "it uses and where it comes from, names the stored credential it ignores, and states "
-            "the action that hands the run to the stored one (issue #292).",
+            "it uses and where it comes from, names the configured API key and its file, and "
+            "gives a copyable unset command to use the next source.",
             ["doctor"],
             doctor_check(
                 contains=(
                     "more than one credential source is available",
-                    "snouty uses the username and password",
-                    "snouty ignores the API key",
-                    "unset [ANTITHESIS_USERNAME, ANTITHESIS_PASSWORD]",
+                    "WARNING: snouty is using the username and password",
+                    "NOTE: an API key is configured in",
+                    "credentials.toml",
+                    "NOTE: `unset ANTITHESIS_USERNAME ANTITHESIS_PASSWORD` to use the next source",
                 ),
             ),
             json_capable=False,
@@ -1894,18 +1968,33 @@ def build_stories(d: Discovery) -> list[Story]:
         ),
         Story(
             "doctor-json",
-            "Gate CI on a ready environment with --json",
-            "I want to check my environment in a script/CI step and parse the result, "
-            "not scrape human text.",
-            "`doctor --json` prints a structured report — a top-level `ok` boolean and a `checks` "
-            "array, each with name/status/message and any notes — and exits non-zero when a required "
-            "check fails, so CI can gate on it.",
+            "Stop CI when required configuration is missing",
+            "I want CI to stop when my tenant and credentials are missing, and I want "
+            "a structured report that explains the failures.",
+            "`doctor --json` prints `ok: false` and exits non-zero. Its checks array "
+            "contains tenant and credentials errors, each with name/status/message. "
+            "The report's ok field agrees with both the check statuses and the exit status.",
             ["doctor", "--json"],
             doctor_json_check,
             json_capable=False,
+            expect_ok=False,
             env=_doctor_env(
                 api_key=False, username=False, password=False, tenant=False, repo=False
             ),
+            isolate_config=True,
+        ),
+        Story(
+            "doctor-json-ready",
+            "Allow CI when local configuration is ready",
+            "I have configured my tenant, repository, and API key. I want a script "
+            "to confirm my local setup without a network request.",
+            "`doctor --json --offline` prints `ok: true` and exits zero. Its checks "
+            "array contains successful tenant and api_key checks and no errors. "
+            "The report's ok field agrees with both the check statuses and the exit status.",
+            ["doctor", "--json", "--offline"],
+            doctor_json_check,
+            json_capable=False,
+            env=_doctor_env(api_key=True, username=False, password=False, tenant=True, repo=True),
             isolate_config=True,
         ),
     ]
@@ -2041,8 +2130,8 @@ def build_help_stories(d: Discovery) -> list[Story]:
         _help_story(
             "help-runs-events",
             "Learn to search events and chain into logs",
-            "I want the help to explain the one-line `HASH VTIME SOURCE OUTPUT` format, "
-            "that a moment feeds `runs logs`, and when multiple terms need the "
+            "I want the help to explain `moment HASH` dividers and `VTIME [source] payload` "
+            "lines, that the hash alone feeds `runs logs`, and when multiple terms need the "
             "events-search feature.",
             ["runs", "events"],
             ["runs", "events", s, "--match", d.event_keyword],
@@ -2057,11 +2146,12 @@ def build_help_stories(d: Discovery) -> list[Story]:
         ),
         _help_story(
             "help-runs-logs",
-            "Learn what the positional moment vs --begin-vtime do",
-            "I want the help to make clear that the positional moment streams logs up to "
-            "it and --begin-vtime sets the start, and to describe the line format.",
+            "Learn how the hash and optional vtime select logs",
+            "I want the help to explain that a hash streams to the branch's current end, "
+            "an optional vtime sets an earlier end, and --begin-vtime sets the start.",
             ["runs", "logs"],
-            ["runs", "logs", s, d.event_hash, d.event_vtime],
+            ["runs", "logs", s, d.event_hash],
+            samples=[("with an explicit end vtime", ["runs", "logs", s, d.event_hash, d.event_vtime])],
         ),
         _help_story(
             "help-runs-build-logs",
@@ -2091,7 +2181,9 @@ def build_help_stories(d: Discovery) -> list[Story]:
         _help_story(
             "help-launch",
             "Understand how to launch a run",
-            "I run `snouty launch --help` to learn how to start a test run.",
+            "I run `snouty launch --help` to learn how to start a test run. The environment "
+            "variable list should describe each setting without implying that its variable "
+            "is required or preferred. Username/password should remain marked deprecated.",
             ["launch"],
         ),
         _help_story(
@@ -2109,7 +2201,10 @@ def build_help_stories(d: Discovery) -> list[Story]:
         _help_story(
             "help-completions",
             "Generate shell completions",
-            "I run `snouty completions --help` to learn how to install completions.",
+            "I run `snouty completions --help` to learn how to install completions. "
+            "For zsh, I want a complete .zshrc setup that initializes completion before "
+            "sourcing the script. Advice for shells that already initialize completion "
+            "should come before the setup example.",
             ["completions"],
         ),
         _help_story(
@@ -2547,26 +2642,42 @@ def _shell_block(args: list[str], text: str, returncode: int, cap: int | None = 
     return f"```shell\n$ {_command_line(args)}\n{body}\n```\nExit code: `{returncode}`"
 
 
+def _captured_block(
+    out_dir: Path, name: str, result: Result, *, cap: int | None = None
+) -> str:
+    block = _shell_block(result.args, result.combined, result.returncode, cap)
+    if result.cast is None:
+        return block + "\n\n_Capture: pipes (JSON); no terminal emulation._"
+    cast_name = f"{name}.cast"
+    (out_dir / cast_name).write_text(result.cast)
+    return (
+        block
+        + f"\n\n_Capture: terminal, {TTY_COLS} columns × {TTY_ROWS} rows; "
+        "plain-text screen and scrollback._"
+        + f"\n\n_Replay colors and redraws: `asciinema play {cast_name}`_"
+        + f"\n\n[Download recording]({cast_name})"
+    )
+
+
 def _write_help_story(out_dir: Path, story: Story, sr: StoryRun, verdict: str, detail: str) -> None:
-    help_text = (sr.help_result.combined if sr.help_result else "").rstrip("\n")
-    help_rc = sr.help_result.returncode if sr.help_result else 0
+    assert sr.help_result is not None
     parts = [
         f"# {story.title}",
         f"**User goal:** {story.goal}",
         f"**Judge satisfaction by:** {story.judge}",
         "## Help text",
-        _shell_block([*(story.help_cmd or []), "--help"], help_text, help_rc),
+        _captured_block(out_dir, f"{story.slug}-help", sr.help_result),
     ]
     if story.args:
         parts.append("## Default output")
         parts.append(
-            _shell_block(
-                story.args, sr.result.combined, sr.result.returncode, cap=HELP_SAMPLE_MAX_LINES
+            _captured_block(
+                out_dir, f"{story.slug}-default", sr.result, cap=HELP_SAMPLE_MAX_LINES
             )
         )
-        for label, res in sr.sample_results or []:
+        for index, (label, res) in enumerate(sr.sample_results or [], 1):
             parts.append(f"### Variant: {label}")
-            parts.append(_shell_block(res.args, res.combined, res.returncode, cap=HELP_SAMPLE_MAX_LINES))
+            parts.append(_captured_block(out_dir, f"{story.slug}-variant-{index}", res, cap=HELP_SAMPLE_MAX_LINES))
     parts.append(f"_Automated check: {verdict} — {detail}_")
     (out_dir / f"{story.slug}.md").write_text("\n\n".join(parts) + "\n")
 
@@ -2589,6 +2700,7 @@ def _write_tty_story(out_dir: Path, story: Story, sr: StoryRun, verdict: str, de
         f"# {story.title}",
         f"**User goal:** {story.goal}",
         f"**Judge satisfaction by:** {story.judge}",
+        f"_Capture: terminal, {TTY_COLS} columns × {TTY_ROWS} rows; prompt frames._",
         "## Conversation",
         f"```shell\n$ {_command_line(story.args)}\n```",
     ]
@@ -2599,6 +2711,7 @@ def _write_tty_story(out_dir: Path, story: Story, sr: StoryRun, verdict: str, de
         cast_name = f"{story.slug}.cast"
         (out_dir / cast_name).write_text(sr.cast)
         parts.append(f"_Replay the session: `asciinema play {cast_name}`_")
+        parts.append(f"[Download recording]({cast_name})")
     if story.post_capture:
         parts.append("## Persisted state")
         for rel_path, contents in sr.captured_files or []:
@@ -2623,7 +2736,7 @@ def write_story(out_dir: Path, story: Story, sr: StoryRun, passed: bool, detail:
         f"# {story.title}\n\n"
         f"**User goal:** {story.goal}\n\n"
         f"**Judge satisfaction by:** {story.judge}\n\n"
-        f"{_shell_block(story.args, sr.result.combined, sr.result.returncode)}\n\n"
+        f"{_captured_block(out_dir, story.slug, sr.result)}\n\n"
         f"_Automated check: {verdict} — {detail}_\n"
     )
     (out_dir / f"{story.slug}.md").write_text(md)
@@ -2682,9 +2795,8 @@ def _run_isolated_story(sn: Snouty, story: Story) -> StoryRun:
     leak in. The home starts empty, which models an unconfigured machine;
     `seed_files` writes the persisted state a story needs. `$XDG_CONFIG_HOME`
     points at `<home>/.config`, so a seed path means the same here as in
-    `run_tty_story`. The `--json` rows aren't captured (`json_lines` can't take
-    an env override, and the isolated stories — all `doctor` stories — validate
-    on rendered text anyway)."""
+    `run_tty_story`. These stories validate their primary result directly;
+    they do not need a second JSON command."""
     home = Path(tempfile.mkdtemp(prefix="snouty-gallery-config."))
     try:
         _write_seed_files(home, story.seed_files)

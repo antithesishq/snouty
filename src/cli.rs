@@ -133,11 +133,11 @@ settings file (./.snouty.toml by default; see the global --settings/--profile
 flags and the README). Environment variables take precedence.
 
 Environment variables (override any settings file):
-  ANTITHESIS_TENANT       Your Antithesis tenant name (required).
-  ANTITHESIS_API_KEY      API key authentication (preferred).
-  ANTITHESIS_USERNAME     Username (deprecated; required when API key is not set).
-  ANTITHESIS_PASSWORD     Password (deprecated; required when API key is not set).
-  ANTITHESIS_REPOSITORY   Container registry for pushing images (required with --config).
+  ANTITHESIS_TENANT       Your Antithesis tenant name.
+  ANTITHESIS_API_KEY      API key authentication.
+  ANTITHESIS_USERNAME     Username (deprecated).
+  ANTITHESIS_PASSWORD     Password (deprecated).
+  ANTITHESIS_REPOSITORY   Container registry for pushing images.
   SNOUTY_CONTAINER_ENGINE Force "docker" or "podman" (auto-detected by default)."#)]
     Launch(LaunchArgs),
 
@@ -198,9 +198,18 @@ object:
     /// Output shell completions
     #[command(long_about = r#"Output shell completions
 
-Writes a completion script for SHELL to stdout; install it by sourcing it from
-your shell config, e.g.:
-  snouty completions zsh > ~/.zfunc/_snouty
+Writes a completion script for SHELL to stdout.
+
+If your shell already initializes completion, add only the source line after
+that initialization. Completions are generated at shell startup.
+Open a new shell to load the setup.
+
+For zsh, add this to ~/.zshrc:
+  autoload -Uz compinit
+  compinit
+  source <(snouty completions zsh)
+
+For bash:
   snouty completions bash | sudo tee /etc/bash_completion.d/snouty"#)]
     Completions {
         /// Shell to generate completions for
@@ -614,11 +623,11 @@ pub struct DebugArgs {
 /// only, and a macro expansion is one).
 macro_rules! classified_blocks_help {
     () => {
-        "Matching events print as classified blocks: a `moment HASH VTIME` divider\n\
-         opens each timeline segment (feed its HASH and VTIME into `runs logs` to see\n\
-         the surrounding logs), and each event under it renders on one line with the\n\
-         Antithesis event shapes — SDK assertions, faults, container lifecycle, test\n\
-         composer — each in their own concise form."
+        "Matching events print as classified blocks: a `moment HASH` divider opens\n\
+         each timeline segment. Use `snouty runs logs <run_id> <hash>` to stream logs\n\
+         to the branch's current end. Each event below the divider renders on one\n\
+         line with the Antithesis event shapes — SDK assertions, faults, container\n\
+         lifecycle, test composer — each in their own concise form."
     };
 }
 
@@ -694,8 +703,8 @@ Query snippets (each is a complete QUERY, ready to paste):
 
 "#,
     classified_blocks_help!(),
-    r#" Rows reshaped by map/narrow/fold
-print as raw JSON.
+    r#"
+Rows reshaped by map/narrow/fold print as raw JSON.
 
 Add --json for machine-readable output. Each event prints as one JSON
 object on its own line:
@@ -868,7 +877,7 @@ root (or --begin-vtime) to the branch's current end; a run in progress can
 extend the branch, so the same INPUT_HASH can return more logs later. Give
 VTIME to end the stream at that moment instead.
 
-Output: a `moment HASH VTIME` divider opens each timeline segment, and each
+Output: a `moment HASH` divider opens each timeline segment, and each
 event under it renders on one line as `VTIME [source] payload` — Antithesis
 event shapes (SDK assertions, faults, container lifecycle, test composer)
 each in their own concise form.

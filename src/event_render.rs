@@ -3,7 +3,7 @@
 //! events).
 //!
 //! Every stream entry is classified into an event type and rendered as a
-//! concise block, git-log style: a yellow `moment HASH VTIME` divider opens
+//! concise block, git-log style: a yellow `moment HASH` divider opens
 //! each timeline segment (the moment is the commit, its events are the body),
 //! one line per event beneath it, and dim indented detail lines where a kind
 //! has more to say. Blocks for consecutive segments are separated by a blank
@@ -33,9 +33,8 @@
 //! The renderer also owns the display conventions the streams share: vtime is
 //! normalized through [`VTime`] and shown in a fixed-width cell, truncated —
 //! never rounded — so a value copied off the screen and pasted back lands on,
-//! never past, the line you saw; the divider carries the segment's
-//! full-precision moment for exact `runs logs`/`runs exec`/`snouty debug`
-//! follow-ups.
+//! never past, the line you saw. The divider carries the input hash for
+//! `runs logs <run_id> <hash>`, which streams to the branch's current end.
 //!
 //! Rendering writes into a caller-supplied buffer (see [`Block`]), in the
 //! style of `Display`/`Debug` formatters: one pass over each input, no
@@ -488,16 +487,11 @@ impl EventStreamRenderer {
             if self.last_input_hash.is_some() {
                 out.push('\n');
             }
-            // The divider carries the segment's full-precision moment —
-            // exactly what `runs logs`/`runs exec`/`snouty debug` take.
-            let divider = DisplayWith(|f: &mut fmt::Formatter<'_>| {
-                write!(f, "moment {}", sanitize(hash))?;
-                if let Some(vtime) = vtime.as_ref() {
-                    write!(f, " {vtime}")?;
-                }
-                Ok(())
-            });
-            writeln!(out, "{}", style(divider).yellow())?;
+            writeln!(
+                out,
+                "{}",
+                style(format_args!("moment {}", sanitize(hash))).yellow()
+            )?;
             self.last_input_hash = Some(hash.to_string());
         }
 
@@ -569,7 +563,7 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn opens_each_timeline_segment_with_a_full_precision_moment_divider() {
+    fn opens_each_timeline_segment_with_an_input_hash_divider() {
         let mut r = renderer(false);
         let first = render_entry(
             &mut r,
@@ -579,13 +573,7 @@ mod tests {
                 "output_text": "starting"
             }),
         );
-        // The divider carries the exact moment (pasteable into `runs logs`);
-        // the event line shows the vtime truncated to the cell width and the
-        // source without its stream.
-        assert_eq!(
-            first,
-            "moment -123 311.8487535319291\n311.8487  [app] starting"
-        );
+        assert_eq!(first, "moment -123\n311.8487  [app] starting");
 
         // Same hash: no divider, no blank line.
         let second = render_entry(
@@ -607,7 +595,7 @@ mod tests {
                 "output_text": "branched"
             }),
         );
-        assert_eq!(third, "\nmoment 456 313.5\n313.5     [app] branched");
+        assert_eq!(third, "\nmoment 456\n313.5     [app] branched");
     }
 
     #[test]
@@ -617,10 +605,23 @@ mod tests {
             "source": {"container": "app", "name": "app"},
             "output_text": "starting"
         }));
-        assert_eq!(
-            block,
-            "moment -123 311.8487535319291\n311.8487535319291   [app] starting"
-        );
+        assert_eq!(block, "moment -123\n311.8487535319291   [app] starting");
+    }
+
+    #[hegel::test]
+    fn divider_is_independent_of_event_vtime_and_rendering_depth(tc: hegel::TestCase) {
+        let hash = tc.draw(hegel::generators::integers::<i64>()).to_string();
+        let ticks = tc.draw(hegel::generators::integers::<u64>().max_value((1 << 53) - 1));
+        let vtime = VTime::from_seconds(ticks as f64 / 4294967296.0).unwrap();
+        let entry = json!({
+            "moment": {"input_hash": hash, "vtime": vtime.to_string()},
+            "source": {"container": "app"},
+            "output_text": "event"
+        });
+        for detail in [false, true] {
+            let block = render_entry(&mut renderer(detail), &entry);
+            assert_eq!(block.lines().next().unwrap(), format!("moment {hash}"));
+        }
     }
 
     #[test]
@@ -710,9 +711,8 @@ mod tests {
     #[test]
     fn an_unparsable_vtime_renders_as_a_placeholder() {
         // A vtime the stream could not normalize is never displayed as the
-        // server's own text: the cell holds a placeholder and the divider
-        // drops the vtime, so escape bytes carried in the value have no path
-        // to the terminal.
+        // server's own text: the cell holds a placeholder, so escape bytes
+        // carried in the value have no path to the terminal.
         let block = render_one(json!({
             "moment": {"input_hash": "-1", "vtime": "1.0\u{1b}[2J"},
             "source": {"container": "app"},

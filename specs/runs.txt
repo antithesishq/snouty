@@ -217,6 +217,7 @@ snouty runs properties $R_run_id --name 'Peak memory' --detail
 mock-runs-server
 snouty runs properties $R_run_id --name no-such-property
 [!staging] stdout 'No properties match.*no-such-property'
+! stdout 'Inspect the run'
 
 # --detail conflicts with --json (which already emits the full data), for both
 # `runs properties` and `runs list`.
@@ -241,7 +242,7 @@ snouty --json runs build-logs $R_run_id
 [!staging] stdout '"timestamp".*"text"'
 
 # `snouty runs events` filters by `--match` server-side and prints each
-# matching event as a classified block: a `moment HASH VTIME` divider opens
+# matching event as a classified block: a `moment HASH` divider opens
 # each timeline segment and each event renders as one `VTIME [source] payload`
 # line (no table: rows print as the server sends them).
 #    Against staging the search matches `fault` and carries `--limit`: fault
@@ -255,9 +256,23 @@ mock-runs-server
 [!staging] snouty runs events $R_run_id --match request
 [staging] snouty runs events $R_run_id --match fault --limit 3
 [!staging] ! stdout '^HASH\s+VTIME\s+SOURCE\s+OUTPUT'
-stdout '^moment [0-9-]'
-[!staging] stdout '^moment -456 2\.0$'
+stdout '^moment -?[0-9]+$'
+[!staging] stdout '^moment -456$'
 [!staging] stdout '^2\.0       \[app\] \{"level":"warn","msg":"slow request"\}$'
+
+# The divider supplies the hash for a log stream to the branch's current end.
+snouty runs events --help
+stdout 'a `moment HASH` divider'
+stdout 'snouty runs logs <run_id> <hash>'
+stdout 'current end'
+! stdout 'moment HASH VTIME'
+snouty runs search --help
+stdout 'a `moment HASH` divider'
+stdout 'snouty runs logs <run_id> <hash>'
+! stdout 'moment HASH VTIME'
+snouty runs logs --help
+stdout 'a `moment HASH` divider'
+! stdout 'moment HASH VTIME'
 
 # Multiple needles need the events-search API to AND them server-side. With
 # the `runs-search` feature off, the command refuses up front and names the
@@ -274,7 +289,7 @@ mock-runs-server
 env SNOUTY_UNSTABLE_FEATURES=runs-search
 [!staging] snouty runs events $R_run_id --match request --match slow
 [staging] snouty runs events $R_run_id --match fault --match network --limit 3
-[!staging] stdout '^moment -456 2\.0$'
+[!staging] stdout '^moment -456$'
 [!staging] stdout '\[app\] \{"level":"warn","msg":"slow request"\}'
 # A needle that isn't present excludes the event entirely.
 mock-runs-server
@@ -384,10 +399,19 @@ stderr '^Error: API error: 400.*'
 [!staging] ! snouty runs
 [!staging] stderr 'API error: 429 Too Many Requests.*'
 
-# `snouty runs properties` prints a friendly empty-state message when no properties exist.
+# An unfiltered empty result succeeds and points to the run details.
 mock-runs-server
 snouty runs properties run-empty
-stdout 'No properties found\.'
+stdout '^No properties found\.$'
+stdout '^Inspect the run with `snouty runs show run-empty`\.$'
+! stdout 'this run is|properties are generated'
+! stderr '^Error:'
+
+# An empty JSON result succeeds without human guidance.
+mock-runs-server
+snouty --json runs properties run-empty
+! stdout '.'
+! stderr 'No properties|Inspect the run|^Error:'
 
 # `snouty runs properties` renders one row per property regardless of whether
 # any examples were sampled.
@@ -435,6 +459,16 @@ mock-runs-server
 ! snouty runs logs no-such-run -123 1.0
 stderr '.*run not found: no-such-run.*'
 ! stderr '.*API error.*'
+! stderr 'Suggestion:'
+
+# A missing moment in an existing run gives two separate suggestions.
+# The recovery command includes the run ID and the required search query.
+mock-runs-server
+! snouty runs logs run-1 0 999999.0
+stderr '^Error: API error: 404 Not Found — Resource not found$'
+stderr '^Suggestion: the run exists but no moment matches this hash and vtime$'
+stderr '^Suggestion: search for a moment using `snouty runs events run-1 <search query>`$'
+! stderr 'list valid moments with'
 
 # A real but incomplete run has no properties yet: explain that they're
 # generated on completion instead of reporting the run as missing. run-3 is the
@@ -449,8 +483,8 @@ stderr '.*this run is incomplete.*'
 ! snouty runs properties
 stderr '.*'
 
-# `snouty runs logs` renders classified event blocks: a `moment HASH VTIME`
-# divider (full precision, pasteable back into `runs logs`) opens each
+# `snouty runs logs` renders classified event blocks: a `moment HASH`
+# divider (its hash is sufficient for `runs logs`) opens each
 # timeline segment, and each event under it renders as one
 # `VTIME [source] payload` line. Antithesis shapes get their own concise
 # forms: an SDK assertion shows a verdict badge (HIT/FAIL on evaluations,
@@ -460,9 +494,9 @@ stderr '.*'
 # Without VTIME the stream runs to the branch's current end.
 mock-runs-server
 snouty runs logs run-1 -123
-stdout '^moment -123 1\.0$'
+stdout '^moment -123$'
 stdout '^1\.0       \[app\] \{"level":"info","msg":"starting"\}$'
-stdout '^moment -456 2\.0$'
+stdout '^moment -456$'
 stdout '^2\.0       \[app\] \{"level":"warn","msg":"slow request"\}$'
 stdout '^311\.8487  \[control\] CATALOG AlwaysOrUnreachable "Counter'\''s value retrieved"$'
 stdout '^400\.5     \[test_composer\] task started core/parallel_driver_fetch$'
@@ -486,6 +520,8 @@ stdout '^2\.0       \[app\] \{"level":"warn","msg":"slow request"\}$'
 # the assertion's source location on an indented detail line.
 mock-runs-server
 snouty runs logs --detail run-1 -123
+stdout '^moment -123$'
+stdout '^moment -456$'
 stdout '^311\.8487535319291   \[control\] CATALOG AlwaysOrUnreachable "Counter'\''s value retrieved"$'
 stdout '^ +@ control\.go:get:87$'
 
@@ -566,7 +602,7 @@ stderr '.*empty search term.*'
 # whose terms are treated as additional needles.
 mock-runs-server
 snouty runs events $R_run_id request
-[!staging] stdout '^moment -456 2\.0$'
+[!staging] stdout '^moment -456$'
 [!staging] stdout '\[app\] \{"level":"warn","msg":"slow request"\}'
 
 # `--limit` caps how many events the server returns. Three events match
@@ -653,7 +689,7 @@ stderr 'SNOUTY_UNSTABLE_FEATURES=runs-search'
 env SNOUTY_UNSTABLE_FEATURES=runs-search
 
 # `snouty runs search` runs one event-set DSL query server-side and prints
-# each matching event as a classified block under its `moment HASH VTIME`
+# each matching event as a classified block under its `moment HASH`
 # divider, exactly like `runs events` (no table: on a live run the stream
 # stays open, so rows print as they arrive).
 #    Against staging the query carries --limit for the same wall-time reason
@@ -661,7 +697,7 @@ env SNOUTY_UNSTABLE_FEATURES=runs-search
 mock-runs-server
 [!staging] snouty runs search $R_run_id 'contains({output_text: "slow request"})'
 [staging] snouty runs search $R_run_id 'contains({output_text: "fault"})' --limit 3
-[!staging] stdout '^moment -456 2\.0$'
+[!staging] stdout '^moment -456$'
 [!staging] stdout '^2\.0       \[app\] \{"level":"warn","msg":"slow request"\}$'
 ! stdout '^HASH\s+VTIME\s+SOURCE\s+OUTPUT'
 

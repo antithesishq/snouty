@@ -317,20 +317,27 @@ fn shadowed_credentials_check(
     .note(
         Level::Warning,
         format!(
-            "snouty uses the {} from {}",
+            "snouty is using the {} from {}",
             in_use.value(),
             describe_origin(in_use)
         ),
     );
     for other in shadowed {
-        check = check.note(
-            Level::Note,
-            format!(
-                "snouty ignores the {} from {}",
-                other.value(),
-                describe_origin(other)
-            ),
-        );
+        let credential = match other.value() {
+            AuthenticationInfo::ApiKey { .. } => "an API key is",
+            AuthenticationInfo::GithubActionsOidc { .. } => "a GitHub Actions OIDC token is",
+            AuthenticationInfo::OAuth { .. } => "OAuth credentials are",
+            AuthenticationInfo::Password { .. } => "a username and password are",
+        };
+        let origin = match other {
+            AttributedValue::SettingsFile {
+                settings_file_path,
+                profile: None,
+                ..
+            } => settings_file_path.display().to_string(),
+            _ => describe_origin(other),
+        };
+        check = check.note(Level::Note, format!("{credential} configured in {origin}"));
     }
     Some(check.note(
         Level::Note,
@@ -346,8 +353,8 @@ fn describe_origin<T>(attribution: &AttributedValue<T>) -> String {
             environment_variable_names,
             ..
         } => format!(
-            "the [{}] environment variable{}",
-            environment_variable_names.join(", "),
+            "the `{}` environment variable{}",
+            environment_variable_names.join("` and `"),
             if environment_variable_names.len() == 1 {
                 ""
             } else {
@@ -377,7 +384,7 @@ fn drop_action<T>(attribution: &AttributedValue<T>) -> String {
         AttributedValue::EnvironmentVariable {
             environment_variable_names,
             ..
-        } => format!("unset [{}]", environment_variable_names.join(", ")),
+        } => format!("`unset {}`", environment_variable_names.join(" ")),
         AttributedValue::SettingsFile {
             settings_file_path,
             profile,
@@ -841,23 +848,27 @@ mod tests {
             .find(|c| c.name == "credential_sources")
             .expect("the conflict is reported");
         assert_eq!(check.status, Status::Warn);
-        let notes = note_text(check);
-        assert!(
-            notes.contains(
-                "snouty uses the username and password from the \
-                 [ANTITHESIS_USERNAME, ANTITHESIS_PASSWORD] environment variables"
-            ),
-            "got: {notes}"
-        );
-        assert!(
-            notes.contains(
-                "snouty ignores the API key from the [default] profile in /tmp/credentials.toml"
-            ),
-            "got: {notes}"
-        );
-        assert!(
-            notes.contains("unset [ANTITHESIS_USERNAME, ANTITHESIS_PASSWORD]"),
-            "got: {notes}"
+        assert_eq!(
+            check
+                .notes
+                .iter()
+                .map(|n| (n.level, n.text.as_str()))
+                .collect::<Vec<_>>(),
+            [
+                (
+                    Level::Warning,
+                    "snouty is using the username and password from the \
+                    `ANTITHESIS_USERNAME` and `ANTITHESIS_PASSWORD` environment variables"
+                ),
+                (
+                    Level::Note,
+                    "an API key is configured in /tmp/credentials.toml"
+                ),
+                (
+                    Level::Note,
+                    "`unset ANTITHESIS_USERNAME ANTITHESIS_PASSWORD` to use the next source"
+                ),
+            ]
         );
     }
 
@@ -880,7 +891,10 @@ mod tests {
             "got: {notes}"
         );
         assert!(
-            notes.contains("snouty ignores the username and password"),
+            notes.contains(
+                "a username and password are configured in the \
+                `ANTITHESIS_USERNAME` and `ANTITHESIS_PASSWORD` environment variables"
+            ),
             "got: {notes}"
         );
     }

@@ -52,6 +52,14 @@ uv run scripts/gen-gallery.py --out "$OUT"
 Record the gallery directory and the number of stories (`ls "$OUT"/*.md | wc -l`)
 for the report header.
 
+Check the capture mode stated in each story. Current human-output captures use
+a 120-column terminal and preserve the screen and scrollback in plain text.
+Interactive login stories show prompt frames at the same terminal size.
+Replay the linked `.cast` file to inspect colors or redraws. JSON captures use
+pipes. Older galleries can also use pipes for human output: do not infer
+terminal wrapping, truncation, or alignment from those captures. Use a new
+terminal capture before reporting a layout defect.
+
 ## Step 2 — Read the stories
 
 Each `*.md` file has this shape:
@@ -150,9 +158,10 @@ Does the output give the user what they need to run the **obvious next
 command**? Concretely:
 - `runs list` / `runs` → are full run IDs present and copyable (not truncated)
   so you can paste one into `runs show` / `runs properties`?
-- `runs events` → are the `hash` and `vtime` shown so you can feed them into
-  `runs logs`? Are sources/streams legible enough to build a `--source` /
-  `--stream` filter?
+- `runs events` → is the `moment HASH` divider's hash complete and copyable
+  into `runs logs <run_id> <hash>`? This streams to the branch's current end;
+  vtime is optional and sets an earlier end. Are sources/streams legible enough
+  to build a `--source` / `--stream` filter?
 - `runs properties` → are property names complete enough to pass to
   `runs property`?
 - error / ambiguous / not-found → does it suggest valid alternatives or the
@@ -190,8 +199,9 @@ threshold.
 - **Truncation**: is `…`-truncation hiding information the user needs (Axis B
   overlap), or is it reasonable?
 - **Density**: walls of near-identical lines, redundant repetition, no grouping.
-- **Stray control characters**: raw escape sequences (e.g. a literal `[K`) that
-  a terminal would hide but a piped or CI-captured log shows. One known
+- **Stray control characters**: flag visible control characters in the rendered
+  terminal text. Raw `.cast` recordings contain valid terminal instructions;
+  replay them before judging their effect. For older piped galleries, one known
   exception: in `validate-*` stories, Docker Compose prefixes each
   `<container> exited with code <n>` line with `\r` + `ESC[K`. The escape is
   compose's, not snouty's — `logConsumer.Status` writes it with no TTY check,
@@ -294,11 +304,11 @@ Guidance for a high-signal report:
 - The gallery is pinned to whatever live run IDs were fresh at generation time,
   so exact IDs/values differ between runs. Judge the *shape and quality* of the
   output, not the specific data.
-- Rendering is judged for an ordinary terminal, without a fixed width to check
-  against. The gallery captures non-interactive output, which is the
-  conservative case: snouty may detect a wider TTY when run by hand. The TTY
-  stories are the exception — they run on a real 120-column terminal, so a line
-  that wraps there wraps for the user too.
+- Human output runs on a real terminal at 120 columns and 40 rows. The capture
+  includes wrapping at that width. Judge whether the layout helps the reader;
+  width alone is not a defect. JSON captures use pipes and do not show terminal
+  layout. When a report renders the captures as HTML, keep the captured line
+  breaks and spaces. Use horizontal scrolling instead of browser line wrapping.
 - The `login-*` stories run in a throwaway `$HOME` that is removed after capture,
   and are fed fake secrets that are redacted again in the file — so the "Persisted
   state" you review never contains a real credential or touches real config. On

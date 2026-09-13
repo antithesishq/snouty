@@ -572,7 +572,7 @@ async fn cmd_runs_properties(
             outln!("{}", serde_json::to_string(property)?)?;
         }
     } else if properties.is_empty() {
-        outln!("{}", explain_empty_properties(&api, run_id, &filter).await)?;
+        outln!("{}", no_properties_message(run_id, &filter))?;
     } else if detail {
         outln!("{}", render_properties_detail(&properties))?;
     } else {
@@ -583,7 +583,7 @@ async fn cmd_runs_properties(
 }
 
 /// The empty-result message, naming whichever filters were active.
-fn no_properties_message(filter: &PropertyFilter) -> String {
+fn no_properties_message(run_id: &str, filter: &PropertyFilter) -> String {
     let mut parts = Vec::new();
     match filter.status {
         Some(PropertyStatus::Passing) => parts.push("passing".to_string()),
@@ -597,32 +597,10 @@ fn no_properties_message(filter: &PropertyFilter) -> String {
         parts.push(format!("group '{group}'"));
     }
     if parts.is_empty() {
-        "No properties found.".to_string()
+        format!("No properties found.\n\nInspect the run with `snouty runs show {run_id}`.")
     } else {
         format!("No properties match ({}).", parts.join(", "))
     }
-}
-
-/// The message for an empty (non-JSON) properties result. A *filtered* empty is
-/// genuinely "nothing matched"; an *unfiltered* empty often just means the run
-/// is incomplete (no triage report yet), so probe the run to say so rather than
-/// implying no properties exist.
-async fn explain_empty_properties(
-    api: &AntithesisApi,
-    run_id: &str,
-    filter: &PropertyFilter<'_>,
-) -> String {
-    let unfiltered = filter.status.is_none() && filter.name.is_none() && filter.group.is_none();
-    if unfiltered
-        && let RunProbe::Exists(run) = probe_run(api, run_id).await
-        && run.status != RunStatus::Completed
-    {
-        return format!(
-            "No properties found — this run is {}; properties are generated when a run completes.",
-            run.status
-        );
-    }
-    no_properties_message(filter)
 }
 
 /// Outcome of probing a run-scoped 404 with `get_run`: does the run itself not
@@ -693,7 +671,7 @@ async fn explain_run_scoped_error(
 
 /// Like [`explain_run_scoped_error`], for the logs endpoint. A 404 that
 /// survives the probe means the run exists and the hash/vtime pair does not
-/// name a moment in it, so say that and point at the command that lists valid
+/// name a moment in it, so say that and point at the command that searches for
 /// moments. The probe already ran inside [`explain_run_scoped_error`]; nothing
 /// extra is fetched here.
 async fn explain_logs_error(
@@ -703,10 +681,10 @@ async fn explain_logs_error(
 ) -> color_eyre::eyre::Report {
     let err = explain_run_scoped_error(api, run_id, err).await;
     if api_error_status(&err) == Some(404) {
-        err.suggestion(format!(
-            "the run exists but no moment matches this hash and vtime — list valid moments with \
-             `snouty runs events {run_id}`"
-        ))
+        err.suggestion("the run exists but no moment matches this hash and vtime")
+            .suggestion(format!(
+                "search for a moment using `snouty runs events {run_id} <search query>`"
+            ))
     } else {
         err
     }
@@ -4470,7 +4448,7 @@ mod tests {
         // The logs endpoint's 404-with-existing-run means "bad moment", the
         // one case where snouty can name the next command.
         #[tokio::test]
-        async fn logs_error_suggests_listing_moments_when_the_run_exists() {
+        async fn logs_error_suggests_searching_for_moments_when_the_run_exists() {
             let server = mock_get_run(
                 "run-1",
                 200,
@@ -4484,11 +4462,15 @@ mod tests {
             .await;
             let api = test_api(&server.uri());
             let result = explain_logs_error(&api, "run-1", api_error(404, "API error: 404")).await;
-            let debug = format!("{result:?}");
+            let debug = strip_ansi(&format!("{result:?}")).into_owned();
             assert!(
-                debug.contains("snouty runs events run-1"),
-                "expected the moment-listing suggestion, got: {debug}"
+                debug.contains(
+                    "Suggestion: the run exists but no moment matches this hash and vtime\n\
+                     Suggestion: search for a moment using `snouty runs events run-1 <search query>`"
+                ),
+                "expected separate explanation and search suggestions, got: {debug}"
             );
+            assert!(!debug.contains("list valid moments with"), "got: {debug}");
         }
 
         // A missing run keeps the plain "run not found" with no moment talk.

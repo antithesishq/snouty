@@ -679,6 +679,18 @@ fn mock_route(
                 let (s, b) = mock_route_get_run_build_logs(run_id);
                 (s, b, ndjson)
             } else if let Some(run_id) = rest.strip_suffix("/logs") {
+                // The gallery observes a 404 for hash 0, vtime 999999.0 on
+                // orbitinghail release 62.1.
+                if mock_query_param(query, "input_hash").as_deref() == Some("0")
+                    && mock_query_param(query, "vtime").as_deref() == Some("999999.0")
+                {
+                    return (
+                        404,
+                        r#"{"message":"Resource not found"}"#.into(),
+                        json,
+                        NO_CACHE_CACHE_CONTROL,
+                    );
+                }
                 let (s, b) = mock_route_get_run_logs(run_id);
                 (s, b, ndjson)
             } else if let Some(run_id) = rest.strip_suffix("/properties") {

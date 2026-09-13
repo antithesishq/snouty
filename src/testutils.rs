@@ -700,7 +700,7 @@ fn mock_route(
         }
         ("POST", p) if p.starts_with("/api/v0/runs/") => {
             let rest = &p["/api/v0/runs/".len()..];
-            if let Some(run_id) = rest.strip_suffix("/execute_command") {
+            if let Some(run_id) = rest.strip_suffix("/command") {
                 let (s, b) = mock_route_execute_command(run_id, req_body);
                 (s, b, ndjson, NO_CACHE_CACHE_CONTROL)
             } else {
@@ -873,6 +873,7 @@ fn mock_route_get_run(run_id: &str) -> (u16, String) {
             r#""failure_moment":{"input_hash":"-3625518438076122494","vtime":"398.4898056755774"}"#
                 .to_string(),
         );
+        fields.push(r#""failure_reason":"the workload container exited early""#.to_string());
     }
 
     (200, format!("{{{}}}", fields.join(",")))
@@ -1090,13 +1091,13 @@ fn mock_route_search_run_events(run_id: &str, query_str: Option<&str>) -> (u16, 
     let Some(needle) = mock_query_param(query_str, "q") else {
         return (400, r#"{"message":"missing q"}"#.to_string());
     };
-    // `limit` is documented as 1..=999, and the server rejects the rest.
+    // `limit` is documented as 1..=1000, and the server rejects the rest.
     if let Some(limit) = mock_query_param(query_str, "limit").and_then(|l| l.parse::<u64>().ok())
-        && !(1..=999).contains(&limit)
+        && !(1..=1000).contains(&limit)
     {
         return (
             400,
-            format!(r#"{{"message":"Bad request: limit {limit} is out of the range 1..=999"}}"#),
+            format!(r#"{{"message":"Bad request: limit {limit} is out of the range 1..=1000"}}"#),
         );
     }
 
@@ -1126,25 +1127,38 @@ fn mock_route_search_run_events(run_id: &str, query_str: Option<&str>) -> (u16, 
 /// input hash (verified against the live API).
 const MOCK_EXEC_BRANCH_HASH: &str = "-8206006569229276678";
 
-/// One `output` event of a mock execution.
 fn mock_exec_output(stream: &str, text: &str, vtime: &str) -> String {
-    format!(
-        r#"{{"type":"output","stream":"{stream}","text":"{text}","moment":{{"input_hash":"{MOCK_EXEC_BRANCH_HASH}","vtime":"{vtime}"}}}}"#
-    )
+    serde_json::json!({
+        "moment": {"input_hash": MOCK_EXEC_BRANCH_HASH, "vtime": vtime},
+        "output_text": text,
+        "source": {"stream": stream},
+    })
+    .to_string()
 }
 
-/// The terminal `exited` event of a mock execution.
-fn mock_exec_exited(exit_code: i64) -> String {
-    format!(
-        r#"{{"type":"exited","exit_code":{exit_code},"end_moment":{{"input_hash":"{MOCK_EXEC_BRANCH_HASH}","vtime":"398.492"}}}}"#
-    )
+/// A command killed by the session can have no exit code.
+fn mock_exec_exited(exit_code: Option<i64>) -> String {
+    serde_json::json!({
+        "status": "exited",
+        "exit_code": exit_code,
+        "end_moment": {"input_hash": MOCK_EXEC_BRANCH_HASH, "vtime": "398.492"},
+    })
+    .to_string()
+}
+
+fn mock_exec_timed_out(vtime: &str) -> String {
+    serde_json::json!({
+        "status": "timed_out",
+        "last_moment": {"input_hash": MOCK_EXEC_BRANCH_HASH, "vtime": vtime},
+    })
+    .to_string()
 }
 
 fn mock_route_execute_command(run_id: &str, req_body: &str) -> (u16, String) {
     // See the `run-stream-error` fixture note in `mock_route_get_run_build_logs`.
     if run_id == "run-stream-error" {
         let lines = [
-            mock_exec_output("stdout", "Linux antithesis 6.12.0", "398.491"),
+            mock_exec_output("info", "Linux antithesis 6.12.0", "398.491"),
             MOCK_STREAM_ERROR_LINE.to_string(),
         ];
         return (200, lines.join("\n") + "\n");
@@ -1178,50 +1192,33 @@ fn mock_route_execute_command(run_id: &str, req_body: &str) -> (u16, String) {
     let timeout = request["timeout_seconds"].as_u64().unwrap_or(30);
 
     let lines = match script.trim() {
-        "true" => vec![mock_exec_exited(0)],
-        "exit 5" => vec![mock_exec_exited(5)],
-        // A command the session killed reports no exit code (`exit_code` is
-        // nullable in the spec).
-        "no-exit-code" => {
-            vec![format!(
-                r#"{{"type":"exited","exit_code":null,"end_moment":{{"input_hash":"{MOCK_EXEC_BRANCH_HASH}","vtime":"398.492"}}}}"#
-            )]
-        }
+        "true" => vec![mock_exec_exited(Some(0))],
+        "exit 5" => vec![mock_exec_exited(Some(5))],
+        "no-exit-code" => vec![mock_exec_exited(None)],
         "sleep 60" => vec![
-            mock_exec_output("stdout", "still working", "398.491"),
-            r#"{"type":"timed_out"}"#.to_string(),
+            mock_exec_output("info", "still working", "398.491"),
+            mock_exec_timed_out("398.491"),
         ],
         "print-timeout" => vec![
-            mock_exec_output("stdout", &format!("timeout_seconds={timeout}"), "398.491"),
-            mock_exec_exited(0),
+            mock_exec_output("info", &format!("timeout_seconds={timeout}"), "398.491"),
+            mock_exec_exited(Some(0)),
         ],
-        "truncate-stream" => vec![mock_exec_output("stdout", "partial output", "398.491")],
-        // The API also labels stderr output with the short form `err`
-        // (observed on the live endpoint). snouty must route it like
-        // `stderr`.
-        "short-stream-err" => vec![
-            mock_exec_output("err", "short-form stderr line", "398.491"),
-            mock_exec_exited(0),
-        ],
-        // A frame type this build does not know, and a known frame carrying a
-        // field it does not know. The stream must survive both.
+        "truncate-stream" => vec![mock_exec_output("info", "partial output", "398.491")],
+        // A result status this build does not know, and a known frame
+        // carrying a field it does not know. The stream must survive both.
         "unknown-frames" => vec![
             format!(
-                r#"{{"type":"heartbeat","at":"398.4905","input_hash":"{MOCK_EXEC_BRANCH_HASH}"}}"#
+                r#"{{"status":"heartbeat","at":"398.4905","input_hash":"{MOCK_EXEC_BRANCH_HASH}"}}"#
             ),
             format!(
-                r#"{{"type":"output","stream":"stdout","text":"known with extras","truncated":true,"moment":{{"input_hash":"{MOCK_EXEC_BRANCH_HASH}","vtime":"398.491"}}}}"#
+                r#"{{"moment":{{"input_hash":"{MOCK_EXEC_BRANCH_HASH}","vtime":"398.491"}},"output_text":"known with extras","source":{{"stream":"info"}},"truncated":true}}"#
             ),
-            mock_exec_exited(0),
+            mock_exec_exited(Some(0)),
         ],
         _ => vec![
-            mock_exec_output("stdout", "Linux antithesis 6.12.0", "398.491"),
-            mock_exec_output(
-                "stderr",
-                "warning: virtual clock drift detected",
-                "398.4915",
-            ),
-            mock_exec_exited(0),
+            mock_exec_output("info", "Linux antithesis 6.12.0", "398.491"),
+            mock_exec_output("error", "warning: virtual clock drift detected", "398.4915"),
+            mock_exec_exited(Some(0)),
         ],
     };
     (200, lines.join("\n") + "\n")
@@ -1235,8 +1232,6 @@ fn mock_route_execute_command(run_id: &str, req_body: &str) -> (u16, String) {
 /// from the live server: the
 /// mock's stream always closes (it is a plain HTTP response), where a live
 /// run's stream stays open forever.
-/// `count_only` is not modelled: snouty does not send it (the count is
-/// moving to a separate endpoint).
 ///
 /// The mock carries no DSL engine. A query is "interpreted" by taking its
 /// needles (see [`query_needles`]) and requiring each, case-insensitively,
@@ -1497,7 +1492,7 @@ mod tests {
         // response moments carry the branch hash, never the requested one.
         let (status, out) = mock_route_execute_command("run-2", &body("uname -a", 30));
         assert_eq!(status, 200);
-        assert!(out.contains(r#""stream":"stderr""#), "got: {out}");
+        assert!(out.contains(r#""stream":"error""#), "got: {out}");
         assert!(out.ends_with("\n"));
         assert!(out.contains(MOCK_EXEC_BRANCH_HASH));
         assert!(!out.contains(r#""input_hash":"-1""#), "got: {out}");
@@ -1506,7 +1501,12 @@ mod tests {
         assert!(out.contains(r#""exit_code":5"#), "got: {out}");
 
         let (_, out) = mock_route_execute_command("run-2", &body("sleep 60", 30));
-        assert!(out.ends_with("{\"type\":\"timed_out\"}\n"), "got: {out}");
+        assert!(
+            out.ends_with(
+                "{\"status\":\"timed_out\",\"last_moment\":{\"input_hash\":\"-8206006569229276678\",\"vtime\":\"398.491\"}}\n"
+            ),
+            "got: {out}"
+        );
 
         // print-timeout echoes the timeout_seconds the server received, so a
         // spec can verify the --timeout flag reaches the wire.

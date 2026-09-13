@@ -693,7 +693,7 @@ async fn explain_run_scoped_error(
 
 /// Like [`explain_run_scoped_error`], for the logs endpoint. A 404 that
 /// survives the probe means the run exists and the hash/vtime pair does not
-/// name a moment in it, so say that and point at the command that lists valid
+/// name a moment in it, so say that and point at the command that searches for
 /// moments. The probe already ran inside [`explain_run_scoped_error`]; nothing
 /// extra is fetched here.
 async fn explain_logs_error(
@@ -703,10 +703,10 @@ async fn explain_logs_error(
 ) -> color_eyre::eyre::Report {
     let err = explain_run_scoped_error(api, run_id, err).await;
     if api_error_status(&err) == Some(404) {
-        err.suggestion(format!(
-            "the run exists but no moment matches this hash and vtime — list valid moments with \
-             `snouty runs events {run_id}`"
-        ))
+        err.suggestion("the run exists but no moment matches this hash and vtime")
+            .suggestion(format!(
+                "search for a moment using `snouty runs events {run_id} <search query>`"
+            ))
     } else {
         err
     }
@@ -4470,7 +4470,7 @@ mod tests {
         // The logs endpoint's 404-with-existing-run means "bad moment", the
         // one case where snouty can name the next command.
         #[tokio::test]
-        async fn logs_error_suggests_listing_moments_when_the_run_exists() {
+        async fn logs_error_suggests_searching_for_moments_when_the_run_exists() {
             let server = mock_get_run(
                 "run-1",
                 200,
@@ -4484,11 +4484,15 @@ mod tests {
             .await;
             let api = test_api(&server.uri());
             let result = explain_logs_error(&api, "run-1", api_error(404, "API error: 404")).await;
-            let debug = format!("{result:?}");
+            let debug = strip_ansi(&format!("{result:?}")).into_owned();
             assert!(
-                debug.contains("snouty runs events run-1"),
-                "expected the moment-listing suggestion, got: {debug}"
+                debug.contains(
+                    "Suggestion: the run exists but no moment matches this hash and vtime\n\
+                     Suggestion: search for a moment using `snouty runs events run-1 <search query>`"
+                ),
+                "expected separate explanation and search suggestions, got: {debug}"
             );
+            assert!(!debug.contains("list valid moments with"), "got: {debug}");
         }
 
         // A missing run keeps the plain "run not found" with no moment talk.

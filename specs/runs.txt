@@ -435,6 +435,16 @@ mock-runs-server
 ! snouty runs logs no-such-run -123 1.0
 stderr '.*run not found: no-such-run.*'
 ! stderr '.*API error.*'
+! stderr 'Suggestion:'
+
+# A missing moment in an existing run gives two separate suggestions.
+# The recovery command includes the run ID and the required search query.
+mock-runs-server
+! snouty runs logs run-1 0 999999.0
+stderr '^Error: API error: 404 Not Found — Resource not found$'
+stderr '^Suggestion: the run exists but no moment matches this hash and vtime$'
+stderr '^Suggestion: search for a moment using `snouty runs events run-1 <search query>`$'
+! stderr 'list valid moments with'
 
 # A real but incomplete run has no properties yet: explain that they're
 # generated on completion instead of reporting the run as missing. run-3 is the

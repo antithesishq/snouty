@@ -1738,10 +1738,16 @@ def build_stories(d: Discovery) -> list[Story]:
             "runs-logs-bad-moment",
             "Try logs with a moment that doesn't exist",
             "I ask for a moment that isn't in this run; I want a clean error.",
-            "A clean error, not a crash or stack trace.",
+            "A clean error with two suggestion lines: the run exists but the moment does not; "
+            "search with `snouty runs events <run ID> <search query>`. Non-zero exit.",
             ["runs", "logs", d.success, "0", "999999.0"],
-            expect_message("error", "not found", "no ", "invalid", "bad"),
+            fails_with(
+                "Error: API error: 404 Not Found — Resource not found",
+                "Suggestion: the run exists but no moment matches this hash and vtime\n"
+                f"Suggestion: search for a moment using `snouty runs events {d.success} <search query>`",
+            ),
             json_capable=False,
+            expect_ok=False,
         ),
         Story(
             "runs-logs-incomplete",

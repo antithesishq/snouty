@@ -10,6 +10,12 @@
 # checks above the skip (arg parsing, schema validation) fail before any API
 # call and run in both modes.
 
+# Legacy credentials are deprecated, not required when the API key is unset.
+snouty launch --help
+stdout '^  ANTITHESIS_USERNAME +Username \(deprecated\)\.$'
+stdout '^  ANTITHESIS_PASSWORD +Password \(deprecated\)\.$'
+! stdout 'required when API key is not set'
+
 # The user specifies a webhook endpoint name via -w / --webhook (required).
 ! snouty launch --duration 30
 stderr '--webhook.*'

@@ -135,8 +135,8 @@ flags and the README). Environment variables take precedence.
 Environment variables (override any settings file):
   ANTITHESIS_TENANT       Your Antithesis tenant name (required).
   ANTITHESIS_API_KEY      API key authentication (preferred).
-  ANTITHESIS_USERNAME     Username (deprecated; required when API key is not set).
-  ANTITHESIS_PASSWORD     Password (deprecated; required when API key is not set).
+  ANTITHESIS_USERNAME     Username (deprecated).
+  ANTITHESIS_PASSWORD     Password (deprecated).
   ANTITHESIS_REPOSITORY   Container registry for pushing images (required with --config).
   SNOUTY_CONTAINER_ENGINE Force "docker" or "podman" (auto-detected by default)."#)]
     Launch(LaunchArgs),

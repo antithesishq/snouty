@@ -29,7 +29,9 @@ fn docs_update_sets_custom_user_agent() {
 
     assert_eq!(
         mock_server.user_agent(),
-        Some(snouty::user_agent_with(Some("test-harness_1-2-3")))
+        Some(snouty::user_agent::user_agent_with(Some(
+            "test-harness_1-2-3"
+        )))
     );
 }
 
@@ -46,7 +48,7 @@ fn docs_update_user_agent_omits_agent_without_harness() {
 
     assert_eq!(
         mock_server.user_agent(),
-        Some(snouty::user_agent_with(None))
+        Some(snouty::user_agent::user_agent_with(None))
     );
 }
 

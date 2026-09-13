@@ -1111,7 +1111,7 @@ fn default_request_headers() -> Result<reqwest::header::HeaderMap> {
     let mut headers = reqwest::header::HeaderMap::new();
     headers.insert(
         reqwest::header::USER_AGENT,
-        HeaderValue::from_str(&crate::user_agent())
+        HeaderValue::from_str(&crate::user_agent::user_agent())
             .wrap_err("failed to build User-Agent header")?,
     );
     for (name, value) in extra_headers_from_env()? {
@@ -1995,7 +1995,7 @@ mod tests {
             .expect("request should carry a User-Agent")
             .to_str()
             .unwrap();
-        assert_eq!(user_agent, crate::user_agent());
+        assert_eq!(user_agent, crate::user_agent::user_agent());
         assert!(user_agent.starts_with("snouty/"));
     }
 

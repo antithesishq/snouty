@@ -131,7 +131,7 @@ async fn download_and_cache_db() -> Result<()> {
 /// has not changed (304 Not Modified).
 async fn fetch_db_if_changed() -> Result<Option<(Vec<u8>, String)>> {
     let client = reqwest::Client::builder()
-        .user_agent(crate::user_agent())
+        .user_agent(crate::user_agent::user_agent())
         .build()?;
     let mut request = client.get(format!("{}/sqlite.db", docs_url()));
 

@@ -1,6 +1,7 @@
 mod support;
 
 use predicates::prelude::*;
+use snouty::user_agent::user_agent_with;
 use support::*;
 use tempfile::TempDir;
 
@@ -21,15 +22,30 @@ fn docs_update_sets_custom_user_agent() {
 
     set_docs_cache_env(&mut snouty(), &cache_dir)
         .env("ANTITHESIS_DOCS_URL", mock_server.url())
+        .env("AI_AGENT", "test-harness_1-2-3")
         .args(["docs", "search", "docker"])
         .assert()
         .success()
         .stdout(predicate::str::contains("/docs/guides/docker_basics/"));
 
     assert_eq!(
-        mock_server.user_agent().as_deref(),
-        Some(snouty::user_agent().as_str()),
+        mock_server.user_agent(),
+        Some(user_agent_with(Some("test-harness_1-2-3")))
     );
+}
+
+#[test]
+fn docs_update_user_agent_omits_agent_without_harness() {
+    let cache_dir = TempDir::new().unwrap();
+    let mock_server = MockDocsServer::start();
+
+    set_docs_cache_env(&mut snouty(), &cache_dir)
+        .env("ANTITHESIS_DOCS_URL", mock_server.url())
+        .args(["docs", "search", "docker"])
+        .assert()
+        .success();
+
+    assert_eq!(mock_server.user_agent(), Some(user_agent_with(None)));
 }
 
 #[test]

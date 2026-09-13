@@ -29,17 +29,7 @@ pub mod tag;
 #[doc(hidden)]
 pub mod testutils;
 pub mod time;
+pub mod user_agent;
 pub mod util;
 pub mod validate;
 pub mod vtime;
-
-/// User-Agent string sent with every HTTP request snouty makes.
-pub fn user_agent() -> String {
-    format!(
-        "snouty/{} ({}; {}; rust{})",
-        env!("CARGO_PKG_VERSION"),
-        std::env::consts::OS,
-        std::env::consts::ARCH,
-        env!("SNOUTY_RUSTC_VERSION")
-    )
-}

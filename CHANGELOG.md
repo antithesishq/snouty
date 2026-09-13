@@ -1,9 +1,14 @@
 # Unreleased
 
+Nothing Yet!
+
+# Version 0.7.2 (2026-09-13)
+
 - `snouty runs show` prints a `Failure Reason` row for an incomplete run that reports one ([#300](https://github.com/antithesishq/snouty/pull/300))
 - `snouty runs events --limit` accepts up to 1000 ([#300](https://github.com/antithesishq/snouty/pull/300))
 - `snouty runs exec` (unstable) follows API release 61.3. Its `--json` output changes shape: each output line is an event in the `runs logs` form, with the text under `output_text` and the stream label under `source.stream`, and the final record carries `status` (`exited` or `timed_out`) instead of `type`. The command needs a tenant on release 61.3 or later ([#300](https://github.com/antithesishq/snouty/pull/300))
 - When a known AI agent harness runs snouty, the `User-Agent` header names the harness in a trailing `agent=<value>` field ([#304](https://github.com/antithesishq/snouty/pull/304))
+- The `moment` divider in `snouty runs logs`, `events`, and `search` output prints only the input hash. ([#306](https://github.com/antithesishq/snouty/pull/306))
 
 # Version 0.7.1 (2026-09-01)
 

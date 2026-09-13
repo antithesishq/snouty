@@ -572,7 +572,7 @@ async fn cmd_runs_properties(
             outln!("{}", serde_json::to_string(property)?)?;
         }
     } else if properties.is_empty() {
-        outln!("{}", explain_empty_properties(&api, run_id, &filter).await)?;
+        outln!("{}", no_properties_message(run_id, &filter))?;
     } else if detail {
         outln!("{}", render_properties_detail(&properties))?;
     } else {
@@ -583,7 +583,7 @@ async fn cmd_runs_properties(
 }
 
 /// The empty-result message, naming whichever filters were active.
-fn no_properties_message(filter: &PropertyFilter) -> String {
+fn no_properties_message(run_id: &str, filter: &PropertyFilter) -> String {
     let mut parts = Vec::new();
     match filter.status {
         Some(PropertyStatus::Passing) => parts.push("passing".to_string()),
@@ -597,32 +597,10 @@ fn no_properties_message(filter: &PropertyFilter) -> String {
         parts.push(format!("group '{group}'"));
     }
     if parts.is_empty() {
-        "No properties found.".to_string()
+        format!("No properties found.\n\nInspect the run with `snouty runs show {run_id}`.")
     } else {
         format!("No properties match ({}).", parts.join(", "))
     }
-}
-
-/// The message for an empty (non-JSON) properties result. A *filtered* empty is
-/// genuinely "nothing matched"; an *unfiltered* empty often just means the run
-/// is incomplete (no triage report yet), so probe the run to say so rather than
-/// implying no properties exist.
-async fn explain_empty_properties(
-    api: &AntithesisApi,
-    run_id: &str,
-    filter: &PropertyFilter<'_>,
-) -> String {
-    let unfiltered = filter.status.is_none() && filter.name.is_none() && filter.group.is_none();
-    if unfiltered
-        && let RunProbe::Exists(run) = probe_run(api, run_id).await
-        && run.status != RunStatus::Completed
-    {
-        return format!(
-            "No properties found — this run is {}; properties are generated when a run completes.",
-            run.status
-        );
-    }
-    no_properties_message(filter)
 }
 
 /// Outcome of probing a run-scoped 404 with `get_run`: does the run itself not

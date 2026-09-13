@@ -217,6 +217,7 @@ snouty runs properties $R_run_id --name 'Peak memory' --detail
 mock-runs-server
 snouty runs properties $R_run_id --name no-such-property
 [!staging] stdout 'No properties match.*no-such-property'
+! stdout 'Inspect the run'
 
 # --detail conflicts with --json (which already emits the full data), for both
 # `runs properties` and `runs list`.
@@ -384,10 +385,19 @@ stderr '^Error: API error: 400.*'
 [!staging] ! snouty runs
 [!staging] stderr 'API error: 429 Too Many Requests.*'
 
-# `snouty runs properties` prints a friendly empty-state message when no properties exist.
+# An unfiltered empty result succeeds and points to the run details.
 mock-runs-server
 snouty runs properties run-empty
-stdout 'No properties found\.'
+stdout '^No properties found\.$'
+stdout '^Inspect the run with `snouty runs show run-empty`\.$'
+! stdout 'this run is|properties are generated'
+! stderr '^Error:'
+
+# An empty JSON result succeeds without human guidance.
+mock-runs-server
+snouty --json runs properties run-empty
+! stdout '.'
+! stderr 'No properties|Inspect the run|^Error:'
 
 # `snouty runs properties` renders one row per property regardless of whether
 # any examples were sampled.

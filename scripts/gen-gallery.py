@@ -1517,14 +1517,12 @@ def build_stories(d: Discovery) -> list[Story]:
             "runs-properties-incomplete",
             "Properties for a run that never finished",
             "I try to view properties on an incomplete run.",
-            "A clean error explaining the properties aren't available (because the run is incomplete) — not a crash or stack trace.",
+            "An empty property set exits zero and shows `snouty runs show <run ID>` "
+            "to inspect the run.",
             ["runs", "properties", d.fail],
-            # The friendly error (explain_properties_error in src/runs.rs) says the
-            # run "is incomplete"; require that distinctive word. A bare "404"/"not
-            # found" would mean the friendly message regressed, and "no properties"
-            # also matches the success-path "No properties found." — so neither is
-            # a safe needle here.
-            expect_message("incomplete"),
+            succeeds_with(
+                f"No properties found.\n\nInspect the run with `snouty runs show {d.fail}`."
+            ),
             json_capable=False,
         ),
         # -- property detail (`properties --name <x> --detail`) -------------

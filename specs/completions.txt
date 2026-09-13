@@ -8,6 +8,7 @@ stdout -literal 'For zsh, add this to ~/.zshrc:'
 stdout '(?s)  autoload -Uz compinit\n  compinit\n  source <\(snouty completions zsh\)'
 stdout -literal 'add only the source line after'
 stdout -literal 'Open a new shell to load the setup.'
+stdout '(?s)If your shell already initializes completion,.*Open a new shell to load the setup\.\n\nFor zsh, add this to ~/.zshrc:'
 
 # Bash completions produce a valid completion script.
 snouty completions bash

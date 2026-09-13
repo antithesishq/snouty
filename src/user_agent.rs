@@ -31,8 +31,9 @@ const AGENT_HINT_MAX_LEN: usize = 64;
 
 /// One marker per harness: the variable it exports to the commands it runs,
 /// the text that variable must contain (empty for any value), and the harness
-/// name. The table follows `unjs/std-env`, whose rows the harness maintainers
-/// verified. Agents come before IDEs so an agent that runs inside an IDE wins.
+/// name. The rows come from `unjs/std-env`, whose entries the harness
+/// maintainers verified, and from each harness's own source or documentation.
+/// Agents come before IDEs so an agent that runs inside an IDE wins.
 const AGENT_MARKERS: &[(&str, &str, &str)] = &[
     ("CLAUDECODE", "", "claude-code"),
     ("CLAUDE_CODE", "", "claude-code"),
@@ -41,10 +42,14 @@ const AGENT_MARKERS: &[(&str, &str, &str)] = &[
     ("GEMINI_CLI", "", "gemini"),
     ("OPENCODE", "", "opencode"),
     ("REPL_ID", "", "replit"),
+    ("PI_CODING_AGENT", "", "pi"),
     ("PATH", ".pi/agent", "pi"),
     ("PATH", ".pi\\agent", "pi"),
     ("AUGMENT_AGENT", "", "auggie"),
+    ("GOOSE_TERMINAL", "", "goose"),
     ("GOOSE_PROVIDER", "", "goose"),
+    ("COPILOT_AGENT", "", "copilot"),
+    ("CLINE_ACTIVE", "", "cline"),
     ("JUNIE_DATA", "", "junie"),
     ("JUNIE_SHIM_PATH", "", "junie"),
     ("EDITOR", "devin", "devin"),

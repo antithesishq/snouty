@@ -25,6 +25,7 @@ use crate::params::{
 use crate::render::{indent_lines, sanitize_multiline};
 use crate::settings::Settings;
 use crate::tag::{Tag, Tagged};
+use crate::user_agent::user_agent;
 use crate::util::source_error;
 use crate::vtime::VTime;
 use snouty_macros::cached;
@@ -1111,8 +1112,7 @@ fn default_request_headers() -> Result<reqwest::header::HeaderMap> {
     let mut headers = reqwest::header::HeaderMap::new();
     headers.insert(
         reqwest::header::USER_AGENT,
-        HeaderValue::from_str(&crate::user_agent::user_agent())
-            .wrap_err("failed to build User-Agent header")?,
+        HeaderValue::from_str(&user_agent()).wrap_err("failed to build User-Agent header")?,
     );
     for (name, value) in extra_headers_from_env()? {
         headers.insert(name, value);
@@ -1989,14 +1989,14 @@ mod tests {
         api.launch_test("basic_test", &params).await.unwrap();
 
         let requests = mock_server.received_requests().await.unwrap();
-        let user_agent = requests[0]
+        let header = requests[0]
             .headers
             .get("user-agent")
             .expect("request should carry a User-Agent")
             .to_str()
             .unwrap();
-        assert_eq!(user_agent, crate::user_agent::user_agent());
-        assert!(user_agent.starts_with("snouty/"));
+        assert_eq!(header, user_agent());
+        assert!(header.starts_with("snouty/"));
     }
 
     #[tokio::test]

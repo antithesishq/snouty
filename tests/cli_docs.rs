@@ -1,6 +1,7 @@
 mod support;
 
 use predicates::prelude::*;
+use snouty::user_agent::user_agent_with;
 use support::*;
 use tempfile::TempDir;
 
@@ -29,9 +30,7 @@ fn docs_update_sets_custom_user_agent() {
 
     assert_eq!(
         mock_server.user_agent(),
-        Some(snouty::user_agent::user_agent_with(Some(
-            "test-harness_1-2-3"
-        )))
+        Some(user_agent_with(Some("test-harness_1-2-3")))
     );
 }
 
@@ -46,10 +45,7 @@ fn docs_update_user_agent_omits_agent_without_harness() {
         .assert()
         .success();
 
-    assert_eq!(
-        mock_server.user_agent(),
-        Some(snouty::user_agent::user_agent_with(None))
-    );
+    assert_eq!(mock_server.user_agent(), Some(user_agent_with(None)));
 }
 
 #[test]

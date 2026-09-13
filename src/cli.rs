@@ -614,11 +614,11 @@ pub struct DebugArgs {
 /// only, and a macro expansion is one).
 macro_rules! classified_blocks_help {
     () => {
-        "Matching events print as classified blocks: a `moment HASH VTIME` divider\n\
-         opens each timeline segment (feed its HASH and VTIME into `runs logs` to see\n\
-         the surrounding logs), and each event under it renders on one line with the\n\
-         Antithesis event shapes — SDK assertions, faults, container lifecycle, test\n\
-         composer — each in their own concise form."
+        "Matching events print as classified blocks: a `moment HASH` divider opens\n\
+         each timeline segment. Use `snouty runs logs <run_id> <hash>` to stream logs\n\
+         to the branch's current end. Each event below the divider renders on one\n\
+         line with the Antithesis event shapes — SDK assertions, faults, container\n\
+         lifecycle, test composer — each in their own concise form."
     };
 }
 
@@ -694,8 +694,8 @@ Query snippets (each is a complete QUERY, ready to paste):
 
 "#,
     classified_blocks_help!(),
-    r#" Rows reshaped by map/narrow/fold
-print as raw JSON.
+    r#"
+Rows reshaped by map/narrow/fold print as raw JSON.
 
 Add --json for machine-readable output. Each event prints as one JSON
 object on its own line:
@@ -868,7 +868,7 @@ root (or --begin-vtime) to the branch's current end; a run in progress can
 extend the branch, so the same INPUT_HASH can return more logs later. Give
 VTIME to end the stream at that moment instead.
 
-Output: a `moment HASH VTIME` divider opens each timeline segment, and each
+Output: a `moment HASH` divider opens each timeline segment, and each
 event under it renders on one line as `VTIME [source] payload` — Antithesis
 event shapes (SDK assertions, faults, container lifecycle, test composer)
 each in their own concise form.

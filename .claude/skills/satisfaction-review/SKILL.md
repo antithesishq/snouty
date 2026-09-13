@@ -158,9 +158,10 @@ Does the output give the user what they need to run the **obvious next
 command**? Concretely:
 - `runs list` / `runs` → are full run IDs present and copyable (not truncated)
   so you can paste one into `runs show` / `runs properties`?
-- `runs events` → are the `hash` and `vtime` shown so you can feed them into
-  `runs logs`? Are sources/streams legible enough to build a `--source` /
-  `--stream` filter?
+- `runs events` → is the `moment HASH` divider's hash complete and copyable
+  into `runs logs <run_id> <hash>`? This streams to the branch's current end;
+  vtime is optional and sets an earlier end. Are sources/streams legible enough
+  to build a `--source` / `--stream` filter?
 - `runs properties` → are property names complete enough to pass to
   `runs property`?
 - error / ambiguous / not-found → does it suggest valid alternatives or the

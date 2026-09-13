@@ -1621,8 +1621,9 @@ def build_stories(d: Discovery) -> list[Story]:
             f"Find events that mention '{kw}'",
             "I want to find events that mention a particular keyword.",
             f"At least one matching event row, and the keyword '{kw}' appears in the output. "
-            "Each row is one `HASH VTIME SOURCE OUTPUT` line whose HASH and VTIME are "
-            "copyable into `runs logs`. When more events match than the default limit of "
+            "A `moment HASH` divider groups `VTIME [source] payload` lines. Its hash "
+            "is sufficient for `runs logs` to stream to the branch's current end. "
+            "When more events match than the default limit of "
             "50, a stderr note says the output stopped at the limit.",
             ["runs", "events", d.success, "--match", kw],
             event_keyword_present(kw),
@@ -1675,9 +1676,9 @@ def build_stories(d: Discovery) -> list[Story]:
             "runs-search-contains",
             f"Query events with the DSL: contains '{kw}'",
             "I want to run an event-set DSL query and read the matching events.",
-            f"At least one matching event line, keyword '{kw}' visible. Each row is one "
-            "`HASH VTIME SOURCE OUTPUT` line whose HASH and VTIME are copyable into "
-            "`runs logs`; output should be legible without a table header. When more "
+            f"At least one matching event line, keyword '{kw}' visible. A `moment HASH` "
+            "divider groups `VTIME [source] payload` lines. Its hash is sufficient for "
+            "`runs logs` to stream to the branch's current end. When more "
             "events match than the default limit of 50, a stderr note says the output "
             "stopped at the limit.",
             ["runs", "search", d.success, f'contains({{output_text: "{kw}"}})'],
@@ -1751,10 +1752,11 @@ def build_stories(d: Discovery) -> list[Story]:
         # -- logs -----------------------------------------------------------
         Story(
             "runs-logs",
-            "Stream logs at a specific moment",
-            "I want the log lines at a particular moment of the run.",
-            "At least one log line is streamed at/around the moment.",
-            ["runs", "logs", d.success, d.event_hash, d.event_vtime],
+            "Stream logs using the hash from an event divider",
+            "I copy a divider's input hash to read logs through the end of that moment.",
+            "Logs stream to the branch's current end without a vtime argument. "
+            "Each divider shows only `moment HASH`; event lines keep their vtimes.",
+            ["runs", "logs", d.success, d.event_hash],
             logs_non_empty,
         ),
         Story(
@@ -2127,8 +2129,8 @@ def build_help_stories(d: Discovery) -> list[Story]:
         _help_story(
             "help-runs-events",
             "Learn to search events and chain into logs",
-            "I want the help to explain the one-line `HASH VTIME SOURCE OUTPUT` format, "
-            "that a moment feeds `runs logs`, and when multiple terms need the "
+            "I want the help to explain `moment HASH` dividers and `VTIME [source] payload` "
+            "lines, that the hash alone feeds `runs logs`, and when multiple terms need the "
             "events-search feature.",
             ["runs", "events"],
             ["runs", "events", s, "--match", d.event_keyword],
@@ -2143,11 +2145,12 @@ def build_help_stories(d: Discovery) -> list[Story]:
         ),
         _help_story(
             "help-runs-logs",
-            "Learn what the positional moment vs --begin-vtime do",
-            "I want the help to make clear that the positional moment streams logs up to "
-            "it and --begin-vtime sets the start, and to describe the line format.",
+            "Learn how the hash and optional vtime select logs",
+            "I want the help to explain that a hash streams to the branch's current end, "
+            "an optional vtime sets an earlier end, and --begin-vtime sets the start.",
             ["runs", "logs"],
-            ["runs", "logs", s, d.event_hash, d.event_vtime],
+            ["runs", "logs", s, d.event_hash],
+            samples=[("with an explicit end vtime", ["runs", "logs", s, d.event_hash, d.event_vtime])],
         ),
         _help_story(
             "help-runs-build-logs",

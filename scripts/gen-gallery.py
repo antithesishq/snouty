@@ -1125,26 +1125,44 @@ def doctor_check(
 
 
 def doctor_json_check(sr: StoryRun, reg: Registry) -> tuple[bool, str]:
-    """Gate the `doctor --json` story: stdout must be a parseable report with a
-    boolean `ok` and a non-empty `checks` array of well-formed records (name,
-    status, message), it must include the api_key check, and a missing required
-    credential must drive `ok` false."""
+    """The report, required checks, and exit status must agree with the setup
+    described by the story."""
     try:
         data = json.loads(sr.result.stdout)
     except json.JSONDecodeError as e:
         return (False, f"stdout is not valid JSON: {e}")
+    if not isinstance(data, dict):
+        return (False, "report is not a JSON object")
     checks = data.get("checks")
     if not isinstance(data.get("ok"), bool) or not isinstance(checks, list) or not checks:
-        return (False, f"missing ok/checks ({data!r:.80})")
+        return (False, "report needs a boolean ok and a non-empty checks array")
     well_formed = all(
-        isinstance(c.get("name"), str)
+        isinstance(c, dict)
+        and isinstance(c.get("name"), str)
         and c.get("status") in ("ok", "warn", "error")
         and isinstance(c.get("message"), str)
         for c in checks
     )
-    names = {c.get("name") for c in checks}
-    passed = well_formed and "api_key" in names and data["ok"] is False
-    return (passed, f"ok={data['ok']}, {len(checks)} checks, well_formed={well_formed}")
+    if not well_formed:
+        return (False, "checks need string names/messages and ok/warn/error statuses")
+    expected = (
+        {"tenant": "ok", "api_key": "ok"}
+        if sr.story.expect_ok
+        else {"tenant": "error", "credentials": "error"}
+    )
+    statuses = {c["name"]: c["status"] for c in checks}
+    required_match = all(statuses.get(name) == status for name, status in expected.items())
+    consistent = data["ok"] == all(c["status"] != "error" for c in checks)
+    passed = (
+        data["ok"] == sr.result.ok == sr.story.expect_ok
+        and required_match
+        and consistent
+    )
+    return (
+        passed,
+        f"ok={data['ok']} (want {sr.story.expect_ok}), exit={sr.result.returncode}, "
+        f"{len(checks)} checks, required_match={required_match}, consistent={consistent}",
+    )
 
 
 def verbose_api_calls(sr: StoryRun, reg: Registry) -> tuple[bool, str]:
@@ -1832,13 +1850,15 @@ def build_stories(d: Discovery) -> list[Story]:
             "doctor-no-auth",
             "Fresh install — doctor tells me what to configure",
             "I just installed snouty and haven't set any credentials; I want doctor to tell me what I need.",
-            "doctor states an API key is required and points ONLY at ANTITHESIS_API_KEY — it must not "
-            "steer me toward username/password, which is legacy auth (issue #145).",
+            "doctor identifies the missing credentials and offers `snouty login` or "
+            "ANTITHESIS_API_KEY, with a support contact for obtaining a key. It must not "
+            "recommend legacy username/password authentication (issue #145).",
             ["doctor"],
             doctor_check(
                 contains=(
                     "No Antithesis credentials found",
-                    "requires an API key",
+                    "snouty login",
+                    "ANTITHESIS_API_KEY",
                     "ask Antithesis support",
                 ),
                 absent=("ANTITHESIS_USERNAME", "ANTITHESIS_PASSWORD"),
@@ -1854,16 +1874,20 @@ def build_stories(d: Discovery) -> list[Story]:
             "doctor-legacy-auth",
             "I only have a legacy username and password",
             "I authenticate with a username/password and no API key; I want doctor to tell me whether that's enough.",
-            "doctor warns the API key is missing (so `snouty runs` and other API commands won't work), "
-            "flags username/password as deprecated and limited to `snouty launch`/`snouty debug`, and "
-            "steers me toward setting an API key.",
+            "doctor states that API commands refuse username/password, marks it as deprecated "
+            "and limited to `snouty launch`/`snouty debug`, and offers `snouty login` or "
+            "ANTITHESIS_API_KEY to change credentials.",
             ["doctor"],
             doctor_check(
                 contains=(
-                    "API key not provided",
+                    "snouty runs",
+                    "refuse username/password",
                     "ANTITHESIS_USERNAME",
                     "deprecated",
                     "snouty launch",
+                    "snouty debug",
+                    "snouty login",
+                    "ANTITHESIS_API_KEY",
                     "ask Antithesis support",
                 ),
             ),
@@ -1894,18 +1918,33 @@ def build_stories(d: Discovery) -> list[Story]:
         ),
         Story(
             "doctor-json",
-            "Gate CI on a ready environment with --json",
-            "I want to check my environment in a script/CI step and parse the result, "
-            "not scrape human text.",
-            "`doctor --json` prints a structured report — a top-level `ok` boolean and a `checks` "
-            "array, each with name/status/message and any notes — and exits non-zero when a required "
-            "check fails, so CI can gate on it.",
+            "Stop CI when required configuration is missing",
+            "I want CI to stop when my tenant and credentials are missing, and I want "
+            "a structured report that explains the failures.",
+            "`doctor --json` prints `ok: false` and exits non-zero. Its checks array "
+            "contains tenant and credentials errors, each with name/status/message. "
+            "The report's ok field agrees with both the check statuses and the exit status.",
             ["doctor", "--json"],
             doctor_json_check,
             json_capable=False,
+            expect_ok=False,
             env=_doctor_env(
                 api_key=False, username=False, password=False, tenant=False, repo=False
             ),
+            isolate_config=True,
+        ),
+        Story(
+            "doctor-json-ready",
+            "Allow CI when local configuration is ready",
+            "I have configured my tenant, repository, and API key. I want a script "
+            "to confirm my local setup without a network request.",
+            "`doctor --json --offline` prints `ok: true` and exits zero. Its checks "
+            "array contains successful tenant and api_key checks and no errors. "
+            "The report's ok field agrees with both the check statuses and the exit status.",
+            ["doctor", "--json", "--offline"],
+            doctor_json_check,
+            json_capable=False,
+            env=_doctor_env(api_key=True, username=False, password=False, tenant=True, repo=True),
             isolate_config=True,
         ),
     ]

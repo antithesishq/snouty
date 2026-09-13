@@ -2066,6 +2066,10 @@ services:
             Ok(())
         }
 
+        fn insecure_registry_flag(&self) -> &'static str {
+            unreachable!("the fake answers remote_manifest itself")
+        }
+
         fn remote_manifest(&self, image_ref: &str) -> RemoteManifest {
             self.remote_manifests
                 .get(image_ref)

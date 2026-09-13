@@ -265,8 +265,6 @@ Three things to know:
 export ANTITHESIS_EXTRA_HEADERS="X-Proxy-Token: abc123"
 ```
 
-When an AI agent harness runs snouty, the `User-Agent` header ends with `agent=<value>`. snouty reads the value from the `AI_AGENT` variable, which Claude Code sets with its version, and falls back to the harness name from its marker variables. It knows the markers of Claude Code, Codex, Gemini CLI, OpenCode, Pi, Auggie, Goose, Kiro, Junie, Cursor, Copilot, and Cline. Set `AI_AGENT` to name a different harness.
-
 ### Username and password (deprecated)
 
 Username and password authentication is deprecated. It works with `snouty launch` and `snouty debug` only, and both print a warning that points to `snouty login`. Every other command that talks to the API refuses it. Use `snouty login` or an API key instead.

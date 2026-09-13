@@ -10,6 +10,7 @@ automation. Human output is for humans and may be reformatted at any time.
 ## Recipes
 
 - [Stream a run's logs at its failure moment](#stream-a-runs-logs-at-its-failure-moment)
+- [Launch with images from a private registry](#launch-with-images-from-a-private-registry)
 
 ## Stream a run's logs at its failure moment
 
@@ -37,3 +38,30 @@ placeholder `{"input_hash": "0", "vtime": 0}` — which streams nothing.
 `snouty runs show` treats that placeholder as "no moment"; do the same with a
 numeric check (`.vtime != 0`), and skip the log fetch rather than streaming an
 empty timeline.
+
+## Launch with images from a private registry
+
+*snouty 0.7.2 · 2026-09-13 · source: [#298](https://github.com/antithesishq/snouty/issues/298)*
+
+`snouty launch --config` never pulls: every compose service image must be in
+the local image store. Pull them first, with your own credentials, then list
+the registry in `private_registries` so snouty copies those images into your
+repository instead of pinning them at an address the test run cannot reach.
+
+```sh
+docker compose -f config/docker-compose.yaml pull
+
+SNOUTY_PRIVATE_REGISTRIES=ghcr.io/your-org \
+  snouty launch -w <webhook> -c config --duration 30
+```
+
+Put the setting in `.snouty.toml` instead when the registry is a fixed part of
+the project:
+
+```toml
+private_registries = ["ghcr.io/your-org"]
+```
+
+Without the setting, snouty asks the registry whether it serves the local
+image. Your engine answers with your credentials, so the answer is yes, the pin
+keeps the private address, and the run fails when the platform pulls it.

@@ -75,12 +75,6 @@ async fn main() -> std::process::ExitCode {
     match run(Cli::parse()).await {
         Ok(code) => code,
         Err(report) => {
-            // One rendering for every error: `render_report` collapses the chain
-            // index for single errors and wraps overlong prose, both printing
-            // concerns that belong here rather than in the messages. User-facing
-            // failures are built with `user_error`/4xx `suppress_backtrace`, so they
-            // print message + any `.note()`/`.suggestion()` hints with no backtrace;
-            // genuine internal faults keep theirs.
             let rendered = snouty::error::render_report(&report);
             eprintln!("{}", snouty::wrap_if_tty(&rendered));
             std::process::ExitCode::FAILURE

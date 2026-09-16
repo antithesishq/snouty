@@ -1,10 +1,7 @@
 //! Opt-in unstable features.
 //!
-//! A feature gates a command that isn't ready to be on for everyone — because
-//! the Antithesis API it depends on is still changing shape, or because most
-//! tenants can't serve it yet. Gating lets such a command ship in a release
-//! instead of waiting on the API, without putting it in front of users who
-//! would only hit a wall.
+//! Feature gates cover commands with unstable interfaces or dependencies.
+//! They let experimental commands ship without enabling them by default.
 //!
 //! Enable features by id in `SNOUTY_UNSTABLE_FEATURES`, a comma-separated
 //! list (see [`enabled`]). The variable says "unstable" because that is the
@@ -13,7 +10,7 @@
 //! stability the rest of the CLI has.
 //!
 //! A gated command is hidden from `--help` until its feature is on, and
-//! invoking it while it is off fails as an unrecognized subcommand. (Hiding is
+//! invoking it while it is off fails with a feature-enablement hint. (Hiding is
 //! not removal: `runs exec --help` still prints its help, which names the
 //! feature, and clap_complete lists hidden subcommands anyway.)
 //!

@@ -46,9 +46,7 @@ start_composer_rollout() {
   systemctl reset-failed antithesis-test-composer.service 2>/dev/null || true
   systemctl start antithesis-test-composer
 
-  # Type=simple means systemctl returns before the Python process has
-  # installed its inotify watch. Wait for an inotify fd in the service
-  # cgroup so the rollout notification cannot race composer startup.
+  # Type=simple does not wait for the composer to install its rollout watch.
   composer_cgroup=$(systemctl show antithesis-test-composer --property=ControlGroup --value)
   composer_ready=
   for _ in $(seq 1 100); do
@@ -70,7 +68,7 @@ start_composer_rollout() {
     return 1
   fi
 
-  # The production randomizer closes this file at the start of a rollout.
+  # Closing this file starts the next rollout.
   touch /opt/antithesis/rollouts/new
 }
 

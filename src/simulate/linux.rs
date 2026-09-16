@@ -348,8 +348,8 @@ pub(super) async fn run(
     drop(vm.take());
     drop(logs.take());
     let output_deadline = tokio::time::Instant::now() + Duration::from_secs(1);
-    if let Some(path) = instrumentation {
-        if let Err(error) = drain(
+    if let Some(path) = instrumentation
+        && let Err(error) = drain(
             &path,
             consumed,
             cleanup_boundary,
@@ -358,10 +358,9 @@ pub(super) async fn run(
             output_deadline,
         )
         .await
-        {
-            summary.infrastructure_failures += 1;
-            eprintln!("Instrumentation read failed: {error:#}");
-        }
+    {
+        summary.infrastructure_failures += 1;
+        eprintln!("Instrumentation read failed: {error:#}");
     }
     for name in [
         "guest-dev-key",

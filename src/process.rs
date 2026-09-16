@@ -51,14 +51,9 @@ pub async fn output_async(
     }
 }
 
-/// Run a command to completion with a wall-clock timeout, killing it (and
-/// returning an error) if it overruns. Reader threads drain stdout/stderr so a
-/// chatty child can't deadlock on a full pipe while we wait. Used for the
-/// synchronous discovery commands, which would otherwise be uninterruptible by
-/// `--timeout` or ctrl+c since a blocking `Command` can't be interrupted.
-///
-/// This helper owns only the direct child. Use [`output_async`] for commands
-/// that start a process group or need cancellation while they run.
+/// Run a command with a timeout and capture both output streams.
+/// Only the direct child is killed; descendants must not retain its output pipes.
+/// Use [`output_async`] for process-group cleanup or cancellation.
 pub fn output_with_timeout(mut cmd: Command, timeout: Duration) -> Result<Output> {
     cmd.stdin(Stdio::null())
         .stdout(Stdio::piped())

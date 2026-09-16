@@ -165,7 +165,7 @@ For any one setting, snouty uses the first value it finds, highest precedence fi
 
 ### Unstable features
 
-Snouty keeps experimental subcommands behind a feature gate. Name the features you want in `SNOUTY_UNSTABLE_FEATURES`, as a comma-separated list. A gated command is hidden from `--help` until its feature is on, and fails as an unrecognized subcommand when it is off.
+Snouty keeps experimental subcommands behind a feature gate. Name the features you want in `SNOUTY_UNSTABLE_FEATURES`, as a comma-separated list. A gated command is hidden from `--help` until its feature is on, and reports how to enable the feature when it is off.
 
 ```sh
 export SNOUTY_UNSTABLE_FEATURES="runs-search,runs-exec"

@@ -154,8 +154,7 @@ impl Images {
                 .replace('.', "")
         );
         let engine = self.engine.clone();
-        // Keep ownership in the worker until create finishes. Cancelling its caller
-        // must not remove the named container before the daemon has created it.
+        // The worker retains cleanup ownership when its caller is cancelled.
         let container = tokio::task::spawn_blocking(move || {
             let container = ExtractionContainer {
                 engine,

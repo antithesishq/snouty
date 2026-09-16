@@ -32,12 +32,12 @@ pub mod scripts;
 pub mod settings;
 pub mod stdio;
 pub(crate) mod table;
+pub mod simulate;
 pub mod tag;
 #[doc(hidden)]
 pub mod testutils;
 pub mod time;
 pub mod user_agent;
 pub mod util;
-pub mod simulate;
 pub mod validate;
 pub mod vtime;

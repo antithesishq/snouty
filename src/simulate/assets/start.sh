@@ -88,6 +88,11 @@ while true; do
     sleep 0.2
   done
 
+  if [[ "$(systemctl show antithesis-test-composer --property=Result --value)" != success ]]; then
+    journalctl -u antithesis-test-composer --no-pager -n 20 >&2
+    exit 1
+  fi
+
   if ! composer_has_runnable_commands; then
     echo "Test composer exited without runnable commands; leaving the local Compose project running"
     exit 0

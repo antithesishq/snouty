@@ -1,5 +1,5 @@
 use std::collections::BTreeSet;
-use std::io::{Read, Seek, SeekFrom, Write};
+use std::io::{BufRead, Read, Seek, SeekFrom, Write};
 use std::path::Path;
 use std::pin::Pin;
 use std::process::ExitCode;
@@ -25,7 +25,8 @@ const STOP: &str = include_str!("assets/stop.sh");
 const STATUS: &str = include_str!("assets/status.sh");
 const CLEANUP_TIMEOUT: Duration = Duration::from_secs(30);
 
-type LogStream = Pin<Box<dyn Stream<Item = Result<String>> + Send>>;
+type LogStream = Pin<Box<dyn Stream<Item = Result<(u64, String)>> + Send>>;
+const MAX_RECORD_BYTES: usize = 4 * 1024 * 1024;
 
 #[derive(Clone, Copy, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -81,32 +82,76 @@ impl Summary {
 struct Output {
     json: bool,
     closed: bool,
+    sender: tokio::sync::mpsc::Sender<OutputLine>,
+}
+
+struct OutputLine {
+    text: String,
+    written: tokio::sync::oneshot::Sender<std::io::Result<()>>,
 }
 
 impl Output {
-    fn line(&mut self, line: &str) -> Result<()> {
+    fn new(json: bool) -> Result<Self> {
+        let (sender, mut receiver) = tokio::sync::mpsc::channel::<OutputLine>(1);
+        // A blocked pipe must not block signals or Tokio runtime shutdown.
+        std::thread::Builder::new()
+            .name("simulate-output".into())
+            .spawn(move || {
+                let mut stdout = std::io::stdout().lock();
+                while let Some(line) = receiver.blocking_recv() {
+                    let result = writeln!(stdout, "{}", line.text).and_then(|_| stdout.flush());
+                    let failed = result.is_err();
+                    let _ = line.written.send(result);
+                    if failed {
+                        break;
+                    }
+                }
+            })?;
+        Ok(Self {
+            json,
+            closed: false,
+            sender,
+        })
+    }
+
+    async fn line(&mut self, line: String) -> Result<()> {
         if self.closed {
             return Ok(());
         }
-        let mut stdout = std::io::stdout().lock();
-        match writeln!(stdout, "{line}").and_then(|_| stdout.flush()) {
-            Ok(()) => Ok(()),
-            Err(error) if error.kind() == std::io::ErrorKind::BrokenPipe => {
+        let (written, received) = tokio::sync::oneshot::channel();
+        if self
+            .sender
+            .send(OutputLine {
+                text: line,
+                written,
+            })
+            .await
+            .is_err()
+        {
+            self.closed = true;
+            return Ok(());
+        }
+        match received.await {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(error)) if error.kind() != std::io::ErrorKind::BrokenPipe => Err(error.into()),
+            _ => {
                 self.closed = true;
                 Ok(())
             }
-            Err(error) => Err(error.into()),
         }
     }
 
-    fn event(&mut self, line: &str, summary: &mut Summary, phase: RunPhase) -> Result<()> {
+    async fn event(&mut self, line: &str, summary: &mut Summary, phase: RunPhase) -> Result<()> {
         if let Some(event) = events::parse_line(line)? {
             summary.observe(&event, phase);
-            self.line(&if self.json {
-                serde_json::to_string(&event)?
-            } else {
-                event.render()
-            })?;
+            if !self.closed {
+                self.line(if self.json {
+                    serde_json::to_string(&event)?
+                } else {
+                    event.render()
+                })
+                .await?;
+            }
         }
         Ok(())
     }
@@ -137,7 +182,6 @@ pub(super) async fn run(
     settings: &Settings,
     options: OutputOptions,
 ) -> Result<ExitCode> {
-    let mut signals = Signals::install()?;
     let runtime = container::runtime(settings)?;
     container::warn_ambiguous_engine(settings, runtime.as_ref(), options.json);
     let compose = compose::DockerCompose::resolve(runtime.as_ref(), config.clone())?;
@@ -161,6 +205,7 @@ pub(super) async fn run(
         .into_iter()
         .map(|service| service.image)
         .collect();
+    let mut signals = Signals::install()?;
     let images = Images::from_runtime(runtime.as_ref());
     let run_dir = tempfile::Builder::new()
         .prefix("snouty-simulate-")
@@ -168,10 +213,9 @@ pub(super) async fn run(
     let mut vm = None;
     let mut logs: Option<LogStream> = None;
     let mut summary = Summary::default();
-    let mut output = Output {
-        json: options.json,
-        closed: false,
-    };
+    let mut output = Output::new(options.json)?;
+    let mut consumed = 0;
+    let mut instrumentation = None;
     let execution = async {
         eprintln!("Preparing guest image...");
         let iso = images.guest_iso(&args.guest_image, run_dir.path()).await?;
@@ -215,25 +259,33 @@ pub(super) async fn run(
             }
             std::fs::remove_file(archive)?;
         }
-        logs = Some(serial_lines(guest.instrumentation_log())?);
+        instrumentation = Some(guest.instrumentation_log().to_owned());
+        consumed = std::fs::metadata(guest.instrumentation_log())?.len();
+        logs = Some(serial_lines(guest.instrumentation_log(), consumed)?);
         let start = format!(
             "restart_enabled={}\n{START}",
             if args.disable_restart { "no" } else { "yes" }
         );
         guest.run_script(&start).await?;
         eprintln!("Streaming guest logs. Interrupt to stop simulation.");
+        let status = if args.disable_restart {
+            format!("unit=antithesis-test-composer.service\n{STATUS}")
+        } else {
+            STATUS.to_owned()
+        };
         let mut health = tokio::time::interval(Duration::from_secs(2));
         let logs = logs.as_mut().expect("log stream opened");
         loop {
             tokio::select! {
                 line = logs.next() => {
-                    let line = line.ok_or_eyre("instrumentation stream ended")??;
-                    output.event(&line, &mut summary, RunPhase::Running)?;
+                    let (end, line) = line.ok_or_eyre("instrumentation stream ended")??;
+                    consumed = end;
+                    output.event(&line, &mut summary, RunPhase::Running).await?;
                     if output.closed { return Ok::<_, color_eyre::Report>(()); }
                 },
                 _ = health.tick() => {
                     if !guest.is_running()? { bail!("QEMU exited unexpectedly\n{}", guest.boot_diagnostics()); }
-                    if !args.disable_restart { tokio::time::timeout(Duration::from_secs(15), guest.run_script(STATUS)).await??; }
+                    tokio::time::timeout(Duration::from_secs(15), guest.run_script(&status)).await??;
                 },
             }
         }
@@ -249,14 +301,18 @@ pub(super) async fn run(
             },
         },
     };
-    // Drain records already emitted before cleanup can terminate test commands.
-    drain(&mut logs, &mut output, &mut summary, RunPhase::Running).await;
+    // Records already written belong to the workload, even if output is behind.
+    let cleanup_boundary = instrumentation
+        .as_ref()
+        .and_then(|path| std::fs::metadata(path).ok())
+        .map_or(consumed, |m| m.len());
     if let Some(guest) = &mut vm {
         eprintln!("Stopping simulation...");
         let cleanup = tokio::select! {
             result = tokio::time::timeout(CLEANUP_TIMEOUT, guest.run_script(STOP)) => Some(result),
             _ = signals.receive() => None,
         };
+        let force_shutdown = cleanup.is_none();
         match cleanup {
             Some(Ok(Ok(_))) | None => {}
             Some(Ok(Err(error))) => {
@@ -275,12 +331,38 @@ pub(super) async fn run(
             Termination::Interrupted => ShutdownSignal::Interrupt,
             _ => ShutdownSignal::Terminate,
         };
-        if let Err(error) = guest.shutdown(signal).await {
+        let shutdown = if force_shutdown {
+            Ok(())
+        } else {
+            tokio::select! {
+                result = guest.shutdown(signal) => result,
+                _ = signals.receive() => Ok(()),
+            }
+        };
+        if let Err(error) = shutdown {
             summary.infrastructure_failures += 1;
             eprintln!("VM shutdown failed: {error:#}");
         }
     }
-    drain(&mut logs, &mut output, &mut summary, RunPhase::Cleanup).await;
+    // Drop force-kills and reaps a VM if a second signal interrupted shutdown.
+    drop(vm.take());
+    drop(logs.take());
+    let output_deadline = tokio::time::Instant::now() + Duration::from_secs(1);
+    if let Some(path) = instrumentation {
+        if let Err(error) = drain(
+            &path,
+            consumed,
+            cleanup_boundary,
+            &mut output,
+            &mut summary,
+            output_deadline,
+        )
+        .await
+        {
+            summary.infrastructure_failures += 1;
+            eprintln!("Instrumentation read failed: {error:#}");
+        }
+    }
     for name in [
         "guest-dev-key",
         "ssh_config",
@@ -312,7 +394,10 @@ pub(super) async fn run(
             summary.assertion_failures, summary.command_failures, summary.infrastructure_failures
         )
     };
-    output.line(&final_line)?;
+    match tokio::time::timeout_at(output_deadline, output.line(final_line)).await {
+        Ok(result) => result?,
+        Err(_) => output.closed = true,
+    }
     Ok(summary.exit_code(reason))
 }
 
@@ -320,17 +405,18 @@ fn shell_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\\''"))
 }
 
-fn serial_lines(path: &Path) -> Result<LogStream> {
+fn serial_lines(path: &Path, start: u64) -> Result<LogStream> {
     let mut file = std::fs::File::open(path)?;
-    file.seek(SeekFrom::End(0))?;
+    file.seek(SeekFrom::Start(start))?;
     Ok(Box::pin(futures_util::stream::try_unfold(
-        (file, Vec::<u8>::new()),
-        |(mut file, mut pending)| async move {
+        (file, Vec::<u8>::new(), start),
+        |(mut file, mut pending, mut offset)| async move {
             loop {
                 if let Some(end) = pending.iter().position(|byte| *byte == b'\n') {
                     let bytes: Vec<_> = pending.drain(..=end).collect();
                     let line = String::from_utf8_lossy(&bytes[..end]).into_owned();
-                    return Ok(Some((line, (file, pending))));
+                    offset += bytes.len() as u64;
+                    return Ok(Some(((offset, line), (file, pending, offset))));
                 }
                 let mut buffer = [0; 8192];
                 let count = file.read(&mut buffer)?;
@@ -338,7 +424,7 @@ fn serial_lines(path: &Path) -> Result<LogStream> {
                     tokio::time::sleep(Duration::from_millis(50)).await;
                 } else {
                     pending.extend_from_slice(&buffer[..count]);
-                    if pending.len() > 4 * 1024 * 1024 {
+                    if pending.len() > MAX_RECORD_BYTES {
                         bail!("instrumentation line exceeds 4 MiB");
                     }
                 }
@@ -348,29 +434,49 @@ fn serial_lines(path: &Path) -> Result<LogStream> {
 }
 
 async fn drain(
-    logs: &mut Option<LogStream>,
+    path: &Path,
+    consumed: u64,
+    cleanup_boundary: u64,
     output: &mut Output,
     summary: &mut Summary,
-    phase: RunPhase,
-) {
-    let Some(logs) = logs else {
-        return;
-    };
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
-    while tokio::time::Instant::now() < deadline {
-        match tokio::time::timeout(Duration::from_millis(150), logs.next()).await {
-            Ok(Some(Ok(line))) => {
-                if let Err(error) = output.event(&line, summary, phase) {
-                    summary.infrastructure_failures += 1;
-                    eprintln!("Invalid instrumentation event: {error:#}");
-                }
-            }
-            Ok(Some(Err(error))) => {
+    output_deadline: tokio::time::Instant,
+) -> Result<()> {
+    let mut file = std::fs::File::open(path)?;
+    file.seek(SeekFrom::Start(consumed))?;
+    let mut reader = std::io::BufReader::new(file);
+    let mut offset = consumed;
+    let mut bytes = Vec::new();
+    loop {
+        bytes.clear();
+        let count = reader
+            .by_ref()
+            .take(MAX_RECORD_BYTES as u64 + 1)
+            .read_until(b'\n', &mut bytes)?;
+        if count == 0 {
+            return Ok(());
+        }
+        if count > MAX_RECORD_BYTES {
+            bail!("instrumentation line exceeds 4 MiB");
+        }
+        let phase = if offset < cleanup_boundary {
+            RunPhase::Running
+        } else {
+            RunPhase::Cleanup
+        };
+        offset += count as u64;
+        let line = String::from_utf8_lossy(&bytes);
+        match tokio::time::timeout_at(
+            output_deadline,
+            output.event(line.trim_end_matches('\n'), summary, phase),
+        )
+        .await
+        {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => {
                 summary.infrastructure_failures += 1;
-                eprintln!("Instrumentation read failed: {error:#}");
-                break;
+                eprintln!("Invalid instrumentation event: {error:#}");
             }
-            _ => break,
+            Err(_) => output.closed = true,
         }
     }
 }
@@ -405,7 +511,8 @@ mod tests {
     async fn tail_preserves_partial_lines_across_cancelled_reads() {
         let file = tempfile::NamedTempFile::new().unwrap();
         std::fs::write(file.path(), "old boot event\n").unwrap();
-        let mut stream = serial_lines(file.path()).unwrap();
+        let mut stream =
+            serial_lines(file.path(), std::fs::metadata(file.path()).unwrap().len()).unwrap();
         let mut writer = std::fs::OpenOptions::new()
             .append(true)
             .open(file.path())
@@ -422,17 +529,45 @@ mod tests {
             .unwrap()
             .unwrap()
             .unwrap();
-        assert_eq!(line, "10 [workload] [INFO] 'partial'");
-        assert!(events::parse_line(&line).unwrap().is_some());
+        assert_eq!(line.1, "10 [workload] [INFO] 'partial'");
+        assert!(events::parse_line(&line.1).unwrap().is_some());
     }
 
     #[tokio::test]
     async fn tail_ends_after_an_oversized_record() {
         let file = tempfile::NamedTempFile::new().unwrap();
-        let mut stream = serial_lines(file.path()).unwrap();
+        let mut stream =
+            serial_lines(file.path(), std::fs::metadata(file.path()).unwrap().len()).unwrap();
         std::fs::write(file.path(), vec![b'x'; 4 * 1024 * 1024 + 1]).unwrap();
         assert!(stream.next().await.unwrap().is_err());
         assert!(stream.next().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn final_drain_accounts_for_backlog_and_partial_last_record_after_output_closes() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        let command = "1 [antithesis_test_composer] [JSON] '{\"task_status\":\"finished\",\"command\":\"test\",\"command_return_code\":\"1\"}'\n";
+        let mut before_cleanup = "1 [workload] [INFO] 'buffered output'\n".repeat(32768);
+        before_cleanup.push_str(command);
+        let cutoff = before_cleanup.len() as u64;
+        let assertion = "2 [workload] [JSON] '{\"antithesis_assert\":{\"assert_type\":\"always\",\"hit\":true,\"condition\":false}}'";
+        std::fs::write(file.path(), format!("{before_cleanup}{command}{assertion}")).unwrap();
+        let mut output = Output::new(true).unwrap();
+        output.closed = true;
+        let mut summary = Summary::default();
+        drain(
+            file.path(),
+            0,
+            cutoff,
+            &mut output,
+            &mut summary,
+            tokio::time::Instant::now(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(summary.command_failures, 1);
+        assert_eq!(summary.assertion_failures, 1);
+        assert_eq!(summary.infrastructure_failures, 0);
     }
 
     #[test]

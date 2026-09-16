@@ -471,6 +471,27 @@ mod tests {
         );
     }
 
+    // Instrumentation serial output from local antithesis-guest:v61.2 under TCG.
+    #[test]
+    fn observed_composer_failure_and_output_are_preserved() {
+        let events: Vec<_> = include_str!("../../tests/fixtures/simulate/observed.log")
+            .lines()
+            .filter_map(|line| parse_line(line).unwrap())
+            .collect();
+        assert_eq!(events.len(), 4);
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| event.failure() == Some(Failure::Command))
+                .count(),
+            1
+        );
+        assert_eq!(
+            events.last().unwrap().render(),
+            "smoke/serial_driver_smoke: snouty-simulation-composer-smoke"
+        );
+    }
+
     #[hegel::test]
     fn assertion_message_survives_json_escaping(tc: hegel::TestCase) {
         let message = tc.draw(generators::text());

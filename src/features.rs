@@ -85,11 +85,14 @@ pub enum Feature {
     /// matching set (observed on tenant releases 58.11 and 60.0). Gated until
     /// the server fixes both.
     RunsSearch,
+    /// Local guest simulation is still under development.
+    Simulate,
     /// An id this build does not recognize.
     Unknown(String),
 }
 
 impl Feature {
+    pub const SIMULATE: &'static str = "simulate";
     pub const RUNS_EXEC: &'static str = "runs-exec";
     pub const RUNS_SEARCH: &'static str = "runs-search";
 }
@@ -99,6 +102,7 @@ impl Feature {
 impl From<&str> for Feature {
     fn from(id: &str) -> Self {
         match id {
+            Self::SIMULATE => Feature::Simulate,
             Self::RUNS_EXEC => Feature::RunsExec,
             Self::RUNS_SEARCH => Feature::RunsSearch,
             other => Feature::Unknown(other.to_string()),
@@ -119,6 +123,7 @@ impl FromStr for Feature {
 impl Display for Feature {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
+            Feature::Simulate => Self::SIMULATE,
             Feature::RunsExec => Self::RUNS_EXEC,
             Feature::RunsSearch => Self::RUNS_SEARCH,
             Feature::Unknown(id) => id,

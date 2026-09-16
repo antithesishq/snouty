@@ -48,7 +48,7 @@ fn get_stdin_params() -> Result<Params> {
 }
 
 #[tokio::main(flavor = "current_thread")]
-async fn main() {
+async fn main() -> std::process::ExitCode {
     // Drop the "Backtrace omitted. Run with RUST_BACKTRACE=1…" footer: it's noise
     // on every error, and outright misleading on user errors built with
     // `suppress_backtrace` (where RUST_BACKTRACE does nothing). A genuine fault
@@ -72,20 +72,23 @@ async fn main() {
             writeln!(buf, "{}", record.args())
         })
         .init();
-    if let Err(report) = run(Cli::parse()).await {
-        // One rendering for every error: `render_report` collapses the chain
-        // index for single errors and wraps overlong prose, both printing
-        // concerns that belong here rather than in the messages. User-facing
-        // failures are built with `user_error`/4xx `suppress_backtrace`, so they
-        // print message + any `.note()`/`.suggestion()` hints with no backtrace;
-        // genuine internal faults keep theirs.
-        let rendered = snouty::error::render_report(&report);
-        eprintln!("{}", snouty::wrap_if_tty(&rendered));
-        std::process::exit(1);
+    match run(Cli::parse()).await {
+        Ok(code) => code,
+        Err(report) => {
+            // One rendering for every error: `render_report` collapses the chain
+            // index for single errors and wraps overlong prose, both printing
+            // concerns that belong here rather than in the messages. User-facing
+            // failures are built with `user_error`/4xx `suppress_backtrace`, so they
+            // print message + any `.note()`/`.suggestion()` hints with no backtrace;
+            // genuine internal faults keep theirs.
+            let rendered = snouty::error::render_report(&report);
+            eprintln!("{}", snouty::wrap_if_tty(&rendered));
+            std::process::ExitCode::FAILURE
+        }
     }
 }
 
-async fn run(cli: Cli) -> Result<()> {
+async fn run(cli: Cli) -> Result<std::process::ExitCode> {
     let Cli {
         json,
         verbose,
@@ -144,12 +147,15 @@ async fn run(cli: Cli) -> Result<()> {
             cmd_debug(args, &settings?, output).await
         }
         Commands::Validate(args) => validate::cmd_validate(args, &settings?).await,
+        Commands::Simulate(args) => {
+            return snouty::simulate::cmd_simulate(args, &settings?, output).await;
+        }
         Commands::Doctor(args) => {
             snouty::doctor::cmd_doctor(&settings?, output, args.offline).await
         }
     };
 
-    suppress_broken_pipe(result)
+    suppress_broken_pipe(result).map(|()| std::process::ExitCode::SUCCESS)
 }
 
 /// When our output is piped into something that exits early (e.g. `snouty
@@ -178,7 +184,8 @@ fn json_unaware_command_name(command: &Commands) -> Option<&'static str> {
         | Commands::Runs { .. }
         | Commands::Docs { .. }
         | Commands::Debug { .. }
-        | Commands::Doctor(_) => None,
+        | Commands::Doctor(_)
+        | Commands::Simulate(_) => None,
         Commands::Validate(_) => Some("validate"),
         Commands::Completions { .. } => Some("completions"),
         Commands::Version => Some("version"),

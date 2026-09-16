@@ -12,18 +12,55 @@ use std::time::{Duration, Instant};
 use color_eyre::eyre::{Context, Result, eyre};
 use tokio::process::Child;
 
+/// Capture a process group's output without blocking cancellation or either pipe.
+pub async fn output_async(
+    mut command: tokio::process::Command,
+    timeout: Duration,
+) -> Result<Output> {
+    use tokio::io::AsyncReadExt;
+
+    command.process_group(0).kill_on_drop(true);
+    command.stdout(Stdio::piped()).stderr(Stdio::piped());
+    let mut child = command.spawn().wrap_err("failed to start command")?;
+    let mut stdout = child.stdout.take().expect("stdout piped");
+    let mut stderr = child.stderr.take().expect("stderr piped");
+    let mut child = ProcessGroupChild::new(child);
+    let mut out = Vec::new();
+    let mut err = Vec::new();
+    let result = tokio::time::timeout(timeout, async {
+        let (status, _, _) = tokio::try_join!(
+            child.wait(),
+            stdout.read_to_end(&mut out),
+            stderr.read_to_end(&mut err),
+        )?;
+        Ok::<_, std::io::Error>(status)
+    })
+    .await;
+    match result {
+        Ok(Ok(status)) => Ok(Output {
+            status,
+            stdout: out,
+            stderr: err,
+        }),
+        result => {
+            let _ = child.kill_group().await;
+            match result {
+                Ok(Err(error)) => Err(error.into()),
+                Err(_) => Err(eyre!("command timed out after {}s", timeout.as_secs())),
+                Ok(Ok(_)) => unreachable!(),
+            }
+        }
+    }
+}
+
 /// Run a command to completion with a wall-clock timeout, killing it (and
 /// returning an error) if it overruns. Reader threads drain stdout/stderr so a
 /// chatty child can't deadlock on a full pipe while we wait. Used for the
 /// synchronous discovery commands, which would otherwise be uninterruptible by
 /// `--timeout` or ctrl+c since a blocking `Command` can't be interrupted.
 ///
-/// Deliberately kills only the leader process — not the process group — so it
-/// needs no `libc::kill(-pid, …)` `unsafe`, unlike [`ProcessGroupChild`]. That
-/// wrapper exists for long-running commands that fork and manage a tree of
-/// children which must all die on timeout. The callers here spawn one-shot
-/// client invocations whose only child is the client itself: killing it closes
-/// the pipes (so the reader threads finish) and the work we were waiting on ends.
+/// This helper owns only the direct child. Use [`output_async`] for commands
+/// that start a process group or need cancellation while they run.
 pub fn output_with_timeout(mut cmd: Command, timeout: Duration) -> Result<Output> {
     cmd.stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -92,10 +129,10 @@ impl ProcessGroupChild {
     pub async fn kill_group(&mut self) -> std::io::Result<()> {
         if let Some(ref mut child) = self.inner {
             if let Some(pid) = child.id() {
-                // Safety: negative PID targets the entire process group.
-                unsafe {
-                    libc::kill(-(pid as libc::pid_t), libc::SIGKILL);
-                }
+                let _ = nix::sys::signal::killpg(
+                    nix::unistd::Pid::from_raw(pid as i32),
+                    nix::sys::signal::Signal::SIGKILL,
+                );
             }
             child.wait().await?;
         }
@@ -121,12 +158,11 @@ impl Drop for ProcessGroupChild {
     fn drop(&mut self) {
         if let Some(ref mut child) = self.inner {
             if let Some(pid) = child.id() {
-                // Safety: best-effort cleanup of the process group.
-                unsafe {
-                    libc::kill(-(pid as libc::pid_t), libc::SIGKILL);
-                }
+                let pid = nix::unistd::Pid::from_raw(pid as i32);
+                let _ = nix::sys::signal::killpg(pid, nix::sys::signal::Signal::SIGKILL);
+                // Cancellation can outlive the Tokio runtime, so reap before returning.
+                let _ = nix::sys::wait::waitpid(pid, None);
             }
-            // Best-effort synchronous reap — we can't .await in Drop.
             let _ = child.try_wait();
         }
     }

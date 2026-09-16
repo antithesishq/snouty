@@ -61,6 +61,14 @@ fn parse_poll_interval(value: &str) -> Result<HumanDuration, String> {
     Ok(interval)
 }
 
+fn parse_startup_timeout(value: &str) -> Result<HumanDuration, String> {
+    let timeout = value.parse::<HumanDuration>().map_err(|e| e.to_string())?;
+    if timeout.seconds() == 0 {
+        return Err("startup timeout must be greater than zero".to_string());
+    }
+    Ok(timeout)
+}
+
 #[derive(Parser)]
 #[command(name = "snouty")]
 #[command(about = "CLI for the Antithesis API", long_about = None)]
@@ -255,6 +263,35 @@ Example:
   snouty validate ./config --timeout 10
   snouty validate ./k8s-config"#)]
     Validate(ValidateArgs),
+
+    /// Run a Compose setup in an Antithesis guest VM
+    #[command(
+        hide = !features::is_enabled(Feature::Simulate),
+        long_about = r#"Run a Compose setup in an Antithesis guest VM
+
+This command is gated behind the 'simulate' unstable feature. Enable it with
+SNOUTY_UNSTABLE_FEATURES=simulate.
+
+Accepts a directory containing docker-compose.yaml, as validate does.
+Kubernetes configurations are not supported. Workload images must exist in
+the local container engine. Supply the guest container image with --guest-image.
+
+Requires Linux x86_64 and QEMU. Uses 1 CPU and 15000 MiB of memory. Uses KVM
+when available, otherwise TCG with a warning that performance will suffer.
+SSH configuration is private to this run; user configuration is not changed.
+
+Repeats rollouts until interrupted. --disable-restart runs one rollout and
+continues to stream logs. Failed assertions and composer commands do not stop
+the simulation, but cause a nonzero exit status when it stops.
+
+Boot console logs are hidden unless startup fails or the VM exits unexpectedly.
+With --json, emits newline-delimited events and a final failure-count summary.
+The startup timeout does not limit the simulation duration.
+
+Example:
+  SNOUTY_UNSTABLE_FEATURES=simulate snouty simulate ./config --guest-image IMAGE"#
+    )]
+    Simulate(SimulateArgs),
 
     /// Check environment configuration
     #[command(long_about = r#"Check environment configuration
@@ -521,6 +558,24 @@ pub struct ValidateArgs {
     /// the hermetic Antithesis environment than it does on this machine
     #[arg(long)]
     pub allow_compose_divergence: bool,
+}
+
+#[derive(Args)]
+pub struct SimulateArgs {
+    /// Path to config directory containing docker-compose.yaml
+    pub config: std::path::PathBuf,
+
+    /// Container image containing /guest.iso
+    #[arg(long, value_parser = validate_non_empty)]
+    pub guest_image: String,
+
+    /// Run one rollout, then continue streaming logs until interrupted
+    #[arg(long)]
+    pub disable_restart: bool,
+
+    /// Maximum time to wait for guest startup (for example, 5m or 300s)
+    #[arg(long, default_value = "5m", value_parser = parse_startup_timeout)]
+    pub timeout: HumanDuration,
 }
 
 #[derive(Args)]
@@ -1121,6 +1176,7 @@ impl Default for RunsListArgs {
 /// the environment.
 pub fn gated_command_error(command: &Commands, enabled: &[Feature]) -> Option<Report> {
     let gated = match command {
+        Commands::Simulate(_) => (Feature::Simulate, "snouty simulate"),
         Commands::Runs {
             command: Some(RunsCommands::Exec { .. }),
         } => (Feature::RunsExec, "snouty runs exec"),

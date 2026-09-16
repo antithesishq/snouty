@@ -1,0 +1,64 @@
+# Simulation is opt-in and never starts a VM during these argument checks.
+env SNOUTY_UNSTABLE_FEATURES=
+snouty --help
+! stdout 'simulate +Run'
+! snouty simulate empty --guest-image guest:latest
+stderr 'is an unstable feature and is not enabled'
+stderr 'SNOUTY_UNSTABLE_FEATURES=simulate'
+
+snouty simulate --help
+stdout 'gated behind the .simulate. unstable feature'
+stdout 'SNOUTY_UNSTABLE_FEATURES=simulate'
+
+env SNOUTY_UNSTABLE_FEATURES=simulate
+snouty --help
+stdout 'simulate +Run a Compose setup'
+snouty simulate --help
+stdout 'guest-image'
+stdout 'disable-restart'
+stdout 'timeout'
+stdout '1 CPU and 15000 MiB'
+stdout 'newline-delimited events'
+! stdout '\-\-accel'
+! stdout '\-\-memory'
+! stdout '\-\-cpus'
+
+! snouty simulate empty
+stderr 'required.*'
+stderr '\-\-guest-image'
+! snouty simulate --guest-image guest:latest
+stderr 'required.*'
+stderr '<CONFIG>'
+! snouty simulate empty --guest-image guest:latest --timeout 0s
+stderr 'startup timeout must be greater than zero'
+! snouty simulate empty --guest-image guest:latest --timeout nonsense
+stderr 'invalid value'
+
+# Detection matches validate before requiring a container engine.
+! snouty simulate /nonexistent/path --guest-image guest:latest
+stderr 'not a directory'
+! snouty simulate empty --guest-image guest:latest
+stderr 'does not contain.*docker-compose.yaml.*manifests/'
+! snouty simulate yml_dir --guest-image guest:latest
+stderr 'rename'
+! snouty simulate ambiguous --guest-image guest:latest
+stderr 'both docker-compose.yaml and a manifests/ subdirectory'
+! snouty simulate yml_dir/docker-compose.yml --guest-image guest:latest
+stderr 'not a directory'
+! snouty simulate kubernetes --guest-image guest:latest
+stderr 'Kubernetes.*not supported'
+
+-- empty/.keep --
+-- yml_dir/docker-compose.yml --
+-- ambiguous/docker-compose.yaml --
+services: {}
+-- ambiguous/manifests/ns.yaml --
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: demo
+-- kubernetes/manifests/ns.yaml --
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: demo

@@ -31,5 +31,6 @@ pub mod testutils;
 pub mod time;
 pub mod user_agent;
 pub mod util;
+pub mod simulate;
 pub mod validate;
 pub mod vtime;

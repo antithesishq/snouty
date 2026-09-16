@@ -1737,6 +1737,17 @@ def build_stories(d: Discovery) -> list[Story]:
             env={"SNOUTY_UNSTABLE_FEATURES": "runs-search"},
         ),
         Story(
+            "simulate-gated",
+            "Invoke simulation while the feature is off",
+            "I want to learn how to enable guest simulation.",
+            "A refusal names the simulate feature and its environment variable.",
+            ["simulate", ".", "--guest-image", "guest:latest"],
+            expect_message("SNOUTY_UNSTABLE_FEATURES=simulate"),
+            json_capable=False,
+            expect_ok=False,
+            env={"SNOUTY_UNSTABLE_FEATURES": None},
+        ),
+        Story(
             "runs-search-gated",
             "Invoke `runs search` while the feature is off",
             "I typed `runs search` without enabling the unstable feature; I want to "
@@ -2191,6 +2202,13 @@ def build_help_stories(d: Discovery) -> list[Story]:
             "Understand how to open a debugging session",
             "I run `snouty debug --help` to learn how to debug a moment.",
             ["debug"],
+        ),
+        _help_story(
+            "help-simulate",
+            "Understand guest simulation",
+            "I want to run a Compose setup in a guest VM and understand image "
+            "requirements, startup timeout, interruption, and failure status.",
+            ["simulate"],
         ),
         _help_story(
             "help-validate",

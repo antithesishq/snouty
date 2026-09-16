@@ -355,7 +355,7 @@ config image) or give the reference an inline default (e.g. ${VAR:-default}).";
 /// then both renders produce `default`. If the local shell sets `VAR`, the two
 /// renders differ and we flag it, which is correct: Antithesis would fall back
 /// to the default while the local run silently used the shell value.
-fn check_compose_divergence(
+pub(crate) fn check_compose_divergence(
     compose: &compose::DockerCompose,
     allow_compose_divergence: bool,
 ) -> Result<()> {

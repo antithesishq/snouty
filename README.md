@@ -165,7 +165,7 @@ For any one setting, snouty uses the first value it finds, highest precedence fi
 
 ### Unstable features
 
-A few subcommands depend on an Antithesis API that is still changing shape, so snouty keeps them behind a gate. Name the features you want in `SNOUTY_UNSTABLE_FEATURES`, as a comma-separated list. A gated command is hidden from `--help` until its feature is on, and fails as an unrecognized subcommand when it is off.
+Snouty keeps experimental subcommands behind a feature gate. Name the features you want in `SNOUTY_UNSTABLE_FEATURES`, as a comma-separated list. A gated command is hidden from `--help` until its feature is on, and fails as an unrecognized subcommand when it is off.
 
 ```sh
 export SNOUTY_UNSTABLE_FEATURES="runs-search,runs-exec"
@@ -175,6 +175,7 @@ export SNOUTY_UNSTABLE_FEATURES="runs-search,runs-exec"
 | ------------- | ---------------------------------------------------------------------------------- |
 | `runs-search` | `snouty runs search`, and routes `snouty runs events` through the events-search API. Needs tenant release 58.11 or newer. |
 | `runs-exec`   | `snouty runs exec`. The execute-command API is unavailable on most tenants.        |
+| `simulate` | `snouty simulate`. Run a Compose setup in a local Antithesis guest VM. |
 
 Anything behind this gate can change its behavior, its flags, or its id, or go away, in any release. `snouty doctor` lists the features that are on, and reports when your tenant is too old to serve one.
 
@@ -302,3 +303,34 @@ snouty completions elvish > ~/.config/elvish/lib/snouty.elv
 # Credits
 
 This project was originally developed by [orbitinghail](https://orbitinghail.dev) for use by [Graft](https://github.com/orbitinghail/graft). It was donated to Antithesis for the benefit of everyone on Feb 27, 2026.
+
+### Local simulation (experimental)
+
+On Linux x86_64, enable `simulate` to run an Antithesis Compose setup in a local
+guest VM:
+
+```sh
+SNOUTY_UNSTABLE_FEATURES=simulate snouty simulate ./config --guest-image IMAGE
+```
+
+Install QEMU (`qemu-system-x86_64`), OpenSSH, tar, and the container engine and
+Compose tools described above. The guest image must contain `/guest.iso`.
+Snouty uses a local guest image when present and pulls it otherwise. Workload
+images must already exist locally. Only directories with `docker-compose.yaml`
+are supported; Kubernetes and arbitrary host bind mounts are not supported.
+
+The VM uses 1 CPU and 15000 MiB of RAM. Snouty uses KVM when available and warns
+when it falls back to slower software emulation. SSH files are private to the
+run; Snouty does not change user configuration.
+
+Rollouts repeat until interrupted. Use `--disable-restart` to start one rollout
+and keep streaming its logs. `--timeout 5m` limits guest startup, not the run.
+Assertion violations and failed test commands do not stop the run, but remain
+recorded across rollouts. On shutdown, recorded failures return status 1;
+otherwise SIGINT returns 130 and SIGTERM returns 143. Cleanup-induced command
+failures do not count. Raw logs are retained on failure, with their path printed.
+
+Use `--json` for newline-delimited events and a final summary with failure counts.
+Progress goes to stderr. Boot logs are shown only on startup failure or an
+unexpected VM exit. Simulation does not run the production fuzzer or deterministic
+hypervisor.

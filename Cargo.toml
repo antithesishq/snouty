@@ -34,7 +34,7 @@ color-eyre = { version = "0.6", default-features = false }
 futures-util = "0.3"
 # Chunk type of reqwest response streams; JsonStream buffers them.
 bytes = "1"
-tokio = { version = "1", features = ["rt", "macros", "process", "time", "io-util", "io-std", "net", "signal", "sync"] }
+tokio = { version = "1", features = ["rt", "macros", "process", "time", "io-util", "io-std", "net", "signal", "sync", "fs"] }
 tokio-util = { version = "0.7", default-features = false, features = ["io"] }
 serde = { version = "1", features = ["derive"] }
 # The exact-version pin keeps a crates.io build of snouty on the macro
@@ -52,6 +52,7 @@ console = "0.15"
 tempfile = "3"
 pulldown-cmark = "0.13"
 libc = "0.2"
+nix = { version = "0.26.4", default-features = false, features = ["signal", "process"] }
 regex = "1"
 semver = "1"
 ptree = { version = "0.5.2", default-features = false }

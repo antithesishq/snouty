@@ -149,14 +149,15 @@ impl ProcessGroupChild {
 
 impl Drop for ProcessGroupChild {
     fn drop(&mut self) {
-        if let Some(ref mut child) = self.inner {
-            if let Some(pid) = child.id() {
-                let pid = nix::unistd::Pid::from_raw(pid as i32);
-                let _ = nix::sys::signal::killpg(pid, nix::sys::signal::Signal::SIGKILL);
-                // Cancellation can outlive the Tokio runtime, so reap before returning.
-                let _ = nix::sys::wait::waitpid(pid, None);
+        if let Some(ref mut child) = self.inner
+            && let Some(pid) = child.id()
+        {
+            let pid = nix::unistd::Pid::from_raw(pid as i32);
+            let _ = nix::sys::signal::killpg(pid, nix::sys::signal::Signal::SIGKILL);
+            // Cancellation can outlive the Tokio runtime, so reap before returning.
+            while matches!(child.try_wait(), Ok(None)) {
+                thread::sleep(Duration::from_millis(1));
             }
-            let _ = child.try_wait();
         }
     }
 }

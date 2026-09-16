@@ -24,12 +24,19 @@ if name == 'docker-compose':
         sys.exit('unexpected compose command: ' + repr(args))
 elif name == 'docker':
     if args[:2] == ['image', 'inspect']:
+        if args[2] == 'guest:test' and mode in ('missing-guest', 'pull-failure') and not (root / 'pulled').exists():
+            sys.exit('No such image: guest:test')
         print(json.dumps([{'Id': 'sha256:' + 'a' * 64, 'Architecture': 'amd64'}]))
     elif args[0] == 'cp':
         Path(args[-1]).write_bytes(b'guest ISO fixture')
     elif args[0] == 'save':
         Path(args[args.index('--output') + 1]).write_bytes(b'workload archive')
-    elif args[0] in ('create', 'rm', 'pull'):
+    elif args[0] == 'pull':
+        record('pull_args', json.dumps(args))
+        if mode == 'pull-failure':
+            sys.exit('registry denied fixture')
+        record('pulled', 'guest:test')
+    elif args[0] in ('create', 'rm'):
         print('fixture-container')
     else:
         sys.exit('unexpected engine command: ' + repr(args))
@@ -50,8 +57,15 @@ elif name == 'ssh':
             log.write_text("11.2 [workload] [JSON] '{\"antithesis_assert\":{\"message\":\"balance stays positive\",\"assert_type\":\"always\",\"must_hit\":true,\"hit\":true,\"condition\":false}}'\n12.0 [workload] [STDOUT] 'still running after assertion'\n")
             if mode == 'malformed-json':
                 log.write_text("12.0 [workload] [JSON] '{broken json}'\n")
-            if mode in ('supervisor-failure', 'clean-once'):
+            if mode in ('supervisor-failure', 'clean-once', 'missing-guest'):
                 log.write_text('12.0 [workload] [STDOUT] \'workload running\'\n')
+            if mode.startswith('blocked-output'):
+                with log.open('w') as output:
+                    for _ in range(1024):
+                        output.write("12 [workload] [STDOUT] '" + 'x' * 8192 + "'\n")
+                    if mode == 'blocked-output-failures':
+                        output.write('13 [antithesis_test_composer] [JSON] ' + json.dumps({'task_status': 'finished', 'command': 'test', 'command_return_code': 1}) + '\n')
+                        output.write('14 [workload] [JSON] ' + json.dumps({'antithesis_assert': {'assert_type': 'always', 'hit': True, 'condition': False, 'message': 'late violation'}}))
             record('rollout_started', 'yes')
         elif 'podman image exists' in script:
             print('[]')
@@ -70,6 +84,9 @@ elif name == 'qemu-system-x86_64':
     if mode == 'boot-failure':
         Path('boot.log').write_text('fatal boot fixture\n')
         sys.exit(23)
+    if mode == 'startup-timeout':
+        while True:
+            time.sleep(1)
     child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])
     record('qemu_child_pid', child.pid)
     def stop(signum, _frame):

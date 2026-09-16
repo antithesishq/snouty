@@ -66,14 +66,27 @@ impl Simulation {
             .env("TERM", "dumb")
             .args(["--json", "simulate"])
             .arg(config)
-            .args(["--guest-image", "guest:test", "--timeout", "10s"])
+            .args([
+                "--guest-image",
+                "guest:test",
+                "--timeout",
+                if mode == "startup-timeout" {
+                    "1s"
+                } else {
+                    "10s"
+                },
+            ])
             .args(if mode == "clean-once" {
                 vec!["--disable-restart"]
             } else {
                 Vec::new()
             })
             .stdin(Stdio::null())
-            .stdout(fs::File::create(root.join("stdout")).unwrap())
+            .stdout(if mode.starts_with("blocked-output") {
+                Stdio::piped()
+            } else {
+                Stdio::from(fs::File::create(root.join("stdout")).unwrap())
+            })
             .stderr(fs::File::create(root.join("stderr")).unwrap())
             .spawn()
             .unwrap();
@@ -300,4 +313,89 @@ fn assertion_written_at_shutdown_is_included_in_final_status() {
         .find(|event| event["type"] == "summary")
         .unwrap();
     assert_eq!(summary["failures"]["assertion_failures"], 1);
+}
+
+#[test]
+fn missing_guest_image_is_pulled_before_boot() {
+    let mut simulation = Simulation::start("missing-guest");
+    simulation.wait_for("stdout", "workload running");
+    let args: serde_json::Value = serde_json::from_str(&simulation.read("pull_args")).unwrap();
+    assert_eq!(
+        args,
+        serde_json::json!(["pull", "--platform", "linux/amd64", "guest:test"])
+    );
+    assert_eq!(simulation.read("pulled"), "guest:test");
+    kill(Pid::from_raw(simulation.child.id() as i32), Signal::SIGTERM).unwrap();
+    assert_eq!(simulation.finish().status.code(), Some(143));
+}
+
+#[test]
+fn failed_guest_pull_never_starts_qemu() {
+    let mut simulation = Simulation::start("pull-failure");
+    let output = simulation.finish();
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(
+        stderr.contains("cannot pull guest image guest:test"),
+        "{stderr}"
+    );
+    assert!(stderr.contains("registry denied fixture"), "{stderr}");
+    assert!(!simulation.root().join("qemu_pid").exists());
+    assert!(!simulation.root().join("pulled").exists());
+}
+
+#[test]
+fn startup_timeout_reaps_qemu_and_reports_boot_diagnostics() {
+    let mut simulation = Simulation::start("startup-timeout");
+    let output = simulation.finish();
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(
+        stderr.contains("guest startup timed out after 1 seconds"),
+        "{stderr}"
+    );
+    assert!(stderr.contains("private boot console"), "{stderr}");
+    let pid: i32 = simulation.read("qemu_pid").parse().unwrap();
+    assert!(
+        kill(Pid::from_raw(pid), None).is_err(),
+        "QEMU survived startup timeout"
+    );
+    assert!(!simulation.root().join("rollout_started").exists());
+}
+
+#[test]
+fn unread_output_pipe_does_not_block_signal_cleanup() {
+    let mut simulation = Simulation::start("blocked-output");
+    simulation.wait_for("stderr", "Streaming guest logs");
+    std::thread::sleep(Duration::from_millis(200));
+    kill(Pid::from_raw(simulation.child.id() as i32), Signal::SIGTERM).unwrap();
+    let output = simulation.finish();
+    assert_eq!(
+        output.status.code(),
+        Some(143),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let pid: i32 = simulation.read("qemu_pid").parse().unwrap();
+    assert!(kill(Pid::from_raw(pid), None).is_err());
+}
+
+#[test]
+fn unread_output_backlog_preserves_command_and_assertion_failures() {
+    let mut simulation = Simulation::start("blocked-output-failures");
+    simulation.wait_for("stderr", "Streaming guest logs");
+    std::thread::sleep(Duration::from_millis(200));
+    kill(Pid::from_raw(simulation.child.id() as i32), Signal::SIGTERM).unwrap();
+    let output = simulation.finish();
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(stderr.contains("Simulation logs:"), "{stderr}");
+    assert!(!stderr.contains("failed:"), "{stderr}");
+    let pid: i32 = simulation.read("qemu_pid").parse().unwrap();
+    assert!(kill(Pid::from_raw(pid), None).is_err());
 }

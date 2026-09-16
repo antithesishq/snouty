@@ -25,12 +25,12 @@ pub mod runs;
 pub mod scripts;
 #[doc(hidden)]
 pub mod settings;
+pub mod simulate;
 pub mod tag;
 #[doc(hidden)]
 pub mod testutils;
 pub mod time;
 pub mod user_agent;
 pub mod util;
-pub mod simulate;
 pub mod validate;
 pub mod vtime;

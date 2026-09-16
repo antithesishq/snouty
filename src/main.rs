@@ -43,7 +43,7 @@ use snouty::validate;
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 #[tokio::main(flavor = "current_thread")]
-async fn main() {
+async fn main() -> std::process::ExitCode {
     // Drop the "Backtrace omitted. Run with RUST_BACKTRACE=1…" footer: it's noise
     // on every error, and outright misleading on user errors built with
     // `suppress_backtrace` (where RUST_BACKTRACE does nothing). A genuine fault
@@ -72,7 +72,11 @@ async fn main() {
         console::set_colors_enabled_stderr(false);
     }
     let cli = snouty::cli::parse();
-    if let Err(report) = run(cli).await {
+    let report = match run(cli).await {
+        Ok(code) => return code,
+        Err(report) => report,
+    };
+    {
         // The docker-credential helper already said "not found" on stdout,
         // which is all that the helper protocol permits for it.
         if report.is::<snouty::docker_credential::CredentialsNotFound>() {
@@ -90,7 +94,7 @@ async fn main() {
     }
 }
 
-async fn run(cli: Cli) -> Result<()> {
+async fn run(cli: Cli) -> Result<std::process::ExitCode> {
     let Cli {
         json,
         verbose,
@@ -143,6 +147,9 @@ async fn run(cli: Cli) -> Result<()> {
             cmd_debug(args, &settings?, output).await
         }
         Commands::Validate(args) => validate::cmd_validate(args, &settings?).await,
+        Commands::Simulate(args) => {
+            return snouty::simulate::cmd_simulate(args, &settings?, output).await;
+        }
         Commands::Doctor(args) => {
             snouty::doctor::cmd_doctor(&settings?, output, args.offline).await
         }
@@ -170,7 +177,7 @@ async fn run(cli: Cli) -> Result<()> {
         }
     };
 
-    suppress_broken_pipe(result)
+    suppress_broken_pipe(result).map(|()| std::process::ExitCode::SUCCESS)
 }
 
 /// When our output is piped into something that exits early (e.g. `snouty

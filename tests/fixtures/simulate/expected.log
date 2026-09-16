@@ -1,0 +1,17 @@
+Reached setup_complete
+Reached setup_complete ("racebench-test ready")
+test composer: started racebench-pigz/singleton_driver_pigz_1
+test composer: passed racebench-pigz/singleton_driver_pigz_1 (0.32s)
+test composer: FAILED racebench-broken/singleton_driver_broken_1 (exit 2, 1.24s)
+  stdout: partial output
+  stderr: bad input
+test composer: run complete (no options left to run)
+racebench-test: setup_complete emitted for blackscholes; idling
+racebench-test: error: application failed
+ASSERTION FAILED: balance stays positive
+assertion reached: worker started
+racebench-test: {"custom_workload_event":{"value":3}}
+racebench-test: error: bad workload configuration (code 1201)
+test: command stdout
+test: error: command stderr
+process terminated by SIGABRT (6)

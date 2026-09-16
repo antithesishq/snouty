@@ -1,0 +1,41 @@
+UEFI firmware boot message
+[0;32m[  OK  ] Started a system service.[0m
+  3.6 [bootstrap] [INFO] 'vm cpuid'
+  5.0 [fuzzpipe] [STARTUP] Type: 3
+  6.0 [bodytrack] [COVERAGE]: +1234
+  6.1 [bodytrack] [COVERAGE MODULE] module
+  6.2 [bodytrack] [SEGMENT] segment
+  6.3 [bodytrack] [TELEMETRY] telemetry
+  6.4 [bodytrack] [WAITING_FOR_INPUT]
+  7.0 [create_container_script] [INFO] 'WORKLOADS lots-of-noise'
+  7.1 [post_stop_script] [JSON] '{"done":true}'
+  7.2 [create_runtime_script] [JSON] '{"fuzzpipe":{"event_type":"Child started"}}'
+  7.3 [create_runtime_script] [ERROR] 'mount: special device /opt/antithesis/tacticslang-sheap does not exist.'
+  7.4 [create_runtime_script] [ERROR] 'dmesg(1) may have more information after failed mount system call.'
+  7.5 [create_runtime_script] [ERROR] 'unexpected mount failure'
+  8.0 [antithesis_prestart_hook] [JSON] '{"container_host_name":"service"}'
+  8.1 [antithesis_prestart_hook] [JSON] '{"antithesis_error":{"code":4102,"message":"bad network"}}'
+  9.0 [fault_injector] [JSON] '{"settings":{"debug":false}}'
+  9.1 [fault_injector] [JSON] '{"antithesis_error":{"message":"unexpected"}}'
+  9.2 [fault_injector_command] [ERROR] 'No such file or directory'
+  9.3 [python3.10] [JSON] '{"antithesis_sdk":{"language":{"name":"Python"}}}'
+  9.4 [python3.10] [JSON] '{"antithesis_setup":{"status":"complete"}}'
+  9.5 [python3.10] [JSON] '{"antithesis_setup":{"details":{"message":"racebench-test ready"},"status":"complete"}}'
+  10.0 [antithesis_test_composer] [INFO] 'Configuration not found, falling back to default config'
+  10.1 [antithesis_test_composer] [JSON] '{"tasks_len":"1","task_status":"started","command":"racebench-pigz/singleton_driver_pigz_1"}'
+  10.2 [antithesis_test_composer] [JSON] '{"command_runtime":"0.320011","command":"racebench-pigz/singleton_driver_pigz_1","task_status":"finished","command_return_code":"0","additional_stdout":"","additional_stderr":""}'
+  10.3 [antithesis_test_composer] [JSON] '{"command":"racebench-broken/singleton_driver_broken_1","task_status":"finished","additional_stderr":"bad input","command_runtime":"1.236","command_return_code":"2","additional_stdout":"partial output"}'
+  10.4 [antithesis_test_composer] [INFO] 'error running command'
+  10.5 [soft_terminate_composer] [JSON] '{"message":"no options left to run","soft_terminate":"terminating branch"}'
+  11.0 [racebench-test] [INFO] 'racebench-test: setup_complete emitted for blackscholes; idling'
+  11.1 [racebench-test] [ERROR] 'application failed'
+  11.2 [racebench-test] [JSON] '{"antithesis_assert":{"message":"balance stays positive","assert_type":"always","must_hit":true,"hit":true,"condition":false}}'
+  11.3 [racebench-test] [JSON] '{"antithesis_assert":{"condition":true,"hit":true,"message":"worker started","must_hit":true,"assert_type":"reachability"}}'
+  11.4 [racebench-test] [JSON] '{"custom_workload_event":{"value":3}}'
+  11.5 [racebench-test] [JSON] '{"antithesis_error":{"code":1201,"message":"bad workload configuration"}}'
+  12.0 [antithesis/pods/racebench-test/commands/test.out] [INFO] 'command stdout'
+  12.1 [antithesis/pods/racebench-test/commands/test.err] [ERROR] 'command stderr'
+  12.2 [processes_terminated_with_signal] [INFO] '{"signal":6}'
+  12.3 [coredump_script] [INFO] 'Coredump disabled'
+  13.0 [python3.10] [ERROR] 'Environment variable 'ANTITHESIS_ASSERTION_CATALOG' must refer to an accessible directory'
+  13.1 [python3.10] [ERROR] 'Ignoring it because it is set to PosixPath('/.antithesis-produced/catalog')'

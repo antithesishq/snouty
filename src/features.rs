@@ -40,6 +40,8 @@ pub enum Feature {
     /// `snouty mcp`, the MCP server. Its tools and their output can still
     /// change.
     Mcp,
+    /// Local guest simulation is still under development.
+    Simulate,
     /// Gates `launch --max-compute-hours`, `launch --setup-timeout` and
     /// `debug --duration`. While it is off, `launch --duration` is not
     /// deprecated.

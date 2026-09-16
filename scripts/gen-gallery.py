@@ -3138,6 +3138,17 @@ def build_stories(d: Discovery, guard: LaunchGuard | None = None) -> list[Story]
             expect_ok=False,
         ),
         Story(
+            "simulate-gated",
+            "Invoke simulation while the feature is off",
+            "I want to learn how to enable guest simulation.",
+            "A refusal names the simulate feature and its environment variable.",
+            ["simulate", ".", "--guest-image", "guest:latest"],
+            expect_message("SNOUTY_UNSTABLE_FEATURES=simulate"),
+            json_capable=False,
+            expect_ok=False,
+            env={"SNOUTY_UNSTABLE_FEATURES": None},
+        ),
+        Story(
             "runs-search-count",
             f"Count the events that match '{kw}'",
             "A search shows only a sample of the matches; I want to know how many "
@@ -4305,6 +4316,13 @@ def build_help_stories(d: Discovery) -> list[Story]:
             "should show that --input-hash, --vtime, and --run-id are required, and that "
             "--session-id is only for a moment that names a session ID.",
             ["debug"],
+        ),
+        _help_story(
+            "help-simulate",
+            "Understand guest simulation",
+            "I want to run a Compose setup in a guest VM and understand image "
+            "requirements, startup timeout, interruption, and failure status.",
+            ["simulate"],
         ),
         _help_story(
             "help-validate",

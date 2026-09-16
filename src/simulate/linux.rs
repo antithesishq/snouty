@@ -7,12 +7,12 @@ use std::time::Duration;
 
 use color_eyre::eyre::{OptionExt, Result, bail};
 use futures_util::{Stream, StreamExt};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tokio::signal::unix::{Signal, SignalKind, signal};
 
 use super::{
     events::{self, Event, Failure},
-    images::Images,
+    images::{ImageId, Images},
     vm::{ShutdownSignal, Vm},
 };
 use crate::{
@@ -36,6 +36,12 @@ enum Termination {
     InfrastructureFailure,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RunPhase {
+    Running,
+    Cleanup,
+}
+
 #[derive(Default, Serialize)]
 struct Summary {
     assertion_failures: u64,
@@ -44,10 +50,10 @@ struct Summary {
 }
 
 impl Summary {
-    fn observe(&mut self, event: &Event, cleanup: bool) {
+    fn observe(&mut self, event: &Event, phase: RunPhase) {
         match event.failure() {
             Some(Failure::Assertion) => self.assertion_failures += 1,
-            Some(Failure::Command) if !cleanup => self.command_failures += 1,
+            Some(Failure::Command) if phase == RunPhase::Running => self.command_failures += 1,
             _ => {}
         }
     }
@@ -93,9 +99,9 @@ impl Output {
         }
     }
 
-    fn event(&mut self, line: &str, summary: &mut Summary, cleanup: bool) -> Result<()> {
+    fn event(&mut self, line: &str, summary: &mut Summary, phase: RunPhase) -> Result<()> {
         if let Some(event) = events::parse_line(line)? {
-            summary.observe(&event, cleanup);
+            summary.observe(&event, phase);
             self.line(&if self.json {
                 serde_json::to_string(&event)?
             } else {
@@ -182,25 +188,20 @@ pub(super) async fn run(
                 "set -euo pipefail\nif podman image exists {image}; then podman image inspect {image}; else printf '[]'; fi\n",
                 image = shell_quote(&reference)
             );
-            let remote: Vec<serde_json::Value> =
-                serde_json::from_str(&guest.run_script(&script).await?)?;
-            let same = remote
-                .first()
-                .and_then(|image| image.get("Id"))
-                .and_then(|id| id.as_str())
-                .is_some_and(|id| id.trim_start_matches("sha256:") == local.id.to_string());
+            #[derive(Deserialize)]
+            struct RemoteImage {
+                #[serde(rename = "Id")]
+                id: ImageId,
+            }
+            let remote: Vec<RemoteImage> = serde_json::from_str(&guest.run_script(&script).await?)?;
+            let same = remote.first().is_some_and(|image| image.id == local.id);
             if !same {
                 changed.push((reference, local.id.to_string()));
             }
         }
         if !changed.is_empty() {
             let archive = run_dir.path().join("images.tar");
-            let ids: Vec<_> = changed
-                .iter()
-                .map(|(_, id)| id.clone())
-                .collect::<BTreeSet<_>>()
-                .into_iter()
-                .collect();
+            let ids: Vec<_> = changed.iter().map(|(_, id)| id.clone()).collect();
             images.save(&ids, &archive).await?;
             guest.load_images(&archive).await?;
             for (reference, id) in changed {
@@ -227,7 +228,7 @@ pub(super) async fn run(
             tokio::select! {
                 line = logs.next() => {
                     let line = line.ok_or_eyre("instrumentation stream ended")??;
-                    output.event(&line, &mut summary, false)?;
+                    output.event(&line, &mut summary, RunPhase::Running)?;
                     if output.closed { return Ok::<_, color_eyre::Report>(()); }
                 },
                 _ = health.tick() => {
@@ -249,7 +250,7 @@ pub(super) async fn run(
         },
     };
     // Drain records already emitted before cleanup can terminate test commands.
-    drain(&mut logs, &mut output, &mut summary, false).await;
+    drain(&mut logs, &mut output, &mut summary, RunPhase::Running).await;
     if let Some(guest) = &mut vm {
         eprintln!("Stopping simulation...");
         let cleanup = tokio::select! {
@@ -258,9 +259,16 @@ pub(super) async fn run(
         };
         match cleanup {
             Some(Ok(Ok(_))) | None => {}
-            Some(result) => {
+            Some(Ok(Err(error))) => {
                 summary.infrastructure_failures += 1;
-                eprintln!("Guest cleanup failed: {result:?}");
+                eprintln!("Guest cleanup failed: {error:#}");
+            }
+            Some(Err(_)) => {
+                summary.infrastructure_failures += 1;
+                eprintln!(
+                    "Guest cleanup timed out after {} seconds",
+                    CLEANUP_TIMEOUT.as_secs()
+                );
             }
         }
         let signal = match reason {
@@ -272,8 +280,7 @@ pub(super) async fn run(
             eprintln!("VM shutdown failed: {error:#}");
         }
     }
-    drain(&mut logs, &mut output, &mut summary, true).await;
-    // Retained diagnostics never contain the runtime identity or a large transfer archive.
+    drain(&mut logs, &mut output, &mut summary, RunPhase::Cleanup).await;
     for name in [
         "guest-dev-key",
         "ssh_config",
@@ -282,10 +289,10 @@ pub(super) async fn run(
         "qmp.sock",
     ] {
         let path = run_dir.path().join(name);
-        if let Err(error) = std::fs::remove_file(&path) {
-            if error.kind() != std::io::ErrorKind::NotFound {
-                log::debug!("removing {}: {error}", path.display());
-            }
+        if let Err(error) = std::fs::remove_file(&path)
+            && error.kind() != std::io::ErrorKind::NotFound
+        {
+            log::debug!("removing {}: {error}", path.display());
         }
     }
     let diagnostics = if summary.failed() {
@@ -316,33 +323,26 @@ fn shell_quote(value: &str) -> String {
 fn serial_lines(path: &Path) -> Result<LogStream> {
     let mut file = std::fs::File::open(path)?;
     file.seek(SeekFrom::End(0))?;
-    Ok(Box::pin(futures_util::stream::unfold(
-        (file, Vec::<u8>::new(), false),
-        |(mut file, mut pending, failed)| async move {
-            if failed {
-                return None;
-            }
-            let result = async {
-                loop {
-                    if let Some(end) = pending.iter().position(|byte| *byte == b'\n') {
-                        let line: Vec<_> = pending.drain(..=end).collect();
-                        return Ok(String::from_utf8_lossy(&line[..end]).into_owned());
-                    }
-                    let mut buffer = [0; 8192];
-                    let count = file.read(&mut buffer)?;
-                    if count == 0 {
-                        tokio::time::sleep(Duration::from_millis(50)).await;
-                    } else {
-                        pending.extend_from_slice(&buffer[..count]);
-                        if pending.len() > 4 * 1024 * 1024 {
-                            bail!("instrumentation line exceeds 4 MiB");
-                        }
+    Ok(Box::pin(futures_util::stream::try_unfold(
+        (file, Vec::<u8>::new()),
+        |(mut file, mut pending)| async move {
+            loop {
+                if let Some(end) = pending.iter().position(|byte| *byte == b'\n') {
+                    let bytes: Vec<_> = pending.drain(..=end).collect();
+                    let line = String::from_utf8_lossy(&bytes[..end]).into_owned();
+                    return Ok(Some((line, (file, pending))));
+                }
+                let mut buffer = [0; 8192];
+                let count = file.read(&mut buffer)?;
+                if count == 0 {
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                } else {
+                    pending.extend_from_slice(&buffer[..count]);
+                    if pending.len() > 4 * 1024 * 1024 {
+                        bail!("instrumentation line exceeds 4 MiB");
                     }
                 }
             }
-            .await;
-            let failed = result.is_err();
-            Some((result, (file, pending, failed)))
         },
     )))
 }
@@ -351,7 +351,7 @@ async fn drain(
     logs: &mut Option<LogStream>,
     output: &mut Output,
     summary: &mut Summary,
-    cleanup: bool,
+    phase: RunPhase,
 ) {
     let Some(logs) = logs else {
         return;
@@ -360,7 +360,7 @@ async fn drain(
     while tokio::time::Instant::now() < deadline {
         match tokio::time::timeout(Duration::from_millis(150), logs.next()).await {
             Ok(Some(Ok(line))) => {
-                if let Err(error) = output.event(&line, summary, cleanup) {
+                if let Err(error) = output.event(&line, summary, phase) {
                     summary.infrastructure_failures += 1;
                     eprintln!("Invalid instrumentation event: {error:#}");
                 }
@@ -439,9 +439,9 @@ mod tests {
     fn cleanup_does_not_turn_terminated_commands_into_failures() {
         let mut summary = Summary::default();
         let event = events::parse_line("1 [antithesis_test_composer] [JSON] '{\"task_status\":\"finished\",\"command\":\"test\",\"command_return_code\":\"143\"}'").unwrap().unwrap();
-        summary.observe(&event, true);
+        summary.observe(&event, RunPhase::Cleanup);
         assert!(!summary.failed());
-        summary.observe(&event, false);
+        summary.observe(&event, RunPhase::Running);
         assert_eq!(
             summary.exit_code(Termination::Interrupted),
             ExitCode::FAILURE

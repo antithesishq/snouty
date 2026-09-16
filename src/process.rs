@@ -28,12 +28,10 @@ pub async fn output_async(
     let mut out = Vec::new();
     let mut err = Vec::new();
     let result = tokio::time::timeout(timeout, async {
-        let (status, _, _) = tokio::try_join!(
-            child.wait(),
-            stdout.read_to_end(&mut out),
-            stderr.read_to_end(&mut err),
-        )?;
-        Ok::<_, std::io::Error>(status)
+        // Keep the leader unreaped until its pipes close. Descendants may still
+        // hold them, and timeout cleanup must retain the process-group identity.
+        tokio::try_join!(stdout.read_to_end(&mut out), stderr.read_to_end(&mut err),)?;
+        child.wait().await
     })
     .await;
     match result {
@@ -171,6 +169,77 @@ impl Drop for ProcessGroupChild {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn async_output_drains_both_pipes() {
+        let mut command = tokio::process::Command::new("sh");
+        command.args([
+            "-c",
+            "head -c 131072 /dev/zero; head -c 131072 /dev/zero >&2; exit 7",
+        ]);
+        let output = output_async(command, Duration::from_secs(5)).await.unwrap();
+        assert_eq!(output.status.code(), Some(7));
+        assert_eq!(output.stdout.len(), 131072);
+        assert_eq!(output.stderr.len(), 131072);
+    }
+
+    #[tokio::test]
+    async fn cancelled_output_kills_and_reaps_child() {
+        let dir = tempfile::tempdir().unwrap();
+        let pid_file = dir.path().join("pid");
+        let mut command = tokio::process::Command::new("sh");
+        command
+            .args(["-c", "echo $$ > \"$1\"; exec sleep 30", "_"])
+            .arg(&pid_file);
+        let pid = {
+            let operation = output_async(command, Duration::from_secs(60));
+            tokio::pin!(operation);
+            tokio::select! {
+                _ = &mut operation => panic!("child exited before cancellation"),
+                pid = async {
+                    tokio::time::timeout(Duration::from_secs(5), async {
+                        loop {
+                            if let Ok(text) = std::fs::read_to_string(&pid_file)
+                                && let Ok(pid) = text.trim().parse::<i32>() {
+                                    break pid;
+                                }
+                            tokio::time::sleep(Duration::from_millis(10)).await;
+                        }
+                    }).await.unwrap()
+                } => pid,
+            }
+        };
+        assert_eq!(
+            nix::sys::wait::waitpid(
+                nix::unistd::Pid::from_raw(pid),
+                Some(nix::sys::wait::WaitPidFlag::WNOHANG)
+            ),
+            Err(nix::errno::Errno::ECHILD)
+        );
+        assert_eq!(
+            nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid), None),
+            Err(nix::errno::Errno::ESRCH)
+        );
+    }
+
+    #[tokio::test]
+    async fn timeout_kills_descendants_after_the_leader_exits() {
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join("leaked");
+        let mut command = tokio::process::Command::new("sh");
+        command
+            .args(["-c", "(sleep 1; touch \"$1\") & exit 0", "_"])
+            .arg(&marker);
+        let error = output_async(command, Duration::from_millis(100))
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("timed out"));
+        tokio::time::sleep(Duration::from_millis(1200)).await;
+        assert!(
+            !marker.exists(),
+            "a descendant survived process-group cleanup"
+        );
+    }
 
     #[test]
     fn output_with_timeout_returns_quick_command_output() {

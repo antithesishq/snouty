@@ -33,6 +33,7 @@ pub mod settings;
 pub mod simulate;
 pub mod stdio;
 pub(crate) mod table;
+pub mod simulate;
 pub mod tag;
 #[doc(hidden)]
 pub mod testutils;

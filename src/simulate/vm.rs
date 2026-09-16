@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::Duration;
 
+use crate::process::output_async;
 use color_eyre::eyre::{Context, Result, bail, eyre};
 use nix::sys::signal::{Signal, killpg};
 use nix::unistd::Pid;
@@ -50,7 +51,9 @@ impl Vm {
         if !accelerated {
             eprintln!("Warning: KVM is not accessible; simulation will run more slowly.");
         }
-        let deadline = Instant::now() + startup_timeout;
+        let deadline = Instant::now()
+            .checked_add(startup_timeout)
+            .ok_or_else(|| eyre!("guest startup timeout is too large"))?;
         for attempt in 0..5 {
             let listener = TcpListener::bind(("127.0.0.1", 0))?;
             let port = listener.local_addr()?.port();
@@ -120,8 +123,11 @@ impl Vm {
             match result {
                 Ok(Ok(())) => return Ok(vm),
                 Ok(Err(error)) => {
-                    let qemu_log = fs::read_to_string(run_dir.join("qemu.log")).unwrap_or_default();
-                    if attempt < 4 && qemu_log.contains("Could not set up host forwarding rule") {
+                    if attempt < 4
+                        && !vm.is_running()?
+                        && TcpListener::bind(("127.0.0.1", port))
+                            .is_err_and(|error| error.kind() == std::io::ErrorKind::AddrInUse)
+                    {
                         continue;
                     }
                     return Err(error).wrap_err(vm.boot_diagnostics());
@@ -161,12 +167,11 @@ impl Vm {
             if !self.is_running()? {
                 bail!("QEMU exited before SSH became ready");
             }
-            let output = self
-                .ssh()
-                .arg("true")
-                .output()
+            let mut command = self.ssh();
+            command.arg("true");
+            let output = output_async(command, Duration::from_secs(5))
                 .await
-                .wrap_err("failed to start SSH")?;
+                .wrap_err("failed to check guest SSH readiness")?;
             if output.status.success() {
                 return Ok(());
             }
@@ -182,96 +187,60 @@ impl Vm {
             .arg(&self.ssh_config)
             .arg("guest_vm")
             .stdin(Stdio::null())
+            .process_group(0)
             .kill_on_drop(true);
         command
     }
 
     pub async fn run_script(&self, script: &str) -> Result<String> {
-        timeout(Duration::from_secs(120), async {
-            let mut command = self.ssh();
-            command
-                .arg("bash -s")
-                .stdin(Stdio::piped())
-                .stdout(Stdio::piped())
-                .stderr(Stdio::piped());
-            let mut child = command.spawn().wrap_err("failed to start SSH")?;
-            let mut stdin = child.stdin.take().expect("SSH stdin is piped");
-            let (written, output) = tokio::join!(
-                async {
-                    stdin.write_all(script.as_bytes()).await?;
-                    stdin.shutdown().await?;
-                    drop(stdin);
-                    Ok::<_, std::io::Error>(())
-                },
-                child.wait_with_output()
+        let mut input = tempfile::tempfile()?;
+        std::io::Write::write_all(&mut input, script.as_bytes())?;
+        input.seek(SeekFrom::Start(0))?;
+        let mut command = self.ssh();
+        command.arg("bash -s").stdin(input);
+        let output = output_async(command, Duration::from_secs(120)).await?;
+        if !output.status.success() {
+            bail!(
+                "guest command failed: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
             );
-            let output = output?;
-            if !output.status.success() {
-                bail!(
-                    "guest command failed: {}",
-                    String::from_utf8_lossy(&output.stderr).trim()
-                );
-            }
-            written?;
-            String::from_utf8(output.stdout).wrap_err("guest command returned invalid UTF-8")
-        })
-        .await
-        .wrap_err("guest command timed out after 120 seconds")?
+        }
+        String::from_utf8(output.stdout).wrap_err("guest command returned invalid UTF-8")
     }
 
     pub async fn upload_config(&self, directory: &Path) -> Result<()> {
+        let archive = tempfile::NamedTempFile::new_in(&self.run_dir)?;
         let mut tar = tokio::process::Command::new("tar");
-        tar.args(["--dereference", "--create", "--file=-", "--directory"])
+        tar.args(["--dereference", "--create", "--file"])
+            .arg(archive.path())
+            .arg("--directory")
             .arg(directory)
             .arg(".")
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .kill_on_drop(true);
-        let mut tar = tar.spawn().wrap_err("failed to start config archive")?;
-        let mut source = tar.stdout.take().expect("tar stdout is piped");
-        let mut ssh = self.ssh();
-        ssh.arg("tar --extract --file=- --directory=/opt/config")
-            .stdin(Stdio::piped())
-            .stdout(Stdio::null())
-            .stderr(Stdio::piped());
-        let mut ssh = ssh.spawn()?;
-        let mut input = ssh.stdin.take().expect("SSH stdin is piped");
-        let (copied, tar_output, ssh_output) = tokio::join!(
-            async {
-                tokio::io::copy(&mut source, &mut input).await?;
-                input.shutdown().await?;
-                drop(input);
-                Ok::<_, std::io::Error>(())
-            },
-            tar.wait_with_output(),
-            ssh.wait_with_output()
-        );
-        let tar_output = tar_output?;
-        let ssh_output = ssh_output?;
-        if !tar_output.status.success() {
+            .stdin(Stdio::null());
+        let output = output_async(tar, Duration::from_secs(120)).await?;
+        if !output.status.success() {
             bail!(
                 "config archive failed: {}",
-                String::from_utf8_lossy(&tar_output.stderr).trim()
+                String::from_utf8_lossy(&output.stderr).trim()
             );
         }
-        if !ssh_output.status.success() {
+        let mut ssh = self.ssh();
+        ssh.arg("tar --extract --file=- --directory=/opt/config")
+            .stdin(File::open(archive.path())?);
+        let output = output_async(ssh, Duration::from_secs(120)).await?;
+        if !output.status.success() {
             bail!(
                 "config upload failed: {}",
-                String::from_utf8_lossy(&ssh_output.stderr).trim()
+                String::from_utf8_lossy(&output.stderr).trim()
             );
         }
-        copied?;
         Ok(())
     }
 
     pub async fn load_images(&self, archive: &Path) -> Result<()> {
-        let output = self
-            .ssh()
-            .arg("podman load")
-            .stdin(File::open(archive)?)
-            .output()
-            .await?;
+        let mut command = self.ssh();
+        command.arg("podman load").stdin(File::open(archive)?);
+        let output = output_async(command, Duration::from_secs(1800)).await?;
         if !output.status.success() {
             bail!(
                 "guest image import failed: {}",
@@ -346,7 +315,20 @@ async fn kvm_available() -> bool {
     {
         return false;
     }
-    let child = tokio::process::Command::new("qemu-system-x86_64")
+    let input = (|| -> std::io::Result<File> {
+        let mut input = tempfile::tempfile()?;
+        std::io::Write::write_all(
+            &mut input,
+            b"{\"execute\":\"qmp_capabilities\"}\n{\"execute\":\"quit\"}\n",
+        )?;
+        input.seek(SeekFrom::Start(0))?;
+        Ok(input)
+    })();
+    let Ok(input) = input else {
+        return false;
+    };
+    let mut command = tokio::process::Command::new("qemu-system-x86_64");
+    command
         .args([
             "-accel",
             "kvm",
@@ -358,21 +340,14 @@ async fn kvm_available() -> bool {
             "-qmp",
             "stdio",
         ])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .kill_on_drop(true)
-        .spawn();
-    let Ok(mut child) = child else {
-        return false;
-    };
-    let mut output = BufReader::new(child.stdout.take().expect("QMP stdout is piped"));
-    let mut greeting = String::new();
-    let ready = matches!(timeout(Duration::from_secs(5), output.read_line(&mut greeting)).await, Ok(Ok(n)) if n > 0)
-        && serde_json::from_str::<QmpGreeting>(&greeting).is_ok();
-    let _ = child.kill().await;
-    let _ = child.wait().await;
-    ready
+        .stdin(input);
+    match output_async(command, Duration::from_secs(5)).await {
+        Ok(output) if output.status.success() => std::str::from_utf8(&output.stdout)
+            .ok()
+            .and_then(|text| text.lines().next())
+            .is_some_and(|line| serde_json::from_str::<QmpGreeting>(line).is_ok()),
+        _ => false,
+    }
 }
 
 #[derive(Deserialize)]

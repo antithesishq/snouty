@@ -150,9 +150,7 @@ impl Vm {
         let mut qmp = BufReader::new(UnixStream::connect(self.run_dir.join("qmp.sock")).await?);
         let mut greeting = String::new();
         qmp.read_line(&mut greeting).await?;
-        let greeting: QmpGreeting =
-            serde_json::from_str(&greeting).wrap_err("invalid QMP greeting")?;
-        let _ = greeting.qmp;
+        let _: QmpGreeting = serde_json::from_str(&greeting).wrap_err("invalid QMP greeting")?;
         qmp_request(&mut qmp, json!({"execute":"qmp_capabilities"})).await?;
         qmp_request(
             &mut qmp,
@@ -231,7 +229,7 @@ impl Vm {
             .stderr(Stdio::piped())
             .kill_on_drop(true);
         let mut tar = tar.spawn().wrap_err("failed to start config archive")?;
-        let source = tar.stdout.take().expect("tar stdout is piped");
+        let mut source = tar.stdout.take().expect("tar stdout is piped");
         let mut ssh = self.ssh();
         ssh.arg("tar --extract --file=- --directory=/opt/config")
             .stdin(Stdio::piped())
@@ -239,7 +237,6 @@ impl Vm {
             .stderr(Stdio::piped());
         let mut ssh = ssh.spawn()?;
         let mut input = ssh.stdin.take().expect("SSH stdin is piped");
-        let mut source = source;
         let (copied, tar_output, ssh_output) = tokio::join!(
             async {
                 tokio::io::copy(&mut source, &mut input).await?;
@@ -381,7 +378,7 @@ async fn kvm_available() -> bool {
 #[derive(Deserialize)]
 struct QmpGreeting {
     #[serde(rename = "QMP")]
-    qmp: Value,
+    _qmp: Value,
 }
 
 #[derive(Deserialize)]

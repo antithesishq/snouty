@@ -30,6 +30,7 @@ pub mod runs;
 pub mod scripts;
 #[doc(hidden)]
 pub mod settings;
+pub mod simulate;
 pub mod stdio;
 pub(crate) mod table;
 pub mod tag;

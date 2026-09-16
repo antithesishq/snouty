@@ -3942,6 +3942,7 @@ dependencies = [
  "libc",
  "log",
  "mimalloc",
+ "nix 0.26.4",
  "open",
  "openapiv3",
  "predicates",

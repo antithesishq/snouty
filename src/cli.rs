@@ -9,12 +9,16 @@ use std::path::Path;
 use chrono::{DateTime, Utc};
 use clap::error::ErrorKind;
 use clap::{ArgGroup, Args, CommandFactory, FromArgMatches, Parser, Subcommand, ValueEnum};
+use color_eyre::Section;
+use color_eyre::eyre::Report;
 
 use crate::api::{
     FaultTolerance, PerformanceTier, RunStatus, SearchLimit, SourceRunId, SourceSessionId,
 };
 
 use crate::docker_credential::HELPER_NAME;
+use crate::error::user_error;
+use crate::features::{self, Feature};
 use crate::help::{self, Attach};
 use crate::params::MAX_SETUP_TIMEOUT_MINUTES;
 use crate::render::{self, CodeSpans};
@@ -221,6 +225,14 @@ const EXEC_TIMEOUT: DurationFlag = DurationFlag {
     check: |timeout| require(timeout.seconds() > 0, "must be at least 1 second"),
 };
 
+fn parse_startup_timeout(value: &str) -> Result<HumanDuration, String> {
+    let timeout = value.parse::<HumanDuration>().map_err(|e| e.to_string())?;
+    if timeout.seconds() == 0 {
+        return Err("startup timeout must be greater than zero".to_string());
+    }
+    Ok(timeout)
+}
+
 #[derive(Parser)]
 #[command(name = "snouty")]
 #[command(about = "CLI for the Antithesis API", long_about = None)]
@@ -281,6 +293,35 @@ pub enum Commands {
     /// Validate local Antithesis setup
     #[command(arg = json(JsonShape::None))]
     Validate(ValidateArgs),
+
+    /// Run a Compose setup in an Antithesis guest VM
+    #[command(
+        hide = !features::is_enabled(Feature::Simulate),
+        long_about = r#"Run a Compose setup in an Antithesis guest VM
+
+This command is gated behind the 'simulate' unstable feature. Enable it with
+SNOUTY_UNSTABLE_FEATURES=simulate.
+
+Accepts a directory containing docker-compose.yaml, as validate does.
+Kubernetes configurations are not supported. Workload images must exist in
+the local container engine. Supply the guest container image with --guest-image.
+
+Requires Linux x86_64 and QEMU. Uses 1 CPU and 15000 MiB of memory. Uses KVM
+when available, otherwise TCG with a warning that performance will suffer.
+SSH configuration is private to this run; user configuration is not changed.
+
+Repeats rollouts until interrupted. --disable-restart runs one rollout and
+continues to stream logs. Failed assertions and composer commands do not stop
+the simulation, but cause a nonzero exit status when it stops.
+
+Boot console logs are hidden unless startup fails or the VM exits unexpectedly.
+With --json, emits newline-delimited events and a final failure-count summary.
+The startup timeout does not limit the simulation duration.
+
+Example:
+  SNOUTY_UNSTABLE_FEATURES=simulate snouty simulate ./config --guest-image IMAGE"#
+    )]
+    Simulate(SimulateArgs),
 
     /// Check environment configuration
     #[command(arg = json(JsonShape::Object))]
@@ -446,6 +487,29 @@ pub fn parse() -> Cli {
         // --help, --version, and the help page for a bare `snouty`.
         Err(err) => err.exit(),
     }
+}
+
+/// Refuses a gated command while its feature is off. A hidden subcommand is
+/// still callable, so dispatch checks this first.
+pub fn gated_command_error(command: &Commands, enabled: &[Feature]) -> Option<Report> {
+    let (feature, path) = match command {
+        Commands::Simulate(_) => (Feature::Simulate, "snouty simulate"),
+        _ => return None,
+    };
+    if enabled.contains(&feature) {
+        return None;
+    }
+    Some(
+        user_error(format!(
+            "`{path}` is an unstable feature and is not enabled"
+        ))
+        .note(format!(
+            "enable it by setting {}={}",
+            features::UNSTABLE_FEATURES_VAR_NAME,
+            feature
+        ))
+        .note("an unstable feature can change or go away in any release"),
+    )
 }
 
 /// clap value parser for a run ID. The ID is one segment of an API path, and
@@ -643,6 +707,24 @@ pub struct ValidateArgs {
     /// the hermetic Antithesis environment than it does on this machine
     #[arg(long)]
     pub allow_compose_divergence: bool,
+}
+
+#[derive(Args)]
+pub struct SimulateArgs {
+    /// Path to config directory containing docker-compose.yaml
+    pub config: std::path::PathBuf,
+
+    /// Container image containing /guest.iso
+    #[arg(long, value_parser = validate_non_empty)]
+    pub guest_image: String,
+
+    /// Run one rollout, then continue streaming logs until interrupted
+    #[arg(long)]
+    pub disable_restart: bool,
+
+    /// Maximum time to wait for guest startup (for example, 5m or 300s)
+    #[arg(long, default_value = "5m", value_parser = parse_startup_timeout)]
+    pub timeout: HumanDuration,
 }
 
 #[derive(Args)]

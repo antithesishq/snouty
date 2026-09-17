@@ -6,6 +6,9 @@ use std::path::Path;
 use std::process::{Child, Command, Output, Stdio};
 use std::time::{Duration, Instant};
 
+use expectrl::Expect;
+use expectrl::process::unix::WaitStatus;
+use expectrl::session::OsSession;
 use nix::sys::signal::{Signal, kill};
 use nix::unistd::Pid;
 use tempfile::TempDir;
@@ -17,6 +20,10 @@ struct Simulation {
 
 impl Simulation {
     fn start(mode: &str) -> Self {
+        Self::start_with_api(mode, "http://127.0.0.1:1")
+    }
+
+    fn start_with_api(mode: &str, api_url: &str) -> Self {
         let directory = tempfile::tempdir().unwrap();
         let root = directory.path();
         let bin = root.join("bin");
@@ -64,11 +71,17 @@ impl Simulation {
             .env("SNOUTY_CONTAINER_ENGINE", "docker")
             .env("SNOUTY_TEMP_DIR", root)
             .env("TERM", "dumb")
+            .env("ANTITHESIS_BASE_URL", api_url)
+            .env("ANTITHESIS_API_KEY", "test-key")
+            .env("ANTITHESIS_REPOSITORY", "registry.example/team/")
             .args(["--json", "simulate"])
             .arg(config)
+            .args(if mode == "default-image" {
+                vec![]
+            } else {
+                vec!["--guest-image", "guest:test"]
+            })
             .args([
-                "--guest-image",
-                "guest:test",
                 "--timeout",
                 if mode == "startup-timeout" {
                     "1s"
@@ -152,6 +165,96 @@ impl Drop for Simulation {
             }
         }
     }
+}
+
+#[test]
+fn hidden_shell_bypasses_compose_and_owns_the_terminal() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    let bin = root.join("bin");
+    fs::create_dir(&bin).unwrap();
+    let python = which::which("python3").expect("simulation fixtures require Python 3");
+    let script = bin.join("mock_tools.py");
+    fs::write(
+        &script,
+        format!(
+            "#!{}\n{}",
+            python.display(),
+            include_str!("fixtures/simulate/mock_tools.py")
+        ),
+    )
+    .unwrap();
+    fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+    for tool in ["docker", "ssh", "qemu-system-x86_64"] {
+        symlink(&script, bin.join(tool)).unwrap();
+    }
+    fs::write(root.join("mode"), "shell").unwrap();
+    let home = root.join("home");
+    fs::create_dir(&home).unwrap();
+    let mut paths = vec![bin];
+    paths.extend(std::env::split_paths(&std::env::var_os("PATH").unwrap()));
+    let mut command = Command::new(assert_cmd::cargo::cargo_bin!("snouty"));
+    command
+        .env_clear()
+        .env("PATH", std::env::join_paths(paths).unwrap())
+        .env("HOME", &home)
+        .env("XDG_CONFIG_HOME", root.join("settings"))
+        .env("XDG_CACHE_HOME", root.join("cache"))
+        .env("SNOUTY_UNSTABLE_FEATURES", "simulate")
+        .env("SNOUTY_CONTAINER_ENGINE", "docker")
+        .env("SNOUTY_TEMP_DIR", root)
+        .env("TERM", "xterm-256color")
+        .args([
+            "simulate",
+            "--shell",
+            "--guest-image",
+            "guest:test",
+            "--timeout",
+            "10s",
+        ]);
+    let mut session = OsSession::spawn(command).expect("spawn shell simulation on a PTY");
+    session.set_expect_timeout(Some(Duration::from_secs(15)));
+    let boot =
+        Expect::expect(&mut session, "private boot console").expect("boot console is visible");
+    assert!(!boot.as_bytes().windows(5).any(|bytes| bytes == b"\x1b[18t"));
+    assert!(!boot.as_bytes().windows(4).any(|bytes| bytes == b"\x1b[6n"));
+    Expect::expect(&mut session, "guest shell ready").expect("guest shell opened");
+    Expect::send_line(&mut session, "whoami").expect("write to guest shell");
+    Expect::expect(&mut session, "root").expect("guest shell replied");
+    Expect::send_line(&mut session, "poweroff").expect("power off guest");
+    let closing =
+        Expect::expect(&mut session, "Stopping simulation...").expect("simulation stopped");
+    let tail = Expect::expect(&mut session, expectrl::Eof).expect("simulation closed its terminal");
+    let status = session
+        .get_process()
+        .wait()
+        .expect("wait for shell simulation");
+    let poweroff = fs::read_to_string(root.join("guest_poweroff")).unwrap_or_default();
+    assert!(
+        matches!(status, WaitStatus::Exited(_, 0)),
+        "shell simulation failed: {status:?}; guest_poweroff={poweroff:?}\n{}",
+        String::from_utf8_lossy(tail.as_bytes())
+    );
+    assert_eq!(
+        fs::read_to_string(root.join("shell_opened")).unwrap(),
+        "yes"
+    );
+    assert_eq!(
+        fs::read_to_string(root.join("shell_input")).unwrap(),
+        "whoami\npoweroff"
+    );
+    assert!(!root.join("batch_script").exists());
+    assert!(!root.join("rollout_started").exists());
+    assert_eq!(poweroff, "yes");
+    let closing = String::from_utf8_lossy(closing.as_bytes());
+    assert_eq!(
+        closing.matches("Connection to 127.0.0.1 closed.").count(),
+        1
+    );
+    assert!(!closing.contains("closed by remote host"));
+    assert_eq!(fs::read_to_string(root.join("qemu_signal")).unwrap(), "15");
+    let run_dir = fs::read_to_string(root.join("run_dir")).unwrap();
+    assert!(!Path::new(&run_dir).exists());
 }
 
 #[test]
@@ -398,4 +501,53 @@ fn unread_output_backlog_preserves_command_and_assertion_failures() {
     assert!(!stderr.contains("failed:"), "{stderr}");
     let pid: i32 = simulation.read("qemu_pid").parse().unwrap();
     assert!(kill(Pid::from_raw(pid), None).is_err());
+}
+
+#[tokio::test]
+async fn guest_image_defaults_to_configured_repository() {
+    let server = wiremock::MockServer::start().await;
+    wiremock::Mock::given(wiremock::matchers::method("GET"))
+        .and(wiremock::matchers::path("/api/version"))
+        .respond_with(
+            wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "latest_api_version": "v1", "release_version": "62.2"
+            })),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+    let api_url = server.uri();
+    tokio::task::spawn_blocking(move || {
+        let mut simulation = Simulation::start_with_api("default-image", &api_url);
+        simulation.wait_for("stdout", "workload running");
+        assert_eq!(
+            simulation.read("guest_image"),
+            "registry.example/team/antithesis-guest:v62.2"
+        );
+        kill(Pid::from_raw(simulation.child.id() as i32), Signal::SIGTERM).unwrap();
+        simulation.finish();
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn failed_release_lookup_requires_explicit_image() {
+    let server = wiremock::MockServer::start().await;
+    wiremock::Mock::given(wiremock::matchers::path("/api/version"))
+        .respond_with(wiremock::ResponseTemplate::new(403))
+        .mount(&server)
+        .await;
+    let api_url = server.uri();
+    tokio::task::spawn_blocking(move || {
+        let mut simulation = Simulation::start_with_api("default-image", &api_url);
+        let output = simulation.finish();
+        assert!(!output.status.success());
+        let stderr = String::from_utf8(output.stderr).unwrap();
+        assert!(stderr.contains("HTTP 403"), "{stderr}");
+        assert!(stderr.contains("--guest-image"), "{stderr}");
+        assert!(!simulation.root().join("qemu_pid").exists());
+    })
+    .await
+    .unwrap();
 }

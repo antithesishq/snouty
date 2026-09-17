@@ -32,6 +32,15 @@ CLI tool for the Antithesis API. Written in Rust.
    "Checks and lints") and `mise run lint`: a hook does not run until you
    stop.
 
+## Guest shell
+
+For low-level guest debugging, run
+`SNOUTY_UNSTABLE_FEATURES=simulate snouty simulate --shell`. This hidden option
+boots the guest and opens a root shell. It does not inspect or start a Compose
+configuration. It shows the boot console until SSH is ready. Exit the shell or
+run `poweroff` to stop the VM.
+
+
 ## Rust coding conventions
 
 All code must be simple and idiomatic.

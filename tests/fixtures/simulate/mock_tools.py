@@ -2,7 +2,6 @@ import json
 import os
 from pathlib import Path
 import signal
-import socket
 import subprocess
 import sys
 import time
@@ -68,7 +67,8 @@ elif name == 'ssh':
     assert args[2] == 'guest_vm', args
     command = args[3]
     if command == 'true':
-        pass
+        if not (root / 'ssh_ready').exists():
+            sys.exit(255)
     elif command == 'bash -s':
         script = sys.stdin.read()
         record('batch_script', script)
@@ -121,19 +121,7 @@ elif name == 'qemu-system-x86_64':
         sys.exit(0)
     signal.signal(signal.SIGTERM, stop)
     signal.signal(signal.SIGINT, stop)
-    listener = socket.socket(socket.AF_UNIX)
-    listener.bind('qmp.sock')
-    listener.listen(1)
-    with Path('boot.log').open('a') as output:
-        output.write('Press [Tab] to edit options\n')
-    connection, _ = listener.accept()
-    with connection.makefile('rwb', buffering=0) as stream:
-        stream.write(b'{"QMP":{}}\n')
-        for line in stream:
-            request = json.loads(line)
-            with (root / 'qmp_requests').open('a') as output:
-                output.write(request['execute'] + '\n')
-            stream.write(b'{"return":{}}\n')
+    record('ssh_ready', 'yes')
     while True:
         time.sleep(1)
 else:

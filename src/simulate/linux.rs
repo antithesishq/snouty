@@ -1,5 +1,5 @@
 use std::collections::BTreeSet;
-use std::io::{BufRead, Read, Seek, SeekFrom, Write};
+use std::io::{BufRead, IsTerminal, Read, Seek, SeekFrom, Write};
 use std::path::Path;
 use std::pin::Pin;
 use std::process::ExitCode;
@@ -13,7 +13,7 @@ use tokio::signal::unix::{Signal, SignalKind, signal};
 use super::{
     events::{self, Event, Failure},
     images::{ImageId, Images},
-    vm::{ShutdownSignal, Vm},
+    vm::{BootOutput, ShutdownSignal, Vm},
 };
 use crate::{
     OutputOptions, cli::SimulateArgs, compose, config::ComposeConfig, container, settings::Settings,
@@ -182,6 +182,7 @@ pub(super) async fn run(
     settings: &Settings,
     options: OutputOptions,
 ) -> Result<ExitCode> {
+    let guest_image = resolve_guest_image(args.guest_image, settings, options.verbose).await?;
     let runtime = container::runtime(settings)?;
     container::warn_ambiguous_engine(settings, runtime.as_ref(), options.json);
     let compose = compose::DockerCompose::resolve(runtime.as_ref(), config.clone())?;
@@ -218,9 +219,17 @@ pub(super) async fn run(
     let mut instrumentation = None;
     let execution = async {
         eprintln!("Preparing guest image...");
-        let iso = images.guest_iso(&args.guest_image, run_dir.path()).await?;
-        eprintln!("Booting guest (1 CPU, 15000 MiB)...");
-        vm = Some(Vm::boot(&iso, run_dir.path(), args.timeout.into()).await?);
+        let iso = images.guest_iso(&guest_image, run_dir.path()).await?;
+        eprintln!("Booting guest...");
+        vm = Some(
+            Vm::boot(
+                &iso,
+                run_dir.path(),
+                args.timeout.into(),
+                BootOutput::Hidden,
+            )
+            .await?,
+        );
         let guest = vm.as_mut().expect("guest booted");
         guest.run_script(PREPARE).await?;
         eprintln!("Uploading Compose configuration and images...");
@@ -398,6 +407,71 @@ pub(super) async fn run(
         Err(_) => output.closed = true,
     }
     Ok(summary.exit_code(reason))
+}
+
+async fn resolve_guest_image(
+    image: Option<String>,
+    settings: &Settings,
+    verbose: bool,
+) -> Result<String> {
+    Ok(match image {
+        Some(image) => image,
+        None => {
+            let repository = crate::settings::require(settings.repository(), "repository")?;
+            let api = crate::api::AntithesisApi::new(settings, verbose)?;
+            let version = api.get_version().await.map_err(|error| {
+                use crate::api::VersionError;
+                let reason = match error {
+                    VersionError::Http(status) => format!("GET /api/version returned HTTP {status}"),
+                    VersionError::BadResponse(reason) | VersionError::Unreachable(reason) => reason,
+                };
+                color_eyre::eyre::eyre!("cannot determine guest image from tenant release: {reason}; use --guest-image to select an image explicitly")
+            })?;
+            format!(
+                "{}/antithesis-guest:v{}",
+                repository.trim_end_matches('/'),
+                version.release_version
+            )
+        }
+    })
+}
+
+pub(super) async fn shell(
+    args: SimulateArgs,
+    settings: &Settings,
+    verbose: bool,
+) -> Result<ExitCode> {
+    if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
+        bail!("simulate --shell requires an interactive terminal");
+    }
+    let guest_image = resolve_guest_image(args.guest_image, settings, verbose).await?;
+    let runtime = container::runtime(settings)?;
+    container::warn_ambiguous_engine(settings, runtime.as_ref(), false);
+    let images = Images::from_runtime(runtime.as_ref());
+    let run_dir = tempfile::Builder::new()
+        .prefix("snouty-simulate-")
+        .tempdir()?;
+    eprintln!("Preparing guest image...");
+    let iso = images.guest_iso(&guest_image, run_dir.path()).await?;
+    eprintln!("Booting guest...");
+    let mut guest = Vm::boot(
+        &iso,
+        run_dir.path(),
+        args.timeout.into(),
+        BootOutput::Visible,
+    )
+    .await?;
+    eprintln!("Opening guest shell. Exit the shell to stop the VM.");
+    let shell_status = guest.interactive_shell().await?;
+    let powered_off =
+        !shell_status.success() && guest.wait_for_poweroff(Duration::from_secs(2)).await?;
+    eprintln!("Stopping simulation...");
+    let shutdown_result = guest.shutdown(ShutdownSignal::Terminate).await;
+    if !shell_status.success() && !powered_off {
+        bail!("guest shell exited with status: {shell_status}");
+    }
+    shutdown_result?;
+    Ok(ExitCode::SUCCESS)
 }
 
 fn shell_quote(value: &str) -> String {

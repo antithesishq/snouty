@@ -26,6 +26,8 @@ elif name == 'docker':
     if args[:2] == ['image', 'inspect']:
         if args[2] == 'guest:test' and mode in ('missing-guest', 'pull-failure') and not (root / 'pulled').exists():
             sys.exit('No such image: guest:test')
+        if args[2] != 'workload:test':
+            record('guest_image', args[2])
         print(json.dumps([{'Id': 'sha256:' + 'a' * 64, 'Architecture': 'amd64'}]))
     elif args[0] == 'cp':
         Path(args[-1]).write_bytes(b'guest ISO fixture')
@@ -45,19 +47,38 @@ elif name == 'ssh':
     config = Path(args[1])
     record('ssh_config', config.read_text())
     record('key_mode', oct((config.parent / 'guest-dev-key').stat().st_mode & 0o777))
+    if args[2:] == ['-o', 'LogLevel=ERROR', '-tt', 'guest_vm']:
+        record('shell_opened', 'yes')
+        print('guest shell ready', flush=True)
+        commands = []
+        for line in sys.stdin:
+            command = line.strip()
+            commands.append(command)
+            record('shell_input', '\n'.join(commands))
+            if command == 'whoami':
+                print('root', flush=True)
+            elif command == 'poweroff':
+                record('guest_poweroff', 'yes')
+                os.kill(int((root / 'qemu_pid').read_text()), signal.SIGTERM)
+                print('Connection to 127.0.0.1 closed.', file=sys.stderr)
+                sys.exit(255)
+            else:
+                sys.exit('unexpected shell input: ' + repr(command))
+        sys.exit(0)
     assert args[2] == 'guest_vm', args
     command = args[3]
     if command == 'true':
         pass
     elif command == 'bash -s':
         script = sys.stdin.read()
+        record('batch_script', script)
         if 'up -d' in script:
             record('restart_mode', script.splitlines()[0])
             log = Path.cwd() / 'instrumentation.log'
             log.write_text("11.2 [workload] [JSON] '{\"antithesis_assert\":{\"message\":\"balance stays positive\",\"assert_type\":\"always\",\"must_hit\":true,\"hit\":true,\"condition\":false}}'\n12.0 [workload] [STDOUT] 'still running after assertion'\n")
             if mode == 'malformed-json':
                 log.write_text("12.0 [workload] [JSON] '{broken json}'\n")
-            if mode in ('supervisor-failure', 'clean-once', 'missing-guest'):
+            if mode in ('supervisor-failure', 'clean-once', 'missing-guest', 'default-image'):
                 log.write_text('12.0 [workload] [STDOUT] \'workload running\'\n')
             if mode.startswith('blocked-output'):
                 with log.open('w') as output:
@@ -79,7 +100,7 @@ elif name == 'qemu-system-x86_64':
     record('qemu_pid', os.getpid())
     record('qemu_args', json.dumps(args))
     record('run_dir', Path.cwd())
-    Path('boot.log').write_text('private boot console\n')
+    Path('boot.log').write_bytes(b'\x1b[18t\x1b[6nprivate boot console\n')
     Path('instrumentation.log').touch()
     if mode == 'boot-failure':
         Path('boot.log').write_text('fatal boot fixture\n')
@@ -91,6 +112,11 @@ elif name == 'qemu-system-x86_64':
     record('qemu_child_pid', child.pid)
     def stop(signum, _frame):
         record('qemu_signal', signum)
+        if child.poll() is None:
+            try:
+                child.terminate()
+            except ProcessLookupError:
+                pass
         child.wait(timeout=5)
         sys.exit(0)
     signal.signal(signal.SIGTERM, stop)

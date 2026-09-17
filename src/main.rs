@@ -1,4 +1,4 @@
-use std::io::{self, ErrorKind, Write};
+use std::io::{self, ErrorKind, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -541,11 +541,22 @@ fn cmd_version(json: bool) -> Result<()> {
 fn cmd_completions(shell: Shell) -> io::Result<()> {
     let mut cmd = Cli::command();
     let bin_name = cmd.get_name().to_string();
-    // clap_complete panics when a write fails, so generate into memory and
-    // write that, so that a closed stdout is an error and not a panic.
-    let mut script = Vec::new();
-    clap_complete::generate(shell, &mut cmd, bin_name, &mut script);
-    stdio::stdout().write_all(&script)
+    let mut generated = Vec::new();
+    clap_complete::generate(shell, &mut cmd, bin_name, &mut generated);
+    let generated = String::from_utf8(generated).map_err(io::Error::other)?;
+    // clap_complete includes hidden arguments, but this escape hatch must only
+    // be discoverable in the contributor documentation.
+    let description = "Boot the guest and open a root shell without starting Compose";
+    let mut filtered = generated
+        .lines()
+        .filter(|line| !line.contains(description))
+        .collect::<Vec<_>>()
+        .join("\n");
+    if generated.ends_with('\n') {
+        filtered.push('\n');
+    }
+    stdio::stdout().write_all(filtered.replace(" --shell", "").as_bytes())?;
+    Ok(())
 }
 
 /// Validate a requested update target against the running version.

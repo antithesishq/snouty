@@ -30,6 +30,12 @@ section of [AGENTS.md](AGENTS.md) describes. A removed or renamed flag, a
 changed JSON key, or a changed exit status is a breaking change, which will be
 subject to extra review.
 
+For low-level guest debugging, run
+`SNOUTY_UNSTABLE_FEATURES=simulate snouty simulate --shell`. This hidden option
+boots the guest and opens a root shell without starting Compose. Exit the shell
+or run `poweroff` to stop the VM. The boot console remains visible until SSH is
+ready.
+
 ## Dependencies & distribution
 
 This tool supports amd64 and arm64 processors on Linux and macOS. Keep third party dependencies minimal, it

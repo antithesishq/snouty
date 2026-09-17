@@ -3142,7 +3142,7 @@ def build_stories(d: Discovery, guard: LaunchGuard | None = None) -> list[Story]
             "Invoke simulation while the feature is off",
             "I want to learn how to enable guest simulation.",
             "A refusal names the simulate feature and its environment variable.",
-            ["simulate", ".", "--guest-image", "guest:latest"],
+            ["simulate", "."],
             expect_message("SNOUTY_UNSTABLE_FEATURES=simulate"),
             json_capable=False,
             expect_ok=False,

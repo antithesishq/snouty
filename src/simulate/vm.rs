@@ -1,5 +1,5 @@
 use std::fs::{self, File, OpenOptions};
-use std::io::{Read, Seek, SeekFrom};
+use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::net::TcpListener;
 use std::os::unix::fs::OpenOptionsExt;
 use std::os::unix::process::CommandExt;
@@ -22,11 +22,95 @@ const HOST_KEY: &str =
     "guest_vm ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAING0HQW0iZo+14UmvEvXJjANJxUdhbRQX3HwntVvJPrs\n";
 const BOOT_MENU: &str = "Press [Tab] to edit options";
 const MEMORY_MIB: &str = "15000";
+const BOOT_CONSOLE_ESCAPE_CODES: [&[u8]; 6] = [
+    b"\x1bc",
+    b"\x1b[?7l",
+    b"\x1b[2J",
+    b"\x1b[0m",
+    b"\x1b[18t",
+    b"\x1b[6n",
+];
 
 #[derive(Clone, Copy)]
 pub enum ShutdownSignal {
     Interrupt,
     Terminate,
+}
+
+#[derive(Clone, Copy)]
+pub enum BootOutput {
+    Hidden,
+    Visible,
+}
+
+struct BootConsole {
+    output: BootOutput,
+    offset: u64,
+    filter: SeaBiosConsoleFilter,
+}
+
+impl BootConsole {
+    fn new(output: BootOutput) -> Self {
+        Self {
+            output,
+            offset: 0,
+            filter: SeaBiosConsoleFilter::default(),
+        }
+    }
+
+    fn flush(&mut self, path: &Path) -> Result<()> {
+        if matches!(self.output, BootOutput::Hidden) {
+            return Ok(());
+        }
+        let mut file = match File::open(path) {
+            Ok(file) => file,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => return Err(error.into()),
+        };
+        file.seek(SeekFrom::Start(self.offset))?;
+        let mut bytes = Vec::new();
+        file.read_to_end(&mut bytes)?;
+        self.offset += bytes.len() as u64;
+        self.filter.write(&bytes, &mut io::stderr().lock())?;
+        io::stderr().flush()?;
+        Ok(())
+    }
+}
+
+#[derive(Default)]
+struct SeaBiosConsoleFilter {
+    pending: Vec<u8>,
+}
+
+impl SeaBiosConsoleFilter {
+    fn write(&mut self, bytes: &[u8], output: &mut impl Write) -> io::Result<()> {
+        self.pending.extend_from_slice(bytes);
+        let mut clean = Vec::with_capacity(self.pending.len());
+        let mut consumed = 0;
+        while consumed < self.pending.len() {
+            let remaining = &self.pending[consumed..];
+            if let Some(code) = BOOT_CONSOLE_ESCAPE_CODES
+                .iter()
+                .find(|code| remaining.starts_with(code))
+            {
+                consumed += code.len();
+            } else if BOOT_CONSOLE_ESCAPE_CODES
+                .iter()
+                .any(|code| code.starts_with(remaining))
+            {
+                break;
+            } else {
+                clean.push(self.pending[consumed]);
+                consumed += 1;
+            }
+        }
+        self.pending.drain(..consumed);
+        output.write_all(&clean)
+    }
+
+    fn finish(&mut self) {
+        self.pending.clear();
+    }
 }
 
 pub struct Vm {
@@ -37,7 +121,12 @@ pub struct Vm {
 }
 
 impl Vm {
-    pub async fn boot(iso: &Path, run_dir: &Path, startup_timeout: Duration) -> Result<Self> {
+    pub async fn boot(
+        iso: &Path,
+        run_dir: &Path,
+        startup_timeout: Duration,
+        boot_output: BootOutput,
+    ) -> Result<Self> {
         let run_dir = fs::canonicalize(run_dir)?;
         let key = run_dir.join("guest-dev-key");
         let mut key_file = OpenOptions::new()
@@ -115,11 +204,14 @@ impl Vm {
                 instrumentation: run_dir.join("instrumentation.log"),
                 run_dir: run_dir.clone(),
             };
+            let mut boot_console = BootConsole::new(boot_output);
             let result = timeout(
                 deadline.saturating_duration_since(Instant::now()),
-                vm.wait_ready(),
+                vm.wait_ready(&mut boot_console),
             )
             .await;
+            boot_console.flush(&vm.run_dir.join("boot.log"))?;
+            boot_console.filter.finish();
             match result {
                 Ok(Ok(())) => return Ok(vm),
                 Ok(Err(error)) => {
@@ -142,8 +234,9 @@ impl Vm {
         unreachable!("the final startup attempt returns its error")
     }
 
-    async fn wait_ready(&mut self) -> Result<()> {
+    async fn wait_ready(&mut self, boot_console: &mut BootConsole) -> Result<()> {
         loop {
+            boot_console.flush(&self.run_dir.join("boot.log"))?;
             if !self.is_running()? {
                 bail!("QEMU exited before the guest booted");
             }
@@ -164,6 +257,7 @@ impl Vm {
         )
         .await?;
         loop {
+            boot_console.flush(&self.run_dir.join("boot.log"))?;
             if !self.is_running()? {
                 bail!("QEMU exited before SSH became ready");
             }
@@ -173,23 +267,44 @@ impl Vm {
                 .await
                 .wrap_err("failed to check guest SSH readiness")?;
             if output.status.success() {
+                boot_console.flush(&self.run_dir.join("boot.log"))?;
                 return Ok(());
             }
             sleep(Duration::from_secs(1)).await;
         }
     }
 
-    fn ssh(&self) -> tokio::process::Command {
+    fn ssh_base(&self) -> tokio::process::Command {
         let mut command = tokio::process::Command::new("ssh");
         command
             .current_dir(&self.run_dir)
             .arg("-F")
-            .arg(&self.ssh_config)
+            .arg(&self.ssh_config);
+        command
+    }
+
+    fn ssh(&self) -> tokio::process::Command {
+        let mut command = self.ssh_base();
+        command
             .arg("guest_vm")
             .stdin(Stdio::null())
             .process_group(0)
             .kill_on_drop(true);
         command
+    }
+
+    pub async fn interactive_shell(&self) -> Result<std::process::ExitStatus> {
+        let mut command = self.ssh_base();
+        let status = command
+            .args(["-o", "LogLevel=ERROR", "-tt", "guest_vm"])
+            .stdin(Stdio::inherit())
+            .stdout(Stdio::inherit())
+            .stderr(Stdio::inherit())
+            .kill_on_drop(true)
+            .status()
+            .await
+            .wrap_err("failed to open guest shell")?;
+        Ok(status)
     }
 
     pub async fn run_script(&self, script: &str) -> Result<String> {
@@ -256,6 +371,19 @@ impl Vm {
 
     pub fn is_running(&mut self) -> Result<bool> {
         Ok(self.child.try_wait()?.is_none())
+    }
+
+    pub async fn wait_for_poweroff(&mut self, grace: Duration) -> Result<bool> {
+        let deadline = Instant::now() + grace;
+        loop {
+            if let Some(status) = self.child.try_wait()? {
+                return Ok(status.success());
+            }
+            if Instant::now() >= deadline {
+                return Ok(false);
+            }
+            sleep(Duration::from_millis(50)).await;
+        }
     }
 
     pub fn boot_diagnostics(&self) -> String {
@@ -396,6 +524,42 @@ where
 mod tests {
     use super::*;
     use hegel::generators;
+
+    #[test]
+    fn seabios_console_filter_removes_screen_control_codes() {
+        let mut output = Vec::new();
+        let mut filter = SeaBiosConsoleFilter::default();
+        filter
+            .write(
+                b"one\x1bc two\x1b[?7l three\x1b[2J four\x1b[0m five\x1b[18t six\x1b[6n seven",
+                &mut output,
+            )
+            .unwrap();
+        assert_eq!(output, b"one two three four five six seven");
+    }
+
+    #[hegel::test]
+    fn seabios_console_filter_is_independent_of_chunk_boundaries(tc: hegel::TestCase) {
+        let prefix = tc.draw(generators::binary());
+        let suffix = tc.draw(generators::binary());
+        let code = tc.draw(generators::sampled_from(
+            BOOT_CONSOLE_ESCAPE_CODES.map(<[u8]>::to_vec).to_vec(),
+        ));
+        let split = tc.draw(generators::integers::<usize>().max_value(code.len()));
+        let input: Vec<_> = prefix.iter().chain(&code).chain(&suffix).copied().collect();
+        let mut whole = Vec::new();
+        let mut whole_filter = SeaBiosConsoleFilter::default();
+        whole_filter.write(&input, &mut whole).unwrap();
+        whole_filter.finish();
+        let mut chunked = Vec::new();
+        let mut filter = SeaBiosConsoleFilter::default();
+        filter.write(&prefix, &mut chunked).unwrap();
+        filter.write(&code[..split], &mut chunked).unwrap();
+        filter.write(&code[split..], &mut chunked).unwrap();
+        filter.write(&suffix, &mut chunked).unwrap();
+        filter.finish();
+        assert_eq!(chunked, whole);
+    }
 
     #[test]
     fn dropping_vm_kills_and_reaps_its_child() {

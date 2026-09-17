@@ -1,7 +1,6 @@
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::net::TcpListener;
-use std::os::unix::fs::OpenOptionsExt;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -15,9 +14,7 @@ use serde::Deserialize;
 use serde_json::Value;
 use tokio::time::{Instant, sleep, timeout};
 
-const GUEST_KEY: &str = include_str!("assets/guest-dev-key");
-const HOST_KEY: &str =
-    "guest_vm ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAING0HQW0iZo+14UmvEvXJjANJxUdhbRQX3HwntVvJPrs\n";
+const AUTHORIZED_KEY_FW_CFG: &str = "opt/antithesis/authorized_key";
 const MEMORY_MIB: &str = "15000";
 const BOOT_CONSOLE_ESCAPE_CODES: [&[u8]; 6] = [
     b"\x1bc",
@@ -112,6 +109,7 @@ impl SeaBiosConsoleFilter {
 
 pub struct Vm {
     child: Child,
+    client_key: Option<ClientKey>,
     ssh_config: PathBuf,
     run_dir: PathBuf,
     instrumentation: PathBuf,
@@ -125,14 +123,6 @@ impl Vm {
         boot_output: BootOutput,
     ) -> Result<Self> {
         let run_dir = fs::canonicalize(run_dir)?;
-        let key = run_dir.join("guest-dev-key");
-        let mut key_file = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .open(&key)?;
-        std::io::Write::write_all(&mut key_file, GUEST_KEY.as_bytes())?;
-        fs::write(run_dir.join("known_hosts"), HOST_KEY)?;
         let accelerated = kvm_available().await;
         if !accelerated {
             eprintln!("Warning: KVM is not accessible; simulation will run more slowly.");
@@ -141,14 +131,15 @@ impl Vm {
             .checked_add(startup_timeout)
             .ok_or_else(|| eyre!("guest startup timeout is too large"))?;
         for attempt in 0..5 {
+            let client_key = ClientKey::generate(&run_dir).await?;
             let listener = TcpListener::bind(("127.0.0.1", 0))?;
             let port = listener.local_addr()?.port();
             let ssh_config = run_dir.join("ssh_config");
-            // Relative paths keep OpenSSH's percent expansion away from the runtime directory.
             fs::write(
                 &ssh_config,
                 format!(
-                    "Host guest_vm\n HostName 127.0.0.1\n Port {port}\n User root\n IdentityFile guest-dev-key\n IdentitiesOnly yes\n IdentityAgent none\n UserKnownHostsFile known_hosts\n GlobalKnownHostsFile /dev/null\n HostKeyAlias guest_vm\n StrictHostKeyChecking yes\n UpdateHostKeys no\n BatchMode yes\n ConnectTimeout 2\n ServerAliveInterval 5\n ServerAliveCountMax 3\n Compression no\n ControlMaster no\n ControlPath none\n"
+                    "Host guest_vm\n HostName 127.0.0.1\n Port {port}\n User root\n IdentityFile {}\n IdentitiesOnly yes\n IdentityAgent none\n UserKnownHostsFile /dev/null\n GlobalKnownHostsFile /dev/null\n StrictHostKeyChecking no\n UpdateHostKeys no\n LogLevel ERROR\n BatchMode yes\n ConnectTimeout 2\n ServerAliveInterval 5\n ServerAliveCountMax 3\n Compression no\n ControlMaster no\n ControlPath none\n",
+                    client_key.identity_file.display()
                 ),
             )?;
             let mut command = Command::new("qemu-system-x86_64");
@@ -177,10 +168,13 @@ impl Vm {
                     "file:boot.log",
                     "-serial",
                     "file:instrumentation.log",
-                    "-device",
-                    "virtio-net-pci,netdev=net0",
-                    "-netdev",
+                    "-fw_cfg",
                 ])
+                .arg(format!(
+                    "name={AUTHORIZED_KEY_FW_CFG},file={}",
+                    client_key.public_key.display()
+                ))
+                .args(["-device", "virtio-net-pci,netdev=net0", "-netdev"])
                 .arg(format!(
                     "user,id=net0,hostfwd=tcp:127.0.0.1:{port}-:22,restrict=yes"
                 ))
@@ -191,6 +185,7 @@ impl Vm {
             drop(listener);
             let mut vm = Self {
                 child: command.spawn().wrap_err("failed to start QEMU")?,
+                client_key: Some(client_key),
                 ssh_config,
                 instrumentation: run_dir.join("instrumentation.log"),
                 run_dir: run_dir.clone(),
@@ -233,12 +228,21 @@ impl Vm {
             }
             let mut command = self.ssh();
             command.arg("true");
-            let output = output_async(command, Duration::from_secs(5))
-                .await
-                .wrap_err("failed to check guest SSH readiness")?;
+            let output = match output_async(command, Duration::from_secs(5)).await {
+                Ok(output) => output,
+                Err(error) => {
+                    log::debug!("guest SSH readiness check failed: {error:#}");
+                    sleep(Duration::from_secs(1)).await;
+                    continue;
+                }
+            };
             if output.status.success() {
                 boot_console.flush(&self.run_dir.join("boot.log"))?;
                 return Ok(());
+            }
+            let error = String::from_utf8_lossy(&output.stderr);
+            if error.contains("Permission denied") || error.contains("no such identity") {
+                bail!("guest SSH authentication failed: {}", error.trim());
             }
             sleep(Duration::from_secs(1)).await;
         }
@@ -340,13 +344,18 @@ impl Vm {
     }
 
     pub fn is_running(&mut self) -> Result<bool> {
-        Ok(self.child.try_wait()?.is_none())
+        let running = self.child.try_wait()?.is_none();
+        if !running {
+            self.client_key.take();
+        }
+        Ok(running)
     }
 
     pub async fn wait_for_poweroff(&mut self, grace: Duration) -> Result<bool> {
         let deadline = Instant::now() + grace;
         loop {
             if let Some(status) = self.child.try_wait()? {
+                self.client_key.take();
                 return Ok(status.success());
             }
             if Instant::now() >= deadline {
@@ -386,11 +395,49 @@ impl Vm {
             if Instant::now() >= deadline {
                 killpg(Pid::from_raw(self.child.id() as i32), Signal::SIGKILL)?;
                 self.child.wait()?;
+                self.client_key.take();
                 break;
             }
             sleep(Duration::from_millis(50)).await;
         }
         Ok(())
+    }
+}
+
+struct ClientKey {
+    _directory: tempfile::TempDir,
+    identity_file: PathBuf,
+    public_key: PathBuf,
+}
+
+impl ClientKey {
+    async fn generate(run_dir: &Path) -> Result<Self> {
+        let directory = tempfile::Builder::new()
+            .prefix("ssh-key-")
+            .tempdir_in(run_dir)
+            .wrap_err("failed to create temporary SSH key directory")?;
+        let private_key = directory.path().join("id_ed25519");
+        let mut command = tokio::process::Command::new("ssh-keygen");
+        command
+            .args(["-q", "-N", "", "-t", "ed25519", "-f"])
+            .arg(&private_key)
+            .stdin(Stdio::null());
+        let output = output_async(command, Duration::from_secs(10))
+            .await
+            .wrap_err("failed to generate temporary SSH key")?;
+        if !output.status.success() {
+            bail!(
+                "failed to generate temporary SSH key: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            );
+        }
+        let identity_file = private_key;
+        let public_key = directory.path().join("id_ed25519.pub");
+        Ok(Self {
+            _directory: directory,
+            identity_file,
+            public_key,
+        })
     }
 }
 
@@ -506,6 +553,11 @@ mod tests {
         let pid = Pid::from_raw(child.id() as i32);
         let vm = Vm {
             child,
+            client_key: Some(ClientKey {
+                _directory: tempfile::tempdir_in(run_dir.path()).unwrap(),
+                identity_file: PathBuf::new(),
+                public_key: PathBuf::new(),
+            }),
             ssh_config: run_dir.path().join("ssh_config"),
             run_dir: run_dir.path().to_path_buf(),
             instrumentation: run_dir.path().join("instrumentation.log"),
@@ -515,5 +567,27 @@ mod tests {
             nix::sys::wait::waitpid(pid, Some(nix::sys::wait::WaitPidFlag::WNOHANG)),
             Err(nix::errno::Errno::ECHILD)
         );
+    }
+
+    #[test]
+    fn reaping_qemu_removes_its_client_key_directory() {
+        let run_dir = tempfile::tempdir().unwrap();
+        let key_directory = tempfile::tempdir_in(run_dir.path()).unwrap();
+        let key_path = key_directory.path().to_path_buf();
+        let mut child = Command::new("true").spawn().unwrap();
+        child.wait().unwrap();
+        let mut vm = Vm {
+            child,
+            client_key: Some(ClientKey {
+                _directory: key_directory,
+                identity_file: PathBuf::new(),
+                public_key: PathBuf::new(),
+            }),
+            ssh_config: run_dir.path().join("ssh_config"),
+            run_dir: run_dir.path().to_path_buf(),
+            instrumentation: run_dir.path().join("instrumentation.log"),
+        };
+        assert!(!vm.is_running().unwrap());
+        assert!(!key_path.exists());
     }
 }

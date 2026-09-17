@@ -45,7 +45,9 @@ elif name == 'ssh':
     assert args[0] == '-F', args
     config = Path(args[1])
     record('ssh_config', config.read_text())
-    record('key_mode', oct((config.parent / 'guest-dev-key').stat().st_mode & 0o777))
+    identity = next(line.split(maxsplit=1)[1] for line in config.read_text().splitlines() if line.strip().startswith('IdentityFile '))
+    private_key = config.parent / identity
+    record('key_mode', oct(private_key.stat().st_mode & 0o777))
     if args[2:] == ['-o', 'LogLevel=ERROR', '-tt', 'guest_vm']:
         record('shell_opened', 'yes')
         print('guest shell ready', flush=True)
@@ -67,6 +69,8 @@ elif name == 'ssh':
     assert args[2] == 'guest_vm', args
     command = args[3]
     if command == 'true':
+        if mode == 'auth-failure':
+            sys.exit('root@127.0.0.1: Permission denied (publickey).')
         if not (root / 'ssh_ready').exists():
             sys.exit(255)
     elif command == 'bash -s':
@@ -96,10 +100,24 @@ elif name == 'ssh':
         sys.stdin.buffer.read()
     else:
         sys.exit('unexpected ssh command: ' + repr(args))
+elif name == 'ssh-keygen':
+    private_key = Path(args[args.index('-f') + 1])
+    public_key = Path(str(private_key) + '.pub')
+    private_key.write_text('fixture private key\n')
+    private_key.chmod(0o600)
+    public_key.write_text('fixture public key\n')
+    record('private_key_path', private_key)
+    record('public_key_path', public_key)
 elif name == 'qemu-system-x86_64':
     record('qemu_pid', os.getpid())
     record('qemu_args', json.dumps(args))
     record('run_dir', Path.cwd())
+    fw_cfg = args[args.index('-fw_cfg') + 1]
+    prefix = 'name=opt/antithesis/authorized_key,file='
+    assert fw_cfg.startswith(prefix), fw_cfg
+    public_key = Path(fw_cfg.removeprefix(prefix))
+    assert public_key.name == 'id_ed25519.pub', public_key
+    record('authorized_key', public_key.read_text())
     Path('boot.log').write_bytes(b'\x1b[18t\x1b[6nprivate boot console\n')
     Path('instrumentation.log').touch()
     if mode == 'boot-failure':
@@ -121,7 +139,8 @@ elif name == 'qemu-system-x86_64':
         sys.exit(0)
     signal.signal(signal.SIGTERM, stop)
     signal.signal(signal.SIGINT, stop)
-    record('ssh_ready', 'yes')
+    if mode != 'shell-booting':
+        record('ssh_ready', 'yes')
     while True:
         time.sleep(1)
 else:

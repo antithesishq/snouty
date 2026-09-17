@@ -371,7 +371,7 @@ pub(super) async fn run(
         summary.infrastructure_failures += 1;
         eprintln!("Instrumentation read failed: {error:#}");
     }
-    for name in ["guest-dev-key", "ssh_config", "known_hosts", "images.tar"] {
+    for name in ["ssh_config", "images.tar"] {
         let path = run_dir.path().join(name);
         if let Err(error) = std::fs::remove_file(&path)
             && error.kind() != std::io::ErrorKind::NotFound
@@ -448,24 +448,47 @@ pub(super) async fn shell(
     eprintln!("Preparing guest image...");
     let iso = images.guest_iso(&guest_image, run_dir.path()).await?;
     eprintln!("Booting guest...");
-    let mut guest = Vm::boot(
-        &iso,
-        run_dir.path(),
-        args.timeout.into(),
-        BootOutput::Visible,
-    )
-    .await?;
+    let mut signals = Signals::install()?;
+    let mut guest = tokio::select! {
+        biased;
+        reason = signals.receive() => return Ok(Summary::default().exit_code(reason)),
+        result = Vm::boot(
+            &iso,
+            run_dir.path(),
+            args.timeout.into(),
+            BootOutput::Visible,
+        ) => result?,
+    };
     eprintln!("Opening guest shell. Exit the shell to stop the VM.");
-    let shell_status = guest.interactive_shell().await?;
-    let powered_off =
-        !shell_status.success() && guest.wait_for_poweroff(Duration::from_secs(2)).await?;
+    let shell = tokio::select! {
+        biased;
+        reason = signals.receive() => Err(reason),
+        result = guest.interactive_shell() => Ok(result?),
+    };
+    let powered_off = match shell {
+        Ok(status) if !status.success() => guest.wait_for_poweroff(Duration::from_secs(2)).await?,
+        _ => false,
+    };
     eprintln!("Stopping simulation...");
-    let shutdown_result = guest.shutdown(ShutdownSignal::Terminate).await;
-    if !shell_status.success() && !powered_off {
-        bail!("guest shell exited with status: {shell_status}");
+    let shutdown_signal = match shell {
+        Err(Termination::Interrupted) => ShutdownSignal::Interrupt,
+        _ => ShutdownSignal::Terminate,
+    };
+    let shutdown_result = tokio::select! {
+        result = guest.shutdown(shutdown_signal) => result,
+        _ = signals.receive() => Ok(()),
+    };
+    if let Ok(status) = shell
+        && !status.success()
+        && !powered_off
+    {
+        bail!("guest shell exited with status: {status}");
     }
     shutdown_result?;
-    Ok(ExitCode::SUCCESS)
+    Ok(match shell {
+        Ok(_) => ExitCode::SUCCESS,
+        Err(reason) => Summary::default().exit_code(reason),
+    })
 }
 
 fn shell_quote(value: &str) -> String {

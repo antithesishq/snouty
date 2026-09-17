@@ -287,7 +287,7 @@ fn assertion_failure_is_latched_until_interruption_and_children_are_reaped() {
     assert_eq!(summary["failures"]["assertion_failures"], 1);
     assert_eq!(summary["failures"]["infrastructure_failures"], 0);
     let run_dir = simulation.read("run_dir");
-    for name in ["guest-dev-key", "ssh_config", "known_hosts", "qmp.sock"] {
+    for name in ["guest-dev-key", "ssh_config", "known_hosts"] {
         assert!(
             !Path::new(&run_dir).join(name).exists(),
             "runtime file {name} retained"
@@ -316,10 +316,7 @@ fn assertion_failure_is_latched_until_interruption_and_children_are_reaped() {
             .read("ssh_config")
             .contains("GlobalKnownHostsFile /dev/null")
     );
-    assert_eq!(
-        simulation.read("qmp_requests"),
-        "qmp_capabilities\nsend-key\n"
-    );
+    assert!(!simulation.read("qemu_args").contains("-qmp"));
 }
 
 #[test]
@@ -330,7 +327,7 @@ fn catastrophic_startup_reports_hidden_boot_console() {
     let stderr = String::from_utf8(output.stderr).unwrap();
     assert!(stderr.contains("fatal boot fixture"), "{stderr}");
     assert!(
-        stderr.contains("QEMU exited before the guest booted"),
+        stderr.contains("QEMU exited before SSH became ready"),
         "{stderr}"
     );
     assert!(!simulation.root().join("rollout_started").exists());

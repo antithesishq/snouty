@@ -6,9 +6,9 @@ use std::path::Path;
 use std::process::{Child, Command, Output, Stdio};
 use std::time::{Duration, Instant};
 
-use expectrl::Expect;
 use expectrl::process::unix::WaitStatus;
 use expectrl::session::OsSession;
+use expectrl::{ControlCode, Expect};
 use nix::sys::signal::{Signal, kill};
 use nix::unistd::Pid;
 use tempfile::TempDir;
@@ -40,7 +40,13 @@ impl Simulation {
         )
         .unwrap();
         fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
-        for tool in ["docker", "docker-compose", "ssh", "qemu-system-x86_64"] {
+        for tool in [
+            "docker",
+            "docker-compose",
+            "ssh",
+            "ssh-keygen",
+            "qemu-system-x86_64",
+        ] {
             symlink(&script, bin.join(tool)).unwrap();
         }
         let config = root.join("config");
@@ -167,8 +173,7 @@ impl Drop for Simulation {
     }
 }
 
-#[test]
-fn hidden_shell_bypasses_compose_and_owns_the_terminal() {
+fn start_shell_simulation(mode: &str) -> (TempDir, OsSession) {
     let directory = tempfile::tempdir().unwrap();
     let root = directory.path();
     let bin = root.join("bin");
@@ -185,10 +190,10 @@ fn hidden_shell_bypasses_compose_and_owns_the_terminal() {
     )
     .unwrap();
     fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
-    for tool in ["docker", "ssh", "qemu-system-x86_64"] {
+    for tool in ["docker", "ssh", "ssh-keygen", "qemu-system-x86_64"] {
         symlink(&script, bin.join(tool)).unwrap();
     }
-    fs::write(root.join("mode"), "shell").unwrap();
+    fs::write(root.join("mode"), mode).unwrap();
     let home = root.join("home");
     fs::create_dir(&home).unwrap();
     let mut paths = vec![bin];
@@ -214,6 +219,13 @@ fn hidden_shell_bypasses_compose_and_owns_the_terminal() {
         ]);
     let mut session = OsSession::spawn(command).expect("spawn shell simulation on a PTY");
     session.set_expect_timeout(Some(Duration::from_secs(15)));
+    (directory, session)
+}
+
+#[test]
+fn hidden_shell_bypasses_compose_and_owns_the_terminal() {
+    let (directory, mut session) = start_shell_simulation("shell");
+    let root = directory.path();
     let boot =
         Expect::expect(&mut session, "private boot console").expect("boot console is visible");
     assert!(!boot.as_bytes().windows(5).any(|bytes| bytes == b"\x1b[18t"));
@@ -258,6 +270,36 @@ fn hidden_shell_bypasses_compose_and_owns_the_terminal() {
 }
 
 #[test]
+fn interrupting_shell_boot_stops_qemu_and_removes_runtime_files() {
+    let (directory, mut session) = start_shell_simulation("shell-booting");
+    let root = directory.path();
+    Expect::expect(&mut session, "private boot console").expect("guest started booting");
+    Expect::send(&mut session, ControlCode::ETX).expect("interrupt guest boot");
+    let tail = Expect::expect(&mut session, expectrl::Eof).expect("simulation closed its terminal");
+    let status = session
+        .get_process()
+        .wait()
+        .expect("wait for shell simulation");
+    assert!(
+        matches!(status, WaitStatus::Exited(_, 130)),
+        "shell simulation failed: {status:?}\n{}",
+        String::from_utf8_lossy(tail.as_bytes())
+    );
+    for file in ["qemu_pid", "qemu_child_pid"] {
+        let pid: i32 = fs::read_to_string(root.join(file))
+            .unwrap()
+            .parse()
+            .unwrap();
+        assert!(
+            kill(Pid::from_raw(pid), None).is_err(),
+            "child {pid} survived interrupt"
+        );
+    }
+    let run_dir = fs::read_to_string(root.join("run_dir")).unwrap();
+    assert!(!Path::new(&run_dir).exists());
+}
+
+#[test]
 fn assertion_failure_is_latched_until_interruption_and_children_are_reaped() {
     let mut simulation = Simulation::start("assertion");
     simulation.wait_for("stdout", "still running after assertion");
@@ -287,12 +329,10 @@ fn assertion_failure_is_latched_until_interruption_and_children_are_reaped() {
     assert_eq!(summary["failures"]["assertion_failures"], 1);
     assert_eq!(summary["failures"]["infrastructure_failures"], 0);
     let run_dir = simulation.read("run_dir");
-    for name in ["guest-dev-key", "ssh_config", "known_hosts"] {
-        assert!(
-            !Path::new(&run_dir).join(name).exists(),
-            "runtime file {name} retained"
-        );
-    }
+    assert!(
+        !Path::new(&run_dir).join("ssh_config").exists(),
+        "runtime SSH config retained"
+    );
     assert!(!String::from_utf8_lossy(&output.stderr).contains("private boot console"));
     assert_eq!(simulation.read("qemu_signal"), "15");
     for file in ["qemu_pid", "qemu_child_pid"] {
@@ -311,11 +351,38 @@ fn assertion_failure_is_latched_until_interruption_and_children_are_reaped() {
         "existing host key\n"
     );
     assert_eq!(simulation.read("key_mode"), "0o600");
-    assert!(
-        simulation
-            .read("ssh_config")
-            .contains("GlobalKnownHostsFile /dev/null")
+    assert_eq!(simulation.read("authorized_key"), "fixture public key\n");
+    let private_key = simulation.read("private_key_path");
+    let public_key = simulation.read("public_key_path");
+    assert!(!Path::new(&private_key).exists());
+    assert!(!Path::new(&public_key).exists());
+    let qemu_args: Vec<String> = serde_json::from_str(&simulation.read("qemu_args")).unwrap();
+    let fw_cfg = qemu_args
+        .windows(2)
+        .find(|args| args[0] == "-fw_cfg")
+        .map(|args| &args[1])
+        .unwrap();
+    assert_eq!(
+        fw_cfg,
+        &format!("name=opt/antithesis/authorized_key,file={public_key}")
     );
+    assert!(
+        !qemu_args
+            .iter()
+            .any(|arg| arg == &format!("name=opt/antithesis/authorized_key,file={private_key}"))
+    );
+    assert!(
+        qemu_args
+            .iter()
+            .any(|arg| arg.contains("hostfwd=tcp:127.0.0.1:") && arg.ends_with("-:22,restrict=yes"))
+    );
+    let ssh_config = simulation.read("ssh_config");
+    assert!(ssh_config.contains("IdentitiesOnly yes"));
+    assert!(ssh_config.contains("IdentityAgent none"));
+    assert!(ssh_config.contains("StrictHostKeyChecking no"));
+    assert!(ssh_config.contains("UserKnownHostsFile /dev/null"));
+    assert!(ssh_config.contains("GlobalKnownHostsFile /dev/null"));
+    assert!(!ssh_config.contains(".pub"));
     assert!(!simulation.read("qemu_args").contains("-qmp"));
 }
 
@@ -331,6 +398,21 @@ fn catastrophic_startup_reports_hidden_boot_console() {
         "{stderr}"
     );
     assert!(!simulation.root().join("rollout_started").exists());
+}
+
+#[test]
+fn ssh_authentication_failure_stops_qemu_without_waiting_for_timeout() {
+    let mut simulation = Simulation::start("auth-failure");
+    let output = simulation.finish();
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(
+        stderr.contains("guest SSH authentication failed"),
+        "{stderr}"
+    );
+    assert!(stderr.contains("Permission denied (publickey)"), "{stderr}");
+    let pid: i32 = simulation.read("qemu_pid").parse().unwrap();
+    assert!(kill(Pid::from_raw(pid), None).is_err());
 }
 
 #[test]

@@ -371,13 +371,7 @@ pub(super) async fn run(
         summary.infrastructure_failures += 1;
         eprintln!("Instrumentation read failed: {error:#}");
     }
-    for name in [
-        "guest-dev-key",
-        "ssh_config",
-        "known_hosts",
-        "images.tar",
-        "qmp.sock",
-    ] {
+    for name in ["guest-dev-key", "ssh_config", "known_hosts", "images.tar"] {
         let path = run_dir.path().join(name);
         if let Err(error) = std::fs::remove_file(&path)
             && error.kind() != std::io::ErrorKind::NotFound

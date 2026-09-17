@@ -29,6 +29,12 @@ New commands and options must be accompanied by [expect style tests](tests/cli_g
 Having to change an existing test is a good sign of backwards incompatible breakage,
 which will be subject to extra review.
 
+For low-level guest debugging, run
+`SNOUTY_UNSTABLE_FEATURES=simulate snouty simulate --shell`. This hidden option
+boots the guest and opens a root shell without starting Compose. Exit the shell
+or run `poweroff` to stop the VM. The boot console remains visible until SSH is
+ready.
+
 ## Dependencies & distribution
 
 This tool supports amd64 and arm64 processors on Linux and macOS. Keep third party dependencies minimal, it

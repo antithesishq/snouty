@@ -124,6 +124,14 @@ uv sync                             # so ./.venv holds the dependencies
 uvx pyright scripts/gen-gallery.py  # `[tool.pyright]` points it at ./.venv
 ```
 
+## Guest shell
+
+For low-level guest debugging, run
+`SNOUTY_UNSTABLE_FEATURES=simulate snouty simulate --shell`. This hidden option
+boots the guest and opens a root shell. It does not inspect or start a Compose
+configuration. It shows the boot console until SSH is ready. Exit the shell or
+run `poweroff` to stop the VM.
+
 ## AI Coding Workflow
 
 1. Follow the Rust coding conventions in this file at all times

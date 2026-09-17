@@ -1,4 +1,4 @@
-use std::io::{self, ErrorKind, IsTerminal, Read};
+use std::io::{self, ErrorKind, IsTerminal, Read, Write};
 use std::process::Command;
 
 use clap::{CommandFactory, Parser};
@@ -411,7 +411,21 @@ fn cmd_completions(shell: Shell) -> Result<()> {
     // and is then refused by `gated_command_error`.
     let mut cmd = Cli::command();
     let bin_name = cmd.get_name().to_string();
-    clap_complete::generate(shell, &mut cmd, bin_name, &mut io::stdout());
+    let mut generated = Vec::new();
+    clap_complete::generate(shell, &mut cmd, bin_name, &mut generated);
+    let generated = String::from_utf8(generated).wrap_err("completion script is not UTF-8")?;
+    // clap_complete includes hidden arguments, but this escape hatch must only
+    // be discoverable in the contributor documentation.
+    let description = "Boot the guest and open a root shell without starting Compose";
+    let mut filtered = generated
+        .lines()
+        .filter(|line| !line.contains(description))
+        .collect::<Vec<_>>()
+        .join("\n");
+    if generated.ends_with('\n') {
+        filtered.push('\n');
+    }
+    io::stdout().write_all(filtered.replace(" --shell", "").as_bytes())?;
     Ok(())
 }
 

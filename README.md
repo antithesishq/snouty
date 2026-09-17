@@ -310,11 +310,14 @@ On Linux x86_64, enable `simulate` to run an Antithesis Compose setup in a local
 guest VM:
 
 ```sh
-SNOUTY_UNSTABLE_FEATURES=simulate snouty simulate ./config --guest-image IMAGE
+SNOUTY_UNSTABLE_FEATURES=simulate snouty simulate ./config
 ```
 
 Install QEMU (`qemu-system-x86_64`), OpenSSH, tar, and the container engine and
-Compose tools described above. The guest image must contain `/guest.iso`.
+Compose tools described above. The guest image defaults to
+`antithesis-guest:v<RELEASE>` in your configured repository, using the tenant release from `/api/version`.
+This lookup requires an API key. Use `--guest-image IMAGE`
+to override it. The guest image must contain `/guest.iso`.
 Snouty uses a local guest image when present and pulls it otherwise. Workload
 images must already exist locally. Only directories with `docker-compose.yaml`
 are supported; Kubernetes and arbitrary host bind mounts are not supported.

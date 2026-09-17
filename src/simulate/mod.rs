@@ -15,7 +15,25 @@ pub async fn cmd_simulate(
     settings: &Settings,
     output: OutputOptions,
 ) -> Result<ExitCode> {
-    let config = match crate::config::detect_config(&args.config)? {
+    if args.shell {
+        if output.json {
+            color_eyre::eyre::bail!("--shell cannot be combined with --json");
+        }
+        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+        {
+            return shell(args, settings, output.verbose).await;
+        }
+        #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
+        {
+            let _ = (args, settings, output);
+            color_eyre::eyre::bail!("simulate requires Linux x86_64");
+        }
+    }
+    let config = match crate::config::detect_config(
+        args.config
+            .as_deref()
+            .expect("clap requires config unless --shell is present"),
+    )? {
         crate::config::Config::Compose(config) => config,
         crate::config::Config::Kubernetes(_) => color_eyre::eyre::bail!(
             "Kubernetes is not supported by simulate; provide docker-compose.yaml"
@@ -33,6 +51,6 @@ pub async fn cmd_simulate(
 }
 
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-use linux::run;
+use linux::{run, shell};
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 mod linux;

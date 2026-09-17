@@ -15,20 +15,38 @@ snouty --help
 stdout 'simulate +Run a Compose setup'
 snouty simulate --help
 stdout 'guest-image'
+stdout 'antithesis-guest:v<RELEASE>'
 stdout 'disable-restart'
 stdout 'timeout'
+! stdout '\-\-shell'
 stdout '1 CPU and 15000 MiB'
 stdout 'newline-delimited events'
 ! stdout '\-\-accel'
 ! stdout '\-\-memory'
 ! stdout '\-\-cpus'
 
+snouty completions bash
+! stdout '\-\-shell'
+snouty completions zsh
+! stdout '\-\-shell'
+snouty completions fish
+! stdout '\-l shell'
+snouty completions elvish
+! stdout 'cand \-\-shell'
+
 ! snouty simulate empty
-stderr 'required.*'
-stderr '\-\-guest-image'
+stderr 'does not contain.*docker-compose.yaml.*manifests/'
 ! snouty simulate --guest-image guest:latest
 stderr 'required.*'
 stderr '<CONFIG>'
+! snouty simulate --shell --guest-image guest:latest
+stderr 'requires an interactive terminal'
+! snouty --json simulate --shell --guest-image guest:latest
+stderr '\-\-shell cannot be combined with \-\-json'
+! snouty simulate empty --shell --guest-image guest:latest
+stderr 'cannot be used with'
+! snouty simulate --shell --disable-restart --guest-image guest:latest
+stderr 'cannot be used with'
 ! snouty simulate empty --guest-image guest:latest --timeout 0s
 stderr 'startup timeout must be greater than zero'
 ! snouty simulate empty --guest-image guest:latest --timeout nonsense

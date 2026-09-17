@@ -274,7 +274,9 @@ SNOUTY_UNSTABLE_FEATURES=simulate.
 
 Accepts a directory containing docker-compose.yaml, as validate does.
 Kubernetes configurations are not supported. Workload images must exist in
-the local container engine. Supply the guest container image with --guest-image.
+the local container engine. The guest image defaults to antithesis-guest:v<RELEASE>
+in the configured repository, using the tenant release from /api/version.
+Requires an API key unless --guest-image is supplied.
 
 Requires Linux x86_64 and QEMU. Uses 1 CPU and 15000 MiB of memory. Uses KVM
 when available, otherwise TCG with a warning that performance will suffer.
@@ -289,7 +291,7 @@ With --json, emits newline-delimited events and a final failure-count summary.
 The startup timeout does not limit the simulation duration.
 
 Example:
-  SNOUTY_UNSTABLE_FEATURES=simulate snouty simulate ./config --guest-image IMAGE"#
+  SNOUTY_UNSTABLE_FEATURES=simulate snouty simulate ./config"#
     )]
     Simulate(SimulateArgs),
 
@@ -563,15 +565,24 @@ pub struct ValidateArgs {
 #[derive(Args)]
 pub struct SimulateArgs {
     /// Path to config directory containing docker-compose.yaml
-    pub config: std::path::PathBuf,
+    #[arg(required_unless_present = "shell")]
+    pub config: Option<std::path::PathBuf>,
 
-    /// Container image containing /guest.iso
+    /// Container image containing /guest.iso (default: REPOSITORY/antithesis-guest:v<RELEASE>)
     #[arg(long, value_parser = validate_non_empty)]
-    pub guest_image: String,
+    pub guest_image: Option<String>,
 
     /// Run one rollout, then continue streaming logs until interrupted
     #[arg(long)]
     pub disable_restart: bool,
+
+    /// Boot the guest and open a root shell without starting Compose
+    #[arg(
+        long,
+        hide = true,
+        conflicts_with_all = ["config", "disable_restart"]
+    )]
+    pub shell: bool,
 
     /// Maximum time to wait for guest startup (for example, 5m or 300s)
     #[arg(long, default_value = "5m", value_parser = parse_startup_timeout)]

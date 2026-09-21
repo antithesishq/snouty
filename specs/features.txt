@@ -12,9 +12,7 @@
 # --settings/--profile — which would mean parsing the command line twice.
 #
 # The gate mechanics are exercised through `runs-exec`, which gates
-# `snouty runs exec`; `runs-search` (gating `snouty runs search` and the
-# events-search routing of `snouty runs events`) rides the same machinery,
-# covered in runs.txt.
+# `snouty runs exec`.
 
 # 1. With no features set, invoking `runs exec` says what is wrong and how to
 #    fix it. Whoever types the command knows it exists, so the error names the

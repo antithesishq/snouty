@@ -638,10 +638,8 @@ macro_rules! classified_blocks_help {
 const SEARCH_LONG_ABOUT: &str = concat!(
     r#"Run an event-set DSL query against a run's events.
 
-This command is gated behind the `runs-search` unstable feature, because the
-events-search API does not honor its documented contract yet on current
-tenants. Enable it by setting SNOUTY_UNSTABLE_FEATURES=runs-search. An
-unstable feature can change or go away in any release.
+The events-search API behind this command needs tenant release 58.11 or
+newer; `snouty doctor` reports an older tenant.
 
 QUERY is a pipeline of dot-separated verbs applied to the run's event stream,
 evaluated left to right; each verb narrows, reshapes, or combines the set of
@@ -985,9 +983,10 @@ JSON object on its own line, and the trailer is left out:
             "A term is matched against the text an event carries: log output, an\n\
              assertion's message and source function, and a test-composer command.\n\n",
             classified_blocks_help!(),
-            "\n\nMatching runs server-side. More than one term requires the events-search API,\n\
-             which is behind the `runs-search` unstable feature\n\
-             (SNOUTY_UNSTABLE_FEATURES=runs-search).\n\n\
+            "\n\nMatching runs server-side. One term uses the events endpoint, which returns\n\
+             the earliest matches in vtime order. Several terms are ANDed through the\n\
+             events-search API, which returns a sample of the matches in no fixed\n\
+             order; `snouty runs search` takes the same route.\n\n\
              Add --json for machine-readable output. Each event prints as one\n\
              JSON object on its own line:\n\
              \x20 snouty --json runs events <run_id> -m error | jq -r .moment.vtime"
@@ -1015,14 +1014,7 @@ JSON object on its own line, and the trailer is left out:
     },
 
     /// Query events with the event-set DSL
-    // Gated behind the `runs-search` feature (see `Feature::RunsSearch`): the
-    // events-search API does not honor its documented contract yet. Same
-    // mechanics as `runs exec` above — `hide` keeps it out of `--help`, and
-    // invoking it while disabled is refused by [`gated_command_error`].
-    #[command(
-        hide = !features::is_enabled(Feature::RunsSearch),
-        long_about = SEARCH_LONG_ABOUT
-    )]
+    #[command(long_about = SEARCH_LONG_ABOUT)]
     Search(RunsSearchArgs),
 }
 
@@ -1124,9 +1116,6 @@ pub fn gated_command_error(command: &Commands, enabled: &[Feature]) -> Option<Re
         Commands::Runs {
             command: Some(RunsCommands::Exec { .. }),
         } => (Feature::RunsExec, "snouty runs exec"),
-        Commands::Runs {
-            command: Some(RunsCommands::Search(_)),
-        } => (Feature::RunsSearch, "snouty runs search"),
         _ => return None,
     };
     let (feature, path) = gated;
@@ -1196,20 +1185,10 @@ mod tests {
         // An unrelated feature does not enable it.
         assert!(gated_command_error(&exec, &[Feature::Unknown("other".to_string())]).is_some());
 
-        // `runs search` is gated the same way, behind its own feature.
-        let search = parse(&["snouty", "runs", "search", "RUN", "q"]).command;
-        let err = gated_command_error(&search, &[]).expect("a gated-off command is refused");
-        let rendered = format!("{err:?}");
-        assert!(
-            rendered.contains("SNOUTY_UNSTABLE_FEATURES=runs-search"),
-            "{rendered}"
-        );
-        assert!(gated_command_error(&search, &[Feature::RunsSearch]).is_none());
-        assert!(gated_command_error(&search, &[Feature::RunsExec]).is_some());
-
         // Sibling subcommands are never gated.
         for args in [
             &["snouty", "runs", "logs", "RUN", "1", "2.0"][..],
+            &["snouty", "runs", "search", "RUN", "q"][..],
             &["snouty", "runs"][..],
         ] {
             assert!(gated_command_error(&parse(args).command, &[]).is_none());

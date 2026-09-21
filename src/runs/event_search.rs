@@ -2,10 +2,10 @@
 //! `runs events`, `runs search`, `runs build-logs`), plus the events-search
 //! helpers.
 //!
-//! Each command resolves its own backend up front — `runs events` from the
-//! `runs-search` feature flag, `runs search` always on the events-search
-//! endpoint, `runs logs`/`runs build-logs` their GET endpoints — and hands
-//! the resulting [`JsonStream`] here. From the stream on, the commands are
+//! Each command resolves its own backend up front — `runs events` from its
+//! needle count, `runs search` always on the events-search endpoint,
+//! `runs logs`/`runs build-logs` their GET endpoints — and hands the
+//! resulting [`JsonStream`] here. From the stream on, the commands are
 //! identical: every event renders to one output line.
 //!
 //! Nothing here filters client-side. The output of a server-side filter IS
@@ -25,7 +25,6 @@ use futures_util::{StreamExt, TryStreamExt};
 use crate::api::{AntithesisApi, MIN_SEARCH_RELEASE, SearchMode};
 use crate::error::{api_error_status, user_error};
 use crate::event_render::EventStreamRenderer;
-use crate::features::{self, Feature};
 use crate::jsonl::JsonStream;
 
 use super::{ErrorRows, FaultAnnotator, event_lines, raw_lines};
@@ -117,27 +116,10 @@ pub(super) async fn check_query(
     Ok(())
 }
 
-/// The refusal for several needles while the `runs-search` feature is off.
-/// The GET events endpoint matches ONE substring; AND-filtering the rest
-/// client-side silently dropped true matches (the server returns a capped
-/// subset), so several needles require the events-search API.
-pub(super) fn multi_needle_error() -> color_eyre::eyre::Report {
-    user_error("multiple search terms require the events-search API")
-        .note(format!(
-            "that API is behind the `{}` unstable feature",
-            Feature::RUNS_SEARCH
-        ))
-        .suggestion(format!(
-            "search a single term, or set {}={}",
-            features::UNSTABLE_FEATURES_VAR_NAME,
-            Feature::RUNS_SEARCH
-        ))
-}
-
-/// Classify an events-search failure. With the feature on, the tenant is
-/// assumed to serve the endpoint (`snouty doctor` reports a tenant release
-/// that is too old), so a 404 means the run: the endpoint's own 404 body is
-/// an unhelpful "Resource not found". A 400 is the server rejecting the
+/// Classify an events-search failure. The tenant is assumed to serve the
+/// endpoint (`snouty doctor` reports a tenant release that is too old), so a
+/// 404 means the run: the endpoint's own 404 body is an unhelpful
+/// "Resource not found". A 400 is the server rejecting the
 /// request — usually the query, but an out-of-range `limit` answers 400 too,
 /// so the note must not blame the query alone (the server's own message,
 /// shown above the note, says which it was).
@@ -150,22 +132,12 @@ pub(super) fn explain_search_error(
             let (major, minor) = MIN_SEARCH_RELEASE;
             user_error(format!("run not found: {run_id}")).suggestion(format!(
                 "tenant releases before {major}.{minor} do not serve the events-search \
-                 API; on an older tenant, remove `runs-search` from {} to fall back",
-                features::UNSTABLE_FEATURES_VAR_NAME
+                 API; `snouty doctor` reports the tenant release"
             ))
         }
         Some(400) => err.note(
             "the server rejected the request; its message above says which part \
              — for a query, check the event-set DSL syntax",
-        ),
-        // The documented contract answers an invalid query with a 400, but
-        // current tenants leak it as a generic 500 whose body says "try again
-        // later" — wrong advice when the query is the problem. Point at the
-        // query so the user does not retry a request that can never succeed.
-        Some(500) => err.note(
-            "current tenant releases answer an invalid or unsupported query with \
-             a generic 500 (observed through release 60.1) — check the query \
-             before retrying",
         ),
         _ => err,
     }
@@ -177,22 +149,9 @@ mod tests {
     use crate::error::ApiError;
 
     #[test]
-    fn multi_needle_error_names_the_gate_and_the_fix() {
-        let err = format!("{:?}", multi_needle_error());
-        assert!(
-            err.contains("multiple search terms require the events-search API"),
-            "{err}"
-        );
-        assert!(
-            err.contains("SNOUTY_UNSTABLE_FEATURES=runs-search"),
-            "{err}"
-        );
-    }
-
-    #[test]
     fn explain_search_error_maps_404_to_run_not_found() {
-        // With the feature on, the tenant is assumed to serve the endpoint,
-        // so its unhelpful 404 body means the run id.
+        // The tenant is assumed to serve the endpoint, so its unhelpful 404
+        // body means the run id.
         let err = color_eyre::eyre::Report::new(ApiError {
             status: 404,
             message: "API error: 404 Not Found — Resource not found".to_string(),

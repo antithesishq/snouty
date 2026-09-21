@@ -494,34 +494,31 @@ fn print_settings(settings: &[Setting]) {
     }
 }
 
-/// With the `runs-search` unstable feature enabled, `runs events` and
-/// `runs search` assume the tenant serves the events-search API instead of
-/// probing for it — this check is where that assumption gets verified. Only
-/// a confidently-known gap reports: the feature off or an unparsable release
-/// version say nothing (the check would guess). Pure so it can be
-/// unit-tested without the network.
-fn runs_search_release_check(version: &ApiVersion, runs_search_enabled: bool) -> Option<Check> {
-    if !runs_search_enabled || version.release? >= MIN_SEARCH_RELEASE {
+/// `runs search`, and `runs events` with several terms, assume the tenant
+/// serves the events-search API instead of probing for it — this check is
+/// where that assumption gets verified. Only a confidently-known gap
+/// reports: an unparsable release version says nothing (the check would
+/// guess). A warning, not a failure: every other command still works on
+/// such a tenant. Pure so it can be unit-tested without the network.
+fn events_search_release_check(version: &ApiVersion) -> Option<Check> {
+    if version.release? >= MIN_SEARCH_RELEASE {
         return None;
     }
     let (major, minor) = MIN_SEARCH_RELEASE;
     Some(
-        Check::fail("runs-search", "tenant serves the events-search API")
+        Check::warn("events-search", "tenant serves the events-search API")
             .note(
-                Level::Error,
+                Level::Warning,
                 format!(
-                    "the `runs-search` unstable feature is enabled, but tenant release {} \
-                     predates the events-search API (added in {major}.{minor}) — \
-                     `runs events` and `runs search` will fail",
+                    "tenant release {} predates the events-search API (added in \
+                     {major}.{minor}) — `runs search` and `runs events` with several \
+                     terms will fail",
                     version.release_version
                 ),
             )
             .note(
                 Level::Note,
-                format!(
-                    "remove `runs-search` from {} or request that your Antithesis tenant is upgraded",
-                    features::UNSTABLE_FEATURES_VAR_NAME
-                ),
+                "request that your Antithesis tenant is upgraded",
             ),
     )
 }
@@ -609,8 +606,7 @@ pub async fn cmd_doctor(
         let host = api.host();
         let version = api.get_version().await;
         if let Ok(version) = &version
-            && let Some(check) =
-                runs_search_release_check(version, features::is_enabled(Feature::RunsSearch))
+            && let Some(check) = events_search_release_check(version)
         {
             checks.push(check);
         }
@@ -1024,29 +1020,27 @@ mod tests {
     // ---- version_check (network probe) ---------------------------------
 
     #[test]
-    fn runs_search_release_check_fires_only_on_a_known_gap() {
+    fn events_search_release_check_fires_only_on_a_known_gap() {
         let version = |release: &str| ApiVersion::new("v1".into(), release.into());
-        // Feature off: nothing, whatever the release.
-        assert!(runs_search_release_check(&version("56.0"), false).is_none());
         // Recent enough (58.11 ships the endpoint): nothing.
-        assert!(runs_search_release_check(&version("58.11"), true).is_none());
-        assert!(runs_search_release_check(&version("60.1"), true).is_none());
-        // Too old: the check fails doctor, names the gap, and suggests
-        // turning the feature off.
-        let check = runs_search_release_check(&version("58.6"), true).unwrap();
-        assert_eq!(check.status, Status::Error);
+        assert!(events_search_release_check(&version("58.11")).is_none());
+        assert!(events_search_release_check(&version("62.2")).is_none());
+        // Too old: the check warns, names the gap, and names the commands
+        // that need the endpoint.
+        let check = events_search_release_check(&version("58.6")).unwrap();
+        assert_eq!(check.status, Status::Warn);
         assert!(
             check.notes[0].text.contains("58.6"),
             "{}",
             check.notes[0].text
         );
         assert!(
-            check.notes[1].text.contains("remove `runs-search`"),
+            check.notes[0].text.contains("`runs search`"),
             "{}",
-            check.notes[1].text
+            check.notes[0].text
         );
         // An unparsable release says nothing rather than guessing.
-        assert!(runs_search_release_check(&version("unknown"), true).is_none());
+        assert!(events_search_release_check(&version("unknown")).is_none());
     }
 
     #[test]

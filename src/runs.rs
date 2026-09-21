@@ -23,7 +23,6 @@ use crate::cli::{RunsCommands, RunsListArgs, RunsSearchArgs};
 use crate::error::{api_error_status, user_error};
 use crate::event_render::{normalize_terminal_text, strip_ansi};
 use crate::event_set_dsl;
-use crate::features::{self, Feature};
 use crate::jsonl::JsonStream;
 use crate::render::{
     OutputOptions, indent_lines, render_kv, sanitize, sanitize_multiline, wrap_text,
@@ -1417,23 +1416,25 @@ async fn cmd_runs_events(
     }
 
     let api = AntithesisApi::new(settings, verbose)?;
-    let stream = if features::is_enabled(Feature::RunsSearch) {
-        let query = event_set_dsl::substring_filter(matches);
-        let search = SearchMode::Query {
-            stream: false,
-            limit: Some(limit),
-        };
-        match api.search_run_events_query(run_id, &query, search).await {
-            Ok(stream) => stream,
-            Err(err) => return Err(event_search::explain_search_error(run_id, err)),
-        }
-    } else {
-        let [needle] = matches else {
-            return Err(event_search::multi_needle_error());
-        };
-        match api.search_run_events(run_id, needle, limit).await {
+    // One needle takes the GET events endpoint, which returns the earliest
+    // matches in vtime order. That endpoint matches a single substring, so
+    // several needles are ANDed server-side through the events-search
+    // endpoint, which returns a sample of the matches in no fixed order.
+    let stream = match matches {
+        [needle] => match api.search_run_events(run_id, needle, limit).await {
             Ok(stream) => stream,
             Err(err) => return Err(explain_run_scoped_error(&api, run_id, err).await),
+        },
+        needles => {
+            let query = event_set_dsl::substring_filter(needles);
+            let search = SearchMode::Query {
+                stream: false,
+                limit: Some(limit),
+            };
+            match api.search_run_events_query(run_id, &query, search).await {
+                Ok(stream) => stream,
+                Err(err) => return Err(event_search::explain_search_error(run_id, err)),
+            }
         }
     };
     let lines = event_search::render_event_stream(stream, ErrorRows::Abort, mode);

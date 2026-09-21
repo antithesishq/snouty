@@ -1280,9 +1280,10 @@ fn mock_route_search_events(run_id: &str, body: &str) -> (u16, String, &'static 
         .iter()
         .any(|verb| query.trim_start().starts_with(&format!("{verb}(")));
     if !starts_with_verb {
-        // The live server lays the rejection out over three lines: the query,
-        // a caret under the offending token, and the reason (observed on
-        // tenant `orbitinghail`, release 61).
+        // The live server lays the rejection out over three lines: the query
+        // at the end of the prose line, a caret whose column counts from the
+        // query's start, and the reason (observed on tenant `orbitinghail`,
+        // release 62.2).
         let message = format!(
             "Bad request: failed to execute pangolin query due to a runtime error: \
              Event set DSL error: {query}\n^\ninvalid with_next"

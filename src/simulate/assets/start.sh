@@ -3,6 +3,7 @@ compose_file=/opt/config/docker-compose.yaml
 restart_enabled=${restart_enabled:-yes}
 state_dir=/run/antithesis-local-injection
 printf '%s\n' "$compose_file" > "$state_dir/compose-file"
+rm -f "$state_dir/setup-ready"
 podman compose -p antithesis -f "$compose_file" up -d --no-build --pull=never
 
 cat > "$state_dir/restart-compose" <<'SUPERVISOR'
@@ -72,9 +73,12 @@ start_composer_rollout() {
   touch /opt/antithesis/rollouts/new
 }
 
+touch "$state_dir/restart-ready"
 while true; do
+  while [[ ! -f "$state_dir/setup-ready" ]]; do
+    sleep 0.1
+  done
   start_composer_rollout
-  touch "$state_dir/restart-ready"
 
   if [[ "$mode" == once ]]; then
     exit 0
@@ -100,35 +104,36 @@ while true; do
   podman compose -p antithesis -f "$compose_file" \
     down --volumes --remove-orphans
   remove_stale_composer_registrations
+  rm -f "$state_dir/setup-ready"
   podman compose -p antithesis -f "$compose_file" up -d --no-build --pull=never
 done
 SUPERVISOR
 chmod +x "$state_dir/restart-compose"
 
 rm -f "$state_dir/restart-ready"
-if [[ "$restart_enabled" == yes ]]; then
-  systemd-run \
-    --unit=antithesis-local-compose-restart.service \
-    --service-type=exec \
-    --property=RemainAfterExit=yes \
-    "$state_dir/restart-compose" "$compose_file" restart
+mode=restart
+if [[ "$restart_enabled" != yes ]]; then
+  mode=once
+fi
+systemd-run \
+  --unit=antithesis-local-compose-restart.service \
+  --service-type=exec \
+  --property=RemainAfterExit=yes \
+  "$state_dir/restart-compose" "$compose_file" "$mode"
 
-  supervisor_ready=
-  for _ in $(seq 1 100); do
-    if [[ -f "$state_dir/restart-ready" ]]; then
-      supervisor_ready=yes
-      break
-    fi
-    if ! systemctl is-active --quiet antithesis-local-compose-restart.service; then
-      break
-    fi
-    sleep 0.1
-  done
-  if [[ "$supervisor_ready" != yes ]]; then
-    echo "Local Compose restart supervisor did not become ready" >&2
-    journalctl -u antithesis-local-compose-restart.service --no-pager -n 20 >&2 || true
-    exit 1
+supervisor_ready=
+for _ in $(seq 1 100); do
+  if [[ -f "$state_dir/restart-ready" ]]; then
+    supervisor_ready=yes
+    break
   fi
-else
-  "$state_dir/restart-compose" "$compose_file" once
+  if ! systemctl is-active --quiet antithesis-local-compose-restart.service; then
+    break
+  fi
+  sleep 0.1
+done
+if [[ "$supervisor_ready" != yes ]]; then
+  echo "Local Compose restart supervisor did not become ready" >&2
+  journalctl -u antithesis-local-compose-restart.service --no-pager -n 20 >&2 || true
+  exit 1
 fi

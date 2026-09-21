@@ -701,3 +701,27 @@ async fn failed_release_lookup_requires_explicit_image() {
     .await
     .unwrap();
 }
+
+#[test]
+fn composer_waits_for_setup_complete_and_wait_is_interruptible() {
+    let mut simulation = Simulation::start("waiting-setup");
+    simulation.wait_for("stdout", "still running after assertion");
+    assert!(simulation.root().join("compose_started").exists());
+    assert!(!simulation.root().join("rollout_started").exists());
+    let log = Path::new(&simulation.read("run_dir")).join("instrumentation.log");
+    use std::io::Write;
+    writeln!(
+        fs::OpenOptions::new().append(true).open(log).unwrap(),
+        "14 [workload] [JSON] '{{\"antithesis_setup\":{{\"status\":\"complete\"}}}}'"
+    )
+    .unwrap();
+    simulation.wait_for("rollout_started", "yes");
+    kill(Pid::from_raw(simulation.child.id() as i32), Signal::SIGTERM).unwrap();
+    simulation.finish();
+
+    let mut simulation = Simulation::start("waiting-setup");
+    simulation.wait_for("stdout", "still running after assertion");
+    kill(Pid::from_raw(simulation.child.id() as i32), Signal::SIGTERM).unwrap();
+    simulation.finish();
+    assert!(!simulation.root().join("rollout_started").exists());
+}

@@ -17,6 +17,7 @@ snouty simulate --help
 stdout 'guest-image'
 stdout 'antithesis-guest:v<RELEASE>'
 stdout 'disable-restart'
+stdout 'Waits for setup_complete before starting test composer'
 stdout 'timeout'
 ! stdout '\-\-shell'
 stdout '1 CPU and 15000 MiB'

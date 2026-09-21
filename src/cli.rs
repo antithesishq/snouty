@@ -282,6 +282,7 @@ Requires Linux x86_64 and QEMU. Uses 1 CPU and 15000 MiB of memory. Uses KVM
 when available, otherwise TCG with a warning that performance will suffer.
 SSH configuration is private to this run; user configuration is not changed.
 
+Waits for setup_complete before starting test composer on each rollout.
 Repeats rollouts until interrupted. --disable-restart runs one rollout and
 continues to stream logs. Failed assertions and composer commands do not stop
 the simulation, but cause a nonzero exit status when it stops.

@@ -278,7 +278,7 @@ pub(super) async fn run(
         guest.run_script(&start).await?;
         eprintln!("Streaming guest logs. Interrupt to stop simulation.");
         let status = if args.disable_restart {
-            format!("unit=antithesis-test-composer.service\n{STATUS}")
+            format!("{STATUS}\nunit=antithesis-test-composer.service\n{STATUS}")
         } else {
             STATUS.to_owned()
         };
@@ -289,6 +289,11 @@ pub(super) async fn run(
                 line = logs.next() => {
                     let (end, line) = line.ok_or_eyre("instrumentation stream ended")??;
                     consumed = end;
+                    if let Some(event) = events::parse_line(&line)?
+                        && matches!(event.kind, events::EventKind::SetupComplete { .. })
+                    {
+                        guest.run_script("touch /run/antithesis-local-injection/setup-ready\n").await?;
+                    }
                     output.event(&line, &mut summary, RunPhase::Running).await?;
                     if output.closed { return Ok::<_, color_eyre::Report>(()); }
                 },

@@ -91,10 +91,15 @@ elif name == 'ssh':
                     if mode == 'blocked-output-failures':
                         output.write('13 [antithesis_test_composer] [JSON] ' + json.dumps({'task_status': 'finished', 'command': 'test', 'command_return_code': 1}) + '\n')
                         output.write('14 [workload] [JSON] ' + json.dumps({'antithesis_assert': {'assert_type': 'always', 'hit': True, 'condition': False, 'message': 'late violation'}}))
+            record('compose_started', 'yes')
+            if mode != 'waiting-setup':
+                with log.open('a') as output:
+                    output.write("13 [workload] [JSON] '{\"antithesis_setup\":{\"status\":\"complete\"}}'\n")
+        elif script == 'touch /run/antithesis-local-injection/setup-ready\n':
             record('rollout_started', 'yes')
         elif 'podman image exists' in script:
             print('[]')
-        elif '--property=Result' in script and mode == 'supervisor-failure':
+        elif '--property=Result' in script and mode == 'supervisor-failure' and (root / 'rollout_started').exists():
             sys.exit('supervisor failed fixture')
     elif command.startswith('tar ') or command == 'podman load':
         sys.stdin.buffer.read()

@@ -20,6 +20,7 @@ use crate::{
 };
 
 const PREPARE: &str = include_str!("assets/prepare.sh");
+const DISABLE_FAULTS: &str = include_str!("assets/disable-faults.sh");
 const START: &str = include_str!("assets/start.sh");
 const STOP: &str = include_str!("assets/stop.sh");
 const STATUS: &str = include_str!("assets/status.sh");
@@ -232,6 +233,9 @@ pub(super) async fn run(
         );
         let guest = vm.as_mut().expect("guest booted");
         guest.run_script(PREPARE).await?;
+        if args.disable_faults {
+            guest.run_script(DISABLE_FAULTS).await?;
+        }
         eprintln!("Uploading Compose configuration and images...");
         guest.upload_config(config.dir()).await?;
         let mut changed = Vec::new();
@@ -292,6 +296,9 @@ pub(super) async fn run(
                     if let Some(event) = events::parse_line(&line)?
                         && matches!(event.kind, events::EventKind::SetupComplete { .. })
                     {
+                        if !args.disable_faults {
+                            guest.run_script("fault_injector_update --unpause\n").await?;
+                        }
                         guest.run_script("touch /run/antithesis-local-injection/setup-ready\n").await?;
                     }
                     output.event(&line, &mut summary, RunPhase::Running).await?;

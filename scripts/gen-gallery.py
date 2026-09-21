@@ -2207,7 +2207,8 @@ def build_help_stories(d: Discovery) -> list[Story]:
             "help-simulate",
             "Understand guest simulation",
             "I want to run a Compose setup in a guest VM and understand image "
-            "requirements, setup_complete before test composer starts, startup timeout, "
+            "requirements, setup_complete before test composer and fault injection start, "
+            "--disable-faults keeping faults paused through test composer, startup timeout, "
             "interruption, and failure status.",
             ["simulate"],
         ),

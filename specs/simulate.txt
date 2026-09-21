@@ -17,6 +17,9 @@ snouty simulate --help
 stdout 'guest-image'
 stdout 'antithesis-guest:v<RELEASE>'
 stdout 'disable-restart'
+stdout 'disable-faults'
+stdout 'Pause fault injection before Compose starts'
+stdout 'Unpauses fault injection after setup_complete unless --disable-faults is set.'
 stdout 'Waits for setup_complete before starting test composer'
 stdout 'timeout'
 ! stdout '\-\-shell'
@@ -47,6 +50,8 @@ stderr '\-\-shell cannot be combined with \-\-json'
 ! snouty simulate empty --shell --guest-image guest:latest
 stderr 'cannot be used with'
 ! snouty simulate --shell --disable-restart --guest-image guest:latest
+stderr 'cannot be used with'
+! snouty simulate --shell --disable-faults --guest-image guest:latest
 stderr 'cannot be used with'
 ! snouty simulate empty --guest-image guest:latest --timeout 0s
 stderr 'startup timeout must be greater than zero'

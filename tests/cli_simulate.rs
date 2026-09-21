@@ -101,6 +101,13 @@ impl Simulation {
             } else {
                 Vec::new()
             })
+            .args(
+                if matches!(mode, "disable-faults" | "fault-pause-failure") {
+                    vec!["--disable-faults"]
+                } else {
+                    Vec::new()
+                },
+            )
             .stdin(Stdio::null())
             .stdout(if mode.starts_with("blocked-output") {
                 Stdio::piped()
@@ -708,6 +715,7 @@ fn composer_waits_for_setup_complete_and_wait_is_interruptible() {
     simulation.wait_for("stdout", "still running after assertion");
     assert!(simulation.root().join("compose_started").exists());
     assert!(!simulation.root().join("rollout_started").exists());
+    assert!(!simulation.root().join("faults_unpaused").exists());
     let log = Path::new(&simulation.read("run_dir")).join("instrumentation.log");
     use std::io::Write;
     writeln!(
@@ -716,6 +724,8 @@ fn composer_waits_for_setup_complete_and_wait_is_interruptible() {
     )
     .unwrap();
     simulation.wait_for("rollout_started", "yes");
+    assert_eq!(simulation.read("faults_unpaused"), "yes");
+    assert!(!simulation.root().join("faults_paused").exists());
     kill(Pid::from_raw(simulation.child.id() as i32), Signal::SIGTERM).unwrap();
     simulation.finish();
 
@@ -724,4 +734,96 @@ fn composer_waits_for_setup_complete_and_wait_is_interruptible() {
     kill(Pid::from_raw(simulation.child.id() as i32), Signal::SIGTERM).unwrap();
     simulation.finish();
     assert!(!simulation.root().join("rollout_started").exists());
+}
+
+#[test]
+fn disable_faults_still_starts_composer() {
+    let mut simulation = Simulation::start("disable-faults");
+    simulation.wait_for("compose_started", "yes");
+    assert_eq!(simulation.read("faults_paused"), "yes");
+    simulation.wait_for("rollout_started", "yes");
+    kill(Pid::from_raw(simulation.child.id() as i32), Signal::SIGTERM).unwrap();
+    simulation.finish();
+    assert!(!simulation.root().join("faults_unpaused").exists());
+}
+
+#[test]
+fn fault_injector_failure_stops_simulation_before_composer() {
+    let mut simulation = Simulation::start("fault-injector-failure");
+    let output = simulation.finish();
+    assert!(!output.status.success());
+    assert_eq!(simulation.read("faults_unpaused"), "yes");
+    assert!(!simulation.root().join("rollout_started").exists());
+}
+
+#[test]
+fn composer_config_disables_fault_control_and_preserves_other_settings() {
+    let directory = tempfile::tempdir().unwrap();
+    let config = directory.path().join("config.json");
+    let original = serde_json::json!({
+        "unpause_fault_injector": true,
+        "other": {"enabled": true, "values": [1, "two", null]}
+    });
+    let script = include_str!("../src/simulate/assets/disable-faults.sh")
+        .replace(
+            "/run/antithesis-local-injection",
+            directory.path().join("state").to_str().unwrap(),
+        )
+        .replace("/opt/antithesis/test/config.json", config.to_str().unwrap())
+        .replace(
+            "/run/systemd/system",
+            directory.path().join("systemd").to_str().unwrap(),
+        )
+        .replace("/run/current-system/sw/bin/bash", "bash");
+    fs::create_dir(directory.path().join("state")).unwrap();
+    let script = format!(
+        "systemctl() {{ test \"$*\" = daemon-reload; }}\nfault_injector_update() {{ test \"$*\" = --pause; }}\n{script}"
+    );
+    let output = Command::new("bash").args(["-c", &script]).output().unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(!config.exists());
+    let unit = fs::read_to_string(
+        directory
+            .path()
+            .join("systemd/antithesis-test-composer.service.d/fault-control.conf"),
+    )
+    .unwrap();
+    let script = unit
+        .lines()
+        .find_map(|line| line.strip_prefix("ExecStartPre="))
+        .unwrap();
+    fs::write(&config, original.to_string()).unwrap();
+    let output = Command::new("bash").args(["-c", script]).output().unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let updated: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&config).unwrap()).unwrap();
+    assert_eq!(
+        updated,
+        serde_json::json!({
+            "unpause_fault_injector": false,
+            "other": original["other"]
+        })
+    );
+
+    fs::write(&config, "{invalid").unwrap();
+    let output = Command::new("bash").args(["-c", &script]).output().unwrap();
+    assert!(!output.status.success());
+    assert_eq!(fs::read_to_string(config).unwrap(), "{invalid");
+}
+
+#[test]
+fn fault_pause_failure_stops_simulation_before_compose() {
+    let mut simulation = Simulation::start("fault-pause-failure");
+    let output = simulation.finish();
+    assert!(!output.status.success());
+    assert_eq!(simulation.read("faults_paused"), "yes");
+    assert!(!simulation.root().join("compose_started").exists());
 }

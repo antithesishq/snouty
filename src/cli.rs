@@ -283,6 +283,7 @@ when available, otherwise TCG with a warning that performance will suffer.
 SSH configuration is private to this run; user configuration is not changed.
 
 Waits for setup_complete before starting test composer on each rollout.
+Unpauses fault injection after setup_complete unless --disable-faults is set.
 Repeats rollouts until interrupted. --disable-restart runs one rollout and
 continues to stream logs. Failed assertions and composer commands do not stop
 the simulation, but cause a nonzero exit status when it stops.
@@ -577,11 +578,15 @@ pub struct SimulateArgs {
     #[arg(long)]
     pub disable_restart: bool,
 
+    /// Pause fault injection before Compose starts and prevent test composer from unpausing it
+    #[arg(long)]
+    pub disable_faults: bool,
+
     /// Boot the guest and open a root shell without starting Compose
     #[arg(
         long,
         hide = true,
-        conflicts_with_all = ["config", "disable_restart"]
+        conflicts_with_all = ["config", "disable_restart", "disable_faults"]
     )]
     pub shell: bool,
 

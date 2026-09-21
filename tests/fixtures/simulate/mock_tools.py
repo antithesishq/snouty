@@ -76,7 +76,11 @@ elif name == 'ssh':
     elif command == 'bash -s':
         script = sys.stdin.read()
         record('batch_script', script)
-        if 'up -d' in script:
+        if 'fault_injector_update --pause' in script:
+            record('faults_paused', 'yes')
+            if mode == 'fault-pause-failure':
+                sys.exit(1)
+        elif 'up -d' in script:
             record('restart_mode', script.splitlines()[0])
             log = Path.cwd() / 'instrumentation.log'
             log.write_text("11.2 [workload] [JSON] '{\"antithesis_assert\":{\"message\":\"balance stays positive\",\"assert_type\":\"always\",\"must_hit\":true,\"hit\":true,\"condition\":false}}'\n12.0 [workload] [STDOUT] 'still running after assertion'\n")
@@ -95,6 +99,10 @@ elif name == 'ssh':
             if mode != 'waiting-setup':
                 with log.open('a') as output:
                     output.write("13 [workload] [JSON] '{\"antithesis_setup\":{\"status\":\"complete\"}}'\n")
+        elif script == 'fault_injector_update --unpause\n':
+            record('faults_unpaused', 'yes')
+            if mode == 'fault-injector-failure':
+                sys.exit(1)
         elif script == 'touch /run/antithesis-local-injection/setup-ready\n':
             record('rollout_started', 'yes')
         elif 'podman image exists' in script:

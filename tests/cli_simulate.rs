@@ -75,7 +75,8 @@ impl Simulation {
             .env("XDG_CACHE_HOME", root.join("cache"))
             .env("SNOUTY_UNSTABLE_FEATURES", "simulate")
             .env("SNOUTY_CONTAINER_ENGINE", "docker")
-            .env("SNOUTY_TEMP_DIR", root)
+            .env("TMPDIR", root)
+            .current_dir(root)
             .env("TERM", "dumb")
             .env("ANTITHESIS_BASE_URL", api_url)
             .env("ANTITHESIS_API_KEY", "test-key")
@@ -161,14 +162,78 @@ impl Drop for Simulation {
     fn drop(&mut self) {
         let _ = self.child.kill();
         let _ = self.child.wait();
-        let run_dir = self.read("run_dir");
-        if !run_dir.is_empty() {
-            let _ = fs::remove_dir_all(run_dir);
-        }
         for file in ["qemu_pid", "qemu_child_pid"] {
             if let Ok(pid) = self.read(file).parse::<i32>() {
                 let _ = kill(Pid::from_raw(pid), Signal::SIGKILL);
             }
+        }
+    }
+}
+
+#[test]
+fn interrupted_startup_cleanup_ignores_unowned_paths() {
+    let checkout = tempfile::tempdir().unwrap();
+    let sentinel = checkout.path().join("sentinel");
+    fs::write(&sentinel, "keep").unwrap();
+    let mut simulation = Simulation::start("interrupt-before-boot");
+    let root = simulation.root().to_path_buf();
+    simulation.wait_for("before_boot", root.to_str().unwrap());
+    assert!(!simulation.root().join("qemu_pid").exists());
+    fs::write(
+        simulation.root().join("run_dir"),
+        checkout.path().as_os_str().as_encoded_bytes(),
+    )
+    .unwrap();
+    kill(Pid::from_raw(simulation.child.id() as i32), Signal::SIGTERM).unwrap();
+    simulation.finish();
+    drop(simulation);
+    assert!(!root.exists());
+    assert_eq!(fs::read_to_string(sentinel).unwrap(), "keep");
+}
+
+#[test]
+fn qemu_probe_and_unknown_arguments_do_not_write_vm_state() {
+    let directory = tempfile::tempdir().unwrap();
+    let bin = directory.path().join("bin");
+    fs::create_dir(&bin).unwrap();
+    let script = bin.join("qemu-system-x86_64");
+    fs::write(&script, include_str!("fixtures/simulate/mock_tools.py")).unwrap();
+    fs::write(directory.path().join("mode"), "clean-once").unwrap();
+    for args in [
+        vec![
+            "-accel",
+            "kvm",
+            "-machine",
+            "none",
+            "-display",
+            "none",
+            "-nodefaults",
+            "-qmp",
+            "stdio",
+        ],
+        vec!["--unexpected"],
+    ] {
+        let output = Command::new("python3")
+            .arg(&script)
+            .args(&args)
+            .current_dir(directory.path())
+            .output()
+            .unwrap();
+        if args[0] == "-accel" {
+            assert!(output.status.success());
+            let greeting: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+            assert!(greeting.get("QMP").is_some());
+        } else {
+            assert!(!output.status.success());
+        }
+        for name in [
+            "run_dir",
+            "qemu_pid",
+            "qemu_args",
+            "boot.log",
+            "instrumentation.log",
+        ] {
+            assert!(!directory.path().join(name).exists(), "unexpected {name}");
         }
     }
 }
@@ -207,7 +272,8 @@ fn start_shell_simulation(mode: &str) -> (TempDir, OsSession) {
         .env("XDG_CACHE_HOME", root.join("cache"))
         .env("SNOUTY_UNSTABLE_FEATURES", "simulate")
         .env("SNOUTY_CONTAINER_ENGINE", "docker")
-        .env("SNOUTY_TEMP_DIR", root)
+        .env("TMPDIR", root)
+        .current_dir(root)
         .env("TERM", "xterm-256color")
         .args([
             "simulate",
@@ -577,9 +643,14 @@ fn unread_output_backlog_preserves_command_and_assertion_failures() {
     );
     let stderr = String::from_utf8(output.stderr).unwrap();
     assert!(stderr.contains("Simulation logs:"), "{stderr}");
+    let run_dir = std::path::PathBuf::from(simulation.read("run_dir"));
+    assert!(run_dir.starts_with(simulation.root()));
+    assert!(run_dir.join("instrumentation.log").exists());
     assert!(!stderr.contains("failed:"), "{stderr}");
     let pid: i32 = simulation.read("qemu_pid").parse().unwrap();
     assert!(kill(Pid::from_raw(pid), None).is_err());
+    drop(simulation);
+    assert!(!run_dir.exists());
 }
 
 #[tokio::test]

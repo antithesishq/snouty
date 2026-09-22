@@ -638,7 +638,7 @@ macro_rules! classified_blocks_help {
 const SEARCH_LONG_ABOUT: &str = concat!(
     r#"Run an event-set DSL query against a run's events.
 
-The events-search API behind this command needs tenant release 58.11 or
+The events-search API behind this command needs tenant release 62.2 or
 newer; `snouty doctor` reports an older tenant.
 
 QUERY is a pipeline of dot-separated verbs applied to the run's event stream,

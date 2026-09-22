@@ -70,11 +70,14 @@ pub struct ApiVersion {
     pub release: Option<(u64, u64)>,
 }
 
-/// The tenant release the events-search API ships with. `runs search`, and
-/// `runs events` with several terms, assume the tenant serves the endpoint;
-/// `snouty doctor` verifies the assumption against this, and the search 404
-/// error names it.
-pub const MIN_SEARCH_RELEASE: (u64, u64) = (58, 11);
+/// The tenant release the events-search API honors its documented contract
+/// from. The endpoint exists from 58.11, but releases through 60.1 ignore
+/// `limit` on a run with a live stream and hold a non-streaming connection
+/// open instead of closing it after the current matching set; 62.2 is the
+/// release both were verified fixed on. `runs search`, and `runs events`
+/// with several terms, assume the tenant serves the endpoint; `snouty doctor`
+/// verifies the assumption against this, and the search 404 error names it.
+pub const MIN_SEARCH_RELEASE: (u64, u64) = (62, 2);
 
 impl ApiVersion {
     /// Parses `release_version` eagerly, so no consumer ever parses it.

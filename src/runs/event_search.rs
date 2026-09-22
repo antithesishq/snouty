@@ -132,7 +132,7 @@ pub(super) fn explain_search_error(
             let (major, minor) = MIN_SEARCH_RELEASE;
             user_error(format!("run not found: {run_id}")).suggestion(format!(
                 "tenant releases before {major}.{minor} do not serve the events-search \
-                 API; `snouty doctor` reports the tenant release"
+                 API as documented; `snouty doctor` reports the tenant release"
             ))
         }
         Some(400) => err.note(

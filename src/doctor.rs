@@ -510,9 +510,9 @@ fn events_search_release_check(version: &ApiVersion) -> Option<Check> {
             .note(
                 Level::Warning,
                 format!(
-                    "tenant release {} predates the events-search API (added in \
-                     {major}.{minor}) — `runs search` and `runs events` with several \
-                     terms will fail",
+                    "tenant release {} predates the events-search API snouty relies on \
+                     (release {major}.{minor}) — `runs search` and `runs events` with \
+                     several terms can fail or hang",
                     version.release_version
                 ),
             )
@@ -1022,15 +1022,17 @@ mod tests {
     #[test]
     fn events_search_release_check_fires_only_on_a_known_gap() {
         let version = |release: &str| ApiVersion::new("v1".into(), release.into());
-        // Recent enough (58.11 ships the endpoint): nothing.
-        assert!(events_search_release_check(&version("58.11")).is_none());
+        // Recent enough (62.2 honors the endpoint's contract): nothing.
         assert!(events_search_release_check(&version("62.2")).is_none());
-        // Too old: the check warns, names the gap, and names the commands
+        assert!(events_search_release_check(&version("63.0")).is_none());
+        // Too old — including 58.11, which ships the endpoint but not its
+        // contract: the check warns, names the gap, and names the commands
         // that need the endpoint.
-        let check = events_search_release_check(&version("58.6")).unwrap();
+        assert!(events_search_release_check(&version("58.11")).is_some());
+        let check = events_search_release_check(&version("60.1")).unwrap();
         assert_eq!(check.status, Status::Warn);
         assert!(
-            check.notes[0].text.contains("58.6"),
+            check.notes[0].text.contains("60.1"),
             "{}",
             check.notes[0].text
         );

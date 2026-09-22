@@ -1215,12 +1215,8 @@ def verbose_api_calls(sr: StoryRun, reg: Registry) -> tuple[bool, str]:
 
 
 def event_multi_match(needle: str, second: str):
-    """Both needles must appear in every returned row's raw JSON: the search
-    backend ANDs them server-side. No count comparison against the
-    single-needle story — that one runs on the GET events backend, whose
-    curated haystack (output text, assertion messages, function names, test
-    commands) is narrower than the raw JSON the search backend matches, so
-    the two row counts are not comparable."""
+    """Both needles must appear in every returned row's raw JSON: the server
+    requires every needle."""
 
     def chk(sr: StoryRun, reg: Registry) -> tuple[bool, str]:
         rows = sr.rows or []

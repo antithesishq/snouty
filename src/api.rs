@@ -116,8 +116,8 @@ pub enum SearchMode {
     },
 }
 
-/// The server's default `limit` on both events endpoints, applied when the
-/// request names none.
+/// The server's default `limit` on the events-search endpoint, applied when
+/// the request names none.
 pub const SEARCH_DEFAULT_LIMIT: NonZeroU64 = NonZeroU64::new(50).unwrap();
 
 /// Why a `/api/version` probe failed, classified for `snouty doctor`.
@@ -701,28 +701,6 @@ impl AntithesisApi {
                 Ok((normalized, next_cursor))
             }
         })
-    }
-
-    pub async fn search_run_events(
-        &self,
-        run_id: &str,
-        query: &str,
-        limit: NonZeroU64,
-    ) -> Result<JsonStream> {
-        // The endpoint documents `limit` as 1..=1000 and rejects the rest.
-        let request = self
-            .client
-            .search_run_events()
-            .run_id(run_id)
-            .q(query)
-            .limit(limit);
-        match request.send().await {
-            Ok(response) => Ok(cap_stream(
-                json_lines(response.into_inner().into_inner()),
-                Some(limit),
-            )),
-            Err(err) => Err(format_api_client_error(err).await),
-        }
     }
 
     /// POST an event-set DSL query to the events-search endpoint and return
@@ -3547,57 +3525,6 @@ mod tests {
             .unwrap();
 
         assert!(properties.is_empty());
-    }
-
-    #[tokio::test]
-    async fn search_run_events_passes_query_through() {
-        let mock_server = MockServer::start().await;
-
-        Mock::given(method("GET"))
-            .and(path("/api/v0/runs/run-1/events"))
-            .and(query_param("q", "slow request"))
-            .respond_with(ResponseTemplate::new(200).set_body_string(
-                r#"{"output_text":"{\"level\":\"warn\",\"msg\":\"slow request\"}","moment":{"input_hash":"-456","vtime":"2.0"}}"#,
-            ))
-            .expect(1)
-            .mount(&mock_server)
-            .await;
-
-        let api = test_api_optionally_with_cache(&mock_server, None);
-
-        let mut stream = api
-            .search_run_events("run-1", "slow request", NonZeroU64::new(50).unwrap())
-            .await
-            .unwrap();
-        let mut body = String::new();
-        while let Some(value) = futures_util::TryStreamExt::try_next(&mut stream)
-            .await
-            .unwrap()
-        {
-            body.push_str(&value.to_string());
-        }
-
-        assert!(body.contains("slow request"));
-    }
-
-    #[tokio::test]
-    async fn search_run_events_forwards_limit() {
-        let mock_server = MockServer::start().await;
-
-        Mock::given(method("GET"))
-            .and(path("/api/v0/runs/run-1/events"))
-            .and(query_param("q", "slow"))
-            .and(query_param("limit", "5"))
-            .respond_with(ResponseTemplate::new(200).set_body_string(""))
-            .expect(1)
-            .mount(&mock_server)
-            .await;
-
-        let api = test_api_optionally_with_cache(&mock_server, None);
-        let _stream = api
-            .search_run_events("run-1", "slow", NonZeroU64::new(5).unwrap())
-            .await
-            .unwrap();
     }
 
     // The DSL search wrapper POSTs the Search_Request body: the query and

@@ -1407,32 +1407,23 @@ async fn cmd_runs_events(
         return Err(user_error("no search term given")
             .suggestion("pass at least one needle via `-m/--match` or as a positional argument"));
     }
-    // An empty needle matches every event (`contains("")` is always true on
-    // either backend), which would silently disable filtering, so reject it
-    // rather than dump the whole stream as if no filter were given.
+    // An empty needle matches every event (`contains("")` is always true),
+    // which would silently disable filtering, so reject it rather than dump
+    // the whole stream as if no filter were given.
     if matches.iter().any(|m| m.is_empty()) {
         return Err(user_error("empty search term")
             .suggestion("each `-m/--match` needle must be a non-empty substring"));
     }
 
     let api = AntithesisApi::new(settings, verbose)?;
-    // The GET events endpoint matches one substring, so several needles go
-    // through the events-search endpoint, which requires every one of them.
-    let stream = match matches {
-        [needle] => match api.search_run_events(run_id, needle, limit).await {
-            Ok(stream) => stream,
-            Err(err) => return Err(explain_run_scoped_error(&api, run_id, err).await),
-        },
-        needles => {
-            let search = SearchMode::Query {
-                stream: false,
-                limit: Some(limit),
-            };
-            api.search_run_events_query(run_id, &event_set_dsl::substring_filter(needles), search)
-                .await
-                .map_err(|err| event_search::explain_search_error(run_id, err))?
-        }
+    let search = SearchMode::Query {
+        stream: false,
+        limit: Some(limit),
     };
+    let stream = api
+        .search_run_events_query(run_id, &event_set_dsl::substring_filter(matches), search)
+        .await
+        .map_err(|err| event_search::explain_search_error(run_id, err))?;
     let lines = event_search::render_event_stream(stream, ErrorRows::Abort, mode);
     print_event_lines(
         lines,

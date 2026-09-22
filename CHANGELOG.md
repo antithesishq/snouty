@@ -1,7 +1,7 @@
 # Unreleased
 
 - `snouty runs search` is stable: the `runs-search` unstable feature is gone, and the command is on for everyone. It needs tenant release 62.2 or newer; `snouty doctor` warns on an older tenant. An exported `SNOUTY_UNSTABLE_FEATURES=runs-search` is ignored ([#309](https://github.com/antithesishq/snouty/pull/309))
-- `snouty runs events` with several `--match` terms ANDs them through the events-search API without a feature flag. One term still uses the events endpoint, which returns the earliest matches in vtime order; several terms return a sample of the matches in no fixed order ([#309](https://github.com/antithesishq/snouty/pull/309))
+- **Breaking**: `snouty runs events` runs on the events-search API, the same route as `snouty runs search`, and no longer calls the events endpoint. Several `--match` terms need no feature flag. The result is a sample of the matching events in no fixed order, where the events endpoint returned the earliest matches in vtime order. `--limit` accepts up to 999 ([#309](https://github.com/antithesishq/snouty/pull/309))
 - A rejected event-set DSL query prints the query on its own line, so the server's caret points at the token it names ([#309](https://github.com/antithesishq/snouty/pull/309))
 
 # Version 0.7.2 (2026-09-13)

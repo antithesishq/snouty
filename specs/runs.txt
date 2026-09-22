@@ -274,9 +274,9 @@ snouty runs logs --help
 stdout 'a `moment HASH` divider'
 ! stdout 'moment HASH VTIME'
 
-# Several needles route through the events-search endpoint, which ANDs them
-# server-side. The old behavior (match one needle server-side, filter the rest
-# client-side) silently second-guessed the server's own filter and is gone.
+# Several needles are matched server-side, every one of them. The old behavior
+# (match one needle server-side, filter the rest client-side) silently
+# second-guessed the server's own filter and is gone.
 mock-runs-server
 [!staging] snouty runs events $R_run_id --match request --match slow
 [staging] snouty runs events $R_run_id --match fault --match network --limit 3
@@ -290,17 +290,13 @@ stderr 'No events matched "starting nonexistent"\.'
 # A needle reaches the text an event carries — log output, an assertion's
 # message and source function, a test-composer command — and nothing else.
 # The name of a JSON field is not text the event reported, so it matches no
-# event. Both backends answer the same way: adding a second needle must not
-# change which events the first one reaches.
+# event.
 #    `IPT_bytes_out` is a field every event carries. The events-search
 #    backend answered this needle with every event in the run until snouty
 #    stopped matching against `JSON.stringify(ev)` (issue #252).
 mock-runs-server
 snouty runs events $R_run_id --match IPT_bytes_out
 stderr 'No events matched "IPT_bytes_out"\.'
-mock-runs-server
-snouty runs events $R_run_id --match IPT_bytes_out --match IPT_bytes_out
-stderr 'No events matched "IPT_bytes_out IPT_bytes_out"\.'
 
 # `snouty --json runs events` outputs raw NDJSON.
 mock-runs-server
@@ -632,34 +628,26 @@ mock-runs-server
 ! snouty runs events run-1 --match x --limit 0
 stderr 'invalid value .0.'
 
-# The server enforces the ceiling of 1000 and answers 400 above it.
+# The server enforces the events-search ceiling of 999 and answers 400 above it.
 mock-runs-server
-[!staging] ! snouty runs events $R_run_id --match x --limit 1001
-[!staging] stderr 'out of the range 1\.\.=1000'
+[!staging] ! snouty runs events $R_run_id --match x --limit 1000
+[!staging] stderr 'out of the range 1\.\.=999'
 
-# With several needles, `runs events` routes through the search endpoint,
-# which caps its stream at the requested limit. (That endpoint's own ceiling
-# is still 999; the server answers 400 above it.)
+# The search endpoint caps its stream at the requested limit.
 mock-runs-server
-snouty --json runs events $R_run_id --match parallel_driver_fetch --match parallel_driver_fetch --limit 1
+snouty --json runs events $R_run_id --match parallel_driver_fetch --limit 1
 [!staging] stdout '"vtime":400\.5'
 [!staging] ! stdout '"vtime":401\.75'
 
-# Human mode prints the same note through that backend.
+# Human mode prints the same note.
 mock-runs-server
-[!staging] snouty runs events $R_run_id --match parallel_driver_fetch --match parallel_driver_fetch --limit 1
+[!staging] snouty runs events $R_run_id --match parallel_driver_fetch --limit 1
 [!staging] stdout '400\.5'
 [!staging] ! stdout '401\.75'
 [!staging] stderr 'Showing up to 1 results\. Additional results may be available\.'
 
-# That backend's ceiling of 999 applies to several needles, where one needle
-# accepts 1000 above.
-mock-runs-server
-[!staging] ! snouty runs events $R_run_id --match x --match y --limit 1000
-[!staging] stderr 'out of the range 1\.\.=999'
-
 # The tenant is assumed to serve the search endpoint, so its 404 simply means
-# the run — the error says "run not found" on both backends.
+# the run — the error says "run not found".
 mock-runs-server
 ! snouty runs events no-such-run --match anything
 stderr 'run not found: no-such-run'

@@ -1416,25 +1416,21 @@ async fn cmd_runs_events(
     }
 
     let api = AntithesisApi::new(settings, verbose)?;
-    // One needle takes the GET events endpoint, which returns the earliest
-    // matches in vtime order. That endpoint matches a single substring, so
-    // several needles are ANDed server-side through the events-search
-    // endpoint, which returns a sample of the matches in no fixed order.
+    // The GET events endpoint matches one substring, so several needles are
+    // ANDed server-side through the events-search endpoint instead.
     let stream = match matches {
         [needle] => match api.search_run_events(run_id, needle, limit).await {
             Ok(stream) => stream,
             Err(err) => return Err(explain_run_scoped_error(&api, run_id, err).await),
         },
         needles => {
-            let query = event_set_dsl::substring_filter(needles);
             let search = SearchMode::Query {
                 stream: false,
                 limit: Some(limit),
             };
-            match api.search_run_events_query(run_id, &query, search).await {
-                Ok(stream) => stream,
-                Err(err) => return Err(event_search::explain_search_error(run_id, err)),
-            }
+            api.search_run_events_query(run_id, &event_set_dsl::substring_filter(needles), search)
+                .await
+                .map_err(|err| event_search::explain_search_error(run_id, err))?
         }
     };
     let lines = event_search::render_event_stream(stream, ErrorRows::Abort, mode);

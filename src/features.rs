@@ -78,8 +78,7 @@ pub enum Feature {
     /// `snouty runs exec`, which drives the execute-command API. That API is
     /// unstable and is unavailable on most tenants.
     RunsExec,
-    /// An id this build does not recognize. This includes `runs-search`,
-    /// which gated `snouty runs search` until release 0.8.0.
+    /// An id this build does not recognize.
     Unknown(String),
 }
 
@@ -136,11 +135,6 @@ mod tests {
         let parsed = Feature::from("from-the-future");
         assert_eq!(parsed, Feature::Unknown("from-the-future".to_string()));
         assert_eq!(parsed.to_string(), "from-the-future");
-        // `runs-search` graduated; an exported id is carried, not rejected.
-        assert_eq!(
-            Feature::from("runs-search"),
-            Feature::Unknown("runs-search".to_string())
-        );
     }
 
     #[test]

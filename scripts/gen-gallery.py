@@ -2097,18 +2097,18 @@ def build_help_stories(d: Discovery) -> list[Story]:
             "help-runs-events",
             "Learn to search events and chain into logs",
             "I want the help to explain `moment HASH` dividers and `VTIME [source] payload` "
-            "lines, that the hash alone feeds `runs logs`, and when multiple terms need the "
-            "events-search feature.",
+            "lines, that the hash alone feeds `runs logs`, and that several terms are ANDed "
+            "through the events-search API.",
             ["runs", "events"],
             ["runs", "events", s, "--match", d.event_keyword],
         ),
         _help_story(
             "help-runs-search",
             "Learn the event-set DSL query command",
-            "I want the help to explain the QUERY syntax (verbs), the unstable-feature "
-            "gate and how to enable it, the mode switches, and the output line format. "
-            "Help-only: the command is gated, so no default output is captured.",
+            "I want the help to explain the QUERY syntax (verbs), the tenant release the "
+            "events-search API needs, the mode switches, and the output line format.",
             ["runs", "search"],
+            ["runs", "search", s, f'contains({{output_text: "{d.event_keyword}"}})'],
         ),
         _help_story(
             "help-runs-logs",

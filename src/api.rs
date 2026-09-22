@@ -756,7 +756,7 @@ impl AntithesisApi {
                 json_lines(response.into_inner().into_inner()),
                 limit,
             )),
-            Err(err) => Err(format_search_client_error(err).await),
+            Err(err) => Err(format_api_client_error(err).await),
         }
     }
 
@@ -1433,18 +1433,6 @@ async fn format_api_client_error(err: ClientError<()>) -> Report {
     }
 }
 
-/// [`format_api_client_error`] for the events-search endpoint: a rejected
-/// query's message gets its query on its own line, so the server's caret
-/// lands under the token it names (see [`lay_out_dsl_error`]).
-async fn format_search_client_error(err: ClientError<()>) -> Report {
-    match classify_client_error(err).await {
-        ApiFailure::Response { status, message } => {
-            format_api_error(status, &lay_out_dsl_error(&message))
-        }
-        ApiFailure::Other(report) => report,
-    }
-}
-
 /// The text the server puts in front of the query it rejected.
 const DSL_ERROR_MARKER: &str = "Event set DSL error: ";
 
@@ -1460,22 +1448,22 @@ const DSL_ERROR_MARKER: &str = "Event set DSL error: ";
 /// whitespace and one `^` right after the line the marker is on. Any other
 /// message comes back unchanged, so a change in the server's format degrades
 /// to today's output, never to a caret under the wrong character.
+/// [`error_body_message`] runs this before it truncates each line, so the
+/// query gets a line's worth of characters of its own.
 fn lay_out_dsl_error(message: &str) -> Cow<'_, str> {
-    let Some(marker) = message.find(DSL_ERROR_MARKER) else {
+    let Some((prose, from_query)) = message.split_once(DSL_ERROR_MARKER) else {
         return Cow::Borrowed(message);
     };
-    let query_start = marker + DSL_ERROR_MARKER.len();
-    let from_query = &message[query_start..];
-    let caret_follows = from_query
+    if !from_query
         .lines()
         .nth(1)
-        .is_some_and(|line| line.trim() == "^");
-    if !caret_follows {
+        .is_some_and(|line| line.trim() == "^")
+    {
         return Cow::Borrowed(message);
     }
     Cow::Owned(format!(
-        "{}\n{from_query}",
-        message[..query_start].trim_end()
+        "{prose}{}\n{from_query}",
+        DSL_ERROR_MARKER.trim_end()
     ))
 }
 
@@ -1578,10 +1566,12 @@ async fn read_error_body(mut response: reqwest::Response) -> String {
 /// margins. That collapse applies only to the unrecognized shapes. A `message`
 /// keeps its own line breaks: the events-search endpoint answers an invalid
 /// query with 400 and a caret line under the offending token (observed on
-/// tenant `orbitinghail`, release 61 — `… bogus_verb({x: "y"})`, then `^`, then
-/// `invalid with_next`), and a caret on one line runs into the text it points
-/// at. Every line gets the 200 characters, because the last line of such a
-/// body carries the reason.
+/// tenant `orbitinghail`, release 62.2 — `… Event set DSL error: bogus_verb({x:
+/// "y"})`, then `^`, then `invalid with_next`), and a caret on one line runs
+/// into the text it points at. The query is moved onto its own line first
+/// (see [`lay_out_dsl_error`]), so the caret's column lands under the token
+/// it names. Every line gets the 200 characters, because the last line of
+/// such a body carries the reason.
 fn error_body_message(body: &str) -> String {
     const MAX_LEN: usize = 200;
 
@@ -1602,6 +1592,7 @@ fn error_body_message(body: &str) -> String {
         }
     }
 
+    let text = lay_out_dsl_error(&text);
     // `render_report` splits the error from its `Note:`/`Suggestion:` tail at
     // the first blank line, so a message that carries one prints its tail twice.
     sanitize_multiline(text.trim())
@@ -1857,13 +1848,11 @@ mod tests {
         assert_eq!(read_error_body(response).await, "upstream is down");
     }
 
-    // The standard `{"message": …}` envelope is unwrapped; anything else is
-    // shown verbatim so the user can still see what the server said.
     // ---- lay_out_dsl_error ------------------------------------------------
 
-    /// The live server's rejection (release 62.2), as `error_body_message`
-    /// hands it on: the query ends the prose line, and the caret's column
-    /// counts from the start of the query.
+    /// The `message` of the live server's rejection (release 62.2): the query
+    /// ends the prose line, and the caret's column counts from the start of
+    /// the query.
     const DSL_REJECTION: &str = "failed to execute pangolin query due to a runtime error: \
                                  Event set DSL error: contains({output_txt: \"x\"})\n\
                                  \x20                        ^\n\
@@ -1902,41 +1891,33 @@ mod tests {
         assert_eq!(lay_out_dsl_error(not_a_caret), not_a_caret);
     }
 
-    /// For any single-line query and any caret column, the laid-out message
-    /// puts the query on its own line with the caret line right under it,
-    /// and keeps the prose before the marker and the reason after the caret.
+    /// For any one-line query and any caret column, the query becomes a line
+    /// of its own and the caret line follows it unchanged, so the column the
+    /// server counted from the query's start now lands under the query.
     #[hegel::test]
     fn lay_out_dsl_error_puts_the_caret_under_the_query(tc: hegel::TestCase) {
-        let prose = tc.draw(
+        let one_line = || {
             generators::text()
                 .max_size(60)
-                .filter(|s| !s.contains('\n') && !s.contains(DSL_ERROR_MARKER)),
+                .filter(|s| !s.contains('\n'))
+        };
+        let query = tc.draw(one_line().filter(|s| s.trim() == s));
+        let reason = tc.draw(one_line());
+        let caret = format!(
+            "{}^",
+            " ".repeat(tc.draw(generators::integers::<usize>().max_value(80)))
         );
-        let query = tc.draw(
-            generators::text()
-                .max_size(60)
-                .filter(|s| !s.contains('\n') && s.trim() == s),
-        );
-        let column = tc.draw(generators::integers::<usize>().max_value(80));
-        let reason = tc.draw(
-            generators::text()
-                .max_size(60)
-                .filter(|s| !s.contains('\n')),
-        );
-        let caret = format!("{}^", " ".repeat(column));
-        let message = format!("{prose}{DSL_ERROR_MARKER}{query}\n{caret}\n{reason}");
+        let message = format!("Bad request: {DSL_ERROR_MARKER}{query}\n{caret}\n{reason}");
 
         let laid_out = lay_out_dsl_error(&message);
-        let mut lines = laid_out.lines();
-        assert_eq!(
-            lines.next(),
-            Some(format!("{prose}{}", DSL_ERROR_MARKER.trim_end()).as_str())
-        );
-        assert_eq!(lines.next(), Some(query.as_str()));
-        assert_eq!(lines.next(), Some(caret.as_str()));
-        assert_eq!(lines.collect::<Vec<_>>().join("\n"), reason);
+        let lines: Vec<&str> = laid_out.lines().collect();
+        assert_eq!(lines[1], query);
+        assert_eq!(lines[2], caret);
+        assert_eq!(lines[3..].join("\n"), reason);
     }
 
+    // The standard `{"message": …}` envelope is unwrapped; anything else is
+    // shown verbatim so the user can still see what the server said.
     #[test]
     fn error_body_message_unwraps_the_standard_envelope() {
         assert_eq!(
@@ -1964,13 +1945,15 @@ mod tests {
         assert_eq!(message.chars().count(), 201);
     }
 
+    // A rejected query keeps its line breaks, and gets its own line, so the
+    // caret's column counts from the query's start.
     #[test]
     fn error_body_message_keeps_the_line_breaks_in_a_message() {
         assert_eq!(
             error_body_message(
                 r#"{"message":"Event set DSL error: bogus_verb({x: \"y\"})\n^\ninvalid with_next"}"#
             ),
-            "Event set DSL error: bogus_verb({x: \"y\"})\n^\ninvalid with_next"
+            "Event set DSL error:\nbogus_verb({x: \"y\"})\n^\ninvalid with_next"
         );
     }
 

@@ -1112,13 +1112,12 @@ impl Default for RunsListArgs {
 /// on — the caller passes them so the decision is testable without touching
 /// the environment.
 pub fn gated_command_error(command: &Commands, enabled: &[Feature]) -> Option<Report> {
-    let gated = match command {
+    let (feature, path) = match command {
         Commands::Runs {
             command: Some(RunsCommands::Exec { .. }),
         } => (Feature::RunsExec, "snouty runs exec"),
         _ => return None,
     };
-    let (feature, path) = gated;
     if enabled.contains(&feature) {
         return None;
     }

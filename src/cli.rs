@@ -641,9 +641,26 @@ const SEARCH_LONG_ABOUT: &str = concat!(
 The events-search API behind this command needs tenant release 62.2 or
 newer; `snouty doctor` reports an older tenant.
 
-QUERY is a pipeline of dot-separated verbs applied to the run's event stream,
-evaluated left to right; each verb narrows, reshapes, or combines the set of
-events flowing through it.
+Reading the results:
+
+- The output is a sample, not every match. The server returns at most
+  --limit events (default 50, maximum 999) in no fixed order. When the output
+  reaches the limit, stderr says "Additional results may be available".
+  Counts and patterns in a full output describe the sample only. An event
+  missing from the output can still be in the run. Fewer events than the
+  limit means the query matched only those events.
+- A run is a tree of timelines, not one history. Antithesis branches the
+  simulation many times, and one result mixes events from many timelines.
+  Each event has a moment: input_hash and vtime. vtime is seconds since the
+  start of the event's own timeline. One timeline carries many input_hash
+  values, so neither field shows whether two events share a timeline. vtime
+  orders events only within one timeline. Two events that conflict in one
+  history (for example, two nodes that each win the same election term) are
+  usually on different timelines. To relate events within one timeline, do
+  it in the query with fold, with_last, or with_next.
+
+QUERY is a pipeline of dot-separated verbs. The first verb reads all events
+in the run. Each later verb reads the output of the verb before it.
 
 Verbs:
   matches({f: "x"})        keep events whose fields equal every given value
@@ -654,18 +671,31 @@ Verbs:
   map(ev => expr)          reshape each event (ev.add_fields({...}) adds)
   flatmap(ev => expr)      map, then flatten the result one level
   narrow(["f1", "f2"])     keep only the listed fields
-  fold((s, ev) => e, s0)   thread state along each timeline, annotating
+  fold((s, ev) => e, s0)   walk each timeline from its root in vtime order,
+                           threading state s (see below)
   union(set, ...)          OR this set with others, deduplicated
   intersect(set, ...)      AND this set with others
   difference(set)          subtract another event set from this one
   distinct_by_moment(set)  union, keeping one event per vtime
-  with_last({n: set})      annotate each event with the nearest earlier
-                           event from `set` in its own timeline
-  with_next({n: set})      the same, looking forward
+  with_last({n: set})      keep each event, add field last_n: the nearest
+                           event from `set` at or before it in the same
+                           timeline (the event itself, if it is in `set`)
+  with_next({n: set}, t)   output the nearest later event from `set` in the
+                           same timeline, with fields last_event (the input
+                           event) and with_next_type ("n"); optional timeout
+                           t in seconds emits with_next_type "timeout"
 
 The string verbs (matches/contains/not_matches/excludes) address four fields:
 output_text, container, stream, and source (the emitter's name). Every other
 field is reachable from JS through `ev`, e.g. `ev.moment.vtime`.
+
+fold: the reducer returns [events, next_state]. `events` is an array of the
+events to output for ev: [] outputs nothing, [ev] keeps ev. next_state goes
+to the next event in the same timeline. s0 must be strict JSON: write
+{"count": 0}, not {count: 0}. The reducer body is JavaScript.
+
+fold, with_last, and with_next scan the whole run. On a large run they can
+take more than 10 minutes.
 
 Query snippets (each is a complete QUERY, ready to paste):
 
@@ -696,8 +726,12 @@ Query snippets (each is a complete QUERY, ready to paste):
   filter(ev => ev.antithesis_assert?.assert_type == "sometimes"
     && ev.antithesis_assert.hit && ev.antithesis_assert.condition)
 
-  # each crash annotated with the nearest earlier fault
+  # each crash annotated with the nearest earlier fault (field last_fault)
   contains({output_text: "fatal"}).with_last({fault: filter(ev => ev.fault)})
+
+  # errors numbered in order within each timeline (field n)
+  contains({output_text: "error"})
+    .fold((s, ev) => [[ev.add_fields({n: s.n + 1})], {n: s.n + 1}], {"n": 0})
 
 "#,
     classified_blocks_help!(),

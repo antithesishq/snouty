@@ -657,7 +657,10 @@ Reading the results:
   orders events only within one timeline. Two events that conflict in one
   history (for example, two nodes that each win the same election term) are
   usually on different timelines. To relate events within one timeline, do
-  it in the query with fold, with_last, or with_next.
+  it in the query with fold, with_last, or with_next. To read one event's
+  own history in order, run `snouty runs logs <run_id> <input_hash> <vtime>`
+  with that event's moment: it prints the timeline from its root to that
+  moment.
 
 QUERY is a pipeline of dot-separated verbs. The first verb reads all events
 in the run. Each later verb reads the output of the verb before it.
@@ -679,23 +682,26 @@ Verbs:
   distinct_by_moment(set)  union, keeping one event per vtime
   with_last({n: set})      keep each event, add field last_n: the nearest
                            event from `set` at or before it in the same
-                           timeline (the event itself, if it is in `set`)
+                           timeline (the event itself, if it is in `set`;
+                           use fold for the previous event of the same kind)
   with_next({n: set}, t)   output the nearest later event from `set` in the
                            same timeline, with fields last_event (the input
                            event) and with_next_type ("n"); optional timeout
                            t in seconds emits with_next_type "timeout"
 
 The string verbs (matches/contains/not_matches/excludes) address four fields:
-output_text, container, stream, and source (the emitter's name). Every other
-field is reachable from JS through `ev`, e.g. `ev.moment.vtime`.
+output_text, and container, stream, and source, which read the event's
+source.container, source.stream, and source.name. In JS, read every field
+from `ev`, e.g. `ev.source.container` or `ev.moment.vtime`.
 
 fold: the reducer returns [events, next_state]. `events` is an array of the
 events to output for ev: [] outputs nothing, [ev] keeps ev. next_state goes
 to the next event in the same timeline. s0 must be strict JSON: write
 {"count": 0}, not {count: 0}. The reducer body is JavaScript.
 
-fold, with_last, and with_next scan the whole run. On a large run they can
-take more than 10 minutes.
+fold, with_last, and with_next scan the whole run before they output
+anything. A filter before them, a small --limit, or --follow does not
+shorten the scan. On a large run the scan can take more than 10 minutes.
 
 Query snippets (each is a complete QUERY, ready to paste):
 

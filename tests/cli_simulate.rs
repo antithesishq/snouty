@@ -525,6 +525,11 @@ fn clean_single_rollout_keeps_streaming_and_preserves_signal_exit_status() {
     simulation.wait_for("stdout", "workload running");
     assert!(simulation.child.try_wait().unwrap().is_none());
     assert_eq!(simulation.read("restart_mode"), "restart_enabled=no");
+    assert!(
+        simulation
+            .read("batch_script")
+            .contains("export COMPOSE_PROJECT_NAME=antithesis")
+    );
     kill(Pid::from_raw(simulation.child.id() as i32), Signal::SIGTERM).unwrap();
     let output = simulation.finish();
     assert_eq!(output.status.code(), Some(143));

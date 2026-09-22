@@ -495,11 +495,11 @@ fn print_settings(settings: &[Setting]) {
 }
 
 /// `runs search`, and `runs events` with several terms, assume the tenant
-/// serves the events-search API instead of probing for it — this check is
-/// where that assumption gets verified. Only a confidently-known gap
-/// reports: an unparsable release version says nothing (the check would
-/// guess). A warning, not a failure: every other command still works on
-/// such a tenant. Pure so it can be unit-tested without the network.
+/// serves the events-search API instead of probing for it. This check
+/// verifies that assumption. An unparsable release version reports nothing,
+/// because the check would guess. It warns rather than fails, because every
+/// other command still works on such a tenant. Pure so it can be unit-tested
+/// without the network.
 fn events_search_release_check(version: &ApiVersion) -> Option<Check> {
     if version.release? >= MIN_SEARCH_RELEASE {
         return None;
@@ -1022,12 +1022,9 @@ mod tests {
     #[test]
     fn events_search_release_check_fires_only_on_a_known_gap() {
         let version = |release: &str| ApiVersion::new("v1".into(), release.into());
-        // Recent enough (62.2 honors the endpoint's contract): nothing.
         assert!(events_search_release_check(&version("62.2")).is_none());
         assert!(events_search_release_check(&version("63.0")).is_none());
-        // Too old — including 58.11, which ships the endpoint but not its
-        // contract: the check warns, names the gap, and names the commands
-        // that need the endpoint.
+        // 58.11 ships the endpoint but not its contract, so it is too old.
         assert!(events_search_release_check(&version("58.11")).is_some());
         let check = events_search_release_check(&version("60.1")).unwrap();
         assert_eq!(check.status, Status::Warn);

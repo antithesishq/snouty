@@ -150,8 +150,6 @@ mod tests {
 
     #[test]
     fn explain_search_error_maps_404_to_run_not_found() {
-        // The tenant is assumed to serve the endpoint, so its unhelpful 404
-        // body means the run id.
         let err = color_eyre::eyre::Report::new(ApiError {
             status: 404,
             message: "API error: 404 Not Found — Resource not found".to_string(),

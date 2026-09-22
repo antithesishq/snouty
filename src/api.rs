@@ -70,13 +70,12 @@ pub struct ApiVersion {
     pub release: Option<(u64, u64)>,
 }
 
-/// The tenant release the events-search API honors its documented contract
-/// from. The endpoint exists from 58.11, but releases through 60.1 ignore
-/// `limit` on a run with a live stream and hold a non-streaming connection
-/// open instead of closing it after the current matching set; 62.2 is the
-/// release both were verified fixed on. `runs search`, and `runs events`
-/// with several terms, assume the tenant serves the endpoint; `snouty doctor`
-/// verifies the assumption against this, and the search 404 error names it.
+/// The first tenant release on which the events-search API honors its
+/// documented contract. Releases 58.11 through 60.1 serve the endpoint but
+/// ignore `limit` on a run with a live stream, and hold a non-streaming
+/// connection open after the last match; 62.2 does neither (observed on
+/// tenant `orbitinghail`). `runs search`, and `runs events` with several
+/// terms, assume the tenant meets this; `snouty doctor` checks it.
 pub const MIN_SEARCH_RELEASE: (u64, u64) = (62, 2);
 
 impl ApiVersion {
@@ -1436,23 +1435,18 @@ async fn format_api_client_error(err: ClientError<()>) -> Report {
     }
 }
 
-/// The text the server puts in front of the query it rejected.
 const DSL_ERROR_MARKER: &str = "Event set DSL error: ";
 
 /// Break a query rejection so its caret points into the query.
 ///
-/// The server writes the rejection as the query at the end of a prose line,
-/// then a line holding one `^` whose column counts from the start of the
-/// query, then the reason. Printed as sent, the caret lands some eighty
-/// columns left of the token it names. One line break after the marker puts
-/// the query at the start of a line, where the caret's column is right.
+/// The server ends a prose line with the rejected query, then writes a line
+/// with one `^` whose column counts from the start of the query, then the
+/// reason (observed on tenant `orbitinghail`, release 62.2). One line break
+/// after the marker puts the query where the caret's column is right.
 ///
-/// This recognizes one shape and parses nothing: the marker, and a line of
-/// whitespace and one `^` right after the line the marker is on. Any other
-/// message comes back unchanged, so a change in the server's format degrades
-/// to today's output, never to a caret under the wrong character.
-/// [`error_body_message`] runs this before it truncates each line, so the
-/// query gets a line's worth of characters of its own.
+/// Only that exact shape is rewritten. Any other message comes back
+/// unchanged, so a change in the server's format degrades to the raw
+/// message, never to a caret under the wrong character.
 fn lay_out_dsl_error(message: &str) -> Cow<'_, str> {
     let Some((prose, from_query)) = message.split_once(DSL_ERROR_MARKER) else {
         return Cow::Borrowed(message);
@@ -1571,10 +1565,8 @@ async fn read_error_body(mut response: reqwest::Response) -> String {
 /// query with 400 and a caret line under the offending token (observed on
 /// tenant `orbitinghail`, release 62.2 — `… Event set DSL error: bogus_verb({x:
 /// "y"})`, then `^`, then `invalid with_next`), and a caret on one line runs
-/// into the text it points at. The query is moved onto its own line first
-/// (see [`lay_out_dsl_error`]), so the caret's column lands under the token
-/// it names. Every line gets the 200 characters, because the last line of
-/// such a body carries the reason.
+/// into the text it points at. Every line gets the 200 characters, because
+/// the last line of such a body carries the reason.
 fn error_body_message(body: &str) -> String {
     const MAX_LEN: usize = 200;
 
@@ -1595,6 +1587,7 @@ fn error_body_message(body: &str) -> String {
         }
     }
 
+    // Before the per-line cut, so the query gets a line of its own.
     let text = lay_out_dsl_error(&text);
     // `render_report` splits the error from its `Note:`/`Suggestion:` tail at
     // the first blank line, so a message that carries one prints its tail twice.
@@ -1853,9 +1846,7 @@ mod tests {
 
     // ---- lay_out_dsl_error ------------------------------------------------
 
-    /// The `message` of the live server's rejection (release 62.2): the query
-    /// ends the prose line, and the caret's column counts from the start of
-    /// the query.
+    /// The `message` of a live rejection (tenant `orbitinghail`, release 62.2).
     const DSL_REJECTION: &str = "failed to execute pangolin query due to a runtime error: \
                                  Event set DSL error: contains({output_txt: \"x\"})\n\
                                  \x20                        ^\n\
@@ -1880,23 +1871,16 @@ mod tests {
 
     #[test]
     fn lay_out_dsl_error_leaves_every_other_shape_alone() {
-        // No marker: an out-of-range limit, say.
         let limit = "limit 1000 is out of the range 1..=999";
         assert_eq!(lay_out_dsl_error(limit), limit);
-        // The marker without a caret line under it.
         let no_caret = "Event set DSL error: contains(\nexpected `{`";
         assert_eq!(lay_out_dsl_error(no_caret), no_caret);
-        // The marker on the last line.
         let last = "Bad request: Event set DSL error: bogus(";
         assert_eq!(lay_out_dsl_error(last), last);
-        // A caret line that carries more than the caret.
         let not_a_caret = "Event set DSL error: bogus(\n^ here\ninvalid";
         assert_eq!(lay_out_dsl_error(not_a_caret), not_a_caret);
     }
 
-    /// For any one-line query and any caret column, the query becomes a line
-    /// of its own and the caret line follows it unchanged, so the column the
-    /// server counted from the query's start now lands under the query.
     #[hegel::test]
     fn lay_out_dsl_error_puts_the_caret_under_the_query(tc: hegel::TestCase) {
         let one_line = || {
@@ -1948,8 +1932,6 @@ mod tests {
         assert_eq!(message.chars().count(), 201);
     }
 
-    // A rejected query keeps its line breaks, and gets its own line, so the
-    // caret's column counts from the query's start.
     #[test]
     fn error_body_message_keeps_the_line_breaks_in_a_message() {
         assert_eq!(

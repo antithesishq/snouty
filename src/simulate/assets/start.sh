@@ -2,6 +2,7 @@ set -euo pipefail
 compose_file=/opt/config/docker-compose.yaml
 restart_enabled=${restart_enabled:-yes}
 state_dir=/run/antithesis-local-injection
+export COMPOSE_PROJECT_NAME=antithesis
 printf '%s\n' "$compose_file" > "$state_dir/compose-file"
 rm -f "$state_dir/setup-ready"
 podman compose -p antithesis -f "$compose_file" up -d --no-build --pull=never
@@ -10,6 +11,7 @@ cat > "$state_dir/restart-compose" <<'SUPERVISOR'
 #!/run/current-system/sw/bin/bash
 set -euo pipefail
 export PATH=/run/current-system/sw/bin:/run/current-system/sw/sbin
+export COMPOSE_PROJECT_NAME=antithesis
 
 compose_file=$1
 mode=$2

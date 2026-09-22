@@ -2097,8 +2097,8 @@ def build_help_stories(d: Discovery) -> list[Story]:
             "help-runs-events",
             "Learn to search events and chain into logs",
             "I want the help to explain `moment HASH` dividers and `VTIME [source] payload` "
-            "lines, that the hash alone feeds `runs logs`, and that several terms are ANDed "
-            "through the events-search API.",
+            "lines, that the hash alone feeds `runs logs`, and that several terms must all "
+            "match, through the events-search API.",
             ["runs", "events"],
             ["runs", "events", s, "--match", d.event_keyword],
         ),

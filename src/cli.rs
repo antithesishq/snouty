@@ -984,7 +984,7 @@ JSON object on its own line, and the trailer is left out:
              assertion's message and source function, and a test-composer command.\n\n",
             classified_blocks_help!(),
             "\n\nMatching runs server-side. One term uses the events endpoint, which returns\n\
-             the earliest matches in vtime order. Several terms are ANDed through the\n\
+             the earliest matches in vtime order. Several terms must all match, through the\n\
              events-search API, which returns a sample of the matches in no fixed\n\
              order; `snouty runs search` takes the same route.\n\n\
              Add --json for machine-readable output. Each event prints as one\n\

@@ -1416,8 +1416,8 @@ async fn cmd_runs_events(
     }
 
     let api = AntithesisApi::new(settings, verbose)?;
-    // The GET events endpoint matches one substring, so several needles are
-    // ANDed server-side through the events-search endpoint instead.
+    // The GET events endpoint matches one substring, so several needles go
+    // through the events-search endpoint, which requires every one of them.
     let stream = match matches {
         [needle] => match api.search_run_events(run_id, needle, limit).await {
             Ok(stream) => stream,

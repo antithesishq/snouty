@@ -27,7 +27,7 @@ container = { max-threads = "num-cpus" }
 filter = """
      test(=compose::tests::compose_config_resolves_env)
    + test(=compose::tests::compose_contents_apply_overlays)
-   + test(=compose::tests::config_json_hermetic_env_scrubs_process_variables)
+   + test(=compose::tests::config_json_hermetic_env_keeps_only_antithesis_variables)
    + test(/^compose::tests::pin_images_/)
    + test(=container::tests::build_and_push_to_mock_registry)
    + test(/_engine_.*_specs$/)

@@ -1,6 +1,6 @@
 # Unreleased
 
-Nothing Yet!
+- `snouty validate` no longer reports a compose divergence for a variable that the Antithesis environment also sets, such as `HOME`, `USER`, `SHELL`, `LANG`, `TMPDIR`, and `DOCKER_HOST`
 
 # Version 0.7.2 (2026-09-13)
 

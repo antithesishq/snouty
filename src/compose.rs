@@ -222,6 +222,28 @@ fn compose_version_parts(version: &str) -> Option<(u64, u64, u64)> {
     Some((major, minor, patch))
 }
 
+/// The variables Antithesis sets in the environment of the docker-compose
+/// process, apart from DOCKER_HOST and DOCKER_CONFIG. A compose file can
+/// interpolate each one. Observed on tenant `orbitinghail` (release 62.2, run
+/// `af47ad2e140c441e4a3fc795aa4b41c4-62-2`), with a compose file that
+/// interpolated a list of common variable names, so Antithesis can set more.
+/// Compose sets `PWD` itself.
+const ANTITHESIS_COMPOSE_ENV: &[&str] = &[
+    "ANTITHESIS_OUTPUT_DIR",
+    "COMPOSE_PROJECT_NAME",
+    "DOCKER_BUILDKIT",
+    "HOME",
+    "LANG",
+    "LD_LIBRARY_PATH",
+    "LOGNAME",
+    "NIX_PATH",
+    "PATH",
+    "SHELL",
+    "SHLVL",
+    "TMPDIR",
+    "USER",
+];
+
 /// The docker CLI config directory (which holds `cli-plugins/`): `$DOCKER_CONFIG`
 /// if set, else `$HOME/.docker`. Read from snouty's own (un-scrubbed) environment.
 /// `None` when neither is set, in which case plugin lookup falls back to the
@@ -381,9 +403,10 @@ impl DockerCompose {
     }
 
     /// Resolve the compose file to JSON under a scrubbed process environment
-    /// that mimics the hermetic Antithesis environment: none of the user's shell
-    /// variables, so `${VAR}` interpolation resolves only from the config dir's
-    /// `.env` file, explicit env files, and inline defaults.
+    /// that mimics the hermetic Antithesis environment: only the variables
+    /// Antithesis also sets (see [`ANTITHESIS_COMPOSE_ENV`]), so any other
+    /// `${VAR}` resolves only from the config dir's `.env` file, explicit env
+    /// files, and inline defaults.
     ///
     /// Returns the raw output rather than a string: a required `${VAR:?}` with no
     /// value makes compose abort (non-zero exit, empty stdout), which the caller
@@ -396,24 +419,25 @@ impl DockerCompose {
         // the point.
         let mut cmd = self.command(None, &["config", "--format", "json"]);
         cmd.env_clear();
-        // Put back the two variables compose needs to *run*, as opposed to the
-        // ones it would interpolate into the file. Both are docker machinery:
-        //
-        // - PATH: compose shells out to `docker`, so without it compose fails
-        //   with "executable file not found in $PATH" and the whole check
-        //   collapses into a bogus "depends on your shell environment" verdict.
-        // - DOCKER_CONFIG: the docker CLI finds the compose plugin under
-        //   $DOCKER_CONFIG/cli-plugins (default $HOME/.docker/cli-plugins), so a
-        //   user-directory install (e.g. Docker Desktop) stays discoverable
-        //   without reintroducing $HOME as a `${VAR}` source.
-        //
-        // A compose file that interpolates `${PATH}` is consequently not flagged.
-        // That is a deliberate trade: PATH exists in the Antithesis environment
-        // too, so it is a poor divergence signal, and keeping it costs every
-        // user with a standalone compose a false failure.
-        if let Some(path) = std::env::var_os("PATH") {
-            cmd.env("PATH", path);
+        // Put back the local value of each variable Antithesis also sets. A
+        // `${VAR}` for one of them resolves in Antithesis too, so it is not a
+        // divergence even though the value differs (`${HOME}` is `/root`
+        // there). PATH is among them, and compose also needs it to find
+        // `docker`.
+        for name in ANTITHESIS_COMPOSE_ENV {
+            if let Some(value) = std::env::var_os(name) {
+                cmd.env(name, value);
+            }
         }
+        // Antithesis sets DOCKER_HOST too. Use the value the local render
+        // uses, which env_clear() removed.
+        if let Some(host) = &self.docker_host {
+            cmd.env("DOCKER_HOST", host);
+        }
+        // Antithesis sets DOCKER_CONFIG to an empty value. The docker CLI
+        // finds the compose plugin under $DOCKER_CONFIG/cli-plugins (default
+        // $HOME/.docker/cli-plugins), so keep the local directory to keep a
+        // user-directory install (e.g. Docker Desktop) discoverable.
         if let Some(config_dir) = docker_config_dir() {
             cmd.env("DOCKER_CONFIG", config_dir);
         }
@@ -2421,7 +2445,7 @@ services:
         );
     }
     #[test]
-    fn config_json_hermetic_env_scrubs_process_variables() {
+    fn config_json_hermetic_env_keeps_only_antithesis_variables() {
         if !has_compose() {
             skip_or_fail("docker-compose (Docker Compose v2) is not available");
             return;
@@ -2435,6 +2459,7 @@ services:
   app:
     image: alpine
     environment:
+      SCRUBBED_VALUE: \"${CARGO_MANIFEST_DIR}\"
       HOME_VALUE: \"${HOME}\"
       PATH_VALUE: \"${PATH}\"
       DOCKER_HOST_VALUE: \"${DOCKER_HOST}\"
@@ -2455,16 +2480,23 @@ services:
         assert!(output.status.success(), "compose config failed: {output:?}");
         let resolved: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
         let environment = &resolved["services"]["app"]["environment"];
-        assert_eq!(environment["HOME_VALUE"], "");
-        assert_eq!(environment["DOCKER_HOST_VALUE"], "");
-        // PATH is deliberately *not* scrubbed: compose shells out to `docker`,
-        // and without it every compose file on a standalone install fails the
-        // check with a bogus "depends on your shell environment" verdict. The
-        // cost is that `${PATH}` alone isn't flagged, which is fine — the
-        // Antithesis environment has a PATH too, so it is a poor signal.
-        assert_ne!(
-            environment["PATH_VALUE"], "",
-            "PATH must survive the scrub so compose can find `docker`"
+        // Cargo sets CARGO_MANIFEST_DIR for the test process, and Antithesis
+        // does not set it.
+        assert!(std::env::var_os("CARGO_MANIFEST_DIR").is_some());
+        assert_eq!(environment["SCRUBBED_VALUE"], "");
+        // Antithesis sets HOME, PATH, and DOCKER_HOST, so the hermetic render
+        // keeps the values the local render uses.
+        assert_eq!(
+            environment["HOME_VALUE"],
+            std::env::var("HOME").unwrap_or_default()
+        );
+        assert_eq!(
+            environment["PATH_VALUE"],
+            std::env::var("PATH").unwrap_or_default()
+        );
+        assert_eq!(
+            environment["DOCKER_HOST_VALUE"],
+            "unix:///tmp/snouty-hermetic-test.sock"
         );
     }
 }

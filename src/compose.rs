@@ -223,7 +223,7 @@ fn compose_version_parts(version: &str) -> Option<(u64, u64, u64)> {
 }
 
 /// The variables Antithesis sets in the environment of the docker-compose
-/// process, apart from DOCKER_HOST and DOCKER_CONFIG. A compose file can
+/// process, apart from DOCKER_CONFIG. A compose file can
 /// interpolate each one. Observed on tenant `orbitinghail` (release 62.2, run
 /// `af47ad2e140c441e4a3fc795aa4b41c4-62-2`), with a compose file that
 /// interpolated a list of common variable names, so Antithesis can set more.
@@ -232,6 +232,7 @@ const ANTITHESIS_COMPOSE_ENV: &[&str] = &[
     "ANTITHESIS_OUTPUT_DIR",
     "COMPOSE_PROJECT_NAME",
     "DOCKER_BUILDKIT",
+    "DOCKER_HOST",
     "HOME",
     "LANG",
     "LD_LIBRARY_PATH",
@@ -429,8 +430,8 @@ impl DockerCompose {
                 cmd.env(name, value);
             }
         }
-        // Antithesis sets DOCKER_HOST too. Use the value the local render
-        // uses, which env_clear() removed.
+        // The local render gets DOCKER_HOST from `self.docker_host` when
+        // the shell does not set it, and env_clear() removed that value.
         if let Some(host) = &self.docker_host {
             cmd.env("DOCKER_HOST", host);
         }

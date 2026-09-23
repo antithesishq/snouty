@@ -743,23 +743,6 @@ fn docker_registry_login(config: &Path, registry: &str) -> RegistryLogin {
         Ok(config_file) => config_file,
         Err(e) => return RegistryLogin::Unknown(format!("{}: {e}", config.display())),
     };
-    // `docker` decodes every `auths` entry when it loads the file and drops
-    // the whole file if one of them is malformed.
-    let auths: HashMap<&str, bool> = match config_file
-        .auths
-        .iter()
-        .map(|(key, auth)| auth.usable().map(|usable| (key.as_str(), usable)))
-        .collect()
-    {
-        Some(auths) => auths,
-        None => {
-            return RegistryLogin::Unknown(format!(
-                "{}: an `auths` entry is not a credential that docker can decode",
-                config.display()
-            ));
-        }
-    };
-
     let server = match registry {
         "docker.io" | "index.docker.io" => DOCKER_HUB_SERVER,
         _ => registry,
@@ -774,6 +757,23 @@ fn docker_registry_login(config: &Path, registry: &str) -> RegistryLogin {
         return docker_helper_login(Command::new(format!("docker-credential-{helper}")), server);
     }
 
+    // `docker` stops decoding `auths` at the first malformed entry and keeps
+    // the rest undecoded, so one bad entry makes every file credential
+    // unreliable. A helper is not affected.
+    let auths: HashMap<&str, bool> = match config_file
+        .auths
+        .iter()
+        .map(|(key, auth)| auth.usable().map(|usable| (key.as_str(), usable)))
+        .collect()
+    {
+        Some(auths) => auths,
+        None => {
+            return RegistryLogin::Unknown(format!(
+                "{}: an `auths` entry is not a credential that docker can decode",
+                config.display()
+            ));
+        }
+    };
     let logged_in = auths
         .iter()
         .any(|(key, usable)| *usable && docker_server_host(key) == host);
@@ -1296,13 +1296,20 @@ mod tests {
             );
         }
 
-        let other = r#"{"auths": {
+        let other = r#""auths": {
             "registry.example.com": {"auth": "dXNlcjpwYXNz"},
             "old.example.com": {"auth": "not-base64"}
-        }}"#;
+        }"#;
         assert!(matches!(
-            docker_login_with_config(other, "registry.example.com"),
-            RegistryLogin::Unknown(_)
+            docker_login_with_config(&format!("{{{other}}}"), "registry.example.com"),
+            RegistryLogin::Unknown(reason) if reason.contains("auths")
+        ));
+
+        // A helper serves the registry without the file credentials.
+        let helper = r#""credHelpers": {"registry.example.com": "snouty-test-missing-helper"}"#;
+        assert!(matches!(
+            docker_login_with_config(&format!("{{{helper}, {other}}}"), "registry.example.com"),
+            RegistryLogin::Unknown(reason) if reason.contains("docker-credential-snouty-test-missing-helper")
         ));
     }
 

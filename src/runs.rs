@@ -1238,8 +1238,8 @@ fn print_run_detail(run: &RunDetail) -> Result<()> {
 
     out!("{}", render_kv(&rows, 0))?;
 
-    // User-defined `attrs.*` params are open-ended, so they get their own
-    // indented block instead of widening the fixed metadata labels above.
+    // `attrs.*` names are user-defined, so they go in their own block and do
+    // not change the width of the metadata labels above.
     let attrs: Vec<(&str, String)> = run
         .attrs()
         .into_iter()

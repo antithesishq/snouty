@@ -5,7 +5,7 @@ use crate::api::{AntithesisApi, ApiVersion, MIN_SEARCH_RELEASE, VersionError};
 use crate::attributed_value::AttributedValue;
 use crate::auth::AuthenticationInfo;
 use crate::compose;
-use crate::container;
+use crate::container::{self, RegistryLogin};
 use crate::features::{self, Feature};
 use crate::render::{OutputOptions, render_kv};
 use crate::settings::Settings;
@@ -216,6 +216,43 @@ fn repository_check(repository: Option<&str>) -> Check {
     }
 }
 
+/// `snouty launch --config` pushes to the repository with the runtime's own
+/// credentials, so a missing login is a warning for the same reason a missing
+/// repository is.
+fn registry_login_check(runtime: &str, registry: &str, login: RegistryLogin) -> Check {
+    let check = match login {
+        RegistryLogin::LoggedIn => {
+            return Check::ok(
+                "registry_login",
+                format!("{runtime} is logged in to {registry}"),
+            );
+        }
+        RegistryLogin::LoggedOut => Check::warn(
+            "registry_login",
+            format!("{runtime} is not logged in to {registry}"),
+        )
+        .note(
+            Level::Warning,
+            "`snouty launch --config` pushes images to the repository",
+        ),
+        RegistryLogin::Unknown(reason) => Check::warn(
+            "registry_login",
+            format!("cannot find out if {runtime} is logged in to {registry}"),
+        )
+        .note(Level::Warning, reason),
+    };
+    // Antithesis gives each tenant a key file for its Artifact Registry
+    // repository; that registry takes the key with the `_json_key` user.
+    let login = if registry.ends_with("-docker.pkg.dev") {
+        format!(
+            "cat $TENANT_NAME.key.json | {runtime} login -u _json_key --password-stdin https://{registry}"
+        )
+    } else {
+        format!("{runtime} login {registry}")
+    };
+    check.note(Level::Note, format!("to log in, run `{login}`"))
+}
+
 fn authn_checks(sources: &[AttributedValue<AuthenticationInfo>]) -> Vec<Check> {
     let Some((credentials, shadowed)) = sources.split_first() else {
         return vec![missing_credentials_check(
@@ -417,16 +454,22 @@ fn collect_checks(settings: &Settings) -> Vec<Check> {
     // (engine_kind), not the invoking binary (name): for podman-in-disguise the
     // command is `docker` but the engine is podman — and this must agree with
     // the engine `launch`/`validate` announce, which also uses engine_kind.
-    match container::runtime(settings) {
-        Ok(rt) => checks.push(Check::ok(
-            "container_runtime",
-            format!("Container runtime: {} detected", rt.engine_kind()),
-        )),
-        Err(e) => checks.push(
-            Check::fail("container_runtime", "Container runtime not detected")
-                .note(Level::Error, e.to_string()),
-        ),
-    }
+    let runtime = match container::runtime(settings) {
+        Ok(rt) => {
+            checks.push(Check::ok(
+                "container_runtime",
+                format!("Container runtime: {} detected", rt.engine_kind()),
+            ));
+            Some(rt)
+        }
+        Err(e) => {
+            checks.push(
+                Check::fail("container_runtime", "Container runtime not detected")
+                    .note(Level::Error, e.to_string()),
+            );
+            None
+        }
+    };
 
     // Docker Compose v2 (required for compose configs). Resolves the standalone
     // `docker-compose` binary or the `docker compose` CLI plugin, and reports
@@ -445,6 +488,14 @@ fn collect_checks(settings: &Settings) -> Vec<Check> {
     // launch-only, so a missing one is a warning.
     checks.push(tenant_check(settings.tenant()));
     checks.push(repository_check(settings.repository()));
+    if let (Some(rt), Some(repository)) = (&runtime, settings.repository()) {
+        let registry = container::registry_host(repository).unwrap_or("docker.io");
+        checks.push(registry_login_check(
+            rt.name(),
+            registry,
+            rt.registry_login(registry),
+        ));
+    }
 
     // Authentication (synchronous-only by design).
     match AuthenticationInfo::available_ambient_credentials(settings.profile()) {

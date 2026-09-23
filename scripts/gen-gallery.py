@@ -1849,6 +1849,20 @@ def build_stories(d: Discovery) -> list[Story]:
             env=_doctor_env(api_key=True, username=False, password=False, tenant=True, repo=True),
         ),
         Story(
+            "doctor-registry-login",
+            "Check that I can push images to my repository",
+            "I set a repository for `snouty launch --config`; I want doctor to tell me if my "
+            "container runtime has a login for that registry before a launch fails on the push.",
+            "doctor names the runtime and the registry host of the repository and says if the "
+            "runtime is logged in to it. When it is not, the line is a warning (not an error) "
+            "and doctor gives a copyable login command for that runtime and registry. It never "
+            "prints a credential.",
+            ["doctor", "--offline"],
+            doctor_check(contains=("logged in to",)),
+            json_capable=False,
+            env=_doctor_env(api_key=True, username=False, password=False, tenant=True, repo=True),
+        ),
+        Story(
             "doctor-api-unreachable",
             "The Antithesis API can't be reached",
             "I run doctor but the API host is unreachable (wrong tenant, blocked network, or the "

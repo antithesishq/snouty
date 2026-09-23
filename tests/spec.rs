@@ -862,6 +862,12 @@ engine_spec_case_test!(
     false
 );
 engine_spec_case_test!(
+    podman_engine_doctor_registry_login_specs,
+    "podman",
+    "doctor_registry_login.txt",
+    false
+);
+engine_spec_case_test!(
     docker_engine_launch_config_push_specs,
     "docker",
     "launch_config_push.txt",
@@ -901,5 +907,11 @@ engine_spec_case_test!(
     docker_engine_validate_k8s_specs,
     "docker",
     "validate_k8s.txt",
+    false
+);
+engine_spec_case_test!(
+    docker_engine_doctor_registry_login_specs,
+    "docker",
+    "doctor_registry_login.txt",
     false
 );

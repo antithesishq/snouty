@@ -135,6 +135,12 @@ snouty doctor --offline
 stderr '.*API key provided.*'
 ! stderr '(?s).*credentials.toml.*'
 
+# Without a repository, doctor does not check a registry login. The checks
+# with a repository need a real container runtime; they are in
+# specs_engine/doctor_registry_login.txt.
+snouty doctor --offline --json
+! stdout 'registry_login'
+
 -- credential_conflict/.config/snouty/credentials.toml --
 [default]
 type = "ApiKey"

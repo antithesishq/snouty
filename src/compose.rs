@@ -1072,7 +1072,7 @@ fn parse_compose_ps(stdout: &str) -> Result<Vec<ComposeContainer>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::container::pinned_image_ref;
+    use crate::container::{RegistryLogin, pinned_image_ref};
     use crate::testutils::{OCIRegistry, has_compose, require_runtimes_with_compose, skip_or_fail};
     use std::path::PathBuf;
 
@@ -2068,6 +2068,10 @@ services:
 
         fn insecure_registry_flag(&self) -> &'static str {
             unreachable!("the fake answers remote_manifest itself")
+        }
+
+        fn registry_login(&self, _registry: &str) -> RegistryLogin {
+            unreachable!("compose never checks a registry login")
         }
 
         fn remote_manifest(&self, image_ref: &str) -> RemoteManifest {

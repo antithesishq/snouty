@@ -1,6 +1,6 @@
 # Unreleased
 
-Nothing Yet!
+- `snouty doctor` checks that the container runtime has a login for the registry of the configured repository. It reads only the local credential store and never contacts the registry. A missing login is a warning, and doctor gives the command to log in ([#310](https://github.com/antithesishq/snouty/issues/310))
 
 # Version 0.7.2 (2026-09-13)
 

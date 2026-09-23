@@ -1,0 +1,53 @@
+# snouty doctor — registry login
+#
+# With a repository set, doctor asks the container runtime if it holds a
+# credential for the registry of the repository. It reads only the local
+# credential store and never contacts the registry, so the check also runs
+# with `--offline`. docker reads its credentials from DOCKER_CONFIG, and podman
+# from REGISTRY_AUTH_FILE; both files use the same format.
+
+env ANTITHESIS_API_KEY=testkey
+env ANTITHESIS_TENANT=testtenant
+env ANTITHESIS_REPOSITORY=registry.example.com/acme/demo
+set-env DOCKER_CONFIG ${WORK}/logged_in
+set-env REGISTRY_AUTH_FILE ${WORK}/logged_in/config.json
+snouty doctor --offline
+stderr '^  ✓ ${SNOUTY_CONTAINER_ENGINE} is logged in to registry\.example\.com$'
+
+snouty doctor --offline --json
+stdout '(?s)"name": "registry_login",\s+"status": "ok"'
+
+# No login is a warning: only `snouty launch --config` pushes to the registry.
+env ANTITHESIS_REPOSITORY=other.example.com/acme/demo
+snouty doctor --offline
+stderr '^  ⚠ ${SNOUTY_CONTAINER_ENGINE} is not logged in to other\.example\.com$'
+stderr '^      NOTE: to log in, run `${SNOUTY_CONTAINER_ENGINE} login other\.example\.com`$'
+stderr 'doctor passed with 1 warning'
+
+snouty doctor --offline --json
+stdout '(?s)"name": "registry_login",\s+"status": "warn"'
+
+# A repository without a registry host is on Docker Hub.
+env ANTITHESIS_REPOSITORY=acme/demo
+snouty doctor --offline
+stderr '^  ⚠ ${SNOUTY_CONTAINER_ENGINE} is not logged in to docker\.io$'
+
+# The Antithesis registry takes the tenant key file with the `_json_key` user.
+env ANTITHESIS_REPOSITORY=us-central1-docker.pkg.dev/acme/demo
+snouty doctor --offline
+stderr '^  ⚠ ${SNOUTY_CONTAINER_ENGINE} is not logged in to us-central1-docker\.pkg\.dev$'
+stderr -literal '| ${SNOUTY_CONTAINER_ENGINE} login -u _json_key --password-stdin https://us-central1-docker.pkg.dev`'
+
+# A docker credential store that gives no answer is a warning that shows the
+# reason. podman reports only that it found no login.
+[docker] env ANTITHESIS_REPOSITORY=registry.example.com/acme/demo
+[docker] set-env DOCKER_CONFIG ${WORK}/broken
+[docker] snouty doctor --offline
+[docker] stderr '^  ⚠ cannot find out if docker is logged in to registry\.example\.com$'
+[docker] stderr '^      WARNING: .*broken/config\.json: '
+
+-- logged_in/config.json --
+{"auths": {"registry.example.com": {"auth": "dXNlcjpwYXNz"}}}
+
+-- broken/config.json --
+not json

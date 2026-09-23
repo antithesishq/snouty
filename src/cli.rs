@@ -117,6 +117,14 @@ Extra parameters can be passed with --param:
     --param antithesis.integrations.github.token=TOKEN \
     --param my.custom.property=value
 
+User-defined attributes are params with an `attrs.` prefix. The server records
+them on the run and `snouty runs show` lists them. Names match
+`attrs.[a-zA-Z][a-zA-Z0-9_-]*` and values are strings:
+  snouty launch -w basic_test --duration 30 \
+    --param attrs.team=payments \
+    --param attrs.branch=main \
+    --param attrs.build=12345
+
 Additional container images that the config parser can't discover (e.g. an
 image referenced only in a Kubernetes CRD field) can be registered with the
 antithesis.images param, a semicolon-delimited [REGISTRY/]NAME(:TAG|@DIGEST)
@@ -735,7 +743,8 @@ Two fields report time and they mean different things. Duration is the
 workload length requested at launch. Elapsed is wall-clock time, which also
 spans provisioning, setup and teardown, so the two legitimately differ.
 Source is the `antithesis.source` the run was launched from, when the
-launcher recorded one.
+launcher recorded one. User-defined attributes (`--param attrs.<name>=<value>`
+at launch) are listed under Attributes, sorted by name with the prefix removed.
 
 Incomplete runs also show the failure moment (Failure Hash/VTime) to pass to
 `runs logs`, and the Failure Reason when the run reports one. Use --web to

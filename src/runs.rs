@@ -1238,6 +1238,20 @@ fn print_run_detail(run: &RunDetail) -> Result<()> {
 
     out!("{}", render_kv(&rows, 0))?;
 
+    // User-defined `attrs.*` params are open-ended, so they get their own
+    // indented block instead of widening the fixed metadata labels above.
+    let attrs: Vec<(&str, String)> = run
+        .attrs()
+        .into_iter()
+        .map(|(k, v)| (k, v.to_string()))
+        .collect();
+    if !attrs.is_empty() {
+        out!(
+            "\nAttributes\n{}",
+            indent_lines(&render_kv(&attrs, 0), "  ")
+        )?;
+    }
+
     // The description can be an enormous multi-paragraph blob, so it goes as its
     // own block — wrapped to the terminal, with the label on its own line —
     // rather than as a metadata row that would otherwise bury Status/timestamps

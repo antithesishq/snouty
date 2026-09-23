@@ -26,6 +26,8 @@ pub const ANT_IS_EPHEMERAL: &str = "antithesis.is_ephemeral";
 pub const ANT_REPORT_RECIPIENTS: &str = "antithesis.report.recipients";
 pub const ANT_EVENT_DESCRIPTION: &str = "antithesis.event_description";
 pub const ANT_FILTER_LOGS_MATCHING: &str = "antithesis.filter_logs_matching";
+/// Prefix of the user-defined `attrs.<name>` parameters the server records on a run.
+pub const ATTRS_PREFIX: &str = "attrs.";
 
 pub const ANT_DEBUGGING_SESSION_ID: &str = "antithesis.debugging.session_id";
 pub const ANT_DEBUGGING_RUN_ID: &str = "antithesis.debugging.run_id";

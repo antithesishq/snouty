@@ -118,7 +118,7 @@ stdout 'Run ID.*$R_run_id'
 [!staging] stdout 'Elapsed.*30m33s'
 [!staging] stdout 'Launcher.*nightly'
 [!staging] stdout 'Source.*demo-harness'
-[!staging] stdout '(?s)^Attributes\n  branch  main\n  team    payments\n'
+[!staging] stdout '(?s)^Attributes\n  branch  main\n  team    payments\n\n'
 ! stdout 'attrs\.'
 
 # `snouty runs show` doesn't print the raw report URL — `snouty runs show --web`

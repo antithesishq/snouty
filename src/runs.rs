@@ -1247,7 +1247,7 @@ fn print_run_detail(run: &RunDetail) -> Result<()> {
         .collect();
     if !attrs.is_empty() {
         out!(
-            "\nAttributes\n{}",
+            "\nAttributes\n{}\n",
             indent_lines(&render_kv(&attrs, 0), "  ")
         )?;
     }

@@ -38,13 +38,14 @@ snouty doctor --offline
 stderr '^  ⚠ ${SNOUTY_CONTAINER_ENGINE} is not logged in to us-central1-docker\.pkg\.dev$'
 stderr -literal '| ${SNOUTY_CONTAINER_ENGINE} login -u _json_key --password-stdin https://us-central1-docker.pkg.dev`'
 
-# A docker credential store that gives no answer is a warning that shows the
-# reason. podman reports only that it found no login.
-[docker] env ANTITHESIS_REPOSITORY=registry.example.com/acme/demo
-[docker] set-env DOCKER_CONFIG ${WORK}/broken
-[docker] snouty doctor --offline
-[docker] stderr '^  ⚠ cannot find out if docker is logged in to registry\.example\.com$'
-[docker] stderr '^      WARNING: .*broken/config\.json: '
+# A credential store that gives no answer is a warning that shows the reason.
+env ANTITHESIS_REPOSITORY=registry.example.com/acme/demo
+set-env DOCKER_CONFIG ${WORK}/broken
+set-env REGISTRY_AUTH_FILE ${WORK}/broken/config.json
+snouty doctor --offline
+stderr '^  ⚠ cannot find out if ${SNOUTY_CONTAINER_ENGINE} is logged in to registry\.example\.com$'
+stderr '^      WARNING: '
+stderr 'broken/config\.json'
 
 -- logged_in/config.json --
 {"auths": {"registry.example.com": {"auth": "dXNlcjpwYXNz"}}}

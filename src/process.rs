@@ -4,7 +4,7 @@
 //! These are engine-agnostic — the container runtime and Docker Compose both
 //! build on them, but nothing here knows about docker or podman.
 
-use std::io::Read;
+use std::io::{Read, Write};
 use std::process::{Command, Output, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -24,11 +24,34 @@ use tokio::process::Child;
 /// children which must all die on timeout. The callers here spawn one-shot
 /// client invocations whose only child is the client itself: killing it closes
 /// the pipes (so the reader threads finish) and the work we were waiting on ends.
-pub fn output_with_timeout(mut cmd: Command, timeout: Duration) -> Result<Output> {
-    cmd.stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+pub fn output_with_timeout(cmd: Command, timeout: Duration) -> Result<Output> {
+    run_with_timeout(cmd, None, timeout)
+}
+
+/// [`output_with_timeout`] for a command that reads `input` from stdin. The
+/// input must be small enough to fit in the pipe buffer.
+pub fn output_with_input_and_timeout(
+    cmd: Command,
+    input: &[u8],
+    timeout: Duration,
+) -> Result<Output> {
+    run_with_timeout(cmd, Some(input), timeout)
+}
+
+fn run_with_timeout(mut cmd: Command, input: Option<&[u8]>, timeout: Duration) -> Result<Output> {
+    cmd.stdin(if input.is_some() {
+        Stdio::piped()
+    } else {
+        Stdio::null()
+    })
+    .stdout(Stdio::piped())
+    .stderr(Stdio::piped());
     let mut child = cmd.spawn().wrap_err("failed to spawn command")?;
+    if let (Some(input), Some(mut stdin)) = (input, child.stdin.take()) {
+        // A child that exits without reading closes the pipe; its exit status
+        // tells the caller what happened, so a write error is not an error.
+        let _ = stdin.write_all(input);
+    }
 
     // Drain both pipes on their own threads; otherwise a child that fills a pipe
     // buffer would block on write while we block on wait — a deadlock.

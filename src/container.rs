@@ -1,4 +1,5 @@
-use std::io::{BufReader, Write};
+use std::collections::HashMap;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
@@ -8,10 +9,10 @@ use color_eyre::{
     Section, SectionExt,
     eyre::{Context, Result, eyre},
 };
-use docker_credential::CredentialRetrievalError;
+use serde::Deserialize;
 
 use crate::error::user_error;
-use crate::process::output_with_timeout;
+use crate::process::{output_with_input_and_timeout, output_with_timeout};
 use crate::settings::Settings;
 
 /// Wall-clock budget for each synchronous docker/podman call made while
@@ -542,12 +543,25 @@ impl ContainerRuntime for PodmanRuntime {
     }
 
     fn registry_login(&self, registry: &str) -> RegistryLogin {
-        // `--get-login` exits non-zero when it finds no login for the registry.
         let cmd = self.command(&["login", "--get-login", registry]);
         match output_with_timeout(cmd, DISCOVERY_COMMAND_TIMEOUT) {
             Ok(output) if output.status.success() => RegistryLogin::LoggedIn,
-            Ok(_) => RegistryLogin::LoggedOut,
-            Err(e) => RegistryLogin::Unknown(format!("'{} login --get-login': {e}", self.cmd)),
+            Ok(output) => {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                // podman has no machine-readable answer. Its "no credential"
+                // error is `not logged into <registry>` (containers/common
+                // `pkg/auth`); every other failure is a broken store.
+                if stderr.contains("not logged into") {
+                    RegistryLogin::LoggedOut
+                } else {
+                    RegistryLogin::Unknown(format!(
+                        "`{} login --get-login` failed: {}",
+                        self.cmd,
+                        stderr.trim()
+                    ))
+                }
+            }
+            Err(e) => RegistryLogin::Unknown(format!("`{} login --get-login`: {e:#}", self.cmd)),
         }
     }
 
@@ -656,44 +670,101 @@ fn docker_config_file() -> Option<PathBuf> {
 /// docker/docker-credential-helpers).
 const CREDENTIAL_HELPER_NOT_FOUND: &str = "credentials not found in native keychain";
 
-/// Look up `registry` in a Docker CLI config file: per-registry `credHelpers`
-/// first, then stored `auths`, then `credsStore`.
+/// The server address that `docker login` uses for Docker Hub.
+const DOCKER_HUB_SERVER: &str = "https://index.docker.io/v1/";
+
+/// The fields of a Docker CLI config file that select a registry credential.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DockerConfig {
+    #[serde(default)]
+    auths: HashMap<String, DockerAuth>,
+    #[serde(default)]
+    cred_helpers: HashMap<String, String>,
+    #[serde(default)]
+    creds_store: String,
+}
+
+#[derive(Deserialize)]
+struct DockerAuth {
+    #[serde(default)]
+    auth: String,
+    #[serde(default)]
+    identitytoken: String,
+}
+
+/// The host part of a Docker server address such as `https://host/v1/`.
+fn docker_server_host(server: &str) -> &str {
+    let server = server
+        .strip_prefix("https://")
+        .or_else(|| server.strip_prefix("http://"))
+        .unwrap_or(server);
+    server.split('/').next().unwrap_or(server)
+}
+
+/// Look up `registry` in a Docker CLI config file with the precedence of
+/// `docker`: the `credHelpers` entry of the registry, else `credsStore`, else
+/// `auths`.
 fn docker_registry_login(config: &Path, registry: &str) -> RegistryLogin {
-    let file = match std::fs::File::open(config) {
-        Ok(file) => file,
+    let contents = match std::fs::read(config) {
+        Ok(contents) => contents,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return RegistryLogin::LoggedOut,
         Err(e) => {
             return RegistryLogin::Unknown(format!("cannot read {}: {e}", config.display()));
         }
     };
-    match docker_credential::get_credential_from_reader(BufReader::new(file), registry) {
-        Ok(_) => RegistryLogin::LoggedIn,
-        Err(e) => docker_login_from_error(e, config),
+    let config_file: DockerConfig = match serde_json::from_slice(&contents) {
+        Ok(config_file) => config_file,
+        Err(e) => return RegistryLogin::Unknown(format!("{}: {e}", config.display())),
+    };
+
+    let server = match registry {
+        "docker.io" | "index.docker.io" => DOCKER_HUB_SERVER,
+        _ => registry,
+    };
+    let host = docker_server_host(server);
+    let helper = config_file
+        .cred_helpers
+        .get(host)
+        .or(Some(&config_file.creds_store))
+        .filter(|helper| !helper.is_empty());
+    if let Some(helper) = helper {
+        return docker_helper_login(Command::new(format!("docker-credential-{helper}")), server);
+    }
+
+    let logged_in = config_file.auths.iter().any(|(key, auth)| {
+        docker_server_host(key) == host && !(auth.auth.is_empty() && auth.identitytoken.is_empty())
+    });
+    if logged_in {
+        RegistryLogin::LoggedIn
+    } else {
+        RegistryLogin::LoggedOut
     }
 }
 
-fn docker_login_from_error(e: CredentialRetrievalError, config: &Path) -> RegistryLogin {
-    match e {
-        CredentialRetrievalError::NoCredentialConfigured => RegistryLogin::LoggedOut,
-        CredentialRetrievalError::HelperFailure { stdout, .. }
-            if stdout.trim() == CREDENTIAL_HELPER_NOT_FOUND =>
-        {
-            RegistryLogin::LoggedOut
-        }
-        CredentialRetrievalError::HelperFailure {
-            helper,
-            stdout,
-            stderr,
-        } => {
-            let output = if stdout.trim().is_empty() {
-                stderr
-            } else {
-                stdout
-            };
-            RegistryLogin::Unknown(format!("`{helper} get` failed: {}", output.trim()))
-        }
-        e => RegistryLogin::Unknown(format!("{}: {e}", config.display())),
+/// Ask a docker credential helper for the credential of `server` with the
+/// `get` command of the helper protocol. The credential itself is discarded.
+fn docker_helper_login(mut helper: Command, server: &str) -> RegistryLogin {
+    let program = helper.get_program().to_string_lossy().into_owned();
+    helper.arg("get");
+    let output =
+        match output_with_input_and_timeout(helper, server.as_bytes(), DISCOVERY_COMMAND_TIMEOUT) {
+            Ok(output) => output,
+            Err(e) => return RegistryLogin::Unknown(format!("`{program} get`: {e:#}")),
+        };
+    if output.status.success() {
+        return RegistryLogin::LoggedIn;
     }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    if stdout.trim() == CREDENTIAL_HELPER_NOT_FOUND {
+        return RegistryLogin::LoggedOut;
+    }
+    let reason = [stdout.trim(), stderr.trim()]
+        .into_iter()
+        .find(|text| !text.is_empty())
+        .map_or_else(|| output.status.to_string(), str::to_string);
+    RegistryLogin::Unknown(format!("`{program} get` failed: {reason}"))
 }
 
 /// Generate a unique image reference with a timestamp + random suffix tag.
@@ -1148,6 +1219,15 @@ mod tests {
             RegistryLogin::LoggedOut
         );
 
+        for key in ["http://registry.example.com", "registry.example.com/v2/"] {
+            let config = format!(r#"{{"auths": {{"{key}": {{"auth": "dXNlcjpwYXNz"}}}}}}"#);
+            assert_eq!(
+                docker_login_with_config(&config, "registry.example.com"),
+                RegistryLogin::LoggedIn,
+                "{key}"
+            );
+        }
+
         let docker_hub = r#"{"auths": {"https://index.docker.io/v1/": {"auth": "dXNlcjpwYXNz"}}}"#;
         assert_eq!(
             docker_login_with_config(docker_hub, "docker.io"),
@@ -1156,45 +1236,89 @@ mod tests {
     }
 
     #[test]
-    fn docker_login_reports_an_unusable_credential_store_as_unknown() {
-        let missing_helper =
-            r#"{"credHelpers": {"registry.example.com": "snouty-test-missing-helper"}}"#;
+    fn docker_login_ignores_an_auths_entry_without_a_credential() {
+        let config = r#"{"auths": {"registry.example.com": {}}}"#;
+        assert_eq!(
+            docker_login_with_config(config, "registry.example.com"),
+            RegistryLogin::LoggedOut
+        );
+        let token = r#"{"auths": {"registry.example.com": {"identitytoken": "t"}}}"#;
+        assert_eq!(
+            docker_login_with_config(token, "registry.example.com"),
+            RegistryLogin::LoggedIn
+        );
+    }
+
+    #[test]
+    fn docker_login_asks_the_credential_store_before_auths() {
+        let auths = r#""auths": {"registry.example.com": {"auth": "dXNlcjpwYXNz"}}"#;
+        // `docker` pushes with the store, so a stale `auths` entry is ignored.
+        let store = format!(r#"{{"credsStore": "snouty-test-missing-helper", {auths}}}"#);
         assert!(matches!(
-            docker_login_with_config(missing_helper, "registry.example.com"),
+            docker_login_with_config(&store, "registry.example.com"),
+            RegistryLogin::Unknown(reason) if reason.contains("docker-credential-snouty-test-missing-helper")
+        ));
+
+        let helper = r#""credHelpers": {"registry.example.com": "snouty-test-missing-helper"}"#;
+        assert!(matches!(
+            docker_login_with_config(&format!("{{{helper}, {auths}}}"), "registry.example.com"),
             RegistryLogin::Unknown(_)
         ));
+
+        let other_helper = r#""credHelpers": {"other.example.com": "snouty-test-missing-helper"}"#;
+        assert_eq!(
+            docker_login_with_config(
+                &format!("{{{other_helper}, {auths}}}"),
+                "registry.example.com"
+            ),
+            RegistryLogin::LoggedIn
+        );
+    }
+
+    #[test]
+    fn docker_login_reports_a_malformed_config_as_unknown() {
         assert!(matches!(
             docker_login_with_config("not json", "registry.example.com"),
             RegistryLogin::Unknown(_)
         ));
     }
 
+    fn helper_login(script: &str, server: &str) -> RegistryLogin {
+        let mut helper = Command::new("sh");
+        helper.args(["-c", script, "docker-credential-test"]);
+        docker_helper_login(helper, server)
+    }
+
     #[test]
-    fn docker_login_reads_the_helper_not_found_answer_as_logged_out() {
-        let helper_failure = |stdout: &str, stderr: &str| CredentialRetrievalError::HelperFailure {
-            helper: "docker-credential-test".to_string(),
-            stdout: stdout.to_string(),
-            stderr: stderr.to_string(),
-        };
-        let config = Path::new("config.json");
+    fn docker_helper_login_follows_the_helper_protocol() {
+        // `get` reads the server address from stdin.
         assert_eq!(
-            docker_login_from_error(
-                helper_failure("credentials not found in native keychain\n", ""),
-                config
+            helper_login(
+                r#"[ "$1" = get ] && [ "$(cat)" = registry.example.com ] && echo '{"Secret":"s"}'"#,
+                "registry.example.com"
+            ),
+            RegistryLogin::LoggedIn
+        );
+        assert_eq!(
+            helper_login(
+                "echo 'credentials not found in native keychain'; exit 1",
+                "registry.example.com"
             ),
             RegistryLogin::LoggedOut
         );
         assert_eq!(
-            docker_login_from_error(helper_failure("", "keychain is locked\n"), config),
-            RegistryLogin::Unknown(
-                "`docker-credential-test get` failed: keychain is locked".to_string()
-            )
+            helper_login(
+                "echo 'keychain is locked' >&2; exit 1",
+                "registry.example.com"
+            ),
+            RegistryLogin::Unknown("`sh get` failed: keychain is locked".to_string())
         );
         assert_eq!(
-            docker_login_from_error(helper_failure("access denied\n", "ignored"), config),
-            RegistryLogin::Unknown(
-                "`docker-credential-test get` failed: access denied".to_string()
-            )
+            helper_login(
+                "echo 'access denied'; echo ignored >&2; exit 1",
+                "registry.example.com"
+            ),
+            RegistryLogin::Unknown("`sh get` failed: access denied".to_string())
         );
     }
 

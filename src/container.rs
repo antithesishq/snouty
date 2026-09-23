@@ -4,12 +4,14 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
 
+use base64::{Engine as _, prelude::BASE64_STANDARD};
 use chrono::Utc;
 use color_eyre::{
     Section, SectionExt,
     eyre::{Context, Result, eyre},
 };
 use serde::Deserialize;
+use serde::de::IgnoredAny;
 
 use crate::error::user_error;
 use crate::process::{output_with_input_and_timeout, output_with_timeout};
@@ -693,6 +695,31 @@ struct DockerAuth {
     identitytoken: String,
 }
 
+impl DockerAuth {
+    /// Whether `docker` can use this entry: an identity token, or an `auth`
+    /// value that decodes to `user:password` (`decodeAuth` in docker/cli).
+    /// `None` is an entry that `docker` rejects.
+    fn usable(&self) -> Option<bool> {
+        if !self.identitytoken.is_empty() {
+            return Some(true);
+        }
+        if self.auth.is_empty() {
+            return Some(false);
+        }
+        let decoded = BASE64_STANDARD.decode(&self.auth).ok()?;
+        let user = decoded.split(|byte| *byte == b':').next()?;
+        (!user.is_empty() && user.len() < decoded.len()).then_some(true)
+    }
+}
+
+/// The reply of a docker credential helper to `get`. Only its shape is
+/// checked; the secret is never read.
+#[derive(Deserialize)]
+struct HelperCredential {
+    #[serde(rename = "Secret")]
+    _secret: IgnoredAny,
+}
+
 /// The host part of a Docker server address such as `https://host/v1/`.
 fn docker_server_host(server: &str) -> &str {
     let server = server
@@ -732,9 +759,21 @@ fn docker_registry_login(config: &Path, registry: &str) -> RegistryLogin {
         return docker_helper_login(Command::new(format!("docker-credential-{helper}")), server);
     }
 
-    let logged_in = config_file.auths.iter().any(|(key, auth)| {
-        docker_server_host(key) == host && !(auth.auth.is_empty() && auth.identitytoken.is_empty())
-    });
+    let mut logged_in = false;
+    for (key, auth) in &config_file.auths {
+        if docker_server_host(key) != host {
+            continue;
+        }
+        match auth.usable() {
+            Some(usable) => logged_in |= usable,
+            None => {
+                return RegistryLogin::Unknown(format!(
+                    "{}: the `auths` entry for {key} is not a credential that docker can decode",
+                    config.display()
+                ));
+            }
+        }
+    }
     if logged_in {
         RegistryLogin::LoggedIn
     } else {
@@ -753,7 +792,12 @@ fn docker_helper_login(mut helper: Command, server: &str) -> RegistryLogin {
             Err(e) => return RegistryLogin::Unknown(format!("`{program} get`: {e:#}")),
         };
     if output.status.success() {
-        return RegistryLogin::LoggedIn;
+        return match serde_json::from_slice::<HelperCredential>(&output.stdout) {
+            Ok(_) => RegistryLogin::LoggedIn,
+            Err(e) => {
+                RegistryLogin::Unknown(format!("`{program} get` did not return a credential: {e}"))
+            }
+        };
     }
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -1236,6 +1280,22 @@ mod tests {
     }
 
     #[test]
+    fn docker_login_rejects_an_auths_entry_that_docker_cannot_decode() {
+        for auth in ["not-base64", "dXNlcnBhc3M=", "OnBhc3M="] {
+            let config =
+                format!(r#"{{"auths": {{"registry.example.com": {{"auth": "{auth}"}}}}}}"#);
+            assert!(
+                matches!(
+                    docker_login_with_config(&config, "registry.example.com"),
+                    RegistryLogin::Unknown(reason)
+                        if reason.contains("registry.example.com") && !reason.contains(auth)
+                ),
+                "{auth}"
+            );
+        }
+    }
+
+    #[test]
     fn docker_login_ignores_an_auths_entry_without_a_credential() {
         let config = r#"{"auths": {"registry.example.com": {}}}"#;
         assert_eq!(
@@ -1299,6 +1359,15 @@ mod tests {
             ),
             RegistryLogin::LoggedIn
         );
+        for reply in ["", "not json", r#"{"Username":"u"}"#] {
+            assert!(
+                matches!(
+                    helper_login(&format!("echo '{reply}'"), "registry.example.com"),
+                    RegistryLogin::Unknown(reason) if reason.contains("did not return a credential")
+                ),
+                "{reply:?}"
+            );
+        }
         assert_eq!(
             helper_login(
                 "echo 'credentials not found in native keychain'; exit 1",

@@ -11,7 +11,6 @@ use color_eyre::{
     eyre::{Context, Result, eyre},
 };
 use serde::Deserialize;
-use serde::de::IgnoredAny;
 
 use crate::error::user_error;
 use crate::process::{output_with_input_and_timeout, output_with_timeout};
@@ -717,7 +716,7 @@ impl DockerAuth {
 #[derive(Deserialize)]
 struct HelperCredential {
     #[serde(rename = "Secret")]
-    _secret: IgnoredAny,
+    _secret: String,
 }
 
 /// The host part of a Docker server address such as `https://host/v1/`.
@@ -744,6 +743,22 @@ fn docker_registry_login(config: &Path, registry: &str) -> RegistryLogin {
         Ok(config_file) => config_file,
         Err(e) => return RegistryLogin::Unknown(format!("{}: {e}", config.display())),
     };
+    // `docker` decodes every `auths` entry when it loads the file and drops
+    // the whole file if one of them is malformed.
+    let auths: HashMap<&str, bool> = match config_file
+        .auths
+        .iter()
+        .map(|(key, auth)| auth.usable().map(|usable| (key.as_str(), usable)))
+        .collect()
+    {
+        Some(auths) => auths,
+        None => {
+            return RegistryLogin::Unknown(format!(
+                "{}: an `auths` entry is not a credential that docker can decode",
+                config.display()
+            ));
+        }
+    };
 
     let server = match registry {
         "docker.io" | "index.docker.io" => DOCKER_HUB_SERVER,
@@ -759,21 +774,9 @@ fn docker_registry_login(config: &Path, registry: &str) -> RegistryLogin {
         return docker_helper_login(Command::new(format!("docker-credential-{helper}")), server);
     }
 
-    let mut logged_in = false;
-    for (key, auth) in &config_file.auths {
-        if docker_server_host(key) != host {
-            continue;
-        }
-        match auth.usable() {
-            Some(usable) => logged_in |= usable,
-            None => {
-                return RegistryLogin::Unknown(format!(
-                    "{}: the `auths` entry for {key} is not a credential that docker can decode",
-                    config.display()
-                ));
-            }
-        }
-    }
+    let logged_in = auths
+        .iter()
+        .any(|(key, usable)| *usable && docker_server_host(key) == host);
     if logged_in {
         RegistryLogin::LoggedIn
     } else {
@@ -1287,12 +1290,20 @@ mod tests {
             assert!(
                 matches!(
                     docker_login_with_config(&config, "registry.example.com"),
-                    RegistryLogin::Unknown(reason)
-                        if reason.contains("registry.example.com") && !reason.contains(auth)
+                    RegistryLogin::Unknown(reason) if !reason.contains(auth)
                 ),
                 "{auth}"
             );
         }
+
+        let other = r#"{"auths": {
+            "registry.example.com": {"auth": "dXNlcjpwYXNz"},
+            "old.example.com": {"auth": "not-base64"}
+        }}"#;
+        assert!(matches!(
+            docker_login_with_config(other, "registry.example.com"),
+            RegistryLogin::Unknown(_)
+        ));
     }
 
     #[test]
@@ -1359,7 +1370,7 @@ mod tests {
             ),
             RegistryLogin::LoggedIn
         );
-        for reply in ["", "not json", r#"{"Username":"u"}"#] {
+        for reply in ["", "not json", r#"{"Username":"u"}"#, r#"{"Secret":1}"#] {
             assert!(
                 matches!(
                     helper_login(&format!("echo '{reply}'"), "registry.example.com"),

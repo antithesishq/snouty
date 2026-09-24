@@ -222,25 +222,21 @@ fn compose_version_parts(version: &str) -> Option<(u64, u64, u64)> {
     Some((major, minor, patch))
 }
 
-/// The variables Antithesis sets in the environment of the docker-compose
-/// process, apart from DOCKER_CONFIG. A compose file can
-/// interpolate each one. Observed on tenant `orbitinghail` (release 62.2, run
-/// `af47ad2e140c441e4a3fc795aa4b41c4-62-2`), with a compose file that
-/// interpolated a list of common variable names, so Antithesis can set more.
-/// Compose sets `PWD` itself.
+/// Variables that Antithesis sets in the environment of the docker-compose
+/// process and that a compose file can interpolate. Observed on tenant
+/// `orbitinghail` (release 62.2, run `af47ad2e140c441e4a3fc795aa4b41c4-62-2`),
+/// with a compose file that interpolated a list of common variable names.
+/// Antithesis also sets platform-internal variables, which are left out.
+/// DOCKER_CONFIG has its own handling, and compose sets `PWD` and
+/// `COMPOSE_PROJECT_NAME` itself.
 const ANTITHESIS_COMPOSE_ENV: &[&str] = &[
     "ANTITHESIS_OUTPUT_DIR",
-    "COMPOSE_PROJECT_NAME",
-    "DOCKER_BUILDKIT",
     "DOCKER_HOST",
     "HOME",
     "LANG",
-    "LD_LIBRARY_PATH",
     "LOGNAME",
-    "NIX_PATH",
     "PATH",
     "SHELL",
-    "SHLVL",
     "TMPDIR",
     "USER",
 ];

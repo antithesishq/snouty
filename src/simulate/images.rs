@@ -42,7 +42,7 @@ impl TryFrom<String> for ImageId {
 
 impl fmt::Display for ImageId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.0)
+        write!(f, "{SHA256_PREFIX}{}", self.0)
     }
 }
 
@@ -204,11 +204,8 @@ impl Images {
     }
 
     pub async fn save(&self, references: &[String], archive: &Path) -> Result<()> {
-        let ids = references
-            .iter()
-            .map(|reference| reference.parse::<ImageId>().map(|id| id.to_string()))
-            .collect::<Result<BTreeSet<_>>>()?;
-        if ids.is_empty() {
+        let references: BTreeSet<_> = references.iter().cloned().collect();
+        if references.is_empty() {
             bail!("no workload images to export");
         }
         let mut command = Command::new(&self.engine);
@@ -220,7 +217,7 @@ impl Images {
         command
             .arg("--output")
             .arg(archive)
-            .args(ids)
+            .args(references)
             .stdin(Stdio::null());
         let output = output_async(command, IMAGE_TIMEOUT).await?;
         if !output.status.success() {
@@ -379,24 +376,32 @@ esac
     }
 
     #[tokio::test]
-    async fn podman_exports_unique_immutable_images_as_a_multi_image_archive() {
+    async fn podman_exports_unique_image_references_as_a_multi_image_archive() {
         let directory = tempfile::tempdir().unwrap();
         let images = engine(directory.path());
-        let other = "b".repeat(64);
         images
             .save(
-                &[ID.into(), format!("sha256:{ID}"), other.clone()],
+                &[
+                    "example.test/app:one".into(),
+                    "example.test/app:one".into(),
+                    "example.test/app:two".into(),
+                ],
                 &directory.path().join("images.tar"),
             )
             .await
             .unwrap();
         let args = std::fs::read_to_string(directory.path().join("save-args")).unwrap();
         assert!(args.lines().any(|arg| arg == "--multi-image-archive"));
-        assert_eq!(args.lines().filter(|arg| *arg == ID).count(), 1);
-        assert!(args.lines().any(|arg| arg == other));
+        assert_eq!(
+            args.lines()
+                .filter(|arg| *arg == "example.test/app:one")
+                .count(),
+            1
+        );
+        assert!(args.lines().any(|arg| arg == "example.test/app:two"));
         assert!(
             images
-                .save(&["latest".into()], &directory.path().join("bad.tar"))
+                .save(&[], &directory.path().join("bad.tar"))
                 .await
                 .is_err()
         );
@@ -416,7 +421,7 @@ esac
                 .unwrap(),
             id
         );
-        assert_eq!(id.to_string(), digest);
+        assert_eq!(id.to_string(), format!("sha256:{digest}"));
         assert_eq!(id.to_string().parse::<ImageId>().unwrap(), id);
         let path = Path::new("cache").join(id.to_string());
         assert_eq!(path.parent(), Some(Path::new("cache")));

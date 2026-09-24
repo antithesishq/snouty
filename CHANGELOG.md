@@ -1,6 +1,7 @@
 # Unreleased
 
 - `snouty runs show` lists the run's user-defined `attrs.*` params under an `Attributes` block, and `snouty launch --help` documents how to set them with `--param attrs.<name>=<value>` ([#312](https://github.com/antithesishq/snouty/issues/312))
+- `snouty validate` no longer reports a compose divergence for a variable that the Antithesis environment also sets ([#314](https://github.com/antithesishq/snouty/issues/314))
 
 # Version 0.7.2 (2026-09-13)
 

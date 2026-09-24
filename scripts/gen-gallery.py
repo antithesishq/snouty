@@ -2209,7 +2209,8 @@ def build_help_stories(d: Discovery) -> list[Story]:
             "I want to run a Compose setup in a guest VM and understand image "
             "requirements, setup_complete before test composer and fault injection start, "
             "--disable-faults keeping faults paused through test composer, startup timeout, "
-            "interruption, and failure status.",
+            "interruption, failure status, the runs-compatible human log rendering, and "
+            "active-fault annotations in JSON output.",
             ["simulate"],
         ),
         _help_story(

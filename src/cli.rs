@@ -289,7 +289,9 @@ continues to stream logs. Failed assertions and composer commands do not stop
 the simulation, but cause a nonzero exit status when it stops.
 
 Boot console logs are hidden unless startup fails or the VM exits unexpectedly.
-With --json, emits newline-delimited events and a final failure-count summary.
+Human output uses the same vtime, source, and event rendering as `runs logs`.
+With --json, emits newline-delimited events annotated with active faults and a
+final failure-count summary.
 The startup timeout does not limit the simulation duration.
 
 Example:

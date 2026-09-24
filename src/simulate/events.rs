@@ -7,6 +7,79 @@ use serde_json::Value;
 
 use crate::render::sanitize;
 
+static FRAME: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^\s*([0-9]+(?:\.[0-9]+)?) \[([^\]]+)\] \[([A-Z][A-Z0-9 _-]*)\](?: (.*))?$")
+        .unwrap()
+});
+// C1 characters are valid JSON text; terminal stripping would corrupt them.
+static CSI: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\x1b\[[0-?]*[ -/]*[@-~]").unwrap());
+
+struct Frame<'a> {
+    timestamp: &'a str,
+    source: &'a str,
+    kind: &'a str,
+    payload: &'a str,
+}
+
+fn frame(line: &str) -> Option<Frame<'_>> {
+    let parts = FRAME.captures(line)?;
+    let payload = parts.get(4).map_or("", |m| m.as_str());
+    Some(Frame {
+        timestamp: parts.get(1).unwrap().as_str(),
+        source: parts.get(2).unwrap().as_str(),
+        kind: parts.get(3).unwrap().as_str(),
+        payload: payload
+            .strip_prefix('\'')
+            .and_then(|s| s.strip_suffix('\''))
+            .unwrap_or(payload),
+    })
+}
+
+/// Convert one guest instrumentation frame to the log-entry shape consumed by
+/// fault annotation and event rendering.
+pub(super) fn log_entry(line: &str) -> Result<Option<Value>> {
+    let line = CSI.replace_all(line, "").replace('\r', "");
+    let Some(frame) = frame(&line) else {
+        return Ok(None);
+    };
+    let mut entry = if frame.kind == "JSON" || frame.source == "processes_terminated_with_signal" {
+        match serde_json::from_str(frame.payload)
+            .wrap_err_with(|| format!("invalid instrumentation JSON from {}", frame.source))?
+        {
+            Value::Object(object) => Value::Object(object),
+            _ => serde_json::json!({"output_text": frame.payload}),
+        }
+    } else {
+        serde_json::json!({"output_text": frame.payload})
+    };
+    entry["moment"] = serde_json::json!({"vtime": frame.timestamp});
+    let container = frame
+        .source
+        .rsplit("/commands/")
+        .next()
+        .filter(|_| frame.source.contains("/commands/"))
+        .and_then(|source| {
+            source
+                .strip_suffix(".out")
+                .or_else(|| source.strip_suffix(".err"))
+        });
+    entry["source"] = serde_json::json!({
+        "name": frame.source,
+        "container": container,
+        "stream": if frame.kind == "ERROR" || frame.source.ends_with(".err") {
+            "error"
+        } else {
+            "out"
+        }
+    });
+    Ok(Some(entry))
+}
+
+pub(super) fn is_fault_injector_line(line: &str) -> bool {
+    let line = CSI.replace_all(line, "").replace('\r', "");
+    frame(&line).is_some_and(|frame| frame.source == "fault_injector")
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Failure {
     Assertion,
@@ -241,23 +314,13 @@ struct AssertionPayload {
 }
 
 pub fn parse_line(line: &str) -> Result<Option<Event>> {
-    static FRAME: LazyLock<Regex> = LazyLock::new(|| {
-        Regex::new(r"^\s*([0-9]+(?:\.[0-9]+)?) \[([^\]]+)\] \[([A-Z][A-Z0-9 _-]*)\](?: (.*))?$")
-            .unwrap()
-    });
-    // C1 characters are valid JSON text; terminal stripping would corrupt them.
-    static CSI: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\x1b\[[0-?]*[ -/]*[@-~]").unwrap());
     let line = CSI.replace_all(line, "").replace('\r', "");
-    let Some(parts) = FRAME.captures(&line) else {
+    let Some(frame) = frame(&line) else {
         return Ok(None);
     };
-    let source = &parts[2];
-    let kind = &parts[3];
-    let payload = parts.get(4).map_or("", |m| m.as_str());
-    let payload = payload
-        .strip_prefix('\'')
-        .and_then(|s| s.strip_suffix('\''))
-        .unwrap_or(payload);
+    let source = frame.source;
+    let kind = frame.kind;
+    let payload = frame.payload;
     if matches!(
         kind,
         "COVERAGE" | "COVERAGE MODULE" | "SEGMENT" | "STARTUP" | "TELEMETRY" | "WAITING_FOR_INPUT"
@@ -290,7 +353,7 @@ pub fn parse_line(line: &str) -> Result<Option<Event>> {
     }
     let event = |kind| {
         Some(Event {
-            timestamp: parts[1].into(),
+            timestamp: frame.timestamp.into(),
             source: source.into(),
             kind,
         })
@@ -455,6 +518,7 @@ pub fn parse_line(line: &str) -> Result<Option<Event>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::runs::FaultAnnotator;
     use hegel::generators;
     use serde_json::json;
 
@@ -557,6 +621,38 @@ mod tests {
         let input = tc.draw(generators::text());
         let _ = parse_line(&input);
         let _ = parse_line(&format!("0 [app] [JSON] {input}"));
+    }
+
+    #[hegel::test]
+    fn log_entry_preserves_json_payload_text(tc: hegel::TestCase) {
+        let text = tc.draw(generators::text());
+        let payload = json!({"custom": text}).to_string();
+        let entry = log_entry(&format!("1.25 [workload] [JSON] {payload}"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(entry["custom"], text);
+        assert_eq!(entry["moment"]["vtime"], "1.25");
+        assert_eq!(entry["source"]["name"], "workload");
+    }
+
+    #[test]
+    fn guest_faults_annotate_later_log_entries() {
+        let mut annotator = FaultAnnotator::default();
+        let mut fault = log_entry(
+            r#"1 [fault_injector] [JSON] {"fault":{"name":"clog","type":"network","affected_nodes":["workload"],"max_duration":2}}"#,
+        )
+        .unwrap()
+        .unwrap();
+        annotator.annotate(&mut fault);
+
+        let mut workload = log_entry("2 [workload] [INFO] request timed out")
+            .unwrap()
+            .unwrap();
+        annotator.annotate(&mut workload);
+        assert_eq!(
+            workload["active_faults"],
+            json!({"network_clog": {"vtime": 1.0}})
+        );
     }
 
     #[test]

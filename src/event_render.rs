@@ -437,8 +437,8 @@ fn render_source(entry: &Value, detail: bool) -> String {
 /// provides.
 pub(crate) struct EventStreamRenderer {
     detail: bool,
-    /// The current segment's hash; `Some` also means at least one block was
-    /// written, so the next divider needs a blank line above it.
+    timeline_dividers: bool,
+    /// The current timeline segment's hash. Linear streams leave this empty.
     last_input_hash: Option<String>,
 }
 
@@ -446,6 +446,17 @@ impl EventStreamRenderer {
     pub(crate) fn new(detail: bool) -> Self {
         Self {
             detail,
+            timeline_dividers: true,
+            last_input_hash: None,
+        }
+    }
+
+    /// Render a linear stream whose entries have vtime and source metadata,
+    /// but no timeline input hash.
+    pub(crate) fn linear(detail: bool) -> Self {
+        Self {
+            detail,
+            timeline_dividers: false,
             last_input_hash: None,
         }
     }
@@ -464,7 +475,8 @@ impl EventStreamRenderer {
         // `timestamp`/`stream`/`text` triple instead — and renders in the
         // shared visual grammar without a divider or classification.
         let hash = entry["moment"]["input_hash"].as_str();
-        let Some(hash) = hash.filter(|_| entry.get("source").is_some()) else {
+        let has_event_envelope = entry.get("moment").is_some() && entry.get("source").is_some();
+        if !has_event_envelope || (self.timeline_dividers && hash.is_none()) {
             if let (Some(timestamp), Some(text)) =
                 (entry["timestamp"].as_str(), entry["text"].as_str())
             {
@@ -476,23 +488,26 @@ impl EventStreamRenderer {
             }
             out.truncate(out.trim_end().len());
             return Ok(());
-        };
+        }
 
         // The stream normalizes this to a JSON number, but an unparsable
         // vtime is left as the server sent it — so this can still be `None`,
         // and the cell below has to say so rather than print server text.
         let vtime = VTime::from_json(&entry["moment"]["vtime"]);
 
-        if self.last_input_hash.as_deref() != Some(hash) {
-            if self.last_input_hash.is_some() {
-                out.push('\n');
+        if self.timeline_dividers {
+            let hash = hash.expect("timeline entries require an input hash");
+            if self.last_input_hash.as_deref() != Some(hash) {
+                if self.last_input_hash.is_some() {
+                    out.push('\n');
+                }
+                writeln!(
+                    out,
+                    "{}",
+                    style(format_args!("moment {}", sanitize(hash))).yellow()
+                )?;
+                self.last_input_hash = Some(hash.to_string());
             }
-            writeln!(
-                out,
-                "{}",
-                style(format_args!("moment {}", sanitize(hash))).yellow()
-            )?;
-            self.last_input_hash = Some(hash.to_string());
         }
 
         let source = render_source(entry, self.detail);
@@ -596,6 +611,19 @@ mod tests {
             }),
         );
         assert_eq!(third, "\nmoment 456\n313.5     [app] branched");
+    }
+
+    #[test]
+    fn linear_stream_renders_without_a_moment_divider() {
+        let mut renderer = EventStreamRenderer::linear(false);
+        let entry = json!({
+            "output_text": "ready",
+            "source": {"name": "workload"},
+            "moment": {"vtime": "1.25"}
+        });
+        let rendered = render_entry(&mut renderer, &entry);
+        assert_eq!(rendered, "1.25      [workload] ready");
+        assert!(!rendered.contains("moment"));
     }
 
     #[test]

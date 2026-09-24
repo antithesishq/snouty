@@ -461,6 +461,27 @@ fn assertion_failure_is_latched_until_interruption_and_children_are_reaped() {
 }
 
 #[test]
+fn json_events_are_annotated_with_guest_faults() {
+    let mut simulation = Simulation::start("fault-annotation");
+    simulation.wait_for("stdout", "balance stays positive");
+    kill(Pid::from_raw(simulation.child.id() as i32), Signal::SIGTERM).unwrap();
+    let output = simulation.finish();
+    let events: Vec<serde_json::Value> = String::from_utf8(output.stdout)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    let assertion = events
+        .iter()
+        .find(|event| event["type"] == "assertion")
+        .unwrap();
+    assert_eq!(
+        assertion["active_faults"],
+        serde_json::json!({"network_clog": {"vtime": 11.0}})
+    );
+}
+
+#[test]
 fn catastrophic_startup_reports_hidden_boot_console() {
     let mut simulation = Simulation::start("boot-failure");
     let output = simulation.finish();

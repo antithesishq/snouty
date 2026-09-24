@@ -278,8 +278,9 @@ the local container engine. The guest image defaults to antithesis-guest:v<RELEA
 in the configured repository, using the tenant release from /api/version.
 Requires an API key unless --guest-image is supplied.
 
-Requires Linux x86_64 and QEMU. Uses 1 CPU and 15000 MiB of memory. Uses KVM
-when available, otherwise TCG with a warning that performance will suffer.
+Requires Linux x86_64 and QEMU. Uses 1 CPU and 15000 MiB of memory by default.
+Use --memory to lower guest memory when the host has less RAM. Uses KVM when
+available, otherwise TCG with a warning that performance will suffer.
 SSH configuration is private to this run; user configuration is not changed.
 
 Waits for setup_complete before starting test composer on each rollout.
@@ -583,6 +584,10 @@ pub struct SimulateArgs {
     /// Pause fault injection before Compose starts and prevent test composer from unpausing it
     #[arg(long)]
     pub disable_faults: bool,
+
+    /// Guest memory in MiB (maximum: 15000)
+    #[arg(long, default_value_t = 15000, value_parser = clap::value_parser!(u64).range(1..=15000))]
+    pub memory: u64,
 
     /// Boot the guest and open a root shell without starting Compose
     #[arg(

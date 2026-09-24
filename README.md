@@ -322,9 +322,10 @@ Snouty uses a local guest image when present and pulls it otherwise. Workload
 images must already exist locally. Only directories with `docker-compose.yaml`
 are supported; Kubernetes and arbitrary host bind mounts are not supported.
 
-The VM uses 1 CPU and 15000 MiB of RAM. Snouty uses KVM when available and warns
-when it falls back to slower software emulation. SSH files are private to the
-run; Snouty does not change user configuration.
+The VM uses 1 CPU and 15000 MiB of RAM by default. Use `--memory MIB` to lower
+guest memory on smaller hosts. Values above 15000 MiB are rejected. Snouty uses
+KVM when available and warns when it falls back to slower software emulation.
+SSH files are private to the run; Snouty does not change user configuration.
 
 Rollouts repeat until interrupted. Use `--disable-restart` to start one rollout
 and keep streaming its logs. `--timeout 5m` limits guest startup, not the run.

@@ -15,7 +15,6 @@ use serde_json::Value;
 use tokio::time::{Instant, sleep, timeout};
 
 const AUTHORIZED_KEY_FW_CFG: &str = "opt/antithesis/authorized_key";
-const MEMORY_MIB: &str = "15000";
 const BOOT_CONSOLE_ESCAPE_CODES: [&[u8]; 6] = [
     b"\x1bc",
     b"\x1b[?7l",
@@ -121,6 +120,7 @@ impl Vm {
         run_dir: &Path,
         startup_timeout: Duration,
         boot_output: BootOutput,
+        memory_mib: u64,
     ) -> Result<Self> {
         let run_dir = fs::canonicalize(run_dir)?;
         let accelerated = kvm_available().await;
@@ -153,11 +153,9 @@ impl Vm {
                     "-smp",
                     "1",
                     "-m",
-                    MEMORY_MIB,
-                    "-boot",
-                    "d",
-                    "-cdrom",
                 ])
+                .arg(memory_mib.to_string())
+                .args(["-boot", "d", "-cdrom"])
                 .arg(iso)
                 .args([
                     "-display",

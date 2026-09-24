@@ -120,6 +120,10 @@ pub enum SearchMode {
 /// the request names none.
 pub const SEARCH_DEFAULT_LIMIT: NonZeroU64 = NonZeroU64::new(50).unwrap();
 
+/// The largest `limit` the events-search endpoint accepts. The server answers
+/// 400 above it, with a message that names 1000.
+pub const SEARCH_MAX_LIMIT: u64 = 999;
+
 /// Why a `/api/version` probe failed, classified for `snouty doctor`.
 #[derive(Debug)]
 pub enum VersionError {

@@ -449,12 +449,13 @@ fn assertion_failure_is_latched_until_interruption_and_children_are_reaped() {
             .iter()
             .any(|arg| arg.contains("hostfwd=tcp:127.0.0.1:") && arg.ends_with("-:22,restrict=yes"))
     );
-    let ssh_config = simulation.read("ssh_config");
+    let ssh_config = simulation.read("image_load_ssh_config");
     assert!(ssh_config.contains("IdentitiesOnly yes"));
     assert!(ssh_config.contains("IdentityAgent none"));
     assert!(ssh_config.contains("StrictHostKeyChecking no"));
     assert!(ssh_config.contains("UserKnownHostsFile /dev/null"));
     assert!(ssh_config.contains("GlobalKnownHostsFile /dev/null"));
+    assert!(ssh_config.contains("Compression no"));
     assert!(!ssh_config.contains(".pub"));
     assert!(!simulation.read("qemu_args").contains("-qmp"));
 }

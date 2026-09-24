@@ -639,6 +639,23 @@ pub struct DebugArgs {
 /// their long help. A macro rather than a `const` so both call sites can
 /// splice it into their `concat!`-built literals (`concat!` takes literals
 /// only, and a macro expansion is one).
+/// How a run is structured: the paragraph `runs search` and `runs logs` share
+/// in their long help. A macro for the same reason as
+/// [`classified_blocks_help`].
+macro_rules! run_structure_help {
+    () => {
+        "How a run is structured: An Antithesis run is a tree of timelines, not one\n\
+         history. A timeline is a series of input_hashes. An input_hash is a hash of\n\
+         every input Antithesis sent up to that point. Antithesis branches a timeline\n\
+         by sending an input from some moment, which creates a new input_hash. Every\n\
+         event has an input_hash and a vtime, and one input_hash can have zero or more\n\
+         events. Events that share an input_hash are on the same timeline. vtime is\n\
+         the virtual time at which the event was emitted on its timeline. Antithesis\n\
+         virtualizes the clock, so vtime can jump forward by any amount, but it never\n\
+         goes backward. vtime orders events only within one timeline."
+    };
+}
+
 macro_rules! classified_blocks_help {
     () => {
         "Matching events print as classified blocks: a `moment HASH` divider opens\n\
@@ -656,15 +673,9 @@ macro_rules! classified_blocks_help {
 const SEARCH_LONG_ABOUT: &str = concat!(
     r#"Run an event-set DSL query against a run's events.
 
-How a run is structured: An Antithesis run is a tree of timelines, not one
-history. A timeline is a series of input_hashes. An input_hash is a hash of
-every input Antithesis sent up to that point. Antithesis branches a timeline
-by sending an input from some moment, which creates a new input_hash. Every
-event has an input_hash and a vtime, and one input_hash can have zero or more
-events. vtime is the virtual time at which the event was emitted on its
-timeline. Antithesis virtualizes the clock, so vtime can jump forward by any
-amount, but it never goes backward. vtime orders events only within one
-timeline.
+"#,
+    run_structure_help!(),
+    r#"
 
 How to read the results: The output is a sample of the matching events, and
 they can come from different timelines. The server returns at most --limit
@@ -933,7 +944,10 @@ object on its own line:
 
     /// Stream moment logs for a run
     #[command(
-        long_about = r#"Stream the logs along one branch of the run's multiverse.
+        long_about = concat!(
+            "Stream the logs along one branch of the run's multiverse.\n\n",
+            run_structure_help!(),
+            r#"
 
 INPUT_HASH identifies the branch: the hash of every input fed to the
 simulation from the root moment to the branch's start. Logs stream from the
@@ -949,6 +963,7 @@ each in their own concise form.
 Add --json for machine-readable output. Each event prints as one JSON object
 on its own line, and --raw passes the server's events through unchanged:
   snouty --json runs logs <run_id> <hash> | jq -r .moment.vtime"#
+        )
     )]
     Logs {
         /// Run ID

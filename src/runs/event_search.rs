@@ -2,10 +2,9 @@
 //! `runs events`, `runs search`, `runs build-logs`), plus the events-search
 //! helpers.
 //!
-//! Each command resolves its own backend up front — `runs events` from its
-//! needle count, `runs search` always on the events-search endpoint,
-//! `runs logs`/`runs build-logs` their GET endpoints — and hands the
-//! resulting [`JsonStream`] here. From the stream on, the commands are
+//! Each command resolves its own backend up front — `runs events` and
+//! `runs search` the events-search endpoint, `runs logs`/`runs build-logs`
+//! their GET endpoints — and hands the resulting [`JsonStream`] here. From the stream on, the commands are
 //! identical: every event renders to one output line.
 //!
 //! Nothing here filters client-side. The output of a server-side filter IS

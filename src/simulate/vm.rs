@@ -152,6 +152,7 @@ impl Vm {
                     if accelerated { "host" } else { "max" },
                     "-machine",
                     "pc,i8042=off",
+                    "-nodefaults",
                     "-smp",
                     "1",
                     "-m",

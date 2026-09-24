@@ -207,6 +207,14 @@ fn guest_has_no_vga_and_retains_its_network_interface_address() {
 }
 
 #[test]
+fn guest_has_no_unused_default_devices() {
+    let mut simulation = Simulation::start("clean-once");
+    simulation.wait_for("qemu_args", "-nodefaults");
+    let args: Vec<String> = serde_json::from_str(&simulation.read("qemu_args")).unwrap();
+    assert!(args.iter().any(|arg| arg == "-nodefaults"));
+}
+
+#[test]
 fn guest_has_no_ps2_controller() {
     let mut simulation = Simulation::start("clean-once");
     simulation.wait_for("qemu_args", "i8042=off");

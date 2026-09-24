@@ -56,7 +56,8 @@ the compose file at the copy:
 repo=$(snouty doctor --offline --json | jq -r .settings.repository)
 
 for image in ghcr.io/your-org/app:v1 ghcr.io/your-org/worker:v1; do
-  copy="$repo/${image#*/}"
+  host=$(echo "${image%%/*}" | sed 's/:/__/')
+  copy="$repo/snouty-mirror/$host/${image#*/}"
   docker pull --platform linux/amd64 "$image"
   docker tag "$image" "$copy"
   docker push "$copy"
@@ -69,6 +70,12 @@ script prints, then launch as usual. snouty sees that the copy is already in
 your repository and uses it without pushing it again. Rerun the script whenever
 a private image changes.
 
-`${image#*/}` drops the registry host, so `ghcr.io/your-org/app:v1` becomes
-`$repo/your-org/app:v1`. This assumes every image names its registry host. If
-snouty uses podman, swap `docker` for `podman`.
+The copy keeps the registry host in its path, so `ghcr.io/your-org/app:v1`
+becomes `$repo/snouty-mirror/ghcr.io/your-org/app:v1`. This is the same path
+snouty uses when it pushes an image itself, and it keeps images from two
+registries apart. A port's `:` becomes `__`, because a path can't contain a
+colon. The script assumes every image names its registry host.
+
+Docker and podman keep separate image stores, and snouty picks podman when both
+are installed. Either launch with `SNOUTY_CONTAINER_ENGINE=docker`, or swap
+`docker` for `podman` in the script.

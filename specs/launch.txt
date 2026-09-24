@@ -21,7 +21,7 @@ stdout '^  ANTITHESIS_REPOSITORY +Container registry for pushing images\.$'
 
 # The help documents user-defined `attrs.*` params, which `runs show` lists.
 snouty launch --help
-stdout 'attrs\.\[a-zA-Z\]\[a-zA-Z0-9_-\]\*'
+stdout 'params with an `attrs\.` prefix'
 stdout '--param attrs\.team=payments'
 
 # The user specifies a webhook endpoint name via -w / --webhook (required).

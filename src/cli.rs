@@ -118,8 +118,7 @@ Extra parameters can be passed with --param:
     --param my.custom.property=value
 
 User-defined attributes are params with an `attrs.` prefix. The server records
-them on the run and `snouty runs show` lists them. Names match
-`attrs.[a-zA-Z][a-zA-Z0-9_-]*` and values are strings:
+them on the run and `snouty runs show` lists them:
   snouty launch -w basic_test --duration 30 \
     --param attrs.team=payments \
     --param attrs.branch=main \
@@ -744,7 +743,7 @@ workload length requested at launch. Elapsed is wall-clock time, which also
 spans provisioning, setup and teardown, so the two legitimately differ.
 Source is the `antithesis.source` the run was launched from, when the
 launcher recorded one. User-defined attributes (`--param attrs.<name>=<value>`
-at launch) are listed under Attributes, sorted by name with the prefix removed.
+at launch) are listed under Attributes.
 
 Incomplete runs also show the failure moment (Failure Hash/VTime) to pass to
 `runs logs`, and the Failure Reason when the run reports one. Use --web to

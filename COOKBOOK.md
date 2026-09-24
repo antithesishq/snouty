@@ -57,7 +57,7 @@ repo=$(snouty doctor --offline --json | jq -r .settings.repository)
 
 for image in ghcr.io/your-org/app:v1 ghcr.io/your-org/worker:v1; do
   copy="$repo/${image#*/}"
-  docker pull "$image"
+  docker pull --platform linux/amd64 "$image"
   docker tag "$image" "$copy"
   docker push "$copy"
   echo "image: $copy"

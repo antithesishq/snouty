@@ -19,6 +19,11 @@ stdout '^  ANTITHESIS_PASSWORD +Password \(deprecated\)\.$'
 stdout '^  ANTITHESIS_REPOSITORY +Container registry for pushing images\.$'
 ! stdout 'required when API key is not set'
 
+# The help documents user-defined `attrs.*` params, which `runs show` lists.
+snouty launch --help
+stdout 'params with an `attrs\.` prefix'
+stdout '--param attrs\.team=payments'
+
 # The user specifies a webhook endpoint name via -w / --webhook (required).
 ! snouty launch --duration 30
 stderr '--webhook.*'

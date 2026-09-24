@@ -88,6 +88,8 @@ Required env in staging mode: `ANTITHESIS_TENANT` plus either
 The `runs` specs require `ANTITHESIS_API_KEY` (every endpoint other than
 launch only accepts API key authentication).
 `ANTITHESIS_BASE_URL` is optional (defaults to `https://<tenant>.antithesis.com`).
+The harness also forwards `ANTITHESIS_EXTRA_HEADERS` and `ANTITHESIS_HTTPS_PROXY`
+when they are set.
 
 When `SNOUTY_STAGING` is set, the `mock-runs-server` directive becomes a
 pass-through that forwards those vars instead of starting the mock. Spec

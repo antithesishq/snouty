@@ -77,9 +77,12 @@ stderr '.*ANTITHESIS_PASSWORD.*'
 # scenario is exercised end to end rather than only against a mock of it. The
 # mock answers 401; the live gateway answers 403 for a bad key (the probes on
 # issue #180 recorded both). Either status is an authentication rejection, so
-# the assertion accepts both.
+# the assertion accepts both. Against staging, the empty ANTITHESIS_BASE_URL
+# sends the request to the tenant's own gateway: a proxy base URL can replace
+# the bad key with a real credential, and then the gateway accepts it.
 mock-server 401 ''
 env ANTITHESIS_API_KEY=testkey
+[staging] env ANTITHESIS_BASE_URL=
 ! snouty doctor
 stderr '.*Antithesis API rejected authentication.*'
 stderr '.*returned HTTP 40[13].*'

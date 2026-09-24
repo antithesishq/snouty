@@ -1,5 +1,5 @@
 use std::borrow::Cow;
-use std::collections::{HashMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::num::NonZeroU64;
 use std::time::Duration;
 
@@ -21,7 +21,7 @@ use crate::error::{ApiError, user_error};
 use crate::params::{
     ANT_CONFIG_IMAGE, ANT_DEBUGGING_INPUT_HASH, ANT_DEBUGGING_RUN_ID, ANT_DEBUGGING_SESSION_ID,
     ANT_DEBUGGING_VTIME, ANT_DESCRIPTION, ANT_DURATION, ANT_EVENT_DESCRIPTION, ANT_IMAGES,
-    ANT_IS_EPHEMERAL, ANT_REPORT_RECIPIENTS, ANT_SOURCE, ANT_TEST_NAME, Params,
+    ANT_IS_EPHEMERAL, ANT_REPORT_RECIPIENTS, ANT_SOURCE, ANT_TEST_NAME, ATTRS_PREFIX, Params,
 };
 use crate::render::{indent_lines, sanitize_multiline};
 use crate::settings::Settings;
@@ -190,6 +190,15 @@ impl RunDetail {
     /// The source the run was launched from (`antithesis.source`), if recorded.
     pub(crate) fn source(&self) -> Option<&str> {
         self.parameters.as_ref()?.antithesis_source.as_deref()
+    }
+
+    /// The run's `attrs.*` parameters, sorted by name with the prefix removed.
+    pub(crate) fn attrs(&self) -> BTreeMap<&str, &str> {
+        self.parameters
+            .iter()
+            .flat_map(|p| p.extra.iter())
+            .filter_map(|(k, v)| Some((k.strip_prefix(ATTRS_PREFIX)?, v.as_str())))
+            .collect()
     }
 
     /// The failure moment if it pins a real point in the run, otherwise `None`.
@@ -1612,6 +1621,24 @@ mod tests {
         // The 101st item is on the next page, and asking for it fetches one.
         assert!(stream.try_next().await.unwrap().is_some());
         assert_eq!(pages.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn run_detail_attrs_keeps_only_prefixed_params_sorted() {
+        let run: RunDetail = serde_json::from_str(
+            r#"{"run_id":"run-1","status":"completed","created_at":"2025-03-20T02:00:00Z",
+                "launcher":"nightly","parameters":{"antithesis.source":"main",
+                "attrs.team":"payments","attrs.branch":"main","my.custom":"x"}}"#,
+        )
+        .unwrap();
+        let attrs: Vec<_> = run.attrs().into_iter().collect();
+        assert_eq!(attrs, vec![("branch", "main"), ("team", "payments")]);
+
+        let bare: RunDetail = serde_json::from_str(
+            r#"{"run_id":"run-2","status":"completed","created_at":"2025-03-20T02:00:00Z","launcher":"nightly"}"#,
+        )
+        .unwrap();
+        assert!(bare.attrs().is_empty());
     }
 
     fn test_api_optionally_with_cache(

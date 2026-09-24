@@ -537,6 +537,8 @@ fn propagate_antithesis_env(env: &mut testscript_rs::TestEnvironment) -> testscr
         "ANTITHESIS_USERNAME",
         "ANTITHESIS_PASSWORD",
         "ANTITHESIS_TENANT",
+        "ANTITHESIS_EXTRA_HEADERS",
+        "ANTITHESIS_HTTPS_PROXY",
     ] {
         env.env_vars.remove(var);
     }
@@ -546,6 +548,8 @@ fn propagate_antithesis_env(env: &mut testscript_rs::TestEnvironment) -> testscr
         "ANTITHESIS_API_KEY",
         "ANTITHESIS_USERNAME",
         "ANTITHESIS_PASSWORD",
+        "ANTITHESIS_EXTRA_HEADERS",
+        "ANTITHESIS_HTTPS_PROXY",
     ] {
         if let Ok(v) = std::env::var(var) {
             env.set_env_var(var, &v);

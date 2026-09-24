@@ -2411,7 +2411,7 @@ fn raw_lines(
     })
 }
 
-struct FaultAnnotator {
+pub(crate) struct FaultAnnotator {
     active_fault_windows: ActiveFaultWindows,
     active_faults: Value,
 }
@@ -2431,7 +2431,7 @@ impl FaultAnnotator {
     /// Annotate one parsed log entry in place: advance the fault windows
     /// using the entry's vtime, strip ANSI from `output_text`, and attach the
     /// current `active_faults`.
-    fn annotate(&mut self, entry: &mut Value) {
+    pub(crate) fn annotate(&mut self, entry: &mut Value) {
         let mut update_faults = false;
 
         // The fault-window math runs directly in seconds. Entries without a

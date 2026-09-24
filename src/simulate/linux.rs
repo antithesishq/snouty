@@ -84,6 +84,8 @@ struct Output {
     json: bool,
     closed: bool,
     sender: tokio::sync::mpsc::Sender<OutputLine>,
+    annotator: crate::runs::FaultAnnotator,
+    renderer: crate::event_render::EventStreamRenderer,
 }
 
 struct OutputLine {
@@ -112,6 +114,8 @@ impl Output {
             json,
             closed: false,
             sender,
+            annotator: crate::runs::FaultAnnotator::default(),
+            renderer: crate::event_render::EventStreamRenderer::linear(false),
         })
     }
 
@@ -143,15 +147,45 @@ impl Output {
     }
 
     async fn event(&mut self, line: &str, summary: &mut Summary, phase: RunPhase) -> Result<()> {
-        if let Some(event) = events::parse_line(line)? {
+        let event = events::parse_line(line)?;
+        let mut entry = if event.is_some() || events::is_fault_injector_line(line) {
+            events::log_entry(line)?
+        } else {
+            None
+        };
+        if let Some(entry) = &mut entry {
+            self.annotator.annotate(entry);
+        }
+        if let Some(event) = event {
             summary.observe(&event, phase);
             if !self.closed {
-                self.line(if self.json {
-                    serde_json::to_string(&event)?
+                let line = if self.json {
+                    let mut value = serde_json::to_value(&event)?;
+                    if let Some(entry) = &entry {
+                        value["active_faults"] = entry["active_faults"].clone();
+                    }
+                    value.to_string()
                 } else {
-                    event.render()
-                })
-                .await?;
+                    let entry = entry.as_mut().expect("parsed events have a log entry");
+                    entry
+                        .as_object_mut()
+                        .expect("log entries are objects")
+                        .remove("active_faults");
+                    if matches!(
+                        &event.kind,
+                        events::EventKind::RolloutComplete { .. }
+                            | events::EventKind::ProcessSignal { .. }
+                    ) || matches!(&event.kind, events::EventKind::Log { .. })
+                        && entry.get("antithesis_error").is_some()
+                    {
+                        event.render()
+                    } else {
+                        let mut rendered = String::new();
+                        self.renderer.render_entry(entry, &mut rendered)?;
+                        rendered
+                    }
+                };
+                self.line(line).await?;
             }
         }
         Ok(())

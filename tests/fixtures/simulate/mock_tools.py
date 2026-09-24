@@ -84,6 +84,8 @@ elif name == 'ssh':
             record('restart_mode', script.splitlines()[0])
             log = Path.cwd() / 'instrumentation.log'
             log.write_text("11.2 [workload] [JSON] '{\"antithesis_assert\":{\"message\":\"balance stays positive\",\"assert_type\":\"always\",\"must_hit\":true,\"hit\":true,\"condition\":false}}'\n12.0 [workload] [STDOUT] 'still running after assertion'\n")
+            if mode == 'fault-annotation':
+                log.write_text("11.0 [fault_injector] [JSON] '{\"fault\":{\"name\":\"clog\",\"type\":\"network\",\"affected_nodes\":[\"workload\"],\"max_duration\":2}}'\n11.2 [workload] [JSON] '{\"antithesis_assert\":{\"message\":\"balance stays positive\",\"assert_type\":\"always\",\"must_hit\":true,\"hit\":true,\"condition\":false}}'\n")
             if mode == 'malformed-json':
                 log.write_text("12.0 [workload] [JSON] '{broken json}'\n")
             if mode in ('supervisor-failure', 'clean-once', 'missing-guest', 'default-image'):

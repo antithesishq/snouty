@@ -39,7 +39,7 @@ overrides the repository.
 ```
 PR #123 comment by <login> (id <id>)
 PR #123 review comment by <login> on <path> (id <id>)
-PR #123 review by <login>: <APPROVED|CHANGES_REQUESTED|COMMENTED>
+PR #123 review by <login>: <APPROVED|CHANGES_REQUESTED|COMMENTED> (id <id>)
 PR #123 check <name>: <failure|timed_out|cancelled|...>
 PR #123 all checks passed for <short-sha>
 PR #123 has no checks
@@ -55,6 +55,14 @@ after it proves nothing. Fix gh, then restart the watcher. The line prints
 once per distinct message, so a permanent failure does not repeat.
 
 Every line names its PR, so one watcher can cover several PRs at once.
+
+A review line prints for every submitted review, an empty one too. The list
+of review comments can lag a review's submission by minutes, so read the
+review's own inline comments at once, with its id:
+
+```
+gh api repos/<owner>/<repo>/pulls/<PR>/reviews/<id>/comments
+```
 
 An event line carries only metadata. Read the full comment, review, or check
 output through the API before you act on it.

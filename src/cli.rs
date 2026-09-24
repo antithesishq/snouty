@@ -644,25 +644,25 @@ pub struct DebugArgs {
 /// [`classified_blocks_help`].
 macro_rules! run_structure_help {
     () => {
-        "How a run is structured: An Antithesis run is a tree of timelines, not one\n\
-         history. A timeline is a series of input_hashes. An input_hash is a hash of\n\
-         every input Antithesis sent up to that point. Antithesis branches a timeline\n\
-         by sending an input from some moment, which creates a new input_hash. Every\n\
-         event has an input_hash and a vtime, and one input_hash can have zero or more\n\
-         events. Events that share an input_hash are on the same timeline. vtime is\n\
-         the virtual time at which the event was emitted on its timeline. Antithesis\n\
-         virtualizes the clock, so vtime can jump forward by any amount, but it never\n\
-         goes backward. vtime orders events only within one timeline."
+        r#"How a run is structured: An Antithesis run is a tree of timelines, not one
+history. A timeline is a series of input_hashes. An input_hash is a hash of
+every input Antithesis sent up to that point. Antithesis branches a timeline
+by sending an input from some moment, which creates a new input_hash. Every
+event has an input_hash and a vtime, and one input_hash can have zero or more
+events. Events that share an input_hash are on the same timeline. vtime is
+the virtual time at which the event was emitted on its timeline. Antithesis
+virtualizes the clock, so vtime can jump forward by any amount, but it never
+goes backward. vtime orders events only within one timeline."#
     };
 }
 
 macro_rules! classified_blocks_help {
     () => {
-        "Matching events print as classified blocks: a `moment HASH` divider opens\n\
-         each timeline segment. Use `snouty runs logs <run_id> <hash>` to stream logs\n\
-         to the branch's current end. Each event below the divider renders on one\n\
-         line with the Antithesis event shapes — SDK assertions, faults, container\n\
-         lifecycle, test composer — each in their own concise form."
+        r#"Matching events print as classified blocks: a `moment HASH` divider opens
+each timeline segment. Use `snouty runs logs <run_id> <hash>` to stream logs
+to the branch's current end. Each event below the divider renders on one
+line with the Antithesis event shapes — SDK assertions, faults, container
+lifecycle, test composer — each in their own concise form."#
     };
 }
 
@@ -945,7 +945,9 @@ object on its own line:
     /// Stream moment logs for a run
     #[command(
         long_about = concat!(
-            "Stream the logs along one branch of the run's multiverse.\n\n",
+            r#"Stream the logs along one branch of the run's multiverse.
+
+"#,
             run_structure_help!(),
             r#"
 
@@ -1060,25 +1062,32 @@ JSON object on its own line, and the trailer is left out:
     /// Search events in a run
     #[command(
         long_about = concat!(
-            "Search a run's events for one or more substrings (all must match).\n\n",
-            "A term is matched against the text an event carries: log output, an\n\
-             assertion's message and source function, and a test-composer command.\n\n",
+            r#"Search a run's events for one or more substrings (all must match).
+
+A term is matched against the text an event carries: log output, an
+assertion's message and source function, and a test-composer command.
+
+"#,
             classified_blocks_help!(),
-            "\n\nMatching runs server-side through the events-search API, the same route\n\
-             `snouty runs search` takes. Every term must match, case-insensitively. The\n\
-             result is a sample of the matching events in no fixed order, capped at\n\
-             --limit. Read `snouty runs search --help` to learn how to read a sample\n\
-             and how the run's timelines relate the events.\n\n\
-             For log output, the equivalent search is:\n\
-             \x20 snouty runs search <run_id> \\\n\
-             \x20   'filter(ev => [\"a\", \"b\"].every(t =>\n\
-             \x20     (ev.output_text || \"\").toLowerCase().includes(t)))'\n\
-             with each term in lower case. `snouty --verbose runs events ...` prints\n\
-             the exact query, which also matches assertion messages and test-composer\n\
-             commands.\n\n\
-             Add --json for machine-readable output. Each event prints as one\n\
-             JSON object on its own line:\n\
-             \x20 snouty --json runs events <run_id> -m error | jq -r .moment.vtime"
+            r#"
+
+Matching runs server-side through the events-search API, the same route
+`snouty runs search` takes. Every term must match, case-insensitively. The
+result is a sample of the matching events in no fixed order, capped at
+--limit. Read `snouty runs search --help` to learn how to read a sample
+and how the run's timelines relate the events.
+
+For log output, the equivalent search is:
+  snouty runs search <run_id> \
+    'filter(ev => ["a", "b"].every(t =>
+      (ev.output_text || "").toLowerCase().includes(t)))'
+with each term in lower case. `snouty --verbose runs events ...` prints
+the exact query, which also matches assertion messages and test-composer
+commands.
+
+Add --json for machine-readable output. Each event prints as one
+JSON object on its own line:
+  snouty --json runs events <run_id> -m error | jq -r .moment.vtime"#
         )
     )]
     Events {

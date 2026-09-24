@@ -43,11 +43,14 @@ empty timeline.
 
 *snouty 0.7.2 · 2026-09-23 · source: [#298](https://github.com/antithesishq/snouty/issues/298)*
 
-A test run cannot pull from a registry that needs your credentials. `snouty
-launch` cannot tell that a registry is private, because your container engine
-confirms the image with your credentials. The launch pins the private address,
-and the run fails when it pulls the image. Copy each private image into your
-repository, and name the copy in the compose file.
+If your compose file uses images from a private registry, the test run can't
+pull them, because it doesn't have your credentials. snouty won't catch this at
+launch: it checks each image with your local container engine, which is logged
+in as you, so the private image looks fine. The run then fails when Antithesis
+tries to pull it.
+
+The fix is to copy each private image into your Antithesis repository and point
+the compose file at the copy:
 
 ```sh
 repo=$(snouty doctor --offline --json | jq -r .settings.repository)
@@ -61,10 +64,11 @@ for image in ghcr.io/your-org/app:v1 ghcr.io/your-org/worker:v1; do
 done
 ```
 
-Put each printed `image:` line in `docker-compose.yaml`, then launch as usual.
-snouty finds the copy in your repository and pins it there, so the launch
-pushes nothing again. Run the script again when a private image changes.
+Replace each private image in `docker-compose.yaml` with the `image:` line the
+script prints, then launch as usual. snouty sees that the copy is already in
+your repository and uses it without pushing it again. Rerun the script whenever
+a private image changes.
 
-`${image#*/}` removes the registry host, so `ghcr.io/your-org/app:v1` becomes
-`$repo/your-org/app:v1`. It expects every image to name its host. Use `podman`
-in place of `docker` if podman is your engine.
+`${image#*/}` drops the registry host, so `ghcr.io/your-org/app:v1` becomes
+`$repo/your-org/app:v1`. This assumes every image names its registry host. If
+snouty uses podman, swap `docker` for `podman`.

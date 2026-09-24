@@ -23,13 +23,18 @@ stdout 'Unpauses fault injection after setup_complete unless --disable-faults is
 stdout 'Waits for setup_complete before starting test composer'
 stdout 'timeout'
 ! stdout '\-\-shell'
-stdout '1 CPU and 15000 MiB'
+stdout '1 CPU and 15000 MiB of memory by default'
+stdout '\-\-memory <MEMORY>'
 stdout 'newline-delimited events'
 stdout 'annotated with active faults'
 stdout 'same vtime, source, and event rendering as .runs logs.'
 ! stdout '\-\-accel'
-! stdout '\-\-memory'
 ! stdout '\-\-cpus'
+
+! snouty simulate empty --guest-image guest:latest --memory 0
+stderr '0 is not in 1\.\.=15000'
+! snouty simulate empty --guest-image guest:latest --memory 15001
+stderr '15001 is not in 1\.\.=15000'
 
 snouty completions bash
 ! stdout '\-\-shell'

@@ -660,7 +660,7 @@ macro_rules! classified_blocks_help {
     () => {
         r#"Matching events print as classified blocks: a `moment HASH` divider opens
 each timeline segment. Use `snouty runs logs <run_id> <hash>` to stream logs
-to the branch's current end. Each event below the divider renders on one
+to the timeline's current end. Each event below the divider renders on one
 line with the Antithesis event shapes — SDK assertions, faults, container
 lifecycle, test composer — each in their own concise form."#
     };
@@ -724,8 +724,10 @@ Verbs:
 
 The string verbs (matches/contains/not_matches/excludes) address four fields:
 output_text, and container, stream, and source, which read the event's
-source.container, source.stream, and source.name. In JS, read every field
-from `ev`, e.g. `ev.source.container` or `ev.moment.vtime`.
+source.container, source.stream, and source.name. output_text holds log
+output only. An SDK assertion's message is in ev.antithesis_assert.message,
+and a test-composer command is in ev.command. In JS, read every field from
+`ev`, e.g. `ev.source.container` or `ev.moment.vtime`.
 
 fold: the reducer takes the state s and one event ev, and returns
 [events, s']. events is an array of the events to output: [ev] outputs ev,
@@ -945,17 +947,17 @@ object on its own line:
     /// Stream moment logs for a run
     #[command(
         long_about = concat!(
-            r#"Stream the logs along one branch of the run's multiverse.
+            r#"Stream the logs of one timeline of a run.
 
 "#,
             run_structure_help!(),
             r#"
 
-INPUT_HASH identifies the branch: the hash of every input fed to the
-simulation from the root moment to the branch's start. Logs stream from the
-root (or --begin-vtime) to the branch's current end; a run in progress can
-extend the branch, so the same INPUT_HASH can return more logs later. Give
-VTIME to end the stream at that moment instead.
+INPUT_HASH identifies the timeline: the hash of every input Antithesis sent
+from the root to that point. Logs stream from the root (or --begin-vtime) to
+the timeline's current end; a run in progress can extend the timeline, so
+the same INPUT_HASH can return more logs later. Give VTIME to end the stream
+at that moment instead.
 
 Output: a `moment HASH` divider opens each timeline segment, and each
 event under it renders on one line as `VTIME [source] payload` — Antithesis
@@ -971,11 +973,11 @@ on its own line, and --raw passes the server's events through unchanged:
         /// Run ID
         run_id: String,
 
-        /// Input hash identifying the branch to stream
+        /// Input hash identifying the timeline to stream
         #[arg(allow_hyphen_values = true)]
         input_hash: String,
 
-        /// Virtual time of the moment to end the stream at; omit it to stream to the branch's current end
+        /// Virtual time of the moment to end the stream at; omit it to stream to the timeline's current end
         // Typed, so a malformed vtime is rejected by clap instead of by the
         // server. `allow_hyphen_values` is kept here (unlike `runs exec`),
         // because this command has always accepted a hyphen-led vtime.

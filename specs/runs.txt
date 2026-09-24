@@ -263,7 +263,7 @@ stdout '^moment -?[0-9]+$'
 [!staging] stdout '^moment -456$'
 [!staging] stdout '^2\.0       \[app\] \{"level":"warn","msg":"slow request"\}$'
 
-# The divider supplies the hash for a log stream to the branch's current end.
+# The divider supplies the hash for a log stream to the timeline's current end.
 snouty runs events --help
 stdout 'a `moment HASH` divider'
 stdout 'snouty runs logs <run_id> <hash>'
@@ -478,7 +478,7 @@ stderr '.*'
 # CATALOG on the hit:false registrations the SDK emits at startup) with its
 # label and message; a fault shows its type, disruption and nodes;
 # test-composer records show their task lifecycle or key=value chatter.
-# Without VTIME the stream runs to the branch's current end.
+# Without VTIME the stream runs to the timeline's current end.
 mock-runs-server
 snouty runs logs run-1 -123
 stdout '^moment -123$'

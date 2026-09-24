@@ -1650,7 +1650,7 @@ def build_stories(d: Discovery) -> list[Story]:
             "I want to find events that mention a particular keyword.",
             f"At least one matching event row, and the keyword '{kw}' appears in the output. "
             "A `moment HASH` divider groups `VTIME [source] payload` lines. Its hash "
-            "is sufficient for `runs logs` to stream to the branch's current end. "
+            "is sufficient for `runs logs` to stream to the timeline's current end. "
             "When more events match than the default limit of "
             "50, a stderr note says the output stopped at the limit.",
             ["runs", "events", d.success, "--match", kw],
@@ -1692,7 +1692,7 @@ def build_stories(d: Discovery) -> list[Story]:
             "I want to run an event-set DSL query and read the matching events.",
             f"At least one matching event line, keyword '{kw}' visible. A `moment HASH` "
             "divider groups `VTIME [source] payload` lines. Its hash is sufficient for "
-            "`runs logs` to stream to the branch's current end. When more "
+            "`runs logs` to stream to the timeline's current end. When more "
             "events match than the default limit of 50, a stderr note says the output "
             "stopped at the limit.",
             ["runs", "search", d.success, f'contains({{output_text: "{kw}"}})'],

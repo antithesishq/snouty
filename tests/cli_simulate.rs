@@ -207,6 +207,17 @@ fn guest_has_no_vga_and_retains_its_network_interface_address() {
 }
 
 #[test]
+fn guest_has_no_ps2_controller() {
+    let mut simulation = Simulation::start("clean-once");
+    simulation.wait_for("qemu_args", "i8042=off");
+    let args: Vec<String> = serde_json::from_str(&simulation.read("qemu_args")).unwrap();
+    assert!(
+        args.windows(2)
+            .any(|args| args == ["-machine", "pc,i8042=off"])
+    );
+}
+
+#[test]
 fn interrupted_startup_cleanup_ignores_unowned_paths() {
     let checkout = tempfile::tempdir().unwrap();
     let sentinel = checkout.path().join("sentinel");

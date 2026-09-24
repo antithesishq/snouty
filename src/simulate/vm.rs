@@ -150,6 +150,8 @@ impl Vm {
                     if accelerated { "kvm" } else { "tcg" },
                     "-cpu",
                     if accelerated { "host" } else { "max" },
+                    "-machine",
+                    "pc,i8042=off",
                     "-smp",
                     "1",
                     "-m",

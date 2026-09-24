@@ -288,23 +288,13 @@ pub(super) async fn run(
             let remote: Vec<RemoteImage> = serde_json::from_str(&guest.run_script(&script).await?)?;
             let same = remote.first().is_some_and(|image| image.id == local.id);
             if !same {
-                changed.push((reference, local.id.to_string()));
+                changed.push(reference);
             }
         }
         if !changed.is_empty() {
             let archive = run_dir.path().join("images.tar");
-            let ids: Vec<_> = changed.iter().map(|(_, id)| id.clone()).collect();
-            images.save(&ids, &archive).await?;
+            images.save(&changed, &archive).await?;
             guest.load_images(&archive).await?;
-            for (reference, id) in changed {
-                guest
-                    .run_script(&format!(
-                        "podman tag {} {}\n",
-                        shell_quote(&id),
-                        shell_quote(&reference)
-                    ))
-                    .await?;
-            }
             std::fs::remove_file(archive)?;
         }
         instrumentation = Some(guest.instrumentation_log().to_owned());

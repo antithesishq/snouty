@@ -54,16 +54,22 @@ def gh_json(args: list[str]) -> Any | None:
     failure prints one line, because a gh that fails on every poll reads
     exactly like a quiet PR — an old gh that rejects a --json field kept
     the watcher silent for a whole day.
+
+    The exit status decides failure, not the output: on an HTTP error
+    `gh api` exits non-zero but still prints the error body, which is
+    valid JSON.
     """
     proc = subprocess.run(["gh", *args], capture_output=True, text=True)
-    try:
-        return json.loads(proc.stdout)
-    except json.JSONDecodeError:
-        message = next((ln for ln in proc.stderr.splitlines() if ln.strip()), "no output")
-        if message not in reported_failures:
-            reported_failures.add(message)
-            emit(f"gh failed: {message}")
-        return None
+    if proc.returncode == 0:
+        try:
+            return json.loads(proc.stdout)
+        except json.JSONDecodeError:
+            pass
+    message = next((ln for ln in proc.stderr.splitlines() if ln.strip()), "no output")
+    if message not in reported_failures:
+        reported_failures.add(message)
+        emit(f"gh failed: {message}")
+    return None
 
 
 def paginate(path: str) -> Iterator[Any]:
@@ -122,7 +128,7 @@ def poll_pr(
             str(pr),
             *repo_flag,
             "--json",
-            "state,author,comments,reviews,statusCheckRollup,headRefOid,baseRefName,baseRefOid",
+            "state,author,comments,statusCheckRollup,headRefOid,baseRefName,baseRefOid",
         ]
     )
     if view is None:
@@ -150,11 +156,17 @@ def poll_pr(
         )
         for c in view["comments"]
     ] + [
-        (f"review:{r['id']}", login_of(r), f"PR #{pr} review by {login_of(r)}: {r['state']}")
-        for r in view["reviews"]
-        # An empty COMMENTED review only groups inline comments, which emit
-        # their own events below.
-        if r["state"] != "COMMENTED" or r["body"]
+        # Every submitted review emits, an empty COMMENTED one too, with its
+        # REST id: the list of review comments below can lag a review's
+        # submission by minutes, and the id lets the reader fetch the
+        # review's own inline comments.
+        (
+            f"review:{r['id']}",
+            login_of(r),
+            f"PR #{pr} review by {login_of(r)}: {r['state']} (id {r['id']})",
+        )
+        for r in paginate(f"repos/{slug}/pulls/{pr}/reviews")
+        if r["state"] != "PENDING"
     ] + [
         (
             f"rc:{rc['id']}",

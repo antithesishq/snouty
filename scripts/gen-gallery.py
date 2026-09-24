@@ -1055,6 +1055,29 @@ def expect_message(*needles: str):
     return chk
 
 
+def caret_under(query: str, segment: str):
+    """The rejection prints `query` on a line of its own, and the caret line
+    right under it points into `segment`, the part of the query that fails."""
+    start = query.index(segment)
+    end = start + len(segment)
+
+    def chk(sr: StoryRun, reg: Registry) -> tuple[bool, str]:
+        lines = sr.result.combined.splitlines()
+        for i, line in enumerate(lines[:-1]):
+            if line.strip() != query:
+                continue
+            indent = len(line) - len(line.lstrip())
+            caret = lines[i + 1]
+            if caret.strip() != "^":
+                return (False, f"no caret line under the query: {caret!r}")
+            col = caret.index("^") - indent
+            ok = start <= col <= end
+            return (ok, f"caret at query column {col}, failing segment spans {start}..{end}")
+        return (False, "the query is not on a line of its own")
+
+    return chk
+
+
 def contains_all(*needles: str):
     def chk(sr: StoryRun, reg: Registry) -> tuple[bool, str]:
         text = sr.result.combined
@@ -1215,12 +1238,8 @@ def verbose_api_calls(sr: StoryRun, reg: Registry) -> tuple[bool, str]:
 
 
 def event_multi_match(needle: str, second: str):
-    """Both needles must appear in every returned row's raw JSON: the search
-    backend ANDs them server-side. No count comparison against the
-    single-needle story — that one runs on the GET events backend, whose
-    curated haystack (output text, assertion messages, function names, test
-    commands) is narrower than the raw JSON the search backend matches, so
-    the two row counts are not comparable."""
+    """Both needles must appear in every returned row's raw JSON: the server
+    requires every needle."""
 
     def chk(sr: StoryRun, reg: Registry) -> tuple[bool, str]:
         rows = sr.rows or []
@@ -1373,6 +1392,15 @@ def _doctor_env(
 # username/password so the API key is reported on its own.
 def _reachable_doctor_env() -> dict[str, str | None]:
     return {"ANTITHESIS_USERNAME": None, "ANTITHESIS_PASSWORD": None}
+
+
+# A long query whose third verb names an invalid field, so the server's caret lands
+# in the middle of the query rather than at its start.
+INVALID_QUERY_SEGMENT = 'not_matches({host: "setup"})'
+INVALID_QUERY = (
+    'contains({output_text: "error"}).filter(ev => ev.moment.vtime > 10)'
+    f'.{INVALID_QUERY_SEGMENT}.narrow(["output_text"])'
+)
 
 
 def build_stories(d: Discovery) -> list[Story]:
@@ -1622,7 +1650,7 @@ def build_stories(d: Discovery) -> list[Story]:
             "I want to find events that mention a particular keyword.",
             f"At least one matching event row, and the keyword '{kw}' appears in the output. "
             "A `moment HASH` divider groups `VTIME [source] payload` lines. Its hash "
-            "is sufficient for `runs logs` to stream to the branch's current end. "
+            "is sufficient for `runs logs` to stream to the timeline's current end. "
             "When more events match than the default limit of "
             "50, a stderr note says the output stopped at the limit.",
             ["runs", "events", d.success, "--match", kw],
@@ -1632,27 +1660,13 @@ def build_stories(d: Discovery) -> list[Story]:
             "runs-events-multi-match",
             "AND-narrow with two --match needles",
             "I want to narrow results to events that mention BOTH of two terms. "
-            "Several terms route through the events-search API (the `runs-search` "
-            "unstable feature), which ANDs them server-side against the raw event JSON.",
+            "Several terms route through the events-search API, which ANDs them "
+            "server-side.",
             f"At least one row, and every row's raw JSON contains both '{kw}' and '{kw2}'. "
             "When more events match than the default limit of 50, a stderr note says "
             "the output stopped at the limit.",
             ["runs", "events", d.success, "--match", kw, "--match", kw2],
             event_multi_match(kw, kw2),
-            env={"SNOUTY_UNSTABLE_FEATURES": "runs-search"},
-        ),
-        Story(
-            "runs-events-multi-gated",
-            "Two --match needles without the events-search API",
-            "I pass two terms but the `runs-search` feature is off; I want a clear "
-            "refusal that names the fix, not a silent approximation.",
-            "A clear error saying multiple terms require the events-search API, with the "
-            "feature variable to set or the advice to search one term. Non-zero exit.",
-            ["runs", "events", d.success, "--match", kw, "--match", kw2],
-            expect_message("multiple search terms require the events-search API"),
-            json_capable=False,
-            expect_ok=False,
-            env={"SNOUTY_UNSTABLE_FEATURES": None},
         ),
         Story(
             "runs-events-no-results",
@@ -1671,19 +1685,18 @@ def build_stories(d: Discovery) -> list[Story]:
             ["runs", "events", d.fail, "--match", d.fail_event_kw],
             non_empty_table,
         ),
-        # -- search (event-set DSL; gated behind the runs-search feature) ----
+        # -- search (event-set DSL) -------------------------------------------
         Story(
             "runs-search-contains",
             f"Query events with the DSL: contains '{kw}'",
             "I want to run an event-set DSL query and read the matching events.",
             f"At least one matching event line, keyword '{kw}' visible. A `moment HASH` "
             "divider groups `VTIME [source] payload` lines. Its hash is sufficient for "
-            "`runs logs` to stream to the branch's current end. When more "
+            "`runs logs` to stream to the timeline's current end. When more "
             "events match than the default limit of 50, a stderr note says the output "
             "stopped at the limit.",
             ["runs", "search", d.success, f'contains({{output_text: "{kw}"}})'],
             event_keyword_present(kw),
-            env={"SNOUTY_UNSTABLE_FEATURES": "runs-search"},
         ),
         Story(
             "runs-search-limit",
@@ -1694,7 +1707,6 @@ def build_stories(d: Discovery) -> list[Story]:
             "note names the limit and says more results may be available.",
             ["runs", "search", d.success, f'contains({{output_text: "{kw}"}})', "-n", "3"],
             rows_at_most_with_limit_note(3),
-            env={"SNOUTY_UNSTABLE_FEATURES": "runs-search"},
         ),
         Story(
             "runs-search-no-results",
@@ -1709,7 +1721,6 @@ def build_stories(d: Discovery) -> list[Story]:
             ],
             expect_message("No events matched the query"),
             json_capable=False,
-            env={"SNOUTY_UNSTABLE_FEATURES": "runs-search"},
         ),
         Story(
             "runs-search-check-valid",
@@ -1719,35 +1730,20 @@ def build_stories(d: Discovery) -> list[Story]:
             ["runs", "search", d.success, 'contains({output_text: "x"})', "--check"],
             expect_message("query is valid"),
             json_capable=False,
-            env={"SNOUTY_UNSTABLE_FEATURES": "runs-search"},
         ),
         Story(
             "runs-search-check-invalid",
             "Validate an invalid query",
-            "My query has a bad verb; I want the validator to tell me what is wrong. "
-            "(Known server limitation: current tenants answer an invalid query with a "
-            "generic 500 instead of the documented 400, so judge how snouty presents "
-            "that unhelpful answer.)",
-            "A non-zero exit with an error a human can act on — at minimum, it must be "
-            "clear the query (not snouty) is the likely problem.",
-            ["runs", "search", d.success, 'bogus_verb({x: "y"})', "--check"],
-            expect_message("API error"),
+            "My long query names a field the string verbs do not have, in its third "
+            "verb; I want the validator to show me exactly where.",
+            "A non-zero exit with the server's rejection: the query on its own line, "
+            "a caret under the bad field in the middle of the query, and the "
+            "reason naming the valid fields. It must be clear the query (not snouty) "
+            "is the problem.",
+            ["runs", "search", d.success, INVALID_QUERY, "--check"],
+            caret_under(INVALID_QUERY, INVALID_QUERY_SEGMENT),
             json_capable=False,
             expect_ok=False,
-            env={"SNOUTY_UNSTABLE_FEATURES": "runs-search"},
-        ),
-        Story(
-            "runs-search-gated",
-            "Invoke `runs search` while the feature is off",
-            "I typed `runs search` without enabling the unstable feature; I want to "
-            "learn how to enable it, not a bare 'unrecognized subcommand'.",
-            "A clear refusal naming the feature and the exact variable to set, plus a "
-            "pointer to `--help`. Non-zero exit.",
-            ["runs", "search", d.success, 'contains({output_text: "x"})'],
-            expect_message("unstable feature"),
-            json_capable=False,
-            expect_ok=False,
-            env={"SNOUTY_UNSTABLE_FEATURES": None},
         ),
         # -- logs -----------------------------------------------------------
         Story(
@@ -2131,18 +2127,18 @@ def build_help_stories(d: Discovery) -> list[Story]:
             "help-runs-events",
             "Learn to search events and chain into logs",
             "I want the help to explain `moment HASH` dividers and `VTIME [source] payload` "
-            "lines, that the hash alone feeds `runs logs`, and when multiple terms need the "
-            "events-search feature.",
+            "lines, that the hash alone feeds `runs logs`, and that several terms must all "
+            "match, through the events-search API.",
             ["runs", "events"],
             ["runs", "events", s, "--match", d.event_keyword],
         ),
         _help_story(
             "help-runs-search",
             "Learn the event-set DSL query command",
-            "I want the help to explain the QUERY syntax (verbs), the unstable-feature "
-            "gate and how to enable it, the mode switches, and the output line format. "
-            "Help-only: the command is gated, so no default output is captured.",
+            "I want the help to explain the QUERY syntax (verbs), the tenant release the "
+            "events-search API needs, the mode switches, and the output line format.",
             ["runs", "search"],
+            ["runs", "search", s, f'contains({{output_text: "{d.event_keyword}"}})'],
         ),
         _help_story(
             "help-runs-logs",

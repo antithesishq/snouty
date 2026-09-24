@@ -168,13 +168,12 @@ For any one setting, snouty uses the first value it finds, highest precedence fi
 A few subcommands depend on an Antithesis API that is still changing shape, so snouty keeps them behind a gate. Name the features you want in `SNOUTY_UNSTABLE_FEATURES`, as a comma-separated list. A gated command is hidden from `--help` until its feature is on, and fails as an unrecognized subcommand when it is off.
 
 ```sh
-export SNOUTY_UNSTABLE_FEATURES="runs-search,runs-exec"
+export SNOUTY_UNSTABLE_FEATURES="runs-exec"
 ```
 
-| Feature       | Enables                                                                            |
-| ------------- | ---------------------------------------------------------------------------------- |
-| `runs-search` | `snouty runs search`, and routes `snouty runs events` through the events-search API. Needs tenant release 58.11 or newer. |
-| `runs-exec`   | `snouty runs exec`. The execute-command API is unavailable on most tenants.        |
+| Feature     | Enables                                                                     |
+| ----------- | --------------------------------------------------------------------------- |
+| `runs-exec` | `snouty runs exec`. The execute-command API is unavailable on most tenants. |
 
 Anything behind this gate can change its behavior, its flags, or its id, or go away, in any release. `snouty doctor` lists the features that are on, and reports when your tenant is too old to serve one.
 

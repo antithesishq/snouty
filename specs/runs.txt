@@ -263,7 +263,7 @@ stdout '^moment -?[0-9]+$'
 [!staging] stdout '^moment -456$'
 [!staging] stdout '^2\.0       \[app\] \{"level":"warn","msg":"slow request"\}$'
 
-# The divider supplies the hash for a log stream to the branch's current end.
+# The divider supplies the hash for a log stream to the timeline's current end.
 snouty runs events --help
 stdout 'a `moment HASH` divider'
 stdout 'snouty runs logs <run_id> <hash>'
@@ -277,19 +277,10 @@ snouty runs logs --help
 stdout 'a `moment HASH` divider'
 ! stdout 'moment HASH VTIME'
 
-# Multiple needles need the events-search API to AND them server-side. With
-# the `runs-search` feature off, the command refuses up front and names the
-# fix — the old behavior (match one needle server-side, filter the rest
-# client-side) silently second-guessed the server's own filter and is gone.
+# Several needles are matched server-side, every one of them. The old behavior
+# (match one needle server-side, filter the rest client-side) silently
+# second-guessed the server's own filter and is gone.
 mock-runs-server
-! snouty runs events run-1 --match request --match slow
-stderr 'multiple search terms require the events-search API'
-stderr 'SNOUTY_UNSTABLE_FEATURES=runs-search'
-
-# With the `runs-search` feature on, `runs events` routes through the
-# events-search endpoint: every needle is matched server-side.
-mock-runs-server
-env SNOUTY_UNSTABLE_FEATURES=runs-search
 [!staging] snouty runs events $R_run_id --match request --match slow
 [staging] snouty runs events $R_run_id --match fault --match network --limit 3
 [!staging] stdout '^moment -456$'
@@ -298,24 +289,17 @@ env SNOUTY_UNSTABLE_FEATURES=runs-search
 mock-runs-server
 snouty runs events $R_run_id --match starting --match nonexistent
 stderr 'No events matched "starting nonexistent"\.'
-env SNOUTY_UNSTABLE_FEATURES=
 
 # A needle reaches the text an event carries — log output, an assertion's
 # message and source function, a test-composer command — and nothing else.
 # The name of a JSON field is not text the event reported, so it matches no
-# event. Both backends answer the same way: enabling the feature must not
-# change which events a search returns.
+# event.
 #    `IPT_bytes_out` is a field every event carries. The events-search
 #    backend answered this needle with every event in the run until snouty
 #    stopped matching against `JSON.stringify(ev)` (issue #252).
 mock-runs-server
 snouty runs events $R_run_id --match IPT_bytes_out
 stderr 'No events matched "IPT_bytes_out"\.'
-mock-runs-server
-env SNOUTY_UNSTABLE_FEATURES=runs-search
-snouty runs events $R_run_id --match IPT_bytes_out
-stderr 'No events matched "IPT_bytes_out"\.'
-env SNOUTY_UNSTABLE_FEATURES=
 
 # `snouty --json runs events` outputs raw NDJSON.
 mock-runs-server
@@ -494,7 +478,7 @@ stderr '.*'
 # CATALOG on the hit:false registrations the SDK emits at startup) with its
 # label and message; a fault shows its type, disruption and nodes;
 # test-composer records show their task lifecycle or key=value chatter.
-# Without VTIME the stream runs to the branch's current end.
+# Without VTIME the stream runs to the timeline's current end.
 mock-runs-server
 snouty runs logs run-1 -123
 stdout '^moment -123$'
@@ -647,49 +631,34 @@ mock-runs-server
 ! snouty runs events run-1 --match x --limit 0
 stderr 'invalid value .0.'
 
-# The server enforces the ceiling of 1000 and answers 400 above it.
+# The events-search endpoint accepts at most 999, so clap rejects more before
+# any request.
 mock-runs-server
-[!staging] ! snouty runs events $R_run_id --match x --limit 1001
-[!staging] stderr 'out of the range 1\.\.=1000'
+! snouty runs events run-1 --match x --limit 1000
+stderr 'invalid value .1000.'
+stderr 'from 1 to 999'
 
-# With the `runs-search` feature on, `runs events` routes through the search
-# endpoint, which caps its stream at the requested limit. (That endpoint's own
-# ceiling is still 999; the server answers 400 above it.)
+# The search endpoint caps its stream at the requested limit.
 mock-runs-server
-env SNOUTY_UNSTABLE_FEATURES=runs-search
 snouty --json runs events $R_run_id --match parallel_driver_fetch --limit 1
 [!staging] stdout '"vtime":400\.5'
 [!staging] ! stdout '"vtime":401\.75'
 
-# Human mode prints the same note through that backend.
+# Human mode prints the same note.
 mock-runs-server
 [!staging] snouty runs events $R_run_id --match parallel_driver_fetch --limit 1
 [!staging] stdout '400\.5'
 [!staging] ! stdout '401\.75'
 [!staging] stderr 'Showing up to 1 results\. Additional results may be available\.'
 
-# Still with the feature on: the tenant is assumed to serve the search
-# endpoint, so its 404 simply means the run — the error says "run not found"
-# and suggests turning the feature off on a tenant that predates the API.
+# The tenant is assumed to serve the search endpoint, so its 404 simply means
+# the run — the error says "run not found".
 mock-runs-server
 ! snouty runs events no-such-run --match anything
 stderr 'run not found: no-such-run'
 mock-runs-server
 ! snouty runs events no-such-run --match one --match two
 stderr 'run not found: no-such-run'
-env SNOUTY_UNSTABLE_FEATURES=
-
-# `snouty runs search` is gated behind the `runs-search` unstable feature,
-# because the events-search API does not honor its documented contract yet.
-# Invoking it while the feature is off is refused with the fix; specs in
-# features.txt cover the gate mechanics themselves.
-mock-runs-server
-! snouty runs search run-1 'contains({output_text: "x"})'
-stderr 'unstable feature'
-stderr 'SNOUTY_UNSTABLE_FEATURES=runs-search'
-
-# The feature stays on for the rest of the `runs search` specs.
-env SNOUTY_UNSTABLE_FEATURES=runs-search
 
 # `snouty runs search` runs one event-set DSL query server-side and prints
 # each matching event as a classified block under its `moment HASH`
@@ -740,10 +709,10 @@ mock-runs-server
 ! snouty runs search run-1 'contains({output_text: "x"})' --limit 0
 stderr 'invalid value .0.'
 
-# The server enforces the ceiling of 999 and answers 400 above it.
+# The same ceiling of 999 applies, checked before any request.
 mock-runs-server
-[!staging] ! snouty runs search $R_run_id 'contains({output_text: "x"})' --limit 1000
-[!staging] stderr 'out of the range 1\.\.=999'
+! snouty runs search run-1 'contains({output_text: "x"})' --limit 1000
+stderr 'from 1 to 999'
 
 # A query that matches nothing prints a friendly empty-state. (Mock-only: on a
 # live run this scans the whole event history.)
@@ -756,15 +725,16 @@ mock-runs-server
 snouty runs search $R_run_id 'contains({output_text: "x"})' --check
 stdout 'query is valid'
 
-# An invalid query fails with the server's rejection. The rejection spans three
-# lines — the query, a caret under the offending token, the reason. The block
-# starts on its own line and every line of it takes the same indent, so the
-# caret keeps pointing at the token above it. (Mock-only: the live tenant
-# answers an invalid query with a generic 500 instead of the documented 400.)
+# An invalid query fails with the server's rejection: the query, a caret under
+# the offending token, the reason. The server writes the query at the end of
+# its prose line with the caret's column counted from the query's start;
+# snouty breaks the line after `Event set DSL error:` so the query starts a
+# line of its own, and every line takes the same indent, so the caret points
+# at the token above it.
 mock-runs-server
-[!staging] ! snouty runs search $R_run_id 'bogus_verb({x: "y"})' --check
-[!staging] stderr 'API error: 400 Bad Request\n  failed to execute.*Event set DSL error: bogus_verb'
-[!staging] stderr '\n  \^\n  invalid with_next'
+! snouty runs search $R_run_id 'bogus_verb({x: "y"})' --check
+stderr 'API error: 400 Bad Request'
+[!staging] stderr 'Event set DSL error:\n  bogus_verb\(\{x: "y"\}\)\n  \^\n  invalid with_next'
 
 # The mode switches pick conflicting response modes, so clap rejects the pairing.
 mock-runs-server
@@ -775,9 +745,6 @@ stderr 'cannot be used with'
 mock-runs-server
 ! snouty runs search no-such-run 'contains({output_text: "x"})'
 stderr 'run not found: no-such-run'
-
-# The `runs search` specs are over; the feature goes back off.
-env SNOUTY_UNSTABLE_FEATURES=
 
 # The server can fail after it has already committed to a `200 OK`: it reports
 # that by ending the NDJSON stream with a `Stream_Error` line, `{"error":"..."}`.
@@ -849,10 +816,8 @@ stderr 'the server reported an error mid-stream: mock stream failure'
 # object — `map(ev => ({error: ev.output_text}))` is a legitimate result row —
 # so a `{"error": ...}` line is data on this stream, not the Stream_Error
 # abort every fixed-schema stream turns it into. The row prints as its own
-# JSON and the command exits 0. (The command is feature-gated; the gate
-# itself is covered above.)
+# JSON and the command exits 0.
 mock-runs-server
-env SNOUTY_UNSTABLE_FEATURES=runs-search
 snouty runs search run-stream-error 'contains({output_text: "starting"})'
 stdout '\[app\] \{"level":"info","msg":"starting"\}'
 stdout -literal '{"error":"mock stream failure"}'
@@ -862,4 +827,3 @@ mock-runs-server
 snouty --json runs search run-stream-error 'contains({output_text: "starting"})'
 stdout 'output_text.*starting'
 stdout '"error":"mock stream failure"'
-env SNOUTY_UNSTABLE_FEATURES=

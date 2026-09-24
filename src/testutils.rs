@@ -869,11 +869,11 @@ fn mock_route_get_run(run_id: &str) -> (u16, String) {
     }
     fields.push(format!(r#""launcher":"{launcher}""#));
     // run-1 carries launch parameters so `runs show` can surface the requested
-    // Duration and Source alongside the timestamp-derived Elapsed; other runs
-    // omit them, exercising the "field absent" path.
+    // Duration, Source and `attrs.*` alongside the timestamp-derived Elapsed;
+    // other runs omit them, exercising the "field absent" path.
     if run_id == "run-1" {
         fields.push(
-            r#""parameters":{"antithesis.duration":"30","antithesis.source":"demo-harness"}"#
+            r#""parameters":{"antithesis.duration":"30","antithesis.source":"demo-harness","attrs.team":"payments","attrs.branch":"main"}"#
                 .to_string(),
         );
     }

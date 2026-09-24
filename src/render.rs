@@ -14,23 +14,23 @@ pub struct OutputOptions {
 }
 
 /// Render aligned `Label  value` lines, sqlite `.mode line`–style. Each line is
-/// terminated with a newline; values are sanitized. Labels are padded to the
+/// terminated with a newline; labels and values are sanitized. Labels are padded to the
 /// widest label, but never narrower than `min_label_width` so a caller that also
 /// renders a wider prose label below the block can keep every row aligned.
 pub(crate) fn render_kv<S: AsRef<str>>(rows: &[(S, String)], min_label_width: usize) -> String {
+    let rows: Vec<(String, String)> = rows
+        .iter()
+        .map(|(label, value)| (sanitize(label.as_ref()), sanitize(value)))
+        .collect();
     let label_width = rows
         .iter()
-        .map(|(label, _)| label.as_ref().len())
+        .map(|(label, _)| label.len())
         .chain(std::iter::once(min_label_width))
         .max()
         .unwrap_or(0);
     let mut out = String::new();
     for (label, value) in rows {
-        out.push_str(&format!(
-            "{:label_width$}  {}\n",
-            label.as_ref(),
-            sanitize(value)
-        ));
+        out.push_str(&format!("{label:label_width$}  {value}\n"));
     }
     out
 }
@@ -233,9 +233,11 @@ mod tests {
     }
 
     #[test]
-    fn render_kv_sanitizes_values() {
+    fn render_kv_sanitizes_labels_and_values() {
         let rows = vec![("k", "a\nb".to_string())];
         assert_eq!(render_kv(&rows, 0), "k  a\\nb\n");
+        let rows = vec![("\x1b[2Jk", "v".to_string()), ("kk", "w".to_string())];
+        assert_eq!(render_kv(&rows, 0), "\\x1B[2Jk  v\nkk        w\n");
     }
 
     /// The prose shape [`wrap_if_tty`] produces on a wide terminal, minus the

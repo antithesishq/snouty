@@ -57,12 +57,17 @@ once per distinct message, so a permanent failure does not repeat.
 Every line names its PR, so one watcher can cover several PRs at once.
 
 A review line prints for every submitted review, an empty one too. The list
-of review comments can lag a review's submission by minutes, so read the
-review's own inline comments at once, with its id:
+of review comments can lag a review's submission by minutes, so read all of
+the review's own inline comments at once, with its id. The endpoint returns
+at most 100 comments per page. Request page 1, 2, and so on until a page
+holds fewer than 100:
 
 ```
-gh api repos/<owner>/<repo>/pulls/<PR>/reviews/<id>/comments
+gh api "repos/<owner>/<repo>/pulls/<PR>/reviews/<id>/comments?per_page=100&page=<N>"
 ```
+
+Do not use `--paginate`: the proxy returns Link headers that point at the
+upstream host.
 
 An event line carries only metadata. Read the full comment, review, or check
 output through the API before you act on it.

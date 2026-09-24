@@ -195,6 +195,18 @@ fn configured_memory_is_passed_to_qemu() {
 }
 
 #[test]
+fn guest_has_no_vga_and_retains_its_network_interface_address() {
+    let mut simulation = Simulation::start("clean-once");
+    simulation.wait_for("qemu_args", "-vga");
+    let args: Vec<String> = serde_json::from_str(&simulation.read("qemu_args")).unwrap();
+    assert!(args.windows(2).any(|args| args == ["-vga", "none"]));
+    assert!(
+        args.iter()
+            .any(|arg| arg == "virtio-net-pci,netdev=net0,addr=3")
+    );
+}
+
+#[test]
 fn interrupted_startup_cleanup_ignores_unowned_paths() {
     let checkout = tempfile::tempdir().unwrap();
     let sentinel = checkout.path().join("sentinel");

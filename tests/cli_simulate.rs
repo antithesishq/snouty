@@ -215,13 +215,13 @@ fn guest_has_no_unused_default_devices() {
 }
 
 #[test]
-fn guest_has_no_ps2_controller() {
+fn guest_uses_q35_without_ps2_controller() {
     let mut simulation = Simulation::start("clean-once");
     simulation.wait_for("qemu_args", "i8042=off");
     let args: Vec<String> = serde_json::from_str(&simulation.read("qemu_args")).unwrap();
     assert!(
         args.windows(2)
-            .any(|args| args == ["-machine", "pc,i8042=off"])
+            .any(|args| args == ["-machine", "q35,i8042=off"])
     );
 }
 

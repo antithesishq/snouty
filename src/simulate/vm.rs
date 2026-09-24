@@ -160,6 +160,8 @@ impl Vm {
                 .args([
                     "-display",
                     "none",
+                    "-vga",
+                    "none",
                     "-monitor",
                     "none",
                     "-serial",
@@ -172,7 +174,7 @@ impl Vm {
                     "name={AUTHORIZED_KEY_FW_CFG},file={}",
                     client_key.public_key.display()
                 ))
-                .args(["-device", "virtio-net-pci,netdev=net0", "-netdev"])
+                .args(["-device", "virtio-net-pci,netdev=net0,addr=3", "-netdev"])
                 .arg(format!(
                     "user,id=net0,hostfwd=tcp:127.0.0.1:{port}-:22,restrict=yes"
                 ))

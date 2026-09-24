@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::num::NonZeroU64;
 use std::time::Duration;
@@ -69,11 +70,13 @@ pub struct ApiVersion {
     pub release: Option<(u64, u64)>,
 }
 
-/// The tenant release the events-search API ships with. `runs events` and
-/// `runs search` assume an enabled `runs-search` feature means the tenant
-/// serves the endpoint; `snouty doctor` verifies the assumption against
-/// this, and the search 404 error names it.
-pub const MIN_SEARCH_RELEASE: (u64, u64) = (58, 11);
+/// The first tenant release on which the events-search API honors its
+/// documented contract. Releases 58.11 through 60.1 serve the endpoint but
+/// ignore `limit` on a run with a live stream, and hold a non-streaming
+/// connection open after the last match; 62.2 does neither (observed on
+/// tenant `orbitinghail`). `runs search`, and `runs events` with several
+/// terms, assume the tenant meets this; `snouty doctor` checks it.
+pub const MIN_SEARCH_RELEASE: (u64, u64) = (62, 2);
 
 impl ApiVersion {
     /// Parses `release_version` eagerly, so no consumer ever parses it.
@@ -113,9 +116,13 @@ pub enum SearchMode {
     },
 }
 
-/// The server's default `limit` on both events endpoints, applied when the
-/// request names none.
+/// The server's default `limit` on the events-search endpoint, applied when
+/// the request names none.
 pub const SEARCH_DEFAULT_LIMIT: NonZeroU64 = NonZeroU64::new(50).unwrap();
+
+/// The largest `limit` the events-search endpoint accepts. The server answers
+/// 400 above it, with a message that names 1000.
+pub const SEARCH_MAX_LIMIT: u64 = 999;
 
 /// Why a `/api/version` probe failed, classified for `snouty doctor`.
 #[derive(Debug)]
@@ -707,28 +714,6 @@ impl AntithesisApi {
                 Ok((normalized, next_cursor))
             }
         })
-    }
-
-    pub async fn search_run_events(
-        &self,
-        run_id: &str,
-        query: &str,
-        limit: NonZeroU64,
-    ) -> Result<JsonStream> {
-        // The endpoint documents `limit` as 1..=1000 and rejects the rest.
-        let request = self
-            .client
-            .search_run_events()
-            .run_id(run_id)
-            .q(query)
-            .limit(limit);
-        match request.send().await {
-            Ok(response) => Ok(cap_stream(
-                json_lines(response.into_inner().into_inner()),
-                Some(limit),
-            )),
-            Err(err) => Err(format_api_client_error(err).await),
-        }
     }
 
     /// POST an event-set DSL query to the events-search endpoint and return
@@ -1441,6 +1426,35 @@ async fn format_api_client_error(err: ClientError<()>) -> Report {
     }
 }
 
+const DSL_ERROR_MARKER: &str = "Event set DSL error: ";
+
+/// Break a query rejection so its caret points into the query.
+///
+/// The server ends a prose line with the rejected query, then writes a line
+/// with one `^` whose column counts from the start of the query, then the
+/// reason (observed on tenant `orbitinghail`, release 62.2). One line break
+/// after the marker puts the query where the caret's column is right.
+///
+/// Only that exact shape is rewritten. Any other message comes back
+/// unchanged, so a change in the server's format degrades to the raw
+/// message, never to a caret under the wrong character.
+fn lay_out_dsl_error(message: &str) -> Cow<'_, str> {
+    let Some((prose, from_query)) = message.split_once(DSL_ERROR_MARKER) else {
+        return Cow::Borrowed(message);
+    };
+    if !from_query
+        .lines()
+        .nth(1)
+        .is_some_and(|line| line.trim() == "^")
+    {
+        return Cow::Borrowed(message);
+    }
+    Cow::Owned(format!(
+        "{prose}{}\n{from_query}",
+        DSL_ERROR_MARKER.trim_end()
+    ))
+}
+
 /// A client error reduced to what a user-facing message is built from.
 enum ApiFailure {
     /// The server answered. `status` is the transport status — the only
@@ -1540,10 +1554,10 @@ async fn read_error_body(mut response: reqwest::Response) -> String {
 /// margins. That collapse applies only to the unrecognized shapes. A `message`
 /// keeps its own line breaks: the events-search endpoint answers an invalid
 /// query with 400 and a caret line under the offending token (observed on
-/// tenant `orbitinghail`, release 61 — `… bogus_verb({x: "y"})`, then `^`, then
-/// `invalid with_next`), and a caret on one line runs into the text it points
-/// at. Every line gets the 200 characters, because the last line of such a
-/// body carries the reason.
+/// tenant `orbitinghail`, release 62.2 — `… Event set DSL error: bogus_verb({x:
+/// "y"})`, then `^`, then `invalid with_next`), and a caret on one line runs
+/// into the text it points at. Every line gets the 200 characters, because
+/// the last line of such a body carries the reason.
 fn error_body_message(body: &str) -> String {
     const MAX_LEN: usize = 200;
 
@@ -1564,6 +1578,8 @@ fn error_body_message(body: &str) -> String {
         }
     }
 
+    // Before the per-line cut, so the query gets a line of its own.
+    let text = lay_out_dsl_error(&text);
     // `render_report` splits the error from its `Note:`/`Suggestion:` tail at
     // the first blank line, so a message that carries one prints its tail twice.
     sanitize_multiline(text.trim())
@@ -1577,6 +1593,7 @@ fn error_body_message(body: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use hegel::{Generator, generators};
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -1836,6 +1853,65 @@ mod tests {
         assert_eq!(read_error_body(response).await, "upstream is down");
     }
 
+    // ---- lay_out_dsl_error ------------------------------------------------
+
+    /// The `message` of a live rejection (tenant `orbitinghail`, release 62.2).
+    const DSL_REJECTION: &str = "failed to execute pangolin query due to a runtime error: \
+                                 Event set DSL error: contains({output_txt: \"x\"})\n\
+                                 \x20                        ^\n\
+                                 invalid contains\n\
+                                 expected one of: output_text, source, stream, container";
+
+    #[test]
+    fn lay_out_dsl_error_starts_the_query_on_its_own_line() {
+        let laid_out = lay_out_dsl_error(DSL_REJECTION);
+        let lines: Vec<&str> = laid_out.lines().collect();
+        assert_eq!(
+            lines,
+            [
+                "failed to execute pangolin query due to a runtime error: Event set DSL error:",
+                "contains({output_txt: \"x\"})",
+                "                         ^",
+                "invalid contains",
+                "expected one of: output_text, source, stream, container",
+            ]
+        );
+    }
+
+    #[test]
+    fn lay_out_dsl_error_leaves_every_other_shape_alone() {
+        let limit = "limit 1000 is out of the range 1..=999";
+        assert_eq!(lay_out_dsl_error(limit), limit);
+        let no_caret = "Event set DSL error: contains(\nexpected `{`";
+        assert_eq!(lay_out_dsl_error(no_caret), no_caret);
+        let last = "Bad request: Event set DSL error: bogus(";
+        assert_eq!(lay_out_dsl_error(last), last);
+        let not_a_caret = "Event set DSL error: bogus(\n^ here\ninvalid";
+        assert_eq!(lay_out_dsl_error(not_a_caret), not_a_caret);
+    }
+
+    #[hegel::test]
+    fn lay_out_dsl_error_puts_the_caret_under_the_query(tc: hegel::TestCase) {
+        let one_line = || {
+            generators::text()
+                .max_size(60)
+                .filter(|s| !s.contains('\n'))
+        };
+        let query = tc.draw(one_line().filter(|s| s.trim() == s));
+        let reason = tc.draw(one_line());
+        let caret = format!(
+            "{}^",
+            " ".repeat(tc.draw(generators::integers::<usize>().max_value(80)))
+        );
+        let message = format!("Bad request: {DSL_ERROR_MARKER}{query}\n{caret}\n{reason}");
+
+        let laid_out = lay_out_dsl_error(&message);
+        let lines: Vec<&str> = laid_out.lines().collect();
+        assert_eq!(lines[1], query);
+        assert_eq!(lines[2], caret);
+        assert_eq!(lines[3..].join("\n"), reason);
+    }
+
     // The standard `{"message": …}` envelope is unwrapped; anything else is
     // shown verbatim so the user can still see what the server said.
     #[test]
@@ -1871,7 +1947,7 @@ mod tests {
             error_body_message(
                 r#"{"message":"Event set DSL error: bogus_verb({x: \"y\"})\n^\ninvalid with_next"}"#
             ),
-            "Event set DSL error: bogus_verb({x: \"y\"})\n^\ninvalid with_next"
+            "Event set DSL error:\nbogus_verb({x: \"y\"})\n^\ninvalid with_next"
         );
     }
 
@@ -3480,57 +3556,6 @@ mod tests {
             .unwrap();
 
         assert!(properties.is_empty());
-    }
-
-    #[tokio::test]
-    async fn search_run_events_passes_query_through() {
-        let mock_server = MockServer::start().await;
-
-        Mock::given(method("GET"))
-            .and(path("/api/v0/runs/run-1/events"))
-            .and(query_param("q", "slow request"))
-            .respond_with(ResponseTemplate::new(200).set_body_string(
-                r#"{"output_text":"{\"level\":\"warn\",\"msg\":\"slow request\"}","moment":{"input_hash":"-456","vtime":"2.0"}}"#,
-            ))
-            .expect(1)
-            .mount(&mock_server)
-            .await;
-
-        let api = test_api_optionally_with_cache(&mock_server, None);
-
-        let mut stream = api
-            .search_run_events("run-1", "slow request", NonZeroU64::new(50).unwrap())
-            .await
-            .unwrap();
-        let mut body = String::new();
-        while let Some(value) = futures_util::TryStreamExt::try_next(&mut stream)
-            .await
-            .unwrap()
-        {
-            body.push_str(&value.to_string());
-        }
-
-        assert!(body.contains("slow request"));
-    }
-
-    #[tokio::test]
-    async fn search_run_events_forwards_limit() {
-        let mock_server = MockServer::start().await;
-
-        Mock::given(method("GET"))
-            .and(path("/api/v0/runs/run-1/events"))
-            .and(query_param("q", "slow"))
-            .and(query_param("limit", "5"))
-            .respond_with(ResponseTemplate::new(200).set_body_string(""))
-            .expect(1)
-            .mount(&mock_server)
-            .await;
-
-        let api = test_api_optionally_with_cache(&mock_server, None);
-        let _stream = api
-            .search_run_events("run-1", "slow", NonZeroU64::new(5).unwrap())
-            .await
-            .unwrap();
     }
 
     // The DSL search wrapper POSTs the Search_Request body: the query and

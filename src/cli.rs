@@ -6,7 +6,7 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
 use color_eyre::Section;
 use color_eyre::eyre::Report;
 
-use crate::api::{RunStatus, SEARCH_DEFAULT_LIMIT};
+use crate::api::{RunStatus, SEARCH_DEFAULT_LIMIT, SEARCH_MAX_LIMIT};
 use crate::error::user_error;
 use crate::features::{self, Feature};
 use crate::time::HumanDuration;
@@ -59,6 +59,17 @@ fn parse_poll_interval(value: &str) -> Result<HumanDuration, String> {
         return Err("poll interval must be at least 1 minute".to_string());
     }
     Ok(interval)
+}
+
+/// clap value parser for the event-search `--limit`: 1 to
+/// [`SEARCH_MAX_LIMIT`], so an out-of-range value fails before any request.
+fn parse_search_limit(value: &str) -> Result<NonZeroU64, String> {
+    value
+        .parse::<u64>()
+        .ok()
+        .filter(|limit| (1..=SEARCH_MAX_LIMIT).contains(limit))
+        .and_then(NonZeroU64::new)
+        .ok_or_else(|| format!("must be a whole number from 1 to {SEARCH_MAX_LIMIT}"))
 }
 
 #[derive(Parser)]
@@ -628,13 +639,30 @@ pub struct DebugArgs {
 /// their long help. A macro rather than a `const` so both call sites can
 /// splice it into their `concat!`-built literals (`concat!` takes literals
 /// only, and a macro expansion is one).
+/// How a run is structured: the paragraph `runs search` and `runs logs` share
+/// in their long help. A macro for the same reason as
+/// [`classified_blocks_help`].
+macro_rules! run_structure_help {
+    () => {
+        r#"How a run is structured: An Antithesis run is a tree of timelines, not one
+history. A timeline is a series of input_hashes. An input_hash is a hash of
+every input Antithesis sent up to that point. Antithesis branches a timeline
+by sending an input from some moment, which creates a new input_hash. Every
+event has an input_hash and a vtime, and one input_hash can have zero or more
+events. Events that share an input_hash are on the same timeline. vtime is
+the virtual time at which the event was emitted on its timeline. Antithesis
+virtualizes the clock, so vtime can jump forward by any amount, but it never
+goes backward. vtime orders events only within one timeline."#
+    };
+}
+
 macro_rules! classified_blocks_help {
     () => {
-        "Matching events print as classified blocks: a `moment HASH` divider opens\n\
-         each timeline segment. Use `snouty runs logs <run_id> <hash>` to stream logs\n\
-         to the branch's current end. Each event below the divider renders on one\n\
-         line with the Antithesis event shapes — SDK assertions, faults, container\n\
-         lifecycle, test composer — each in their own concise form."
+        r#"Matching events print as classified blocks: a `moment HASH` divider opens
+each timeline segment. Use `snouty runs logs <run_id> <hash>` to stream logs
+to the timeline's current end. Each event below the divider renders on one
+line with the Antithesis event shapes — SDK assertions, faults, container
+lifecycle, test composer — each in their own concise form."#
     };
 }
 
@@ -645,14 +673,26 @@ macro_rules! classified_blocks_help {
 const SEARCH_LONG_ABOUT: &str = concat!(
     r#"Run an event-set DSL query against a run's events.
 
-This command is gated behind the `runs-search` unstable feature, because the
-events-search API does not honor its documented contract yet on current
-tenants. Enable it by setting SNOUTY_UNSTABLE_FEATURES=runs-search. An
-unstable feature can change or go away in any release.
+"#,
+    run_structure_help!(),
+    r#"
 
-QUERY is a pipeline of dot-separated verbs applied to the run's event stream,
-evaluated left to right; each verb narrows, reshapes, or combines the set of
-events flowing through it.
+How to read the results: The output is a sample of the matching events, and
+they can come from different timelines. The server returns at most --limit
+events (default 50, maximum 999) in no fixed order. When the output reaches
+the limit, stderr says "Additional results may be available". Then any count
+or pattern in the output holds for the sample, not for the run: if all 50
+events come from node-0, other nodes can still have matches. An event missing
+from the output can still be in the run. Fewer events than the limit means
+the query matched only those events. Two events that conflict in one history
+(for example, two nodes that each win the same election term) are usually on
+different timelines. To relate an event to others on its own timeline, use
+fold, with_last, or with_next in the query. To read the whole timeline up to
+one event, run `snouty runs logs <run_id> <input_hash> <vtime>` with that
+event's moment.
+
+QUERY is a pipeline of dot-separated verbs. The first verb reads all events
+in the run. Each later verb reads the output of the verb before it.
 
 Verbs:
   matches({f: "x"})        keep events whose fields equal every given value
@@ -663,18 +703,43 @@ Verbs:
   map(ev => expr)          reshape each event (ev.add_fields({...}) adds)
   flatmap(ev => expr)      map, then flatten the result one level
   narrow(["f1", "f2"])     keep only the listed fields
-  fold((s, ev) => e, s0)   thread state along each timeline, annotating
+  fold((s, ev) => [events, s'], s0)
+                           walk each timeline from its root in vtime order,
+                           threading state s (see below)
   union(set, ...)          OR this set with others, deduplicated
   intersect(set, ...)      AND this set with others
   difference(set)          subtract another event set from this one
   distinct_by_moment(set)  union, keeping one event per vtime
-  with_last({n: set})      annotate each event with the nearest earlier
-                           event from `set` in its own timeline
-  with_next({n: set})      the same, looking forward
+  with_last({n: set})      keep each event, add field last_n: the nearest
+                           event from `set` at or before it in the same
+                           timeline (the event itself, if it is in `set`;
+                           use fold for the previous event of the same kind)
+  with_next({n: set}, vtime_within)
+                           output the nearest later event from `set` in the
+                           same timeline, with fields last_event (the input
+                           event) and with_next_type ("n"); with the optional
+                           vtime_within (in vtime seconds), an input event
+                           with no match by then outputs with_next_type
+                           "timeout"
 
 The string verbs (matches/contains/not_matches/excludes) address four fields:
-output_text, container, stream, and source (the emitter's name). Every other
-field is reachable from JS through `ev`, e.g. `ev.moment.vtime`.
+output_text, and container, stream, and source, which read the event's
+source.container, source.stream, and source.name. output_text holds log
+output only. An SDK assertion's message is in ev.antithesis_assert.message,
+and a test-composer command is in ev.command. In JS, read every field from
+`ev`, e.g. `ev.source.container` or `ev.moment.vtime`.
+
+fold: the reducer takes the state s and one event ev, and returns
+[events, s']. events is an array of the events to output: [ev] outputs ev,
+[] outputs nothing, and several distinct events output each one, e.g.
+[ev.add_fields({copy: 1}), ev.add_fields({copy: 2})]. Identical events
+output once. s' is the state for the next event in the same timeline. s0
+must be strict JSON: write {"count": 0}, not {count: 0}. The reducer body
+and s' are JavaScript.
+
+fold, with_last, and with_next cause the API to scan a lot of data before
+returning. On a large run, the scan can take more than 10 minutes. Use
+simpler operations when possible.
 
 Query snippets (each is a complete QUERY, ready to paste):
 
@@ -705,8 +770,12 @@ Query snippets (each is a complete QUERY, ready to paste):
   filter(ev => ev.antithesis_assert?.assert_type == "sometimes"
     && ev.antithesis_assert.hit && ev.antithesis_assert.condition)
 
-  # each crash annotated with the nearest earlier fault
+  # each crash annotated with the nearest earlier fault (field last_fault)
   contains({output_text: "fatal"}).with_last({fault: filter(ev => ev.fault)})
+
+  # errors numbered in order within each timeline (field n)
+  contains({output_text: "error"})
+    .fold((s, ev) => [[ev.add_fields({n: s.n + 1})], {n: s.n + 1}], {"n": 0})
 
 "#,
     classified_blocks_help!(),
@@ -877,13 +946,18 @@ object on its own line:
 
     /// Stream moment logs for a run
     #[command(
-        long_about = r#"Stream the logs along one branch of the run's multiverse.
+        long_about = concat!(
+            r#"Stream the logs of one timeline of a run.
 
-INPUT_HASH identifies the branch: the hash of every input fed to the
-simulation from the root moment to the branch's start. Logs stream from the
-root (or --begin-vtime) to the branch's current end; a run in progress can
-extend the branch, so the same INPUT_HASH can return more logs later. Give
-VTIME to end the stream at that moment instead.
+"#,
+            run_structure_help!(),
+            r#"
+
+INPUT_HASH identifies the timeline: the hash of every input Antithesis sent
+from the root to that point. Logs stream from the root (or --begin-vtime) to
+the timeline's current end; a run in progress can extend the timeline, so
+the same INPUT_HASH can return more logs later. Give VTIME to end the stream
+at that moment instead.
 
 Output: a `moment HASH` divider opens each timeline segment, and each
 event under it renders on one line as `VTIME [source] payload` — Antithesis
@@ -893,16 +967,17 @@ each in their own concise form.
 Add --json for machine-readable output. Each event prints as one JSON object
 on its own line, and --raw passes the server's events through unchanged:
   snouty --json runs logs <run_id> <hash> | jq -r .moment.vtime"#
+        )
     )]
     Logs {
         /// Run ID
         run_id: String,
 
-        /// Input hash identifying the branch to stream
+        /// Input hash identifying the timeline to stream
         #[arg(allow_hyphen_values = true)]
         input_hash: String,
 
-        /// Virtual time of the moment to end the stream at; omit it to stream to the branch's current end
+        /// Virtual time of the moment to end the stream at; omit it to stream to the timeline's current end
         // Typed, so a malformed vtime is rejected by clap instead of by the
         // server. `allow_hyphen_values` is kept here (unlike `runs exec`),
         // because this command has always accepted a hyphen-led vtime.
@@ -989,16 +1064,32 @@ JSON object on its own line, and the trailer is left out:
     /// Search events in a run
     #[command(
         long_about = concat!(
-            "Search a run's events for one or more substrings (all must match).\n\n",
-            "A term is matched against the text an event carries: log output, an\n\
-             assertion's message and source function, and a test-composer command.\n\n",
+            r#"Search a run's events for one or more substrings (all must match).
+
+A term is matched against the text an event carries: log output, an
+assertion's message and source function, and a test-composer command.
+
+"#,
             classified_blocks_help!(),
-            "\n\nMatching runs server-side. More than one term requires the events-search API,\n\
-             which is behind the `runs-search` unstable feature\n\
-             (SNOUTY_UNSTABLE_FEATURES=runs-search).\n\n\
-             Add --json for machine-readable output. Each event prints as one\n\
-             JSON object on its own line:\n\
-             \x20 snouty --json runs events <run_id> -m error | jq -r .moment.vtime"
+            r#"
+
+Matching runs server-side through the events-search API, the same route
+`snouty runs search` takes. Every term must match, case-insensitively. The
+result is a sample of the matching events in no fixed order, capped at
+--limit. Read `snouty runs search --help` to learn how to read a sample
+and how the run's timelines relate the events.
+
+For log output, the equivalent search is:
+  snouty runs search <run_id> \
+    'filter(ev => ["a", "b"].every(t =>
+      (ev.output_text || "").toLowerCase().includes(t)))'
+with each term in lower case. `snouty --verbose runs events ...` prints
+the exact query, which also matches assertion messages and test-composer
+commands.
+
+Add --json for machine-readable output. Each event prints as one
+JSON object on its own line:
+  snouty --json runs events <run_id> -m error | jq -r .moment.vtime"#
         )
     )]
     Events {
@@ -1009,9 +1100,9 @@ JSON object on its own line, and the trailer is left out:
         #[arg(short = 'm', long = "match")]
         matches: Vec<String>,
 
-        /// Maximum number of events to print. Raise it to make a search more
-        /// exhaustive.
-        #[arg(short = 'n', long, default_value_t = SEARCH_DEFAULT_LIMIT)]
+        /// Maximum number of events to print, at most 999. Raise it to make a
+        /// search more exhaustive.
+        #[arg(short = 'n', long, default_value_t = SEARCH_DEFAULT_LIMIT, value_parser = parse_search_limit)]
         limit: NonZeroU64,
 
         /// Substrings to match, as a positional alias for `-m` (all must match).
@@ -1023,14 +1114,7 @@ JSON object on its own line, and the trailer is left out:
     },
 
     /// Query events with the event-set DSL
-    // Gated behind the `runs-search` feature (see `Feature::RunsSearch`): the
-    // events-search API does not honor its documented contract yet. Same
-    // mechanics as `runs exec` above — `hide` keeps it out of `--help`, and
-    // invoking it while disabled is refused by [`gated_command_error`].
-    #[command(
-        hide = !features::is_enabled(Feature::RunsSearch),
-        long_about = SEARCH_LONG_ABOUT
-    )]
+    #[command(long_about = SEARCH_LONG_ABOUT)]
     Search(RunsSearchArgs),
 }
 
@@ -1042,8 +1126,8 @@ pub struct RunsSearchArgs {
     /// Event-set DSL query
     pub query: String,
 
-    /// Maximum number of events to print (default 50)
-    #[arg(short = 'n', long)]
+    /// Maximum number of events to print (default 50, maximum 999)
+    #[arg(short = 'n', long, value_parser = parse_search_limit)]
     pub limit: Option<NonZeroU64>,
 
     /// Keep the connection open and print new matches as they arrive
@@ -1128,16 +1212,12 @@ impl Default for RunsListArgs {
 /// on — the caller passes them so the decision is testable without touching
 /// the environment.
 pub fn gated_command_error(command: &Commands, enabled: &[Feature]) -> Option<Report> {
-    let gated = match command {
+    let (feature, path) = match command {
         Commands::Runs {
             command: Some(RunsCommands::Exec { .. }),
         } => (Feature::RunsExec, "snouty runs exec"),
-        Commands::Runs {
-            command: Some(RunsCommands::Search(_)),
-        } => (Feature::RunsSearch, "snouty runs search"),
         _ => return None,
     };
-    let (feature, path) = gated;
     if enabled.contains(&feature) {
         return None;
     }
@@ -1204,20 +1284,10 @@ mod tests {
         // An unrelated feature does not enable it.
         assert!(gated_command_error(&exec, &[Feature::Unknown("other".to_string())]).is_some());
 
-        // `runs search` is gated the same way, behind its own feature.
-        let search = parse(&["snouty", "runs", "search", "RUN", "q"]).command;
-        let err = gated_command_error(&search, &[]).expect("a gated-off command is refused");
-        let rendered = format!("{err:?}");
-        assert!(
-            rendered.contains("SNOUTY_UNSTABLE_FEATURES=runs-search"),
-            "{rendered}"
-        );
-        assert!(gated_command_error(&search, &[Feature::RunsSearch]).is_none());
-        assert!(gated_command_error(&search, &[Feature::RunsExec]).is_some());
-
         // Sibling subcommands are never gated.
         for args in [
             &["snouty", "runs", "logs", "RUN", "1", "2.0"][..],
+            &["snouty", "runs", "search", "RUN", "q"][..],
             &["snouty", "runs"][..],
         ] {
             assert!(gated_command_error(&parse(args).command, &[]).is_none());
@@ -1401,6 +1471,35 @@ mod tests {
 
         let parsed = Cli::try_parse_from(["snouty", "runs", "search", "RUN", "q", "-n", "0"]);
         assert!(parsed.is_err(), "expected --limit 0 to be rejected");
+    }
+
+    // Both event-search commands accept 1 to 999, the endpoint's own range.
+    #[test]
+    fn search_limit_accepts_the_endpoint_range_only() {
+        for (args, ok) in [
+            (
+                &["snouty", "runs", "search", "RUN", "q", "-n", "999"][..],
+                true,
+            ),
+            (
+                &["snouty", "runs", "search", "RUN", "q", "-n", "1000"][..],
+                false,
+            ),
+            (
+                &["snouty", "runs", "events", "RUN", "x", "-n", "999"][..],
+                true,
+            ),
+            (
+                &["snouty", "runs", "events", "RUN", "x", "-n", "1000"][..],
+                false,
+            ),
+            (
+                &["snouty", "runs", "events", "RUN", "x", "-n", "abc"][..],
+                false,
+            ),
+        ] {
+            assert_eq!(Cli::try_parse_from(args).is_ok(), ok, "{args:?}");
+        }
     }
 
     // `runs search` takes the run id and one raw DSL query positionally; the

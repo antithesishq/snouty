@@ -464,7 +464,7 @@ pub fn filtered_path_without_binary(binary: &str) -> Option<String> {
 /// Handles:
 /// - `GET  /api/v0/runs` — paginated run listing
 /// - `GET  /api/v0/runs/{run_id}` — run detail (keyed by run id; 404 unknown)
-/// - `GET  /api/v0/runs/{run_id}/{properties,logs,events,build_logs}` — nested
+/// - `GET  /api/v0/runs/{run_id}/{properties,logs,build_logs}` — nested
 ///   run resources (404 for an unknown run id, like the real API; properties
 ///   additionally 404 for runs that aren't `completed`)
 /// - `POST /api/v1/launch/{launcher_name}` — returns a mock launch response
@@ -696,9 +696,6 @@ fn mock_route(
             } else if let Some(run_id) = rest.strip_suffix("/properties") {
                 let (s, b) = mock_route_list_run_properties(run_id, query);
                 (s, b, json)
-            } else if let Some(run_id) = rest.strip_suffix("/events") {
-                let (s, b) = mock_route_search_run_events(run_id, query);
-                (s, b, ndjson)
             } else {
                 let (s, b) = mock_route_get_run(rest);
                 (s, b, json)
@@ -1004,11 +1001,9 @@ fn mock_route_list_run_properties(run_id: &str, query: Option<&str>) -> (u16, St
     )
 }
 
-/// The text an events route matches a needle against: an event's log text,
+/// The text the search route matches a needle against: an event's log text,
 /// an assertion's message and source function, and a test-composer command
-/// and task, NUL-joined so a needle cannot span two fields. Both events
-/// routes share it, because `runs events` returns the same events whichever
-/// backend serves it.
+/// and task, NUL-joined so a needle cannot span two fields.
 ///
 /// The gates the live endpoints put on those fields — an assertion counts
 /// only once it was hit, a command only on a composer event — are not
@@ -1088,50 +1083,6 @@ fn query_needles(query: &str) -> Vec<String> {
         .filter(|literal| !literal.trim().is_empty())
         .map(|literal| literal.to_lowercase())
         .collect()
-}
-
-fn mock_route_search_run_events(run_id: &str, query_str: Option<&str>) -> (u16, String) {
-    // The `run-stream-error` stream is returned unfiltered: a `Stream_Error`
-    // line is a failure signal the server emits regardless of the query, not
-    // a match, so the needle filter below must not consume it.
-    if run_id == "run-stream-error" {
-        return mock_route_get_run_logs(run_id);
-    }
-    if !mock_run_known(run_id) {
-        return mock_run_not_found(run_id);
-    }
-    let Some(needle) = mock_query_param(query_str, "q") else {
-        return (400, r#"{"message":"missing q"}"#.to_string());
-    };
-    // `limit` is documented as 1..=1000, and the server rejects the rest.
-    if let Some(limit) = mock_query_param(query_str, "limit").and_then(|l| l.parse::<u64>().ok())
-        && !(1..=1000).contains(&limit)
-    {
-        return (
-            400,
-            format!(r#"{{"message":"Bad request: limit {limit} is out of the range 1..=1000"}}"#),
-        );
-    }
-
-    let (_, logs) = mock_route_get_run_logs(run_id);
-    let needle = needle.to_lowercase();
-    let mut matches = logs
-        .lines()
-        .filter(|line| mock_event_haystack(line).contains(&needle))
-        .collect::<Vec<_>>();
-
-    // Cap the returned events at `limit` when present, mirroring the real
-    // endpoint's `limit` query parameter (the subset is the first N matches).
-    if let Some(limit) = mock_query_param(query_str, "limit").and_then(|l| l.parse::<usize>().ok())
-    {
-        matches.truncate(limit);
-    }
-
-    if matches.is_empty() {
-        (200, String::new())
-    } else {
-        (200, matches.join("\n") + "\n")
-    }
 }
 
 /// The branch input hash every mock execution lands on: executing a command
@@ -1280,9 +1231,9 @@ fn mock_route_search_events(run_id: &str, body: &str) -> (u16, String, &'static 
         .iter()
         .any(|verb| query.trim_start().starts_with(&format!("{verb}(")));
     if !starts_with_verb {
-        // The live server lays the rejection out over three lines: the query,
-        // a caret under the offending token, and the reason (observed on
-        // tenant `orbitinghail`, release 61).
+        // The live server's rejection (observed on tenant `orbitinghail`,
+        // release 62.2): the query ends a prose line, then a `^` whose column
+        // counts from the query's start, then the reason.
         let message = format!(
             "Bad request: failed to execute pangolin query due to a runtime error: \
              Event set DSL error: {query}\n^\ninvalid with_next"
@@ -1434,33 +1385,6 @@ mod tests {
         assert!(mock_check_user_agent(lowercase));
         assert!(!mock_check_user_agent(empty));
         assert!(!mock_check_user_agent(missing));
-    }
-
-    #[test]
-    fn mock_route_search_run_events_matches_after_decoding() {
-        let (status, body) = mock_route_search_run_events("run-1", Some("q=slow+request"));
-        assert_eq!(status, 200);
-        assert!(
-            body.contains("slow request"),
-            "expected match for decoded query, got: {body}"
-        );
-    }
-
-    #[test]
-    fn mock_route_search_run_events_caps_at_limit() {
-        // parallel_driver_fetch matches three events; limit=1 keeps the first.
-        let (status, all) = mock_route_search_run_events("run-1", Some("q=parallel_driver_fetch"));
-        assert_eq!(status, 200);
-        assert_eq!(all.lines().count(), 3, "fixture should match three events");
-
-        let (status, capped) =
-            mock_route_search_run_events("run-1", Some("q=parallel_driver_fetch&limit=1"));
-        assert_eq!(status, 200);
-        assert_eq!(capped.lines().count(), 1);
-        assert!(
-            capped.contains(r#""vtime":"400.5""#),
-            "the first match should be retained, got: {capped}"
-        );
     }
 
     #[test]

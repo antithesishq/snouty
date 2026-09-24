@@ -1055,6 +1055,29 @@ def expect_message(*needles: str):
     return chk
 
 
+def caret_under(query: str, segment: str):
+    """The rejection prints `query` on a line of its own, and the caret line
+    right under it points into `segment`, the part of the query that fails."""
+    start = query.index(segment)
+    end = start + len(segment)
+
+    def chk(sr: StoryRun, reg: Registry) -> tuple[bool, str]:
+        lines = sr.result.combined.splitlines()
+        for i, line in enumerate(lines[:-1]):
+            if line.strip() != query:
+                continue
+            indent = len(line) - len(line.lstrip())
+            caret = lines[i + 1]
+            if caret.strip() != "^":
+                return (False, f"no caret line under the query: {caret!r}")
+            col = caret.index("^") - indent
+            ok = start <= col <= end
+            return (ok, f"caret at query column {col}, failing segment spans {start}..{end}")
+        return (False, "the query is not on a line of its own")
+
+    return chk
+
+
 def contains_all(*needles: str):
     def chk(sr: StoryRun, reg: Registry) -> tuple[bool, str]:
         text = sr.result.combined
@@ -1369,6 +1392,15 @@ def _doctor_env(
 # username/password so the API key is reported on its own.
 def _reachable_doctor_env() -> dict[str, str | None]:
     return {"ANTITHESIS_USERNAME": None, "ANTITHESIS_PASSWORD": None}
+
+
+# A long query whose third verb names an invalid field, so the server's caret lands
+# in the middle of the query rather than at its start.
+INVALID_QUERY_SEGMENT = 'not_matches({host: "setup"})'
+INVALID_QUERY = (
+    'contains({output_text: "error"}).filter(ev => ev.moment.vtime > 10)'
+    f'.{INVALID_QUERY_SEGMENT}.narrow(["output_text"])'
+)
 
 
 def build_stories(d: Discovery) -> list[Story]:
@@ -1702,12 +1734,14 @@ def build_stories(d: Discovery) -> list[Story]:
         Story(
             "runs-search-check-invalid",
             "Validate an invalid query",
-            "My query has a bad verb; I want the validator to tell me what is wrong.",
+            "My long query names a field the string verbs do not have, in its third "
+            "verb; I want the validator to show me exactly where.",
             "A non-zero exit with the server's rejection: the query on its own line, "
-            "a caret under the offending token, and the reason. It must be clear the "
-            "query (not snouty) is the problem.",
-            ["runs", "search", d.success, 'bogus_verb({x: "y"})', "--check"],
-            expect_message("Event set DSL error"),
+            "a caret under the bad field in the middle of the query, and the "
+            "reason naming the valid fields. It must be clear the query (not snouty) "
+            "is the problem.",
+            ["runs", "search", d.success, INVALID_QUERY, "--check"],
+            caret_under(INVALID_QUERY, INVALID_QUERY_SEGMENT),
             json_capable=False,
             expect_ok=False,
         ),

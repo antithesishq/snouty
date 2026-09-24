@@ -656,29 +656,29 @@ macro_rules! classified_blocks_help {
 const SEARCH_LONG_ABOUT: &str = concat!(
     r#"Run an event-set DSL query against a run's events.
 
-The events-search API behind this command needs tenant release 62.2 or
-newer; `snouty doctor` reports an older tenant.
+How a run is structured: An Antithesis run is a tree of timelines, not one
+history. A timeline is a series of input_hashes. An input_hash is a hash of
+every input Antithesis sent up to that point. Antithesis branches a timeline
+by sending an input from some moment, which creates a new input_hash. Every
+event has an input_hash and a vtime, and one input_hash can have zero or more
+events. vtime is the virtual time at which the event was emitted on its
+timeline. Antithesis virtualizes the clock, so vtime can jump forward by any
+amount, but it never goes backward. vtime orders events only within one
+timeline.
 
-Reading the results:
-
-- The output is a sample, not every match. The server returns at most
-  --limit events (default 50, maximum 999) in no fixed order. When the output
-  reaches the limit, stderr says "Additional results may be available".
-  Counts and patterns in a full output describe the sample only. An event
-  missing from the output can still be in the run. Fewer events than the
-  limit means the query matched only those events.
-- A run is a tree of timelines, not one history. Antithesis branches the
-  simulation many times, and one result mixes events from many timelines.
-  Each event has a moment: input_hash and vtime. vtime is seconds since the
-  start of the event's own timeline. One timeline carries many input_hash
-  values, so neither field shows whether two events share a timeline. vtime
-  orders events only within one timeline. Two events that conflict in one
-  history (for example, two nodes that each win the same election term) are
-  usually on different timelines. To relate events within one timeline, do
-  it in the query with fold, with_last, or with_next. To read one event's
-  own history in order, run `snouty runs logs <run_id> <input_hash> <vtime>`
-  with that event's moment: it prints the timeline from its root to that
-  moment.
+How to read the results: The output is a sample of the matching events, and
+they can come from different timelines. The server returns at most --limit
+events (default 50, maximum 999) in no fixed order. When the output reaches
+the limit, stderr says "Additional results may be available". Then any count
+or pattern in the output holds for the sample, not for the run: if all 50
+events come from node-0, other nodes can still have matches. An event missing
+from the output can still be in the run. Fewer events than the limit means
+the query matched only those events. Two events that conflict in one history
+(for example, two nodes that each win the same election term) are usually on
+different timelines. To relate an event to others on its own timeline, use
+fold, with_last, or with_next in the query. To read the whole timeline up to
+one event, run `snouty runs logs <run_id> <input_hash> <vtime>` with that
+event's moment.
 
 QUERY is a pipeline of dot-separated verbs. The first verb reads all events
 in the run. Each later verb reads the output of the verb before it.
@@ -692,7 +692,8 @@ Verbs:
   map(ev => expr)          reshape each event (ev.add_fields({...}) adds)
   flatmap(ev => expr)      map, then flatten the result one level
   narrow(["f1", "f2"])     keep only the listed fields
-  fold((s, ev) => e, s0)   walk each timeline from its root in vtime order,
+  fold((s, ev) => [events, s'], s0)
+                           walk each timeline from its root in vtime order,
                            threading state s (see below)
   union(set, ...)          OR this set with others, deduplicated
   intersect(set, ...)      AND this set with others
@@ -702,24 +703,30 @@ Verbs:
                            event from `set` at or before it in the same
                            timeline (the event itself, if it is in `set`;
                            use fold for the previous event of the same kind)
-  with_next({n: set}, t)   output the nearest later event from `set` in the
+  with_next({n: set}, vtime_within)
+                           output the nearest later event from `set` in the
                            same timeline, with fields last_event (the input
-                           event) and with_next_type ("n"); optional timeout
-                           t in seconds emits with_next_type "timeout"
+                           event) and with_next_type ("n"); with the optional
+                           vtime_within (in vtime seconds), an input event
+                           with no match by then outputs with_next_type
+                           "timeout"
 
 The string verbs (matches/contains/not_matches/excludes) address four fields:
 output_text, and container, stream, and source, which read the event's
 source.container, source.stream, and source.name. In JS, read every field
 from `ev`, e.g. `ev.source.container` or `ev.moment.vtime`.
 
-fold: the reducer returns [events, next_state]. `events` is an array of the
-events to output for ev: [] outputs nothing, [ev] keeps ev. next_state goes
-to the next event in the same timeline. s0 must be strict JSON: write
-{"count": 0}, not {count: 0}. The reducer body is JavaScript.
+fold: the reducer takes the state s and one event ev, and returns
+[events, s']. events is an array of the events to output: [ev] outputs ev,
+[] outputs nothing, and several distinct events output each one, e.g.
+[ev.add_fields({copy: 1}), ev.add_fields({copy: 2})]. Identical events
+output once. s' is the state for the next event in the same timeline. s0
+must be strict JSON: write {"count": 0}, not {count: 0}. The reducer body
+and s' are JavaScript.
 
-fold, with_last, and with_next scan the whole run before they output
-anything. A filter before them, a small --limit, or --follow does not
-shorten the scan. On a large run the scan can take more than 10 minutes.
+fold, with_last, and with_next cause the API to scan a lot of data before
+returning. On a large run, the scan can take more than 10 minutes. Use
+simpler operations when possible.
 
 Query snippets (each is a complete QUERY, ready to paste):
 
@@ -1043,8 +1050,17 @@ JSON object on its own line, and the trailer is left out:
              assertion's message and source function, and a test-composer command.\n\n",
             classified_blocks_help!(),
             "\n\nMatching runs server-side through the events-search API, the same route\n\
-             `snouty runs search` takes. Every term must match. The result is a sample of\n\
-             the matching events in no fixed order, capped at --limit.\n\n\
+             `snouty runs search` takes. Every term must match, case-insensitively. The\n\
+             result is a sample of the matching events in no fixed order, capped at\n\
+             --limit. Read `snouty runs search --help` to learn how to read a sample\n\
+             and how the run's timelines relate the events.\n\n\
+             For log output, the equivalent search is:\n\
+             \x20 snouty runs search <run_id> \\\n\
+             \x20   'filter(ev => [\"a\", \"b\"].every(t =>\n\
+             \x20     (ev.output_text || \"\").toLowerCase().includes(t)))'\n\
+             with each term in lower case. `snouty --verbose runs events ...` prints\n\
+             the exact query, which also matches assertion messages and test-composer\n\
+             commands.\n\n\
              Add --json for machine-readable output. Each event prints as one\n\
              JSON object on its own line:\n\
              \x20 snouty --json runs events <run_id> -m error | jq -r .moment.vtime"

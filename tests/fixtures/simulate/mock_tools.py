@@ -109,7 +109,10 @@ elif name == 'ssh':
             print('[]')
         elif '--property=Result' in script and mode == 'supervisor-failure' and (root / 'rollout_started').exists():
             sys.exit('supervisor failed fixture')
-    elif command.startswith('tar ') or command == 'podman load':
+    elif command.startswith('tar '):
+        sys.stdin.buffer.read()
+    elif command == 'podman load':
+        record('image_load_ssh_config', config.read_text())
         sys.stdin.buffer.read()
     else:
         sys.exit('unexpected ssh command: ' + repr(args))

@@ -631,10 +631,12 @@ mock-runs-server
 ! snouty runs events run-1 --match x --limit 0
 stderr 'invalid value .0.'
 
-# The server enforces the events-search ceiling of 999 and answers 400 above it.
+# The events-search endpoint accepts at most 999, so clap rejects more before
+# any request.
 mock-runs-server
-[!staging] ! snouty runs events $R_run_id --match x --limit 1000
-[!staging] stderr 'out of the range 1\.\.=999'
+! snouty runs events run-1 --match x --limit 1000
+stderr 'invalid value .1000.'
+stderr 'from 1 to 999'
 
 # The search endpoint caps its stream at the requested limit.
 mock-runs-server
@@ -707,10 +709,10 @@ mock-runs-server
 ! snouty runs search run-1 'contains({output_text: "x"})' --limit 0
 stderr 'invalid value .0.'
 
-# The server enforces the ceiling of 999 and answers 400 above it.
+# The same ceiling of 999 applies, checked before any request.
 mock-runs-server
-[!staging] ! snouty runs search $R_run_id 'contains({output_text: "x"})' --limit 1000
-[!staging] stderr 'out of the range 1\.\.=999'
+! snouty runs search run-1 'contains({output_text: "x"})' --limit 1000
+stderr 'from 1 to 999'
 
 # A query that matches nothing prints a friendly empty-state. (Mock-only: on a
 # live run this scans the whole event history.)

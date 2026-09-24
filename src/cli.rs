@@ -6,7 +6,7 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
 use color_eyre::Section;
 use color_eyre::eyre::Report;
 
-use crate::api::{RunStatus, SEARCH_DEFAULT_LIMIT};
+use crate::api::{RunStatus, SEARCH_DEFAULT_LIMIT, SEARCH_MAX_LIMIT};
 use crate::error::user_error;
 use crate::features::{self, Feature};
 use crate::time::HumanDuration;
@@ -59,6 +59,17 @@ fn parse_poll_interval(value: &str) -> Result<HumanDuration, String> {
         return Err("poll interval must be at least 1 minute".to_string());
     }
     Ok(interval)
+}
+
+/// clap value parser for the event-search `--limit`: 1 to
+/// [`SEARCH_MAX_LIMIT`], so an out-of-range value fails before any request.
+fn parse_search_limit(value: &str) -> Result<NonZeroU64, String> {
+    value
+        .parse::<u64>()
+        .ok()
+        .filter(|limit| (1..=SEARCH_MAX_LIMIT).contains(limit))
+        .and_then(NonZeroU64::new)
+        .ok_or_else(|| format!("must be a whole number from 1 to {SEARCH_MAX_LIMIT}"))
 }
 
 #[derive(Parser)]
@@ -1047,9 +1058,9 @@ JSON object on its own line, and the trailer is left out:
         #[arg(short = 'm', long = "match")]
         matches: Vec<String>,
 
-        /// Maximum number of events to print. Raise it to make a search more
-        /// exhaustive.
-        #[arg(short = 'n', long, default_value_t = SEARCH_DEFAULT_LIMIT)]
+        /// Maximum number of events to print, at most 999. Raise it to make a
+        /// search more exhaustive.
+        #[arg(short = 'n', long, default_value_t = SEARCH_DEFAULT_LIMIT, value_parser = parse_search_limit)]
         limit: NonZeroU64,
 
         /// Substrings to match, as a positional alias for `-m` (all must match).
@@ -1073,8 +1084,8 @@ pub struct RunsSearchArgs {
     /// Event-set DSL query
     pub query: String,
 
-    /// Maximum number of events to print (default 50)
-    #[arg(short = 'n', long)]
+    /// Maximum number of events to print (default 50, maximum 999)
+    #[arg(short = 'n', long, value_parser = parse_search_limit)]
     pub limit: Option<NonZeroU64>,
 
     /// Keep the connection open and print new matches as they arrive
@@ -1418,6 +1429,35 @@ mod tests {
 
         let parsed = Cli::try_parse_from(["snouty", "runs", "search", "RUN", "q", "-n", "0"]);
         assert!(parsed.is_err(), "expected --limit 0 to be rejected");
+    }
+
+    // Both event-search commands accept 1 to 999, the endpoint's own range.
+    #[test]
+    fn search_limit_accepts_the_endpoint_range_only() {
+        for (args, ok) in [
+            (
+                &["snouty", "runs", "search", "RUN", "q", "-n", "999"][..],
+                true,
+            ),
+            (
+                &["snouty", "runs", "search", "RUN", "q", "-n", "1000"][..],
+                false,
+            ),
+            (
+                &["snouty", "runs", "events", "RUN", "x", "-n", "999"][..],
+                true,
+            ),
+            (
+                &["snouty", "runs", "events", "RUN", "x", "-n", "1000"][..],
+                false,
+            ),
+            (
+                &["snouty", "runs", "events", "RUN", "x", "-n", "abc"][..],
+                false,
+            ),
+        ] {
+            assert_eq!(Cli::try_parse_from(args).is_ok(), ok, "{args:?}");
+        }
     }
 
     // `runs search` takes the run id and one raw DSL query positionally; the

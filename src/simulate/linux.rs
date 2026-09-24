@@ -258,6 +258,7 @@ pub(super) async fn run(
                 run_dir.path(),
                 args.timeout.into(),
                 BootOutput::Hidden,
+                args.memory,
             )
             .await?,
         );
@@ -499,6 +500,7 @@ pub(super) async fn shell(
             run_dir.path(),
             args.timeout.into(),
             BootOutput::Visible,
+            args.memory,
         ) => result?,
     };
     eprintln!("Opening guest shell. Exit the shell to stop the VM.");

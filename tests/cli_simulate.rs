@@ -20,10 +20,18 @@ struct Simulation {
 
 impl Simulation {
     fn start(mode: &str) -> Self {
-        Self::start_with_api(mode, "http://127.0.0.1:1")
+        Self::start_with_options(mode, "http://127.0.0.1:1", None)
     }
 
     fn start_with_api(mode: &str, api_url: &str) -> Self {
+        Self::start_with_options(mode, api_url, None)
+    }
+
+    fn start_with_memory(mode: &str, memory: &str) -> Self {
+        Self::start_with_options(mode, "http://127.0.0.1:1", Some(memory))
+    }
+
+    fn start_with_options(mode: &str, api_url: &str, memory: Option<&str>) -> Self {
         let directory = tempfile::tempdir().unwrap();
         let root = directory.path();
         let bin = root.join("bin");
@@ -108,6 +116,7 @@ impl Simulation {
                     Vec::new()
                 },
             )
+            .args(memory.into_iter().flat_map(|memory| ["--memory", memory]))
             .stdin(Stdio::null())
             .stdout(if mode.starts_with("blocked-output") {
                 Stdio::piped()
@@ -175,6 +184,14 @@ impl Drop for Simulation {
             }
         }
     }
+}
+
+#[test]
+fn configured_memory_is_passed_to_qemu() {
+    let mut simulation = Simulation::start_with_memory("clean-once", "4096");
+    simulation.wait_for("qemu_args", "-m");
+    let args: Vec<String> = serde_json::from_str(&simulation.read("qemu_args")).unwrap();
+    assert!(args.windows(2).any(|args| args == ["-m", "4096"]));
 }
 
 #[test]

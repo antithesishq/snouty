@@ -341,6 +341,18 @@ pub(super) async fn run(
         if args.disable_faults {
             guest.run_script(DISABLE_FAULTS).await?;
         }
+        std::fs::write(run_dir.path().join(ATTACH_READY), "")?;
+        if output.json {
+            output
+                .line(serde_json::json!({"type":"simulation_started", "run_id":run_id}).to_string())
+                .await?;
+        } else {
+            eprintln!("Run ID: {run_id}");
+            eprintln!("Attach: snouty simulate --attach {run_id}");
+        }
+        if output.closed {
+            return Ok::<_, color_eyre::Report>(());
+        }
         eprintln!("Uploading Compose configuration and images...");
         guest.upload_config(config.dir()).await?;
         let mut changed = Vec::new();
@@ -375,18 +387,6 @@ pub(super) async fn run(
             if args.disable_restart { "no" } else { "yes" }
         );
         guest.run_script(&start).await?;
-        std::fs::write(run_dir.path().join(ATTACH_READY), "")?;
-        if output.json {
-            output
-                .line(serde_json::json!({"type":"simulation_started", "run_id":run_id}).to_string())
-                .await?;
-        } else {
-            eprintln!("Run ID: {run_id}");
-            eprintln!("Attach: snouty simulate --attach {run_id}");
-        }
-        if output.closed {
-            return Ok::<_, color_eyre::Report>(());
-        }
         eprintln!("Streaming guest logs. Interrupt to stop simulation.");
         let status = if args.disable_restart {
             format!("{STATUS}\nunit=antithesis-test-composer.service\n{STATUS}")

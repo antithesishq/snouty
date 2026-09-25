@@ -90,7 +90,7 @@ impl Simulation {
             .env("ANTITHESIS_BASE_URL", api_url)
             .env("ANTITHESIS_API_KEY", "test-key")
             .env("ANTITHESIS_REPOSITORY", "registry.example/team/")
-            .args(if mode == "human" {
+            .args(if mode == "human" || mode == "human-blocked-upload" {
                 vec!["simulate"]
             } else {
                 vec!["--json", "simulate"]
@@ -461,8 +461,9 @@ fn attach_opens_shell_without_stopping_compose_simulation() {
 
 #[test]
 fn human_simulation_prints_the_attach_command() {
-    let mut simulation = Simulation::start("human");
+    let mut simulation = Simulation::start("human-blocked-upload");
     simulation.wait_for("stderr", "Attach: snouty simulate --attach simulate-");
+    simulation.wait_for("upload_blocked", "yes");
     let run_dir = simulation.read("run_dir");
     let id = Path::new(&run_dir).file_name().unwrap().to_str().unwrap();
     assert!(simulation.read("stderr").contains(&format!("Run ID: {id}")));
@@ -471,6 +472,29 @@ fn human_simulation_prints_the_attach_command() {
             .read("stderr")
             .contains(&format!("Attach: snouty simulate --attach {id}"))
     );
+    assert!(!simulation.read("compose_started").contains("yes"));
+    kill(Pid::from_raw(simulation.child.id() as i32), Signal::SIGTERM).unwrap();
+    assert_eq!(simulation.finish().status.code(), Some(143));
+}
+
+#[test]
+fn json_simulation_emits_run_id_before_upload_finishes() {
+    let mut simulation = Simulation::start("blocked-upload");
+    simulation.wait_for("stdout", "simulation_started");
+    simulation.wait_for("upload_blocked", "yes");
+    let start: serde_json::Value =
+        serde_json::from_str(simulation.read("stdout").lines().next().unwrap()).unwrap();
+    let id = start["run_id"].as_str().unwrap();
+    assert_eq!(start["type"], "simulation_started");
+    assert_eq!(
+        Path::new(&simulation.read("run_dir"))
+            .file_name()
+            .unwrap()
+            .to_str()
+            .unwrap(),
+        id
+    );
+    assert!(!simulation.read("compose_started").contains("yes"));
     kill(Pid::from_raw(simulation.child.id() as i32), Signal::SIGTERM).unwrap();
     assert_eq!(simulation.finish().status.code(), Some(143));
 }
@@ -479,6 +503,7 @@ fn human_simulation_prints_the_attach_command() {
 fn attach_rejects_a_stopped_simulation_with_retained_logs() {
     let mut simulation = Simulation::start("assertion");
     simulation.wait_for("stdout", "simulation_started");
+    simulation.wait_for("stdout", "balance stays positive");
     let start: serde_json::Value =
         serde_json::from_str(simulation.read("stdout").lines().next().unwrap()).unwrap();
     let id = start["run_id"].as_str().unwrap();

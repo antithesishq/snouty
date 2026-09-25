@@ -6,16 +6,46 @@ mod images;
 #[cfg(target_os = "linux")]
 mod vm;
 
-use crate::{OutputOptions, cli::SimulateArgs, settings::Settings};
+use crate::{
+    OutputOptions,
+    cli::{SimulateArgs, SimulationId},
+    settings::Settings,
+};
 use color_eyre::eyre::Result;
 use std::process::ExitCode;
 
+enum SimulationMode {
+    Compose,
+    Shell,
+    Attach(SimulationId),
+}
+
 pub async fn cmd_simulate(
-    args: SimulateArgs,
+    mut args: SimulateArgs,
     settings: &Settings,
     output: OutputOptions,
 ) -> Result<ExitCode> {
-    if args.shell {
+    let mode = match (args.shell, args.attach.take()) {
+        (false, None) => SimulationMode::Compose,
+        (true, None) => SimulationMode::Shell,
+        (false, Some(id)) => SimulationMode::Attach(id),
+        (true, Some(_)) => unreachable!("clap rejects --shell with --attach"),
+    };
+    if let SimulationMode::Attach(id) = mode {
+        if output.json {
+            color_eyre::eyre::bail!("--attach cannot be combined with --json");
+        }
+        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+        {
+            return attach(id);
+        }
+        #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
+        {
+            let _ = id;
+            color_eyre::eyre::bail!("simulate requires Linux x86_64");
+        }
+    }
+    if let SimulationMode::Shell = mode {
         if output.json {
             color_eyre::eyre::bail!("--shell cannot be combined with --json");
         }
@@ -32,7 +62,7 @@ pub async fn cmd_simulate(
     let config = match crate::config::detect_config(
         args.config
             .as_deref()
-            .expect("clap requires config unless --shell is present"),
+            .expect("clap requires config unless --shell or --attach is present"),
     )? {
         crate::config::Config::Compose(config) => config,
         crate::config::Config::Kubernetes(_) => color_eyre::eyre::bail!(
@@ -51,6 +81,6 @@ pub async fn cmd_simulate(
 }
 
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-use linux::{run, shell};
+use linux::{attach, run, shell};
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 mod linux;

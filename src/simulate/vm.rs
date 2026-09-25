@@ -114,6 +114,42 @@ pub struct Vm {
     instrumentation: PathBuf,
 }
 
+pub struct GuestConnection<'a> {
+    run_dir: &'a Path,
+}
+
+impl<'a> GuestConnection<'a> {
+    pub fn new(run_dir: &'a Path) -> Self {
+        Self { run_dir }
+    }
+
+    fn shell_command(&self) -> Command {
+        let mut command = Command::new("ssh");
+        command
+            .current_dir(self.run_dir)
+            .arg("-F")
+            .arg(self.run_dir.join("ssh_config"))
+            .args(["-o", "LogLevel=ERROR", "-tt", "guest_vm"])
+            .stdin(Stdio::inherit())
+            .stdout(Stdio::inherit())
+            .stderr(Stdio::inherit());
+        command
+    }
+
+    pub async fn interactive_shell(&self) -> Result<std::process::ExitStatus> {
+        let status = tokio::process::Command::from(self.shell_command())
+            .kill_on_drop(true)
+            .status()
+            .await
+            .wrap_err("failed to open guest shell")?;
+        Ok(status)
+    }
+
+    pub fn exec_interactive_shell(&self) -> Result<std::process::ExitCode> {
+        Err(self.shell_command().exec()).wrap_err("failed to open guest shell")
+    }
+}
+
 impl Vm {
     pub async fn boot(
         iso: &Path,
@@ -271,17 +307,9 @@ impl Vm {
     }
 
     pub async fn interactive_shell(&self) -> Result<std::process::ExitStatus> {
-        let mut command = self.ssh_base();
-        let status = command
-            .args(["-o", "LogLevel=ERROR", "-tt", "guest_vm"])
-            .stdin(Stdio::inherit())
-            .stdout(Stdio::inherit())
-            .stderr(Stdio::inherit())
-            .kill_on_drop(true)
-            .status()
+        GuestConnection::new(&self.run_dir)
+            .interactive_shell()
             .await
-            .wrap_err("failed to open guest shell")?;
-        Ok(status)
     }
 
     pub async fn run_script(&self, script: &str) -> Result<String> {

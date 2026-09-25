@@ -52,7 +52,7 @@ console = "0.15"
 tempfile = "3"
 pulldown-cmark = "0.13"
 libc = "0.2"
-nix = { version = "0.26.4", default-features = false, features = ["signal", "process"] }
+nix = { version = "0.26.4", default-features = false, features = ["signal", "process", "user"] }
 regex = "1"
 semver = "1"
 ptree = { version = "0.5.2", default-features = false }

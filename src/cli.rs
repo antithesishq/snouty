@@ -272,6 +272,10 @@ Example:
 This command is gated behind the 'simulate' unstable feature. Enable it with
 SNOUTY_UNSTABLE_FEATURES=simulate.
 
+While a Compose simulation runs, it prints a run ID. Open a second terminal
+and use `snouty simulate --attach <ID>` to enter its guest. Leaving that shell
+does not stop the simulation.
+
 Accepts a directory containing docker-compose.yaml, as validate does.
 Kubernetes configurations are not supported. Workload images must exist in
 the local container engine. The guest image defaults to antithesis-guest:v<RELEASE>
@@ -570,36 +574,66 @@ pub struct ValidateArgs {
 #[derive(Args)]
 pub struct SimulateArgs {
     /// Path to config directory containing docker-compose.yaml
-    #[arg(required_unless_present = "shell")]
+    #[arg(required_unless_present_any = ["shell", "attach"])]
     pub config: Option<std::path::PathBuf>,
 
     /// Container image containing /guest.iso (default: REPOSITORY/antithesis-guest:v<RELEASE>)
-    #[arg(long, value_parser = validate_non_empty)]
+    #[arg(long, value_parser = validate_non_empty, conflicts_with = "attach")]
     pub guest_image: Option<String>,
 
     /// Run one rollout, then continue streaming logs until interrupted
-    #[arg(long)]
+    #[arg(long, conflicts_with = "attach")]
     pub disable_restart: bool,
 
     /// Pause fault injection before Compose starts and prevent test composer from unpausing it
-    #[arg(long)]
+    #[arg(long, conflicts_with = "attach")]
     pub disable_faults: bool,
 
     /// Guest memory in MiB (maximum: 15000)
-    #[arg(long, default_value_t = 15000, value_parser = clap::value_parser!(u64).range(1..=15000))]
+    #[arg(long, default_value_t = 15000, value_parser = clap::value_parser!(u64).range(1..=15000), conflicts_with = "attach")]
     pub memory: u64,
 
     /// Boot the guest and open a root shell without starting Compose
     #[arg(
         long,
         hide = true,
-        conflicts_with_all = ["config", "disable_restart", "disable_faults"]
+        conflicts_with_all = ["config", "disable_restart", "disable_faults", "attach"]
     )]
     pub shell: bool,
 
+    /// Open a root shell in a running Compose simulation
+    #[arg(long, value_name = "ID", conflicts_with = "config")]
+    pub attach: Option<SimulationId>,
+
     /// Maximum time to wait for guest startup (for example, 5m or 300s)
-    #[arg(long, default_value = "5m", value_parser = parse_startup_timeout)]
+    #[arg(long, default_value = "5m", value_parser = parse_startup_timeout, conflicts_with = "attach")]
     pub timeout: HumanDuration,
+}
+
+#[derive(Clone, Debug)]
+pub struct SimulationId(String);
+
+impl std::str::FromStr for SimulationId {
+    type Err = &'static str;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        if value.len() > "simulate-".len()
+            && value.starts_with("simulate-")
+            && value
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+        {
+            Ok(Self(value.to_owned()))
+        } else {
+            Err("invalid simulation ID")
+        }
+    }
+}
+
+impl std::fmt::Display for SimulationId {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(formatter)
+    }
 }
 
 #[derive(Args)]
@@ -1231,6 +1265,28 @@ pub fn gated_command_error(command: &Commands, enabled: &[Feature]) -> Option<Re
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[hegel::test]
+    fn simulation_ids_stay_within_the_session_directory(tc: hegel::TestCase) {
+        let bytes = tc.draw(hegel::generators::binary().max_size(64));
+        let alphabet = b"0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
+        let suffix: String = bytes
+            .iter()
+            .map(|byte| alphabet[*byte as usize % alphabet.len()] as char)
+            .collect();
+        let input = format!("simulate-x{suffix}");
+        let id = input.parse::<SimulationId>().unwrap();
+        let path = std::path::Path::new("sessions").join(id.to_string());
+        assert_eq!(path.parent(), Some(std::path::Path::new("sessions")));
+        assert_eq!(id.to_string(), input);
+
+        let arbitrary = tc.draw(hegel::generators::text());
+        assert!(
+            format!("simulate-/{arbitrary}")
+                .parse::<SimulationId>()
+                .is_err()
+        );
+    }
 
     fn parse(args: &[&str]) -> Cli {
         Cli::try_parse_from(args).expect("args should parse")

@@ -58,6 +58,8 @@ elif name == 'ssh':
             record('shell_input', '\n'.join(commands))
             if command == 'whoami':
                 print('root', flush=True)
+            elif command == 'exit':
+                sys.exit(0)
             elif command == 'poweroff':
                 record('guest_poweroff', 'yes')
                 os.kill(int((root / 'qemu_pid').read_text()), signal.SIGTERM)
@@ -69,10 +71,10 @@ elif name == 'ssh':
     assert args[2] == 'guest_vm', args
     command = args[3]
     if command == 'true':
-        if mode == 'auth-failure':
-            sys.exit('root@127.0.0.1: Permission denied (publickey).')
         if not (root / 'ssh_ready').exists():
             sys.exit(255)
+        if mode == 'auth-failure':
+            sys.exit('root@127.0.0.1: Permission denied (publickey).')
     elif command == 'bash -s':
         script = sys.stdin.read()
         record('batch_script', script)
@@ -81,6 +83,7 @@ elif name == 'ssh':
             if mode == 'fault-pause-failure':
                 sys.exit(1)
         elif 'up -d' in script:
+            record('start_script', script)
             record('restart_mode', script.splitlines()[0])
             log = Path.cwd() / 'instrumentation.log'
             log.write_text("11.2 [workload] [JSON] '{\"antithesis_assert\":{\"message\":\"balance stays positive\",\"assert_type\":\"always\",\"must_hit\":true,\"hit\":true,\"condition\":false}}'\n12.0 [workload] [STDOUT] 'still running after assertion'\n")
@@ -88,7 +91,7 @@ elif name == 'ssh':
                 log.write_text("11.0 [fault_injector] [JSON] '{\"fault\":{\"name\":\"clog\",\"type\":\"network\",\"affected_nodes\":[\"workload\"],\"max_duration\":2}}'\n11.2 [workload] [JSON] '{\"antithesis_assert\":{\"message\":\"balance stays positive\",\"assert_type\":\"always\",\"must_hit\":true,\"hit\":true,\"condition\":false}}'\n")
             if mode == 'malformed-json':
                 log.write_text("12.0 [workload] [JSON] '{broken json}'\n")
-            if mode in ('supervisor-failure', 'clean-once', 'missing-guest', 'default-image'):
+            if mode in ('supervisor-failure', 'clean-once', 'missing-guest', 'default-image', 'human'):
                 log.write_text('12.0 [workload] [STDOUT] \'workload running\'\n')
             if mode.startswith('blocked-output'):
                 with log.open('w') as output:

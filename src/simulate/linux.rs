@@ -1,6 +1,7 @@
 use std::collections::BTreeSet;
 use std::io::{BufRead, IsTerminal, Read, Seek, SeekFrom, Write};
-use std::path::Path;
+use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
+use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::process::ExitCode;
 use std::time::Duration;
@@ -13,10 +14,15 @@ use tokio::signal::unix::{Signal, SignalKind, signal};
 use super::{
     events::{self, Event, Failure},
     images::{ImageId, Images},
-    vm::{BootOutput, ShutdownSignal, Vm},
+    vm::{BootOutput, GuestConnection, ShutdownSignal, Vm},
 };
 use crate::{
-    OutputOptions, cli::SimulateArgs, compose, config::ComposeConfig, container, settings::Settings,
+    OutputOptions,
+    cli::{SimulateArgs, SimulationId},
+    compose,
+    config::ComposeConfig,
+    container,
+    settings::Settings,
 };
 
 const PREPARE: &str = include_str!("assets/prepare.sh");
@@ -25,6 +31,63 @@ const START: &str = include_str!("assets/start.sh");
 const STOP: &str = include_str!("assets/stop.sh");
 const STATUS: &str = include_str!("assets/status.sh");
 const CLEANUP_TIMEOUT: Duration = Duration::from_secs(30);
+const ATTACH_READY: &str = "attach-ready";
+
+fn session_root() -> Result<PathBuf> {
+    let base = std::env::var_os("XDG_RUNTIME_DIR")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| std::env::temp_dir().join(format!("snouty-{}", nix::unistd::geteuid())));
+    let root = base.join("snouty").join("simulate");
+    for (directory, private) in [
+        (base.clone(), true),
+        (base.join("snouty"), false),
+        (root.clone(), true),
+    ] {
+        if !directory.exists() {
+            let mut builder = std::fs::DirBuilder::new();
+            builder.mode(0o700);
+            if let Err(error) = builder.create(&directory)
+                && error.kind() != std::io::ErrorKind::AlreadyExists
+            {
+                return Err(error.into());
+            }
+        }
+        let metadata = std::fs::symlink_metadata(&directory)?;
+        if !metadata.is_dir()
+            || metadata.uid() != nix::unistd::geteuid().as_raw()
+            || metadata.permissions().mode() & if private { 0o077 } else { 0o022 } != 0
+        {
+            bail!(
+                "simulation runtime directory is not private: {}",
+                directory.display()
+            );
+        }
+    }
+    Ok(root)
+}
+
+fn interactive_terminal(option: &str) -> Result<()> {
+    if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
+        bail!("simulate {option} requires an interactive terminal");
+    }
+    Ok(())
+}
+
+pub(super) fn attach(id: SimulationId) -> Result<ExitCode> {
+    interactive_terminal("--attach")?;
+    let path = session_root()?.join(id.to_string());
+    let metadata = std::fs::symlink_metadata(&path)
+        .map_err(|_| color_eyre::eyre::eyre!("simulation {id} is no longer running"))?;
+    if !metadata.is_dir()
+        || metadata.uid() != nix::unistd::geteuid().as_raw()
+        || metadata.permissions().mode() & 0o077 != 0
+        || !path.join(ATTACH_READY).is_file()
+    {
+        bail!("simulation {id} is no longer running");
+    }
+    GuestConnection::new(&path).exec_interactive_shell()
+}
 
 type LogStream = Pin<Box<dyn Stream<Item = Result<(u64, String)>> + Send>>;
 const MAX_RECORD_BYTES: usize = 4 * 1024 * 1024;
@@ -244,8 +307,15 @@ pub(super) async fn run(
     let mut signals = Signals::install()?;
     let images = Images::from_runtime(runtime.as_ref());
     let run_dir = tempfile::Builder::new()
-        .prefix("snouty-simulate-")
-        .tempdir()?;
+        .prefix("simulate-")
+        .tempdir_in(session_root()?)?;
+    std::fs::set_permissions(run_dir.path(), std::fs::Permissions::from_mode(0o700))?;
+    let run_id = run_dir
+        .path()
+        .file_name()
+        .unwrap()
+        .to_string_lossy()
+        .into_owned();
     let mut vm = None;
     let mut logs: Option<LogStream> = None;
     let mut summary = Summary::default();
@@ -305,6 +375,18 @@ pub(super) async fn run(
             if args.disable_restart { "no" } else { "yes" }
         );
         guest.run_script(&start).await?;
+        std::fs::write(run_dir.path().join(ATTACH_READY), "")?;
+        if output.json {
+            output
+                .line(serde_json::json!({"type":"simulation_started", "run_id":run_id}).to_string())
+                .await?;
+        } else {
+            eprintln!("Run ID: {run_id}");
+            eprintln!("Attach: snouty simulate --attach {run_id}");
+        }
+        if output.closed {
+            return Ok::<_, color_eyre::Report>(());
+        }
         eprintln!("Streaming guest logs. Interrupt to stop simulation.");
         let status = if args.disable_restart {
             format!("{STATUS}\nunit=antithesis-test-composer.service\n{STATUS}")
@@ -347,6 +429,7 @@ pub(super) async fn run(
             },
         },
     };
+    let _ = std::fs::remove_file(run_dir.path().join(ATTACH_READY));
     // Records already written belong to the workload, even if output is behind.
     let cleanup_boundary = instrumentation
         .as_ref()
@@ -472,9 +555,7 @@ pub(super) async fn shell(
     settings: &Settings,
     verbose: bool,
 ) -> Result<ExitCode> {
-    if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
-        bail!("simulate --shell requires an interactive terminal");
-    }
+    interactive_terminal("--shell")?;
     let guest_image = resolve_guest_image(args.guest_image, settings, verbose).await?;
     let runtime = container::runtime(settings)?;
     container::warn_ambiguous_engine(settings, runtime.as_ref(), false);

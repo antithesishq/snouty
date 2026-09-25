@@ -90,7 +90,7 @@ indicatif = "0.18"
 tempfile = "3"
 pulldown-cmark = "0.13.6"
 libc = "0.2"
-nix = { version = "0.26.4", default-features = false, features = ["signal", "process"] }
+nix = { version = "0.26.4", default-features = false, features = ["signal", "process", "user"] }
 regex = "1"
 semver = "1"
 shlex = "2"

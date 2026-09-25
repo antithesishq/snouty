@@ -81,6 +81,7 @@ impl Simulation {
             .env("HOME", &home)
             .env("XDG_CONFIG_HOME", root.join("settings"))
             .env("XDG_CACHE_HOME", root.join("cache"))
+            .env("XDG_RUNTIME_DIR", root.join("runtime"))
             .env("SNOUTY_UNSTABLE_FEATURES", "simulate")
             .env("SNOUTY_CONTAINER_ENGINE", "docker")
             .env("TMPDIR", root)
@@ -89,7 +90,11 @@ impl Simulation {
             .env("ANTITHESIS_BASE_URL", api_url)
             .env("ANTITHESIS_API_KEY", "test-key")
             .env("ANTITHESIS_REPOSITORY", "registry.example/team/")
-            .args(["--json", "simulate"])
+            .args(if mode == "human" {
+                vec!["simulate"]
+            } else {
+                vec!["--json", "simulate"]
+            })
             .arg(config)
             .args(if mode == "default-image" {
                 vec![]
@@ -325,6 +330,7 @@ fn start_shell_simulation(mode: &str) -> (TempDir, OsSession) {
         .env("HOME", &home)
         .env("XDG_CONFIG_HOME", root.join("settings"))
         .env("XDG_CACHE_HOME", root.join("cache"))
+        .env("XDG_RUNTIME_DIR", root.join("runtime"))
         .env("SNOUTY_UNSTABLE_FEATURES", "simulate")
         .env("SNOUTY_CONTAINER_ENGINE", "docker")
         .env("TMPDIR", root)
@@ -341,6 +347,25 @@ fn start_shell_simulation(mode: &str) -> (TempDir, OsSession) {
     let mut session = OsSession::spawn(command).expect("spawn shell simulation on a PTY");
     session.set_expect_timeout(Some(Duration::from_secs(15)));
     (directory, session)
+}
+
+fn attach_command(root: &Path, id: &str) -> Command {
+    let mut paths = vec![root.join("bin")];
+    paths.extend(std::env::split_paths(&std::env::var_os("PATH").unwrap()));
+    let mut command = Command::new(assert_cmd::cargo::cargo_bin!("snouty"));
+    command
+        .env_clear()
+        .env("PATH", std::env::join_paths(paths).unwrap())
+        .env("HOME", root.join("home"))
+        .env("XDG_CONFIG_HOME", root.join("settings"))
+        .env("XDG_CACHE_HOME", root.join("cache"))
+        .env("XDG_RUNTIME_DIR", root.join("runtime"))
+        .env("SNOUTY_UNSTABLE_FEATURES", "simulate")
+        .env("TMPDIR", root)
+        .env("TERM", "xterm-256color")
+        .current_dir(root)
+        .args(["simulate", "--attach", id]);
+    command
 }
 
 #[test]
@@ -391,6 +416,89 @@ fn hidden_shell_bypasses_compose_and_owns_the_terminal() {
 }
 
 #[test]
+fn attach_opens_shell_without_stopping_compose_simulation() {
+    let mut simulation = Simulation::start("clean-once");
+    simulation.wait_for("stdout", "simulation_started");
+    let start: serde_json::Value = simulation
+        .read("stdout")
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+        .find(|event| event["type"] == "simulation_started")
+        .unwrap();
+    let id = start["run_id"].as_str().unwrap();
+    let run_dir = Path::new(&simulation.read("run_dir")).to_owned();
+    assert!(
+        run_dir.starts_with(simulation.root()),
+        "{}",
+        run_dir.display()
+    );
+    assert_eq!(run_dir.file_name().unwrap(), id);
+    assert_eq!(
+        run_dir,
+        simulation.root().join("runtime/snouty/simulate").join(id)
+    );
+    assert!(run_dir.join("attach-ready").exists());
+
+    let mut shell = OsSession::spawn(attach_command(simulation.root(), id)).unwrap();
+    shell.set_expect_timeout(Some(Duration::from_secs(15)));
+    Expect::expect(&mut shell, "guest shell ready").unwrap();
+    Expect::send_line(&mut shell, "whoami").unwrap();
+    Expect::expect(&mut shell, "root").unwrap();
+    Expect::send_line(&mut shell, "exit").unwrap();
+    Expect::expect(&mut shell, expectrl::Eof).unwrap();
+    assert!(matches!(
+        shell.get_process().wait().unwrap(),
+        WaitStatus::Exited(_, 0)
+    ));
+    assert!(simulation.child.try_wait().unwrap().is_none());
+    assert!(run_dir.join("attach-ready").exists());
+
+    kill(Pid::from_raw(simulation.child.id() as i32), Signal::SIGTERM).unwrap();
+    let output = simulation.finish();
+    assert_eq!(output.status.code(), Some(143));
+    assert!(!run_dir.exists());
+}
+
+#[test]
+fn human_simulation_prints_the_attach_command() {
+    let mut simulation = Simulation::start("human");
+    simulation.wait_for("stderr", "Attach: snouty simulate --attach simulate-");
+    let run_dir = simulation.read("run_dir");
+    let id = Path::new(&run_dir).file_name().unwrap().to_str().unwrap();
+    assert!(simulation.read("stderr").contains(&format!("Run ID: {id}")));
+    assert!(
+        simulation
+            .read("stderr")
+            .contains(&format!("Attach: snouty simulate --attach {id}"))
+    );
+    kill(Pid::from_raw(simulation.child.id() as i32), Signal::SIGTERM).unwrap();
+    assert_eq!(simulation.finish().status.code(), Some(143));
+}
+
+#[test]
+fn attach_rejects_a_stopped_simulation_with_retained_logs() {
+    let mut simulation = Simulation::start("assertion");
+    simulation.wait_for("stdout", "simulation_started");
+    let start: serde_json::Value =
+        serde_json::from_str(simulation.read("stdout").lines().next().unwrap()).unwrap();
+    let id = start["run_id"].as_str().unwrap();
+    let run_dir = Path::new(&simulation.read("run_dir")).to_owned();
+    kill(Pid::from_raw(simulation.child.id() as i32), Signal::SIGTERM).unwrap();
+    assert_eq!(simulation.finish().status.code(), Some(1));
+    assert!(run_dir.exists());
+    assert!(!run_dir.join("attach-ready").exists());
+
+    let mut shell = OsSession::spawn(attach_command(simulation.root(), id)).unwrap();
+    shell.set_expect_timeout(Some(Duration::from_secs(15)));
+    Expect::expect(&mut shell, "is no longer running").unwrap();
+    Expect::expect(&mut shell, expectrl::Eof).unwrap();
+    assert!(matches!(
+        shell.get_process().wait().unwrap(),
+        WaitStatus::Exited(_, 1)
+    ));
+}
+
+#[test]
 fn interrupting_shell_boot_stops_qemu_and_removes_runtime_files() {
     let (directory, mut session) = start_shell_simulation("shell-booting");
     let root = directory.path();
@@ -411,6 +519,10 @@ fn interrupting_shell_boot_stops_qemu_and_removes_runtime_files() {
             .unwrap()
             .parse()
             .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while kill(Pid::from_raw(pid), None).is_ok() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
         assert!(
             kill(Pid::from_raw(pid), None).is_err(),
             "child {pid} survived interrupt"
@@ -597,7 +709,7 @@ fn clean_single_rollout_keeps_streaming_and_preserves_signal_exit_status() {
     assert_eq!(simulation.read("restart_mode"), "restart_enabled=no");
     assert!(
         simulation
-            .read("batch_script")
+            .read("start_script")
             .contains("export COMPOSE_PROJECT_NAME=antithesis")
     );
     kill(Pid::from_raw(simulation.child.id() as i32), Signal::SIGTERM).unwrap();

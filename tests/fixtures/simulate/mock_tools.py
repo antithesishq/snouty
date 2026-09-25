@@ -116,6 +116,10 @@ elif name == 'ssh':
             sys.exit('supervisor failed fixture')
     elif command.startswith('tar '):
         sys.stdin.buffer.read()
+        if mode.endswith('blocked-upload'):
+            record('upload_blocked', 'yes')
+            while True:
+                time.sleep(1)
     elif command == 'podman load':
         record('image_load_ssh_config', config.read_text())
         sys.stdin.buffer.read()

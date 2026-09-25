@@ -272,7 +272,7 @@ Example:
 This command is gated behind the 'simulate' unstable feature. Enable it with
 SNOUTY_UNSTABLE_FEATURES=simulate.
 
-While a Compose simulation runs, it prints a run ID. Open a second terminal
+After the guest boots, it prints a run ID. Open a second terminal
 and use `snouty simulate --attach <ID>` to enter its guest. Leaving that shell
 does not stop the simulation.
 

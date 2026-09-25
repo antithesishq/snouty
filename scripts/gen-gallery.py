@@ -2211,7 +2211,7 @@ def build_help_stories(d: Discovery) -> list[Story]:
             "--disable-faults keeping faults paused through test composer, startup timeout, "
             "interruption, failure status, the runs-compatible human log rendering, and "
             "active-fault annotations in JSON output. It should also show how to attach "
-            "a second terminal to a running guest.",
+            "a second terminal to a running guest, with the ID printed after boot.",
             ["simulate"],
         ),
         _help_story(

@@ -96,22 +96,21 @@ ALLOWED_ACCOUNT_IDS = {
     158243242,  # devin-ai-integration[bot], github.com/apps/devin-ai-integration
 }
 
-# Write access by account id, looked up once per account.
-write_access: dict[int, bool] = {}
 
-
-def trusted(slug: str, user: dict[str, Any]) -> bool | None:
+def trusted(slug: str, user: dict[str, Any], write_access: dict[int, bool]) -> bool | None:
     """Whether an account is allowlisted or can write to the repo. None
     means the lookup failed: the caller retries on the next poll.
+    `write_access` caches lookups by account id for one poll only, so a
+    revoked writer loses trust at the next poll.
     """
     uid = user.get("id")
     if uid in ALLOWED_ACCOUNT_IDS:
         return True
-    if uid is None:
+    # The permission lookup answers 404 "is not a user" for an app's bot
+    # account, so a bot outside the allowlist is untrusted without one.
+    if uid is None or user.get("type") == "Bot":
         return False
     if uid not in write_access:
-        # An app account answers 404 "is not a user", which parses as a
-        # body without a permission.
         perm = gh_json(["api", f"repos/{slug}/collaborators/{quote(user.get('login', ''), safe='')}/permission"])
         if perm is None:
             return None
@@ -209,13 +208,14 @@ def poll_pr(
         )
         for rc in paginate(f"repos/{slug}/pulls/{pr}/comments")
     ]
+    write_access: dict[int, bool] = {}
     for key, item, line in events:
         if key in seen:
             continue
         if login_of(item) == ignore:
             seen.add(key)
             continue
-        ok = trusted(slug, item.get("user") or {})
+        ok = trusted(slug, item.get("user") or {}, write_access)
         if ok is None:
             continue
         seen.add(key)

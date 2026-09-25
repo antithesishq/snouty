@@ -172,7 +172,11 @@ def poll_pr(
     if view["state"] != "OPEN":
         emit(f"PR #{pr} merged" if view["state"] == "MERGED" else f"PR #{pr} closed without merge")
         return False
-    ignore = login_of(view)
+    # Compare the author's exact REST login, not a norm_login fold: an
+    # app's "app/name" is "name[bot]" over REST, and no user can take a
+    # login with brackets.
+    author = view["author"]["login"]
+    ignore = f"{author.removeprefix('app/')}[bot]" if author.startswith("app/") else author
 
     if changed(seen, "base", view["baseRefName"]):
         emit(f"PR #{pr} base changed to {view['baseRefName']}")
@@ -212,7 +216,7 @@ def poll_pr(
     for key, item, line in events:
         if key in seen:
             continue
-        if login_of(item) == ignore:
+        if (item.get("user") or {}).get("login") == ignore:
             seen.add(key)
             continue
         ok = trusted(slug, item.get("user") or {}, write_access)

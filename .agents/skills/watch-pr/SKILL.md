@@ -53,8 +53,7 @@ gh failed: <message>
 ```
 
 A comment or review line ends in ` [no write access]` when its author lacks
-write access to the repository and is not an allowlisted app: Claude
-(`claude`) or Devin (`devin-ai-integration`).
+write access to the repository and is not an allowlisted app.
 
 A `gh failed:` line means the watcher cannot reach the API, so silence
 after it proves nothing. Fix gh, then restart the watcher. The line prints

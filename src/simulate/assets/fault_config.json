@@ -1,0 +1,8 @@
+{
+  "custom_scripts": [
+    {
+      "interval": 60.0,
+      "command": "container_status.py --fault-type kill --fault-duration 2.0 1.0"
+    }
+  ]
+}

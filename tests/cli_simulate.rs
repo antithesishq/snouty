@@ -121,6 +121,11 @@ impl Simulation {
                     Vec::new()
                 },
             )
+            .args(if mode == "disable-node-kills" {
+                vec!["--disable-node-kills"]
+            } else {
+                Vec::new()
+            })
             .args(memory.into_iter().flat_map(|memory| ["--memory", memory]))
             .stdin(Stdio::null())
             .stdout(if mode.starts_with("blocked-output") {
@@ -957,6 +962,30 @@ fn disable_faults_still_starts_composer() {
     kill(Pid::from_raw(simulation.child.id() as i32), Signal::SIGTERM).unwrap();
     simulation.finish();
     assert!(!simulation.root().join("faults_unpaused").exists());
+}
+
+#[test]
+fn node_kills_are_enabled_by_default_and_can_be_disabled() {
+    let expected = serde_json::json!({
+        "custom_scripts": [{
+            "interval": 60.0,
+            "command": "container_status.py --fault-type kill --fault-duration 2.0 1.0"
+        }]
+    });
+    let mut simulation = Simulation::start("clean-once");
+    simulation.wait_for("compose_started", "yes");
+    let config: serde_json::Value =
+        serde_json::from_str(&simulation.read("node_kills_config")).unwrap();
+    assert_eq!(config, expected);
+    kill(Pid::from_raw(simulation.child.id() as i32), Signal::SIGTERM).unwrap();
+    simulation.finish();
+
+    let mut simulation = Simulation::start("disable-node-kills");
+    simulation.wait_for("compose_started", "yes");
+    assert!(!simulation.root().join("node_kills_config").exists());
+    simulation.wait_for("faults_unpaused", "yes");
+    kill(Pid::from_raw(simulation.child.id() as i32), Signal::SIGTERM).unwrap();
+    simulation.finish();
 }
 
 #[test]

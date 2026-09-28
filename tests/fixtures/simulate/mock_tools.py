@@ -78,7 +78,10 @@ elif name == 'ssh':
     elif command == 'bash -s':
         script = sys.stdin.read()
         record('batch_script', script)
-        if 'fault_injector_update --pause' in script:
+        if "cat > /opt/antithesis/fault_config.json <<'CONFIG'\n" in script:
+            config = script.split("<<'CONFIG'\n", 1)[1].rsplit('CONFIG\n', 1)[0]
+            record('node_kills_config', json.dumps(json.loads(config)))
+        elif 'fault_injector_update --pause' in script:
             record('faults_paused', 'yes')
             if mode == 'fault-pause-failure':
                 sys.exit(1)

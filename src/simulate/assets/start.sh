@@ -7,6 +7,20 @@ printf '%s\n' "$compose_file" > "$state_dir/compose-file"
 rm -f "$state_dir/setup-ready"
 podman compose -p antithesis -f "$compose_file" up -d --no-build --pull=never
 
+cat > "$state_dir/add-entropy" <<'ENTROPY'
+#!/run/current-system/sw/bin/bash
+set -euo pipefail
+export PATH=/run/current-system/sw/bin:/run/current-system/sw/sbin
+entropy_scripts=(/nix/store/*-add_entropy)
+if [[ ! -x "${entropy_scripts[0]}" ]]; then
+  echo "Guest add_entropy script is unavailable" >&2
+  exit 1
+fi
+seed=$(od -An -N8 -tu8 /dev/urandom | tr -d ' ')
+"${entropy_scripts[0]}" "$seed" "$1"
+ENTROPY
+chmod +x "$state_dir/add-entropy"
+
 cat > "$state_dir/restart-compose" <<'SUPERVISOR'
 #!/run/current-system/sw/bin/bash
 set -euo pipefail
@@ -71,16 +85,28 @@ start_composer_rollout() {
     return 1
   fi
 
-  # Closing this file starts the next rollout.
   touch /opt/antithesis/rollouts/new
 }
 
 touch "$state_dir/restart-ready"
+first_rollout=yes
 while true; do
   while [[ ! -f "$state_dir/setup-ready" ]]; do
     sleep 0.1
   done
+  if [[ "$first_rollout" == yes ]]; then
+    "$state_dir/add-entropy" true
+  fi
   start_composer_rollout
+  if [[ "$first_rollout" == yes ]]; then
+    systemd-run \
+      --unit=antithesis-local-add-entropy \
+      --on-active=30s \
+      --on-unit-active=30s \
+      --timer-property=AccuracySec=1s \
+      "$state_dir/add-entropy" false
+    first_rollout=no
+  fi
 
   if [[ "$mode" == once ]]; then
     exit 0

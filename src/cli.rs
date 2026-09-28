@@ -288,6 +288,9 @@ available, otherwise TCG with a warning that performance will suffer.
 SSH configuration is private to this run; user configuration is not changed.
 
 Waits for setup_complete before starting test composer on each rollout.
+Forces a new fault configuration before the first rollout. A guest timer then
+calls add_entropy every 30 seconds, independent of composer restarts. Later
+calls use the guest's normal rerandomization chance.
 Unpauses fault injection after setup_complete unless --disable-faults is set.
 The classic fault injector attempts a node kill every 60 virtual seconds on
 average. Use --disable-node-kills to omit these kills. Other faults remain

@@ -27,6 +27,7 @@ use crate::{
 
 const PREPARE: &str = include_str!("assets/prepare.sh");
 const DISABLE_FAULTS: &str = include_str!("assets/disable-faults.sh");
+const NODE_KILLS_CONFIG: &str = include_str!("assets/fault_config.json");
 const START: &str = include_str!("assets/start.sh");
 const STOP: &str = include_str!("assets/stop.sh");
 const STATUS: &str = include_str!("assets/status.sh");
@@ -338,6 +339,13 @@ pub(super) async fn run(
         );
         let guest = vm.as_mut().expect("guest booted");
         guest.run_script(PREPARE).await?;
+        if !args.disable_node_kills {
+            guest
+                .run_script(&format!(
+                    "set -euo pipefail\nmkdir -p /opt/antithesis\ncat > /opt/antithesis/fault_config.json <<'CONFIG'\n{NODE_KILLS_CONFIG}CONFIG\n"
+                ))
+                .await?;
+        }
         if args.disable_faults {
             guest.run_script(DISABLE_FAULTS).await?;
         }

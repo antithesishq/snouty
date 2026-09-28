@@ -329,6 +329,12 @@ SSH files are private to the run; Snouty does not change user configuration.
 
 Rollouts repeat until interrupted. Use `--disable-restart` to start one rollout
 and keep streaming its logs. `--timeout 5m` limits guest startup, not the run.
+The classic fault injector attempts a node kill every 60 virtual seconds on
+average and restarts the node after a normally distributed delay of 2 seconds
+with a standard deviation of 1 second. The standard rerandomizer can select
+this fault in a swarm. Use `--disable-node-kills` to omit it, or
+`--disable-faults` to pause all fault injection. TacticsLang does not use the
+node kill configuration.
 Assertion violations and failed test commands do not stop the run, but remain
 recorded across rollouts. On shutdown, recorded failures return status 1;
 otherwise SIGINT returns 130 and SIGTERM returns 143. Cleanup-induced command

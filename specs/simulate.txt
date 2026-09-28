@@ -18,6 +18,8 @@ stdout 'guest-image'
 stdout 'antithesis-guest:v<RELEASE>'
 stdout 'disable-restart'
 stdout 'disable-faults'
+stdout 'disable-node-kills'
+stdout 'classic fault injector attempts a node kill every 60 virtual seconds'
 stdout 'Pause fault injection before Compose starts'
 stdout 'Unpauses fault injection after setup_complete unless --disable-faults is set.'
 stdout 'Waits for setup_complete before starting test composer'
@@ -62,6 +64,8 @@ stderr 'cannot be used with'
 ! snouty simulate --shell --disable-restart --guest-image guest:latest
 stderr 'cannot be used with'
 ! snouty simulate --shell --disable-faults --guest-image guest:latest
+stderr 'cannot be used with'
+! snouty simulate --shell --disable-node-kills --guest-image guest:latest
 stderr 'cannot be used with'
 ! snouty simulate --attach ../other
 stderr 'invalid simulation ID'

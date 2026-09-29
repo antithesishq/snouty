@@ -11,6 +11,7 @@ cat > "$state_dir/add-entropy" <<'ENTROPY'
 #!/run/current-system/sw/bin/bash
 set -euo pipefail
 export PATH=/run/current-system/sw/bin:/run/current-system/sw/sbin
+export LD_LIBRARY_PATH=/run/current-system/sw/lib
 entropy_scripts=(/nix/store/*-add_entropy)
 if [[ ! -x "${entropy_scripts[0]}" ]]; then
   echo "Guest add_entropy script is unavailable" >&2

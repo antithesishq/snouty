@@ -667,7 +667,10 @@ fn json_events_are_annotated_with_guest_faults() {
         .unwrap();
     assert_eq!(
         assertion["active_faults"],
-        serde_json::json!({"network_clog": {"vtime": 11.0}})
+        serde_json::json!({
+            "network_clog": {"vtime": 11.0},
+            "node_kill": {"echo-server": 11.1}
+        })
     );
 }
 

@@ -1863,7 +1863,7 @@ impl FaultAnnotator {
                     ) || update_faults;
                 }
 
-                if fault_type.eq("node") && (fault_name.eq("pause") || fault_name.eq("throttle")) {
+                if fault_type.eq("node") && matches!(fault_name, "kill" | "pause" | "throttle") {
                     update_faults = self.active_fault_windows.add_node_fault(
                         fault_name.to_string(),
                         target.to_string(),
@@ -3463,13 +3463,13 @@ mod tests {
                 json!({
                     "moment": { "vtime": "1" },
                     "source": { "name": "fault_injector" },
-                    "fault": { "name": "kill" }
+                    "fault": { "name": "reboot" }
                 })
             )),
             Some(
                 concat!(
                     r#"{"moment":{"vtime":1.0},"source":{"name":"fault_injector"},"#,
-                    r#""fault":{"name":"kill"},"#,
+                    r#""fault":{"name":"reboot"},"#,
                     r#""active_faults":{}}"#
                 )
                 .to_string()
@@ -3505,7 +3505,7 @@ mod tests {
             json!({
                 "moment": { "vtime": "1" },
                 "source": { "name": "fault_injector" },
-                "fault": { "name": "kill" }
+                "fault": { "name": "reboot" }
             })
         ));
 
@@ -4152,6 +4152,37 @@ mod tests {
                 .to_string()
             )
         );
+    }
+
+    #[test]
+    fn node_kill_is_annotated_until_its_duration_expires() {
+        let mut annotator = FaultAnnotator::default();
+        let mut kill = json!({
+            "moment": {"vtime": "1"},
+            "source": {"name": "fault_injector"},
+            "fault": {
+                "name": "kill",
+                "type": "node",
+                "affected_nodes": ["echo-server"],
+                "max_duration": 2
+            }
+        });
+        annotator.annotate(&mut kill);
+        assert_eq!(
+            kill["active_faults"],
+            json!({"node_kill": {"echo-server": 1.0}})
+        );
+
+        let mut during = json!({"moment": {"vtime": "2"}});
+        annotator.annotate(&mut during);
+        assert_eq!(
+            during["active_faults"],
+            json!({"node_kill": {"echo-server": 1.0}})
+        );
+
+        let mut after = json!({"moment": {"vtime": "4"}});
+        annotator.annotate(&mut after);
+        assert_eq!(after["active_faults"], json!({}));
     }
 
     fn summary(

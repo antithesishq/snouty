@@ -1187,6 +1187,10 @@ fn mock_route_execute_command(run_id: &str, req_body: &str) -> (u16, String) {
     (200, lines.join("\n") + "\n")
 }
 
+/// A bootstrap event, shaped as the live server sends one (tenant
+/// `orbitinghail`, run `d4b213720b4f72d68132653843623a04-62-2`).
+const MOCK_BOOTSTRAP_EVENT: &str = r#"{"output_text":"Bootstrapping","source":{"name":"bootstrap","stream":"info"},"moment":{"input_hash":"6133169164192300224","vtime":"0.5"}}"#;
+
 /// `POST /runs/{id}/events/search` — the events-search endpoint.
 /// `validate_only` returns an empty 200, and matching events stream back as
 /// NDJSON. The mock ends the stream at `limit`, as release 61 does (observed
@@ -1285,9 +1289,13 @@ fn mock_route_search_events(run_id: &str, body: &str) -> (u16, String, &'static 
     // events` answer differently on each backend (issue #252).
     let reads_event_json = !query.contains(crate::event_set_dsl::NEEDLE_FILTER.trim())
         && query.contains("JSON.stringify(ev)");
+    // The search reaches bootstrap events, which the log stream never holds
+    // (they precede its timeline). A query carrying `SKIP_BOOTSTRAP` drops them.
+    let skip_bootstrap = query.contains(crate::event_set_dsl::SKIP_BOOTSTRAP);
     let (_, logs) = mock_route_get_run_logs(run_id);
     let mut matches: Vec<&str> = logs
         .lines()
+        .chain((!skip_bootstrap).then_some(MOCK_BOOTSTRAP_EVENT))
         .filter(|line| {
             let haystack = if reads_event_json {
                 line.to_lowercase()

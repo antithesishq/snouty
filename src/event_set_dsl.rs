@@ -30,11 +30,20 @@ pub const VERBS: &[&str] = &[
 /// holds every needle.
 pub(crate) const NEEDLE_FILTER: &str = include_str!("event_set_dsl/needle_filter.pangolin.js");
 
-/// Build the event set that keeps the events holding every needle.
+/// The condition that drops bootstrap events. They come before a run's log
+/// timeline starts, so their moments have no log stream: a hash taken from
+/// one leads `runs logs` nowhere.
+pub(crate) const SKIP_BOOTSTRAP: &str = r#"ev.source?.name !== "bootstrap""#;
+
+/// Build the event set that keeps the events holding every needle, bootstrap
+/// events aside.
 pub fn substring_filter(needles: &[String]) -> String {
     let lowercased: Vec<String> = needles.iter().map(|needle| needle.to_lowercase()).collect();
     let needles = serde_json::to_string(&lowercased).expect("strings serialize to JSON");
-    format!("filter(ev => ({})(ev, {needles}))", NEEDLE_FILTER.trim())
+    format!(
+        "filter(ev => {SKIP_BOOTSTRAP} && ({})(ev, {needles}))",
+        NEEDLE_FILTER.trim()
+    )
 }
 
 #[cfg(test)]
@@ -48,6 +57,16 @@ mod tests {
         let query = substring_filter(&["Raft".to_string(), r#"say "hi"\"#.to_string()]);
         assert!(
             query.ends_with(r#")(ev, ["raft","say \"hi\"\\"]))"#),
+            "got: {query}"
+        );
+    }
+
+    // Bootstrap events are dropped before any needle is tried.
+    #[test]
+    fn substring_filter_skips_bootstrap_events() {
+        let query = substring_filter(&["error".to_string()]);
+        assert!(
+            query.starts_with(&format!("filter(ev => {SKIP_BOOTSTRAP} && (")),
             "got: {query}"
         );
     }

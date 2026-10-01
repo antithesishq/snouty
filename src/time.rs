@@ -10,7 +10,7 @@
 //! whole-number components (`h`/`m`/`s`, in that order); fractional components
 //! like `1.5h` are rejected, since the bare-minutes form already covers that.
 
-use chrono::{DateTime, Local, Utc};
+use chrono::{DateTime, Local, TimeZone, Utc};
 
 use std::error::Error;
 use std::fmt;
@@ -196,9 +196,15 @@ pub(crate) fn format_local(dt: DateTime<Utc>) -> String {
 /// offset, a form `--created-after`/`--created-before` read back as the same
 /// instant. Example: `2026-05-27 08:25:13 -07:00`.
 pub(crate) fn format_local_with_offset(dt: DateTime<Utc>) -> String {
-    dt.with_timezone(&Local)
-        .format("%Y-%m-%d %H:%M:%S %:z")
-        .to_string()
+    format_with_offset(dt.with_timezone(&Local))
+}
+
+/// [`format_local_with_offset`] for a timestamp already in its timezone.
+fn format_with_offset<Tz: TimeZone>(dt: DateTime<Tz>) -> String
+where
+    Tz::Offset: fmt::Display,
+{
+    dt.format("%Y-%m-%d %H:%M:%S %:z").to_string()
 }
 
 /// Reformat an RFC 3339 timestamp string into the local, suffix-less format.
@@ -213,6 +219,7 @@ pub(crate) fn format_local_str(raw: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::FixedOffset;
 
     fn minutes(s: &str) -> f64 {
         s.parse::<HumanDuration>().unwrap().minutes()
@@ -331,17 +338,25 @@ mod tests {
     }
 
     /// A timestamp `runs show` prints parses back, as `--created-after` and
-    /// `--created-before` parse it, to the same instant, in any local timezone.
+    /// `--created-before` parse it, to the same instant, under any UTC offset
+    /// of whole minutes (every zone in use today).
     #[hegel::test]
-    fn format_local_with_offset_round_trips(tc: hegel::TestCase) {
+    fn format_with_offset_round_trips(tc: hegel::TestCase) {
         // 1970 through 2100, at whole seconds as the format prints them.
         let seconds = tc.draw(
             generators::integers::<i64>()
                 .min_value(0)
                 .max_value(4_102_444_800),
         );
+        // UTC-12:00 through UTC+14:00, the span of real zones.
+        let minutes = tc.draw(
+            generators::integers::<i32>()
+                .min_value(-12 * 60)
+                .max_value(14 * 60),
+        );
+        let offset = FixedOffset::east_opt(minutes * 60).expect("in range");
         let dt = DateTime::from_timestamp(seconds, 0).expect("in range");
-        let printed = format_local_with_offset(dt);
+        let printed = format_with_offset(dt.with_timezone(&offset));
         let parsed: DateTime<Utc> = printed.parse().expect("the printed form must parse");
         assert_eq!(parsed, dt, "{printed:?}");
     }

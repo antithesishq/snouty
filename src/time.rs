@@ -184,11 +184,20 @@ fn split_unit(s: &str, unit: char) -> Option<(u64, &str)> {
 }
 
 /// Format an absolute timestamp in the user's local timezone, without a
-/// timezone suffix (the times in snouty's output are always local, so showing
-/// the offset would just be noise). Example: `2026-05-27 08:25:13`.
+/// timezone suffix, for dense output such as build-log lines. Example:
+/// `2026-05-27 08:25:13`.
 pub(crate) fn format_local(dt: DateTime<Utc>) -> String {
     dt.with_timezone(&Local)
         .format("%Y-%m-%d %H:%M:%S")
+        .to_string()
+}
+
+/// Format an absolute timestamp in the user's local timezone with its UTC
+/// offset, a form `--created-after`/`--created-before` read back as the same
+/// instant. Example: `2026-05-27 08:25:13 -07:00`.
+pub(crate) fn format_local_with_offset(dt: DateTime<Utc>) -> String {
+    dt.with_timezone(&Local)
+        .format("%Y-%m-%d %H:%M:%S %:z")
         .to_string()
 }
 
@@ -319,6 +328,22 @@ mod tests {
             .parse::<HumanDuration>()
             .expect("Display output must re-parse");
         assert_eq!(d, reparsed);
+    }
+
+    /// A timestamp `runs show` prints parses back, as `--created-after` and
+    /// `--created-before` parse it, to the same instant, in any local timezone.
+    #[hegel::test]
+    fn format_local_with_offset_round_trips(tc: hegel::TestCase) {
+        // 1970 through 2100, at whole seconds as the format prints them.
+        let seconds = tc.draw(
+            generators::integers::<i64>()
+                .min_value(0)
+                .max_value(4_102_444_800),
+        );
+        let dt = DateTime::from_timestamp(seconds, 0).expect("in range");
+        let printed = format_local_with_offset(dt);
+        let parsed: DateTime<Utc> = printed.parse().expect("the printed form must parse");
+        assert_eq!(parsed, dt, "{printed:?}");
     }
 
     /// Parsing arbitrary text must never panic — it returns `Ok` or

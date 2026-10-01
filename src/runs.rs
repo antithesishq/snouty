@@ -28,7 +28,7 @@ use crate::render::{
     OutputOptions, indent_lines, render_kv, sanitize, sanitize_multiline, wrap_text,
 };
 use crate::settings::Settings;
-use crate::time::{HumanDuration, format_local};
+use crate::time::{HumanDuration, format_local_with_offset};
 use crate::vtime::VTime;
 
 mod event_search;
@@ -1193,13 +1193,13 @@ fn print_run_detail(run: &RunDetail) -> Result<()> {
     }
 
     rows.push(("Status", run.status.to_string()));
-    rows.push(("Created", format_local(run.created_at)));
+    rows.push(("Created", format_local_with_offset(run.created_at)));
 
     if let Some(t) = run.started_at {
-        rows.push(("Started", format_local(t)));
+        rows.push(("Started", format_local_with_offset(t)));
     }
     if let Some(t) = run.completed_at {
-        rows.push(("Completed", format_local(t)));
+        rows.push(("Completed", format_local_with_offset(t)));
     }
 
     // Requested vs. actual run time. "Duration" is the configured workload
@@ -1300,7 +1300,7 @@ fn render_runs_detail(runs: &[RunSummary]) -> String {
             let mut rows: Vec<(&str, String)> = vec![
                 ("Run ID", run.run_id.clone()),
                 ("Status", run.status.to_string()),
-                ("Created", format_local(run.created_at)),
+                ("Created", format_local_with_offset(run.created_at)),
                 ("Launcher", run.launcher.clone()),
             ];
             if let Some(name) = run.test_name() {

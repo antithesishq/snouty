@@ -599,7 +599,9 @@ fn no_properties_message(run_id: &str, filter: &PropertyFilter) -> String {
         parts.push(format!("group '{group}'"));
     }
     if parts.is_empty() {
-        format!("No properties found.\n\nInspect the run with `snouty runs show {run_id}`.")
+        format!(
+            "No properties found. A run that is not complete can have no properties.\n\nInspect the run with `snouty runs show {run_id}`."
+        )
     } else {
         format!("No properties match ({}).", parts.join(", "))
     }

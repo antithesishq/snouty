@@ -424,13 +424,20 @@ stderr '^Error: API error: 400.*'
 [!staging] ! snouty runs
 [!staging] stderr 'API error: 429 Too Many Requests.*'
 
-# An unfiltered empty result succeeds and points to the run details.
+# An unfiltered empty result succeeds, says that a run that is not complete
+# can have no properties, and points to the run details. A filtered empty
+# result keeps the filter message.
 mock-runs-server
 snouty runs properties run-empty
-stdout '^No properties found\.$'
+stdout '^No properties found\. A run that is not complete can have no properties\.$'
 stdout '^Inspect the run with `snouty runs show run-empty`\.$'
 ! stdout 'this run is|properties are generated'
 ! stderr '^Error:'
+
+mock-runs-server
+snouty runs properties run-empty --failing
+stdout '^No properties match \(failing\)\.$'
+! stdout 'not complete|Inspect the run'
 
 # An empty JSON result succeeds without human guidance.
 mock-runs-server

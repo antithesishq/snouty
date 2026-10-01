@@ -2507,16 +2507,19 @@ _CREDS = ".config/snouty/credentials.toml"
 # A `credentials.toml` exactly as `snouty login` writes it.
 _SEED_CREDS_TOML = f'[default]\ntype = "ApiKey"\napi_key = "{_SEED_KEY}"\n'
 
-# Prompts the dialogues wait for, and the credential-menu labels they choose
-# between (these match the `Display` impl on snouty's `AuthSetupType`).
+# Prompts the dialogues wait for. The gallery's tenant offers no CLI OAuth, so
+# an API key is the one kind `snouty login` sets up: it asks for the key with no
+# credential menu first.
 _ASK_TENANT = "What Antithesis tenant"
 _ASK_REPO = "What container repository"
 _ASK_CREDENTIALS = "What kind of credentials"
 _ASK_KEY = "Please enter your API Key"
-_ASK_USERNAME = "What username"
-_ASK_PASSWORD = "Please enter your password"
-_API_KEY = "API Key"
-_USERNAME_PASSWORD = "Username & password (deprecated)"
+_USERNAME_PASSWORD = "Username & password"
+# A `credentials.toml` holding a username and password, as an older snouty
+# wrote it before `snouty login` stopped offering them.
+_SEED_PASSWORD_CREDS_TOML = (
+    f'[default]\ntype = "Password"\nusername = "puser"\npassword = "{_FAKE_PASS}"\n'
+)
 
 # Shared satisfaction rubric for the TTY stories: judge the conversation AND the
 # persisted result, not just the exit code.
@@ -2565,11 +2568,11 @@ def build_tty_stories() -> list[Story]:
             (
                 (_ASK_TENANT, _TENANT + ENTER),
                 (_ASK_REPO, _REPO + ENTER),
-                pick(_ASK_CREDENTIALS, _API_KEY),
                 (_ASK_KEY, _FAKE_KEY + ENTER),
             ),
             tty_persisted(
-                prompts=(_ASK_TENANT, _ASK_REPO, _ASK_CREDENTIALS),
+                prompts=(_ASK_TENANT, _ASK_REPO, _ASK_KEY),
+                absent_prompts=(_ASK_CREDENTIALS, _USERNAME_PASSWORD),
                 files=(
                     (_SETTINGS, (f'tenant = "{_TENANT}"', f'repository = "{_REPO}"')),
                     (_CREDS, ('type = "ApiKey"', f'api_key = "{_FAKE_KEY}"')),
@@ -2586,7 +2589,6 @@ def build_tty_stories() -> list[Story]:
             (
                 (_ASK_TENANT, ENTER),
                 (_ASK_REPO, ENTER),
-                pick(_ASK_CREDENTIALS, _API_KEY),
                 (_ASK_KEY, ENTER),
             ),
             tty_persisted(
@@ -2604,22 +2606,26 @@ def build_tty_stories() -> list[Story]:
             },
         ),
         _tty_story(
-            "login-password",
-            "Set up deprecated username/password auth",
-            "I authenticate with a username and password rather than an API key.",
+            "login-replaces-stored-password",
+            "Move from a stored username/password to an API key",
+            "An older snouty stored my username and password. Re-running login should switch me to "
+            "an API key, without offering username/password again.",
             ["login"],
             (
-                (_ASK_TENANT, _TENANT + ENTER),
-                (_ASK_REPO, _REPO + ENTER),
-                pick(_ASK_CREDENTIALS, _USERNAME_PASSWORD),
-                (_ASK_USERNAME, "puser" + ENTER),
-                (_ASK_PASSWORD, _FAKE_PASS + ENTER),
+                (_ASK_TENANT, ENTER),
+                (_ASK_REPO, ENTER),
+                (_ASK_KEY, _FAKE_KEY + ENTER),
             ),
             tty_persisted(
-                prompts=(_ASK_CREDENTIALS, _USERNAME_PASSWORD),
-                files=((_CREDS, ('type = "Password"', 'username = "puser"')),),
-                secrets_absent=(_FAKE_PASS,),
+                prompts=(_ASK_KEY,),
+                absent_prompts=(_ASK_CREDENTIALS, _USERNAME_PASSWORD),
+                files=((_CREDS, ('type = "ApiKey"', f'api_key = "{_FAKE_KEY}"')),),
+                secrets_absent=(_FAKE_KEY, _FAKE_PASS),
             ),
+            seed_files={
+                _SETTINGS: f'tenant = "{_TENANT}"\nrepository = "{_REPO}"\n',
+                _CREDS: _SEED_PASSWORD_CREDS_TOML,
+            },
         ),
     ]
 

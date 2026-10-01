@@ -19,6 +19,14 @@ stdout '.*update.*'
 stdout '.*validate.*'
 stdout '.*doctor.*'
 
+# Flag descriptions wrap at word boundaries instead of running off the
+# terminal, which split them mid-word. Captured output gets the same measure
+# as a terminal, so no line here passes 100 columns.
+snouty launch --help
+! stdout '^.{101,}$'
+snouty runs logs --help
+! stdout '^.{101,}$'
+
 # validate --help documents both the compose and Kubernetes flows.
 snouty validate --help
 stdout '.*Compose configs:.*'

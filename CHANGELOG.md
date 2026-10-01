@@ -1,5 +1,6 @@
 # Unreleased
 
+- `snouty runs properties --detail` shows the passing and failing example totals of each event property next to `Examples`, and ends with the `snouty runs logs` command that takes the hash and vtime of an example. A property with no examples shows `passed with no examples` or `failed with no examples`, and no table ([#323](https://github.com/antithesishq/snouty/pull/323))
 - `snouty runs properties` no longer shows a property's description: `--detail` drops the `Details` row, and `--json` drops the `description` field ([#327](https://github.com/antithesishq/snouty/pull/327))
 - `snouty runs search` is stable: the `runs-search` unstable feature is gone, and the command is on for everyone. It needs tenant release 62.2 or newer; `snouty doctor` warns on an older tenant. An exported `SNOUTY_UNSTABLE_FEATURES=runs-search` is ignored ([#309](https://github.com/antithesishq/snouty/pull/309))
 - **Breaking**: `snouty runs events` runs on the events-search API, the same route as `snouty runs search`, and no longer calls the events endpoint. Several `--match` terms need no feature flag. The result is a sample of the matching events in no fixed order, where the events endpoint returned the earliest matches in vtime order. `--limit` accepts up to 999 ([#309](https://github.com/antithesishq/snouty/pull/309))

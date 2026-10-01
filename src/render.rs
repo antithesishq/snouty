@@ -100,12 +100,19 @@ const PROSE_WIDTH: usize = 100;
 /// that straddles it. The measure is the terminal's width, capped at
 /// [`PROSE_WIDTH`].
 pub fn wrap_if_tty(text: &str) -> String {
-    let term = console::Term::stderr();
-    if !term.is_term() {
-        return text.to_string();
+    match prose_width() {
+        Some(width) => wrap_text(text, width).join("\n"),
+        None => text.to_string(),
     }
-    let width = PROSE_WIDTH.min(term.size().1 as usize);
-    wrap_text(text, width).join("\n")
+}
+
+/// The measure [`wrap_if_tty`] wraps stderr prose to: the terminal's width,
+/// capped at [`PROSE_WIDTH`]. `None` when stderr is not a terminal, where
+/// output keeps whole lines.
+pub(crate) fn prose_width() -> Option<usize> {
+    let term = console::Term::stderr();
+    term.is_term()
+        .then(|| PROSE_WIDTH.min(term.size().1 as usize))
 }
 
 /// The one wrapping engine every snouty renderer shares. Greedy word-wrap of

@@ -62,7 +62,22 @@ fn print_notes(notes: &[Note]) {
             Level::Warning => console::style(note.level.label()).yellow(),
             Level::Error => console::style(note.level.label()).red(),
         };
-        eprintln!("      {}: {}", label, note.text);
+        // On a terminal, a long note wraps with its continuation lines hung
+        // under the note's text, so the terminal never breaks it mid-word.
+        let hang = 6 + note.level.label().len() + 2;
+        let lines = match crate::render::prose_width() {
+            Some(width) => crate::render::wrap_text(&note.text, width.saturating_sub(hang)),
+            None => vec![note.text.clone()],
+        };
+        let mut lines = lines.iter();
+        eprintln!(
+            "      {}: {}",
+            label,
+            lines.next().map_or("", |l| l.as_str())
+        );
+        for line in lines {
+            eprintln!("{:hang$}{line}", "");
+        }
     }
 }
 

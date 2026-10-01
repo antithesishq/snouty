@@ -1036,7 +1036,7 @@ mod tests {
     /// A text generator whose output never contains `@` — for digest values,
     /// which never carry an `@` in practice (`sha256:...`), so the
     /// re-pinning/idempotence reasoning holds.
-    fn no_at() -> impl Generator<String> {
+    fn no_at() -> impl hegel::PrintableGenerator<String> {
         generators::text().filter(|s: &String| !s.contains('@'))
     }
 

@@ -98,7 +98,7 @@ tempfile = "3"
 testscript-rs = { git = "https://github.com/antithesishq/testscript-rs.git", branch = "main" }
 ctor = "0.4"
 wiremock = "0.6"
-hegeltest = "0.21.2"
+hegeltest = { version = "0.48.1", features = ["static-engine"] }
 expectrl = "0.9"
 strip-ansi-escapes = "0.2.1"
 

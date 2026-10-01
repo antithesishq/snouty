@@ -16,9 +16,8 @@ use serde_json::{Map, Value, json};
 use chrono::{DateTime, Utc};
 
 use crate::api::{
-    AntithesisApi, Event, EventProperty, LogsBegin, Moment, NonEventProperty, Property,
-    PropertyStatus, RunDetail, RunStatus, RunSummary, RunsFilterOptions, SEARCH_DEFAULT_LIMIT,
-    SearchMode,
+    AntithesisApi, Event, EventProperty, Moment, NonEventProperty, Property, PropertyStatus,
+    RunDetail, RunStatus, RunSummary, RunsFilterOptions, SEARCH_DEFAULT_LIMIT, SearchMode,
 };
 use crate::cli::{RunsCommands, RunsListArgs, RunsSearchArgs};
 use crate::error::{api_error_status, user_error};
@@ -182,7 +181,6 @@ pub async fn cmd_runs(
             input_hash,
             vtime,
             begin_vtime,
-            begin_input_hash,
             ..
         }) => {
             // The endpoint requires a vtime; `0` is the placeholder for "no
@@ -191,13 +189,7 @@ pub async fn cmd_runs(
                 input_hash,
                 vtime: vtime.unwrap_or(VTime::ZERO),
             };
-            // clap enforces `begin_input_hash requires begin_vtime`, so mapping
-            // over the vtime cannot drop a supplied hash.
-            let begin = begin_vtime.map(|vtime| LogsBegin {
-                vtime,
-                input_hash: begin_input_hash,
-            });
-            cmd_runs_logs(&run_id, moment, begin, settings, output.verbose, mode).await
+            cmd_runs_logs(&run_id, moment, begin_vtime, settings, output.verbose, mode).await
         }
         Some(RunsCommands::Exec {
             run_id,
@@ -1471,7 +1463,7 @@ async fn cmd_runs_events(
 async fn cmd_runs_logs(
     run_id: &str,
     moment: Moment,
-    begin: Option<LogsBegin>,
+    begin_vtime: Option<VTime>,
     settings: &Settings,
     verbose: bool,
     mode: EventOutput,
@@ -1479,7 +1471,7 @@ async fn cmd_runs_logs(
     debug!("streaming logs for run: {}", run_id);
 
     let api = AntithesisApi::new(settings, verbose)?;
-    let stream = match api.get_run_logs(run_id, moment, begin).await {
+    let stream = match api.get_run_logs(run_id, moment, begin_vtime).await {
         Ok(stream) => stream.untag(),
         Err(err) => return Err(explain_logs_error(&api, run_id, err).await),
     };

@@ -369,16 +369,6 @@ pub(crate) enum ResponseCache {
     Dir(std::path::PathBuf),
 }
 
-/// Where [`AntithesisApi::get_run_logs`] starts streaming from, instead of
-/// the root. The vtime alone is enough; the input
-/// hash is an optimization the endpoint accepts only alongside it, which is
-/// why this is not a [`Moment`].
-#[derive(Clone, Debug, serde::Serialize)]
-pub struct LogsBegin {
-    pub vtime: VTime,
-    pub input_hash: Option<String>,
-}
-
 /// End `stream` at the first line whose `moment.vtime` is past `end`. The
 /// endpoint streams in chronological order, so nothing at or before the end
 /// follows a line past it. A line with no vtime (a `Stream_Error`) is never
@@ -626,7 +616,7 @@ impl AntithesisApi {
         &self,
         run_id: &str,
         moment: Moment,
-        begin: Option<LogsBegin>,
+        begin_vtime: Option<VTime>,
     ) -> Result<Tagged<JsonStream, CachePolicy>> {
         let end = (moment.vtime != VTime::ZERO).then_some(moment.vtime);
         let mut request = self
@@ -635,11 +625,8 @@ impl AntithesisApi {
             .run_id(run_id)
             .input_hash(moment.input_hash)
             .vtime(moment.vtime);
-        if let Some(begin) = begin {
-            request = request.begin_vtime(begin.vtime);
-            if let Some(hash) = begin.input_hash {
-                request = request.begin_input_hash(hash);
-            }
+        if let Some(begin_vtime) = begin_vtime {
+            request = request.begin_vtime(begin_vtime);
         }
 
         match request.send().await {

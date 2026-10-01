@@ -1443,7 +1443,8 @@ fn lay_out_dsl_error(message: &str) -> Cow<'_, str> {
     };
     if from_query
         .lines()
-        .nth(1).is_none_or(|line| line.trim() != "^")
+        .nth(1)
+        .is_none_or(|line| line.trim() != "^")
     {
         return Cow::Borrowed(message);
     }

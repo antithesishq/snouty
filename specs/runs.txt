@@ -304,13 +304,15 @@ stderr 'No events matched "IPT_bytes_out"\.'
 # Bootstrap events are left out. They come before the run's log timeline, so
 # a hash from one would lead `runs logs` to no log lines. `runs search` still
 # reaches them.
+#    Mock only: live runs carry bootstrap events, but their text varies from
+#    run to run (mostly a CPU feature dump), and an incomplete run can hold
+#    none, so no needle is sure to reach one on staging. The mock's event
+#    is the one tenant `orbitinghail` returned for "Bootstrapping".
 mock-runs-server
-snouty runs events $R_run_id --match bootstrapping
-stderr 'No events matched "bootstrapping"\.'
+[!staging] snouty runs events $R_run_id --match bootstrapping
+[!staging] stderr 'No events matched "bootstrapping"\.'
 [!staging] snouty runs search $R_run_id 'contains({output_text: "Bootstrapping"})'
 [!staging] stdout '\[bootstrap\] Bootstrapping'
-snouty runs events --help
-stdout 'Bootstrap events are left out'
 
 # `snouty --json runs events` outputs raw NDJSON.
 mock-runs-server

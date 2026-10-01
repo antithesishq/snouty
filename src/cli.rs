@@ -1068,8 +1068,6 @@ JSON object on its own line, and the trailer is left out:
 
 A term is matched against the text an event carries: log output, an
 assertion's message and source function, and a test-composer command.
-Bootstrap events are left out: they come before the run's log timeline,
-so their moments have no logs to stream.
 
 "#,
             classified_blocks_help!(),

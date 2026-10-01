@@ -246,8 +246,6 @@ Frame = tuple[str, str]
 # Keys a step can send. `inquire` holds the terminal in raw mode for a prompt's
 # whole lifetime, so these arrive as key events rather than line-edited text.
 ENTER = "\r"
-DOWN = "\x1b[B"
-UP = "\x1b[A"
 
 # The pseudo-terminal's size. 120 columns keeps snouty's own lines — which carry
 # absolute paths under the throwaway `$HOME` — clear of the wrap boundary, so a
@@ -257,66 +255,13 @@ TTY_COLS = 120
 TTY_ROWS = 40
 
 # How long to wait for one prompt. Generous: a healthy exchange completes in
-# milliseconds, but the credential menu waits on snouty probing the tenant for
-# its OAuth configuration first.
+# milliseconds, but the first credential prompt waits on snouty probing the
+# tenant for its OAuth configuration.
 PROMPT_TIMEOUT = 30
 
 # How long the output must stay quiet before a frame is taken. A prompt matches
 # mid-stream, so without this the frame would catch a half-drawn screen.
 SETTLE = 0.2
-
-# `inquire`'s row prefixes (see its RenderConfig defaults): the prompt still
-# being answered leads with `?`, one already answered with `>`, the highlighted
-# menu row with `>`, and every other menu row with a space. Each is followed by
-# one more space.
-LIVE_PROMPT = "? "
-HIGHLIGHTED = "> "
-UNHIGHLIGHTED = "  "
-
-
-def pick(prompt: str, label: str) -> Step:
-    """A step that chooses `label` from an `inquire` menu: move the highlight
-    onto that row, then select it.
-
-    The keys are read off the screen rather than fixed, because the menu's
-    contents depend on the tenant — `snouty login` offers single sign-on only
-    where the tenant enables it — so a fixed count of arrow presses would land
-    on the wrong row."""
-
-    def keys(screen: list[str]) -> str:
-        options = _menu_options(screen)
-        labels = [text for text, _ in options]
-        if label not in labels:
-            raise GalleryError(f"menu has no {label!r} option; it offers {labels}")
-        highlighted = next((i for i, (_, on) in enumerate(options) if on), 0)
-        distance = labels.index(label) - highlighted
-        arrow = DOWN if distance > 0 else UP
-        return arrow * abs(distance) + ENTER
-
-    return (prompt, keys)
-
-
-def _menu_options(screen: list[str]) -> list[tuple[str, bool]]:
-    """Every option of the `inquire` menu on `screen`: its label, and whether it
-    is the highlighted one.
-
-    The menu sits under the prompt still being answered — the last line leading
-    with `?`, since an answered prompt is redrawn with `>`. Its options are the
-    rows below that, up to the first row that is neither highlighted nor
-    indented (the help line, or a blank row past the end of the menu)."""
-    live = [i for i, line in enumerate(screen) if line.startswith(LIVE_PROMPT)]
-    if not live:
-        return []
-    options: list[tuple[str, bool]] = []
-    for line in screen[live[-1] + 1 :]:
-        if line.startswith(HIGHLIGHTED):
-            options.append((line[2:].strip(), True))
-        elif line.startswith(UNHIGHLIGHTED) and line.strip():
-            options.append((line[2:].strip(), False))
-        else:
-            break
-    return options
-
 
 class _Recorder:
     """Sink for everything the child writes.

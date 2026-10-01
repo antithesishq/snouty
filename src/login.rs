@@ -244,7 +244,7 @@ fn print_login_summary(
             }
             _ => {
                 println!(
-                    "Skipped credential storage — snouty will use the ANTITHESIS_API_KEY environment variable."
+                    "Skipped credential storage — snouty will read credentials from the environment, such as ANTITHESIS_API_KEY."
                 );
             }
         },

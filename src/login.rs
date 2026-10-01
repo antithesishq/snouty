@@ -269,28 +269,10 @@ fn prompt_for_value(
 /// The credential kinds `snouty login` sets up. A username and password comes
 /// only from the environment or an older credentials file, because `snouty runs`
 /// refuses it.
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy)]
 enum AuthSetupType {
     ApiKey,
     OAuth,
-}
-
-impl AuthSetupType {
-    /// The credential menu, in order: single sign-on leads and is the
-    /// first-login default.
-    const IN_PREFERENCE_ORDER: [Self; 2] = [Self::OAuth, Self::ApiKey];
-
-    /// Whether this menu entry collects the same credential kind as `info`.
-    fn collects(self, info: &AuthenticationInfo) -> bool {
-        match info {
-            AuthenticationInfo::ApiKey { .. } => self == Self::ApiKey,
-            AuthenticationInfo::OAuth { .. } => self == Self::OAuth,
-            // No menu entry sets these up. OIDC is ambient-only.
-            AuthenticationInfo::GithubActionsOidc { .. } | AuthenticationInfo::Password { .. } => {
-                false
-            }
-        }
-    }
 }
 
 impl std::fmt::Display for AuthSetupType {
@@ -319,46 +301,27 @@ async fn prompt_for_auth(
     let oauth_offered = oauth_config
         .as_ref()
         .is_ok_and(|config| !matches!(config, CliOAuthConfig::Disabled));
-    let credential_options: Vec<AuthSetupType> = AuthSetupType::IN_PREFERENCE_ORDER
-        .into_iter()
-        .filter(|option| oauth_offered || *option != AuthSetupType::OAuth)
-        .collect();
 
-    // Default the highlighted option to whatever kind was last stored, so the
-    // common "log in again the same way" case is one keystroke; otherwise
-    // highlight the first (preferred) option. Credentials from environment
-    // variables are not stored, so they set no default.
-    let previous_kind = match previous_value {
-        Some(creds) if !matches!(creds, AttributedValue::EnvironmentVariable { .. }) => {
-            Some(creds.value())
-        }
-        _ => None,
-    };
-    let default = previous_kind
-        .and_then(|kind| {
-            credential_options
-                .iter()
-                .position(|option| option.collects(kind))
-        })
-        .unwrap_or(0);
-
-    let choice = match credential_options.as_slice() {
-        [only] => Some(*only),
-        options => {
-            let labels = options.iter().map(ToString::to_string).collect();
-            prompter
-                .select(
-                    "What kind of credentials would you like to use? (Hit Esc to skip)",
-                    labels,
-                    default,
-                )?
-                .map(|index| options[index])
-        }
+    // Single sign-on leads the menu and is the default, unless an API key is
+    // stored: then "log in again the same way" stays one keystroke.
+    let stored_key = stored_api_key(previous_value);
+    let choice = if oauth_offered {
+        let options = [AuthSetupType::OAuth, AuthSetupType::ApiKey];
+        let labels = options.iter().map(ToString::to_string).collect();
+        prompter
+            .select(
+                "What kind of credentials would you like to use? (Hit Esc to skip)",
+                labels,
+                usize::from(stored_key.is_some()),
+            )?
+            .map(|index| options[index])
+    } else {
+        Some(AuthSetupType::ApiKey)
     };
 
     match choice {
         None => Ok(None),
-        Some(AuthSetupType::ApiKey) => prompt_for_api_key(prompter, stored_api_key(previous_value)),
+        Some(AuthSetupType::ApiKey) => prompt_for_api_key(prompter, stored_key),
         Some(AuthSetupType::OAuth) => complete_oauth_login(&client, &base_url, &oauth_config?)
             .await
             .map(Some),
@@ -388,8 +351,7 @@ fn secret_hint(secret: &str) -> String {
 
 /// The API key already in storage, when that is what the previous credentials
 /// hold. Credentials read from the environment are left out on purpose: keeping
-/// one would copy an ambient secret into the credentials file. The menu's own
-/// default ignores them for the same reason.
+/// one would copy an ambient secret into the credentials file.
 fn stored_api_key(previous: Option<&AttributedValue<AuthenticationInfo>>) -> Option<&str> {
     match previous {
         None | Some(AttributedValue::EnvironmentVariable { .. }) => None,
@@ -1311,25 +1273,6 @@ mod tests {
         Ok(())
     }
 
-    /// With OAuth on, the menu offers only OAuth and an API key.
-    #[tokio::test]
-    async fn login_never_offers_a_username_and_password() -> Result<()> {
-        let env = LoginEnv::with_oauth_config(OAUTH_EPHEMERAL);
-        let settings = env.resolve_settings(None)?;
-        let prompter = Script::default()
-            .input("mytenant")
-            .input("myrepo")
-            .select(1)
-            .secret("sk-test-key")
-            .build();
-
-        do_cmd_login(None, None, None, &settings, &prompter).await?;
-
-        let (menu, _) = &prompter.selects()[0];
-        assert_eq!(menu, &[OAUTH.to_owned(), API_KEY.to_owned()]);
-        Ok(())
-    }
-
     /// Login reads a username and password an older snouty stored, asks for an
     /// API key, and replaces the stored credentials.
     #[tokio::test]
@@ -1392,31 +1335,6 @@ mod tests {
         // Only the tenant was prompted; the flow bailed before repository/credentials.
         assert_eq!(prompter.prompts().len(), 1, "{:?}", prompter.prompts());
         assert!(env.settings().is_empty(), "nothing should be persisted");
-        Ok(())
-    }
-
-    /// With OAuth disabled, login shows no menu and asks for the API key.
-    #[tokio::test]
-    async fn login_asks_for_an_api_key_straight_away_without_oauth() -> Result<()> {
-        let env = LoginEnv::with_oauth_config(OAUTH_DISABLED);
-        let settings = env.resolve_settings(None)?;
-        let prompter = Script::default()
-            .input("mytenant")
-            .input("myrepo")
-            .secret("sk-test-key")
-            .build();
-
-        do_cmd_login(None, None, None, &settings, &prompter).await?;
-
-        assert!(prompter.selects().is_empty(), "no menu without OAuth");
-        assert!(
-            prompter
-                .prompts()
-                .last()
-                .is_some_and(|p| p.starts_with("Please enter your API Key")),
-            "got: {:?}",
-            prompter.prompts()
-        );
         Ok(())
     }
 

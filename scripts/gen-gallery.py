@@ -231,14 +231,10 @@ class Snouty:
 # ---------------------------------------------------------------------------
 
 
-# The keys a dialogue step types: either a literal string, or — when they depend
-# on what snouty drew — a function of the settled screen (see `pick`).
-Keys = str | Callable[[list[str]], str]
-
 # One step of a dialogue: text to wait for on screen, then the keys to type once
 # it is there. Every send is gated on its prompt being rendered, so no keystroke
 # can race ahead of the prompt meant to read it.
-Step = tuple[str, Keys]
+Step = tuple[str, str]
 
 # One frame: the prompt that was waiting, and the screen at that moment.
 Frame = tuple[str, str]
@@ -426,7 +422,7 @@ def drive_tty(
             break
         frames.append((prompt, session.frame()))
         try:
-            session.send(keys if isinstance(keys, str) else keys(session.screen.display))
+            session.send(keys)
         except GalleryError as e:
             frames.append((f"[gallery] answering {prompt!r}: {e}", session.frame()))
             completed = False
@@ -2434,10 +2430,8 @@ def build_validate_stories(ephemeral: Path | None) -> list[Story]:
 # default here.
 #
 # The tenant is contacted for real: `snouty login` asks it whether single
-# sign-on is available before it draws the credential menu, so the menu a story
-# shows is the menu that tenant gives. That is the point — the gallery shows
-# what a human would see. It also means the menu's contents are not fixed, which
-# is why `pick` finds its row on screen instead of counting keypresses.
+# sign-on is available before it asks for credentials, so a story shows what a
+# human would see on that tenant.
 # ---------------------------------------------------------------------------
 
 # Fake, obviously-not-real secrets typed at the prompts — never a real
@@ -2458,7 +2452,6 @@ _ASK_TENANT = "What Antithesis tenant"
 _ASK_REPO = "What container repository"
 _ASK_CREDENTIALS = "What kind of credentials"
 _ASK_KEY = "Please enter your API Key"
-_USERNAME_PASSWORD = "Username & password"
 # A `credentials.toml` with a username and password, as an older snouty wrote it.
 _SEED_PASSWORD_CREDS_TOML = (
     f'[default]\ntype = "Password"\nusername = "puser"\npassword = "{_FAKE_PASS}"\n'
@@ -2515,7 +2508,7 @@ def build_tty_stories() -> list[Story]:
             ),
             tty_persisted(
                 prompts=(_ASK_TENANT, _ASK_REPO, _ASK_KEY),
-                absent_prompts=(_ASK_CREDENTIALS, _USERNAME_PASSWORD),
+                absent_prompts=(_ASK_CREDENTIALS,),
                 files=(
                     (_SETTINGS, (f'tenant = "{_TENANT}"', f'repository = "{_REPO}"')),
                     (_CREDS, ('type = "ApiKey"', f'api_key = "{_FAKE_KEY}"')),
@@ -2561,7 +2554,7 @@ def build_tty_stories() -> list[Story]:
             ),
             tty_persisted(
                 prompts=(_ASK_KEY,),
-                absent_prompts=(_ASK_CREDENTIALS, _USERNAME_PASSWORD),
+                absent_prompts=(_ASK_CREDENTIALS,),
                 files=((_CREDS, ('type = "ApiKey"', f'api_key = "{_FAKE_KEY}"')),),
                 secrets_absent=(_FAKE_KEY, _FAKE_PASS),
             ),

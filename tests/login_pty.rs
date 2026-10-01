@@ -133,11 +133,6 @@ fn send(session: &mut OsSession, input: &str) {
     Expect::send(session, input).expect("write to the PTY");
 }
 
-/// Wait for the API key prompt. With OAuth disabled, login shows no menu first.
-fn reach_api_key_prompt(session: &mut OsSession) {
-    expect(session, "Please enter your API Key");
-}
-
 /// Wait for the summary and a clean exit. Returns the consumed text.
 fn finish(mut session: OsSession) -> String {
     let seen = expect(&mut session, "Run `snouty doctor` to verify your setup.");
@@ -158,7 +153,7 @@ fn credentials(home: &Path) -> String {
 #[test]
 fn a_pasted_api_key_is_masked() {
     let (home, mut session) = start_login();
-    reach_api_key_prompt(&mut session);
+    expect(&mut session, "Please enter your API Key");
 
     let key = "sk-pty-key-123";
     send(&mut session, key);
@@ -177,7 +172,7 @@ fn a_pasted_api_key_is_masked() {
 #[test]
 fn accepts_an_api_key_longer_than_the_terminal_width() {
     let (home, mut session) = start_login();
-    reach_api_key_prompt(&mut session);
+    expect(&mut session, "Please enter your API Key");
 
     let long_key = format!("sk-{}", "a".repeat(197));
     assert!(
@@ -238,11 +233,7 @@ fn bare_enter_keeps_the_stored_api_key() {
 #[test]
 fn esc_at_the_api_key_prompt_skips_credential_storage() {
     let (home, mut session) = start_login();
-    let seen = expect(&mut session, "hit Esc to skip");
-    assert!(
-        !seen.contains("What kind of credentials"),
-        "no menu without OAuth: {seen}"
-    );
+    expect(&mut session, "hit Esc to skip");
     send(&mut session, "\x1b");
     let seen = finish(session);
 

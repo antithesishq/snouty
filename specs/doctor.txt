@@ -112,17 +112,22 @@ env ANTITHESIS_API_KEY=
 env ANTITHESIS_USERNAME=testuser
 env ANTITHESIS_PASSWORD=testpass
 env ANTITHESIS_TENANT=testtenant
+# Doctor reports it as one check whose one next step frees the API key. It
+# doesn't also report a credential shortfall and the password, and it doesn't
+# tell the user to run `snouty login`, which they already did.
 snouty doctor
-stderr '^  ⚠ more than one credential source is available$'
-stderr '^      WARNING: snouty is using the username and password from the `ANTITHESIS_USERNAME` and `ANTITHESIS_PASSWORD` environment variables$'
-stderr '^      NOTE: an API key is configured in .+credentials\.toml$'
-stderr '^      NOTE: `unset ANTITHESIS_USERNAME ANTITHESIS_PASSWORD` to use the next source$'
+stderr '^  ⚠ the username and password are hiding your API key$'
+stderr '^      WARNING: snouty uses the username and password from the `ANTITHESIS_USERNAME` and `ANTITHESIS_PASSWORD` environment variables, which `snouty runs` refuses$'
+stderr '^      NOTE: `unset ANTITHESIS_USERNAME ANTITHESIS_PASSWORD` to use the API key in .+credentials\.toml$'
+! stderr 'snouty login. to sign in'
+! stderr 'more than one credential source'
+! stderr 'Using password credentials'
 
 snouty doctor --json
-stdout '"name": "credential_sources"'
-stdout '"text": "snouty is using the username and password from the `ANTITHESIS_USERNAME` and `ANTITHESIS_PASSWORD` environment variables"'
-stdout '"text": "an API key is configured in .*credentials\.toml"'
-stdout '"text": "`unset ANTITHESIS_USERNAME ANTITHESIS_PASSWORD` to use the next source"'
+stdout '"name": "credentials"'
+stdout '"text": "`unset ANTITHESIS_USERNAME ANTITHESIS_PASSWORD` to use the API key in .*credentials\.toml"'
+! stdout '"name": "credential_sources"'
+! stdout '"name": "basic_auth"'
 ! stdout 'spec-stored-key|testpass'
 
 # A credentials file snouty cannot parse sits behind the exported API key. No

@@ -238,6 +238,16 @@ fn authn_checks(sources: &[AttributedValue<AuthenticationInfo>]) -> Vec<Check> {
         )];
     };
 
+    // A username and password in use while they hide a credential the API
+    // accepts: the one thing to do is free that credential (issue #292).
+    if let AuthenticationInfo::Password { .. } = credentials.value()
+        && let Some(hidden) = shadowed
+            .iter()
+            .find(|s| !matches!(s.value(), AuthenticationInfo::Password { .. }))
+    {
+        return vec![hidden_credential_check(credentials, hidden)];
+    }
+
     let mut checks = match credentials.value() {
         AuthenticationInfo::GithubActionsOidc { .. } => {
             vec![enrich_with_origin(
@@ -316,6 +326,59 @@ fn with_credential_remedy(check: Check) -> Check {
         )
 }
 
+/// The single check for a username and password that hide a credential the
+/// API accepts. It replaces the shortfall, password, and conflict checks,
+/// which together repeated the problem three ways and led with `snouty
+/// login`, a step the user has already taken.
+fn hidden_credential_check(
+    in_use: &AttributedValue<AuthenticationInfo>,
+    hidden: &AttributedValue<AuthenticationInfo>,
+) -> Check {
+    let name = credential_name(hidden.value());
+    Check::warn(
+        CREDENTIALS_CHECK_NAME,
+        format!("the username and password are hiding your {name}"),
+    )
+    .note(
+        Level::Warning,
+        format!(
+            "snouty uses the username and password from {}, which `snouty runs` refuses",
+            describe_origin(in_use)
+        ),
+    )
+    .note(
+        Level::Note,
+        format!(
+            "{} to use the {name} in {}",
+            drop_action(in_use),
+            credential_origin(hidden)
+        ),
+    )
+}
+
+/// The name of a credential kind, for "your …" and "the … in".
+fn credential_name(credential: &AuthenticationInfo) -> &'static str {
+    match credential {
+        AuthenticationInfo::ApiKey { .. } => "API key",
+        AuthenticationInfo::GithubActionsOidc { .. } => "GitHub Actions OIDC token",
+        AuthenticationInfo::OAuth { .. } => "OAuth credentials",
+        AuthenticationInfo::Password { .. } => "username and password",
+    }
+}
+
+/// Where a shadowed credential lives: a credentials file's path alone when
+/// it uses the default profile, otherwise [`describe_origin`].
+fn credential_origin(credential: &AttributedValue<AuthenticationInfo>) -> String {
+    match credential {
+        AttributedValue::SettingsFile {
+            settings_file_path,
+            profile: None,
+            ..
+        } => settings_file_path.display().to_string(),
+        _ => describe_origin(credential),
+    }
+}
+
 /// A warning, not a failure: snouty is authenticated, just not with the
 /// credential the user expected.
 fn shadowed_credentials_check(
@@ -344,15 +407,10 @@ fn shadowed_credentials_check(
             AuthenticationInfo::OAuth { .. } => "OAuth credentials are",
             AuthenticationInfo::Password { .. } => "a username and password are",
         };
-        let origin = match other {
-            AttributedValue::SettingsFile {
-                settings_file_path,
-                profile: None,
-                ..
-            } => settings_file_path.display().to_string(),
-            _ => describe_origin(other),
-        };
-        check = check.note(Level::Note, format!("{credential} configured in {origin}"));
+        check = check.note(
+            Level::Note,
+            format!("{credential} configured in {}", credential_origin(other)),
+        );
     }
     Some(check.note(
         Level::Note,
@@ -850,15 +908,24 @@ mod tests {
     }
 
     /// The case issue #292 reported: `snouty login` stored an API key while a
-    /// legacy username/password was still exported.
+    /// legacy username/password was still exported. One check names the
+    /// problem and the one step that fixes it.
     #[test]
-    fn a_shadowed_credential_is_reported_with_the_action_that_frees_it() {
+    fn a_password_hiding_an_api_key_is_one_check_with_one_next_step() {
         let checks = authn_checks(&[env_password_source(), file_api_key_source()]);
-        let check = checks
-            .iter()
-            .find(|c| c.name == "credential_sources")
-            .expect("the conflict is reported");
+        assert_eq!(
+            checks.len(),
+            1,
+            "got: {:?}",
+            checks.iter().map(|c| c.name).collect::<Vec<_>>()
+        );
+        let check = &checks[0];
+        assert_eq!(check.name, CREDENTIALS_CHECK_NAME);
         assert_eq!(check.status, Status::Warn);
+        assert_eq!(
+            check.message,
+            "the username and password are hiding your API key"
+        );
         assert_eq!(
             check
                 .notes
@@ -868,16 +935,14 @@ mod tests {
             [
                 (
                     Level::Warning,
-                    "snouty is using the username and password from the \
-                    `ANTITHESIS_USERNAME` and `ANTITHESIS_PASSWORD` environment variables"
+                    "snouty uses the username and password from the \
+                    `ANTITHESIS_USERNAME` and `ANTITHESIS_PASSWORD` environment variables, \
+                    which `snouty runs` refuses"
                 ),
                 (
                     Level::Note,
-                    "an API key is configured in /tmp/credentials.toml"
-                ),
-                (
-                    Level::Note,
-                    "`unset ANTITHESIS_USERNAME ANTITHESIS_PASSWORD` to use the next source"
+                    "`unset ANTITHESIS_USERNAME ANTITHESIS_PASSWORD` to use the API key in \
+                    /tmp/credentials.toml"
                 ),
             ]
         );

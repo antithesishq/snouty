@@ -2155,7 +2155,9 @@ def build_help_stories(d: Discovery) -> list[Story]:
             "Understand how to launch a run",
             "I run `snouty launch --help` to learn how to start a test run. The environment "
             "variable list should describe each setting without implying that its variable "
-            "is required or preferred. Username/password should remain marked deprecated.",
+            "is required or preferred. Username/password should remain marked deprecated. "
+            "The help should say that credentials come from `snouty login` and name the next "
+            "step, `snouty runs wait <run_id>`.",
             ["launch"],
         ),
         _help_story(

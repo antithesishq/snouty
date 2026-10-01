@@ -4,8 +4,8 @@ use std::time::Duration;
 
 use color_eyre::Section;
 use color_eyre::eyre::{Result, WrapErr, eyre};
-use futures_util::TryStreamExt;
 use futures_util::stream::BoxStream;
+use futures_util::{StreamExt, TryStreamExt};
 use indexmap::IndexMap;
 use indexmap::map::Entry;
 use log::debug;
@@ -1478,15 +1478,46 @@ async fn cmd_runs_logs(
     debug!("streaming logs for run: {}", run_id);
 
     let api = AntithesisApi::new(settings, verbose)?;
+    let requested_vtime = moment.vtime;
     let stream = match api.get_run_logs(run_id, moment, begin).await {
         Ok(stream) => stream.untag(),
         Err(err) => return Err(explain_logs_error(&api, run_id, err).await),
+    };
+    // The footer says where the stream ended, so a reader can tell a quiet
+    // timeline from one cut short; the renderer drops the vtime it needs.
+    let last_vtime = std::sync::Arc::new(std::sync::Mutex::new(None));
+    let stream = {
+        let last_vtime = last_vtime.clone();
+        stream
+            .inspect_ok(move |event| {
+                if let Some(vtime) = VTime::from_json(&event["moment"]["vtime"]) {
+                    *last_vtime.lock().expect("not poisoned") = Some(vtime);
+                }
+            })
+            .boxed()
     };
     // A moment with no logs (e.g. a manually-supplied 0/0 placeholder)
     // yields an empty stream; the pipeline says so in human mode rather
     // than printing nothing.
     let lines = event_search::render_event_stream(stream, ErrorRows::Abort, mode);
-    print_event_lines(lines, mode, "No log lines at this moment.", None).await
+    print_event_lines(lines, mode, "No log lines at this moment.", None).await?;
+    let last_vtime = *last_vtime.lock().expect("not poisoned");
+    if let (false, Some(last)) = (mode.json(), last_vtime) {
+        eprintln!("{}", logs_footer(last, requested_vtime));
+    }
+    Ok(())
+}
+
+/// The line `runs logs` ends its human output with: where the stream
+/// stopped, and the moment it was asked to end at, when one was given.
+fn logs_footer(last: VTime, requested: VTime) -> String {
+    if requested == VTime::ZERO {
+        format!("— end of logs: last event at vtime {last:.8} —")
+    } else {
+        format!(
+            "— end of logs: last event at vtime {last:.8}; requested moment at vtime {requested:.8} —"
+        )
+    }
 }
 
 /// One frame of an execute-command NDJSON stream.

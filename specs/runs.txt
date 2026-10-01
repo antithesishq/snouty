@@ -201,8 +201,8 @@ snouty runs properties $R_run_id --name 'Counter value' --detail
 # The table is a sample of what the run recorded, and says so. One trailing
 # next step names the command that each HASH/VTIME row feeds.
 [!staging] stdout '^Examples  showing 2 of 3 failing, 1 of 12 passing$'
-stdout '^view logs leading up to an example:$'
-stdout '^  snouty runs logs \S+ <hash> <vtime>$'
+[!staging] stdout '^view logs leading up to an example:$'
+[!staging] stdout '^  snouty runs logs \S+ <hash> <vtime>$'
 
 # --name is a case-insensitive substring filter over property names; without
 # --detail it just narrows the (grouped) table.

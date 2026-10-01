@@ -359,10 +359,6 @@ snouty settings file, optionally under a named profile. Sensitive information an
 information not provided via args are asked for at the terminal, so this command
 needs an interactive session.
 
-It stores single sign-on (OAuth) credentials when your tenant offers them, or
-an API key. It does not set up a username and password: set
-ANTITHESIS_USERNAME and ANTITHESIS_PASSWORD for those instead.
-
 NOTE: `snouty login` will offer to reuse your existing configuration values, including
 any sourced from a local .snouty.toml file or the file specified by --settings or via
 the SNOUTY_SETTINGS_PATH environment variable. However, snouty login will save the

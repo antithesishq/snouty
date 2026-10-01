@@ -44,14 +44,14 @@ trait Prompter {
     fn select(&self, prompt: &str, items: Vec<String>, default: usize) -> Result<Option<usize>>;
 
     /// A masked secret (each character echoes as `*`). There is deliberately
-    /// no confirmation round: Antithesis passwords are long generated strings
-    /// that are pasted like API keys, not typed twice.
+    /// no confirmation round: an API key is a long generated string that is
+    /// pasted, not typed twice. Returns `None` when the user skips it (Esc).
     ///
     /// `hint` is a display-only stand-in for a secret already stored (see
     /// [`secret_hint`]). When it is set, the prompt shows it and says that an
     /// empty answer keeps the stored secret. The secret itself never reaches
     /// the prompter.
-    fn password(&self, prompt: &str, hint: Option<&str>) -> Result<Option<String>>;
+    fn secret(&self, prompt: &str, hint: Option<&str>) -> Result<Option<String>>;
 }
 
 /// The production [`Prompter`]: `inquire` prompts reading the real terminal.
@@ -77,7 +77,7 @@ impl Prompter for InquirePrompter {
             .map(|choice| choice.index))
     }
 
-    fn password(&self, prompt: &str, hint: Option<&str>) -> Result<Option<String>> {
+    fn secret(&self, prompt: &str, hint: Option<&str>) -> Result<Option<String>> {
         // `inquire` has no default for a masked prompt, so the hint rides in
         // the message, in the same `(value)` shape `Text` gives a default.
         let message = match hint {
@@ -244,7 +244,7 @@ fn print_login_summary(
             }
             _ => {
                 println!(
-                    "Skipped credential storage — snouty will use the ANTITHESIS_API_KEY or ANTITHESIS_USERNAME/PASSWORD environment variables."
+                    "Skipped credential storage — snouty will use the ANTITHESIS_API_KEY environment variable."
                 );
             }
         },
@@ -343,9 +343,6 @@ async fn prompt_for_auth(
         })
         .unwrap_or(0);
 
-    // Without single sign-on an API key is the one kind left, so there is no
-    // menu to pick from: login asks for the key straight away, and Esc there
-    // skips credential storage as Esc at the menu does.
     let choice = match credential_options.as_slice() {
         [only] => Some(*only),
         options => {
@@ -419,7 +416,7 @@ fn prompt_for_api_key(
     stored: Option<&str>,
 ) -> Result<Option<PersistableCredentials>> {
     let hint = stored.map(secret_hint);
-    let entered = prompter.password("Please enter your API Key", hint.as_deref())?;
+    let entered = prompter.secret("Please enter your API Key", hint.as_deref())?;
     Ok(entered.map(|entered| PersistableCredentials::ApiKey {
         api_key: keep_stored_if_empty(entered, stored),
     }))
@@ -1033,7 +1030,7 @@ mod tests {
     enum Answer {
         Input(String),
         Select(Option<usize>),
-        Password(Option<String>),
+        Secret(Option<String>),
     }
 
     /// Fluent builder for a script of [`Answer`]s, in the order the flow will ask.
@@ -1054,13 +1051,13 @@ mod tests {
             self.0.push(Answer::Select(None));
             self
         }
-        fn password(mut self, value: &str) -> Self {
-            self.0.push(Answer::Password(Some(value.to_owned())));
+        fn secret(mut self, value: &str) -> Self {
+            self.0.push(Answer::Secret(Some(value.to_owned())));
             self
         }
         /// Esc at a masked prompt: the user skips it rather than answering.
-        fn skip_password(mut self) -> Self {
-            self.0.push(Answer::Password(None));
+        fn skip_secret(mut self) -> Self {
+            self.0.push(Answer::Secret(None));
             self
         }
         fn build(self) -> ScriptedPrompter {
@@ -1068,7 +1065,7 @@ mod tests {
                 answers: RefCell::new(self.0.into()),
                 prompts: RefCell::new(Vec::new()),
                 selects: RefCell::new(Vec::new()),
-                password_hints: RefCell::new(Vec::new()),
+                secret_hints: RefCell::new(Vec::new()),
             }
         }
     }
@@ -1080,8 +1077,8 @@ mod tests {
         prompts: RefCell<Vec<String>>,
         /// Each `select` call: its item list and its default index.
         selects: RefCell<Vec<(Vec<String>, usize)>>,
-        /// The hint shown by each `password` call, in order.
-        password_hints: RefCell<Vec<Option<String>>>,
+        /// The hint shown by each `secret` call, in order.
+        secret_hints: RefCell<Vec<Option<String>>>,
     }
 
     impl ScriptedPrompter {
@@ -1102,9 +1099,9 @@ mod tests {
             self.selects.borrow().clone()
         }
 
-        /// The hint shown by each `password` prompt, in order.
-        fn password_hints(&self) -> Vec<Option<String>> {
-            self.password_hints.borrow().clone()
+        /// The hint shown by each `secret` prompt, in order.
+        fn secret_hints(&self) -> Vec<Option<String>> {
+            self.secret_hints.borrow().clone()
         }
     }
 
@@ -1133,13 +1130,11 @@ mod tests {
             }
         }
 
-        fn password(&self, prompt: &str, hint: Option<&str>) -> Result<Option<String>> {
-            self.password_hints
-                .borrow_mut()
-                .push(hint.map(str::to_owned));
-            match self.next("password", prompt) {
-                Answer::Password(value) => Ok(value),
-                _ => panic!("next scripted answer was not a password at {prompt:?}"),
+        fn secret(&self, prompt: &str, hint: Option<&str>) -> Result<Option<String>> {
+            self.secret_hints.borrow_mut().push(hint.map(str::to_owned));
+            match self.next("secret", prompt) {
+                Answer::Secret(value) => Ok(value),
+                _ => panic!("next scripted answer was not a secret at {prompt:?}"),
             }
         }
     }
@@ -1269,7 +1264,7 @@ mod tests {
         let prompter = Script::default()
             .input("mytenant")
             .input("myrepo")
-            .password("sk-test-key")
+            .secret("sk-test-key")
             .build();
 
         do_cmd_login(None, None, None, &settings, &prompter).await?;
@@ -1289,7 +1284,7 @@ mod tests {
     async fn login_flags_skip_the_tenant_and_repository_prompts() -> Result<()> {
         let env = LoginEnv::new();
         let settings = env.resolve_settings(None)?;
-        let prompter = Script::default().password("sk-test-key").build();
+        let prompter = Script::default().secret("sk-test-key").build();
 
         do_cmd_login(
             Some("mytenant".to_owned()),
@@ -1327,7 +1322,7 @@ mod tests {
             .input("mytenant")
             .input("myrepo")
             .select(1)
-            .password("sk-test-key")
+            .secret("sk-test-key")
             .build();
 
         do_cmd_login(None, None, None, &settings, &prompter).await?;
@@ -1350,7 +1345,7 @@ mod tests {
         let prompter = Script::default()
             .input("mytenant")
             .input("myrepo")
-            .password("sk-test-key")
+            .secret("sk-test-key")
             .build();
 
         do_cmd_login(None, None, None, &settings, &prompter).await?;
@@ -1369,7 +1364,7 @@ mod tests {
         let prompter = Script::default()
             .input("ptenant")
             .input("prepo")
-            .password("pk-secret")
+            .secret("pk-secret")
             .build();
 
         do_cmd_login(None, None, Some("prod"), &settings, &prompter).await?;
@@ -1411,7 +1406,7 @@ mod tests {
         let prompter = Script::default()
             .input("mytenant")
             .input("myrepo")
-            .password("sk-test-key")
+            .secret("sk-test-key")
             .build();
 
         do_cmd_login(None, None, None, &settings, &prompter).await?;
@@ -1441,7 +1436,7 @@ mod tests {
             .input("mytenant")
             .input("myrepo")
             .select(1)
-            .password("sk-test-key")
+            .secret("sk-test-key")
             .build();
 
         do_cmd_login(None, None, None, &settings, &prompter).await?;
@@ -1470,7 +1465,7 @@ mod tests {
             .input("mytenant")
             .input("myrepo")
             .select(1)
-            .password("")
+            .secret("")
             .build();
 
         do_cmd_login(None, None, None, &settings, &prompter).await?;
@@ -1493,13 +1488,13 @@ mod tests {
         let prompter = Script::default()
             .input("mytenant")
             .input("myrepo")
-            .password("") // hit enter
+            .secret("") // hit enter
             .build();
 
         do_cmd_login(None, None, None, &settings, &prompter).await?;
 
         assert_eq!(
-            prompter.password_hints(),
+            prompter.secret_hints(),
             vec![Some("********9Pgw".to_owned())],
             "the key prompt must show that a stored key is there to keep"
         );
@@ -1523,7 +1518,7 @@ mod tests {
         let prompter = Script::default()
             .input("mytenant")
             .input("myrepo")
-            .password("antithesis_api_key_v2_NEW_7Qxz")
+            .secret("antithesis_api_key_v2_NEW_7Qxz")
             .build();
 
         do_cmd_login(None, None, None, &settings, &prompter).await?;
@@ -1548,7 +1543,7 @@ mod tests {
         let prompter = Script::default()
             .input("mytenant")
             .input("myrepo")
-            .password("sk-typed-key")
+            .secret("sk-typed-key")
             .build();
 
         let result = do_cmd_login(None, None, None, &settings, &prompter).await;
@@ -1557,7 +1552,7 @@ mod tests {
         result?;
 
         assert_eq!(
-            prompter.password_hints(),
+            prompter.secret_hints(),
             vec![None],
             "an ambient key must not be offered as something to keep"
         );
@@ -1573,7 +1568,7 @@ mod tests {
         let prompter = Script::default()
             .input("mytenant")
             .input("myrepo")
-            .skip_password()
+            .skip_secret()
             .build();
 
         do_cmd_login(None, None, None, &settings, &prompter).await?;
@@ -1718,7 +1713,7 @@ mod tests {
         let prompter = Script::default()
             .input("acme")
             .input("registry.example.com/acme/app")
-            .password("sk-KEYCHAIN-TEST")
+            .secret("sk-KEYCHAIN-TEST")
             .build();
         do_cmd_login(None, None, None, &settings, &prompter).await?;
 
@@ -1770,7 +1765,7 @@ mod tests {
         let prof_prompter = Script::default()
             .input("acme")
             .input("registry.example.com/acme/app")
-            .password("sk-PROD-KEY")
+            .secret("sk-PROD-KEY")
             .build();
         do_cmd_login(None, None, Some("prod"), &prof_settings, &prof_prompter).await?;
         assert!(

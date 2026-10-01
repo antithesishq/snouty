@@ -231,14 +231,10 @@ class Snouty:
 # ---------------------------------------------------------------------------
 
 
-# The keys a dialogue step types: either a literal string, or — when they depend
-# on what snouty drew — a function of the settled screen (see `pick`).
-Keys = str | Callable[[list[str]], str]
-
 # One step of a dialogue: text to wait for on screen, then the keys to type once
 # it is there. Every send is gated on its prompt being rendered, so no keystroke
 # can race ahead of the prompt meant to read it.
-Step = tuple[str, Keys]
+Step = tuple[str, str]
 
 # One frame: the prompt that was waiting, and the screen at that moment.
 Frame = tuple[str, str]
@@ -246,8 +242,6 @@ Frame = tuple[str, str]
 # Keys a step can send. `inquire` holds the terminal in raw mode for a prompt's
 # whole lifetime, so these arrive as key events rather than line-edited text.
 ENTER = "\r"
-DOWN = "\x1b[B"
-UP = "\x1b[A"
 
 # The pseudo-terminal's size. 120 columns keeps snouty's own lines — which carry
 # absolute paths under the throwaway `$HOME` — clear of the wrap boundary, so a
@@ -257,66 +251,13 @@ TTY_COLS = 120
 TTY_ROWS = 40
 
 # How long to wait for one prompt. Generous: a healthy exchange completes in
-# milliseconds, but the credential menu waits on snouty probing the tenant for
-# its OAuth configuration first.
+# milliseconds, but the first credential prompt waits on snouty probing the
+# tenant for its OAuth configuration.
 PROMPT_TIMEOUT = 30
 
 # How long the output must stay quiet before a frame is taken. A prompt matches
 # mid-stream, so without this the frame would catch a half-drawn screen.
 SETTLE = 0.2
-
-# `inquire`'s row prefixes (see its RenderConfig defaults): the prompt still
-# being answered leads with `?`, one already answered with `>`, the highlighted
-# menu row with `>`, and every other menu row with a space. Each is followed by
-# one more space.
-LIVE_PROMPT = "? "
-HIGHLIGHTED = "> "
-UNHIGHLIGHTED = "  "
-
-
-def pick(prompt: str, label: str) -> Step:
-    """A step that chooses `label` from an `inquire` menu: move the highlight
-    onto that row, then select it.
-
-    The keys are read off the screen rather than fixed, because the menu's
-    contents depend on the tenant — `snouty login` offers single sign-on only
-    where the tenant enables it — so a fixed count of arrow presses would land
-    on the wrong row."""
-
-    def keys(screen: list[str]) -> str:
-        options = _menu_options(screen)
-        labels = [text for text, _ in options]
-        if label not in labels:
-            raise GalleryError(f"menu has no {label!r} option; it offers {labels}")
-        highlighted = next((i for i, (_, on) in enumerate(options) if on), 0)
-        distance = labels.index(label) - highlighted
-        arrow = DOWN if distance > 0 else UP
-        return arrow * abs(distance) + ENTER
-
-    return (prompt, keys)
-
-
-def _menu_options(screen: list[str]) -> list[tuple[str, bool]]:
-    """Every option of the `inquire` menu on `screen`: its label, and whether it
-    is the highlighted one.
-
-    The menu sits under the prompt still being answered — the last line leading
-    with `?`, since an answered prompt is redrawn with `>`. Its options are the
-    rows below that, up to the first row that is neither highlighted nor
-    indented (the help line, or a blank row past the end of the menu)."""
-    live = [i for i, line in enumerate(screen) if line.startswith(LIVE_PROMPT)]
-    if not live:
-        return []
-    options: list[tuple[str, bool]] = []
-    for line in screen[live[-1] + 1 :]:
-        if line.startswith(HIGHLIGHTED):
-            options.append((line[2:].strip(), True))
-        elif line.startswith(UNHIGHLIGHTED) and line.strip():
-            options.append((line[2:].strip(), False))
-        else:
-            break
-    return options
-
 
 class _Recorder:
     """Sink for everything the child writes.
@@ -481,7 +422,7 @@ def drive_tty(
             break
         frames.append((prompt, session.frame()))
         try:
-            session.send(keys if isinstance(keys, str) else keys(session.screen.display))
+            session.send(keys)
         except GalleryError as e:
             frames.append((f"[gallery] answering {prompt!r}: {e}", session.frame()))
             completed = False
@@ -2495,10 +2436,8 @@ def build_validate_stories(ephemeral: Path | None) -> list[Story]:
 # default here.
 #
 # The tenant is contacted for real: `snouty login` asks it whether single
-# sign-on is available before it draws the credential menu, so the menu a story
-# shows is the menu that tenant gives. That is the point — the gallery shows
-# what a human would see. It also means the menu's contents are not fixed, which
-# is why `pick` finds its row on screen instead of counting keypresses.
+# sign-on is available before it asks for credentials, so a story shows what a
+# human would see on that tenant.
 # ---------------------------------------------------------------------------
 
 # Fake, obviously-not-real secrets typed at the prompts — never a real
@@ -2513,16 +2452,16 @@ _CREDS = ".config/snouty/credentials.toml"
 # A `credentials.toml` exactly as `snouty login` writes it.
 _SEED_CREDS_TOML = f'[default]\ntype = "ApiKey"\napi_key = "{_SEED_KEY}"\n'
 
-# Prompts the dialogues wait for, and the credential-menu labels they choose
-# between (these match the `Display` impl on snouty's `AuthSetupType`).
+# Prompts the dialogues wait for. The gallery's tenant has no CLI OAuth, so
+# login asks for the API key with no credential menu.
 _ASK_TENANT = "What Antithesis tenant"
 _ASK_REPO = "What container repository"
 _ASK_CREDENTIALS = "What kind of credentials"
 _ASK_KEY = "Please enter your API Key"
-_ASK_USERNAME = "What username"
-_ASK_PASSWORD = "Please enter your password"
-_API_KEY = "API Key"
-_USERNAME_PASSWORD = "Username & password (deprecated)"
+# A `credentials.toml` with a username and password, as an older snouty wrote it.
+_SEED_PASSWORD_CREDS_TOML = (
+    f'[default]\ntype = "Password"\nusername = "puser"\npassword = "{_FAKE_PASS}"\n'
+)
 
 # Shared satisfaction rubric for the TTY stories: judge the conversation AND the
 # persisted result, not just the exit code.
@@ -2571,11 +2510,11 @@ def build_tty_stories() -> list[Story]:
             (
                 (_ASK_TENANT, _TENANT + ENTER),
                 (_ASK_REPO, _REPO + ENTER),
-                pick(_ASK_CREDENTIALS, _API_KEY),
                 (_ASK_KEY, _FAKE_KEY + ENTER),
             ),
             tty_persisted(
-                prompts=(_ASK_TENANT, _ASK_REPO, _ASK_CREDENTIALS),
+                prompts=(_ASK_TENANT, _ASK_REPO, _ASK_KEY),
+                absent_prompts=(_ASK_CREDENTIALS,),
                 files=(
                     (_SETTINGS, (f'tenant = "{_TENANT}"', f'repository = "{_REPO}"')),
                     (_CREDS, ('type = "ApiKey"', f'api_key = "{_FAKE_KEY}"')),
@@ -2592,7 +2531,6 @@ def build_tty_stories() -> list[Story]:
             (
                 (_ASK_TENANT, ENTER),
                 (_ASK_REPO, ENTER),
-                pick(_ASK_CREDENTIALS, _API_KEY),
                 (_ASK_KEY, ENTER),
             ),
             tty_persisted(
@@ -2610,22 +2548,26 @@ def build_tty_stories() -> list[Story]:
             },
         ),
         _tty_story(
-            "login-password",
-            "Set up deprecated username/password auth",
-            "I authenticate with a username and password rather than an API key.",
+            "login-replaces-stored-password",
+            "Move from a stored username/password to an API key",
+            "An older snouty stored my username and password. Re-running login should switch me to "
+            "an API key, without offering username/password again.",
             ["login"],
             (
-                (_ASK_TENANT, _TENANT + ENTER),
-                (_ASK_REPO, _REPO + ENTER),
-                pick(_ASK_CREDENTIALS, _USERNAME_PASSWORD),
-                (_ASK_USERNAME, "puser" + ENTER),
-                (_ASK_PASSWORD, _FAKE_PASS + ENTER),
+                (_ASK_TENANT, ENTER),
+                (_ASK_REPO, ENTER),
+                (_ASK_KEY, _FAKE_KEY + ENTER),
             ),
             tty_persisted(
-                prompts=(_ASK_CREDENTIALS, _USERNAME_PASSWORD),
-                files=((_CREDS, ('type = "Password"', 'username = "puser"')),),
-                secrets_absent=(_FAKE_PASS,),
+                prompts=(_ASK_KEY,),
+                absent_prompts=(_ASK_CREDENTIALS,),
+                files=((_CREDS, ('type = "ApiKey"', f'api_key = "{_FAKE_KEY}"')),),
+                secrets_absent=(_FAKE_KEY, _FAKE_PASS),
             ),
+            seed_files={
+                _SETTINGS: f'tenant = "{_TENANT}"\nrepository = "{_REPO}"\n',
+                _CREDS: _SEED_PASSWORD_CREDS_TOML,
+            },
         ),
     ]
 

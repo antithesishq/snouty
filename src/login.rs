@@ -44,14 +44,14 @@ trait Prompter {
     fn select(&self, prompt: &str, items: Vec<String>, default: usize) -> Result<Option<usize>>;
 
     /// A masked secret (each character echoes as `*`). There is deliberately
-    /// no confirmation round: Antithesis passwords are long generated strings
-    /// that are pasted like API keys, not typed twice.
+    /// no confirmation round: an API key is a long generated string that is
+    /// pasted, not typed twice. Returns `None` when the user skips it (Esc).
     ///
     /// `hint` is a display-only stand-in for a secret already stored (see
     /// [`secret_hint`]). When it is set, the prompt shows it and says that an
     /// empty answer keeps the stored secret. The secret itself never reaches
     /// the prompter.
-    fn password(&self, prompt: &str, hint: Option<&str>) -> Result<String>;
+    fn secret(&self, prompt: &str, hint: Option<&str>) -> Result<Option<String>>;
 }
 
 /// The production [`Prompter`]: `inquire` prompts reading the real terminal.
@@ -77,20 +77,22 @@ impl Prompter for InquirePrompter {
             .map(|choice| choice.index))
     }
 
-    fn password(&self, prompt: &str, hint: Option<&str>) -> Result<String> {
+    fn secret(&self, prompt: &str, hint: Option<&str>) -> Result<Option<String>> {
         // `inquire` has no default for a masked prompt, so the hint rides in
         // the message, in the same `(value)` shape `Text` gives a default.
         let message = match hint {
             Some(hint) => format!("{prompt} ({hint})"),
             None => prompt.to_owned(),
         };
-        let mut password = Password::new(&message)
+        let help = match hint {
+            Some(_) => "hit enter to keep the stored value, or Esc to skip",
+            None => "hit Esc to skip",
+        };
+        let password = Password::new(&message)
             .with_display_mode(PasswordDisplayMode::Masked)
-            .without_confirmation();
-        if hint.is_some() {
-            password = password.with_help_message("hit enter to keep the stored value");
-        }
-        Ok(password.prompt()?)
+            .without_confirmation()
+            .with_help_message(help);
+        Ok(password.prompt_skippable()?)
     }
 }
 
@@ -242,7 +244,7 @@ fn print_login_summary(
             }
             _ => {
                 println!(
-                    "Skipped credential storage — snouty will use the ANTITHESIS_API_KEY or ANTITHESIS_USERNAME/PASSWORD environment variables."
+                    "Skipped credential storage — snouty will read credentials from the environment, such as ANTITHESIS_API_KEY."
                 );
             }
         },
@@ -264,35 +266,19 @@ fn prompt_for_value(
     )
 }
 
-#[derive(Clone, Copy, PartialEq)]
+/// The credential kinds `snouty login` sets up. A username and password comes
+/// only from the environment or an older credentials file, because `snouty runs`
+/// refuses it.
+#[derive(Clone, Copy)]
 enum AuthSetupType {
     ApiKey,
-    Password,
     OAuth,
-}
-
-impl AuthSetupType {
-    /// The credential menu, in order: single sign-on leads and is the
-    /// first-login default; the deprecated username/password option is last.
-    const IN_PREFERENCE_ORDER: [Self; 3] = [Self::OAuth, Self::ApiKey, Self::Password];
-
-    /// Whether this menu entry collects the same credential kind as `info`.
-    fn collects(self, info: &AuthenticationInfo) -> bool {
-        match info {
-            AuthenticationInfo::ApiKey { .. } => self == Self::ApiKey,
-            AuthenticationInfo::Password { .. } => self == Self::Password,
-            AuthenticationInfo::OAuth { .. } => self == Self::OAuth,
-            // No menu entry sets up GitHub Actions OIDC; it is ambient-only.
-            AuthenticationInfo::GithubActionsOidc { .. } => false,
-        }
-    }
 }
 
 impl std::fmt::Display for AuthSetupType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             AuthSetupType::ApiKey => f.write_str("API Key"),
-            AuthSetupType::Password => f.write_str("Username & password (deprecated)"),
             AuthSetupType::OAuth => f.write_str("Single sign-on (OAuth)"),
         }
     }
@@ -315,54 +301,30 @@ async fn prompt_for_auth(
     let oauth_offered = oauth_config
         .as_ref()
         .is_ok_and(|config| !matches!(config, CliOAuthConfig::Disabled));
-    let credential_options: Vec<AuthSetupType> = AuthSetupType::IN_PREFERENCE_ORDER
-        .into_iter()
-        .filter(|option| oauth_offered || *option != AuthSetupType::OAuth)
-        .collect();
 
-    // Default the highlighted option to whatever kind was last stored, so the
-    // common "log in again the same way" case is one keystroke; otherwise
-    // highlight the first (preferred) option. Credentials from environment
-    // variables are not stored, so they set no default.
-    let previous_kind = match previous_value {
-        Some(creds) if !matches!(creds, AttributedValue::EnvironmentVariable { .. }) => {
-            Some(creds.value())
-        }
-        _ => None,
+    // Single sign-on leads the menu and is the default, unless an API key is
+    // stored: then "log in again the same way" stays one keystroke.
+    let stored_key = stored_api_key(previous_value);
+    let choice = if oauth_offered {
+        let options = [AuthSetupType::OAuth, AuthSetupType::ApiKey];
+        let labels = options.iter().map(ToString::to_string).collect();
+        prompter
+            .select(
+                "What kind of credentials would you like to use? (Hit Esc to skip)",
+                labels,
+                usize::from(stored_key.is_some()),
+            )?
+            .map(|index| options[index])
+    } else {
+        Some(AuthSetupType::ApiKey)
     };
-    let default = previous_kind
-        .and_then(|kind| {
-            credential_options
-                .iter()
-                .position(|option| option.collects(kind))
-        })
-        .unwrap_or(0);
 
-    let labels = credential_options.iter().map(ToString::to_string).collect();
-    let selection = prompter.select(
-        "What kind of credentials would you like to use? (Hit Esc to skip)",
-        labels,
-        default,
-    )?;
-
-    match selection {
+    match choice {
         None => Ok(None),
-        Some(index) => match credential_options[index] {
-            AuthSetupType::ApiKey => {
-                prompt_for_api_key(prompter, stored_api_key(previous_value)).map(Some)
-            }
-
-            AuthSetupType::Password => match previous_value.map(AttributedValue::value) {
-                Some(AuthenticationInfo::Password { username, .. }) => {
-                    prompt_for_username_password(prompter, Some(username))
-                }
-                _ => prompt_for_username_password(prompter, None),
-            }
+        Some(AuthSetupType::ApiKey) => prompt_for_api_key(prompter, stored_key),
+        Some(AuthSetupType::OAuth) => complete_oauth_login(&client, &base_url, &oauth_config?)
+            .await
             .map(Some),
-            AuthSetupType::OAuth => complete_oauth_login(&client, &base_url, &oauth_config?)
-                .await
-                .map(Some),
-        },
     }
 }
 
@@ -389,8 +351,7 @@ fn secret_hint(secret: &str) -> String {
 
 /// The API key already in storage, when that is what the previous credentials
 /// hold. Credentials read from the environment are left out on purpose: keeping
-/// one would copy an ambient secret into the credentials file. The menu's own
-/// default ignores them for the same reason.
+/// one would copy an ambient secret into the credentials file.
 fn stored_api_key(previous: Option<&AttributedValue<AuthenticationInfo>>) -> Option<&str> {
     match previous {
         None | Some(AttributedValue::EnvironmentVariable { .. }) => None,
@@ -410,30 +371,16 @@ fn keep_stored_if_empty(entered: String, stored: Option<&str>) -> String {
     }
 }
 
+/// Returns `None` when the user skips the prompt with Esc.
 fn prompt_for_api_key(
     prompter: &dyn Prompter,
     stored: Option<&str>,
-) -> Result<PersistableCredentials> {
+) -> Result<Option<PersistableCredentials>> {
     let hint = stored.map(secret_hint);
-    let entered = prompter.password("Please enter your API Key", hint.as_deref())?;
-    Ok(PersistableCredentials::ApiKey {
+    let entered = prompter.secret("Please enter your API Key", hint.as_deref())?;
+    Ok(entered.map(|entered| PersistableCredentials::ApiKey {
         api_key: keep_stored_if_empty(entered, stored),
-    })
-}
-
-fn prompt_for_username_password(
-    prompter: &dyn Prompter,
-    previous_username: Option<&str>,
-) -> Result<PersistableCredentials> {
-    let username = prompt_for_value(prompter, "username", previous_username)?;
-    if username.is_empty() {
-        return Err(eyre!("Username cannot be empty"));
-    }
-    // No confirmation round: like an API key, an Antithesis password is a
-    // long generated string that is pasted, not typed.
-    let password = prompter.password("Please enter your password", None)?;
-
-    Ok(PersistableCredentials::Password { username, password })
+    }))
 }
 
 #[derive(Debug, Deserialize)]
@@ -540,7 +487,7 @@ async fn fetch_cli_config(client: &reqwest::Client, base_url: &str) -> Result<Cl
     if response.status() == reqwest::StatusCode::FORBIDDEN {
         return Err(
             user_error("this tenant has not enabled OAuth login for the CLI")
-                .suggestion("choose API key or username/password authentication instead"),
+                .suggestion("choose API key authentication instead"),
         );
     }
 
@@ -568,7 +515,7 @@ async fn bind_callback_listener(config: &CliOAuthConfig) -> Result<CallbackListe
         CliOAuthConfig::Disabled => Err(user_error(
             "this tenant has not enabled OAuth login for the CLI",
         )
-        .suggestion("choose API key or username/password authentication instead")),
+        .suggestion("choose API key authentication instead")),
         CliOAuthConfig::Ephemeral => {
             // Let the OS assign the port on IPv4, then mirror it onto IPv6.
             let v4 = TcpListener::bind(("127.0.0.1", 0))
@@ -1044,7 +991,7 @@ mod tests {
     enum Answer {
         Input(String),
         Select(Option<usize>),
-        Password(String),
+        Secret(Option<String>),
     }
 
     /// Fluent builder for a script of [`Answer`]s, in the order the flow will ask.
@@ -1065,8 +1012,13 @@ mod tests {
             self.0.push(Answer::Select(None));
             self
         }
-        fn password(mut self, value: &str) -> Self {
-            self.0.push(Answer::Password(value.to_owned()));
+        fn secret(mut self, value: &str) -> Self {
+            self.0.push(Answer::Secret(Some(value.to_owned())));
+            self
+        }
+        /// Esc at a masked prompt.
+        fn skip_secret(mut self) -> Self {
+            self.0.push(Answer::Secret(None));
             self
         }
         fn build(self) -> ScriptedPrompter {
@@ -1074,7 +1026,7 @@ mod tests {
                 answers: RefCell::new(self.0.into()),
                 prompts: RefCell::new(Vec::new()),
                 selects: RefCell::new(Vec::new()),
-                password_hints: RefCell::new(Vec::new()),
+                secret_hints: RefCell::new(Vec::new()),
             }
         }
     }
@@ -1086,8 +1038,8 @@ mod tests {
         prompts: RefCell<Vec<String>>,
         /// Each `select` call: its item list and its default index.
         selects: RefCell<Vec<(Vec<String>, usize)>>,
-        /// The hint shown by each `password` call, in order.
-        password_hints: RefCell<Vec<Option<String>>>,
+        /// The hint shown by each `secret` call, in order.
+        secret_hints: RefCell<Vec<Option<String>>>,
     }
 
     impl ScriptedPrompter {
@@ -1108,9 +1060,9 @@ mod tests {
             self.selects.borrow().clone()
         }
 
-        /// The hint shown by each `password` prompt, in order.
-        fn password_hints(&self) -> Vec<Option<String>> {
-            self.password_hints.borrow().clone()
+        /// The hint shown by each `secret` prompt, in order.
+        fn secret_hints(&self) -> Vec<Option<String>> {
+            self.secret_hints.borrow().clone()
         }
     }
 
@@ -1139,13 +1091,11 @@ mod tests {
             }
         }
 
-        fn password(&self, prompt: &str, hint: Option<&str>) -> Result<String> {
-            self.password_hints
-                .borrow_mut()
-                .push(hint.map(str::to_owned));
-            match self.next("password", prompt) {
-                Answer::Password(value) => Ok(value),
-                _ => panic!("next scripted answer was not a password at {prompt:?}"),
+        fn secret(&self, prompt: &str, hint: Option<&str>) -> Result<Option<String>> {
+            self.secret_hints.borrow_mut().push(hint.map(str::to_owned));
+            match self.next("secret", prompt) {
+                Answer::Secret(value) => Ok(value),
+                _ => panic!("next scripted answer was not a secret at {prompt:?}"),
             }
         }
     }
@@ -1164,7 +1114,6 @@ mod tests {
 
     /// Credential-kind menu labels, matching the `Display` impl on `AuthSetupType`.
     const API_KEY: &str = "API Key";
-    const USERNAME_PASSWORD: &str = "Username & password (deprecated)";
     const OAUTH: &str = "Single sign-on (OAuth)";
 
     /// A per-test isolated environment: an exclusive env lock, a throwaway `$HOME`,
@@ -1276,8 +1225,7 @@ mod tests {
         let prompter = Script::default()
             .input("mytenant")
             .input("myrepo")
-            .select(0) // API Key
-            .password("sk-test-key")
+            .secret("sk-test-key")
             .build();
 
         do_cmd_login(None, None, None, &settings, &prompter).await?;
@@ -1297,7 +1245,7 @@ mod tests {
     async fn login_flags_skip_the_tenant_and_repository_prompts() -> Result<()> {
         let env = LoginEnv::new();
         let settings = env.resolve_settings(None)?;
-        let prompter = Script::default().select(0).password("sk-test-key").build();
+        let prompter = Script::default().secret("sk-test-key").build();
 
         do_cmd_login(
             Some("mytenant".to_owned()),
@@ -1325,26 +1273,27 @@ mod tests {
         Ok(())
     }
 
-    /// Selecting "Username & password" collects a username and a password and
-    /// persists them.
+    /// Login reads a username and password an older snouty stored, asks for an
+    /// API key, and replaces the stored credentials.
     #[tokio::test]
-    async fn login_collects_a_username_and_password() -> Result<()> {
+    async fn login_replaces_a_stored_username_and_password_with_an_api_key() -> Result<()> {
         let env = LoginEnv::new();
+        env.seed(
+            ".config/snouty/credentials.toml",
+            "[default]\ntype = \"Password\"\nusername = \"puser\"\npassword = \"ppass\"\n",
+        );
         let settings = env.resolve_settings(None)?;
         let prompter = Script::default()
-            .input("ptenant")
-            .input("prepo")
-            .select(1) // Username & password
-            .input("puser")
-            .password("ppass")
+            .input("mytenant")
+            .input("myrepo")
+            .secret("sk-test-key")
             .build();
 
         do_cmd_login(None, None, None, &settings, &prompter).await?;
 
         let creds = env.credentials();
-        assert!(creds.contains(r#"type = "Password""#), "{creds}");
-        assert!(creds.contains(r#"username = "puser""#), "{creds}");
-        assert!(creds.contains(r#"password = "ppass""#), "{creds}");
+        assert!(creds.contains(r#"type = "ApiKey""#), "{creds}");
+        assert!(!creds.contains("ppass"), "{creds}");
         Ok(())
     }
 
@@ -1356,8 +1305,7 @@ mod tests {
         let prompter = Script::default()
             .input("ptenant")
             .input("prepo")
-            .select(0)
-            .password("pk-secret")
+            .secret("pk-secret")
             .build();
 
         do_cmd_login(None, None, Some("prod"), &settings, &prompter).await?;
@@ -1390,37 +1338,9 @@ mod tests {
         Ok(())
     }
 
-    /// When the backend reports OAuth is disabled for the CLI, the "Single sign-on
-    /// (OAuth)" option is not offered in the credential menu.
-    #[tokio::test]
-    async fn login_hides_oauth_when_backend_disables_it() -> Result<()> {
-        let env = LoginEnv::with_oauth_config(OAUTH_DISABLED);
-        let settings = env.resolve_settings(None)?;
-        let prompter = Script::default()
-            .input("mytenant")
-            .input("myrepo")
-            .select(0)
-            .password("sk-test-key")
-            .build();
-
-        do_cmd_login(None, None, None, &settings, &prompter).await?;
-
-        let (menu, default) = &prompter.selects()[0];
-        assert_eq!(
-            menu,
-            &[API_KEY.to_owned(), USERNAME_PASSWORD.to_owned()],
-            "OAuth must be hidden when the backend disables it"
-        );
-        assert_eq!(
-            *default, 0,
-            "the first option must be highlighted when no credentials are stored"
-        );
-        Ok(())
-    }
-
     /// Conversely, when the backend advertises an OAuth port strategy, the "Single
     /// sign-on (OAuth)" option *is* offered — first in the menu and as the
-    /// default, with the deprecated username/password option last.
+    /// default.
     #[tokio::test]
     async fn login_offers_oauth_first_when_backend_supports_it() -> Result<()> {
         let env = LoginEnv::with_oauth_config(OAUTH_EPHEMERAL);
@@ -1431,7 +1351,7 @@ mod tests {
             .input("mytenant")
             .input("myrepo")
             .select(1)
-            .password("sk-test-key")
+            .secret("sk-test-key")
             .build();
 
         do_cmd_login(None, None, None, &settings, &prompter).await?;
@@ -1439,43 +1359,34 @@ mod tests {
         let (menu, default) = &prompter.selects()[0];
         assert_eq!(
             menu,
-            &[
-                OAUTH.to_owned(),
-                API_KEY.to_owned(),
-                USERNAME_PASSWORD.to_owned()
-            ],
+            &[OAUTH.to_owned(), API_KEY.to_owned()],
             "OAuth must lead the menu when the backend advertises a port strategy"
         );
         assert_eq!(*default, 0, "OAuth must be the default for a first login");
         Ok(())
     }
 
-    /// Stored username/password credentials move the default to that (last)
-    /// menu entry, so "log in again the same way" stays one keystroke.
+    /// A stored API key moves the menu's default to the API key entry, so "log
+    /// in again the same way" stays one keystroke.
     #[tokio::test]
     async fn login_defaults_to_the_previously_used_kind() -> Result<()> {
-        let env = LoginEnv::new();
+        let env = LoginEnv::with_oauth_config(OAUTH_EPHEMERAL);
         env.seed(
             ".config/snouty/credentials.toml",
-            "[default]\ntype = \"Password\"\nusername = \"puser\"\npassword = \"ppass\"\n",
+            "[default]\ntype = \"ApiKey\"\napi_key = \"sk-stored-key\"\n",
         );
         let settings = env.resolve_settings(None)?;
         let prompter = Script::default()
             .input("mytenant")
             .input("myrepo")
-            .select(0)
-            .password("sk-test-key")
+            .select(1)
+            .secret("")
             .build();
 
         do_cmd_login(None, None, None, &settings, &prompter).await?;
 
         let (menu, default) = &prompter.selects()[0];
-        let password_index = menu
-            .iter()
-            .position(|label| label == USERNAME_PASSWORD)
-            .expect("menu must offer username/password");
-        assert_eq!(password_index, menu.len() - 1, "password must come last");
-        assert_eq!(*default, password_index);
+        assert_eq!(menu[*default], API_KEY);
         Ok(())
     }
 
@@ -1492,14 +1403,13 @@ mod tests {
         let prompter = Script::default()
             .input("mytenant")
             .input("myrepo")
-            .select(0) // API Key, the stored kind, is already the default
-            .password("") // hit enter
+            .secret("") // hit enter
             .build();
 
         do_cmd_login(None, None, None, &settings, &prompter).await?;
 
         assert_eq!(
-            prompter.password_hints(),
+            prompter.secret_hints(),
             vec![Some("********9Pgw".to_owned())],
             "the key prompt must show that a stored key is there to keep"
         );
@@ -1523,8 +1433,7 @@ mod tests {
         let prompter = Script::default()
             .input("mytenant")
             .input("myrepo")
-            .select(0)
-            .password("antithesis_api_key_v2_NEW_7Qxz")
+            .secret("antithesis_api_key_v2_NEW_7Qxz")
             .build();
 
         do_cmd_login(None, None, None, &settings, &prompter).await?;
@@ -1549,8 +1458,7 @@ mod tests {
         let prompter = Script::default()
             .input("mytenant")
             .input("myrepo")
-            .select(0)
-            .password("sk-typed-key")
+            .secret("sk-typed-key")
             .build();
 
         let result = do_cmd_login(None, None, None, &settings, &prompter).await;
@@ -1559,18 +1467,39 @@ mod tests {
         result?;
 
         assert_eq!(
-            prompter.password_hints(),
+            prompter.secret_hints(),
             vec![None],
             "an ambient key must not be offered as something to keep"
         );
         Ok(())
     }
 
-    /// Esc at the credential menu skips credential storage: the tenant and
+    /// Esc at the API key prompt skips credential storage: the tenant and
     /// repository are still saved, and no credentials file is written.
     #[tokio::test]
     async fn login_skips_credential_storage_on_esc() -> Result<()> {
         let env = LoginEnv::new();
+        let settings = env.resolve_settings(None)?;
+        let prompter = Script::default()
+            .input("mytenant")
+            .input("myrepo")
+            .skip_secret()
+            .build();
+
+        do_cmd_login(None, None, None, &settings, &prompter).await?;
+
+        assert!(env.settings().contains(r#"tenant = "mytenant""#));
+        assert!(
+            !env.config_dir().join("credentials.toml").exists(),
+            "Esc at the API key prompt must write no credentials file"
+        );
+        Ok(())
+    }
+
+    /// With OAuth on, Esc at the menu skips credential storage.
+    #[tokio::test]
+    async fn login_skips_credential_storage_on_esc_at_the_menu() -> Result<()> {
+        let env = LoginEnv::with_oauth_config(OAUTH_EPHEMERAL);
         let settings = env.resolve_settings(None)?;
         let prompter = Script::default()
             .input("mytenant")
@@ -1580,11 +1509,7 @@ mod tests {
 
         do_cmd_login(None, None, None, &settings, &prompter).await?;
 
-        assert!(env.settings().contains(r#"tenant = "mytenant""#));
-        assert!(
-            !env.config_dir().join("credentials.toml").exists(),
-            "Esc at the menu must write no credentials file"
-        );
+        assert!(!env.config_dir().join("credentials.toml").exists());
         Ok(())
     }
 
@@ -1703,8 +1628,7 @@ mod tests {
         let prompter = Script::default()
             .input("acme")
             .input("registry.example.com/acme/app")
-            .select(0) // API Key
-            .password("sk-KEYCHAIN-TEST")
+            .secret("sk-KEYCHAIN-TEST")
             .build();
         do_cmd_login(None, None, None, &settings, &prompter).await?;
 
@@ -1756,8 +1680,7 @@ mod tests {
         let prof_prompter = Script::default()
             .input("acme")
             .input("registry.example.com/acme/app")
-            .select(0)
-            .password("sk-PROD-KEY")
+            .secret("sk-PROD-KEY")
             .build();
         do_cmd_login(None, None, Some("prod"), &prof_settings, &prof_prompter).await?;
         assert!(

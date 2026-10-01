@@ -133,16 +133,6 @@ fn send(session: &mut OsSession, input: &str) {
     Expect::send(session, input).expect("write to the PTY");
 }
 
-/// Select the API-key entry: the first menu option is highlighted without any
-/// keypress, so a bare Enter picks it (the menu is [API Key, Username &
-/// password] with OAuth disabled — reaching the API-key prompt proves the
-/// default; the unit tests own the default-index logic directly).
-fn choose_api_key(session: &mut OsSession) {
-    expect(session, "What kind of credentials would you like to use?");
-    send(session, "\r");
-    expect(session, "Please enter your API Key");
-}
-
 /// Wait for the summary and a clean exit. Returns the consumed text.
 fn finish(mut session: OsSession) -> String {
     let seen = expect(&mut session, "Run `snouty doctor` to verify your setup.");
@@ -161,9 +151,9 @@ fn credentials(home: &Path) -> String {
 /// A pasted API key echoes one `*` per character, and the key itself never
 /// reaches the screen.
 #[test]
-fn bare_enter_selects_api_key_and_input_is_masked() {
+fn a_pasted_api_key_is_masked() {
     let (home, mut session) = start_login();
-    choose_api_key(&mut session);
+    expect(&mut session, "Please enter your API Key");
 
     let key = "sk-pty-key-123";
     send(&mut session, key);
@@ -182,7 +172,7 @@ fn bare_enter_selects_api_key_and_input_is_masked() {
 #[test]
 fn accepts_an_api_key_longer_than_the_terminal_width() {
     let (home, mut session) = start_login();
-    choose_api_key(&mut session);
+    expect(&mut session, "Please enter your API Key");
 
     let long_key = format!("sk-{}", "a".repeat(197));
     assert!(
@@ -221,11 +211,6 @@ fn bare_enter_keeps_the_stored_api_key() {
         &format!("[default]\ntype = \"ApiKey\"\napi_key = \"{stored}\"\n"),
     )]);
 
-    expect(
-        &mut session,
-        "What kind of credentials would you like to use?",
-    );
-    send(&mut session, "\r");
     // The hint: stars, then the key's own last characters. Antithesis keys
     // share a constant prefix, so the tail is what tells two of them apart.
     let mut seen = expect(&mut session, "Please enter your API Key (********9Pgw)");
@@ -243,34 +228,18 @@ fn bare_enter_keeps_the_stored_api_key() {
     );
 }
 
-/// The username/password flow (last menu entry) collects the password exactly
-/// once, masked: an Antithesis password is a long generated string pasted like
-/// an API key, so there is no confirmation round.
+/// Esc at the API key prompt skips credential storage and writes no
+/// credentials file.
 #[test]
-fn password_flow_asks_once_and_masks_the_password() {
+fn esc_at_the_api_key_prompt_skips_credential_storage() {
     let (home, mut session) = start_login();
+    expect(&mut session, "hit Esc to skip");
+    send(&mut session, "\x1b");
+    let seen = finish(session);
 
-    expect(&mut session, "Username & password (deprecated)");
-    send(&mut session, "\x1b[B\r"); // arrow down to the last entry, select it
-
-    expect(&mut session, "What username would you like to use?");
-    send(&mut session, "pty-user\r");
-
-    expect(&mut session, "Please enter your password");
-    let password = format!("pw-{}", "b".repeat(60));
-    send(&mut session, &password);
-    let mut seen = expect(&mut session, &row_of_stars());
-    send(&mut session, "\r");
-    seen += &finish(session);
-
+    assert!(seen.contains("Skipped credential storage"), "{seen}");
     assert!(
-        !seen.contains("bbbb"),
-        "no fragment of the password may be rendered"
-    );
-    let creds = credentials(home.path());
-    assert!(creds.contains(r#"username = "pty-user""#), "{creds}");
-    assert!(
-        creds.contains(&format!(r#"password = "{password}""#)),
-        "{creds}"
+        !home.path().join(".config/snouty/credentials.toml").exists(),
+        "Esc must write no credentials file"
     );
 }

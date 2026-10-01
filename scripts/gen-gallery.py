@@ -2507,16 +2507,14 @@ _CREDS = ".config/snouty/credentials.toml"
 # A `credentials.toml` exactly as `snouty login` writes it.
 _SEED_CREDS_TOML = f'[default]\ntype = "ApiKey"\napi_key = "{_SEED_KEY}"\n'
 
-# Prompts the dialogues wait for. The gallery's tenant offers no CLI OAuth, so
-# an API key is the one kind `snouty login` sets up: it asks for the key with no
-# credential menu first.
+# Prompts the dialogues wait for. The gallery's tenant has no CLI OAuth, so
+# login asks for the API key with no credential menu.
 _ASK_TENANT = "What Antithesis tenant"
 _ASK_REPO = "What container repository"
 _ASK_CREDENTIALS = "What kind of credentials"
 _ASK_KEY = "Please enter your API Key"
 _USERNAME_PASSWORD = "Username & password"
-# A `credentials.toml` holding a username and password, as an older snouty
-# wrote it before `snouty login` stopped offering them.
+# A `credentials.toml` with a username and password, as an older snouty wrote it.
 _SEED_PASSWORD_CREDS_TOML = (
     f'[default]\ntype = "Password"\nusername = "puser"\npassword = "{_FAKE_PASS}"\n'
 )

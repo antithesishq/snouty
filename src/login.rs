@@ -266,9 +266,9 @@ fn prompt_for_value(
     )
 }
 
-/// The credential kinds `snouty login` sets up. A username and password is
-/// not one of them: it is deprecated and `snouty runs` refuses it, so it comes
-/// only from the environment, or from a credentials file an older snouty wrote.
+/// The credential kinds `snouty login` sets up. A username and password comes
+/// only from the environment or an older credentials file, because `snouty runs`
+/// refuses it.
 #[derive(Clone, Copy, PartialEq)]
 enum AuthSetupType {
     ApiKey,
@@ -285,8 +285,7 @@ impl AuthSetupType {
         match info {
             AuthenticationInfo::ApiKey { .. } => self == Self::ApiKey,
             AuthenticationInfo::OAuth { .. } => self == Self::OAuth,
-            // No menu entry sets these up: OIDC is ambient-only, and a username
-            // and password comes from the environment or an old credentials file.
+            // No menu entry sets these up. OIDC is ambient-only.
             AuthenticationInfo::GithubActionsOidc { .. } | AuthenticationInfo::Password { .. } => {
                 false
             }
@@ -410,7 +409,7 @@ fn keep_stored_if_empty(entered: String, stored: Option<&str>) -> String {
     }
 }
 
-/// The API key prompt. `None` when the user skips it with Esc.
+/// Returns `None` when the user skips the prompt with Esc.
 fn prompt_for_api_key(
     prompter: &dyn Prompter,
     stored: Option<&str>,
@@ -1055,7 +1054,7 @@ mod tests {
             self.0.push(Answer::Secret(Some(value.to_owned())));
             self
         }
-        /// Esc at a masked prompt: the user skips it rather than answering.
+        /// Esc at a masked prompt.
         fn skip_secret(mut self) -> Self {
             self.0.push(Answer::Secret(None));
             self
@@ -1312,8 +1311,7 @@ mod tests {
         Ok(())
     }
 
-    /// `snouty login` no longer sets up a username and password: with OAuth on,
-    /// the menu offers only OAuth and an API key.
+    /// With OAuth on, the menu offers only OAuth and an API key.
     #[tokio::test]
     async fn login_never_offers_a_username_and_password() -> Result<()> {
         let env = LoginEnv::with_oauth_config(OAUTH_EPHEMERAL);
@@ -1332,8 +1330,8 @@ mod tests {
         Ok(())
     }
 
-    /// A username and password an older snouty stored still loads: login reads
-    /// it without error, asks for an API key, and replaces it.
+    /// Login reads a username and password an older snouty stored, asks for an
+    /// API key, and replaces the stored credentials.
     #[tokio::test]
     async fn login_replaces_a_stored_username_and_password_with_an_api_key() -> Result<()> {
         let env = LoginEnv::new();
@@ -1397,8 +1395,7 @@ mod tests {
         Ok(())
     }
 
-    /// When the backend disables OAuth, an API key is the one kind left, so
-    /// login shows no menu and asks for the key straight away.
+    /// With OAuth disabled, login shows no menu and asks for the API key.
     #[tokio::test]
     async fn login_asks_for_an_api_key_straight_away_without_oauth() -> Result<()> {
         let env = LoginEnv::with_oauth_config(OAUTH_DISABLED);
@@ -1559,7 +1556,7 @@ mod tests {
         Ok(())
     }
 
-    /// Esc at the credential menu skips credential storage: the tenant and
+    /// Esc at the API key prompt skips credential storage: the tenant and
     /// repository are still saved, and no credentials file is written.
     #[tokio::test]
     async fn login_skips_credential_storage_on_esc() -> Result<()> {
@@ -1581,7 +1578,7 @@ mod tests {
         Ok(())
     }
 
-    /// With OAuth on there is a menu, and Esc there skips credential storage.
+    /// With OAuth on, Esc at the menu skips credential storage.
     #[tokio::test]
     async fn login_skips_credential_storage_on_esc_at_the_menu() -> Result<()> {
         let env = LoginEnv::with_oauth_config(OAUTH_EPHEMERAL);

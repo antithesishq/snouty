@@ -133,8 +133,7 @@ fn send(session: &mut OsSession, input: &str) {
     Expect::send(session, input).expect("write to the PTY");
 }
 
-/// Wait for the API key prompt. With OAuth disabled an API key is the one
-/// kind `snouty login` sets up, so it asks for the key with no menu first.
+/// Wait for the API key prompt. With OAuth disabled, login shows no menu first.
 fn reach_api_key_prompt(session: &mut OsSession) {
     expect(session, "Please enter your API Key");
 }
@@ -234,8 +233,7 @@ fn bare_enter_keeps_the_stored_api_key() {
     );
 }
 
-/// Esc at the API key prompt skips credential storage: login still saves the
-/// tenant and repository, says it stored no credentials, and writes no
+/// Esc at the API key prompt skips credential storage and writes no
 /// credentials file.
 #[test]
 fn esc_at_the_api_key_prompt_skips_credential_storage() {

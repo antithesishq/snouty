@@ -1324,7 +1324,7 @@ fn mock_route_launch() -> (u16, String) {
 }
 
 #[cfg(test)]
-#[ctor::ctor]
+#[ctor::ctor(unsafe)]
 fn init_test_eyre() {
     let _ = color_eyre::install();
 }

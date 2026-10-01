@@ -269,7 +269,11 @@ fn run_search(
     let title_param = title_query.unwrap_or("");
 
     stmt.query_map(
-        rusqlite::params![match_query, title_param, fetch_limit],
+        rusqlite::params![
+            match_query,
+            title_param,
+            i64::try_from(fetch_limit).unwrap_or(i64::MAX)
+        ],
         |row| {
             Ok((
                 row.get::<_, String>(0)?, // path

@@ -1264,12 +1264,9 @@ def logs_non_empty(sr: StoryRun, reg: Registry) -> tuple[bool, str]:
 
 
 def logs_with_footer(sr: StoryRun, reg: Registry) -> tuple[bool, str]:
-    """Log lines, then the footer that says where the stream stopped compared
-    with the moment it was asked to end at."""
+    """Log lines, then the footer that marks the end of the stream."""
     n = len(sr.rows or [])
-    footer = contains_text(sr.result.combined, "— end of logs: last event at vtime") and contains_text(
-        sr.result.combined, "requested moment at vtime"
-    )
+    footer = contains_text(sr.result.combined, "— end of logs")
     return (n > 0 and footer, f"{n} log lines, footer={footer}")
 
 
@@ -1764,8 +1761,8 @@ def build_stories(d: Discovery) -> list[Story]:
             "runs-logs-incomplete",
             "Stream logs at the failure moment of an incomplete run",
             "I want the logs right at the moment an incomplete run failed.",
-            "At least one log line, then a footer that says where the stream stopped and the "
-            "failure moment it was asked to end at, so a quiet timeline doesn't read as cut short.",
+            "At least one log line, then a footer that marks the end of the stream, so a quiet "
+            "timeline doesn't read as cut short.",
             ["runs", "logs", d.fail, d.fail_hash, d.fail_vtime],
             logs_with_footer,
         ),

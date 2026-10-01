@@ -76,7 +76,11 @@ fn expand(args: Args, func: ItemFn) -> syn::Result<proc_macro2::TokenStream> {
         vis,
         sig,
         block,
+        modifiers,
     } = func;
+    // syn 3 holds modifiers it may grow (e.g. `gen fn`) outside `sig`;
+    // re-emitting `#sig` would silently drop them, so reject any.
+    modifiers.require_empty()?;
     if sig.asyncness.is_none() {
         return Err(syn::Error::new_spanned(
             sig.fn_token,

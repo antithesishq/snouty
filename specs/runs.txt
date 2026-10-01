@@ -198,6 +198,11 @@ snouty runs properties $R_run_id --name 'Counter value' --detail
 [!staging] stdout 'STATUS.*HASH.*VTIME'
 [!staging] stdout '(?s)failing.*-100.*45\.334635781589895.*failing.*-200.*313\.15126806590706.*passing.*-300.*398\.4898056755774'
 [!staging] ! stdout 'Details|Counter stays within safe bounds'
+# The Examples label carries the run's totals; the table below is a sample.
+# One trailing next step names the command that each HASH/VTIME row feeds.
+[!staging] stdout '^Examples  12 passing examples and 3 failing examples$'
+[!staging] stdout '^view logs leading up to an example:$'
+[!staging] stdout '^  snouty runs logs \S+ <hash> <vtime>$'
 
 # --name is a case-insensitive substring filter over property names; without
 # --detail it just narrows the (grouped) table.
@@ -219,6 +224,7 @@ mock-runs-server
 snouty runs properties $R_run_id --name 'Setup completes' --detail
 [!staging] stdout 'Result.*final_counter'
 [!staging] stdout '"final_counter".*42'
+[!staging] ! stdout 'view logs'
 
 # A *failing* non-event property carries its violating value in counterexamples;
 # --detail labels those under `Counter-examples` (shown first), distinct from the

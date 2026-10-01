@@ -574,6 +574,16 @@ async fn cmd_runs_properties(
         outln!("{}", no_properties_message(run_id, &filter))?;
     } else if detail {
         outln!("{}", render_properties_detail(&properties))?;
+        // One next step for the whole listing: every HASH/VTIME row above feeds it.
+        let has_moments = properties.iter().any(|p| match p {
+            Property::EventProperty(p) => !p.examples.is_empty() || !p.counterexamples.is_empty(),
+            Property::NonEventProperty(_) => false,
+        });
+        if has_moments {
+            outln!(
+                "\nview logs leading up to an example:\n  snouty runs logs {run_id} <hash> <vtime>"
+            )?;
+        }
     } else {
         outln!("{}", render_properties_table(&properties))?;
     }
@@ -887,16 +897,44 @@ fn render_property_detail(property: &Property) -> String {
     out.push('\n');
     match property {
         // Event properties have moments — the user feeds a HASH/VTIME into
-        // `runs logs` — so the `Examples` field holds a STATUS/HASH/VTIME table
-        // (or, when there are none, the inline "unreachable" note).
+        // `runs logs`. The `Examples` label carries the run's totals, and a
+        // STATUS/HASH/VTIME table of the sampled moments follows when the API
+        // sent some.
         Property::EventProperty(p) => {
-            out.push_str(&render_field("Examples", &render_moments_table(p)));
+            if p.examples.is_empty() && p.counterexamples.is_empty() {
+                let outcome = match p.status {
+                    PropertyStatus::Passing => "passed",
+                    PropertyStatus::Failing => "failed",
+                };
+                out.push_str(&render_field(
+                    "Examples",
+                    &format!("{outcome} with no examples"),
+                ));
+            } else {
+                out.push_str(&render_field("Examples", &example_totals(p)));
+                out.push('\n');
+                out.push_str(&indent_lines(&render_moments_table(p), "  "));
+            }
         }
         // Non-event "system" properties have no moments; their values show under
         // a `Result` (or, when failing, labelled Counter-examples/Examples).
         Property::NonEventProperty(p) => out.push_str(&render_result(p)),
     }
     out
+}
+
+/// How many passing and failing examples the run recorded, as in `2558
+/// passing examples and 27 failing examples`. The table below it is a sample.
+fn example_totals(p: &EventProperty) -> String {
+    let count = |n: Option<u32>, status: &str| {
+        let n = n.unwrap_or(0);
+        format!("{n} {status} example{}", if n == 1 { "" } else { "s" })
+    };
+    format!(
+        "{} and {}",
+        count(p.example_count, "passing"),
+        count(p.counterexample_count, "failing")
+    )
 }
 
 /// The STATUS/HASH/VTIME table for an event property's moments: counterexamples
@@ -916,9 +954,6 @@ fn render_moments_table(p: &EventProperty) -> String {
             sanitize(&event.moment.input_hash),
             event.moment.vtime.to_string(),
         ]);
-    }
-    if rows.is_empty() {
-        return "(none — property was unreachable)".to_string();
     }
     let headers = vec![
         "STATUS".to_string(),
@@ -2512,6 +2547,29 @@ mod tests {
         }
     }
 
+    // The label states the run's totals, not the size of the sample below it,
+    // with a singular for one.
+    #[test]
+    fn example_totals_count_what_the_run_recorded() {
+        let mut p = event_prop(
+            PropertyStatus::Failing,
+            vec![event("ex", "2.0")],
+            vec![event("cex", "1.0")],
+        );
+        p.counterexample_count = Some(27);
+        p.example_count = Some(2558);
+        assert_eq!(
+            example_totals(&p),
+            "2558 passing examples and 27 failing examples"
+        );
+        p.example_count = Some(1);
+        p.counterexample_count = Some(0);
+        assert_eq!(
+            example_totals(&p),
+            "1 passing example and 0 failing examples"
+        );
+    }
+
     #[test]
     fn render_moments_table_uses_status_column() {
         let p = event_prop(
@@ -2595,12 +2653,12 @@ mod tests {
         // No Group key/value line (the heading carries it) and no rule separator.
         assert!(!out.contains("Group     Safety"));
         assert!(!out.contains('─'));
-        // Each property keeps its header and an Examples section whose table is
-        // indented beneath the (column-0) "Examples" label (no `:`).
+        // Each property keeps its header and an Examples line carrying its
+        // totals, with the table indented beneath it (no `:`).
         assert!(out.contains("Name      First"));
-        assert_eq!(out.matches("Examples\n").count(), 2);
+        assert_eq!(out.matches("\nExamples  ").count(), 2);
         assert!(
-            out.contains("Examples\n  STATUS"),
+            out.contains("Examples  0 passing examples and 1 failing example\n  STATUS"),
             "examples table should be indented\n{out}"
         );
     }
@@ -2913,10 +2971,19 @@ mod tests {
         assert_eq!(stream_error_message(&json!(["error"])), None);
     }
 
+    // A property the API sent no moments for says so in its outcome and
+    // renders no table.
     #[test]
-    fn render_moments_table_marks_unreachable_when_empty() {
-        let p = event_prop(PropertyStatus::Passing, vec![], vec![]);
-        assert!(render_moments_table(&p).contains("unreachable"));
+    fn a_property_with_no_examples_renders_no_table() {
+        for (status, outcome) in [
+            (PropertyStatus::Passing, "passed with no examples"),
+            (PropertyStatus::Failing, "failed with no examples"),
+        ] {
+            let p = Property::EventProperty(event_prop(status, vec![], vec![]));
+            let out = render_property_detail(&p);
+            assert!(out.contains(&format!("Examples  {outcome}")), "{out}");
+            assert!(!out.contains("STATUS"), "{out}");
+        }
     }
 
     #[test]

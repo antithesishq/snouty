@@ -1269,10 +1269,16 @@ def event_keyword_present(keyword: str):
 
 
 def property_has_examples(sr: StoryRun, reg: Registry) -> tuple[bool, str]:
+    """Example moments with no `Details` row, plus the one trailing next step
+    they feed."""
     text = sr.result.combined
-    has_moments = _has_moment_rows(text)
+    rows = _has_moment_rows(text)
     no_details = _DETAILS_ROW.search(text) is None
-    return (has_moments and no_details, f"moments={has_moments}, no Details row={no_details}")
+    hint = contains_text(text, "view logs leading up to an example:")
+    return (
+        rows and no_details and hint,
+        f"moment rows={rows}, no Details row={no_details}, logs hint={hint}",
+    )
 
 
 def property_non_event_result(sr: StoryRun, reg: Registry) -> tuple[bool, str]:
@@ -1613,7 +1619,7 @@ def build_stories(d: Discovery) -> list[Story]:
             "runs-properties-detail-failing",
             "Drill into a failing property's counter-examples",
             "A property failed; I want to see concrete counter-examples I can debug.",
-            "Shows the property plus at least one counter-example with a moment (hash/vtime) — not an empty `unreachable`. "
+            "Shows the property, its passing/failing example totals, and at least one counter-example with a moment (hash/vtime) — not `failed with no examples`. Ends with one `snouty runs logs` next step. "
             "There is no `Details` row: snouty does not show property descriptions.",
             ["runs", "properties", d.success, "--name", d.fail_prop, "--detail"],
             property_has_examples,
@@ -1623,7 +1629,7 @@ def build_stories(d: Discovery) -> list[Story]:
             "runs-properties-detail-passing",
             "Look at the examples behind a passing property",
             "A property passed; I want to see example moments that satisfied it.",
-            "Shows at least one example with a moment (hash/vtime). "
+            "Shows its example totals and at least one example with a moment (hash/vtime), then one `snouty runs logs` next step. "
             "There is no `Details` row: snouty does not show property descriptions.",
             ["runs", "properties", d.success, "--name", d.pass_event_prop, "--detail"],
             property_has_examples,

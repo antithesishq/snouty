@@ -292,10 +292,7 @@ async fn prompt_for_auth(
     // ANTITHESIS_BASE_URL trumps the supplied tenant because the former is used by spec tests
     let base_url = env::var(settings::ANTITHESIS_BASE_URL_VAR_NAME)?
         .unwrap_or_else(|| format!("https://{tenant}.antithesis.com"));
-    let client = reqwest::Client::builder()
-        .timeout(OAUTH_HTTP_TIMEOUT)
-        .build()
-        .wrap_err("failed to build the OAuth HTTP client")?;
+    let client = build_oauth_client()?;
     let oauth_config = fetch_cli_config(&client, &base_url).await;
 
     let oauth_offered = oauth_config
@@ -326,6 +323,13 @@ async fn prompt_for_auth(
             .await
             .map(Some),
     }
+}
+
+fn build_oauth_client() -> Result<reqwest::Client> {
+    reqwest::Client::builder()
+        .timeout(OAUTH_HTTP_TIMEOUT)
+        .build()
+        .wrap_err("failed to build the OAuth HTTP client")
 }
 
 /// How many trailing characters of a stored secret its hint shows. Enough to
@@ -385,7 +389,7 @@ fn prompt_for_api_key(
 
 #[derive(Debug, Deserialize)]
 #[serde(tag = "port_strategy", rename_all = "snake_case")]
-enum CliOAuthConfig {
+pub(crate) enum CliOAuthConfig {
     /// Bind the first available port from `ports`, in order.
     Fixed { ports: Vec<u16> },
     /// Bind any available port (an OS-assigned ephemeral port).
@@ -473,6 +477,10 @@ async fn complete_oauth_login(
         antithesis_token: tokens.antithesis_token,
         refresh_token: tokens.refresh_token,
     })
+}
+
+pub(crate) async fn query_oauth_configuration(base_url: &str) -> Result<CliOAuthConfig> {
+    fetch_cli_config(&build_oauth_client()?, base_url).await
 }
 
 /// `GET /auth/cli/config` — the redirect strategy for this tenant. A 403 means

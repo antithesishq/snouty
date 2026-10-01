@@ -1441,10 +1441,9 @@ fn lay_out_dsl_error(message: &str) -> Cow<'_, str> {
     let Some((prose, from_query)) = message.split_once(DSL_ERROR_MARKER) else {
         return Cow::Borrowed(message);
     };
-    if !from_query
+    if from_query
         .lines()
-        .nth(1)
-        .is_some_and(|line| line.trim() == "^")
+        .nth(1).is_none_or(|line| line.trim() != "^")
     {
         return Cow::Borrowed(message);
     }

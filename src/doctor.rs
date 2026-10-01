@@ -7,6 +7,7 @@ use crate::auth::AuthenticationInfo;
 use crate::compose;
 use crate::container;
 use crate::features::{self, Feature};
+use crate::login::{CliOAuthConfig, query_oauth_configuration};
 use crate::render::{OutputOptions, render_kv};
 use crate::settings::Settings;
 
@@ -649,23 +650,36 @@ pub async fn cmd_doctor(
 ) -> Result<()> {
     let mut checks = collect_checks(settings);
 
-    // Connectivity + version check (network). Skipped with --offline. Only
-    // runs when the resolved credentials work against the full API:
-    // /api/version, like every endpoint but launch, rejects username/password
-    // auth, so probing it with those credentials would only yield a misleading
-    // 403 — and the auth checks above already tell deprecated-credential and
-    // unauthenticated users to set a key. The client is built from the
-    // resolved settings (base url / tenant), and `verbose` logs the
-    // request/response.
-    if !offline && let Ok(api) = AntithesisApi::new(settings, verbose) {
-        let host = api.host();
-        let version = api.get_version().await;
-        if let Ok(version) = &version
-            && let Some(check) = events_search_release_check(version)
-        {
-            checks.push(check);
+    if !offline {
+        // Connectivity + version check (network). Skipped with --offline. Only
+        // runs when the resolved credentials work against the full API:
+        // /api/version, like every endpoint but launch, rejects username/password
+        // auth, so probing it with those credentials would only yield a misleading
+        // 403 — and the auth checks above already tell deprecated-credential and
+        // unauthenticated users to set a key. The client is built from the
+        // resolved settings (base url / tenant), and `verbose` logs the
+        // request/response.
+        if let Ok(api) = AntithesisApi::new(settings, verbose) {
+            let host = api.host();
+            let version = api.get_version().await;
+            if let Ok(version) = &version
+                && let Some(check) = events_search_release_check(version)
+            {
+                checks.push(check);
+            }
+            checks.push(version_check(&host, version));
         }
-        checks.push(version_check(&host, version));
+
+        if let Some(base_url) = settings.base_url()
+            && let Ok(CliOAuthConfig::Disabled) = query_oauth_configuration(base_url).await
+        {
+            checks.push(
+                Check::warn("oauth-configured", "OAuth is configured for this tenant").note(
+                    Level::Note,
+                    "Request that your tenant administrator configure and enable OAuth login",
+                ),
+            );
+        }
     }
 
     let settings_rows = resolve_settings(settings, &features::enabled());

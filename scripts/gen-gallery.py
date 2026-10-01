@@ -87,7 +87,7 @@ BUILD_SAMPLES_SCRIPT = Path(__file__).resolve().parent / "build-validate-samples
 # renderer aligns several rows. It must match fewer than NEEDLE_MAX_MATCHES (the
 # default --limit), so a stopword does not turn the search stories into result
 # cap stories. NEEDLE_PROBES bounds the searches discovery runs per moment, and
-# MOMENT_PROBES bounds the moments it tries per run.
+# MOMENT_PROBES bounds the moments it tries per property.
 NEEDLE_MIN_MATCHES = 4
 NEEDLE_MAX_MATCHES = 50
 NEEDLE_PROBES = 12
@@ -549,17 +549,21 @@ def _pick_logs_moment(
 ) -> tuple[dict, str, str] | None:
     """A moment for the logs stories, and the needles for the events/search
     stories. The moment comes from the failing property's counter-examples, then
-    the passing property's examples, so the logs stories stream a moment that the
-    property detail stories show. Both logs stories must return at least one
-    line at the moment, and its logs must give a needle (see _pick_needles).
+    the passing property's examples (MOMENT_PROBES from each), so the logs
+    stories stream a moment that the property detail stories show. Both logs
+    stories must return at least one line at the moment, and its logs must give
+    a needle (see _pick_needles).
     Returns (moment, needle, second needle), or None when no moment fits."""
     by_name = {p["name"]: p for p in props}
     moments = [
         v["moment"]
-        for v in _moments(by_name[fail_prop].get("counterexamples") or [])
-        + _moments(by_name[pass_prop].get("examples") or [])
+        for values in (
+            by_name[fail_prop].get("counterexamples"),
+            by_name[pass_prop].get("examples"),
+        )
+        for v in _moments(values or [])[:MOMENT_PROBES]
     ]
-    for moment in moments[:MOMENT_PROBES]:
+    for moment in moments:
         h, v = str(moment["input_hash"]), str(moment["vtime"])
         logs = _logs(sn, [run, h, v])
         begin = ["--begin-vtime", _begin_vtime(v), "--begin-input-hash", h]
@@ -2653,9 +2657,12 @@ def snouty_build(binary: Path, repo_root: Path) -> str:
     and whether it is a release. A release is a clean build of the commit that
     the `vVERSION` tag points to; every other build is a dev build, which can
     show changes that no release has."""
-    line = subprocess.run(
-        [str(binary), "--version"], capture_output=True, text=True
-    ).stdout.strip()
+    try:
+        line = subprocess.run(
+            [str(binary), "--version"], capture_output=True, text=True
+        ).stdout.strip()
+    except OSError as e:
+        raise GalleryError(f"cannot run `{binary} --version`: {e}") from e
     m = _VERSION_LINE.match(line)
     if m is None:
         raise GalleryError(f"cannot parse `snouty --version` output: {line!r}")
@@ -2663,14 +2670,19 @@ def snouty_build(binary: Path, repo_root: Path) -> str:
     if sha is None:
         return f"{version}, commit unknown, release unknown (the binary records no commit)"
     tag = f"v{version}"
-    tagged = subprocess.run(
-        ["git", "rev-parse", f"--short={len(sha)}", f"{tag}^{{commit}}"],
-        cwd=repo_root,
-        capture_output=True,
-        text=True,
-    )
+    try:
+        tagged = subprocess.run(
+            ["git", "rev-parse", f"--short={len(sha)}", f"{tag}^{{commit}}"],
+            cwd=repo_root,
+            capture_output=True,
+            text=True,
+        )
+    except OSError:
+        tagged = None
     if dirty:
         kind = "dev build (uncommitted changes)"
+    elif tagged is None:
+        kind = f"release unknown (cannot run git to find tag {tag})"
     elif tagged.returncode != 0:
         kind = f"dev build (no tag {tag} in this checkout)"
     elif tagged.stdout.strip() != sha:

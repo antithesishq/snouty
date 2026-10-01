@@ -574,6 +574,16 @@ async fn cmd_runs_properties(
         outln!("{}", no_properties_message(run_id, &filter))?;
     } else if detail {
         outln!("{}", render_properties_detail(&properties))?;
+        // One next step for the whole listing: every HASH/VTIME row above feeds it.
+        let has_moments = properties.iter().any(|p| match p {
+            Property::EventProperty(p) => !p.examples.is_empty() || !p.counterexamples.is_empty(),
+            Property::NonEventProperty(_) => false,
+        });
+        if has_moments {
+            outln!(
+                "\nview logs leading up to an example:\n  snouty runs logs {run_id} <hash> <vtime>"
+            )?;
+        }
     } else {
         outln!("{}", render_properties_table(&properties))?;
     }
@@ -889,14 +899,40 @@ fn render_property_detail(property: &Property) -> String {
         // Event properties have moments — the user feeds a HASH/VTIME into
         // `runs logs` — so the `Examples` field holds a STATUS/HASH/VTIME table
         // (or, when there are none, the inline "unreachable" note).
-        Property::EventProperty(p) => {
-            out.push_str(&render_field("Examples", &render_moments_table(p)));
-        }
+        // The API returns a sample of the moments, so a note above the table
+        // says how many of each status the run actually recorded.
+        Property::EventProperty(p) => match moments_sample_note(p) {
+            Some(note) => {
+                out.push_str(&render_field("Examples", &note));
+                out.push('\n');
+                out.push_str(&indent_lines(&render_moments_table(p), "  "));
+            }
+            None => out.push_str(&render_field("Examples", &render_moments_table(p))),
+        },
         // Non-event "system" properties have no moments; their values show under
         // a `Result` (or, when failing, labelled Counter-examples/Examples).
         Property::NonEventProperty(p) => out.push_str(&render_result(p)),
     }
     out
+}
+
+/// What an event property's moment rows are a sample of, as in `showing 2 of
+/// 3 failing, 1 of 12 passing`. `None` when every recorded moment is shown.
+fn moments_sample_note(p: &EventProperty) -> Option<String> {
+    let parts = [
+        ("failing", p.counterexamples.len(), p.counterexample_count),
+        ("passing", p.examples.len(), p.example_count),
+    ]
+    .map(|(status, shown, total)| (status, shown as u64, u64::from(total.unwrap_or(0))));
+    if parts.iter().all(|&(_, shown, total)| shown >= total) {
+        return None;
+    }
+    let counts: Vec<String> = parts
+        .iter()
+        .filter(|&&(_, _, total)| total > 0)
+        .map(|&(status, shown, total)| format!("{shown} of {} {status}", format_count_si(total)))
+        .collect();
+    Some(format!("showing {}", counts.join(", ")))
 }
 
 /// The STATUS/HASH/VTIME table for an event property's moments: counterexamples
@@ -2510,6 +2546,30 @@ mod tests {
             Property::EventProperty(p) => p,
             _ => unreachable!(),
         }
+    }
+
+    // The note appears only when the API sent fewer moments than the run
+    // recorded, and names a status only when the run recorded some.
+    #[test]
+    fn moments_sample_note_counts_what_was_left_out() {
+        let mut p = event_prop(
+            PropertyStatus::Failing,
+            vec![event("ex", "2.0")],
+            vec![event("cex", "1.0")],
+        );
+        assert_eq!(moments_sample_note(&p), None);
+        p.counterexample_count = Some(27);
+        p.example_count = Some(2558);
+        assert_eq!(
+            moments_sample_note(&p).as_deref(),
+            Some("showing 1 of 27 failing, 1 of 2.6k passing")
+        );
+        p.counterexamples.clear();
+        p.counterexample_count = Some(0);
+        assert_eq!(
+            moments_sample_note(&p).as_deref(),
+            Some("showing 1 of 2.6k passing")
+        );
     }
 
     #[test]

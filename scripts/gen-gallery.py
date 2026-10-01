@@ -1965,17 +1965,23 @@ def build_stories(d: Discovery) -> list[Story]:
             "I ran `snouty login` but doctor still reports my old credentials",
             "I stored an API key with `snouty login`, but a username and password are still "
             "exported in my shell; I want to know why doctor keeps reporting the old ones.",
-            "doctor warns that more than one credential source is available, names the credential "
-            "it uses and where it comes from, names the configured API key and its file, and "
-            "gives a copyable unset command to use the next source.",
+            "doctor reports one warning: the username and password are hiding the API key. It "
+            "names where they come from and why `snouty runs` refuses them, and gives one next "
+            "step, a copyable unset command, naming the API key's file. It doesn't tell me to run "
+            "`snouty login` again.",
             ["doctor"],
             doctor_check(
                 contains=(
-                    "more than one credential source is available",
-                    "WARNING: snouty is using the username and password",
-                    "NOTE: an API key is configured in",
+                    "the username and password are hiding your API key",
+                    "WARNING: snouty uses the username and password from the `ANTITHESIS_USERNAME`",
+                    "which `snouty runs` refuses",
+                    "NOTE: `unset ANTITHESIS_USERNAME ANTITHESIS_PASSWORD` to use the API key in",
                     "credentials.toml",
-                    "NOTE: `unset ANTITHESIS_USERNAME ANTITHESIS_PASSWORD` to use the next source",
+                ),
+                absent=(
+                    "run `snouty login` to sign in",
+                    "more than one credential source",
+                    "Using password credentials",
                 ),
             ),
             json_capable=False,

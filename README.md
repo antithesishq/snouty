@@ -207,7 +207,7 @@ Pick **Single sign-on (OAuth)** to sign in through your identity provider. Snout
 
 Two limits are worth knowing:
 
-- The menu offers single sign-on only when your tenant enables CLI OAuth. Use an API key when the option does not appear.
+- The menu offers single sign-on only when your tenant enables CLI OAuth. Without it, `snouty login` asks for an API key straight away.
 - The browser must run on the same machine as snouty, because the redirect goes to `http://localhost:<port>/callback`. On a headless machine or a remote VM, either forward that port to your workstation, or use another authentication method.
 
 ### Where stored credentials live
@@ -267,6 +267,8 @@ export ANTITHESIS_EXTRA_HEADERS="X-Proxy-Token: abc123"
 ### Username and password (deprecated)
 
 Username and password authentication is deprecated. It works with `snouty launch` and `snouty debug` only, and both print a warning that points to `snouty login`. Every other command that talks to the API refuses it. Use `snouty login` or an API key instead.
+
+`snouty login` does not set up a username and password. Set `ANTITHESIS_USERNAME` and `ANTITHESIS_PASSWORD` instead. A username and password that an older snouty stored in the credentials file still works.
 
 ## Shell Completions
 

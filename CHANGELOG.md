@@ -1,5 +1,6 @@
 # Unreleased
 
+- `snouty runs logs` ends its human output with `— end of logs` on stderr, so a quiet timeline doesn't look cut short ([#328](https://github.com/antithesishq/snouty/pull/328))
 - `snouty launch` and `snouty debug` ignore the `statusCode` field of the launch response, and accept a response without it. ([#336](https://github.com/antithesishq/snouty/issues/336))
 - **Breaking**: `snouty login` sets up only OAuth and API keys. When the tenant has no CLI OAuth, `snouty login` asks for an API key directly, and Esc skips credential storage. A username and password still works from `ANTITHESIS_USERNAME` and `ANTITHESIS_PASSWORD`, or from a credentials file that an older snouty wrote ([#325](https://github.com/antithesishq/snouty/pull/325))
 - `snouty runs events` leaves out bootstrap events. A bootstrap event comes before the log timeline of the run, so `snouty runs logs` had no lines for its moment ([#319](https://github.com/antithesishq/snouty/pull/319))

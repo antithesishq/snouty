@@ -13,8 +13,9 @@ default-run = "snouty"
 [dependencies]
 base64 = "0.22"
 bytesize = "2"
-# tokio-runtime instead of the default async-std; mmap keeps the fast read path.
-cacache = { version = "13", default-features = false, features = ["tokio-runtime", "mmap"] }
+# tokio-runtime instead of the default async-std. No mmap: cacache uses it only
+# to write small entries, and it pulls in memmap2 0.5 (RUSTSEC-2026-0186).
+cacache = { version = "13", default-features = false, features = ["tokio-runtime"] }
 chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4", features = ["derive", "wrap_help"] }
 clap_complete = "4"

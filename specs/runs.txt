@@ -604,7 +604,7 @@ mock-runs-server
 ! snouty runs logs run-1 -123 1.0 --begin-vtime not-a-number
 stderr 'invalid value .*not-a-number.*'
 
-# `--begin-vtime` alone sets the start; there is no begin input hash flag.
+# `runs logs` rejects `--begin-input-hash`: `--begin-vtime` alone sets the start.
 mock-runs-server
 ! snouty runs logs run-1 -123 1.0 --begin-vtime 0.5 --begin-input-hash 0
 stderr 'unexpected argument.*--begin-input-hash'

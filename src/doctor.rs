@@ -334,10 +334,10 @@ fn hidden_credential_check(
     in_use: &AttributedValue<AuthenticationInfo>,
     hidden: &AttributedValue<AuthenticationInfo>,
 ) -> Check {
-    let name = credential_name(hidden.value());
+    let hidden_kind = hidden.value();
     Check::warn(
         CREDENTIALS_CHECK_NAME,
-        format!("the username and password are hiding your {name}"),
+        format!("the username and password are hiding your {hidden_kind}"),
     )
     .note(
         Level::Warning,
@@ -349,34 +349,11 @@ fn hidden_credential_check(
     .note(
         Level::Note,
         format!(
-            "{} to use the {name} in {}",
+            "{} to use the {hidden_kind} in {}",
             drop_action(in_use),
-            credential_origin(hidden)
+            describe_origin(hidden)
         ),
     )
-}
-
-/// The name of a credential kind, for "your …" and "the … in".
-fn credential_name(credential: &AuthenticationInfo) -> &'static str {
-    match credential {
-        AuthenticationInfo::ApiKey { .. } => "API key",
-        AuthenticationInfo::GithubActionsOidc { .. } => "GitHub Actions OIDC token",
-        AuthenticationInfo::OAuth { .. } => "OAuth credentials",
-        AuthenticationInfo::Password { .. } => "username and password",
-    }
-}
-
-/// Where a shadowed credential lives: a credentials file's path alone when
-/// it uses the default profile, otherwise [`describe_origin`].
-fn credential_origin(credential: &AttributedValue<AuthenticationInfo>) -> String {
-    match credential {
-        AttributedValue::SettingsFile {
-            settings_file_path,
-            profile: None,
-            ..
-        } => settings_file_path.display().to_string(),
-        _ => describe_origin(credential),
-    }
 }
 
 /// A warning, not a failure: snouty is authenticated, just not with the
@@ -407,10 +384,15 @@ fn shadowed_credentials_check(
             AuthenticationInfo::OAuth { .. } => "OAuth credentials are",
             AuthenticationInfo::Password { .. } => "a username and password are",
         };
-        check = check.note(
-            Level::Note,
-            format!("{credential} configured in {}", credential_origin(other)),
-        );
+        let origin = match other {
+            AttributedValue::SettingsFile {
+                settings_file_path,
+                profile: None,
+                ..
+            } => settings_file_path.display().to_string(),
+            _ => describe_origin(other),
+        };
+        check = check.note(Level::Note, format!("{credential} configured in {origin}"));
     }
     Some(check.note(
         Level::Note,
@@ -942,7 +924,7 @@ mod tests {
                 (
                     Level::Note,
                     "`unset ANTITHESIS_USERNAME ANTITHESIS_PASSWORD` to use the API key in \
-                    /tmp/credentials.toml"
+                    the [default] profile in /tmp/credentials.toml"
                 ),
             ]
         );

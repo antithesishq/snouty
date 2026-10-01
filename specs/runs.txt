@@ -187,6 +187,7 @@ snouty --json runs properties $R_run_id
 [!staging] stdout '"name".*"Counter value stays below limit"'
 [!staging] stdout '"status".*"Failing"'
 [!staging] stdout '"vtime":45\.334635781589895'
+[!staging] ! stdout '"description"'
 
 # `--name <substr> --detail` expands the matching property into its examples.
 # For the Counter event property that's a STATUS/HASH/VTIME table, sorted
@@ -196,6 +197,7 @@ mock-runs-server
 snouty runs properties $R_run_id --name 'Counter value' --detail
 [!staging] stdout 'STATUS.*HASH.*VTIME'
 [!staging] stdout '(?s)failing.*-100.*45\.334635781589895.*failing.*-200.*313\.15126806590706.*passing.*-300.*398\.4898056755774'
+[!staging] ! stdout 'Details|Counter stays within safe bounds'
 
 # --name is a case-insensitive substring filter over property names; without
 # --detail it just narrows the (grouped) table.

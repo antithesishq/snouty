@@ -256,7 +256,6 @@ fn normalize_property(property: Property) -> Result<Property> {
             Ok(Property::NonEventProperty(NonEventProperty {
                 counterexample_count: p.counterexample_count,
                 counterexamples,
-                description: p.description,
                 example_count: p.example_count,
                 examples,
                 group: p.group,

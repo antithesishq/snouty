@@ -51,6 +51,7 @@ fn generate_api_client(out_dir: &Path) {
     );
     untype_error_responses(&mut spec_value);
     drop_include_filtered_logs(&mut spec_value);
+    drop_property_description(&mut spec_value);
     mark_vtime_schema(&mut spec_value);
     unrequire_search_limit_default(&mut spec_value);
     let spec: openapiv3::OpenAPI = serde_json::from_value(spec_value).unwrap();
@@ -208,6 +209,20 @@ fn drop_include_filtered_logs(spec: &mut serde_json::Value) {
         removed.get("default").is_some(),
         "Execute_Command_Request.include_filtered_logs no longer carries a default; \
          the generated field is omittable, so delete `drop_include_filtered_logs` in build.rs"
+    );
+}
+
+/// snouty does not show a property's description, in its human output or in
+/// `--json`, so drop the field from the generated property types.
+fn drop_property_description(spec: &mut serde_json::Value) {
+    let properties = spec
+        .pointer_mut("/components/schemas/Property_Base/properties")
+        .and_then(serde_json::Value::as_object_mut)
+        .expect("openapi spec has no Property_Base.properties");
+    assert!(
+        properties.remove("description").is_some(),
+        "Property_Base no longer has `description`; \
+         delete `drop_property_description` in build.rs"
     );
 }
 

@@ -178,7 +178,7 @@ whether that hurts. Read the output and decide.
 sometimes a problem. Ask what the wrap does to the reader:
 - A wrapped **table row** is the bad case: continuation text lands under the
   wrong columns and every row after it is harder to scan. Flag it.
-- A wrapped **prose field** (a run description, a `Details` paragraph) is worse
+- A wrapped **prose field** (a run description) is worse
   when it runs under the label column with no indent, and fine when snouty
   wraps and indents it itself. Flag the first, not the second.
 - A long **opaque token** — a signed report URL, an image digest, a log line

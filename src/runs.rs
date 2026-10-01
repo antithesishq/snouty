@@ -803,7 +803,7 @@ enum ProseLayout {
     OwnLine,
 }
 
-/// Render a labelled block of free-form prose (e.g. a property/run description):
+/// Render a labelled block of free-form prose (e.g. a run description):
 /// sanitize while keeping real line breaks, drop stray leading/trailing blank
 /// lines, and wrap to the terminal so a long paragraph doesn't blow past the
 /// screen. Blank interior lines are emitted bare (no padding) in every layout.
@@ -871,7 +871,7 @@ fn render_properties_detail(properties: &[Property]) -> String {
         .join("\n\n")
 }
 
-/// One property's detail within a group section: a `Name`/`Status`/`Details`
+/// One property's detail within a group section: a `Name`/`Status`
 /// header (no `Group` line — the section heading carries it) followed by its
 /// examples. Every field goes through [`render_field`], so a short value sits
 /// inline against the value column while a long or multi-line one drops to an
@@ -885,22 +885,6 @@ fn render_property_detail(property: &Property) -> String {
         property_status_label(property.status()),
     ));
     out.push('\n');
-    let description = match property {
-        Property::EventProperty(p) => p.description.as_deref(),
-        Property::NonEventProperty(p) => p.description.as_deref(),
-    };
-    if let Some(desc) = description {
-        // Details is free-form prose, wrapped under the value column so
-        // continuation lines hang-indent to match the values above.
-        out.push_str(&render_prose_block(
-            "Details",
-            desc,
-            ProseLayout::HangingIndent {
-                label_col: PROPERTY_LABEL_WIDTH,
-                min_body_width: 20,
-            },
-        ));
-    }
     match property {
         // Event properties have moments — the user feeds a HASH/VTIME into
         // `runs logs` — so the `Examples` field holds a STATUS/HASH/VTIME table
@@ -1047,7 +1031,7 @@ fn fits_inline(label: &str, value: &str) -> bool {
         && PROPERTY_LABEL_WIDTH + value.chars().count() <= terminal_width().min(100)
 }
 
-/// Width of the label column in `render_property_detail` (`"Details   "`).
+/// Width of the label column in `render_property_detail` (`"Examples  "`).
 const PROPERTY_LABEL_WIDTH: usize = 10;
 
 /// Drop leading and trailing blank lines, keeping interior ones.
@@ -2354,7 +2338,6 @@ mod tests {
         Property::EventProperty(EventProperty {
             counterexample_count: Some(cex_count),
             counterexamples,
-            description: None,
             example_count: Some(ex_count),
             examples,
             group: group.map(str::to_string),
@@ -2376,7 +2359,6 @@ mod tests {
         Property::NonEventProperty(NonEventProperty {
             counterexample_count: Some(cex_count),
             counterexamples,
-            description: None,
             example_count: Some(ex_count),
             examples,
             group: None,
@@ -2584,7 +2566,7 @@ mod tests {
         assert!(out.contains("Result"), "got: {out}");
         assert!(out.contains("maximum_used_bytes"));
         assert!(!out.contains("Examples"));
-        // The label carries no colon, matching Name/Status/Details.
+        // The label carries no colon, matching Name/Status.
         assert!(!out.contains("Result:"), "got: {out}");
     }
 

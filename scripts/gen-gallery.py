@@ -770,6 +770,10 @@ def _pick_property_with_moments(sn: Snouty, run: str, props: list[dict], status:
 # never as a moment HASH/VTIME row.
 _NONEVENT_RESULT = re.compile(r"^\s*Result\b", re.MULTILINE)
 
+# snouty does not show a property's description, so `--detail` has no
+# `Details` row.
+_DETAILS_ROW = re.compile(r"^\s*Details\b", re.MULTILINE)
+
 
 def _has_real_value(value) -> bool:
     """Whether a non-event example renders as a usable value — i.e. a scalar or a
@@ -1009,7 +1013,11 @@ def properties_pass_and_fail(sr: StoryRun, reg: Registry) -> tuple[bool, str]:
     rows = sr.rows or []
     has_p = any(r.get("status") == "Passing" for r in rows)
     has_f = any(r.get("status") == "Failing" for r in rows)
-    return (has_p and has_f, f"{len(rows)} props, passing={has_p} failing={has_f}")
+    no_desc = not any("description" in r for r in rows)
+    return (
+        has_p and has_f and no_desc,
+        f"{len(rows)} props, passing={has_p} failing={has_f} no description={no_desc}",
+    )
 
 
 def all_launcher(value: str):
@@ -1261,8 +1269,10 @@ def event_keyword_present(keyword: str):
 
 
 def property_has_examples(sr: StoryRun, reg: Registry) -> tuple[bool, str]:
-    ok = _has_moment_rows(sr.result.combined)
-    return (ok, "shows example moments" if ok else "no example moments (degenerate)")
+    text = sr.result.combined
+    has_moments = _has_moment_rows(text)
+    no_details = _DETAILS_ROW.search(text) is None
+    return (has_moments and no_details, f"moments={has_moments}, no Details row={no_details}")
 
 
 def property_non_event_result(sr: StoryRun, reg: Registry) -> tuple[bool, str]:
@@ -1271,8 +1281,9 @@ def property_non_event_result(sr: StoryRun, reg: Registry) -> tuple[bool, str]:
     text = sr.result.combined
     has_result = _NONEVENT_RESULT.search(text) is not None
     no_moments = not _has_moment_rows(text)
-    ok = has_result and no_moments
-    return (ok, f"result={has_result}, no moments={no_moments}")
+    no_details = _DETAILS_ROW.search(text) is None
+    ok = has_result and no_moments and no_details
+    return (ok, f"result={has_result}, no moments={no_moments}, no Details row={no_details}")
 
 
 def _exit_with(*needles: str, want_ok: bool):
@@ -1564,7 +1575,8 @@ def build_stories(d: Discovery) -> list[Story]:
             "runs-properties",
             "See all properties — pass and fail",
             "I want the full property list for a completed run.",
-            "A table with both passing and failing properties present.",
+            "A table with both passing and failing properties present. "
+            "The --json rows carry no `description` field.",
             ["runs", "properties", d.success],
             properties_pass_and_fail,
         ),
@@ -1601,7 +1613,8 @@ def build_stories(d: Discovery) -> list[Story]:
             "runs-properties-detail-failing",
             "Drill into a failing property's counter-examples",
             "A property failed; I want to see concrete counter-examples I can debug.",
-            "Shows the property plus at least one counter-example with a moment (hash/vtime) — not an empty `unreachable`.",
+            "Shows the property plus at least one counter-example with a moment (hash/vtime) — not an empty `unreachable`. "
+            "There is no `Details` row: snouty does not show property descriptions.",
             ["runs", "properties", d.success, "--name", d.fail_prop, "--detail"],
             property_has_examples,
             json_capable=False,
@@ -1610,7 +1623,8 @@ def build_stories(d: Discovery) -> list[Story]:
             "runs-properties-detail-passing",
             "Look at the examples behind a passing property",
             "A property passed; I want to see example moments that satisfied it.",
-            "Shows at least one example with a moment (hash/vtime).",
+            "Shows at least one example with a moment (hash/vtime). "
+            "There is no `Details` row: snouty does not show property descriptions.",
             ["runs", "properties", d.success, "--name", d.pass_event_prop, "--detail"],
             property_has_examples,
             json_capable=False,
@@ -1619,7 +1633,8 @@ def build_stories(d: Discovery) -> list[Story]:
             "runs-properties-detail-non-event",
             "Detail a non-event property — its result value",
             "I want to inspect a non-event ('system') property, whose value is data rather than moments.",
-            "Shows the value under a 'Result' label (scalar inline, or JSON for an object/array), with no per-moment hash/vtime rows.",
+            "Shows the value under a 'Result' label (scalar inline, or JSON for an object/array), with no per-moment hash/vtime rows "
+            "and no `Details` row.",
             ["runs", "properties", d.success, "--name", d.nonevent_prop, "--detail"],
             property_non_event_result,
             json_capable=False,

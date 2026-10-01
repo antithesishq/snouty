@@ -163,7 +163,7 @@ pub(crate) fn sanitize(s: &str) -> String {
 }
 
 /// Like [`sanitize`] but preserves real newlines instead of escaping them to
-/// literal `\n`. For multi-line free text (e.g. property descriptions) that is
+/// literal `\n`. For multi-line free text (e.g. run descriptions) that is
 /// meant to be read as prose, not as a single table cell.
 pub(crate) fn sanitize_multiline(s: &str) -> String {
     let mut out = String::new();
@@ -300,7 +300,7 @@ mod tests {
 
     #[test]
     fn sanitize_multiline_keeps_newlines_but_escapes_other_controls() {
-        // Real newlines survive (so Details renders as prose), \r is dropped,
+        // Real newlines survive (so a description renders as prose), \r is dropped,
         // and other control chars are still escaped.
         assert_eq!(
             sanitize_multiline("one\ntwo\r\nthree\u{0001}"),

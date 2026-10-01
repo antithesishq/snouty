@@ -53,3 +53,36 @@ stdout 'getting_started - Setup guide.*'
 #    prints a "No results found" message to stderr.
 snouty docs --offline tree no-such-doc-page
 stderr 'No results found.*'
+
+# With --json, the command prints the tree as one pretty-printed JSON object,
+#    {"children": [node, ...]}. The synthetic docs root is omitted. Each node
+#    has "name", the last path segment, and "path", the segments from the
+#    top-level node joined with "/". A page node also has "title". A node
+#    that has child nodes also has "children", sorted by name.
+snouty --json docs --offline tree
+stdout '^\{\n  "children": \['
+stdout '"name": "docker_basics",\n\s*"path": "guides/docker_basics",\n\s*"title": "Docker basics"\n'
+stdout '"name": "guides",\n\s*"path": "guides",\n\s*"children": \['
+stdout '"name": "multiverse_debugging",\n\s*"path": "multiverse_debugging",\n\s*"title": "Multiverse debugging",\n\s*"children": \['
+stdout '(?s)"path": "environment".*"path": "faq".*"path": "getting_started".*"path": "guides"'
+! stdout '"name": "docs"'
+! stdout '━'
+! stderr .
+
+# 5b. --json applies --depth: a node at the depth limit has no "children".
+snouty --json docs --offline tree --depth 1
+stdout '"name": "guides",\n\s*"path": "guides"\n'
+stdout '"name": "multiverse_debugging",\n\s*"path": "multiverse_debugging",\n\s*"title": "Multiverse debugging"\n'
+! stdout 'guides/docker_basics'
+
+# 5c. --json applies the filter, and keeps the ancestors of a matching page.
+snouty --json docs --offline tree overview
+stdout '"path": "multiverse_debugging/overview",\n\s*"title": "Overview"'
+stdout '"path": "multiverse_debugging",'
+! stdout '"path": "guides"'
+
+# 5d. With --json, a filter that matches no pages prints an empty "children"
+#    array, and nothing on stderr. The command exits successfully.
+snouty --json docs --offline tree no-such-doc-page
+stdout '\A\{\n  "children": \[\]\n\}\z'
+! stderr .

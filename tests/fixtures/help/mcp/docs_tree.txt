@@ -1,0 +1,12 @@
+Returns a tree of documentation paths.
+
+Builds a directory-like tree from all page paths stored in the documentation database.
+
+filter keeps only the pages whose path or title contains the text
+(case-insensitive), and the directories above them. depth keeps only the
+nodes at that depth or shallower; the top-level nodes are at depth 1.
+
+Returns one JSON object: {"children": [node, ...]}. Each node has name, the
+last segment of its path, and path, the value to pass to the docs_show tool.
+A node has title when it is a page, and children, sorted by name, when it
+has child nodes that depth did not remove.

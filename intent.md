@@ -152,7 +152,7 @@ Returns a JSON object matching this schema:
 
 ### docs_show
 
-Supports any `path` form accepted by `snouty runs show <path>`.
+Supports any `path` form accepted by `snouty docs show <path>`.
 
 Params:
 

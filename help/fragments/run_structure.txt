@@ -1,0 +1,9 @@
+How a run is structured: An Antithesis run is a tree of timelines, not one
+history. A timeline is a series of input_hashes. An input_hash is a hash of
+every input Antithesis sent up to that point. Antithesis branches a timeline
+by sending an input from some moment, which creates a new input_hash. Every
+event has an input_hash and a vtime, and one input_hash can have zero or more
+events. Events that share an input_hash are on the same timeline. vtime is
+the virtual time at which the event was emitted on its timeline. Antithesis
+virtualizes the clock, so vtime can jump forward by any amount, but it never
+goes backward. vtime orders events only within one timeline.

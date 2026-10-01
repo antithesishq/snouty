@@ -22,6 +22,7 @@ Snouty provides the following subcommands. Invoke `snouty <command> --help` to f
 - `snouty validate`: locally run and validate your docker-compose.yaml setup.
 - `snouty doctor`: check your environment is configured correctly.
 - `snouty docs`: search the Antithesis documentation locally (auto-refreshes the local copy over the network; pass `--offline` to skip).
+- `snouty mcp`: serve the run, docs, and doctor commands to AI agents over the Model Context Protocol. See [MCP server](#mcp-server).
 - `snouty completions <shell>`: generate shell completion scripts.
 - `snouty version`: print version and build information.
 - `snouty update`: install the latest version. Set `update_channel = "unstable"` (or `SNOUTY_UPDATE_CHANNEL=unstable`) to also consider pre-releases; override the setting for one run with `--channel stable|unstable`.
@@ -171,11 +172,88 @@ A few subcommands depend on an Antithesis API that is still changing shape, so s
 export SNOUTY_UNSTABLE_FEATURES="runs-exec"
 ```
 
-| Feature     | Enables                                                                     |
-| ----------- | --------------------------------------------------------------------------- |
-| `runs-exec` | `snouty runs exec`. The execute-command API is unavailable on most tenants. |
+| Feature     | Enables                                                                                                               |
+| ----------- | --------------------------------------------------------------------------------------------------------------------- |
+| `runs-exec` | `snouty runs exec`, and the `runs_exec` tool of `snouty mcp`. The execute-command API is unavailable on most tenants. |
 
 Anything behind this gate can change its behavior, its flags, or its id, or go away, in any release. `snouty doctor` lists the features that are on, and reports when your tenant is too old to serve one.
+
+## MCP server
+
+`snouty mcp` starts a [Model Context Protocol](https://modelcontextprotocol.io) server. The server lets an AI agent use snouty's run, docs, and doctor commands as tools. It uses the streamable HTTP transport, or stdio with `--stdio`.
+
+### stdio
+
+With `--stdio`, the agent starts snouty itself and talks to it on stdin and stdout. This is the easiest setup when the agent can run a command, because no server must already be running. For example, in Claude Code:
+
+```sh
+claude mcp add snouty -- snouty mcp --stdio
+```
+
+A JSON config for a stdio server looks like this one:
+
+```json
+{
+  "mcpServers": {
+    "snouty": {
+      "command": "snouty",
+      "args": ["mcp", "--stdio"]
+    }
+  }
+}
+```
+
+stdout carries only MCP messages. The server writes one line on stderr for each message that it gets: the time and the JSON-RPC method. For a tool call, the line also shows the tool name, and `isError` or `error CODE` when the call failed. Add `--verbose` to also log the params. The server stops when the agent closes stdin, or on Ctrl-C, SIGTERM, or SIGHUP. The `--host`, `--port`, and `--allowed-host` flags do not apply.
+
+### Streamable HTTP
+
+```sh
+snouty mcp
+```
+
+When the server is ready, it prints `Listening on 127.0.0.1:8765`. Connect your agent to `http://127.0.0.1:8765/mcp`. The server runs in the foreground until Ctrl-C, SIGTERM, or SIGHUP stops it. A stop also ends all tool calls in progress. The server writes one line on stderr for each request: the time, the HTTP status, and the JSON-RPC method. Add `--verbose` to also log the request params and the API requests that the tools make.
+
+| Flag                           | Default     | Description                                                                                                     |
+| ------------------------------ | ----------- | --------------------------------------------------------------------------------------------------------------- |
+| `--host <ip>`                  | `127.0.0.1` | The IP address to listen on.                                                                                    |
+| `--port <port>`                | `8765`      | The port to listen on. `0` picks a free port, and the `Listening on` line shows it.                             |
+| `--allowed-host <host[:port]>` |             | Also accept requests with this `Host` header. Without a port, any port matches. You can give it more than once. |
+
+The server accepts a request only when its `Host` header is the listen address or an `--allowed-host` value. It refuses a request that has an `Origin` header. These checks stop a web page from sending requests to the server. If you listen on `0.0.0.0`, add an `--allowed-host` for each name that your clients use.
+
+Most MCP clients take an HTTP server in a JSON config like this one. The key names can be different in your client, so refer to its documentation:
+
+```json
+{
+  "mcpServers": {
+    "snouty": {
+      "type": "http",
+      "url": "http://127.0.0.1:8765/mcp"
+    }
+  }
+}
+```
+
+### Tools
+
+The server reads settings, profiles, and credentials as the other commands do, so `--settings`, `--profile`, and the `ANTITHESIS_*` environment variables apply, with both transports.
+
+All tools are marked read-only. Each tool returns the same output as its command with `--json`, as one text block. A failed call sets `isError` and returns the error text. Each tool description is short, to save context. When an agent needs more, `tool_help` returns the full help of a tool. The tools are:
+
+| Tool              | Command                                                     |
+| ----------------- | ----------------------------------------------------------- |
+| `runs_list`       | `snouty runs list`                                          |
+| `runs_show`       | `snouty runs show`                                          |
+| `runs_properties` | `snouty runs properties`                                    |
+| `runs_build_logs` | `snouty runs build-logs`                                    |
+| `runs_logs`       | `snouty runs logs`                                          |
+| `runs_search`     | `snouty runs search`                                        |
+| `runs_exec`       | `snouty runs exec` (only with the `runs-exec` feature on)   |
+| `docs_tree`       | `snouty docs tree`                                          |
+| `docs_show`       | `snouty docs show` (returns the page as Markdown, not JSON) |
+| `docs_search`     | `snouty docs search`                                        |
+| `doctor`          | `snouty doctor`                                             |
+| `tool_help`       | The full help of another tool, as plain text                |
 
 ## Authentication
 

@@ -1,0 +1,20 @@
+Show a run's metadata: id, status, timestamps, launcher, and description.
+
+Two fields report time and they mean different things. Duration is the
+workload length requested at launch. Elapsed is wall-clock time, which also
+spans provisioning, setup and teardown, so the two legitimately differ.
+Source is the `antithesis.source` the run was launched from, when the
+launcher recorded one. User-defined attributes (`--param attrs.<name>=<value>`
+at launch) are listed under Attributes.
+
+Incomplete runs also show the failure moment (Failure Hash/VTime) to pass to
+`runs logs`, and the Failure Reason when the run reports one. Use --web to
+open the triage report in a browser.
+
+Examples:
+  snouty runs show <run_id>
+  snouty runs show <run_id> --web
+
+Add --json for machine-readable output. The run prints as one JSON object.
+With --web it prints the report URL as {"url": ...} and opens no browser:
+  snouty --json runs show <run_id> | jq -r .status

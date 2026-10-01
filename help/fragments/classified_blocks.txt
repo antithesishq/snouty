@@ -1,0 +1,5 @@
+Matching events print as classified blocks: a `moment HASH` divider opens
+each timeline segment. Use `snouty runs logs <run_id> <hash>` to stream logs
+to the timeline's current end. Each event below the divider renders on one
+line with the Antithesis event shapes — SDK assertions, faults, container
+lifecycle, test composer — each in their own concise form.

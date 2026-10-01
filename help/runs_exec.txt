@@ -1,0 +1,46 @@
+Execute a bash script in a run's live session, at a moment.
+
+{% if cli %}
+This command is gated behind the `runs-exec` unstable feature, because the
+Antithesis API it calls is unstable and unavailable on most tenants. Enable it
+by setting SNOUTY_UNSTABLE_FEATURES=runs-exec. An unstable feature can change
+or go away in any release.
+
+{% endif %}
+The run must have a live session (it is in progress). The script executes on
+a fresh branch of the multiverse, so it does not disturb the running test.
+{% if cli %}
+INPUT_HASH and VTIME identify the moment to execute at; a moment comes from
+`runs properties --detail` or `runs events`.
+
+The script's stdout and stderr stream to snouty's stdout and stderr. On exit,
+a trailer on stderr documents the branch's end moment, to chain a follow-up
+command from. A non-zero exit code, a timeout, or a truncated stream fails
+snouty with exit code 1.
+
+Omit SCRIPT to read the script from stdin — a pipe, a redirect, or a heredoc.
+
+Examples:
+  snouty runs exec <run_id> <hash> <vtime> 'uname -a'
+  echo 'ps aux' | snouty runs exec <run_id> <hash> <vtime>
+  snouty runs exec <run_id> <hash> <vtime> < script.sh
+
+Add --json for machine-readable output. Each frame of the stream prints as one
+JSON object on its own line, and the trailer is left out:
+  snouty --json runs exec <run_id> <hash> <vtime> 'ls' \
+    | jq -r 'select(.output_text != null).output_text'
+{% else %}
+input_hash and vtime identify the moment to execute at. Give input_hash as a
+string. A moment comes from the example and counterexample moments of the
+runs_properties tool, or from the events of the runs_search tool. timeout is
+the number of seconds the server waits for the script to exit (default 30).
+
+Returns one JSON object per frame of the stream, one per line. An output
+frame has moment, output_text and source.stream: "info" for the script's
+standard output and "error" for its standard error. The last frame is the
+result. It is {"status": "exited", "exit_code": ..., "end_moment": ...}, or
+{"status": "timed_out", "last_moment": ...}. end_moment is the end of the
+new branch, to execute a follow-up script from. A non-zero exit code, a
+timeout, or a stream with no result frame marks the result isError, after
+all the frames.
+{% endif %}

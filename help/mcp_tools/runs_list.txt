@@ -1,0 +1,5 @@
+List recent Antithesis runs. Use it to find a run_id for the other runs_* tools. For the details of one run, use runs_show.
+
+Filters: status (starting, in_progress, completed, cancelled, incomplete, unknown), launcher (launcher name), created_after and created_before (ISO 8601, e.g. "2026-09-30T00:00:00Z"). limit: the maximum number of runs (default 10).
+
+Returns JSONL: one run per line, with run_id, status, created_at, launcher and description.

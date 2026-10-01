@@ -1,0 +1,3 @@
+Read one Antithesis documentation page. path comes from docs_search or docs_tree, e.g. "getting_started/overview". A full https://antithesis.com/docs/ URL also works. For an unknown path, the result suggests similar pages.
+
+Returns the page as markdown (not JSON). The first line is "# " and the title.

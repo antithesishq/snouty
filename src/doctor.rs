@@ -1,3 +1,5 @@
+use std::io::Write;
+
 use color_eyre::eyre::Result;
 use serde::{Serialize, Serializer};
 
@@ -643,12 +645,18 @@ fn version_check(host: &str, result: std::result::Result<ApiVersion, VersionErro
     }
 }
 
+/// Returns whether every required check passed. A failed check is a result,
+/// not an error: the report says what failed.
 pub async fn cmd_doctor(
     settings: &Settings,
     OutputOptions { json, verbose }: OutputOptions,
     offline: bool,
-) -> Result<()> {
-    let mut checks = collect_checks(settings);
+    out: &mut (dyn Write + Send),
+) -> Result<bool> {
+    // The checks run the container tools and read the keychain, which block.
+    // On their own thread, they do not stop the other MCP calls.
+    let owned = settings.clone();
+    let mut checks = tokio::task::spawn_blocking(move || collect_checks(&owned)).await?;
 
     if !offline {
         // Connectivity + version check (network). Skipped with --offline. Only
@@ -694,7 +702,13 @@ pub async fn cmd_doctor(
             checks: &checks,
             settings: &settings_rows,
         };
-        println!("{}", serde_json::to_string_pretty(&report)?);
+        let written = writeln!(out, "{}", serde_json::to_string_pretty(&report)?);
+        // A failed check returns false, also when stdout is closed. A write
+        // error would become exit 0 through `suppress_broken_pipe`, and a CI
+        // gate would read a pass.
+        if errors == 0 {
+            written?;
+        }
     } else {
         eprintln!("Checks");
         for check in &checks {
@@ -723,13 +737,7 @@ pub async fn cmd_doctor(
         }
     }
 
-    // Exit non-zero on failure without re-rendering an error report: the checks
-    // above already say exactly what's wrong, so a generic "Error: doctor found
-    // problems" footer would be redundant noise.
-    if errors > 0 {
-        std::process::exit(1);
-    }
-    Ok(())
+    Ok(errors == 0)
 }
 
 #[cfg(test)]

@@ -1,0 +1,5 @@
+List the Antithesis documentation pages as a tree. Use it to see which docs exist. To find pages about a topic, use docs_search. To read a page, use docs_show.
+
+filter: a case-insensitive match on page path or title. depth: keep nodes at this depth or less (the top level is 1). The full tree is large, so start with depth 1 or 2.
+
+Returns one JSON object {"children": [node, ...]}. Each node has name and path, title if it is a page, and children if it has child nodes. Pass path to docs_show.

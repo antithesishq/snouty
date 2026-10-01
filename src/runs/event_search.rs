@@ -99,6 +99,7 @@ pub(super) async fn check_query(
     run_id: &str,
     query: &str,
     json: bool,
+    out: &mut (dyn Write + Send),
 ) -> Result<()> {
     if let Err(err) = api
         .search_run_events_query(run_id, query, SearchMode::Validate)
@@ -106,11 +107,10 @@ pub(super) async fn check_query(
     {
         return Err(explain_search_error(run_id, err));
     }
-    let mut stdout = std::io::stdout().lock();
     if json {
-        writeln!(stdout, "{}", json!({"valid": true}))?;
+        writeln!(out, "{}", json!({"valid": true}))?;
     } else {
-        writeln!(stdout, "query is valid")?;
+        writeln!(out, "query is valid")?;
     }
     Ok(())
 }

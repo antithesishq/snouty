@@ -1,0 +1,16 @@
+Search Antithesis documentation
+
+Full-text search over a local copy of the Antithesis docs, auto-updated before
+each use unless --offline.
+
+Search for a page, browse the tree to find one, then show it. `sqlite` prints
+the path to the local database for querying it directly.
+
+Examples:
+  snouty docs search fault injection
+  snouty docs tree sdk
+  snouty docs show getting_started
+
+Add --json for machine-readable output. `search` and `tree` print JSON; the
+other subcommands print text either way:
+  snouty --json docs search fault injection | jq -r '.[].path'

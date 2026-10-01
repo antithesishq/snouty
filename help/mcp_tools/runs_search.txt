@@ -1,0 +1,11 @@
+Search the events of a run across all timelines with an event-set DSL query. Use it to find where something happened: an error, a fault, an assertion. To read the history before one match, pass its moment to runs_logs.
+
+query is a chain of verbs joined by ".". Examples:
+  contains({output_text: "connection refused"})
+  matches({container: "etcd0", stream: "error"})
+  filter(ev => ev.antithesis_assert?.hit && !ev.antithesis_assert.condition)
+The string verbs (matches, contains, not_matches, excludes) read only output_text, container, stream and source. For other fields, use filter(ev => ...) with JavaScript.
+
+Returns JSONL, one event per line, in no fixed order: a sample of at most limit events (default 50, maximum 999). If limit events come back, more can match; narrow the query.
+
+All verbs (fold, with_last, with_next, ...) and more examples: tool_help {"tool": "runs_search"}

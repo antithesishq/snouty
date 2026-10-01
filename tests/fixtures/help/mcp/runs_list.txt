@@ -1,0 +1,8 @@
+List recent runs.
+
+status, launcher, created_after and created_before filter the runs on the
+server. limit sets the maximum number of runs to return (default 10).
+
+Returns one JSON object per run, one per line, in the order the server
+returns them. The keys include run_id, status, created_at, launcher and
+description. Pass run_id to the other runs tools.

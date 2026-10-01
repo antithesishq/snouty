@@ -1,0 +1,28 @@
+Search a run's events for one or more substrings (all must match).
+
+A term is matched against the text an event carries: log output, an
+assertion's message and source function, and a test-composer command.
+
+Matching events print as classified blocks: a `moment HASH` divider opens
+each timeline segment. Use `snouty runs logs <run_id> <hash>` to stream logs
+to the timeline's current end. Each event below the divider renders on one
+line with the Antithesis event shapes — SDK assertions, faults, container
+lifecycle, test composer — each in their own concise form.
+
+Matching runs server-side through the events-search API, the same route
+`snouty runs search` takes. Every term must match, case-insensitively. The
+result is a sample of the matching events in no fixed order, capped at
+--limit. Read `snouty runs search --help` to learn how to read a sample
+and how the run's timelines relate the events.
+
+For log output, the equivalent search is:
+  snouty runs search <run_id> \
+    'filter(ev => ["a", "b"].every(t =>
+      (ev.output_text || "").toLowerCase().includes(t)))'
+with each term in lower case. `snouty --verbose runs events ...` prints
+the exact query, which also matches assertion messages and test-composer
+commands.
+
+Add --json for machine-readable output. Each event prints as one
+JSON object on its own line:
+  snouty --json runs events <run_id> -m error | jq -r .moment.vtime

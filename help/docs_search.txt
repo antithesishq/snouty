@@ -1,0 +1,32 @@
+Search the documentation
+
+Uses full-text search across the Antithesis documentation database.
+{% if cli %}
+The database is automatically updated before each search unless --offline is passed to the docs command.
+
+Prints ranked matches (title and page path); pass a path to `snouty docs show`.
+Use --list to print only the paths.
+{% else %}
+The database is automatically updated before each search.
+{% endif %}
+
+By default the query is searched as literal text. {% if cli %}Pass --match{% else %}Set match{% endif %} to treat the
+query as a raw SQLite FTS5 expression instead, enabling operators like
+AND/OR/NOT/NEAR, "quoted phrases", `title:` column filters, and `prefix*`.
+
+{% if cli %}
+Examples:
+  snouty docs search fault injection
+  snouty docs search "config image"
+  snouty docs search moment.branch
+  snouty docs search sdk setup
+  snouty docs search --match 'sdk NOT java'
+
+Add --json for machine-readable output. The matches print as one JSON array
+of {path, title, snippet} objects, or of paths with --list:
+  snouty --json docs search fault injection | jq -r '.[].path'
+{% else %}
+Returns one JSON array of {path, title, snippet} objects, best match first.
+limit sets the maximum number of matches (default 10). Pass a path to the
+docs_show tool to read the page.
+{% endif %}

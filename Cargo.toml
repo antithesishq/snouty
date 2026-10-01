@@ -23,7 +23,13 @@ getrandom = "0.4"
 env_logger = "0.11"
 form_urlencoded = "1"
 headers = "0.4"
-hyper = "1"
+hyper = { version = "1", features = ["server", "http1"] }
+# `snouty mcp`: the MCP server (stdio, or streamable HTTP served by plain hyper).
+# hyper-util supplies only `rt::TokioIo` and `rt::TokioTimer`, and http-body-util
+# the body types.
+rmcp = { version = "3.5", default-features = false, features = ["server", "transport-io", "transport-streamable-http-server"] }
+hyper-util = { version = "0.1", default-features = false, features = ["tokio"] }
+http-body-util = "0.1"
 json5 = "1.3.0"
 json-patch = "4"
 jsonschema = { version = "0.57", default-features = false }
@@ -35,7 +41,7 @@ color-eyre = { version = "0.6", default-features = false }
 futures-util = "0.3"
 # Chunk type of reqwest response streams; JsonStream buffers them.
 bytes = "1"
-tokio = { version = "1", features = ["rt", "macros", "process", "time", "io-util", "io-std", "net", "signal", "sync"] }
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "process", "time", "io-util", "io-std", "net", "signal", "sync"] }
 tokio-util = { version = "0.7", default-features = false, features = ["io"] }
 serde = { version = "1", features = ["derive"] }
 # The exact-version pin keeps a crates.io build of snouty on the macro
@@ -44,6 +50,8 @@ snouty-macros = { path = "snouty-macros", version = "=0.7.2" }
 # float_roundtrip makes serde_json's f64 parsing correctly-rounded, so a vtime
 # read out of a JSON number is never off by one ULP (see src/vtime.rs).
 serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }
+# Names the field of an MCP tool param that fails to parse.
+serde_path_to_error = "0.1"
 # The float printer serde_json itself uses; VTime::Display goes through it so
 # the human text matches the JSON number byte-for-byte (see src/vtime.rs).
 zmij = "1"
@@ -77,6 +85,8 @@ name = "mock_api"
 path = "examples/mock_api.rs"
 
 [build-dependencies]
+# Renders the help/*.txt long-help templates into OUT_DIR, once per target.
+minijinja = { version = "2.24", default-features = false, features = ["multi_template", "serde", "loader"] }
 # Same openapiv3 version progenitor resolves; build.rs preprocesses the spec
 # through this type before handing it to the generator.
 openapiv3 = "2"

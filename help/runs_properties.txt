@@ -1,0 +1,36 @@
+List a run's property (assertion) results{% if cli %}, one table per group{% endif %}.
+
+{% if cli %}
+Each table is headed by its group; columns are STATUS, EXAMPLES, NAME (failing
+first). EXAMPLES is the example count, shown as examples/counterexamples when a
+property has counterexamples.
+
+Narrow with --name and/or --group (both case-insensitive substring matches);
+add --detail to expand the matches into their examples and counter-example
+moments instead of the table.
+
+Examples:
+  snouty runs properties <run_id> --failing
+  snouty runs properties <run_id> --name eventually_validate --detail
+  snouty runs properties <run_id> --group Unreachable --detail
+
+Add --json for machine-readable output. Each property prints as one JSON
+object on its own line. --json is mutually exclusive with --detail:
+  snouty --json runs properties <run_id> --failing | jq -r .name
+{% else %}
+Narrow with name and/or group (both case-insensitive substring matches).
+passing keeps only the passing properties, and failing keeps only the
+failing properties. passing and failing are mutually exclusive.
+
+Returns one JSON object per property, one per line. The keys include name,
+status ("Passing" or "Failing"), group (when the property has one),
+is_event, example_count, counterexample_count, examples and
+counterexamples.
+
+For an event property (is_event is true), each item of examples and
+counterexamples is an event with a moment object:
+{"moment": {"input_hash": ..., "vtime": ...}, ...}.
+Pass input_hash and vtime to the runs_logs tool to read the logs up to that
+moment. For other properties, each item is the value that the property
+recorded.
+{% endif %}

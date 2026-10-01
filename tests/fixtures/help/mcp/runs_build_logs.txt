@@ -1,0 +1,7 @@
+Stream a run's build and setup logs: everything the platform did
+before the test started.
+
+Returns one JSON object per log line, one per line, with the keys timestamp,
+stream and text. stream is "stdout" or "stderr". The result holds the whole
+build, so expect thousands of lines on a real run. When a launch failed,
+read the lines whose stream is "stderr" first.

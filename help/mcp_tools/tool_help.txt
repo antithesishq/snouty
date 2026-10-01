@@ -1,0 +1,3 @@
+Get the full documentation of another tool on this server: all of its parameters, output fields and examples. Use it when a tool description points to tool_help, or before you write a runs_search query.
+
+Returns plain text, not JSON.

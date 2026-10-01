@@ -1,0 +1,9 @@
+Read all events on one timeline of a run, in order, from the root (or begin_vtime) up to vtime. Use it to see what led up to a moment, such as a counterexample from runs_properties or a match from runs_search. To find events across all timelines, use runs_search.
+
+Terms: a run is a tree of timelines. input_hash names a timeline. vtime is virtual time in seconds on that timeline. An input_hash and a vtime together are a moment.
+
+Params: input_hash is a string, not a number; copy it exactly. vtime and begin_vtime are numbers or decimal strings. Without vtime, the logs go to the end of the timeline.
+
+Returns JSONL, one event per line: moment, output_text, source (container, stream), and fault or antithesis_assert on those events. Can be thousands of lines; use begin_vtime to start later.
+
+More: tool_help {"tool": "runs_logs"}

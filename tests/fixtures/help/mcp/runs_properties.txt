@@ -1,0 +1,17 @@
+List a run's property (assertion) results.
+
+Narrow with name and/or group (both case-insensitive substring matches).
+passing keeps only the passing properties, and failing keeps only the
+failing properties. passing and failing are mutually exclusive.
+
+Returns one JSON object per property, one per line. The keys include name,
+status ("Passing" or "Failing"), group (when the property has one),
+is_event, example_count, counterexample_count, examples and
+counterexamples.
+
+For an event property (is_event is true), each item of examples and
+counterexamples is an event with a moment object:
+{"moment": {"input_hash": ..., "vtime": ...}, ...}.
+Pass input_hash and vtime to the runs_logs tool to read the logs up to that
+moment. For other properties, each item is the value that the property
+recorded.

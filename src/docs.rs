@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 use std::fs;
-use std::io::Write as _;
+use std::io::Write;
 use std::path::PathBuf;
 
 use color_eyre::Section;
@@ -8,6 +8,7 @@ use color_eyre::eyre::{OptionExt, Result, bail};
 use ptree::print_config::UTF_CHARS_BOLD;
 use ptree::{PrintConfig, write_tree_with};
 use rusqlite::{Connection, OpenFlags};
+use serde::Serialize;
 use tempfile::NamedTempFile;
 
 mod snippet;
@@ -49,16 +50,30 @@ fn etag_path() -> Result<PathBuf> {
     Ok(cache_dir()?.join("docs.db.etag"))
 }
 
+/// How a docs command gets the docs database before it reads it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Refresh {
+    /// Use only the cached database.
+    Offline,
+    /// Download the database. When that fails, use the cached database and
+    /// write a warning on stderr.
+    Online,
+    /// As `Online`, but the warning goes to the log, so that it stays out of
+    /// the MCP request log on stderr.
+    OnlineQuiet,
+}
+
 pub async fn cmd_docs(
     command: DocsCommands,
-    offline: bool,
+    refresh: Refresh,
     OutputOptions { json, .. }: OutputOptions,
+    out: &mut (dyn Write + Send),
 ) -> Result<()> {
-    if !offline {
-        update_with_fallback().await?;
+    if refresh != Refresh::Offline {
+        update_with_fallback(refresh).await?;
     }
 
-    ensure_docs_db_available(offline)?;
+    ensure_docs_db_available(refresh == Refresh::Offline)?;
 
     match command {
         DocsCommands::Search {
@@ -83,20 +98,26 @@ pub async fn cmd_docs(
                     limit,
                     query_mode,
                 },
+                out,
             )
         }
-        DocsCommands::Sqlite => sqlite_path(),
-        DocsCommands::Tree { depth, filter } => tree(depth.map(|d| d.get()), filter.as_deref()),
-        DocsCommands::Show { path } => show(&path),
+        DocsCommands::Sqlite => sqlite_path(out),
+        DocsCommands::Tree { depth, filter } => {
+            tree(depth.map(|d| d.get()), filter.as_deref(), json, out)
+        }
+        DocsCommands::Show { path } => show(&path, out),
     }
 }
 
-async fn update_with_fallback() -> Result<()> {
+async fn update_with_fallback(refresh: Refresh) -> Result<()> {
     if let Err(e) = download_and_cache_db().await {
-        if db_path()?.exists() {
-            eprintln!("Warning: failed to update docs, falling back to cached docs\n    {e}\n");
-        } else {
+        if !db_path()?.exists() {
             return Err(e);
+        }
+        if refresh == Refresh::OnlineQuiet {
+            log::warn!("failed to update docs, falling back to cached docs: {e}");
+        } else {
+            eprintln!("Warning: failed to update docs, falling back to cached docs\n    {e}\n");
         }
     }
 
@@ -331,6 +352,7 @@ fn search(
         limit,
         query_mode,
     }: SearchOptions,
+    out: &mut dyn Write,
 ) -> Result<()> {
     let conn = open_db()?;
 
@@ -399,44 +421,46 @@ fn search(
 
     if json {
         if results.is_empty() {
-            print_empty_json_array()?;
+            print_empty_json_array(out)?;
         } else if list {
-            print_path_json(&results)?;
+            print_path_json(&results, out)?;
         } else {
-            print_json(&results)?;
+            print_json(&results, out)?;
         }
     } else if results.is_empty() {
         eprintln!("No results found for '{}'", query);
     } else if list {
-        print_paths(&results);
+        print_paths(&results, out)?;
     } else {
-        print_results(&results);
+        print_results(&results, out)?;
     }
 
     Ok(())
 }
 
-fn print_paths(results: &[(String, String, String)]) {
+fn print_paths(results: &[(String, String, String)], out: &mut dyn Write) -> Result<()> {
     for (path, _, _) in results {
-        println!("{path}");
+        writeln!(out, "{path}")?;
     }
+    Ok(())
 }
 
-fn print_empty_json_array() -> Result<()> {
-    println!(
+fn print_empty_json_array(out: &mut dyn Write) -> Result<()> {
+    writeln!(
+        out,
         "{}",
         serde_json::to_string_pretty(&Vec::<serde_json::Value>::new())?
-    );
+    )?;
     Ok(())
 }
 
-fn print_path_json(results: &[(String, String, String)]) -> Result<()> {
+fn print_path_json(results: &[(String, String, String)], out: &mut dyn Write) -> Result<()> {
     let items: Vec<&str> = results.iter().map(|(path, _, _)| path.as_str()).collect();
-    println!("{}", serde_json::to_string_pretty(&items)?);
+    writeln!(out, "{}", serde_json::to_string_pretty(&items)?)?;
     Ok(())
 }
 
-fn print_json(results: &[(String, String, String)]) -> Result<()> {
+fn print_json(results: &[(String, String, String)], out: &mut dyn Write) -> Result<()> {
     let items: Vec<serde_json::Value> = results
         .iter()
         .map(|(path, title, snippet)| {
@@ -447,7 +471,7 @@ fn print_json(results: &[(String, String, String)]) -> Result<()> {
             })
         })
         .collect();
-    println!("{}", serde_json::to_string_pretty(&items)?);
+    writeln!(out, "{}", serde_json::to_string_pretty(&items)?)?;
     Ok(())
 }
 
@@ -531,19 +555,25 @@ fn style_title(title: &str) -> String {
     render_marked(title, true)
 }
 
-fn print_results(results: &[(String, String, String)]) {
+fn print_results(results: &[(String, String, String)], out: &mut dyn Write) -> Result<()> {
     let width = console::Term::stdout().size().1.min(80) as usize;
 
     for (i, (path, title, snippet)) in results.iter().enumerate() {
         if i > 0 {
-            println!();
+            writeln!(out)?;
         }
-        println!("{}  {}", console::style(path).dim(), style_title(title),);
+        writeln!(
+            out,
+            "{}  {}",
+            console::style(path).dim(),
+            style_title(title)
+        )?;
         let wrapped = wrap_snippet(snippet, width);
         for line in wrapped.lines() {
-            println!("  {}", style_line(line));
+            writeln!(out, "  {}", style_line(line))?;
         }
     }
+    Ok(())
 }
 
 fn open_db() -> Result<Connection> {
@@ -581,7 +611,7 @@ fn generated_sdk_index(lang: &str) -> Option<(&'static str, &'static str)> {
     Some(resolved)
 }
 
-fn show(path: &str) -> Result<()> {
+fn show(path: &str, out: &mut dyn Write) -> Result<()> {
     let conn = open_db()?;
 
     let path = normalized_path(path);
@@ -597,7 +627,7 @@ fn show(path: &str) -> Result<()> {
         .ok();
 
     if let Some((title, content)) = result {
-        println!("# {title}\n{content}");
+        writeln!(out, "# {title}\n{content}")?;
         return Ok(());
     }
 
@@ -645,8 +675,8 @@ fn show(path: &str) -> Result<()> {
     Err(report)
 }
 
-fn sqlite_path() -> Result<()> {
-    println!("{}", db_path()?.display());
+fn sqlite_path(out: &mut dyn Write) -> Result<()> {
+    writeln!(out, "{}", db_path()?.display())?;
     Ok(())
 }
 
@@ -672,8 +702,8 @@ impl TreeNode {
 }
 
 /// Load documentation pages from SQLite, optionally filter the tree, and print
-/// a Unicode-rendered view of the remaining paths.
-fn tree(depth: Option<usize>, filter: Option<&str>) -> Result<()> {
+/// the remaining paths as a Unicode-rendered view, or as JSON when `json` is set.
+fn tree(depth: Option<usize>, filter: Option<&str>, json: bool, out: &mut dyn Write) -> Result<()> {
     let conn = open_db()?;
     let mut stmt = conn.prepare("SELECT path, title FROM pages ORDER BY path")?;
     let mut root = TreeNode::default();
@@ -689,6 +719,14 @@ fn tree(depth: Option<usize>, filter: Option<&str>) -> Result<()> {
         root = filter_tree(root, "", filter).unwrap_or_default();
     }
 
+    if json {
+        let tree = TreeJson {
+            children: json_children(&root, "", 1, depth),
+        };
+        writeln!(out, "{}", serde_json::to_string_pretty(&tree)?)?;
+        return Ok(());
+    }
+
     if root.children.is_empty() {
         if let Some(label) = filter.as_deref() {
             eprintln!("No results found for '{label}'");
@@ -698,8 +736,58 @@ fn tree(depth: Option<usize>, filter: Option<&str>) -> Result<()> {
         return Ok(());
     }
 
-    print!("{}", render_forest(&root, depth)?);
+    write!(out, "{}", render_forest(&root, depth)?)?;
     Ok(())
+}
+
+/// The `docs tree --json` output. The synthetic `docs` root is omitted, as in
+/// the text output.
+#[derive(Serialize)]
+struct TreeJson<'a> {
+    children: Vec<NodeJson<'a>>,
+}
+
+#[derive(Serialize)]
+struct NodeJson<'a> {
+    name: &'a str,
+    /// The segments from the top-level node to this node, joined with `/`.
+    /// For a page node, [`show`] accepts it.
+    path: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    title: Option<&'a str>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    children: Vec<NodeJson<'a>>,
+}
+
+/// Convert the children of `node` to JSON nodes at `current_depth`. The depth
+/// rule is the same as in [`render_tree`].
+fn json_children<'a>(
+    node: &'a TreeNode,
+    path_prefix: &str,
+    current_depth: usize,
+    max_depth: Option<usize>,
+) -> Vec<NodeJson<'a>> {
+    node.children
+        .iter()
+        .map(|(name, child)| {
+            let path = if path_prefix.is_empty() {
+                name.clone()
+            } else {
+                format!("{path_prefix}/{name}")
+            };
+            let children = if max_depth.is_none_or(|limit| current_depth < limit) {
+                json_children(child, &path, current_depth + 1, max_depth)
+            } else {
+                Vec::new()
+            };
+            NodeJson {
+                name,
+                path,
+                title: child.page_title.as_deref(),
+                children,
+            }
+        })
+        .collect()
 }
 
 /// Render each top-level node as its own tree so the synthetic `docs` root is
@@ -811,9 +899,10 @@ fn normalized_path(path: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        fts5_literal, generated_sdk_index, is_fts5_query_error, literal_match_query,
-        literal_query_terms, literal_title_query, normalized_path,
+        NodeJson, TreeNode, fts5_literal, generated_sdk_index, is_fts5_query_error, json_children,
+        literal_match_query, literal_query_terms, literal_title_query, normalized_path,
     };
+    use hegel::generators;
 
     #[test]
     fn literal_query_terms_drops_stopwords() {
@@ -934,5 +1023,41 @@ mod tests {
             normalized_path("https://antithesis.com/docs/getting_started/?utm=1#overview"),
             "getting_started"
         );
+    }
+
+    /// Checks each node below `ancestors` and returns how deep the nodes go.
+    fn check_json_nodes(nodes: &[NodeJson], ancestors: &mut Vec<String>) -> usize {
+        let mut deepest = 0;
+        for node in nodes {
+            ancestors.push(node.name.to_string());
+            assert!(
+                node.path.ends_with(node.name),
+                "{} {}",
+                node.path,
+                node.name
+            );
+            assert_eq!(node.path.split('/').collect::<Vec<_>>(), *ancestors);
+            deepest = deepest.max(1 + check_json_nodes(&node.children, ancestors));
+            ancestors.pop();
+        }
+        deepest
+    }
+
+    /// Every JSON node's path is the names from the top-level node down to it,
+    /// and no node is deeper than the depth limit.
+    #[hegel::test]
+    fn tree_json_paths_follow_ancestor_names(tc: hegel::TestCase) {
+        let paths = tc.draw(generators::vecs(
+            generators::text().alphabet("ab/").max_size(8),
+        ));
+        let depth = tc.draw(generators::optional(
+            generators::integers::<usize>().min_value(1).max_value(4),
+        ));
+        let mut root = TreeNode::default();
+        for path in &paths {
+            root.insert_page(path, path.clone());
+        }
+        let deepest = check_json_nodes(&json_children(&root, "", 1, depth), &mut Vec::new());
+        assert!(depth.is_none_or(|limit| deepest <= limit));
     }
 }

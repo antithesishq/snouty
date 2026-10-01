@@ -1,4 +1,7 @@
+use std::fmt;
+use std::net::{IpAddr, Ipv4Addr};
 use std::num::NonZeroU64;
+use std::str::FromStr;
 
 use chrono::{DateTime, Utc};
 use clap::{Args, Parser, Subcommand, ValueEnum};
@@ -9,6 +12,7 @@ use color_eyre::eyre::Report;
 use crate::api::{RunStatus, SEARCH_DEFAULT_LIMIT, SEARCH_MAX_LIMIT};
 use crate::error::user_error;
 use crate::features::{self, Feature};
+use crate::help::{HelpPage, Target};
 use crate::time::HumanDuration;
 use crate::vtime::VTime;
 
@@ -16,7 +20,7 @@ use crate::vtime::VTime;
 /// error output. The generated enum offers no iteration, so this array is the
 /// source of truth; [`assert_run_statuses_complete`] forces an update here
 /// whenever the generated enum gains a variant.
-const ALL_RUN_STATUSES: [RunStatus; 6] = [
+pub(crate) const ALL_RUN_STATUSES: [RunStatus; 6] = [
     RunStatus::Starting,
     RunStatus::InProgress,
     RunStatus::Completed,
@@ -43,7 +47,7 @@ const _: () = assert_run_statuses_complete(RunStatus::Starting);
 
 /// clap value parser for `--status` that keeps a friendly, enumerated error
 /// message (the generated `RunStatus::from_str` only says "invalid value").
-fn parse_run_status(value: &str) -> Result<RunStatus, String> {
+pub(crate) fn parse_run_status(value: &str) -> Result<RunStatus, String> {
     value.parse::<RunStatus>().map_err(|_| {
         let valid = ALL_RUN_STATUSES.map(|s| s.to_string()).join(", ");
         format!("invalid status: '{value}'\nvalid values: {valid}")
@@ -64,11 +68,16 @@ fn parse_poll_interval(value: &str) -> Result<HumanDuration, String> {
 /// clap value parser for the event-search `--limit`: 1 to
 /// [`SEARCH_MAX_LIMIT`], so an out-of-range value fails before any request.
 fn parse_search_limit(value: &str) -> Result<NonZeroU64, String> {
-    value
-        .parse::<u64>()
-        .ok()
-        .filter(|limit| (1..=SEARCH_MAX_LIMIT).contains(limit))
-        .and_then(NonZeroU64::new)
+    // Text that is not a whole number gets the same error as a number out of
+    // range.
+    check_search_limit(value.parse().unwrap_or(0))
+}
+
+/// The range check of [`parse_search_limit`], shared with the MCP params,
+/// which get the limit as a JSON number.
+pub(crate) fn check_search_limit(limit: u64) -> Result<NonZeroU64, String> {
+    NonZeroU64::new(limit)
+        .filter(|limit| limit.get() <= SEARCH_MAX_LIMIT)
         .ok_or_else(|| format!("must be a whole number from 1 to {SEARCH_MAX_LIMIT}"))
 }
 
@@ -104,63 +113,7 @@ pub struct Cli {
 #[derive(Subcommand)]
 pub enum Commands {
     /// Launch a test run
-    #[command(long_about = r#"Launch a test run
-
-Example:
-  snouty launch --webhook basic_test --config ./config \
-    --test-name "my-test" \
-    --description "nightly test run" \
-    --duration 30 \
-    --recipients "team@example.com"
-
-The -c/--config flag points at a local directory containing docker-compose.yaml
-(this is the config image source, unrelated to snouty's own settings file).
-Images required for the run need to have been built already. Pushing happens
-automatically.
-
-Alternatively, pass a pre-built config image directly:
-  snouty launch --webhook basic_test \
-    --config-image us-central1-docker.pkg.dev/proj/repo/config:latest \
-    --duration 30
-
-Extra parameters can be passed with --param:
-  snouty launch -w basic_test --duration 30 \
-    --param antithesis.integrations.github.token=TOKEN \
-    --param my.custom.property=value
-
-User-defined attributes are params with an `attrs.` prefix. The server records
-them on the run and `snouty runs show` lists them:
-  snouty launch -w basic_test --duration 30 \
-    --param attrs.team=payments \
-    --param attrs.branch=main \
-    --param attrs.build=12345
-
-Additional container images that the config parser can't discover (e.g. an
-image referenced only in a Kubernetes CRD field) can be registered with the
-antithesis.images param, a semicolon-delimited [REGISTRY/]NAME(:TAG|@DIGEST)
-list:
-  snouty launch -w basic_k8s_test --config ./config --duration 30 \
-    --param 'antithesis.images=app@sha256:...;db:latest'
-
-Add --json for machine-readable output. The launch response prints as one
-JSON object:
-  snouty launch --json -w basic_test --duration 30 | jq -r .runId
-
-Next, wait for the run to finish with `snouty runs wait <run_id>`. The run ID is
-the `run_id` value in the launch output, or `.runId` in the --json output.
-
-Credentials come from `snouty login` or from the environment variables below.
-Tenant and repository may be set via the environment variables below, or in a
-settings file (./.snouty.toml by default; see the global --settings/--profile
-flags and the README). Environment variables take precedence.
-
-Environment variables (override any settings file):
-  ANTITHESIS_TENANT       Your Antithesis tenant name.
-  ANTITHESIS_API_KEY      API key authentication.
-  ANTITHESIS_USERNAME     Username (deprecated).
-  ANTITHESIS_PASSWORD     Password (deprecated).
-  ANTITHESIS_REPOSITORY   Container registry for pushing images.
-  SNOUTY_CONTAINER_ENGINE Force "docker" or "podman" (auto-detected by default)."#)]
+    #[command(long_about = HelpPage::Launch.text(Target::Cli))]
     Launch(LaunchArgs),
 
     /// Deprecated: use `launch` instead
@@ -169,27 +122,7 @@ Environment variables (override any settings file):
 
     /// Interact with test runs
     #[command(
-        long_about = r#"Interact with test runs
-
-List, inspect, and view logs for Antithesis test runs.
-
-When no subcommand is given, lists all runs (same as `snouty runs list`).
-
-Examples:
-  snouty runs
-  snouty runs list --status completed --launcher nightly
-  snouty runs show <run_id>
-  snouty runs wait <run_id>
-  snouty runs properties <run_id>
-  snouty runs properties --failing <run_id>
-  snouty runs properties <run_id> --name <substring> --detail
-  snouty runs build-logs <run_id>
-  snouty runs logs <run_id> <hash> [vtime]
-  snouty runs events <run_id> -m <query>
-
-Add --json for machine-readable output. Every subcommand prints JSON in place
-of its table or its rendered events:
-  snouty --json runs list | jq -r .run_id"#,
+        long_about = HelpPage::Runs.text(Target::Cli),
         subcommand_required = false
     )]
     Runs {
@@ -198,154 +131,33 @@ of its table or its rendered events:
     },
 
     /// Launch a debugging session
-    #[command(long_about = r#"Launch a debugging session
-
-Identify the target run with exactly one of --run-id (preferred) or
---session-id.
-
-Using CLI arguments:
-  snouty debug \
-    --run-id 9043254f65c9c65d63fe043a0abfc7fc-53-1 \
-    --input-hash 6057726200491963783 \
-    --vtime 329.8037810830865 \
-    --description "debug this moment" \
-    --recipients "team@example.com"
-
-Add --json for machine-readable output. The response prints as one JSON
-object:
-  snouty debug --json --run-id <run_id> --input-hash <hash> --vtime <vtime> |
-    jq -r .runId"#)]
+    #[command(long_about = HelpPage::Debug.text(Target::Cli))]
     Debug(DebugArgs),
 
     /// Output shell completions
-    #[command(long_about = r#"Output shell completions
-
-Writes a completion script for SHELL to stdout.
-
-If your shell already initializes completion, add only the source line after
-that initialization. Completions are generated at shell startup.
-Open a new shell to load the setup.
-
-For zsh, add this to ~/.zshrc:
-  autoload -Uz compinit
-  compinit
-  source <(snouty completions zsh)
-
-For bash:
-  snouty completions bash | sudo tee /etc/bash_completion.d/snouty"#)]
+    #[command(long_about = HelpPage::Completions.text(Target::Cli))]
     Completions {
         /// Shell to generate completions for
         shell: clap_complete::Shell,
     },
 
     /// Validate local Antithesis setup
-    #[command(long_about = r#"Validate local Antithesis setup
-
-Compose configs:
-  Runs docker-compose locally and watches for the setup-complete event to
-  confirm instrumentation is working. After setup-complete is detected,
-  discovers test commands from /opt/antithesis/test/v1 inside the
-  running containers and validates their structure.
-
-  Before starting anything, validate resolves the compose file twice — with
-  your shell and under a scrubbed environment matching the hermetic Antithesis
-  environment — and fails if any ${VAR} resolves differently, catching setups
-  that only work locally because a value came from your shell. Use
-  --allow-compose-divergence to downgrade that to a warning.
-
-  Test commands are discovered by scanning /opt/antithesis/test/v1 from each
-  running container for {test_name}/{command} entries. Test commands are
-  validated to have recognized prefixes and at least one driver or anytime
-  test command when any are present. Test commands are not executed.
-
-  The setup-complete event is watched through a temp directory bind-mounted
-  into each container. If your container engine runs inside a VM or on
-  another machine and does not share this machine's temp directory, snouty
-  will not be able to see the setup-complete event. Set SNOUTY_TEMP_DIR to a
-  directory under a path the VM shares with write access, or share this
-  machine's temp directory with the VM.
-
-Kubernetes configs:
-  Runs docker.io/antithesishq/k8s-validator against the manifests/
-  directory to perform static analysis of the manifests. --timeout,
-  --keep-running, and --allow-compose-divergence have no effect here (no
-  workloads or containers are started, and there is no docker-compose config
-  to render).
-
-Example:
-  snouty validate ./config
-  snouty validate ./config --timeout 10
-  snouty validate ./k8s-config"#)]
+    #[command(long_about = HelpPage::Validate.text(Target::Cli))]
     Validate(ValidateArgs),
 
     /// Check environment configuration
-    #[command(long_about = r#"Check environment configuration
-
-Verifies that your environment is properly configured for Antithesis testing.
-Runs health checks — container runtime, docker compose, your credentials
-(stored by `snouty login`, or set in the ANTITHESIS_* environment variables),
-and API connectivity — then prints the resolved settings (tenant, repository,
-container engine) so you can confirm what snouty will use.
-
-snouty prefers an API key (full API access); a username and password is
-deprecated auth, accepted only by `snouty launch` and `snouty debug`.
-
-When credentials are configured, doctor also contacts the Antithesis API to
-report the API and tenant versions and confirm connectivity. Pass --offline to
-skip that network call.
-
-Exits non-zero if any required check fails. Pass --json for a machine-readable
-report (e.g. to gate CI).
-
-Example:
-  snouty doctor
-  snouty doctor --json | jq -r .settings.tenant
-  snouty doctor --offline"#)]
+    #[command(long_about = HelpPage::Doctor.text(Target::Cli))]
     Doctor(DoctorArgs),
 
     /// Print version information
     Version,
 
     /// Check for and install updates
-    #[command(long_about = r#"Check for and install updates
-
-Runs the bundled `snouty-update` helper, which checks for a newer release and
-replaces the snouty binary in place. Does nothing if `snouty-update` is not
-installed alongside snouty.
-
-Pass a version to install a specific release instead of the latest, including
-pre-releases:
-  snouty update 0.6.0
-  snouty update 0.6.0-rc.1
-
-The update channel decides what "latest" means: `stable` (the default)
-installs the latest release, `unstable` also considers pre-releases but still
-installs the latest release when it is newer than every pre-release. Set the
-channel with the `update_channel` setting (or SNOUTY_UPDATE_CHANNEL), and
-override it for one run with --channel:
-  snouty update --channel unstable
-
-Installing a version older than the one you're running is a downgrade and
-requires --force."#)]
+    #[command(long_about = HelpPage::Update.text(Target::Cli))]
     Update(UpdateArgs),
 
     /// Search Antithesis documentation
-    #[command(long_about = r#"Search Antithesis documentation
-
-Full-text search over a local copy of the Antithesis docs, auto-updated before
-each use unless --offline.
-
-Search for a page, browse the tree to find one, then show it. `sqlite` prints
-the path to the local database for querying it directly.
-
-Examples:
-  snouty docs search fault injection
-  snouty docs tree sdk
-  snouty docs show getting_started
-
-Add --json for machine-readable output. Only `search` prints JSON; the other
-subcommands print text either way:
-  snouty --json docs search fault injection | jq -r '.[].path'"#)]
+    #[command(long_about = HelpPage::Docs.text(Target::Cli))]
     Docs {
         /// Don't check for documentation updates
         #[arg(long)]
@@ -356,22 +168,7 @@ subcommands print text either way:
     },
 
     /// Sign in and store your snouty configuration
-    #[command(long_about = r#"Sign in and store your snouty configuration
-
-Provide configuration and authentication information to persist in the global
-snouty settings file, optionally under a named profile. Sensitive information and
-information not provided via args are asked for at the terminal, so this command
-needs an interactive session.
-
-NOTE: `snouty login` will offer to reuse your existing configuration values, including
-any sourced from a local .snouty.toml file or the file specified by --settings or via
-the SNOUTY_SETTINGS_PATH environment variable. However, snouty login will save the
-specified configuration and credentials to the "global" files in your home directory.
-
-Examples:
-  snouty login
-  snouty login --tenant "mytenant" --repository "repository"
-  snouty login --profile "profile""#)]
+    #[command(long_about = HelpPage::Login.text(Target::Cli))]
     Login {
         #[arg(long, value_parser = validate_non_empty)]
         tenant: Option<String>,
@@ -379,9 +176,71 @@ Examples:
         #[arg(long, value_parser = validate_non_empty)]
         repository: Option<String>,
     },
+
+    /// Serve snouty's run, docs and doctor commands to AI agents over MCP
+    #[command(long_about = HelpPage::Mcp.text(Target::Cli))]
+    Mcp(McpArgs),
 }
 
-fn validate_non_empty(value: &str) -> Result<String, String> {
+/// The port `snouty mcp` listens on when `--port` names none.
+pub const DEFAULT_MCP_PORT: u16 = 8765;
+
+#[derive(Args, Debug)]
+pub struct McpArgs {
+    /// Serve one client over stdin and stdout instead of HTTP
+    #[arg(long, conflicts_with_all = ["host", "port", "allowed_hosts"])]
+    pub stdio: bool,
+
+    /// IP address to listen on
+    #[arg(long, default_value_t = IpAddr::V4(Ipv4Addr::LOCALHOST))]
+    pub host: IpAddr,
+
+    /// Port to listen on (0 picks a free port)
+    #[arg(long, default_value_t = DEFAULT_MCP_PORT)]
+    pub port: u16,
+
+    /// Also accept requests whose Host header is this value (repeatable).
+    /// Without a port, any port matches.
+    #[arg(long = "allowed-host", value_name = "HOST[:PORT]")]
+    pub allowed_hosts: Vec<AllowedHost>,
+}
+
+/// A Host header value that `snouty mcp` accepts: a host name or IP address,
+/// with an optional port.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AllowedHost(http::uri::Authority);
+
+impl FromStr for AllowedHost {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        let authority: http::uri::Authority = value
+            .parse()
+            .map_err(|e| format!("not a valid host: {e}"))?;
+        // A Host header has no user info, so an entry with one never matches.
+        if authority.as_str().contains('@') {
+            return Err("a host must not contain '@'".to_owned());
+        }
+        if authority.host().is_empty() {
+            return Err("the host name is empty".to_owned());
+        }
+        // rmcp lets an entry with no port match every port, so a port that
+        // is empty or not a u16 must not become no port.
+        let has_port = authority.as_str().len() > authority.host().len();
+        if has_port && authority.port_u16().is_none() {
+            return Err("the port must be a number from 0 to 65535".to_owned());
+        }
+        Ok(AllowedHost(authority))
+    }
+}
+
+impl fmt::Display for AllowedHost {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+pub(crate) fn validate_non_empty(value: &str) -> Result<String, String> {
     if value.trim().is_empty() {
         Err("Value may not be empty or whitespace".to_owned())
     } else {
@@ -389,38 +248,20 @@ fn validate_non_empty(value: &str) -> Result<String, String> {
     }
 }
 
+/// The number of results `docs search` returns when `--limit` names none.
+pub const DEFAULT_DOCS_SEARCH_LIMIT: usize = 10;
+
 #[derive(Subcommand)]
 pub enum DocsCommands {
     /// Search the documentation
-    #[command(long_about = r#"Search the documentation
-
-Uses full-text search across the Antithesis documentation database.
-The database is automatically updated before each search unless --offline is passed to the docs command.
-
-Prints ranked matches (title and page path); pass a path to `snouty docs show`.
-Use --list to print only the paths.
-
-By default the query is searched as literal text. Pass --match to treat the
-query as a raw SQLite FTS5 expression instead, enabling operators like
-AND/OR/NOT/NEAR, "quoted phrases", `title:` column filters, and `prefix*`.
-
-Examples:
-  snouty docs search fault injection
-  snouty docs search "config image"
-  snouty docs search moment.branch
-  snouty docs search sdk setup
-  snouty docs search --match 'sdk NOT java'
-
-Add --json for machine-readable output. The matches print as one JSON array
-of {path, title, snippet} objects, or of paths with --list:
-  snouty --json docs search fault injection | jq -r '.[].path'"#)]
+    #[command(long_about = HelpPage::DocsSearch.text(Target::Cli))]
     Search {
         /// Print only matching page paths, one per line
         #[arg(short = 'l', long)]
         list: bool,
 
         /// Maximum number of results to return
-        #[arg(short = 'n', long, default_value = "10")]
+        #[arg(short = 'n', long, default_value_t = DEFAULT_DOCS_SEARCH_LIMIT)]
         limit: usize,
 
         /// Treat the query as a raw FTS5 expression (AND/OR/NOT/NEAR, "phrases",
@@ -432,17 +273,7 @@ of {path, title, snippet} objects, or of paths with --list:
         query: Vec<String>,
     },
     /// Print a tree of documentation paths
-    #[command(long_about = r#"Print a tree of documentation paths
-
-Builds a directory-like tree from all page paths stored in the documentation database.
-
-Examples:
-  snouty docs tree
-  snouty docs tree --depth 2
-  snouty docs tree -d 2
-  snouty docs tree sdk
-
-This command prints text only. --json has no effect on it."#)]
+    #[command(long_about = HelpPage::DocsTree.text(Target::Cli))]
     Tree {
         /// Limit output to nodes at this depth or shallower
         #[arg(short = 'd', long)]
@@ -453,23 +284,14 @@ This command prints text only. --json has no effect on it."#)]
     },
 
     /// Show full contents of a documentation page
-    #[command(long_about = r#"Show full contents of a documentation page
-
-Displays the full markdown content of a page by its path.
-If the exact path is not found, suggests similar pages.
-
-This command prints text only. --json has no effect on it."#)]
+    #[command(long_about = HelpPage::DocsShow.text(Target::Cli))]
     Show {
         /// Page path (e.g. "getting_started/overview")
         path: String,
     },
 
     /// Print the path to the cached SQLite database
-    #[command(long_about = r#"Print the path to the cached SQLite database
-
-Useful for directly querying the documentation database with external tools.
-
-This command prints the path only. --json has no effect on it."#)]
+    #[command(long_about = HelpPage::DocsSqlite.text(Target::Cli))]
     Sqlite,
 }
 
@@ -639,197 +461,14 @@ pub struct DebugArgs {
     pub recipients: Option<String>,
 }
 
-/// The block-rendering paragraph `runs events` and `runs search` share in
-/// their long help. A macro rather than a `const` so both call sites can
-/// splice it into their `concat!`-built literals (`concat!` takes literals
-/// only, and a macro expansion is one).
-/// How a run is structured: the paragraph `runs search` and `runs logs` share
-/// in their long help. A macro for the same reason as
-/// [`classified_blocks_help`].
-macro_rules! run_structure_help {
-    () => {
-        r#"How a run is structured: An Antithesis run is a tree of timelines, not one
-history. A timeline is a series of input_hashes. An input_hash is a hash of
-every input Antithesis sent up to that point. Antithesis branches a timeline
-by sending an input from some moment, which creates a new input_hash. Every
-event has an input_hash and a vtime, and one input_hash can have zero or more
-events. Events that share an input_hash are on the same timeline. vtime is
-the virtual time at which the event was emitted on its timeline. Antithesis
-virtualizes the clock, so vtime can jump forward by any amount, but it never
-goes backward. vtime orders events only within one timeline."#
-    };
-}
-
-macro_rules! classified_blocks_help {
-    () => {
-        r#"Matching events print as classified blocks: a `moment HASH` divider opens
-each timeline segment. Use `snouty runs logs <run_id> <hash>` to stream logs
-to the timeline's current end. Each event below the divider renders on one
-line with the Antithesis event shapes — SDK assertions, faults, container
-lifecycle, test composer — each in their own concise form."#
-    };
-}
-
-/// `runs search`'s long help. Static text: the `search_long_about` test
-/// keeps it in sync with [`event_set_dsl::VERBS`] (every verb must appear)
-/// and holds every line to 78 columns, since clap prints long_about
-/// verbatim.
-const SEARCH_LONG_ABOUT: &str = concat!(
-    r#"Run an event-set DSL query against a run's events.
-
-"#,
-    run_structure_help!(),
-    r#"
-
-How to read the results: The output is a sample of the matching events, and
-they can come from different timelines. The server returns at most --limit
-events (default 50, maximum 999) in no fixed order. When the output reaches
-the limit, stderr says "Additional results may be available". Then any count
-or pattern in the output holds for the sample, not for the run: if all 50
-events come from node-0, other nodes can still have matches. An event missing
-from the output can still be in the run. Fewer events than the limit means
-the query matched only those events. Two events that conflict in one history
-(for example, two nodes that each win the same election term) are usually on
-different timelines. To relate an event to others on its own timeline, use
-fold, with_last, or with_next in the query. To read the whole timeline up to
-one event, run `snouty runs logs <run_id> <input_hash> <vtime>` with that
-event's moment.
-
-QUERY is a pipeline of dot-separated verbs. The first verb reads all events
-in the run. Each later verb reads the output of the verb before it.
-
-Verbs:
-  matches({f: "x"})        keep events whose fields equal every given value
-  contains({f: "x"})       keep events whose fields contain every substring
-  not_matches({f: "x"})    drop exact matches
-  excludes({f: "x"})       drop substring matches
-  filter(ev => expr)       keep events where the JS expression is truthy
-  map(ev => expr)          reshape each event (ev.add_fields({...}) adds)
-  flatmap(ev => expr)      map, then flatten the result one level
-  narrow(["f1", "f2"])     keep only the listed fields
-  fold((s, ev) => [events, s'], s0)
-                           walk each timeline from its root in vtime order,
-                           threading state s (see below)
-  union(set, ...)          OR this set with others, deduplicated
-  intersect(set, ...)      AND this set with others
-  difference(set)          subtract another event set from this one
-  distinct_by_moment(set)  union, keeping one event per vtime
-  with_last({n: set})      keep each event, add field last_n: the nearest
-                           event from `set` at or before it in the same
-                           timeline (the event itself, if it is in `set`;
-                           use fold for the previous event of the same kind)
-  with_next({n: set}, vtime_within)
-                           output the nearest later event from `set` in the
-                           same timeline, with fields last_event (the input
-                           event) and with_next_type ("n"); with the optional
-                           vtime_within (in vtime seconds), an input event
-                           with no match by then outputs with_next_type
-                           "timeout"
-
-The string verbs (matches/contains/not_matches/excludes) address four fields:
-output_text, and container, stream, and source, which read the event's
-source.container, source.stream, and source.name. output_text holds log
-output only. An SDK assertion's message is in ev.antithesis_assert.message,
-and a test-composer command is in ev.command. In JS, read every field from
-`ev`, e.g. `ev.source.container` or `ev.moment.vtime`.
-
-fold: the reducer takes the state s and one event ev, and returns
-[events, s']. events is an array of the events to output: [ev] outputs ev,
-[] outputs nothing, and several distinct events output each one, e.g.
-[ev.add_fields({copy: 1}), ev.add_fields({copy: 2})]. Identical events
-output once. s' is the state for the next event in the same timeline. s0
-must be strict JSON: write {"count": 0}, not {count: 0}. The reducer body
-and s' are JavaScript.
-
-fold, with_last, and with_next cause the API to scan a lot of data before
-returning. On a large run, the scan can take more than 10 minutes. Use
-simpler operations when possible.
-
-Query snippets (each is a complete QUERY, ready to paste):
-
-  # log text contains a substring
-  contains({output_text: "connection refused"})
-
-  # log text matches a regex
-  filter(ev => /timed?.?out/i.test(ev.output_text || ""))
-
-  # a substring anywhere in the raw event JSON
-  filter(ev => JSON.stringify(ev).includes("needle"))
-
-  # one container's stderr
-  matches({container: "etcd0", stream: "error"})
-
-  # errors from everything except a noisy container
-  contains({output_text: "error"}).not_matches({container: "setup"})
-
-  # events in a vtime window
-  filter(ev => ev.moment.vtime > 100 && ev.moment.vtime < 150)
-
-  # one assertion's evaluations, by id, that came up false
-  filter(ev => ev.antithesis_assert?.hit
-    && ev.antithesis_assert.id == "acks are durable"
-    && !ev.antithesis_assert.condition)
-
-  # hit sometimes assertions that evaluated true (also: always, reachability)
-  filter(ev => ev.antithesis_assert?.assert_type == "sometimes"
-    && ev.antithesis_assert.hit && ev.antithesis_assert.condition)
-
-  # each crash annotated with the nearest earlier fault (field last_fault)
-  contains({output_text: "fatal"}).with_last({fault: filter(ev => ev.fault)})
-
-  # errors numbered in order within each timeline (field n)
-  contains({output_text: "error"})
-    .fold((s, ev) => [[ev.add_fields({n: s.n + 1})], {n: s.n + 1}], {"n": 0})
-
-"#,
-    classified_blocks_help!(),
-    r#"
-Rows reshaped by map/narrow/fold print as raw JSON.
-
-Add --json for machine-readable output. Each event prints as one JSON
-object on its own line:
-  snouty --json runs search <run_id> 'contains({output_text: "err"})' \
-    | jq -r .moment.vtime"#
-);
-
 #[derive(Subcommand)]
 pub enum RunsCommands {
     /// List all runs
-    #[command(
-        long_about = r#"List recent runs (the default when `snouty runs` runs with no subcommand).
-
-Columns: RUN ID, STATUS, CREATED, TEST NAME. Use --detail for the full
-description and launcher.
-
-Add --json for machine-readable output. Each run prints as one JSON object on
-its own line, in the order the server returns them:
-  snouty --json runs list | jq -r .run_id"#
-    )]
+    #[command(long_about = HelpPage::RunsList.text(Target::Cli))]
     List(RunsListArgs),
 
     /// Show details of a specific run
-    #[command(
-        long_about = r#"Show a run's metadata: id, status, timestamps, launcher, and description.
-
-Two fields report time and they mean different things. Duration is the
-workload length requested at launch. Elapsed is wall-clock time, which also
-spans provisioning, setup and teardown, so the two legitimately differ.
-Source is the `antithesis.source` the run was launched from, when the
-launcher recorded one. User-defined attributes (`--param attrs.<name>=<value>`
-at launch) are listed under Attributes.
-
-Incomplete runs also show the failure moment (Failure Hash/VTime) to pass to
-`runs logs`, and the Failure Reason when the run reports one. Use --web to
-open the triage report in a browser.
-
-Examples:
-  snouty runs show <run_id>
-  snouty runs show <run_id> --web
-
-Add --json for machine-readable output. The run prints as one JSON object.
-With --web it prints the report URL as {"url": ...} and opens no browser:
-  snouty --json runs show <run_id> | jq -r .status"#
-    )]
+    #[command(long_about = HelpPage::RunsShow.text(Target::Cli))]
     Show {
         /// Run ID
         run_id: String,
@@ -840,28 +479,7 @@ With --web it prints the report URL as {"url": ...} and opens no browser:
     },
 
     /// Wait for a run to reach a terminal state
-    #[command(
-        long_about = r#"Wait for a run to reach a terminal state (completed, cancelled, or incomplete).
-
-Polls the run's status until it is terminal, then reports the final status and
-exits 0 whatever that status is; the run's outcome is in the output, not the
-exit code. A run that reports status `unknown` fails the command instead:
-snouty cannot tell whether such a run will still make progress, so the caller
-decides what to do.
-
-The wait is unbounded unless --timeout is given, and the command is safe to
-interrupt and re-run: waiting holds no state beyond the run id, so re-running
-resumes the wait.
-
-Examples:
-  snouty runs wait <run_id>
-  snouty runs wait <run_id> --timeout 2h
-  snouty launch --json -w basic_test ... | jq -r .runId | xargs snouty runs wait
-
-Add --json for machine-readable output. The final status prints as one JSON
-object:
-  snouty --json runs wait <run_id> | jq -r .status"#
-    )]
+    #[command(long_about = HelpPage::RunsWait.text(Target::Cli))]
     Wait {
         /// Run ID
         run_id: String,
@@ -878,26 +496,7 @@ object:
     },
 
     /// List property results for a run
-    #[command(
-        long_about = r#"List a run's property (assertion) results, one table per group.
-
-Each table is headed by its group; columns are STATUS, EXAMPLES, NAME (failing
-first). EXAMPLES is the example count, shown as examples/counterexamples when a
-property has counterexamples.
-
-Narrow with --name and/or --group (both case-insensitive substring matches);
-add --detail to expand the matches into their examples and counter-example
-moments instead of the table.
-
-Examples:
-  snouty runs properties <run_id> --failing
-  snouty runs properties <run_id> --name eventually_validate --detail
-  snouty runs properties <run_id> --group Unreachable --detail
-
-Add --json for machine-readable output. Each property prints as one JSON
-object on its own line. --json is mutually exclusive with --detail:
-  snouty --json runs properties <run_id> --failing | jq -r .name"#
-    )]
+    #[command(long_about = HelpPage::RunsProperties.text(Target::Cli))]
     Properties {
         /// Run ID
         run_id: String,
@@ -925,54 +524,14 @@ object on its own line. --json is mutually exclusive with --detail:
     },
 
     /// Stream build logs for a run
-    #[command(
-        long_about = r#"Stream a run's build and setup logs: everything the platform did
-before the test started.
-
-Output: each line is `timestamp [stream] line`, where stream is `stdout` or
-`stderr`. The whole build is streamed, so expect thousands of lines on a real
-run. Grep the stream tag to narrow it, and read `[stderr]` first when a
-launch failed.
-
-Examples:
-  snouty runs build-logs <run_id>
-  snouty runs build-logs <run_id> | grep '\[stderr\]'
-  snouty runs build-logs <run_id> | grep -i 'error\|denied'
-
-Add --json for machine-readable output. Each log line prints as one JSON
-object on its own line:
-  snouty --json runs build-logs <run_id> | jq -r .text"#
-    )]
+    #[command(long_about = HelpPage::RunsBuildLogs.text(Target::Cli))]
     BuildLogs {
         /// Run ID
         run_id: String,
     },
 
     /// Stream moment logs for a run
-    #[command(
-        long_about = concat!(
-            r#"Stream the logs of one timeline of a run.
-
-"#,
-            run_structure_help!(),
-            r#"
-
-INPUT_HASH identifies the timeline: the hash of every input Antithesis sent
-from the root to that point. Logs stream from the root (or --begin-vtime) to
-the timeline's current end; a run in progress can extend the timeline, so
-the same INPUT_HASH can return more logs later. Give VTIME to end the stream
-at that moment instead.
-
-Output: a `moment HASH` divider opens each timeline segment, and each
-event under it renders on one line as `VTIME [source] payload` — Antithesis
-event shapes (SDK assertions, faults, container lifecycle, test composer)
-each in their own concise form.
-
-Add --json for machine-readable output. Each event prints as one JSON object
-on its own line, and --raw passes the server's events through unchanged:
-  snouty --json runs logs <run_id> <hash> | jq -r .moment.vtime"#
-        )
-    )]
+    #[command(long_about = HelpPage::RunsLogs.text(Target::Cli))]
     Logs {
         /// Run ID
         run_id: String,
@@ -1004,34 +563,7 @@ on its own line, and --raw passes the server's events through unchanged:
     // [`gated_command_error`].
     #[command(
         hide = !features::is_enabled(Feature::RunsExec),
-        long_about = r#"Execute a bash script in a run's live session, at a moment.
-
-This command is gated behind the `runs-exec` unstable feature, because the
-Antithesis API it calls is unstable and unavailable on most tenants. Enable it
-by setting SNOUTY_UNSTABLE_FEATURES=runs-exec. An unstable feature can change
-or go away in any release.
-
-The run must have a live session (it is in progress). The script executes on
-a fresh branch of the multiverse, so it does not disturb the running test.
-INPUT_HASH and VTIME identify the moment to execute at; a moment comes from
-`runs properties --detail` or `runs events`.
-
-The script's stdout and stderr stream to snouty's stdout and stderr. On exit,
-a trailer on stderr documents the branch's end moment, to chain a follow-up
-command from. A non-zero exit code, a timeout, or a truncated stream fails
-snouty with exit code 1.
-
-Omit SCRIPT to read the script from stdin — a pipe, a redirect, or a heredoc.
-
-Examples:
-  snouty runs exec <run_id> <hash> <vtime> 'uname -a'
-  echo 'ps aux' | snouty runs exec <run_id> <hash> <vtime>
-  snouty runs exec <run_id> <hash> <vtime> < script.sh
-
-Add --json for machine-readable output. Each frame of the stream prints as one
-JSON object on its own line, and the trailer is left out:
-  snouty --json runs exec <run_id> <hash> <vtime> 'ls' \
-    | jq -r 'select(.output_text != null).output_text'"#
+        long_about = HelpPage::RunsExec.text(Target::Cli)
     )]
     Exec {
         /// Run ID
@@ -1057,41 +589,12 @@ JSON object on its own line, and the trailer is left out:
         // The API's own default is 30 with a minimum of 0 and no maximum. A
         // 0-second timeout can only ever time out, so the floor here is 1; the
         // ceiling is left to the server rather than guessed at.
-        #[arg(long, default_value_t = 30, value_parser = clap::value_parser!(u64).range(1..))]
+        #[arg(long, default_value_t = DEFAULT_EXEC_TIMEOUT_SECS, value_parser = clap::value_parser!(u64).range(1..))]
         timeout: u64,
     },
 
     /// Search events in a run
-    #[command(
-        long_about = concat!(
-            r#"Search a run's events for one or more substrings (all must match).
-
-A term is matched against the text an event carries: log output, an
-assertion's message and source function, and a test-composer command.
-
-"#,
-            classified_blocks_help!(),
-            r#"
-
-Matching runs server-side through the events-search API, the same route
-`snouty runs search` takes. Every term must match, case-insensitively. The
-result is a sample of the matching events in no fixed order, capped at
---limit. Read `snouty runs search --help` to learn how to read a sample
-and how the run's timelines relate the events.
-
-For log output, the equivalent search is:
-  snouty runs search <run_id> \
-    'filter(ev => ["a", "b"].every(t =>
-      (ev.output_text || "").toLowerCase().includes(t)))'
-with each term in lower case. `snouty --verbose runs events ...` prints
-the exact query, which also matches assertion messages and test-composer
-commands.
-
-Add --json for machine-readable output. Each event prints as one
-JSON object on its own line:
-  snouty --json runs events <run_id> -m error | jq -r .moment.vtime"#
-        )
-    )]
+    #[command(long_about = HelpPage::RunsEvents.text(Target::Cli))]
     Events {
         /// Run ID
         run_id: String,
@@ -1114,9 +617,12 @@ JSON object on its own line:
     },
 
     /// Query events with the event-set DSL
-    #[command(long_about = SEARCH_LONG_ABOUT)]
+    #[command(long_about = HelpPage::RunsSearch.text(Target::Cli))]
     Search(RunsSearchArgs),
 }
+
+/// The seconds `runs exec` waits for the script when `--timeout` names none.
+pub const DEFAULT_EXEC_TIMEOUT_SECS: u64 = 30;
 
 #[derive(Args)]
 pub struct RunsSearchArgs {
@@ -1542,18 +1048,51 @@ mod tests {
         assert!(parsed.is_err(), "expected --check --follow to conflict");
     }
 
-    // The help is built at runtime so the verb list has one home
-    // ([`event_set_dsl::VERBS`]); it must name every verb and stay wrapped —
-    // clap prints long_about verbatim, so an over-long line would stick out
-    // of the ~78-column help text.
+    #[hegel::test]
+    fn allowed_host_round_trips_and_has_no_user_info(tc: hegel::TestCase) {
+        let value = tc.draw(hegel::generators::text().alphabet("ab1.:@[]-"));
+        if let Ok(host) = value.parse::<AllowedHost>() {
+            assert!(!value.contains('@'), "accepted {value:?}");
+            assert_eq!(host.to_string(), value);
+            assert_eq!(host.to_string().parse::<AllowedHost>(), Ok(host));
+        }
+    }
+
+    #[test]
+    fn allowed_host_takes_a_name_with_an_optional_port() {
+        for value in [
+            "myhost.example",
+            "myhost.example:8765",
+            "[::1]:8765",
+            "10.0.0.1",
+        ] {
+            assert!(value.parse::<AllowedHost>().is_ok(), "{value}");
+        }
+        for value in [
+            "",
+            "user@myhost.example",
+            "http://myhost.example",
+            ":8765",
+            "myhost:99999",
+            "myhost:",
+        ] {
+            assert!(value.parse::<AllowedHost>().is_err(), "{value}");
+        }
+    }
+
+    // The help names every verb in [`event_set_dsl::VERBS`] and stays wrapped,
+    // for the CLI and for tool_help: clap prints long_about verbatim, so an
+    // over-long line sticks out of the ~78-column help text.
     #[test]
     fn search_long_about_names_every_verb_and_wraps() {
-        let about = SEARCH_LONG_ABOUT;
-        for verb in crate::event_set_dsl::VERBS {
-            assert!(about.contains(verb), "missing verb {verb}");
-        }
-        for line in about.lines() {
-            assert!(line.len() <= 78, "over-long help line: {line}");
+        for target in [Target::Cli, Target::Mcp] {
+            let about = HelpPage::RunsSearch.text(target);
+            for verb in crate::event_set_dsl::VERBS {
+                assert!(about.contains(verb), "{target:?}: missing verb {verb}");
+            }
+            for line in about.lines() {
+                assert!(line.len() <= 78, "{target:?}: over-long help line: {line}");
+            }
         }
     }
 
@@ -1563,7 +1102,14 @@ mod tests {
     /// never raises the subject.
     #[test]
     fn every_long_help_says_what_json_does() {
-        const NO_JSON: [&str; 5] = ["validate", "completions", "version", "update", "login"];
+        const NO_JSON: [&str; 6] = [
+            "validate",
+            "completions",
+            "version",
+            "update",
+            "login",
+            "mcp",
+        ];
 
         fn walk(command: &clap::Command) {
             for sub in command.get_subcommands() {

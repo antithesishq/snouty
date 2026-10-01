@@ -1,0 +1,7 @@
+Run a bash script in a live (in-progress) run at a moment, on a new branch that does not change the test. Use it to inspect files, processes or state at that moment. Get moments from runs_properties examples or runs_search events.
+
+Params: input_hash (a string), vtime, script (bash), timeout in seconds (default 30).
+
+Returns JSONL frames: output frames with output_text and source.stream ("info" is stdout, "error" is stderr), then one result frame: {"status": "exited", "exit_code", "end_moment"} or {"status": "timed_out", "last_moment"}. To run a follow-up script, use end_moment. A non-zero exit, a timeout or no result frame sets isError.
+
+More: tool_help {"tool": "runs_exec"}

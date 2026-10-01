@@ -1,5 +1,7 @@
 # Unreleased
 
+- `snouty runs events` leaves out bootstrap events. A bootstrap event comes before the log timeline of the run, so `snouty runs logs` had no lines for its moment ([#319](https://github.com/antithesishq/snouty/pull/319))
+- `snouty runs show` prints `Created`, `Started`, and `Completed`, and `snouty runs list --detail` prints `Created`, in local time with the UTC offset, for example `2026-09-24 12:32:48 -07:00`. ([#320](https://github.com/antithesishq/snouty/pull/320))
 - `snouty runs properties --detail` shows the passing and failing example totals of each event property next to `Examples`, and ends with the `snouty runs logs` command that takes the hash and vtime of an example. A property with no examples shows `passed with no examples` or `failed with no examples`, and no table ([#323](https://github.com/antithesishq/snouty/pull/323))
 - `snouty runs properties` no longer shows a property's description: `--detail` drops the `Details` row, and `--json` drops the `description` field ([#327](https://github.com/antithesishq/snouty/pull/327))
 - `snouty runs search` is stable: the `runs-search` unstable feature is gone, and the command is on for everyone. It needs tenant release 62.2 or newer; `snouty doctor` warns on an older tenant. An exported `SNOUTY_UNSTABLE_FEATURES=runs-search` is ignored ([#309](https://github.com/antithesishq/snouty/pull/309))

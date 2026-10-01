@@ -121,6 +121,15 @@ stdout 'Run ID.*$R_run_id'
 [!staging] stdout '(?s)^Attributes\n  branch  main\n  team    payments\n\n'
 [!staging] ! stdout 'attrs\.'
 
+# Timestamps carry the local UTC offset, so one pastes back into
+# `--created-after`/`--created-before` as the same instant.
+mock-runs-server
+env TZ=UTC
+snouty runs show $R_run_id
+stdout '^Created +\d{4}-\d\d-\d\d \d\d:\d\d:\d\d \+00:00$'
+snouty runs list --detail -n 1
+stdout '^Created +\d{4}-\d\d-\d\d \d\d:\d\d:\d\d \+00:00$'
+
 # `snouty runs show` doesn't print the raw report URL — `snouty runs show --web`
 # is the way to follow that link. The hint is shown only when a report link
 # exists (mock runs all carry one), since `--web` errors without it.

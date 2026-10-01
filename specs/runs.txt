@@ -198,9 +198,9 @@ snouty runs properties $R_run_id --name 'Counter value' --detail
 [!staging] stdout 'STATUS.*HASH.*VTIME'
 [!staging] stdout '(?s)failing.*-100.*45\.334635781589895.*failing.*-200.*313\.15126806590706.*passing.*-300.*398\.4898056755774'
 [!staging] ! stdout 'Details|Counter stays within safe bounds'
-# The table is a sample of what the run recorded, and says so. One trailing
-# next step names the command that each HASH/VTIME row feeds.
-[!staging] stdout '^Examples  showing 2 of 3 failing, 1 of 12 passing$'
+# The Examples label carries the run's totals; the table below is a sample.
+# One trailing next step names the command that each HASH/VTIME row feeds.
+[!staging] stdout '^Examples  12 passing examples and 3 failing examples$'
 [!staging] stdout '^view logs leading up to an example:$'
 [!staging] stdout '^  snouty runs logs \S+ <hash> <vtime>$'
 

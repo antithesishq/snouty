@@ -409,6 +409,19 @@ fn truncate_at_end_vtime(stream: JsonStream, end: VTime) -> JsonStream {
         .boxed()
 }
 
+/// One execute-command request.
+pub struct ExecRequest {
+    /// The moment to execute at.
+    pub moment: Moment,
+    pub script: String,
+    /// The container to execute in, or `None` for the host.
+    pub container: Option<String>,
+    pub timeout: Duration,
+    /// Stream every event of the timeline while the script executes, not
+    /// only the script's output.
+    pub events: bool,
+}
+
 pub struct AntithesisApi {
     client: generated::Client,
     base_url: String,
@@ -668,29 +681,24 @@ impl AntithesisApi {
         }
     }
 
-    /// Execute a bash script in the run's live session, starting at `moment`,
-    /// in `container`, or on the host when it is `None`. Returns the NDJSON
-    /// response stream: command-output `Event` records in the run-logs shape,
-    /// then one terminal `Command_Termination_Result` whose `status` is
-    /// `exited` or `timed_out`.
+    /// Execute a bash script in the run's live session. Returns the NDJSON
+    /// response stream: `Event` records in the run-logs shape, then one
+    /// terminal `Command_Termination_Result` whose `status` is `exited` or
+    /// `timed_out`.
     ///
     /// The server accepts `moment.vtime` as an exact JSON number, although
     /// the schema documents a string. See the orbitinghail release 61.3
     /// command verification in `specs/runs_exec.txt`.
-    pub async fn execute_command(
-        &self,
-        run_id: &str,
-        moment: Moment,
-        script: String,
-        container: Option<String>,
-        timeout: Duration,
-    ) -> Result<JsonStream> {
+    pub async fn execute_command(&self, run_id: &str, exec: ExecRequest) -> Result<JsonStream> {
         let body = generated::types::ExecuteCommandRequest {
-            moment,
-            script,
-            container: container.unwrap_or_else(|| EXEC_HOST_CONTAINER.to_string()),
+            moment: exec.moment,
+            script: exec.script,
+            container: exec
+                .container
+                .unwrap_or_else(|| EXEC_HOST_CONTAINER.to_string()),
+            include_system_logs: exec.events.then_some(true),
             // The wire field is a whole number of seconds.
-            timeout_seconds: timeout.as_secs(),
+            timeout_seconds: exec.timeout.as_secs(),
             source_run_id: None,
             source_session_id: None,
         };

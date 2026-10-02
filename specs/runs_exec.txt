@@ -30,6 +30,14 @@
 #
 #   - The script executes on the host, or in the container that --container
 #     names.
+#   - Without --events, the stream holds only the script's output, and
+#     snouty prints it as plain stdout and stderr. --events asks the server
+#     for every event of the timeline while the script executes
+#     (`include_system_logs`), and snouty prints them as `runs logs` does,
+#     the script's output included. Verified against release 64.0
+#     (orbitinghail): the timeline carries assertions, test-composer tasks,
+#     fault-injector and journald events, and metadata about the command
+#     itself, most of which have no output text.
 #   - The script comes from the SCRIPT argument, or from stdin when SCRIPT is
 #     omitted. Omitting it is the only way to read stdin; a pipe, a redirect,
 #     and a heredoc all work, and a script over 2 MiB is refused.
@@ -138,11 +146,36 @@ stdout 'container=_ANTITHESIS_HOST'
 snouty runs exec run-2 -3625518438076122494 398.4898056755774 print-container --container my-service
 stdout 'container=my-service'
 
+# Without --events, the request leaves out include_system_logs, so the server
+# default (false) applies.
+snouty runs exec run-2 -3625518438076122494 398.4898056755774 print-system-logs
+stdout 'include_system_logs=absent'
+
+snouty runs exec run-2 -3625518438076122494 398.4898056755774 print-system-logs --events
+stdout '\[bash_command\] include_system_logs=true'
+
+# --events prints every event of the timeline as `runs logs` does, all on
+# stdout: a `moment HASH` divider, then `VTIME [source] payload` lines. The
+# trailer still goes to stderr.
+snouty runs exec run-2 -3625518438076122494 398.4898056755774 with-system-logs --events
+stdout 'moment -8206006569229276678'
+stdout '398.49.* \[bash_command\] .*Command received'
+stdout '398.49.* \[bash_command\] script says hi'
+stdout '398.49.* \[workload\] workload says hi'
+stderr 'end moment: -8206006569229276678 398.492'
+
+# With --events and --json, every event passes through as NDJSON, then the
+# result.
+snouty --json runs exec run-2 -3625518438076122494 398.4898056755774 with-system-logs --events
+stdout '"fuzzpipe":\{"event_type":"Command received"\}'
+stdout '"output_text":"workload says hi"'
+stdout '"status":"exited"'
+
 # --json passes the NDJSON stream through: output events, then the result,
 # with vtimes normalized to exact JSON numbers (like `runs logs`) and no
 # trailer.
 snouty --json runs exec run-2 -3625518438076122494 398.4898056755774 'uname -a'
-stdout '\{"moment":\{"input_hash":"-8206006569229276678","vtime":398.491\},"output_text":"Linux antithesis 6.12.0","source":\{"stream":"info"\}\}'
+stdout '\{"moment":\{"input_hash":"-8206006569229276678","vtime":398.491\},"output_text":"Linux antithesis 6.12.0","source":\{"command_id":"echidna-cmd-1","name":"bash_command","stream":"info"\}\}'
 stdout '\{"status":"exited","exit_code":0,"end_moment":\{"input_hash":"-8206006569229276678","vtime":398.492\}\}'
 ! stderr 'end moment'
 

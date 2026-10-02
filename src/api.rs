@@ -2752,6 +2752,16 @@ mod tests {
         );
     }
 
+    // The spec lists three tiers, but a run can carry any value: a later tier,
+    // or whatever its launch passed. One such run must not fail the listing.
+    #[test]
+    fn run_params_accept_any_performance_tier() {
+        let params: RunParams =
+            serde_json::from_value(serde_json::json!({"antithesis.performance_tier": "ultra"}))
+                .unwrap();
+        assert_eq!(params.antithesis_performance_tier.as_deref(), Some("ultra"));
+    }
+
     #[tokio::test]
     async fn stream_runs_returns_empty_when_no_runs_exist() {
         let mock_server = MockServer::start().await;

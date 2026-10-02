@@ -27,7 +27,7 @@ on:
 
 jobs:
   publish-crates:
-    runs-on: "ubuntu-22.04"
+    runs-on: "ubuntu-24.04"
     # Hold the run here until a reviewer approves it.
     environment: release
     # release.yml grants the publish job `id-token: write` and

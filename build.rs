@@ -52,6 +52,7 @@ fn generate_api_client(out_dir: &Path) {
     untype_error_responses(&mut spec_value);
     drop_include_filtered_logs(&mut spec_value);
     drop_property_description(&mut spec_value);
+    drop_launch_status_code(&mut spec_value);
     mark_vtime_schema(&mut spec_value);
     unrequire_search_limit_default(&mut spec_value);
     let spec: openapiv3::OpenAPI = serde_json::from_value(spec_value).unwrap();
@@ -224,6 +225,33 @@ fn drop_property_description(spec: &mut serde_json::Value) {
         "Property_Base no longer has `description`; \
          delete `drop_property_description` in build.rs"
     );
+}
+
+/// Drop the body-level `statusCode` from the launch success responses. The
+/// HTTP status already says whether a launch succeeded, the API team has
+/// confirmed clients should ignore the body's copy (#180), and tenant release
+/// 63.3 stopped sending it (#336), so requiring it fails a successful launch.
+fn drop_launch_status_code(spec: &mut serde_json::Value) {
+    for name in ["Launch_Response", "Launch_MVD_Response"] {
+        let schema = spec
+            .pointer_mut(&format!("/components/schemas/{name}"))
+            .and_then(serde_json::Value::as_object_mut)
+            .unwrap_or_else(|| panic!("openapi spec has no {name}"));
+        let properties = schema
+            .get_mut("properties")
+            .and_then(serde_json::Value::as_object_mut)
+            .unwrap_or_else(|| panic!("openapi spec has no {name}.properties"));
+        assert!(
+            properties.remove("statusCode").is_some(),
+            "{name} no longer has `statusCode`; delete `drop_launch_status_code` in build.rs"
+        );
+        if let Some(required) = schema
+            .get_mut("required")
+            .and_then(serde_json::Value::as_array_mut)
+        {
+            required.retain(|field| field != "statusCode");
+        }
+    }
 }
 
 /// Tag `Moment.vtime` with a private `format: vtime` marker for the

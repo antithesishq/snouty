@@ -2155,6 +2155,35 @@ mod tests {
         assert_eq!(response.run_id.as_deref(), Some("run-123"));
     }
 
+    /// The launch success body from tenant release 63.3, which has no
+    /// `statusCode` (#336).
+    const LAUNCH_OK_BODY_63_3: &str = r#"{"message":"Success","runId":"run-63-3"}"#;
+
+    // Success is the HTTP status alone, so a body without `statusCode` still
+    // launches, on the documented status and on the undocumented 200 alike.
+    #[tokio::test]
+    async fn launch_test_accepts_a_body_without_status_code() {
+        for status in [200, 202] {
+            let mock_server = mock_launch_test(status, LAUNCH_OK_BODY_63_3).await;
+            let api = test_api_optionally_with_cache(&mock_server, None);
+            let params = Params::from_key_value_pairs(["antithesis.duration=30"]).unwrap();
+
+            let response = api.launch_test("basic_test", &params).await.unwrap();
+            assert_eq!(response.run_id.as_deref(), Some("run-63-3"));
+        }
+    }
+
+    #[tokio::test]
+    async fn launch_debugging_accepts_a_body_without_status_code() {
+        for status in [200, 202] {
+            let mock_server = mock_debug_launch(status, LAUNCH_OK_BODY_63_3).await;
+            let api = test_api_optionally_with_cache(&mock_server, None);
+
+            let response = api.launch_debugging(&debug_params()).await.unwrap();
+            assert_eq!(response.run_id.as_deref(), Some("run-63-3"));
+        }
+    }
+
     /// Params for a debug launch against a fixed run.
     fn debug_params() -> Params {
         Params::from_key_value_pairs([

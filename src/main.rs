@@ -11,12 +11,15 @@ use semver::Version;
 use snouty::OutputOptions;
 use snouty::api::AntithesisApi;
 use snouty::auth::initialize_credential_store;
-use snouty::cli::{Cli, Commands, DebugArgs, LaunchArgs, UpdateArgs, UpdateChannel};
+use snouty::cli::{
+    Cli, Commands, DebugArgs, LaunchArgs, UpdateArgs, UpdateChannel, gated_command_error,
+};
 use snouty::compose;
 use snouty::config;
 use snouty::container;
 use snouty::docs;
 use snouty::error::user_error;
+use snouty::features;
 use snouty::login::cmd_login;
 use snouty::params::{
     ANT_CONFIG_IMAGE, ANT_DEBUGGING_INPUT_HASH, ANT_DEBUGGING_RUN_ID, ANT_DEBUGGING_SESSION_ID,
@@ -96,6 +99,12 @@ async fn run(cli: Cli) -> Result<()> {
     // The global output flags travel together from here on; every command
     // takes them as one value instead of a swappable positional bool pair.
     let output = OutputOptions { json, verbose };
+
+    // A gated command hides itself as the parser is built, but a hidden
+    // subcommand is still callable, so refuse it here too.
+    if let Some(report) = gated_command_error(&command, &features::enabled()) {
+        return Err(report);
+    }
 
     if let Err(err) = initialize_credential_store() {
         eprintln!("warning: Could not initialize system keychain credential storage: {err:?}");

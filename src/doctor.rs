@@ -553,8 +553,11 @@ fn print_settings(settings: &[Setting]) {
 /// An API that some commands assume the tenant serves, from a minimum tenant
 /// release, instead of probing for it.
 struct ReleaseFloor {
-    /// The API's name, which is also the check's id.
-    api: &'static str,
+    id: &'static str,
+    /// What the tenant must serve, for the check's title.
+    serves: &'static str,
+    /// What an older tenant lacks.
+    gap: &'static str,
     min: (u64, u64),
     /// What goes wrong on an older tenant.
     consequence: &'static str,
@@ -562,12 +565,16 @@ struct ReleaseFloor {
 
 const RELEASE_FLOORS: [ReleaseFloor; 2] = [
     ReleaseFloor {
-        api: "events-search",
+        id: "events-search",
+        serves: "the events-search API",
+        gap: "the events-search API snouty relies on",
         min: MIN_SEARCH_RELEASE,
         consequence: "`runs search` and `runs events` with several terms can fail or hang",
     },
     ReleaseFloor {
-        api: "execute-command",
+        id: "execute-command",
+        serves: "the execute-command `container` field",
+        gap: "the execute-command `container` field `runs exec` sends",
         min: MIN_EXEC_RELEASE,
         consequence: "`runs exec` fails",
     },
@@ -583,13 +590,12 @@ fn release_floor_check(version: &ApiVersion, floor: &ReleaseFloor) -> Option<Che
     }
     let (major, minor) = floor.min;
     Some(
-        Check::warn(floor.api, format!("tenant serves the {} API", floor.api))
+        Check::warn(floor.id, format!("tenant serves {}", floor.serves))
             .note(
                 Level::Warning,
                 format!(
-                    "tenant release {} predates the {} API snouty relies on \
-                     (release {major}.{minor}) — {}",
-                    version.release_version, floor.api, floor.consequence
+                    "tenant release {} predates {} (release {major}.{minor}) — {}",
+                    version.release_version, floor.gap, floor.consequence
                 ),
             )
             .note(

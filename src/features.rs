@@ -13,7 +13,8 @@
 //! stability the rest of the CLI has.
 //!
 //! A gated command is hidden from `--help` until its feature is on, and
-//! invoking it while it is off fails. (Hiding is not removal: the command's
+//! invoking it while it is off fails with an error that names the feature
+//! (see `cli::gated_command_error`). (Hiding is not removal: the command's
 //! own `--help` still prints, and clap_complete lists hidden subcommands
 //! anyway.) No command is gated now.
 //!

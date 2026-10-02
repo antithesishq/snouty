@@ -165,7 +165,7 @@ For any one setting, snouty uses the first value it finds, highest precedence fi
 
 ### Unstable features
 
-A subcommand that depends on an Antithesis API that is still changing shape can ship behind a gate. Name the features you want in `SNOUTY_UNSTABLE_FEATURES`, as a comma-separated list. A gated command is hidden from `--help` until its feature is on, and fails as an unrecognized subcommand when it is off. No command is gated now.
+A subcommand that depends on an Antithesis API that is still changing shape can ship behind a gate. Name the features you want in `SNOUTY_UNSTABLE_FEATURES`, as a comma-separated list. A gated command is hidden from `--help` until its feature is on, and fails with an error that names the feature when it is off. No command is gated now.
 
 Anything behind this gate can change its behavior, its flags, or its id, or go away, in any release. `snouty doctor` lists the features that are on.
 

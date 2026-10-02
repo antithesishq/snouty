@@ -566,7 +566,7 @@ def _pick_logs_moment(
     for moment in moments:
         h, v = str(moment["input_hash"]), str(moment["vtime"])
         logs = _logs(sn, [run, h, v])
-        begin = ["--begin-vtime", _begin_vtime(v), "--begin-input-hash", h]
+        begin = ["--begin-vtime", _begin_vtime(v)]
         if not logs or not _logs(sn, [run, h, v, *begin]):
             print(f"  skip moment {h} {v}: no logs", file=sys.stderr)
             continue

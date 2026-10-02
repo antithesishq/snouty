@@ -211,11 +211,13 @@ async fn serve_http(args: McpArgs, server: tools::Snouty, verbose: bool) -> Resu
         }
     }
 
-    // rmcp runs each tool call in its own task, not in the connection task.
-    // The cancel and the abort below each cancel the call's `ctx.ct`. Then
-    // `main` exits the process, which ends any task that is left.
-    shutdown.cancel();
+    // Abort the connections first, so that each request in progress logs
+    // `disconnected`. A cancel first lets a call answer with an error on
+    // another worker thread before its connection is aborted. rmcp runs each
+    // tool call in its own task, and the abort cancels the call's `ctx.ct`.
+    // Then `main` exits, which ends any task that is left.
     conns.shutdown().await;
+    shutdown.cancel();
     Ok(())
 }
 

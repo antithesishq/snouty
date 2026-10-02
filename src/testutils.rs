@@ -1319,7 +1319,7 @@ fn mock_route_search_events(run_id: &str, body: &str) -> (u16, String, &'static 
 fn mock_route_launch() -> (u16, String) {
     (
         200,
-        r#"{"runId":"mock-run-id","statusCode":200}"#.to_string(),
+        r#"{"message":"Success","runId":"mock-run-id"}"#.to_string(),
     )
 }
 

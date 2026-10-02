@@ -12,10 +12,10 @@
 //! go away, in any release. Nothing behind this gate is covered by whatever
 //! stability the rest of the CLI has.
 //!
-//! A gated command is hidden from `--help` until its feature is on, and
-//! invoking it while it is off fails as an unrecognized subcommand. (Hiding is
-//! not removal: `runs exec --help` still prints its help, which names the
-//! feature, and clap_complete lists hidden subcommands anyway.)
+//! A gated command is hidden from `--help` until its feature is on. Invoking
+//! it while it is off fails with an error that names the feature (see
+//! `cli::gated_command_error`). Hiding does not remove the command: its own
+//! `--help` still prints, and clap_complete lists hidden subcommands.
 //!
 //! Deliberately an environment variable and not a setting. The gate has to be
 //! known before the command line is parsed, because it decides which
@@ -75,25 +75,15 @@ fn parse_list(value: &str) -> Vec<Feature> {
 /// its id retired — must not break the build that reads it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Feature {
-    /// `snouty runs exec`, which drives the execute-command API. That API is
-    /// unstable and is unavailable on most tenants.
-    RunsExec,
     /// An id this build does not recognize.
     Unknown(String),
-}
-
-impl Feature {
-    pub const RUNS_EXEC: &'static str = "runs-exec";
 }
 
 /// The feature an id names. Every id maps to a feature, so this is total:
 /// one this build does not know becomes [`Feature::Unknown`].
 impl From<&str> for Feature {
     fn from(id: &str) -> Self {
-        match id {
-            Self::RUNS_EXEC => Feature::RunsExec,
-            other => Feature::Unknown(other.to_string()),
-        }
+        Feature::Unknown(id.to_string())
     }
 }
 
@@ -110,7 +100,6 @@ impl FromStr for Feature {
 impl Display for Feature {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
-            Feature::RunsExec => Self::RUNS_EXEC,
             Feature::Unknown(id) => id,
         })
     }
@@ -121,28 +110,23 @@ mod tests {
     use super::*;
 
     #[test]
-    fn known_id_parses_to_its_variant() {
-        assert_eq!(Feature::from("runs-exec"), Feature::RunsExec);
-        assert_eq!("runs-exec".parse(), Ok(Feature::RunsExec));
-        assert_eq!(Feature::RunsExec.to_string(), "runs-exec");
-    }
-
-    #[test]
     fn unknown_id_is_kept_rather_than_rejected() {
         // One exported SNOUTY_UNSTABLE_FEATURES is shared by every snouty on the
         // machine: an id from a newer build, or one whose feature has
         // graduated, must not break this one.
-        let parsed = Feature::from("from-the-future");
-        assert_eq!(parsed, Feature::Unknown("from-the-future".to_string()));
-        assert_eq!(parsed.to_string(), "from-the-future");
+        let parsed = Feature::from("runs-exec");
+        assert_eq!(parsed, Feature::Unknown("runs-exec".to_string()));
+        assert_eq!(parsed.to_string(), "runs-exec");
     }
 
     #[test]
     fn a_list_drops_blanks_and_whitespace() {
-        assert_eq!(parse_list("runs-exec"), vec![Feature::RunsExec]);
         assert_eq!(
             parse_list(" runs-exec ,, other , "),
-            vec![Feature::RunsExec, Feature::Unknown("other".to_string())]
+            vec![
+                Feature::Unknown("runs-exec".to_string()),
+                Feature::Unknown("other".to_string())
+            ]
         );
         assert!(parse_list("").is_empty());
         assert!(parse_list(" , ").is_empty());

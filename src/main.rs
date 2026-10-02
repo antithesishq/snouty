@@ -100,9 +100,8 @@ async fn run(cli: Cli) -> Result<()> {
     // takes them as one value instead of a swappable positional bool pair.
     let output = OutputOptions { json, verbose };
 
-    // A gated command hides itself as the parser is built (see the `hide`
-    // attribute on `RunsCommands::Exec`), but a hidden subcommand is still
-    // callable — so refuse it here too.
+    // A gated command hides itself as the parser is built, but a hidden
+    // subcommand is still callable, so refuse it here too.
     if let Some(report) = gated_command_error(&command, &features::enabled()) {
         return Err(report);
     }
@@ -404,10 +403,6 @@ async fn cmd_debug(
 }
 
 fn cmd_completions(shell: Shell) -> Result<()> {
-    // `Cli::command()` already reflects the feature gate, though it only goes
-    // so far: clap_complete emits hidden subcommands into the candidate list
-    // for bash and zsh, so a gated-off command can still be tab-completed —
-    // and is then refused by `gated_command_error`.
     let mut cmd = Cli::command();
     let bin_name = cmd.get_name().to_string();
     clap_complete::generate(shell, &mut cmd, bin_name, &mut io::stdout());

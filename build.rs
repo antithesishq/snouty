@@ -17,7 +17,7 @@ fn main() {
 }
 
 /// How many `"additionalProperties": false` occurrences the vendored spec
-/// carries (tenant release 61.3: none).
+/// carries (tenant release 64.0: none).
 const EXPECTED_ADDITIONAL_PROPERTIES_FALSE: usize = 0;
 
 fn generate_api_client(out_dir: &Path) {
@@ -50,10 +50,11 @@ fn generate_api_client(out_dir: &Path) {
          EXPECTED_ADDITIONAL_PROPERTIES_FALSE in build.rs to {stripped}."
     );
     untype_error_responses(&mut spec_value);
-    drop_include_filtered_logs(&mut spec_value);
+    unrequire_include_system_logs_default(&mut spec_value);
     drop_property_description(&mut spec_value);
     drop_launch_status_code(&mut spec_value);
     mark_vtime_schema(&mut spec_value);
+    open_performance_tier(&mut spec_value);
     unrequire_search_limit_default(&mut spec_value);
     let spec: openapiv3::OpenAPI = serde_json::from_value(spec_value).unwrap();
 
@@ -192,24 +193,22 @@ fn unrequire_search_limit_default(spec: &mut serde_json::Value) {
     );
 }
 
-/// The schema default makes progenitor serialize `include_filtered_logs`
-/// on every request. snouty does not expose this option, so omit it to use
-/// the server default.
+/// Strip the schema default from `Execute_Command_Request.include_system_logs`,
+/// so progenitor omits the field unless `runs exec --events` sets it.
 ///
-/// TODO: remove this transform when the schema drops the field or its default.
-fn drop_include_filtered_logs(spec: &mut serde_json::Value) {
-    let properties = spec
-        .pointer_mut("/components/schemas/Execute_Command_Request/properties")
+/// ACTION when the assertion fails: delete this transform and its call.
+fn unrequire_include_system_logs_default(spec: &mut serde_json::Value) {
+    let field = spec
+        .pointer_mut("/components/schemas/Execute_Command_Request/properties/include_system_logs")
         .and_then(serde_json::Value::as_object_mut)
-        .expect("openapi spec has no Execute_Command_Request.properties");
-    let removed = properties.remove("include_filtered_logs").expect(
-        "Execute_Command_Request no longer has `include_filtered_logs`; \
-         delete `drop_include_filtered_logs` in build.rs",
-    );
+        .expect(
+            "openapi spec has no Execute_Command_Request.include_system_logs; \
+             update unrequire_include_system_logs_default in build.rs",
+        );
     assert!(
-        removed.get("default").is_some(),
-        "Execute_Command_Request.include_filtered_logs no longer carries a default; \
-         the generated field is omittable, so delete `drop_include_filtered_logs` in build.rs"
+        field.remove("default").is_some(),
+        "Execute_Command_Request.include_system_logs no longer carries a default; \
+         unrequire_include_system_logs_default in build.rs is a no-op and can be removed"
     );
 }
 
@@ -255,6 +254,25 @@ fn drop_launch_status_code(spec: &mut serde_json::Value) {
             .and_then(serde_json::Value::as_object_mut)
             .and_then(|properties| properties.remove("statusCode"));
     }
+}
+
+/// Decode `Params.antithesis.performance_tier` as a plain string. `runs list`
+/// and `runs show` decode every run's parameters through `Params`, so a closed
+/// enum would fail a whole listing on one tier this build does not know. snouty
+/// only shows the value, so it does not need the enum.
+fn open_performance_tier(spec: &mut serde_json::Value) {
+    let tier = spec
+        .pointer_mut("/components/schemas/Params/properties/antithesis.performance_tier")
+        .and_then(serde_json::Value::as_object_mut)
+        .expect(
+            "openapi spec has no Params.antithesis.performance_tier; \
+             delete `open_performance_tier` in build.rs",
+        );
+    assert!(
+        tier.remove("enum").is_some(),
+        "Params.antithesis.performance_tier is no longer an enum; \
+         delete `open_performance_tier` in build.rs"
+    );
 }
 
 /// Tag `Moment.vtime` with a private `format: vtime` marker for the

@@ -1090,11 +1090,13 @@ fn query_needles(query: &str) -> Vec<String> {
 /// input hash (verified against the live API).
 const MOCK_EXEC_BRANCH_HASH: &str = "-8206006569229276678";
 
+/// A line of the script's output, shaped as release 64.0 sends one
+/// (orbitinghail).
 fn mock_exec_output(stream: &str, text: &str, vtime: &str) -> String {
     serde_json::json!({
         "moment": {"input_hash": MOCK_EXEC_BRANCH_HASH, "vtime": vtime},
         "output_text": text,
-        "source": {"stream": stream},
+        "source": {"command_id": "echidna-cmd-1", "name": "bash_command", "stream": stream},
     })
     .to_string()
 }
@@ -1113,6 +1115,17 @@ fn mock_exec_timed_out(vtime: &str) -> String {
     serde_json::json!({
         "status": "timed_out",
         "last_moment": {"input_hash": MOCK_EXEC_BRANCH_HASH, "vtime": vtime},
+    })
+    .to_string()
+}
+
+/// The metadata event that opens a command's timeline, shaped as release 64.0
+/// sends it (orbitinghail).
+fn mock_exec_command_received() -> String {
+    serde_json::json!({
+        "moment": {"input_hash": MOCK_EXEC_BRANCH_HASH, "vtime": "398.4905"},
+        "source": {"meta_for": "echidna-cmd-1", "name": "bash_command"},
+        "fuzzpipe": {"event_type": "Command received"},
     })
     .to_string()
 }
@@ -1152,7 +1165,11 @@ fn mock_route_execute_command(run_id: &str, req_body: &str) -> (u16, String) {
     // script rather than modelling a validation error nothing exercises.
     let request = serde_json::from_str::<serde_json::Value>(req_body).unwrap_or_default();
     let script = request["script"].as_str().unwrap_or_default();
-    let timeout = request["timeout_seconds"].as_u64().unwrap_or(30);
+    let timeout = request["timeout_seconds"].as_u64().unwrap_or(600);
+    let container = request["container"].as_str().unwrap_or_default();
+    let system_logs = request
+        .get("include_system_logs")
+        .map_or("absent".to_string(), ToString::to_string);
 
     let lines = match script.trim() {
         "true" => vec![mock_exec_exited(Some(0))],
@@ -1166,15 +1183,43 @@ fn mock_route_execute_command(run_id: &str, req_body: &str) -> (u16, String) {
             mock_exec_output("info", &format!("timeout_seconds={timeout}"), "398.491"),
             mock_exec_exited(Some(0)),
         ],
+        "print-system-logs" => vec![
+            mock_exec_output(
+                "info",
+                &format!("include_system_logs={system_logs}"),
+                "398.491",
+            ),
+            mock_exec_exited(Some(0)),
+        ],
+        // The timeline that include_system_logs asks for, in release 64.0
+        // shapes (orbitinghail).
+        "with-system-logs" => vec![
+            mock_exec_command_received(),
+            mock_exec_output("info", "script says hi", "398.491"),
+            serde_json::json!({
+                "moment": {"input_hash": MOCK_EXEC_BRANCH_HASH, "vtime": "398.4912"},
+                "source": {"container": "workload", "name": "driver", "pid": 47, "stream": "error"},
+                "output_text": "workload says hi",
+            })
+            .to_string(),
+            mock_exec_exited(Some(0)),
+        ],
+        // An event that is not the script's output, sent although the request
+        // did not ask for the timeline.
+        "unexpected-event" => vec![mock_exec_command_received(), mock_exec_exited(Some(0))],
+        "print-container" => vec![
+            mock_exec_output("info", &format!("container={container}"), "398.491"),
+            mock_exec_exited(Some(0)),
+        ],
         "truncate-stream" => vec![mock_exec_output("info", "partial output", "398.491")],
-        // A result status this build does not know, and a known frame
-        // carrying a field it does not know. The stream must survive both.
+        // A known frame carrying a field this build does not know, which
+        // renders, then a result status outside the spec, which fails.
         "unknown-frames" => vec![
             format!(
-                r#"{{"status":"heartbeat","at":"398.4905","input_hash":"{MOCK_EXEC_BRANCH_HASH}"}}"#
+                r#"{{"moment":{{"input_hash":"{MOCK_EXEC_BRANCH_HASH}","vtime":"398.491"}},"output_text":"known with extras","source":{{"stream":"info"}},"truncated":true}}"#
             ),
             format!(
-                r#"{{"moment":{{"input_hash":"{MOCK_EXEC_BRANCH_HASH}","vtime":"398.491"}},"output_text":"known with extras","source":{{"stream":"info"}},"truncated":true}}"#
+                r#"{{"status":"heartbeat","at":"398.4905","input_hash":"{MOCK_EXEC_BRANCH_HASH}"}}"#
             ),
             mock_exec_exited(Some(0)),
         ],

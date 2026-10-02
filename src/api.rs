@@ -78,6 +78,15 @@ pub struct ApiVersion {
 /// terms, assume the tenant meets this; `snouty doctor` checks it.
 pub const MIN_SEARCH_RELEASE: (u64, u64) = (62, 2);
 
+/// The first tenant release whose execute-command API takes `container`.
+/// Earlier releases reject the field, and this release requires it. `runs exec`
+/// assumes the tenant meets this; `snouty doctor` checks it.
+pub const MIN_EXEC_RELEASE: (u64, u64) = (64, 0);
+
+/// The `container` value that executes a command on the host instead of in a
+/// container.
+const EXEC_HOST_CONTAINER: &str = "_ANTITHESIS_HOST";
+
 impl ApiVersion {
     /// Parses `release_version` eagerly, so no consumer ever parses it.
     pub fn new(latest_api_version: String, release_version: String) -> Self {
@@ -387,6 +396,17 @@ fn truncate_at_end_vtime(stream: JsonStream, end: VTime) -> JsonStream {
         .boxed()
 }
 
+pub struct ExecRequest {
+    pub moment: Moment,
+    pub script: String,
+    /// The container to execute in, or `None` for the host.
+    pub container: Option<String>,
+    pub timeout: Duration,
+    /// Stream every event of the timeline while the script executes, not
+    /// only the script's output.
+    pub events: bool,
+}
+
 pub struct AntithesisApi {
     client: generated::Client,
     base_url: String,
@@ -646,29 +666,25 @@ impl AntithesisApi {
         }
     }
 
-    /// Execute a bash script in the run's live session, starting at `moment`.
-    /// Returns the NDJSON response stream: command-output `Event` records in
-    /// the run-logs shape, then one terminal `Command_Termination_Result`
-    /// whose `status` is `exited` or `timed_out`.
+    /// Execute a bash script in the run's live session. Returns the NDJSON
+    /// response stream: `Event` records in the run-logs shape, then one
+    /// terminal `Command_Termination_Result` whose `status` is `exited` or
+    /// `timed_out`.
     ///
     /// The server accepts `moment.vtime` as an exact JSON number, although
-    /// the schema documents a string. See the orbitinghail release 61.3
-    /// command verification in `specs/runs_exec.txt`.
-    pub async fn execute_command(
-        &self,
-        run_id: &str,
-        moment: Moment,
-        script: String,
-        timeout: Duration,
-    ) -> Result<JsonStream> {
-        // The server rejects `container` and `wait_until`; neither is implemented.
+    /// the schema documents a string (observed on orbitinghail, release 61.3).
+    pub async fn execute_command(&self, run_id: &str, exec: ExecRequest) -> Result<JsonStream> {
         let body = generated::types::ExecuteCommandRequest {
-            moment,
-            script,
+            moment: exec.moment,
+            script: exec.script,
+            container: exec
+                .container
+                .unwrap_or_else(|| EXEC_HOST_CONTAINER.to_string()),
+            include_system_logs: exec.events.then_some(true),
             // The wire field is a whole number of seconds.
-            timeout_seconds: timeout.as_secs(),
-            container: None,
-            wait_until: None,
+            timeout_seconds: exec.timeout.as_secs(),
+            source_run_id: None,
+            source_session_id: None,
         };
         let request = self.client.execute_command().run_id(run_id).body(body);
         match request.send().await {
@@ -2093,9 +2109,6 @@ mod tests {
         let mock_server = mock_launch_test(202, LAUNCH_OK_BODY).await;
 
         let api = test_api_optionally_with_cache(&mock_server, None);
-        // `antithesis.filter_logs_matching` left the `Params` schema in release
-        // 61.3. It now travels through the untyped map, and the wire form does
-        // not change.
         let params = Params::from_key_value_pairs([
             "antithesis.duration=30",
             "antithesis.filter_logs_matching=debug",
@@ -2549,13 +2562,17 @@ mod tests {
                 "get getRun",
                 "get getRunBuildLogs",
                 "get getRunLogs",
+                "get getRunModule",
                 "get getUsage",
                 "get getUsageSummary",
                 "get getVersion",
+                "get listRunModuleInstances",
+                "get listRunModules",
                 "get listRunProperties",
                 "get listRuns",
                 "get listUsage",
                 "get searchRunEvents",
+                "post cancelRun",
                 "post executeCommand",
                 "post launchMvd",
                 "post launchTest",
@@ -2720,6 +2737,16 @@ mod tests {
                 generated::types::ParamsAntithesisIsEphemeral::False,
             ]
         );
+    }
+
+    // The spec lists three tiers, but a run can carry any value: a later tier,
+    // or whatever its launch passed. One such run must not fail the listing.
+    #[test]
+    fn run_params_accept_any_performance_tier() {
+        let params: RunParams =
+            serde_json::from_value(serde_json::json!({"antithesis.performance_tier": "ultra"}))
+                .unwrap();
+        assert_eq!(params.antithesis_performance_tier.as_deref(), Some("ultra"));
     }
 
     #[tokio::test]

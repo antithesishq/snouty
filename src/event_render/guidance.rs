@@ -273,19 +273,16 @@ mod tests {
     #[test]
     fn guidance_detail_mode_keeps_the_raw_data_and_location() {
         let mut r = renderer(true);
-        let block = render_entry(
-            &mut r,
-            &json!({
-                "antithesis_guidance": {
-                    "guidance_type": "numeric", "maximize": true, "hit": true,
-                    "message": "wal grew long",
-                    "guidance_data": {"left": 48, "right": 1000},
-                    "location": {"begin_line": 439, "file": "src/actions.rs", "function": "checkpoint"}
-                },
-                "source": {"container": "w", "name": "w"},
-                "moment": {"input_hash": "-1", "vtime": "1.0"}
-            }),
-        );
+        let block = r.render_entry(&json!({
+            "antithesis_guidance": {
+                "guidance_type": "numeric", "maximize": true, "hit": true,
+                "message": "wal grew long",
+                "guidance_data": {"left": 48, "right": 1000},
+                "location": {"begin_line": 439, "file": "src/actions.rs", "function": "checkpoint"}
+            },
+            "source": {"container": "w", "name": "w"},
+            "moment": {"input_hash": "-1", "vtime": "1.0"}
+        }));
         let mut lines = block.lines().skip(2);
         assert_eq!(
             lines.next().unwrap(),

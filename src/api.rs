@@ -80,7 +80,7 @@ pub struct ApiVersion {
 pub const MIN_SEARCH_RELEASE: (u64, u64) = (62, 2);
 
 /// The first tenant release whose execute-command API takes `container`.
-/// Earlier releases reject the field, and later ones require it. `runs exec`
+/// Earlier releases reject the field, and this release requires it. `runs exec`
 /// assumes the tenant meets this; `snouty doctor` checks it.
 pub const MIN_EXEC_RELEASE: (u64, u64) = (64, 0);
 
@@ -685,8 +685,7 @@ impl AntithesisApi {
     /// `timed_out`.
     ///
     /// The server accepts `moment.vtime` as an exact JSON number, although
-    /// the schema documents a string. See the orbitinghail release 61.3
-    /// command verification in `specs/runs_exec.txt`.
+    /// the schema documents a string (observed on orbitinghail, release 61.3).
     pub async fn execute_command(&self, run_id: &str, exec: ExecRequest) -> Result<JsonStream> {
         let body = generated::types::ExecuteCommandRequest {
             moment: exec.moment,

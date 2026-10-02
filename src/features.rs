@@ -12,11 +12,10 @@
 //! go away, in any release. Nothing behind this gate is covered by whatever
 //! stability the rest of the CLI has.
 //!
-//! A gated command is hidden from `--help` until its feature is on, and
-//! invoking it while it is off fails with an error that names the feature
-//! (see `cli::gated_command_error`). (Hiding is not removal: the command's
-//! own `--help` still prints, and clap_complete lists hidden subcommands
-//! anyway.) No command is gated now.
+//! A gated command is hidden from `--help` until its feature is on. Invoking
+//! it while it is off fails with an error that names the feature (see
+//! `cli::gated_command_error`). Hiding does not remove the command: its own
+//! `--help` still prints, and clap_complete lists hidden subcommands.
 //!
 //! Deliberately an environment variable and not a setting. The gate has to be
 //! known before the command line is parsed, because it decides which

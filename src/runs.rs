@@ -205,8 +205,6 @@ pub async fn cmd_runs(
                 moment: Moment { input_hash, vtime },
                 script: resolve_exec_script(script)?,
                 container,
-                // The flag is a whole number of seconds; carry it as a
-                // Duration from here on.
                 timeout: Duration::from_secs(timeout),
                 events,
             };
@@ -1513,12 +1511,10 @@ async fn cmd_runs_logs(
     Ok(())
 }
 
-/// An execute-command stream holds events, then one terminal result, in the
-/// shapes the release 64.0 spec documents and release 64.0 was observed to
-/// send (orbitinghail). Every event carries a `moment`, and the result does
-/// not. Without `--events`, every event is the script's own output, in this
-/// shape. Unknown fields are ignored, but a line in any other shape fails the
-/// command.
+/// One line of the script's output, as the release 64.0 spec documents it and
+/// release 64.0 sends it (orbitinghail). Every event carries a `moment`, and
+/// the terminal result does not. Without `--events`, every event has this
+/// shape.
 #[derive(Debug, Deserialize)]
 struct ExecOutput<'a> {
     /// Not read, but the spec requires a valid one on every event.
@@ -1528,7 +1524,6 @@ struct ExecOutput<'a> {
     source: ExecSource,
 }
 
-/// Only `stream` is read: the script's output needs no label.
 #[derive(Debug, Deserialize)]
 struct ExecSource {
     stream: ExecStream,
@@ -1551,7 +1546,6 @@ enum ExecStream {
 #[serde(tag = "status", rename_all = "snake_case")]
 enum ExecResult {
     Exited {
-        /// `null` when no exit code was available.
         exit_code: Option<i64>,
         end_moment: Moment,
     },
@@ -1560,9 +1554,8 @@ enum ExecResult {
     TimedOut,
 }
 
-/// Render the script's output for a human: its stdout on stdout, its stderr
-/// on stderr, so `runs exec ... | jq` sees the script's output and nothing
-/// else.
+/// Keep snouty's stdout to the script's stdout, so `runs exec ... | jq`
+/// composes.
 fn render_exec_output(output: &ExecOutput) -> Result<()> {
     let text = normalize_terminal_text(output.output_text);
     match output.source.stream {

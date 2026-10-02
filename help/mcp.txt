@@ -1,5 +1,10 @@
 Serve snouty's run, docs and doctor commands to AI agents over MCP
 
+This command is gated behind the `mcp` unstable feature, because its tools
+and their output can still change. Enable it by setting
+SNOUTY_UNSTABLE_FEATURES=mcp. An unstable feature can change or go away in
+any release.
+
 Starts a Model Context Protocol server (streamable HTTP) that listens on
 --host and --port. An agent connects to http://HOST:PORT/mcp. The server
 runs in the foreground until Ctrl-C, SIGTERM or SIGHUP stops it. A stop also

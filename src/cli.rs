@@ -178,7 +178,12 @@ pub enum Commands {
     },
 
     /// Serve snouty's run, docs and doctor commands to AI agents over MCP
-    #[command(long_about = HelpPage::Mcp.text(Target::Cli))]
+    // Gated: hidden while its feature is off, and refused by
+    // [`gated_command_error`].
+    #[command(
+        hide = !features::is_enabled(Feature::Mcp),
+        long_about = HelpPage::Mcp.text(Target::Cli)
+    )]
     Mcp(McpArgs),
 }
 
@@ -722,6 +727,7 @@ pub fn gated_command_error(command: &Commands, enabled: &[Feature]) -> Option<Re
         Commands::Runs {
             command: Some(RunsCommands::Exec { .. }),
         } => (Feature::RunsExec, "snouty runs exec"),
+        Commands::Mcp(_) => (Feature::Mcp, "snouty mcp"),
         _ => return None,
     };
     if enabled.contains(&feature) {
@@ -789,6 +795,11 @@ mod tests {
         assert!(gated_command_error(&exec, &[Feature::RunsExec]).is_none());
         // An unrelated feature does not enable it.
         assert!(gated_command_error(&exec, &[Feature::Unknown("other".to_string())]).is_some());
+
+        let mcp = parse(&["snouty", "mcp", "--stdio"]).command;
+        let err = gated_command_error(&mcp, &[]).expect("mcp is gated");
+        assert!(format!("{err:?}").contains("SNOUTY_UNSTABLE_FEATURES=mcp"));
+        assert!(gated_command_error(&mcp, &[Feature::Mcp]).is_none());
 
         // Sibling subcommands are never gated.
         for args in [

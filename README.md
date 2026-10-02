@@ -166,7 +166,7 @@ For any one setting, snouty uses the first value it finds, highest precedence fi
 
 ### Unstable features
 
-A few subcommands depend on an Antithesis API that is still changing shape, so snouty keeps them behind a gate. Name the features you want in `SNOUTY_UNSTABLE_FEATURES`, as a comma-separated list. A gated command is hidden from `--help` until its feature is on, and fails as an unrecognized subcommand when it is off.
+A few subcommands are not stable yet, because the Antithesis API they call or their own output is still changing shape, so snouty keeps them behind a gate. Name the features you want in `SNOUTY_UNSTABLE_FEATURES`, as a comma-separated list. A gated command is hidden from `--help` until its feature is on, and fails as an unrecognized subcommand when it is off.
 
 ```sh
 export SNOUTY_UNSTABLE_FEATURES="runs-exec"
@@ -175,19 +175,20 @@ export SNOUTY_UNSTABLE_FEATURES="runs-exec"
 | Feature     | Enables                                                                                                               |
 | ----------- | --------------------------------------------------------------------------------------------------------------------- |
 | `runs-exec` | `snouty runs exec`, and the `runs_exec` tool of `snouty mcp`. The execute-command API is unavailable on most tenants. |
+| `mcp`       | `snouty mcp`, the MCP server. Its tools and their output can still change.                                            |
 
 Anything behind this gate can change its behavior, its flags, or its id, or go away, in any release. `snouty doctor` lists the features that are on, and reports when your tenant is too old to serve one.
 
 ## MCP server
 
-`snouty mcp` starts a [Model Context Protocol](https://modelcontextprotocol.io) server. The server lets an AI agent use snouty's run, docs, and doctor commands as tools. It uses the streamable HTTP transport, or stdio with `--stdio`.
+`snouty mcp` starts a [Model Context Protocol](https://modelcontextprotocol.io) server. The server lets an AI agent use snouty's run, docs, and doctor commands as tools. It uses the streamable HTTP transport, or stdio with `--stdio`. It is an unstable feature: set `SNOUTY_UNSTABLE_FEATURES=mcp` to turn it on.
 
 ### stdio
 
 With `--stdio`, the agent starts snouty itself and talks to it on stdin and stdout. This is the easiest setup when the agent can run a command, because no server must already be running. For example, in Claude Code:
 
 ```sh
-claude mcp add snouty -- snouty mcp --stdio
+claude mcp add snouty -e SNOUTY_UNSTABLE_FEATURES=mcp -- snouty mcp --stdio
 ```
 
 A JSON config for a stdio server looks like this one:
@@ -197,7 +198,8 @@ A JSON config for a stdio server looks like this one:
   "mcpServers": {
     "snouty": {
       "command": "snouty",
-      "args": ["mcp", "--stdio"]
+      "args": ["mcp", "--stdio"],
+      "env": { "SNOUTY_UNSTABLE_FEATURES": "mcp" }
     }
   }
 }
@@ -208,7 +210,7 @@ stdout carries only MCP messages. The server writes one line on stderr for each 
 ### Streamable HTTP
 
 ```sh
-snouty mcp
+SNOUTY_UNSTABLE_FEATURES=mcp snouty mcp
 ```
 
 When the server is ready, it prints `Listening on 127.0.0.1:8765`. Connect your agent to `http://127.0.0.1:8765/mcp`. The server runs in the foreground until Ctrl-C, SIGTERM, or SIGHUP stops it. A stop also ends all tool calls in progress. The server writes one line on stderr for each request: the time, the HTTP status, and the JSON-RPC method. Add `--verbose` to also log the request params and the API requests that the tools make.

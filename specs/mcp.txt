@@ -31,6 +31,20 @@
 # listens, so it fails fast and the tools read the fixture database.
 env ANTITHESIS_DOCS_URL=http://127.0.0.1:9
 
+# --- Feature gate ---
+
+# snouty mcp is an unstable feature. While it is off, the command is refused
+# with the name of the feature, and top-level help does not list it.
+! snouty mcp --stdio
+stderr '`snouty mcp` is an unstable feature and is not enabled'
+stderr 'SNOUTY_UNSTABLE_FEATURES=mcp'
+snouty --help
+! stdout '^  mcp '
+
+env SNOUTY_UNSTABLE_FEATURES=mcp
+snouty --help
+stdout '^  mcp +Serve snouty'
+
 # --- Flags ---
 
 # The command has --host, --port and --allowed-host.
@@ -457,7 +471,7 @@ mcp-stdio empty.jsonl mcp --stdio
 [staging] skip
 
 # The runs-exec unstable feature adds the runs_exec tool.
-env SNOUTY_UNSTABLE_FEATURES=runs-exec
+env SNOUTY_UNSTABLE_FEATURES=mcp,runs-exec
 mock-runs-server
 mcp-server mcp --port 0
 mcp-rpc tools/list

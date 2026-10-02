@@ -84,12 +84,9 @@ BUILD_SAMPLES_SCRIPT = Path(__file__).resolve().parent / "build-validate-samples
 # The events/search needle comes from the logs at a property's moment, so the
 # stories search for text the run really printed. A needle must match at least
 # NEEDLE_MIN_MATCHES events, so the `-n 3` story reaches its limit and the
-# renderer aligns several rows. It must match fewer than NEEDLE_MAX_MATCHES (the
-# default --limit), so a stopword does not turn the search stories into result
-# cap stories. NEEDLE_PROBES bounds the searches discovery runs per moment, and
-# MOMENT_PROBES bounds the moments it tries per property.
+# renderer aligns several rows. NEEDLE_PROBES bounds the searches discovery runs
+# per run, and MOMENT_PROBES bounds the moments it tries per property.
 NEEDLE_MIN_MATCHES = 4
-NEEDLE_MAX_MATCHES = 50
 NEEDLE_PROBES = 12
 MOMENT_PROBES = 4
 
@@ -491,37 +488,33 @@ def _begin_vtime(vtime: str) -> str:
 
 
 def _pick_needles(
-    sn: Snouty, run: str, logs: list[dict], min_matches: int
+    sn: Snouty, run: str, logs: list[dict], min_matches: int, probed: set[str] | None = None
 ) -> tuple[str, str] | None:
     """A needle and a second needle for the events/search stories, taken from
     the text of `logs`. The last lines come first, because they are nearest to
-    the moment. The needle must match from `min_matches` to fewer than
-    NEEDLE_MAX_MATCHES events. The second needle comes from the same line, so
-    both needles match at least that event. Returns None when no needle fits
-    within NEEDLE_PROBES searches."""
-    seen: set[str] = set()
-    probes = 0
+    the moment. The needle must match at least `min_matches` events. The second
+    needle comes from the same line, so both needles match at least that event.
+    `probed` holds the tokens already searched. Pass the same set for each
+    moment of a run, so that a token is searched only once per run. Returns
+    None when no needle fits within NEEDLE_PROBES searches."""
+    probed = set() if probed is None else probed
     for row in reversed(logs):
         for token in re.findall(r"[A-Za-z_]{5,}", row.get("output_text") or ""):
             low = token.lower()
-            if low in seen or low in _UBIQUITOUS_TOKENS:
+            if low in probed or low in _UBIQUITOUS_TOKENS:
                 continue
-            seen.add(low)
             second = _pick_second_needle(row, token)
             if second is None:
                 continue
-            if probes == NEEDLE_PROBES:
+            if len(probed) >= NEEDLE_PROBES:
                 return None
-            probes += 1
-            # `runs events` matches more fields, case-insensitively, so it
-            # gives the upper count and the search query the lower count.
-            limit = ["-n", str(NEEDLE_MAX_MATCHES)]
+            probed.add(low)
+            # `runs events` matches more fields, case-insensitively, than the
+            # search query, so a needle that the query finds `min_matches`
+            # times also passes in `runs events`.
             query = f'contains({{output_text: "{token}"}})'
             try:
-                events = sn.json_lines(["runs", "events", run, "--match", token, *limit])
-                if len(events) >= NEEDLE_MAX_MATCHES:
-                    continue
-                found = sn.json_lines(["runs", "search", run, query, *limit])
+                found = sn.json_lines(["runs", "search", run, query, "-n", str(min_matches)])
             except GalleryError:
                 return None
             if len(found) >= min_matches:
@@ -552,7 +545,7 @@ def _pick_logs_moment(
     the passing property's examples (MOMENT_PROBES from each), so the logs
     stories stream a moment that the property detail stories show. Both logs
     stories must return at least one line at the moment, and its logs must give
-    a needle (see _pick_needles).
+    a needle (see _pick_needles). All the moments share one NEEDLE_PROBES budget.
     Returns (moment, needle, second needle), or None when no moment fits."""
     by_name = {p["name"]: p for p in props}
     moments = [
@@ -563,14 +556,17 @@ def _pick_logs_moment(
         )
         for v in _moments(values or [])[:MOMENT_PROBES]
     ]
+    probed: set[str] = set()
     for moment in moments:
+        if len(probed) >= NEEDLE_PROBES:
+            break
         h, v = str(moment["input_hash"]), str(moment["vtime"])
         logs = _logs(sn, [run, h, v])
         begin = ["--begin-vtime", _begin_vtime(v)]
         if not logs or not _logs(sn, [run, h, v, *begin]):
             print(f"  skip moment {h} {v}: no logs", file=sys.stderr)
             continue
-        needles = _pick_needles(sn, run, logs, NEEDLE_MIN_MATCHES)
+        needles = _pick_needles(sn, run, logs, NEEDLE_MIN_MATCHES, probed)
         if needles is None:
             print(f"  skip moment {h} {v}: no needle in its logs", file=sys.stderr)
             continue

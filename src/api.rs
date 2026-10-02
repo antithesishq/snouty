@@ -409,9 +409,7 @@ fn truncate_at_end_vtime(stream: JsonStream, end: VTime) -> JsonStream {
         .boxed()
 }
 
-/// One execute-command request.
 pub struct ExecRequest {
-    /// The moment to execute at.
     pub moment: Moment,
     pub script: String,
     /// The container to execute in, or `None` for the host.

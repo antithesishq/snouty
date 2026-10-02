@@ -432,9 +432,8 @@ fn render_source(entry: &Value, detail: bool) -> String {
 // ---------------------------------------------------------------------------
 
 /// Stateful renderer for one event stream. Feed it entries in stream order;
-/// it writes the exact text to print for each — dividers and blank-line
-/// separation included, no trailing newline — into the buffer the caller
-/// provides.
+/// it returns the exact text to print for each — dividers and blank-line
+/// separation included, no trailing newline.
 pub(crate) struct EventStreamRenderer {
     detail: bool,
     /// The current segment's hash; `Some` also means at least one block was
@@ -450,11 +449,17 @@ impl EventStreamRenderer {
         }
     }
 
-    /// Render one NDJSON entry (vtime already normalized by the stream) into
-    /// `out`. The written text may span several lines — a `moment` divider
-    /// when the entry opens a new timeline segment, the event line, and any
-    /// indented detail lines.
-    pub(crate) fn render_entry(&mut self, entry: &Value, out: &mut String) -> fmt::Result {
+    /// Render one NDJSON entry (vtime already normalized by the stream). The
+    /// text may span several lines — a `moment` divider when the entry opens
+    /// a new timeline segment, the event line, and any indented detail lines.
+    pub(crate) fn render_entry(&mut self, entry: &Value) -> String {
+        let mut out = String::new();
+        self.write_entry(entry, &mut out)
+            .expect("writing to a String cannot fail");
+        out
+    }
+
+    fn write_entry(&mut self, entry: &Value, out: &mut String) -> fmt::Result {
         // A full event carries both its moment and its source envelope. A
         // row reshaped by an event-set DSL pipeline can lack either (narrow
         // can keep `moment` while dropping the rest); rendering it through
@@ -540,11 +545,7 @@ pub(super) mod testkit {
     }
 
     pub(crate) fn render_entry(renderer: &mut EventStreamRenderer, entry: &Value) -> String {
-        let mut out = String::new();
-        renderer
-            .render_entry(entry, &mut out)
-            .expect("writing to a String cannot fail");
-        out
+        renderer.render_entry(entry)
     }
 
     pub(crate) fn render_one(entry: Value) -> String {

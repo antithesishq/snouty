@@ -1520,8 +1520,8 @@ async fn cmd_runs_logs(
 /// shape. Unknown fields are ignored, but a line in any other shape fails the
 /// command.
 #[derive(Debug, Deserialize)]
-struct ExecOutput {
-    output_text: String,
+struct ExecOutput<'a> {
+    output_text: &'a str,
     source: ExecSource,
 }
 
@@ -1561,7 +1561,7 @@ enum ExecResult {
 /// on stderr, so `runs exec ... | jq` sees the script's output and nothing
 /// else.
 fn render_exec_output(output: &ExecOutput) -> Result<()> {
-    let text = normalize_terminal_text(&output.output_text);
+    let text = normalize_terminal_text(output.output_text);
     match output.source.stream {
         ExecStream::Error => eprintln!("{text}"),
         ExecStream::Info => outln!("{text}")?,
@@ -1642,9 +1642,7 @@ async fn cmd_runs_exec(
 ) -> Result<()> {
     debug!("executing command in run: {}", run_id);
     let timeout = exec.timeout;
-    // With --events, every event of the timeline renders as `runs logs`
-    // renders it.
-    let mut events = exec.events.then(|| EventStreamRenderer::new(false));
+    let mut renderer = exec.events.then(|| EventStreamRenderer::new(false));
     let api = AntithesisApi::new(settings, verbose)?;
     let stream = match api.execute_command(run_id, exec).await {
         Ok(stream) => stream,
@@ -1660,7 +1658,7 @@ async fn cmd_runs_exec(
     let mut lines = event_lines(stream, ErrorRows::Abort);
     while let Some(mut entry) = lines.try_next().await? {
         if entry.get("moment").is_some() {
-            match &mut events {
+            match &mut renderer {
                 None => {
                     let output =
                         ExecOutput::deserialize(&entry).map_err(|_| off_spec_line(&entry))?;
@@ -1668,14 +1666,11 @@ async fn cmd_runs_exec(
                         render_exec_output(&output)?;
                     }
                 }
-                Some(renderer) if !json => {
-                    let mut line = String::new();
-                    renderer
-                        .render_entry(&entry, &mut line)
-                        .expect("writing to a String cannot fail");
-                    outln!("{line}")?;
+                Some(renderer) => {
+                    if !json {
+                        outln!("{}", renderer.render_entry(&entry))?;
+                    }
                 }
-                Some(_) => {}
             }
         } else {
             // The stream normalized `moment.vtime`; the terminal result

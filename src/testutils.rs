@@ -1118,6 +1118,17 @@ fn mock_exec_timed_out(vtime: &str) -> String {
     .to_string()
 }
 
+/// The metadata event that opens a command's timeline, shaped as release 64.0
+/// sends it (orbitinghail).
+fn mock_exec_command_received() -> String {
+    serde_json::json!({
+        "moment": {"input_hash": MOCK_EXEC_BRANCH_HASH, "vtime": "398.4905"},
+        "source": {"meta_for": "echidna-cmd-1", "name": "bash_command"},
+        "fuzzpipe": {"event_type": "Command received"},
+    })
+    .to_string()
+}
+
 fn mock_route_execute_command(run_id: &str, req_body: &str) -> (u16, String) {
     // See the `run-stream-error` fixture note in `mock_route_get_run_build_logs`.
     if run_id == "run-stream-error" {
@@ -1179,30 +1190,22 @@ fn mock_route_execute_command(run_id: &str, req_body: &str) -> (u16, String) {
             ),
             mock_exec_exited(Some(0)),
         ],
-        // With include_system_logs, the timeline's other events surround the
-        // script's output. Shapes from release 64.0 (orbitinghail).
-        "with-system-logs" if system_logs == "true" => vec![
-            format!(
-                r#"{{"moment":{{"input_hash":"{MOCK_EXEC_BRANCH_HASH}","vtime":"398.4905"}},"source":{{"meta_for":"echidna-cmd-1","name":"bash_command"}},"fuzzpipe":{{"event_type":"Command received"}}}}"#
-            ),
-            mock_exec_output("info", "script says hi", "398.491"),
-            format!(
-                r#"{{"moment":{{"input_hash":"{MOCK_EXEC_BRANCH_HASH}","vtime":"398.4912"}},"source":{{"container":"workload","name":"driver","pid":47,"stream":"error"}},"output_text":"workload says hi"}}"#
-            ),
-            mock_exec_exited(Some(0)),
-        ],
+        // The timeline's other events surround the script's output, as with
+        // include_system_logs. Shapes from release 64.0 (orbitinghail).
         "with-system-logs" => vec![
+            mock_exec_command_received(),
             mock_exec_output("info", "script says hi", "398.491"),
+            serde_json::json!({
+                "moment": {"input_hash": MOCK_EXEC_BRANCH_HASH, "vtime": "398.4912"},
+                "source": {"container": "workload", "name": "driver", "pid": 47, "stream": "error"},
+                "output_text": "workload says hi",
+            })
+            .to_string(),
             mock_exec_exited(Some(0)),
         ],
         // An event that is not the script's output, sent although the request
         // did not ask for the timeline.
-        "unexpected-event" => vec![
-            format!(
-                r#"{{"moment":{{"input_hash":"{MOCK_EXEC_BRANCH_HASH}","vtime":"398.4905"}},"source":{{"meta_for":"echidna-cmd-1","name":"bash_command"}},"fuzzpipe":{{"event_type":"Command received"}}}}"#
-            ),
-            mock_exec_exited(Some(0)),
-        ],
+        "unexpected-event" => vec![mock_exec_command_received(), mock_exec_exited(Some(0))],
         "print-container" => vec![
             mock_exec_output("info", &format!("container={container}"), "398.491"),
             mock_exec_exited(Some(0)),

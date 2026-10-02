@@ -111,8 +111,8 @@ another account with write access approves.
 The release notes come from the PR description, so keep it true for the
 branch as it is now.
 
-Before each push, read the diff of the new commits: `git diff @{u}..HEAD`.
-Update the title and description when the push changes the behavior, the
+Before each push, compare the title and description with the whole branch:
+`git diff origin/main...HEAD`. Update them when the push changes the behavior, the
 scope, or the reason. Examples: a reviewer asks for a different approach, a
 CI fix changes behavior, or the push adds or removes part of the change. A
 push that only fixes formatting, a typo, or a test needs no update.
@@ -124,7 +124,7 @@ Copy the current description to `pr-body.md` and edit it. Write it back over
 REST, as in step 4 of the `open-pr` skill:
 
 ```
-gh pr view <PR> --json body --jq .body > pr-body.md
+gh pr view <PR> -R <owner>/<repo> --json body --jq .body > pr-body.md
 gh api -X PATCH repos/<owner>/<repo>/pulls/<PR> \
   -F body=@pr-body.md --jq '.html_url'
 ```

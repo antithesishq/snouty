@@ -40,7 +40,7 @@ If any check fails, report the issue clearly and stop.
 
 ### 2. Write the Release Notes in CHANGELOG.md
 
-Find the most recent stable tag `vPREV` (not an `-rc.N` tag). List the merged PRs with `git log --oneline vPREV..HEAD`. Each squash-merge subject ends in `(#N)`. If an earlier rc left a `# Unreleased` section, use it as a draft, and read only the PRs that merged after that rc tag.
+Find the most recent stable tag `vPREV` (not an `-rc.N` tag) with `git tag -l 'v*' --sort=-v:refname | grep -v -- -rc | head -1`. List the merged PRs with `git log --oneline vPREV..HEAD`. Each squash-merge subject ends in `(#N)`. If an earlier rc left a `# Unreleased` section, use it as a draft: read only the PRs that merged after the newest rc tag, and extend that section in place.
 
 Read the description of each PR with `gh pr view N --json title,body`. If a description does not make the user-visible change clear, read the squash-merge commit with `git show <sha>`.
 

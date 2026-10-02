@@ -988,10 +988,6 @@ on its own line, and --raw passes the server's events through unchanged:
         #[arg(long, allow_hyphen_values = true)]
         begin_vtime: Option<VTime>,
 
-        /// Start from this input hash (optimization; must be paired with --begin-vtime)
-        #[arg(long, allow_hyphen_values = true, requires = "begin_vtime")]
-        begin_input_hash: Option<String>,
-
         #[command(flatten)]
         render: EventOutputArgs,
     },
@@ -1324,7 +1320,7 @@ mod tests {
         assert!(err.contains("number of minutes"), "got: {err}");
     }
 
-    // The positional `input_hash`/`vtime` and the `--begin-*` flags must all
+    // The positional `input_hash`/`vtime` and `--begin-vtime` must all
     // accept hyphen-led values: moment coordinates are routinely negative
     // (e.g. `snouty runs logs RUN -123 -2.0`).
     #[test]
@@ -1338,8 +1334,6 @@ mod tests {
             "-2.0",
             "--begin-vtime",
             "-2.0",
-            "--begin-input-hash",
-            "0",
         ]);
         let Commands::Runs {
             command:
@@ -1347,7 +1341,6 @@ mod tests {
                     input_hash,
                     vtime,
                     begin_vtime,
-                    begin_input_hash,
                     ..
                 }),
         } = cli.command
@@ -1357,7 +1350,6 @@ mod tests {
         assert_eq!(input_hash, "-123");
         assert_eq!(vtime, Some("-2.0".parse::<VTime>().unwrap()));
         assert_eq!(begin_vtime, Some("-2.0".parse::<VTime>().unwrap()));
-        assert_eq!(begin_input_hash.as_deref(), Some("0"));
     }
 
     // VTIME is optional; without it the stream runs to the branch's current

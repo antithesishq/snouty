@@ -1737,8 +1737,6 @@ def build_stories(d: Discovery) -> list[Story]:
                 d.event_vtime,
                 "--begin-vtime",
                 vmin,
-                "--begin-input-hash",
-                d.event_hash,
             ],
             logs_begin_at(vmin),
         ),

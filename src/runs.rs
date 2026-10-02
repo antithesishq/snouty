@@ -1521,6 +1521,9 @@ async fn cmd_runs_logs(
 /// command.
 #[derive(Debug, Deserialize)]
 struct ExecOutput<'a> {
+    /// Not read, but the spec requires a valid one on every event.
+    #[allow(dead_code)]
+    moment: Moment,
     output_text: &'a str,
     source: ExecSource,
 }

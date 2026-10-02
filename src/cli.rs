@@ -2,8 +2,12 @@ use std::num::NonZeroU64;
 
 use chrono::{DateTime, Utc};
 use clap::{Args, Parser, Subcommand, ValueEnum};
+use color_eyre::Section;
+use color_eyre::eyre::Report;
 
 use crate::api::{RunStatus, SEARCH_DEFAULT_LIMIT, SEARCH_MAX_LIMIT};
+use crate::error::user_error;
+use crate::features::{self, Feature};
 use crate::time::HumanDuration;
 use crate::vtime::VTime;
 
@@ -1209,6 +1213,39 @@ impl Default for RunsListArgs {
     }
 }
 
+/// The feature a gated command needs, and the command's path. No command is
+/// gated now. A gated command adds an arm here as well as its `hide`
+/// attribute, because hiding alone leaves it callable.
+fn gated_command(_command: &Commands) -> Option<(Feature, &'static str)> {
+    None
+}
+
+/// The error for invoking a gated command whose feature is off.
+///
+/// Anyone who types the command already knows it exists, so the error says
+/// what is actually wrong and how to fix it, rather than pretending the
+/// command is not there. `enabled` names the features that are on — the
+/// caller passes them so the decision is testable without touching the
+/// environment.
+pub fn gated_command_error(command: &Commands, enabled: &[Feature]) -> Option<Report> {
+    let (feature, path) = gated_command(command)?;
+    if enabled.contains(&feature) {
+        return None;
+    }
+    Some(
+        user_error(format!(
+            "`{path}` is an unstable feature and is not enabled"
+        ))
+        .note(format!(
+            "enable it by setting {}={}",
+            features::UNSTABLE_FEATURES_VAR_NAME,
+            feature
+        ))
+        .note("an unstable feature can change or go away in any release")
+        .suggestion(format!("run `{path} --help` for what it does")),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1233,6 +1270,17 @@ mod tests {
     fn update_channel_rejects_unknown_values() {
         let err = "nightly".parse::<UpdateChannel>().unwrap_err();
         assert_eq!(err, "expected `stable` or `unstable`, got `nightly`");
+    }
+
+    #[test]
+    fn no_command_is_gated() {
+        for args in [
+            &["snouty", "runs", "exec", "RUN", "1", "2.0", "true"][..],
+            &["snouty", "runs", "search", "RUN", "q"][..],
+            &["snouty", "runs"][..],
+        ] {
+            assert!(gated_command_error(&parse(args).command, &[]).is_none());
+        }
     }
 
     #[test]

@@ -9,12 +9,12 @@
 - When the server is ready, it prints `Listening on $HOST:$PORT`.
 - Logs one line per request/response with the timestamp, status code, and json-rpc method call. Request params are visible when `snouty --verbose` is set.
 - On Ctrl-C, SIGTERM or SIGHUP, it stops and ends all work in progress.
-- Global snouty flags `--settings` and `--profile` as well as environment variables apply to `snouty mcp` like any oither command.
+- Global snouty flags `--settings` and `--profile` as well as environment variables apply to `snouty mcp` like any other command.
 
 ## Tools
 
 - Snouty MCP directly executes the underlying subcommand logic. Snouty MCP does not recursively exec itself to run subcommands. Refactor the implementations of subcommands as needed to expose the underlying logic to the MCP tool calls.
-- All of the snouty mcp tools are marked read only. Even tools like exec which implicitely create a standalone branch in the multiverse which can't affect other things.
+- All of the snouty mcp tools are marked read only. Even tools like exec which implicitly create a standalone branch in the multiverse which can't affect other things.
 - All tool output is emitted in a single TextContent ContentBlock. Tools either output JSON or JSONL, depending on what the associated subcommand would output when the `--json` flag is specified. Structured output and output schemas are not used.
 - A tool failure should mark `isError` on the result and include any error text in the output. It's fine if failures do not return JSON, match what the associated snouty subcommand does on error.
 - For streaming endpoints which may error in the middle of the stream, the MCP server will buffer the result, and mark isError accordingly.

@@ -11,24 +11,25 @@ repository = "https://github.com/antithesishq/snouty"
 default-run = "snouty"
 
 [dependencies]
-base64 = "0.22"
+base64 = "0.23"
 bytesize = "2"
-# tokio-runtime instead of the default async-std; mmap keeps the fast read path.
-cacache = { version = "13", default-features = false, features = ["tokio-runtime", "mmap"] }
+# tokio-runtime instead of the default async-std. No mmap: cacache uses it only
+# to write small entries, and it pulls in memmap2 0.5 (RUSTSEC-2026-0186).
+cacache = { version = "13", default-features = false, features = ["tokio-runtime"] }
 chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4", features = ["derive", "wrap_help"] }
 clap_complete = "4"
-getrandom = "0.3"
+getrandom = "0.4"
 env_logger = "0.11"
 form_urlencoded = "1"
 headers = "0.4"
 hyper = "1"
 json5 = "1.3.0"
 json-patch = "4"
-jsonschema = { version = "0.37.4", default-features = false }
+jsonschema = { version = "0.57", default-features = false }
 log = "0.4"
 open = "5"
-progenitor-client = "0.14.0"
+progenitor-client = "0.15.0"
 reqwest = { version = "0.13.1", default-features = false, features = ["http2", "json", "query", "stream", "native-tls-vendored"] }
 color-eyre = { version = "0.6", default-features = false }
 futures-util = "0.3"
@@ -47,8 +48,10 @@ serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }
 # the human text matches the JSON number byte-for-byte (see src/vtime.rs).
 zmij = "1"
 indexmap = { version = "2.10.0" }
-rusqlite = { version = "0.34", features = ["bundled"] }
-console = "0.15"
+# No default features: snouty never caches statements (cache), and does not
+# target wasm (ffi-sqlite-wasm-rs).
+rusqlite = { version = "0.40", default-features = false, features = ["bundled"] }
+console = "0.16"
 tempfile = "3"
 pulldown-cmark = "0.13"
 libc = "0.2"
@@ -77,14 +80,14 @@ path = "examples/mock_api.rs"
 # Same openapiv3 version progenitor resolves; build.rs preprocesses the spec
 # through this type before handing it to the generator.
 openapiv3 = "2"
-prettyplease = "0.2"
-progenitor = "0.14.0"
+prettyplease = "0.3.0"
+progenitor = "0.15.0"
 quote = "1"
 # Same schemars version progenitor/typify resolve; build.rs hands
 # with_conversion a schemars SchemaObject to map vtime onto crate::vtime::VTime.
 schemars = "0.8"
 serde_json = "1"
-syn = "2"
+syn = "3.0.6"
 
 [dev-dependencies]
 assert_cmd = "2"
@@ -96,7 +99,7 @@ tempfile = "3"
 # crates.io when upstream ships these
 # (https://github.com/antithesishq/testscript-rs).
 testscript-rs = { git = "https://github.com/antithesishq/testscript-rs.git", branch = "main" }
-ctor = "0.4"
+ctor = "1"
 wiremock = "0.6"
 hegeltest = { version = "0.48.1", features = ["static-engine"] }
 expectrl = "0.9"

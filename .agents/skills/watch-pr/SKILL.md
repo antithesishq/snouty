@@ -89,8 +89,9 @@ another account with write access approves.
 
 - **Review comment or review**: triage it. If it asks for a change, check out
   that PR's branch, make the change, update the description (step 4), push,
-  and reply on the thread with the commit hash. Leave the thread open; the reviewer resolves it. If the
-  comment is unclear, ask on the thread instead of guessing.
+  and reply on the thread with the commit hash. Leave the thread open; the
+  reviewer resolves it. If the comment is unclear, ask on the thread instead
+  of guessing.
 
   Reply over REST, with the comment id from the event line. Name the repo
   the watcher watches: the `-R owner/repo` target, or this repo when the
@@ -112,10 +113,11 @@ The release notes come from the PR description, so keep it true for the
 branch as it is now.
 
 Before each push, compare the title and description with the whole branch:
-`git diff origin/main...HEAD`. Update them when the push changes the behavior, the
-scope, or the reason. Examples: a reviewer asks for a different approach, a
-CI fix changes behavior, or the push adds or removes part of the change. A
-push that only fixes formatting, a typo, or a test needs no update.
+`git diff origin/main...HEAD`. Update them when the push changes the
+behavior, the scope, or the reason. Examples: a reviewer asks for a
+different approach, a CI fix changes behavior, or the push adds or removes
+part of the change. A push that only fixes formatting, a typo, or a test
+needs no update.
 
 Do not add a change log or an "Update:" section. The commits and review
 threads keep that history. Obey step 3 of the `open-pr` skill.

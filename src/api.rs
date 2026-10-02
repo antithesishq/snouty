@@ -78,6 +78,15 @@ pub struct ApiVersion {
 /// terms, assume the tenant meets this; `snouty doctor` checks it.
 pub const MIN_SEARCH_RELEASE: (u64, u64) = (62, 2);
 
+/// The first tenant release whose execute-command API takes `container`.
+/// Earlier releases reject the field, and later ones require it. `runs exec`
+/// assumes the tenant meets this; `snouty doctor` checks it.
+pub const MIN_EXEC_RELEASE: (u64, u64) = (64, 0);
+
+/// The `container` value that executes a command on the host instead of in a
+/// container.
+const EXEC_HOST_CONTAINER: &str = "_ANTITHESIS_HOST";
+
 impl ApiVersion {
     /// Parses `release_version` eagerly, so no consumer ever parses it.
     pub fn new(latest_api_version: String, release_version: String) -> Self {
@@ -646,10 +655,11 @@ impl AntithesisApi {
         }
     }
 
-    /// Execute a bash script in the run's live session, starting at `moment`.
-    /// Returns the NDJSON response stream: command-output `Event` records in
-    /// the run-logs shape, then one terminal `Command_Termination_Result`
-    /// whose `status` is `exited` or `timed_out`.
+    /// Execute a bash script in the run's live session, starting at `moment`,
+    /// in `container`, or on the host when it is `None`. Returns the NDJSON
+    /// response stream: command-output `Event` records in the run-logs shape,
+    /// then one terminal `Command_Termination_Result` whose `status` is
+    /// `exited` or `timed_out`.
     ///
     /// The server accepts `moment.vtime` as an exact JSON number, although
     /// the schema documents a string. See the orbitinghail release 61.3
@@ -659,16 +669,17 @@ impl AntithesisApi {
         run_id: &str,
         moment: Moment,
         script: String,
+        container: Option<String>,
         timeout: Duration,
     ) -> Result<JsonStream> {
-        // The server rejects `container` and `wait_until`; neither is implemented.
         let body = generated::types::ExecuteCommandRequest {
             moment,
             script,
+            container: container.unwrap_or_else(|| EXEC_HOST_CONTAINER.to_string()),
             // The wire field is a whole number of seconds.
             timeout_seconds: timeout.as_secs(),
-            container: None,
-            wait_until: None,
+            source_run_id: None,
+            source_session_id: None,
         };
         let request = self.client.execute_command().run_id(run_id).body(body);
         match request.send().await {
@@ -2093,9 +2104,6 @@ mod tests {
         let mock_server = mock_launch_test(202, LAUNCH_OK_BODY).await;
 
         let api = test_api_optionally_with_cache(&mock_server, None);
-        // `antithesis.filter_logs_matching` left the `Params` schema in release
-        // 61.3. It now travels through the untyped map, and the wire form does
-        // not change.
         let params = Params::from_key_value_pairs([
             "antithesis.duration=30",
             "antithesis.filter_logs_matching=debug",
@@ -2549,13 +2557,17 @@ mod tests {
                 "get getRun",
                 "get getRunBuildLogs",
                 "get getRunLogs",
+                "get getRunModule",
                 "get getUsage",
                 "get getUsageSummary",
                 "get getVersion",
+                "get listRunModuleInstances",
+                "get listRunModules",
                 "get listRunProperties",
                 "get listRuns",
                 "get listUsage",
                 "get searchRunEvents",
+                "post cancelRun",
                 "post executeCommand",
                 "post launchMvd",
                 "post launchTest",

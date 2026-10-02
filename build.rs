@@ -17,7 +17,7 @@ fn main() {
 }
 
 /// How many `"additionalProperties": false` occurrences the vendored spec
-/// carries (tenant release 61.3: none).
+/// carries (tenant release 64.0: none).
 const EXPECTED_ADDITIONAL_PROPERTIES_FALSE: usize = 0;
 
 fn generate_api_client(out_dir: &Path) {
@@ -50,7 +50,7 @@ fn generate_api_client(out_dir: &Path) {
          EXPECTED_ADDITIONAL_PROPERTIES_FALSE in build.rs to {stripped}."
     );
     untype_error_responses(&mut spec_value);
-    drop_include_filtered_logs(&mut spec_value);
+    drop_include_system_logs(&mut spec_value);
     drop_property_description(&mut spec_value);
     drop_launch_status_code(&mut spec_value);
     mark_vtime_schema(&mut spec_value);
@@ -192,24 +192,24 @@ fn unrequire_search_limit_default(spec: &mut serde_json::Value) {
     );
 }
 
-/// The schema default makes progenitor serialize `include_filtered_logs`
-/// on every request. snouty does not expose this option, so omit it to use
-/// the server default.
+/// The schema default makes progenitor serialize `include_system_logs` on
+/// every request. snouty does not expose this option, so omit it to use the
+/// server default.
 ///
 /// TODO: remove this transform when the schema drops the field or its default.
-fn drop_include_filtered_logs(spec: &mut serde_json::Value) {
+fn drop_include_system_logs(spec: &mut serde_json::Value) {
     let properties = spec
         .pointer_mut("/components/schemas/Execute_Command_Request/properties")
         .and_then(serde_json::Value::as_object_mut)
         .expect("openapi spec has no Execute_Command_Request.properties");
-    let removed = properties.remove("include_filtered_logs").expect(
-        "Execute_Command_Request no longer has `include_filtered_logs`; \
-         delete `drop_include_filtered_logs` in build.rs",
+    let removed = properties.remove("include_system_logs").expect(
+        "Execute_Command_Request no longer has `include_system_logs`; \
+         delete `drop_include_system_logs` in build.rs",
     );
     assert!(
         removed.get("default").is_some(),
-        "Execute_Command_Request.include_filtered_logs no longer carries a default; \
-         the generated field is omittable, so delete `drop_include_filtered_logs` in build.rs"
+        "Execute_Command_Request.include_system_logs no longer carries a default; \
+         the generated field is omittable, so delete `drop_include_system_logs` in build.rs"
     );
 }
 

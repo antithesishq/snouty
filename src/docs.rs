@@ -152,8 +152,11 @@ async fn download_and_cache_db() -> Result<()> {
 /// fetch_db_if_changed returns Ok(None) if the server indicates the database
 /// has not changed (304 Not Modified).
 async fn fetch_db_if_changed() -> Result<Option<(Vec<u8>, String)>> {
+    // A black-holed docs host must not hang a docs command, or an MCP call,
+    // which no one can interrupt.
     let client = reqwest::Client::builder()
         .user_agent(user_agent())
+        .connect_timeout(crate::api::CONNECT_TIMEOUT)
         .build()?;
     let mut request = client.get(format!("{}/sqlite.db", docs_url()));
 

@@ -273,7 +273,7 @@ fn normalize_property(property: Property) -> Result<Property> {
 /// hangs on a black-holed or unresolvable host. There is deliberately no read or
 /// total timeout: once connected, an Antithesis request may take a truly long time
 /// to return (e.g. massive log files) and must not be aborted — the user can ctrl-c.
-const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+pub(crate) const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// How many times a GET whose transport failed is re-sent before the failure
 /// surfaces, with [`transient_retry_backoff`] between attempts.

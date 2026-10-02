@@ -653,12 +653,17 @@ pub async fn cmd_doctor(
     offline: bool,
     out: &mut (dyn Write + Send),
 ) -> Result<bool> {
-    // The checks run the container tools and read the keychain, which block.
-    // On their own thread, they do not stop the other MCP calls.
+    // The checks run the container tools and read the keychain, and building
+    // the API client reads the keychain too. These block, so on their own
+    // thread they do not stop the other MCP calls.
     let owned = settings.clone();
-    let mut checks = tokio::task::spawn_blocking(move || collect_checks(&owned)).await?;
+    let (mut checks, api) = tokio::task::spawn_blocking(move || {
+        let api = (!offline).then(|| AntithesisApi::new(&owned, verbose));
+        (collect_checks(&owned), api)
+    })
+    .await?;
 
-    if !offline {
+    if let Some(api) = api {
         // Connectivity + version check (network). Skipped with --offline. Only
         // runs when the resolved credentials work against the full API:
         // /api/version, like every endpoint but launch, rejects username/password
@@ -667,7 +672,7 @@ pub async fn cmd_doctor(
         // unauthenticated users to set a key. The client is built from the
         // resolved settings (base url / tenant), and `verbose` logs the
         // request/response.
-        if let Ok(api) = AntithesisApi::new(settings, verbose) {
+        if let Ok(api) = api {
             let host = api.host();
             let version = api.get_version().await;
             if let Ok(version) = &version

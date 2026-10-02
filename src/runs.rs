@@ -1,11 +1,12 @@
 use std::io::{IsTerminal, Read, Write};
 use std::num::NonZeroU64;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use color_eyre::Section;
 use color_eyre::eyre::{Result, WrapErr, eyre};
-use futures_util::TryStreamExt;
 use futures_util::stream::BoxStream;
+use futures_util::{StreamExt, TryStreamExt};
 use indexmap::IndexMap;
 use indexmap::map::Entry;
 use log::debug;
@@ -1485,8 +1486,17 @@ async fn cmd_runs_logs(
     // A moment with no logs (e.g. a manually-supplied 0/0 placeholder)
     // yields an empty stream; the pipeline says so in human mode rather
     // than printing nothing.
-    let lines = event_search::render_event_stream(stream, ErrorRows::Abort, mode);
-    print_event_lines(lines, mode, "No log lines at this moment.", None).await
+    let any_lines = AtomicBool::new(false);
+    let lines = event_search::render_event_stream(stream, ErrorRows::Abort, mode)
+        .inspect_ok(|_| any_lines.store(true, Ordering::Relaxed))
+        .boxed();
+    print_event_lines(lines, mode, "No log lines at this moment.", None).await?;
+    // The footer marks the end of the stream, so a quiet timeline doesn't
+    // read as one cut short.
+    if !mode.json() && any_lines.into_inner() {
+        eprintln!("— end of logs");
+    }
+    Ok(())
 }
 
 /// One frame of an execute-command NDJSON stream.

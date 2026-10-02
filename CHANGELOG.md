@@ -1,5 +1,6 @@
 # Unreleased
 
+- `snouty runs logs` ends its human output with `— end of logs` on stderr, so a quiet timeline doesn't look cut short ([#328](https://github.com/antithesishq/snouty/pull/328))
 - `snouty launch` and `snouty debug` ignore the `statusCode` field of the launch response, and accept a response without it. ([#336](https://github.com/antithesishq/snouty/issues/336))
 - The released Linux gnu binaries need glibc 2.39 or newer, because they build on Ubuntu 24.04. The musl binaries are unchanged. For an install into `~/.local/bin`, the shell installer moves its PATH script from `~/.local/bin/env` to `~/.config/snouty/env.sh` and updates the shell startup files ([#338](https://github.com/antithesishq/snouty/pull/338))
 - **Breaking**: `snouty login` sets up only OAuth and API keys. When the tenant has no CLI OAuth, `snouty login` asks for an API key directly, and Esc skips credential storage. A username and password still works from `ANTITHESIS_USERNAME` and `ANTITHESIS_PASSWORD`, or from a credentials file that an older snouty wrote ([#325](https://github.com/antithesishq/snouty/pull/325))

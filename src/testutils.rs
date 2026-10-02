@@ -1090,11 +1090,13 @@ fn query_needles(query: &str) -> Vec<String> {
 /// input hash (verified against the live API).
 const MOCK_EXEC_BRANCH_HASH: &str = "-8206006569229276678";
 
+/// A line of the script's output, shaped as release 64.0 sends one
+/// (orbitinghail).
 fn mock_exec_output(stream: &str, text: &str, vtime: &str) -> String {
     serde_json::json!({
         "moment": {"input_hash": MOCK_EXEC_BRANCH_HASH, "vtime": vtime},
         "output_text": text,
-        "source": {"stream": stream},
+        "source": {"command_id": "echidna-cmd-1", "name": "bash_command", "stream": stream},
     })
     .to_string()
 }
@@ -1154,6 +1156,9 @@ fn mock_route_execute_command(run_id: &str, req_body: &str) -> (u16, String) {
     let script = request["script"].as_str().unwrap_or_default();
     let timeout = request["timeout_seconds"].as_u64().unwrap_or(600);
     let container = request["container"].as_str().unwrap_or_default();
+    let system_logs = request
+        .get("include_system_logs")
+        .map_or("absent".to_string(), ToString::to_string);
 
     let lines = match script.trim() {
         "true" => vec![mock_exec_exited(Some(0))],
@@ -1165,6 +1170,26 @@ fn mock_route_execute_command(run_id: &str, req_body: &str) -> (u16, String) {
         ],
         "print-timeout" => vec![
             mock_exec_output("info", &format!("timeout_seconds={timeout}"), "398.491"),
+            mock_exec_exited(Some(0)),
+        ],
+        "print-system-logs" => vec![
+            mock_exec_output("info", &format!("include_system_logs={system_logs}"), "398.491"),
+            mock_exec_exited(Some(0)),
+        ],
+        // With include_system_logs, the timeline's other events surround the
+        // script's output. Shapes from release 64.0 (orbitinghail).
+        "with-system-logs" if system_logs == "true" => vec![
+            format!(
+                r#"{{"moment":{{"input_hash":"{MOCK_EXEC_BRANCH_HASH}","vtime":"398.4905"}},"source":{{"meta_for":"echidna-cmd-1","name":"bash_command"}},"fuzzpipe":{{"event_type":"Command received"}}}}"#
+            ),
+            mock_exec_output("info", "script says hi", "398.491"),
+            format!(
+                r#"{{"moment":{{"input_hash":"{MOCK_EXEC_BRANCH_HASH}","vtime":"398.4912"}},"source":{{"container":"workload","name":"driver","pid":47,"stream":"error"}},"output_text":"workload says hi"}}"#
+            ),
+            mock_exec_exited(Some(0)),
+        ],
+        "with-system-logs" => vec![
+            mock_exec_output("info", "script says hi", "398.491"),
             mock_exec_exited(Some(0)),
         ],
         "print-container" => vec![

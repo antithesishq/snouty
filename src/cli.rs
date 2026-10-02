@@ -1046,6 +1046,11 @@ JSON object on its own line, and the trailer is left out:
         #[arg(long)]
         container: Option<String>,
 
+        /// Print every event of the timeline while the script executes, as
+        /// `runs logs` prints them, in place of only the script's output
+        #[arg(long)]
+        events: bool,
+
         /// Maximum seconds the server waits for the script to exit before
         /// reporting a timeout
         // The API's own default is 600 with a minimum of 0 and no maximum.

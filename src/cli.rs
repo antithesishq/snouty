@@ -146,6 +146,10 @@ Add --json for machine-readable output. The launch response prints as one
 JSON object:
   snouty launch --json -w basic_test --duration 30 | jq -r .runId
 
+Next, wait for the run to finish with `snouty runs wait <run_id>`. The run ID is
+the `run_id` value in the launch output, or `.runId` in the --json output.
+
+Credentials come from `snouty login` or from the environment variables below.
 Tenant and repository may be set via the environment variables below, or in a
 settings file (./.snouty.toml by default; see the global --settings/--profile
 flags and the README). Environment variables take precedence.

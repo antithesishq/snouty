@@ -102,34 +102,33 @@ another account with write access approves.
   ```
 - **Check failure**: read the failing log with
   `gh run view <run-id> --log-failed`, fix it, and push.
-- **After each push**: keep the title and description true to the branch, as
-  described in step 4.
+- **Each push**: update the title and description (step 4).
 - **Merged or closed**: stop related work on that PR. The script exits on its
   own once every watched PR reaches this state.
 
 ## 4. Keep the description current
 
-The description says what the PR does now, not what it did when it opened.
-The release writes the changelog from it, so a stale description gives wrong
-release notes.
+The description tells what the PR does now. The release notes come from it,
+so an old description gives wrong notes.
 
-After each push, compare the title and description with
-`git diff origin/main...HEAD`. Update them when a push changes the behavior,
-the scope, or the reason: a reviewer asks for a different approach, a CI fix
-changes behavior, or a part of the change is dropped or added. A push that
-only fixes formatting, a typo, or a test needs no update.
+Before each push, read the diff of the new commits: `git diff @{u}..HEAD`.
+Update the title and description when the push changes the behavior, the
+scope, or the reason. For example, a reviewer asks for a different approach,
+a CI fix changes behavior, or you remove or add a part of the change. A push
+that only fixes formatting, a typo, or a test needs no update.
 
-Rewrite the description as if the PR had been written this way from the
-start. Do not add a log of changes or an "Update:" section; the commits and
-review threads keep that history. Keep the rules of the `open-pr` skill.
+Write the description for the branch as it is now. Do not add a change log
+or an "Update:" section. The commits and review threads keep that history.
+Obey step 3 of the `open-pr` skill.
 
-Read the current description, edit it in a file, and write it back over
-REST, because the proxy rejects the GraphQL write that `gh pr edit` makes:
+Copy the current description to `pr-body.md` and edit it. Write it back over
+REST, as in step 4 of the `open-pr` skill. Send only the fields that change:
 
 ```
 gh pr view <PR> --json body --jq .body > pr-body.md
 gh api -X PATCH repos/<owner>/<repo>/pulls/<PR> \
-  -f title="<title>" -F body=@pr-body.md --jq '.html_url'
+  -F body=@pr-body.md --jq '.html_url'
 ```
 
-Delete `pr-body.md` after the update.
+To change the title, add `-f title="<title>"`. Delete `pr-body.md` after the
+update.

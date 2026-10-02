@@ -27,12 +27,12 @@ git push -u origin <branch>
 
 Write the body to a file, `pr-body.md`, so the shell never mangles it.
 
-Write prose that explains the change and why. State the behavior change the
-user can perceive, or say that there is none: the release writes the
-changelog from PR descriptions, and PRs do not edit `CHANGELOG.md`. Bullets are fine for listing
-specific changes; section headers usually are not. Do not add a `## Summary`
-header, a `## Test plan` section, or any other template boilerplate. Do not
-list outstanding work, test checklists, or follow-up TODOs.
+Write prose that explains the change and why. State the behavior change that
+the user sees. If there is none, say so. The release notes come from this
+text. Bullets are fine for listing specific changes; section headers usually
+are not. Do not add a `## Summary` header, a `## Test plan` section, or any
+other template boilerplate. Do not list outstanding work, test checklists, or
+follow-up TODOs.
 
 When the work closes an issue, put `fixes #<N>` on its own line, one line per
 issue.

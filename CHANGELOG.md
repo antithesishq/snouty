@@ -1,19 +1,3 @@
-# Unreleased
-
-- **Breaking**: `snouty runs logs` no longer accepts `--begin-input-hash`. `--begin-vtime` alone sets where the stream starts ([#334](https://github.com/antithesishq/snouty/pull/334))
-- `snouty runs logs` ends its human output with `— end of logs` on stderr, so a quiet timeline doesn't look cut short ([#328](https://github.com/antithesishq/snouty/pull/328))
-- `snouty launch` and `snouty debug` ignore the `statusCode` field of the launch response, and accept a response without it. ([#336](https://github.com/antithesishq/snouty/issues/336))
-- The released Linux gnu binaries need glibc 2.39 or newer, because they build on Ubuntu 24.04. The musl binaries are unchanged. For an install into `~/.local/bin`, the shell installer moves its PATH script from `~/.local/bin/env` to `~/.config/snouty/env.sh` and updates the shell startup files ([#338](https://github.com/antithesishq/snouty/pull/338))
-- **Breaking**: `snouty login` sets up only OAuth and API keys. When the tenant has no CLI OAuth, `snouty login` asks for an API key directly, and Esc skips credential storage. A username and password still works from `ANTITHESIS_USERNAME` and `ANTITHESIS_PASSWORD`, or from a credentials file that an older snouty wrote ([#325](https://github.com/antithesishq/snouty/pull/325))
-- `snouty runs events` leaves out bootstrap events. A bootstrap event comes before the log timeline of the run, so `snouty runs logs` had no lines for its moment ([#319](https://github.com/antithesishq/snouty/pull/319))
-- `snouty runs show` prints `Created`, `Started`, and `Completed`, and `snouty runs list --detail` prints `Created`, in local time with the UTC offset, for example `2026-09-24 12:32:48 -07:00`. ([#320](https://github.com/antithesishq/snouty/pull/320))
-- `snouty runs properties --detail` shows the passing and failing example totals of each event property next to `Examples`, and ends with the `snouty runs logs` command that takes the hash and vtime of an example. A property with no examples shows `passed with no examples` or `failed with no examples`, and no table ([#323](https://github.com/antithesishq/snouty/pull/323))
-- `snouty runs properties` no longer shows a property's description: `--detail` drops the `Details` row, and `--json` drops the `description` field ([#327](https://github.com/antithesishq/snouty/pull/327))
-- `snouty runs search` is stable: the `runs-search` unstable feature is gone, and the command is on for everyone. It needs tenant release 62.2 or newer; `snouty doctor` warns on an older tenant. An exported `SNOUTY_UNSTABLE_FEATURES=runs-search` is ignored ([#309](https://github.com/antithesishq/snouty/pull/309))
-- **Breaking**: `snouty runs events` runs on the events-search API, the same route as `snouty runs search`, and no longer calls the events endpoint. Several `--match` terms need no feature flag. The result is a sample of the matching events in no fixed order, where the events endpoint returned the earliest matches in vtime order. `--limit` accepts up to 999 ([#309](https://github.com/antithesishq/snouty/pull/309))
-- `snouty runs show` lists the run's user-defined `attrs.*` params under an `Attributes` block, and `snouty launch --help` documents how to set them with `--param attrs.<name>=<value>` ([#312](https://github.com/antithesishq/snouty/issues/312))
-- `snouty validate` no longer reports a compose divergence for a variable that the Antithesis environment also sets ([#314](https://github.com/antithesishq/snouty/issues/314))
-
 # Version 0.7.2 (2026-09-13)
 
 - `snouty runs show` prints a `Failure Reason` row for an incomplete run that reports one ([#300](https://github.com/antithesishq/snouty/pull/300))

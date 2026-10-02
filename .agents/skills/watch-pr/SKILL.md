@@ -88,9 +88,10 @@ another account with write access approves.
 ## 3. React to each event
 
 - **Review comment or review**: triage it. If it asks for a change, check out
-  that PR's branch, make the change, push, and reply on the thread with the
-  commit hash. Leave the thread open; the reviewer resolves it. If the
-  comment is unclear, ask on the thread instead of guessing.
+  that PR's branch, make the change, update the description (step 4), push,
+  and reply on the thread with the commit hash. Leave the thread open; the
+  reviewer resolves it. If the comment is unclear, ask on the thread instead
+  of guessing.
 
   Reply over REST, with the comment id from the event line. Name the repo
   the watcher watches: the `-R owner/repo` target, or this repo when the
@@ -101,6 +102,34 @@ another account with write access approves.
     -f body='...'
   ```
 - **Check failure**: read the failing log with
-  `gh run view <run-id> --log-failed`, fix it, and push.
+  `gh run view <run-id> --log-failed`, fix it, update the description
+  (step 4), and push.
 - **Merged or closed**: stop related work on that PR. The script exits on its
   own once every watched PR reaches this state.
+
+## 4. Keep the description current
+
+The release notes come from the PR description, so keep it true for the
+branch as it is now.
+
+Before each push, compare the title and description with the whole branch:
+`git diff origin/main...HEAD`. Update them when the push changes the
+behavior, the scope, or the reason. Examples: a reviewer asks for a
+different approach, a CI fix changes behavior, or the push adds or removes
+part of the change. A push that only fixes formatting, a typo, or a test
+needs no update.
+
+Do not add a change log or an "Update:" section. The commits and review
+threads keep that history. Obey step 3 of the `open-pr` skill.
+
+Copy the current description to `pr-body.md` and edit it. Write it back over
+REST, as in step 4 of the `open-pr` skill:
+
+```
+gh pr view <PR> -R <owner>/<repo> --json body --jq .body > pr-body.md
+gh api -X PATCH repos/<owner>/<repo>/pulls/<PR> \
+  -F body=@pr-body.md --jq '.html_url'
+```
+
+To change the title, add `-f title="<title>"`. Delete `pr-body.md` after the
+update.

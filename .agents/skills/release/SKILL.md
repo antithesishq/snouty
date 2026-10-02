@@ -15,11 +15,11 @@ cargo-dist reads the top-level `CHANGELOG.md` when the release tag is pushed. It
 2. A pre-release (e.g. `0.7.0-rc.2`) with no exact heading falls back to the stable heading (`# Version 0.7.0`), then to the `# Unreleased` heading. cargo-dist rewrites the heading to include the pre-release version in the GitHub Release.
 3. A stable version matches only its exact heading. A missing heading does not fail the release; cargo-dist just omits the notes.
 
-The convention: entries accumulate under `# Unreleased` as PRs land. Pre-releases publish the `# Unreleased` section as-is. A stable release renames `# Unreleased` to its version, so all rc-era entries fold into the final release notes.
+The convention: only the release PR edits `CHANGELOG.md`. In step 2, write the notes from the descriptions of the merged PRs. `CHANGELOG.md` holds at most one pre-release section: the one for the newest pre-release of the next version, e.g. `# Version 0.7.0-rc.2 (YYYY-MM-DD)`. It lists the changes since the last stable release. Each new pre-release replaces that section, and the stable release replaces it with the section for the version.
 
 ## Pre-releases
 
-The procedure for a pre-release (`-rc.N` suffix) is the same as for a release, with one difference: when the user asks for a pre-release without a full version (e.g. "cut an rc for 0.7.0"), pick the next rc number — list existing tags with `git tag -l 'v0.7.0-rc.*'` and use N+1 of the highest, or `-rc.1` when there are none.
+The procedure for a pre-release (`-rc.N` suffix) is the same as for a release, except for the changelog heading in step 2. When the user asks for a pre-release without a full version (e.g. "cut an rc for 0.7.0"), pick the next rc number — list existing tags with `git tag -l 'v0.7.0-rc.*'` and use N+1 of the highest, or `-rc.1` when there are none.
 
 ## Release Procedure
 
@@ -38,29 +38,25 @@ Run all of the following sanity checks before making any changes:
 
 If any check fails, report the issue clearly and stop.
 
-### 2. Update CHANGELOG.md
+### 2. Write the Release Notes in CHANGELOG.md
 
-Read `CHANGELOG.md` and check the `# Unreleased` section.
+Find the most recent stable tag `vPREV` (not an `-rc.N` tag) with `git tag -l 'v[0-9]*' --sort=-v:refname | grep -v -- -rc | head -1`. The notes cover the PRs merged since `vPREV`. List them with `git log --oneline vPREV..HEAD`. Each squash-merge subject ends in `(#N)`.
 
-If the `# Unreleased` section is missing, empty, or stale (it does not cover the changes since the last release tag), draft entries first: list the commits with `git log --oneline vPREV..HEAD` (where `vPREV` is the most recent tag), and write one factual bullet per notable feature. Follow these rules:
+When `CHANGELOG.md` has a section for an earlier pre-release of this version, use it as a draft. Then read only the PRs merged since that pre-release's tag: `git log --oneline vX.Y.Z-rc.M..HEAD`.
 
-- Write each entry as the net change relative to the previous release. When a feature is new in this release, describe the feature once; do not list the iterations that built it (e.g. a rewrite of a command that did not exist in the previous release is part of the feature, not an entry).
-- Compress to the set of notable features. The changelog does not need to describe every change or every detail of a feature.
-- Link PR numbers with the public base URL, e.g. `([#176](https://github.com/antithesishq/snouty/pull/176))`. Do not use the exe proxy hostname.
-- Skip internal-only changes (CI, refactors, dependency bumps).
+Read the description of each PR with `gh pr view N --json title,body`. If a description does not make the user-visible change clear, read the squash-merge commit with `git show <sha>`.
 
-Then, depending on the release type:
+Write one factual bullet per notable feature, not one per change. Follow these rules:
 
-- **Pre-release (`-rc.N`)**: do not rename anything. cargo-dist publishes the `# Unreleased` section under the rc version automatically. Do not create a heading for the rc version.
-- **Stable release**: rename `# Unreleased` to `# Version X.Y.Z (YYYY-MM-DD)` with today's date, and insert a fresh section above it:
+- Describe behavior that the user sees. Leave out implementation detail unless the reader needs it to understand the entry.
+- Write each entry as the net change relative to the last stable release, `vPREV`. When a feature is new in this release, describe the feature once; do not list the iterations that built it (e.g. a rewrite of a command that did not exist in the previous release is part of the feature, not an entry).
+- Put the largest changes first, breaking or not. Start each breaking change with `**Breaking**:`.
+- Link every PR that contributes to an entry with the public base URL, e.g. `([#176](https://github.com/antithesishq/snouty/pull/176))`. Do not use the exe proxy hostname.
+- Skip internal-only changes (CI, refactors, dependency bumps, docs for contributors).
 
-  ```markdown
-  # Unreleased
+Put the notes above the newest version section, under `# Version X.Y.Z-rc.N (YYYY-MM-DD)` for a pre-release or `# Version X.Y.Z (YYYY-MM-DD)` for a stable release, with today's date. Remove the section of the earlier pre-release; the new section replaces it. A later change can reverse or replace an earlier one: remove the superseded entry, and combine entries that changed the same feature.
 
-  Nothing Yet!
-  ```
-
-Verify the result parses: `parse-changelog CHANGELOG.md X.Y.Z` must print the section for a stable release; `parse-changelog CHANGELOG.md Unreleased` must print it for a pre-release. Install the CLI with `cargo install parse-changelog` if it is missing. cargo-dist uses this same library, so this check proves the GitHub Release will pick up the notes.
+Verify the result parses: `parse-changelog CHANGELOG.md X.Y.Z[-rc.N]` must print the new section. Install the CLI with `cargo install parse-changelog` if it is missing. cargo-dist uses this same library, so this check proves the GitHub Release will pick up the notes.
 
 ### 3. Bump the Version in Cargo.toml
 

@@ -54,6 +54,7 @@ fn generate_api_client(out_dir: &Path) {
     drop_property_description(&mut spec_value);
     drop_launch_status_code(&mut spec_value);
     mark_vtime_schema(&mut spec_value);
+    open_performance_tier(&mut spec_value);
     unrequire_search_limit_default(&mut spec_value);
     let spec: openapiv3::OpenAPI = serde_json::from_value(spec_value).unwrap();
 
@@ -253,6 +254,25 @@ fn drop_launch_status_code(spec: &mut serde_json::Value) {
             .and_then(serde_json::Value::as_object_mut)
             .and_then(|properties| properties.remove("statusCode"));
     }
+}
+
+/// Decode `Params.antithesis.performance_tier` as a plain string. `runs list`
+/// and `runs show` decode every run's parameters through `Params`, so a closed
+/// enum would fail a whole listing on one tier this build does not know. snouty
+/// only shows the value, so it does not need the enum.
+fn open_performance_tier(spec: &mut serde_json::Value) {
+    let tier = spec
+        .pointer_mut("/components/schemas/Params/properties/antithesis.performance_tier")
+        .and_then(serde_json::Value::as_object_mut)
+        .expect(
+            "openapi spec has no Params.antithesis.performance_tier; \
+             delete `open_performance_tier` in build.rs",
+        );
+    assert!(
+        tier.remove("enum").is_some(),
+        "Params.antithesis.performance_tier is no longer an enum; \
+         delete `open_performance_tier` in build.rs"
+    );
 }
 
 /// Tag `Moment.vtime` with a private `format: vtime` marker for the

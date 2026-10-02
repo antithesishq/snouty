@@ -47,8 +47,7 @@ fn get_stdin_params() -> Result<Params> {
     Params::from_json(&value)
 }
 
-#[tokio::main(flavor = "current_thread")]
-async fn main() {
+fn main() {
     // Drop the "Backtrace omitted. Run with RUST_BACKTRACE=1…" footer: it's noise
     // on every error, and outright misleading on user errors built with
     // `suppress_backtrace` (where RUST_BACKTRACE does nothing). A genuine fault
@@ -72,7 +71,31 @@ async fn main() {
             writeln!(buf, "{}", record.args())
         })
         .init();
-    if let Err(report) = run(Cli::parse()).await {
+    let cli = Cli::parse();
+    // The MCP server serves calls at the same time, so it gets worker
+    // threads. A CLI command does one thing at a time.
+    let mut runtime = match cli.command {
+        Commands::Mcp(_) => {
+            let mut builder = tokio::runtime::Builder::new_multi_thread();
+            builder.worker_threads(snouty::mcp::WORKER_THREADS);
+            builder
+        }
+        _ => tokio::runtime::Builder::new_current_thread(),
+    };
+    let runtime = runtime
+        .enable_all()
+        .build()
+        .expect("failed to start the tokio runtime");
+    let result = runtime.block_on(run(cli));
+    // Dropping the runtime waits with no limit for its blocking tasks, such
+    // as a DNS lookup that does not end, so a stopped MCP server could hang.
+    // Every task that a command needs has finished by now.
+    runtime.shutdown_background();
+    if let Err(report) = result {
+        // doctor already wrote its report, which says what failed.
+        if report.downcast_ref::<ChecksFailed>().is_some() {
+            std::process::exit(1);
+        }
         // One rendering for every error: `render_report` collapses the chain
         // index for single errors and wraps overlong prose, both printing
         // concerns that belong here rather than in the messages. User-facing
@@ -84,6 +107,19 @@ async fn main() {
         std::process::exit(1);
     }
 }
+
+/// `snouty doctor` found a failed required check. The command already wrote
+/// its report, so `main` exits 1 and prints nothing more.
+#[derive(Debug)]
+struct ChecksFailed;
+
+impl std::fmt::Display for ChecksFailed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("required checks failed")
+    }
+}
+
+impl std::error::Error for ChecksFailed {}
 
 async fn run(cli: Cli) -> Result<()> {
     let Cli {
@@ -125,7 +161,14 @@ async fn run(cli: Cli) -> Result<()> {
             Ok(())
         }
         Commands::Update(args) => cmd_update(args, &settings?),
-        Commands::Docs { offline, command } => docs::cmd_docs(command, offline, output).await,
+        Commands::Docs { offline, command } => {
+            let refresh = if offline {
+                docs::Refresh::Offline
+            } else {
+                docs::Refresh::Online
+            };
+            docs::cmd_docs(command, refresh, output, &mut io::stdout()).await
+        }
         Commands::Login { tenant, repository } => {
             cmd_login(tenant, repository, profile.as_deref(), &settings?).await
         }
@@ -138,15 +181,25 @@ async fn run(cli: Cli) -> Result<()> {
             info!("launching test with webhook: {}", args.webhook);
             cmd_launch(args, &settings?, output).await
         }
-        Commands::Runs { command } => snouty::runs::cmd_runs(command, &settings?, output).await,
+        Commands::Runs { command } => {
+            snouty::runs::cmd_runs(command, &settings?, output, &mut io::stdout()).await
+        }
         Commands::Debug(args) => {
             info!("starting debug session");
             cmd_debug(args, &settings?, output).await
         }
         Commands::Validate(args) => validate::cmd_validate(args, &settings?).await,
         Commands::Doctor(args) => {
-            snouty::doctor::cmd_doctor(&settings?, output, args.offline).await
+            let passed =
+                snouty::doctor::cmd_doctor(&settings?, output, args.offline, &mut io::stdout())
+                    .await?;
+            if passed {
+                Ok(())
+            } else {
+                Err(ChecksFailed.into())
+            }
         }
+        Commands::Mcp(args) => snouty::mcp::cmd_mcp(args, settings?, verbose).await,
     };
 
     suppress_broken_pipe(result)
@@ -184,6 +237,7 @@ fn json_unaware_command_name(command: &Commands) -> Option<&'static str> {
         Commands::Version => Some("version"),
         Commands::Update(_) => Some("update"),
         Commands::Login { .. } => Some("login"),
+        Commands::Mcp(_) => Some("mcp"),
     }
 }
 

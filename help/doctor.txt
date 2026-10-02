@@ -1,0 +1,42 @@
+Check environment configuration
+
+Verifies that your environment is properly configured for Antithesis testing.
+Runs health checks — container runtime, docker compose, your credentials
+(stored by `snouty login`, or set in the ANTITHESIS_* environment variables),
+{% if cli %}
+and API connectivity — then prints the resolved settings (tenant, repository,
+container engine) so you can confirm what snouty will use.
+
+snouty prefers an API key (full API access); a username and password is
+deprecated auth, accepted only by `snouty launch` and `snouty debug`.
+{% else %}
+and API connectivity — then reports the resolved settings (tenant,
+repository, container engine) that this server uses.
+
+An API key gives full API access. A username and password is deprecated
+auth, and the runs tools do not accept it.
+{% endif %}
+
+When credentials are configured, doctor also contacts the Antithesis API to
+{% if cli %}
+report the API and tenant versions and confirm connectivity. Pass --offline to
+skip that network call.
+
+Exits non-zero if any required check fails. Pass --json for a machine-readable
+report (e.g. to gate CI).
+
+Example:
+  snouty doctor
+  snouty doctor --json | jq -r .settings.tenant
+  snouty doctor --offline
+{% else %}
+report the API and tenant versions and confirm connectivity. Set offline to
+skip that network call.
+
+Returns one JSON object with the keys ok, checks and settings. ok is true
+when every required check passed. checks is an array of {name, status,
+message} objects, and a check can also have notes, an array of {level,
+text}. status is "ok", "warn" or "error", and level is "note", "warning" or
+"error". settings holds the resolved settings, by name. An unset setting is
+null. When ok is false, the result is marked isError.
+{% endif %}

@@ -5,6 +5,7 @@ use std::process::Command;
 fn main() {
     println!("cargo:rerun-if-env-changed=RUSTC");
     println!("cargo:rerun-if-changed=src/openapi.json");
+    println!("cargo:rerun-if-changed={HELP_DIR}");
     println!(
         "cargo:rustc-env=SNOUTY_RUSTC_VERSION={}",
         rustc_version().unwrap()
@@ -14,6 +15,105 @@ fn main() {
     let out_dir = std::env::var_os("OUT_DIR").unwrap();
     fs::create_dir_all(&out_dir).unwrap();
     generate_api_client(Path::new(&out_dir));
+    render_help(Path::new(&out_dir));
+}
+
+/// Long-help templates. Each top-level `.txt` file is one page. `fragments/`
+/// holds text that pages include.
+const HELP_DIR: &str = "help";
+/// The subdirectory of `HELP_DIR` that holds the short MCP tool descriptions.
+const MCP_TOOLS_DIR: &str = "mcp_tools";
+
+/// The readers of a rendered help page. This mirrors `snouty::help::Target`,
+/// because a build script cannot use the crate it builds. A target that is
+/// missing here fails the build at the `include_str!` in `src/help.rs`.
+#[derive(Clone, Copy)]
+enum HelpTarget {
+    Cli,
+    Mcp,
+}
+
+impl HelpTarget {
+    const ALL: [HelpTarget; 2] = [HelpTarget::Cli, HelpTarget::Mcp];
+
+    /// The template context: the booleans `cli` and `mcp`.
+    fn context(self) -> minijinja::Value {
+        match self {
+            HelpTarget::Cli => minijinja::context! { cli => true, mcp => false },
+            HelpTarget::Mcp => minijinja::context! { cli => false, mcp => true },
+        }
+    }
+}
+
+impl std::fmt::Display for HelpTarget {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            HelpTarget::Cli => "cli",
+            HelpTarget::Mcp => "mcp",
+        })
+    }
+}
+
+/// Renders every help page once per target into `OUT_DIR/help/<target>/`, and
+/// each MCP tool description into `OUT_DIR/help/mcp_tools/`. A template sees
+/// the booleans `cli` and `mcp`. A template error fails the build with the
+/// file name.
+fn render_help(out_dir: &Path) {
+    let mut env = minijinja::Environment::new();
+    env.set_loader(minijinja::path_loader(HELP_DIR));
+    // With these settings, a line that holds only a block tag disappears, and
+    // an `{% include %}` line becomes the lines of the included file.
+    env.set_trim_blocks(true);
+    env.set_lstrip_blocks(true);
+    env.set_keep_trailing_newline(true);
+    env.set_undefined_behavior(minijinja::UndefinedBehavior::Strict);
+
+    let pages = txt_files(Path::new(HELP_DIR));
+
+    // Remove the renders of an earlier build. Otherwise a page whose template
+    // was deleted stays in OUT_DIR, and its `include_str!` does not fail.
+    let help_out = out_dir.join(HELP_DIR);
+    if help_out.exists() {
+        fs::remove_dir_all(&help_out).unwrap();
+    }
+    for target in HelpTarget::ALL {
+        let dir = help_out.join(target.to_string());
+        fs::create_dir_all(&dir).unwrap();
+        let context = target.context();
+        for name in &pages {
+            render_page(&env, name, &context, &dir.join(name));
+        }
+    }
+
+    // The short MCP tool descriptions exist only for MCP.
+    let dir = help_out.join(MCP_TOOLS_DIR);
+    fs::create_dir_all(&dir).unwrap();
+    let context = HelpTarget::Mcp.context();
+    for name in txt_files(&Path::new(HELP_DIR).join(MCP_TOOLS_DIR)) {
+        let template = format!("{MCP_TOOLS_DIR}/{name}");
+        render_page(&env, &template, &context, &dir.join(&name));
+    }
+}
+
+/// The names of the `.txt` files in `dir`. The extension filter also skips
+/// editor swap and backup files, and subdirectories.
+fn txt_files(dir: &Path) -> Vec<String> {
+    fs::read_dir(dir)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| path.is_file() && path.extension().is_some_and(|ext| ext == "txt"))
+        .map(|path| path.file_name().unwrap().to_str().unwrap().to_owned())
+        .collect()
+}
+
+fn render_page(env: &minijinja::Environment, name: &str, context: &minijinja::Value, out: &Path) {
+    let text = env
+        .get_template(name)
+        .and_then(|template| template.render(context))
+        .unwrap_or_else(|err| panic!("{HELP_DIR}/{name}: {err:#}"));
+    // A file ends in a newline, and a clap long_about does not.
+    let text = text.strip_suffix('\n').unwrap_or(&text);
+    fs::write(out, text).unwrap();
 }
 
 /// How many `"additionalProperties": false` occurrences the vendored spec

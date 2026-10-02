@@ -1,0 +1,12 @@
+Search the documentation
+
+Uses full-text search across the Antithesis documentation database.
+The database is automatically updated before each search.
+
+By default the query is searched as literal text. Set match to treat the
+query as a raw SQLite FTS5 expression instead, enabling operators like
+AND/OR/NOT/NEAR, "quoted phrases", `title:` column filters, and `prefix*`.
+
+Returns one JSON array of {path, title, snippet} objects, best match first.
+limit sets the maximum number of matches (default 10). Pass a path to the
+docs_show tool to read the page.

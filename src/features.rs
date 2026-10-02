@@ -78,12 +78,16 @@ pub enum Feature {
     /// `snouty runs exec`, which drives the execute-command API. That API is
     /// unstable and is unavailable on most tenants.
     RunsExec,
+    /// `snouty mcp`, the MCP server. Its tools and their output can still
+    /// change.
+    Mcp,
     /// An id this build does not recognize.
     Unknown(String),
 }
 
 impl Feature {
     pub const RUNS_EXEC: &'static str = "runs-exec";
+    pub const MCP: &'static str = "mcp";
 }
 
 /// The feature an id names. Every id maps to a feature, so this is total:
@@ -92,6 +96,7 @@ impl From<&str> for Feature {
     fn from(id: &str) -> Self {
         match id {
             Self::RUNS_EXEC => Feature::RunsExec,
+            Self::MCP => Feature::Mcp,
             other => Feature::Unknown(other.to_string()),
         }
     }
@@ -111,6 +116,7 @@ impl Display for Feature {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
             Feature::RunsExec => Self::RUNS_EXEC,
+            Feature::Mcp => Self::MCP,
             Feature::Unknown(id) => id,
         })
     }

@@ -1,0 +1,45 @@
+Serve snouty's run, docs and doctor commands to AI agents over MCP
+
+This command is gated behind the `mcp` unstable feature, because its tools
+and their output can still change. Enable it by setting
+SNOUTY_UNSTABLE_FEATURES=mcp. An unstable feature can change or go away in
+any release.
+
+Starts a Model Context Protocol server (streamable HTTP) that listens on
+--host and --port. An agent connects to http://HOST:PORT/mcp. The server
+runs in the foreground until Ctrl-C, SIGTERM or SIGHUP stops it. A stop also
+ends all tool calls in progress.
+
+With --stdio, the server uses the stdio transport instead: the agent starts
+snouty mcp --stdio and sends messages on its stdin. stdout carries only MCP
+messages, and the server prints no `Listening on` line. The request log on
+stderr has no HTTP status. The server stops when stdin closes, or on Ctrl-C,
+SIGTERM or SIGHUP. --host, --port and --allowed-host do not apply.
+
+When the server is ready, it prints `Listening on HOST:PORT` on stdout. Then
+it writes one line on stderr for each request: the time, the HTTP status and
+the JSON-RPC method. For a tool call, the line also shows the tool name, and
+`isError` or `error CODE` when the call failed. With --verbose, the line
+also shows the request params, and the tools log their API requests.
+
+The tools are runs_list, runs_show, runs_properties, runs_build_logs,
+runs_logs, runs_search, docs_tree, docs_show, docs_search, doctor and
+tool_help. The runs-exec unstable feature adds runs_exec. Each tool returns
+the same output as its command in JSON mode. All tools are marked read-only.
+A tool description is short; tool_help returns the full help of a tool.
+
+The server accepts a request only when its Host header is the listen
+address (for example 127.0.0.1:8765) or an --allowed-host value. It refuses
+a request that has an Origin header. These checks stop a web page from
+sending requests to the server. With --host 0.0.0.0, the server accepts only
+the literal Host 0.0.0.0:PORT. Add an --allowed-host for each name that
+clients use.
+
+--settings, --profile and the ANTITHESIS_* environment variables apply as
+they do for the other commands.
+
+Examples:
+  snouty mcp
+  snouty mcp --stdio
+  snouty mcp --port 0
+  snouty mcp --host 0.0.0.0 --allowed-host myhost.example:8765

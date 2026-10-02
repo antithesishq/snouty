@@ -21,9 +21,10 @@ There are three kinds of story:
   * help stories — capture `snouty <cmd> --help` next to that command's default
     output (slugs like `help-runs-properties`) and judge whether the help is
     informative, clear, concise, consistent, and *aligned* with what the command
-    prints. Commands that mutate state or need an interactive arg (launch,
-    debug, validate, update, completions) are help-only. An automated check
-    verifies any column/field the help names actually appears in the output.
+    prints. Commands that mutate state, need an interactive arg, or run until
+    stopped (launch, debug, validate, update, completions, mcp) are help-only.
+    An automated check verifies any column/field the help names actually
+    appears in the output.
   * TTY stories — drive an interactive command (today only `snouty login`) on a
     real pseudo-terminal and record the conversation: one *frame* per prompt,
     an asciinema recording to replay, and the files the command persisted. See
@@ -1976,8 +1977,8 @@ def build_stories(d: Discovery) -> list[Story]:
 # Help stories: render each command's `--help` next to its default output, with
 # rubrics that ask whether the help is informative, clear, concise, consistent,
 # and aligned with what the command actually prints. Commands that mutate state
-# (launch, debug, validate, update) or need an interactive arg (completions) are
-# help-only — `args=[]` so nothing is executed.
+# (launch, debug, validate, update), need an interactive arg (completions), or
+# run until stopped (mcp) are help-only — `args=[]` so nothing is executed.
 # ---------------------------------------------------------------------------
 
 
@@ -1996,9 +1997,9 @@ _OUTPUT_RUBRIC = (
     " Compare the help against the default output shown below it."
 )
 _HELP_ONLY_RUBRIC = (
-    " This command mutates state or needs an interactive argument, so only its "
-    "help is shown — judge the help text on its own merits and for consistency "
-    "with its siblings."
+    " This command mutates state, needs an interactive argument, or runs until "
+    "stopped, so only its help is shown — judge the help text on its own merits "
+    "and for consistency with its siblings."
 )
 
 
@@ -2186,6 +2187,14 @@ def build_help_stories(d: Discovery) -> list[Story]:
             "I run `snouty update --help` to understand what updating does.",
             ["update"],
         ),
+        _help_story(
+            "help-mcp",
+            "Learn how to serve snouty to an AI agent",
+            "I run `snouty mcp --help` to learn how to start the MCP server, the URL my "
+            "agent connects to, which tools it offers, and which Host values it accepts. "
+            "The help should say how to stop the server and what it logs.",
+            ["mcp"],
+        ),
         # -- docs (help-only: output depends on a downloaded docs DB) --------
         _help_story(
             "help-docs",
@@ -2202,7 +2211,9 @@ def build_help_stories(d: Discovery) -> list[Story]:
         _help_story(
             "help-docs-tree",
             "Learn to browse the docs tree",
-            "I run `snouty docs tree --help` to learn how to browse documentation paths.",
+            "I run `snouty docs tree --help` to learn how to browse documentation paths. "
+            "I also want it to describe the `--json` output well enough to write a `jq` "
+            "filter over the nodes without running the command first.",
             ["docs", "tree"],
         ),
         _help_story(

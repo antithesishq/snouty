@@ -1,0 +1,21 @@
+Interact with test runs
+
+List, inspect, and view logs for Antithesis test runs.
+
+When no subcommand is given, lists all runs (same as `snouty runs list`).
+
+Examples:
+  snouty runs
+  snouty runs list --status completed --launcher nightly
+  snouty runs show <run_id>
+  snouty runs wait <run_id>
+  snouty runs properties <run_id>
+  snouty runs properties --failing <run_id>
+  snouty runs properties <run_id> --name <substring> --detail
+  snouty runs build-logs <run_id>
+  snouty runs logs <run_id> <hash> [vtime]
+  snouty runs events <run_id> -m <query>
+
+Add --json for machine-readable output. Every subcommand prints JSON in place
+of its table or its rendered events:
+  snouty --json runs list | jq -r .run_id

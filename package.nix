@@ -12,7 +12,8 @@ rustPlatform.buildRustPackage (finalAttrs: {
   __structuredAttrs = true;
 
   # Every path that Cargo.toml declares must appear here: workspace members,
-  # path dependencies, and [[example]] paths.
+  # path dependencies, and [[example]] paths. So must every path that build.rs
+  # reads.
   src = lib.fileset.toSource {
     root = ./.;
     fileset = lib.fileset.unions [
@@ -20,6 +21,7 @@ rustPlatform.buildRustPackage (finalAttrs: {
       ./Cargo.toml
       ./build.rs
       ./examples
+      ./help
       ./snouty-macros
       ./src
     ];

@@ -1,0 +1,37 @@
+Validate local Antithesis setup
+
+Compose configs:
+  Runs docker-compose locally and watches for the setup-complete event to
+  confirm instrumentation is working. After setup-complete is detected,
+  discovers test commands from /opt/antithesis/test/v1 inside the
+  running containers and validates their structure.
+
+  Before starting anything, validate resolves the compose file twice — with
+  your shell and under a scrubbed environment matching the hermetic Antithesis
+  environment — and fails if any ${VAR} resolves differently, catching setups
+  that only work locally because a value came from your shell. Use
+  --allow-compose-divergence to downgrade that to a warning.
+
+  Test commands are discovered by scanning /opt/antithesis/test/v1 from each
+  running container for {test_name}/{command} entries. Test commands are
+  validated to have recognized prefixes and at least one driver or anytime
+  test command when any are present. Test commands are not executed.
+
+  The setup-complete event is watched through a temp directory bind-mounted
+  into each container. If your container engine runs inside a VM or on
+  another machine and does not share this machine's temp directory, snouty
+  will not be able to see the setup-complete event. Set SNOUTY_TEMP_DIR to a
+  directory under a path the VM shares with write access, or share this
+  machine's temp directory with the VM.
+
+Kubernetes configs:
+  Runs docker.io/antithesishq/k8s-validator against the manifests/
+  directory to perform static analysis of the manifests. --timeout,
+  --keep-running, and --allow-compose-divergence have no effect here (no
+  workloads or containers are started, and there is no docker-compose config
+  to render).
+
+Example:
+  snouty validate ./config
+  snouty validate ./config --timeout 10
+  snouty validate ./k8s-config

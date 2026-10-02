@@ -1,0 +1,20 @@
+Check for and install updates
+
+Runs the bundled `snouty-update` helper, which checks for a newer release and
+replaces the snouty binary in place. Does nothing if `snouty-update` is not
+installed alongside snouty.
+
+Pass a version to install a specific release instead of the latest, including
+pre-releases:
+  snouty update 0.6.0
+  snouty update 0.6.0-rc.1
+
+The update channel decides what "latest" means: `stable` (the default)
+installs the latest release, `unstable` also considers pre-releases but still
+installs the latest release when it is newer than every pre-release. Set the
+channel with the `update_channel` setting (or SNOUTY_UPDATE_CHANNEL), and
+override it for one run with --channel:
+  snouty update --channel unstable
+
+Installing a version older than the one you're running is a downgrade and
+requires --force.

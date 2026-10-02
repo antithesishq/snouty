@@ -717,6 +717,684 @@ fn run_engine_spec_case(runtime_name: &'static str, case: EngineSpecCase) {
     }
 }
 
+/// The `snouty mcp` process that `mcp-server` started. The spec runs on one
+/// thread, so a thread-local can hold it for the fn-pointer commands.
+struct McpServer {
+    child: std::process::Child,
+    stdout_path: std::path::PathBuf,
+    stderr_path: std::path::PathBuf,
+}
+
+impl McpServer {
+    /// The process output so far, with `status` as its exit status.
+    fn output(&self, status: std::process::ExitStatus) -> std::process::Output {
+        std::process::Output {
+            status,
+            stdout: std::fs::read(&self.stdout_path).unwrap_or_default(),
+            stderr: std::fs::read(&self.stderr_path).unwrap_or_default(),
+        }
+    }
+}
+
+thread_local! {
+    static MCP_SERVER: RefCell<Option<McpServer>> = const { RefCell::new(None) };
+}
+
+/// The connection of the tool call that `mcp-call -bg` sent, so that
+/// `mcp-disconnect` can close it. The call runs on its own thread, so a
+/// thread-local cannot hold it.
+static MCP_BG_CALL: std::sync::Mutex<Option<TcpStream>> = std::sync::Mutex::new(None);
+
+const MCP_PROTOCOL_VERSION: rmcp::model::ProtocolVersion =
+    rmcp::model::ProtocolVersion::LATEST_WITH_INITIALIZE;
+
+/// How long `mcp-server` waits for `Listening on`, and `wait-file` for its
+/// file.
+const MCP_START_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// How long `mcp-stop` waits for the server to exit after the signal.
+const MCP_STOP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+const MCP_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(20);
+
+/// Kills the server that a spec did not stop, so it does not outlive its spec.
+fn kill_mcp_server() {
+    if let Some(mut server) = MCP_SERVER.take() {
+        let _ = server.child.kill();
+        let _ = server.child.wait();
+    }
+    MCP_BG_CALL.lock().unwrap().take();
+}
+
+/// Calls `check` every `MCP_POLL_INTERVAL` until it returns `Some`, for up
+/// to `timeout`. `None` means that the time ran out.
+fn poll<T>(
+    timeout: std::time::Duration,
+    mut check: impl FnMut() -> testscript_rs::Result<Option<T>>,
+) -> testscript_rs::Result<Option<T>> {
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        if let Some(value) = check()? {
+            return Ok(Some(value));
+        }
+        if std::time::Instant::now() > deadline {
+            return Ok(None);
+        }
+        thread::sleep(MCP_POLL_INTERVAL);
+    }
+}
+
+/// Waits up to `timeout` for `child` to exit. When the time runs out, kills
+/// it and returns `Err` with the status after the kill.
+fn wait_exit(
+    child: &mut std::process::Child,
+    timeout: std::time::Duration,
+) -> testscript_rs::Result<Result<std::process::ExitStatus, std::process::ExitStatus>> {
+    let wait_err = |e: std::io::Error| err(format!("wait snouty: {e}"));
+    if let Some(status) = poll(timeout, || child.try_wait().map_err(wait_err))? {
+        return Ok(Ok(status));
+    }
+    let _ = child.kill();
+    Ok(Err(child.wait().map_err(wait_err)?))
+}
+
+/// `mcp-server <snouty args…>`: starts snouty in the background, with stdout
+/// and stderr in the files `mcp.stdout` and `mcp.stderr`. When it prints
+/// `Listening on ADDR`, sets `MCP_ADDR` and `MCP_PORT`.
+/// If the process exits first, its output becomes the last output and the
+/// command fails.
+fn cmd_mcp_server(
+    env: &mut testscript_rs::TestEnvironment,
+    args: &[String],
+) -> testscript_rs::Result<()> {
+    if MCP_SERVER.with_borrow(Option::is_some) {
+        return Err(err(
+            "mcp-server: a server is already running; stop it with mcp-stop".to_string(),
+        ));
+    }
+    let expanded: Vec<String> = args.iter().map(|a| env.substitute_env_vars(a)).collect();
+    let stdout_path = env.current_dir.join("mcp.stdout");
+    let stderr_path = env.current_dir.join("mcp.stderr");
+    let create = |path: &std::path::Path| {
+        std::fs::File::create(path).map_err(|e| err(format!("create {}: {e}", path.display())))
+    };
+    let mut cmd = snouty_cmd(env, &expanded);
+    // The spec setup turns on debug logging, which would bury the request
+    // log that the specs read.
+    cmd.env_remove("RUST_LOG")
+        .stdout(create(&stdout_path)?)
+        .stderr(create(&stderr_path)?);
+    let child = cmd.spawn().map_err(|e| err(format!("spawn snouty: {e}")))?;
+    let mut server = McpServer {
+        child,
+        stdout_path,
+        stderr_path,
+    };
+
+    let listening = regex::Regex::new(r"(?m)^Listening on (\S+)$").unwrap();
+    // `Ok` is the listen address, and `Err` the status of an early exit.
+    let started = poll(MCP_START_TIMEOUT, || {
+        let stdout = std::fs::read_to_string(&server.stdout_path).unwrap_or_default();
+        if let Some(found) = listening.captures(&stdout) {
+            return Ok(Some(Ok(found[1].to_string())));
+        }
+        let exited = server.child.try_wait();
+        Ok(exited
+            .map_err(|e| err(format!("wait snouty: {e}")))?
+            .map(Err))
+    })?;
+    let addr = match started {
+        Some(Ok(addr)) => addr,
+        Some(Err(status)) => {
+            let output = server.output(status);
+            let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+            env.last_output = Some(output);
+            return Err(err(format!(
+                "snouty exited before it listened ({status})\nstderr:\n{stderr}"
+            )));
+        }
+        None => {
+            let _ = server.child.kill();
+            let status = server
+                .child
+                .wait()
+                .map_err(|e| err(format!("wait snouty: {e}")))?;
+            env.last_output = Some(server.output(status));
+            return Err(err(format!(
+                "snouty did not print `Listening on` in {MCP_START_TIMEOUT:?}"
+            )));
+        }
+    };
+    let port = addr
+        .parse::<std::net::SocketAddr>()
+        .map_err(|e| err(format!("listen address {addr}: {e}")))?
+        .port()
+        .to_string();
+
+    env.set_env_var("MCP_ADDR", &addr);
+    env.set_env_var("MCP_PORT", &port);
+    env.last_output = Some(server.output(std::process::ExitStatus::default()));
+    MCP_SERVER.set(Some(server));
+    Ok(())
+}
+
+/// How long `mcp-stdio` waits for each response, and for the exit.
+const MCP_STDIO_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// `mcp-stdio <file> <snouty args…>`: runs snouty and writes each line of
+/// the file to its stdin. When it has written one response line for each
+/// request with an `id`, closes stdin and waits for the exit. The output
+/// becomes the last output. Fails when the exit status is not 0. snouty
+/// stops when stdin closes, so the command reads the responses first.
+fn cmd_mcp_stdio(
+    env: &mut testscript_rs::TestEnvironment,
+    args: &[String],
+) -> testscript_rs::Result<()> {
+    let [file, rest @ ..] = args else {
+        return Err(err("mcp-stdio requires <file> <snouty args…>".to_string()));
+    };
+    let path = resolve_spec_path(env, file)?;
+    let input =
+        std::fs::read_to_string(&path).map_err(|e| err(format!("read {}: {e}", path.display())))?;
+    let requests = input
+        .lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .filter(|message| message.get("id").is_some())
+        .count();
+    let expanded: Vec<String> = rest.iter().map(|a| env.substitute_env_vars(a)).collect();
+    // stderr goes to a file, so a long request log cannot fill the pipe and
+    // block snouty.
+    let stderr_path = env.current_dir.join("mcp-stdio.stderr");
+    let stderr = std::fs::File::create(&stderr_path)
+        .map_err(|e| err(format!("create {}: {e}", stderr_path.display())))?;
+    let mut cmd = snouty_cmd(env, &expanded);
+    cmd.env_remove("RUST_LOG")
+        .stdin(Stdio::piped())
+        .stderr(stderr);
+    let mut child = cmd.spawn().map_err(|e| err(format!("spawn snouty: {e}")))?;
+
+    let mut stdin = child.stdin.take().expect("stdin is piped");
+    // The server reads one message per line, and a fixture file can end
+    // with no newline.
+    for line in input.lines() {
+        writeln!(stdin, "{line}").map_err(|e| err(format!("write snouty stdin: {e}")))?;
+    }
+    let stdout = child.stdout.take().expect("stdout is piped");
+    let (lines_tx, lines_rx) = std::sync::mpsc::channel();
+    thread::spawn(move || {
+        use std::io::BufRead;
+        for line in std::io::BufReader::new(stdout).lines() {
+            let Ok(line) = line else { break };
+            if lines_tx.send(line).is_err() {
+                break;
+            }
+        }
+    });
+    let mut stdout = String::new();
+    for _ in 0..requests {
+        match lines_rx.recv_timeout(MCP_STDIO_TIMEOUT) {
+            Ok(line) => {
+                stdout.push_str(&line);
+                stdout.push('\n');
+            }
+            Err(_) => break,
+        }
+    }
+    drop(stdin);
+
+    let Ok(status) = wait_exit(&mut child, MCP_STDIO_TIMEOUT)? else {
+        return Err(err(format!(
+            "snouty did not exit in {MCP_STDIO_TIMEOUT:?} after stdin closed"
+        )));
+    };
+    // The lines that came after the last response, such as a message the
+    // server wrote by mistake.
+    stdout.extend(lines_rx.try_iter().map(|line| line + "\n"));
+    env.last_output = Some(std::process::Output {
+        status,
+        stdout: stdout.into_bytes(),
+        stderr: std::fs::read(&stderr_path).unwrap_or_default(),
+    });
+    if !status.success() {
+        return Err(err(format!("snouty exited with {status}")));
+    }
+    Ok(())
+}
+
+/// `mcp-stop [-TERM|-INT|-HUP]`: sends the signal (default TERM) and waits
+/// for the server to exit. The server output becomes the last output. Fails
+/// when the exit status is not 0, or when the server does not exit in time.
+fn cmd_mcp_stop(
+    env: &mut testscript_rs::TestEnvironment,
+    args: &[String],
+) -> testscript_rs::Result<()> {
+    let signal = match args {
+        [] => "TERM",
+        [flag] if matches!(flag.as_str(), "-TERM" | "-INT" | "-HUP") => &flag[1..],
+        _ => {
+            return Err(err(
+                "mcp-stop accepts one of -TERM, -INT or -HUP".to_string()
+            ));
+        }
+    };
+    let mut server = MCP_SERVER
+        .take()
+        .ok_or_else(|| err("mcp-stop: no server is running".to_string()))?;
+    let sent = std::process::Command::new("kill")
+        .args(["-s", signal, &server.child.id().to_string()])
+        .status()
+        .map_err(|e| err(format!("run kill: {e}")))?;
+    if !sent.success() {
+        let _ = server.child.kill();
+        let _ = server.child.wait();
+        return Err(err(format!("kill -s {signal} failed: {sent}")));
+    }
+
+    let status = match wait_exit(&mut server.child, MCP_STOP_TIMEOUT)? {
+        Ok(status) => status,
+        Err(killed) => {
+            env.last_output = Some(server.output(killed));
+            return Err(err(format!(
+                "snouty did not exit in {MCP_STOP_TIMEOUT:?} after SIG{signal}"
+            )));
+        }
+    };
+    let output = server.output(status);
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    env.last_output = Some(output);
+    if !status.success() {
+        return Err(err(format!(
+            "snouty exited with {status} after SIG{signal}\nstderr:\n{stderr}"
+        )));
+    }
+    Ok(())
+}
+
+/// One HTTP response, as the harness client reads it.
+struct HttpResponse {
+    status: u16,
+    body: String,
+}
+
+impl HttpResponse {
+    /// The JSON-RPC message in the body. The server runs in JSON response
+    /// mode, so the body is one JSON value, not an SSE stream.
+    fn message(&self) -> Result<serde_json::Value, String> {
+        serde_json::from_str(&self.body)
+            .map_err(|e| format!("parse JSON-RPC body: {e}\n{}", self.body))
+    }
+}
+
+/// What an MCP request sends, apart from its JSON-RPC body.
+#[derive(Clone, Copy)]
+struct McpRequest<'a> {
+    addr: &'a str,
+    /// The Host header. `None` sends `addr`.
+    host: Option<&'a str>,
+    path: &'a str,
+    origin: Option<&'a str>,
+    /// Put a handle to the connection in [`MCP_BG_CALL`] before it sends.
+    /// `mcp_call` applies it to the tool call only.
+    share: bool,
+}
+
+impl<'a> McpRequest<'a> {
+    fn to(addr: &'a str) -> Self {
+        McpRequest {
+            addr,
+            host: None,
+            path: snouty::mcp::MCP_PATH,
+            origin: None,
+            share: false,
+        }
+    }
+
+    /// POSTs `body` over a new connection with `Connection: close`, and reads
+    /// the response to its end. The harness has its own client, because it
+    /// must send any Host header the spec names.
+    fn post(&self, body: &serde_json::Value) -> Result<HttpResponse, String> {
+        let body = body.to_string();
+        let mut head = format!(
+            "POST {} HTTP/1.1\r\nHost: {}\r\nContent-Type: application/json\r\n\
+             Accept: application/json, text/event-stream\r\n\
+             MCP-Protocol-Version: {MCP_PROTOCOL_VERSION}\r\n\
+             Content-Length: {}\r\nConnection: close\r\n",
+            self.path,
+            self.host.unwrap_or(self.addr),
+            body.len(),
+        );
+        if let Some(origin) = self.origin {
+            head.push_str(&format!("Origin: {origin}\r\n"));
+        }
+        head.push_str("\r\n");
+
+        let mut stream =
+            TcpStream::connect(self.addr).map_err(|e| format!("connect {}: {e}", self.addr))?;
+        if self.share {
+            let handle = stream
+                .try_clone()
+                .map_err(|e| format!("clone connection: {e}"))?;
+            *MCP_BG_CALL.lock().unwrap() = Some(handle);
+        }
+        stream
+            .write_all(head.as_bytes())
+            .and_then(|()| stream.write_all(body.as_bytes()))
+            .map_err(|e| format!("send request: {e}"))?;
+        let mut raw = Vec::new();
+        stream
+            .read_to_end(&mut raw)
+            .map_err(|e| format!("read response: {e}"))?;
+        let raw = String::from_utf8_lossy(&raw);
+        let (head, body) = raw
+            .split_once("\r\n\r\n")
+            .ok_or_else(|| format!("response has no header end:\n{raw}"))?;
+        let mut lines = head.split("\r\n");
+        let status = lines
+            .next()
+            .and_then(|line| line.split(' ').nth(1))
+            .and_then(|code| code.parse().ok())
+            .ok_or_else(|| format!("bad status line:\n{head}"))?;
+        let chunked = lines.filter_map(|line| line.split_once(':')).any(|(n, v)| {
+            n.trim().eq_ignore_ascii_case("transfer-encoding") && v.contains("chunked")
+        });
+        if chunked {
+            return Err("chunked responses are not supported".to_string());
+        }
+        Ok(HttpResponse {
+            status,
+            body: body.to_string(),
+        })
+    }
+}
+
+/// The `result` of a JSON-RPC response. The error is the text a spec reads
+/// on stderr: `HTTP <status>` or `error <code>: <message>`.
+fn rpc_result(response: &HttpResponse) -> Result<serde_json::Value, String> {
+    if !(200..300).contains(&response.status) {
+        return Err(format!("HTTP {}", response.status));
+    }
+    let mut message = response.message()?;
+    if let Some(error) = message.get("error") {
+        let code = error.get("code").and_then(|c| c.as_i64()).unwrap_or(0);
+        let text = error.get("message").and_then(|m| m.as_str()).unwrap_or("");
+        return Err(format!("error {code}: {text}"));
+    }
+    message
+        .get_mut("result")
+        .map(serde_json::Value::take)
+        .ok_or_else(|| format!("response has no result or error: {message}"))
+}
+
+fn spec_output(success: bool, stdout: String, stderr: String) -> std::process::Output {
+    use std::os::unix::process::ExitStatusExt;
+    std::process::Output {
+        status: std::process::ExitStatus::from_raw(if success { 0 } else { 1 << 8 }),
+        stdout: stdout.into_bytes(),
+        stderr: stderr.into_bytes(),
+    }
+}
+
+/// Parses `<method|tool> [json]`, the shape both `mcp-call` and `mcp-rpc`
+/// end with.
+fn name_and_params(
+    env: &testscript_rs::TestEnvironment,
+    directive: &str,
+    args: &[String],
+) -> testscript_rs::Result<(String, Option<serde_json::Value>)> {
+    let (name, json) = match args {
+        [name] => (name, None),
+        [name, json] => (name, Some(json)),
+        _ => return Err(err(format!("{directive} requires <name> [json]"))),
+    };
+    let params = json
+        .map(|json| {
+            let json = env.substitute_env_vars(json);
+            serde_json::from_str(&json)
+                .map_err(|e| err(format!("{directive}: bad JSON {json}: {e}")))
+        })
+        .transpose()?;
+    Ok((name.clone(), params))
+}
+
+fn mcp_addr(env: &testscript_rs::TestEnvironment) -> testscript_rs::Result<String> {
+    env.env_vars
+        .get("MCP_ADDR")
+        .cloned()
+        .ok_or_else(|| err("MCP_ADDR is not set; start a server with mcp-server".to_string()))
+}
+
+/// Initializes the server and calls one tool. The error is
+/// `(stdout, stderr)` for the last output.
+fn mcp_call(
+    call: McpRequest,
+    tool: &str,
+    arguments: Option<serde_json::Value>,
+) -> Result<String, (String, String)> {
+    let fail = |stderr: String| (String::new(), stderr);
+    let request = McpRequest {
+        share: false,
+        ..call
+    };
+    let initialize = request
+        .post(&serde_json::json!({
+            "jsonrpc": "2.0", "id": 1, "method": "initialize",
+            "params": {
+                "protocolVersion": MCP_PROTOCOL_VERSION,
+                "capabilities": {},
+                "clientInfo": {"name": "snouty-spec", "version": "0"},
+            },
+        }))
+        .map_err(fail)?;
+    rpc_result(&initialize).map_err(|e| fail(format!("initialize: {e}")))?;
+    let initialized = request
+        .post(&serde_json::json!({"jsonrpc": "2.0", "method": "notifications/initialized"}))
+        .map_err(fail)?;
+    if !(200..300).contains(&initialized.status) {
+        return Err(fail(format!("initialized: HTTP {}", initialized.status)));
+    }
+
+    let mut params = serde_json::json!({"name": tool});
+    if let Some(arguments) = arguments {
+        params["arguments"] = arguments;
+    }
+    let request = McpRequest {
+        share: call.share,
+        ..request
+    };
+    let call = request
+        .post(&serde_json::json!({"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": params}))
+        .map_err(fail)?;
+    let result = rpc_result(&call).map_err(fail)?;
+    let text = match result
+        .get("content")
+        .and_then(|c| c.as_array())
+        .map(Vec::as_slice)
+    {
+        Some([block]) if block.get("type").and_then(|t| t.as_str()) == Some("text") => block
+            .get("text")
+            .and_then(|t| t.as_str())
+            .unwrap_or_default()
+            .to_string(),
+        _ => return Err(fail(format!("expected exactly one text block: {result}"))),
+    };
+    if result.get("isError").and_then(|e| e.as_bool()) == Some(true) {
+        return Err((text, "isError".to_string()));
+    }
+    Ok(text)
+}
+
+/// `mcp-call [-bg] <tool> [arguments-json]`: initializes a session with the
+/// server at `MCP_ADDR`, then calls the tool. stdout gets the one text block
+/// of the result. A result with `isError` fails, with the text on stdout. A
+/// JSON-RPC error fails with `error <code>: <message>` on stderr, and an HTTP
+/// error with `HTTP <status>`. With `-bg`, the call runs on a thread and the
+/// command returns at once, with no output; `mcp-disconnect` closes its
+/// connection.
+fn cmd_mcp_call(
+    env: &mut testscript_rs::TestEnvironment,
+    args: &[String],
+) -> testscript_rs::Result<()> {
+    let (background, args) = match args {
+        [flag, rest @ ..] if flag == "-bg" => (true, rest),
+        _ => (false, args),
+    };
+    let (tool, arguments) = name_and_params(env, "mcp-call", args)?;
+    let addr = mcp_addr(env)?;
+    if background {
+        thread::spawn(move || {
+            let call = McpRequest {
+                share: true,
+                ..McpRequest::to(&addr)
+            };
+            mcp_call(call, &tool, arguments)
+        });
+        return Ok(());
+    }
+    match mcp_call(McpRequest::to(&addr), &tool, arguments) {
+        Ok(text) => {
+            env.last_output = Some(spec_output(true, text, String::new()));
+            Ok(())
+        }
+        Err((stdout, stderr)) => {
+            let message = format!("mcp-call {tool} failed\nstderr:\n{stderr}\nstdout:\n{stdout}");
+            env.last_output = Some(spec_output(false, stdout, stderr));
+            Err(err(message))
+        }
+    }
+}
+
+/// `mcp-rpc [-host H] [-path P] [-origin O] <method> [params-json]`: sends one
+/// JSON-RPC request to `MCP_ADDR`, with no session. stdout gets the `result`
+/// as compact JSON. An HTTP error fails with `HTTP <status>` on stderr, and a
+/// JSON-RPC error with `error <code>: <message>`.
+fn cmd_mcp_rpc(
+    env: &mut testscript_rs::TestEnvironment,
+    args: &[String],
+) -> testscript_rs::Result<()> {
+    let addr = mcp_addr(env)?;
+    let mut request = McpRequest::to(&addr);
+    let mut rest = args;
+    let (mut host, mut path, mut origin) = (None, None, None);
+    while let [flag, value, tail @ ..] = rest {
+        let slot = match flag.as_str() {
+            "-host" => &mut host,
+            "-path" => &mut path,
+            "-origin" => &mut origin,
+            _ => break,
+        };
+        *slot = Some(env.substitute_env_vars(value));
+        rest = tail;
+    }
+    request.host = host.as_deref();
+    request.path = path.as_deref().unwrap_or(request.path);
+    request.origin = origin.as_deref();
+    let (method, params) = name_and_params(env, "mcp-rpc", rest)?;
+
+    let mut body = serde_json::json!({"jsonrpc": "2.0", "id": 1, "method": method});
+    if let Some(params) = params {
+        body["params"] = params;
+    }
+    let response = request.post(&body).map_err(err)?;
+    match rpc_result(&response) {
+        Ok(result) => {
+            env.last_output = Some(spec_output(true, format!("{result}\n"), String::new()));
+            Ok(())
+        }
+        Err(stderr) => {
+            let message = format!("mcp-rpc {method} failed: {stderr}");
+            env.last_output = Some(spec_output(false, String::new(), format!("{stderr}\n")));
+            Err(err(message))
+        }
+    }
+}
+
+/// `mcp-disconnect`: closes the connection of the tool call that
+/// `mcp-call -bg` sent, as a client that goes away does.
+fn cmd_mcp_disconnect(
+    _env: &mut testscript_rs::TestEnvironment,
+    _args: &[String],
+) -> testscript_rs::Result<()> {
+    let stream = MCP_BG_CALL
+        .lock()
+        .unwrap()
+        .take()
+        .ok_or_else(|| err("mcp-disconnect: no mcp-call -bg connection".to_string()))?;
+    stream
+        .shutdown(std::net::Shutdown::Both)
+        .map_err(|e| err(format!("close connection: {e}")))
+}
+
+/// `mock-blackhole-server [-docs] <name>`: an API server that accepts
+/// connections and never answers. It writes the file `<name>.hit` when a
+/// connection arrives, and `<name>.closed` when the client closes one. It
+/// points the API env vars at itself, or with `-docs`, the docs URL.
+fn cmd_mock_blackhole_server(
+    env: &mut testscript_rs::TestEnvironment,
+    args: &[String],
+) -> testscript_rs::Result<()> {
+    let (docs, name) = match args {
+        [name] => (false, name),
+        [flag, name] if flag == "-docs" => (true, name),
+        _ => {
+            return Err(err(
+                "mock-blackhole-server requires [-docs] <name>".to_string()
+            ));
+        }
+    };
+    if is_staging() {
+        return Err(err(
+            "mock-blackhole-server is not supported against staging; guard the block with [!staging]"
+                .to_string(),
+        ));
+    }
+    let listener =
+        TcpListener::bind("127.0.0.1:0").map_err(|e| err(format!("failed to bind: {e}")))?;
+    let addr = listener
+        .local_addr()
+        .map_err(|e| err(format!("failed to get addr: {e}")))?;
+    let hit = env.current_dir.join(format!("{name}.hit"));
+    let closed = env.current_dir.join(format!("{name}.closed"));
+    thread::spawn(move || {
+        for mut stream in listener.incoming().flatten() {
+            let _ = std::fs::write(&hit, "");
+            let closed = closed.clone();
+            // Read and never answer, until the client closes the connection.
+            thread::spawn(move || {
+                let mut buf = [0u8; 4096];
+                while matches!(stream.read(&mut buf), Ok(n) if n > 0) {}
+                let _ = std::fs::write(&closed, "");
+            });
+        }
+    });
+    if docs {
+        env.set_env_var("ANTITHESIS_DOCS_URL", &format!("http://{addr}"));
+    } else {
+        env.set_env_var("ANTITHESIS_BASE_URL", &format!("http://{addr}"));
+        env.set_env_var("ANTITHESIS_API_KEY", "blackhole-key");
+        env.set_env_var("ANTITHESIS_TENANT", "testtenant");
+    }
+    Ok(())
+}
+
+/// `wait-file <path>`: waits until the file exists, for up to
+/// [`MCP_START_TIMEOUT`].
+fn cmd_wait_file(
+    env: &mut testscript_rs::TestEnvironment,
+    args: &[String],
+) -> testscript_rs::Result<()> {
+    let [path_arg] = args else {
+        return Err(err("wait-file requires <path>".to_string()));
+    };
+    let path = resolve_spec_path(env, path_arg)?;
+    match poll(MCP_START_TIMEOUT, || Ok(path.exists().then_some(())))? {
+        Some(()) => Ok(()),
+        None => Err(err(format!(
+            "{} did not appear in {MCP_START_TIMEOUT:?}",
+            path.display()
+        ))),
+    }
+}
+
 // --- Test functions ---
 
 #[test]
@@ -749,6 +1427,14 @@ fn spec_tests() {
             .command("env_from_json", cmd_env_from_json)
             .command("file", cmd_file)
             .command("set-env", cmd_set_env)
+            .command("mcp-server", cmd_mcp_server)
+            .command("mcp-call", cmd_mcp_call)
+            .command("mcp-rpc", cmd_mcp_rpc)
+            .command("mcp-stop", cmd_mcp_stop)
+            .command("mcp-stdio", cmd_mcp_stdio)
+            .command("mcp-disconnect", cmd_mcp_disconnect)
+            .command("mock-blackhole-server", cmd_mock_blackhole_server)
+            .command("wait-file", cmd_wait_file)
             .command("snouty-bg", |env, args| {
                 let child = snouty_cmd(env, args)
                     .spawn()
@@ -797,6 +1483,7 @@ fn spec_tests() {
                 Ok(())
             })
             .execute();
+        kill_mcp_server();
 
         match result {
             Ok(()) => {}

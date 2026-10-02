@@ -1,0 +1,17 @@
+Launch a debugging session
+
+Identify the target run with exactly one of --run-id (preferred) or
+--session-id.
+
+Using CLI arguments:
+  snouty debug \
+    --run-id 9043254f65c9c65d63fe043a0abfc7fc-53-1 \
+    --input-hash 6057726200491963783 \
+    --vtime 329.8037810830865 \
+    --description "debug this moment" \
+    --recipients "team@example.com"
+
+Add --json for machine-readable output. The response prints as one JSON
+object:
+  snouty debug --json --run-id <run_id> --input-hash <hash> --vtime <vtime> |
+    jq -r .runId

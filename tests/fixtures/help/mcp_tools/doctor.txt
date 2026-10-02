@@ -1,0 +1,3 @@
+Check the setup of this server: credentials, Antithesis API connection, container runtime, and the resolved settings (tenant, repository). Use it when other tools fail with authentication or connection errors. offline: true skips the API check.
+
+Returns one JSON object: ok (true or false), checks (an array of {name, status: "ok", "warn" or "error", message}, with optional notes), settings (by name; an unset setting is null). isError is set when ok is false.

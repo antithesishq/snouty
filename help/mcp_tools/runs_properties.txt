@@ -1,0 +1,7 @@
+List the property (assertion) results of a run: which passed, which failed, and their example moments. Start here to triage a run. For log lines, use runs_logs or runs_search.
+
+Filters: failing or passing (true; not both), name and group (case-insensitive substrings).
+
+Returns JSONL, one property per line: name, status ("Passing" or "Failing"), group, is_event, example_count, counterexample_count, examples, counterexamples. In an event property (is_event true), each example has moment {input_hash, vtime}. Pass it to runs_logs to read the logs up to that moment.
+
+More: tool_help {"tool": "runs_properties"}

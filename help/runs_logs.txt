@@ -1,0 +1,34 @@
+Stream the logs of one timeline of a run.
+
+{% include "fragments/run_structure.txt" %}
+
+{% if cli %}
+INPUT_HASH identifies the timeline: the hash of every input Antithesis sent
+from the root to that point. Logs stream from the root (or --begin-vtime) to
+the timeline's current end; a run in progress can extend the timeline, so
+the same INPUT_HASH can return more logs later. Give VTIME to end the stream
+at that moment instead.
+
+Output: a `moment HASH` divider opens each timeline segment, and each
+event under it renders on one line as `VTIME [source] payload` — Antithesis
+event shapes (SDK assertions, faults, container lifecycle, test composer)
+each in their own concise form.
+
+Add --json for machine-readable output. Each event prints as one JSON object
+on its own line, and --raw passes the server's events through unchanged:
+  snouty --json runs logs <run_id> <hash> | jq -r .moment.vtime
+{% else %}
+input_hash identifies the timeline: the hash of every input Antithesis sent
+from the root to that point. Give it as a string, exactly as other tools
+return it. Logs start at the root (or at begin_vtime) and end at the
+timeline's current end; a run in progress can extend the timeline, so the
+same input_hash can return more logs later. Give vtime to end the logs at
+that moment instead.
+
+Returns one JSON object per event, one per line. Each event has a moment
+object with input_hash and vtime, and vtime is an exact JSON number. Log
+output is in output_text, and source tells which container and stream
+emitted it. Other event shapes (SDK assertions in antithesis_assert, faults
+in fault) have their own keys. active_faults lists the faults that are
+active at the event.
+{% endif %}

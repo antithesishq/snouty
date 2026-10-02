@@ -1,0 +1,17 @@
+Execute a bash script in a run's live session, at a moment.
+
+The run must have a live session (it is in progress). The script executes on
+a fresh branch of the multiverse, so it does not disturb the running test.
+input_hash and vtime identify the moment to execute at. Give input_hash as a
+string. A moment comes from the example and counterexample moments of the
+runs_properties tool, or from the events of the runs_search tool. timeout is
+the number of seconds the server waits for the script to exit (default 30).
+
+Returns one JSON object per frame of the stream, one per line. An output
+frame has moment, output_text and source.stream: "info" for the script's
+standard output and "error" for its standard error. The last frame is the
+result. It is {"status": "exited", "exit_code": ..., "end_moment": ...}, or
+{"status": "timed_out", "last_moment": ...}. end_moment is the end of the
+new branch, to execute a follow-up script from. A non-zero exit code, a
+timeout, or a stream with no result frame marks the result isError, after
+all the frames.

@@ -17,6 +17,8 @@ stderr '.*No Antithesis credentials found.*'
 stderr '.*needs credentials to authenticate.*'
 stderr '.*ask Antithesis support.*'
 ! stderr '.*ANTITHESIS_USERNAME.*'
+# The report already says what failed, so no error line follows it.
+! stderr 'required checks failed'
 
 # --json emits a structured report on stdout and still exits non-zero when a
 # required credential is missing (so CI can gate on it).
@@ -25,6 +27,7 @@ stdout '.*"ok": false.*'
 stdout '.*"name": "credentials".*'
 stdout '.*"status": "error".*'
 stdout '.*"level": "error".*'
+! stderr 'required checks failed'
 
 # With only username/password set, the credential shortfall downgrades to a
 # warning and the deprecated creds are flagged as launch/debug-only.

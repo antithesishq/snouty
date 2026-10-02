@@ -1,0 +1,512 @@
+# snouty mcp
+#
+# Serve snouty's run, docs and doctor commands to AI agents over the Model
+# Context Protocol (streamable HTTP, stateless, JSON responses; or stdio). The server
+# runs in the foreground. The endpoint is http://HOST:PORT/mcp.
+#
+# Directives:
+#
+#   - `mcp-server <args>` starts snouty in the background and waits for
+#     `Listening on ADDR`. It sets MCP_ADDR and MCP_PORT.
+#   - `mcp-call <tool> [json]` initializes a session and calls the tool. stdout
+#     gets the one text block of the result. A result with `isError` fails,
+#     with the text on stdout. A JSON-RPC error fails with `error CODE: MSG` on
+#     stderr, and an HTTP error with `HTTP STATUS`. With `-bg`, the call runs
+#     in the background, and `mcp-disconnect` closes its connection.
+#   - `mcp-rpc [-host H] [-path P] [-origin O] <method> [json]` sends one
+#     JSON-RPC request and prints its `result`.
+#   - `mcp-stop [-TERM|-INT|-HUP]` sends the signal and waits for the exit.
+#     It fails when the exit status is not 0. Then stdout and stderr are the
+#     server's output, so the request log can be read.
+#   - `mcp-stdio FILE <args>` runs snouty with the lines of FILE on stdin.
+#     When it has one response line for each request, it closes stdin and
+#     waits for the exit. stdout and stderr are the server's output.
+#   - `mock-blackhole-server [-docs] NAME` is an API server that never
+#     answers. It writes the file NAME.hit when a request arrives, and
+#     NAME.closed when the client closes the connection. With -docs, it is the
+#     docs server. `wait-file PATH` waits for a file.
+#
+# A docs tool refreshes the docs database before it reads it, as the docs
+# commands do without --offline. The refresh goes to an address where nothing
+# listens, so it fails fast and the tools read the fixture database.
+env ANTITHESIS_DOCS_URL=http://127.0.0.1:9
+
+# --- Feature gate ---
+
+# snouty mcp is an unstable feature. While it is off, the command is refused
+# with the name of the feature, and top-level help does not list it.
+! snouty mcp --stdio
+stderr '`snouty mcp` is an unstable feature and is not enabled'
+stderr 'SNOUTY_UNSTABLE_FEATURES=mcp'
+snouty --help
+! stdout '^  mcp '
+
+env SNOUTY_UNSTABLE_FEATURES=mcp
+snouty --help
+stdout '^  mcp +Serve snouty'
+
+# --- Flags ---
+
+# The command has --host, --port and --allowed-host.
+snouty mcp --help
+stdout '--host'
+stdout '--port'
+stdout '--allowed-host'
+
+# Each flag value is parsed before the server starts.
+! mcp-server mcp --port bogus
+stderr 'invalid value'
+
+# --host takes an IP address. A name is not resolved.
+! mcp-server mcp --host localhost
+stderr 'invalid value'
+
+# --allowed-host takes a host with an optional port, with no user info.
+! mcp-server mcp --allowed-host user@myhost.example
+stderr 'invalid value'
+! mcp-server mcp --allowed-host myhost.example:99999
+stderr 'invalid value'
+
+# --- Startup ---
+
+# With --port 0, the server picks a free port and prints the address that it
+# listens on. The default host is 127.0.0.1.
+mcp-server mcp --port 0
+stdout '^Listening on 127\.0\.0\.1:\d+$'
+
+# --- tools/list ---
+
+# Eleven tools are listed, each marked read-only. runs_exec is not listed,
+# because the runs-exec unstable feature is off. A tool description is help
+# text for an agent, so it does not name CLI flags.
+mcp-rpc tools/list
+stdout -count=11 '"readOnlyHint":true'
+stdout '"name":"runs_list"'
+stdout '"name":"runs_show"'
+stdout '"name":"runs_properties"'
+stdout '"name":"runs_build_logs"'
+stdout '"name":"runs_logs"'
+stdout '"name":"runs_search"'
+stdout '"name":"docs_tree"'
+stdout '"name":"docs_show"'
+stdout '"name":"docs_search"'
+stdout '"name":"doctor"'
+stdout '"name":"tool_help"'
+! stdout '"name":"runs_exec"'
+! stdout '--json'
+
+# A tool description is short. When it leaves out details, it points to
+# tool_help, which returns the full help as plain text.
+stdout '"name":"runs_search","description":"Search the events of a run[^"]*'
+! stdout 'How a run is structured'
+stdout 'tool_help \{..tool..: ..runs_search..\}'
+mcp-call tool_help '{"tool":"runs_search"}'
+stdout '^Run an event-set DSL query'
+stdout 'How a run is structured'
+stdout 'with_next\('
+! stdout '--json'
+
+# tool_help names only a listed tool that has full help.
+mcp-rpc tools/list
+stdout '"name":"tool_help".*"enum":\["runs_list",[^]]*"doctor"\]'
+! mcp-call tool_help '{"tool":"runs_exec"}'
+stdout '^invalid params: tool: no help for runs_exec$'
+! mcp-call tool_help '{"tool":"nope"}'
+stdout '^invalid params: tool: unknown tool: nope'
+
+# A tool that is not listed cannot be called.
+! mcp-call runs_exec '{"run_id":"r","input_hash":"-1","vtime":1,"script":"ls"}'
+stderr 'unknown tool: runs_exec'
+
+# runs_logs needs only run_id and input_hash.
+mcp-rpc tools/list
+stdout '"name":"runs_logs".*"required":\["run_id","input_hash"\]'
+
+# --- Request checks ---
+
+# The server refuses a request whose Host header is not the listen address.
+# This stops DNS rebinding. A name that resolves to the listen address is
+# refused too.
+! mcp-rpc -host evil.example tools/list
+stderr 'HTTP 403'
+! mcp-rpc -host localhost:$MCP_PORT tools/list
+stderr 'HTTP 403'
+
+# The server refuses a request that has an Origin header, as a browser sends.
+! mcp-rpc -origin http://evil.example tools/list
+stderr 'HTTP 403'
+
+# The endpoint is /mcp. Every other path is not found.
+! mcp-rpc -path /other tools/list
+stderr 'HTTP 404'
+mcp-stop
+
+# Each --allowed-host adds a Host header value that the server accepts. A
+# value with no port matches any port.
+mcp-server mcp --port 0 --allowed-host myhost.example
+mcp-rpc -host myhost.example tools/list
+stdout '"name":"runs_show"'
+mcp-rpc -host myhost.example:$MCP_PORT tools/list
+stdout '"name":"runs_show"'
+! mcp-rpc -host other.example tools/list
+stderr 'HTTP 403'
+mcp-stop
+
+# --- doctor ---
+
+# doctor returns the report JSON. A failed required check makes it a tool
+# error, and the text is the report alone. No credentials are set yet, so the
+# credentials check fails.
+mcp-server mcp --port 0
+! mcp-call doctor '{"offline":true}'
+stdout '"checks"'
+stdout '"name": "credentials"'
+! stdout 'required checks failed'
+mcp-stop
+
+# --settings and --profile apply to the tools, as they do to the other
+# commands.
+mcp-server --settings s.toml --profile p mcp --port 0
+! mcp-call doctor '{"offline":true}'
+stdout '"profile-tenant"'
+mcp-stop
+
+# offline skips the API check. With credentials, a call without offline runs
+# the check, and the API at this address does not answer. As in doctor.txt,
+# the offline call assumes a container runtime.
+[!staging] env ANTITHESIS_API_KEY=testkey
+[!staging] env ANTITHESIS_TENANT=testtenant
+[!staging] env ANTITHESIS_BASE_URL=http://127.0.0.1:1
+[!staging] mcp-server mcp --port 0
+[!staging] mcp-call doctor '{"offline":true}'
+[!staging] ! stdout '"name": "api"'
+[!staging] ! mcp-call doctor
+[!staging] stdout '"name": "api"'
+[!staging] mcp-stop
+
+# --- Runs tools ---
+
+# Each runs tool returns what its command prints with --json. The server
+# reads the API settings when it starts, so the mock starts first.
+mock-runs-server
+mcp-server mcp --port 0
+
+# runs_list returns NDJSON, one run per line.
+mcp-call runs_list '{"status":"completed","limit":1}'
+stdout '^\{.*"run_id":"[^"]+"'
+[!staging] stdout '"run_id":"run-1"'
+env_from_json 0 run_id
+
+# runs_show returns one JSON object.
+mcp-call runs_show '{"run_id":"$R_run_id"}'
+stdout '"run_id": "$R_run_id"'
+[!staging] stdout '"status": "completed"'
+
+# runs_properties returns NDJSON, and filters as the command does.
+mcp-call runs_properties '{"run_id":"$R_run_id"}'
+[!staging] stdout '"name":"Counter value stays below limit"'
+[!staging] stdout '"name":"Setup completes"'
+mcp-call runs_properties '{"run_id":"$R_run_id","failing":true}'
+[!staging] stdout '"name":"Counter value stays below limit"'
+[!staging] ! stdout 'Setup completes'
+[!staging] mcp-call runs_properties '{"run_id":"run-1","passing":true}'
+[!staging] stdout 'Setup completes'
+[!staging] ! stdout 'Counter value'
+[!staging] mcp-call runs_properties '{"run_id":"run-1","name":"SETUP"}'
+[!staging] stdout 'Setup completes'
+[!staging] ! stdout 'Counter value'
+[!staging] mcp-call runs_properties '{"run_id":"run-1","group":"safety"}'
+[!staging] stdout 'Counter value'
+[!staging] ! stdout 'Setup completes'
+
+# runs_list filters as the command does.
+[!staging] mcp-call runs_list '{"status":"incomplete"}'
+[!staging] stdout '"run_id":"run-3"'
+[!staging] ! stdout 'run-1'
+[!staging] mcp-call runs_list '{"limit":2}'
+[!staging] stdout -count=2 '"run_id"'
+[!staging] mcp-call runs_list '{"launcher":"debug"}'
+[!staging] stdout '"run_id":"run-2"'
+[!staging] ! stdout 'run-1'
+
+# runs_build_logs returns NDJSON.
+mcp-call runs_build_logs '{"run_id":"$R_run_id"}'
+[!staging] stdout '"text":"Building image payments-service\.\.\."'
+
+# runs_logs returns NDJSON events. A vtime can be a number or a string.
+[!staging] mcp-call runs_logs '{"run_id":"run-1","input_hash":"-123","vtime":2.0}'
+[!staging] stdout '"output_text"'
+[!staging] stdout '"vtime":1\.0'
+[!staging] mcp-call runs_logs '{"run_id":"run-1","input_hash":"-123","vtime":"2.0"}'
+[!staging] stdout '"vtime":1\.0'
+[!staging] mcp-call runs_logs '{"run_id":"run-1","input_hash":"-123"}'
+[!staging] stdout '"output_text"'
+
+# runs_search returns NDJSON events, up to the limit.
+mcp-call runs_search '{"run_id":"$R_run_id","query":"contains({output_text: \"fault\"})","limit":1}'
+[!staging] mcp-call runs_search '{"run_id":"$R_run_id","query":"contains({output_text: \"parallel_driver_fetch\"})","limit":1}'
+[!staging] stdout '"vtime":400\.5'
+[!staging] ! stdout '"vtime":401\.75'
+
+# --- Errors ---
+
+# A tool error has `isError` and the text that the command writes on stderr.
+# A run that does not exist gives the same message as the command.
+[!staging] ! mcp-call runs_show '{"run_id":"no-such-run"}'
+[!staging] stdout 'run not found: no-such-run'
+[!staging] ! stdout 'API error'
+
+# A stream that fails after it started keeps the lines that came before the
+# error, then the error text.
+[!staging] ! mcp-call runs_logs '{"run_id":"run-stream-error","input_hash":"-123","vtime":1.0}'
+[!staging] stdout '(?s)"output_text":.*starting.*\nError: .*the server reported an error mid-stream: mock stream failure'
+mcp-stop
+
+# --- Param validation ---
+
+# A tool checks its params before it starts work. A bad param is a tool error
+# whose text starts with `invalid params`, so the agent can correct the call.
+# With --verbose, the tools log each API request with a `> ` line; no such line
+# shows that no request was sent.
+mcp-server --verbose mcp --port 0
+! mcp-call runs_search '{"run_id":"x","query":"q","limit":1000}'
+stdout '^invalid params: .*999'
+! mcp-call runs_search '{"run_id":"x","query":"q","limit":0}'
+stdout '^invalid params'
+! mcp-call runs_properties '{"run_id":"x","passing":true,"failing":true}'
+stdout '^invalid params: passing and failing cannot both be true'
+! mcp-call runs_show '{"run_id":"x","bogus":1}'
+stdout '^invalid params: .*unknown field `bogus`'
+! mcp-call runs_show '{}'
+stdout '^invalid params: missing field `run_id`'
+! mcp-call runs_show '{"run_id":""}'
+stdout '^invalid params'
+! mcp-call runs_list '{"status":"bogus"}'
+stdout '^invalid params'
+! mcp-call runs_logs '{"run_id":"x","input_hash":"-1","vtime":"soon"}'
+stdout '^invalid params'
+# The error names the param that is wrong.
+! mcp-call runs_list '{"created_after":"2025-01-01"}'
+stdout '^invalid params: created_after: '
+! mcp-call docs_tree '{"depth":0}'
+stdout '^invalid params'
+! mcp-call docs_search '{"query":"  "}'
+stdout '^invalid params'
+
+# An unknown tool is a JSON-RPC error, not a tool error.
+! mcp-call nope
+stderr '^error -32602: unknown tool: nope$'
+mcp-stop
+! stderr '^> '
+
+# --- Docs tools ---
+
+setup-docs-db
+mcp-server mcp --port 0
+
+# docs_tree returns the tree as one JSON object, as `docs tree --json` does.
+mcp-call docs_tree
+stdout '"children": \['
+stdout '"path": "guides/docker_basics"'
+mcp-call docs_tree '{"filter":"overview"}'
+stdout '"path": "multiverse_debugging/overview"'
+! stdout '"name": "guides"'
+mcp-call docs_tree '{"depth":1}'
+stdout '"name": "guides"'
+! stdout '"name": "docker_basics"'
+
+# docs_show returns the page markdown, not JSON. It takes every path form that
+# `docs show` takes.
+mcp-call docs_show '{"path":"guides/docker_basics"}'
+stdout '^# '
+mcp-call docs_show '{"path":"https://antithesis.com/docs/guides/docker_basics/"}'
+stdout '^# '
+
+# docs_search returns a JSON array of matches.
+mcp-call docs_search '{"query":"docker"}'
+stdout '^\['
+stdout '"path": "/docs/guides/docker_basics/"'
+mcp-call docs_search '{"query":"docker","limit":1}'
+stdout -count=1 '"path"'
+
+# A page that does not exist is a tool error.
+! mcp-call docs_show '{"path":"no/such/page"}'
+stdout 'no/such/page'
+mcp-stop
+
+# A docs tool refreshes the docs database before it reads it.
+[!staging] mock-blackhole-server -docs docs
+[!staging] mcp-server mcp --port 0
+[!staging] mcp-call -bg docs_search '{"query":"docker"}'
+[!staging] wait-file docs.hit
+[!staging] mcp-stop
+[!staging] env ANTITHESIS_DOCS_URL=http://127.0.0.1:9
+
+# --- Request log ---
+
+# The server writes one line on stderr for each request: the time, the HTTP
+# status and the JSON-RPC method. A tool call also shows the tool name, and
+# `isError` or `error CODE` when it failed. The params show only with
+# --verbose.
+[!staging] mock-runs-server
+[!staging] mcp-server mcp --port 0
+[!staging] mcp-call runs_show '{"run_id":"run-1"}'
+[!staging] ! mcp-call runs_show '{"run_id":"no-such-run"}'
+[!staging] ! mcp-call nope
+[!staging] ! mcp-rpc -host evil.example tools/list
+[!staging] ! mcp-rpc -path /other tools/list
+[!staging] mcp-stop
+[!staging] stderr '^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z 200 initialize$'
+[!staging] stderr '^\S+Z 202 notifications/initialized$'
+[!staging] stderr '^\S+Z 200 tools/call runs_show$'
+[!staging] stderr '^\S+Z 200 tools/call runs_show isError$'
+[!staging] stderr '^\S+Z 200 tools/call nope error -32602$'
+[!staging] stderr '^\S+Z 403 tools/list$'
+[!staging] stderr '^\S+Z 404 POST$'
+[!staging] ! stderr '"run_id"'
+
+[!staging] mock-runs-server
+[!staging] mcp-server --verbose mcp --port 0
+[!staging] mcp-call runs_show '{"run_id":"run-1"}'
+[!staging] mcp-call runs_logs '{"run_id":"run-1","input_hash":"-123","vtime":2.0,"begin_vtime":0.5}'
+[!staging] mcp-call runs_list '{"created_after":"2025-01-01T00:00:00Z","created_before":"2025-02-01T00:00:00Z"}'
+[!staging] mcp-stop
+[!staging] stderr '^\S+Z 200 tools/call runs_show \{.*"run_id":"run-1".*\}$'
+# With --verbose, the tools also log their API requests. The request shows
+# that each param reaches the API.
+[!staging] stderr '^> GET http://'
+[!staging] stderr '^> GET .*/logs\?begin_vtime=0\.5&input_hash=-123&vtime=2\.0$'
+[!staging] stderr '^> GET .*created_after=2025-01-01.*created_before=2025-02-01'
+
+# --- Shutdown ---
+
+# SIGINT, SIGTERM and SIGHUP each stop the server with exit status 0.
+mcp-server mcp --port 0
+mcp-stop -INT
+mcp-server mcp --port 0
+mcp-stop -HUP
+mcp-server mcp --port 0
+mcp-stop -TERM
+
+# A stop also ends the tool calls in progress. The call below waits for an API
+# server that never answers. The server still exits in time, and the log line
+# shows that the call ended with no response.
+[!staging] mock-blackhole-server stop
+[!staging] mcp-server mcp --port 0
+[!staging] mcp-call -bg runs_show '{"run_id":"x"}'
+[!staging] wait-file stop.hit
+[!staging] mcp-stop -TERM
+[!staging] stderr '^\S+Z - tools/call runs_show disconnected$'
+
+# A client that goes away also ends its tool call: the server closes the API
+# connection of the call and keeps running.
+[!staging] mock-blackhole-server gone
+[!staging] mcp-server mcp --port 0
+[!staging] mcp-call -bg runs_show '{"run_id":"x"}'
+[!staging] wait-file gone.hit
+[!staging] mcp-disconnect
+[!staging] wait-file gone.closed
+[!staging] mcp-rpc tools/list
+[!staging] mcp-stop
+[!staging] stderr '^\S+Z - tools/call runs_show disconnected$'
+
+# --- stdio ---
+
+# --stdio serves one client over stdin and stdout. It has no address, so it
+# does not take the HTTP flags.
+! snouty mcp --stdio --port 0
+stderr 'cannot be used with'
+! snouty mcp --stdio --allowed-host myhost.example
+stderr 'cannot be used with'
+
+# stdout has only the responses, one JSON-RPC message per line. A fast call
+# can answer before a slow call that came first. The server does not print
+# `Listening on`. It writes the
+# request log on stderr, with no HTTP status. It stops with status 0 when
+# stdin closes.
+mock-runs-server
+mcp-stdio stdio.jsonl mcp --stdio
+stdout -count=4 '^\{"jsonrpc":"2\.0","id":\d,'
+! stdout 'Listening on'
+stdout '"id":1,"result":\{"protocolVersion"'
+stdout -count=11 '"readOnlyHint":true'
+! stdout '"ttlMs"'
+[!staging] stdout '"id":3,"result":\{"content":\[\{"type":"text","text":"\{.*run_id.{3,5}run-1'
+stdout '"id":4,"result":\{"content":\[\{"type":"text","text":"invalid params: missing field `run_id`"\}\],"isError":true\}'
+stderr '^\S+Z initialize$'
+stderr '^\S+Z notifications/initialized$'
+stderr '^\S+Z tools/list$'
+stderr '^\S+Z tools/call runs_list$'
+stderr '^\S+Z tools/call runs_show isError$'
+
+# With --verbose, the log line also shows the params.
+mcp-stdio stdio.jsonl --verbose mcp --stdio
+stderr '^\S+Z tools/call runs_show isError \{"name":"runs_show","arguments":\{\}\}$'
+
+# A client that uses protocol 2026-07-28 sends server/discover and no
+# initialize. Only a list result in that protocol has ttlMs and cacheScope.
+mcp-stdio discover.jsonl mcp --stdio
+stdout '"id":1,"result":\{"resultType":"complete","supportedVersions":\[[^]]*"2026-07-28"'
+stdout '"id":2,"result":\{.*"ttlMs":0,"cacheScope":"public".*"tools":\['
+
+# A blocking doctor check does not stop other calls. Here each container
+# tool call takes one second, and tools/list answers while doctor waits.
+chmod 755 bin/docker
+env SAVED_PATH=$PATH
+env PATH=$WORK/bin:$PATH
+env SNOUTY_CONTAINER_ENGINE=docker
+mcp-stdio slow-doctor.jsonl mcp --stdio
+stdout '(?s)"id":3,.*"id":2,'
+env PATH=$SAVED_PATH
+env SNOUTY_CONTAINER_ENGINE=
+
+# A client that closes stdin before it initializes is not an error.
+mcp-stdio empty.jsonl mcp --stdio
+! stdout .
+
+# --- runs_exec ---
+
+# Every runs_exec call executes a script in a live session, so this section
+# does not run against staging.
+[staging] skip
+
+# The runs-exec unstable feature adds the runs_exec tool.
+env SNOUTY_UNSTABLE_FEATURES=mcp,runs-exec
+mock-runs-server
+mcp-server mcp --port 0
+mcp-rpc tools/list
+stdout -count=12 '"readOnlyHint":true'
+stdout '"name":"runs_exec"'
+mcp-call tool_help '{"tool":"runs_exec"}'
+stdout '^Execute a bash script'
+mcp-call runs_exec '{"run_id":"run-2","input_hash":"-3625518438076122494","vtime":398.4898056755774,"script":"uname -a"}'
+stdout '"output_text":"Linux antithesis 6.12.0'
+! mcp-call runs_exec '{"run_id":"run-2","input_hash":"-1","vtime":1,"script":" "}'
+stdout '^invalid params: script: '
+mcp-stop
+
+-- s.toml --
+tenant = "top-tenant"
+
+[profile.p]
+tenant = "profile-tenant"
+
+-- stdio.jsonl --
+{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"spec","version":"0"}}}
+{"jsonrpc":"2.0","method":"notifications/initialized"}
+{"jsonrpc":"2.0","id":2,"method":"tools/list"}
+{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"runs_list","arguments":{"limit":1}}}
+{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"runs_show","arguments":{}}}
+-- discover.jsonl --
+{"jsonrpc":"2.0","id":1,"method":"server/discover","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientInfo":{"name":"spec","version":"0"},"io.modelcontextprotocol/clientCapabilities":{}}}}
+{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientInfo":{"name":"spec","version":"0"},"io.modelcontextprotocol/clientCapabilities":{}}}}
+-- empty.jsonl --
+-- slow-doctor.jsonl --
+{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"spec","version":"0"}}}
+{"jsonrpc":"2.0","method":"notifications/initialized"}
+{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"doctor","arguments":{"offline":true}}}
+{"jsonrpc":"2.0","id":3,"method":"tools/list"}
+-- bin/docker --
+#!/bin/sh
+sleep 1
+exit 1

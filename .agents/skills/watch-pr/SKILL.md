@@ -102,5 +102,34 @@ another account with write access approves.
   ```
 - **Check failure**: read the failing log with
   `gh run view <run-id> --log-failed`, fix it, and push.
+- **After each push**: keep the title and description true to the branch, as
+  described in step 4.
 - **Merged or closed**: stop related work on that PR. The script exits on its
   own once every watched PR reaches this state.
+
+## 4. Keep the description current
+
+The description says what the PR does now, not what it did when it opened.
+The release writes the changelog from it, so a stale description gives wrong
+release notes.
+
+After each push, compare the title and description with
+`git diff origin/main...HEAD`. Update them when a push changes the behavior,
+the scope, or the reason: a reviewer asks for a different approach, a CI fix
+changes behavior, or a part of the change is dropped or added. A push that
+only fixes formatting, a typo, or a test needs no update.
+
+Rewrite the description as if the PR had been written this way from the
+start. Do not add a log of changes or an "Update:" section; the commits and
+review threads keep that history. Keep the rules of the `open-pr` skill.
+
+Read the current description, edit it in a file, and write it back over
+REST, because the proxy rejects the GraphQL write that `gh pr edit` makes:
+
+```
+gh pr view <PR> --json body --jq .body > pr-body.md
+gh api -X PATCH repos/<owner>/<repo>/pulls/<PR> \
+  -f title="<title>" -F body=@pr-body.md --jq '.html_url'
+```
+
+Delete `pr-body.md` after the update.

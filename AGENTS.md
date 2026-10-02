@@ -210,9 +210,9 @@ All code must be simple and idiomatic.
 - A comment states a precondition, an invariant, a non-obvious reason, or a TODO
   with a trigger. Delete anything else. Narration of how a change was
   investigated belongs in the PR. Prefer to let the code speak for itself.
-- A changelog entry describes behavior the user can perceive, one entry per
-  feature, with the PR link. Leave out implementation detail unless the reader
-  needs it to understand the entry.
+- A PR does not edit `CHANGELOG.md`. The release skill writes the changelog
+  from the descriptions of the merged PRs, so a PR description states the
+  behavior change the user can perceive.
 - All prose is ASD-STE100 simplified technical English.
 - Do not name one platform when the problem is general. Use generic examples,
   not one machine's paths.

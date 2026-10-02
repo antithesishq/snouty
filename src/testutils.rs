@@ -1172,7 +1172,11 @@ fn mock_route_execute_command(run_id: &str, req_body: &str) -> (u16, String) {
             mock_exec_exited(Some(0)),
         ],
         "print-system-logs" => vec![
-            mock_exec_output("info", &format!("include_system_logs={system_logs}"), "398.491"),
+            mock_exec_output(
+                "info",
+                &format!("include_system_logs={system_logs}"),
+                "398.491",
+            ),
             mock_exec_exited(Some(0)),
         ],
         // With include_system_logs, the timeline's other events surround the
@@ -1189,6 +1193,14 @@ fn mock_route_execute_command(run_id: &str, req_body: &str) -> (u16, String) {
         ],
         "with-system-logs" => vec![
             mock_exec_output("info", "script says hi", "398.491"),
+            mock_exec_exited(Some(0)),
+        ],
+        // An event that is not the script's output, sent although the request
+        // did not ask for the timeline.
+        "unexpected-event" => vec![
+            format!(
+                r#"{{"moment":{{"input_hash":"{MOCK_EXEC_BRANCH_HASH}","vtime":"398.4905"}},"source":{{"meta_for":"echidna-cmd-1","name":"bash_command"}},"fuzzpipe":{{"event_type":"Command received"}}}}"#
+            ),
             mock_exec_exited(Some(0)),
         ],
         "print-container" => vec![

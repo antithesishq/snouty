@@ -1479,9 +1479,10 @@ def build_stories(d: Discovery) -> list[Story]:
             "runs-show",
             "Peek at the metadata for a completed run",
             "I want the metadata for one specific run.",
-            "Shows the run id, status, timestamps, launcher, and links.",
+            "Shows the run id, status, timestamps, launcher, and links, then hints at "
+            "`runs properties` for the property results and `--web` for the report.",
             ["runs", "show", d.success],
-            contains_all(d.success, "completed"),
+            contains_all(d.success, "completed", f"snouty runs properties {d.success}"),
             json_capable=False,
         ),
         Story(

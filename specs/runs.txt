@@ -138,6 +138,12 @@ snouty runs show $R_run_id
 ! stdout 'Report.*https'
 [!staging] stdout 'snouty runs show .*--web'
 
+# A completed run has property results, so `snouty runs show` points at
+# `snouty runs properties`, above the `--web` hint.
+mock-runs-server
+snouty runs show $R_run_id
+stdout '(?s)^see property results:\n  snouty runs properties $R_run_id\n\nview the report in your browser:\n'
+
 # `snouty --json runs show --web` resolves the report URL without launching a
 # browser, so a script can capture it. (Plain `--web` would shell out to a
 # browser, so it's not exercised here.)
@@ -372,6 +378,8 @@ snouty runs show $R_run_id
 stdout 'Failure VTime.*'
 stdout 'Failure Hash.*'
 stdout 'Failure Reason +the workload container exited early'
+# An incomplete run has no property results, so there is no properties hint.
+! stdout 'snouty runs properties'
 
 mock-runs-server
 snouty --json runs show $R_run_id

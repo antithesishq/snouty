@@ -1286,6 +1286,15 @@ fn print_run_detail(run: &RunDetail) -> Result<()> {
         )?;
     }
 
+    // Only a completed run has property results: the properties endpoint gives
+    // none for an incomplete or in-progress run, even one with a report link.
+    if run.status == RunStatus::Completed {
+        outln!(
+            "\nsee property results:\n  snouty runs properties {}",
+            run.run_id
+        )?;
+    }
+
     // Point at the obvious next step instead of dumping the huge signed report
     // URL into the metadata block — but only when a triage report actually
     // exists, since `--web` errors out otherwise (e.g. for incomplete runs).

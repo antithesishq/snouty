@@ -81,19 +81,14 @@ SAMPLES_DIR = Path(__file__).resolve().parent.parent / "tests" / "fixtures" / "v
 # them (and pulls the glibc base) and is run before the live validate stories.
 BUILD_SAMPLES_SCRIPT = Path(__file__).resolve().parent / "build-validate-samples.sh"
 
-# Keywords probed (in order) to sample a real event from a run. --match is
-# required, so a truly unfiltered call isn't possible; ordering broadest-first
-# (a near-universal needle, then common log words) makes the common case a
-# single probe per run before falling back to narrower terms.
-# Keyword order probed when picking the completed run's event stories.
-# Distinctive words first: a stopword like "the" matches nearly every event,
-# so a story built on it exercises the result cap instead of the search and
-# reads as unrealistic. A run matching none of these is skipped by discovery.
-EVENT_KEYWORDS = ["error", "start", "setup", "client", "test", "info"]
-
-# Keyword order probed for an incomplete run's events story: its narrative is
-# "events around the failure", so try "error" before the general needles.
-INCOMPLETE_EVENT_KEYWORDS = ["error", *EVENT_KEYWORDS]
+# The events/search needle comes from the logs at a property's moment, so the
+# stories search for text the run really printed. A needle must match at least
+# NEEDLE_MIN_MATCHES events, so the `-n 3` story reaches its limit and the
+# renderer aligns several rows. NEEDLE_PROBES bounds the searches discovery runs
+# per run, and MOMENT_PROBES bounds the moments it tries per property.
+NEEDLE_MIN_MATCHES = 4
+NEEDLE_PROBES = 12
+MOMENT_PROBES = 4
 
 
 class GalleryError(Exception):
@@ -459,17 +454,18 @@ class Discovery:
     window_before: str = ""
     event_keyword: str = ""
     event_kw2: str = ""
-    event_hash: str = ""
+    # A property example's moment that has logs, for the logs stories.
+    logs_hash: str = ""
     # The exact text of the JSON number, so positional moment arguments reach
     # the API byte-identically.
-    event_vtime: str = "0"
+    logs_vtime: str = "0"
     fail_prop: str = ""  # failing event property whose detail shows counter-examples
     pass_event_prop: str = ""  # passing event property whose detail shows examples
     nonevent_prop: str = ""  # non-event property whose detail shows a real value
     name_filter: str = ""  # substring matching exactly one property name
     fail_hash: str = ""
     fail_vtime: str = ""
-    fail_event_kw: str = "error"  # keyword the incomplete run's events story matches on
+    fail_event_kw: str = ""  # needle the incomplete run's events story matches on
 
 
 def _first_run(sn: Snouty, *filters: str) -> str | None:
@@ -477,26 +473,52 @@ def _first_run(sn: Snouty, *filters: str) -> str | None:
     return rows[0]["run_id"] if rows else None
 
 
-def _sample_event(sn: Snouty, run: str) -> dict | None:
-    """Return the first event matching any probe keyword that is usable for the
-    event/logs stories, or None if the run has no such event. Raises GalleryError
-    if the endpoint is unreachable.
+def _logs(sn: Snouty, args: list[str]) -> list[dict]:
+    """The `runs logs` rows for `args`, or none when the endpoint fails."""
+    try:
+        return sn.json_lines(["runs", "logs", *args])
+    except GalleryError:
+        return []
 
-    "Usable" means it has a moment with both coordinates (for the logs stories)
-    *and* yields a distinctive second needle (for the multi-match story); we stash
-    both on the returned row so discovery doesn't have to re-derive them."""
-    for kw in EVENT_KEYWORDS:
-        rows = sn.json_lines(["runs", "events", run, "--match", kw])
-        for row in rows:
-            moment = row.get("moment") or {}
-            if not (moment.get("input_hash") and moment.get("vtime")):
+
+def _begin_vtime(vtime: str) -> str:
+    """`--begin-vtime` for the logs skip-ahead story: just before the moment. A
+    lower bound, so the float round-trip is harmless here."""
+    return f"{max(0.0, float(vtime) - 0.5):.3f}"
+
+
+def _pick_needles(
+    sn: Snouty, run: str, logs: list[dict], min_matches: int, probed: set[str] | None = None
+) -> tuple[str, str] | None:
+    """A needle and a second needle for the events/search stories, taken from
+    the text of `logs`. The last lines come first, because they are nearest to
+    the moment. The needle must match at least `min_matches` events. The second
+    needle comes from the same line, so both needles match at least that event.
+    `probed` holds the tokens already searched. Pass the same set for each
+    moment of a run, so that a token is searched only once per run. Returns
+    None when no needle fits within NEEDLE_PROBES searches."""
+    probed = set() if probed is None else probed
+    for row in reversed(logs):
+        for token in re.findall(r"[A-Za-z_]{5,}", row.get("output_text") or ""):
+            low = token.lower()
+            if low in probed or low in _UBIQUITOUS_TOKENS:
                 continue
-            second = _pick_second_needle(row, kw)
+            second = _pick_second_needle(row, token)
             if second is None:
                 continue
-            row["_keyword"] = kw
-            row["_second_needle"] = second
-            return row
+            if len(probed) >= NEEDLE_PROBES:
+                return None
+            probed.add(low)
+            # `runs events` matches more fields, case-insensitively, than the
+            # search query, so a needle that the query finds `min_matches`
+            # times also passes in `runs events`.
+            query = f'contains({{output_text: "{token}"}})'
+            try:
+                found = sn.json_lines(["runs", "search", run, query, "-n", str(min_matches)])
+            except GalleryError:
+                return None
+            if len(found) >= min_matches:
+                return token, second
     return None
 
 
@@ -506,38 +528,66 @@ class CompletedPick:
     per-story selections derived from it (so discovery doesn't re-derive them)."""
 
     run: str
-    event: dict
+    logs_moment: dict  # a property example's moment that has logs
+    keyword: str
+    keyword2: str
     fail_prop: str
     pass_prop: str
     nonevent_prop: str
     name_filter: str
 
 
+def _pick_logs_moment(
+    sn: Snouty, run: str, props: list[dict], fail_prop: str, pass_prop: str
+) -> tuple[dict, str, str] | None:
+    """A moment for the logs stories, and the needles for the events/search
+    stories. The moment comes from the failing property's counter-examples, then
+    the passing property's examples (MOMENT_PROBES from each), so the logs
+    stories stream a moment that the property detail stories show. Both logs
+    stories must return at least one line at the moment, and its logs must give
+    a needle (see _pick_needles). All the moments share one NEEDLE_PROBES budget.
+    Returns (moment, needle, second needle), or None when no moment fits."""
+    by_name = {p["name"]: p for p in props}
+    moments = [
+        v["moment"]
+        for values in (
+            by_name[fail_prop].get("counterexamples"),
+            by_name[pass_prop].get("examples"),
+        )
+        for v in _moments(values or [])[:MOMENT_PROBES]
+    ]
+    probed: set[str] = set()
+    for moment in moments:
+        if len(probed) >= NEEDLE_PROBES:
+            break
+        h, v = str(moment["input_hash"]), str(moment["vtime"])
+        logs = _logs(sn, [run, h, v])
+        begin = ["--begin-vtime", _begin_vtime(v)]
+        if not logs or not _logs(sn, [run, h, v, *begin]):
+            print(f"  skip moment {h} {v}: no logs", file=sys.stderr)
+            continue
+        needles = _pick_needles(sn, run, logs, NEEDLE_MIN_MATCHES, probed)
+        if needles is None:
+            print(f"  skip moment {h} {v}: no needle in its logs", file=sys.stderr)
+            continue
+        return moment, *needles
+    return None
+
+
 def _pick_completed_run(sn: Snouty, scan: int) -> CompletedPick:
-    """Pick a completed run that can drive *all* the completed-run stories, not
-    just the event/logs ones. Earlier this committed to the first run with
-    sampleable events, then `discover` separately demanded that same run also
-    render failing/passing/non-event property moments — so a run with events but
-    no failing-property moments (the first completed run on a tenant routinely is
-    one) sank the whole gallery. Instead, scan recent completed runs and take the
-    first that satisfies every requirement at once."""
+    """Pick a completed run that can drive *all* the completed-run stories: the
+    property stories, the logs stories (see _pick_logs_moment), and the
+    events/search stories. Scan recent completed runs and take the first that
+    satisfies every requirement at once."""
     runs = sn.json_lines(["runs", "list", "--status", "completed", "-n", str(scan)])
     if not runs:
         raise GalleryError("no completed runs found on this tenant")
-    last_reason = "none had sampleable events"
+    last_reason = "none had a usable property moment"
     for r in runs:
         run = r["run_id"]
-        try:
-            event = _sample_event(sn, run)
-        except GalleryError:
-            print(f"  skip {run}: events endpoint unreachable", file=sys.stderr)
-            continue
-        if event is None:
-            print(f"  skip {run}: no sampleable events", file=sys.stderr)
-            continue
-        # Has events; now require it to drive the property stories too. Each
-        # picker raises GalleryError if this run can't satisfy its story — catch
-        # it and move on rather than committing to a run that fails downstream.
+        # Each picker raises GalleryError if this run can't satisfy its story —
+        # catch it and move on rather than committing to a run that fails
+        # downstream.
         props = sn.json_lines(["runs", "properties", run])
         try:
             fail_prop = _pick_property_with_moments(sn, run, props, "Failing")
@@ -548,18 +598,25 @@ def _pick_completed_run(sn: Snouty, scan: int) -> CompletedPick:
             print(f"  skip {run}: {e}", file=sys.stderr)
             last_reason = str(e)
             continue
+        picked = _pick_logs_moment(sn, run, props, fail_prop, pass_prop)
+        if picked is None:
+            last_reason = "no property moment with logs and a needle"
+            print(f"  skip {run}: {last_reason}", file=sys.stderr)
+            continue
+        moment, kw, kw2 = picked
         print(
-            f"  completed run : {run} (events matched '{event['_keyword']}')",
+            f"  completed run : {run} (logs at {moment['input_hash']} "
+            f"{moment['vtime']}; needles '{kw}', '{kw2}')",
             file=sys.stderr,
         )
         return CompletedPick(
-            run, event, fail_prop, pass_prop, nonevent_prop, name_filter
+            run, moment, kw, kw2, fail_prop, pass_prop, nonevent_prop, name_filter
         )
     raise GalleryError(
         f"none of the {len(runs)} most recent completed runs can drive every "
-        f"completed-run story (need sampleable events plus failing/passing/"
-        f"non-event property moments and a unique name filter); last reason: "
-        f"{last_reason}"
+        f"completed-run story (need failing/passing/non-event property moments, "
+        f"a unique name filter, and a property moment with logs and a needle); "
+        f"last reason: {last_reason}"
     )
 
 
@@ -581,8 +638,8 @@ def _pick_incomplete_run(sn: Snouty, scan: int) -> tuple[str, dict, str]:
     routinely a timeout with a 0/0 failure moment and no error events, leaving the
     logs/events stories empty. The chosen run must have a real failure moment whose
     logs are non-empty (so runs-logs-incomplete streams lines and runs-show-incomplete
-    renders a moment) AND events matching a probe keyword (for runs-events-incomplete).
-    Returns (run_id, failure_moment, event_keyword)."""
+    renders a moment) AND a needle from those logs that matches events (for
+    runs-events-incomplete). Returns (run_id, failure_moment, event_keyword)."""
     runs = sn.json_lines(["runs", "list", "--status", "incomplete", "-n", str(scan)])
     if not runs:
         raise GalleryError("no incomplete run found — incomplete stories cannot run")
@@ -593,24 +650,15 @@ def _pick_incomplete_run(sn: Snouty, scan: int) -> tuple[str, dict, str]:
             print(f"  skip {run}: no real failure moment (0/0 sentinel)", file=sys.stderr)
             continue
         h, v = str(moment["input_hash"]), str(moment["vtime"])
-        try:
-            logs = sn.json_lines(["runs", "logs", run, h, v])
-        except GalleryError:
-            logs = []
+        logs = _logs(sn, [run, h, v])
         if not logs:
             print(f"  skip {run}: no logs at the failure moment", file=sys.stderr)
             continue
-        kw = None
-        for k in INCOMPLETE_EVENT_KEYWORDS:
-            try:
-                if sn.json_lines(["runs", "events", run, "--match", k]):
-                    kw = k
-                    break
-            except GalleryError:
-                break  # events endpoint unreachable for this run; move on
-        if kw is None:
-            print(f"  skip {run}: no events match a probe keyword", file=sys.stderr)
+        needles = _pick_needles(sn, run, logs, 1)
+        if needles is None:
+            print(f"  skip {run}: no needle in the failure logs", file=sys.stderr)
             continue
+        kw = needles[0]
         print(
             f"  incomplete run: {run} (logs at failure moment; events match '{kw}')",
             file=sys.stderr,
@@ -618,7 +666,7 @@ def _pick_incomplete_run(sn: Snouty, scan: int) -> tuple[str, dict, str]:
         return run, moment, kw
     raise GalleryError(
         f"none of the {len(runs)} most recent incomplete runs has a real failure "
-        "moment with logs and matching events — refusing to write a gallery with "
+        "moment with logs and a needle — refusing to write a gallery with "
         "the incomplete event/logs stories degenerate"
     )
 
@@ -769,7 +817,7 @@ def discover(sn: Snouty, scan: int) -> Discovery:
     print("discovering runs via the live API…", file=sys.stderr)
 
     pick = _pick_completed_run(sn, scan)
-    success, event = pick.run, pick.event
+    success, moment = pick.run, pick.logs_moment
 
     fail, fail_moment, fail_event_kw = _pick_incomplete_run(sn, scan)
     cancelled = _first_run(sn, "--status", "cancelled")
@@ -791,9 +839,6 @@ def discover(sn: Snouty, scan: int) -> Discovery:
     window_after = by_time[0]["created_at"]
     window_before = by_time[-1]["created_at"]
 
-    keyword = event["_keyword"]
-    moment = event["moment"]
-
     disc = Discovery(
         success=success,
         fail=fail,
@@ -802,10 +847,10 @@ def discover(sn: Snouty, scan: int) -> Discovery:
         created_after=created_after,
         window_after=window_after,
         window_before=window_before,
-        event_keyword=keyword,
-        event_kw2=event["_second_needle"],
-        event_hash=moment["input_hash"],
-        event_vtime=str(moment["vtime"]),
+        event_keyword=pick.keyword,
+        event_kw2=pick.keyword2,
+        logs_hash=str(moment["input_hash"]),
+        logs_vtime=str(moment["vtime"]),
         # Property-story selections were derived against `success` during the
         # holistic run pick, so reuse them rather than re-probing the API.
         fail_prop=pick.fail_prop,
@@ -1370,9 +1415,7 @@ INVALID_QUERY = (
 
 def build_stories(d: Discovery) -> list[Story]:
     kw, kw2 = d.event_keyword, d.event_kw2
-    # `--begin-vtime` for the logs skip-ahead story: just before the sampled
-    # moment. A lower bound, so the float round-trip is harmless here.
-    vmin = f"{max(0.0, float(d.event_vtime) - 0.5):.3f}"
+    vmin = _begin_vtime(d.logs_vtime)
     stories = [
         # -- listing --------------------------------------------------------
         Story(
@@ -1720,11 +1763,12 @@ def build_stories(d: Discovery) -> list[Story]:
         # -- logs -----------------------------------------------------------
         Story(
             "runs-logs",
-            "Stream logs using the hash from an event divider",
-            "I copy a divider's input hash to read logs through the end of that moment.",
+            "Stream logs using the hash from a property example",
+            "I copy an example's input hash from `runs properties --detail` to read "
+            "logs through the end of that moment.",
             "Logs stream to the branch's current end without a vtime argument. "
             "Each divider shows only `moment HASH`; event lines keep their vtimes.",
-            ["runs", "logs", d.success, d.event_hash],
+            ["runs", "logs", d.success, d.logs_hash],
             logs_non_empty,
         ),
         Story(
@@ -1736,8 +1780,8 @@ def build_stories(d: Discovery) -> list[Story]:
                 "runs",
                 "logs",
                 d.success,
-                d.event_hash,
-                d.event_vtime,
+                d.logs_hash,
+                d.logs_vtime,
                 "--begin-vtime",
                 vmin,
             ],
@@ -2123,8 +2167,8 @@ def build_help_stories(d: Discovery) -> list[Story]:
             "I want the help to explain that a hash streams to the branch's current end, "
             "an optional vtime sets an earlier end, and --begin-vtime sets the start.",
             ["runs", "logs"],
-            ["runs", "logs", s, d.event_hash],
-            samples=[("with an explicit end vtime", ["runs", "logs", s, d.event_hash, d.event_vtime])],
+            ["runs", "logs", s, d.logs_hash],
+            samples=[("with an explicit end vtime", ["runs", "logs", s, d.logs_hash, d.logs_vtime])],
         ),
         _help_story(
             "help-runs-build-logs",
@@ -2599,6 +2643,55 @@ def build_tty_stories() -> list[Story]:
 HELP_SAMPLE_MAX_LINES = 18
 
 
+# `snouty --version` prints `snouty VERSION (SHA)`, with `-dirty` on the sha when
+# the build had uncommitted changes; a build made outside git has no sha.
+_VERSION_LINE = re.compile(r"^snouty (\S+)(?: \(([0-9a-f]+)(-dirty)?\))?$")
+
+
+def snouty_build(binary: Path, repo_root: Path) -> str:
+    """The build under test, for every story's header: its version, its commit,
+    and whether it is a release. A release is a clean build of the commit that
+    the `vVERSION` tag points to; every other build is a dev build, which can
+    show changes that no release has."""
+    try:
+        line = subprocess.run(
+            [str(binary), "--version"], capture_output=True, text=True
+        ).stdout.strip()
+    except OSError as e:
+        raise GalleryError(f"cannot run `{binary} --version`: {e}") from e
+    m = _VERSION_LINE.match(line)
+    if m is None:
+        raise GalleryError(f"cannot parse `snouty --version` output: {line!r}")
+    version, sha, dirty = m.groups()
+    if sha is None:
+        return f"{version}, commit unknown, release unknown (the binary records no commit)"
+    tag = f"v{version}"
+    try:
+        tagged = subprocess.run(
+            ["git", "rev-parse", f"--short={len(sha)}", f"{tag}^{{commit}}"],
+            cwd=repo_root,
+            capture_output=True,
+            text=True,
+        )
+    except OSError:
+        tagged = None
+    if dirty:
+        kind = "dev build (uncommitted changes)"
+    elif tagged is None:
+        kind = f"release unknown (cannot run git to find tag {tag})"
+    elif tagged.returncode != 0:
+        kind = f"dev build (no tag {tag} in this checkout)"
+    elif tagged.stdout.strip() != sha:
+        kind = f"dev build (not the {tag} commit)"
+    else:
+        kind = f"release {tag}"
+    return f"{version}, commit {sha}{dirty or ''}, {kind}"
+
+
+def _build_line(build: str) -> str:
+    return f"**snouty build:** {build}"
+
+
 def _command_line(args: list[str]) -> str:
     """`snouty <args>` as a line a reader can paste into a shell.
 
@@ -2640,10 +2733,13 @@ def _captured_block(
     )
 
 
-def _write_help_story(out_dir: Path, story: Story, sr: StoryRun, verdict: str, detail: str) -> None:
+def _write_help_story(
+    out_dir: Path, story: Story, sr: StoryRun, verdict: str, detail: str, build: str
+) -> None:
     assert sr.help_result is not None
     parts = [
         f"# {story.title}",
+        _build_line(build),
         f"**User goal:** {story.goal}",
         f"**Judge satisfaction by:** {story.judge}",
         "## Help text",
@@ -2672,13 +2768,16 @@ def _redact_secrets(text: str) -> str:
     return _SECRET_LINE.sub(r'\1"[REDACTED]"', text)
 
 
-def _write_tty_story(out_dir: Path, story: Story, sr: StoryRun, verdict: str, detail: str) -> None:
+def _write_tty_story(
+    out_dir: Path, story: Story, sr: StoryRun, verdict: str, detail: str, build: str
+) -> None:
     # One frame per prompt, so a reviewer sees the screen the user faced at each
     # decision — including the menus, which are erased once chosen and so appear
     # nowhere in the closing screen. The keys typed are not listed separately:
     # `inquire` draws each answer next to its prompt, and the frames carry that.
     parts = [
         f"# {story.title}",
+        _build_line(build),
         f"**User goal:** {story.goal}",
         f"**Judge satisfaction by:** {story.judge}",
         f"_Capture: terminal, {TTY_COLS} columns × {TTY_ROWS} rows; prompt frames._",
@@ -2705,16 +2804,19 @@ def _write_tty_story(out_dir: Path, story: Story, sr: StoryRun, verdict: str, de
     (out_dir / f"{story.slug}.md").write_text("\n\n".join(parts) + "\n")
 
 
-def write_story(out_dir: Path, story: Story, sr: StoryRun, passed: bool, detail: str) -> None:
+def write_story(
+    out_dir: Path, story: Story, sr: StoryRun, passed: bool, detail: str, build: str
+) -> None:
     verdict = "PASS" if passed else "FAIL"
     if story.help_cmd is not None:
-        _write_help_story(out_dir, story, sr, verdict, detail)
+        _write_help_story(out_dir, story, sr, verdict, detail, build)
         return
     if story.dialogue is not None:
-        _write_tty_story(out_dir, story, sr, verdict, detail)
+        _write_tty_story(out_dir, story, sr, verdict, detail, build)
         return
     md = (
         f"# {story.title}\n\n"
+        f"{_build_line(build)}\n\n"
         f"**User goal:** {story.goal}\n\n"
         f"**Judge satisfaction by:** {story.judge}\n\n"
         f"{_captured_block(out_dir, story.slug, sr.result)}\n\n"
@@ -2841,7 +2943,7 @@ def main() -> int:
 
     if args.list:
         # An all-default Discovery is enough to enumerate slugs (build_stories
-        # only reads a few fields, and event_vtime defaults to a real vtime).
+        # only reads a few fields, and logs_vtime defaults to a real vtime).
         for s in build_stories(Discovery()):
             print(s.slug)
         for s in build_validate_stories(None):
@@ -2862,7 +2964,12 @@ def main() -> int:
     if not snouty_bin.exists():
         print(f"error: snouty binary not found: {snouty_bin}", file=sys.stderr)
         return 1
-    print(f"using binary: {snouty_bin}", file=sys.stderr)
+    try:
+        build = snouty_build(snouty_bin, repo_root)
+    except GalleryError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 1
+    print(f"using binary: {snouty_bin} ({build})", file=sys.stderr)
 
     out_dir = args.out or Path(tempfile.mkdtemp(prefix="snouty-gallery."))
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -2936,7 +3043,7 @@ def main() -> int:
             if sr.rows is not None:
                 reg.row_counts[story.slug] = len(sr.rows)
             passed, detail = story.check(sr, reg)
-            write_story(out_dir, story, sr, passed, detail)
+            write_story(out_dir, story, sr, passed, detail, build)
             mark = "ok  " if passed else "FAIL"
             print(f"  {mark} {story.slug:<32} {detail}", file=sys.stderr)
             if not passed:

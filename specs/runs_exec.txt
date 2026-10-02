@@ -41,9 +41,8 @@
 #   - The script comes from the SCRIPT argument, or from stdin when SCRIPT is
 #     omitted. Omitting it is the only way to read stdin; a pipe, a redirect,
 #     and a heredoc all work, and a script over 2 MiB is refused.
-#   - Output events are routed by `source.stream`: an `error` line to snouty's
-#     stderr, every other label (`info`, or one snouty does not know) to
-#     snouty's stdout. stdout carries only the script's output, so
+#   - Output events are routed by `source.stream`: `error` to snouty's
+#     stderr, `info` to snouty's stdout. stdout carries only the script's output, so
 #     `snouty runs exec ... | jq` composes.
 #   - On `exited`, a trailer on stderr documents the branch's end moment, to
 #     chain a follow-up command from.

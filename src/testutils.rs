@@ -1191,8 +1191,8 @@ fn mock_route_execute_command(run_id: &str, req_body: &str) -> (u16, String) {
             ),
             mock_exec_exited(Some(0)),
         ],
-        // The timeline's other events surround the script's output, as with
-        // include_system_logs. Shapes from release 64.0 (orbitinghail).
+        // The timeline that include_system_logs asks for, in release 64.0
+        // shapes (orbitinghail).
         "with-system-logs" => vec![
             mock_exec_command_received(),
             mock_exec_output("info", "script says hi", "398.491"),

@@ -1061,10 +1061,9 @@ JSON object on its own line, and the trailer is left out:
 
         /// Maximum seconds the server waits for the script to exit before
         /// reporting a timeout
-        // The API's own default is 600 with a minimum of 0 and no maximum.
-        // snouty waits 30 seconds by default, so that a script that hangs
-        // fails soon. A 0-second timeout can only ever time out, so the floor
-        // here is 1; the ceiling is left to the server rather than guessed at.
+        // The default is 30, not the API's 600, so a hung script fails soon. A
+        // 0-second timeout always times out, so the floor is 1. The server sets
+        // the ceiling.
         #[arg(long, default_value_t = 30, value_parser = clap::value_parser!(u64).range(1..))]
         timeout: u64,
     },
@@ -1211,9 +1210,9 @@ impl Default for RunsListArgs {
     }
 }
 
-/// The feature a gated command needs, and the command's path. No command is
-/// gated now. A gated command adds an arm here as well as its `hide`
-/// attribute, because hiding alone leaves it callable.
+/// The feature a gated command needs, and its path. A gated command needs an
+/// arm here as well as a `hide` attribute, because a hidden command is still
+/// callable.
 fn gated_command(_command: &Commands) -> Option<(Feature, &'static str)> {
     None
 }

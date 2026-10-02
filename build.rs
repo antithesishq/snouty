@@ -192,10 +192,8 @@ fn unrequire_search_limit_default(spec: &mut serde_json::Value) {
     );
 }
 
-/// Strip the `default: false` from `Execute_Command_Request.include_system_logs`,
-/// so the generated field is an `Option` that is omitted from the request body
-/// unless `runs exec --events` sets it. With the default in the schema,
-/// progenitor serializes the field on every request.
+/// Strip the schema default from `Execute_Command_Request.include_system_logs`,
+/// so progenitor omits the field unless `runs exec --events` sets it.
 ///
 /// ACTION when the assertion fails: delete this transform and its call.
 fn unrequire_include_system_logs_default(spec: &mut serde_json::Value) {

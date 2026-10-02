@@ -559,7 +559,6 @@ struct ReleaseFloor {
     /// What an older tenant lacks.
     gap: &'static str,
     min: (u64, u64),
-    /// What goes wrong on an older tenant.
     consequence: &'static str,
 }
 

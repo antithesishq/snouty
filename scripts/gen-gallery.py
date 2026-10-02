@@ -2400,9 +2400,14 @@ def build_validate_stories(ephemeral: Path | None) -> list[Story]:
             "validate-timeout",
             "Validate a harness that never signals setup-complete",
             "My harness never emits the setup-complete event.",
-            "snouty waits up to --timeout and then fails with a clear timeout message.",
+            "snouty waits up to --timeout, then fails with the timeout it used and the likely causes, most likely first.",
             [str(s / "timeout"), "--timeout", "5"],
-            fails_with("timed out waiting for setup-complete event"),
+            fails_with(
+                "timed out waiting for setup-complete event (5s)",
+                "make sure your workload emits setup_complete",
+                "raise --timeout",
+                "may not see this machine's temp directory",
+            ),
             needs_docker=True,
         ),
         v(

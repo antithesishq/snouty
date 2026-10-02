@@ -271,11 +271,6 @@ async fn validate_compose(
         );
     }
 
-    // One budget covers container startup and the wait for setup-complete.
-    // An attached `up` doesn't return once the project is running, so there is
-    // no "containers are up" moment at which to restart the clock.
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(timeout);
-
     eprintln!("Starting compose services...");
     let mut up_child = compose.up_attached(overlay)?;
     let _guard = if keep_running {
@@ -289,8 +284,11 @@ async fn validate_compose(
 
     let sdk_output_dir = temp_dir.join("antithesis");
 
+    // One budget covers container startup and the wait for setup-complete.
+    // An attached `up` doesn't return once the project is running, so there is
+    // no "containers are up" moment at which to restart the clock.
     let result = tokio::select! {
-        result = watch_for_setup_complete(&sdk_output_dir, deadline) => result,
+        result = watch_for_setup_complete(&sdk_output_dir, timeout) => result,
         status = up_child.wait() => Err(compose_exited_early(status)),
         _ = tokio::signal::ctrl_c() => Err(eyre!("interrupted")),
     };
@@ -903,7 +901,7 @@ const POLL_INTERVAL: Duration = Duration::from_millis(25);
 const MAX_READ_BYTES: u64 = 1024 * 1024;
 
 /// Watch `.jsonl` files anywhere under the given directory for setup-complete.
-/// Returns once the event is seen, and errors when the deadline passes first.
+/// Returns once the event is seen, and errors when `timeout` seconds pass first.
 ///
 /// Reads every file on every poll, and remembers nothing between polls. The
 /// SDK's local-file handler opens its output without `O_APPEND` and truncates
@@ -920,15 +918,22 @@ const MAX_READ_BYTES: u64 = 1024 * 1024;
 ///
 /// Uses blocking `std::fs` calls intentionally — reads are small and infrequent,
 /// and this avoids pulling in tokio::fs for a simple poll loop.
-async fn watch_for_setup_complete(output_dir: &Path, deadline: tokio::time::Instant) -> Result<()> {
+async fn watch_for_setup_complete(output_dir: &Path, timeout: u64) -> Result<()> {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(timeout);
     loop {
         if tokio::time::Instant::now() >= deadline {
+            // The most likely cause comes first.
             return Err(
-                eyre!("timed out waiting for setup-complete event").suggestion(
-                    "one possible cause is a container engine that cannot see this machine's \
-                     temp directory, such as a VM-backed engine (e.g. Lima, Colima) or a \
-                     remote daemon; see 'snouty validate --help'",
-                ),
+                eyre!("timed out waiting for setup-complete event ({timeout}s)")
+                    .suggestion(
+                        "make sure your workload emits setup_complete \
+                         (Antithesis SDK, or $ANTITHESIS_OUTPUT_DIR/sdk.jsonl)",
+                    )
+                    .suggestion("if startup is just slow, raise --timeout")
+                    .suggestion(
+                        "a VM-backed engine (Lima, Colima) or remote daemon may not see \
+                         this machine's temp directory; see 'snouty validate --help'",
+                    ),
             );
         }
 
@@ -1328,13 +1333,9 @@ services:
         );
     }
 
-    fn test_deadline() -> tokio::time::Instant {
-        tokio::time::Instant::now() + Duration::from_secs(3)
-    }
-
-    /// Watch `dir` until the event arrives or the test deadline passes.
+    /// Watch `dir` until the event arrives or 3 seconds pass.
     async fn watch(dir: &Path) -> Result<()> {
-        watch_for_setup_complete(dir, test_deadline()).await
+        watch_for_setup_complete(dir, 3).await
     }
 
     /// Assert the watch timed out rather than failing for another reason.
@@ -1344,12 +1345,26 @@ services:
             err.to_string().contains("timed out"),
             "expected a timeout, got: {err}"
         );
-        // The timeout carries the unshared-temp-directory suggestion, which
-        // points at the full explanation in the help text.
-        let rendered = format!("{err:?}");
+        // The error names the timeout, and the suggestions list the causes
+        // with the most likely first.
         assert!(
-            rendered.contains("snouty validate --help"),
-            "expected the suggestion to point at --help, got: {rendered}"
+            err.to_string().contains("(3s)"),
+            "expected the timeout in the error, got: {err}"
+        );
+        let rendered = format!("{err:?}");
+        let causes = [
+            "$ANTITHESIS_OUTPUT_DIR/sdk.jsonl",
+            "raise --timeout",
+            "snouty validate --help",
+        ]
+        .map(|needle| {
+            rendered
+                .find(needle)
+                .unwrap_or_else(|| panic!("expected {needle:?} in: {rendered}"))
+        });
+        assert!(
+            causes.is_sorted(),
+            "expected the causes in order of likelihood, got: {rendered}"
         );
     }
 

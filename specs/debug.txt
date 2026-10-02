@@ -66,9 +66,8 @@ stderr '"antithesis.report.recipients": "\[REDACTED\]"'
 # deprecated — the launch warns and steers the user to `snouty login`.
 stderr 'warning: username/password authentication is deprecated'
 
-# The webhook reports success as an under-documented HTTP status (the live API
-#    answers 200), but a real, spec-conformant 202 carrying the same
-#    runId/statusCode envelope is also accepted.
+# The live API answers success with HTTP 200. snouty also accepts the
+#    documented 202.
 mock-server 202 '{"statusCode":202,"runId":"run-123"}'
 snouty debug --input-hash abc123 --run-id 9043254f65c9c65d63fe043a0abfc7fc-53-1 --vtime 1234567890
 stdout 'Debugging session started: run_id run-123'

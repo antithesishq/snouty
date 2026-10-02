@@ -227,10 +227,8 @@ fn drop_property_description(spec: &mut serde_json::Value) {
     );
 }
 
-/// Drop the body-level `statusCode` from the launch success responses. The
-/// HTTP status already says whether a launch succeeded, the API team has
-/// confirmed clients should ignore the body's copy (#180), and tenant release
-/// 63.3 stopped sending it (#336), so requiring it fails a successful launch.
+/// Drop `statusCode` from the launch success responses. The HTTP status is the
+/// success signal (#180). Tenant release 63.3 does not send the field (#336).
 fn drop_launch_status_code(spec: &mut serde_json::Value) {
     for name in ["Launch_Response", "Launch_MVD_Response"] {
         let schema = spec

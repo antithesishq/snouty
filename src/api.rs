@@ -2142,8 +2142,8 @@ mod tests {
         );
     }
 
-    // The launch webhooks answer an undocumented HTTP 200 whose body claims 202.
-    // snouty accepts any 2xx as success and reports the transport status.
+    // The launch webhooks answer an undocumented HTTP 200. snouty accepts any
+    // 2xx as success.
     #[tokio::test]
     async fn launch_test_accepts_200_webhook_envelope() {
         let mock_server = mock_launch_test(200, LAUNCH_OK_BODY).await;
@@ -2155,8 +2155,6 @@ mod tests {
         assert_eq!(response.run_id.as_deref(), Some("run-123"));
     }
 
-    // Success is the HTTP status alone, so a body without `statusCode` still
-    // launches, on the documented status and on the undocumented 200 alike.
     #[tokio::test]
     async fn launch_test_accepts_a_body_without_status_code() {
         for status in [200, 202] {
@@ -2211,13 +2209,12 @@ mod tests {
         mock_endpoint("POST", "/api/v1/launch/basic_test", status, body).await
     }
 
-    /// The launch envelope the live webhook returns on success. Its body-level
-    /// `statusCode` deliberately disagrees with the HTTP status the mocks pair
-    /// it with, since snouty must ignore the body's copy (#180).
+    /// The launch success body before tenant release 63.3. Its `statusCode`
+    /// does not agree with the HTTP status of the mocks, because snouty must
+    /// ignore it (#180).
     const LAUNCH_OK_BODY: &str = r#"{"runId":"run-123","statusCode":202}"#;
 
-    /// The launch success body from tenant release 63.3, which has no
-    /// `statusCode` (#336).
+    /// The launch success body that tenant release 63.3 sends (#336).
     const LAUNCH_OK_BODY_63_3: &str = r#"{"message":"Success","runId":"run-63-3"}"#;
 
     // The body's own statusCode is ignored outright (#180): snouty reads the run
@@ -2332,8 +2329,7 @@ mod tests {
         assert_eq!(response.run_id, None);
     }
 
-    // The documented 202 body and the live webhook envelope have converged on
-    // `{ statusCode, runId }`, which the generated client parses directly.
+    // The 202 body that the vendored spec documents still parses.
     #[tokio::test]
     async fn launch_debugging_accepts_202_documented() {
         let mock_server =

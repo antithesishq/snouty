@@ -237,19 +237,25 @@ fn drop_launch_status_code(spec: &mut serde_json::Value) {
             .pointer_mut(&format!("/components/schemas/{name}"))
             .and_then(serde_json::Value::as_object_mut)
             .unwrap_or_else(|| panic!("openapi spec has no {name}"));
-        let properties = schema
-            .get_mut("properties")
-            .and_then(serde_json::Value::as_object_mut)
-            .unwrap_or_else(|| panic!("openapi spec has no {name}.properties"));
-        assert!(
-            properties.remove("statusCode").is_some(),
-            "{name} no longer has `statusCode`; delete `drop_launch_status_code` in build.rs"
-        );
         let required = schema
             .get_mut("required")
             .and_then(serde_json::Value::as_array_mut)
-            .unwrap_or_else(|| panic!("openapi spec has no {name}.required"));
+            .filter(|required| required.iter().any(|field| field == "statusCode"))
+            .unwrap_or_else(|| {
+                panic!(
+                    "{name} no longer requires `statusCode`; \
+                     delete `drop_launch_status_code` in build.rs"
+                )
+            });
         required.retain(|field| field != "statusCode");
+        // OpenAPI 3.0 requires a non-empty `required` array.
+        if required.is_empty() {
+            schema.remove("required");
+        }
+        schema
+            .get_mut("properties")
+            .and_then(serde_json::Value::as_object_mut)
+            .and_then(|properties| properties.remove("statusCode"));
     }
 }
 

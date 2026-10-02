@@ -114,19 +114,6 @@ fn launch_with_typed_flags() {
         .stderr(predicate::str::contains("is_ephemeral").not());
 }
 
-// Tenant release 63.3 answers a launch without the body-level `statusCode`
-// (#336). The HTTP status alone decides success.
-#[test]
-fn launch_json_accepts_a_body_without_status_code() {
-    let mock_url = start_mock_server(r#"{"message":"Success","runId":"run-63-3"}"#, 200);
-
-    snouty_with_mock(&mock_url)
-        .args(["--json", "launch", "-w", "basic_test", "--duration", "15"])
-        .assert()
-        .success()
-        .stdout(predicate::str::contains(r#""runId": "run-63-3""#));
-}
-
 #[test]
 fn launch_with_ephemeral_flag() {
     let mock_url = start_mock_server(r#"{"runId":"run-123","statusCode":200}"#, 200);

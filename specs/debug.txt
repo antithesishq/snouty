@@ -55,7 +55,7 @@ stderr 'specify --run-id or --session-id.*'
 #    The vtime is normalized to its exact print, so every route into a moment
 #    (flags, raw JSON) sends the same text: `1234567890` becomes
 #    `1234567890.0`.
-mock-server 200 '{"statusCode":202,"runId":"run-123"}'
+mock-server 200 '{"message":"Success","runId":"run-123"}'
 snouty debug --input-hash abc123 --run-id 9043254f65c9c65d63fe043a0abfc7fc-53-1 --vtime 1234567890 --description 'debug this moment' --recipients team@example.com
 stderr '"antithesis.debugging.input_hash": "abc123"'
 stderr '"antithesis.debugging.run_id": "9043254f65c9c65d63fe043a0abfc7fc-53-1"'
@@ -74,13 +74,13 @@ snouty debug --input-hash abc123 --run-id 9043254f65c9c65d63fe043a0abfc7fc-53-1 
 stdout 'Debugging session started: run_id run-123'
 
 # --session-id remains supported for backwards compatibility.
-mock-server 200 '{"statusCode":202,"runId":"run-123"}'
+mock-server 200 '{"message":"Success","runId":"run-123"}'
 snouty debug --input-hash abc123 --session-id d5d1c9cf0e64b5dd69b00e97b07fe3f4-18-1 --vtime 1234567890
 stderr '"antithesis.debugging.session_id": "d5d1c9cf0e64b5dd69b00e97b07fe3f4-18-1"'
 
 # Parameters can alternatively be read from stdin via --stdin, as JSON or
 #    JSON5. A stdin vtime is normalized the same way the flags' is.
-mock-server 200 '{"statusCode":202,"runId":"run-123"}'
+mock-server 200 '{"message":"Success","runId":"run-123"}'
 stdin debug_json.txt
 snouty debug --stdin
 stderr '"antithesis.debugging.input_hash": "abc"'
@@ -96,7 +96,7 @@ stderr 'antithesis.debugging.vtime = "not-a-number"'
 
 # When both stdin and CLI args are provided, CLI args take priority over
 #    stdin values.
-mock-server 200 '{"statusCode":202,"runId":"run-123"}'
+mock-server 200 '{"message":"Success","runId":"run-123"}'
 stdin debug_run_json.txt
 snouty debug --stdin --input-hash override --recipients team@example.com
 stderr '"antithesis.debugging.run_id": "9043254f65c9c65d63fe043a0abfc7fc-53-1"'
@@ -105,7 +105,7 @@ stderr '"antithesis.debugging.vtime": "329.8037810830865"'
 stderr '"antithesis.report.recipients": "\[REDACTED\]"'
 
 # On success, a one-line confirmation with the run_id is printed to stdout.
-mock-server 200 '{"statusCode":202,"runId":"run-123"}'
+mock-server 200 '{"message":"Success","runId":"run-123"}'
 stdin debug_run_json.txt
 snouty debug --stdin
 stdout 'Debugging session started: run_id run-123'
@@ -140,14 +140,14 @@ stderr '.*<html><body>Bad Gateway</body></html>.*'
 # ANTITHESIS_EXTRA_HEADERS adds arbitrary headers to every API request (for
 #    consumption by proxies). With --verbose, the merged request headers are
 #    logged to stderr, so a configured extra header shows up on the wire.
-mock-server 200 '{"statusCode":202,"runId":"run-123"}'
+mock-server 200 '{"message":"Success","runId":"run-123"}'
 set-env ANTITHESIS_EXTRA_HEADERS X-Snouty-Test: hello-world
 snouty --verbose debug --input-hash abc123 --run-id 9043254f65c9c65d63fe043a0abfc7fc-53-1 --vtime 1234567890
 stderr '> x-snouty-test: hello-world.*'
 
 # A malformed ANTITHESIS_EXTRA_HEADERS entry (missing the ':' separator) is
 #    rejected when the client is built, before any API call.
-mock-server 200 '{"statusCode":202,"runId":"run-123"}'
+mock-server 200 '{"message":"Success","runId":"run-123"}'
 set-env ANTITHESIS_EXTRA_HEADERS not-a-valid-header-line
 ! snouty debug --input-hash abc123 --run-id 9043254f65c9c65d63fe043a0abfc7fc-53-1 --vtime 1234567890
 stderr 'ANTITHESIS_EXTRA_HEADERS entry missing \':\' separator: "not-a-valid-header-line".*'

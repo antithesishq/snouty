@@ -245,12 +245,11 @@ fn drop_launch_status_code(spec: &mut serde_json::Value) {
             properties.remove("statusCode").is_some(),
             "{name} no longer has `statusCode`; delete `drop_launch_status_code` in build.rs"
         );
-        if let Some(required) = schema
+        let required = schema
             .get_mut("required")
             .and_then(serde_json::Value::as_array_mut)
-        {
-            required.retain(|field| field != "statusCode");
-        }
+            .unwrap_or_else(|| panic!("openapi spec has no {name}.required"));
+        required.retain(|field| field != "statusCode");
     }
 }
 

@@ -2155,10 +2155,6 @@ mod tests {
         assert_eq!(response.run_id.as_deref(), Some("run-123"));
     }
 
-    /// The launch success body from tenant release 63.3, which has no
-    /// `statusCode` (#336).
-    const LAUNCH_OK_BODY_63_3: &str = r#"{"message":"Success","runId":"run-63-3"}"#;
-
     // Success is the HTTP status alone, so a body without `statusCode` still
     // launches, on the documented status and on the undocumented 200 alike.
     #[tokio::test]
@@ -2219,6 +2215,10 @@ mod tests {
     /// `statusCode` deliberately disagrees with the HTTP status the mocks pair
     /// it with, since snouty must ignore the body's copy (#180).
     const LAUNCH_OK_BODY: &str = r#"{"runId":"run-123","statusCode":202}"#;
+
+    /// The launch success body from tenant release 63.3, which has no
+    /// `statusCode` (#336).
+    const LAUNCH_OK_BODY_63_3: &str = r#"{"message":"Success","runId":"run-63-3"}"#;
 
     // The body's own statusCode is ignored outright (#180): snouty reads the run
     // id and nothing else, so a body claiming 202 over an HTTP 200 has no way to

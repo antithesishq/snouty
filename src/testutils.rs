@@ -1151,7 +1151,8 @@ fn mock_route_execute_command(run_id: &str, req_body: &str) -> (u16, String) {
     // script rather than modelling a validation error nothing exercises.
     let request = serde_json::from_str::<serde_json::Value>(req_body).unwrap_or_default();
     let script = request["script"].as_str().unwrap_or_default();
-    let timeout = request["timeout_seconds"].as_u64().unwrap_or(30);
+    let timeout = request["timeout_seconds"].as_u64().unwrap_or(600);
+    let container = request["container"].as_str().unwrap_or_default();
 
     let lines = match script.trim() {
         "true" => vec![mock_exec_exited(Some(0))],
@@ -1165,15 +1166,19 @@ fn mock_route_execute_command(run_id: &str, req_body: &str) -> (u16, String) {
             mock_exec_output("info", &format!("timeout_seconds={timeout}"), "398.491"),
             mock_exec_exited(Some(0)),
         ],
+        "print-container" => vec![
+            mock_exec_output("info", &format!("container={container}"), "398.491"),
+            mock_exec_exited(Some(0)),
+        ],
         "truncate-stream" => vec![mock_exec_output("info", "partial output", "398.491")],
-        // A result status this build does not know, and a known frame
-        // carrying a field it does not know. The stream must survive both.
+        // A known frame carrying a field this build does not know, which
+        // renders, then a result status outside the spec, which fails.
         "unknown-frames" => vec![
             format!(
-                r#"{{"status":"heartbeat","at":"398.4905","input_hash":"{MOCK_EXEC_BRANCH_HASH}"}}"#
+                r#"{{"moment":{{"input_hash":"{MOCK_EXEC_BRANCH_HASH}","vtime":"398.491"}},"output_text":"known with extras","source":{{"stream":"info"}},"truncated":true}}"#
             ),
             format!(
-                r#"{{"moment":{{"input_hash":"{MOCK_EXEC_BRANCH_HASH}","vtime":"398.491"}},"output_text":"known with extras","source":{{"stream":"info"}},"truncated":true}}"#
+                r#"{{"status":"heartbeat","at":"398.4905","input_hash":"{MOCK_EXEC_BRANCH_HASH}"}}"#
             ),
             mock_exec_exited(Some(0)),
         ],

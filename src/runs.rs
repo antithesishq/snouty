@@ -196,13 +196,17 @@ pub async fn cmd_runs(
             input_hash,
             vtime,
             script,
+            container,
             timeout,
         }) => {
             let moment = Moment { input_hash, vtime };
             // The flag is a whole number of seconds; carry it as a Duration
             // from here on.
             let timeout = Duration::from_secs(timeout);
-            cmd_runs_exec(&run_id, moment, script, timeout, settings, output).await
+            cmd_runs_exec(
+                &run_id, moment, script, container, timeout, settings, output,
+            )
+            .await
         }
         Some(RunsCommands::Events {
             run_id,
@@ -1505,13 +1509,11 @@ async fn cmd_runs_logs(
     Ok(())
 }
 
-/// One frame of an execute-command NDJSON stream.
-///
-/// Deliberately permissive, because `runs exec` is a work in progress behind
-/// an unstable feature and the stream may still grow frames and fields: a
-/// frame this build does not recognize is kept whole as [`ExecFrame::Unknown`]
-/// rather than failing the stream. Tighten this to a closed type once the
-/// command stabilizes.
+/// One frame of an execute-command NDJSON stream, in the shapes the release
+/// 64.0 spec documents and release 61.3 was observed to send: a command-output
+/// event, then one terminal result. A `Stream_Error` line never reaches this
+/// type, because `event_lines` turns it into the command's failure. Unknown
+/// fields are ignored, but any other frame fails the command.
 ///
 /// Variant order matters: serde tries `Output` first. An output line's
 /// payload is open workload data and may carry a `status` of its own, so
@@ -1521,32 +1523,28 @@ async fn cmd_runs_logs(
 #[serde(untagged)]
 enum ExecFrame {
     Output {
-        /// Required to distinguish output from unknown frames; JSON mode
-        /// prints the original entry.
+        /// Not read, but the spec requires it on every event.
         #[allow(dead_code)]
         moment: Moment,
         output_text: String,
-        source: Option<ExecSource>,
+        source: ExecSource,
     },
     Result(ExecResult),
-    /// A frame with an unknown `status`, or a known one whose shape did not
-    /// fit.
-    Unknown(Value),
 }
 
-/// Only `stream` is read: a command runs on the guest machine, so there is
-/// no container or source name to show.
+/// Only `stream` is read: the other fields of an event's source name a
+/// workload process, and the script's output needs no label.
 #[derive(Debug, Deserialize)]
 struct ExecSource {
-    stream: Option<ExecStream>,
+    stream: ExecStream,
 }
 
+/// The script's stdout is `info`, and its stderr is `error`.
 #[derive(Debug, Clone, Copy, Deserialize)]
 #[serde(rename_all = "snake_case")]
 enum ExecStream {
+    Info,
     Error,
-    #[serde(other)]
-    Other,
 }
 
 /// The terminal record of a successful stream.
@@ -1558,20 +1556,17 @@ enum ExecStream {
 #[serde(tag = "status", rename_all = "snake_case")]
 enum ExecResult {
     Exited {
+        /// `null` when no exit code was available.
         exit_code: Option<i64>,
-        /// Required by the spec; `Option` only so a server that omits it
-        /// costs the trailer rather than the whole result.
-        end_moment: Option<Moment>,
+        end_moment: Moment,
     },
     /// `last_moment` is not read: the spec marks it informational, so nothing
     /// chains from it.
     TimedOut,
 }
 
-/// Render one frame for a human. Only what the script itself wrote goes to
-/// stdout — its stdout on stdout, its stderr on stderr — so `runs exec ... |
-/// jq` sees the script's output and nothing else. A frame this build does not
-/// know is not the script's output, so it goes to stderr whole.
+/// Render one frame for a human: the script's stdout on stdout, its stderr on
+/// stderr, so `runs exec ... | jq` sees the script's output and nothing else.
 ///
 /// The terminal result produces no output of its own: it decides the exit
 /// status, which the caller settles after the stream ends.
@@ -1583,13 +1578,12 @@ fn render_exec_frame(frame: &ExecFrame) -> Result<()> {
             ..
         } => {
             let text = normalize_terminal_text(output_text);
-            match source.as_ref().and_then(|source| source.stream) {
-                Some(ExecStream::Error) => eprintln!("{text}"),
-                Some(ExecStream::Other) | None => outln!("{text}")?,
+            match source.stream {
+                ExecStream::Error => eprintln!("{text}"),
+                ExecStream::Info => outln!("{text}")?,
             }
         }
         ExecFrame::Result(_) => {}
-        ExecFrame::Unknown(frame) => eprintln!("{frame}"),
     }
     Ok(())
 }
@@ -1658,6 +1652,7 @@ async fn cmd_runs_exec(
     run_id: &str,
     moment: Moment,
     script: Option<String>,
+    container: Option<String>,
     timeout: Duration,
     settings: &Settings,
     OutputOptions { json, verbose }: OutputOptions,
@@ -1666,7 +1661,10 @@ async fn cmd_runs_exec(
 
     debug!("executing command in run: {}", run_id);
     let api = AntithesisApi::new(settings, verbose)?;
-    let stream = match api.execute_command(run_id, moment, script, timeout).await {
+    let stream = match api
+        .execute_command(run_id, moment, script, container, timeout)
+        .await
+    {
         Ok(stream) => stream,
         // Translate a bad run id's 404 into the shared "run not found"
         // message every sibling run-scoped command reports (the endpoint's
@@ -1683,9 +1681,9 @@ async fn cmd_runs_exec(
         // carries its moment under `end_moment` or `last_moment` instead.
         normalize_vtime_field(&mut entry, "end_moment");
         normalize_vtime_field(&mut entry, "last_moment");
-        let frame = ExecFrame::deserialize(&entry).map_err(|err| {
-            eyre!("could not decode a line of the command's output: {err}")
-                .note("every JSON object decodes, so this means the decoder itself failed")
+        let frame = ExecFrame::deserialize(&entry).map_err(|_| {
+            eyre!("the server sent a line that is not command output or a result: {entry}")
+                .suggestion("run `snouty update`; a newer snouty may know this line")
         })?;
 
         if json {
@@ -1709,8 +1707,8 @@ async fn cmd_runs_exec(
             // moment to chain a follow-up command from, in the positional
             // order `runs exec` takes it (VTime's Display is exact, so it
             // pastes back unchanged). --json carries it in the exited result.
-            if !json && let Some(m) = end_moment {
-                eprintln!("end moment: {} {}", m.input_hash, m.vtime);
+            if !json {
+                eprintln!("end moment: {} {}", end_moment.input_hash, end_moment.vtime);
             }
             match exit_code {
                 Some(0) => Ok(()),
@@ -2740,53 +2738,41 @@ mod tests {
 
     #[test]
     fn exec_frame_parses_each_stream_shape() {
-        // Shapes from the release 61.3 spec examples for the command stream.
+        // Shapes from the release 64.0 spec examples for the command stream.
         let frame: ExecFrame = serde_json::from_str(
             r#"{"moment":{"input_hash":"-3160476794197372487","vtime":"16.304728139657527"},"output_text":"hello-err","source":{"stream":"error"}}"#,
         )
         .unwrap();
         let ExecFrame::Output {
-            moment,
             output_text,
-            source:
-                Some(ExecSource {
-                    stream: Some(ExecStream::Error),
-                }),
+            source: ExecSource {
+                stream: ExecStream::Error,
+            },
+            ..
         } = frame
         else {
             panic!("expected a stderr output event");
         };
         assert_eq!(output_text, "hello-err");
-        assert_eq!(moment.input_hash, "-3160476794197372487");
-        assert_eq!(moment.vtime.to_string(), "16.304728139657527");
-
-        // `Event` does not require `source`, so a missing, null, or unknown
-        // label is still stdout.
-        for line in [
-            r#"{"moment":{"input_hash":"-1","vtime":"1.0"},"output_text":"bare"}"#,
-            r#"{"moment":{"input_hash":"-1","vtime":"1.0"},"output_text":"bare","source":null}"#,
-            r#"{"moment":{"input_hash":"-1","vtime":"1.0"},"output_text":"bare","source":{"stream":null}}"#,
-            r#"{"moment":{"input_hash":"-1","vtime":"1.0"},"output_text":"bare","source":{"stream":"info"}}"#,
-        ] {
-            let ExecFrame::Output { source, .. } = serde_json::from_str(line).unwrap() else {
-                panic!("expected an output event: {line}");
-            };
-            assert!(
-                matches!(
-                    source.and_then(|source| source.stream),
-                    Some(ExecStream::Other) | None
-                ),
-                "{line}"
-            );
-        }
 
         // An output line whose workload payload carries a `status` of its own
         // is still output, not a result.
         let frame: ExecFrame = serde_json::from_str(
-            r#"{"moment":{"input_hash":"-1","vtime":"1.0"},"output_text":"{\"status\":\"exited\"}","status":"exited"}"#,
+            r#"{"moment":{"input_hash":"-1","vtime":"1.0"},"output_text":"{\"status\":\"exited\"}","source":{"stream":"info"},"status":"exited"}"#,
         )
         .unwrap();
-        assert!(matches!(frame, ExecFrame::Output { .. }), "got: {frame:?}");
+        assert!(
+            matches!(
+                frame,
+                ExecFrame::Output {
+                    source: ExecSource {
+                        stream: ExecStream::Info
+                    },
+                    ..
+                }
+            ),
+            "got: {frame:?}"
+        );
 
         let frame: ExecFrame = serde_json::from_str(
             r#"{"status":"exited","exit_code":5,"end_moment":{"input_hash":"-316","vtime":"16.3"}}"#,
@@ -2802,9 +2788,8 @@ mod tests {
         assert_eq!(exit_code, Some(5));
         // VTime's Display is exact, so a vtime copied off the trailer names
         // the same moment.
-        let m = end_moment.expect("exited carries a moment");
-        assert_eq!(m.input_hash, "-316");
-        assert_eq!(m.vtime.to_string(), "16.3");
+        assert_eq!(end_moment.input_hash, "-316");
+        assert_eq!(end_moment.vtime.to_string(), "16.3");
 
         // `exit_code` is nullable ("no exit code was available").
         let ExecFrame::Result(ExecResult::Exited { exit_code, .. }) = serde_json::from_str(
@@ -2829,23 +2814,19 @@ mod tests {
     }
 
     #[test]
-    fn exec_frame_decodes_any_object() {
-        // The stream handler treats a decode failure as an error. This says
-        // why that arm should never run: `Unknown(Value)` accepts any JSON, so
-        // no shape the server can send fails to decode. If this ever fails,
-        // the error path in `cmd_runs_exec` is the right place to find out.
+    fn exec_frame_rejects_shapes_outside_the_spec() {
         for line in [
             r#"{}"#,
-            r#"{"status":null}"#,
-            r#"{"output_text":"no moment"}"#,
-            r#"{"status":"exited","exit_code":"not-a-number"}"#,
-            r#"{"status":42,"nested":{"deep":[1,2,{"x":null}]}}"#,
-            r#"{"moment":{"input_hash":"-1","vtime":"1.0"},"output_text":{},"source":[]}"#,
+            r#"{"status":"heartbeat"}"#,
+            r#"{"output_text":"no moment","source":{"stream":"info"}}"#,
+            r#"{"moment":{"input_hash":"-1","vtime":"1.0"},"output_text":"no source"}"#,
+            r#"{"moment":{"input_hash":"-1","vtime":"1.0"},"output_text":"x","source":{"stream":"debug"}}"#,
+            r#"{"status":"exited","exit_code":0}"#,
+            r#"{"status":"exited","exit_code":"not-a-number","end_moment":{"input_hash":"-1","vtime":"1.0"}}"#,
         ] {
-            let entry: Value = serde_json::from_str(line).unwrap();
             assert!(
-                ExecFrame::deserialize(&entry).is_ok(),
-                "should decode: {line}"
+                serde_json::from_str::<ExecFrame>(line).is_err(),
+                "should be rejected: {line}"
             );
         }
     }
@@ -4238,8 +4219,11 @@ mod tests {
                 antithesis_config_image: None,
                 antithesis_description: description.map(str::to_string),
                 antithesis_duration: None,
+                antithesis_filter_logs_matching: None,
+                antithesis_filter_source_matching: None,
                 antithesis_images: None,
                 antithesis_is_ephemeral: None,
+                antithesis_performance_tier: None,
                 antithesis_report_recipients: None,
                 antithesis_source: None,
                 extra,

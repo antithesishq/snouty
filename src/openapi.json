@@ -36,6 +36,8 @@
       "name": "Launch",
       "description": "Launch a test run or debugging session."
     },
+    {"name": "Modules", "description": "Lists instrumented modules loaded during a test run and the programs that\nloaded them. Every module that loaded with coverage instrumentation is\nincluded, whether or not the build published a symbol catalog for it;\nhas_catalog tells them apart. A symbol catalog describes the files,\nfunctions, and instrumented code locations in a module's build.\n\nEach module appears once per run, identified by module_id. Treat this\nidentifier as an opaque string; name is a display label and need\nnot be unique. File, function, and location counts describe the catalog,\nregardless of which code has executed. A module without a catalog reports\na location count; but its file and function counts are\nnull. These endpoints do not report\ncoverage results.\n\nAn instance identifies a program that loaded a module in a named container.\nThe same (module_id, container_name, program_path) combination appears only\nonce per run, even across multiple processes, container restarts, or repeated\nloads. Instances group processes by program path; they do not enumerate\nindividual process lifetimes.\n\nprogram_path is the path to the process's executable. For interpreted\nprograms, this is the interpreter binary. Different scripts using the\nsame interpreter path in the same named container share an instance for\neach module they load in common.\nContainer names and program paths are served as recorded, without rewriting\nthem.\n\nModules and instances may take time to appear after loading. A module appears before\nany of its instances.\n\nEach list is ordered by when entries first become available through this\nAPI, which may differ from the order in which modules were loaded. Entries\nkeep their positions, and new entries are always added after existing\nones. Repeated loads do not move or duplicate entries.\n\nUse each list's cursor to fetch subsequent pages or poll for new entries.\nAn empty page does not mean the list is final. The module list and each module's\ninstance list have separate cursors; neither reports updates to entries\nalready listed."},
+    {"name": "Module instances", "description": "Programs that loaded modules in named containers."},
     {
       "name": "Usage",
       "description": "Information about usage"
@@ -50,11 +52,9 @@
       "parameters": [],
       "get": {
         "operationId": "listRuns",
-        "summary": "List all test runs",
-        "description": "Returns a paginated list of test runs. Results are ordered by creation time, newest first.",
-        "tags": [
-          "Test runs"
-        ],
+        "summary": "List runs",
+        "description": "Returns a paginated list of runs of all types. Results are ordered by creation time, newest first.",
+        "tags": ["Test runs"],
         "parameters": [
           {
             "name": "limit",
@@ -204,9 +204,7 @@
         "operationId": "getRun",
         "summary": "Get test run details",
         "description": "Returns the full details of a single test run, including results.",
-        "tags": [
-          "Test runs"
-        ],
+        "tags": ["Test runs"],
         "parameters": [
           {
             "name": "run_id",
@@ -328,10 +326,8 @@
       "post": {
         "operationId": "executeCommand",
         "summary": "Execute a command in a test run",
-        "description": "Executes a bash command in the live session associated with the test run, starting at the requested moment. When `container` is specified, the command executes inside that container; otherwise, it executes directly on the guest machine. When `include_filtered_logs` is `true`, all log events selected by the command's log filter are included in the output. When `wait_until` is specified, the command continues executing until an event matching that event-set DSL query is observed or the explicitly specified timeout elapses. Output is streamed as newline-delimited JSON (NDJSON). Command output uses the same `Event` shape returned by the run logs endpoint, without an additional wrapper. A successful stream ends with exactly one command result whose `status` is `exited` or `timed_out`; a stream that fails after the response begins ends with a `Stream_Error`.",
-        "tags": [
-          "Test runs"
-        ],
+        "description": "Executes a bash command in the live session associated with the test run, starting at the requested moment. When `include_system_logs` is `true`, every event observed during the command's execution is included, not just the command's own stdout and stderr. Output is streamed as newline-delimited JSON (NDJSON). Command output uses the same `Event` shape returned by the run logs endpoint, without an additional wrapper. A successful stream ends with exactly one command result whose `status` is `exited` or `timed_out`; a stream that fails after the response begins ends with a `Stream_Error`.",
+        "tags": ["Test runs"],
         "parameters": [
           {
             "name": "run_id",
@@ -357,7 +353,8 @@
                   "vtime": "398.4898056755774"
                 },
                 "script": "uname -a",
-                "timeout_seconds": 30
+                "timeout_seconds": 30,
+                "container": "_ANTITHESIS_HOST"
               }
             }
           }
@@ -369,15 +366,9 @@
               "application/x-ndjson": {
                 "schema": {
                   "oneOf": [
-                    {
-                      "$ref": "#/components/schemas/Event"
-                    },
-                    {
-                      "$ref": "#/components/schemas/Command_Termination_Result"
-                    },
-                    {
-                      "$ref": "#/components/schemas/Stream_Error"
-                    }
+                    { "$ref": "#/components/schemas/Event" },
+                    { "$ref": "#/components/schemas/Command_Termination_Result" },
+                    { "$ref": "#/components/schemas/Stream_Error" }
                   ]
                 },
                 "examples": {
@@ -451,9 +442,7 @@
         "operationId": "getRunLogs",
         "summary": "Get logs for a specific moment",
         "description": "Streams the logs for a moment in the test run as newline-delimited JSON (NDJSON) in chronological order. Each line is a self-contained JSON object. The response is streamed and the connection remains open until all matching log lines have been sent.",
-        "tags": [
-          "Test runs"
-        ],
+        "tags": ["Test runs"],
         "parameters": [
           {
             "name": "run_id",
@@ -511,12 +500,8 @@
               "application/x-ndjson": {
                 "schema": {
                   "oneOf": [
-                    {
-                      "$ref": "#/components/schemas/Event"
-                    },
-                    {
-                      "$ref": "#/components/schemas/Stream_Error"
-                    }
+                    { "$ref": "#/components/schemas/Event" },
+                    { "$ref": "#/components/schemas/Stream_Error" }
                   ]
                 },
                 "examples": {
@@ -602,9 +587,7 @@
         "operationId": "getRunBuildLogs",
         "summary": "Stream build logs",
         "description": "Streams the build logs for a test run as newline-delimited JSON (NDJSON). Each line contains a timestamp, a stream indicator, and the log text. The response is streamed and the connection remains open until all matching log lines have been sent.\n\n**Known limitation:** Build logs are not available for test runs created before Antithesis version 54.5. Requests for such runs return `404 Not Found`.",
-        "tags": [
-          "Test runs"
-        ],
+        "tags": ["Test runs"],
         "parameters": [
           {
             "name": "run_id",
@@ -623,12 +606,8 @@
               "application/x-ndjson": {
                 "schema": {
                   "oneOf": [
-                    {
-                      "$ref": "#/components/schemas/Build_Log_Line"
-                    },
-                    {
-                      "$ref": "#/components/schemas/Stream_Error"
-                    }
+                    { "$ref": "#/components/schemas/Build_Log_Line" },
+                    { "$ref": "#/components/schemas/Stream_Error" }
                   ]
                 },
                 "example": {
@@ -671,9 +650,7 @@
         "operationId": "listRunProperties",
         "summary": "List test run properties",
         "description": "Returns a paginated list of property results for a test run, including both passing and failing properties by default. Use the `status` parameter to filter by a specific status.\n\n**Known limitation:** Property results are not available for test runs created before Antithesis version 54.5. Requests for such runs return `404 Not Found`.",
-        "tags": [
-          "Test runs"
-        ],
+        "tags": ["Test runs"],
         "parameters": [
           {
             "name": "run_id",
@@ -748,17 +725,17 @@
                       "counterexamples": []
                     },
                     {
-                      "name": "Input count",
-                      "description": null,
-                      "status": "Passing",
-                      "is_event": false,
-                      "is_group": false,
-                      "example_count": 1,
-                      "counterexample_count": 0,
-                      "examples": [
-                        318446
-                      ],
-                      "counterexamples": []
+                        "name": "Input count",
+                        "description": null,
+                        "status": "Passing",
+                        "is_event": false,
+                        "is_group": false,
+                        "example_count": 1,
+                        "counterexample_count": 0,
+                        "examples": [
+                            318446
+                        ],
+                        "counterexamples": []
                     }
                   ]
                 }
@@ -797,9 +774,7 @@
         "operationId": "searchRunEvents",
         "summary": "Search test run events",
         "description": "Searches events in a test run for the given query string. The search matches against output text, assertion messages, function names, and test composer commands. Results are streamed as newline-delimited JSON (NDJSON). Each line is a self-contained JSON object representing an event.",
-        "tags": [
-          "Test runs"
-        ],
+        "tags": ["Test runs"],
         "parameters": [
           {
             "name": "run_id",
@@ -840,12 +815,8 @@
               "application/x-ndjson": {
                 "schema": {
                   "oneOf": [
-                    {
-                      "$ref": "#/components/schemas/Event"
-                    },
-                    {
-                      "$ref": "#/components/schemas/Stream_Error"
-                    }
+                    { "$ref": "#/components/schemas/Event" },
+                    { "$ref": "#/components/schemas/Stream_Error" }
                   ]
                 },
                 "example": {
@@ -896,9 +867,7 @@
         "operationId": "search",
         "summary": "Search events with event sets",
         "description": "Runs a search query across a single test run's events and returns the matching events. The test run to search is identified by the `run_id` path parameter. To count matching events instead, use `/api/v0/runs/{run_id}/events/search/count`.\n\n### Search query\n\nThe `query` field is an event set. An event set is a pipeline of verbs separated by `.`, applied left to right to the underlying event stream. The [event set reference](/docs/reference/event-set-reference/) has the full grammar.\n\n### Validating a query\n\nWhen `validate_only` is `true` the server checks only that `query` is syntactically valid and does not execute it; no events are returned. The server responds with `200 OK` and an empty body for a syntactically valid query, and for an invalid query, the server responds with `400 Bad Request`. `validate_only` takes precedence over `is_streaming`.\n\n### Streaming\n\nWhen `is_streaming` is `true` the connection remains open and the server continues to emit events as they are observed in live test runs. When `false` the server closes the connection once it has returned the current matching set.",
-        "tags": [
-          "Test runs"
-        ],
+        "tags": ["Test runs"],
         "parameters": [
           {
             "name": "run_id",
@@ -1001,9 +970,7 @@
         "operationId": "searchCount",
         "summary": "Count events with event sets",
         "description": "Runs a search query across a single test run's events and returns the number of matching events. The test run to search is identified by the `run_id` path parameter.\n\n### Search query\n\nThe `query` field is an event set. An event set is a pipeline of verbs separated by `.`, applied left to right to the underlying event stream. The [event set reference](/docs/reference/event-set-reference/) has the full grammar.\n\n### Validating a query\n\nWhen `validate_only` is `true` the server checks only that `query` is syntactically valid and does not execute it; no count is computed. The server responds with `200 OK` and an empty body for a syntactically valid query, and for an invalid query, the server responds with `400 Bad Request`.",
-        "tags": [
-          "Test runs"
-        ],
+        "tags": ["Test runs"],
         "parameters": [
           {
             "name": "run_id",
@@ -1084,14 +1051,84 @@
         }
       }
     },
+    "/api/v0/runs/{run_id}/cancel": {
+      "post": {
+        "operationId": "cancelRun",
+        "summary": "Cancel a test run",
+        "description": "Requests cancellation of the test run identified by `run_id`, including its descendant jobs. Cancellation is asynchronous: a successful response confirms that cancellation was requested, but jobs may still be stopping. The run record is marked as cancelled and its finish timestamps are set. Runs that are already completed, cancelled, or incomplete return `409 Conflict` without changing their status or finish timestamps. No request body is required.",
+        "tags": ["Test runs"],
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "description": "Unique identifier of the test run to cancel.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Cancellation successfully requested.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                },
+                "example": {}
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "405": {
+            "$ref": "#/components/responses/MethodNotAllowed"
+          },
+          "406": {
+            "$ref": "#/components/responses/NotAcceptable"
+          },
+          "409": {
+            "description": "The run has already finished and cannot be cancelled.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error_Response"
+                },
+                "example": {
+                  "message": "Conflict: Run example-run-id has already finished and cannot be cancelled"
+                }
+              }
+            }
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "503": {
+            "$ref": "#/components/responses/ServiceUnavailable"
+          }
+        }
+      }
+    },
     "/api/v1/launch/{launcher_name}": {
       "post": {
         "operationId": "launchTest",
         "summary": "Launch a test",
         "description": "Kicks off a test using the specified launcher (e.g. `basic_test` or `basic_k8s_test`). Fetches the relevant container images specified in configuration files and in `antithesis.images`, builds the test environment, and runs the test for the duration set in `antithesis.duration`. Returns an HTTP status code indicating whether the test was successfully started (not the test result itself).",
-        "tags": [
-          "Launch"
-        ],
+        "tags": ["Launch"],
         "parameters": [
           {
             "name": "launcher_name",
@@ -1158,9 +1195,7 @@
     },
     "/api/version": {
       "get": {
-        "tags": [
-          "Version"
-        ],
+        "tags": ["Version"],
         "operationId": "getVersion",
         "summary": "Get API and release version",
         "description": "Returns the latest supported API version and the current Antithesis release version for the tenant.",
@@ -1200,10 +1235,9 @@
         "operationId": "launchMvd",
         "summary": "Launch a debugging session",
         "description": "Kicks off a multiverse debugging session that'll be available for six hours. Returns an HTTP status code indicating whether the debugging session request was successfully accepted and the session is getting ready.\n\nThe target test run is identified by `antithesis.debugging.run_id`. For backwards compatibility, `antithesis.debugging.session_id` is also accepted — prefer `run_id` for new integrations.",
-        "tags": [
-          "Launch"
+        "tags": ["Launch"],
+        "parameters": [
         ],
-        "parameters": [],
         "requestBody": {
           "required": true,
           "content": {
@@ -1280,14 +1314,246 @@
         }
       }
     },
+    "/api/v0/runs/{run_id}/modules": {
+      "get": {
+        "operationId": "listRunModules",
+        "summary": "List modules loaded in a test run",
+        "description": "Returns one entry per module_id, ordered by first publication.\n\nOmit after to begin at the start of the collection. The returned cursor marks the position immediately after the last module in this page. Pass it unchanged as after to fetch modules from that position onward. An empty page still returns a cursor for polling. When has_more is false, clients may poll using that cursor to discover modules published later.\n\nLoading an existing module again does not create another module entry. New container/program combinations appear in that module's instances collection.\n\nA known run with no published modules returns an empty page.",
+        "tags": [
+          "Modules"
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/CoverageRunId"
+          },
+          {
+            "$ref": "#/components/parameters/CoverageLimit"
+          },
+          {
+            "$ref": "#/components/parameters/CoverageAfter"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "List modules loaded in a test run.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CoverageModuleListResponse"
+                },
+                "example": {
+                  "data": [
+                    {
+                      "module_id": "9f4a1c0e7b2d8e3f5a6b4c2d1e0f9a8b7c6d5e4f",
+                      "name": "payment-service",
+                      "has_catalog": true,
+                      "language": "go",
+                      "instrumentor": "go",
+                      "num_files": 412,
+                      "num_functions": 9873,
+                      "num_locations": 120433
+                    },
+                    {
+                      "module_id": "4d1e0f9a8b7c6d5e4f9f4a1c0e7b2d8e3f5a6b4c",
+                      "name": "ledger-worker",
+                      "has_catalog": false,
+                      "language": null,
+                      "instrumentor": null,
+                      "num_files": null,
+                      "num_functions": null,
+                      "num_locations": 48213
+                    }
+                  ],
+                  "cursor": "opaque-module-cursor",
+                  "has_more": false
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "405": {
+            "$ref": "#/components/responses/MethodNotAllowed"
+          },
+          "406": {
+            "$ref": "#/components/responses/NotAcceptable"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "503": {
+            "$ref": "#/components/responses/ServiceUnavailable"
+          }
+        }
+      }
+    },
+    "/api/v0/runs/{run_id}/modules/{module_id}": {
+      "get": {
+        "operationId": "getRunModule",
+        "summary": "Get one loaded module",
+        "description": "Returns the same module representation used by the modules listing.\n\nUse /api/v0/runs/{run_id}/modules/{module_id}/instances to list the programs that loaded this module.\n\nReturns 404 if the run does not exist or the module has not been published in this run.",
+        "tags": [
+          "Modules"
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/CoverageRunId"
+          },
+          {
+            "name": "module_id",
+            "in": "path",
+            "required": true,
+            "description": "Opaque module identifier returned by the modules listing.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Get one loaded module.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CoverageModule"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "405": {
+            "$ref": "#/components/responses/MethodNotAllowed"
+          },
+          "406": {
+            "$ref": "#/components/responses/NotAcceptable"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "503": {
+            "$ref": "#/components/responses/ServiceUnavailable"
+          }
+        }
+      }
+    },
+    "/api/v0/runs/{run_id}/modules/{module_id}/instances": {
+      "get": {
+        "operationId": "listRunModuleInstances",
+        "summary": "List programs that loaded a module in a test run",
+        "description": "Returns instances of the specified module, ordered by first publication.\n\nWithin this module's instances, each (container_name, program_path) combination appears once. Multiple processes and container restarts with the same container name and program path do not create additional instances. Individual process lifetimes are not enumerated.\n\nOmit after to begin at the start of the collection. The returned cursor marks the next position to examine, not an instance ID. It can advance past instances of other modules, even when this page is empty. Pass it unchanged as after to resume without repeating instances from this page. When has_more is false, clients may poll using that cursor to discover instances published later. Each module's instances have a separate cursor.\n\nA published module with no published instances returns an empty page. Returns 404 if the run does not exist or the module has not been published in this run.",
+        "tags": [
+          "Module instances"
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/CoverageRunId"
+          },
+          {
+            "name": "module_id",
+            "in": "path",
+            "required": true,
+            "description": "Opaque module identifier returned by the modules listing.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "$ref": "#/components/parameters/CoverageLimit"
+          },
+          {
+            "$ref": "#/components/parameters/CoverageAfter"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "A page of programs that loaded the specified module in the run.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CoverageModuleInstanceListResponse"
+                },
+                "example": {
+                  "data": [
+                    {
+                      "instance_id": "opaque-instance-1",
+                      "container_name": "payment1",
+                      "program_path": "/opt/app/payment-service"
+                    },
+                    {
+                      "instance_id": "opaque-instance-2",
+                      "container_name": "payment2",
+                      "program_path": "/opt/app/payment-service"
+                    }
+                  ],
+                  "cursor": "opaque-instance-cursor",
+                  "has_more": false
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "405": {
+            "$ref": "#/components/responses/MethodNotAllowed"
+          },
+          "406": {
+            "$ref": "#/components/responses/NotAcceptable"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "503": {
+            "$ref": "#/components/responses/ServiceUnavailable"
+          }
+        }
+      }
+    },
     "/api/v0/usage": {
       "get": {
         "operationId": "listUsage",
         "summary": "Lists all usage entries",
         "description": "Returns a paginated list of usage line items. Results are ordered by creation time, newest first",
-        "tags": [
-          "Usage"
-        ],
+        "tags": ["Usage"],
         "parameters": [
           {
             "name": "start_time",
@@ -1397,9 +1663,7 @@
         "operationId": "getUsageSummary",
         "summary": "Gets a total of usage hours used",
         "description": "Gets the total number of runs and usage hours used by all runs, bounded by the optional start and end limits",
-        "tags": [
-          "Usage"
-        ],
+        "tags": ["Usage"],
         "parameters": [
           {
             "name": "start_time",
@@ -1469,9 +1733,7 @@
         "operationId": "getUsage",
         "summary": "Gets usage for a run",
         "description": "Returns the usage for a specific run id",
-        "tags": [
-          "Usage"
-        ],
+        "tags": ["Usage"],
         "parameters": [
           {
             "name": "run_id",
@@ -1529,13 +1791,184 @@
     }
   },
   "components": {
+    "parameters": {
+      "CoverageRunId": {
+        "name": "run_id",
+        "in": "path",
+        "required": true,
+        "description": "Unique identifier of the test run.",
+        "schema": {
+          "type": "string"
+        }
+      },
+      "CoverageLimit": {
+        "name": "limit",
+        "in": "query",
+        "required": false,
+        "description": "Maximum number of entries to return. Values outside 1–1000 return 400 Bad Request. The limit may change between requests using a cursor.",
+        "schema": {
+          "type": "integer",
+          "default": 50,
+          "minimum": 1,
+          "maximum": 1000
+        }
+      },
+      "CoverageAfter": {
+        "name": "after",
+        "in": "query",
+        "required": false,
+        "description": "Opaque cursor returned by a previous response. Resumes scanning at the position recorded by that cursor, without repeating entries from the previous page. The cursor is a continuation token, not the identifier of the last or next entry. Omit to begin at the start of the collection.\n\nCursors are scoped to the run and collection, including module_id for a module's instances. Use each cursor only with the same endpoint and path parameters. Invalid cursors or cursors used with a different scope return 400 Bad Request.\n\nCursors remain valid while the run's API data is retained. Treat cursor values as opaque; do not parse or construct them.",
+        "schema": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
     "schemas": {
+      "CoverageModule": {
+        "type": "object",
+        "required": [
+          "module_id",
+          "name",
+          "has_catalog",
+          "language",
+          "instrumentor",
+          "num_files",
+          "num_functions",
+          "num_locations"
+        ],
+        "properties": {
+          "module_id": {
+            "type": "string",
+            "description": "Opaque symbol catalog identifier. Unique within the run. Not necessarily a native build ID."
+          },
+          "name": {
+            "type": "string",
+            "description": "Display label. Not necessarily unique."
+          },
+          "has_catalog": {
+            "type": "boolean",
+            "description": "Whether a symbol catalog is available for this module. When false, the module ran coverage-instrumented code but nothing describes its files, functions, or locations: language, instrumentor, and the file and function counts are null, and no file, function, or location detail will be available for it. Usually the module's binary was not provided for symbolization when the environment was built."
+          },
+          "language": {
+            "type": "string",
+            "description": "Language recorded in the catalog header, or null if unavailable. Values are not a closed enumeration.",
+            "nullable": true
+          },
+          "instrumentor": {
+            "type": "string",
+            "description": "Instrumentor recorded in the catalog header, or null if unavailable. Values are not a closed enumeration.",
+            "nullable": true
+          },
+          "num_files": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0,
+            "description": "Number of distinct file entries in the published catalog. Null when has_catalog is false.",
+            "nullable": true
+          },
+          "num_functions": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0,
+            "description": "Number of function entries in the published catalog, grouped by file and qualified function name. Null when has_catalog is false.",
+            "nullable": true
+          },
+          "num_locations": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0,
+            "description": "Number of coverage locations in the published catalog or, when has_catalog is false, the number of instrumentation points the program reported when it loaded the module. This is not a count of source lines or hits."
+          }
+        }
+      },
+      "CoverageModuleInstance": {
+        "type": "object",
+        "required": [
+          "instance_id",
+          "container_name",
+          "program_path"
+        ],
+        "properties": {
+          "instance_id": {
+            "type": "string",
+            "description": "Opaque, stable identifier for this instance within the run. Repeated observations of the same (module_id, container_name, program_path) retain the same identifier."
+          },
+          "container_name": {
+            "type": "string",
+            "description": "Name of the container running the program. Part of the instance identity; container lifetime IDs are not used."
+          },
+          "program_path": {
+            "type": "string",
+            "description": "Path to the process's executable, as recorded at runtime. For\ninterpreted programs, this is the interpreter binary. Compared\nexactly as recorded, without normalization or remapping.\n"
+          }
+        },
+        "description": "A program that loaded the module identified by module_id in the request path."
+      },
+      "CoveragePage": {
+        "type": "object",
+        "required": [
+          "cursor",
+          "has_more"
+        ],
+        "properties": {
+          "cursor": {
+            "type": "string",
+            "description": "Opaque continuation token marking the next position to examine. It is not an entry identifier. Pass it unchanged as after to resume without repeating entries from this page. For modules, it marks the position immediately after the last returned module. For module instances, it also accounts for positions skipped because they belong to other modules. Always present, including on empty pages; it may advance even when no instances are returned. At the current end of a list, retain this cursor and use it to poll for new entries.",
+            "minLength": 1
+          },
+          "has_more": {
+            "type": "boolean",
+            "description": "Whether more matching entries were available beyond this page when the request was evaluated. False does not mean the collection is final. Clients may poll using the returned cursor."
+          }
+        }
+      },
+      "CoverageModuleListResponse": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/CoveragePage"
+          },
+          {
+            "type": "object",
+            "required": [
+              "data"
+            ],
+            "properties": {
+              "data": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/CoverageModule"
+                }
+              }
+            }
+          }
+        ]
+      },
+      "CoverageModuleInstanceListResponse": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/CoveragePage"
+          },
+          {
+            "type": "object",
+            "required": [
+              "data"
+            ],
+            "properties": {
+              "data": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/CoverageModuleInstance"
+                }
+              }
+            }
+          }
+        ]
+      },
       "Error_Response": {
         "type": "object",
         "description": "Standard error envelope returned by all error responses.",
-        "required": [
-          "message"
-        ],
+        "required": ["message"],
         "properties": {
           "message": {
             "type": "string",
@@ -1548,9 +1981,7 @@
       "Stream_Error": {
         "type": "object",
         "description": "An error that may be emitted as an individual line in an NDJSON stream. This occurs when the server encounters an error after the server responds with a `200 OK` status and before the stream completes.",
-        "required": [
-          "error"
-        ],
+        "required": ["error"],
         "properties": {
           "error": {
             "type": "string",
@@ -1563,9 +1994,7 @@
       "Run_List_Response": {
         "type": "object",
         "description": "A page of test run summaries returned by the list endpoint. Use `next_cursor` to iterate through all available results.",
-        "required": [
-          "data"
-        ],
+        "required": ["data"],
         "properties": {
           "data": {
             "type": "array",
@@ -1582,12 +2011,7 @@
       },
       "Run_Summary": {
         "type": "object",
-        "required": [
-          "run_id",
-          "status",
-          "created_at",
-          "launcher"
-        ],
+        "required": ["run_id", "status", "created_at", "launcher"],
         "properties": {
           "run_id": {
             "type": "string",
@@ -1693,10 +2117,7 @@
       "Launch_Response": {
         "type": "object",
         "description": "Response returned when a test is successfully launched.",
-        "required": [
-          "runId",
-          "statusCode"
-        ],
+        "required": ["runId", "statusCode"],
         "properties": {
           "runId": {
             "type": "string",
@@ -1715,10 +2136,7 @@
       "Version_Response": {
         "type": "object",
         "description": "Version information returned by the version endpoint.",
-        "required": [
-          "latest_api_version",
-          "release_version"
-        ],
+        "required": ["latest_api_version", "release_version"],
         "properties": {
           "latest_api_version": {
             "type": "string",
@@ -1736,9 +2154,7 @@
       "Launch_MVD_Response": {
         "type": "object",
         "description": "Response returned when a debugging session request is successfully accepted.",
-        "required": [
-          "statusCode"
-        ],
+        "required": ["statusCode"],
         "properties": {
           "runId": {
             "type": "string",
@@ -1757,9 +2173,7 @@
       "Launch_Error_Response": {
         "type": "object",
         "description": "Error envelope returned by the launch endpoints (`/api/v1/launch/{launcher_name}` and `/api/v1/launch/debugging`). These endpoints are fronted by the test-launch webhook and report failures with a status code rather than the `Error_Response` `message` envelope used by the other endpoints. A null `runId` is included once a request reaches the test launcher. Some gateway-level rejections (for example authentication or rate limiting) may instead return an empty body.",
-        "required": [
-          "statusCode"
-        ],
+        "required": ["statusCode"],
         "properties": {
           "statusCode": {
             "type": "integer",
@@ -1777,9 +2191,7 @@
       "Launch_Request": {
         "type": "object",
         "description": "Request body for launching a test.",
-        "required": [
-          "params"
-        ],
+        "required": ["params"],
         "properties": {
           "params": {
             "description": "Launch parameters. All parameters are optional.",
@@ -1795,9 +2207,7 @@
       "Launch_MVD_Request": {
         "type": "object",
         "description": "Request body for launching a multiverse debugging session.",
-        "required": [
-          "params"
-        ],
+        "required": ["params"],
         "properties": {
           "params": {
             "description": "Launch parameters. All parameters are optional.",
@@ -1812,43 +2222,45 @@
       },
       "Execute_Command_Request": {
         "type": "object",
-        "description": "Request body for executing a command in a test run's live session, either directly on the guest machine or inside a specified container. `timeout_seconds` must be explicitly specified whenever `wait_until` is present; this is enforced by the server rather than expressed structurally in this schema.",
-        "required": [
-          "moment",
-          "script"
-        ],
+        "description": "Request body for executing a command in a test run's live session.",
+        "required": ["moment", "script", "container"],
         "properties": {
           "moment": {
             "$ref": "#/components/schemas/Moment"
           },
           "script": {
             "type": "string",
-            "description": "Bash script to execute in the live session.",
+            "description": "Bash script to execute in the specified container or on the host.",
             "example": "uname -a"
           },
           "container": {
             "type": "string",
-            "minLength": 1,
-            "description": "Name of the container in which to execute the command. When omitted, the command executes directly on the guest machine. Not yet implemented: requests specifying this field are rejected.",
-            "example": "etcd0"
+            "description": "Name or ID of the container in which to execute the script. Use `_ANTITHESIS_HOST` to execute directly on the host.",
+            "example": "my-service"
           },
-          "include_filtered_logs": {
+          "include_system_logs": {
             "type": "boolean",
             "default": false,
-            "description": "When true, includes all log events selected by the command's log filter in the streamed output. Defaults to false. Not yet implemented: requests setting this to true are rejected."
-          },
-          "wait_until": {
-            "type": "string",
-            "minLength": 1,
-            "description": "An event-set DSL query identifying the event to wait for. When specified, the command continues executing until a matching event is observed or `timeout_seconds` elapses. `timeout_seconds` must be explicitly specified whenever `wait_until` is present. Not yet implemented: requests specifying this field are rejected.",
-            "example": "matches({container: \"etcd0\"}).filter(ev => ev.output_text.includes(\"ready\"))"
+            "description": "When true, the streamed output includes every event observed during the command's execution, not just the command's own stdout and stderr. Defaults to false."
           },
           "timeout_seconds": {
             "type": "integer",
             "format": "uint64",
             "minimum": 0,
-            "default": 30,
-            "description": "Maximum number of seconds to wait for the command to exit or for the `wait_until` query to match before emitting a `timed_out` result. Defaults to 30 when `wait_until` is omitted and must be explicitly specified when `wait_until` is present."
+            "default": 600,
+            "description": "Maximum number of seconds to wait for the command to exit before emitting a `timed_out` result. Defaults to 600."
+          },
+          "source_session_id": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Session id to replay input history from when the requested `moment` is not warm in the run's live session. When the moment is cold, the server rewarms it by replaying this source session's inputs before running the command. Mutually exclusive with `source_run_id`: specifying both is rejected. When omitted and the moment is cold, the request fails.",
+            "example": "9c69eff4f842f988a0fea0acfc2d6195-61-2"
+          },
+          "source_run_id": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Test run id whose live session supplies the input history for rewarming a cold `moment`; the server resolves it to that run's session id. Mutually exclusive with `source_session_id`: specifying both is rejected.",
+            "example": "9c69eff4f842f988a0fea0acfc2d6195-61-2"
           }
         },
         "additionalProperties": true
@@ -1858,17 +2270,11 @@
         "oneOf": [
           {
             "type": "object",
-            "required": [
-              "status",
-              "exit_code",
-              "end_moment"
-            ],
+            "required": ["status", "exit_code", "end_moment"],
             "properties": {
               "status": {
                 "type": "string",
-                "enum": [
-                  "exited"
-                ]
+                "enum": ["exited"]
               },
               "exit_code": {
                 "type": "integer",
@@ -1889,15 +2295,11 @@
           },
           {
             "type": "object",
-            "required": [
-              "status"
-            ],
+            "required": ["status"],
             "properties": {
               "status": {
                 "type": "string",
-                "enum": [
-                  "timed_out"
-                ]
+                "enum": ["timed_out"]
               },
               "last_moment": {
                 "description": "The latest command-output moment observed before the timeout, if any. This is informational and does not imply that the command stopped executing.",
@@ -1918,9 +2320,7 @@
       "Search_Request": {
         "type": "object",
         "description": "Request body for searching events with the event sets.",
-        "required": [
-          "query"
-        ],
+        "required": ["query"],
         "properties": {
           "query": {
             "type": "string",
@@ -1950,9 +2350,7 @@
       "Search_Count_Request": {
         "type": "object",
         "description": "Request body for counting events that match an event set query.",
-        "required": [
-          "query"
-        ],
+        "required": ["query"],
         "properties": {
           "query": {
             "type": "string",
@@ -1970,9 +2368,7 @@
       "Search_Count_Response": {
         "type": "object",
         "description": "Response returned by the event search count endpoint.",
-        "required": [
-          "count"
-        ],
+        "required": ["count"],
         "properties": {
           "count": {
             "type": "integer",
@@ -2002,6 +2398,16 @@
             "description": "Desired duration of the test run in minutes.",
             "example": "30"
           },
+          "antithesis.filter_logs_matching": {
+            "type": "string",
+            "description": "An [RE2](https://github.com/google/re2/wiki/Syntax) pattern matching log lines to suppress while the test runs. Suppressed lines can be recovered in the [Multiverse Debugger](/docs/product/debugging/simple_mvd/). Matching is unanchored and case-sensitive, so any line containing a match is suppressed; prefix the pattern with `(?i)` for case-insensitive matching. Lookahead, lookbehind and backreferences are not supported. See [Retroactive logging](/docs/product/launching_tests/#retroactive-logging).",
+            "example": "(?i)^\\s*(TRACE|DEBUG)\\b"
+          },
+          "antithesis.filter_source_matching": {
+            "type": "string",
+            "description": "An [RE2](https://github.com/google/re2/wiki/Syntax) pattern matching the sources whose output should be suppressed while the test runs. Where `antithesis.filter_logs_matching` selects individual lines by their content, this suppresses a matching source's output in its entirety. A source is the emitter of a log line, usually the name of the process that wrote it; the `source` field on each log line shows the exact names available to match against. The pattern is applied to the source name rather than to the line, and carries the same RE2 restrictions as `antithesis.filter_logs_matching`. This parameter has no equivalent field in the test launcher dialogue. See [Retroactive logging](/docs/product/launching_tests/#retroactive-logging).",
+            "example": "^metrics-agent$"
+          },
           "antithesis.images": {
             "type": "string",
             "description": "A semicolon-delimited list of container image versions needed in the testing environment. Each entry in the format `[REGISTRY/]NAME(:TAG|@DIGEST)`. In most cases, images are parsed from the orchestration configuration (e.g. `docker-compose.yaml` or `/manifests`) and do not need to be specified here. It is recommended to use a digest over a tag. Images specified by digest will be tagged as `latest` within the Antithesis environment. The default registry is `us-central1-docker.pkg.dev/molten-verve-216720/$TENANT_NAME-repository/`. When images mentioned in the config are also passed via this parameter, the value here overwrites the config. We recommend only using this parameter for images not already mentioned in the config files.",
@@ -2010,11 +2416,14 @@
           "antithesis.is_ephemeral": {
             "type": "string",
             "nullable": true,
-            "enum": [
-              "true",
-              "false"
-            ],
+            "enum": ["true", "false"],
             "description": "A boolean (represented as `\"true\"` or `\"false\"`) that indicates whether or not the run's results should be reflected in future reports as a historic result. Set to `\"true\"` when kicking off one-off, exploratory runs. Defaults to `\"false\"`."
+          },
+          "antithesis.performance_tier": {
+            "type": "string",
+            "enum": ["standard", "fast", "turbo"],
+            "description": "The performance tier to use for the test run. Higher tiers explore system states faster through increased parallelism, consuming more core hours. Defaults to \"standard\".",
+            "example": "standard"
           },
           "antithesis.report.recipients": {
             "type": "string",
@@ -2051,12 +2460,12 @@
               },
               "antithesis.debugging.input_hash": {
                 "type": "string",
-                "description": "Obtain it from the [copy moment button](/docs/product/reports/properties/#copy-moment) in the triage report.",
+                "description": "Obtain it from the [copy moment button](/docs/product/understanding_test_results/reports/properties/#copy-moment) in the triage report.",
                 "example": "-9067336385060865277"
               },
               "antithesis.debugging.vtime": {
                 "type": "string",
-                "description": "The virtual time at which you want to start debugging. Obtain it from the [copy moment button](/docs/product/reports/properties/#copy-moment) in the triage report.",
+                "description": "The virtual time at which you want to start debugging. Obtain it from the [copy moment button](/docs/product/understanding_test_results/reports/properties/#copy-moment) in the triage report.",
                 "example": "45.334635781589895"
               },
               "antithesis.event_description": {
@@ -2087,12 +2496,12 @@
               },
               "antithesis.debugging.input_hash": {
                 "type": "string",
-                "description": "Obtain it from the [copy moment button](/docs/product/reports/properties/#copy-moment) in the triage report.",
+                "description": "Obtain it from the [copy moment button](/docs/product/understanding_test_results/reports/properties/#copy-moment) in the triage report.",
                 "example": "-9067336385060865277"
               },
               "antithesis.debugging.vtime": {
                 "type": "string",
-                "description": "The virtual time at which you want to start debugging. Obtain it from the [copy moment button](/docs/product/reports/properties/#copy-moment) in the triage report.",
+                "description": "The virtual time at which you want to start debugging. Obtain it from the [copy moment button](/docs/product/understanding_test_results/reports/properties/#copy-moment) in the triage report.",
                 "example": "45.334635781589895"
               },
               "antithesis.event_description": {
@@ -2112,9 +2521,7 @@
       "Event": {
         "type": "object",
         "description": "A single event. Each event includes its moment information. Fields vary by event source.",
-        "required": [
-          "moment"
-        ],
+        "required": ["moment"],
         "properties": {
           "moment": {
             "$ref": "#/components/schemas/Moment"
@@ -2125,10 +2532,7 @@
       "Moment": {
         "type": "object",
         "description": "Identifies a specific moment in the run's execution timeline.",
-        "required": [
-          "input_hash",
-          "vtime"
-        ],
+        "required": ["input_hash", "vtime"],
         "properties": {
           "input_hash": {
             "type": "string",
@@ -2146,10 +2550,7 @@
       "Build_Log_Line": {
         "type": "object",
         "description": "A single build log line.",
-        "required": [
-          "timestamp",
-          "text"
-        ],
+        "required": ["timestamp", "text"],
         "properties": {
           "timestamp": {
             "type": "string",
@@ -2159,10 +2560,7 @@
           },
           "stream": {
             "type": "string",
-            "enum": [
-              "stdout",
-              "stderr"
-            ],
+            "enum": ["stdout", "stderr"],
             "description": "Whether this line is from standard output or standard error."
           },
           "text": {
@@ -2176,9 +2574,7 @@
       "Property_List_Response": {
         "type": "object",
         "description": "A page of property results returned by the properties endpoint. Use `next_cursor` to iterate through all available results.",
-        "required": [
-          "data"
-        ],
+        "required": ["data"],
         "properties": {
           "data": {
             "type": "array",
@@ -2196,11 +2592,7 @@
       "Property_Base": {
         "type": "object",
         "description": "Shared fields for all property results. A property result from a test run. Properties with `is_group` set to true represent a group property that contain other individual properties; individual properties within that group reference it via the `group` field.",
-        "required": [
-          "name",
-          "status",
-          "is_event"
-        ],
+        "required": ["name", "status", "is_event"],
         "properties": {
           "name": {
             "type": "string",
@@ -2252,9 +2644,7 @@
             "properties": {
               "is_event": {
                 "description": "Always `true` for event properties. Discriminates this branch of the `oneOf`.",
-                "enum": [
-                  true
-                ]
+                "enum": [true]
               },
               "examples": {
                 "type": "array",
@@ -2285,9 +2675,7 @@
             "properties": {
               "is_event": {
                 "description": "Always `false` for non-event properties. Discriminates this branch of the `oneOf`.",
-                "enum": [
-                  false
-                ]
+                "enum": [false]
               },
               "examples": {
                 "type": "array",
@@ -2316,22 +2704,12 @@
       },
       "Property_Status": {
         "type": "string",
-        "enum": [
-          "Passing",
-          "Failing"
-        ],
+        "enum": ["Passing", "Failing"],
         "description": "Whether the property is currently passing or failing."
       },
       "Run_Status": {
         "type": "string",
-        "enum": [
-          "starting",
-          "in_progress",
-          "completed",
-          "cancelled",
-          "incomplete",
-          "unknown"
-        ],
+        "enum": ["starting", "in_progress", "completed", "cancelled", "incomplete", "unknown"],
         "description": "Current lifecycle status of a test run. `starting`: the run is being set up. `in_progress`: the run is actively running. `completed`: the run finished successfully. `cancelled`: the run was cancelled before completion. `incomplete`: the run did not complete successfully. `unknown`: the status of the run is unknown."
       },
       "Creator_Info": {
@@ -2366,9 +2744,7 @@
       "Usage_List_Response": {
         "type": "object",
         "description": "A page of usage line items returned by the list endpoint. Use `next_cursor` to iterate through all available results.",
-        "required": [
-          "data"
-        ],
+        "required": ["data"],
         "properties": {
           "data": {
             "type": "array",
@@ -2381,17 +2757,13 @@
             "nullable": true,
             "description": "Opaque pagination cursor. Pass as the `after` query parameter to fetch the next page. Null if no more pages."
           }
+
         }
       },
       "Usage_Entry": {
         "type": "object",
         "description": "A line item entry for the usage hours associated with a specific run.",
-        "required": [
-          "run_id",
-          "hours",
-          "start_time",
-          "end_time"
-        ],
+        "required": ["run_id", "hours", "start_time", "end_time"],
         "properties": {
           "run_id": {
             "type": "string",
@@ -2420,10 +2792,7 @@
       "Usage_Summary": {
         "type": "object",
         "description": "A summary of the total number of billable runs and usage hours for the requested period.",
-        "required": [
-          "total_hours",
-          "run_count"
-        ],
+        "required": ["total_hours", "run_count"],
         "properties": {
           "total_hours": {
             "type": "number",

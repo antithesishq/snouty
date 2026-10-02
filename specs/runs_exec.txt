@@ -13,16 +13,23 @@
 # — the response moments carry a new input_hash — so the running test is not
 # disturbed.
 #
-# The stream shape follows the release 61.3 spec (`POST
-# /runs/{run_id}/command`), verified against the live API (orbitinghail,
-# release 61.3): zero or more command-output events in the same `Event` shape
+# The stream shape follows the release 64.0 spec (`POST
+# /runs/{run_id}/command`), and release 61.3 was verified to send it
+# (orbitinghail): zero or more command-output events in the same `Event` shape
 # `runs logs` receives (`moment`, `output_text`, `source.stream`, with `info`
 # for stdout and `error` for stderr), then exactly one result whose `status`
 # is `exited` or `timed_out`, unless the stream ends with a `Stream_Error`
 # line.
 #
+# Release 64.0 requires `container` in the request: a container name or ID,
+# or `_ANTITHESIS_HOST` for the host. Earlier releases reject the field, so
+# `runs exec` needs release 64.0 or newer, and `snouty doctor` warns on an
+# older tenant.
+#
 # snouty's contract:
 #
+#   - The script executes on the host, or in the container that --container
+#     names.
 #   - The script comes from the SCRIPT argument, or from stdin when SCRIPT is
 #     omitted. Omitting it is the only way to read stdin; a pipe, a redirect,
 #     and a heredoc all work, and a script over 2 MiB is refused.
@@ -39,12 +46,8 @@
 #   - `--json` passes the NDJSON through with vtimes normalized to exact JSON
 #     numbers (like `runs logs --json`) and no trailer; exit semantics are
 #     unchanged.
-#
-# The command is gated behind the `runs-exec` feature, because the API it
-# calls is unstable and unavailable on most tenants; specs/features.txt covers
-# the gate itself. Every check here needs the command to exist, so the feature
-# is on for the whole file.
-env SNOUTY_UNSTABLE_FEATURES=runs-exec
+#   - A line outside the spec's shapes fails snouty. Unknown fields on a known
+#     line are ignored.
 
 # Every successful invocation executes a script inside a live session, so
 # everything below the credential-free check is gated behind `[staging] skip`,
@@ -119,12 +122,21 @@ stderr 'command timed out after 30s'
 ! stderr 'end moment'
 
 # --timeout is forwarded to the server as timeout_seconds (the mock echoes
-# back the value it received), and the default is the API default, 30.
+# back the value it received). The default is 30, not the API default of 600,
+# so a script that hangs fails soon.
 snouty runs exec run-2 -3625518438076122494 398.4898056755774 print-timeout --timeout 45
 stdout 'timeout_seconds=45'
 
 snouty runs exec run-2 -3625518438076122494 398.4898056755774 print-timeout
 stdout 'timeout_seconds=30'
+
+# Without --container, the script executes on the host.
+snouty runs exec run-2 -3625518438076122494 398.4898056755774 print-container
+stdout 'container=_ANTITHESIS_HOST'
+
+# --container names the container to execute in, by name or ID.
+snouty runs exec run-2 -3625518438076122494 398.4898056755774 print-container --container my-service
+stdout 'container=my-service'
 
 # --json passes the NDJSON stream through: output events, then the result,
 # with vtimes normalized to exact JSON numbers (like `runs logs`) and no
@@ -144,20 +156,18 @@ stdout '\{"status":"timed_out","last_moment":\{"input_hash":"-820600656922927667
 stdout '"exit_code":5'
 stderr 'command exited with code 5'
 
-# The stream may grow frames and fields while the command is unstable, so
-# neither kind stops it. An unrecognized frame goes to stderr in human mode,
-# and a known frame with an unknown field still renders its output.
-snouty runs exec run-2 -3625518438076122494 398.4898056755774 unknown-frames
+# A known frame with an unknown field still renders its output, but a frame
+# outside the spec fails snouty, and names the line.
+! snouty runs exec run-2 -3625518438076122494 398.4898056755774 unknown-frames
 stdout 'known with extras'
-stderr '.*heartbeat.*'
+stderr 'not command output or a result: .*heartbeat'
 ! stdout '.*heartbeat.*'
 
-# With --json both pass through to stdout unchanged: the unknown frame whole,
-# and the unknown field alongside the known ones.
-snouty --json runs exec run-2 -3625518438076122494 398.4898056755774 unknown-frames
-stdout '"status":"heartbeat".*"at":"398.4905"'
+# With --json the known frame passes through unchanged, unknown field included,
+# and the frame outside the spec fails snouty in the same way.
+! snouty --json runs exec run-2 -3625518438076122494 398.4898056755774 unknown-frames
 stdout '"output_text":"known with extras".*"truncated":true'
-stdout '"status":"exited"'
+stderr 'not command output or a result: .*heartbeat'
 
 # A `Stream_Error` line is the server aborting the stream, not data: it
 # becomes the command's failure and is never rendered as output.

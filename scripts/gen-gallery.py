@@ -2205,6 +2205,14 @@ def build_help_stories(d: Discovery) -> list[Story]:
             ["runs", "build-logs", s],
         ),
         _help_story(
+            "help-runs-exec",
+            "Learn how to execute a script in a live run",
+            "I want the help to tell me which runs accept a script, how to pick the "
+            "moment and the container, where the script's output goes, and how to "
+            "chain a follow-up command. Help-only: the command needs a live run.",
+            ["runs", "exec"],
+        ),
+        _help_story(
             "help-doctor",
             "Learn what doctor checks",
             "I run `snouty doctor --help` to see what it verifies, then run it.",

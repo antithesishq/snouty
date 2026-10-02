@@ -202,6 +202,11 @@ stderr 'not command output or a result: .*heartbeat'
 stdout '"output_text":"known with extras".*"truncated":true'
 stderr 'not command output or a result: .*heartbeat'
 
+# Without --events, every event must be the script's output. Any other event
+# fails snouty rather than being dropped.
+! snouty runs exec run-2 -3625518438076122494 398.4898056755774 unexpected-event
+stderr 'not command output or a result: .*Command received'
+
 # A `Stream_Error` line is the server aborting the stream, not data: it
 # becomes the command's failure and is never rendered as output.
 ! snouty runs exec run-stream-error -3625518438076122494 398.4898056755774 'uname -a'

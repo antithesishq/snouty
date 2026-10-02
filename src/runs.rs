@@ -16,8 +16,9 @@ use serde_json::{Map, Value, json};
 use chrono::{DateTime, Utc};
 
 use crate::api::{
-    AntithesisApi, Event, EventProperty, ExecRequest, Moment, NonEventProperty, Property, PropertyStatus,
-    RunDetail, RunStatus, RunSummary, RunsFilterOptions, SEARCH_DEFAULT_LIMIT, SearchMode,
+    AntithesisApi, Event, EventProperty, ExecRequest, Moment, NonEventProperty, Property,
+    PropertyStatus, RunDetail, RunStatus, RunSummary, RunsFilterOptions, SEARCH_DEFAULT_LIMIT,
+    SearchMode,
 };
 use crate::cli::{RunsCommands, RunsListArgs, RunsSearchArgs};
 use crate::error::{api_error_status, user_error};
@@ -1656,7 +1657,8 @@ async fn cmd_runs_exec(
         if entry.get("moment").is_some() {
             match &mut events {
                 None => {
-                    let output = ExecOutput::deserialize(&entry).map_err(|_| off_spec_line(&entry))?;
+                    let output =
+                        ExecOutput::deserialize(&entry).map_err(|_| off_spec_line(&entry))?;
                     if !json {
                         render_exec_output(&output)?;
                     }

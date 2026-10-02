@@ -1004,16 +1004,20 @@ The script executes on the host, or in the container that --container names.
 The command needs tenant release 64.0 or newer; `snouty doctor` reports the
 tenant release.
 
-The script's stdout and stderr stream to snouty's stdout and stderr. On exit,
-a trailer on stderr documents the branch's end moment, to chain a follow-up
-command from. A non-zero exit code, a timeout, or a truncated stream fails
-snouty with exit code 1.
+The script's stdout and stderr stream to snouty's stdout and stderr. With
+--events, snouty prints every event of the timeline while the script
+executes, as `runs logs` prints them: the script's output, the workload's
+logs and assertions, and Antithesis events. On exit, a trailer on stderr
+documents the branch's end moment, to chain a follow-up command from. A
+non-zero exit code, a timeout, or a truncated stream fails snouty with exit
+code 1.
 
 Omit SCRIPT to read the script from stdin — a pipe, a redirect, or a heredoc.
 
 Examples:
   snouty runs exec <run_id> <hash> <vtime> 'uname -a'
   snouty runs exec <run_id> <hash> <vtime> --container <name> 'ps aux'
+  snouty runs exec <run_id> <hash> <vtime> --events 'sleep 5'
   echo 'ps aux' | snouty runs exec <run_id> <hash> <vtime>
   snouty runs exec <run_id> <hash> <vtime> < script.sh
 

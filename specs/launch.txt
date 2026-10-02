@@ -77,7 +77,7 @@ stderr 'No Antithesis credentials found.*'
 [staging] skip
 
 # --param cannot override typed flag values.
-mock-server 200 '{"runId":"run-123","statusCode":202}'
+mock-server 200 '{"message":"Success","runId":"run-123"}'
 ! snouty launch -w basic_test --duration 30 --param antithesis.duration=60
 stderr 'cannot be overridden via --param.*'
 
@@ -92,7 +92,7 @@ stderr 'no parameters provided.*'
 #    parameters are printed to stderr with sensitive values (tokens, email
 #    recipients) redacted. On success, a one-line confirmation with the
 #    run_id is printed to stdout.
-mock-server 200 '{"runId":"run-123","statusCode":202}'
+mock-server 200 '{"message":"Success","runId":"run-123"}'
 snouty launch -w basic_test --test-name my-test --description 'nightly test run' --config-image config:latest --duration 30 --recipients team@example.com --source ci-pipeline
 stderr '"antithesis.test_name": "my-test"'
 stderr '"antithesis.description": "nightly test run"'
@@ -105,7 +105,7 @@ stdout 'Test run started: run_id run-123'
 # Username/password authentication still works for the launch webhook, but it
 # is deprecated: a warning on stderr steers the user to `snouty login`. The
 # mock-server directive configures username/password credentials.
-mock-server 200 '{"runId":"run-123","statusCode":202}'
+mock-server 200 '{"message":"Success","runId":"run-123"}'
 snouty launch -w basic_test --duration 30 --source ci-pipeline
 stderr 'warning: username/password authentication is deprecated'
 stderr 'snouty login'
@@ -114,7 +114,7 @@ stdout 'Test run started: run_id run-123'
 # With an API key configured, no deprecation warning is shown. (An empty env
 # value means unset, so the last line restores username/password auth for the
 # rest of the file.)
-mock-server 200 '{"runId":"run-123","statusCode":202}'
+mock-server 200 '{"message":"Success","runId":"run-123"}'
 env ANTITHESIS_API_KEY=testkey
 snouty launch -w basic_test --duration 30 --source ci-pipeline
 ! stderr 'deprecated'
@@ -133,30 +133,30 @@ stdout '\s*"runId": "run-123".*'
 ! stdout 'Test run started.*'
 
 # 6b. --ephemeral flag sets antithesis.is_ephemeral to "true".
-mock-server 200 '{"runId":"run-123","statusCode":202}'
+mock-server 200 '{"message":"Success","runId":"run-123"}'
 snouty launch -w basic_test --duration 30 --ephemeral
 stderr '"antithesis.is_ephemeral": "true"'
 
 # 6c. Without --source, is_ephemeral is set automatically and an info message is shown.
-mock-server 200 '{"runId":"run-123","statusCode":202}'
+mock-server 200 '{"message":"Success","runId":"run-123"}'
 snouty launch -w basic_test --duration 30
 stderr '"antithesis.is_ephemeral": "true"'
 stderr 'Starting an ephemeral run; its findings will not be retained.*'
 
 # 6c2. With --source, is_ephemeral is not set unless --ephemeral is passed.
-mock-server 200 '{"runId":"run-123","statusCode":202}'
+mock-server 200 '{"message":"Success","runId":"run-123"}'
 snouty launch -w basic_test --duration 30 --source ci-pipeline
 ! stderr 'is_ephemeral.*'
 ! stderr 'Starting an ephemeral run.*'
 
 # 6c3. --duration accepts h/m unit suffixes, normalized to bare minutes for the
 #    API (1h30m -> 90).
-mock-server 200 '{"runId":"run-123","statusCode":202}'
+mock-server 200 '{"message":"Success","runId":"run-123"}'
 snouty launch -w basic_test --duration 1h30m --source ci-pipeline
 stderr '"antithesis.duration": "90"'
 
 # 6d. --param flag passes custom properties.
-mock-server 200 '{"runId":"run-123","statusCode":202}'
+mock-server 200 '{"message":"Success","runId":"run-123"}'
 snouty launch -w basic_test --duration 30 --param my.custom.prop=value --param antithesis.integrations.github.callback_url=https://example.com/cb
 stderr '"my.custom.prop": "value"'
 stderr '"antithesis.integrations.github.callback_url": "https://example.com/cb"'
@@ -164,7 +164,7 @@ stderr '"antithesis.integrations.github.callback_url": "https://example.com/cb"'
 # 6d2. Unknown antithesis.* params pass through: the platform can add params
 #    before snouty learns about them (#211). Known params keep their value
 #    checks (see the antithesis.duration=asdf case above).
-mock-server 200 '{"runId":"run-123","statusCode":202}'
+mock-server 200 '{"message":"Success","runId":"run-123"}'
 snouty launch -w basic_test --duration 30 --param antithesis.brand_new_param=on
 stderr '"antithesis.brand_new_param": "on"'
 stdout 'Test run started: run_id run-123'
@@ -172,7 +172,7 @@ stdout 'Test run started: run_id run-123'
 # 6e. antithesis.images may be passed via --param to register additional
 #    images (e.g. an image referenced only in a CRD field) that the config
 #    parser can't discover. Semicolon-delimited [REGISTRY/]NAME(:TAG|@DIGEST).
-mock-server 200 '{"runId":"run-123","statusCode":202}'
+mock-server 200 '{"message":"Success","runId":"run-123"}'
 snouty launch -w basic_test --duration 30 --param 'antithesis.images=app@sha256:abc;db:latest'
 stderr '"antithesis.images": "app@sha256:abc;db:latest"'
 
@@ -188,11 +188,11 @@ mock-server 404 '{"statusCode":404,"runId":null}'
 stderr 'API error: 404 Not Found.*'
 
 # `snouty run` still works but prints a deprecation warning.
-mock-server 200 '{"runId":"run-123","statusCode":202}'
+mock-server 200 '{"message":"Success","runId":"run-123"}'
 snouty run -w basic_test --duration 30
 stderr 'snouty run.*is deprecated.*snouty launch'
 
-mock-server 200 '{"runId":"run-123","statusCode":202}'
+mock-server 200 '{"message":"Success","runId":"run-123"}'
 snouty launch -w basic_test --duration 30 --filter-logs-matching debug
 stderr '"antithesis.duration": "30"'
 stderr '"antithesis.filter_logs_matching": "debug"'

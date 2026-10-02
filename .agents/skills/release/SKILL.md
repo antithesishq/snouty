@@ -15,11 +15,11 @@ cargo-dist reads the top-level `CHANGELOG.md` when the release tag is pushed. It
 2. A pre-release (e.g. `0.7.0-rc.2`) with no exact heading falls back to the stable heading (`# Version 0.7.0`), then to the `# Unreleased` heading. cargo-dist rewrites the heading to include the pre-release version in the GitHub Release.
 3. A stable version matches only its exact heading. A missing heading does not fail the release; cargo-dist just omits the notes.
 
-The convention: only the release PR edits `CHANGELOG.md`. In step 2, write the notes from the descriptions of the merged PRs. Each pre-release gets its own exact heading, e.g. `# Version 0.7.0-rc.2 (YYYY-MM-DD)`, with the changes since the previous tag. A stable release merges the sections of its pre-releases into one section for the version.
+The convention: only the release PR edits `CHANGELOG.md`. In step 2, write the notes from the descriptions of the merged PRs. `CHANGELOG.md` holds at most one pre-release section: the one for the newest pre-release of the next version, e.g. `# Version 0.7.0-rc.2 (YYYY-MM-DD)`. It lists the changes since the last stable release. Each new pre-release replaces that section, and the stable release replaces it with the section for the version.
 
 ## Pre-releases
 
-The procedure for a pre-release (`-rc.N` suffix) is the same as for a release, except for the changelog section in step 2. When the user asks for a pre-release without a full version (e.g. "cut an rc for 0.7.0"), pick the next rc number — list existing tags with `git tag -l 'v0.7.0-rc.*'` and use N+1 of the highest, or `-rc.1` when there are none.
+The procedure for a pre-release (`-rc.N` suffix) is the same as for a release, except for the changelog heading in step 2. When the user asks for a pre-release without a full version (e.g. "cut an rc for 0.7.0"), pick the next rc number — list existing tags with `git tag -l 'v0.7.0-rc.*'` and use N+1 of the highest, or `-rc.1` when there are none.
 
 ## Release Procedure
 
@@ -40,22 +40,21 @@ If any check fails, report the issue clearly and stop.
 
 ### 2. Write the Release Notes in CHANGELOG.md
 
-Find the most recent stable tag `vPREV` (not an `-rc.N` tag) with `git tag -l 'v[0-9]*' --sort=-v:refname | grep -v -- -rc | head -1`, and the pre-release tags of this version with `git tag -l 'vX.Y.Z-rc.*' --sort=-v:refname`. The start tag `vSTART` is the newest of these pre-release tags, or `vPREV` when there are none. List the PRs merged since then with `git log --oneline vSTART..HEAD`. Each squash-merge subject ends in `(#N)`.
+Find the most recent stable tag `vPREV` (not an `-rc.N` tag) with `git tag -l 'v[0-9]*' --sort=-v:refname | grep -v -- -rc | head -1`. The notes cover the PRs merged since `vPREV`. List them with `git log --oneline vPREV..HEAD`. Each squash-merge subject ends in `(#N)`.
+
+When `CHANGELOG.md` has a section for an earlier pre-release of this version, use it as a draft. Then read only the PRs merged since that pre-release's tag: `git log --oneline vX.Y.Z-rc.M..HEAD`.
 
 Read the description of each PR with `gh pr view N --json title,body`. If a description does not make the user-visible change clear, read the squash-merge commit with `git show <sha>`.
 
 Write one factual bullet per notable feature, not one per change. Follow these rules:
 
 - Describe behavior that the user sees. Leave out implementation detail unless the reader needs it to understand the entry.
-- Write each entry as the net change relative to the previous release. When a feature is new in this release, describe the feature once; do not list the iterations that built it (e.g. a rewrite of a command that did not exist in the previous release is part of the feature, not an entry).
+- Write each entry as the net change relative to the last stable release, `vPREV`. When a feature is new in this release, describe the feature once; do not list the iterations that built it (e.g. a rewrite of a command that did not exist in the previous release is part of the feature, not an entry).
 - Put the largest changes first, breaking or not. Start each breaking change with `**Breaking**:`.
 - Link every PR that contributes to an entry with the public base URL, e.g. `([#176](https://github.com/antithesishq/snouty/pull/176))`. Do not use the exe proxy hostname.
 - Skip internal-only changes (CI, refactors, dependency bumps, docs for contributors).
 
-Then, depending on the release type:
-
-- **Pre-release (`-rc.N`)**: put the notes for the PRs since `vSTART` above the newest version section, under `# Version X.Y.Z-rc.N (YYYY-MM-DD)` with today's date. Do not edit the sections of earlier pre-releases.
-- **Stable release**: replace the sections of all `X.Y.Z-rc.*` pre-releases with one `# Version X.Y.Z (YYYY-MM-DD)` section with today's date. It holds their entries and the notes for the PRs since `vSTART`, merged into the net change relative to `vPREV`. A later pre-release can reverse a decision from an earlier one: remove an entry that a later change reversed, and combine entries that changed the same feature.
+Put the notes above the newest version section, under `# Version X.Y.Z-rc.N (YYYY-MM-DD)` for a pre-release or `# Version X.Y.Z (YYYY-MM-DD)` for a stable release, with today's date. Remove the section of the earlier pre-release; the new section replaces it. A later change can reverse or replace an earlier one: remove the superseded entry, and combine entries that changed the same feature.
 
 Verify the result parses: `parse-changelog CHANGELOG.md X.Y.Z[-rc.N]` must print the new section. Install the CLI with `cargo install parse-changelog` if it is missing. cargo-dist uses this same library, so this check proves the GitHub Release will pick up the notes.
 

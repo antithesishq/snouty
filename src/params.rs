@@ -30,7 +30,7 @@ pub const ANT_FILTER_LOGS_MATCHING: &str = "antithesis.filter_logs_matching";
 pub const ATTRS_PREFIX: &str = "attrs.";
 /// The `vcs.*` parameters that the Antithesis GitHub trigger action records on a
 /// run, with their `runs show` labels, in display order.
-pub const VCS_PARAMS: [(&str, &str); 11] = [
+pub const VCS_PARAMS: &[(&str, &str)] = &[
     ("vcs.repo_type", "Repo Type"),
     ("vcs.repo_owner", "Repo Owner"),
     ("vcs.repo_name", "Repo Name"),

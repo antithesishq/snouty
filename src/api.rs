@@ -208,12 +208,13 @@ impl RunDetail {
 
     /// The run's known `vcs.*` parameters as (label, value) pairs, in display order.
     pub(crate) fn vcs(&self) -> Vec<(&'static str, &str)> {
-        let Some(params) = &self.parameters else {
-            return Vec::new();
-        };
-        VCS_PARAMS
+        self.parameters
             .iter()
-            .filter_map(|&(key, label)| Some((label, params.extra.get(key)?.as_str())))
+            .flat_map(|p| {
+                VCS_PARAMS
+                    .iter()
+                    .filter_map(|&(key, label)| Some((label, p.extra.get(key)?.as_str())))
+            })
             .collect()
     }
 

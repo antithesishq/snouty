@@ -17,10 +17,13 @@ pub struct OutputOptions {
 /// terminated with a newline; labels and values are sanitized. Labels are padded to the
 /// widest label, but never narrower than `min_label_width` so a caller that also
 /// renders a wider prose label below the block can keep every row aligned.
-pub(crate) fn render_kv<S: AsRef<str>>(rows: &[(S, String)], min_label_width: usize) -> String {
+pub(crate) fn render_kv<L: AsRef<str>, V: AsRef<str>>(
+    rows: &[(L, V)],
+    min_label_width: usize,
+) -> String {
     let rows: Vec<(String, String)> = rows
         .iter()
-        .map(|(label, value)| (sanitize(label.as_ref()), sanitize(value)))
+        .map(|(label, value)| (sanitize(label.as_ref()), sanitize(value.as_ref())))
         .collect();
     let label_width = rows
         .iter()

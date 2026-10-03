@@ -828,24 +828,21 @@ def discover(sn: Snouty, scan: int) -> Discovery:
     print(f"  cancelled run : {cancelled}", file=sys.stderr)
 
     # Dynamic listing params from real runs, so listing stories aren't empty.
-    recent = sn.json_lines(["runs", "list", "-n", "30"])
+    # A trigger-action run can sit behind many manual runs, so the vcs search
+    # looks further back than the 30 runs the listing stories use.
+    runs = sn.json_lines(["runs", "list", "-n", "100"])
+    recent = runs[:30]
     if not recent:
         raise GalleryError("no runs found at all")
     launcher = next((r["launcher"] for r in recent if r.get("launcher")), "")
-    # A trigger-action run can sit behind many manual runs, so look further back.
+    if not launcher:
+        raise GalleryError("no run has a launcher — the --launcher story cannot run")
     vcs_run = next(
-        (
-            r
-            for r in sn.json_lines(["runs", "list", "-n", "100"])
-            if (r.get("parameters") or {}).get("vcs.version_id")
-        ),
-        None,
+        (r for r in runs if (r.get("parameters") or {}).get("vcs.version_id")), None
     )
     if not vcs_run:
         raise GalleryError("no run has vcs.version_id — the vcs story cannot run")
     print(f"  vcs run       : {vcs_run['run_id']}", file=sys.stderr)
-    if not launcher:
-        raise GalleryError("no run has a launcher — the --launcher story cannot run")
     by_time = sorted(recent, key=lambda r: r["created_at"])
     # created-after: a timestamp with several runs after it.
     created_after = by_time[max(0, len(by_time) - 6)]["created_at"]

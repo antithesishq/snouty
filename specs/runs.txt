@@ -110,6 +110,7 @@ env_from_json 0 run_id
 # differ, since Elapsed also spans provisioning/setup/teardown — and Source
 # reports where the run was launched from. User-defined `attrs.*` params are
 # listed under an Attributes block, sorted by name with the prefix removed.
+# Known `vcs.*` params are listed under a Version Control block, in a fixed order.
 mock-runs-server
 snouty runs show $R_run_id
 stdout 'Run ID.*$R_run_id'
@@ -120,6 +121,8 @@ stdout 'Run ID.*$R_run_id'
 [!staging] stdout 'Source.*demo-harness'
 [!staging] stdout '(?s)^Attributes\n  branch  main\n  team    payments\n\n'
 [!staging] ! stdout 'attrs\.'
+[!staging] stdout '(?s)^Version Control\n  Repo Owner   acme\n  Repo Name    widgets\n  Branch       main\n  Commit       abc123\n  Commit Link  https://github.com/acme/widgets/commit/abc123\n\n'
+[!staging] ! stdout 'vcs\.'
 
 # Timestamps carry the local UTC offset, so one pastes back into
 # `--created-after`/`--created-before` as the same instant.

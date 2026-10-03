@@ -816,7 +816,9 @@ workload length requested at launch. Elapsed is wall-clock time, which also
 spans provisioning, setup and teardown, so the two legitimately differ.
 Source is the `antithesis.source` the run was launched from, when the
 launcher recorded one. User-defined attributes (`--param attrs.<name>=<value>`
-at launch) are listed under Attributes.
+at launch) are listed under Attributes. The `vcs.*` parameters that the
+Antithesis GitHub trigger action records (repository, branch, commit, and pull
+request) are listed under Version Control.
 
 Incomplete runs also show the failure moment (Failure Hash/VTime) to pass to
 `runs logs`, and the Failure Reason when the run reports one. Use --web to

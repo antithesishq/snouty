@@ -448,6 +448,8 @@ class Discovery:
     success: str = ""  # completed run that drives the event/logs/property stories
     fail: str = ""  # an incomplete run
     cancelled: str = ""  # a cancelled run
+    vcs: str = ""  # a run launched with `vcs.*` params (e.g. by the GitHub trigger action)
+    vcs_commit: str = ""  # that run's `vcs.version_id`
     launcher: str = ""  # a real launcher value (for the --launcher story)
     created_after: str = ""  # a timestamp with runs after it
     window_after: str = ""
@@ -830,6 +832,18 @@ def discover(sn: Snouty, scan: int) -> Discovery:
     if not recent:
         raise GalleryError("no runs found at all")
     launcher = next((r["launcher"] for r in recent if r.get("launcher")), "")
+    # A trigger-action run can sit behind many manual runs, so look further back.
+    vcs_run = next(
+        (
+            r
+            for r in sn.json_lines(["runs", "list", "-n", "100"])
+            if (r.get("parameters") or {}).get("vcs.version_id")
+        ),
+        None,
+    )
+    if not vcs_run:
+        raise GalleryError("no run has vcs.version_id — the vcs story cannot run")
+    print(f"  vcs run       : {vcs_run['run_id']}", file=sys.stderr)
     if not launcher:
         raise GalleryError("no run has a launcher — the --launcher story cannot run")
     by_time = sorted(recent, key=lambda r: r["created_at"])
@@ -843,6 +857,8 @@ def discover(sn: Snouty, scan: int) -> Discovery:
         success=success,
         fail=fail,
         cancelled=cancelled,
+        vcs=vcs_run["run_id"],
+        vcs_commit=vcs_run["parameters"]["vcs.version_id"],
         launcher=launcher,
         created_after=created_after,
         window_after=window_after,
@@ -1555,6 +1571,16 @@ def build_stories(d: Discovery) -> list[Story]:
             "Status is shown as cancelled.",
             ["runs", "show", d.cancelled],
             contains_all("cancelled"),
+            json_capable=False,
+        ),
+        Story(
+            "runs-show-vcs",
+            "Find the commit a CI run tested",
+            "A run was launched from CI; I want to know which repository, branch, and "
+            "commit it tested.",
+            "A Version Control block lists the repository, branch, commit id, and commit link.",
+            ["runs", "show", d.vcs],
+            contains_all("Version Control", d.vcs_commit),
             json_capable=False,
         ),
         Story(

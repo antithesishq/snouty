@@ -1265,6 +1265,18 @@ fn print_run_detail(run: &RunDetail) -> Result<()> {
         )?;
     }
 
+    let vcs: Vec<(&str, String)> = run
+        .vcs()
+        .into_iter()
+        .map(|(k, v)| (k, v.to_string()))
+        .collect();
+    if !vcs.is_empty() {
+        out!(
+            "\nVersion Control\n{}\n",
+            indent_lines(&render_kv(&vcs, 0), "  ")
+        )?;
+    }
+
     // The description can be an enormous multi-paragraph blob, so it goes as its
     // own block — wrapped to the terminal, with the label on its own line —
     // rather than as a metadata row that would otherwise bury Status/timestamps

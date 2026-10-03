@@ -1193,6 +1193,18 @@ fn render_properties_table(properties: &[Property]) -> String {
         .join("\n\n")
 }
 
+/// Prints nothing when `rows` is empty.
+fn print_kv_block<'a>(
+    title: &str,
+    rows: impl IntoIterator<Item = (&'a str, &'a str)>,
+) -> Result<()> {
+    let rows: Vec<_> = rows.into_iter().collect();
+    if !rows.is_empty() {
+        out!("\n{title}\n{}\n", indent_lines(&render_kv(&rows, 0), "  "))?;
+    }
+    Ok(())
+}
+
 fn print_run_detail(run: &RunDetail) -> Result<()> {
     // Bound once and reused for both the Failure Hash/VTime rows and the deferred
     // "view logs" hint below, so the two can't drift apart (a placeholder 0/0
@@ -1251,19 +1263,10 @@ fn print_run_detail(run: &RunDetail) -> Result<()> {
 
     out!("{}", render_kv(&rows, 0))?;
 
-    // `attrs.*` names are user-defined, so they go in their own block and do
-    // not change the width of the metadata labels above.
-    let attrs: Vec<(&str, String)> = run
-        .attrs()
-        .into_iter()
-        .map(|(k, v)| (k, v.to_string()))
-        .collect();
-    if !attrs.is_empty() {
-        out!(
-            "\nAttributes\n{}\n",
-            indent_lines(&render_kv(&attrs, 0), "  ")
-        )?;
-    }
+    // Each block aligns its own labels, so these rows do not widen the metadata
+    // labels above.
+    print_kv_block("Attributes", run.attrs())?;
+    print_kv_block("Version Control", run.vcs())?;
 
     // The description can be an enormous multi-paragraph blob, so it goes as its
     // own block — wrapped to the terminal, with the label on its own line —

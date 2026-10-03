@@ -22,6 +22,7 @@ use crate::params::{
     ANT_CONFIG_IMAGE, ANT_DEBUGGING_INPUT_HASH, ANT_DEBUGGING_RUN_ID, ANT_DEBUGGING_SESSION_ID,
     ANT_DEBUGGING_VTIME, ANT_DESCRIPTION, ANT_DURATION, ANT_EVENT_DESCRIPTION, ANT_IMAGES,
     ANT_IS_EPHEMERAL, ANT_REPORT_RECIPIENTS, ANT_SOURCE, ANT_TEST_NAME, ATTRS_PREFIX, Params,
+    VCS_PARAMS,
 };
 use crate::render::{indent_lines, sanitize_multiline};
 use crate::settings::Settings;
@@ -202,6 +203,18 @@ impl RunDetail {
             .iter()
             .flat_map(|p| p.extra.iter())
             .filter_map(|(k, v)| Some((k.strip_prefix(ATTRS_PREFIX)?, v.as_str())))
+            .collect()
+    }
+
+    /// The run's known `vcs.*` parameters as (label, value) pairs, in display order.
+    pub(crate) fn vcs(&self) -> Vec<(&'static str, &str)> {
+        self.parameters
+            .iter()
+            .flat_map(|p| {
+                VCS_PARAMS
+                    .iter()
+                    .filter_map(|&(key, label)| Some((label, p.extra.get(key)?.as_str())))
+            })
             .collect()
     }
 

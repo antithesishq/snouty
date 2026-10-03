@@ -448,6 +448,8 @@ class Discovery:
     success: str = ""  # completed run that drives the event/logs/property stories
     fail: str = ""  # an incomplete run
     cancelled: str = ""  # a cancelled run
+    vcs: str = ""  # a run launched with `vcs.*` params
+    vcs_commit: str = ""  # that run's `vcs.version_id`
     launcher: str = ""  # a real launcher value (for the --launcher story)
     created_after: str = ""  # a timestamp with runs after it
     window_after: str = ""
@@ -813,7 +815,9 @@ def _pick_name_filter(prop_names: list[str]) -> str:
     raise GalleryError("no substring matches exactly one property")
 
 
-def discover(sn: Snouty, scan: int) -> Discovery:
+def discover(sn: Snouty, scan: int, need_vcs: bool) -> Discovery:
+    """`need_vcs` gates the vcs-run lookup: a tenant without trigger-action runs
+    can still generate every other story."""
     print("discovering runs via the live API…", file=sys.stderr)
 
     pick = _pick_completed_run(sn, scan)
@@ -825,13 +829,24 @@ def discover(sn: Snouty, scan: int) -> Discovery:
         raise GalleryError("no cancelled run found — the cancelled story cannot run")
     print(f"  cancelled run : {cancelled}", file=sys.stderr)
 
-    # Dynamic listing params from real runs, so listing stories aren't empty.
-    recent = sn.json_lines(["runs", "list", "-n", "30"])
+    # Dynamic listing params from the newest 30 runs, so listing stories aren't
+    # empty. Trigger-action runs are sparse, so the vcs search scans all 100.
+    runs = sn.json_lines(["runs", "list", "-n", "100"])
+    recent = runs[:30]
     if not recent:
         raise GalleryError("no runs found at all")
     launcher = next((r["launcher"] for r in recent if r.get("launcher")), "")
     if not launcher:
         raise GalleryError("no run has a launcher — the --launcher story cannot run")
+    vcs, vcs_commit = "", ""
+    if need_vcs:
+        vcs_run = next(
+            (r for r in runs if (r.get("parameters") or {}).get("vcs.version_id")), None
+        )
+        if not vcs_run:
+            raise GalleryError("no run has vcs.version_id — the vcs story cannot run")
+        vcs, vcs_commit = vcs_run["run_id"], vcs_run["parameters"]["vcs.version_id"]
+        print(f"  vcs run       : {vcs}", file=sys.stderr)
     by_time = sorted(recent, key=lambda r: r["created_at"])
     # created-after: a timestamp with several runs after it.
     created_after = by_time[max(0, len(by_time) - 6)]["created_at"]
@@ -843,6 +858,8 @@ def discover(sn: Snouty, scan: int) -> Discovery:
         success=success,
         fail=fail,
         cancelled=cancelled,
+        vcs=vcs,
+        vcs_commit=vcs_commit,
         launcher=launcher,
         created_after=created_after,
         window_after=window_after,
@@ -1555,6 +1572,16 @@ def build_stories(d: Discovery) -> list[Story]:
             "Status is shown as cancelled.",
             ["runs", "show", d.cancelled],
             contains_all("cancelled"),
+            json_capable=False,
+        ),
+        Story(
+            "runs-show-vcs",
+            "Find the commit a CI run tested",
+            "A run was launched from CI; I want to know which repository, branch, and "
+            "commit it tested.",
+            "A Version Control block lists the repository, branch, commit id, and commit link.",
+            ["runs", "show", d.vcs],
+            contains_all("Version Control", d.vcs_commit),
             json_capable=False,
         ),
         Story(
@@ -3003,7 +3030,7 @@ def main() -> int:
     try:
         stories: list[Story] = []
         if need_api:
-            disc = discover(sn, args.runs_to_scan)
+            disc = discover(sn, args.runs_to_scan, selected("runs-show-vcs"))
             stories += build_stories(disc)
 
         if need_validate:

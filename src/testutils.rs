@@ -865,12 +865,11 @@ fn mock_route_get_run(run_id: &str) -> (u16, String) {
         fields.push(r#""completed_at":"2025-03-20T02:31:45Z""#.to_string());
     }
     fields.push(format!(r#""launcher":"{launcher}""#));
-    // run-1 carries launch parameters so `runs show` can surface the requested
-    // Duration, Source and `attrs.*` alongside the timestamp-derived Elapsed;
-    // other runs omit them, exercising the "field absent" path.
+    // Only run-1 carries launch parameters; the other runs exercise the
+    // absent-field path.
     if run_id == "run-1" {
         fields.push(
-            r#""parameters":{"antithesis.duration":"30","antithesis.source":"demo-harness","attrs.team":"payments","attrs.branch":"main"}"#
+            r#""parameters":{"antithesis.duration":"30","antithesis.source":"demo-harness","attrs.team":"payments","attrs.branch":"main","vcs.repo_type":"github","vcs.repo_owner":"acme","vcs.repo_name":"widgets","vcs.repo_branch":"main","vcs.version_id":"abc123","vcs.version_link":"https://github.com/acme/widgets/commit/abc123"}"#
                 .to_string(),
         );
     }

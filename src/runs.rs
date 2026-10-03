@@ -1193,7 +1193,7 @@ fn render_properties_table(properties: &[Property]) -> String {
         .join("\n\n")
 }
 
-/// Print `rows` as an indented block under `title`, or nothing when there are no rows.
+/// Prints nothing when `rows` is empty.
 fn print_kv_block<'a>(
     title: &str,
     rows: impl IntoIterator<Item = (&'a str, &'a str)>,
@@ -1263,8 +1263,8 @@ fn print_run_detail(run: &RunDetail) -> Result<()> {
 
     out!("{}", render_kv(&rows, 0))?;
 
-    // `attrs.*` names are user-defined, so they go in their own block and do
-    // not change the width of the metadata labels above.
+    // Each block aligns its own labels, so these rows do not widen the metadata
+    // labels above.
     print_kv_block("Attributes", run.attrs())?;
     print_kv_block("Version Control", run.vcs())?;
 

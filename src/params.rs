@@ -28,11 +28,10 @@ pub const ANT_EVENT_DESCRIPTION: &str = "antithesis.event_description";
 pub const ANT_FILTER_LOGS_MATCHING: &str = "antithesis.filter_logs_matching";
 /// Prefix of the user-defined `attrs.<name>` parameters the server records on a run.
 pub const ATTRS_PREFIX: &str = "attrs.";
-/// The `vcs.*` parameters that the Antithesis GitHub trigger action records on a
-/// run, with their `runs show` labels, in display order. Observed on
-/// `GET /api/v0/runs/{run_id}` (tenant version 63) as string values on scheduled
-/// runs. The action can also send `vcs.pr_*` and `vcs.system_name`, but no run
-/// has shown them yet, so they are not listed.
+/// The `vcs.*` parameters that `runs show` lists, with their labels, in display order.
+/// Observed as strings on `GET /api/v0/runs/{run_id}` (tenant version 63), on runs
+/// launched by the Antithesis GitHub trigger action.
+/// TODO: add `vcs.pr_*` and `vcs.system_name` when a run records them.
 pub const VCS_PARAMS: &[(&str, &str)] = &[
     ("vcs.repo_type", "Repo Type"),
     ("vcs.repo_owner", "Repo Owner"),

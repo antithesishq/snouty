@@ -448,7 +448,7 @@ class Discovery:
     success: str = ""  # completed run that drives the event/logs/property stories
     fail: str = ""  # an incomplete run
     cancelled: str = ""  # a cancelled run
-    vcs: str = ""  # a run launched with `vcs.*` params (e.g. by the GitHub trigger action)
+    vcs: str = ""  # a run launched with `vcs.*` params
     vcs_commit: str = ""  # that run's `vcs.version_id`
     launcher: str = ""  # a real launcher value (for the --launcher story)
     created_after: str = ""  # a timestamp with runs after it
@@ -827,9 +827,8 @@ def discover(sn: Snouty, scan: int) -> Discovery:
         raise GalleryError("no cancelled run found — the cancelled story cannot run")
     print(f"  cancelled run : {cancelled}", file=sys.stderr)
 
-    # Dynamic listing params from real runs, so listing stories aren't empty.
-    # A trigger-action run can sit behind many manual runs, so the vcs search
-    # looks further back than the 30 runs the listing stories use.
+    # Dynamic listing params from the newest 30 runs, so listing stories aren't
+    # empty. Trigger-action runs are sparse, so the vcs search scans all 100.
     runs = sn.json_lines(["runs", "list", "-n", "100"])
     recent = runs[:30]
     if not recent:

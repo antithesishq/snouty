@@ -815,7 +815,9 @@ def _pick_name_filter(prop_names: list[str]) -> str:
     raise GalleryError("no substring matches exactly one property")
 
 
-def discover(sn: Snouty, scan: int) -> Discovery:
+def discover(sn: Snouty, scan: int, need_vcs: bool) -> Discovery:
+    """`need_vcs` gates the vcs-run lookup: a tenant without trigger-action runs
+    can still generate every other story."""
     print("discovering runs via the live API…", file=sys.stderr)
 
     pick = _pick_completed_run(sn, scan)
@@ -836,12 +838,15 @@ def discover(sn: Snouty, scan: int) -> Discovery:
     launcher = next((r["launcher"] for r in recent if r.get("launcher")), "")
     if not launcher:
         raise GalleryError("no run has a launcher — the --launcher story cannot run")
-    vcs_run = next(
-        (r for r in runs if (r.get("parameters") or {}).get("vcs.version_id")), None
-    )
-    if not vcs_run:
-        raise GalleryError("no run has vcs.version_id — the vcs story cannot run")
-    print(f"  vcs run       : {vcs_run['run_id']}", file=sys.stderr)
+    vcs, vcs_commit = "", ""
+    if need_vcs:
+        vcs_run = next(
+            (r for r in runs if (r.get("parameters") or {}).get("vcs.version_id")), None
+        )
+        if not vcs_run:
+            raise GalleryError("no run has vcs.version_id — the vcs story cannot run")
+        vcs, vcs_commit = vcs_run["run_id"], vcs_run["parameters"]["vcs.version_id"]
+        print(f"  vcs run       : {vcs}", file=sys.stderr)
     by_time = sorted(recent, key=lambda r: r["created_at"])
     # created-after: a timestamp with several runs after it.
     created_after = by_time[max(0, len(by_time) - 6)]["created_at"]
@@ -853,8 +858,8 @@ def discover(sn: Snouty, scan: int) -> Discovery:
         success=success,
         fail=fail,
         cancelled=cancelled,
-        vcs=vcs_run["run_id"],
-        vcs_commit=vcs_run["parameters"]["vcs.version_id"],
+        vcs=vcs,
+        vcs_commit=vcs_commit,
         launcher=launcher,
         created_after=created_after,
         window_after=window_after,
@@ -3025,7 +3030,7 @@ def main() -> int:
     try:
         stories: list[Story] = []
         if need_api:
-            disc = discover(sn, args.runs_to_scan)
+            disc = discover(sn, args.runs_to_scan, selected("runs-show-vcs"))
             stories += build_stories(disc)
 
         if need_validate:

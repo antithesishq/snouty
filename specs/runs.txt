@@ -121,7 +121,7 @@ stdout 'Run ID.*$R_run_id'
 [!staging] stdout 'Source.*demo-harness'
 [!staging] stdout '(?s)^Attributes\n  branch  main\n  team    payments\n\n'
 [!staging] ! stdout 'attrs\.'
-[!staging] stdout '(?s)^Version Control\n  Repo Owner   acme\n  Repo Name    widgets\n  Branch       main\n  Commit       abc123\n  Commit Link  https://github.com/acme/widgets/commit/abc123\n\n'
+[!staging] stdout '(?s)^Version Control\n  Repo Type    github\n  Repo Owner   acme\n  Repo Name    widgets\n  Branch       main\n  Commit       abc123\n  Commit Link  https://github.com/acme/widgets/commit/abc123\n\n'
 [!staging] ! stdout 'vcs\.'
 
 # Timestamps carry the local UTC offset, so one pastes back into

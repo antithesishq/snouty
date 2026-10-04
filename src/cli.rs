@@ -998,8 +998,19 @@ on its own line, and --raw passes the server's events through unchanged:
     },
 
     /// Execute a command in a run's live session
+    // Gated behind the `runs-exec` feature. `hide` is an expression, so the
+    // decision is made when the command is built — the feature comes from the
+    // environment, which needs no parse to read. Hiding only keeps it out of
+    // `--help`; invoking it while disabled is refused by
+    // [`gated_command_error`].
     #[command(
+        hide = !features::is_enabled(Feature::RunsExec),
         long_about = r#"Execute a bash script in a run's live session, at a moment.
+
+This command is gated behind the `runs-exec` unstable feature, because the
+Antithesis API it calls is still changing. Enable it by setting
+SNOUTY_UNSTABLE_FEATURES=runs-exec. An unstable feature can change or go away
+in any release.
 
 The run must have a live session (it is in progress). The script executes on
 a fresh branch of the multiverse, so it does not disturb the running test.
@@ -1215,8 +1226,13 @@ impl Default for RunsListArgs {
 /// The feature a gated command needs, and its path. A gated command needs an
 /// arm here as well as a `hide` attribute, because a hidden command is still
 /// callable.
-fn gated_command(_command: &Commands) -> Option<(Feature, &'static str)> {
-    None
+fn gated_command(command: &Commands) -> Option<(Feature, &'static str)> {
+    match command {
+        Commands::Runs {
+            command: Some(RunsCommands::Exec { .. }),
+        } => Some((Feature::RunsExec, "snouty runs exec")),
+        _ => None,
+    }
 }
 
 /// The error for invoking a gated command whose feature is off.
@@ -1272,9 +1288,29 @@ mod tests {
     }
 
     #[test]
-    fn no_command_is_gated() {
+    fn a_gated_off_command_is_refused_and_an_enabled_one_runs() {
+        let exec = parse(&["snouty", "runs", "exec", "RUN", "1", "2.0", "true"]).command;
+
+        // Off: refused with a message that says what is wrong and how to fix
+        // it.
+        let err = gated_command_error(&exec, &[]).expect("a gated-off command is refused");
+        let rendered = format!("{err:?}");
+        assert!(rendered.contains("`snouty runs exec`"), "{rendered}");
+        assert!(rendered.contains("unstable feature"), "{rendered}");
+        assert!(
+            rendered.contains("SNOUTY_UNSTABLE_FEATURES=runs-exec"),
+            "{rendered}"
+        );
+        assert!(rendered.contains("snouty runs exec --help"), "{rendered}");
+
+        // On: allowed through.
+        assert!(gated_command_error(&exec, &[Feature::RunsExec]).is_none());
+        // An unrelated feature does not enable it.
+        assert!(gated_command_error(&exec, &[Feature::Unknown("other".to_string())]).is_some());
+
+        // Sibling subcommands are never gated.
         for args in [
-            &["snouty", "runs", "exec", "RUN", "1", "2.0", "true"][..],
+            &["snouty", "runs", "logs", "RUN", "1", "2.0"][..],
             &["snouty", "runs", "search", "RUN", "q"][..],
             &["snouty", "runs"][..],
         ] {

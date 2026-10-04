@@ -560,6 +560,9 @@ struct ReleaseFloor {
     gap: &'static str,
     min: (u64, u64),
     consequence: &'static str,
+    /// The unstable feature the API's commands are gated behind. The check
+    /// runs only when that feature is on.
+    feature: Option<Feature>,
 }
 
 const RELEASE_FLOORS: [ReleaseFloor; 2] = [
@@ -569,6 +572,7 @@ const RELEASE_FLOORS: [ReleaseFloor; 2] = [
         gap: "the events-search API snouty relies on",
         min: MIN_SEARCH_RELEASE,
         consequence: "`runs search` and `runs events` with several terms can fail or hang",
+        feature: None,
     },
     ReleaseFloor {
         id: "execute-command",
@@ -576,8 +580,19 @@ const RELEASE_FLOORS: [ReleaseFloor; 2] = [
         gap: "the execute-command `container` field `runs exec` sends",
         min: MIN_EXEC_RELEASE,
         consequence: "`runs exec` fails",
+        feature: Some(Feature::RunsExec),
     },
 ];
+
+/// The release-floor warnings for `version`, skipping a floor whose commands
+/// are behind a feature that is off.
+fn release_floor_checks(version: &ApiVersion, enabled: &[Feature]) -> Vec<Check> {
+    RELEASE_FLOORS
+        .iter()
+        .filter(|floor| floor.feature.as_ref().is_none_or(|f| enabled.contains(f)))
+        .filter_map(|floor| release_floor_check(version, floor))
+        .collect()
+}
 
 /// Verify that the tenant release meets `floor`. An unparsable release
 /// version reports nothing, because the check would guess. It warns rather
@@ -688,11 +703,7 @@ pub async fn cmd_doctor(
             let host = api.host();
             let version = api.get_version().await;
             if let Ok(version) = &version {
-                checks.extend(
-                    RELEASE_FLOORS
-                        .iter()
-                        .filter_map(|floor| release_floor_check(version, floor)),
-                );
+                checks.extend(release_floor_checks(version, &features::enabled()));
             }
             checks.push(version_check(&host, version));
         }
@@ -1089,10 +1100,7 @@ mod tests {
 
         let rows = resolve_settings(
             &Settings::default(),
-            &[
-                Feature::Unknown("runs-exec".to_string()),
-                Feature::Unknown("other".to_string()),
-            ],
+            &[Feature::RunsExec, Feature::Unknown("other".to_string())],
         );
         let row = rows
             .iter()
@@ -1155,6 +1163,19 @@ mod tests {
             "{}",
             check.notes[0].text
         );
+    }
+
+    #[test]
+    fn exec_release_floor_needs_its_feature() {
+        let old = ApiVersion::new("v1".into(), "63.3".into());
+        let ids = |enabled: &[Feature]| -> Vec<String> {
+            release_floor_checks(&old, enabled)
+                .into_iter()
+                .map(|check| check.name.to_string())
+                .collect()
+        };
+        assert_eq!(ids(&[]), Vec::<String>::new());
+        assert_eq!(ids(&[Feature::RunsExec]), vec!["execute-command"]);
     }
 
     #[test]

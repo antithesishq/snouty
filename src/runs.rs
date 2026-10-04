@@ -17,8 +17,8 @@ use chrono::{DateTime, Utc};
 
 use crate::api::{
     AntithesisApi, Event, EventProperty, ExecRequest, Moment, NonEventProperty, Property,
-    PropertyStatus, RunDetail, RunStatus, RunSummary, RunsFilterOptions, SEARCH_DEFAULT_LIMIT,
-    SearchMode,
+    PropertyStatus, RewarmSource, RunDetail, RunStatus, RunSummary, RunsFilterOptions,
+    SEARCH_DEFAULT_LIMIT, SearchMode,
 };
 use crate::cli::{RunsCommands, RunsListArgs, RunsSearchArgs};
 use crate::error::{api_error_status, user_error};
@@ -200,13 +200,20 @@ pub async fn cmd_runs(
             container,
             timeout,
             events,
+            source_run_id,
+            source_session_id,
         }) => {
+            // clap makes the two flags mutually exclusive.
+            let rewarm = source_run_id
+                .map(RewarmSource::Run)
+                .or(source_session_id.map(RewarmSource::Session));
             let exec = ExecRequest {
                 moment: Moment { input_hash, vtime },
                 script: resolve_exec_script(script)?,
                 container,
                 timeout: Duration::from_secs(timeout),
                 events,
+                rewarm,
             };
             cmd_runs_exec(&run_id, exec, settings, output).await
         }
@@ -1639,13 +1646,26 @@ async fn cmd_runs_exec(
     debug!("executing command in run: {}", run_id);
     let timeout = exec.timeout;
     let mut renderer = exec.events.then(|| EventStreamRenderer::new(false));
+    let rewarm_flag = exec.rewarm.as_ref().map(|source| match source {
+        RewarmSource::Run(_) => ("--run-id", "run"),
+        RewarmSource::Session(_) => ("--session-id", "session"),
+    });
     let api = AntithesisApi::new(settings, verbose)?;
     let stream = match api.execute_command(run_id, exec).await {
         Ok(stream) => stream,
         // Translate a bad run id's 404 into the shared "run not found"
         // message every sibling run-scoped command reports (the endpoint's
-        // own 404 body is an unhelpful "Resource not found").
-        Err(err) => return Err(explain_run_scoped_error(&api, run_id, err).await),
+        // own 404 body is an unhelpful "Resource not found"). A 404 that
+        // survives that probe can only be the rewarm source.
+        Err(err) => {
+            let err = explain_run_scoped_error(&api, run_id, err).await;
+            return Err(match rewarm_flag {
+                Some((flag, noun)) if api_error_status(&err) == Some(404) => {
+                    err.suggestion(format!("check that {flag} names an existing {noun}"))
+                }
+                _ => err,
+            });
+        }
     };
 
     // The terminal result is held until the stream ends, so a stream error

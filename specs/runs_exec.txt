@@ -176,6 +176,38 @@ stdout '"fuzzpipe":\{"event_type":"Command received"\}'
 stdout '"output_text":"workload says hi"'
 stdout '"status":"exited"'
 
+# --run-id and --session-id name the run, or that run's session, that a cold
+# moment comes from (source_run_id and source_session_id). The server rewarms
+# the moment by replaying that run's inputs. Verified against release 64.0
+# (orbitinghail): without either, a moment off the session's own timeline
+# answers 400 "Moment not warm", and the rewarm counts against --timeout.
+# Without the flags, neither field is sent.
+snouty runs exec run-2 -3625518438076122494 398.4898056755774 print-source
+stdout 'source_run_id=absent source_session_id=absent'
+
+snouty runs exec run-2 -3625518438076122494 398.4898056755774 print-source --run-id 1f1211ea49946d4f63a92d65ee42476d-64-0
+stdout 'source_run_id=1f1211ea49946d4f63a92d65ee42476d-64-0 source_session_id=absent'
+
+snouty runs exec run-2 -3625518438076122494 398.4898056755774 print-source --session-id ba4ebf3181dd342334b86c58941813c6-64-0
+stdout 'source_run_id=absent source_session_id=ba4ebf3181dd342334b86c58941813c6-64-0'
+
+# The two flags are mutually exclusive, and an empty ID is rejected before any
+# API call.
+! snouty runs exec run-2 -3625518438076122494 398.4898056755774 'true' --run-id a --session-id b
+stderr 'cannot be used with'
+
+! snouty runs exec run-2 -3625518438076122494 398.4898056755774 'true' --run-id ''
+stderr 'invalid value .* for .--run-id'
+
+# An unknown source answers a bare 404. The session exists, so snouty points
+# at the flag.
+! snouty runs exec run-2 -3625518438076122494 398.4898056755774 'true' --run-id no-such-run
+stderr 'Resource not found'
+stderr 'check that --run-id names an existing run'
+
+! snouty runs exec run-2 -3625518438076122494 398.4898056755774 'true' --session-id no-such-session
+stderr 'check that --session-id names an existing session'
+
 # --json passes the NDJSON stream through: output events, then the result,
 # with vtimes normalized to exact JSON numbers (like `runs logs`) and no
 # trailer.

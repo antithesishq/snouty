@@ -1166,6 +1166,13 @@ fn mock_route_execute_command(run_id: &str, req_body: &str) -> (u16, String) {
     let script = request["script"].as_str().unwrap_or_default();
     let timeout = request["timeout_seconds"].as_u64().unwrap_or(600);
     let container = request["container"].as_str().unwrap_or_default();
+    let source = |key: &str| request[key].as_str().unwrap_or("absent").to_string();
+    // An unknown rewarm source answers the live endpoint's bare 404.
+    if request["source_run_id"] == "no-such-run"
+        || request["source_session_id"] == "no-such-session"
+    {
+        return (404, r#"{"message":"Resource not found"}"#.to_string());
+    }
     let system_logs = request
         .get("include_system_logs")
         .map_or("absent".to_string(), ToString::to_string);
@@ -1206,6 +1213,18 @@ fn mock_route_execute_command(run_id: &str, req_body: &str) -> (u16, String) {
         // An event that is not the script's output, sent although the request
         // did not ask for the timeline.
         "unexpected-event" => vec![mock_exec_command_received(), mock_exec_exited(Some(0))],
+        "print-source" => vec![
+            mock_exec_output(
+                "info",
+                &format!(
+                    "source_run_id={} source_session_id={}",
+                    source("source_run_id"),
+                    source("source_session_id")
+                ),
+                "398.491",
+            ),
+            mock_exec_exited(Some(0)),
+        ],
         "print-container" => vec![
             mock_exec_output("info", &format!("container={container}"), "398.491"),
             mock_exec_exited(Some(0)),

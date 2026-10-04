@@ -43,6 +43,10 @@ pub use generated::types::{
     BuildLogLine, Event, EventProperty, Moment, NonEventProperty, Property, PropertyStatus,
     RunDetail, RunStatus, RunSummary,
 };
+pub use generated::types::{
+    ExecuteCommandRequestSourceRunId as SourceRunId,
+    ExecuteCommandRequestSourceSessionId as SourceSessionId,
+};
 
 /// The outcome of a launch or debugging-launch request, and the `--json` output
 /// of `snouty launch` / `snouty debug`.
@@ -418,6 +422,15 @@ pub struct ExecRequest {
     /// Stream every event of the timeline while the script executes, not
     /// only the script's output.
     pub events: bool,
+    /// Where the server replays inputs from when `moment` is cold.
+    pub rewarm: Option<RewarmSource>,
+}
+
+/// The run, or that run's session, that a cold moment comes from. The server
+/// rewarms the moment by replaying its inputs.
+pub enum RewarmSource {
+    Run(SourceRunId),
+    Session(SourceSessionId),
 }
 
 pub struct AntithesisApi {
@@ -687,6 +700,11 @@ impl AntithesisApi {
     /// The server accepts `moment.vtime` as an exact JSON number, although
     /// the schema documents a string (observed on orbitinghail, release 61.3).
     pub async fn execute_command(&self, run_id: &str, exec: ExecRequest) -> Result<JsonStream> {
+        let (source_run_id, source_session_id) = match exec.rewarm {
+            Some(RewarmSource::Run(id)) => (Some(id), None),
+            Some(RewarmSource::Session(id)) => (None, Some(id)),
+            None => (None, None),
+        };
         let body = generated::types::ExecuteCommandRequest {
             moment: exec.moment,
             script: exec.script,
@@ -696,8 +714,8 @@ impl AntithesisApi {
             include_system_logs: exec.events.then_some(true),
             // The wire field is a whole number of seconds.
             timeout_seconds: exec.timeout.as_secs(),
-            source_run_id: None,
-            source_session_id: None,
+            source_run_id,
+            source_session_id,
         };
         let request = self.client.execute_command().run_id(run_id).body(body);
         match request.send().await {

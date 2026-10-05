@@ -40,12 +40,9 @@ mod generated {
 use crate::jsonl::{JsonStream, json_lines};
 pub(crate) use generated::types::Params as RunParams;
 pub use generated::types::{
-    BuildLogLine, Event, EventProperty, Moment, NonEventProperty, Property, PropertyStatus,
-    RunDetail, RunStatus, RunSummary,
-};
-pub use generated::types::{
-    ExecuteCommandRequestSourceRunId as SourceRunId,
-    ExecuteCommandRequestSourceSessionId as SourceSessionId,
+    BuildLogLine, Event, EventProperty, ExecuteCommandRequestSourceRunId as SourceRunId,
+    ExecuteCommandRequestSourceSessionId as SourceSessionId, Moment, NonEventProperty, Property,
+    PropertyStatus, RunDetail, RunStatus, RunSummary,
 };
 
 /// The outcome of a launch or debugging-launch request, and the `--json` output

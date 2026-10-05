@@ -137,27 +137,27 @@ stderr 'command timed out after 30s'
 # --timeout is forwarded to the server as timeout_seconds (the mock echoes
 # back the value it received). The default is 30, not the API default of 600,
 # so a script that hangs fails soon.
-snouty runs exec run-2 -3625518438076122494 398.4898056755774 print-timeout --timeout 45
+snouty runs exec run-2 -3625518438076122494 398.4898056755774 print-request --timeout 45
 stdout 'timeout_seconds=45'
 
-snouty runs exec run-2 -3625518438076122494 398.4898056755774 print-timeout
+snouty runs exec run-2 -3625518438076122494 398.4898056755774 print-request
 stdout 'timeout_seconds=30'
 
 # Without --container, the script executes on the host.
-snouty runs exec run-2 -3625518438076122494 398.4898056755774 print-container
+snouty runs exec run-2 -3625518438076122494 398.4898056755774 print-request
 stdout 'container=_ANTITHESIS_HOST'
 
 # --container names the container to execute in, by name or ID.
-snouty runs exec run-2 -3625518438076122494 398.4898056755774 print-container --container my-service
+snouty runs exec run-2 -3625518438076122494 398.4898056755774 print-request --container my-service
 stdout 'container=my-service'
 
 # Without --events, the request leaves out include_system_logs, so the server
 # default (false) applies.
-snouty runs exec run-2 -3625518438076122494 398.4898056755774 print-system-logs
+snouty runs exec run-2 -3625518438076122494 398.4898056755774 print-request
 stdout 'include_system_logs=absent'
 
-snouty runs exec run-2 -3625518438076122494 398.4898056755774 print-system-logs --events
-stdout '\[bash_command\] include_system_logs=true'
+snouty runs exec run-2 -3625518438076122494 398.4898056755774 print-request --events
+stdout '\[bash_command\] .*include_system_logs=true'
 
 # --events prints every event of the timeline as `runs logs` does, all on
 # stdout: a `moment HASH` divider, then `VTIME [source] payload` lines. The
@@ -182,13 +182,13 @@ stdout '"status":"exited"'
 # (orbitinghail): without either, a moment off the session's own timeline
 # answers 400 "Moment not warm", and the rewarm counts against --timeout.
 # Without the flags, neither field is sent.
-snouty runs exec run-2 -3625518438076122494 398.4898056755774 print-source
+snouty runs exec run-2 -3625518438076122494 398.4898056755774 print-request
 stdout 'source_run_id=absent source_session_id=absent'
 
-snouty runs exec run-2 -3625518438076122494 398.4898056755774 print-source --run-id 1f1211ea49946d4f63a92d65ee42476d-64-0
+snouty runs exec run-2 -3625518438076122494 398.4898056755774 print-request --run-id 1f1211ea49946d4f63a92d65ee42476d-64-0
 stdout 'source_run_id=1f1211ea49946d4f63a92d65ee42476d-64-0 source_session_id=absent'
 
-snouty runs exec run-2 -3625518438076122494 398.4898056755774 print-source --session-id ba4ebf3181dd342334b86c58941813c6-64-0
+snouty runs exec run-2 -3625518438076122494 398.4898056755774 print-request --session-id ba4ebf3181dd342334b86c58941813c6-64-0
 stdout 'source_run_id=absent source_session_id=ba4ebf3181dd342334b86c58941813c6-64-0'
 
 # The two flags are mutually exclusive, and an empty ID is rejected before any

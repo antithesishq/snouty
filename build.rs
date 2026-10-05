@@ -179,17 +179,11 @@ fn untype_error_responses(spec: &mut serde_json::Value) {
 /// upstream fix) fails the build. ACTION when that happens: delete this
 /// transform and its call.
 fn unrequire_search_limit_default(spec: &mut serde_json::Value) {
-    let limit = spec
-        .pointer_mut("/components/schemas/Search_Request/properties/limit")
-        .and_then(serde_json::Value::as_object_mut)
-        .expect(
-            "openapi spec has no Search_Request.limit property; \
-             update unrequire_search_limit_default in build.rs",
-        );
-    assert!(
-        limit.remove("default").is_some(),
-        "Search_Request.limit no longer carries a default; \
-         unrequire_search_limit_default in build.rs is a no-op and can be removed"
+    remove_schema_key(
+        spec,
+        "/components/schemas/Search_Request/properties/limit",
+        "default",
+        "unrequire_search_limit_default",
     );
 }
 
@@ -198,31 +192,22 @@ fn unrequire_search_limit_default(spec: &mut serde_json::Value) {
 ///
 /// ACTION when the assertion fails: delete this transform and its call.
 fn unrequire_include_system_logs_default(spec: &mut serde_json::Value) {
-    let field = spec
-        .pointer_mut("/components/schemas/Execute_Command_Request/properties/include_system_logs")
-        .and_then(serde_json::Value::as_object_mut)
-        .expect(
-            "openapi spec has no Execute_Command_Request.include_system_logs; \
-             update unrequire_include_system_logs_default in build.rs",
-        );
-    assert!(
-        field.remove("default").is_some(),
-        "Execute_Command_Request.include_system_logs no longer carries a default; \
-         unrequire_include_system_logs_default in build.rs is a no-op and can be removed"
+    remove_schema_key(
+        spec,
+        "/components/schemas/Execute_Command_Request/properties/include_system_logs",
+        "default",
+        "unrequire_include_system_logs_default",
     );
 }
 
 /// snouty does not show a property's description, in its human output or in
 /// `--json`, so drop the field from the generated property types.
 fn drop_property_description(spec: &mut serde_json::Value) {
-    let properties = spec
-        .pointer_mut("/components/schemas/Property_Base/properties")
-        .and_then(serde_json::Value::as_object_mut)
-        .expect("openapi spec has no Property_Base.properties");
-    assert!(
-        properties.remove("description").is_some(),
-        "Property_Base no longer has `description`; \
-         delete `drop_property_description` in build.rs"
+    remove_schema_key(
+        spec,
+        "/components/schemas/Property_Base/properties",
+        "description",
+        "drop_property_description",
     );
 }
 
@@ -261,17 +246,26 @@ fn drop_launch_status_code(spec: &mut serde_json::Value) {
 /// enum would fail a whole listing on one tier this build does not know. snouty
 /// only shows the value, so it does not need the enum.
 fn open_performance_tier(spec: &mut serde_json::Value) {
-    let tier = spec
-        .pointer_mut("/components/schemas/Params/properties/antithesis.performance_tier")
+    remove_schema_key(
+        spec,
+        "/components/schemas/Params/properties/antithesis.performance_tier",
+        "enum",
+        "open_performance_tier",
+    );
+}
+
+/// Remove `key` from the object at `pointer`. Both must exist, so a spec
+/// refresh that makes `transform` a no-op fails the build.
+fn remove_schema_key(spec: &mut serde_json::Value, pointer: &str, key: &str, transform: &str) {
+    let object = spec
+        .pointer_mut(pointer)
         .and_then(serde_json::Value::as_object_mut)
-        .expect(
-            "openapi spec has no Params.antithesis.performance_tier; \
-             delete `open_performance_tier` in build.rs",
-        );
+        .unwrap_or_else(|| {
+            panic!("openapi spec has no object at {pointer}; update `{transform}` in build.rs")
+        });
     assert!(
-        tier.remove("enum").is_some(),
-        "Params.antithesis.performance_tier is no longer an enum; \
-         delete `open_performance_tier` in build.rs"
+        object.remove(key).is_some(),
+        "openapi spec has no `{key}` at {pointer}; delete `{transform}` in build.rs"
     );
 }
 

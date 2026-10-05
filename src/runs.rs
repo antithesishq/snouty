@@ -1646,9 +1646,9 @@ async fn cmd_runs_exec(
     debug!("executing command in run: {}", run_id);
     let timeout = exec.timeout;
     let mut renderer = exec.events.then(|| EventStreamRenderer::new(false));
-    let rewarm_flag = exec.rewarm.as_ref().map(|source| match source {
-        RewarmSource::Run(_) => ("--run-id", "run"),
-        RewarmSource::Session(_) => ("--session-id", "session"),
+    let rewarm_not_found = exec.rewarm.as_ref().map(|source| match source {
+        RewarmSource::Run(_) => "check that --run-id names an existing run",
+        RewarmSource::Session(_) => "check that --session-id names an existing session",
     });
     let api = AntithesisApi::new(settings, verbose)?;
     let stream = match api.execute_command(run_id, exec).await {
@@ -1659,10 +1659,8 @@ async fn cmd_runs_exec(
         // survives that probe can only be the rewarm source.
         Err(err) => {
             let err = explain_run_scoped_error(&api, run_id, err).await;
-            return Err(match rewarm_flag {
-                Some((flag, noun)) if api_error_status(&err) == Some(404) => {
-                    err.suggestion(format!("check that {flag} names an existing {noun}"))
-                }
+            return Err(match rewarm_not_found {
+                Some(hint) if api_error_status(&err) == Some(404) => err.suggestion(hint),
                 _ => err,
             });
         }
@@ -1682,11 +1680,8 @@ async fn cmd_runs_exec(
                         render_exec_output(&output)?;
                     }
                 }
-                Some(renderer) => {
-                    if !json {
-                        outln!("{}", renderer.render_entry(&entry))?;
-                    }
-                }
+                Some(renderer) if !json => outln!("{}", renderer.render_entry(&entry))?,
+                Some(_) => {}
             }
         } else {
             // The stream normalized `moment.vtime`; the terminal result

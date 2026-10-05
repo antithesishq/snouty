@@ -554,10 +554,8 @@ fn print_settings(settings: &[Setting]) {
 /// release, instead of probing for it.
 struct ReleaseFloor {
     id: &'static str,
-    /// What the tenant must serve, for the check's title.
+    /// What the tenant must serve.
     serves: &'static str,
-    /// What an older tenant lacks.
-    gap: &'static str,
     min: (u64, u64),
     consequence: &'static str,
     /// The unstable feature the API's commands are gated behind. The check
@@ -569,7 +567,6 @@ const RELEASE_FLOORS: [ReleaseFloor; 2] = [
     ReleaseFloor {
         id: "events-search",
         serves: "the events-search API",
-        gap: "the events-search API snouty relies on",
         min: MIN_SEARCH_RELEASE,
         consequence: "`runs search` and `runs events` with several terms can fail or hang",
         feature: None,
@@ -577,7 +574,6 @@ const RELEASE_FLOORS: [ReleaseFloor; 2] = [
     ReleaseFloor {
         id: "execute-command",
         serves: "the execute-command `container` field",
-        gap: "the execute-command `container` field `runs exec` sends",
         min: MIN_EXEC_RELEASE,
         consequence: "`runs exec` fails",
         feature: Some(Feature::RunsExec),
@@ -609,7 +605,7 @@ fn release_floor_check(version: &ApiVersion, floor: &ReleaseFloor) -> Option<Che
                 Level::Warning,
                 format!(
                     "tenant release {} predates {} (release {major}.{minor}) — {}",
-                    version.release_version, floor.gap, floor.consequence
+                    version.release_version, floor.serves, floor.consequence
                 ),
             )
             .note(
@@ -689,6 +685,7 @@ pub async fn cmd_doctor(
     offline: bool,
 ) -> Result<()> {
     let mut checks = collect_checks(settings);
+    let enabled = features::enabled();
 
     if !offline {
         // Connectivity + version check (network). Skipped with --offline. Only
@@ -703,7 +700,7 @@ pub async fn cmd_doctor(
             let host = api.host();
             let version = api.get_version().await;
             if let Ok(version) = &version {
-                checks.extend(release_floor_checks(version, &features::enabled()));
+                checks.extend(release_floor_checks(version, &enabled));
             }
             checks.push(version_check(&host, version));
         }
@@ -720,7 +717,7 @@ pub async fn cmd_doctor(
         }
     }
 
-    let settings_rows = resolve_settings(settings, &features::enabled());
+    let settings_rows = resolve_settings(settings, &enabled);
 
     // Only the checks carry pass/warn/fail; the settings table is informational.
     let errors = checks.iter().filter(|c| c.status == Status::Error).count();
@@ -1168,14 +1165,14 @@ mod tests {
     #[test]
     fn exec_release_floor_needs_its_feature() {
         let old = ApiVersion::new("v1".into(), "63.3".into());
-        let ids = |enabled: &[Feature]| -> Vec<String> {
+        let ids = |enabled: &[Feature]| -> Vec<&str> {
             release_floor_checks(&old, enabled)
                 .into_iter()
-                .map(|check| check.name.to_string())
+                .map(|check| check.name)
                 .collect()
         };
-        assert_eq!(ids(&[]), Vec::<String>::new());
-        assert_eq!(ids(&[Feature::RunsExec]), vec!["execute-command"]);
+        assert!(ids(&[]).is_empty());
+        assert_eq!(ids(&[Feature::RunsExec]), ["execute-command"]);
     }
 
     #[test]

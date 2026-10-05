@@ -684,12 +684,7 @@ fn mock_route(
                 if mock_query_param(query, "input_hash").as_deref() == Some("0")
                     && mock_query_param(query, "vtime").as_deref() == Some("999999.0")
                 {
-                    return (
-                        404,
-                        r#"{"message":"Resource not found"}"#.into(),
-                        json,
-                        NO_CACHE_CACHE_CONTROL,
-                    );
+                    return (404, MOCK_BARE_404_BODY.into(), json, NO_CACHE_CACHE_CONTROL);
                 }
                 let (s, b) = mock_route_get_run_logs(run_id);
                 (s, b, ndjson)
@@ -886,6 +881,10 @@ fn mock_route_get_run(run_id: &str) -> (u16, String) {
 
     (200, format!("{{{}}}", fields.join(",")))
 }
+
+/// The bare 404 body the live API sends for an unknown resource. It never
+/// names the resource.
+const MOCK_BARE_404_BODY: &str = r#"{"message":"Resource not found"}"#;
 
 /// The `Stream_Error` line the `run-stream-error` fixture ends its streams
 /// with: the server's shape for a failure that happens after the `200 OK` is
@@ -1143,7 +1142,7 @@ fn mock_route_execute_command(run_id: &str, req_body: &str) -> (u16, String) {
         // the other nested routes mock — never names the run. snouty's "run
         // not found" translation has to do the work, and the spec can only
         // prove that against the unhelpful body.
-        return (404, r#"{"message":"Resource not found"}"#.to_string());
+        return (404, MOCK_BARE_404_BODY.to_string());
     }
     // The mock treats only an in-progress run as having a live session.
     // The real API is looser — a session outlives the run for a while (see
@@ -1164,18 +1163,12 @@ fn mock_route_execute_command(run_id: &str, req_body: &str) -> (u16, String) {
     // script rather than modelling a validation error nothing exercises.
     let request = serde_json::from_str::<serde_json::Value>(req_body).unwrap_or_default();
     let script = request["script"].as_str().unwrap_or_default();
-    let timeout = request["timeout_seconds"].as_u64().unwrap_or(600);
-    let container = request["container"].as_str().unwrap_or_default();
-    let source = |key: &str| request[key].as_str().unwrap_or("absent").to_string();
     // An unknown rewarm source answers the live endpoint's bare 404.
     if request["source_run_id"] == "no-such-run"
         || request["source_session_id"] == "no-such-session"
     {
-        return (404, r#"{"message":"Resource not found"}"#.to_string());
+        return (404, MOCK_BARE_404_BODY.to_string());
     }
-    let system_logs = request
-        .get("include_system_logs")
-        .map_or("absent".to_string(), ToString::to_string);
 
     let lines = match script.trim() {
         "true" => vec![mock_exec_exited(Some(0))],
@@ -1185,18 +1178,28 @@ fn mock_route_execute_command(run_id: &str, req_body: &str) -> (u16, String) {
             mock_exec_output("info", "still working", "398.491"),
             mock_exec_timed_out("398.491"),
         ],
-        "print-timeout" => vec![
-            mock_exec_output("info", &format!("timeout_seconds={timeout}"), "398.491"),
-            mock_exec_exited(Some(0)),
-        ],
-        "print-system-logs" => vec![
-            mock_exec_output(
-                "info",
-                &format!("include_system_logs={system_logs}"),
-                "398.491",
-            ),
-            mock_exec_exited(Some(0)),
-        ],
+        // Echoes the request fields a spec checks, so a spec can verify that
+        // a flag reaches the wire, or that its field is left out.
+        "print-request" => {
+            let field = |key: &str| match request.get(key) {
+                Some(serde_json::Value::String(value)) => value.clone(),
+                Some(value) => value.to_string(),
+                None => "absent".to_string(),
+            };
+            let echo = [
+                "container",
+                "timeout_seconds",
+                "include_system_logs",
+                "source_run_id",
+                "source_session_id",
+            ]
+            .map(|key| format!("{key}={}", field(key)))
+            .join(" ");
+            vec![
+                mock_exec_output("info", &echo, "398.491"),
+                mock_exec_exited(Some(0)),
+            ]
+        }
         // The timeline that include_system_logs asks for, in release 64.0
         // shapes (orbitinghail).
         "with-system-logs" => vec![
@@ -1213,22 +1216,6 @@ fn mock_route_execute_command(run_id: &str, req_body: &str) -> (u16, String) {
         // An event that is not the script's output, sent although the request
         // did not ask for the timeline.
         "unexpected-event" => vec![mock_exec_command_received(), mock_exec_exited(Some(0))],
-        "print-source" => vec![
-            mock_exec_output(
-                "info",
-                &format!(
-                    "source_run_id={} source_session_id={}",
-                    source("source_run_id"),
-                    source("source_session_id")
-                ),
-                "398.491",
-            ),
-            mock_exec_exited(Some(0)),
-        ],
-        "print-container" => vec![
-            mock_exec_output("info", &format!("container={container}"), "398.491"),
-            mock_exec_exited(Some(0)),
-        ],
         "truncate-stream" => vec![mock_exec_output("info", "partial output", "398.491")],
         // A known frame carrying a field this build does not know, which
         // renders, then a result status outside the spec, which fails.
@@ -1515,9 +1502,7 @@ mod tests {
             "got: {out}"
         );
 
-        // print-timeout echoes the timeout_seconds the server received, so a
-        // spec can verify the --timeout flag reaches the wire.
-        let (_, out) = mock_route_execute_command("run-2", &body("print-timeout", 45));
+        let (_, out) = mock_route_execute_command("run-2", &body("print-request", 45));
         assert!(out.contains("timeout_seconds=45"), "got: {out}");
 
         let (_, out) = mock_route_execute_command("run-2", &body("truncate-stream", 30));
@@ -1537,7 +1522,7 @@ mod tests {
         // on the status, not the message.
         let (status, out) = mock_route_execute_command("no-such-run", body);
         assert_eq!(status, 404);
-        assert_eq!(out, r#"{"message":"Resource not found"}"#);
+        assert_eq!(out, MOCK_BARE_404_BODY);
     }
 
     #[test]

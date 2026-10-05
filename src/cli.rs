@@ -1071,7 +1071,7 @@ JSON object on its own line, and the trailer is left out:
 
         /// Name or ID of the container to execute in; omit it to execute on
         /// the host
-        #[arg(long)]
+        #[arg(long, value_parser = clap::builder::NonEmptyStringValueParser::new())]
         container: Option<String>,
 
         /// Print every event of the timeline while the script executes, as
@@ -1240,22 +1240,17 @@ impl Default for RunsListArgs {
     }
 }
 
-/// The feature a gated command needs, and its path. A gated command needs an
-/// arm here as well as a `hide` attribute, because a hidden command is still
-/// callable.
-fn gated_command(command: &Commands) -> Option<(Feature, &'static str)> {
-    match command {
+/// The error for invoking a gated command whose feature is off. A gated
+/// command needs an arm here as well as a `hide` attribute, because a hidden
+/// command is still callable. `enabled` names the features that are on, so a
+/// test does not need the environment.
+pub fn gated_command_error(command: &Commands, enabled: &[Feature]) -> Option<Report> {
+    let (feature, path) = match command {
         Commands::Runs {
             command: Some(RunsCommands::Exec { .. }),
-        } => Some((Feature::RunsExec, "snouty runs exec")),
-        _ => None,
-    }
-}
-
-/// The error for invoking a gated command whose feature is off. `enabled`
-/// names the features that are on, so a test does not need the environment.
-pub fn gated_command_error(command: &Commands, enabled: &[Feature]) -> Option<Report> {
-    let (feature, path) = gated_command(command)?;
+        } => (Feature::RunsExec, "snouty runs exec"),
+        _ => return None,
+    };
     if enabled.contains(&feature) {
         return None;
     }

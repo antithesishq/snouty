@@ -1128,6 +1128,9 @@ fn mock_exec_command_received() -> String {
     .to_string()
 }
 
+/// The input hash of a moment the mock session holds cold.
+const MOCK_COLD_HASH: &str = "1002528785118888238";
+
 fn mock_route_execute_command(run_id: &str, req_body: &str) -> (u16, String) {
     // See the `run-stream-error` fixture note in `mock_route_get_run_build_logs`.
     if run_id == "run-stream-error" {
@@ -1166,6 +1169,21 @@ fn mock_route_execute_command(run_id: &str, req_body: &str) -> (u16, String) {
         || request["source_session_id"] == "no-such-session"
     {
         return (404, MOCK_BARE_404_BODY.to_string());
+    }
+    // A moment off the session's own timeline is cold. Without a source the
+    // live endpoint answers 400; with one, a rewarm that outlives the timeout
+    // answers 400 too. Both messages verbatim from release 64.0 (orbitinghail).
+    if request["moment"]["input_hash"] == MOCK_COLD_HASH {
+        let has_source =
+            request.get("source_run_id").is_some() || request.get("source_session_id").is_some();
+        let message = if has_source {
+            format!(
+                "Bad request: rewarm did not reach the target moment: 66/381 inputs replayed (1 queries, target_input_hash={MOCK_COLD_HASH}) — the guest may be slow or may have exited"
+            )
+        } else {
+            r#"Bad request: Moment not warm and no provided source_run_id or source_session_id. (400 Bad Request): {"result":"unknown_moment"}"#.to_string()
+        };
+        return (400, serde_json::json!({ "message": message }).to_string());
     }
 
     let lines = match script.trim() {

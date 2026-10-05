@@ -1644,9 +1644,9 @@ async fn cmd_runs_exec(
     debug!("executing command in run: {}", run_id);
     let timeout = exec.timeout;
     let mut renderer = exec.events.then(|| EventStreamRenderer::new(false));
-    let rewarm_not_found = exec.rewarm.as_ref().map(|source| match source {
-        RewarmSource::Run(_) => "check that --run-id names an existing run",
-        RewarmSource::Session(_) => "check that --session-id names an existing session",
+    let rewarm_flag = exec.rewarm.as_ref().map(|source| match source {
+        RewarmSource::Run(_) => "--run-id",
+        RewarmSource::Session(_) => "--session-id",
     });
     let api = AntithesisApi::new(settings, verbose)?;
     let stream = match api.execute_command(run_id, exec).await {
@@ -1654,11 +1654,23 @@ async fn cmd_runs_exec(
         // Translate a bad run id's 404 into the shared "run not found"
         // message every sibling run-scoped command reports (the endpoint's
         // own 404 body is an unhelpful "Resource not found"). A 404 that
-        // survives that probe can only be the rewarm source.
+        // survives that probe can only be the rewarm source. A 400 is a cold
+        // moment, a rewarm that did not finish, or a source that is not the
+        // moment's run (observed on orbitinghail, release 64.0).
         Err(err) => {
             let err = explain_run_scoped_error(&api, run_id, err).await;
-            return Err(match rewarm_not_found {
-                Some(hint) if api_error_status(&err) == Some(404) => err.suggestion(hint),
+            return Err(match (api_error_status(&err), rewarm_flag) {
+                (Some(404), Some(flag)) => {
+                    err.suggestion(format!("check that {flag} names an existing source"))
+                }
+                (Some(400), None) => err.suggestion(
+                    "for a moment off the session's own timeline, name the run it comes from \
+                     with --run-id or --session-id",
+                ),
+                (Some(400), Some(flag)) => err.suggestion(format!(
+                    "check that {flag} names the run the moment comes from, and raise \
+                     --timeout: the rewarm counts against it"
+                )),
                 _ => err,
             });
         }
@@ -1713,10 +1725,17 @@ async fn cmd_runs_exec(
                 None => Err(user_error("command exited without reporting an exit code")),
             }
         }
-        Some(ExecResult::TimedOut) => Err(user_error(format!(
-            "command timed out after {}",
-            HumanDuration::from_seconds(timeout.as_secs())
-        ))),
+        Some(ExecResult::TimedOut) => {
+            let err = user_error(format!(
+                "command timed out after {}",
+                HumanDuration::from_seconds(timeout.as_secs())
+            ));
+            Err(match rewarm_flag {
+                Some(_) => err
+                    .note("the rewarm counts against --timeout; raise it to give the rewarm time"),
+                None => err,
+            })
+        }
         // Exit 0 must mean "the script ran and exited 0", so a stream that
         // ends without a terminal result — truncation — is a failure.
         None => Err(eyre!("stream ended before the command reported completion")

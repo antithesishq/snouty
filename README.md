@@ -17,7 +17,7 @@ Snouty provides the following subcommands. Invoke `snouty <command> --help` to f
   - `snouty runs logs <run_id> <hash> [vtime]`: stream a run's logs along one branch.
   - `snouty runs events <run_id> -m <needle>`: search events in a run.
   - `snouty runs search <run_id> <query>`: run an event-set DSL query against a run's events.
-  - `snouty runs exec <run_id> <hash> <vtime> [script]`: run a bash script in a run's live session at a given moment, on the host or in a container (`--container`). `--events` prints the whole timeline while the script executes, as `runs logs` does. `--run-id` or `--session-id` names the run a cold moment comes from, so the server can rewarm it. Unstable: see [Unstable features](#unstable-features).
+  - `snouty runs exec <run_id> <hash> <vtime> [script]`: run a bash script in a run's live session at a given moment. Unstable: see [Unstable features](#unstable-features).
 - `snouty debug`: start a debug session.
 - `snouty validate`: locally run and validate your docker-compose.yaml setup.
 - `snouty doctor`: check your environment is configured correctly.
@@ -171,8 +171,8 @@ A few subcommands depend on an Antithesis API that is still changing shape, so s
 export SNOUTY_UNSTABLE_FEATURES="runs-exec"
 ```
 
-| Feature     | Enables                                                          |
-| ----------- | ---------------------------------------------------------------- |
+| Feature     | Enables                                                                         |
+| ----------- | ------------------------------------------------------------------------------- |
 | `runs-exec` | `snouty runs exec`. The execute-command API needs tenant release 64.0 or newer. |
 
 Anything behind this gate can change its behavior, its flags, or its id, or go away, in any release. `snouty doctor` lists the features that are on, and reports when your tenant is too old to serve one.

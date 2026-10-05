@@ -1027,9 +1027,9 @@ The script executes on the host, or in the container that --container names.
 The command needs tenant release 64.0 or newer; `snouty doctor` reports the
 tenant release.
 
-The script's stdout and stderr stream to snouty's stdout and stderr. With
---events, snouty prints every event of the timeline while the script
-executes, as `runs logs` prints them: the script's output, the workload's
+Without --events, the script's stdout and stderr stream to snouty's stdout
+and stderr. With --events, snouty prints every event of the timeline to
+stdout while the script executes, as `runs logs` prints them: the script's output, the workload's
 logs and assertions, and Antithesis events. On exit, a trailer on stderr
 documents the branch's end moment, to chain a follow-up command from. A
 non-zero exit code, a timeout, or a truncated stream fails snouty with exit
@@ -1252,13 +1252,8 @@ fn gated_command(command: &Commands) -> Option<(Feature, &'static str)> {
     }
 }
 
-/// The error for invoking a gated command whose feature is off.
-///
-/// Anyone who types the command already knows it exists, so the error says
-/// what is actually wrong and how to fix it, rather than pretending the
-/// command is not there. `enabled` names the features that are on — the
-/// caller passes them so the decision is testable without touching the
-/// environment.
+/// The error for invoking a gated command whose feature is off. `enabled`
+/// names the features that are on, so a test does not need the environment.
 pub fn gated_command_error(command: &Commands, enabled: &[Feature]) -> Option<Report> {
     let (feature, path) = gated_command(command)?;
     if enabled.contains(&feature) {
@@ -1308,8 +1303,6 @@ mod tests {
     fn a_gated_off_command_is_refused_and_an_enabled_one_runs() {
         let exec = parse(&["snouty", "runs", "exec", "RUN", "1", "2.0", "true"]).command;
 
-        // Off: refused with a message that says what is wrong and how to fix
-        // it.
         let err = gated_command_error(&exec, &[]).expect("a gated-off command is refused");
         let rendered = format!("{err:?}");
         assert!(rendered.contains("`snouty runs exec`"), "{rendered}");

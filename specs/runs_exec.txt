@@ -14,8 +14,8 @@
 # disturbed.
 #
 # The stream shape follows the release 64.0 spec (`POST
-# /runs/{run_id}/command`), and release 61.3 was verified to send it
-# (orbitinghail): zero or more command-output events in the same `Event` shape
+# /runs/{run_id}/command`), verified against the live API (orbitinghail,
+# release 64.0): zero or more command-output events in the same `Event` shape
 # `runs logs` receives (`moment`, `output_text`, `source.stream`, with `info`
 # for stdout and `error` for stderr), then exactly one result whose `status`
 # is `exited` or `timed_out`, unless the stream ends with a `Stream_Error`
@@ -41,9 +41,9 @@
 #   - The script comes from the SCRIPT argument, or from stdin when SCRIPT is
 #     omitted. Omitting it is the only way to read stdin; a pipe, a redirect,
 #     and a heredoc all work, and a script over 2 MiB is refused.
-#   - Output events are routed by `source.stream`: `error` to snouty's
-#     stderr, `info` to snouty's stdout. stdout carries only the script's output, so
-#     `snouty runs exec ... | jq` composes.
+#   - Without --events, output events are routed by `source.stream`: `error`
+#     to snouty's stderr, `info` to snouty's stdout. stdout carries only the
+#     script's output, so `snouty runs exec ... | jq` composes.
 #   - On `exited`, a trailer on stderr documents the branch's end moment, to
 #     chain a follow-up command from.
 #   - `exited` with code 0 is success. Any other terminal state fails snouty
@@ -55,7 +55,7 @@
 #     unchanged.
 #   - A line outside the spec's shapes fails snouty. Unknown fields on a known
 #     line are ignored.
-
+#
 # The command is gated behind the `runs-exec` feature, because the API it
 # calls is still changing; specs/features.txt covers the gate itself. Every
 # check here needs the command to exist, so the feature is on for the whole

@@ -2208,11 +2208,11 @@ def build_help_stories(d: Discovery) -> list[Story]:
             "help-runs-exec",
             "Learn how to execute a script in a live run",
             "I want the help to tell me that the command is behind the `runs-exec` "
-            "unstable feature and how to enable it, which runs accept a script, how to pick the "
-            "moment and the container, when a moment needs --run-id or --session-id, where the "
-            "script's output goes, what --events "
-            "prints instead, and how to chain a follow-up command. Help-only: the "
-            "command needs a live run.",
+            "unstable feature and how to enable it, which runs accept a script, how "
+            "to pick the moment and the container, when a moment needs --run-id or "
+            "--session-id, where the script's output goes, what --events prints "
+            "instead, and how to chain a follow-up command. Help-only: the command "
+            "needs a live run.",
             ["runs", "exec"],
         ),
         _help_story(

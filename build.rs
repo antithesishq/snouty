@@ -188,9 +188,7 @@ fn unrequire_search_limit_default(spec: &mut serde_json::Value) {
 }
 
 /// Strip the schema default from `Execute_Command_Request.include_system_logs`,
-/// so progenitor omits the field unless `runs exec --events` sets it.
-///
-/// ACTION when the assertion fails: delete this transform and its call.
+/// so the request omits the field unless `runs exec --events` sets it.
 fn unrequire_include_system_logs_default(spec: &mut serde_json::Value) {
     remove_schema_key(
         spec,
@@ -243,8 +241,7 @@ fn drop_launch_status_code(spec: &mut serde_json::Value) {
 
 /// Decode `Params.antithesis.performance_tier` as a plain string. `runs list`
 /// and `runs show` decode every run's parameters through `Params`, so a closed
-/// enum would fail a whole listing on one tier this build does not know. snouty
-/// only shows the value, so it does not need the enum.
+/// enum would fail a whole listing on one tier this build does not know.
 fn open_performance_tier(spec: &mut serde_json::Value) {
     remove_schema_key(
         spec,

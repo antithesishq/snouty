@@ -554,7 +554,6 @@ fn print_settings(settings: &[Setting]) {
 /// release, instead of probing for it.
 struct ReleaseFloor {
     id: &'static str,
-    /// What the tenant must serve.
     serves: &'static str,
     min: (u64, u64),
     consequence: &'static str,
@@ -580,8 +579,6 @@ const RELEASE_FLOORS: [ReleaseFloor; 2] = [
     },
 ];
 
-/// The release-floor warnings for `version`, skipping a floor whose commands
-/// are behind a feature that is off.
 fn release_floor_checks(version: &ApiVersion, enabled: &[Feature]) -> Vec<Check> {
     RELEASE_FLOORS
         .iter()
@@ -593,7 +590,6 @@ fn release_floor_checks(version: &ApiVersion, enabled: &[Feature]) -> Vec<Check>
 /// Verify that the tenant release meets `floor`. An unparsable release
 /// version reports nothing, because the check would guess. It warns rather
 /// than fails, because every other command still works on such a tenant.
-/// Pure so it can be unit-tested without the network.
 fn release_floor_check(version: &ApiVersion, floor: &ReleaseFloor) -> Option<Check> {
     if version.release? >= floor.min {
         return None;
@@ -1128,7 +1124,7 @@ mod tests {
         assert_eq!(row(&rows, "profile").render_value(), "default");
     }
 
-    // ---- version_check (network probe) ---------------------------------
+    // ---- release_floor_check -------------------------------------------
 
     #[test]
     fn release_floor_check_fires_only_on_a_known_gap() {

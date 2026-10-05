@@ -1518,10 +1518,8 @@ async fn cmd_runs_logs(
     Ok(())
 }
 
-/// One line of the script's output, as the release 64.0 spec documents it and
-/// release 64.0 sends it (orbitinghail). Every event carries a `moment`, and
-/// the terminal result does not. Without `--events`, every event has this
-/// shape.
+/// One line of the script's output, as release 64.0 sends it (orbitinghail).
+/// Without `--events`, every event has this shape.
 #[derive(Debug, Deserialize)]
 struct ExecOutput<'a> {
     /// Not read, but the spec requires a valid one on every event.
@@ -1671,6 +1669,7 @@ async fn cmd_runs_exec(
     let mut terminal: Option<ExecResult> = None;
     let mut lines = event_lines(stream, ErrorRows::Abort);
     while let Some(mut entry) = lines.try_next().await? {
+        // Every event carries a `moment`, and the terminal result does not.
         if entry.get("moment").is_some() {
             match &mut renderer {
                 None => {

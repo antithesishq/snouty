@@ -1138,10 +1138,8 @@ fn mock_route_execute_command(run_id: &str, req_body: &str) -> (u16, String) {
         return (200, lines.join("\n") + "\n");
     }
     if !mock_run_known(run_id) {
-        // The live endpoint's 404 body, which — unlike the friendlier body
-        // the other nested routes mock — never names the run. snouty's "run
-        // not found" translation has to do the work, and the spec can only
-        // prove that against the unhelpful body.
+        // snouty's "run not found" translation must work from the status
+        // alone.
         return (404, MOCK_BARE_404_BODY.to_string());
     }
     // The mock treats only an in-progress run as having a live session.
@@ -1178,8 +1176,7 @@ fn mock_route_execute_command(run_id: &str, req_body: &str) -> (u16, String) {
             mock_exec_output("info", "still working", "398.491"),
             mock_exec_timed_out("398.491"),
         ],
-        // Echoes the request fields a spec checks, so a spec can verify that
-        // a flag reaches the wire, or that its field is left out.
+        // Echoes request fields, so a spec can check what reaches the wire.
         "print-request" => {
             let field = |key: &str| match request.get(key) {
                 Some(serde_json::Value::String(value)) => value.clone(),

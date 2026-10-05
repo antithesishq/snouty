@@ -339,7 +339,7 @@ pub(super) async fn run(
         );
         let guest = vm.as_mut().expect("guest booted");
         guest.run_script(PREPARE).await?;
-        if !args.disable_node_kills {
+        if args.node_kills {
             guest
                 .run_script(&format!(
                     "set -euo pipefail\nmkdir -p /opt/antithesis\ncat > /opt/antithesis/fault_config.json <<'CONFIG'\n{NODE_KILLS_CONFIG}CONFIG\n"

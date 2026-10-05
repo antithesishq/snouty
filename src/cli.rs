@@ -292,9 +292,9 @@ Forces a new fault configuration before the first rollout. A guest timer then
 calls add_entropy every 30 seconds, independent of composer restarts. Later
 calls use the guest's normal rerandomization chance.
 Unpauses fault injection after setup_complete unless --disable-faults is set.
-The classic fault injector attempts a node kill every 60 virtual seconds on
-average. Use --disable-node-kills to omit these kills. Other faults remain
-enabled. TacticsLang does not use this fault configuration.
+Use --node-kills to make the classic fault injector attempt a node kill every
+60 virtual seconds on average. Other faults remain enabled by default.
+TacticsLang does not use this fault configuration.
 Repeats rollouts until interrupted. --disable-restart runs one rollout and
 continues to stream logs. Failed assertions and composer commands do not stop
 the simulation, but cause a nonzero exit status when it stops.
@@ -595,9 +595,9 @@ pub struct SimulateArgs {
     #[arg(long, conflicts_with = "attach")]
     pub disable_faults: bool,
 
-    /// Do not add node kills to the classic fault injector schedule
+    /// Add node kills to the classic fault injector schedule
     #[arg(long, conflicts_with = "attach")]
-    pub disable_node_kills: bool,
+    pub node_kills: bool,
 
     /// Guest memory in MiB (maximum: 15000)
     #[arg(long, default_value_t = 15000, value_parser = clap::value_parser!(u64).range(1..=15000), conflicts_with = "attach")]
@@ -607,7 +607,7 @@ pub struct SimulateArgs {
     #[arg(
         long,
         hide = true,
-        conflicts_with_all = ["config", "disable_restart", "disable_faults", "disable_node_kills", "attach"]
+        conflicts_with_all = ["config", "disable_restart", "disable_faults", "node_kills", "attach"]
     )]
     pub shell: bool,
 

@@ -177,7 +177,7 @@ stdout '"fuzzpipe":\{"event_type":"Command received"\}'
 stdout '"output_text":"workload says hi"'
 stdout '"status":"exited"'
 
-# --run-id and --session-id name the run, or that run's session, that a cold
+# --source-run-id and --source-session-id name the run, or that run's session, that a cold
 # moment comes from (source_run_id and source_session_id). The server rewarms
 # the moment by replaying that run's inputs. Verified against release 64.0
 # (orbitinghail): without either, a moment off the session's own timeline
@@ -186,45 +186,45 @@ stdout '"status":"exited"'
 snouty runs exec run-2 -3625518438076122494 398.4898056755774 print-request
 stdout 'source_run_id=absent source_session_id=absent'
 
-snouty runs exec run-2 -3625518438076122494 398.4898056755774 print-request --run-id 1f1211ea49946d4f63a92d65ee42476d-64-0
+snouty runs exec run-2 -3625518438076122494 398.4898056755774 print-request --source-run-id 1f1211ea49946d4f63a92d65ee42476d-64-0
 stdout 'source_run_id=1f1211ea49946d4f63a92d65ee42476d-64-0 source_session_id=absent'
 
-snouty runs exec run-2 -3625518438076122494 398.4898056755774 print-request --session-id ba4ebf3181dd342334b86c58941813c6-64-0
+snouty runs exec run-2 -3625518438076122494 398.4898056755774 print-request --source-session-id ba4ebf3181dd342334b86c58941813c6-64-0
 stdout 'source_run_id=absent source_session_id=ba4ebf3181dd342334b86c58941813c6-64-0'
 
 # A cold moment without a source fails with the server's 400, and snouty
 # points at the flags.
 ! snouty runs exec run-2 1002528785118888238 278.1311443040613 'true'
 stderr 'Moment not warm'
-stderr 'name the run it comes from with --run-id or --session-id'
+stderr 'name the run it comes from with --source-run-id or --source-session-id'
 
 # With a source, a 400 is a rewarm that did not finish (or a source that is
 # not the moment's run). snouty names the flag and --timeout.
-! snouty runs exec run-2 1002528785118888238 278.1311443040613 'true' --run-id 1f1211ea49946d4f63a92d65ee42476d-64-0
+! snouty runs exec run-2 1002528785118888238 278.1311443040613 'true' --source-run-id 1f1211ea49946d4f63a92d65ee42476d-64-0
 stderr 'rewarm did not reach the target moment'
-stderr 'check that --run-id names the run the moment comes from, and raise --timeout'
+stderr 'check that --source-run-id names the run the moment comes from, and raise --timeout'
 
 # A timeout with a source says the rewarm counts against --timeout.
-! snouty runs exec run-2 -3625518438076122494 398.4898056755774 'sleep 60' --session-id ba4ebf3181dd342334b86c58941813c6-64-0
+! snouty runs exec run-2 -3625518438076122494 398.4898056755774 'sleep 60' --source-session-id ba4ebf3181dd342334b86c58941813c6-64-0
 stderr 'command timed out after 30s'
 stderr 'the rewarm counts against --timeout'
 
 # The two flags are mutually exclusive, and an empty ID is rejected before any
 # API call.
-! snouty runs exec run-2 -3625518438076122494 398.4898056755774 'true' --run-id a --session-id b
+! snouty runs exec run-2 -3625518438076122494 398.4898056755774 'true' --source-run-id a --source-session-id b
 stderr 'cannot be used with'
 
-! snouty runs exec run-2 -3625518438076122494 398.4898056755774 'true' --run-id ''
-stderr 'invalid value .* for .--run-id'
+! snouty runs exec run-2 -3625518438076122494 398.4898056755774 'true' --source-run-id ''
+stderr 'invalid value .* for .--source-run-id'
 
 # An unknown source answers a bare 404. The session exists, so snouty points
 # at the flag.
-! snouty runs exec run-2 -3625518438076122494 398.4898056755774 'true' --run-id no-such-run
+! snouty runs exec run-2 -3625518438076122494 398.4898056755774 'true' --source-run-id no-such-run
 stderr 'Resource not found'
-stderr 'check that --run-id names an existing source'
+stderr 'check that --source-run-id names an existing source'
 
-! snouty runs exec run-2 -3625518438076122494 398.4898056755774 'true' --session-id no-such-session
-stderr 'check that --session-id names an existing source'
+! snouty runs exec run-2 -3625518438076122494 398.4898056755774 'true' --source-session-id no-such-session
+stderr 'check that --source-session-id names an existing source'
 
 # An empty --container is rejected before any API call.
 ! snouty runs exec run-2 -3625518438076122494 398.4898056755774 'true' --container ''

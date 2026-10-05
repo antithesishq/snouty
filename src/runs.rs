@@ -1645,8 +1645,8 @@ async fn cmd_runs_exec(
     let timeout = exec.timeout;
     let mut renderer = exec.events.then(|| EventStreamRenderer::new(false));
     let rewarm_flag = exec.rewarm.as_ref().map(|source| match source {
-        RewarmSource::Run(_) => "--run-id",
-        RewarmSource::Session(_) => "--session-id",
+        RewarmSource::Run(_) => "--source-run-id",
+        RewarmSource::Session(_) => "--source-session-id",
     });
     let api = AntithesisApi::new(settings, verbose)?;
     let stream = match api.execute_command(run_id, exec).await {
@@ -1665,7 +1665,7 @@ async fn cmd_runs_exec(
                 }
                 (Some(400), None) => err.suggestion(
                     "for a moment off the session's own timeline, name the run it comes from \
-                     with --run-id or --session-id",
+                     with --source-run-id or --source-session-id",
                 ),
                 (Some(400), Some(flag)) => err.suggestion(format!(
                     "check that {flag} names the run the moment comes from, and raise \

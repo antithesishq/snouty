@@ -1019,9 +1019,9 @@ INPUT_HASH and VTIME identify the moment to execute at; a moment comes from
 
 The session holds the moment it started at, and the moments before it on
 that timeline. Any other moment is cold. Name the run it comes from with
---run-id, or that run's session with --session-id, and the server rewarms the
-moment by replaying the run's inputs. A rewarm can take minutes, and --timeout
-counts it.
+--source-run-id, or that run's session with --source-session-id, and the
+server rewarms the moment by replaying the run's inputs. A rewarm can take
+minutes, and --timeout counts it.
 
 The script executes on the host, or in the container that --container names.
 The command needs tenant release 64.0 or newer; `snouty doctor` reports the
@@ -1041,7 +1041,7 @@ Examples:
   snouty runs exec <run_id> <hash> <vtime> 'uname -a'
   snouty runs exec <run_id> <hash> <vtime> --container <name> 'ps aux'
   snouty runs exec <run_id> <hash> <vtime> --events 'sleep 5'
-  snouty runs exec <run_id> <hash> <vtime> --run-id <source_run_id> --timeout 300 'ls'
+  snouty runs exec <run_id> <hash> <vtime> --source-run-id <id> --timeout 300 'ls'
   echo 'ps aux' | snouty runs exec <run_id> <hash> <vtime>
   snouty runs exec <run_id> <hash> <vtime> < script.sh
 
@@ -1081,12 +1081,12 @@ JSON object on its own line, and the trailer is left out:
 
         /// Run that the moment comes from, to rewarm a moment the session
         /// does not hold
-        #[arg(long = "run-id", conflicts_with = "source_session_id")]
+        #[arg(long, conflicts_with = "source_session_id")]
         source_run_id: Option<SourceRunId>,
 
         /// Session of the run that the moment comes from, to rewarm a moment
         /// the session does not hold
-        #[arg(long = "session-id")]
+        #[arg(long)]
         source_session_id: Option<SourceSessionId>,
 
         /// Maximum seconds the server waits for the script to exit before

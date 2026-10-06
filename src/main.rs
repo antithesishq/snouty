@@ -24,8 +24,8 @@ use snouty::login::cmd_login;
 use snouty::params::{
     ANT_CONFIG_IMAGE, ANT_DEBUGGING_INPUT_HASH, ANT_DEBUGGING_RUN_ID, ANT_DEBUGGING_SESSION_ID,
     ANT_DEBUGGING_VTIME, ANT_DESCRIPTION, ANT_DURATION, ANT_EVENT_DESCRIPTION,
-    ANT_FILTER_LOGS_MATCHING, ANT_IS_EPHEMERAL, ANT_REPORT_RECIPIENTS, ANT_SOURCE, ANT_TEST_NAME,
-    Params,
+    ANT_FILTER_LOGS_MATCHING, ANT_IS_EPHEMERAL, ANT_PERFORMANCE_TIER, ANT_REPORT_RECIPIENTS,
+    ANT_SOURCE, ANT_TEST_NAME, Params,
 };
 use snouty::settings::Settings;
 use snouty::validate;
@@ -223,6 +223,10 @@ async fn cmd_launch(
 
     if let Some(filter_logs_matching) = args.filter_logs_matching {
         params.insert(ANT_FILTER_LOGS_MATCHING, filter_logs_matching);
+    }
+
+    if let Some(performance_tier) = args.performance_tier {
+        params.insert(ANT_PERFORMANCE_TIER, performance_tier.to_string());
     }
 
     let config_image_ref = if let Some(config_dir) = args.config {

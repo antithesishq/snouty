@@ -26,6 +26,7 @@ pub const ANT_IS_EPHEMERAL: &str = "antithesis.is_ephemeral";
 pub const ANT_REPORT_RECIPIENTS: &str = "antithesis.report.recipients";
 pub const ANT_EVENT_DESCRIPTION: &str = "antithesis.event_description";
 pub const ANT_FILTER_LOGS_MATCHING: &str = "antithesis.filter_logs_matching";
+pub const ANT_PERFORMANCE_TIER: &str = "antithesis.performance_tier";
 /// Prefix of the user-defined `attrs.<name>` parameters the server records on a run.
 pub const ATTRS_PREFIX: &str = "attrs.";
 /// The `vcs.*` parameters that `runs show` lists, with their labels, in display order.
@@ -429,6 +430,18 @@ mod tests {
         ])
         .unwrap();
         assert!(params.validate_test_params().is_err());
+    }
+
+    #[test]
+    fn schema_accepts_every_performance_tier() {
+        use crate::cli::PerformanceTier;
+        use clap::ValueEnum;
+
+        for tier in PerformanceTier::value_variants() {
+            let mut params = Params::new();
+            params.insert(ANT_PERFORMANCE_TIER, tier.to_string());
+            assert!(params.validate_test_params().is_ok(), "{tier} rejected");
+        }
     }
 
     #[test]

@@ -1,4 +1,4 @@
-#![cfg(all(target_os = "linux", target_arch = "x86_64"))]
+#![cfg(target_os = "linux")]
 
 use std::fs;
 use std::os::unix::fs::{PermissionsExt, symlink};
@@ -54,6 +54,7 @@ impl Simulation {
             "ssh",
             "ssh-keygen",
             "qemu-system-x86_64",
+            "qemu-system-aarch64",
         ] {
             symlink(&script, bin.join(tool)).unwrap();
         }
@@ -73,6 +74,20 @@ impl Simulation {
         .unwrap();
         fs::write(home.join(".ssh/known_hosts"), "existing host key\n").unwrap();
         fs::write(root.join("mode"), mode).unwrap();
+        let firmware = root.join("data/AAVMF");
+        fs::create_dir_all(&firmware).unwrap();
+        fs::write(firmware.join("AAVMF_CODE.fd"), "firmware code").unwrap();
+        let vars = firmware.join("AAVMF_VARS.fd");
+        fs::write(&vars, "firmware variables").unwrap();
+        fs::set_permissions(&vars, fs::Permissions::from_mode(0o444)).unwrap();
+        let qemu_data = root.join("share/qemu");
+        fs::create_dir_all(&qemu_data).unwrap();
+        fs::write(qemu_data.join("edk2-aarch64-code.fd"), "QEMU firmware code").unwrap();
+        fs::write(
+            qemu_data.join("edk2-arm-vars.fd"),
+            "QEMU firmware variables",
+        )
+        .unwrap();
         let mut paths = vec![bin];
         paths.extend(std::env::split_paths(&std::env::var_os("PATH").unwrap()));
         let child = Command::new(assert_cmd::cargo::cargo_bin!("snouty"))
@@ -81,6 +96,7 @@ impl Simulation {
             .env("HOME", &home)
             .env("XDG_CONFIG_HOME", root.join("settings"))
             .env("XDG_CACHE_HOME", root.join("cache"))
+            .env("XDG_DATA_HOME", root.join("data"))
             .env("XDG_RUNTIME_DIR", root.join("runtime"))
             .env("SNOUTY_UNSTABLE_FEATURES", "simulate")
             .env("SNOUTY_CONTAINER_ENGINE", "docker")
@@ -101,6 +117,14 @@ impl Simulation {
             } else {
                 vec!["--guest-image", "guest:test"]
             })
+            .args([
+                "--platform",
+                if mode.starts_with("arm64") {
+                    "arm64"
+                } else {
+                    "amd64"
+                },
+            ])
             .args([
                 "--timeout",
                 if mode == "startup-timeout" {
@@ -234,6 +258,79 @@ fn guest_uses_q35_with_acceleration_fallback() {
             .any(|args| args == ["-machine", "q35,i8042=off,accel=kvm:tcg"])
     );
     assert!(args.windows(2).any(|args| args == ["-cpu", "max"]));
+}
+
+#[test]
+fn arm64_guest_uses_uefi_and_arm64_images() {
+    let mut simulation = Simulation::start("arm64");
+    simulation.wait_for("stdout", "workload running");
+    assert_eq!(simulation.read("qemu_tool"), "qemu-system-aarch64");
+    let args: Vec<String> = serde_json::from_str(&simulation.read("qemu_args")).unwrap();
+    assert!(
+        args.windows(2)
+            .any(|args| args == ["-machine", "virt,gic-version=max,accel=kvm:tcg"])
+    );
+    assert!(args.windows(2).any(|args| args == ["-cpu", "max"]));
+    assert!(
+        args.windows(2)
+            .any(|args| args == ["-device", "pci-serial,chardev=instrumentation"])
+    );
+    assert!(args.windows(2).any(|args| {
+        args == [
+            "-chardev",
+            "file,id=instrumentation,path=instrumentation.log",
+        ]
+    }));
+    assert!(
+        args.windows(2)
+            .any(|args| args == ["-device", "virtio-net-pci,netdev=net0"])
+    );
+    assert!(
+        args.iter()
+            .any(|arg| arg.contains("if=pflash,format=raw,unit=0,readonly=on,file="))
+    );
+    let run_dir = Path::new(simulation.read("run_dir").trim()).to_path_buf();
+    let vars = run_dir.join("uefi_vars.fd");
+    assert_eq!(
+        fs::read_to_string(&vars).unwrap(),
+        "QEMU firmware variables"
+    );
+    assert_eq!(
+        fs::metadata(vars).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+    assert!(
+        args.iter()
+            .any(|arg| arg.contains("if=pflash,format=raw,unit=1,file="))
+    );
+    let pull: serde_json::Value = serde_json::from_str(&simulation.read("pull_args")).unwrap();
+    assert_eq!(
+        pull,
+        serde_json::json!(["pull", "--platform", "linux/arm64", "guest:test"])
+    );
+    let create: Vec<String> = serde_json::from_str(&simulation.read("create_args")).unwrap();
+    assert!(
+        create
+            .windows(2)
+            .any(|args| args == ["--platform", "linux/arm64"])
+    );
+    let save: Vec<String> = serde_json::from_str(&simulation.read("save_args")).unwrap();
+    assert!(
+        save.windows(2)
+            .any(|args| args == ["--platform", "linux/arm64"])
+    );
+    kill(Pid::from_raw(simulation.child.id() as i32), Signal::SIGTERM).unwrap();
+    assert_eq!(simulation.finish().status.code(), Some(143));
+}
+
+#[test]
+fn arm64_guest_rejects_amd64_workload_images() {
+    let mut simulation = Simulation::start("arm64-wrong-workload");
+    let output = simulation.finish();
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(stderr.contains("simulate requires arm64"), "{stderr}");
+    assert!(!simulation.root().join("compose_started").exists());
 }
 
 #[test]

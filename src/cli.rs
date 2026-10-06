@@ -9,6 +9,7 @@ use color_eyre::eyre::Report;
 use crate::api::{RunStatus, SEARCH_DEFAULT_LIMIT};
 use crate::error::user_error;
 use crate::features::{self, Feature};
+use crate::simulate::SimulatePlatform;
 use crate::time::HumanDuration;
 use crate::vtime::VTime;
 
@@ -282,8 +283,11 @@ the local container engine. The guest image defaults to antithesis-guest:v<RELEA
 in the configured repository, using the tenant release from /api/version.
 Requires an API key unless --guest-image is supplied.
 
-Requires Linux x86_64 and QEMU. Uses 1 CPU and 15000 MiB of memory by default.
+Requires Linux and QEMU. Uses 1 CPU and 15000 MiB of memory by default.
 Use --memory to lower guest memory when the host has less RAM.
+The guest platform defaults to the host architecture. Use --platform arm64 to
+run an ARM64 guest and ARM64 workload images on an x86-64 host. ARM64 guests
+require QEMU AArch64 and EDK2 AArch64 UEFI firmware.
 SSH configuration is private to this run; user configuration is not changed.
 
 Waits for setup_complete before starting test composer on each rollout.
@@ -585,6 +589,10 @@ pub struct SimulateArgs {
     /// Container image containing /guest.iso (default: REPOSITORY/antithesis-guest:v<RELEASE>)
     #[arg(long, value_parser = validate_non_empty, conflicts_with = "attach")]
     pub guest_image: Option<String>,
+
+    /// Guest and workload image platform (default: native host platform)
+    #[arg(long, value_enum, default_value_t = SimulatePlatform::default(), conflicts_with = "attach")]
+    pub platform: SimulatePlatform,
 
     /// Run one rollout, then continue streaming logs until interrupted
     #[arg(long, conflicts_with = "attach")]

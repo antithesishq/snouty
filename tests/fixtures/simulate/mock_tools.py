@@ -23,14 +23,23 @@ if name == 'docker-compose':
         sys.exit('unexpected compose command: ' + repr(args))
 elif name == 'docker':
     if args[:2] == ['image', 'inspect']:
-        if args[2] == 'guest:test' and mode in ('missing-guest', 'pull-failure') and not (root / 'pulled').exists():
+        reference = args[-1]
+        platform = args[3] if args[2:3] == ['--platform'] else 'linux/amd64'
+        if reference == 'guest:test' and mode in ('missing-guest', 'pull-failure') and not (root / 'pulled').exists():
             sys.exit('No such image: guest:test')
-        if args[2] != 'workload:test':
-            record('guest_image', args[2])
-        print(json.dumps([{'Id': 'sha256:' + 'a' * 64, 'Architecture': 'amd64'}]))
+        if reference != 'workload:test':
+            record('guest_image', reference)
+        architecture = 'arm64' if platform == 'linux/arm64' else 'amd64'
+        if mode == 'arm64' and reference == 'guest:test' and not (root / 'pulled').exists():
+            architecture = 'amd64'
+        if mode == 'arm64-wrong-workload' and reference == 'workload:test':
+            architecture = 'amd64'
+        image_id = 'b' if architecture == 'arm64' else 'a'
+        print(json.dumps([{'Id': 'sha256:' + image_id * 64, 'Architecture': architecture}]))
     elif args[0] == 'cp':
         Path(args[-1]).write_bytes(b'guest ISO fixture')
     elif args[0] == 'save':
+        record('save_args', json.dumps(args))
         Path(args[args.index('--output') + 1]).write_bytes(b'workload archive')
     elif args[0] == 'pull':
         record('pull_args', json.dumps(args))
@@ -38,6 +47,8 @@ elif name == 'docker':
             sys.exit('registry denied fixture')
         record('pulled', 'guest:test')
     elif args[0] in ('create', 'rm'):
+        if args[0] == 'create':
+            record('create_args', json.dumps(args))
         print('fixture-container')
     else:
         sys.exit('unexpected engine command: ' + repr(args))
@@ -94,7 +105,7 @@ elif name == 'ssh':
                 log.write_text("11.0 [fault_injector] [JSON] '{\"fault\":{\"name\":\"clog\",\"type\":\"network\",\"affected_nodes\":[\"workload\"],\"max_duration\":2}}'\n11.1 [fault_injector] [JSON] '{\"fault\":{\"name\":\"kill\",\"type\":\"node\",\"affected_nodes\":[\"echo-server\"],\"max_duration\":2}}'\n11.2 [workload] [JSON] '{\"antithesis_assert\":{\"message\":\"balance stays positive\",\"assert_type\":\"always\",\"must_hit\":true,\"hit\":true,\"condition\":false}}'\n")
             if mode == 'malformed-json':
                 log.write_text("12.0 [workload] [JSON] '{broken json}'\n")
-            if mode in ('supervisor-failure', 'clean-once', 'missing-guest', 'default-image', 'human'):
+            if mode in ('supervisor-failure', 'clean-once', 'missing-guest', 'default-image', 'human', 'arm64'):
                 log.write_text('12.0 [workload] [STDOUT] \'workload running\'\n')
             if mode.startswith('blocked-output'):
                 with log.open('w') as output:
@@ -140,7 +151,7 @@ elif name == 'ssh-keygen':
     public_key.write_text('fixture public key\n')
     record('private_key_path', private_key)
     record('public_key_path', public_key)
-elif name == 'qemu-system-x86_64':
+elif name in ('qemu-system-x86_64', 'qemu-system-aarch64'):
     if '-fw_cfg' not in args:
         sys.exit('unexpected QEMU command: ' + repr(args))
     fw_cfg = args[args.index('-fw_cfg') + 1]
@@ -150,6 +161,7 @@ elif name == 'qemu-system-x86_64':
     assert public_key.name == 'id_ed25519.pub', public_key
     authorized_key = public_key.read_text()
     record('qemu_pid', os.getpid())
+    record('qemu_tool', name)
     record('qemu_args', json.dumps(args))
     record('run_dir', Path.cwd())
     record('authorized_key', authorized_key)

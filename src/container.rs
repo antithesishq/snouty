@@ -27,14 +27,14 @@ pub const AMD64_PLATFORM: &str = "linux/amd64";
 
 /// A container image's CPU architecture, as reported by the runtime.
 ///
-/// snouty only cares whether an image is runnable on Antithesis, which is
-/// x86-64 only — so this distinguishes [`Amd64`](Self::Amd64) from everything
-/// else, keeping the raw runtime string for [`Other`](Self::Other) so error
-/// messages can name the offending architecture.
+/// Local simulation also runs ARM64 images. Other architectures keep the raw
+/// runtime string so errors can name the image's architecture.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Architecture {
     /// `amd64` (x86-64) — the only architecture Antithesis runs.
     Amd64,
+    /// `arm64` (AArch64) — used by local simulation.
+    Arm64,
     /// Any other architecture; carries the runtime's raw name for diagnostics.
     Other(String),
 }
@@ -43,6 +43,7 @@ impl From<&str> for Architecture {
     fn from(arch: &str) -> Self {
         match arch {
             "amd64" => Architecture::Amd64,
+            "arm64" => Architecture::Arm64,
             other => Architecture::Other(other.to_string()),
         }
     }
@@ -52,6 +53,7 @@ impl std::fmt::Display for Architecture {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Architecture::Amd64 => f.write_str("amd64"),
+            Architecture::Arm64 => f.write_str("arm64"),
             Architecture::Other(arch) => f.write_str(arch),
         }
     }

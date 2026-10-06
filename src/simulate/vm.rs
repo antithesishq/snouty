@@ -1,6 +1,7 @@
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::net::TcpListener;
+use std::os::unix::fs::PermissionsExt;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -11,6 +12,8 @@ use color_eyre::eyre::{Context, Result, bail, eyre};
 use nix::sys::signal::{Signal, killpg};
 use nix::unistd::Pid;
 use tokio::time::{Instant, sleep, timeout};
+
+use super::SimulatePlatform;
 
 const AUTHORIZED_KEY_FW_CFG: &str = "opt/antithesis/authorized_key";
 const BOOT_CONSOLE_ESCAPE_CODES: [&[u8]; 6] = [
@@ -155,9 +158,12 @@ impl Vm {
         startup_timeout: Duration,
         boot_output: BootOutput,
         memory_mib: u64,
+        platform: SimulatePlatform,
     ) -> Result<Self> {
         let run_dir = fs::canonicalize(run_dir)?;
-        if OpenOptions::new()
+        if platform != SimulatePlatform::default() {
+            eprintln!("Warning: this guest architecture requires software emulation on this host.");
+        } else if OpenOptions::new()
             .read(true)
             .write(true)
             .open("/dev/kvm")
@@ -165,6 +171,15 @@ impl Vm {
         {
             eprintln!("Warning: KVM is not accessible; simulation will run more slowly.");
         }
+        let arm_firmware = if platform == SimulatePlatform::Arm64 {
+            let (code, template) = arm_firmware()?;
+            let variables = run_dir.join("uefi_vars.fd");
+            fs::copy(template, &variables)?;
+            fs::set_permissions(&variables, fs::Permissions::from_mode(0o600))?;
+            Some((code, variables))
+        } else {
+            None
+        };
         let deadline = Instant::now()
             .checked_add(startup_timeout)
             .ok_or_else(|| eyre!("guest startup timeout is too large"))?;
@@ -180,40 +195,76 @@ impl Vm {
                     client_key.identity_file.display()
                 ),
             )?;
-            let mut command = Command::new("qemu-system-x86_64");
+            let mut command = Command::new(match platform {
+                SimulatePlatform::Amd64 => "qemu-system-x86_64",
+                SimulatePlatform::Arm64 => "qemu-system-aarch64",
+            });
             command
                 .current_dir(&run_dir)
                 .args([
                     "-cpu",
                     "max",
                     "-machine",
-                    "q35,i8042=off,accel=kvm:tcg",
+                    match platform {
+                        SimulatePlatform::Amd64 => "q35,i8042=off,accel=kvm:tcg",
+                        SimulatePlatform::Arm64 => "virt,gic-version=max,accel=kvm:tcg",
+                    },
                     "-nodefaults",
                     "-smp",
                     "1",
                     "-m",
                 ])
-                .arg(memory_mib.to_string())
-                .args(["-boot", "d", "-cdrom"])
-                .arg(iso)
-                .args([
-                    "-display",
-                    "none",
-                    "-vga",
-                    "none",
-                    "-monitor",
-                    "none",
-                    "-serial",
-                    "file:boot.log",
-                    "-serial",
-                    "file:instrumentation.log",
-                    "-fw_cfg",
-                ])
+                .arg(memory_mib.to_string());
+            if let Some((code, variables)) = &arm_firmware {
+                command
+                    .arg("-drive")
+                    .arg(format!(
+                        "if=pflash,format=raw,unit=0,readonly=on,file={}",
+                        code.display()
+                    ))
+                    .arg("-drive")
+                    .arg(format!(
+                        "if=pflash,format=raw,unit=1,file={}",
+                        variables.display()
+                    ));
+            }
+            command.args(["-boot", "d", "-cdrom"]).arg(iso).args([
+                "-display",
+                "none",
+                "-vga",
+                "none",
+                "-monitor",
+                "none",
+                "-serial",
+                "file:boot.log",
+            ]);
+            match platform {
+                SimulatePlatform::Amd64 => {
+                    command.args(["-serial", "file:instrumentation.log"]);
+                }
+                SimulatePlatform::Arm64 => {
+                    command.args([
+                        "-chardev",
+                        "file,id=instrumentation,path=instrumentation.log",
+                        "-device",
+                        "pci-serial,chardev=instrumentation",
+                    ]);
+                }
+            }
+            command
+                .arg("-fw_cfg")
                 .arg(format!(
                     "name={AUTHORIZED_KEY_FW_CFG},file={}",
                     client_key.public_key.display()
                 ))
-                .args(["-device", "virtio-net-pci,netdev=net0,addr=3", "-netdev"])
+                .args([
+                    "-device",
+                    match platform {
+                        SimulatePlatform::Amd64 => "virtio-net-pci,netdev=net0,addr=3",
+                        SimulatePlatform::Arm64 => "virtio-net-pci,netdev=net0",
+                    },
+                    "-netdev",
+                ])
                 .arg(format!(
                     "user,id=net0,hostfwd=tcp:127.0.0.1:{port}-:22,restrict=yes"
                 ))
@@ -433,6 +484,46 @@ impl Vm {
         }
         Ok(())
     }
+}
+
+fn arm_firmware() -> Result<(PathBuf, PathBuf)> {
+    let qemu_data = std::env::var_os("PATH")
+        .and_then(|path| {
+            std::env::split_paths(&path)
+                .map(|path| path.join("qemu-system-aarch64"))
+                .find(|path| path.is_file())
+        })
+        .and_then(|path| fs::canonicalize(path).ok())
+        .and_then(|path| {
+            path.parent()?
+                .parent()
+                .map(|prefix| prefix.join("share/qemu"))
+        });
+    let roots = qemu_data
+        .into_iter()
+        .chain(std::env::var_os("XDG_DATA_HOME").map(PathBuf::from))
+        .chain([
+            PathBuf::from("/usr/local/share"),
+            PathBuf::from("/usr/share"),
+        ]);
+    for root in roots {
+        for (code, vars) in [
+            ("AAVMF/AAVMF_CODE.fd", "AAVMF/AAVMF_VARS.fd"),
+            (
+                "edk2/aarch64/QEMU_EFI-pflash.raw",
+                "edk2/aarch64/vars-template-pflash.raw",
+            ),
+            ("edk2-aarch64-code.fd", "edk2-arm-vars.fd"),
+            ("edk2-aarch64-code.fd", "edk2-aarch64-vars.fd"),
+        ] {
+            let code = root.join(code);
+            let vars = root.join(vars);
+            if code.is_file() && vars.is_file() {
+                return Ok((code, vars));
+            }
+        }
+    }
+    bail!("AArch64 UEFI firmware is unavailable; install EDK2 AArch64 UEFI firmware")
 }
 
 struct ClientKey {

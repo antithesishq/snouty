@@ -141,9 +141,6 @@ elif name == 'ssh-keygen':
     record('private_key_path', private_key)
     record('public_key_path', public_key)
 elif name == 'qemu-system-x86_64':
-    if args == ['-accel', 'kvm', '-machine', 'none', '-display', 'none', '-nodefaults', '-qmp', 'stdio']:
-        print(json.dumps({'QMP': {}}))
-        sys.exit(0)
     if '-fw_cfg' not in args:
         sys.exit('unexpected QEMU command: ' + repr(args))
     fw_cfg = args[args.index('-fw_cfg') + 1]

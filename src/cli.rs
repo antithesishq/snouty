@@ -283,8 +283,7 @@ in the configured repository, using the tenant release from /api/version.
 Requires an API key unless --guest-image is supplied.
 
 Requires Linux x86_64 and QEMU. Uses 1 CPU and 15000 MiB of memory by default.
-Use --memory to lower guest memory when the host has less RAM. Uses KVM when
-available, otherwise TCG with a warning that performance will suffer.
+Use --memory to lower guest memory when the host has less RAM.
 SSH configuration is private to this run; user configuration is not changed.
 
 Waits for setup_complete before starting test composer on each rollout.

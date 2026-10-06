@@ -10,8 +10,6 @@ use crate::process::output_async;
 use color_eyre::eyre::{Context, Result, bail, eyre};
 use nix::sys::signal::{Signal, killpg};
 use nix::unistd::Pid;
-use serde::Deserialize;
-use serde_json::Value;
 use tokio::time::{Instant, sleep, timeout};
 
 const AUTHORIZED_KEY_FW_CFG: &str = "opt/antithesis/authorized_key";
@@ -159,8 +157,12 @@ impl Vm {
         memory_mib: u64,
     ) -> Result<Self> {
         let run_dir = fs::canonicalize(run_dir)?;
-        let accelerated = kvm_available().await;
-        if !accelerated {
+        if OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open("/dev/kvm")
+            .is_err()
+        {
             eprintln!("Warning: KVM is not accessible; simulation will run more slowly.");
         }
         let deadline = Instant::now()
@@ -182,12 +184,10 @@ impl Vm {
             command
                 .current_dir(&run_dir)
                 .args([
-                    "-accel",
-                    if accelerated { "kvm" } else { "tcg" },
                     "-cpu",
-                    if accelerated { "host" } else { "max" },
+                    "max",
                     "-machine",
-                    "q35,i8042=off",
+                    "q35,i8042=off,accel=kvm:tcg",
                     "-nodefaults",
                     "-smp",
                     "1",
@@ -480,56 +480,6 @@ impl Drop for Vm {
         let _ = killpg(Pid::from_raw(self.child.id() as i32), Signal::SIGKILL);
         let _ = self.child.wait();
     }
-}
-
-async fn kvm_available() -> bool {
-    if OpenOptions::new()
-        .read(true)
-        .write(true)
-        .open("/dev/kvm")
-        .is_err()
-    {
-        return false;
-    }
-    let input = (|| -> std::io::Result<File> {
-        let mut input = tempfile::tempfile()?;
-        std::io::Write::write_all(
-            &mut input,
-            b"{\"execute\":\"qmp_capabilities\"}\n{\"execute\":\"quit\"}\n",
-        )?;
-        input.seek(SeekFrom::Start(0))?;
-        Ok(input)
-    })();
-    let Ok(input) = input else {
-        return false;
-    };
-    let mut command = tokio::process::Command::new("qemu-system-x86_64");
-    command
-        .args([
-            "-accel",
-            "kvm",
-            "-machine",
-            "none",
-            "-display",
-            "none",
-            "-nodefaults",
-            "-qmp",
-            "stdio",
-        ])
-        .stdin(input);
-    match output_async(command, Duration::from_secs(5)).await {
-        Ok(output) if output.status.success() => std::str::from_utf8(&output.stdout)
-            .ok()
-            .and_then(|text| text.lines().next())
-            .is_some_and(|line| serde_json::from_str::<QmpGreeting>(line).is_ok()),
-        _ => false,
-    }
-}
-
-#[derive(Deserialize)]
-struct QmpGreeting {
-    #[serde(rename = "QMP")]
-    _qmp: Value,
 }
 
 #[cfg(test)]

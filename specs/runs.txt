@@ -83,6 +83,15 @@ mock-runs-server
 [!staging] ! stdout 'run-3'
 [!staging] ! stderr 'Showing up to'
 
+# The newest mock run is from launcher `nightly`, so `env_from_json_find`
+# captures `run-2`.
+mock-runs-server
+[!staging] snouty --json runs list
+[!staging] env_from_json_find run_id launcher!=nightly
+mock-runs-server
+[!staging] snouty runs show $R_run_id
+[!staging] stdout 'Run ID +run-2$'
+
 # `--limit 0` asks for nothing, so clap rejects it before any request.
 mock-runs-server
 ! snouty runs list --limit 0
@@ -97,12 +106,13 @@ stderr '.*'
 #    endpoints (properties, build-logs, events) only return data once a run
 #    has reached a terminal state, so list with --status completed first.
 #
-#    Against staging the tenant must have at least one completed run. Without
-#    one, `env_from_json` captures nothing and every later command fails.
+#    A multiverse-debugging session completes with launcher `debugging` and
+#    has no build logs, so skip it. Against staging, the tenant must have a
+#    run from another launcher among its 100 newest completed runs.
 mock-runs-server
-snouty --json runs list --status completed
+snouty --json runs list --status completed --limit 100
 [!staging] stdout '"run_id":"run-.*'
-env_from_json 0 run_id
+env_from_json_find run_id launcher!=debugging
 
 # `snouty runs show` displays run details in key-value format. The requested
 # Duration (from antithesis.duration) and the wall-clock Elapsed (derived from

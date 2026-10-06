@@ -310,7 +310,7 @@ fn parse_json_line(line: &str) -> testscript_rs::Result<serde_json::Value> {
     serde_json::from_str(line).map_err(|e| err(format!("parse JSON line: {e}")))
 }
 
-/// Stores `<key>` of `value` as `$R_<key>`.
+/// Stores `value[key]` as `$R_<key>`. Fails when the key is missing or null.
 fn set_env_from_json(
     env: &mut testscript_rs::TestEnvironment,
     value: &serde_json::Value,
@@ -362,8 +362,7 @@ fn cmd_env_from_json_find(
     args: &[String],
 ) -> testscript_rs::Result<()> {
     // Usage: env_from_json_find <json_key> <field>!=<value>
-    // Like env_from_json, but reads the first NDJSON line whose <field> is
-    // not the string <value>. A missing or non-string <field> passes.
+    // A line with a missing or non-string <field> matches.
     let usage = || err("env_from_json_find requires <json_key> <field>!=<value>".to_string());
     let [key, filter] = args else {
         return Err(usage());

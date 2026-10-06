@@ -83,8 +83,8 @@ mock-runs-server
 [!staging] ! stdout 'run-3'
 [!staging] ! stderr 'Showing up to'
 
-# `env_from_json_find` skips each line whose field has the excluded value. The
-# newest mock run is from launcher `nightly`, so it captures the next one.
+# The newest mock run is from launcher `nightly`, so `env_from_json_find`
+# captures `run-2`.
 [!staging] env_from_json_find run_id launcher!=nightly
 mock-runs-server
 [!staging] snouty runs show $R_run_id
@@ -105,10 +105,8 @@ stderr '.*'
 #    has reached a terminal state, so list with --status completed first.
 #
 #    A multiverse-debugging session completes with launcher `debugging` and
-#    has no build logs, so `env_from_json_find` takes the newest completed run
-#    from another launcher. Against staging the tenant must have one such run
-#    in its 100 newest completed runs. Without one, `env_from_json_find` fails
-#    and every later command fails.
+#    has no build logs, so skip it. Against staging, the tenant must have a
+#    run from another launcher among its 100 newest completed runs.
 mock-runs-server
 snouty --json runs list --status completed --limit 100
 [!staging] stdout '"run_id":"run-.*'

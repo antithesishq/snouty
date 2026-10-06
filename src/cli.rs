@@ -283,7 +283,7 @@ the local container engine. The guest image defaults to antithesis-guest:v<RELEA
 in the configured repository, using the tenant release from /api/version.
 Requires an API key unless --guest-image is supplied.
 
-Requires Linux and QEMU. Uses 1 CPU and 15000 MiB of memory by default.
+Requires Linux or macOS and QEMU. Uses 1 CPU and 15000 MiB of memory by default.
 Use --memory to lower guest memory when the host has less RAM.
 The guest platform defaults to the host architecture. Use --platform arm64 to
 run an ARM64 guest and ARM64 workload images on an x86-64 host. ARM64 guests

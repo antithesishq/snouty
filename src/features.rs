@@ -13,9 +13,9 @@
 //! stability the rest of the CLI has.
 //!
 //! A gated command is hidden from `--help` until its feature is on, and
-//! invoking it while it is off fails as an unrecognized subcommand. (Hiding is
-//! not removal: `runs exec --help` still prints its help, which names the
-//! feature, and clap_complete lists hidden subcommands anyway.)
+//! invoking it while it is off fails with an error that names the feature.
+//! (Hiding is not removal: `runs exec --help` still prints its help, which
+//! names the feature, and clap_complete lists hidden subcommands anyway.)
 //!
 //! Deliberately an environment variable and not a setting. The gate has to be
 //! known before the command line is parsed, because it decides which
@@ -76,7 +76,7 @@ fn parse_list(value: &str) -> Vec<Feature> {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Feature {
     /// `snouty runs exec`, which drives the execute-command API. That API is
-    /// unstable and is unavailable on most tenants.
+    /// still changing, and needs tenant release 64.0 or newer.
     RunsExec,
     /// An id this build does not recognize.
     Unknown(String),

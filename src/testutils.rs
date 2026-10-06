@@ -684,12 +684,7 @@ fn mock_route(
                 if mock_query_param(query, "input_hash").as_deref() == Some("0")
                     && mock_query_param(query, "vtime").as_deref() == Some("999999.0")
                 {
-                    return (
-                        404,
-                        r#"{"message":"Resource not found"}"#.into(),
-                        json,
-                        NO_CACHE_CACHE_CONTROL,
-                    );
+                    return (404, MOCK_BARE_404_BODY.into(), json, NO_CACHE_CACHE_CONTROL);
                 }
                 let (s, b) = mock_route_get_run_logs(run_id);
                 (s, b, ndjson)
@@ -886,6 +881,10 @@ fn mock_route_get_run(run_id: &str) -> (u16, String) {
 
     (200, format!("{{{}}}", fields.join(",")))
 }
+
+/// The bare 404 body the live API sends for an unknown resource. It never
+/// names the resource.
+const MOCK_BARE_404_BODY: &str = r#"{"message":"Resource not found"}"#;
 
 /// The `Stream_Error` line the `run-stream-error` fixture ends its streams
 /// with: the server's shape for a failure that happens after the `200 OK` is
@@ -1089,11 +1088,13 @@ fn query_needles(query: &str) -> Vec<String> {
 /// input hash (verified against the live API).
 const MOCK_EXEC_BRANCH_HASH: &str = "-8206006569229276678";
 
+/// A line of the script's output, shaped as release 64.0 sends one
+/// (orbitinghail).
 fn mock_exec_output(stream: &str, text: &str, vtime: &str) -> String {
     serde_json::json!({
         "moment": {"input_hash": MOCK_EXEC_BRANCH_HASH, "vtime": vtime},
         "output_text": text,
-        "source": {"stream": stream},
+        "source": {"command_id": "echidna-cmd-1", "name": "bash_command", "stream": stream},
     })
     .to_string()
 }
@@ -1116,6 +1117,20 @@ fn mock_exec_timed_out(vtime: &str) -> String {
     .to_string()
 }
 
+/// The metadata event that opens a command's timeline, shaped as release 64.0
+/// sends it (orbitinghail).
+fn mock_exec_command_received() -> String {
+    serde_json::json!({
+        "moment": {"input_hash": MOCK_EXEC_BRANCH_HASH, "vtime": "398.4905"},
+        "source": {"meta_for": "echidna-cmd-1", "name": "bash_command"},
+        "fuzzpipe": {"event_type": "Command received"},
+    })
+    .to_string()
+}
+
+/// The input hash of a moment the mock session holds cold.
+const MOCK_COLD_HASH: &str = "1002528785118888238";
+
 fn mock_route_execute_command(run_id: &str, req_body: &str) -> (u16, String) {
     // See the `run-stream-error` fixture note in `mock_route_get_run_build_logs`.
     if run_id == "run-stream-error" {
@@ -1126,11 +1141,9 @@ fn mock_route_execute_command(run_id: &str, req_body: &str) -> (u16, String) {
         return (200, lines.join("\n") + "\n");
     }
     if !mock_run_known(run_id) {
-        // The live endpoint's 404 body, which — unlike the friendlier body
-        // the other nested routes mock — never names the run. snouty's "run
-        // not found" translation has to do the work, and the spec can only
-        // prove that against the unhelpful body.
-        return (404, r#"{"message":"Resource not found"}"#.to_string());
+        // snouty's "run not found" translation must work from the status
+        // alone.
+        return (404, MOCK_BARE_404_BODY.to_string());
     }
     // The mock treats only an in-progress run as having a live session.
     // The real API is looser — a session outlives the run for a while (see
@@ -1151,7 +1164,27 @@ fn mock_route_execute_command(run_id: &str, req_body: &str) -> (u16, String) {
     // script rather than modelling a validation error nothing exercises.
     let request = serde_json::from_str::<serde_json::Value>(req_body).unwrap_or_default();
     let script = request["script"].as_str().unwrap_or_default();
-    let timeout = request["timeout_seconds"].as_u64().unwrap_or(30);
+    // An unknown rewarm source answers the live endpoint's bare 404.
+    if request["source_run_id"] == "no-such-run"
+        || request["source_session_id"] == "no-such-session"
+    {
+        return (404, MOCK_BARE_404_BODY.to_string());
+    }
+    // A moment off the session's own timeline is cold. Without a source the
+    // live endpoint answers 400; with one, a rewarm that outlives the timeout
+    // answers 400 too. Both messages verbatim from release 64.0 (orbitinghail).
+    if request["moment"]["input_hash"] == MOCK_COLD_HASH {
+        let has_source =
+            request.get("source_run_id").is_some() || request.get("source_session_id").is_some();
+        let message = if has_source {
+            format!(
+                "Bad request: rewarm did not reach the target moment: 66/381 inputs replayed (1 queries, target_input_hash={MOCK_COLD_HASH}) — the guest may be slow or may have exited"
+            )
+        } else {
+            r#"Bad request: Moment not warm and no provided source_run_id or source_session_id. (400 Bad Request): {"result":"unknown_moment"}"#.to_string()
+        };
+        return (400, serde_json::json!({ "message": message }).to_string());
+    }
 
     let lines = match script.trim() {
         "true" => vec![mock_exec_exited(Some(0))],
@@ -1161,20 +1194,63 @@ fn mock_route_execute_command(run_id: &str, req_body: &str) -> (u16, String) {
             mock_exec_output("info", "still working", "398.491"),
             mock_exec_timed_out("398.491"),
         ],
-        "print-timeout" => vec![
-            mock_exec_output("info", &format!("timeout_seconds={timeout}"), "398.491"),
+        // Echoes request fields, so a spec can check what reaches the wire.
+        "print-request" => {
+            let field = |key: &str| match request.get(key) {
+                Some(serde_json::Value::String(value)) => value.clone(),
+                Some(value) => value.to_string(),
+                None => "absent".to_string(),
+            };
+            let echo = [
+                "container",
+                "timeout_seconds",
+                "include_system_logs",
+                "source_run_id",
+                "source_session_id",
+            ]
+            .map(|key| format!("{key}={}", field(key)))
+            .join(" ");
+            vec![
+                mock_exec_output("info", &echo, "398.491"),
+                mock_exec_exited(Some(0)),
+            ]
+        }
+        // The timeline that include_system_logs asks for, in release 64.0
+        // shapes (orbitinghail).
+        "with-system-logs" => vec![
+            mock_exec_command_received(),
+            mock_exec_output("info", "script says hi", "398.491"),
+            serde_json::json!({
+                "moment": {"input_hash": MOCK_EXEC_BRANCH_HASH, "vtime": "398.4912"},
+                "source": {"container": "workload", "name": "driver", "pid": 47, "stream": "error"},
+                "output_text": "workload says hi",
+            })
+            .to_string(),
             mock_exec_exited(Some(0)),
         ],
+        // An event that is not the script's output, sent although the request
+        // did not ask for the timeline.
+        "unexpected-event" => vec![mock_exec_command_received(), mock_exec_exited(Some(0))],
         "truncate-stream" => vec![mock_exec_output("info", "partial output", "398.491")],
-        // A result status this build does not know, and a known frame
-        // carrying a field it does not know. The stream must survive both.
+        // A result followed by more lines is not the terminal result.
+        "early-result" => vec![
+            mock_exec_exited(Some(5)),
+            mock_exec_output("info", "after the early result", "398.491"),
+            mock_exec_exited(Some(0)),
+        ],
+        // A known frame carrying a field this build does not know, which
+        // renders, then a result status outside the spec, which fails.
         "unknown-frames" => vec![
+            format!(
+                r#"{{"moment":{{"input_hash":"{MOCK_EXEC_BRANCH_HASH}","vtime":"398.491"}},"output_text":"known with extras","source":{{"stream":"info"}},"truncated":true}}"#
+            ),
             format!(
                 r#"{{"status":"heartbeat","at":"398.4905","input_hash":"{MOCK_EXEC_BRANCH_HASH}"}}"#
             ),
             format!(
-                r#"{{"moment":{{"input_hash":"{MOCK_EXEC_BRANCH_HASH}","vtime":"398.491"}},"output_text":"known with extras","source":{{"stream":"info"}},"truncated":true}}"#
+                r#"{{"moment":{{"input_hash":"{MOCK_EXEC_BRANCH_HASH}","vtime":"398.491"}},"output_text":"no source"}}"#
             ),
+            mock_exec_output("debug", "unknown stream", "398.491"),
             mock_exec_exited(Some(0)),
         ],
         _ => vec![
@@ -1451,9 +1527,7 @@ mod tests {
             "got: {out}"
         );
 
-        // print-timeout echoes the timeout_seconds the server received, so a
-        // spec can verify the --timeout flag reaches the wire.
-        let (_, out) = mock_route_execute_command("run-2", &body("print-timeout", 45));
+        let (_, out) = mock_route_execute_command("run-2", &body("print-request", 45));
         assert!(out.contains("timeout_seconds=45"), "got: {out}");
 
         let (_, out) = mock_route_execute_command("run-2", &body("truncate-stream", 30));
@@ -1473,7 +1547,7 @@ mod tests {
         // on the status, not the message.
         let (status, out) = mock_route_execute_command("no-such-run", body);
         assert_eq!(status, 404);
-        assert_eq!(out, r#"{"message":"Resource not found"}"#);
+        assert_eq!(out, MOCK_BARE_404_BODY);
     }
 
     #[test]

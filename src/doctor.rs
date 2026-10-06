@@ -1,7 +1,7 @@
 use color_eyre::eyre::Result;
 use serde::{Serialize, Serializer};
 
-use crate::api::{AntithesisApi, ApiVersion, MIN_SEARCH_RELEASE, VersionError};
+use crate::api::{AntithesisApi, ApiVersion, MIN_EXEC_RELEASE, MIN_SEARCH_RELEASE, VersionError};
 use crate::attributed_value::AttributedValue;
 use crate::auth::AuthenticationInfo;
 use crate::compose;
@@ -550,26 +550,58 @@ fn print_settings(settings: &[Setting]) {
     }
 }
 
-/// `runs search`, and `runs events` with several terms, assume the tenant
-/// serves the events-search API instead of probing for it. This check
-/// verifies that assumption. An unparsable release version reports nothing,
-/// because the check would guess. It warns rather than fails, because every
-/// other command still works on such a tenant. Pure so it can be unit-tested
-/// without the network.
-fn events_search_release_check(version: &ApiVersion) -> Option<Check> {
-    if version.release? >= MIN_SEARCH_RELEASE {
+/// An API that some commands assume the tenant serves, from a minimum tenant
+/// release, instead of probing for it.
+struct ReleaseFloor {
+    id: &'static str,
+    serves: &'static str,
+    min: (u64, u64),
+    consequence: &'static str,
+    /// The unstable feature the API's commands are gated behind. The check
+    /// runs only when that feature is on.
+    feature: Option<Feature>,
+}
+
+const RELEASE_FLOORS: [ReleaseFloor; 2] = [
+    ReleaseFloor {
+        id: "events-search",
+        serves: "the events-search API",
+        min: MIN_SEARCH_RELEASE,
+        consequence: "`runs search` and `runs events` with several terms can fail or hang",
+        feature: None,
+    },
+    ReleaseFloor {
+        id: "execute-command",
+        serves: "the execute-command `container` field",
+        min: MIN_EXEC_RELEASE,
+        consequence: "`runs exec` fails",
+        feature: Some(Feature::RunsExec),
+    },
+];
+
+fn release_floor_checks(version: &ApiVersion, enabled: &[Feature]) -> Vec<Check> {
+    RELEASE_FLOORS
+        .iter()
+        .filter(|floor| floor.feature.as_ref().is_none_or(|f| enabled.contains(f)))
+        .filter_map(|floor| release_floor_check(version, floor))
+        .collect()
+}
+
+/// Verify that the tenant release meets `floor`. An unparsable release
+/// version reports nothing, because the check would guess. It warns rather
+/// than fails, because every other command still works on such a tenant.
+fn release_floor_check(version: &ApiVersion, floor: &ReleaseFloor) -> Option<Check> {
+    if version.release? >= floor.min {
         return None;
     }
-    let (major, minor) = MIN_SEARCH_RELEASE;
+    let (major, minor) = floor.min;
     Some(
-        Check::warn("events-search", "tenant serves the events-search API")
+        Check::warn(floor.id, format!("tenant serves {}", floor.serves))
             .note(
                 Level::Warning,
                 format!(
-                    "tenant release {} predates the events-search API snouty relies on \
-                     (release {major}.{minor}) — `runs search` and `runs events` with \
-                     several terms can fail or hang",
-                    version.release_version
+                    "tenant release {} predates {} (release {major}.{minor}) — {}",
+                    version.release_version, floor.serves, floor.consequence
                 ),
             )
             .note(
@@ -649,6 +681,7 @@ pub async fn cmd_doctor(
     offline: bool,
 ) -> Result<()> {
     let mut checks = collect_checks(settings);
+    let enabled = features::enabled();
 
     if !offline {
         // Connectivity + version check (network). Skipped with --offline. Only
@@ -662,10 +695,8 @@ pub async fn cmd_doctor(
         if let Ok(api) = AntithesisApi::new(settings, verbose) {
             let host = api.host();
             let version = api.get_version().await;
-            if let Ok(version) = &version
-                && let Some(check) = events_search_release_check(version)
-            {
-                checks.push(check);
+            if let Ok(version) = &version {
+                checks.extend(release_floor_checks(version, &enabled));
             }
             checks.push(version_check(&host, version));
         }
@@ -682,7 +713,7 @@ pub async fn cmd_doctor(
         }
     }
 
-    let settings_rows = resolve_settings(settings, &features::enabled());
+    let settings_rows = resolve_settings(settings, &enabled);
 
     // Only the checks carry pass/warn/fail; the settings table is informational.
     let errors = checks.iter().filter(|c| c.status == Status::Error).count();
@@ -1093,16 +1124,17 @@ mod tests {
         assert_eq!(row(&rows, "profile").render_value(), "default");
     }
 
-    // ---- version_check (network probe) ---------------------------------
+    // ---- release_floor_check -------------------------------------------
 
     #[test]
-    fn events_search_release_check_fires_only_on_a_known_gap() {
+    fn release_floor_check_fires_only_on_a_known_gap() {
         let version = |release: &str| ApiVersion::new("v1".into(), release.into());
-        assert!(events_search_release_check(&version("62.2")).is_none());
-        assert!(events_search_release_check(&version("63.0")).is_none());
+        let [search, exec] = &RELEASE_FLOORS;
+        assert!(release_floor_check(&version("62.2"), search).is_none());
+        assert!(release_floor_check(&version("63.0"), search).is_none());
         // 58.11 ships the endpoint but not its contract, so it is too old.
-        assert!(events_search_release_check(&version("58.11")).is_some());
-        let check = events_search_release_check(&version("60.1")).unwrap();
+        assert!(release_floor_check(&version("58.11"), search).is_some());
+        let check = release_floor_check(&version("60.1"), search).unwrap();
         assert_eq!(check.status, Status::Warn);
         assert!(
             check.notes[0].text.contains("60.1"),
@@ -1115,7 +1147,28 @@ mod tests {
             check.notes[0].text
         );
         // An unparsable release says nothing rather than guessing.
-        assert!(events_search_release_check(&version("unknown")).is_none());
+        assert!(release_floor_check(&version("unknown"), search).is_none());
+
+        assert!(release_floor_check(&version("64.0"), exec).is_none());
+        let check = release_floor_check(&version("63.3"), exec).unwrap();
+        assert!(
+            check.notes[0].text.contains("`runs exec`"),
+            "{}",
+            check.notes[0].text
+        );
+    }
+
+    #[test]
+    fn exec_release_floor_needs_its_feature() {
+        let old = ApiVersion::new("v1".into(), "63.3".into());
+        let ids = |enabled: &[Feature]| -> Vec<&str> {
+            release_floor_checks(&old, enabled)
+                .into_iter()
+                .map(|check| check.name)
+                .collect()
+        };
+        assert!(ids(&[]).is_empty());
+        assert_eq!(ids(&[Feature::RunsExec]), ["execute-command"]);
     }
 
     #[test]

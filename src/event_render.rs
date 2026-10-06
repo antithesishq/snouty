@@ -432,9 +432,8 @@ fn render_source(entry: &Value, detail: bool) -> String {
 // ---------------------------------------------------------------------------
 
 /// Stateful renderer for one event stream. Feed it entries in stream order;
-/// it writes the exact text to print for each — dividers and blank-line
-/// separation included, no trailing newline — into the buffer the caller
-/// provides.
+/// it returns the exact text to print for each — dividers and blank-line
+/// separation included, no trailing newline.
 pub(crate) struct EventStreamRenderer {
     detail: bool,
     /// The current segment's hash; `Some` also means at least one block was
@@ -450,11 +449,17 @@ impl EventStreamRenderer {
         }
     }
 
-    /// Render one NDJSON entry (vtime already normalized by the stream) into
-    /// `out`. The written text may span several lines — a `moment` divider
-    /// when the entry opens a new timeline segment, the event line, and any
-    /// indented detail lines.
-    pub(crate) fn render_entry(&mut self, entry: &Value, out: &mut String) -> fmt::Result {
+    /// Render one NDJSON entry (vtime already normalized by the stream). The
+    /// text may span several lines — a `moment` divider when the entry opens
+    /// a new timeline segment, the event line, and any indented detail lines.
+    pub(crate) fn render_entry(&mut self, entry: &Value) -> String {
+        let mut out = String::new();
+        self.write_entry(entry, &mut out)
+            .expect("writing to a String cannot fail");
+        out
+    }
+
+    fn write_entry(&mut self, entry: &Value, out: &mut String) -> fmt::Result {
         // A full event carries both its moment and its source envelope. A
         // row reshaped by an event-set DSL pipeline can lack either (narrow
         // can keep `moment` while dropping the rest); rendering it through
@@ -539,20 +544,12 @@ pub(super) mod testkit {
         EventStreamRenderer::new(detail)
     }
 
-    pub(crate) fn render_entry(renderer: &mut EventStreamRenderer, entry: &Value) -> String {
-        let mut out = String::new();
-        renderer
-            .render_entry(entry, &mut out)
-            .expect("writing to a String cannot fail");
-        out
-    }
-
     pub(crate) fn render_one(entry: Value) -> String {
-        render_entry(&mut renderer(false), &entry)
+        renderer(false).render_entry(&entry)
     }
 
     pub(crate) fn render_one_detailed(entry: Value) -> String {
-        render_entry(&mut renderer(true), &entry)
+        renderer(true).render_entry(&entry)
     }
 }
 
@@ -565,36 +562,27 @@ mod tests {
     #[test]
     fn opens_each_timeline_segment_with_an_input_hash_divider() {
         let mut r = renderer(false);
-        let first = render_entry(
-            &mut r,
-            &json!({
-                "moment": {"input_hash": "-123", "vtime": "311.8487535319291"},
-                "source": {"container": "app", "name": "app", "stream": "out"},
-                "output_text": "starting"
-            }),
-        );
+        let first = r.render_entry(&json!({
+            "moment": {"input_hash": "-123", "vtime": "311.8487535319291"},
+            "source": {"container": "app", "name": "app", "stream": "out"},
+            "output_text": "starting"
+        }));
         assert_eq!(first, "moment -123\n311.8487  [app] starting");
 
         // Same hash: no divider, no blank line.
-        let second = render_entry(
-            &mut r,
-            &json!({
-                "moment": {"input_hash": "-123", "vtime": "312.0"},
-                "source": {"container": "app", "name": "app", "stream": "out"},
-                "output_text": "still here"
-            }),
-        );
+        let second = r.render_entry(&json!({
+            "moment": {"input_hash": "-123", "vtime": "312.0"},
+            "source": {"container": "app", "name": "app", "stream": "out"},
+            "output_text": "still here"
+        }));
         assert_eq!(second, "312.0     [app] still here");
 
         // New hash: blank line, then the next divider.
-        let third = render_entry(
-            &mut r,
-            &json!({
-                "moment": {"input_hash": "456", "vtime": "313.5"},
-                "source": {"container": "app", "name": "app", "stream": "out"},
-                "output_text": "branched"
-            }),
-        );
+        let third = r.render_entry(&json!({
+            "moment": {"input_hash": "456", "vtime": "313.5"},
+            "source": {"container": "app", "name": "app", "stream": "out"},
+            "output_text": "branched"
+        }));
         assert_eq!(third, "\nmoment 456\n313.5     [app] branched");
     }
 
@@ -619,7 +607,7 @@ mod tests {
             "output_text": "event"
         });
         for detail in [false, true] {
-            let block = render_entry(&mut renderer(detail), &entry);
+            let block = renderer(detail).render_entry(&entry);
             assert_eq!(block.lines().next().unwrap(), format!("moment {hash}"));
         }
     }
@@ -639,7 +627,7 @@ mod tests {
 
         // A row reshaped by map/narrow/fold has no moment: its JSON is the row.
         let mut r = renderer(false);
-        let row = render_entry(&mut r, &json!({"count": 3, "container": "etcd0"}));
+        let row = r.render_entry(&json!({"count": 3, "container": "etcd0"}));
         assert_eq!(row, r#"{"count":3,"container":"etcd0"}"#);
     }
 
@@ -676,7 +664,7 @@ mod tests {
             "source": {"container": pod, "name": pod},
             "moment": {"input_hash": "-1", "vtime": "25.6"}
         });
-        let block = render_entry(&mut renderer(false), &entry);
+        let block = renderer(false).render_entry(&entry);
         let mut lines = block.lines().skip(1);
         assert_eq!(
             lines.next().unwrap(),
@@ -687,21 +675,18 @@ mod tests {
         assert_eq!(lines.next(), None);
 
         // --detail keeps the label inline and whole.
-        let block = render_entry(&mut renderer(true), &entry);
+        let block = renderer(true).render_entry(&entry);
         assert!(
             block.contains(&format!("[{pod}] Applied CRD")),
             "got: {block}"
         );
 
         // A label that fits stays whole.
-        let block = render_entry(
-            &mut renderer(false),
-            &json!({
-                "output_text": "hi",
-                "source": {"container": "bank/parallel_driver_tx.sh"},
-                "moment": {"input_hash": "-1", "vtime": "1.0"}
-            }),
-        );
+        let block = renderer(false).render_entry(&json!({
+            "output_text": "hi",
+            "source": {"container": "bank/parallel_driver_tx.sh"},
+            "moment": {"input_hash": "-1", "vtime": "1.0"}
+        }));
         assert!(
             block.ends_with("[bank/parallel_driver_tx.sh] hi"),
             "got: {block}"

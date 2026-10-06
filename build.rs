@@ -17,7 +17,7 @@ fn main() {
 }
 
 /// How many `"additionalProperties": false` occurrences the vendored spec
-/// carries (tenant release 61.3: none).
+/// carries (tenant release 64.0: none).
 const EXPECTED_ADDITIONAL_PROPERTIES_FALSE: usize = 0;
 
 fn generate_api_client(out_dir: &Path) {
@@ -50,10 +50,11 @@ fn generate_api_client(out_dir: &Path) {
          EXPECTED_ADDITIONAL_PROPERTIES_FALSE in build.rs to {stripped}."
     );
     untype_error_responses(&mut spec_value);
-    drop_include_filtered_logs(&mut spec_value);
+    unrequire_include_system_logs_default(&mut spec_value);
     drop_property_description(&mut spec_value);
     drop_launch_status_code(&mut spec_value);
     mark_vtime_schema(&mut spec_value);
+    open_performance_tier(&mut spec_value);
     unrequire_search_limit_default(&mut spec_value);
     let spec: openapiv3::OpenAPI = serde_json::from_value(spec_value).unwrap();
 
@@ -178,52 +179,33 @@ fn untype_error_responses(spec: &mut serde_json::Value) {
 /// upstream fix) fails the build. ACTION when that happens: delete this
 /// transform and its call.
 fn unrequire_search_limit_default(spec: &mut serde_json::Value) {
-    let limit = spec
-        .pointer_mut("/components/schemas/Search_Request/properties/limit")
-        .and_then(serde_json::Value::as_object_mut)
-        .expect(
-            "openapi spec has no Search_Request.limit property; \
-             update unrequire_search_limit_default in build.rs",
-        );
-    assert!(
-        limit.remove("default").is_some(),
-        "Search_Request.limit no longer carries a default; \
-         unrequire_search_limit_default in build.rs is a no-op and can be removed"
+    remove_schema_key(
+        spec,
+        "/components/schemas/Search_Request/properties/limit",
+        "default",
+        "unrequire_search_limit_default",
     );
 }
 
-/// The schema default makes progenitor serialize `include_filtered_logs`
-/// on every request. snouty does not expose this option, so omit it to use
-/// the server default.
-///
-/// TODO: remove this transform when the schema drops the field or its default.
-fn drop_include_filtered_logs(spec: &mut serde_json::Value) {
-    let properties = spec
-        .pointer_mut("/components/schemas/Execute_Command_Request/properties")
-        .and_then(serde_json::Value::as_object_mut)
-        .expect("openapi spec has no Execute_Command_Request.properties");
-    let removed = properties.remove("include_filtered_logs").expect(
-        "Execute_Command_Request no longer has `include_filtered_logs`; \
-         delete `drop_include_filtered_logs` in build.rs",
-    );
-    assert!(
-        removed.get("default").is_some(),
-        "Execute_Command_Request.include_filtered_logs no longer carries a default; \
-         the generated field is omittable, so delete `drop_include_filtered_logs` in build.rs"
+/// Strip the schema default from `Execute_Command_Request.include_system_logs`,
+/// so the request omits the field unless `runs exec --events` sets it.
+fn unrequire_include_system_logs_default(spec: &mut serde_json::Value) {
+    remove_schema_key(
+        spec,
+        "/components/schemas/Execute_Command_Request/properties/include_system_logs",
+        "default",
+        "unrequire_include_system_logs_default",
     );
 }
 
 /// snouty does not show a property's description, in its human output or in
 /// `--json`, so drop the field from the generated property types.
 fn drop_property_description(spec: &mut serde_json::Value) {
-    let properties = spec
-        .pointer_mut("/components/schemas/Property_Base/properties")
-        .and_then(serde_json::Value::as_object_mut)
-        .expect("openapi spec has no Property_Base.properties");
-    assert!(
-        properties.remove("description").is_some(),
-        "Property_Base no longer has `description`; \
-         delete `drop_property_description` in build.rs"
+    remove_schema_key(
+        spec,
+        "/components/schemas/Property_Base/properties",
+        "description",
+        "drop_property_description",
     );
 }
 
@@ -255,6 +237,33 @@ fn drop_launch_status_code(spec: &mut serde_json::Value) {
             .and_then(serde_json::Value::as_object_mut)
             .and_then(|properties| properties.remove("statusCode"));
     }
+}
+
+/// Decode `Params.antithesis.performance_tier` as a plain string. `runs list`
+/// and `runs show` decode every run's parameters through `Params`, so a closed
+/// enum would fail a whole listing on one tier this build does not know.
+fn open_performance_tier(spec: &mut serde_json::Value) {
+    remove_schema_key(
+        spec,
+        "/components/schemas/Params/properties/antithesis.performance_tier",
+        "enum",
+        "open_performance_tier",
+    );
+}
+
+/// Remove `key` from the object at `pointer`. Both must exist, so a spec
+/// refresh that makes `transform` a no-op fails the build.
+fn remove_schema_key(spec: &mut serde_json::Value, pointer: &str, key: &str, transform: &str) {
+    let object = spec
+        .pointer_mut(pointer)
+        .and_then(serde_json::Value::as_object_mut)
+        .unwrap_or_else(|| {
+            panic!("openapi spec has no object at {pointer}; update `{transform}` in build.rs")
+        });
+    assert!(
+        object.remove(key).is_some(),
+        "openapi spec has no `{key}` at {pointer}; delete `{transform}` in build.rs"
+    );
 }
 
 /// Tag `Moment.vtime` with a private `format: vtime` marker for the

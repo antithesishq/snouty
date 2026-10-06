@@ -2,11 +2,10 @@ use std::num::NonZeroU64;
 
 use chrono::{DateTime, Utc};
 use clap::{Args, Parser, Subcommand, ValueEnum};
-
 use color_eyre::Section;
 use color_eyre::eyre::Report;
 
-use crate::api::{RunStatus, SEARCH_DEFAULT_LIMIT, SEARCH_MAX_LIMIT};
+use crate::api::{RunStatus, SEARCH_DEFAULT_LIMIT, SEARCH_MAX_LIMIT, SourceRunId, SourceSessionId};
 use crate::error::user_error;
 use crate::features::{self, Feature};
 use crate::time::HumanDuration;
@@ -1009,24 +1008,44 @@ on its own line, and --raw passes the server's events through unchanged:
         long_about = r#"Execute a bash script in a run's live session, at a moment.
 
 This command is gated behind the `runs-exec` unstable feature, because the
-Antithesis API it calls is unstable and unavailable on most tenants. Enable it
-by setting SNOUTY_UNSTABLE_FEATURES=runs-exec. An unstable feature can change
-or go away in any release.
+Antithesis API it calls is still changing. Enable it by setting
+SNOUTY_UNSTABLE_FEATURES=runs-exec. An unstable feature can change or go away
+in any release.
 
-The run must have a live session (it is in progress). The script executes on
-a fresh branch of the multiverse, so it does not disturb the running test.
-INPUT_HASH and VTIME identify the moment to execute at; a moment comes from
+The run must have a live session. A run has one while it is in progress, and
+for a while after it completes. A debugging session that `snouty debug`
+launches is a run with a live session too: pass its run ID once it is ready,
+which can take a few minutes. The script executes on a fresh branch of the
+multiverse, so it does not disturb the session.
+
+INPUT_HASH and VTIME identify the moment to execute at, and the moment must be
+warm. A warm moment is a moment that is loaded into the session. Every moment
+generated in the session is warm: by fuzzing, and by an earlier `runs exec`,
+so the end moment of one command is warm for the next. A moment from another
+run or session is cold. To bring it over, name the run it comes from with
+--source-run-id, and the server loads the moment by replaying that run's
+inputs. That can take minutes, and --timeout counts it. Find a moment with
 `runs properties --detail` or `runs events`.
 
-The script's stdout and stderr stream to snouty's stdout and stderr. On exit,
-a trailer on stderr documents the branch's end moment, to chain a follow-up
-command from. A non-zero exit code, a timeout, or a truncated stream fails
-snouty with exit code 1.
+The script executes on the host, or in the container that --container names.
+The command needs tenant release 64.0 or newer; `snouty doctor` reports the
+tenant release.
+
+Without --events, the script's stdout and stderr stream to snouty's stdout
+and stderr. With --events, snouty prints every event of the timeline to
+stdout while the script executes, as `runs logs` prints them: the script's
+output, the workload's logs and assertions, and Antithesis events. On exit, a trailer on stderr
+documents the branch's end moment, to chain a follow-up command from. A
+non-zero exit code, a timeout, or a truncated stream fails snouty with exit
+code 1.
 
 Omit SCRIPT to read the script from stdin — a pipe, a redirect, or a heredoc.
 
 Examples:
   snouty runs exec <run_id> <hash> <vtime> 'uname -a'
+  snouty runs exec <run_id> <hash> <vtime> --container <name> 'ps aux'
+  snouty runs exec <run_id> <hash> <vtime> --events 'sleep 5'
+  snouty runs exec <run_id> <hash> <vtime> --source-run-id <id> --timeout 300 'ls'
   echo 'ps aux' | snouty runs exec <run_id> <hash> <vtime>
   snouty runs exec <run_id> <hash> <vtime> < script.sh
 
@@ -1054,11 +1073,31 @@ JSON object on its own line, and the trailer is left out:
         /// Bash script to execute; omit it to read the script from stdin
         script: Option<String>,
 
+        /// Name or ID of the container to execute in; omit it to execute on
+        /// the host
+        #[arg(long, value_parser = clap::builder::NonEmptyStringValueParser::new())]
+        container: Option<String>,
+
+        /// Print every event of the timeline while the script executes, as
+        /// `runs logs` prints them, in place of only the script's output
+        #[arg(long)]
+        events: bool,
+
+        /// Run that a cold moment comes from; the server loads the moment
+        /// into the session
+        #[arg(long, conflicts_with = "source_session_id")]
+        source_run_id: Option<SourceRunId>,
+
+        /// Session that a cold moment comes from, in place of
+        /// --source-run-id
+        #[arg(long)]
+        source_session_id: Option<SourceSessionId>,
+
         /// Maximum seconds the server waits for the script to exit before
         /// reporting a timeout
-        // The API's own default is 30 with a minimum of 0 and no maximum. A
-        // 0-second timeout can only ever time out, so the floor here is 1; the
-        // ceiling is left to the server rather than guessed at.
+        // The default is 30, not the API's 600, so a hung script fails soon. A
+        // 0-second timeout always times out, so the floor is 1. The server sets
+        // the ceiling.
         #[arg(long, default_value_t = 30, value_parser = clap::value_parser!(u64).range(1..))]
         timeout: u64,
     },
@@ -1205,14 +1244,10 @@ impl Default for RunsListArgs {
     }
 }
 
-/// The error for invoking a gated command whose feature is off.
-///
-/// This is the half of the gate that hiding cannot do: a hidden subcommand is
-/// still callable. Anyone who types the command already knows it exists, so
-/// the error says what is actually wrong and how to fix it, rather than
-/// pretending the command is not there. `enabled` names the features that are
-/// on — the caller passes them so the decision is testable without touching
-/// the environment.
+/// The error for invoking a gated command whose feature is off. A gated
+/// command needs an arm here as well as a `hide` attribute, because a hidden
+/// command is still callable. `enabled` names the features that are on, so a
+/// test does not need the environment.
 pub fn gated_command_error(command: &Commands, enabled: &[Feature]) -> Option<Report> {
     let (feature, path) = match command {
         Commands::Runs {
@@ -1223,7 +1258,6 @@ pub fn gated_command_error(command: &Commands, enabled: &[Feature]) -> Option<Re
     if enabled.contains(&feature) {
         return None;
     }
-
     Some(
         user_error(format!(
             "`{path}` is an unstable feature and is not enabled"
@@ -1268,9 +1302,6 @@ mod tests {
     fn a_gated_off_command_is_refused_and_an_enabled_one_runs() {
         let exec = parse(&["snouty", "runs", "exec", "RUN", "1", "2.0", "true"]).command;
 
-        // Off: refused with a message that says what is wrong and how to fix
-        // it. Whoever typed the command knows it exists, so pretending it does
-        // not would only waste their time.
         let err = gated_command_error(&exec, &[]).expect("a gated-off command is refused");
         let rendered = format!("{err:?}");
         assert!(rendered.contains("`snouty runs exec`"), "{rendered}");

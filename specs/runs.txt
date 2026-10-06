@@ -85,6 +85,8 @@ mock-runs-server
 
 # The newest mock run is from launcher `nightly`, so `env_from_json_find`
 # captures `run-2`.
+mock-runs-server
+[!staging] snouty --json runs list
 [!staging] env_from_json_find run_id launcher!=nightly
 mock-runs-server
 [!staging] snouty runs show $R_run_id

@@ -362,20 +362,29 @@ fn cmd_env_from_json_find(
     args: &[String],
 ) -> testscript_rs::Result<()> {
     // Usage: env_from_json_find <json_key> <field>!=<value>
-    // A line with a missing or non-string <field> matches.
+    // Every line must carry <field> as a string, so a misspelled field fails
+    // instead of matching every line.
     let usage = || err("env_from_json_find requires <json_key> <field>!=<value>".to_string());
     let [key, filter] = args else {
         return Err(usage());
     };
     let (field, excluded) = filter.split_once("!=").ok_or_else(usage)?;
 
-    for line in last_stdout(env)?.lines() {
+    let stdout = last_stdout(env)?;
+    for line in stdout.lines() {
         let value = parse_json_line(line)?;
-        if value.get(field).and_then(|v| v.as_str()) != Some(excluded) {
+        let actual = value
+            .get(field)
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| err(format!("string field '{field}' not found in JSON")))?;
+        if actual != excluded {
             return set_env_from_json(env, &value, key);
         }
     }
-    Err(err(format!("no JSON line matches '{filter}'")))
+    Err(err(format!(
+        "none of {} JSON line(s) matches '{filter}'",
+        stdout.lines().count()
+    )))
 }
 
 fn cmd_mock_runs_server(

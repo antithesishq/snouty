@@ -1241,6 +1241,10 @@ fn mock_route_execute_command(run_id: &str, req_body: &str) -> (u16, String) {
             format!(
                 r#"{{"status":"heartbeat","at":"398.4905","input_hash":"{MOCK_EXEC_BRANCH_HASH}"}}"#
             ),
+            format!(
+                r#"{{"moment":{{"input_hash":"{MOCK_EXEC_BRANCH_HASH}","vtime":"398.491"}},"output_text":"no source"}}"#
+            ),
+            mock_exec_output("debug", "unknown stream", "398.491"),
             mock_exec_exited(Some(0)),
         ],
         _ => vec![

@@ -99,6 +99,14 @@ pub fn api_error_status(report: &Report) -> Option<u16> {
         .find_map(|cause| cause.downcast_ref::<ApiError>().map(|e| e.status))
 }
 
+/// Returns the message of the first [`ApiError`] in the report's chain, if
+/// any: the server's own text, with the status in front.
+pub fn api_error_message(report: &Report) -> Option<&str> {
+    report
+        .chain()
+        .find_map(|cause| cause.downcast_ref::<ApiError>().map(|e| e.message.as_str()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

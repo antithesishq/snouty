@@ -1,5 +1,6 @@
 use std::io::{IsTerminal, Read, Write};
 use std::num::NonZeroU64;
+use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
@@ -21,7 +22,7 @@ use crate::api::{
     SEARCH_DEFAULT_LIMIT, SearchMode,
 };
 use crate::cli::{RunsCommands, RunsListArgs, RunsSearchArgs};
-use crate::error::{api_error_status, user_error};
+use crate::error::{api_error_message, api_error_status, user_error};
 use crate::event_render::{EventStreamRenderer, normalize_terminal_text, strip_ansi};
 use crate::event_set_dsl;
 use crate::jsonl::JsonStream;
@@ -1518,22 +1519,6 @@ async fn cmd_runs_logs(
     Ok(())
 }
 
-/// One line of the script's output, as release 64.0 sends it (orbitinghail).
-/// Without `--events`, every event has this shape.
-#[derive(Debug, Deserialize)]
-struct ExecOutput<'a> {
-    /// Not read, but the spec requires a valid one on every event.
-    #[allow(dead_code)]
-    moment: Moment,
-    output_text: &'a str,
-    source: ExecSource,
-}
-
-#[derive(Debug, Deserialize)]
-struct ExecSource {
-    stream: ExecStream,
-}
-
 /// The script's stdout is `info`, and its stderr is `error`.
 #[derive(Debug, Clone, Copy, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -1559,21 +1544,9 @@ enum ExecResult {
     TimedOut,
 }
 
-/// Keep snouty's stdout to the script's stdout, so `runs exec ... | jq`
-/// composes.
-fn render_exec_output(output: &ExecOutput) -> Result<()> {
-    let text = normalize_terminal_text(output.output_text);
-    match output.source.stream {
-        ExecStream::Error => eprintln!("{text}"),
-        ExecStream::Info => outln!("{text}")?,
-    }
-    Ok(())
-}
-
-fn off_spec_line(entry: &Value) -> color_eyre::eyre::Report {
-    eyre!("the server sent a line that is not command output or a result: {entry}")
-        .suggestion("run `snouty update`; a newer snouty may know this line")
-}
+/// The marker in a 400's message that the moment is cold, as release 64.0
+/// sends it (orbitinghail): `… (400 Bad Request): {"result":"unknown_moment"}`.
+const UNKNOWN_MOMENT: &str = r#""unknown_moment""#;
 
 /// Cap on a script read from stdin. Far more than any hand-written bash
 /// script needs, and small enough that `snouty runs exec ... < /dev/urandom`
@@ -1655,17 +1628,19 @@ async fn cmd_runs_exec(
         // message every sibling run-scoped command reports (the endpoint's
         // own 404 body is an unhelpful "Resource not found"). A 404 that
         // survives that probe can only be the rewarm source. A 400 is a cold
-        // moment, a rewarm that did not finish, or a source that is not the
-        // moment's run (observed on orbitinghail, release 64.0).
+        // moment, an ended session, a rewarm that did not finish, or a source
+        // that is not the moment's run (observed on orbitinghail, release
+        // 64.0). Only a cold moment says so, and only in its message text.
         Err(err) => {
             let err = explain_run_scoped_error(&api, run_id, err).await;
+            let cold = api_error_message(&err).is_some_and(|m| m.contains(UNKNOWN_MOMENT));
             return Err(match (api_error_status(&err), rewarm_flag) {
                 (Some(404), Some(flag)) => {
                     err.suggestion(format!("check that {flag} names an existing source"))
                 }
-                (Some(400), None) => err.suggestion(
+                (Some(400), None) if cold => err.suggestion(
                     "for a moment off the session's own timeline, name the run it comes from \
-                     with --source-run-id or --source-session-id",
+                     with --source-run-id",
                 ),
                 (Some(400), Some(flag)) => err.suggestion(format!(
                     "check that {flag} names the run the moment comes from, and raise \
@@ -1676,33 +1651,35 @@ async fn cmd_runs_exec(
         }
     };
 
-    // The terminal result is held until the stream ends, so a stream error
-    // after it still wins.
+    // Only the last line can be the terminal result. A result followed by
+    // more lines is shown as an event, so a stream error after it still wins.
     let mut terminal: Option<ExecResult> = None;
-    let mut lines = event_lines(stream, ErrorRows::Abort);
+    let mut lines = event_lines(stream, ErrorRows::Abort).peekable();
     while let Some(mut entry) = lines.try_next().await? {
-        // Every event carries a `moment`, and the terminal result does not.
-        if entry.get("moment").is_some() {
-            match &mut renderer {
-                None => {
-                    let output =
-                        ExecOutput::deserialize(&entry).map_err(|_| off_spec_line(&entry))?;
-                    if !json {
-                        render_exec_output(&output)?;
-                    }
-                }
-                Some(renderer) if !json => outln!("{}", renderer.render_entry(&entry))?,
-                Some(_) => {}
-            }
-        } else {
+        if Pin::new(&mut lines).peek().await.is_none() {
             // The stream normalized `moment.vtime`; the terminal result
             // carries its moment under `end_moment` or `last_moment` instead.
             normalize_vtime_field(&mut entry, "end_moment");
             normalize_vtime_field(&mut entry, "last_moment");
-            terminal = Some(ExecResult::deserialize(&entry).map_err(|_| off_spec_line(&entry))?);
+            terminal = ExecResult::deserialize(&entry).ok();
         }
         if json {
             outln!("{entry}")?;
+        } else if terminal.is_some() {
+            // The trailer and the exit code below show the result.
+        } else if let Some(renderer) = &mut renderer {
+            outln!("{}", renderer.render_entry(&entry))?;
+        } else if let Some(text) = entry["output_text"].as_str() {
+            // Keep snouty's stdout to the script's stdout, so
+            // `runs exec ... | jq` composes. The server is still in flux, so
+            // an unknown or missing stream is stdout.
+            let text = normalize_terminal_text(text);
+            match ExecStream::deserialize(&entry["source"]["stream"]) {
+                Ok(ExecStream::Error) => eprintln!("{text}"),
+                Ok(ExecStream::Info) | Err(_) => outln!("{text}")?,
+            }
+        } else {
+            eprintln!("{entry}");
         }
     }
 
@@ -2750,28 +2727,6 @@ mod tests {
             render_property_detail(&multi).contains("Result    [1,2]"),
             "multi inline"
         );
-    }
-
-    #[test]
-    fn exec_output_parses_the_observed_shape() {
-        // A stderr line as release 64.0 sends it (orbitinghail).
-        let output: ExecOutput = serde_json::from_str(
-            r#"{"moment":{"input_hash":"7736731196035056899","vtime":"14.422959262039512"},"IPT_bytes_out":396952,"source":{"command_id":"echidna-cmd-9fccb5524d97df88","name":"bash_command","stream":"error"},"output_text":"to-stderr"}"#,
-        )
-        .unwrap();
-        assert_eq!(output.output_text, "to-stderr");
-        assert!(matches!(output.source.stream, ExecStream::Error));
-
-        for line in [
-            r#"{"moment":{"input_hash":"-1","vtime":"1.0"},"output_text":"no source"}"#,
-            r#"{"moment":{"input_hash":"-1","vtime":"1.0"},"output_text":"x","source":{"stream":"debug"}}"#,
-            r#"{"moment":{"input_hash":"-1","vtime":"1.0"},"source":{"meta_for":"echidna-cmd-1","name":"bash_command"},"fuzzpipe":{"event_type":"Command received"}}"#,
-        ] {
-            assert!(
-                serde_json::from_str::<ExecOutput>(line).is_err(),
-                "should be rejected: {line}"
-            );
-        }
     }
 
     #[test]

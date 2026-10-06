@@ -41,9 +41,11 @@
 #   - The script comes from the SCRIPT argument, or from stdin when SCRIPT is
 #     omitted. Omitting it is the only way to read stdin; a pipe, a redirect,
 #     and a heredoc all work, and a script over 2 MiB is refused.
-#   - Without --events, output events are routed by `source.stream`: `error`
-#     to snouty's stderr, `info` to snouty's stdout. stdout carries only the
-#     script's output, so `snouty runs exec ... | jq` composes.
+#   - Without --events, an event's `output_text` is routed by
+#     `source.stream`: `error` to snouty's stderr, and anything else, a
+#     missing stream included, to snouty's stdout. An event without
+#     `output_text` goes to stderr as raw JSON. stdout carries only output
+#     text, so `snouty runs exec ... | jq` composes.
 #   - On `exited`, a trailer on stderr documents the branch's end moment, to
 #     chain a follow-up command from.
 #   - `exited` with code 0 is success. Any other terminal state fails snouty
@@ -53,8 +55,8 @@
 #   - `--json` passes the NDJSON through with vtimes normalized to exact JSON
 #     numbers (like `runs logs --json`) and no trailer; exit semantics are
 #     unchanged.
-#   - A line outside the spec's shapes fails snouty. Unknown fields on a known
-#     line are ignored.
+#   - The API is still changing, so snouty is lenient about events: no event
+#     shape fails snouty. Only the last line is read as the result.
 #
 # The command is gated behind the `runs-exec` feature, because the API it
 # calls is still changing; specs/features.txt covers the gate itself. Every
@@ -82,6 +84,7 @@ stdout 'Linux antithesis 6.12.0'
 ! stdout 'virtual clock drift'
 stderr 'warning: virtual clock drift detected'
 stderr 'end moment: -8206006569229276678 398.492'
+! stderr '"status"'
 
 # Omitting SCRIPT reads the script from stdin. That is the only way to do it:
 # there is no `-` spelling, so there is one way to trigger a stdin read.
@@ -192,11 +195,11 @@ stdout 'source_run_id=1f1211ea49946d4f63a92d65ee42476d-64-0 source_session_id=ab
 snouty runs exec run-2 -3625518438076122494 398.4898056755774 print-request --source-session-id ba4ebf3181dd342334b86c58941813c6-64-0
 stdout 'source_run_id=absent source_session_id=ba4ebf3181dd342334b86c58941813c6-64-0'
 
-# A cold moment without a source fails with the server's 400, and snouty
-# points at the flags.
+# A cold moment without a source fails with the server's 400
+# (`{"result":"unknown_moment"}`), and snouty points at --source-run-id.
 ! snouty runs exec run-2 1002528785118888238 278.1311443040613 'true'
 stderr 'Moment not warm'
-stderr 'name the run it comes from with --source-run-id or --source-session-id'
+stderr 'name the run it comes from with --source-run-id$'
 
 # With a source, a 400 is a rewarm that did not finish (or a source that is
 # not the moment's run). snouty names the flag and --timeout.
@@ -248,23 +251,27 @@ stdout '\{"status":"timed_out","last_moment":\{"input_hash":"-820600656922927667
 stdout '"exit_code":5'
 stderr 'command exited with code 5'
 
-# A known frame with an unknown field still renders its output, but a frame
-# outside the spec fails snouty, and names the line.
-! snouty runs exec run-2 -3625518438076122494 398.4898056755774 unknown-frames
-stdout 'known with extras'
-stderr 'not command output or a result: .*heartbeat'
-! stdout '.*heartbeat.*'
+# Unknown fields and unknown frames do not fail snouty. Output text with an
+# unknown or missing stream goes to stdout, and a frame without output text
+# goes to stderr as raw JSON.
+snouty runs exec run-2 -3625518438076122494 398.4898056755774 unknown-frames
+stdout '^known with extras$'
+stdout '^no source$'
+stdout '^unknown stream$'
+stderr '"status":"heartbeat"'
+! stdout 'heartbeat'
 
-# With --json the known frame passes through unchanged, unknown field included,
-# and the frame outside the spec fails snouty in the same way.
-! snouty --json runs exec run-2 -3625518438076122494 398.4898056755774 unknown-frames
+# With --json every frame passes through unchanged, unknown fields included.
+snouty --json runs exec run-2 -3625518438076122494 398.4898056755774 unknown-frames
 stdout '"output_text":"known with extras".*"truncated":true'
-stderr 'not command output or a result: .*heartbeat'
+stdout '"status":"heartbeat"'
+stdout '"output_text":"no source"'
 
-# Without --events, every event must be the script's output. Any other event
-# fails snouty rather than being dropped.
-! snouty runs exec run-2 -3625518438076122494 398.4898056755774 unexpected-event
-stderr 'not command output or a result: .*Command received'
+# Without --events, an event that is not the script's output still does not
+# fail snouty. It goes to stderr, so stdout keeps only output text.
+snouty runs exec run-2 -3625518438076122494 398.4898056755774 unexpected-event
+stderr '"event_type":"Command received"'
+! stdout .
 
 # A `Stream_Error` line is the server aborting the stream, not data: it
 # becomes the command's failure and is never rendered as output.
@@ -282,6 +289,7 @@ stderr 'stream ended before the command reported completion.*'
 # API team is improving it server-side, so snouty does not translate it.
 ! snouty runs exec run-1 -3625518438076122494 398.4898056755774 'uname -a'
 stderr 'API error: 400 Bad Request.*minting session token failed.*'
+! stderr 'source-run-id'
 
 # An unknown run id is the shared "run not found" error every run-scoped
 # command reports. The endpoint's own 404 body is an unhelpful "Resource not

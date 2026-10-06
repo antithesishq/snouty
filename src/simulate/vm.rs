@@ -257,14 +257,7 @@ impl Vm {
                     "name={AUTHORIZED_KEY_FW_CFG},file={}",
                     client_key.public_key.display()
                 ))
-                .args([
-                    "-device",
-                    match platform {
-                        SimulatePlatform::Amd64 => "virtio-net-pci,netdev=net0,addr=3",
-                        SimulatePlatform::Arm64 => "virtio-net-pci,netdev=net0",
-                    },
-                    "-netdev",
-                ])
+                .args(["-device", "virtio-net-pci,netdev=net0", "-netdev"])
                 .arg(format!(
                     "user,id=net0,hostfwd=tcp:127.0.0.1:{port}-:22,restrict=yes"
                 ))

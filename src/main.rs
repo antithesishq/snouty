@@ -226,11 +226,12 @@ async fn cmd_launch(
         params.insert(ANT_FILTER_LOGS_MATCHING, filter_logs_matching);
     }
 
+    let mut unknown_performance_tier = None;
     if let Some(performance_tier) = args.performance_tier {
-        if let PerformanceTier::Unknown(tier) = &performance_tier {
-            eprintln!("warning: snouty does not know performance tier `{tier}`; sending it anyway");
-        }
         params.insert(ANT_PERFORMANCE_TIER, performance_tier.to_string());
+        if let PerformanceTier::Unknown(tier) = performance_tier {
+            unknown_performance_tier = Some(tier);
+        }
     }
 
     let config_image_ref = if let Some(config_dir) = args.config {
@@ -304,6 +305,11 @@ async fn cmd_launch(
             "Starting an ephemeral run; its findings will not be retained as historic \
              results. Pass --source to record property history across runs."
         );
+    }
+
+    // Warned here for the same reason as the ephemeral notice.
+    if let Some(tier) = unknown_performance_tier {
+        eprintln!("warning: snouty does not know performance tier `{tier}`; sending it anyway");
     }
 
     let response = launch_webhook(&args.webhook, params, settings, verbose).await?;

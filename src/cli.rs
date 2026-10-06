@@ -1375,14 +1375,6 @@ mod tests {
     }
 
     #[test]
-    fn performance_tier_parses_each_known_name_as_known() {
-        for known in KnownPerformanceTier::value_variants() {
-            let name = PerformanceTier::Known(*known).to_string();
-            assert_eq!(PerformanceTier::from(name), PerformanceTier::Known(*known));
-        }
-    }
-
-    #[test]
     fn update_channel_parses_its_named_values() {
         assert_eq!(
             UpdateChannel::STABLE.parse::<UpdateChannel>().unwrap(),

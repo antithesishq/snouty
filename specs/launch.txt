@@ -94,6 +94,12 @@ mock-server 200 '{"message":"Success","runId":"run-123"}'
 ! snouty launch -w basic_test --duration 30 --param antithesis.duration=60
 stderr 'cannot be overridden via --param.*'
 
+# The unknown-tier warning prints only when the run is about to be sent, not
+#    ahead of a check that fails.
+! snouty launch -w basic_test --duration 30 --performance-tier ultra --param antithesis.performance_tier=ultra
+stderr 'cannot be overridden via --param'
+! stderr 'does not know performance tier'
+
 # At least one source of parameters must be provided; otherwise the
 #    command fails.
 mock-server 200 '{}'

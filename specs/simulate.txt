@@ -15,6 +15,8 @@ snouty --help
 stdout 'simulate +Run a Compose setup'
 snouty simulate --help
 stdout 'guest-image'
+stdout '\-\-platform <PLATFORM>'
+stdout 'native host platform'
 stdout 'antithesis-guest:v<RELEASE>'
 stdout 'disable-restart'
 stdout 'disable-faults'
@@ -45,6 +47,8 @@ stderr '0 is not in 1\.\.=15000'
 stderr '15001 is not in 1\.\.=15000'
 ! snouty simulate empty --guest-image guest:latest --disable-node-kills
 stderr 'unexpected argument'
+! snouty simulate empty --guest-image guest:latest --platform other
+stderr 'invalid value'
 
 snouty completions bash
 ! stdout '\-\-shell'
@@ -61,6 +65,8 @@ stderr 'does not contain.*docker-compose.yaml.*manifests/'
 stderr 'required.*'
 stderr '<CONFIG>'
 ! snouty simulate --shell --guest-image guest:latest
+stderr 'requires an interactive terminal'
+! snouty simulate --shell --platform arm64 --guest-image guest:latest
 stderr 'requires an interactive terminal'
 ! snouty --json simulate --shell --guest-image guest:latest
 stderr '\-\-shell cannot be combined with \-\-json'

@@ -433,15 +433,17 @@ mod tests {
     }
 
     #[test]
-    fn schema_accepts_every_performance_tier() {
+    fn schema_performance_tiers_match_the_enum() {
         use crate::cli::PerformanceTier;
         use clap::ValueEnum;
 
-        for tier in PerformanceTier::value_variants() {
-            let mut params = Params::new();
-            params.insert(ANT_PERFORMANCE_TIER, tier.to_string());
-            assert!(params.validate_test_params().is_ok(), "{tier} rejected");
-        }
+        let schema: Value = serde_json::from_str(SCHEMA).unwrap();
+        let schema_tiers = &schema["$defs"]["testCore"]["properties"][ANT_PERFORMANCE_TIER]["enum"];
+        let enum_tiers: Vec<String> = PerformanceTier::value_variants()
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+        assert_eq!(*schema_tiers, serde_json::json!(enum_tiers));
     }
 
     #[test]

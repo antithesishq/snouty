@@ -62,13 +62,10 @@ stderr 'antithesis\.filter_logs_matching matches the empty string, which would s
 ! snouty launch -w basic_test --duration 30 --param antithesis.filter_logs_matching=
 stderr 'antithesis\.filter_logs_matching is empty'
 
-# --performance-tier accepts only the tiers the platform offers. The raw
-#    --param form is held to the same values by the schema.
+# --performance-tier accepts only the tiers this snouty knows.
 ! snouty launch -w basic_test --duration 30 --performance-tier ultra
 stderr 'invalid value .ultra. for .--performance-tier'
 stderr 'possible values: standard, fast, turbo'
-! snouty launch -w basic_test --duration 30 --param antithesis.performance_tier=ultra
-stderr 'antithesis\.performance_tier: "ultra" is not one of "standard", "fast" or "turbo"'
 
 # `launch` does not accept --stdin.
 ! snouty launch -w basic_test --stdin --duration 30
@@ -215,4 +212,10 @@ stdout 'Test run started: run_id run-123'
 mock-server 200 '{"message":"Success","runId":"run-123"}'
 snouty launch -w basic_test --duration 30 --performance-tier turbo
 stderr '"antithesis.performance_tier": "turbo"'
+stdout 'Test run started: run_id run-123'
+
+# The raw --param form sends any tier, so a tier newer than this snouty works.
+mock-server 200 '{"message":"Success","runId":"run-123"}'
+snouty launch -w basic_test --duration 30 --param antithesis.performance_tier=ultra
+stderr '"antithesis.performance_tier": "ultra"'
 stdout 'Test run started: run_id run-123'

@@ -68,8 +68,7 @@
         },
         "antithesis.performance_tier": {
           "type": "string",
-          "enum": ["standard", "fast", "turbo"],
-          "description": "Performance tier for the run. Higher tiers explore system states faster through more parallelism, and consume core hours faster. Defaults to standard."
+          "description": "Performance tier for the run. Higher tiers explore system states faster through more parallelism, and consume core hours faster. Defaults to standard. Not an enum, so a tier newer than this snouty passes through."
         }
       }
     },

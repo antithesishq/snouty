@@ -433,20 +433,6 @@ mod tests {
     }
 
     #[test]
-    fn schema_performance_tiers_match_the_enum() {
-        use crate::cli::PerformanceTier;
-        use clap::ValueEnum;
-
-        let schema: Value = serde_json::from_str(SCHEMA).unwrap();
-        let schema_tiers = &schema["$defs"]["testCore"]["properties"][ANT_PERFORMANCE_TIER]["enum"];
-        let enum_tiers: Vec<String> = PerformanceTier::value_variants()
-            .iter()
-            .map(ToString::to_string)
-            .collect();
-        assert_eq!(*schema_tiers, serde_json::json!(enum_tiers));
-    }
-
-    #[test]
     fn validate_images_semicolon_delimited() {
         let params =
             Params::from_key_value_pairs(["antithesis.images=app@sha256:abc;db:latest"]).unwrap();

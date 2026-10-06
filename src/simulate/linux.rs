@@ -325,7 +325,9 @@ pub(super) async fn run(
     let mut instrumentation = None;
     let execution = async {
         eprintln!("Preparing guest image...");
-        let iso = images.guest_iso(&guest_image, run_dir.path()).await?;
+        let iso = images
+            .guest_iso(&guest_image, run_dir.path(), args.platform)
+            .await?;
         eprintln!("Booting guest...");
         vm = Some(
             Vm::boot(
@@ -334,6 +336,7 @@ pub(super) async fn run(
                 args.timeout.into(),
                 BootOutput::Hidden,
                 args.memory,
+                args.platform,
             )
             .await?,
         );
@@ -365,7 +368,7 @@ pub(super) async fn run(
         guest.upload_config(config.dir()).await?;
         let mut changed = Vec::new();
         for reference in references {
-            let local = images.inspect(&reference).await?;
+            let local = images.inspect(&reference, args.platform).await?;
             let script = format!(
                 "set -euo pipefail\nif podman image exists {image}; then podman image inspect {image}; else printf '[]'; fi\n",
                 image = shell_quote(&reference)
@@ -383,7 +386,7 @@ pub(super) async fn run(
         }
         if !changed.is_empty() {
             let archive = run_dir.path().join("images.tar");
-            images.save(&changed, &archive).await?;
+            images.save(&changed, &archive, args.platform).await?;
             guest.load_images(&archive).await?;
             std::fs::remove_file(archive)?;
         }
@@ -572,7 +575,9 @@ pub(super) async fn shell(
         .prefix("snouty-simulate-")
         .tempdir()?;
     eprintln!("Preparing guest image...");
-    let iso = images.guest_iso(&guest_image, run_dir.path()).await?;
+    let iso = images
+        .guest_iso(&guest_image, run_dir.path(), args.platform)
+        .await?;
     eprintln!("Booting guest...");
     let mut signals = Signals::install()?;
     let mut guest = tokio::select! {
@@ -584,6 +589,7 @@ pub(super) async fn shell(
             args.timeout.into(),
             BootOutput::Visible,
             args.memory,
+            args.platform,
         ) => result?,
     };
     eprintln!("Opening guest shell. Exit the shell to stop the VM.");

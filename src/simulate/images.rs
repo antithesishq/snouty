@@ -9,8 +9,9 @@ use color_eyre::eyre::{Context, Result, bail, eyre};
 use serde::Deserialize;
 use tokio::process::Command;
 
-use crate::container::{AMD64_PLATFORM, Architecture, ContainerRuntime};
+use crate::container::{Architecture, ContainerRuntime};
 use crate::process::{output_async, output_with_timeout};
+use crate::simulate::SimulatePlatform;
 
 const IMAGE_TIMEOUT: Duration = Duration::from_secs(1800);
 const CREATE_TIMEOUT: Duration = Duration::from_secs(60);
@@ -73,7 +74,7 @@ impl Images {
         }
     }
 
-    pub async fn inspect(&self, reference: &str) -> Result<Image> {
+    pub async fn inspect(&self, reference: &str, platform: SimulatePlatform) -> Result<Image> {
         #[derive(Deserialize)]
         struct Inspect {
             // Podman v5.8.2: local antithesis-guest:v61.2 inspect uses Id and Architecture.
@@ -83,8 +84,11 @@ impl Images {
             architecture: String,
         }
         let mut cmd = Command::new(&self.engine);
-        cmd.args(["image", "inspect", reference])
-            .stdin(Stdio::null());
+        cmd.args(["image", "inspect"]);
+        if matches!(self.kind, Engine::Docker) {
+            cmd.args(["--platform", &format!("linux/{platform}")]);
+        }
+        cmd.arg(reference).stdin(Stdio::null());
         let output = output_async(cmd, Duration::from_secs(60)).await?;
         if !output.status.success() {
             bail!(
@@ -99,26 +103,28 @@ impl Images {
             .next()
             .ok_or_else(|| eyre!("image inspect returned no image"))?;
         let architecture = Architecture::from(image.architecture.as_str());
-        if architecture != Architecture::Amd64 {
-            bail!("image {reference} uses {architecture}; simulate requires amd64");
+        if architecture != Architecture::from(platform) {
+            bail!("image {reference} uses {architecture}; simulate requires {platform}");
         }
         Ok(Image { id: image.id })
     }
 
-    pub async fn guest_iso(&self, reference: &str, run_dir: &Path) -> Result<PathBuf> {
+    pub async fn guest_iso(
+        &self,
+        reference: &str,
+        run_dir: &Path,
+        platform: SimulatePlatform,
+    ) -> Result<PathBuf> {
         // Local guest images permit testing a guest release before it is published.
-        let mut exists = Command::new(&self.engine);
-        exists
-            .args(["image", "inspect", reference])
-            .stdin(Stdio::null());
-        if !output_async(exists, Duration::from_secs(60))
-            .await?
-            .status
-            .success()
-        {
+        if self.inspect(reference, platform).await.is_err() {
             let mut pull = Command::new(&self.engine);
-            pull.args(["pull", "--platform", AMD64_PLATFORM, reference])
-                .stdin(Stdio::null());
+            pull.args([
+                "pull",
+                "--platform",
+                &format!("linux/{platform}"),
+                reference,
+            ])
+            .stdin(Stdio::null());
             let output = output_async(pull, IMAGE_TIMEOUT).await?;
             if !output.status.success() {
                 bail!(
@@ -127,15 +133,20 @@ impl Images {
                 );
             }
         }
-        let image = self.inspect(reference).await?;
+        let image = self.inspect(reference, platform).await?;
         let cache = crate::settings::cache_dir()
             .unwrap_or_else(|| run_dir.to_owned())
             .join("simulate")
             .join(image.id.to_string());
-        self.extract_iso(image.id, &cache).await
+        self.extract_iso(reference, &cache, platform).await
     }
 
-    async fn extract_iso(&self, id: ImageId, cache: &Path) -> Result<PathBuf> {
+    async fn extract_iso(
+        &self,
+        reference: &str,
+        cache: &Path,
+        platform: SimulatePlatform,
+    ) -> Result<PathBuf> {
         std::fs::create_dir_all(cache)?;
         let iso = cache.join("guest.iso");
         if std::fs::symlink_metadata(&iso)
@@ -154,6 +165,7 @@ impl Images {
                 .replace('.', "")
         );
         let engine = self.engine.clone();
+        let reference = reference.to_owned();
         // The worker retains cleanup ownership when its caller is cancelled.
         let container = tokio::task::spawn_blocking(move || {
             let container = ExtractionContainer {
@@ -161,13 +173,15 @@ impl Images {
                 name: Some(name),
             };
             let mut create = std::process::Command::new(&container.engine);
-            create.args([
-                "create",
-                "--name",
-                container.name.as_deref().expect("container name assigned"),
-                &id.to_string(),
-                "/bin/true",
-            ]);
+            create
+                .args([
+                    "create",
+                    "--platform",
+                    &format!("linux/{platform}"),
+                    "--name",
+                ])
+                .arg(container.name.as_deref().expect("container name assigned"))
+                .args([&reference, "/bin/true"]);
             let output = output_with_timeout(create, CREATE_TIMEOUT)?;
             if !output.status.success() {
                 bail!(
@@ -203,13 +217,21 @@ impl Images {
         Ok(iso)
     }
 
-    pub async fn save(&self, references: &[String], archive: &Path) -> Result<()> {
+    pub async fn save(
+        &self,
+        references: &[String],
+        archive: &Path,
+        platform: SimulatePlatform,
+    ) -> Result<()> {
         let references: BTreeSet<_> = references.iter().cloned().collect();
         if references.is_empty() {
             bail!("no workload images to export");
         }
         let mut command = Command::new(&self.engine);
         command.arg("save");
+        if matches!(self.kind, Engine::Docker) {
+            command.args(["--platform", &format!("linux/{platform}")]);
+        }
         if matches!(self.kind, Engine::Podman) {
             // Without this flag Podman interprets extra arguments as tags of one image.
             command.args(["--format", "docker-archive", "--multi-image-archive"]);
@@ -335,7 +357,7 @@ esac
         std::fs::write(directory.path().join("fail-copy"), "").unwrap();
         assert!(
             images
-                .extract_iso(ID.parse().unwrap(), &cache)
+                .extract_iso("guest:test", &cache, SimulatePlatform::Amd64)
                 .await
                 .is_err()
         );
@@ -344,14 +366,14 @@ esac
         assert!(directory.path().join("removed").exists());
         std::fs::remove_file(directory.path().join("fail-copy")).unwrap();
         let iso = images
-            .extract_iso(ID.parse().unwrap(), &cache)
+            .extract_iso("guest:test", &cache, SimulatePlatform::Amd64)
             .await
             .unwrap();
         assert_eq!(std::fs::read(&iso).unwrap(), b"guest iso");
         std::fs::remove_file(directory.path().join("started")).unwrap();
         assert_eq!(
             images
-                .extract_iso(ID.parse().unwrap(), &cache)
+                .extract_iso("guest:test", &cache, SimulatePlatform::Amd64)
                 .await
                 .unwrap(),
             iso
@@ -365,8 +387,11 @@ esac
         let images = engine(directory.path());
         std::fs::write(directory.path().join("slow"), "").unwrap();
         let cache = directory.path().join("cache");
-        let task =
-            tokio::spawn(async move { images.extract_iso(ID.parse().unwrap(), &cache).await });
+        let task = tokio::spawn(async move {
+            images
+                .extract_iso("guest:test", &cache, SimulatePlatform::Amd64)
+                .await
+        });
         wait_for(&directory.path().join("started")).await;
         task.abort();
         assert!(task.await.unwrap_err().is_cancelled());
@@ -387,6 +412,7 @@ esac
                     "example.test/app:two".into(),
                 ],
                 &directory.path().join("images.tar"),
+                SimulatePlatform::Amd64,
             )
             .await
             .unwrap();
@@ -401,7 +427,11 @@ esac
         assert!(args.lines().any(|arg| arg == "example.test/app:two"));
         assert!(
             images
-                .save(&[], &directory.path().join("bad.tar"))
+                .save(
+                    &[],
+                    &directory.path().join("bad.tar"),
+                    SimulatePlatform::Amd64
+                )
                 .await
                 .is_err()
         );

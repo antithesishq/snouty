@@ -17,6 +17,7 @@ snouty simulate --help
 stdout 'guest-image'
 stdout '\-\-platform <PLATFORM>'
 stdout 'native host platform'
+stdout 'Requires Linux or macOS and QEMU'
 stdout 'antithesis-guest:v<RELEASE>'
 stdout 'disable-restart'
 stdout 'disable-faults'

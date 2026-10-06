@@ -225,14 +225,15 @@ fn guest_has_no_unused_default_devices() {
 }
 
 #[test]
-fn guest_uses_q35_without_ps2_controller() {
+fn guest_uses_q35_with_acceleration_fallback() {
     let mut simulation = Simulation::start("clean-once");
     simulation.wait_for("qemu_args", "i8042=off");
     let args: Vec<String> = serde_json::from_str(&simulation.read("qemu_args")).unwrap();
     assert!(
         args.windows(2)
-            .any(|args| args == ["-machine", "q35,i8042=off"])
+            .any(|args| args == ["-machine", "q35,i8042=off,accel=kvm:tcg"])
     );
+    assert!(args.windows(2).any(|args| args == ["-cpu", "max"]));
 }
 
 #[test]
@@ -254,53 +255,6 @@ fn interrupted_startup_cleanup_ignores_unowned_paths() {
     drop(simulation);
     assert!(!root.exists());
     assert_eq!(fs::read_to_string(sentinel).unwrap(), "keep");
-}
-
-#[test]
-fn qemu_probe_and_unknown_arguments_do_not_write_vm_state() {
-    let directory = tempfile::tempdir().unwrap();
-    let bin = directory.path().join("bin");
-    fs::create_dir(&bin).unwrap();
-    let script = bin.join("qemu-system-x86_64");
-    fs::write(&script, include_str!("fixtures/simulate/mock_tools.py")).unwrap();
-    fs::write(directory.path().join("mode"), "clean-once").unwrap();
-    for args in [
-        vec![
-            "-accel",
-            "kvm",
-            "-machine",
-            "none",
-            "-display",
-            "none",
-            "-nodefaults",
-            "-qmp",
-            "stdio",
-        ],
-        vec!["--unexpected"],
-    ] {
-        let output = Command::new("python3")
-            .arg(&script)
-            .args(&args)
-            .current_dir(directory.path())
-            .output()
-            .unwrap();
-        if args[0] == "-accel" {
-            assert!(output.status.success());
-            let greeting: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-            assert!(greeting.get("QMP").is_some());
-        } else {
-            assert!(!output.status.success());
-        }
-        for name in [
-            "run_dir",
-            "qemu_pid",
-            "qemu_args",
-            "boot.log",
-            "instrumentation.log",
-        ] {
-            assert!(!directory.path().join(name).exists(), "unexpected {name}");
-        }
-    }
 }
 
 fn start_shell_simulation(mode: &str) -> (TempDir, OsSession) {

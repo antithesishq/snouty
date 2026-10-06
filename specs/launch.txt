@@ -62,10 +62,13 @@ stderr 'antithesis\.filter_logs_matching matches the empty string, which would s
 ! snouty launch -w basic_test --duration 30 --param antithesis.filter_logs_matching=
 stderr 'antithesis\.filter_logs_matching is empty'
 
-# --performance-tier accepts only the tiers this snouty knows.
-! snouty launch -w basic_test --duration 30 --performance-tier ultra
-stderr 'invalid value .ultra. for .--performance-tier'
-stderr 'possible values: standard, fast, turbo'
+# The --performance-tier help lists only the tiers this snouty knows.
+snouty launch --help
+stdout 'possible values: standard, fast, turbo\]'
+
+# --performance-tier does not accept an empty tier.
+! snouty launch -w basic_test --duration 30 --performance-tier ''
+stderr 'a value is required for .--performance-tier'
 
 # `launch` does not accept --stdin.
 ! snouty launch -w basic_test --stdin --duration 30
@@ -212,6 +215,15 @@ stdout 'Test run started: run_id run-123'
 mock-server 200 '{"message":"Success","runId":"run-123"}'
 snouty launch -w basic_test --duration 30 --performance-tier turbo
 stderr '"antithesis.performance_tier": "turbo"'
+! stderr 'does not know performance tier'
+stdout 'Test run started: run_id run-123'
+
+# --performance-tier sends a tier that this snouty does not know, so a tier
+#    newer than this snouty works. snouty warns, because the value can be a typo.
+mock-server 200 '{"message":"Success","runId":"run-123"}'
+snouty launch -w basic_test --duration 30 --performance-tier ultra
+stderr 'warning: snouty does not know performance tier `ultra`; sending it anyway'
+stderr '"antithesis.performance_tier": "ultra"'
 stdout 'Test run started: run_id run-123'
 
 # The raw --param form sends any tier, so a tier newer than this snouty works.

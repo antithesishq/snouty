@@ -12,7 +12,8 @@ use snouty::OutputOptions;
 use snouty::api::AntithesisApi;
 use snouty::auth::initialize_credential_store;
 use snouty::cli::{
-    Cli, Commands, DebugArgs, LaunchArgs, UpdateArgs, UpdateChannel, gated_command_error,
+    Cli, Commands, DebugArgs, LaunchArgs, PerformanceTier, UpdateArgs, UpdateChannel,
+    gated_command_error,
 };
 use snouty::compose;
 use snouty::config;
@@ -226,6 +227,9 @@ async fn cmd_launch(
     }
 
     if let Some(performance_tier) = args.performance_tier {
+        if let PerformanceTier::Unknown(tier) = &performance_tier {
+            eprintln!("warning: snouty does not know performance tier `{tier}`; sending it anyway");
+        }
         params.insert(ANT_PERFORMANCE_TIER, performance_tier.to_string());
     }
 

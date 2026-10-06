@@ -486,22 +486,83 @@ pub struct UpdateArgs {
     pub channel: Option<UpdateChannel>,
 }
 
-/// The `antithesis.performance_tier` values this snouty knows.
+/// The `antithesis.performance_tier` values this snouty knows. `--help` and
+/// shell completion list these.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, ValueEnum)]
-pub enum PerformanceTier {
+pub enum KnownPerformanceTier {
     Standard,
     Fast,
     Turbo,
 }
 
+/// An `antithesis.performance_tier` value. The platform can add a tier that
+/// this snouty does not know, so any non-empty string parses.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum PerformanceTier {
+    Known(KnownPerformanceTier),
+    Unknown(String),
+}
+
+impl From<String> for PerformanceTier {
+    fn from(tier: String) -> Self {
+        match KnownPerformanceTier::from_str(&tier, false) {
+            Ok(known) => PerformanceTier::Known(known),
+            Err(_) => PerformanceTier::Unknown(tier),
+        }
+    }
+}
+
 impl std::fmt::Display for PerformanceTier {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        // The wire value is the clap value name, so the two cannot drift apart.
-        f.write_str(
-            self.to_possible_value()
-                .expect("no variant is skipped")
-                .get_name(),
-        )
+        match self {
+            // The wire value is the clap value name, so the two cannot drift apart.
+            PerformanceTier::Known(known) => f.write_str(
+                known
+                    .to_possible_value()
+                    .expect("no variant is skipped")
+                    .get_name(),
+            ),
+            PerformanceTier::Unknown(tier) => f.write_str(tier),
+        }
+    }
+}
+
+impl clap::builder::ValueParserFactory for PerformanceTier {
+    type Parser = PerformanceTierParser;
+
+    fn value_parser() -> Self::Parser {
+        PerformanceTierParser
+    }
+}
+
+/// Parses any non-empty string, but lists only the known tiers as possible
+/// values. clap checks a value against the possible values only in parsers
+/// that enforce them, such as `EnumValueParser`; this parser does not.
+#[derive(Clone)]
+pub struct PerformanceTierParser;
+
+impl clap::builder::TypedValueParser for PerformanceTierParser {
+    type Value = PerformanceTier;
+
+    fn parse_ref(
+        &self,
+        cmd: &clap::Command,
+        arg: Option<&clap::Arg>,
+        value: &std::ffi::OsStr,
+    ) -> Result<PerformanceTier, clap::Error> {
+        clap::builder::NonEmptyStringValueParser::new()
+            .parse_ref(cmd, arg, value)
+            .map(PerformanceTier::from)
+    }
+
+    fn possible_values(
+        &self,
+    ) -> Option<Box<dyn Iterator<Item = clap::builder::PossibleValue> + '_>> {
+        Some(Box::new(
+            KnownPerformanceTier::value_variants()
+                .iter()
+                .filter_map(ValueEnum::to_possible_value),
+        ))
     }
 }
 
@@ -623,8 +684,9 @@ pub struct LaunchArgs {
 
     /// Performance tier for the run. Higher tiers explore system states faster
     /// through more parallelism. They also consume core hours faster. The
-    /// server default is `standard`.
-    #[arg(long, value_enum)]
+    /// server default is `standard`. snouty warns on a tier it does not know,
+    /// and sends it anyway.
+    #[arg(long)]
     pub performance_tier: Option<PerformanceTier>,
 
     /// Extra parameters as key=value pairs (repeatable)
@@ -1303,6 +1365,21 @@ mod tests {
 
     fn parse(args: &[&str]) -> Cli {
         Cli::try_parse_from(args).expect("args should parse")
+    }
+
+    /// Any tier string survives the parse unchanged.
+    #[hegel::test]
+    fn performance_tier_round_trips_any_string(tc: hegel::TestCase) {
+        let raw = tc.draw(hegel::generators::text());
+        assert_eq!(PerformanceTier::from(raw.clone()).to_string(), raw);
+    }
+
+    #[test]
+    fn performance_tier_parses_each_known_name_as_known() {
+        for known in KnownPerformanceTier::value_variants() {
+            let name = PerformanceTier::Known(*known).to_string();
+            assert_eq!(PerformanceTier::from(name), PerformanceTier::Known(*known));
+        }
     }
 
     #[test]

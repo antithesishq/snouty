@@ -1012,16 +1012,20 @@ Antithesis API it calls is still changing. Enable it by setting
 SNOUTY_UNSTABLE_FEATURES=runs-exec. An unstable feature can change or go away
 in any release.
 
-The run must have a live session (it is in progress). The script executes on
-a fresh branch of the multiverse, so it does not disturb the running test.
-INPUT_HASH and VTIME identify the moment to execute at; a moment comes from
-`runs properties --detail` or `runs events`.
+The run must have a live session. A run has one while it is in progress, and
+for a while after it completes. A debugging session that `snouty debug`
+launches is a run with a live session too: pass its run ID once it is ready,
+which can take a few minutes. The script executes on a fresh branch of the
+multiverse, so it does not disturb the session.
 
-The session holds the moment it started at, and the moments before it on
-that timeline. Any other moment is cold. Name the run it comes from with
---source-run-id, or that run's session with --source-session-id, and the
-server rewarms the moment by replaying the run's inputs. A rewarm can take
-minutes, and --timeout counts it.
+INPUT_HASH and VTIME identify the moment to execute at, and the moment must be
+warm. A warm moment is a moment that is loaded into the session. Every moment
+generated in the session is warm: by fuzzing, and by an earlier `runs exec`,
+so the end moment of one command is warm for the next. A moment from another
+run or session is cold. To bring it over, name the run it comes from with
+--source-run-id, and the server loads the moment by replaying that run's
+inputs. That can take minutes, and --timeout counts it. Find a moment with
+`runs properties --detail` or `runs events`.
 
 The script executes on the host, or in the container that --container names.
 The command needs tenant release 64.0 or newer; `snouty doctor` reports the
@@ -1029,8 +1033,8 @@ tenant release.
 
 Without --events, the script's stdout and stderr stream to snouty's stdout
 and stderr. With --events, snouty prints every event of the timeline to
-stdout while the script executes, as `runs logs` prints them: the script's output, the workload's
-logs and assertions, and Antithesis events. On exit, a trailer on stderr
+stdout while the script executes, as `runs logs` prints them: the script's
+output, the workload's logs and assertions, and Antithesis events. On exit, a trailer on stderr
 documents the branch's end moment, to chain a follow-up command from. A
 non-zero exit code, a timeout, or a truncated stream fails snouty with exit
 code 1.
@@ -1079,13 +1083,13 @@ JSON object on its own line, and the trailer is left out:
         #[arg(long)]
         events: bool,
 
-        /// Run that the moment comes from, to rewarm a moment the session
-        /// does not hold
+        /// Run that a cold moment comes from; the server loads the moment
+        /// into the session
         #[arg(long, conflicts_with = "source_session_id")]
         source_run_id: Option<SourceRunId>,
 
-        /// Session of the run that the moment comes from, to rewarm a moment
-        /// the session does not hold
+        /// Session that a cold moment comes from, in place of
+        /// --source-run-id
         #[arg(long)]
         source_session_id: Option<SourceSessionId>,
 

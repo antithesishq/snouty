@@ -486,7 +486,7 @@ pub struct UpdateArgs {
     pub channel: Option<UpdateChannel>,
 }
 
-/// The `antithesis.performance_tier` values the launch API accepts.
+/// The `antithesis.performance_tier` values this snouty knows.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, ValueEnum)]
 pub enum PerformanceTier {
     Standard,
@@ -622,8 +622,8 @@ pub struct LaunchArgs {
     pub filter_logs_matching: Option<String>,
 
     /// Performance tier for the run. Higher tiers explore system states faster
-    /// through more parallelism, and consume core hours faster. The server
-    /// default is `standard`.
+    /// through more parallelism. They also consume core hours faster. The
+    /// server default is `standard`.
     #[arg(long, value_enum)]
     pub performance_tier: Option<PerformanceTier>,
 

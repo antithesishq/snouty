@@ -1,11 +1,11 @@
 //! Local guest simulation. The guest owns Compose and test-composer execution.
 
 mod events;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 mod firmware;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 mod images;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 mod vm;
 
 use crate::{
@@ -71,28 +71,28 @@ pub async fn cmd_simulate(
         if output.json {
             color_eyre::eyre::bail!("--attach cannot be combined with --json");
         }
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
         {
             return attach(id);
         }
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
         {
             let _ = id;
-            color_eyre::eyre::bail!("simulate requires Linux");
+            color_eyre::eyre::bail!("simulate requires Linux or macOS");
         }
     }
     if let SimulationMode::Shell = mode {
         if output.json {
             color_eyre::eyre::bail!("--shell cannot be combined with --json");
         }
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
         {
             return shell(args, settings, output.verbose).await;
         }
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
         {
             let _ = (args, settings, output);
-            color_eyre::eyre::bail!("simulate requires Linux");
+            color_eyre::eyre::bail!("simulate requires Linux or macOS");
         }
     }
     let config = match crate::config::detect_config(
@@ -105,18 +105,18 @@ pub async fn cmd_simulate(
             "Kubernetes is not supported by simulate; provide docker-compose.yaml"
         ),
     };
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     {
         run(args, config, settings, output).await
     }
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     {
         let _ = (args, config, settings, output);
-        color_eyre::eyre::bail!("simulate requires Linux")
+        color_eyre::eyre::bail!("simulate requires Linux or macOS")
     }
 }
 
-#[cfg(target_os = "linux")]
-use linux::{attach, run, shell};
-#[cfg(target_os = "linux")]
-mod linux;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+use host::{attach, run, shell};
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+mod host;

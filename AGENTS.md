@@ -105,8 +105,9 @@ pass secrets there. Two rules follow:
 - An unprefixed assertion must hold against any tenant. Put
   `stdout 'Run ID +[^ ]'` unprefixed and `stdout 'Run ID .*run-1'` behind
   `[!staging]`.
-- The tenant must have at least one completed run. `runs.txt` captures a run id
-  from the list and every later command uses it.
+- The tenant must have a completed run from a launcher other than `debugging`
+  among its 100 newest completed runs. `runs.txt` captures that run's id and
+  every later command uses it.
 
 A `stdout` or `stderr` pattern is always a regex, with Go's flags: `^` and
 `$` match at line boundaries, and `.` stops at a newline. State `(?s)` for a

@@ -357,53 +357,26 @@ fn cmd_env_from_json(
     set_env_from_json(env, &value, key)
 }
 
-enum JsonFilter<'a> {
-    Eq { field: &'a str, value: &'a str },
-    Ne { field: &'a str, value: &'a str },
-}
-
-impl<'a> JsonFilter<'a> {
-    fn parse(s: &'a str) -> Option<Self> {
-        if let Some((field, value)) = s.split_once("!=") {
-            Some(Self::Ne { field, value })
-        } else {
-            let (field, value) = s.split_once('=')?;
-            Some(Self::Eq { field, value })
-        }
-    }
-
-    /// A missing or non-string field never equals `value`.
-    fn matches(&self, json: &serde_json::Value) -> bool {
-        match *self {
-            Self::Eq { field, value } => json.get(field).and_then(|v| v.as_str()) == Some(value),
-            Self::Ne { field, value } => json.get(field).and_then(|v| v.as_str()) != Some(value),
-        }
-    }
-}
-
 fn cmd_env_from_json_find(
     env: &mut testscript_rs::TestEnvironment,
     args: &[String],
 ) -> testscript_rs::Result<()> {
-    // Usage: env_from_json_find <json_key> <field>=<value> | <field>!=<value>
-    // Like env_from_json, but reads the first NDJSON line whose string
-    // <field> passes the filter.
-    let usage = || err("env_from_json_find requires <json_key> <field>[!]=<value>".to_string());
+    // Usage: env_from_json_find <json_key> <field>!=<value>
+    // Like env_from_json, but reads the first NDJSON line whose <field> is
+    // not the string <value>. A missing or non-string <field> passes.
+    let usage = || err("env_from_json_find requires <json_key> <field>!=<value>".to_string());
     let [key, filter] = args else {
         return Err(usage());
     };
-    let filter = JsonFilter::parse(filter).ok_or_else(usage)?;
+    let (field, excluded) = filter.split_once("!=").ok_or_else(usage)?;
 
-    let mut found = None;
     for line in last_stdout(env)?.lines() {
         let value = parse_json_line(line)?;
-        if filter.matches(&value) {
-            found = Some(value);
-            break;
+        if value.get(field).and_then(|v| v.as_str()) != Some(excluded) {
+            return set_env_from_json(env, &value, key);
         }
     }
-    let value = found.ok_or_else(|| err(format!("no JSON line matches '{}'", args[1])))?;
-    set_env_from_json(env, &value, key)
+    Err(err(format!("no JSON line matches '{filter}'")))
 }
 
 fn cmd_mock_runs_server(

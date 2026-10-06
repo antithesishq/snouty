@@ -1,6 +1,5 @@
 use std::io::{IsTerminal, Read, Write};
 use std::num::NonZeroU64;
-use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
@@ -1548,6 +1547,30 @@ enum ExecResult {
 /// sends it (orbitinghail): `… (400 Bad Request): {"result":"unknown_moment"}`.
 const UNKNOWN_MOMENT: &str = r#""unknown_moment""#;
 
+/// Show one event of a `runs exec` stream. Without --events, snouty's stdout
+/// carries only output text, so `runs exec ... | jq` composes. The server is
+/// still in flux, so an unknown or missing stream is stdout.
+fn render_exec_event(
+    entry: &Value,
+    json: bool,
+    renderer: Option<&mut EventStreamRenderer>,
+) -> Result<()> {
+    if json {
+        outln!("{entry}")?;
+    } else if let Some(renderer) = renderer {
+        outln!("{}", renderer.render_entry(entry))?;
+    } else if let Some(text) = entry["output_text"].as_str() {
+        let text = normalize_terminal_text(text);
+        match ExecStream::deserialize(&entry["source"]["stream"]) {
+            Ok(ExecStream::Error) => eprintln!("{text}"),
+            Ok(ExecStream::Info) | Err(_) => outln!("{text}")?,
+        }
+    } else {
+        eprintln!("{entry}");
+    }
+    Ok(())
+}
+
 /// Cap on a script read from stdin. Far more than any hand-written bash
 /// script needs, and small enough that `snouty runs exec ... < /dev/urandom`
 /// fails with a message instead of consuming memory until the OOM killer
@@ -1651,37 +1674,31 @@ async fn cmd_runs_exec(
         }
     };
 
-    // Only the last line can be the terminal result. A result followed by
-    // more lines is shown as an event, so a stream error after it still wins.
-    let mut terminal: Option<ExecResult> = None;
-    let mut lines = event_lines(stream, ErrorRows::Abort).peekable();
+    // Only the last line can be the terminal result. A line that parses as
+    // one is held until the next line arrives, and is shown as an event if one
+    // does. Every other line is shown as it arrives.
+    let mut held: Option<(Value, ExecResult)> = None;
+    let mut lines = event_lines(stream, ErrorRows::Abort);
     while let Some(mut entry) = lines.try_next().await? {
-        if Pin::new(&mut lines).peek().await.is_none() {
-            // The stream normalized `moment.vtime`; the terminal result
-            // carries its moment under `end_moment` or `last_moment` instead.
-            normalize_vtime_field(&mut entry, "end_moment");
-            normalize_vtime_field(&mut entry, "last_moment");
-            terminal = ExecResult::deserialize(&entry).ok();
+        if let Some((line, _)) = held.take() {
+            render_exec_event(&line, json, renderer.as_mut())?;
         }
-        if json {
-            outln!("{entry}")?;
-        } else if terminal.is_some() {
-            // The trailer and the exit code below show the result.
-        } else if let Some(renderer) = &mut renderer {
-            outln!("{}", renderer.render_entry(&entry))?;
-        } else if let Some(text) = entry["output_text"].as_str() {
-            // Keep snouty's stdout to the script's stdout, so
-            // `runs exec ... | jq` composes. The server is still in flux, so
-            // an unknown or missing stream is stdout.
-            let text = normalize_terminal_text(text);
-            match ExecStream::deserialize(&entry["source"]["stream"]) {
-                Ok(ExecStream::Error) => eprintln!("{text}"),
-                Ok(ExecStream::Info) | Err(_) => outln!("{text}")?,
+        match ExecResult::deserialize(&entry) {
+            Ok(result) => {
+                // The stream normalized `moment.vtime`; the terminal result
+                // carries its moment under `end_moment` or `last_moment`.
+                normalize_vtime_field(&mut entry, "end_moment");
+                normalize_vtime_field(&mut entry, "last_moment");
+                held = Some((entry, result));
             }
-        } else {
-            eprintln!("{entry}");
+            Err(_) => render_exec_event(&entry, json, renderer.as_mut())?,
         }
     }
+    // Without --json, the trailer and the exit code below show the result.
+    if json && let Some((line, _)) = &held {
+        outln!("{line}")?;
+    }
+    let terminal = held.map(|(_, result)| result);
 
     match terminal {
         Some(ExecResult::Exited {

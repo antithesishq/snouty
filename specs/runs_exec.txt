@@ -278,6 +278,12 @@ stderr '"event_type":"Command received"'
 ! snouty runs exec run-stream-error -3625518438076122494 398.4898056755774 'uname -a'
 stderr 'the server reported an error mid-stream: mock stream failure'
 
+# Only the last line is the result. A result followed by more lines is shown
+# as an event.
+snouty runs exec run-2 -3625518438076122494 398.4898056755774 early-result
+stdout 'after the early result'
+stderr '"exit_code":5'
+
 # A stream that ends without a result is truncated, and truncation is a
 # failure.
 ! snouty runs exec run-2 -3625518438076122494 398.4898056755774 truncate-stream

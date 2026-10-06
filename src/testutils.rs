@@ -1232,6 +1232,12 @@ fn mock_route_execute_command(run_id: &str, req_body: &str) -> (u16, String) {
         // did not ask for the timeline.
         "unexpected-event" => vec![mock_exec_command_received(), mock_exec_exited(Some(0))],
         "truncate-stream" => vec![mock_exec_output("info", "partial output", "398.491")],
+        // A result followed by more lines is not the terminal result.
+        "early-result" => vec![
+            mock_exec_exited(Some(5)),
+            mock_exec_output("info", "after the early result", "398.491"),
+            mock_exec_exited(Some(0)),
+        ],
         // A known frame carrying a field this build does not know, which
         // renders, then a result status outside the spec, which fails.
         "unknown-frames" => vec![

@@ -16,6 +16,10 @@ use super::SimulatePlatform;
 use super::firmware::platform_firmware;
 
 const AUTHORIZED_KEY_FW_CFG: &str = "opt/antithesis/authorized_key";
+#[cfg(target_os = "linux")]
+const QEMU_ACCELERATOR: &str = "kvm:tcg";
+#[cfg(target_os = "macos")]
+const QEMU_ACCELERATOR: &str = "hvf:tcg";
 const BOOT_CONSOLE_ESCAPE_CODES: [&[u8]; 6] = [
     b"\x1bc",
     b"\x1b[?7l",
@@ -163,11 +167,12 @@ impl Vm {
         let run_dir = fs::canonicalize(run_dir)?;
         if platform != SimulatePlatform::default() {
             eprintln!("Warning: this guest architecture requires software emulation on this host.");
-        } else if OpenOptions::new()
-            .read(true)
-            .write(true)
-            .open("/dev/kvm")
-            .is_err()
+        } else if cfg!(target_os = "linux")
+            && OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open("/dev/kvm")
+                .is_err()
         {
             eprintln!("Warning: KVM is not accessible; simulation will run more slowly.");
         }
@@ -197,19 +202,15 @@ impl Vm {
             });
             command
                 .current_dir(&run_dir)
-                .args([
-                    "-cpu",
-                    "max",
-                    "-machine",
+                .args(["-cpu", "max", "-machine"])
+                .arg(format!(
+                    "{},accel={QEMU_ACCELERATOR}",
                     match platform {
-                        SimulatePlatform::Amd64 => "q35,i8042=off,accel=kvm:tcg",
-                        SimulatePlatform::Arm64 => "virt,gic-version=max,accel=kvm:tcg",
-                    },
-                    "-nodefaults",
-                    "-smp",
-                    "1",
-                    "-m",
-                ])
+                        SimulatePlatform::Amd64 => "q35,i8042=off",
+                        SimulatePlatform::Arm64 => "virt,gic-version=max",
+                    }
+                ))
+                .args(["-nodefaults", "-smp", "1", "-m"])
                 .arg(memory_mib.to_string());
             if let Some(code) = &firmware {
                 command.arg("-bios").arg(code);

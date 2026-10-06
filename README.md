@@ -306,8 +306,8 @@ This project was originally developed by [orbitinghail](https://orbitinghail.dev
 
 ### Local simulation (experimental)
 
-On Linux x86_64 or ARM64, enable `simulate` to run an Antithesis Compose setup
-in a local guest VM:
+On x86-64 or ARM64 Linux and macOS hosts, enable `simulate` to run an Antithesis
+Compose setup in a local guest VM:
 
 ```sh
 SNOUTY_UNSTABLE_FEATURES=simulate snouty simulate ./config

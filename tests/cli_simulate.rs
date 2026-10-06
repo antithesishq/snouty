@@ -1,4 +1,4 @@
-#![cfg(target_os = "linux")]
+#![cfg(any(target_os = "linux", target_os = "macos"))]
 
 use std::fs;
 use std::os::unix::fs::{PermissionsExt, symlink};
@@ -306,9 +306,14 @@ fn guest_uses_q35_with_acceleration_fallback() {
     let mut simulation = Simulation::start("clean-once");
     simulation.wait_for("qemu_args", "i8042=off");
     let args: Vec<String> = serde_json::from_str(&simulation.read("qemu_args")).unwrap();
+    let accelerator = if cfg!(target_os = "macos") {
+        "hvf:tcg"
+    } else {
+        "kvm:tcg"
+    };
     assert!(
         args.windows(2)
-            .any(|args| args == ["-machine", "q35,i8042=off,accel=kvm:tcg"])
+            .any(|args| { args == ["-machine", &format!("q35,i8042=off,accel={accelerator}")] })
     );
     assert!(args.windows(2).any(|args| args == ["-cpu", "max"]));
 }
@@ -319,10 +324,17 @@ fn arm64_guest_uses_uefi_and_arm64_images() {
     simulation.wait_for("stdout", "workload running");
     assert_eq!(simulation.read("qemu_tool"), "qemu-system-aarch64");
     let args: Vec<String> = serde_json::from_str(&simulation.read("qemu_args")).unwrap();
-    assert!(
-        args.windows(2)
-            .any(|args| args == ["-machine", "virt,gic-version=max,accel=kvm:tcg"])
-    );
+    let accelerator = if cfg!(target_os = "macos") {
+        "hvf:tcg"
+    } else {
+        "kvm:tcg"
+    };
+    assert!(args.windows(2).any(|args| {
+        args == [
+            "-machine",
+            &format!("virt,gic-version=max,accel={accelerator}"),
+        ]
+    }));
     assert!(args.windows(2).any(|args| args == ["-cpu", "max"]));
     assert!(
         args.windows(2)

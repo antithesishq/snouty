@@ -74,20 +74,76 @@ impl Simulation {
         .unwrap();
         fs::write(home.join(".ssh/known_hosts"), "existing host key\n").unwrap();
         fs::write(root.join("mode"), mode).unwrap();
-        let firmware = root.join("data/AAVMF");
-        fs::create_dir_all(&firmware).unwrap();
-        fs::write(firmware.join("AAVMF_CODE.fd"), "firmware code").unwrap();
-        let vars = firmware.join("AAVMF_VARS.fd");
-        fs::write(&vars, "firmware variables").unwrap();
-        fs::set_permissions(&vars, fs::Permissions::from_mode(0o444)).unwrap();
         let qemu_data = root.join("share/qemu");
-        fs::create_dir_all(&qemu_data).unwrap();
-        fs::write(qemu_data.join("edk2-aarch64-code.fd"), "QEMU firmware code").unwrap();
+        fs::create_dir_all(qemu_data.join("firmware")).unwrap();
+        let x86_code = qemu_data.join("guest-x86-code.fd");
+        let x86_vars = qemu_data.join("guest-x86-vars.fd");
+        fs::write(&x86_code, "x86 firmware code").unwrap();
+        fs::write(&x86_vars, "x86 firmware variables").unwrap();
         fs::write(
-            qemu_data.join("edk2-arm-vars.fd"),
-            "QEMU firmware variables",
+            qemu_data.join("firmware/00-guest-x86.json"),
+            serde_json::json!({
+                "interface-types": ["uefi"],
+                "mapping": {
+                    "device": "flash",
+                    "executable": {"filename": x86_code, "format": "raw"},
+                    "nvram-template": {"filename": x86_vars, "format": "raw"}
+                },
+                "targets": [{"architecture": "x86_64", "machines": ["pc-q35-*"]}]
+            })
+            .to_string(),
         )
         .unwrap();
+        let code = qemu_data.join("guest-arm-code.fd");
+        let vars = qemu_data.join("guest-arm-vars.fd");
+        fs::write(&code, "QEMU firmware code").unwrap();
+        fs::write(&vars, "QEMU firmware variables").unwrap();
+        let secure_code = qemu_data.join("secure-arm-code.fd");
+        fs::write(&secure_code, "secure firmware code").unwrap();
+        fs::write(
+            qemu_data.join("firmware/00-secure-arm.json"),
+            serde_json::json!({
+                "interface-types": ["uefi"],
+                "mapping": {"device": "flash", "executable": {"filename": secure_code, "format": "raw"}},
+                "targets": [{"architecture": "aarch64", "machines": ["virt-*"]}],
+                "features": ["secure-boot"]
+            })
+            .to_string(),
+        )
+        .unwrap();
+        fs::write(
+            qemu_data.join("firmware/01-guest-arm.json"),
+            serde_json::json!({
+                "interface-types": ["uefi"],
+                "mapping": {
+                    "device": "flash",
+                    "executable": {"filename": code, "format": "raw"},
+                    "nvram-template": {"filename": vars, "format": "raw"}
+                },
+                "targets": [{"architecture": "aarch64", "machines": ["virt-*"]}],
+                "features": ["verbose-static"]
+            })
+            .to_string(),
+        )
+        .unwrap();
+        if mode == "arm64-firmware-combined" {
+            let combined_code = qemu_data.join("combined-arm-code.fd");
+            fs::write(&combined_code, "combined firmware code").unwrap();
+            fs::write(
+                qemu_data.join("firmware/00-combined-arm.json"),
+                serde_json::json!({
+                    "interface-types": ["uefi"],
+                    "mapping": {
+                        "device": "flash",
+                        "mode": "combined",
+                        "executable": {"filename": combined_code, "format": "raw"}
+                    },
+                    "targets": [{"architecture": "aarch64", "machines": ["virt-*"]}]
+                })
+                .to_string(),
+            )
+            .unwrap();
+        }
         let mut paths = vec![bin];
         paths.extend(std::env::split_paths(&std::env::var_os("PATH").unwrap()));
         let child = Command::new(assert_cmd::cargo::cargo_bin!("snouty"))
@@ -282,24 +338,14 @@ fn arm64_guest_uses_uefi_and_arm64_images() {
         args.windows(2)
             .any(|args| args == ["-device", "virtio-net-pci,netdev=net0"])
     );
-    assert!(
-        args.iter()
-            .any(|arg| arg.contains("if=pflash,format=raw,unit=0,readonly=on,file="))
-    );
     let run_dir = Path::new(simulation.read("run_dir").trim()).to_path_buf();
-    let vars = run_dir.join("uefi_vars.fd");
     assert_eq!(
-        fs::read_to_string(&vars).unwrap(),
-        "QEMU firmware variables"
+        args.windows(2)
+            .find(|args| args[0] == "-bios")
+            .map(|args| fs::read_to_string(&args[1]).unwrap()),
+        Some("QEMU firmware code".to_owned())
     );
-    assert_eq!(
-        fs::metadata(vars).unwrap().permissions().mode() & 0o777,
-        0o600
-    );
-    assert!(
-        args.iter()
-            .any(|arg| arg.contains("if=pflash,format=raw,unit=1,file="))
-    );
+    assert!(!run_dir.join("uefi_vars.fd").exists());
     let pull: serde_json::Value = serde_json::from_str(&simulation.read("pull_args")).unwrap();
     assert_eq!(
         pull,
@@ -316,6 +362,23 @@ fn arm64_guest_uses_uefi_and_arm64_images() {
         save.windows(2)
             .any(|args| args == ["--platform", "linux/arm64"])
     );
+    kill(Pid::from_raw(simulation.child.id() as i32), Signal::SIGTERM).unwrap();
+    assert_eq!(simulation.finish().status.code(), Some(143));
+}
+
+#[test]
+fn combined_firmware_uses_bios_without_copying_image() {
+    let mut simulation = Simulation::start("arm64-firmware-combined");
+    simulation.wait_for("qemu_args", "-bios");
+    let args: Vec<String> = serde_json::from_str(&simulation.read("qemu_args")).unwrap();
+    assert_eq!(
+        args.windows(2)
+            .find(|args| args[0] == "-bios")
+            .map(|args| Path::new(&args[1]).to_path_buf()),
+        Some(simulation.root().join("share/qemu/combined-arm-code.fd"))
+    );
+    let run_dir = Path::new(simulation.read("run_dir").trim()).to_path_buf();
+    assert!(!run_dir.join("uefi_vars.fd").exists());
     kill(Pid::from_raw(simulation.child.id() as i32), Signal::SIGTERM).unwrap();
     assert_eq!(simulation.finish().status.code(), Some(143));
 }

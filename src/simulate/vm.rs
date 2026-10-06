@@ -1,7 +1,6 @@
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::net::TcpListener;
-use std::os::unix::fs::PermissionsExt;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -14,6 +13,7 @@ use nix::unistd::Pid;
 use tokio::time::{Instant, sleep, timeout};
 
 use super::SimulatePlatform;
+use super::firmware::platform_firmware;
 
 const AUTHORIZED_KEY_FW_CFG: &str = "opt/antithesis/authorized_key";
 const BOOT_CONSOLE_ESCAPE_CODES: [&[u8]; 6] = [
@@ -171,12 +171,8 @@ impl Vm {
         {
             eprintln!("Warning: KVM is not accessible; simulation will run more slowly.");
         }
-        let arm_firmware = if platform == SimulatePlatform::Arm64 {
-            let (code, template) = arm_firmware()?;
-            let variables = run_dir.join("uefi_vars.fd");
-            fs::copy(template, &variables)?;
-            fs::set_permissions(&variables, fs::Permissions::from_mode(0o600))?;
-            Some((code, variables))
+        let firmware = if platform == SimulatePlatform::Arm64 {
+            Some(platform_firmware(platform)?)
         } else {
             None
         };
@@ -215,18 +211,8 @@ impl Vm {
                     "-m",
                 ])
                 .arg(memory_mib.to_string());
-            if let Some((code, variables)) = &arm_firmware {
-                command
-                    .arg("-drive")
-                    .arg(format!(
-                        "if=pflash,format=raw,unit=0,readonly=on,file={}",
-                        code.display()
-                    ))
-                    .arg("-drive")
-                    .arg(format!(
-                        "if=pflash,format=raw,unit=1,file={}",
-                        variables.display()
-                    ));
+            if let Some(code) = &firmware {
+                command.arg("-bios").arg(code);
             }
             command.args(["-boot", "d", "-cdrom"]).arg(iso).args([
                 "-display",
@@ -477,46 +463,6 @@ impl Vm {
         }
         Ok(())
     }
-}
-
-fn arm_firmware() -> Result<(PathBuf, PathBuf)> {
-    let qemu_data = std::env::var_os("PATH")
-        .and_then(|path| {
-            std::env::split_paths(&path)
-                .map(|path| path.join("qemu-system-aarch64"))
-                .find(|path| path.is_file())
-        })
-        .and_then(|path| fs::canonicalize(path).ok())
-        .and_then(|path| {
-            path.parent()?
-                .parent()
-                .map(|prefix| prefix.join("share/qemu"))
-        });
-    let roots = qemu_data
-        .into_iter()
-        .chain(std::env::var_os("XDG_DATA_HOME").map(PathBuf::from))
-        .chain([
-            PathBuf::from("/usr/local/share"),
-            PathBuf::from("/usr/share"),
-        ]);
-    for root in roots {
-        for (code, vars) in [
-            ("AAVMF/AAVMF_CODE.fd", "AAVMF/AAVMF_VARS.fd"),
-            (
-                "edk2/aarch64/QEMU_EFI-pflash.raw",
-                "edk2/aarch64/vars-template-pflash.raw",
-            ),
-            ("edk2-aarch64-code.fd", "edk2-arm-vars.fd"),
-            ("edk2-aarch64-code.fd", "edk2-aarch64-vars.fd"),
-        ] {
-            let code = root.join(code);
-            let vars = root.join(vars);
-            if code.is_file() && vars.is_file() {
-                return Ok((code, vars));
-            }
-        }
-    }
-    bail!("AArch64 UEFI firmware is unavailable; install EDK2 AArch64 UEFI firmware")
 }
 
 struct ClientKey {

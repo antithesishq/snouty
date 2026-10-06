@@ -2,6 +2,8 @@
 
 mod events;
 #[cfg(target_os = "linux")]
+mod firmware;
+#[cfg(target_os = "linux")]
 mod images;
 #[cfg(target_os = "linux")]
 mod vm;

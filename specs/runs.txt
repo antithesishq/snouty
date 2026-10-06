@@ -97,12 +97,15 @@ stderr '.*'
 #    endpoints (properties, build-logs, events) only return data once a run
 #    has reached a terminal state, so list with --status completed first.
 #
-#    Against staging the tenant must have at least one completed run. Without
-#    one, `env_from_json` captures nothing and every later command fails.
+#    A multiverse-debugging session completes with launcher `debugging` and
+#    has no build logs, so `env_from_json_find` takes the newest completed run
+#    from another launcher. Against staging the tenant must have one such run
+#    in its 100 newest completed runs. Without one, `env_from_json_find` fails
+#    and every later command fails.
 mock-runs-server
-snouty --json runs list --status completed
+snouty --json runs list --status completed --limit 100
 [!staging] stdout '"run_id":"run-.*'
-env_from_json 0 run_id
+env_from_json_find run_id launcher!=debugging
 
 # `snouty runs show` displays run details in key-value format. The requested
 # Duration (from antithesis.duration) and the wall-clock Elapsed (derived from

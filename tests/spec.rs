@@ -298,6 +298,35 @@ fn cmd_mock_server(
     Ok(())
 }
 
+fn last_stdout(env: &testscript_rs::TestEnvironment) -> testscript_rs::Result<&str> {
+    let output = env
+        .last_output
+        .as_ref()
+        .ok_or_else(|| err("no previous command output".to_string()))?;
+    std::str::from_utf8(&output.stdout).map_err(|e| err(format!("stdout is not valid UTF-8: {e}")))
+}
+
+fn parse_json_line(line: &str) -> testscript_rs::Result<serde_json::Value> {
+    serde_json::from_str(line).map_err(|e| err(format!("parse JSON line: {e}")))
+}
+
+/// Stores `<key>` of `value` as `$R_<key>`.
+fn set_env_from_json(
+    env: &mut testscript_rs::TestEnvironment,
+    value: &serde_json::Value,
+    key: &str,
+) -> testscript_rs::Result<()> {
+    let extracted = match value.get(key) {
+        Some(serde_json::Value::Null) | None => {
+            return Err(err(format!("key '{key}' not found in JSON")));
+        }
+        Some(serde_json::Value::String(s)) => s.clone(),
+        Some(other) => other.to_string(),
+    };
+    env.set_env_var(&format!("R_{key}"), &extracted);
+    Ok(())
+}
+
 fn cmd_env_from_json(
     env: &mut testscript_rs::TestEnvironment,
     args: &[String],
@@ -315,12 +344,7 @@ fn cmd_env_from_json(
         .map_err(|_| err("line_index must be a non-negative integer".to_string()))?;
     let key = &args[1];
 
-    let output = env
-        .last_output
-        .as_ref()
-        .ok_or_else(|| err("no previous command output".to_string()))?;
-    let stdout = std::str::from_utf8(&output.stdout)
-        .map_err(|e| err(format!("stdout is not valid UTF-8: {e}")))?;
+    let stdout = last_stdout(env)?;
     let lines: Vec<&str> = stdout.lines().collect();
     let line = lines.get(line_idx).ok_or_else(|| {
         err(format!(
@@ -329,17 +353,57 @@ fn cmd_env_from_json(
             line_idx
         ))
     })?;
-    let value: serde_json::Value =
-        serde_json::from_str(line).map_err(|e| err(format!("parse JSON line: {e}")))?;
-    let extracted = match value.get(key) {
-        Some(serde_json::Value::Null) | None => {
-            return Err(err(format!("key '{key}' not found in JSON")));
+    let value = parse_json_line(line)?;
+    set_env_from_json(env, &value, key)
+}
+
+enum JsonFilter<'a> {
+    Eq { field: &'a str, value: &'a str },
+    Ne { field: &'a str, value: &'a str },
+}
+
+impl<'a> JsonFilter<'a> {
+    fn parse(s: &'a str) -> Option<Self> {
+        if let Some((field, value)) = s.split_once("!=") {
+            Some(Self::Ne { field, value })
+        } else {
+            let (field, value) = s.split_once('=')?;
+            Some(Self::Eq { field, value })
         }
-        Some(serde_json::Value::String(s)) => s.clone(),
-        Some(other) => other.to_string(),
+    }
+
+    /// A missing or non-string field never equals `value`.
+    fn matches(&self, json: &serde_json::Value) -> bool {
+        match *self {
+            Self::Eq { field, value } => json.get(field).and_then(|v| v.as_str()) == Some(value),
+            Self::Ne { field, value } => json.get(field).and_then(|v| v.as_str()) != Some(value),
+        }
+    }
+}
+
+fn cmd_env_from_json_find(
+    env: &mut testscript_rs::TestEnvironment,
+    args: &[String],
+) -> testscript_rs::Result<()> {
+    // Usage: env_from_json_find <json_key> <field>=<value> | <field>!=<value>
+    // Like env_from_json, but reads the first NDJSON line whose string
+    // <field> passes the filter.
+    let usage = || err("env_from_json_find requires <json_key> <field>[!]=<value>".to_string());
+    let [key, filter] = args else {
+        return Err(usage());
     };
-    env.set_env_var(&format!("R_{key}"), &extracted);
-    Ok(())
+    let filter = JsonFilter::parse(filter).ok_or_else(usage)?;
+
+    let mut found = None;
+    for line in last_stdout(env)?.lines() {
+        let value = parse_json_line(line)?;
+        if filter.matches(&value) {
+            found = Some(value);
+            break;
+        }
+    }
+    let value = found.ok_or_else(|| err(format!("no JSON line matches '{}'", args[1])))?;
+    set_env_from_json(env, &value, key)
 }
 
 fn cmd_mock_runs_server(
@@ -747,6 +811,7 @@ fn spec_tests() {
             .command("mock-runs-server", cmd_mock_runs_server)
             .command("mock-proxy", cmd_mock_proxy)
             .command("env_from_json", cmd_env_from_json)
+            .command("env_from_json_find", cmd_env_from_json_find)
             .command("file", cmd_file)
             .command("set-env", cmd_set_env)
             .command("snouty-bg", |env, args| {

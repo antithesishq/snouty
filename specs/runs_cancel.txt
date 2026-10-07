@@ -3,15 +3,18 @@
 # Cancel a run that is starting or in progress (`POST
 # /api/v0/runs/{run_id}/cancel`). Cancellation is asynchronous: success means
 # the server marked the run as cancelled, but its jobs can still be stopping.
-# A run that has already finished answers 409 and does not change. Verified
-# against the live API (orbitinghail, release 64.0): a completed run answers
-# 409 with "Conflict: Run <id> has already finished and cannot be cancelled"
-# and keeps its status, and an unknown run id answers a bare 404.
+# Verified against the live API (orbitinghail, release 64.0):
+#
+#   - A starting run answers 200 `{}`, and `runs show` reports it cancelled
+#     at once, with its completion time set.
+#   - A run that is already cancelled answers 200 `{}` again and does not
+#     change, although the spec documents 409 for it.
+#   - A completed run answers 409 with "Conflict: Run <id> has already
+#     finished and cannot be cancelled", and keeps its status.
+#   - An unknown run id answers a bare 404.
 #
 # The request is a POST, so a transport failure is never retried: the
 # cancellation is sent exactly once.
-#
-# Only the failure cases run against staging. They do not change the tenant.
 
 # Like every runs command, cancel requires an API key.
 ! snouty runs cancel some-run
@@ -25,28 +28,34 @@ stderr '.*RUN_ID.*'
 snouty runs --help
 stdout 'cancel.*Cancel a run'
 
-# `snouty runs cancel --help` explains that cancellation is asynchronous and
-# that a finished run cannot be cancelled.
+# `snouty runs cancel --help` explains that cancellation is asynchronous, that
+# a completed run cannot be cancelled, and that a cancelled run can be
+# cancelled again.
 snouty runs cancel --help
 stdout 'asynchronous'
-stdout 'already finished'
+stdout 'already completed'
+stdout 'already cancelled'
+
+# Every case below sends a cancel request, so none of them run against
+# staging.
+[staging] skip
 
 # Cancelling a run in progress confirms the cancellation on stdout and notes
 # on stderr that its jobs can take time to stop. run-2 is the mock's
 # in-progress fixture.
 mock-runs-server
-[!staging] snouty runs cancel run-2
-[!staging] stdout '^cancelled run run-2$'
-[!staging] stderr 'take some time to stop'
+snouty runs cancel run-2
+stdout '^cancelled run run-2$'
+stderr 'take some time to stop'
 
 # `snouty --json runs cancel` prints the run id as one JSON object, and no
 # note.
 mock-runs-server
-[!staging] snouty --json runs cancel run-2
-[!staging] stdout '^\{"run_id":"run-2"\}$'
-[!staging] ! stderr 'take some time'
+snouty --json runs cancel run-2
+stdout '^\{"run_id":"run-2"\}$'
+! stderr 'take some time'
 
-# A run that has already finished cannot be cancelled. The command fails,
+# A run that has already completed cannot be cancelled. The command fails,
 # says why, and points at `runs show` for the run's final status.
 mock-runs-server
 snouty --json runs list --status completed

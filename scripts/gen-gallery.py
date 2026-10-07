@@ -2173,9 +2173,9 @@ def build_help_stories(d: Discovery) -> list[Story]:
             "help-runs-cancel",
             "Learn what cancelling a run does",
             "I want the help to explain that cancellation is asynchronous and that a "
-            "finished run cannot be cancelled.",
+            "completed run cannot be cancelled.",
             ["runs", "cancel"],
-            # Only a finished run is safe to cancel here: the server refuses it
+            # Only a completed run is safe to cancel here: the server refuses it
             # and leaves the run unchanged.
             ["runs", "cancel", s],
             expect_ok=False,

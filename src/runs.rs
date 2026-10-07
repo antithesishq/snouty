@@ -450,16 +450,18 @@ async fn cmd_runs_cancel(
     debug!("cancelling run: {}", run_id);
 
     let api = AntithesisApi::new(settings, verbose)?;
-    api.cancel_run(run_id)
-        .await
-        .map_err(|err| match api_error_status(&err) {
+    if let Err(err) = api.cancel_run(run_id).await {
+        return Err(match api_error_status(&err) {
             Some(409) => user_error(format!("run {run_id} has already finished"))
                 .note("only a run that is starting or in progress can be cancelled")
                 .suggestion(format!(
                     "see the run's final status with `snouty runs show {run_id}`"
                 )),
-            _ => explain_run_not_found(run_id, err),
-        })?;
+            // A tenant release without the cancel endpoint can 404 for a run
+            // that exists, so probe the run before calling the id bad.
+            _ => explain_run_scoped_error(&api, run_id, err).await,
+        });
+    }
 
     if json {
         outln!("{}", json!({ "run_id": run_id }))?;

@@ -964,14 +964,15 @@ def _exec_json(sn: Snouty, x: ExecSession, h: str, v: str, script: str) -> Resul
 
 
 def _live_session(sn: Snouty) -> dict | None:
-    """The newest in-progress debugging session that names the run and moment
-    it debugs, or None."""
-    rows = sn.json_lines(
-        ["runs", "list", "--launcher", DEBUGGING_LAUNCHER, "--status", "in_progress"]
-    )
+    """The newest debugging session that has not completed and names the run
+    and moment it debugs, or None. A session that accepted commands reported
+    status `unknown` (orbitinghail, release 64.0), so the status is not read."""
+    rows = sn.json_lines(["runs", "list", "--launcher", DEBUGGING_LAUNCHER, "-n", "20"])
     for r in rows:
         params = r.get("parameters") or {}
-        if all(params.get(k) for k in (_DEBUG_RUN, _DEBUG_HASH, _DEBUG_VTIME)):
+        if not r.get("completed_at") and all(
+            params.get(k) for k in (_DEBUG_RUN, _DEBUG_HASH, _DEBUG_VTIME)
+        ):
             return r
     return None
 
@@ -1070,12 +1071,21 @@ def discover_exec_session(sn: Snouty, d: Discovery) -> ExecSession:
     """Reuse a live debugging session, or launch one from `d.success`, then wait
     until it accepts commands and run the exec that the follow-up story chains
     from."""
-    row, launch = _live_session(sn), None
-    if row is None:
-        row, launch = _launch_session(sn, d.success)
-        print(f"  launched debugging session {row['run_id']}", file=sys.stderr)
-    else:
+    row = _live_session(sn)
+    if row is not None:
         print(f"  reusing debugging session {row['run_id']}", file=sys.stderr)
+        try:
+            return _ready_exec_session(sn, d, row, None)
+        except GalleryError as e:
+            print(f"  cannot reuse {row['run_id']}: {e}", file=sys.stderr)
+    row, launch = _launch_session(sn, d.success)
+    print(f"  launched debugging session {row['run_id']}", file=sys.stderr)
+    return _ready_exec_session(sn, d, row, launch)
+
+
+def _ready_exec_session(sn: Snouty, d: Discovery, row: dict, launch: Result | None) -> ExecSession:
+    """Wait until the session `row` accepts commands, and run the exec that the
+    follow-up story chains from."""
     params = row["parameters"]
     base, h, v = params[_DEBUG_RUN], params[_DEBUG_HASH], params[_DEBUG_VTIME]
     rewarm = _rewarm_moment(sn, base, float(v))
@@ -1095,7 +1105,7 @@ def discover_exec_session(sn: Snouty, d: Discovery) -> ExecSession:
         rewarm_vtime=str(rewarm["vtime"]),
     )
     _wait_ready(sn, x)
-    first = _exec_json(sn, x, h, v, f"echo '{EXEC_MARKER_TEXT}' > {EXEC_MARKER_PATH}")
+    first = _exec_json(sn, x, h, v, f'echo "{EXEC_MARKER_TEXT}" > {EXEC_MARKER_PATH}')
     if not first.ok:
         raise GalleryError(f"the first exec in {x.session} failed: {first.stderr.strip()}")
     x.follow_hash, x.follow_vtime = _end_moment(first)
@@ -2314,7 +2324,7 @@ def build_exec_stories(x: ExecSession) -> list[Story]:
     `discover_exec_session` found or launched. Each one executes once: none is
     re-run for JSON rows."""
     exec_at = ["runs", "exec", x.session, x.hash, x.vtime]
-    script = "echo \"hello from $(uname -n)\"; echo 'a warning on stderr' >&2"
+    script = 'echo "hello from $(uname -n)"; echo "a warning on stderr" >&2'
 
     def exec_story(slug: str, title: str, goal: str, judge: str, args: list[str], check, **kw):
         return Story(slug, title, goal, judge, args, check, json_capable=False, env=EXEC_ENV, **kw)
@@ -2336,7 +2346,7 @@ def build_exec_stories(x: ExecSession) -> list[Story]:
             "I run a command that exits non-zero, and I want snouty to tell me so.",
             "The script's output appears, snouty reports the script's exit code, and the "
             "trailer still names the end moment. snouty exits 1, not with the script's code.",
-            [*exec_at, "echo 'checking the data directory'; exit 3"],
+            [*exec_at, 'echo "checking the data directory"; exit 3'],
             fails_with("checking the data directory", "code 3", "end moment:"),
         ),
         exec_story(
@@ -2364,8 +2374,8 @@ def build_exec_stories(x: ExecSession) -> list[Story]:
             "the assertions, and Antithesis events, next to my script's output.",
             "Events print as `runs logs` prints them, the script's output among them, then "
             "the end-moment trailer. Exit 0.",
-            [*exec_at, "--events", "echo 'before the pause'; sleep 2; echo 'after the pause'"],
-            succeeds_with("before the pause", "after the pause", "end moment:"),
+            [*exec_at, "--events", 'echo "first line"; echo "second line"'],
+            succeeds_with("first line", "second line", "end moment:"),
         ),
         exec_story(
             "runs-exec--json",
@@ -2401,13 +2411,13 @@ def build_exec_stories(x: ExecSession) -> list[Story]:
             "My script can hang, and I want it stopped after a few seconds.",
             "The output printed before the timeout appears, then snouty says the command "
             "timed out and after how long. No end-moment trailer. snouty exits 1.",
-            [*exec_at, "--timeout", "5", "echo 'waiting for a lock'; sleep 60"],
+            [*exec_at, "--timeout", "5", 'echo "waiting for a lock"; sleep 60'],
             fails_with("waiting for a lock", "timed out"),
         ),
         exec_story(
             "runs-exec-follow-up",
             "Continue from where my last command ended",
-            f"An earlier `runs exec` wrote a file (`echo '{EXEC_MARKER_TEXT}' > "
+            f'An earlier `runs exec` wrote a file (`echo "{EXEC_MARKER_TEXT}" > '
             f"{EXEC_MARKER_PATH}`), and its trailer named an end moment. I run my next "
             "command at that moment, to build on what the first one did.",
             "The command executes at the earlier command's end moment, so the file it wrote "

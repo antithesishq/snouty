@@ -72,6 +72,10 @@ fn generate_api_client(out_dir: &Path) {
         "crate::vtime::VTime",
         std::iter::empty::<progenitor::TypeImpl>(),
     );
+    settings.with_patch(
+        PERFORMANCE_TIER_SCHEMA,
+        progenitor::TypePatch::default().with_derive("clap::ValueEnum"),
+    );
     let mut generator = progenitor::Generator::new(&settings);
     let tokens = generator.generate_tokens(&spec).unwrap();
     let ast = syn::parse2(tokens).unwrap();
@@ -241,29 +245,63 @@ fn drop_launch_status_code(spec: &mut serde_json::Value) {
 
 /// Decode `Params.antithesis.performance_tier` as a plain string. `runs list`
 /// and `runs show` decode every run's parameters through `Params`, so a closed
-/// enum would fail a whole listing on one tier this build does not know.
+/// enum would fail a whole listing on one tier this build does not know. The
+/// enum moves to a `PerformanceTier` schema, which `--performance-tier` parses
+/// into.
 fn open_performance_tier(spec: &mut serde_json::Value) {
-    remove_schema_key(
+    let tiers = remove_schema_key(
         spec,
         "/components/schemas/Params/properties/antithesis.performance_tier",
         "enum",
         "open_performance_tier",
     );
+    assert!(
+        tiers
+            .as_array()
+            .is_some_and(|tiers| !tiers.is_empty() && tiers.iter().all(|t| t.is_string())),
+        "Params.antithesis.performance_tier's enum is not a list of strings; update \
+         `open_performance_tier` in build.rs"
+    );
+    let description = spec
+        .pointer("/components/schemas/Params/properties/antithesis.performance_tier/description")
+        .cloned()
+        .unwrap_or_default();
+    let schemas = spec
+        .pointer_mut("/components/schemas")
+        .and_then(serde_json::Value::as_object_mut)
+        .expect("openapi spec has /components/schemas");
+    assert!(
+        schemas
+            .insert(
+                PERFORMANCE_TIER_SCHEMA.to_owned(),
+                serde_json::json!({"type": "string", "enum": tiers, "description": description}),
+            )
+            .is_none(),
+        "openapi spec now defines {PERFORMANCE_TIER_SCHEMA}; delete `open_performance_tier`'s \
+         copy in build.rs"
+    );
 }
 
-/// Remove `key` from the object at `pointer`. Both must exist, so a spec
-/// refresh that makes `transform` a no-op fails the build.
-fn remove_schema_key(spec: &mut serde_json::Value, pointer: &str, key: &str, transform: &str) {
+/// The schema `open_performance_tier` adds.
+const PERFORMANCE_TIER_SCHEMA: &str = "PerformanceTier";
+
+/// Remove `key` from the object at `pointer`, and return its value. Both must
+/// exist, so a spec refresh that makes `transform` a no-op fails the build.
+fn remove_schema_key(
+    spec: &mut serde_json::Value,
+    pointer: &str,
+    key: &str,
+    transform: &str,
+) -> serde_json::Value {
     let object = spec
         .pointer_mut(pointer)
         .and_then(serde_json::Value::as_object_mut)
         .unwrap_or_else(|| {
             panic!("openapi spec has no object at {pointer}; update `{transform}` in build.rs")
         });
-    assert!(
-        object.remove(key).is_some(),
-        "openapi spec has no `{key}` at {pointer}; delete `{transform}` in build.rs"
-    );
+    object.remove(key).unwrap_or_else(|| {
+        panic!("openapi spec has no `{key}` at {pointer}; delete `{transform}` in build.rs")
+    })
 }
 
 /// Tag `Moment.vtime` with a private `format: vtime` marker for the

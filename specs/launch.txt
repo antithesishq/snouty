@@ -62,6 +62,15 @@ stderr 'antithesis\.filter_logs_matching matches the empty string, which would s
 ! snouty launch -w basic_test --duration 30 --param antithesis.filter_logs_matching=
 stderr 'antithesis\.filter_logs_matching is empty'
 
+# --performance-tier accepts only the tiers in the vendored OpenAPI spec, and
+#    its help points at --param for any other tier.
+! snouty launch -w basic_test --duration 30 --performance-tier ultra
+stderr 'invalid value .ultra. for .--performance-tier'
+stderr 'possible values: standard, fast, turbo'
+snouty launch --help
+stdout 'possible values: standard, fast, turbo\]'
+stdout '--param antithesis\.performance_tier=TIER'
+
 # `launch` does not accept --stdin.
 ! snouty launch -w basic_test --stdin --duration 30
 stderr 'unexpected argument.*'
@@ -201,4 +210,16 @@ mock-server 200 '{"message":"Success","runId":"run-123"}'
 snouty launch -w basic_test --duration 30 --filter-logs-matching debug
 stderr '"antithesis.duration": "30"'
 stderr '"antithesis.filter_logs_matching": "debug"'
+stdout 'Test run started: run_id run-123'
+
+# --performance-tier sends `antithesis.performance_tier`.
+mock-server 200 '{"message":"Success","runId":"run-123"}'
+snouty launch -w basic_test --duration 30 --performance-tier turbo
+stderr '"antithesis.performance_tier": "turbo"'
+stdout 'Test run started: run_id run-123'
+
+# The raw --param form sends any tier, so a tier newer than this snouty works.
+mock-server 200 '{"message":"Success","runId":"run-123"}'
+snouty launch -w basic_test --duration 30 --param antithesis.performance_tier=ultra
+stderr '"antithesis.performance_tier": "ultra"'
 stdout 'Test run started: run_id run-123'

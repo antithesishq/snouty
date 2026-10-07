@@ -5,7 +5,10 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
 use color_eyre::Section;
 use color_eyre::eyre::Report;
 
-use crate::api::{RunStatus, SEARCH_DEFAULT_LIMIT, SEARCH_MAX_LIMIT, SourceRunId, SourceSessionId};
+use crate::api::{
+    PerformanceTier, RunStatus, SEARCH_DEFAULT_LIMIT, SEARCH_MAX_LIMIT, SourceRunId,
+    SourceSessionId,
+};
 use crate::error::user_error;
 use crate::features::{self, Feature};
 use crate::time::HumanDuration;
@@ -601,6 +604,13 @@ pub struct LaunchArgs {
     /// release 59 or newer.
     #[arg(long)]
     pub filter_logs_matching: Option<String>,
+
+    /// Performance tier for the run. Higher tiers explore system states faster
+    /// through more parallelism. They also consume core hours faster. The
+    /// server default is `standard`. To send a tier that is not listed, use
+    /// `--param antithesis.performance_tier=TIER`.
+    #[arg(long, value_enum)]
+    pub performance_tier: Option<PerformanceTier>,
 
     /// Extra parameters as key=value pairs (repeatable)
     #[arg(long = "param")]
@@ -1278,6 +1288,17 @@ mod tests {
 
     fn parse(args: &[&str]) -> Cli {
         Cli::try_parse_from(args).expect("args should parse")
+    }
+
+    /// clap parses the value name, and `launch` sends `Display`, the wire
+    /// value. They differ for a tier such as `ultra_fast`, which clap would
+    /// name `ultra-fast`.
+    #[test]
+    fn performance_tier_value_names_are_the_wire_values() {
+        for tier in PerformanceTier::value_variants() {
+            let name = tier.to_possible_value().expect("no variant is skipped");
+            assert_eq!(name.get_name(), tier.to_string());
+        }
     }
 
     #[test]

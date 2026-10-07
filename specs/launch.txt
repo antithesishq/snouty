@@ -98,7 +98,7 @@ stderr 'cannot be overridden via --param.*'
 #    ahead of a check that fails.
 ! snouty launch -w basic_test --duration 30 --performance-tier ultra --param antithesis.performance_tier=ultra
 stderr 'cannot be overridden via --param'
-! stderr 'does not know performance tier'
+! stderr 'unknown performance tier'
 
 # At least one source of parameters must be provided; otherwise the
 #    command fails.
@@ -221,14 +221,14 @@ stdout 'Test run started: run_id run-123'
 mock-server 200 '{"message":"Success","runId":"run-123"}'
 snouty launch -w basic_test --duration 30 --performance-tier turbo
 stderr '"antithesis.performance_tier": "turbo"'
-! stderr 'does not know performance tier'
+! stderr 'unknown performance tier'
 stdout 'Test run started: run_id run-123'
 
 # --performance-tier sends a tier that this snouty does not know, so a tier
 #    newer than this snouty works. snouty warns, because the value can be a typo.
 mock-server 200 '{"message":"Success","runId":"run-123"}'
 snouty launch -w basic_test --duration 30 --performance-tier ultra
-stderr 'warning: snouty does not know performance tier `ultra`; sending it anyway'
+stderr 'warning: unknown performance tier `ultra`'
 stderr '"antithesis.performance_tier": "ultra"'
 stdout 'Test run started: run_id run-123'
 

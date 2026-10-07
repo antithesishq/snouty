@@ -309,7 +309,7 @@ async fn cmd_launch(
 
     // Warned here for the same reason as the ephemeral notice.
     if let Some(tier) = unknown_performance_tier {
-        eprintln!("warning: snouty does not know performance tier `{tier}`; sending it anyway");
+        eprintln!("warning: unknown performance tier `{tier}`");
     }
 
     let response = launch_webhook(&args.webhook, params, settings, verbose).await?;

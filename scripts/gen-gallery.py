@@ -19,10 +19,10 @@ There are three kinds of story:
   * goal stories — capture one command's output and judge it against a user goal
     (the bulk of the gallery; slugs like `runs-events-single`). The `runs exec`
     stories (`runs-exec*`, and `debug` when discovery launches a session) run
-    in a debugging session. Discovery reuses an uncompleted session that an
-    earlier gallery run launched, or launches one with `snouty debug`. A new
-    session takes several minutes to accept commands. `--no-exec` leaves them
-    out.
+    in a debugging session. Discovery reuses a starting or in-progress session
+    that an earlier gallery run launched, or launches one with `snouty debug`.
+    A new session takes several minutes to accept commands. `--no-exec` leaves
+    them out.
   * help stories — capture `snouty <cmd> --help` next to that command's default
     output (slugs like `help-runs-properties`) and judge whether the help is
     informative, clear, concise, consistent, and *aligned* with what the command
@@ -104,11 +104,18 @@ DEBUGGING_LAUNCHER = "debugging"
 # `runs exec` is an unstable feature; its stories turn it on.
 EXEC_ENV: dict[str, str | None] = {"SNOUTY_UNSTABLE_FEATURES": "runs-exec"}
 
-# A new debugging session does not accept commands at once. Observed on
-# orbitinghail (release 64.0): `starting` for about 75s, then `in_progress`, with
-# the command endpoint answering 404 for about 2 minutes more and then 400
-# `unknown_moment` while the session replays to its moment. No status reports
-# readiness, so discovery polls an exec until it succeeds.
+# A debugging session's status says whether it accepts commands: `starting`
+# is not ready yet, `in_progress` is ready, and an ended session never accepts
+# them. Observed on orbitinghail (release 64.0), before the API adopted these
+# semantics: `starting` for about 75s, then `in_progress` while the command
+# endpoint answered 404 for about 2 minutes more and then 400 `unknown_moment`,
+# then `unknown` once commands executed, about 7 minutes after the launch.
+SESSION_STARTING = "starting"
+SESSION_READY = "in_progress"
+# A ready session reports `unknown` until the API adopts the semantics above.
+# TODO: drop SESSION_READY_OLD once a ready session reports `in_progress`.
+SESSION_READY_OLD = "unknown"
+SESSION_ENDED = frozenset({"completed", "cancelled", "incomplete"})
 EXEC_READY_DEADLINE = 600
 EXEC_READY_POLL = 15
 
@@ -973,14 +980,18 @@ def _debugging_sessions(sn: Snouty) -> list[dict]:
 
 
 def _live_session(sn: Snouty) -> dict | None:
-    """The newest uncompleted debugging session that the gallery launched, or
-    None. A session that the gallery did not launch is never reused: the stories
-    would execute in it, and it can hold the cold story's moment. A session that
-    accepted commands reported status `unknown` (orbitinghail, release 64.0), so
-    the status is not read."""
+    """The newest debugging session that the gallery launched and that is ready
+    or starting, or None. A session that the gallery did not launch is never
+    reused: the stories would execute in it, and it can hold the cold story's
+    moment."""
     for r in _debugging_sessions(sn):
         description = (r.get("parameters") or {}).get(_DESCRIPTION, "")
-        if not r.get("completed_at") and description.startswith(EXEC_SESSION_DESCRIPTION):
+        live = r.get("status") in (
+            SESSION_STARTING,
+            SESSION_READY,
+            SESSION_READY_OLD,
+        )
+        if live and description.startswith(EXEC_SESSION_DESCRIPTION):
             return r
     return None
 
@@ -1023,17 +1034,27 @@ def _launch_session(sn: Snouty, base_run: str) -> tuple[dict, Result]:
 
 
 def _wait_ready(sn: Snouty, x: ExecSession, script: str) -> Result:
+    """Wait while the session is starting, then execute `script` until it
+    succeeds. Fail at once when the session has ended."""
     deadline = time.monotonic() + EXEC_READY_DEADLINE
     while True:
-        res = _exec_json(sn, x, script)
-        if res.ok:
-            return res
+        status = sn.json_obj(["runs", "show", x.session]).get("status")
+        if status in SESSION_ENDED:
+            raise GalleryError(f"debugging session {x.session} has ended ({status})")
+        waiting_for = f"status {status}"
+        # TODO: once the API reports `in_progress` only for a ready session,
+        # execute once and fail on an error instead of retrying.
+        if status != SESSION_STARTING:
+            res = _exec_json(sn, x, script)
+            if res.ok:
+                return res
+            waiting_for = res.stderr.strip()
         if time.monotonic() > deadline:
             raise GalleryError(
                 f"debugging session {x.session} did not accept `runs exec` within "
-                f"{EXEC_READY_DEADLINE}s; last error: {res.stderr.strip()}"
+                f"{EXEC_READY_DEADLINE}s; last: {waiting_for}"
             )
-        print(f"  waiting for {x.session}: {res.stderr.strip()}", file=sys.stderr)
+        print(f"  waiting for {x.session}: {waiting_for}", file=sys.stderr)
         time.sleep(EXEC_READY_POLL)
 
 
@@ -2404,7 +2425,9 @@ def build_exec_stories(d: Discovery, x: ExecSession) -> list[Story]:
             "My script can hang, and I want it stopped after a few seconds.",
             "The output printed before the timeout appears, then snouty says the command "
             "timed out and after how long. No end-moment trailer. snouty exits 1.",
-            [*exec_at, "--timeout", "5", 'echo "waiting for a lock"; sleep 60'],
+            # `sleep` counts virtual time, which can run far ahead of the wall
+            # clock that --timeout counts: a `sleep 60` once exited within 5s.
+            [*exec_at, "--timeout", "5", 'echo "waiting for a lock"; sleep 3600'],
             fails_with("waiting for a lock", "timed out"),
         ),
         exec_story(

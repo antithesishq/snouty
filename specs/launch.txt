@@ -29,14 +29,11 @@ snouty launch --help
 stdout 'params with an `attrs\.` prefix'
 stdout '--param attrs\.team=payments'
 
-# The user specifies a launcher name via -l / --launcher (required).
-! snouty launch --duration 30
-stderr 'required arguments were not provided:\n  --launcher <LAUNCHER>'
+# The user specifies a launcher name via -l / --launcher. It defaults to
+#    basic_test.
 snouty launch --help
-stdout '^Usage: snouty launch \[OPTIONS\] --launcher <LAUNCHER>$'
 stdout '^  -l, --launcher <LAUNCHER>$'
-snouty run --help
-stdout '^Usage: snouty run \[OPTIONS\] --launcher <LAUNCHER>$'
+stdout '\[default: basic_test\]'
 
 # -w / --webhook is a deprecated alias for --launcher. Help hides it, and it
 #    conflicts with --launcher.
@@ -217,10 +214,22 @@ mock-server 200 '{"message":"Success","runId":"run-123"}'
 snouty run --launcher basic_test --duration 30
 stderr 'snouty run.*is deprecated.*snouty launch'
 
-# --webhook and -w still launch the test, but print a deprecation warning.
+# Without --launcher, the run goes to the basic_test launcher.
 mock-server 200 '{"message":"Success","runId":"run-123"}'
-snouty launch --webhook basic_test --duration 30
+snouty --verbose launch --duration 30
+stderr '^> POST .*/api/v1/launch/basic_test$'
+stdout 'Test run started: run_id run-123'
+
+# --launcher selects the launcher.
+mock-server 200 '{"message":"Success","runId":"run-123"}'
+snouty --verbose launch --launcher basic_k8s_test --duration 30
+stderr '^> POST .*/api/v1/launch/basic_k8s_test$'
+
+# --webhook and -w still select the launcher, but print a deprecation warning.
+mock-server 200 '{"message":"Success","runId":"run-123"}'
+snouty --verbose launch --webhook basic_k8s_test --duration 30
 stderr '^warning: --webhook is deprecated, use --launcher instead$'
+stderr '^> POST .*/api/v1/launch/basic_k8s_test$'
 stdout 'Test run started: run_id run-123'
 mock-server 200 '{"message":"Success","runId":"run-123"}'
 snouty launch -w basic_test --duration 30

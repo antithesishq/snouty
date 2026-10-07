@@ -280,15 +280,6 @@ fn launch_no_trailing_raw_args() {
 }
 
 #[test]
-fn launch_fails_without_launcher() {
-    snouty()
-        .args(["launch", "--duration", "30"])
-        .assert()
-        .failure()
-        .stderr(predicate::str::contains("--launcher"));
-}
-
-#[test]
 fn launch_fails_without_parameters() {
     let mock_url = start_mock_server(r#"{}"#, 200);
 

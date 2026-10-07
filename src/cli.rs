@@ -106,9 +106,6 @@ pub struct Cli {
 #[derive(Subcommand)]
 pub enum Commands {
     /// Launch a test run
-    // The deprecated --webhook can stand in for --launcher, so clap treats
-    // --launcher as optional and the derived usage would not show it.
-    #[command(override_usage = "snouty launch [OPTIONS] --launcher <LAUNCHER>")]
     #[command(long_about = r#"Launch a test run
 
 Example:
@@ -169,10 +166,7 @@ Environment variables (override any settings file):
     Launch(LaunchArgs),
 
     /// Deprecated: use `launch` instead
-    #[command(
-        hide = true,
-        override_usage = "snouty run [OPTIONS] --launcher <LAUNCHER>"
-    )]
+    #[command(hide = true)]
     Run(LaunchArgs),
 
     /// Interact with test runs
@@ -563,13 +557,8 @@ pub struct DoctorArgs {
 #[derive(Args)]
 pub struct LaunchArgs {
     /// Launcher name (e.g., basic_test, basic_k8s_test)
-    #[arg(
-        short,
-        long,
-        required_unless_present = "webhook",
-        conflicts_with = "webhook"
-    )]
-    pub launcher: Option<String>,
+    #[arg(short, long, default_value = "basic_test", conflicts_with = "webhook")]
+    pub launcher: String,
 
     /// Deprecated alias for --launcher
     #[arg(short, long, hide = true)]
@@ -630,20 +619,6 @@ pub struct LaunchArgs {
     /// Extra parameters as key=value pairs (repeatable)
     #[arg(long = "param")]
     pub params: Vec<String>,
-}
-
-impl LaunchArgs {
-    /// Returns the launcher name and warns if it came from the deprecated
-    /// --webhook. Clap guarantees that exactly one of the two flags is set.
-    pub fn take_launcher(&mut self) -> String {
-        if let Some(webhook) = self.webhook.take() {
-            eprintln!("warning: --webhook is deprecated, use --launcher instead");
-            return webhook;
-        }
-        self.launcher
-            .take()
-            .expect("clap requires --launcher or --webhook")
-    }
 }
 
 #[derive(Args)]

@@ -184,11 +184,17 @@ fn json_unaware_command_name(command: &Commands) -> Option<&'static str> {
 }
 
 async fn cmd_launch(
-    mut args: LaunchArgs,
+    args: LaunchArgs,
     settings: &Settings,
     OutputOptions { json, verbose }: OutputOptions,
 ) -> Result<()> {
-    let launcher = args.take_launcher();
+    let launcher = match args.webhook {
+        Some(webhook) => {
+            eprintln!("warning: --webhook is deprecated, use --launcher instead");
+            webhook
+        }
+        None => args.launcher,
+    };
     info!("launching test with launcher: {launcher}");
 
     let mut params = Params::new();

@@ -457,8 +457,8 @@ async fn cmd_runs_cancel(
                 .suggestion(format!(
                     "see the run's final status with `snouty runs show {run_id}`"
                 )),
-            // A tenant without the cancel endpoint answers 404 for a real run,
-            // so probe the run.
+            // A tenant older than MIN_CANCEL_RELEASE has no cancel endpoint
+            // and answers 404 for a real run, so probe the run.
             _ => explain_run_scoped_error(&api, run_id, err).await,
         });
     }

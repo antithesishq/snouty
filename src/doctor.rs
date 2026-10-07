@@ -1,7 +1,10 @@
 use color_eyre::eyre::Result;
 use serde::{Serialize, Serializer};
 
-use crate::api::{AntithesisApi, ApiVersion, MIN_EXEC_RELEASE, MIN_SEARCH_RELEASE, VersionError};
+use crate::api::{
+    AntithesisApi, ApiVersion, MIN_CANCEL_RELEASE, MIN_EXEC_RELEASE, MIN_SEARCH_RELEASE,
+    VersionError,
+};
 use crate::attributed_value::AttributedValue;
 use crate::auth::AuthenticationInfo;
 use crate::compose;
@@ -562,7 +565,7 @@ struct ReleaseFloor {
     feature: Option<Feature>,
 }
 
-const RELEASE_FLOORS: [ReleaseFloor; 2] = [
+const RELEASE_FLOORS: [ReleaseFloor; 3] = [
     ReleaseFloor {
         id: "events-search",
         serves: "the events-search API",
@@ -576,6 +579,13 @@ const RELEASE_FLOORS: [ReleaseFloor; 2] = [
         min: MIN_EXEC_RELEASE,
         consequence: "`runs exec` fails",
         feature: Some(Feature::RunsExec),
+    },
+    ReleaseFloor {
+        id: "cancel-run",
+        serves: "the cancel-run API",
+        min: MIN_CANCEL_RELEASE,
+        consequence: "`runs cancel` fails",
+        feature: None,
     },
 ];
 
@@ -1129,7 +1139,7 @@ mod tests {
     #[test]
     fn release_floor_check_fires_only_on_a_known_gap() {
         let version = |release: &str| ApiVersion::new("v1".into(), release.into());
-        let [search, exec] = &RELEASE_FLOORS;
+        let [search, exec, cancel] = &RELEASE_FLOORS;
         assert!(release_floor_check(&version("62.2"), search).is_none());
         assert!(release_floor_check(&version("63.0"), search).is_none());
         // 58.11 ships the endpoint but not its contract, so it is too old.
@@ -1153,6 +1163,14 @@ mod tests {
         let check = release_floor_check(&version("63.3"), exec).unwrap();
         assert!(
             check.notes[0].text.contains("`runs exec`"),
+            "{}",
+            check.notes[0].text
+        );
+
+        assert!(release_floor_check(&version("63.0"), cancel).is_none());
+        let check = release_floor_check(&version("62.2"), cancel).unwrap();
+        assert!(
+            check.notes[0].text.contains("`runs cancel`"),
             "{}",
             check.notes[0].text
         );

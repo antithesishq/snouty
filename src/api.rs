@@ -85,6 +85,10 @@ pub const MIN_SEARCH_RELEASE: (u64, u64) = (62, 2);
 /// assumes the tenant meets this; `snouty doctor` checks it.
 pub const MIN_EXEC_RELEASE: (u64, u64) = (64, 0);
 
+/// The first tenant release that serves the cancel-run API. `runs cancel`
+/// assumes the tenant meets this; `snouty doctor` checks it.
+pub const MIN_CANCEL_RELEASE: (u64, u64) = (63, 0);
+
 /// The `container` value that executes a command on the host instead of in a
 /// container.
 const EXEC_HOST_CONTAINER: &str = "_ANTITHESIS_HOST";

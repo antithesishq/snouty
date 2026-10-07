@@ -16,11 +16,12 @@ stderr '.*RUN_ID.*'
 snouty runs --help
 stdout 'cancel.*Cancel a run'
 
-# `snouty runs cancel --help` explains that cancellation is asynchronous and
-# that a completed run cannot be cancelled.
+# `snouty runs cancel --help` explains that cancellation is asynchronous, that
+# a completed run cannot be cancelled, and the tenant release it needs.
 snouty runs cancel --help
 stdout 'asynchronous'
 stdout 'already completed'
+stdout 'release 63\.0 or newer'
 
 # Every case below sends a cancel request, so none of them run against
 # staging.

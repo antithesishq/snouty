@@ -887,6 +887,9 @@ marked the run as cancelled, but its jobs can still be stopping. A run that
 has already completed or is incomplete cannot be cancelled: the command fails
 and the run does not change.
 
+The command needs tenant release 63.0 or newer; `snouty doctor` reports the
+tenant release.
+
 Examples:
   snouty runs cancel <run_id>
 

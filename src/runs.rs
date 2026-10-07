@@ -142,6 +142,7 @@ pub async fn cmd_runs(
             poll_interval,
             timeout,
         }) => cmd_runs_wait(&run_id, poll_interval.into(), timeout, settings, output).await,
+        Some(RunsCommands::Cancel { run_id }) => cmd_runs_cancel(&run_id, settings, output).await,
         Some(RunsCommands::Properties {
             run_id,
             passing,
@@ -438,6 +439,35 @@ async fn cmd_runs_wait(
         outln!("run {} is {}", run.run_id, run.status)?;
     }
 
+    Ok(())
+}
+
+/// `runs cancel`: request cancellation of a run that has not finished.
+async fn cmd_runs_cancel(
+    run_id: &str,
+    settings: &Settings,
+    OutputOptions { json, verbose }: OutputOptions,
+) -> Result<()> {
+    debug!("cancelling run: {}", run_id);
+
+    let api = AntithesisApi::new(settings, verbose)?;
+    if let Err(err) = api.cancel_run(run_id).await {
+        return Err(match api_error_status(&err) {
+            Some(409) => user_error(format!("run {run_id} has already finished"))
+                .note("only a run that is starting or in progress can be cancelled")
+                .suggestion(format!(
+                    "see the run's final status with `snouty runs show {run_id}`"
+                )),
+            _ => explain_run_not_found(run_id, err),
+        });
+    }
+
+    if json {
+        outln!("{}", json!({ "run_id": run_id }))?;
+    } else {
+        outln!("cancelled run {run_id}")?;
+        eprintln!("its jobs can take some time to stop");
+    }
     Ok(())
 }
 

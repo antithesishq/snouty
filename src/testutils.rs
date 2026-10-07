@@ -707,6 +707,9 @@ fn mock_route(
             if let Some(run_id) = rest.strip_suffix("/command") {
                 let (s, b) = mock_route_execute_command(run_id, req_body);
                 (s, b, ndjson, NO_CACHE_CACHE_CONTROL)
+            } else if let Some(run_id) = rest.strip_suffix("/cancel") {
+                let (s, b) = mock_route_cancel_run(run_id);
+                (s, b, json, NO_CACHE_CACHE_CONTROL)
             } else {
                 (
                     404,
@@ -880,6 +883,22 @@ fn mock_route_get_run(run_id: &str) -> (u16, String) {
     }
 
     (200, format!("{{{}}}", fields.join(",")))
+}
+
+/// The mock keeps no state, so cancelling `run-2` (in progress) always
+/// succeeds. The 409 and 404 bodies are the ones the live API sends
+/// (orbitinghail, release 64.0).
+fn mock_route_cancel_run(run_id: &str) -> (u16, String) {
+    match MOCK_RUNS.iter().find(|(id, ..)| *id == run_id) {
+        Some((_, "starting" | "in_progress", ..)) => (200, "{}".to_string()),
+        Some(_) => (
+            409,
+            format!(
+                r#"{{"message":"Conflict: Run {run_id} has already finished and cannot be cancelled"}}"#
+            ),
+        ),
+        None => (404, r#"{"error":"404 Not Found"}"#.to_string()),
+    }
 }
 
 /// The bare 404 body the live API sends for an unknown resource. It never

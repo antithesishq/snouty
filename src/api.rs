@@ -586,6 +586,18 @@ impl AntithesisApi {
         }
     }
 
+    /// Request cancellation of a run. The server answers 409 for a run that
+    /// has already finished, with a message such as "Conflict: Run <id> has
+    /// already finished and cannot be cancelled", and a bare
+    /// `{"error":"404 Not Found"}` for an unknown run (both observed on
+    /// orbitinghail, release 64.0).
+    pub async fn cancel_run(&self, run_id: &str) -> Result<()> {
+        match self.client.cancel_run().run_id(run_id).send().await {
+            Ok(_) => Ok(()),
+            Err(err) => Err(format_api_client_error(err).await),
+        }
+    }
+
     /// Probe `GET /api/version` for the API and tenant release versions. The
     /// endpoint authenticates like every endpoint other than launch, so the
     /// probe runs only when an API key is configured; receiving any HTTP

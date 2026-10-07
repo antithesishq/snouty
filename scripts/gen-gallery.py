@@ -1575,6 +1575,21 @@ def build_stories(d: Discovery) -> list[Story]:
             json_capable=False,
         ),
         Story(
+            "runs-cancel-finished",
+            "Try to cancel a run that has already finished",
+            "I try to cancel a run that already completed; I want a clean error that says why.",
+            "A clean error that says the run has already finished, a note that only a "
+            "starting or in-progress run can be cancelled, and a suggestion to check its "
+            "status with `snouty runs show`. Non-zero exit.",
+            ["runs", "cancel", d.success],
+            fails_with(
+                f"Error: run {d.success} has already finished",
+                f"snouty runs show {d.success}",
+            ),
+            json_capable=False,
+            expect_ok=False,
+        ),
+        Story(
             "runs-show-vcs",
             "Find the commit a CI run tested",
             "A run was launched from CI; I want to know which repository, branch, and "
@@ -2153,6 +2168,17 @@ def build_help_stories(d: Discovery) -> list[Story]:
             ["runs", "wait", s],
             # wait on a terminal run prints one status line; nothing columnar
             # to align tokens against.
+        ),
+        _help_story(
+            "help-runs-cancel",
+            "Learn what cancelling a run does",
+            "I want the help to explain that cancellation is asynchronous and that a "
+            "finished run cannot be cancelled.",
+            ["runs", "cancel"],
+            # Only a finished run is safe to cancel here: the server refuses it
+            # and leaves the run unchanged.
+            ["runs", "cancel", s],
+            expect_ok=False,
         ),
         _help_story(
             "help-runs-properties",

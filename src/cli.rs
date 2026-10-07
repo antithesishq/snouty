@@ -878,6 +878,27 @@ object:
         timeout: Option<HumanDuration>,
     },
 
+    /// Cancel a run that has not finished
+    #[command(
+        long_about = r#"Cancel a run that is starting or in progress, with its descendant jobs.
+
+Cancellation is asynchronous. When the command succeeds, the server has
+marked the run as cancelled, but its jobs can still be stopping. A run that
+has already finished (completed, cancelled, or incomplete) cannot be
+cancelled: the command fails and the run does not change.
+
+Examples:
+  snouty runs cancel <run_id>
+
+Add --json for machine-readable output. The cancelled run id prints as one
+JSON object:
+  snouty --json runs cancel <run_id> | jq -r .run_id"#
+    )]
+    Cancel {
+        /// Run ID
+        run_id: String,
+    },
+
     /// List property results for a run
     #[command(
         long_about = r#"List a run's property (assertion) results, one table per group.

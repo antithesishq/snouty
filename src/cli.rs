@@ -109,7 +109,7 @@ pub enum Commands {
     #[command(long_about = r#"Launch a test run
 
 Example:
-  snouty launch --webhook basic_test --config ./config \
+  snouty launch --launcher basic_test --config ./config \
     --test-name "my-test" \
     --description "nightly test run" \
     --duration 30 \
@@ -121,18 +121,18 @@ Images required for the run need to have been built already. Pushing happens
 automatically.
 
 Alternatively, pass a pre-built config image directly:
-  snouty launch --webhook basic_test \
+  snouty launch --launcher basic_test \
     --config-image us-central1-docker.pkg.dev/proj/repo/config:latest \
     --duration 30
 
 Extra parameters can be passed with --param:
-  snouty launch -w basic_test --duration 30 \
+  snouty launch --launcher basic_test --duration 30 \
     --param antithesis.integrations.github.token=TOKEN \
     --param my.custom.property=value
 
 User-defined attributes are params with an `attrs.` prefix. The server records
 them on the run and `snouty runs show` lists them:
-  snouty launch -w basic_test --duration 30 \
+  snouty launch --launcher basic_test --duration 30 \
     --param attrs.team=payments \
     --param attrs.branch=main \
     --param attrs.build=12345
@@ -141,12 +141,12 @@ Additional container images that the config parser can't discover (e.g. an
 image referenced only in a Kubernetes CRD field) can be registered with the
 antithesis.images param, a semicolon-delimited [REGISTRY/]NAME(:TAG|@DIGEST)
 list:
-  snouty launch -w basic_k8s_test --config ./config --duration 30 \
+  snouty launch --launcher basic_k8s_test --config ./config --duration 30 \
     --param 'antithesis.images=app@sha256:...;db:latest'
 
 Add --json for machine-readable output. The launch response prints as one
 JSON object:
-  snouty launch --json -w basic_test --duration 30 | jq -r .runId
+  snouty launch --json --launcher basic_test --duration 30 | jq -r .runId
 
 Next, wait for the run to finish with `snouty runs wait <run_id>`. The run ID is
 the `run_id` value in the launch output, or `.runId` in the --json output.
@@ -556,9 +556,18 @@ pub struct DoctorArgs {
 
 #[derive(Args)]
 pub struct LaunchArgs {
-    /// Webhook endpoint name (e.g., basic_test, basic_k8s_test)
-    #[arg(short, long)]
-    pub webhook: String,
+    /// Launcher name (e.g., basic_test, basic_k8s_test)
+    #[arg(
+        short,
+        long,
+        required_unless_present = "webhook",
+        conflicts_with = "webhook"
+    )]
+    pub launcher: Option<String>,
+
+    /// Deprecated alias for --launcher
+    #[arg(short, long, hide = true)]
+    pub webhook: Option<String>,
 
     /// Local config dir (docker-compose.yaml or a manifests/ subdir), auto-built
     /// and pushed as the config image. Compose service images must already exist
@@ -867,7 +876,7 @@ resumes the wait.
 Examples:
   snouty runs wait <run_id>
   snouty runs wait <run_id> --timeout 2h
-  snouty launch --json -w basic_test ... | jq -r .runId | xargs snouty runs wait
+  snouty launch --json --launcher basic_test ... | jq -r .runId | xargs snouty runs wait
 
 Add --json for machine-readable output. The final status prints as one JSON
 object:
@@ -1369,11 +1378,17 @@ mod tests {
     #[test]
     fn duration_flag_rejects_invalid_value() {
         // `.err()` avoids requiring `Cli: Debug` (which `unwrap_err` would).
-        let err =
-            Cli::try_parse_from(["snouty", "launch", "-w", "basic_test", "--duration", "1.5h"])
-                .err()
-                .expect("invalid duration should fail to parse")
-                .to_string();
+        let err = Cli::try_parse_from([
+            "snouty",
+            "launch",
+            "--launcher",
+            "basic_test",
+            "--duration",
+            "1.5h",
+        ])
+        .err()
+        .expect("invalid duration should fail to parse")
+        .to_string();
         assert!(err.contains("--duration"), "got: {err}");
         assert!(err.contains("number of minutes"), "got: {err}");
     }

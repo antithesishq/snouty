@@ -4,42 +4,42 @@
 # docker-compose.yaml file that will be pushed as a config image.
 
 # Requires ANTITHESIS_REPOSITORY when --config is used.
-! snouty launch -w basic_test -c config --duration 30
+! snouty launch --launcher basic_test -c config --duration 30
 stderr 'Could not resolve Antithesis repository.*'
 
 # Kubernetes config directories (manifests/ subdirectory) are also accepted
 # by --config and likewise require ANTITHESIS_REPOSITORY.
-! snouty launch -w basic_k8s_test -c k8s_config --duration 30
+! snouty launch --launcher basic_k8s_test -c k8s_config --duration 30
 stderr 'Could not resolve Antithesis repository.*'
 
 env ANTITHESIS_REPOSITORY=registry.example.com/repo
 
 # Rejects a nonexistent directory.
-! snouty launch -w basic_test -c /nonexistent/path --duration 30
+! snouty launch --launcher basic_test -c /nonexistent/path --duration 30
 stderr 'not a directory.*'
 
 # 2b. Long flag --config also accepted.
-! snouty launch -w basic_test --config /nonexistent/path --duration 30
+! snouty launch --launcher basic_test --config /nonexistent/path --duration 30
 stderr 'not a directory.*'
 
 # Rejects a directory without docker-compose.yaml or manifests/.
-! snouty launch -w basic_test -c empty --duration 30
+! snouty launch --launcher basic_test -c empty --duration 30
 stderr '.*does not contain.*docker-compose.yaml.*manifests/.*'
 
 # Rejects docker-compose.yml (wrong extension).
-! snouty launch -w basic_test -c yml_dir --duration 30
+! snouty launch --launcher basic_test -c yml_dir --duration 30
 stderr '.*rename it to docker-compose.yaml.*'
 
 # Rejects an ambiguous directory containing both compose and manifests/.
-! snouty launch -w basic_test -c ambiguous --duration 30
+! snouty launch --launcher basic_test -c ambiguous --duration 30
 stderr '.*both docker-compose.yaml and a manifests/ subdirectory.*'
 
 # --config conflicts with --config-image (clap).
-! snouty launch -w basic_test -c config --config-image some-image:latest --duration 30
+! snouty launch --launcher basic_test -c config --config-image some-image:latest --duration 30
 stderr '--config.*'
 
 # --config conflicts with --param antithesis.config_image.
-! snouty launch -w basic_test -c config --param antithesis.config_image=some-image:latest
+! snouty launch --launcher basic_test -c config --param antithesis.config_image=some-image:latest
 stderr 'cannot be overridden via --param.*'
 
 -- config/docker-compose.yaml --

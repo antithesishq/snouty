@@ -62,13 +62,14 @@ stderr 'antithesis\.filter_logs_matching matches the empty string, which would s
 ! snouty launch -w basic_test --duration 30 --param antithesis.filter_logs_matching=
 stderr 'antithesis\.filter_logs_matching is empty'
 
-# The --performance-tier help lists only the tiers this snouty knows.
+# --performance-tier accepts only the tiers in the vendored OpenAPI spec, and
+#    its help points at --param for any other tier.
+! snouty launch -w basic_test --duration 30 --performance-tier ultra
+stderr 'invalid value .ultra. for .--performance-tier'
+stderr 'possible values: standard, fast, turbo'
 snouty launch --help
 stdout 'possible values: standard, fast, turbo\]'
-
-# --performance-tier does not accept an empty tier.
-! snouty launch -w basic_test --duration 30 --performance-tier ''
-stderr 'a value is required for .--performance-tier'
+stdout '--param antithesis\.performance_tier=TIER'
 
 # `launch` does not accept --stdin.
 ! snouty launch -w basic_test --stdin --duration 30
@@ -93,12 +94,6 @@ stderr 'No Antithesis credentials found.*'
 mock-server 200 '{"message":"Success","runId":"run-123"}'
 ! snouty launch -w basic_test --duration 30 --param antithesis.duration=60
 stderr 'cannot be overridden via --param.*'
-
-# The unknown-tier warning prints only when the run is about to be sent, not
-#    ahead of a check that fails.
-! snouty launch -w basic_test --duration 30 --performance-tier ultra --param antithesis.performance_tier=ultra
-stderr 'cannot be overridden via --param'
-! stderr 'unknown performance tier'
 
 # At least one source of parameters must be provided; otherwise the
 #    command fails.
@@ -221,15 +216,6 @@ stdout 'Test run started: run_id run-123'
 mock-server 200 '{"message":"Success","runId":"run-123"}'
 snouty launch -w basic_test --duration 30 --performance-tier turbo
 stderr '"antithesis.performance_tier": "turbo"'
-! stderr 'unknown performance tier'
-stdout 'Test run started: run_id run-123'
-
-# --performance-tier sends a tier that this snouty does not know, so a tier
-#    newer than this snouty works. snouty warns, because the value can be a typo.
-mock-server 200 '{"message":"Success","runId":"run-123"}'
-snouty launch -w basic_test --duration 30 --performance-tier ultra
-stderr 'warning: unknown performance tier `ultra`'
-stderr '"antithesis.performance_tier": "ultra"'
 stdout 'Test run started: run_id run-123'
 
 # The raw --param form sends any tier, so a tier newer than this snouty works.

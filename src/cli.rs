@@ -5,7 +5,10 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
 use color_eyre::Section;
 use color_eyre::eyre::Report;
 
-use crate::api::{RunStatus, SEARCH_DEFAULT_LIMIT, SEARCH_MAX_LIMIT, SourceRunId, SourceSessionId};
+use crate::api::{
+    PerformanceTier, RunStatus, SEARCH_DEFAULT_LIMIT, SEARCH_MAX_LIMIT, SourceRunId,
+    SourceSessionId,
+};
 use crate::error::user_error;
 use crate::features::{self, Feature};
 use crate::time::HumanDuration;
@@ -486,86 +489,6 @@ pub struct UpdateArgs {
     pub channel: Option<UpdateChannel>,
 }
 
-/// The `antithesis.performance_tier` values this snouty knows. `--help` and
-/// shell completion list these.
-#[derive(Clone, Copy, PartialEq, Eq, Debug, ValueEnum)]
-pub enum KnownPerformanceTier {
-    Standard,
-    Fast,
-    Turbo,
-}
-
-/// An `antithesis.performance_tier` value. The platform can add a tier that
-/// this snouty does not know, so any non-empty string parses.
-#[derive(Clone, PartialEq, Eq, Debug)]
-pub enum PerformanceTier {
-    Known(KnownPerformanceTier),
-    Unknown(String),
-}
-
-impl From<String> for PerformanceTier {
-    fn from(tier: String) -> Self {
-        match KnownPerformanceTier::from_str(&tier, false) {
-            Ok(known) => PerformanceTier::Known(known),
-            Err(_) => PerformanceTier::Unknown(tier),
-        }
-    }
-}
-
-impl std::fmt::Display for PerformanceTier {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            // The wire value is the clap value name, so the two cannot drift apart.
-            PerformanceTier::Known(known) => f.write_str(
-                known
-                    .to_possible_value()
-                    .expect("no variant is skipped")
-                    .get_name(),
-            ),
-            PerformanceTier::Unknown(tier) => f.write_str(tier),
-        }
-    }
-}
-
-impl clap::builder::ValueParserFactory for PerformanceTier {
-    type Parser = PerformanceTierParser;
-
-    fn value_parser() -> Self::Parser {
-        PerformanceTierParser
-    }
-}
-
-/// Parses any non-empty string, but lists only the known tiers as possible
-/// values. clap checks a value against the possible values only in parsers
-/// that enforce them, such as `EnumValueParser`; this parser does not.
-#[derive(Clone)]
-pub struct PerformanceTierParser;
-
-impl clap::builder::TypedValueParser for PerformanceTierParser {
-    type Value = PerformanceTier;
-
-    fn parse_ref(
-        &self,
-        cmd: &clap::Command,
-        arg: Option<&clap::Arg>,
-        value: &std::ffi::OsStr,
-    ) -> Result<PerformanceTier, clap::Error> {
-        clap::builder::NonEmptyStringValueParser::new()
-            .parse_ref(cmd, arg, value)
-            .map(PerformanceTier::from)
-    }
-
-    fn possible_values(
-        &self,
-    ) -> Option<Box<dyn Iterator<Item = clap::builder::PossibleValue> + '_>> {
-        Some(Box::new(
-            KnownPerformanceTier::value_variants()
-                .iter()
-                .filter_map(ValueEnum::to_possible_value),
-        ))
-    }
-}
-
 /// Which releases `snouty update` considers when no explicit version is given.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default, ValueEnum)]
 pub enum UpdateChannel {
@@ -684,9 +607,9 @@ pub struct LaunchArgs {
 
     /// Performance tier for the run. Higher tiers explore system states faster
     /// through more parallelism. They also consume core hours faster. The
-    /// server default is `standard`. snouty warns on a tier it does not know,
-    /// and sends it anyway.
-    #[arg(long)]
+    /// server default is `standard`. To send a tier that is not listed, use
+    /// `--param antithesis.performance_tier=TIER`.
+    #[arg(long, value_enum)]
     pub performance_tier: Option<PerformanceTier>,
 
     /// Extra parameters as key=value pairs (repeatable)
@@ -1367,11 +1290,15 @@ mod tests {
         Cli::try_parse_from(args).expect("args should parse")
     }
 
-    /// Any tier string survives the parse unchanged.
-    #[hegel::test]
-    fn performance_tier_round_trips_any_string(tc: hegel::TestCase) {
-        let raw = tc.draw(hegel::generators::text());
-        assert_eq!(PerformanceTier::from(raw.clone()).to_string(), raw);
+    /// clap parses the value name, and `launch` sends `Display`, the wire
+    /// value. They differ for a tier such as `ultra_fast`, which clap would
+    /// name `ultra-fast`.
+    #[test]
+    fn performance_tier_value_names_are_the_wire_values() {
+        for tier in PerformanceTier::value_variants() {
+            let name = tier.to_possible_value().expect("no variant is skipped");
+            assert_eq!(name.get_name(), tier.to_string());
+        }
     }
 
     #[test]

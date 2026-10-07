@@ -29,13 +29,21 @@ snouty launch --help
 stdout 'params with an `attrs\.` prefix'
 stdout '--param attrs\.team=payments'
 
-# The user specifies a webhook endpoint name via -w / --webhook (required).
-! snouty launch --duration 30
-stderr '--webhook.*'
+# The user specifies a launcher name via -l / --launcher. It defaults to
+#    basic_test.
+snouty launch --help
+stdout '^  -l, --launcher <LAUNCHER>$'
+stdout '\[default: basic_test\]'
+
+# -w / --webhook is a deprecated alias for --launcher. Help hides it, and it
+#    conflicts with --launcher.
+! stdout 'webhook'
+! snouty launch --launcher basic_test --webhook basic_test --duration 30
+stderr 'cannot be used with'
 
 # An invalid --duration fails at flag-parse time with a message attributed to
 #    the flag, not an opaque schema regex.
-! snouty launch -w basic_test --duration abc
+! snouty launch --launcher basic_test --duration abc
 stderr 'invalid value .abc. for .--duration'
 stderr 'number of minutes.*'
 
@@ -44,27 +52,27 @@ stderr 'number of minutes.*'
 #    hatch) reports only the real error, attributed to the offending field,
 #    not a misleading "unevaluated properties" cascade that names its valid
 #    siblings.
-! snouty launch -w basic_test --param antithesis.duration=asdf --param antithesis.source=ci
+! snouty launch --launcher basic_test --param antithesis.duration=asdf --param antithesis.source=ci
 stderr 'validation failed.*'
 stderr 'antithesis\.duration: .*'
 ! stderr 'Unevaluated properties.*'
 
 # `antithesis.filter_logs_matching` is validated client-side before any API
 #    call. The platform rejects a bad pattern only after the run has started.
-! snouty launch -w basic_test --duration 30 --filter-logs-matching '('
+! snouty launch --launcher basic_test --duration 30 --filter-logs-matching '('
 stderr 'antithesis\.filter_logs_matching is not a valid regular expression.*'
 
 # A pattern that matches the empty string would suppress every log line.
-! snouty launch -w basic_test --duration 30 --filter-logs-matching 'x*'
+! snouty launch --launcher basic_test --duration 30 --filter-logs-matching 'x*'
 stderr 'antithesis\.filter_logs_matching matches the empty string, which would suppress every log line'
 
 # An empty pattern makes the platform skip filtering silently.
-! snouty launch -w basic_test --duration 30 --param antithesis.filter_logs_matching=
+! snouty launch --launcher basic_test --duration 30 --param antithesis.filter_logs_matching=
 stderr 'antithesis\.filter_logs_matching is empty'
 
 # --performance-tier accepts only the tiers in the vendored OpenAPI spec, and
 #    its help points at --param for any other tier.
-! snouty launch -w basic_test --duration 30 --performance-tier ultra
+! snouty launch --launcher basic_test --duration 30 --performance-tier ultra
 stderr 'invalid value .ultra. for .--performance-tier'
 stderr 'possible values: standard, fast, turbo'
 snouty launch --help
@@ -72,16 +80,16 @@ stdout 'possible values: standard, fast, turbo\]'
 stdout '--param antithesis\.performance_tier=TIER'
 
 # `launch` does not accept --stdin.
-! snouty launch -w basic_test --stdin --duration 30
+! snouty launch --launcher basic_test --stdin --duration 30
 stderr 'unexpected argument.*'
 
 # Old-style raw --antithesis.* args are not accepted by `launch`.
-! snouty launch -w basic_test --antithesis.duration 30
+! snouty launch --launcher basic_test --antithesis.duration 30
 
 # The command authenticates with the Antithesis API using either
 #    ANTITHESIS_API_KEY and ANTITHESIS_TENANT, or
 #    ANTITHESIS_USERNAME, ANTITHESIS_PASSWORD, and ANTITHESIS_TENANT.
-! snouty launch -w basic_test --duration 30
+! snouty launch --launcher basic_test --duration 30
 stderr 'No Antithesis credentials found.*'
 
 # Everything below runs against the mock only. The skip sits above the first
@@ -92,13 +100,13 @@ stderr 'No Antithesis credentials found.*'
 
 # --param cannot override typed flag values.
 mock-server 200 '{"message":"Success","runId":"run-123"}'
-! snouty launch -w basic_test --duration 30 --param antithesis.duration=60
+! snouty launch --launcher basic_test --duration 30 --param antithesis.duration=60
 stderr 'cannot be overridden via --param.*'
 
 # At least one source of parameters must be provided; otherwise the
 #    command fails.
 mock-server 200 '{}'
-! snouty launch -w basic_test
+! snouty launch --launcher basic_test
 stderr 'no parameters provided.*'
 
 # Parameters are provided as --key value typed flags
@@ -107,7 +115,7 @@ stderr 'no parameters provided.*'
 #    recipients) redacted. On success, a one-line confirmation with the
 #    run_id is printed to stdout.
 mock-server 200 '{"message":"Success","runId":"run-123"}'
-snouty launch -w basic_test --test-name my-test --description 'nightly test run' --config-image config:latest --duration 30 --recipients team@example.com --source ci-pipeline
+snouty launch --launcher basic_test --test-name my-test --description 'nightly test run' --config-image config:latest --duration 30 --recipients team@example.com --source ci-pipeline
 stderr '"antithesis.test_name": "my-test"'
 stderr '"antithesis.description": "nightly test run"'
 stderr '"antithesis.config_image": "config:latest"'
@@ -120,7 +128,7 @@ stdout 'Test run started: run_id run-123'
 # is deprecated: a warning on stderr steers the user to `snouty login`. The
 # mock-server directive configures username/password credentials.
 mock-server 200 '{"message":"Success","runId":"run-123"}'
-snouty launch -w basic_test --duration 30 --source ci-pipeline
+snouty launch --launcher basic_test --duration 30 --source ci-pipeline
 stderr 'warning: username/password authentication is deprecated'
 stderr 'snouty login'
 stdout 'Test run started: run_id run-123'
@@ -130,7 +138,7 @@ stdout 'Test run started: run_id run-123'
 # rest of the file.)
 mock-server 200 '{"message":"Success","runId":"run-123"}'
 env ANTITHESIS_API_KEY=testkey
-snouty launch -w basic_test --duration 30 --source ci-pipeline
+snouty launch --launcher basic_test --duration 30 --source ci-pipeline
 ! stderr 'deprecated'
 stdout 'Test run started: run_id run-123'
 env ANTITHESIS_API_KEY=
@@ -141,37 +149,37 @@ env ANTITHESIS_API_KEY=
 # with the response anyway (the mock answers HTTP 200 saying 202). Use --verbose
 # to see the response as it arrived.
 mock-server 200 '{"runId":"run-123","statusCode":202}'
-snouty --json launch -w basic_test --config-image config:latest --duration 30 --source ci-pipeline
+snouty --json launch --launcher basic_test --config-image config:latest --duration 30 --source ci-pipeline
 stdout '\s*"runId": "run-123".*'
 ! stdout '.*statusCode.*'
 ! stdout 'Test run started.*'
 
 # 6b. --ephemeral flag sets antithesis.is_ephemeral to "true".
 mock-server 200 '{"message":"Success","runId":"run-123"}'
-snouty launch -w basic_test --duration 30 --ephemeral
+snouty launch --launcher basic_test --duration 30 --ephemeral
 stderr '"antithesis.is_ephemeral": "true"'
 
 # 6c. Without --source, is_ephemeral is set automatically and an info message is shown.
 mock-server 200 '{"message":"Success","runId":"run-123"}'
-snouty launch -w basic_test --duration 30
+snouty launch --launcher basic_test --duration 30
 stderr '"antithesis.is_ephemeral": "true"'
 stderr 'Starting an ephemeral run; its findings will not be retained.*'
 
 # 6c2. With --source, is_ephemeral is not set unless --ephemeral is passed.
 mock-server 200 '{"message":"Success","runId":"run-123"}'
-snouty launch -w basic_test --duration 30 --source ci-pipeline
+snouty launch --launcher basic_test --duration 30 --source ci-pipeline
 ! stderr 'is_ephemeral.*'
 ! stderr 'Starting an ephemeral run.*'
 
 # 6c3. --duration accepts h/m unit suffixes, normalized to bare minutes for the
 #    API (1h30m -> 90).
 mock-server 200 '{"message":"Success","runId":"run-123"}'
-snouty launch -w basic_test --duration 1h30m --source ci-pipeline
+snouty launch --launcher basic_test --duration 1h30m --source ci-pipeline
 stderr '"antithesis.duration": "90"'
 
 # 6d. --param flag passes custom properties.
 mock-server 200 '{"message":"Success","runId":"run-123"}'
-snouty launch -w basic_test --duration 30 --param my.custom.prop=value --param antithesis.integrations.github.callback_url=https://example.com/cb
+snouty launch --launcher basic_test --duration 30 --param my.custom.prop=value --param antithesis.integrations.github.callback_url=https://example.com/cb
 stderr '"my.custom.prop": "value"'
 stderr '"antithesis.integrations.github.callback_url": "https://example.com/cb"'
 
@@ -179,7 +187,7 @@ stderr '"antithesis.integrations.github.callback_url": "https://example.com/cb"'
 #    before snouty learns about them (#211). Known params keep their value
 #    checks (see the antithesis.duration=asdf case above).
 mock-server 200 '{"message":"Success","runId":"run-123"}'
-snouty launch -w basic_test --duration 30 --param antithesis.brand_new_param=on
+snouty launch --launcher basic_test --duration 30 --param antithesis.brand_new_param=on
 stderr '"antithesis.brand_new_param": "on"'
 stdout 'Test run started: run_id run-123'
 
@@ -187,7 +195,7 @@ stdout 'Test run started: run_id run-123'
 #    images (e.g. an image referenced only in a CRD field) that the config
 #    parser can't discover. Semicolon-delimited [REGISTRY/]NAME(:TAG|@DIGEST).
 mock-server 200 '{"message":"Success","runId":"run-123"}'
-snouty launch -w basic_test --duration 30 --param 'antithesis.images=app@sha256:abc;db:latest'
+snouty launch --launcher basic_test --duration 30 --param 'antithesis.images=app@sha256:abc;db:latest'
 stderr '"antithesis.images": "app@sha256:abc;db:latest"'
 
 # On an error that reaches the test launcher (e.g. an unknown launcher name),
@@ -198,28 +206,50 @@ stderr '"antithesis.images": "app@sha256:abc;db:latest"'
 # no request validation beyond auth, so it never returns a 400; 404 is the
 # canonical reachable failure.)
 mock-server 404 '{"statusCode":404,"runId":null}'
-! snouty launch -w no_such_launcher --duration 30
+! snouty launch --launcher no_such_launcher --duration 30
 stderr 'API error: 404 Not Found.*'
 
 # `snouty run` still works but prints a deprecation warning.
 mock-server 200 '{"message":"Success","runId":"run-123"}'
-snouty run -w basic_test --duration 30
+snouty run --launcher basic_test --duration 30
 stderr 'snouty run.*is deprecated.*snouty launch'
 
+# Without --launcher, the run goes to the basic_test launcher.
 mock-server 200 '{"message":"Success","runId":"run-123"}'
-snouty launch -w basic_test --duration 30 --filter-logs-matching debug
+snouty --verbose launch --duration 30
+stderr '^> POST .*/api/v1/launch/basic_test$'
+stdout 'Test run started: run_id run-123'
+
+# --launcher selects the launcher.
+mock-server 200 '{"message":"Success","runId":"run-123"}'
+snouty --verbose launch --launcher basic_k8s_test --duration 30
+stderr '^> POST .*/api/v1/launch/basic_k8s_test$'
+
+# --webhook and -w still select the launcher, but print a deprecation warning.
+mock-server 200 '{"message":"Success","runId":"run-123"}'
+snouty --verbose launch --webhook basic_k8s_test --duration 30
+stderr '^warning: --webhook is deprecated, use --launcher instead$'
+stderr '^> POST .*/api/v1/launch/basic_k8s_test$'
+stdout 'Test run started: run_id run-123'
+mock-server 200 '{"message":"Success","runId":"run-123"}'
+snouty launch -w basic_test --duration 30
+stderr '^warning: --webhook is deprecated, use --launcher instead$'
+stdout 'Test run started: run_id run-123'
+
+mock-server 200 '{"message":"Success","runId":"run-123"}'
+snouty launch --launcher basic_test --duration 30 --filter-logs-matching debug
 stderr '"antithesis.duration": "30"'
 stderr '"antithesis.filter_logs_matching": "debug"'
 stdout 'Test run started: run_id run-123'
 
 # --performance-tier sends `antithesis.performance_tier`.
 mock-server 200 '{"message":"Success","runId":"run-123"}'
-snouty launch -w basic_test --duration 30 --performance-tier turbo
+snouty launch --launcher basic_test --duration 30 --performance-tier turbo
 stderr '"antithesis.performance_tier": "turbo"'
 stdout 'Test run started: run_id run-123'
 
 # The raw --param form sends any tier, so a tier newer than this snouty works.
 mock-server 200 '{"message":"Success","runId":"run-123"}'
-snouty launch -w basic_test --duration 30 --param antithesis.performance_tier=ultra
+snouty launch --launcher basic_test --duration 30 --param antithesis.performance_tier=ultra
 stderr '"antithesis.performance_tier": "ultra"'
 stdout 'Test run started: run_id run-123'

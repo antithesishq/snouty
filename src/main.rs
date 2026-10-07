@@ -129,13 +129,9 @@ async fn run(cli: Cli) -> Result<()> {
         Commands::Login { tenant, repository } => {
             cmd_login(tenant, repository, profile.as_deref(), &settings?).await
         }
-        Commands::Launch(args) => {
-            info!("launching test with webhook: {}", args.webhook);
-            cmd_launch(args, &settings?, output).await
-        }
+        Commands::Launch(args) => cmd_launch(args, &settings?, output).await,
         Commands::Run(args) => {
             eprintln!("warning: `snouty run` is deprecated, use `snouty launch` instead");
-            info!("launching test with webhook: {}", args.webhook);
             cmd_launch(args, &settings?, output).await
         }
         Commands::Runs { command } => snouty::runs::cmd_runs(command, &settings?, output).await,
@@ -192,6 +188,15 @@ async fn cmd_launch(
     settings: &Settings,
     OutputOptions { json, verbose }: OutputOptions,
 ) -> Result<()> {
+    let launcher = match args.webhook {
+        Some(webhook) => {
+            eprintln!("warning: --webhook is deprecated, use --launcher instead");
+            webhook
+        }
+        None => args.launcher,
+    };
+    info!("launching test with launcher: {launcher}");
+
     let mut params = Params::new();
 
     if let Some(test_name) = args.test_name {
@@ -302,7 +307,7 @@ async fn cmd_launch(
         );
     }
 
-    let response = launch_webhook(&args.webhook, params, settings, verbose).await?;
+    let response = submit_launch(&launcher, params, settings, verbose).await?;
 
     if json {
         println!("{}", serde_json::to_string_pretty(&response)?);
@@ -316,8 +321,8 @@ async fn cmd_launch(
     Ok(())
 }
 
-async fn launch_webhook(
-    webhook: &str,
+async fn submit_launch(
+    launcher: &str,
     params: Params,
     settings: &Settings,
     verbose: bool,
@@ -330,7 +335,7 @@ async fn launch_webhook(
     );
 
     let api = AntithesisApi::new_for_launch(settings, verbose)?;
-    api.launch_test(webhook, &params).await
+    api.launch_test(launcher, &params).await
 }
 
 fn debug_typed_params(args: &DebugArgs) -> Params {

@@ -20,8 +20,8 @@ and an explanation what else to do.
 
 ## Documentation
 
-When writing examples, prefer to use long flag names (`--webhook`) instead of
-short ones (`-w`). This communicates the intent more clearly.
+When writing examples, prefer to use long flag names (`--launcher`) instead of
+short ones (`-l`). This communicates the intent more clearly.
 
 ## Testing
 

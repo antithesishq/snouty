@@ -69,7 +69,7 @@ ANTITHESIS_TENANT=your-tenant \
 ANTITHESIS_REPOSITORY=us-central1-docker.pkg.dev/your-proj/your-repo \
 ANTITHESIS_API_KEY=… \
   snouty launch \
-    --webhook basic_test \
+    --launcher basic_test \
     --config tests/fixtures/validate/valid \
     --test-name "snouty-valid-sample" \
     --description "snouty valid sample harness" \

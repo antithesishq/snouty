@@ -18,7 +18,7 @@ fn launch_config_rejects_nonexistent_dir() {
         .env("ANTITHESIS_REPOSITORY", "registry.example.com/repo")
         .args([
             "launch",
-            "-w",
+            "--launcher",
             "basic_test",
             "-c",
             "/nonexistent/path",
@@ -38,7 +38,7 @@ fn launch_config_rejects_dir_without_compose() {
         .env("ANTITHESIS_REPOSITORY", "registry.example.com/repo")
         .args([
             "launch",
-            "-w",
+            "--launcher",
             "basic_test",
             "-c",
             dir.path().to_str().unwrap(),
@@ -59,7 +59,7 @@ fn launch_config_rejects_yml_extension() {
         .env("ANTITHESIS_REPOSITORY", "registry.example.com/repo")
         .args([
             "launch",
-            "-w",
+            "--launcher",
             "basic_test",
             "-c",
             dir.path().to_str().unwrap(),
@@ -80,7 +80,7 @@ fn launch_config_conflicts_with_config_image_param() {
         .env("ANTITHESIS_REPOSITORY", "registry.example.com/repo")
         .args([
             "launch",
-            "-w",
+            "--launcher",
             "basic_test",
             "-c",
             dir.path().to_str().unwrap(),
@@ -102,7 +102,7 @@ fn launch_config_requires_registry_env() {
     snouty()
         .args([
             "launch",
-            "-w",
+            "--launcher",
             "basic_test",
             "-c",
             dir.path().to_str().unwrap(),
@@ -122,7 +122,7 @@ fn launch_config_long_flag_accepted() {
         .env("ANTITHESIS_REPOSITORY", "registry.example.com/repo")
         .args([
             "launch",
-            "-w",
+            "--launcher",
             "basic_test",
             "--config",
             "/nonexistent/path",
@@ -143,7 +143,7 @@ fn launch_config_conflicts_with_param_config_image() {
         .env("ANTITHESIS_REPOSITORY", "registry.example.com/repo")
         .args([
             "launch",
-            "-w",
+            "--launcher",
             "basic_test",
             "-c",
             dir.path().to_str().unwrap(),
@@ -165,7 +165,7 @@ fn launch_config_k8s_dir_is_accepted() {
     snouty()
         .args([
             "launch",
-            "-w",
+            "--launcher",
             "basic_k8s_test",
             "-c",
             dir.path().to_str().unwrap(),
@@ -188,7 +188,7 @@ fn launch_config_rejects_empty_manifests_dir() {
         .env("ANTITHESIS_REPOSITORY", "registry.example.com/repo")
         .args([
             "launch",
-            "-w",
+            "--launcher",
             "basic_k8s_test",
             "-c",
             dir.path().to_str().unwrap(),
@@ -210,7 +210,7 @@ fn launch_config_rejects_ambiguous_dir() {
         .env("ANTITHESIS_REPOSITORY", "registry.example.com/repo")
         .args([
             "launch",
-            "-w",
+            "--launcher",
             "basic_test",
             "-c",
             dir.path().to_str().unwrap(),

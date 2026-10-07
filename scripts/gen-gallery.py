@@ -19,9 +19,10 @@ There are three kinds of story:
   * goal stories — capture one command's output and judge it against a user goal
     (the bulk of the gallery; slugs like `runs-events-single`). The `runs exec`
     stories (`runs-exec*`, and `debug` when discovery launches a session) run
-    in a debugging session: discovery reuses an in-progress one, or launches
-    one with `snouty debug`, which takes several minutes to accept commands.
-    `--no-exec` leaves them out.
+    in a debugging session. Discovery reuses an uncompleted session that an
+    earlier gallery run launched, or launches one with `snouty debug`. A new
+    session takes several minutes to accept commands. `--no-exec` leaves them
+    out.
   * help stories — capture `snouty <cmd> --help` next to that command's default
     output (slugs like `help-runs-properties`) and judge whether the help is
     informative, clear, concise, consistent, and *aligned* with what the command
@@ -61,6 +62,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime
@@ -96,7 +98,7 @@ NEEDLE_MIN_MATCHES = 4
 NEEDLE_PROBES = 12
 MOMENT_PROBES = 4
 
-# The launcher of a debugging session that `snouty debug` starts.
+# `runs list` reports this launcher for a debugging session.
 DEBUGGING_LAUNCHER = "debugging"
 
 # `runs exec` is an unstable feature; its stories turn it on.
@@ -105,13 +107,12 @@ EXEC_ENV: dict[str, str | None] = {"SNOUTY_UNSTABLE_FEATURES": "runs-exec"}
 # A new debugging session does not accept commands at once. Observed on
 # orbitinghail (release 64.0): `starting` for about 75s, then `in_progress`, with
 # the command endpoint answering 404 for about 2 minutes more and then 400
-# `unknown_moment` while the session replays to its moment. With no `ready`
-# status to wait for, discovery polls a trivial exec until EXEC_READY_DEADLINE.
+# `unknown_moment` while the session replays to its moment. No status reports
+# readiness, so discovery polls an exec until it succeeds.
 EXEC_READY_DEADLINE = 600
 EXEC_READY_POLL = 15
 
-# Loading a cold moment replays the source run's inputs, which took 27s in one
-# measurement. The rewarm story gives it this long.
+# Loading a cold moment replays the source run's inputs; one load took 27s.
 EXEC_REWARM_TIMEOUT = 300
 
 
@@ -125,12 +126,11 @@ class GalleryError(Exception):
 
 
 def _ndjson(text: str) -> list[dict]:
-    """The rows of NDJSON `text`, skipping blank lines."""
     return [json.loads(line) for line in text.splitlines() if line.strip()]
 
 
 def _moment_strs(moment: dict) -> tuple[str, str]:
-    """A moment's input hash and vtime, as the positional arguments snouty takes."""
+    """A moment as snouty's positional `<input_hash> <vtime>` arguments."""
     return str(moment["input_hash"]), str(moment["vtime"])
 
 
@@ -141,7 +141,7 @@ class Result:
     stderr: str
     returncode: int
     cast: str | None = None
-    stdin: str | None = None  # the script fed to snouty's stdin, if any
+    stdin: str | None = None
 
     @property
     def ok(self) -> bool:
@@ -196,8 +196,8 @@ class Snouty:
     ) -> Result:
         if "--json" not in args:
             screen = pyte.HistoryScreen(TTY_COLS, TTY_ROWS, history=sys.maxsize)
-            # With `stdin`, a shell pipes that text to snouty, as a user's
-            # `snouty ... <<'EOF'` does; stdout and stderr stay on the terminal.
+            # A shell pipes `stdin` to snouty, as a heredoc does, so stdin is a
+            # pipe while stdout and stderr stay on the terminal.
             program, argv = self.binary, args
             if stdin is not None:
                 pipe = 'stdin=$1; shift; printf %s "$stdin" | "$@"'
@@ -509,8 +509,15 @@ class Discovery:
     fail_event_kw: str = ""  # needle the incomplete run's events story matches on
 
 
+def _test_runs(sn: Snouty, *args: str) -> list[dict]:
+    """`runs list <args>` without debugging sessions, which have no properties
+    or build logs of their own."""
+    rows = sn.json_lines(["runs", "list", *args])
+    return [r for r in rows if r.get("launcher") != DEBUGGING_LAUNCHER]
+
+
 def _first_run(sn: Snouty, *filters: str) -> str | None:
-    rows = sn.json_lines(["runs", "list", *filters, "-n", "1"])
+    rows = _test_runs(sn, *filters, "-n", "20")
     return rows[0]["run_id"] if rows else None
 
 
@@ -620,13 +627,7 @@ def _pick_completed_run(sn: Snouty, scan: int) -> CompletedPick:
     property stories, the logs stories (see _pick_logs_moment), and the
     events/search stories. Scan recent completed runs and take the first that
     satisfies every requirement at once."""
-    # A debugging session has no properties of its own, and the exec stories
-    # launch one, so a session must never drive the completed-run stories.
-    runs = [
-        r
-        for r in sn.json_lines(["runs", "list", "--status", "completed", "-n", str(scan)])
-        if r.get("launcher") != DEBUGGING_LAUNCHER
-    ]
+    runs = _test_runs(sn, "--status", "completed", "-n", str(scan))
     if not runs:
         raise GalleryError("no completed runs found on this tenant")
     last_reason = "none had a usable property moment"
@@ -687,7 +688,7 @@ def _pick_incomplete_run(sn: Snouty, scan: int) -> tuple[str, dict, str]:
     logs are non-empty (so runs-logs-incomplete streams lines and runs-show-incomplete
     renders a moment) AND a needle from those logs that matches events (for
     runs-events-incomplete). Returns (run_id, failure_moment, event_keyword)."""
-    runs = sn.json_lines(["runs", "list", "--status", "incomplete", "-n", str(scan)])
+    runs = _test_runs(sn, "--status", "incomplete", "-n", str(scan))
     if not runs:
         raise GalleryError("no incomplete run found — incomplete stories cannot run")
     for r in runs:
@@ -876,7 +877,7 @@ def discover(sn: Snouty, scan: int, need_vcs: bool) -> Discovery:
 
     # Dynamic listing params from the newest 30 runs, so listing stories aren't
     # empty. Trigger-action runs are sparse, so the vcs search scans all 100.
-    runs = sn.json_lines(["runs", "list", "-n", "100"])
+    runs = _test_runs(sn, "-n", "100")
     recent = runs[:30]
     if not recent:
         raise GalleryError("no runs found at all")
@@ -939,8 +940,8 @@ class ExecSession:
     container: str = ""  # a container name from the base run's logs
     # The `snouty debug` launch, or None when discovery reused a live session.
     launch: Result | None = None
-    # The end moment of an exec that discovery ran: it wrote EXEC_MARKER_TEXT
-    # to EXEC_MARKER_PATH.
+    # The end moment of discovery's readiness exec, which wrote
+    # EXEC_MARKER_TEXT to EXEC_MARKER_PATH.
     follow_hash: str = ""
     follow_vtime: str = "0"
     # A property moment of the base run, after the session's moment.
@@ -951,27 +952,35 @@ class ExecSession:
 EXEC_MARKER_PATH = "/tmp/snouty-gallery-marker"
 EXEC_MARKER_TEXT = "written by an earlier runs exec"
 
-# Every debugging session carries the moment it debugs in its parameters.
+# Parameter keys of a debugging session's `runs list` row.
 _DEBUG_RUN = "antithesis.debugging.run_id"
 _DEBUG_HASH = "antithesis.debugging.input_hash"
 _DEBUG_VTIME = "antithesis.debugging.vtime"
+_DESCRIPTION = "antithesis.event_description"
+
+# The description of each session the gallery launches starts with this.
+EXEC_SESSION_DESCRIPTION = "snouty gen-gallery runs exec stories"
 
 
 def _exec_json(sn: Snouty, x: ExecSession, script: str) -> Result:
-    """A `--json runs exec` of `script` at the session's own moment."""
     return sn.run(["--json", "runs", "exec", x.session, x.hash, x.vtime, script], EXEC_ENV)
 
 
+def _debugging_sessions(sn: Snouty) -> list[dict]:
+    """A session that is still `starting` has no `parameters` yet; they
+    appeared about 70s after the launch (orbitinghail, release 64.0)."""
+    return sn.json_lines(["runs", "list", "--launcher", DEBUGGING_LAUNCHER, "-n", "20"])
+
+
 def _live_session(sn: Snouty) -> dict | None:
-    """The newest debugging session that has not completed and names the run
-    and moment it debugs, or None. A session that accepted commands reported
-    status `unknown` (orbitinghail, release 64.0), so the status is not read."""
-    rows = sn.json_lines(["runs", "list", "--launcher", DEBUGGING_LAUNCHER, "-n", "20"])
-    for r in rows:
-        params = r.get("parameters") or {}
-        if not r.get("completed_at") and all(
-            params.get(k) for k in (_DEBUG_RUN, _DEBUG_HASH, _DEBUG_VTIME)
-        ):
+    """The newest uncompleted debugging session that the gallery launched, or
+    None. A session that the gallery did not launch is never reused: the stories
+    would execute in it, and it can hold the cold story's moment. A session that
+    accepted commands reported status `unknown` (orbitinghail, release 64.0), so
+    the status is not read."""
+    for r in _debugging_sessions(sn):
+        description = (r.get("parameters") or {}).get(_DESCRIPTION, "")
+        if not r.get("completed_at") and description.startswith(EXEC_SESSION_DESCRIPTION):
             return r
     return None
 
@@ -979,8 +988,7 @@ def _live_session(sn: Snouty) -> dict | None:
 def _launch_session(sn: Snouty, base_run: str) -> tuple[dict, Result]:
     """Launch a debugging session at the setup-complete moment of `base_run`.
     Returns the session's `runs list` row and the launch's output."""
-    # The SDK's setup event, not workload text: a search for `setup_complete`
-    # matched only one workload's own log line.
+    # Match the SDK's setup event; workload log text is not a reliable marker.
     setup = sn.json_lines(
         [
             "runs",
@@ -993,34 +1001,28 @@ def _launch_session(sn: Snouty, base_run: str) -> tuple[dict, Result]:
     )
     if not setup:
         raise GalleryError(f"{base_run} has no setup-complete event to debug from")
-    moment = setup[0]["moment"]
-    # A unique description finds the new session in `runs list`, so discovery
-    # never parses the launch's human-facing output.
-    description = f"snouty gen-gallery runs exec stories {datetime.now().isoformat()}"
+    h, v = _moment_strs(setup[0]["moment"])
+    # A unique description finds the new session in `runs list` without
+    # parsing the launch's human-facing output.
+    description = f"{EXEC_SESSION_DESCRIPTION} {datetime.now().isoformat()}"
     launch = sn.run(
-        [
-            "debug",
-            "--run-id",
-            base_run,
-            "--input-hash",
-            str(moment["input_hash"]),
-            "--vtime",
-            str(moment["vtime"]),
-            "--description",
-            description,
-        ]
+        ["debug", "--run-id", base_run, "--input-hash", h, "--vtime", v, "--description", description]
     )
     if not launch.ok:
         raise GalleryError(f"`snouty debug` failed (exit {launch.returncode}): {launch.combined}")
-    rows = sn.json_lines(["runs", "list", "--launcher", DEBUGGING_LAUNCHER, "-n", "20"])
-    for r in rows:
-        if (r.get("parameters") or {}).get("antithesis.event_description") == description:
-            return r, launch
-    raise GalleryError(f"cannot find the debugging session {description!r} in `runs list`")
+    deadline = time.monotonic() + EXEC_READY_DEADLINE
+    while time.monotonic() < deadline:
+        for r in _debugging_sessions(sn):
+            if (r.get("parameters") or {}).get(_DESCRIPTION) == description:
+                return r, launch
+        print(f"  waiting for the session {description!r} to list its parameters", file=sys.stderr)
+        time.sleep(EXEC_READY_POLL)
+    raise GalleryError(
+        f"the debugging session {description!r} listed no parameters within {EXEC_READY_DEADLINE}s"
+    )
 
 
 def _wait_ready(sn: Snouty, x: ExecSession, script: str) -> Result:
-    """Poll `script` at the session's moment until it succeeds; return that exec."""
     deadline = time.monotonic() + EXEC_READY_DEADLINE
     while True:
         res = _exec_json(sn, x, script)
@@ -1036,11 +1038,14 @@ def _wait_ready(sn: Snouty, x: ExecSession, script: str) -> Result:
 
 
 def _container(sn: Snouty, run: str, h: str, v: str) -> str:
-    """The container of the last log line up to a moment that names one."""
-    for row in reversed(_logs(sn, [run, h, v])):
-        if name := (row.get("source") or {}).get("container"):
-            return name
-    raise GalleryError(f"no log line of {run} up to {h} {v} names a container")
+    """The container that logs most often up to a moment. A one-shot setup
+    container can log last and then exit, and `--container` fails on it."""
+    names = Counter(
+        name for row in _logs(sn, [run, h, v]) if (name := (row.get("source") or {}).get("container"))
+    )
+    if not names:
+        raise GalleryError(f"no log line of {run} up to {h} {v} names a container")
+    return names.most_common(1)[0][0]
 
 
 def _rewarm_moment(sn: Snouty, run: str, after: float) -> dict:
@@ -1060,11 +1065,11 @@ def _rewarm_moment(sn: Snouty, run: str, after: float) -> dict:
     raise GalleryError(f"no property moment of {run} after vtime {after} to rewarm")
 
 
-def discover_exec_session(sn: Snouty, d: Discovery) -> ExecSession:
-    """Reuse a live debugging session, or launch one from `d.success`, then wait
-    until it accepts commands and run the exec that the follow-up story chains
-    from."""
-    row = _live_session(sn)
+def discover_exec_session(sn: Snouty, d: Discovery, reuse: bool) -> ExecSession:
+    """A debugging session that accepts `runs exec`. With `reuse`, prefer a live
+    session that the gallery launched; otherwise, or when that session is not
+    ready, launch one from `d.success`."""
+    row = _live_session(sn) if reuse else None
     if row is not None:
         print(f"  reusing debugging session {row['run_id']}", file=sys.stderr)
         try:
@@ -1077,8 +1082,6 @@ def discover_exec_session(sn: Snouty, d: Discovery) -> ExecSession:
 
 
 def _ready_exec_session(sn: Snouty, row: dict, launch: Result | None) -> ExecSession:
-    """Wait until the session `row` accepts commands, then pick the moments and
-    the container the exec stories use."""
     params = row["parameters"]
     base, h, v = params[_DEBUG_RUN], params[_DEBUG_HASH], params[_DEBUG_VTIME]
     x = ExecSession(session=row["run_id"], base_run=base, hash=h, vtime=v, launch=launch)
@@ -1135,11 +1138,9 @@ class Story:
     # under `$XDG_CONFIG_HOME/snouty` — those would otherwise leak in and mask a
     # story that models an unconfigured machine (e.g. the no-auth doctor stories).
     isolate_config: bool = False
-    # Text piped to the command's stdin.
     stdin: str | None = None
-    # A result that discovery already captured, because later stories depend on
-    # what the command did (the `snouty debug` launch). The story shows it and
-    # runs nothing.
+    # A result that discovery captured, because later stories depend on its side
+    # effects. The story shows it and runs nothing.
     precaptured: Result | None = None
     # The story starts real containers (a live `snouty validate` sample), as
     # opposed to the static checks that fail before any container starts. All
@@ -1535,6 +1536,18 @@ def fails_with(*needles: str):
     return _exit_with(*needles, want_ok=False)
 
 
+def exits_1_with(*needles: str):
+    """`fails_with`, and the exit code is 1: snouty reports a script's exit code
+    and does not forward it."""
+    failed = fails_with(*needles)
+
+    def chk(sr: StoryRun, reg: Registry) -> tuple[bool, str]:
+        ok, detail = failed(sr, reg)
+        return (ok and sr.result.returncode == 1, detail)
+
+    return chk
+
+
 def logs_non_empty(sr: StoryRun, reg: Registry) -> tuple[bool, str]:
     n = len(sr.rows or [])
     return (n > 0, f"{n} log lines")
@@ -1560,9 +1573,8 @@ def logs_begin_at(begin: str):
 
 
 def exec_json(needle: str, *, system_events: bool):
-    """A `--json runs exec` story: exit 0, a last line that reports `exited`
-    with code 0, an output event that contains `needle`, and timeline events
-    without output text exactly when `system_events` (`--events`) is set."""
+    """Check a `--json runs exec` story. With `--events`, timeline events
+    without `output_text` appear."""
 
     def chk(sr: StoryRun, reg: Registry) -> tuple[bool, str]:
         try:
@@ -2287,11 +2299,8 @@ def build_stories(d: Discovery) -> list[Story]:
 
 
 def build_exec_stories(d: Discovery, x: ExecSession) -> list[Story]:
-    """Stories that execute scripts in the debugging session that
-    `discover_exec_session` found or launched. Each one executes once: none is
-    re-run for JSON rows. The cold-moment story executes at the incomplete run's
-    failure moment: no story loads it, so it stays cold however often the
-    session is reused."""
+    """Stories that execute in session `x`. No story is JSON-capable, so each
+    script executes once."""
     exec_at = ["runs", "exec", x.session, x.hash, x.vtime]
     script = 'echo "hello from $(uname -n)"; echo "a warning on stderr" >&2'
 
@@ -2331,7 +2340,7 @@ def build_exec_stories(d: Discovery, x: ExecSession) -> list[Story]:
             "The script's output appears, snouty reports the script's exit code, and the "
             "trailer still names the end moment. snouty exits 1, not with the script's code.",
             [*exec_at, 'echo "checking the data directory"; exit 3'],
-            fails_with("checking the data directory", "code 3", "end moment:"),
+            exits_1_with("checking the data directory", "code 3", "end moment:"),
         ),
         exec_story(
             "runs-exec--container",
@@ -2416,6 +2425,7 @@ def build_exec_stories(d: Discovery, x: ExecSession) -> list[Story]:
             "debugging session.",
             "snouty fails, says that the moment is not loaded into the session, and tells me "
             "how to load it: name the run it comes from with --source-run-id.",
+            # No story loads d.fail's moment, so it stays cold in a reused session.
             ["runs", "exec", x.session, d.fail_hash, d.fail_vtime, "uname -n"],
             fails_with("--source-run-id"),
         ),
@@ -2445,7 +2455,7 @@ def build_exec_stories(d: Discovery, x: ExecSession) -> list[Story]:
     return stories
 
 
-# Enumerates every exec slug, the `debug` story included.
+# A placeholder with a launch, so slug enumeration includes `debug`.
 _LISTED_EXEC_SESSION = ExecSession(launch=Result(["debug"], "", "", 0))
 
 
@@ -3477,7 +3487,10 @@ def main() -> int:
             disc = discover(sn, args.runs_to_scan, selected("runs-show-vcs"))
             stories += build_stories(disc)
             if need_exec:
-                exec_session = discover_exec_session(sn, disc)
+                # When `--only` selects `debug`, launch a new session so the
+                # story has a launch to show.
+                reuse = not (args.only and selected("debug"))
+                exec_session = discover_exec_session(sn, disc, reuse)
                 if exec_session.launch is None and selected("debug"):
                     print("  no debug story: discovery reused a live session", file=sys.stderr)
                 stories += build_exec_stories(disc, exec_session)

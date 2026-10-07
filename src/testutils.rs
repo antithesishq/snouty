@@ -468,6 +468,8 @@ pub fn filtered_path_without_binary(binary: &str) -> Option<String> {
 ///   run resources (404 for an unknown run id, like the real API; properties
 ///   additionally 404 for runs that aren't `completed`)
 /// - `POST /api/v1/launch/{launcher_name}` — returns a mock launch response
+/// - `POST /api/v0/runs/{run_id}/cancel` — 200 for an in-progress run, 409
+///   for any other known run, 404 for an unknown run
 pub struct MockApiServer {
     url: String,
     token: String,

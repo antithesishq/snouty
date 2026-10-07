@@ -586,13 +586,15 @@ impl AntithesisApi {
         }
     }
 
-    /// Request cancellation of a run. Observed on orbitinghail, release 64.0:
-    /// a starting run answers 200 `{}` and is cancelled at once; a cancel
-    /// sent again over the next 8 minutes answers 200 `{}` and changes
-    /// nothing, although the spec documents 409 for a cancelled run (possibly
-    /// while its jobs stop); a completed run answers 409
-    /// "Conflict: Run <id> has already finished and cannot be cancelled"; and
-    /// an unknown run answers a bare `{"error":"404 Not Found"}`.
+    /// Request cancellation of a run.
+    ///
+    /// Observed on orbitinghail, release 64.0:
+    /// - A starting run answers 200 `{}` and is cancelled at once.
+    /// - A repeat cancel answers 200 `{}` and changes nothing. The spec
+    ///   documents 409.
+    /// - A completed run answers 409 "Conflict: Run <id> has already finished
+    ///   and cannot be cancelled".
+    /// - An unknown run answers 404 `{"error":"404 Not Found"}`.
     pub async fn cancel_run(&self, run_id: &str) -> Result<()> {
         match self.client.cancel_run().run_id(run_id).send().await {
             Ok(_) => Ok(()),

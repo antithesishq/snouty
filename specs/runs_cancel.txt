@@ -3,18 +3,6 @@
 # Cancel a run that is starting or in progress (`POST
 # /api/v0/runs/{run_id}/cancel`). Cancellation is asynchronous: success means
 # the server marked the run as cancelled, but its jobs can still be stopping.
-# Verified against the live API (orbitinghail, release 64.0):
-#
-#   - A starting run answers 200 `{}`, and `runs show` reports it cancelled
-#     at once, with its completion time set.
-#   - A cancel sent again over the next 8 minutes answers 200 `{}` and
-#     changes nothing, although the spec documents 409 for a cancelled run.
-#   - A completed run answers 409 with "Conflict: Run <id> has already
-#     finished and cannot be cancelled", and keeps its status.
-#   - An unknown run id answers a bare 404.
-#
-# The request is a POST, so a transport failure is never retried: the
-# cancellation is sent exactly once.
 
 # Like every runs command, cancel requires an API key.
 ! snouty runs cancel some-run

@@ -885,8 +885,7 @@ object:
 Cancellation is asynchronous. When the command succeeds, the server has
 marked the run as cancelled, but its jobs can still be stopping. A run that
 has already completed or is incomplete cannot be cancelled: the command fails
-and the run does not change. To cancel a run that is already cancelled again
-succeeds and changes nothing.
+and the run does not change.
 
 Examples:
   snouty runs cancel <run_id>

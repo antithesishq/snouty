@@ -626,6 +626,20 @@ pub struct LaunchArgs {
     pub params: Vec<String>,
 }
 
+impl LaunchArgs {
+    /// Takes the launcher name, warning when it came from the deprecated
+    /// --webhook. Clap guarantees exactly one of the two flags is set.
+    pub fn take_launcher(&mut self) -> String {
+        if let Some(webhook) = self.webhook.take() {
+            eprintln!("warning: --webhook is deprecated, use --launcher instead");
+            return webhook;
+        }
+        self.launcher
+            .take()
+            .expect("clap requires --launcher or --webhook")
+    }
+}
+
 #[derive(Args)]
 pub struct DebugArgs {
     /// Read parameters from stdin (JSON)

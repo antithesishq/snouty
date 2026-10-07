@@ -184,19 +184,11 @@ fn json_unaware_command_name(command: &Commands) -> Option<&'static str> {
 }
 
 async fn cmd_launch(
-    args: LaunchArgs,
+    mut args: LaunchArgs,
     settings: &Settings,
     OutputOptions { json, verbose }: OutputOptions,
 ) -> Result<()> {
-    let launcher = match args.webhook {
-        Some(webhook) => {
-            eprintln!("warning: --webhook is deprecated, use --launcher instead");
-            webhook
-        }
-        None => args
-            .launcher
-            .expect("clap requires --launcher unless --webhook is present"),
-    };
+    let launcher = args.take_launcher();
     info!("launching test with launcher: {launcher}");
 
     let mut params = Params::new();
@@ -309,7 +301,7 @@ async fn cmd_launch(
         );
     }
 
-    let response = launch_test(&launcher, params, settings, verbose).await?;
+    let response = submit_launch(&launcher, params, settings, verbose).await?;
 
     if json {
         println!("{}", serde_json::to_string_pretty(&response)?);
@@ -323,7 +315,7 @@ async fn cmd_launch(
     Ok(())
 }
 
-async fn launch_test(
+async fn submit_launch(
     launcher: &str,
     params: Params,
     settings: &Settings,

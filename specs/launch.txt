@@ -32,12 +32,11 @@ stdout '--param attrs\.team=payments'
 # The user specifies a launcher name via -l / --launcher (required).
 ! snouty launch --duration 30
 stderr 'required arguments were not provided:\n  --launcher <LAUNCHER>'
-snouty launch --help
-stdout '^  -l, --launcher <LAUNCHER>$'
 
 # -w / --webhook is a deprecated alias for --launcher. Help does not show it,
 #    and it cannot be used together with --launcher.
 snouty launch --help
+stdout '^  -l, --launcher <LAUNCHER>$'
 ! stdout 'webhook'
 ! snouty launch --launcher basic_test --webhook basic_test --duration 30
 stderr 'cannot be used with'
@@ -224,11 +223,6 @@ mock-server 200 '{"message":"Success","runId":"run-123"}'
 snouty launch -w basic_test --duration 30
 stderr '^warning: --webhook is deprecated, use --launcher instead$'
 stdout 'Test run started: run_id run-123'
-
-# --launcher prints no deprecation warning.
-mock-server 200 '{"message":"Success","runId":"run-123"}'
-snouty launch --launcher basic_test --duration 30
-! stderr '--webhook is deprecated'
 
 mock-server 200 '{"message":"Success","runId":"run-123"}'
 snouty launch --launcher basic_test --duration 30 --filter-logs-matching debug

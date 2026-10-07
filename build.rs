@@ -255,6 +255,17 @@ fn open_performance_tier(spec: &mut serde_json::Value) {
         "enum",
         "open_performance_tier",
     );
+    assert!(
+        tiers
+            .as_array()
+            .is_some_and(|tiers| !tiers.is_empty() && tiers.iter().all(|t| t.is_string())),
+        "Params.antithesis.performance_tier's enum is not a list of strings; update \
+         `open_performance_tier` in build.rs"
+    );
+    let description = spec
+        .pointer("/components/schemas/Params/properties/antithesis.performance_tier/description")
+        .cloned()
+        .unwrap_or_default();
     let schemas = spec
         .pointer_mut("/components/schemas")
         .and_then(serde_json::Value::as_object_mut)
@@ -263,7 +274,7 @@ fn open_performance_tier(spec: &mut serde_json::Value) {
         schemas
             .insert(
                 PERFORMANCE_TIER_SCHEMA.to_owned(),
-                serde_json::json!({"type": "string", "enum": tiers}),
+                serde_json::json!({"type": "string", "enum": tiers, "description": description}),
             )
             .is_none(),
         "openapi spec now defines {PERFORMANCE_TIER_SCHEMA}; delete `open_performance_tier`'s \

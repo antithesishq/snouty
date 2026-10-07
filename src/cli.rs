@@ -106,6 +106,9 @@ pub struct Cli {
 #[derive(Subcommand)]
 pub enum Commands {
     /// Launch a test run
+    // The deprecated --webhook can stand in for --launcher, so clap treats
+    // --launcher as optional and the derived usage would not show it.
+    #[command(override_usage = "snouty launch [OPTIONS] --launcher <LAUNCHER>")]
     #[command(long_about = r#"Launch a test run
 
 Example:
@@ -627,8 +630,8 @@ pub struct LaunchArgs {
 }
 
 impl LaunchArgs {
-    /// Takes the launcher name, warning when it came from the deprecated
-    /// --webhook. Clap guarantees exactly one of the two flags is set.
+    /// Returns the launcher name and warns if it came from the deprecated
+    /// --webhook. Clap guarantees that exactly one of the two flags is set.
     pub fn take_launcher(&mut self) -> String {
         if let Some(webhook) = self.webhook.take() {
             eprintln!("warning: --webhook is deprecated, use --launcher instead");

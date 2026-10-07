@@ -169,7 +169,10 @@ Environment variables (override any settings file):
     Launch(LaunchArgs),
 
     /// Deprecated: use `launch` instead
-    #[command(hide = true)]
+    #[command(
+        hide = true,
+        override_usage = "snouty run [OPTIONS] --launcher <LAUNCHER>"
+    )]
     Run(LaunchArgs),
 
     /// Interact with test runs

@@ -35,6 +35,8 @@ stderr 'required arguments were not provided:\n  --launcher <LAUNCHER>'
 snouty launch --help
 stdout '^Usage: snouty launch \[OPTIONS\] --launcher <LAUNCHER>$'
 stdout '^  -l, --launcher <LAUNCHER>$'
+snouty run --help
+stdout '^Usage: snouty run \[OPTIONS\] --launcher <LAUNCHER>$'
 
 # -w / --webhook is a deprecated alias for --launcher. Help hides it, and it
 #    conflicts with --launcher.

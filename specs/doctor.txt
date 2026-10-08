@@ -61,6 +61,10 @@ stderr '^      NOTE: run `snouty login` to store an API key, then `unset ANTITHE
 [!staging] stderr '.*Antithesis API reachable.*'
 [!staging] stderr '.*latest API version: v1.*'
 [!staging] stderr '.*tenant release version: 56.0.*'
+# A tenant that old predates the APIs some commands need, so doctor warns for
+# each one, `runs exec` included, with no feature to turn on first.
+[!staging] stderr 'tenant serves the execute-command .container. field'
+[!staging] stderr 'release 64.0\) — .runs exec. fails'
 
 # 404: typically an older tenant predating the version endpoint, but possibly a
 # proxy/route intercepting the request — either way it's still reachable and

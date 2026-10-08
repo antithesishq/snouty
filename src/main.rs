@@ -11,15 +11,12 @@ use semver::Version;
 use snouty::OutputOptions;
 use snouty::api::AntithesisApi;
 use snouty::auth::initialize_credential_store;
-use snouty::cli::{
-    Cli, Commands, DebugArgs, LaunchArgs, UpdateArgs, UpdateChannel, gated_command_error,
-};
+use snouty::cli::{Cli, Commands, DebugArgs, LaunchArgs, UpdateArgs, UpdateChannel};
 use snouty::compose;
 use snouty::config;
 use snouty::container;
 use snouty::docs;
 use snouty::error::user_error;
-use snouty::features;
 use snouty::login::cmd_login;
 use snouty::params::{
     ANT_CONFIG_IMAGE, ANT_DEBUGGING_INPUT_HASH, ANT_DEBUGGING_RUN_ID, ANT_DEBUGGING_SESSION_ID,
@@ -99,13 +96,6 @@ async fn run(cli: Cli) -> Result<()> {
     // The global output flags travel together from here on; every command
     // takes them as one value instead of a swappable positional bool pair.
     let output = OutputOptions { json, verbose };
-
-    // A gated command hides itself as the parser is built (see the `hide`
-    // attribute on `RunsCommands::Exec`), but a hidden subcommand is still
-    // callable — so refuse it here too.
-    if let Some(report) = gated_command_error(&command, &features::enabled()) {
-        return Err(report);
-    }
 
     if let Err(err) = initialize_credential_store() {
         eprintln!("warning: Could not initialize system keychain credential storage: {err:?}");
@@ -449,10 +439,6 @@ async fn cmd_debug(
 }
 
 fn cmd_completions(shell: Shell) -> Result<()> {
-    // `Cli::command()` already reflects the feature gate, though it only goes
-    // so far: clap_complete emits hidden subcommands into the candidate list
-    // for bash and zsh, so a gated-off command can still be tab-completed —
-    // and is then refused by `gated_command_error`.
     let mut cmd = Cli::command();
     let bin_name = cmd.get_name().to_string();
     clap_complete::generate(shell, &mut cmd, bin_name, &mut io::stdout());

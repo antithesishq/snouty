@@ -2,15 +2,11 @@ use std::num::NonZeroU64;
 
 use chrono::{DateTime, Utc};
 use clap::{Args, Parser, Subcommand, ValueEnum};
-use color_eyre::Section;
-use color_eyre::eyre::Report;
 
 use crate::api::{
     PerformanceTier, RunStatus, SEARCH_DEFAULT_LIMIT, SEARCH_MAX_LIMIT, SourceRunId,
     SourceSessionId,
 };
-use crate::error::user_error;
-use crate::features::{self, Feature};
 use crate::time::HumanDuration;
 use crate::vtime::VTime;
 
@@ -1068,19 +1064,8 @@ on its own line:
     },
 
     /// Execute a command in a run's live session
-    // Gated behind the `runs-exec` feature. `hide` is an expression, so the
-    // decision is made when the command is built — the feature comes from the
-    // environment, which needs no parse to read. Hiding only keeps it out of
-    // `--help`; invoking it while disabled is refused by
-    // [`gated_command_error`].
     #[command(
-        hide = !features::is_enabled(Feature::RunsExec),
         long_about = r#"Execute a bash script in a run's live session, at a moment.
-
-This command is gated behind the `runs-exec` unstable feature, because the
-Antithesis API it calls is still changing. Enable it by setting
-SNOUTY_UNSTABLE_FEATURES=runs-exec. An unstable feature can change or go away
-in any release.
 
 The run must have a live session. A run has one while it is in progress, and
 for a while after it completes. A debugging session that `snouty debug`
@@ -1314,34 +1299,6 @@ impl Default for RunsListArgs {
     }
 }
 
-/// The error for invoking a gated command whose feature is off. A gated
-/// command needs an arm here as well as a `hide` attribute, because a hidden
-/// command is still callable. `enabled` names the features that are on, so a
-/// test does not need the environment.
-pub fn gated_command_error(command: &Commands, enabled: &[Feature]) -> Option<Report> {
-    let (feature, path) = match command {
-        Commands::Runs {
-            command: Some(RunsCommands::Exec { .. }),
-        } => (Feature::RunsExec, "snouty runs exec"),
-        _ => return None,
-    };
-    if enabled.contains(&feature) {
-        return None;
-    }
-    Some(
-        user_error(format!(
-            "`{path}` is an unstable feature and is not enabled"
-        ))
-        .note(format!(
-            "enable it by setting {}={}",
-            features::UNSTABLE_FEATURES_VAR_NAME,
-            feature
-        ))
-        .note("an unstable feature can change or go away in any release")
-        .suggestion(format!("run `{path} --help` for what it does")),
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1377,35 +1334,6 @@ mod tests {
     fn update_channel_rejects_unknown_values() {
         let err = "nightly".parse::<UpdateChannel>().unwrap_err();
         assert_eq!(err, "expected `stable` or `unstable`, got `nightly`");
-    }
-
-    #[test]
-    fn a_gated_off_command_is_refused_and_an_enabled_one_runs() {
-        let exec = parse(&["snouty", "runs", "exec", "RUN", "1", "2.0", "true"]).command;
-
-        let err = gated_command_error(&exec, &[]).expect("a gated-off command is refused");
-        let rendered = format!("{err:?}");
-        assert!(rendered.contains("`snouty runs exec`"), "{rendered}");
-        assert!(rendered.contains("unstable feature"), "{rendered}");
-        assert!(
-            rendered.contains("SNOUTY_UNSTABLE_FEATURES=runs-exec"),
-            "{rendered}"
-        );
-        assert!(rendered.contains("snouty runs exec --help"), "{rendered}");
-
-        // On: allowed through.
-        assert!(gated_command_error(&exec, &[Feature::RunsExec]).is_none());
-        // An unrelated feature does not enable it.
-        assert!(gated_command_error(&exec, &[Feature::Unknown("other".to_string())]).is_some());
-
-        // Sibling subcommands are never gated.
-        for args in [
-            &["snouty", "runs", "logs", "RUN", "1", "2.0"][..],
-            &["snouty", "runs", "search", "RUN", "q"][..],
-            &["snouty", "runs"][..],
-        ] {
-            assert!(gated_command_error(&parse(args).command, &[]).is_none());
-        }
     }
 
     #[test]

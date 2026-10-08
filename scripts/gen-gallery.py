@@ -107,9 +107,6 @@ DISCOVERY_MAX_PAGES = 10
 # `runs list` reports this launcher for a debugging session.
 DEBUGGING_LAUNCHER = "debugging"
 
-# `runs exec` is an unstable feature; its stories turn it on.
-EXEC_ENV: dict[str, str | None] = {"SNOUTY_UNSTABLE_FEATURES": "runs-exec"}
-
 # A debugging session's status says whether it accepts commands: `starting`
 # is not ready yet, `in_progress` is ready, and an ended session never accepts
 # them. Observed on orbitinghail (release 64.0), before the API adopted these
@@ -1005,7 +1002,7 @@ EXEC_SESSION_DESCRIPTION = "snouty gen-gallery runs exec stories"
 
 
 def _exec_json(sn: Snouty, x: ExecSession, script: str) -> Result:
-    return sn.run(["--json", "runs", "exec", x.session, x.hash, x.vtime, script], EXEC_ENV)
+    return sn.run(["--json", "runs", "exec", x.session, x.hash, x.vtime, script])
 
 
 def _debugging_sessions(sn: Snouty) -> list[dict]:
@@ -2392,7 +2389,7 @@ def build_exec_stories(d: Discovery, x: ExecSession) -> list[Story]:
     script = 'echo "hello from $(uname -n)"; echo "a warning on stderr" >&2'
 
     def exec_story(slug: str, title: str, goal: str, judge: str, args: list[str], check, **kw):
-        return Story(slug, title, goal, judge, args, check, json_capable=False, env=EXEC_ENV, **kw)
+        return Story(slug, title, goal, judge, args, check, json_capable=False, **kw)
 
     stories = []
     if x.launch is not None:
@@ -2733,8 +2730,8 @@ def build_help_stories(d: Discovery) -> list[Story]:
         _help_story(
             "help-runs-exec",
             "Learn how to execute a script in a live run",
-            "I want the help to tell me that the command is behind the `runs-exec` "
-            "unstable feature and how to enable it, which runs accept a script, how "
+            "I want the help to tell me which runs accept a script, which tenant "
+            "release the command needs, how "
             "to pick the moment and the container, when a moment needs "
             "--source-run-id or --source-session-id, where the script's output goes, "
             "what --events prints "

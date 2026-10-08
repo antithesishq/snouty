@@ -110,14 +110,13 @@ impl Params {
         Ok(Self { inner })
     }
 
-    /// Validate params against the test params schema, then validate the
-    /// log filter patterns. The pattern check runs here so no launch path can
-    /// skip it.
+    /// Validate params against the test params schema and the log filter
+    /// patterns. The pattern check runs here so no launch path can skip it.
     ///
-    /// The platform validates these patterns only after the run has started,
-    /// so a bad value becomes a failed run minutes later, not a launch error.
-    /// The platform matches with RE2; the `regex` crate is close but not
-    /// identical, so the local compile is a pre-check, not the authority.
+    /// The platform checks `filter_logs_matching` only after the run starts,
+    /// so a bad pattern fails the run minutes later. The local check uses the
+    /// `regex` crate, which is close to RE2 but not identical, so it is a
+    /// pre-check only.
     pub fn validate_test_params(&self) -> Result<()> {
         validate_against_def(&self.inner, "testParams")?;
         for (key, suppressed, max_bytes) in [
@@ -236,8 +235,8 @@ fn is_sensitive_key(key: &str) -> bool {
 /// including the NUL terminator.
 const MAX_FILTER_LOGS_MATCHING_BYTES: usize = 1023;
 
-/// Validate one log filter pattern. `suppressed` names what a pattern that
-/// matches the empty string would suppress.
+/// `suppressed` names the output that an empty-string match suppresses, for
+/// the error message.
 fn validate_filter_pattern(
     key: &str,
     value: &str,

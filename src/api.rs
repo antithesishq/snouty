@@ -61,50 +61,6 @@ pub struct LaunchResponse {
     pub run_id: Option<String>,
 }
 
-/// The launcher that `snouty launch` sends a run to.
-#[derive(Clone, Debug)]
-pub enum Launcher {
-    BasicTest,
-    BasicK8sTest,
-    /// A tenant-specific launcher. Snouty does not know which params it needs.
-    Other(String),
-}
-
-impl Launcher {
-    const BASIC_TEST: &'static str = "basic_test";
-    const BASIC_K8S_TEST: &'static str = "basic_k8s_test";
-
-    /// True when a run on this launcher requires a config image.
-    pub fn requires_config_image(&self) -> bool {
-        match self {
-            Launcher::BasicTest | Launcher::BasicK8sTest => true,
-            Launcher::Other(_) => false,
-        }
-    }
-}
-
-impl std::str::FromStr for Launcher {
-    type Err = std::convert::Infallible;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Ok(match s {
-            Self::BASIC_TEST => Launcher::BasicTest,
-            Self::BASIC_K8S_TEST => Launcher::BasicK8sTest,
-            other => Launcher::Other(other.to_owned()),
-        })
-    }
-}
-
-impl std::fmt::Display for Launcher {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(match self {
-            Launcher::BasicTest => Self::BASIC_TEST,
-            Launcher::BasicK8sTest => Self::BASIC_K8S_TEST,
-            Launcher::Other(name) => name,
-        })
-    }
-}
-
 /// API and tenant release version, from `GET /api/version`.
 #[derive(Debug, Clone)]
 pub struct ApiVersion {
@@ -596,16 +552,12 @@ impl AntithesisApi {
             .unwrap_or_else(|| self.base_url.clone())
     }
 
-    pub async fn launch_test(
-        &self,
-        launcher: &Launcher,
-        params: &Params,
-    ) -> Result<LaunchResponse> {
+    pub async fn launch_test(&self, launcher: &str, params: &Params) -> Result<LaunchResponse> {
         let body = launch_request(params)?;
         let result = self
             .client
             .launch_test()
-            .launcher_name(launcher.to_string())
+            .launcher_name(launcher)
             .body(body)
             .send()
             .await;
@@ -1990,13 +1942,6 @@ mod tests {
     }
 
     #[hegel::test]
-    fn launcher_display_round_trips(tc: hegel::TestCase) {
-        let name = tc.draw(generators::text());
-        let launcher: Launcher = name.parse().unwrap();
-        assert_eq!(launcher.to_string(), name);
-    }
-
-    #[hegel::test]
     fn lay_out_dsl_error_puts_the_caret_under_the_query(tc: hegel::TestCase) {
         let one_line = || {
             generators::text()
@@ -2195,9 +2140,7 @@ mod tests {
 
         let api = test_api_optionally_with_cache(&mock_server, None);
         let params = Params::from_key_value_pairs(["antithesis.duration=30"]).unwrap();
-        api.launch_test(&Launcher::BasicTest, &params)
-            .await
-            .unwrap();
+        api.launch_test("basic_test", &params).await.unwrap();
 
         let requests = mock_server.received_requests().await.unwrap();
         let header = requests[0]
@@ -2221,10 +2164,7 @@ mod tests {
         ])
         .unwrap();
 
-        let response = api
-            .launch_test(&Launcher::BasicTest, &params)
-            .await
-            .unwrap();
+        let response = api.launch_test("basic_test", &params).await.unwrap();
         let requests = mock_server.received_requests().await.unwrap();
 
         assert_eq!(response.run_id.as_deref(), Some("run-123"));
@@ -2260,10 +2200,7 @@ mod tests {
         let api = test_api_optionally_with_cache(&mock_server, None);
         let params = Params::from_key_value_pairs(["antithesis.duration=30"]).unwrap();
 
-        let response = api
-            .launch_test(&Launcher::BasicTest, &params)
-            .await
-            .unwrap();
+        let response = api.launch_test("basic_test", &params).await.unwrap();
         assert_eq!(response.run_id.as_deref(), Some("run-123"));
     }
 
@@ -2274,10 +2211,7 @@ mod tests {
             let api = test_api_optionally_with_cache(&mock_server, None);
             let params = Params::from_key_value_pairs(["antithesis.duration=30"]).unwrap();
 
-            let response = api
-                .launch_test(&Launcher::BasicTest, &params)
-                .await
-                .unwrap();
+            let response = api.launch_test("basic_test", &params).await.unwrap();
             assert_eq!(response.run_id.as_deref(), Some("run-63-3"));
         }
     }
@@ -2376,10 +2310,7 @@ mod tests {
             let api = test_api_optionally_with_cache(&mock_server, None);
             let params = Params::from_key_value_pairs(["antithesis.duration=30"]).unwrap();
 
-            let report = api
-                .launch_test(&Launcher::BasicTest, &params)
-                .await
-                .unwrap_err();
+            let report = api.launch_test("basic_test", &params).await.unwrap_err();
             assert_eq!(
                 crate::error::api_error_status(&report),
                 Some(404),
@@ -2401,10 +2332,7 @@ mod tests {
         let api = test_api_optionally_with_cache(&mock_server, None);
         let params = Params::from_key_value_pairs(["antithesis.duration=30"]).unwrap();
 
-        let report = api
-            .launch_test(&Launcher::BasicTest, &params)
-            .await
-            .unwrap_err();
+        let report = api.launch_test("basic_test", &params).await.unwrap_err();
         assert_eq!(
             format!("{report:#}"),
             "API error: 404 Not Found — bad request"
@@ -2647,10 +2575,7 @@ mod tests {
         let api = test_api_at_url(base_url, None);
         let params = Params::from_key_value_pairs(["antithesis.duration=30"]).unwrap();
 
-        let report = api
-            .launch_test(&Launcher::BasicTest, &params)
-            .await
-            .unwrap_err();
+        let report = api.launch_test("basic_test", &params).await.unwrap_err();
 
         assert!(
             crate::error::api_error_status(&report).is_none(),

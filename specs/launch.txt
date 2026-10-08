@@ -88,18 +88,13 @@ stderr 'unexpected argument.*'
 
 # The basic_test and basic_k8s_test launchers need a config image. Without
 #    --config, --config-image, or --param antithesis.config_image, the command
-#    fails before any API call and names the flags that supply one. An empty
-#    or blank value does not count.
+#    fails before any API call and names the flags that supply one.
 ! snouty launch --launcher basic_test --duration 30
 stderr 'the basic_test launcher requires a config image'
-stderr 'pass --config with a local config directory, or --config-image with a pre-built image'
+stderr 'pass --config or --config-image'
 ! snouty launch --launcher basic_k8s_test --duration 30
 stderr 'the basic_k8s_test launcher requires a config image'
 ! snouty launch --duration 30
-stderr 'the basic_test launcher requires a config image'
-! snouty launch --launcher basic_test --config-image '' --duration 30
-stderr 'the basic_test launcher requires a config image'
-! snouty launch --launcher basic_test --param 'antithesis.config_image= ' --duration 30
 stderr 'the basic_test launcher requires a config image'
 
 # The command authenticates with the Antithesis API using either
@@ -274,18 +269,4 @@ stdout 'Test run started: run_id run-123'
 mock-server 200 '{"message":"Success","runId":"run-123"}'
 snouty launch --launcher basic_test --duration 30 --param antithesis.config_image=config:latest
 stderr '"antithesis.config_image": "config:latest"'
-! stderr 'no config image'
-stdout 'Test run started: run_id run-123'
-
-# Snouty does not know which params another launcher needs. Without a config
-#    image, the run still launches, with a warning.
-mock-server 200 '{"message":"Success","runId":"run-123"}'
-snouty launch --launcher my_launcher --duration 30
-stderr '^warning: no config image given\. If the my_launcher launcher requires one, pass --config or --config-image\.$'
-stdout 'Test run started: run_id run-123'
-
-# With a config image, another launcher shows no warning.
-mock-server 200 '{"message":"Success","runId":"run-123"}'
-snouty launch --launcher my_launcher --config-image config:latest --duration 30
-! stderr 'no config image'
 stdout 'Test run started: run_id run-123'

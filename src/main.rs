@@ -9,7 +9,7 @@ use color_eyre::Section;
 use color_eyre::eyre::{Context, Result};
 use semver::Version;
 use snouty::OutputOptions;
-use snouty::api::{AntithesisApi, Launcher};
+use snouty::api::AntithesisApi;
 use snouty::auth::initialize_credential_store;
 use snouty::cli::{
     Cli, Commands, DebugArgs, LaunchArgs, UpdateArgs, UpdateChannel, gated_command_error,
@@ -267,25 +267,13 @@ async fn cmd_launch(
 
     params.validate_test_params()?;
 
-    let has_config_image = params
-        .as_map()
-        .get(ANT_CONFIG_IMAGE)
-        .and_then(|value| value.as_str())
-        .is_some_and(|image| !image.trim().is_empty());
-    if !has_config_image {
-        if launcher.requires_config_image() {
-            return Err(user_error(format!(
-                "invalid arguments: the {launcher} launcher requires a config image"
-            ))
-            .suggestion(
-                "pass --config with a local config directory, or --config-image with a \
-                 pre-built image",
-            ));
-        }
-        eprintln!(
-            "warning: no config image given. If the {launcher} launcher requires one, \
-             pass --config or --config-image."
-        );
+    if matches!(launcher.as_str(), "basic_test" | "basic_k8s_test")
+        && !params.contains_key(ANT_CONFIG_IMAGE)
+    {
+        return Err(user_error(format!(
+            "invalid arguments: the {launcher} launcher requires a config image"
+        ))
+        .suggestion("pass --config or --config-image"));
     }
 
     if let Some((detected, registry, config_image)) = config_image_ref {
@@ -343,7 +331,7 @@ async fn cmd_launch(
 }
 
 async fn submit_launch(
-    launcher: &Launcher,
+    launcher: &str,
     params: Params,
     settings: &Settings,
     verbose: bool,

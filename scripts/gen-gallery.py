@@ -2705,9 +2705,7 @@ def build_help_stories(d: Discovery) -> list[Story]:
             "is required or preferred. Username/password should remain marked deprecated. "
             "The help should say that credentials come from `snouty login` and name the next "
             "step, `snouty runs wait <run_id>`. `--performance-tier` should list the three "
-            "tiers: standard, fast, and turbo. The help should say that the basic_test and "
-            "basic_k8s_test launchers require a config image, and every example for those "
-            "launchers should pass one.",
+            "tiers: standard, fast, and turbo.",
             ["launch"],
         ),
         _help_story(

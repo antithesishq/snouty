@@ -6,7 +6,7 @@ use color_eyre::Section;
 use color_eyre::eyre::Report;
 
 use crate::api::{
-    Launcher, PerformanceTier, RunStatus, SEARCH_DEFAULT_LIMIT, SEARCH_MAX_LIMIT, SourceRunId,
+    PerformanceTier, RunStatus, SEARCH_DEFAULT_LIMIT, SEARCH_MAX_LIMIT, SourceRunId,
     SourceSessionId,
 };
 use crate::error::user_error;
@@ -118,8 +118,7 @@ Example:
 The -c/--config flag points at a local directory containing docker-compose.yaml
 (this is the config image source, unrelated to snouty's own settings file).
 Images required for the run need to have been built already. Pushing happens
-automatically. The basic_test and basic_k8s_test launchers require a config
-image: pass --config or --config-image.
+automatically.
 
 Alternatively, pass a pre-built config image directly:
   snouty launch --launcher basic_test \
@@ -127,13 +126,13 @@ Alternatively, pass a pre-built config image directly:
     --duration 30
 
 Extra parameters can be passed with --param:
-  snouty launch --launcher basic_test --config ./config --duration 30 \
+  snouty launch --launcher basic_test --duration 30 \
     --param antithesis.integrations.github.token=TOKEN \
     --param my.custom.property=value
 
 User-defined attributes are params with an `attrs.` prefix. The server records
 them on the run and `snouty runs show` lists them:
-  snouty launch --launcher basic_test --config ./config --duration 30 \
+  snouty launch --launcher basic_test --duration 30 \
     --param attrs.team=payments \
     --param attrs.branch=main \
     --param attrs.build=12345
@@ -147,8 +146,7 @@ list:
 
 Add --json for machine-readable output. The launch response prints as one
 JSON object:
-  snouty launch --json --launcher basic_test --config ./config --duration 30 \
-    | jq -r .runId
+  snouty launch --json --launcher basic_test --duration 30 | jq -r .runId
 
 Next, wait for the run to finish with `snouty runs wait <run_id>`. The run ID is
 the `run_id` value in the launch output, or `.runId` in the --json output.
@@ -559,12 +557,12 @@ pub struct DoctorArgs {
 #[derive(Args)]
 pub struct LaunchArgs {
     /// Launcher name (e.g., basic_test, basic_k8s_test)
-    #[arg(short, long, default_value_t = Launcher::BasicTest, conflicts_with = "webhook")]
-    pub launcher: Launcher,
+    #[arg(short, long, default_value = "basic_test", conflicts_with = "webhook")]
+    pub launcher: String,
 
     /// Deprecated alias for --launcher
     #[arg(short, long, hide = true)]
-    pub webhook: Option<Launcher>,
+    pub webhook: Option<String>,
 
     /// Local config dir (docker-compose.yaml or a manifests/ subdir), auto-built
     /// and pushed as the config image. Compose service images must already exist

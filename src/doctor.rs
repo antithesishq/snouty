@@ -365,8 +365,9 @@ fn password_only_check(in_use: &AttributedValue<AuthenticationInfo>, username: &
             "run `snouty login` to store an API key, then {}",
             drop_action(in_use)
         ),
-        AttributedValue::SettingsFile { .. } | AttributedValue::Keychain { .. } => {
-            "run `snouty login` to replace it with an API key".to_owned()
+        AttributedValue::SettingsFile { profile, .. } => login_to_replace(profile.as_deref()),
+        AttributedValue::Keychain { entry_name, .. } => {
+            login_to_replace(entry_name.strip_prefix("profile_"))
         }
     };
     enrich_with_origin(
@@ -383,6 +384,13 @@ fn password_only_check(in_use: &AttributedValue<AuthenticationInfo>, username: &
         in_use,
     )
     .note(Level::Note, next_step)
+}
+
+/// The next step for a stored password. A bare `snouty login` writes the
+/// default profile, so a named profile is passed on.
+fn login_to_replace(profile: Option<&str>) -> String {
+    let flag = profile.map_or(String::new(), |p| format!(" --profile {p}"));
+    format!("run `snouty login{flag}` to replace it with an API key")
 }
 
 /// A warning, not a failure: snouty is authenticated, just not with the
@@ -921,6 +929,22 @@ mod tests {
                     "run `snouty login` to replace it with an API key".to_owned()
                 ),
             ]
+        );
+        // A bare `snouty login` writes the default profile, so the next step
+        // names the profile that holds the password.
+        let keychain = notes(AttributedValue::Keychain {
+            value: AuthenticationInfo::Password {
+                username: "user".to_owned(),
+                password: "pass".to_owned(),
+            },
+            entry_name: "profile_prod".to_owned(),
+        });
+        assert_eq!(
+            keychain.last().unwrap(),
+            &(
+                Level::Note,
+                "run `snouty login --profile prod` to replace it with an API key".to_owned()
+            )
         );
     }
 

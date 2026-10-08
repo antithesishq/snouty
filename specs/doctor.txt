@@ -153,6 +153,12 @@ stdout '"name": "credentials",\s*"status": "warn"'
 ! stdout '"name": "basic_auth"'
 ! stdout 'stored-pass'
 
+# A bare `snouty login` writes the default profile, so for a password stored
+# under a named profile the next step names that profile.
+snouty --profile prod doctor
+stderr '^      NOTE: read from the \[prod\] profile in .+credentials\.toml$'
+stderr '^      NOTE: run `snouty login --profile prod` to replace it with an API key$'
+
 # A credentials file snouty cannot parse sits behind the exported API key. No
 # command reads that far, so doctor reports the key it uses and stays green
 # rather than failing on a file that stops nothing. `--offline` is needed here:
@@ -175,6 +181,11 @@ api_key = "spec-stored-key"
 [default]
 type = "Password"
 username = "storeduser"
+password = "stored-pass"
+
+[profile.prod]
+type = "Password"
+username = "produser"
 password = "stored-pass"
 
 -- broken_credentials/.config/snouty/credentials.toml --

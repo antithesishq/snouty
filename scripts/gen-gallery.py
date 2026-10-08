@@ -967,6 +967,8 @@ _DESCRIPTION = "antithesis.event_description"
 
 # The description of each session the gallery launches starts with this.
 EXEC_SESSION_DESCRIPTION = "snouty gen-gallery runs exec stories"
+# The title of each session the gallery launches.
+EXEC_SESSION_TITLE = "snouty gallery"
 
 
 def _exec_json(sn: Snouty, x: ExecSession, script: str) -> Result:
@@ -1023,7 +1025,19 @@ def _launch_session(sn: Snouty, base_run: str) -> tuple[dict, Result]:
     description = f"{EXEC_SESSION_DESCRIPTION} {datetime.now().isoformat()}"
     # With `runs-exec` on, the launch's next-step hint names `runs exec`.
     launch = sn.run(
-        ["debug", "--run-id", base_run, "--input-hash", h, "--vtime", v, "--description", description],
+        [
+            "debug",
+            "--run-id",
+            base_run,
+            "--input-hash",
+            h,
+            "--vtime",
+            v,
+            "--title",
+            EXEC_SESSION_TITLE,
+            "--description",
+            description,
+        ],
         env=EXEC_ENV,
     )
     if not launch.ok:
@@ -2363,11 +2377,12 @@ def build_exec_stories(d: Discovery, x: ExecSession) -> list[Story]:
             Story(
                 "debug",
                 "Open a debugging session at a moment",
-                f"I want to debug run {x.base_run} from the moment its setup completed.",
-                "snouty shows the parameters it sends and the run ID of the new debugging "
-                "session. It says that the session takes minutes to start, and gives the "
-                "`runs show` command to check it and the `runs exec` command to use when it "
-                "is ready. Exit 0.",
+                f"I want to debug run {x.base_run} from the moment its setup completed, "
+                "and give the session a title and a description.",
+                "snouty shows the parameters it sends, with the title as "
+                "antithesis.test_name, and the run ID of the new debugging session. It says "
+                "that the session takes minutes to start, and gives the `runs show` command "
+                "to check it and the `runs exec` command to use when it is ready. Exit 0.",
                 x.launch.args,
                 succeeds_with("Debugging session started", "snouty runs show", "snouty runs exec"),
                 json_capable=False,

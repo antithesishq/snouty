@@ -57,6 +57,7 @@ fn generate_api_client(out_dir: &Path) {
     mark_vtime_schema(&mut spec_value);
     open_performance_tier(&mut spec_value);
     unrequire_search_limit_default(&mut spec_value);
+    add_mvd_test_name(&mut spec_value);
     let spec: openapiv3::OpenAPI = serde_json::from_value(spec_value).unwrap();
 
     let mut settings = progenitor::GenerationSettings::default();
@@ -253,6 +254,35 @@ fn drop_launch_status_code(spec: &mut serde_json::Value) {
             .get_mut("properties")
             .and_then(serde_json::Value::as_object_mut)
             .and_then(|properties| properties.remove("statusCode"));
+    }
+}
+
+/// Add `antithesis.test_name` to both `MVD_Params` variants, for
+/// `snouty debug --title`. The spec omits it, but the debugging launcher
+/// stores it: on orbitinghail, release 64.0, a session launched with it lists
+/// it in its `parameters`, and `runs list` shows it as the test name.
+fn add_mvd_test_name(spec: &mut serde_json::Value) {
+    let variants = spec
+        .pointer_mut("/components/schemas/MVD_Params/oneOf")
+        .and_then(serde_json::Value::as_array_mut)
+        .expect("openapi spec has no MVD_Params.oneOf; update `add_mvd_test_name` in build.rs");
+    for variant in variants {
+        let properties = variant
+            .get_mut("properties")
+            .and_then(serde_json::Value::as_object_mut)
+            .expect("an MVD_Params variant has no properties; update `add_mvd_test_name`");
+        assert!(
+            properties
+                .insert(
+                    "antithesis.test_name".to_owned(),
+                    serde_json::json!({
+                        "type": "string",
+                        "description": "A title for the debugging session."
+                    }),
+                )
+                .is_none(),
+            "MVD_Params now documents antithesis.test_name; delete `add_mvd_test_name` in build.rs"
+        );
     }
 }
 

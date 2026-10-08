@@ -329,6 +329,18 @@ snouty runs logs --help
 stdout 'a `moment HASH` divider'
 ! stdout 'moment HASH VTIME'
 
+# `--raw` (`-r`) is deprecated, so help on the three event-stream commands
+# does not show it.
+snouty runs logs --help
+! stdout 'raw'
+! stdout '^ +-r,'
+snouty runs events --help
+! stdout 'raw'
+! stdout '^ +-r,'
+snouty runs search --help
+! stdout '[-]-raw'
+! stdout '^ +-r,'
+
 # Several needles are matched server-side, every one of them. The old behavior
 # (match one needle server-side, filter the rest client-side) silently
 # second-guessed the server's own filter and is gone.
@@ -387,6 +399,10 @@ mock-runs-server
 [staging] snouty --json runs events $R_run_id --match fault --limit 3 --raw
 ! stdout '^moment '
 [!staging] stdout '"vtime":"311\.8487535319291"'
+# `--raw` is deprecated: it still works, and a warning goes to stderr only,
+# so the piped stdout stays the server's events.
+stderr '^warning: --raw is deprecated, use --json alone instead$'
+! stdout 'deprecated'
 
 [staging] skip
 
@@ -615,10 +631,12 @@ stdout '"vtime":402.0.*"active_faults":\{\}'
 # `--raw` disables post-processing: NDJSON passes through without fault
 # annotation. The end vtime still applies to raw output.
 mock-runs-server
-snouty runs logs --json --raw run-1 -123 1.0
+snouty runs logs --json -r run-1 -123 1.0
 stdout 'output_text.*starting'
 ! stdout 'active_faults'
 ! stdout 'slow request'
+stderr '^warning: --raw is deprecated, use --json alone instead$'
+! stdout 'deprecated'
 
 # `--raw` means the server's events as JSON lines, so it requires --json;
 # there is no raw human rendering.

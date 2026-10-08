@@ -53,8 +53,7 @@ stderr 'specify --run-id or --session-id.*'
 #    parameters are printed to stderr with sensitive values redacted. The
 #    target run is identified by --run-id (preferred for new integrations).
 #    --title names the session: it sends antithesis.test_name, which
-#    `snouty runs list` shows in its TEST NAME column. --description sends
-#    antithesis.event_description.
+#    `snouty runs list` shows in its TEST NAME column.
 #    The vtime is normalized to its exact print, so every route into a moment
 #    (flags, raw JSON) sends the same text: `1234567890` becomes
 #    `1234567890.0`.

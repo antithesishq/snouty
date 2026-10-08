@@ -967,8 +967,6 @@ _DESCRIPTION = "antithesis.event_description"
 
 # The description of each session the gallery launches starts with this.
 EXEC_SESSION_DESCRIPTION = "snouty gen-gallery runs exec stories"
-# The title of each session the gallery launches.
-EXEC_SESSION_TITLE = "snouty gallery"
 
 
 def _exec_json(sn: Snouty, x: ExecSession, script: str) -> Result:
@@ -1034,7 +1032,7 @@ def _launch_session(sn: Snouty, base_run: str) -> tuple[dict, Result]:
             "--vtime",
             v,
             "--title",
-            EXEC_SESSION_TITLE,
+            "snouty gallery",
             "--description",
             description,
         ],

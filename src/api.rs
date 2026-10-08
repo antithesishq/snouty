@@ -85,6 +85,10 @@ pub const MIN_SEARCH_RELEASE: (u64, u64) = (62, 2);
 /// assumes the tenant meets this; `snouty doctor` checks it.
 pub const MIN_EXEC_RELEASE: (u64, u64) = (64, 0);
 
+/// The first tenant release that serves the cancel-run API. `runs cancel`
+/// assumes the tenant meets this; `snouty doctor` checks it.
+pub const MIN_CANCEL_RELEASE: (u64, u64) = (63, 0);
+
 /// The `container` value that executes a command on the host instead of in a
 /// container.
 const EXEC_HOST_CONTAINER: &str = "_ANTITHESIS_HOST";
@@ -582,6 +586,22 @@ impl AntithesisApi {
                 let policy = policy.and(CachePolicy::cache_if(detail.status.is_terminal()));
                 Ok(detail.with_tag(policy))
             }
+            Err(err) => Err(format_api_client_error(err).await),
+        }
+    }
+
+    /// Request cancellation of a run.
+    ///
+    /// Observed on orbitinghail, release 64.0:
+    /// - A starting run answers 200 `{}` and is cancelled at once.
+    /// - A repeat cancel answers 200 `{}` and changes nothing. The spec
+    ///   documents 409.
+    /// - A completed run answers 409 "Conflict: Run <id> has already finished
+    ///   and cannot be cancelled".
+    /// - An unknown run answers 404 `{"error":"404 Not Found"}`.
+    pub async fn cancel_run(&self, run_id: &str) -> Result<()> {
+        match self.client.cancel_run().run_id(run_id).send().await {
+            Ok(_) => Ok(()),
             Err(err) => Err(format_api_client_error(err).await),
         }
     }

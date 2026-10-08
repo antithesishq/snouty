@@ -1,0 +1,59 @@
+# snouty runs cancel
+#
+# Cancel a run that is starting or in progress (`POST
+# /api/v0/runs/{run_id}/cancel`). Cancellation is asynchronous: success means
+# the server marked the run as cancelled, but it can still be stopping.
+
+# Like every runs command, cancel requires an API key.
+! snouty runs cancel some-run
+stderr 'No Antithesis credentials found.*'
+
+# A run ID is required.
+! snouty runs cancel
+stderr '.*RUN_ID.*'
+
+# `snouty runs --help` lists the cancel subcommand.
+snouty runs --help
+stdout 'cancel.*Cancel a run'
+
+# `snouty runs cancel --help` explains that cancellation is asynchronous, that
+# a completed run cannot be cancelled, and the tenant release it needs.
+snouty runs cancel --help
+stdout 'asynchronous'
+stdout 'already completed'
+stdout 'release 63\.0 or newer'
+
+# Every case below sends a cancel request, so none of them run against
+# staging.
+[staging] skip
+
+# Cancelling a run in progress confirms the cancellation on stdout. run-2 is
+# the mock's in-progress fixture.
+mock-runs-server
+snouty runs cancel run-2
+stdout '^cancelled run run-2$'
+
+# `snouty --json runs cancel` prints the run id as one JSON object.
+mock-runs-server
+snouty --json runs cancel run-2
+stdout '^\{"run_id":"run-2"\}$'
+
+# A run that has already completed cannot be cancelled. The command fails,
+# says why, and points at `runs show` for the run's final status.
+mock-runs-server
+snouty --json runs list --status completed
+env_from_json 0 run_id
+
+mock-runs-server
+! snouty runs cancel $R_run_id
+stderr 'run $R_run_id has already finished'
+stderr 'starting or in progress'
+stderr 'snouty runs show $R_run_id'
+! stdout 'cancelled run'
+
+# A bad run id gives the same friendly "run not found" message as every other
+# run-scoped subcommand.
+mock-runs-server
+! snouty runs cancel no-such-run
+stderr '.*run not found: no-such-run.*'
+! stderr '.*API error.*'

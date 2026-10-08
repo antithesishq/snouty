@@ -468,6 +468,8 @@ pub fn filtered_path_without_binary(binary: &str) -> Option<String> {
 ///   run resources (404 for an unknown run id, like the real API; properties
 ///   additionally 404 for runs that aren't `completed`)
 /// - `POST /api/v1/launch/{launcher_name}` — returns a mock launch response
+/// - `POST /api/v0/runs/{run_id}/cancel` — 200 for an in-progress run, 409
+///   for any other known run, 404 for an unknown run
 pub struct MockApiServer {
     url: String,
     token: String,
@@ -707,6 +709,9 @@ fn mock_route(
             if let Some(run_id) = rest.strip_suffix("/command") {
                 let (s, b) = mock_route_execute_command(run_id, req_body);
                 (s, b, ndjson, NO_CACHE_CACHE_CONTROL)
+            } else if let Some(run_id) = rest.strip_suffix("/cancel") {
+                let (s, b) = mock_route_cancel_run(run_id);
+                (s, b, json, NO_CACHE_CACHE_CONTROL)
             } else {
                 (
                     404,
@@ -882,9 +887,28 @@ fn mock_route_get_run(run_id: &str) -> (u16, String) {
     (200, format!("{{{}}}", fields.join(",")))
 }
 
+/// The mock keeps no state, so cancelling an in-progress run always succeeds.
+/// The bodies match the ones documented on `AntithesisApi::cancel_run`.
+fn mock_route_cancel_run(run_id: &str) -> (u16, String) {
+    match MOCK_RUNS.iter().find(|(id, ..)| *id == run_id) {
+        Some((_, "in_progress", ..)) => (200, "{}".to_string()),
+        Some(_) => (
+            409,
+            format!(
+                r#"{{"message":"Conflict: Run {run_id} has already finished and cannot be cancelled"}}"#
+            ),
+        ),
+        None => (404, MOCK_CANCEL_404_BODY.to_string()),
+    }
+}
+
 /// The bare 404 body the live API sends for an unknown resource. It never
 /// names the resource.
 const MOCK_BARE_404_BODY: &str = r#"{"message":"Resource not found"}"#;
+
+/// The bare 404 body the live cancel endpoint sends for an unknown run. Its
+/// shape differs from [`MOCK_BARE_404_BODY`].
+const MOCK_CANCEL_404_BODY: &str = r#"{"error":"404 Not Found"}"#;
 
 /// The `Stream_Error` line the `run-stream-error` fixture ends its streams
 /// with: the server's shape for a failure that happens after the `200 OK` is

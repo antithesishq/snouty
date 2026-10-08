@@ -12,10 +12,10 @@
 //! go away, in any release. Nothing behind this gate is covered by whatever
 //! stability the rest of the CLI has.
 //!
-//! No feature is gated now. To gate a command, add a variant to [`Feature`],
-//! hide the command from `--help` with a clap `hide` attribute that reads
-//! [`enabled`], and refuse it before dispatch while its feature is off: a
-//! hidden subcommand is still callable, and clap_complete still lists it.
+//! No feature is gated now. To gate a command, hide it from `--help` with a
+//! clap `hide` attribute that checks [`enabled`] for its id, and refuse it
+//! before dispatch while its feature is off: a hidden subcommand is still
+//! callable, and clap_complete still lists it.
 //!
 //! Deliberately an environment variable and not a setting. The gate has to be
 //! known before the command line is parsed, because it decides which
@@ -23,24 +23,25 @@
 //! without first parsing `--settings`/`--profile`, which would mean parsing the
 //! command line twice. An environment variable has no such dependency.
 
-use std::convert::Infallible;
-use std::fmt::{self, Display, Formatter};
-use std::str::FromStr;
-
 use crate::env;
 
 /// The environment variable that enables unstable features, as a
 /// comma-separated list of ids.
 pub const UNSTABLE_FEATURES_VAR_NAME: &str = "SNOUTY_UNSTABLE_FEATURES";
 
-/// The features `SNOUTY_UNSTABLE_FEATURES` enables, in the order listed. Empty when the
+/// The feature ids `SNOUTY_UNSTABLE_FEATURES` lists, in order. Empty when the
 /// variable is unset or holds nothing usable; whitespace and empty entries are
 /// dropped, so `"a, b,"` is `[a, b]`.
+///
+/// Every id is kept, known or not: one exported `SNOUTY_UNSTABLE_FEATURES` is
+/// shared by every snouty on the machine, so an id a newer build knows about —
+/// or one whose feature has graduated and had its id retired — must not break
+/// the build that reads it.
 ///
 /// A non-Unicode value is treated as unset rather than failing the command:
 /// this is read before the parse, where there is no good way to report an
 /// error, and the cost of ignoring it is only that a feature stays off.
-pub fn enabled() -> Vec<Feature> {
+pub fn enabled() -> Vec<String> {
     match env::var(UNSTABLE_FEATURES_VAR_NAME) {
         Ok(Some(value)) => parse_list(&value),
         _ => Vec::new(),
@@ -50,50 +51,13 @@ pub fn enabled() -> Vec<Feature> {
 /// The ids in one comma-separated list. Factored out of the environment read
 /// so the splitting rule can be unit-tested without changing process-global
 /// state — the same split `crate::env` makes for its own pure part.
-fn parse_list(value: &str) -> Vec<Feature> {
+fn parse_list(value: &str) -> Vec<String> {
     value
         .split(',')
         .map(str::trim)
         .filter(|id| !id.is_empty())
-        .map(Feature::from)
+        .map(str::to_string)
         .collect()
-}
-
-/// A feature that can be turned on by id.
-///
-/// Unknown ids are kept as [`Feature::Unknown`] rather than rejected: one
-/// exported `SNOUTY_UNSTABLE_FEATURES` is shared by every snouty on the machine, so an
-/// id a newer build knows about — or one whose feature has graduated and had
-/// its id retired — must not break the build that reads it.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Feature {
-    /// An id this build does not recognize.
-    Unknown(String),
-}
-
-/// The feature an id names. Every id maps to a feature, so this is total:
-/// one this build does not know becomes [`Feature::Unknown`].
-impl From<&str> for Feature {
-    fn from(id: &str) -> Self {
-        Feature::Unknown(id.to_string())
-    }
-}
-
-/// The same total conversion as [`From<&str>`], for callers that reach it
-/// through `str::parse`.
-impl FromStr for Feature {
-    type Err = Infallible;
-
-    fn from_str(id: &str) -> Result<Self, Self::Err> {
-        Ok(Feature::from(id))
-    }
-}
-
-impl Display for Feature {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        let Feature::Unknown(id) = self;
-        f.write_str(id)
-    }
 }
 
 #[cfg(test)]
@@ -101,23 +65,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn unknown_id_is_kept_rather_than_rejected() {
-        // One exported SNOUTY_UNSTABLE_FEATURES is shared by every snouty on the
-        // machine: an id from a newer build, or one whose feature has
-        // graduated, must not break this one.
-        let parsed = Feature::from("from-the-future");
-        assert_eq!(parsed, Feature::Unknown("from-the-future".to_string()));
-        assert_eq!(parsed.to_string(), "from-the-future");
-    }
-
-    #[test]
     fn a_list_drops_blanks_and_whitespace() {
-        let unknown = |id: &str| Feature::Unknown(id.to_string());
-        assert_eq!(parse_list("one"), vec![unknown("one")]);
-        assert_eq!(
-            parse_list(" one ,, other , "),
-            vec![unknown("one"), unknown("other")]
-        );
+        assert_eq!(parse_list("one"), ["one"]);
+        assert_eq!(parse_list(" one ,, other , "), ["one", "other"]);
         assert!(parse_list("").is_empty());
         assert!(parse_list(" , ").is_empty());
     }

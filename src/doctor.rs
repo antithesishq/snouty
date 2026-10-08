@@ -9,7 +9,7 @@ use crate::attributed_value::AttributedValue;
 use crate::auth::AuthenticationInfo;
 use crate::compose;
 use crate::container;
-use crate::features::{self, Feature};
+use crate::features;
 use crate::login::{CliOAuthConfig, query_oauth_configuration};
 use crate::render::{OutputOptions, render_kv};
 use crate::settings::Settings;
@@ -550,7 +550,7 @@ fn collect_checks(settings: &Settings) -> Vec<Check> {
 /// The resolved-settings table: the value snouty resolved for each setting and
 /// where it came from (env > profile > project/global file). Purely
 /// informational — required/optional semantics are reported by [`collect_checks`].
-fn resolve_settings(settings: &Settings, features: &[Feature]) -> Vec<Setting> {
+fn resolve_settings(settings: &Settings, features: &[String]) -> Vec<Setting> {
     let mut rows = vec![
         Setting::maybe("profile", settings.profile()),
         Setting::maybe("tenant", settings.tenant()),
@@ -566,8 +566,7 @@ fn resolve_settings(settings: &Settings, features: &[Feature]) -> Vec<Setting> {
     // Only when set: features are opt-in, so an empty row would be noise on
     // every ordinary run.
     if !features.is_empty() {
-        let ids: Vec<String> = features.iter().map(Feature::to_string).collect();
-        rows.push(Setting::new("features", ids.join(", ")));
+        rows.push(Setting::new("features", features.join(", ")));
     }
     rows
 }
@@ -717,7 +716,6 @@ pub async fn cmd_doctor(
     offline: bool,
 ) -> Result<()> {
     let mut checks = collect_checks(settings);
-    let enabled = features::enabled();
 
     if !offline {
         // Connectivity + version check (network). Skipped with --offline. Only
@@ -749,7 +747,7 @@ pub async fn cmd_doctor(
         }
     }
 
-    let settings_rows = resolve_settings(settings, &enabled);
+    let settings_rows = resolve_settings(settings, &features::enabled());
 
     // Only the checks carry pass/warn/fail; the settings table is informational.
     let errors = checks.iter().filter(|c| c.status == Status::Error).count();
@@ -1178,10 +1176,7 @@ mod tests {
 
         let rows = resolve_settings(
             &Settings::default(),
-            &[
-                Feature::Unknown("one".to_string()),
-                Feature::Unknown("other".to_string()),
-            ],
+            &["one".to_string(), "other".to_string()],
         );
         let row = rows
             .iter()
@@ -1255,7 +1250,7 @@ mod tests {
     }
 
     #[test]
-    fn exec_release_floor_needs_no_feature() {
+    fn exec_release_floor_warns_below_64() {
         let ids = |release: &str| -> Vec<&str> {
             release_floor_checks(&ApiVersion::new("v1".into(), release.into()))
                 .into_iter()

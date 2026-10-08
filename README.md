@@ -166,11 +166,9 @@ For any one setting, snouty uses the first value it finds, highest precedence fi
 
 ### Unstable features
 
-When a subcommand depends on an Antithesis API that is still changing shape, snouty keeps it behind a gate. Name the features you want in `SNOUTY_UNSTABLE_FEATURES`, as a comma-separated list. A gated command is hidden from `--help` until its feature is on, and fails with an error that names the feature when it is off.
+When a subcommand depends on an Antithesis API that is still changing shape, snouty can keep it behind a gate, turned on by naming its feature in `SNOUTY_UNSTABLE_FEATURES` (a comma-separated list). Anything behind this gate can change its behavior, its flags, or its id, or go away, in any release.
 
-No subcommand is gated now. `snouty runs exec` was gated behind `runs-exec` until it became stable; snouty ignores that id and any other id it does not know.
-
-Anything behind this gate can change its behavior, its flags, or its id, or go away, in any release. `snouty doctor` lists the features that are on.
+No subcommand is gated now. snouty ignores any id it does not know, including `runs-exec`, the retired gate for `snouty runs exec`. `snouty doctor` lists the ids that are set.
 
 ## Authentication
 

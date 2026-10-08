@@ -119,7 +119,7 @@ fn shorten<'a>(key: &str, rendered: &'a str) -> Cow<'a, str> {
         "command" => truncate_start(rendered, VALUE_TRUNCATE_WIDTH, "…"),
         "weight" => match rendered.parse::<f64>() {
             Ok(weight) if weight.is_finite() => format!("{weight:.3}").into(),
-            _ => rendered.into(),
+            _ => console::truncate_str(rendered, VALUE_TRUNCATE_WIDTH, "…"),
         },
         _ => console::truncate_str(rendered, VALUE_TRUNCATE_WIDTH, "…"),
     }
@@ -277,9 +277,15 @@ mod tests {
             "got: {block}"
         );
 
-        // An unparsable weight stays as it is.
+        // An unparsable weight is not rounded, and is truncated as other
+        // values are.
         let block = render_one(chatter(json!("high"), "/opt/t/a.py"));
         assert!(block.contains(" weight=high "), "got: {block}");
+        let block = render_one(chatter(json!("x".repeat(50)), "/opt/t/a.py"));
+        assert!(
+            block.contains(&format!(" weight={}… ", "x".repeat(39))),
+            "got: {block}"
+        );
 
         // --detail: full values.
         let block = render_one_detailed(chatter(json!("0.037937902697115555"), long));

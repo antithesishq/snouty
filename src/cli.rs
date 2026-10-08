@@ -173,21 +173,23 @@ Environment variables (override any settings file):
     #[command(
         long_about = r#"Interact with test runs
 
-List, inspect, and view logs for Antithesis test runs.
+List, inspect, wait on, cancel, and read the logs of Antithesis test runs.
 
-When no subcommand is given, lists all runs (same as `snouty runs list`).
+When no subcommand is given, lists recent runs (same as `snouty runs list`).
 
 Examples:
   snouty runs
   snouty runs list --status completed --launcher nightly
   snouty runs show <run_id>
   snouty runs wait <run_id>
+  snouty runs cancel <run_id>
   snouty runs properties <run_id>
   snouty runs properties --failing <run_id>
   snouty runs properties <run_id> --name <substring> --detail
   snouty runs build-logs <run_id>
   snouty runs logs <run_id> <hash> [vtime]
   snouty runs events <run_id> -m <query>
+  snouty runs search <run_id> 'contains({output_text: "error"})'
 
 Add --json for machine-readable output. Every subcommand prints JSON in place
 of its table or its rendered events:
@@ -350,7 +352,7 @@ subcommands print text either way:
   snouty --json docs search fault injection | jq -r '.[].path'"#)]
     Docs {
         /// Don't check for documentation updates
-        #[arg(long)]
+        #[arg(long, global = true)]
         offline: bool,
 
         #[command(subcommand)]
@@ -397,7 +399,7 @@ pub enum DocsCommands {
     #[command(long_about = r#"Search the documentation
 
 Uses full-text search across the Antithesis documentation database.
-The database is automatically updated before each search unless --offline is passed to the docs command.
+The database is updated before each search unless you pass --offline.
 
 Prints ranked matches (title and page path); pass a path to `snouty docs show`.
 Use --list to print only the paths.
@@ -816,7 +818,7 @@ object on its own line:
 
 #[derive(Subcommand)]
 pub enum RunsCommands {
-    /// List all runs
+    /// List recent runs
     #[command(
         long_about = r#"List recent runs (the default when `snouty runs` runs with no subcommand).
 

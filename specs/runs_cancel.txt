@@ -16,6 +16,11 @@ stderr '.*RUN_ID.*'
 snouty runs --help
 stdout 'cancel.*Cancel a run'
 
+# The `snouty runs --help` intro and examples also cover cancel.
+snouty runs --help
+stdout 'wait on, cancel, and read the logs'
+stdout -literal 'snouty runs cancel <run_id>'
+
 # `snouty runs cancel --help` explains that cancellation is asynchronous, that
 # a completed run cannot be cancelled, and the tenant release it needs.
 snouty runs cancel --help

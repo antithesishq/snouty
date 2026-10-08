@@ -66,6 +66,10 @@
           "type": "string",
           "description": "RE2 pattern; the platform suppresses matching log lines during fuzzing. Matching is unanchored and case-sensitive. Suppressed lines stay available in multiverse debugging. Max 1023 bytes. Requires tenant release 59 or newer."
         },
+        "antithesis.filter_source_matching": {
+          "type": "string",
+          "description": "RE2 pattern; the platform suppresses all output from matching log sources during fuzzing. A source is usually the name of the process that wrote the line. Matching is unanchored and case-sensitive. Suppressed output stays available in multiverse debugging. Max 1023 bytes."
+        },
         "antithesis.performance_tier": {
           "type": "string",
           "description": "Performance tier for the run. Higher tiers explore system states faster through more parallelism. They also consume core hours faster. Defaults to standard. A plain string, so a tier newer than this snouty passes through."

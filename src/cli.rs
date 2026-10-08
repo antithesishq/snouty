@@ -609,6 +609,15 @@ pub struct LaunchArgs {
     #[arg(long)]
     pub filter_logs_matching: Option<String>,
 
+    /// Suppress all output from log sources matching this RE2 pattern during
+    /// fuzzing. A source is usually the name of the process that wrote the
+    /// line, as shown in its `source` field. Matching is unanchored and
+    /// case-sensitive (use `^name$` to match one source exactly). Suppressed
+    /// output stays available in multiverse debugging. Same RE2 rules and
+    /// byte limit as --filter-logs-matching.
+    #[arg(long)]
+    pub filter_source_matching: Option<String>,
+
     /// Performance tier for the run. Higher tiers explore system states faster
     /// through more parallelism. They also consume core hours faster. The
     /// server default is `standard`. To send a tier that is not listed, use

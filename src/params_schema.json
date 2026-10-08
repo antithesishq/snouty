@@ -68,7 +68,7 @@
         },
         "antithesis.filter_source_matching": {
           "type": "string",
-          "description": "RE2 pattern; the platform suppresses all output from matching log sources during fuzzing. A source is usually the name of the process that wrote the line. Matching is unanchored and case-sensitive. Suppressed output stays available in multiverse debugging. Max 1023 bytes."
+          "description": "RE2 pattern; the platform suppresses all output from matching log sources during fuzzing. A source is usually the name of the process that wrote the line. Matching is unanchored and case-sensitive. Suppressed output stays available in multiverse debugging."
         },
         "antithesis.performance_tier": {
           "type": "string",

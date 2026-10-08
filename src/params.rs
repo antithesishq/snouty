@@ -113,9 +113,30 @@ impl Params {
     /// Validate params against the test params schema, then validate the
     /// log filter patterns. The pattern check runs here so no launch path can
     /// skip it.
+    ///
+    /// The platform validates these patterns only after the run has started,
+    /// so a bad value becomes a failed run minutes later, not a launch error.
+    /// The platform matches with RE2; the `regex` crate is close but not
+    /// identical, so the local compile is a pre-check, not the authority.
     pub fn validate_test_params(&self) -> Result<()> {
         validate_against_def(&self.inner, "testParams")?;
-        self.validate_filter_patterns()
+        for (key, suppressed, max_bytes) in [
+            (
+                ANT_FILTER_LOGS_MATCHING,
+                "every log line",
+                Some(MAX_FILTER_LOGS_MATCHING_BYTES),
+            ),
+            (
+                ANT_FILTER_SOURCE_MATCHING,
+                "the output of every source",
+                None,
+            ),
+        ] {
+            if let Some(value) = self.inner.get(key).and_then(Value::as_str) {
+                validate_filter_pattern(key, value, suppressed, max_bytes)?;
+            }
+        }
+        Ok(())
     }
 
     /// Validate params against the debugging params schema.
@@ -141,24 +162,6 @@ impl Params {
                 .note(format!("{key} = {value}"))
         })?;
         self.insert(key, vtime.to_string());
-        Ok(())
-    }
-
-    /// Validate the log filter patterns before launch.
-    ///
-    /// The platform validates these patterns only after the run has started,
-    /// so a bad value becomes a failed run minutes later, not a launch error.
-    /// The platform matches with RE2; the `regex` crate is close but not
-    /// identical, so the local compile is a pre-check, not the authority.
-    fn validate_filter_patterns(&self) -> Result<()> {
-        for (key, suppressed) in [
-            (ANT_FILTER_LOGS_MATCHING, "every log line"),
-            (ANT_FILTER_SOURCE_MATCHING, "the output of every source"),
-        ] {
-            if let Some(value) = self.inner.get(key).and_then(Value::as_str) {
-                validate_filter_pattern(key, value, suppressed)?;
-            }
-        }
         Ok(())
     }
 
@@ -230,20 +233,27 @@ fn is_sensitive_key(key: &str) -> bool {
 }
 
 /// The guest copies a `filter_logs_matching` pattern into a 1024-byte buffer
-/// including the NUL terminator. `filter_source_matching` uses the same limit.
-const MAX_FILTER_PATTERN_BYTES: usize = 1023;
+/// including the NUL terminator.
+const MAX_FILTER_LOGS_MATCHING_BYTES: usize = 1023;
 
 /// Validate one log filter pattern. `suppressed` names what a pattern that
 /// matches the empty string would suppress.
-fn validate_filter_pattern(key: &str, value: &str, suppressed: &str) -> Result<()> {
+fn validate_filter_pattern(
+    key: &str,
+    value: &str,
+    suppressed: &str,
+    max_bytes: Option<usize>,
+) -> Result<()> {
     if value.trim().is_empty() {
         return Err(user_error(format!("{key} is empty"))
             .note("the platform skips filtering for an empty pattern")
             .suggestion("provide a pattern or drop the flag"));
     }
-    if value.len() > MAX_FILTER_PATTERN_BYTES {
+    if let Some(max_bytes) = max_bytes
+        && value.len() > max_bytes
+    {
         return Err(user_error(format!(
-            "{key} is too long: {} bytes (max {MAX_FILTER_PATTERN_BYTES})",
+            "{key} is too long: {} bytes (max {max_bytes})",
             value.len()
         )));
     }
@@ -829,7 +839,12 @@ mod tests {
     }
 
     fn validate_filter(pattern: &str) -> Result<()> {
-        validate_filter_pattern(ANT_FILTER_LOGS_MATCHING, pattern, "every log line")
+        validate_filter_pattern(
+            ANT_FILTER_LOGS_MATCHING,
+            pattern,
+            "every log line",
+            Some(MAX_FILTER_LOGS_MATCHING_BYTES),
+        )
     }
 
     #[test]

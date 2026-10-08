@@ -613,8 +613,8 @@ pub struct LaunchArgs {
     /// fuzzing. A source is usually the name of the process that wrote the
     /// line, as shown in its `source` field. Matching is unanchored and
     /// case-sensitive (use `^name$` to match one source exactly). Suppressed
-    /// output stays available in multiverse debugging. Same RE2 rules and
-    /// byte limit as --filter-logs-matching.
+    /// output stays available in multiverse debugging. RE2 syntax: no
+    /// lookahead/lookbehind or backreferences.
     #[arg(long)]
     pub filter_source_matching: Option<String>,
 

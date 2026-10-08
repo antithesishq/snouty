@@ -1109,12 +1109,11 @@ JSON object on its own line, and the trailer is left out:
         source_session_id: Option<SourceSessionId>,
 
         /// Maximum seconds the server waits for the script to exit before
-        /// reporting a timeout
-        // The default is 30, not the API's 600, so a hung script fails soon. A
-        // 0-second timeout always times out, so the floor is 1. The server sets
-        // the ceiling.
-        #[arg(long, default_value_t = 30, value_parser = clap::value_parser!(u64).range(1..))]
-        timeout: u64,
+        /// reporting a timeout [default: the server's, 600 as of release 64.0]
+        // A 0-second timeout always times out, so the floor is 1. The server
+        // sets the ceiling.
+        #[arg(long, value_parser = clap::value_parser!(u64).range(1..))]
+        timeout: Option<u64>,
     },
 
     /// Search events in a run

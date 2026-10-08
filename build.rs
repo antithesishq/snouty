@@ -51,6 +51,7 @@ fn generate_api_client(out_dir: &Path) {
     );
     untype_error_responses(&mut spec_value);
     unrequire_include_system_logs_default(&mut spec_value);
+    unrequire_exec_timeout_default(&mut spec_value);
     drop_property_description(&mut spec_value);
     drop_launch_status_code(&mut spec_value);
     mark_vtime_schema(&mut spec_value);
@@ -199,6 +200,18 @@ fn unrequire_include_system_logs_default(spec: &mut serde_json::Value) {
         "/components/schemas/Execute_Command_Request/properties/include_system_logs",
         "default",
         "unrequire_include_system_logs_default",
+    );
+}
+
+/// Strip the schema default from `Execute_Command_Request.timeout_seconds`,
+/// so the request omits the field unless `runs exec --timeout` sets it, and
+/// the server's own default applies.
+fn unrequire_exec_timeout_default(spec: &mut serde_json::Value) {
+    remove_schema_key(
+        spec,
+        "/components/schemas/Execute_Command_Request/properties/timeout_seconds",
+        "default",
+        "unrequire_exec_timeout_default",
     );
 }
 

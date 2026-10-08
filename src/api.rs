@@ -415,7 +415,8 @@ pub struct ExecRequest {
     pub script: String,
     /// The container to execute in, or `None` for the host.
     pub container: Option<String>,
-    pub timeout: Duration,
+    /// `None` leaves the timeout to the server's default.
+    pub timeout: Option<Duration>,
     /// Stream every event of the timeline while the script executes, not
     /// only the script's output.
     pub events: bool,
@@ -710,7 +711,7 @@ impl AntithesisApi {
                 .unwrap_or_else(|| EXEC_HOST_CONTAINER.to_string()),
             include_system_logs: exec.events.then_some(true),
             // The wire field is a whole number of seconds.
-            timeout_seconds: exec.timeout.as_secs(),
+            timeout_seconds: exec.timeout.map(|timeout| timeout.as_secs()),
             source_run_id,
             source_session_id,
         };

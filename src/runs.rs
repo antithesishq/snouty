@@ -212,7 +212,7 @@ pub async fn cmd_runs(
                 moment: Moment { input_hash, vtime },
                 script: resolve_exec_script(script)?,
                 container,
-                timeout: Duration::from_secs(timeout),
+                timeout: timeout.map(Duration::from_secs),
                 events,
                 rewarm,
             };
@@ -1792,10 +1792,14 @@ async fn cmd_runs_exec(
             }
         }
         Some(ExecResult::TimedOut) => {
-            let err = user_error(format!(
-                "command timed out after {}",
-                HumanDuration::from_seconds(timeout.as_secs())
-            ));
+            let err = match timeout {
+                Some(timeout) => user_error(format!(
+                    "command timed out after {}",
+                    HumanDuration::from_seconds(timeout.as_secs())
+                )),
+                None => user_error("command timed out after the server's default timeout")
+                    .suggestion("set a longer timeout with --timeout"),
+            };
             Err(match rewarm_flag {
                 Some(_) => err
                     .note("the rewarm counts against --timeout; raise it to give the rewarm time"),

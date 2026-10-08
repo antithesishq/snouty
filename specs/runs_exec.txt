@@ -143,20 +143,26 @@ stderr 'command exited without reporting an exit code'
 # snouty reports as a failure. Output produced before the timeout is still
 # shown. The result carries no end moment — its `last_moment` is informational,
 # the command may still be running — so there is no trailer.
-! snouty runs exec run-2 -3625518438076122494 398.4898056755774 'sleep 60'
+! snouty runs exec run-2 -3625518438076122494 398.4898056755774 'sleep 60' --timeout 30
 stdout 'still working'
 stderr 'command timed out after 30s'
 ! stderr 'end moment'
 ! stderr 'rewarm'
 
+# Without --timeout, the server's default applies (600 seconds as of release
+# 64.0), and snouty names --timeout.
+! snouty runs exec run-2 -3625518438076122494 398.4898056755774 'sleep 60'
+stderr 'command timed out after the server.s default timeout'
+stderr 'set a longer timeout with --timeout'
+
 # --timeout is forwarded to the server as timeout_seconds (the mock echoes
-# back the value it received). The default is 30, not the API default of 600,
-# so a script that hangs fails soon.
+# back the value it received). Without it, the request leaves out
+# timeout_seconds, so the server's default applies.
 snouty runs exec run-2 -3625518438076122494 398.4898056755774 print-request --timeout 45
 stdout 'timeout_seconds=45'
 
 snouty runs exec run-2 -3625518438076122494 398.4898056755774 print-request
-stdout 'timeout_seconds=30'
+stdout 'timeout_seconds=absent'
 
 # Without --container, the script executes on the host.
 snouty runs exec run-2 -3625518438076122494 398.4898056755774 print-request
@@ -247,7 +253,7 @@ stderr 'check that --source-run-id names the run the moment comes from, and rais
 
 # A timeout with a source says the rewarm counts against --timeout.
 ! snouty runs exec run-2 -3625518438076122494 398.4898056755774 'sleep 60' --source-session-id ba4ebf3181dd342334b86c58941813c6-64-0
-stderr 'command timed out after 30s'
+stderr 'command timed out'
 stderr 'the rewarm counts against --timeout'
 
 # The two flags are mutually exclusive, and an empty ID is rejected before any

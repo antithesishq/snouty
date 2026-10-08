@@ -2250,21 +2250,26 @@ def build_stories(d: Discovery) -> list[Story]:
             "doctor-legacy-auth",
             "I only have a legacy username and password",
             "I authenticate with a username/password and no API key; I want doctor to tell me whether that's enough.",
-            "doctor states that API commands refuse username/password, marks it as deprecated "
-            "and limited to `snouty launch`/`snouty debug`, and offers `snouty login` or "
-            "ANTITHESIS_API_KEY to change credentials.",
+            "doctor reports one warning: username/password works only for `snouty launch` and "
+            "`snouty debug`, is deprecated, and `snouty runs` refuses it. It names where the "
+            "credentials come from and gives one next step: run `snouty login` to store an API "
+            "key, then a copyable unset command. It suggests `snouty login` only once.",
             ["doctor"],
             doctor_check(
                 contains=(
-                    "snouty runs",
-                    "refuse username/password",
-                    "ANTITHESIS_USERNAME",
-                    "deprecated",
-                    "snouty launch",
-                    "snouty debug",
-                    "snouty login",
-                    "ANTITHESIS_API_KEY",
-                    "ask Antithesis support",
+                    "username/password for user [",
+                    "only works for `snouty launch` and `snouty debug`",
+                    "WARNING: username/password is deprecated, and `snouty runs` and other API "
+                    "commands refuse it",
+                    "NOTE: read from the `ANTITHESIS_USERNAME` and `ANTITHESIS_PASSWORD` "
+                    "environment variables",
+                    "NOTE: run `snouty login` to store an API key, then "
+                    "`unset ANTITHESIS_USERNAME ANTITHESIS_PASSWORD`",
+                ),
+                absent=(
+                    "No credentials the API commands accept",
+                    "Using password credentials",
+                    "run `snouty login` to sign in",
                 ),
             ),
             json_capable=False,

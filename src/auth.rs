@@ -1059,10 +1059,10 @@ fn parse_credentials_file_toml(contents: String, path: &Path) -> Result<Credenti
     ))
 }
 
-/// The one-line remediation for the username/password deprecation. Every
-/// message that states the deprecation (the rejection suggestion, the warning
-/// on use, and the doctor note) renders this constant, so the wording cannot
-/// drift apart.
+/// The one-line remediation for the username/password deprecation. The
+/// rejection suggestion and the warning on use both render this constant, so
+/// the wording cannot drift apart. Doctor states the deprecation in its own
+/// check, with a next step that depends on where the password came from.
 pub(crate) const PASSWORD_DEPRECATION_SUGGESTION: &str = "username/password authentication is deprecated; run `snouty login` to switch to another authentication method";
 
 /// Apply the caller's [`PasswordPolicy`] to a resolved credential. This is

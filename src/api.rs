@@ -2230,9 +2230,8 @@ mod tests {
         }
     }
 
-    // The MVD request is typed, so it silently drops a param that has no
-    // field. Every debugging param the schema accepts must reach the body, in
-    // both arms of the run_id/session_id oneOf.
+    // launch_mvd_request copies each param into a typed field, so it drops a
+    // param that has no field.
     #[test]
     fn launch_mvd_request_sends_every_debugging_param() {
         let schema: serde_json::Value =

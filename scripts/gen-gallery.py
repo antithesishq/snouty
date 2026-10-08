@@ -1000,9 +1000,10 @@ def _launch_session(sn: Snouty, base_run: str) -> tuple[dict, Result]:
     """Launch a debugging session at a moment just after `base_run` completes
     setup. Returns the session's `runs list` row and the launch's output."""
     # Match system events; workload log text is not a reliable marker. A run
-    # whose setup ends without the SDK's setup-complete call (e.g. a Kubernetes
-    # run) has no setup event, so try the next early events in turn. Each event
-    # occurs on many branches, and any match is a moment after setup.
+    # whose workload never calls the SDK's setup-complete API has no setup
+    # event, so try the next early events in turn. Search returns matches in no
+    # fixed order, and the fault injector unpauses many times in a run, so take
+    # the earliest match of a sample.
     events = [
         (
             "the SDK setup-complete event",
@@ -1019,12 +1020,12 @@ def _launch_session(sn: Snouty, base_run: str) -> tuple[dict, Result]:
         ),
     ]
     for _, query in events:
-        if found := sn.json_lines(["runs", "search", base_run, query, "-n", "1"]):
+        if found := sn.json_lines(["runs", "search", base_run, query, "-n", "20"]):
             break
     else:
         tried = "; ".join(name for name, _ in events)
         raise GalleryError(f"{base_run} has no post-setup event to debug from (tried {tried})")
-    h, v = _moment_strs(found[0]["moment"])
+    h, v = _moment_strs(min((r["moment"] for r in found), key=lambda m: float(m["vtime"])))
     # A unique description finds the new session in `runs list` without
     # parsing the launch's human-facing output.
     description = f"{EXEC_SESSION_DESCRIPTION} {datetime.now().isoformat()}"

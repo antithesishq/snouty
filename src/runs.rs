@@ -44,10 +44,14 @@ use event_search::EventOutput;
 /// It only applies when the server filled the limit. Fewer rows than asked for
 /// means the result set is exhausted, and the note would send the user back for
 /// rows that do not exist, so `shown` below `limit` prints nothing. Callers
-/// print it in human mode only.
-fn limit_note(shown: usize, limit: NonZeroU64) {
+/// print it in human mode only. `blank_line_before` sets the note apart from
+/// output whose blocks are separated by blank lines.
+fn limit_note(shown: usize, limit: NonZeroU64, blank_line_before: bool) {
     if (shown as u64) < limit.get() {
         return;
+    }
+    if blank_line_before {
+        eprintln!();
     }
     eprintln!("Showing up to {limit} results. Additional results may be available.");
 }
@@ -80,7 +84,7 @@ async fn print_event_lines(
     if seen == 0 {
         eprintln!("{empty_message}");
     } else if let Some(limit) = limit {
-        limit_note(seen, limit);
+        limit_note(seen, limit, false);
     }
     Ok(())
 }
@@ -286,7 +290,7 @@ async fn cmd_runs_list(
         let width = terminal_width();
         outln!("{}", render_runs_table(&runs, width))?;
     }
-    limit_note(runs.len(), args.limit);
+    limit_note(runs.len(), args.limit, args.detail);
     Ok(())
 }
 
@@ -2396,7 +2400,12 @@ fn render_runs_table(runs: &[RunSummary], width: usize) -> String {
     let rows: Vec<Vec<String>> = runs
         .iter()
         .map(|run| {
-            let test_name = run.test_name().map(sanitize).unwrap_or_else(|| "-".into());
+            // A run with no test name (a debugging session, for one) shows its
+            // launcher, so the row still says what the run is.
+            let test_name = match run.test_name().unwrap_or(&run.launcher) {
+                "" => "-".to_string(),
+                name => sanitize(name),
+            };
             vec![
                 sanitize(&run.run_id),
                 run.status.to_string(),
@@ -4463,12 +4472,30 @@ mod tests {
     }
 
     #[test]
-    fn runs_table_renders_dashes_when_test_name_and_description_missing() {
+    fn runs_table_shows_launcher_when_test_name_missing() {
+        let runs = vec![summary(
+            "abc-54-1",
+            RunStatus::Completed,
+            "2024-01-01T00:00:00Z",
+            "debugging",
+            None,
+            None,
+        )];
+        let table = render_runs_table(&runs, 100);
+        let row = table.lines().nth(1).unwrap();
+        assert!(
+            row.trim_end().ends_with("  debugging"),
+            "expected launcher in TEST NAME, got: {row}"
+        );
+    }
+
+    #[test]
+    fn runs_table_renders_dashes_when_test_name_and_launcher_missing() {
         let runs = vec![summary(
             "abc-54-1",
             RunStatus::Incomplete,
             "2024-01-01T00:00:00Z",
-            "basic_test",
+            "",
             None,
             None,
         )];

@@ -29,6 +29,7 @@ snouty runs logs --help
 
 # validate --help documents both the compose and Kubernetes flows.
 snouty validate --help
+stdout '^Examples:$'
 stdout '.*Compose configs:.*'
 stdout '.*docker-compose locally.*'
 stdout '.*setup-complete.*'
@@ -36,3 +37,8 @@ stdout '.*Test commands are not executed.*'
 stdout '.*Kubernetes configs:.*'
 stdout '.*k8s-validator.*'
 stdout '.*manifests\/.*'
+
+# doctor --help heads its block of examples with `Examples:`.
+snouty doctor --help
+stdout '^Examples:$'
+! stdout '^Example:$'

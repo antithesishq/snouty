@@ -10,10 +10,7 @@ use serde_json::{Map, Value};
 use crate::render::sanitize;
 
 use super::ansi::strip_ansi;
-use super::{
-    Block, DisplayWith, Event, LOG_ENVELOPE_KEYS, VALUE_TRUNCATE_WIDTH, format_duration,
-    format_value,
-};
+use super::{Block, DisplayWith, Event, VALUE_TRUNCATE_WIDTH, format_duration, payload_pairs};
 
 fn from_composer(entry: &Value) -> bool {
     entry["source"]["name"].as_str() == Some("antithesis_test_composer")
@@ -96,13 +93,13 @@ impl<'a> Event<'a> for Chatter<'a> {
         if block.detail() {
             // One pair per line, untruncated.
             write!(block, "{}", style("composer").dim())?;
-            for (key, rendered) in self.pairs() {
+            for (key, rendered) in payload_pairs(self.0) {
                 block.detail_line(format_args!("{}={rendered}", sanitize(key)))?;
             }
         } else {
             let line = DisplayWith(|f: &mut fmt::Formatter<'_>| {
                 write!(f, "composer")?;
-                for (key, rendered) in self.pairs() {
+                for (key, rendered) in payload_pairs(self.0) {
                     let truncated = console::truncate_str(&rendered, VALUE_TRUNCATE_WIDTH, "…");
                     write!(f, " {}={truncated}", sanitize(key))?;
                 }
@@ -114,22 +111,9 @@ impl<'a> Event<'a> for Chatter<'a> {
     }
 }
 
-impl Chatter<'_> {
-    /// The renderable key=value pairs: everything but the envelope keys and
-    /// the empty values.
-    fn pairs(&self) -> impl Iterator<Item = (&String, String)> {
-        self.0.iter().filter_map(|(key, value)| {
-            if LOG_ENVELOPE_KEYS.contains(&key.as_str()) {
-                return None;
-            }
-            format_value(value).map(|rendered| (key, rendered))
-        })
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use crate::event_render::format_value;
     use crate::event_render::testkit::*;
     use serde_json::json;
 

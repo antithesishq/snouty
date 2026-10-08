@@ -1722,6 +1722,7 @@ def build_stories(d: Discovery) -> list[Story]:
             "List recent runs to find one to inspect",
             "I want to scan recent runs and pick one to dig into.",
             "Up to 10 recent runs, newest first, with legible id/status/title/time columns; "
+            "a run with no test name (a debugging session) shows its launcher as the title; "
             "when more runs exist, a stderr note says the output stopped at the limit.",
             ["runs", "list", "-n", "10"],
             rows_at_most(10),
@@ -1739,7 +1740,8 @@ def build_stories(d: Discovery) -> list[Story]:
             "runs-list--detail",
             "Get full descriptions instead of truncated titles",
             "Default titles are truncated; I want to read the full descriptions.",
-            "Descriptions are shown in full (longer than the default view), one row per run.",
+            "Descriptions are shown in full (longer than the default view), one row per run. "
+            "When more runs exist, a blank line sets the limit note apart from the last run.",
             ["runs", "list", "-n", "6", "--detail"],
             # --detail can't be combined with --json, so validate the rendered
             # key-value blocks directly rather than re-running for JSON rows. Check
@@ -2402,7 +2404,8 @@ def build_exec_stories(d: Discovery, x: ExecSession) -> list[Story]:
             "I want to see the whole timeline while my script executes: the workload's logs, "
             "the assertions, and Antithesis events, next to my script's output.",
             "Events print as `runs logs` prints them, the script's output among them, then "
-            "the end-moment trailer. Exit 0.",
+            "the end-moment trailer. The injected command is one `command injected (input N)` "
+            "line, not a raw JSON blob. Exit 0.",
             [*exec_at, "--events", 'echo "first line"; echo "second line"'],
             succeeds_with("first line", "second line", "end moment:"),
         ),

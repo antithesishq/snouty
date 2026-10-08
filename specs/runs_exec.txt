@@ -21,6 +21,12 @@
 # is `exited` or `timed_out`, unless the stream ends with a `Stream_Error`
 # line.
 #
+# When the server rewarms a cold moment, the stream begins with progress
+# records, `{"status":"rewarming","percent_complete":N}`: the first is at 0,
+# the last is at 100, and all come before the command's output. This shape
+# follows the spec of the release after 64.0; it is not yet observed against
+# the live API.
+#
 # Release 64.0 requires `container` in the request: a container name or ID,
 # or `_ANTITHESIS_HOST` for the host. Earlier releases reject the field, so
 # `runs exec` needs release 64.0 or newer, and `snouty doctor` warns on an
@@ -46,15 +52,18 @@
 #     missing stream included, to snouty's stdout. An event without
 #     `output_text` goes to stderr as raw JSON. stdout carries only output
 #     text, so `snouty runs exec ... | jq` composes.
+#   - Rewarm progress goes to stderr: a progress bar when stderr is a
+#     terminal, and one `rewarming moment: N%` line per record otherwise.
+#     stdout keeps only the script's output, with or without --events.
 #   - On `exited`, a trailer on stderr documents the branch's end moment, to
 #     chain a follow-up command from.
 #   - `exited` with code 0 is success. Any other terminal state fails snouty
 #     with exit code 1: a non-zero code (reported, not forwarded), a
 #     `timed_out` result, or a stream that ends with no result at all — exit
 #     0 must mean "the script ran and exited 0".
-#   - `--json` passes the NDJSON through with vtimes normalized to exact JSON
-#     numbers (like `runs logs --json`) and no trailer; exit semantics are
-#     unchanged.
+#   - `--json` passes the NDJSON through, progress records included, with
+#     vtimes normalized to exact JSON numbers (like `runs logs --json`) and no
+#     trailer or progress display; exit semantics are unchanged.
 #   - The API is still changing, so snouty is lenient about events: no event
 #     shape fails snouty. Only the last line is read as the result.
 #
@@ -201,9 +210,31 @@ stdout 'source_run_id=absent source_session_id=ba4ebf3181dd342334b86c58941813c6-
 stderr 'Moment not warm'
 stderr 'name the run it comes from with --source-run-id$'
 
+# With a source, the server rewarms the moment and streams its progress
+# ahead of the output. Off a terminal, snouty prints one line per progress
+# record on stderr, and stdout keeps only the script's output.
+snouty runs exec run-2 1002528785118888238 278.1311443040613 'uname -a' --source-run-id 1f1211ea49946d4f63a92d65ee42476d-64-0
+stdout 'Linux antithesis 6.12.0'
+! stdout 'rewarming'
+stderr '(?s)rewarming moment: 0%\nrewarming moment: 40%\nrewarming moment: 100%\n'
+stderr 'end moment: -8206006569229276678 398.492'
+! stderr '"status"'
+
+# With --events, the progress still goes to stderr, not into the timeline.
+snouty runs exec run-2 1002528785118888238 278.1311443040613 with-system-logs --events --source-run-id 1f1211ea49946d4f63a92d65ee42476d-64-0
+stdout '398.49.* \[bash_command\] script says hi'
+! stdout 'rewarming'
+stderr 'rewarming moment: 100%'
+
+# With --json, the progress records pass through as NDJSON, before the
+# output, and no progress display goes to stderr.
+snouty --json runs exec run-2 1002528785118888238 278.1311443040613 'uname -a' --source-run-id 1f1211ea49946d4f63a92d65ee42476d-64-0
+stdout '(?s)^\{"status":"rewarming","percent_complete":0\}\n.*\{"status":"rewarming","percent_complete":100\}\n\{"moment":.*"output_text":"Linux antithesis 6.12.0"'
+! stderr 'rewarming'
+
 # With a source, a 400 is a rewarm that did not finish (or a source that is
 # not the moment's run). snouty names the flag and --timeout.
-! snouty runs exec run-2 1002528785118888238 278.1311443040613 'true' --source-run-id 1f1211ea49946d4f63a92d65ee42476d-64-0
+! snouty runs exec run-2 1002528785118888238 278.1311443040613 slow-rewarm --source-run-id 1f1211ea49946d4f63a92d65ee42476d-64-0
 stderr 'rewarm did not reach the target moment'
 stderr 'check that --source-run-id names the run the moment comes from, and raise --timeout'
 

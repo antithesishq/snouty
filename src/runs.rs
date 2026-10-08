@@ -9,6 +9,7 @@ use futures_util::stream::BoxStream;
 use futures_util::{StreamExt, TryStreamExt};
 use indexmap::IndexMap;
 use indexmap::map::Entry;
+use indicatif::{ProgressBar, ProgressStyle};
 use log::debug;
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
@@ -1543,6 +1544,46 @@ enum ExecResult {
     TimedOut,
 }
 
+/// A progress record of a stream that rewarms a cold moment. Every one
+/// precedes the command's output, and the last one is at 100.
+#[derive(Debug, Deserialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+enum ExecProgress {
+    Rewarming { percent_complete: u8 },
+}
+
+/// Rewarm progress on stderr, so stdout keeps only the script's output: a bar
+/// on a terminal, and one line per record elsewhere, where a bar redrawn in
+/// place would garble a log.
+enum RewarmDisplay {
+    Bar(ProgressBar),
+    Lines,
+}
+
+impl RewarmDisplay {
+    fn new() -> Self {
+        if !std::io::stderr().is_terminal() {
+            return Self::Lines;
+        }
+        let style = ProgressStyle::with_template("rewarming moment [{bar:40}] {pos}%")
+            .expect("the template is valid")
+            .progress_chars("=> ");
+        Self::Bar(ProgressBar::new(100).with_style(style))
+    }
+
+    fn show(&self, percent_complete: u8) {
+        match self {
+            Self::Bar(bar) => {
+                bar.set_position(percent_complete.into());
+                if percent_complete >= 100 {
+                    bar.finish();
+                }
+            }
+            Self::Lines => eprintln!("rewarming moment: {percent_complete}%"),
+        }
+    }
+}
+
 /// The marker in a 400's message that the moment is cold, as release 64.0
 /// sends it (orbitinghail): `… (400 Bad Request): {"result":"unknown_moment"}`.
 const UNKNOWN_MOMENT: &str = r#""unknown_moment""#;
@@ -1678,10 +1719,22 @@ async fn cmd_runs_exec(
     // one is held until the next line arrives, and is shown as an event if one
     // does. Every other line is shown as it arrives.
     let mut held: Option<(Value, ExecResult)> = None;
+    let mut rewarm: Option<RewarmDisplay> = None;
     let mut lines = event_lines(stream, ErrorRows::Abort);
     while let Some(mut entry) = lines.try_next().await? {
         if let Some((line, _)) = held.take() {
             render_exec_event(&line, json, renderer.as_mut())?;
+        }
+        if let Ok(ExecProgress::Rewarming { percent_complete }) = ExecProgress::deserialize(&entry)
+        {
+            if json {
+                outln!("{entry}")?;
+            } else {
+                rewarm
+                    .get_or_insert_with(RewarmDisplay::new)
+                    .show(percent_complete);
+            }
+            continue;
         }
         match ExecResult::deserialize(&entry) {
             Ok(result) => {

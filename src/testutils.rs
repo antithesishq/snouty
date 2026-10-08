@@ -1172,19 +1172,27 @@ fn mock_route_execute_command(run_id: &str, req_body: &str) -> (u16, String) {
     }
     // A moment off the session's own timeline is cold. Without a source the
     // live endpoint answers 400; with one, a rewarm that outlives the timeout
-    // answers 400 too. Both messages verbatim from release 64.0 (orbitinghail).
-    if request["moment"]["input_hash"] == MOCK_COLD_HASH {
-        let has_source =
-            request.get("source_run_id").is_some() || request.get("source_session_id").is_some();
-        let message = if has_source {
-            format!(
-                "Bad request: rewarm did not reach the target moment: 66/381 inputs replayed (1 queries, target_input_hash={MOCK_COLD_HASH}) — the guest may be slow or may have exited"
-            )
-        } else {
-            r#"Bad request: Moment not warm and no provided source_run_id or source_session_id. (400 Bad Request): {"result":"unknown_moment"}"#.to_string()
-        };
+    // answers 400 too (the `slow-rewarm` script). Both messages verbatim from
+    // release 64.0 (orbitinghail). A rewarm that finishes streams
+    // `Rewarm_Progress` records ahead of the output, as the spec documents.
+    let cold = request["moment"]["input_hash"] == MOCK_COLD_HASH;
+    let has_source =
+        request.get("source_run_id").is_some() || request.get("source_session_id").is_some();
+    if cold && !has_source {
+        let message = r#"Bad request: Moment not warm and no provided source_run_id or source_session_id. (400 Bad Request): {"result":"unknown_moment"}"#;
         return (400, serde_json::json!({ "message": message }).to_string());
     }
+    if cold && script.trim() == "slow-rewarm" {
+        let message = format!(
+            "Bad request: rewarm did not reach the target moment: 66/381 inputs replayed (1 queries, target_input_hash={MOCK_COLD_HASH}) — the guest may be slow or may have exited"
+        );
+        return (400, serde_json::json!({ "message": message }).to_string());
+    }
+    let rewarm_progress = cold.then(|| {
+        [0, 40, 100].map(|percent| {
+            serde_json::json!({"status": "rewarming", "percent_complete": percent}).to_string()
+        })
+    });
 
     let lines = match script.trim() {
         "true" => vec![mock_exec_exited(Some(0))],
@@ -1259,6 +1267,7 @@ fn mock_route_execute_command(run_id: &str, req_body: &str) -> (u16, String) {
             mock_exec_exited(Some(0)),
         ],
     };
+    let lines: Vec<String> = rewarm_progress.into_iter().flatten().chain(lines).collect();
     (200, lines.join("\n") + "\n")
 }
 

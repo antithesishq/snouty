@@ -212,6 +212,7 @@ Using CLI arguments:
     --run-id 9043254f65c9c65d63fe043a0abfc7fc-53-1 \
     --input-hash 6057726200491963783 \
     --vtime 329.8037810830865 \
+    --title "stalled leader election" \
     --description "debug this moment" \
     --recipients "team@example.com"
 
@@ -662,6 +663,10 @@ pub struct DebugArgs {
     /// Virtual time identifying the moment to debug
     #[arg(long)]
     pub vtime: Option<VTime>,
+
+    /// Debugging session title, shown as the test name in `snouty runs list`
+    #[arg(long)]
+    pub title: Option<String>,
 
     /// Debugging session description
     #[arg(long)]

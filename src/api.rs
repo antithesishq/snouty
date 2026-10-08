@@ -1281,6 +1281,7 @@ fn launch_mvd_request(params: &Params) -> Result<generated::types::LaunchMvdRequ
         .ok_or_else(|| eyre!("missing {ANT_DEBUGGING_INPUT_HASH}"))?;
     let vtime = get(ANT_DEBUGGING_VTIME)?.ok_or_else(|| eyre!("missing {ANT_DEBUGGING_VTIME}"))?;
     let event_description = get(ANT_EVENT_DESCRIPTION)?;
+    let test_name = get(ANT_TEST_NAME)?;
     let recipients = get(ANT_REPORT_RECIPIENTS)?;
     let run_id = get(ANT_DEBUGGING_RUN_ID)?;
     let session_id = get(ANT_DEBUGGING_SESSION_ID)?;
@@ -1296,6 +1297,7 @@ fn launch_mvd_request(params: &Params) -> Result<generated::types::LaunchMvdRequ
             antithesis_debugging_vtime: vtime,
             antithesis_event_description: event_description,
             antithesis_report_recipients: recipients,
+            antithesis_test_name: test_name,
         },
         (None, Some(session_id)) => MvdParams::SessionId {
             antithesis_debugging_input_hash: input_hash,
@@ -1303,6 +1305,7 @@ fn launch_mvd_request(params: &Params) -> Result<generated::types::LaunchMvdRequ
             antithesis_debugging_vtime: vtime,
             antithesis_event_description: event_description,
             antithesis_report_recipients: recipients,
+            antithesis_test_name: test_name,
         },
         (Some(_), Some(_)) => return Err(eyre!("specify exactly one of --run-id / --session-id")),
         (None, None) => return Err(eyre!("specify --run-id or --session-id")),
@@ -2224,6 +2227,39 @@ mod tests {
 
             let response = api.launch_debugging(&debug_params()).await.unwrap();
             assert_eq!(response.run_id.as_deref(), Some("run-63-3"));
+        }
+    }
+
+    // launch_mvd_request copies each param into a typed field, so it drops a
+    // param that has no field.
+    #[test]
+    fn launch_mvd_request_sends_every_debugging_param() {
+        let schema: serde_json::Value =
+            serde_json::from_str(include_str!("params_schema.json")).unwrap();
+        let keys: Vec<&str> = ["debuggingCore", "reportRecipients"]
+            .iter()
+            .flat_map(|def| {
+                schema["$defs"][def]["properties"]
+                    .as_object()
+                    .unwrap()
+                    .keys()
+                    .map(String::as_str)
+            })
+            .collect();
+        for (target, other) in [
+            (ANT_DEBUGGING_RUN_ID, ANT_DEBUGGING_SESSION_ID),
+            (ANT_DEBUGGING_SESSION_ID, ANT_DEBUGGING_RUN_ID),
+        ] {
+            let mut params = Params::new();
+            for &key in keys.iter().filter(|&&key| key != other) {
+                params.insert(key, format!("value of {key}"));
+            }
+            let body = serde_json::to_value(launch_mvd_request(&params).unwrap()).unwrap();
+            assert_eq!(
+                body["params"],
+                serde_json::to_value(params.as_map()).unwrap(),
+                "a debugging param is missing from the {target} request"
+            );
         }
     }
 

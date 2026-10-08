@@ -366,6 +366,9 @@ fn debug_typed_params(args: &DebugArgs) -> Params {
     if let Some(vtime) = &args.vtime {
         params.insert(ANT_DEBUGGING_VTIME, vtime.to_string());
     }
+    if let Some(title) = &args.title {
+        params.insert(ANT_TEST_NAME, title.as_str());
+    }
     if let Some(description) = &args.description {
         params.insert(ANT_EVENT_DESCRIPTION, description.as_str());
     }

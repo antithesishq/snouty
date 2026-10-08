@@ -99,6 +99,10 @@
         "antithesis.event_description": {
           "type": "string",
           "description": "Description for the debugging event/session"
+        },
+        "antithesis.test_name": {
+          "type": "string",
+          "description": "Title for the debugging session"
         }
       },
       "required": [

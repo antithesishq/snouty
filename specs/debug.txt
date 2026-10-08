@@ -107,17 +107,17 @@ stderr '"antithesis.report.recipients": "\[REDACTED\]"'
 
 # On success, a confirmation with the run_id is printed to stdout. The
 #    session takes a few minutes to start, so the next steps follow: the
-#    command that shows the session's status, and the `runs exec` command at
-#    the debugged moment. On release 64.0 a session that reports
+#    command that waits until the session runs, and the `runs exec` command
+#    at the debugged moment. On release 64.0 a session that reports
 #    `in_progress` can still answer 404 or 'Moment not warm' for minutes, so
 #    the hint says to try again.
 mock-server 200 '{"message":"Success","runId":"run-123"}'
 stdin debug_run_json.txt
 snouty debug --stdin
 stdout 'Debugging session started: run_id run-123'
-stdout -literal 'the session takes a few minutes to start. See its status:'
-stdout '^  snouty runs show run-123$'
-stdout -literal 'when the status is in_progress, run a script at this moment:'
+stdout -literal 'the session takes a few minutes to start. Wait for it with:'
+stdout '^  snouty runs wait run-123 --until running$'
+stdout -literal 'then run a script at this moment:'
 stdout -literal "  snouty runs exec run-123 6057726200491963783 329.8037810830865 '<script>'"
 stdout -literal "if it answers 404 or 'Moment not warm', the session is still loading. Try again."
 

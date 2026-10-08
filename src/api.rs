@@ -2230,17 +2230,38 @@ mod tests {
         }
     }
 
-    // The MVD request is typed, so a param it has no field for is dropped
-    // silently. `--title` sends antithesis.test_name, which build.rs adds.
+    // The MVD request is typed, so it silently drops a param that has no
+    // field. Every debugging param the schema accepts must reach the body, in
+    // both arms of the run_id/session_id oneOf.
     #[test]
-    fn launch_mvd_request_sends_the_test_name() {
-        let mut params = debug_params();
-        params.insert(ANT_TEST_NAME, "stalled leader election");
-        let body = serde_json::to_value(launch_mvd_request(&params).unwrap()).unwrap();
-        assert_eq!(
-            body["params"]["antithesis.test_name"],
-            "stalled leader election"
-        );
+    fn launch_mvd_request_sends_every_debugging_param() {
+        let schema: serde_json::Value =
+            serde_json::from_str(include_str!("params_schema.json")).unwrap();
+        let keys: Vec<&str> = ["debuggingCore", "reportRecipients"]
+            .iter()
+            .flat_map(|def| {
+                schema["$defs"][def]["properties"]
+                    .as_object()
+                    .unwrap()
+                    .keys()
+                    .map(String::as_str)
+            })
+            .collect();
+        for (target, other) in [
+            (ANT_DEBUGGING_RUN_ID, ANT_DEBUGGING_SESSION_ID),
+            (ANT_DEBUGGING_SESSION_ID, ANT_DEBUGGING_RUN_ID),
+        ] {
+            let mut params = Params::new();
+            for &key in keys.iter().filter(|&&key| key != other) {
+                params.insert(key, format!("value of {key}"));
+            }
+            let body = serde_json::to_value(launch_mvd_request(&params).unwrap()).unwrap();
+            assert_eq!(
+                body["params"],
+                serde_json::to_value(params.as_map()).unwrap(),
+                "a debugging param is missing from the {target} request"
+            );
+        }
     }
 
     /// Params for a debug launch against a fixed run.

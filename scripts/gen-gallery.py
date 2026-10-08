@@ -1464,10 +1464,12 @@ def doctor_check(
     *,
     contains: tuple[str, ...],
     absent: tuple[str, ...] = (),
+    one_line: tuple[str, ...] = (),
     ok: bool | None = None,
 ):
     """Gate a doctor story: every `contains` needle must appear, no `absent`
-    needle may, and (when `ok` is given) the exit status must match. `ok` is left
+    needle may, every `one_line` needle must appear unwrapped on one terminal
+    line, and (when `ok` is given) the exit status must match. `ok` is left
     None for the api-key/legacy stories because their overall pass/fail also
     depends on the machine's container runtime — only the auth lines, which this
     asserts on, are deterministic."""
@@ -1476,11 +1478,14 @@ def doctor_check(
         text = sr.result.combined
         missing = [n for n in contains if not contains_text(text, n)]
         unexpected = [n for n in absent if contains_text(text, n)]
+        split = [n for n in one_line if not any(n in line for line in text.splitlines())]
         exit_matches = ok is None or sr.result.ok == ok
-        passed = not missing and not unexpected and exit_matches
+        passed = not missing and not unexpected and not split and exit_matches
         bits = []
         if missing:
             bits.append(f"missing={missing!r}")
+        if split:
+            bits.append(f"split across lines={split!r}")
         if unexpected:
             bits.append(f"unexpected={unexpected!r}")
         if not exit_matches:
@@ -2315,6 +2320,7 @@ def build_stories(d: Discovery) -> list[Story]:
                     "Using password credentials",
                     "run `snouty login` to sign in",
                 ),
+                one_line=("`unset ANTITHESIS_USERNAME ANTITHESIS_PASSWORD`",),
             ),
             json_capable=False,
             env=_doctor_env(api_key=False, username=True, password=True, tenant=True, repo=True),

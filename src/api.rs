@@ -163,20 +163,6 @@ impl RunStatus {
             RunStatus::Completed | RunStatus::Cancelled | RunStatus::Incomplete
         )
     }
-
-    /// Whether a run in this status is at `target` or past it in the
-    /// lifecycle starting → in_progress → (completed | cancelled | incomplete).
-    /// The three end states are alternatives, so each one reaches only itself.
-    pub(crate) fn has_reached(self, target: RunStatus) -> bool {
-        match target {
-            RunStatus::Starting => true,
-            RunStatus::InProgress => self != RunStatus::Starting,
-            RunStatus::Completed
-            | RunStatus::Cancelled
-            | RunStatus::Incomplete
-            | RunStatus::Unknown => self == target,
-        }
-    }
 }
 
 fn params_test_name(params: Option<&RunParams>) -> Option<&str> {

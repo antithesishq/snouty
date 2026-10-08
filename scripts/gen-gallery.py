@@ -2601,13 +2601,13 @@ def build_help_stories(d: Discovery) -> list[Story]:
             "Learn how to wait for a run to finish",
             "I want the help to explain the terminal states, that an `unknown` status "
             "fails the command, what --poll-interval and --timeout do, and how --until "
-            "waits for a status such as in_progress.",
+            "running waits for the run to start.",
             ["runs", "wait"],
             ["runs", "wait", s],
             samples=[
                 (
-                    "--until in_progress on a completed run (already past the target)",
-                    ["runs", "wait", s, "--until", "in_progress"],
+                    "--until running on a completed run (it has already started)",
+                    ["runs", "wait", s, "--until", "running"],
                 )
             ],
             # wait on a terminal run prints one status line; nothing columnar

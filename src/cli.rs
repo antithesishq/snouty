@@ -46,33 +46,10 @@ const _: () = assert_run_statuses_complete(RunStatus::Starting);
 /// clap value parser for `--status` that keeps a friendly, enumerated error
 /// message (the generated `RunStatus::from_str` only says "invalid value").
 fn parse_run_status(value: &str) -> Result<RunStatus, String> {
-    value
-        .parse::<RunStatus>()
-        .map_err(|_| invalid_status(value, ALL_RUN_STATUSES))
-}
-
-/// clap value parser for `runs wait --until`: any `--status` value except
-/// `unknown`, which no lifecycle step leads to.
-fn parse_wait_target(value: &str) -> Result<RunStatus, String> {
-    match value.parse::<RunStatus>() {
-        Ok(RunStatus::Unknown) => Err("cannot wait for status 'unknown'".to_string()),
-        Ok(status) => Ok(status),
-        Err(_) => Err(invalid_status(
-            value,
-            ALL_RUN_STATUSES
-                .into_iter()
-                .filter(|s| *s != RunStatus::Unknown),
-        )),
-    }
-}
-
-fn invalid_status(value: &str, valid: impl IntoIterator<Item = RunStatus>) -> String {
-    let valid = valid
-        .into_iter()
-        .map(|s| s.to_string())
-        .collect::<Vec<_>>()
-        .join(", ");
-    format!("invalid status: '{value}'\nvalid values: {valid}")
+    value.parse::<RunStatus>().map_err(|_| {
+        let valid = ALL_RUN_STATUSES.map(|s| s.to_string()).join(", ");
+        format!("invalid status: '{value}'\nvalid values: {valid}")
+    })
 }
 
 /// clap value parser for `runs wait --poll-interval`: a [`HumanDuration`] of
@@ -512,6 +489,15 @@ pub struct UpdateArgs {
     pub channel: Option<UpdateChannel>,
 }
 
+/// The point in a run's lifecycle that `runs wait --until` waits for.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, ValueEnum)]
+pub enum WaitUntil {
+    /// The run is in_progress, or has already ended
+    Running,
+    /// The run has ended: completed, cancelled, or incomplete
+    Complete,
+}
+
 /// Which releases `snouty update` considers when no explicit version is given.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default, ValueEnum)]
 pub enum UpdateChannel {
@@ -877,7 +863,7 @@ With --web it prints the report URL as {"url": ...} and opens no browser:
         web: bool,
     },
 
-    /// Wait for a run to reach a terminal state or a given status
+    /// Wait for a run to start or to reach a terminal state
     #[command(
         long_about = r#"Wait for a run to reach a terminal state (completed, cancelled, or incomplete).
 
@@ -887,11 +873,9 @@ exit code. A run that reports status `unknown` fails the command instead:
 snouty cannot tell whether such a run will still make progress, so the caller
 decides what to do.
 
-With --until <status>, the wait stops when the run reaches that status or a
-later one. The lifecycle is starting, then in_progress, then one of completed,
-cancelled, or incomplete. Thus `--until in_progress` succeeds on a run that is
-already completed. If the run ends in a different terminal state, it can never
-reach the status, and the command fails. A debugging session can be
+With --until running, the wait stops when the run has started: when it is
+in_progress, or has already ended. Use it to wait for a test run to start
+fuzzing, or for a debugging session to be ready. A debugging session can be
 in_progress before it accepts `snouty runs exec`.
 
 The wait is unbounded unless --timeout is given, and the command is safe to
@@ -901,7 +885,7 @@ resumes the wait.
 Examples:
   snouty runs wait <run_id>
   snouty runs wait <run_id> --timeout 2h
-  snouty runs wait <run_id> --until in_progress
+  snouty runs wait <run_id> --until running
   snouty launch --json --launcher basic_test ... | jq -r .runId | xargs snouty runs wait
 
 Add --json for machine-readable output. The final status prints as one JSON
@@ -922,10 +906,9 @@ object:
         #[arg(long)]
         timeout: Option<HumanDuration>,
 
-        /// Stop when the run reaches this status or a later one (starting,
-        /// in_progress, completed, cancelled, incomplete)
-        #[arg(long, value_name = "STATUS", value_parser = parse_wait_target)]
-        until: Option<RunStatus>,
+        /// The point in the run's lifecycle to wait for
+        #[arg(long, value_enum, default_value_t = WaitUntil::Complete)]
+        until: WaitUntil,
     },
 
     /// Cancel a run that has not finished

@@ -185,7 +185,7 @@ password = "stored-pass"
 
 [profile.prod]
 type = "Password"
-username = "produser"
+username = "prod-user"
 password = "stored-pass"
 
 -- broken_credentials/.config/snouty/credentials.toml --

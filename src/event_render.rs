@@ -17,14 +17,14 @@
 //!
 //! Two rendering depths:
 //! - default: one line per event. Antithesis event shapes (SDK assertions,
-//!   guidance, fault injections, container lifecycle, test composer chatter)
-//!   each render in their own concise form; everything else falls back to
-//!   the log-text or raw-JSON renderer.
+//!   guidance, fault injections, container lifecycle, injected commands,
+//!   test composer chatter) each render in their own concise form; everything
+//!   else falls back to the log-text or raw-JSON renderer.
 //! - detail (`--detail`): a full-width vtime cell that holds every moment a
 //!   real run reports whole (see [`VTIME_WIDTH_DETAIL`]), assertion and
 //!   guidance source locations, the payload's attached `details` JSON, the
-//!   composer's captured stdout/stderr, and composer chatter expanded to one
-//!   key=value per line, untruncated.
+//!   composer's captured stdout/stderr, and composer chatter and injected
+//!   commands expanded to one key=value per line, untruncated.
 //!
 //! There is no "raw" rendering here: `--raw` on the commands requires
 //! `--json` and prints the server's events untouched, one JSON object per
@@ -45,6 +45,7 @@ mod assert;
 mod composer;
 mod container;
 mod fault;
+mod guest;
 mod guidance;
 mod log;
 mod sdk;
@@ -238,6 +239,7 @@ fn render_payload(entry: &Value, block: &mut Block<'_>) -> fmt::Result {
         fault::Fault,
         fault::InjectorInfo,
         container::Lifecycle,
+        guest::CommandInjected,
         log::Log,
         composer::Task,
         composer::Chatter,
@@ -389,6 +391,17 @@ fn format_value(value: &Value) -> Option<String> {
         }
         Value::Object(_) => render_details_json(value),
     }
+}
+
+/// A record's renderable key=value pairs: every key but the envelope keys,
+/// and no empty values.
+fn payload_pairs(record: &Map<String, Value>) -> impl Iterator<Item = (&String, String)> {
+    record.iter().filter_map(|(key, value)| {
+        if LOG_ENVELOPE_KEYS.contains(&key.as_str()) {
+            return None;
+        }
+        format_value(value).map(|rendered| (key, rendered))
+    })
 }
 
 /// Render a duration in seconds (the API sends both numbers and stringified

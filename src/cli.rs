@@ -274,7 +274,7 @@ Kubernetes configs:
   workloads or containers are started, and there is no docker-compose config
   to render).
 
-Example:
+Examples:
   snouty validate ./config
   snouty validate ./config --timeout 10
   snouty validate ./k8s-config"#)]
@@ -299,7 +299,7 @@ skip that network call.
 Exits non-zero if any required check fails. Pass --json for a machine-readable
 report (e.g. to gate CI).
 
-Example:
+Examples:
   snouty doctor
   snouty doctor --json | jq -r .settings.tenant
   snouty doctor --offline"#)]
@@ -1071,10 +1071,10 @@ tenant release.
 Without --events, the script's stdout and stderr stream to snouty's stdout
 and stderr. With --events, snouty prints every event of the timeline to
 stdout while the script executes, as `runs logs` prints them: the script's
-output, the workload's logs and assertions, and Antithesis events. On exit, a trailer on stderr
-documents the branch's end moment, to chain a follow-up command from. A
-non-zero exit code, a timeout, or a truncated stream fails snouty with exit
-code 1.
+output, the workload's logs and assertions, and Antithesis events. On exit, a
+trailer on stderr documents the branch's end moment, to chain a follow-up
+command from. A non-zero exit code, a timeout, or a truncated stream fails
+snouty with exit code 1.
 
 Omit SCRIPT to read the script from stdin — a pipe, a redirect, or a heredoc.
 
@@ -1640,6 +1640,23 @@ mod tests {
         }
         for line in about.lines() {
             assert!(line.len() <= 78, "over-long help line: {line}");
+        }
+    }
+
+    /// clap prints a long_about verbatim, so its prose must be wrapped by
+    /// hand to the width of the help text around it. Indented lines are
+    /// examples, and a command line does not wrap.
+    #[test]
+    fn runs_exec_long_help_prose_is_wrapped() {
+        let cli = <Cli as clap::CommandFactory>::command();
+        let about = cli
+            .find_subcommand("runs")
+            .and_then(|runs| runs.find_subcommand("exec"))
+            .and_then(|exec| exec.get_long_about())
+            .unwrap()
+            .to_string();
+        for line in about.lines().filter(|line| !line.starts_with(' ')) {
+            assert!(line.chars().count() <= 78, "over-long help line: {line}");
         }
     }
 

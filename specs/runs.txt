@@ -39,10 +39,20 @@ snouty runs
 stdout 'RUN ID.*STATUS.*CREATED.*TEST NAME'
 [!staging] stdout 'run-1.*completed'
 [!staging] stdout 'run-2.*in_progress'
+# A run with no test name shows its launcher in the TEST NAME column. No mock
+# run has a test name.
+[!staging] stdout '^run-2 +in_progress +.* debug$'
+[!staging] ! stdout ' -$'
 # The default table omits the description (it never fit usefully beside the full
 # run id); use `runs list --detail` to see it.
 ! stdout 'DESCRIPTION'
 [!staging] ! stdout 'nightly smoke on main'
+
+# A filtered list uses the same table.
+mock-runs-server
+[!staging] snouty runs list --launcher debug --status in_progress
+[!staging] stdout '^run-2 +in_progress +.* debug$'
+[!staging] ! stdout 'run-1'
 
 # `snouty runs list --detail` prints one aligned key-value block per run (no
 # table), so full descriptions are visible.
@@ -76,6 +86,12 @@ mock-runs-server
 [!staging] stdout 'run-2'
 [!staging] ! stdout 'run-3'
 [!staging] stderr 'Showing up to 2 results\. Additional results may be available\.'
+[!staging] ! stderr '\n\nShowing'
+# `--detail` separates its blocks with blank lines, so a blank line also
+# sets the note apart from the last block.
+mock-runs-server
+[!staging] snouty runs list --detail --limit 2
+[!staging] stderr '\n\nShowing up to 2 results\.'
 # `--json` never carries the note; the output itself is still capped.
 mock-runs-server
 [!staging] snouty --json runs list --limit 2

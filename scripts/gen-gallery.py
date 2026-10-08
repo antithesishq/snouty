@@ -1001,32 +1001,22 @@ def _launch_session(sn: Snouty, base_run: str) -> tuple[dict, Result]:
     setup. Returns the session's `runs list` row and the launch's output."""
     # Match system events; workload log text is not a reliable marker. A run
     # whose workload never calls the SDK's setup-complete API has no setup
-    # event, so try the next early events in turn. One query that ORs the
-    # three events would lose this order: search returns a sample in no fixed
-    # order, and a run has few setup events but many of the others. The fault
-    # injector unpauses many times in a run, so take the earliest match of a
-    # sample.
-    events = [
-        (
-            "the SDK setup-complete event",
-            'filter(ev => ev.antithesis_setup?.status == "complete")',
-        ),
-        (
-            "the test composer's first_randomizer_new_input event",
-            'filter(ev => ev.composer_lifecycle == "first_randomizer_new_input")',
-        ),
-        (
-            "the fault injector's unpause event",
-            'filter(ev => ev.source?.name == "fault_injector" && ev.info?.message == "status"'
-            " && ev.info?.details?.paused == false)",
-        ),
-    ]
-    for _, query in events:
-        if found := sn.json_lines(["runs", "search", base_run, query, "-n", "20"]):
-            break
-    else:
-        tried = "; ".join(name for name, _ in events)
-        raise GalleryError(f"{base_run} has no post-setup event to debug from (tried {tried})")
+    # event, so also match two other events that occur just after setup. Search
+    # returns a sample in no fixed order, and the fault injector unpauses many
+    # times in a run, so take the earliest match of the sample.
+    query = (
+        'filter(ev => ev.antithesis_setup?.status == "complete"'
+        ' || ev.composer_lifecycle == "first_randomizer_new_input"'
+        ' || (ev.source?.name == "fault_injector" && ev.info?.message == "status"'
+        " && ev.info?.details?.paused == false))"
+    )
+    found = sn.json_lines(["runs", "search", base_run, query, "-n", "100"])
+    if not found:
+        raise GalleryError(
+            f"{base_run} has no post-setup event to debug from (tried the SDK setup-complete"
+            " event, the test composer's first_randomizer_new_input event, and the fault"
+            " injector's unpause event)"
+        )
     h, v = _moment_strs(min((r["moment"] for r in found), key=lambda m: float(m["vtime"])))
     # A unique description finds the new session in `runs list` without
     # parsing the launch's human-facing output.

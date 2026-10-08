@@ -614,7 +614,7 @@ pub struct LaunchArgs {
     /// line, as shown in its `source` field. Matching is unanchored and
     /// case-sensitive (use `^name$` to match one source exactly). Suppressed
     /// output stays available in multiverse debugging. RE2 syntax: no
-    /// lookahead/lookbehind or backreferences.
+    /// lookahead/lookbehind or backreferences. Max 1023 bytes.
     #[arg(long)]
     pub filter_source_matching: Option<String>,
 

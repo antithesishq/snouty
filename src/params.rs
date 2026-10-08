@@ -113,26 +113,18 @@ impl Params {
     /// Validate params against the test params schema and the log filter
     /// patterns. The pattern check runs here so no launch path can skip it.
     ///
-    /// The platform checks `filter_logs_matching` only after the run starts,
+    /// The platform checks the patterns only after the run starts,
     /// so a bad pattern fails the run minutes later. The local check uses the
     /// `regex` crate, which is close to RE2 but not identical, so it is a
     /// pre-check only.
     pub fn validate_test_params(&self) -> Result<()> {
         validate_against_def(&self.inner, "testParams")?;
-        for (key, suppressed, max_bytes) in [
-            (
-                ANT_FILTER_LOGS_MATCHING,
-                "every log line",
-                Some(MAX_FILTER_LOGS_MATCHING_BYTES),
-            ),
-            (
-                ANT_FILTER_SOURCE_MATCHING,
-                "the output of every source",
-                None,
-            ),
+        for (key, suppressed) in [
+            (ANT_FILTER_LOGS_MATCHING, "every log line"),
+            (ANT_FILTER_SOURCE_MATCHING, "the output of every source"),
         ] {
             if let Some(value) = self.inner.get(key).and_then(Value::as_str) {
-                validate_filter_pattern(key, value, suppressed, max_bytes)?;
+                validate_filter_pattern(key, value, suppressed)?;
             }
         }
         Ok(())
@@ -231,28 +223,21 @@ fn is_sensitive_key(key: &str) -> bool {
     key.ends_with(".token") || key == ANT_REPORT_RECIPIENTS
 }
 
-/// The guest copies a `filter_logs_matching` pattern into a 1024-byte buffer
+/// The platform compiles each filter pattern into a 1024-byte buffer
 /// including the NUL terminator.
-const MAX_FILTER_LOGS_MATCHING_BYTES: usize = 1023;
+const MAX_FILTER_PATTERN_BYTES: usize = 1023;
 
 /// `suppressed` names the output that an empty-string match suppresses, for
 /// the error message.
-fn validate_filter_pattern(
-    key: &str,
-    value: &str,
-    suppressed: &str,
-    max_bytes: Option<usize>,
-) -> Result<()> {
+fn validate_filter_pattern(key: &str, value: &str, suppressed: &str) -> Result<()> {
     if value.trim().is_empty() {
         return Err(user_error(format!("{key} is empty"))
             .note("the platform skips filtering for an empty pattern")
             .suggestion("provide a pattern or drop the flag"));
     }
-    if let Some(max_bytes) = max_bytes
-        && value.len() > max_bytes
-    {
+    if value.len() > MAX_FILTER_PATTERN_BYTES {
         return Err(user_error(format!(
-            "{key} is too long: {} bytes (max {max_bytes})",
+            "{key} is too long: {} bytes (max {MAX_FILTER_PATTERN_BYTES})",
             value.len()
         )));
     }
@@ -838,12 +823,7 @@ mod tests {
     }
 
     fn validate_filter(pattern: &str) -> Result<()> {
-        validate_filter_pattern(
-            ANT_FILTER_LOGS_MATCHING,
-            pattern,
-            "every log line",
-            Some(MAX_FILTER_LOGS_MATCHING_BYTES),
-        )
+        validate_filter_pattern(ANT_FILTER_LOGS_MATCHING, pattern, "every log line")
     }
 
     #[test]
@@ -869,7 +849,7 @@ mod tests {
 
     #[test]
     fn validate_filter_pattern_limits_bytes_not_chars() {
-        // The guest buffer is 1024 bytes including the NUL terminator, so the
+        // The buffer is 1024 bytes including the NUL terminator, so the
         // limit is 1023 *bytes*: 512 two-byte chars (1024 bytes) must fail
         // even though the char count is far below the limit.
         let err = validate_filter(&"é".repeat(512)).unwrap_err();

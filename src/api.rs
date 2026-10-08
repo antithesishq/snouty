@@ -2594,6 +2594,7 @@ mod tests {
                 "get getUsage",
                 "get getUsageSummary",
                 "get getVersion",
+                "get listEntitlements",
                 "get listRunModuleInstances",
                 "get listRunModules",
                 "get listRunProperties",

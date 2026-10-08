@@ -1015,7 +1015,7 @@ event shapes (SDK assertions, faults, container lifecycle, test composer)
 each in their own concise form.
 
 Add --json for machine-readable output. Each event prints as one JSON object
-on its own line, and --raw passes the server's events through unchanged:
+on its own line:
   snouty --json runs logs <run_id> <hash> | jq -r .moment.vtime"#
         )
     )]
@@ -1234,10 +1234,10 @@ pub struct RunsSearchArgs {
 /// help text, and the raw/detail conflict from drifting between commands.
 #[derive(Args)]
 pub struct EventOutputArgs {
-    /// Print the server's events untouched, one JSON object per line,
-    /// skipping snouty's normalization (vtime, and fault annotation on
+    /// Deprecated: print the server's events untouched, one JSON object per
+    /// line, skipping snouty's normalization (vtime, and fault annotation on
     /// `runs logs`); requires --json
-    #[arg(short = 'r', long)]
+    #[arg(short = 'r', long, hide = true)]
     pub raw: bool,
 
     /// Detailed rendering: a full-width vtime on every line, source

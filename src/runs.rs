@@ -124,6 +124,9 @@ pub async fn cmd_runs(
     if raw && !output.json {
         return Err(raw_requires_json_error());
     }
+    if raw {
+        eprintln!("warning: --raw is deprecated, use --json alone instead");
+    }
     // The stream commands' output mode, resolved once the flags are known
     // legal. Fault annotation is `runs logs`' default `--json` shape; the
     // other stream commands carry no fault windows to thread.

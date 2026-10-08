@@ -2,7 +2,7 @@
 #
 # Cancel a run that is starting or in progress (`POST
 # /api/v0/runs/{run_id}/cancel`). Cancellation is asynchronous: success means
-# the server marked the run as cancelled, but its jobs can still be stopping.
+# the server marked the run as cancelled, but it can still be stopping.
 
 # Like every runs command, cancel requires an API key.
 ! snouty runs cancel some-run
@@ -27,20 +27,16 @@ stdout 'release 63\.0 or newer'
 # staging.
 [staging] skip
 
-# Cancelling a run in progress confirms the cancellation on stdout and notes
-# on stderr that its jobs can take time to stop. run-2 is the mock's
-# in-progress fixture.
+# Cancelling a run in progress confirms the cancellation on stdout. run-2 is
+# the mock's in-progress fixture.
 mock-runs-server
 snouty runs cancel run-2
 stdout '^cancelled run run-2$'
-stderr 'take some time to stop'
 
-# `snouty --json runs cancel` prints the run id as one JSON object, and no
-# note.
+# `snouty --json runs cancel` prints the run id as one JSON object.
 mock-runs-server
 snouty --json runs cancel run-2
 stdout '^\{"run_id":"run-2"\}$'
-! stderr 'take some time'
 
 # A run that has already completed cannot be cancelled. The command fails,
 # says why, and points at `runs show` for the run's final status.

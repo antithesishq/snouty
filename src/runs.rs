@@ -467,7 +467,6 @@ async fn cmd_runs_cancel(
         outln!("{}", json!({ "run_id": run_id }))?;
     } else {
         outln!("cancelled run {run_id}")?;
-        eprintln!("its jobs can take some time to stop");
     }
     Ok(())
 }

@@ -74,7 +74,7 @@ impl Launcher {
     const BASIC_TEST: &'static str = "basic_test";
     const BASIC_K8S_TEST: &'static str = "basic_k8s_test";
 
-    /// Whether a run on this launcher cannot start without a config image.
+    /// True when a run on this launcher requires a config image.
     pub fn requires_config_image(&self) -> bool {
         match self {
             Launcher::BasicTest | Launcher::BasicK8sTest => true,
@@ -1989,7 +1989,6 @@ mod tests {
         assert_eq!(lay_out_dsl_error(not_a_caret), not_a_caret);
     }
 
-    /// Every launcher name parses, and displays as the name it came from.
     #[hegel::test]
     fn launcher_display_round_trips(tc: hegel::TestCase) {
         let name = tc.draw(generators::text());

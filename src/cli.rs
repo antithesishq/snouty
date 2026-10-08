@@ -52,6 +52,15 @@ fn parse_run_status(value: &str) -> Result<RunStatus, String> {
     })
 }
 
+/// clap value parser for `runs wait --until`: any `--status` value except
+/// `unknown`, which no lifecycle step leads to.
+fn parse_wait_target(value: &str) -> Result<RunStatus, String> {
+    match parse_run_status(value)? {
+        RunStatus::Unknown => Err("cannot wait for status 'unknown'".to_string()),
+        status => Ok(status),
+    }
+}
+
 /// clap value parser for `runs wait --poll-interval`: a [`HumanDuration`] of
 /// at least 1 minute — polling faster cannot observe a run (which takes
 /// minutes to hours) any sooner, and only hammers the API.
@@ -854,7 +863,7 @@ With --web it prints the report URL as {"url": ...} and opens no browser:
         web: bool,
     },
 
-    /// Wait for a run to reach a terminal state
+    /// Wait for a run to reach a terminal state or a given status
     #[command(
         long_about = r#"Wait for a run to reach a terminal state (completed, cancelled, or incomplete).
 
@@ -864,6 +873,13 @@ exit code. A run that reports status `unknown` fails the command instead:
 snouty cannot tell whether such a run will still make progress, so the caller
 decides what to do.
 
+With --until <status>, the wait stops when the run reaches that status or a
+later one. The lifecycle is starting, then in_progress, then one of completed,
+cancelled, or incomplete. Thus `--until in_progress` succeeds on a run that is
+already completed. If the run ends in a different terminal state, it can never
+reach the status, and the command fails. A debugging session can be
+in_progress before it accepts `snouty runs exec`.
+
 The wait is unbounded unless --timeout is given, and the command is safe to
 interrupt and re-run: waiting holds no state beyond the run id, so re-running
 resumes the wait.
@@ -871,6 +887,7 @@ resumes the wait.
 Examples:
   snouty runs wait <run_id>
   snouty runs wait <run_id> --timeout 2h
+  snouty runs wait <run_id> --until in_progress
   snouty launch --json --launcher basic_test ... | jq -r .runId | xargs snouty runs wait
 
 Add --json for machine-readable output. The final status prints as one JSON
@@ -890,6 +907,11 @@ object:
         /// without it the wait is unbounded
         #[arg(long)]
         timeout: Option<HumanDuration>,
+
+        /// Stop when the run reaches this status or a later one (starting,
+        /// in_progress, completed, cancelled, incomplete)
+        #[arg(long, value_name = "STATUS", value_parser = parse_wait_target)]
+        until: Option<RunStatus>,
     },
 
     /// Cancel a run that has not finished

@@ -2,6 +2,7 @@
 //! composer's other structured chatter, both classified only on records
 //! whose `source.name` is `antithesis_test_composer`.
 
+use std::borrow::Cow;
 use std::fmt::{self, Write};
 
 use console::style;
@@ -100,8 +101,7 @@ impl<'a> Event<'a> for Chatter<'a> {
             let line = DisplayWith(|f: &mut fmt::Formatter<'_>| {
                 write!(f, "composer")?;
                 for (key, rendered) in payload_pairs(self.0) {
-                    let truncated = console::truncate_str(&rendered, VALUE_TRUNCATE_WIDTH, "…");
-                    write!(f, " {}={truncated}", sanitize(key))?;
+                    write!(f, " {}={}", sanitize(key), shorten(key, &rendered))?;
                 }
                 Ok(())
             });
@@ -111,11 +111,45 @@ impl<'a> Event<'a> for Chatter<'a> {
     }
 }
 
+/// Shortens one chatter value for the one-line form. A `command` is a path,
+/// and its end tells the commands apart, so it keeps the end. A `weight` is
+/// a probability, so three decimals are sufficient.
+fn shorten<'a>(key: &str, rendered: &'a str) -> Cow<'a, str> {
+    match key {
+        "command" => truncate_start(rendered, VALUE_TRUNCATE_WIDTH, "…"),
+        "weight" => match rendered.parse::<f64>() {
+            Ok(weight) if weight.is_finite() => format!("{weight:.3}").into(),
+            _ => console::truncate_str(rendered, VALUE_TRUNCATE_WIDTH, "…"),
+        },
+        _ => console::truncate_str(rendered, VALUE_TRUNCATE_WIDTH, "…"),
+    }
+}
+
+/// The mirror of `console::truncate_str`: keeps the end of `s` and puts
+/// `head` in front, so that the result is at most `width` columns wide.
+fn truncate_start<'a>(s: &'a str, width: usize, head: &str) -> Cow<'a, str> {
+    if console::measure_text_width(s) <= width {
+        return s.into();
+    }
+    let budget = width.saturating_sub(console::measure_text_width(head));
+    let mut used = 0;
+    let mut start = s.len();
+    for (index, c) in s.char_indices().rev() {
+        used += console::measure_text_width(c.encode_utf8(&mut [0; 4]));
+        if used > budget {
+            break;
+        }
+        start = index;
+    }
+    format!("{head}{}", &s[start..]).into()
+}
+
 #[cfg(test)]
 mod tests {
+    use super::{VALUE_TRUNCATE_WIDTH, truncate_start};
     use crate::event_render::format_value;
     use crate::event_render::testkit::*;
-    use serde_json::json;
+    use serde_json::{Value, json};
 
     #[test]
     fn composer_captured_output_appears_only_in_detail_mode() {
@@ -214,6 +248,68 @@ mod tests {
             lines.next().unwrap(),
             "                    container_id=22453394531ae33a6df72b8119fb9fd8338f8854d6a271fe736417fb35975013"
         );
+    }
+
+    #[test]
+    fn composer_command_keeps_its_end_and_weight_rounds() {
+        let chatter = |weight: Value, command: &str| {
+            json!({
+                "weight_type": "configured", "weight": weight, "command": command,
+                "source": {"name": "antithesis_test_composer"},
+                "moment": {"input_hash": "-1", "vtime": "15.7"}
+            })
+        };
+        let long = "/opt/antithesis/test/v1/wellnest/parallel_driver_check_ins.py";
+
+        // The wire form is a string; a long command keeps its end.
+        let block = render_one(chatter(json!("0.037937902697115555"), long));
+        assert!(
+            block.ends_with(
+                "composer weight_type=configured weight=0.038 command=…1/wellnest/parallel_driver_check_ins.py"
+            ),
+            "got: {block}"
+        );
+
+        // A numeric weight rounds the same; a short command is unchanged.
+        let block = render_one(chatter(json!(0.0555555), "/opt/t/a.py"));
+        assert!(
+            block.ends_with("weight=0.056 command=/opt/t/a.py"),
+            "got: {block}"
+        );
+
+        // An unparsable weight is not rounded, and is truncated as other
+        // values are.
+        let block = render_one(chatter(json!("high"), "/opt/t/a.py"));
+        assert!(block.contains(" weight=high "), "got: {block}");
+        let block = render_one(chatter(json!("x".repeat(50)), "/opt/t/a.py"));
+        assert!(
+            block.contains(&format!(" weight={}… ", "x".repeat(39))),
+            "got: {block}"
+        );
+
+        // --detail: full values.
+        let block = render_one_detailed(chatter(json!("0.037937902697115555"), long));
+        assert!(
+            block.contains("\n                    weight=0.037937902697115555\n"),
+            "got: {block}"
+        );
+        assert!(
+            block.ends_with(&format!("\n                    command={long}")),
+            "got: {block}"
+        );
+    }
+
+    /// For any text, the start-truncated form fits the width, and keeps the
+    /// end of the input after the `…` marker.
+    #[hegel::test]
+    fn truncate_start_fits_and_keeps_the_end(tc: hegel::TestCase) {
+        let s = tc.draw(hegel::generators::text());
+        let out = truncate_start(&s, VALUE_TRUNCATE_WIDTH, "…");
+        assert!(console::measure_text_width(&out) <= VALUE_TRUNCATE_WIDTH);
+        match out.strip_prefix('…') {
+            Some(kept) if out != s => assert!(s.ends_with(kept)),
+            _ => assert_eq!(out, s),
+        }
     }
 
     #[test]

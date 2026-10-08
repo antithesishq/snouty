@@ -214,19 +214,49 @@ fn print_login_summary(
         saved.push_str(&format!(" and repository `{repository}`"));
     }
     println!("\nSaved {saved}{scope} to {}.", settings_path.display());
+    // Name a stored username and password that this login overwrote, because a
+    // script that still uses it will no longer work. A password from somewhere
+    // else, such as the environment, is still there.
+    let replaced = match (&credentials, &previous_credentials) {
+        (
+            Some(AttributedValue::Keychain { entry_name, .. }),
+            Some(AttributedValue::Keychain {
+                value: AuthenticationInfo::Password { .. },
+                entry_name: previous_entry_name,
+            }),
+        ) => entry_name == previous_entry_name,
+        (
+            Some(AttributedValue::SettingsFile {
+                settings_file_path,
+                profile,
+                ..
+            }),
+            Some(AttributedValue::SettingsFile {
+                value: AuthenticationInfo::Password { .. },
+                settings_file_path: previous_path,
+                profile: previous_profile,
+            }),
+        ) => settings_file_path == previous_path && profile == previous_profile,
+        _ => false,
+    };
+    let replaced = if replaced {
+        ", replacing your stored username and password"
+    } else {
+        ""
+    };
     match credentials {
         Some(AttributedValue::Keychain {
             value: kind,
             entry_name: _,
         }) => {
-            println!("Stored your {kind}{scope} in the system keychain.");
+            println!("Stored your {kind}{scope} in the system keychain{replaced}.");
         }
         Some(AttributedValue::SettingsFile {
             value: kind,
             settings_file_path: path,
             profile: _,
         }) => {
-            println!("Stored your {kind}{scope} in {}.", path.display());
+            println!("Stored your {kind}{scope} in {}{replaced}.", path.display());
         }
         _ => match previous_credentials {
             Some(AttributedValue::Keychain { .. }) => {

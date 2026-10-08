@@ -56,6 +56,15 @@ fn start_login() -> (tempfile::TempDir, OsSession) {
 /// As [`start_login`], with each `(path, contents)` in `seed` written under the
 /// temp `$HOME` first — the pre-existing state a fresh login would not have.
 fn start_login_with(seed: &[(&str, &str)]) -> (tempfile::TempDir, OsSession) {
+    start_login_with_env(seed, &[])
+}
+
+/// As [`start_login_with`], with each `(name, value)` in `env` also set for
+/// the child.
+fn start_login_with_env(
+    seed: &[(&str, &str)],
+    env: &[(&str, &str)],
+) -> (tempfile::TempDir, OsSession) {
     let home = tempfile::TempDir::new().expect("temp HOME");
     for (path, contents) in seed {
         let path = home.path().join(path);
@@ -80,7 +89,8 @@ fn start_login_with(seed: &[(&str, &str)]) -> (tempfile::TempDir, OsSession) {
         .env("ANTITHESIS_BASE_URL", base_url)
         // Force file-based credential storage so a macOS run doesn't touch
         // the real keychain.
-        .env("SNOUTY_DISABLE_KEYCHAIN_CREDENTIAL_STORAGE", "1");
+        .env("SNOUTY_DISABLE_KEYCHAIN_CREDENTIAL_STORAGE", "1")
+        .envs(env.iter().copied());
 
     let mut session = OsSession::spawn(command).expect("spawn snouty login on a PTY");
     // The size is set while the child is still probing /auth/cli/config, well
@@ -226,6 +236,45 @@ fn bare_enter_keeps_the_stored_api_key() {
         creds.contains(&format!(r#"api_key = "{stored}""#)),
         "a bare Enter must keep the stored key: {creds}"
     );
+}
+
+/// A new API key that overwrites a stored username and password says so in the
+/// summary, because a script that still uses the password will no longer work.
+#[test]
+fn an_api_key_that_replaces_a_stored_password_says_so() {
+    let (home, mut session) = start_login_with(&[(
+        ".config/snouty/credentials.toml",
+        "[default]\ntype = \"Password\"\nusername = \"puser\"\npassword = \"pty-pass\"\n",
+    )]);
+    expect(&mut session, "Please enter your API Key");
+    send(&mut session, "sk-pty-key-123\r");
+    let seen = finish(session);
+
+    assert!(
+        seen.contains("credentials.toml, replacing your stored username and password."),
+        "{seen}"
+    );
+    let creds = credentials(home.path());
+    assert!(creds.contains(r#"api_key = "sk-pty-key-123""#), "{creds}");
+}
+
+/// A username and password from the environment is still there after login,
+/// so the summary does not claim to replace it.
+#[test]
+fn an_api_key_does_not_claim_to_replace_a_password_from_the_environment() {
+    let (_home, mut session) = start_login_with_env(
+        &[],
+        &[
+            ("ANTITHESIS_USERNAME", "puser"),
+            ("ANTITHESIS_PASSWORD", "pty-pass"),
+        ],
+    );
+    expect(&mut session, "Please enter your API Key");
+    send(&mut session, "sk-pty-key-123\r");
+    let seen = finish(session);
+
+    assert!(seen.contains("Stored your API key in "), "{seen}");
+    assert!(!seen.contains("replacing"), "{seen}");
 }
 
 /// Esc at the API key prompt skips credential storage and writes no

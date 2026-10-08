@@ -73,7 +73,7 @@
 # everything below the credential-free check is gated behind `[staging] skip`,
 # like `snouty debug`: staging has no reliably-live run to execute against.
 
-# The command is in `runs --help`, and no feature gates it.
+# The command is in `runs --help`.
 snouty runs --help
 stdout 'exec.*Execute a command in a run'
 snouty runs exec --help

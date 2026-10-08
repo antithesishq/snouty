@@ -12,9 +12,7 @@
 //! go away, in any release. Nothing behind this gate is covered by whatever
 //! stability the rest of the CLI has.
 //!
-//! To gate a command, parse the ids [`enabled`] returns into a feature enum
-//! with a constant for each id. Hide the command from `--help` with a clap
-//! `hide` attribute, and refuse it before dispatch while its feature is off:
+//! A gated command needs a clap `hide` attribute and a check before dispatch:
 //! a hidden subcommand is still callable, and clap_complete still lists it.
 //!
 //! Deliberately an environment variable and not a setting. The gate has to be
@@ -33,10 +31,9 @@ pub const UNSTABLE_FEATURES_VAR_NAME: &str = "SNOUTY_UNSTABLE_FEATURES";
 /// variable is unset or holds nothing usable; whitespace and empty entries are
 /// dropped, so `"a, b,"` is `[a, b]`.
 ///
-/// Every id is kept, known or not: one exported `SNOUTY_UNSTABLE_FEATURES` is
-/// shared by every snouty on the machine, so an id a newer build knows about —
-/// or one whose feature has graduated and had its id retired — must not break
-/// the build that reads it.
+/// Callers must not reject an unknown id: every snouty on the machine shares
+/// one exported variable, so it can hold an id from a newer build or a retired
+/// one.
 ///
 /// A non-Unicode value is treated as unset rather than failing the command:
 /// this is read before the parse, where there is no good way to report an

@@ -168,7 +168,7 @@ For any one setting, snouty uses the first value it finds, highest precedence fi
 
 When a subcommand depends on an Antithesis API that is still changing shape, snouty can keep it behind a gate, turned on by naming its feature in `SNOUTY_UNSTABLE_FEATURES` (a comma-separated list). Anything behind this gate can change its behavior, its flags, or its id, or go away, in any release.
 
-No subcommand is gated now. An id that snouty does not know, such as the retired `runs-exec`, has no effect, but `snouty doctor` lists every id that is set.
+No subcommand is gated. An id that snouty does not know, such as the retired `runs-exec`, has no effect, but `snouty doctor` lists every id that is set.
 
 ## Authentication
 

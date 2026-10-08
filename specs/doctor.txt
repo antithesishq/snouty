@@ -61,8 +61,7 @@ stderr '^      NOTE: run `snouty login` to store an API key, then `unset ANTITHE
 [!staging] stderr '.*Antithesis API reachable.*'
 [!staging] stderr '.*latest API version: v1.*'
 [!staging] stderr '.*tenant release version: 56.0.*'
-# A tenant that old predates the APIs some commands need, so doctor warns for
-# each one.
+# Release 56.0 is below every release floor, so doctor warns for each one.
 [!staging] stderr 'tenant serves the events-search API'
 [!staging] stderr 'tenant serves the cancel-run API'
 [!staging] stderr 'tenant serves the execute-command .container. field'

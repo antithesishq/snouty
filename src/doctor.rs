@@ -1182,7 +1182,6 @@ mod tests {
             .iter()
             .find(|r| r.name == "features")
             .expect("the row appears when a feature is on");
-        // An id this build doesn't know is echoed, not dropped.
         assert_eq!(row.render_value(), "one, other");
     }
 

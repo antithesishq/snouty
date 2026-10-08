@@ -1989,6 +1989,14 @@ mod tests {
         assert_eq!(lay_out_dsl_error(not_a_caret), not_a_caret);
     }
 
+    /// Every launcher name parses, and displays as the name it came from.
+    #[hegel::test]
+    fn launcher_display_round_trips(tc: hegel::TestCase) {
+        let name = tc.draw(generators::text());
+        let launcher: Launcher = name.parse().unwrap();
+        assert_eq!(launcher.to_string(), name);
+    }
+
     #[hegel::test]
     fn lay_out_dsl_error_puts_the_caret_under_the_query(tc: hegel::TestCase) {
         let one_line = || {

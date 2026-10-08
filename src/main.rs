@@ -267,7 +267,12 @@ async fn cmd_launch(
 
     params.validate_test_params()?;
 
-    if !params.contains_key(ANT_CONFIG_IMAGE) {
+    let has_config_image = params
+        .as_map()
+        .get(ANT_CONFIG_IMAGE)
+        .and_then(|value| value.as_str())
+        .is_some_and(|image| !image.trim().is_empty());
+    if !has_config_image {
         if launcher.requires_config_image() {
             return Err(user_error(format!(
                 "invalid arguments: the {launcher} launcher requires a config image"

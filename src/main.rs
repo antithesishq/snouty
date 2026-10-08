@@ -9,7 +9,7 @@ use color_eyre::Section;
 use color_eyre::eyre::{Context, Result};
 use semver::Version;
 use snouty::OutputOptions;
-use snouty::api::AntithesisApi;
+use snouty::api::{AntithesisApi, Launcher};
 use snouty::auth::initialize_credential_store;
 use snouty::cli::{
     Cli, Commands, DebugArgs, LaunchArgs, UpdateArgs, UpdateChannel, gated_command_error,
@@ -323,7 +323,7 @@ async fn cmd_launch(
         );
     }
 
-    let response = submit_launch(&launcher.to_string(), params, settings, verbose).await?;
+    let response = submit_launch(&launcher, params, settings, verbose).await?;
 
     if json {
         println!("{}", serde_json::to_string_pretty(&response)?);
@@ -338,7 +338,7 @@ async fn cmd_launch(
 }
 
 async fn submit_launch(
-    launcher: &str,
+    launcher: &Launcher,
     params: Params,
     settings: &Settings,
     verbose: bool,

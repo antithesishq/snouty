@@ -6,7 +6,7 @@ use color_eyre::Section;
 use color_eyre::eyre::Report;
 
 use crate::api::{
-    PerformanceTier, RunStatus, SEARCH_DEFAULT_LIMIT, SEARCH_MAX_LIMIT, SourceRunId,
+    Launcher, PerformanceTier, RunStatus, SEARCH_DEFAULT_LIMIT, SEARCH_MAX_LIMIT, SourceRunId,
     SourceSessionId,
 };
 use crate::error::user_error;
@@ -559,7 +559,7 @@ pub struct DoctorArgs {
 #[derive(Args)]
 pub struct LaunchArgs {
     /// Launcher name (e.g., basic_test, basic_k8s_test)
-    #[arg(short, long, default_value = "basic_test", conflicts_with = "webhook")]
+    #[arg(short, long, default_value_t = Launcher::BasicTest, conflicts_with = "webhook")]
     pub launcher: Launcher,
 
     /// Deprecated alias for --launcher
@@ -621,50 +621,6 @@ pub struct LaunchArgs {
     /// Extra parameters as key=value pairs (repeatable)
     #[arg(long = "param")]
     pub params: Vec<String>,
-}
-
-/// The launcher that `snouty launch` sends a run to.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Launcher {
-    BasicTest,
-    BasicK8sTest,
-    /// A tenant-specific launcher. Snouty does not know which params it needs.
-    Other(String),
-}
-
-impl Launcher {
-    const BASIC_TEST: &'static str = "basic_test";
-    const BASIC_K8S_TEST: &'static str = "basic_k8s_test";
-
-    /// Whether a run on this launcher cannot start without a config image.
-    pub fn requires_config_image(&self) -> bool {
-        match self {
-            Launcher::BasicTest | Launcher::BasicK8sTest => true,
-            Launcher::Other(_) => false,
-        }
-    }
-}
-
-impl std::str::FromStr for Launcher {
-    type Err = std::convert::Infallible;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Ok(match s {
-            Self::BASIC_TEST => Launcher::BasicTest,
-            Self::BASIC_K8S_TEST => Launcher::BasicK8sTest,
-            other => Launcher::Other(other.to_owned()),
-        })
-    }
-}
-
-impl std::fmt::Display for Launcher {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(match self {
-            Launcher::BasicTest => Self::BASIC_TEST,
-            Launcher::BasicK8sTest => Self::BASIC_K8S_TEST,
-            Launcher::Other(name) => name,
-        })
-    }
 }
 
 #[derive(Args)]

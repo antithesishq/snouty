@@ -1016,8 +1016,10 @@ def _launch_session(sn: Snouty, base_run: str) -> tuple[dict, Result]:
     # A unique description finds the new session in `runs list` without
     # parsing the launch's human-facing output.
     description = f"{EXEC_SESSION_DESCRIPTION} {datetime.now().isoformat()}"
+    # With `runs-exec` on, the launch's next-step hint names `runs exec`.
     launch = sn.run(
-        ["debug", "--run-id", base_run, "--input-hash", h, "--vtime", v, "--description", description]
+        ["debug", "--run-id", base_run, "--input-hash", h, "--vtime", v, "--description", description],
+        env=EXEC_ENV,
     )
     if not launch.ok:
         raise GalleryError(f"`snouty debug` failed (exit {launch.returncode}): {launch.combined}")
@@ -2351,10 +2353,13 @@ def build_exec_stories(d: Discovery, x: ExecSession) -> list[Story]:
                 "Open a debugging session at a moment",
                 f"I want to debug run {x.base_run} from the moment its setup completed.",
                 "snouty shows the parameters it sends and the run ID of the new debugging "
-                "session, which is what `runs exec` needs. Exit 0.",
+                "session. It says that the session takes minutes to start, and gives the "
+                "`runs show` command to check it and the `runs exec` command to use when it "
+                "is ready. Exit 0.",
                 x.launch.args,
-                succeeds_with("Debugging session started"),
+                succeeds_with("Debugging session started", "snouty runs show", "snouty runs exec"),
                 json_capable=False,
+                env=EXEC_ENV,
                 precaptured=x.launch,
             )
         )

@@ -1,11 +1,11 @@
 # snouty runs wait
 #
-# Wait for a run to reach a terminal state (completed, cancelled, or
-# incomplete), or with `--until running` until it starts, then report the
-# status. The command exits 0 for every
-# terminal state; the run's outcome is in the output, not the exit code. A run
-# that reports status `unknown` fails the command instead of waiting forever
-# on a run that may never make progress.
+# Wait until a run is running or complete (`--until`, default complete), then
+# report its status. Complete means a terminal state: completed, cancelled, or
+# incomplete. The command exits 0 for every status it stops at; the run's
+# outcome is in the output, not the exit code. A run that reports status
+# `unknown` fails the command instead of waiting forever on a run that may
+# never make progress.
 #
 # Status transitions mid-wait are covered by Rust integration tests in
 # src/runs.rs, where the test server can change the run's status between polls.
@@ -28,10 +28,11 @@ stderr 'must be a number of minutes'
 
 # `snouty runs --help` lists the wait subcommand.
 snouty runs --help
-stdout 'wait.*terminal state'
+stdout 'wait.*running or complete'
 
-# `snouty runs wait --help` explains the terminal states, the unknown-status
-# failure, and that re-running resumes the wait after an interruption.
+# `snouty runs wait --help` explains the two --until statuses, that each is a
+# minimum, the unknown-status failure, and that re-running resumes the wait
+# after an interruption.
 snouty runs wait --help
 stdout 'completed, cancelled, or incomplete'
 stdout 'unknown'
@@ -39,8 +40,9 @@ stdout 'interrupt and re-run'
 stdout '--poll-interval'
 stdout '--timeout'
 stdout '--until'
-stdout 'running'
-stdout 'in_progress before it accepts'
+stdout 'running .*in_progress, or it is'
+stdout 'The status is a minimum'
+! stdout 'runs exec'
 
 # A run that is already terminal returns immediately: the final status is the
 # whole output, exit 0.

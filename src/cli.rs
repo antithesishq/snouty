@@ -492,9 +492,9 @@ pub struct UpdateArgs {
 /// The point in a run's lifecycle that `runs wait --until` waits for.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, ValueEnum)]
 pub enum WaitUntil {
-    /// The run is in_progress, or has already ended
+    /// The run is in_progress, or already complete
     Running,
-    /// The run has ended: completed, cancelled, or incomplete
+    /// The run is completed, cancelled, or incomplete
     Complete,
 }
 
@@ -863,24 +863,25 @@ With --web it prints the report URL as {"url": ...} and opens no browser:
         web: bool,
     },
 
-    /// Wait for a run to start or to reach a terminal state
-    #[command(
-        long_about = r#"Wait for a run to reach a terminal state (completed, cancelled, or incomplete).
+    /// Wait until a run is running or complete
+    #[command(long_about = r#"Wait until a run is running or complete.
 
-Polls the run's status until it is terminal, then reports the final status and
-exits 0 whatever that status is; the run's outcome is in the output, not the
-exit code. A run that reports status `unknown` fails the command instead:
-snouty cannot tell whether such a run will still make progress, so the caller
-decides what to do.
+--until sets the status to wait for:
+  running   The run has at least started: it is in_progress, or it is
+            already complete.
+  complete  The run is complete: completed, cancelled, or incomplete. This
+            is the default.
 
-With --until running, the wait stops when the run has started: when it is
-in_progress, or has already ended. Use it to wait for a test run to start
-fuzzing, or for a debugging session to be ready. A debugging session can be
-in_progress before it accepts `snouty runs exec`.
+The status is a minimum. A run can only move forward, and a complete run
+never starts again. Thus `--until running` on a complete run returns at once.
 
-The wait is unbounded unless --timeout is given, and the command is safe to
-interrupt and re-run: waiting holds no state beyond the run id, so re-running
-resumes the wait.
+When the run reaches the status, the command prints the run's current status
+and exits 0, whatever that status is. The run's outcome is in the output, not
+the exit code. A run that reports status `unknown` fails the command: snouty
+cannot tell whether such a run will still make progress.
+
+The wait is unbounded unless --timeout is given. The command is safe to
+interrupt and re-run: it holds no state beyond the run id.
 
 Examples:
   snouty runs wait <run_id>
@@ -890,8 +891,7 @@ Examples:
 
 Add --json for machine-readable output. The final status prints as one JSON
 object:
-  snouty --json runs wait <run_id> | jq -r .status"#
-    )]
+  snouty --json runs wait <run_id> | jq -r .status"#)]
     Wait {
         /// Run ID
         run_id: String,
@@ -906,7 +906,7 @@ object:
         #[arg(long)]
         timeout: Option<HumanDuration>,
 
-        /// The point in the run's lifecycle to wait for
+        /// The status to wait for; a later status also ends the wait
         #[arg(long, value_enum, default_value_t = WaitUntil::Complete)]
         until: WaitUntil,
     },

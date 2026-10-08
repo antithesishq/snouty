@@ -867,8 +867,7 @@ With --web it prints the report URL as {"url": ...} and opens no browser:
     #[command(long_about = r#"Wait until a run is running or complete.
 
 --until sets the status to wait for:
-  running   The run has at least started: it is in_progress, or it is
-            already complete.
+  running   The run has status in_progress, or it is already complete.
   complete  The run is complete: completed, cancelled, or incomplete. This
             is the default.
 
@@ -876,9 +875,9 @@ The status is a minimum. A run can only move forward, and a complete run
 never starts again. Thus `--until running` on a complete run returns at once.
 
 When the run reaches the status, the command prints the run's current status
-and exits 0, whatever that status is. The run's outcome is in the output, not
-the exit code. A run that reports status `unknown` fails the command: snouty
-cannot tell whether such a run will still make progress.
+and exits 0, whatever that status is. A run that reports status `unknown`
+fails the command: snouty cannot tell whether such a run will still make
+progress.
 
 The wait is unbounded unless --timeout is given. The command is safe to
 interrupt and re-run: it holds no state beyond the run id.

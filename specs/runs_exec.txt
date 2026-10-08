@@ -52,8 +52,10 @@
 #     missing stream included, to snouty's stdout. An event without
 #     `output_text` goes to stderr as raw JSON. stdout carries only output
 #     text, so `snouty runs exec ... | jq` composes.
-#   - Rewarm progress goes to stderr: a progress bar when stderr is a
-#     terminal, and one `rewarming moment: N%` line per record otherwise.
+#   - Rewarm progress goes to stderr: when stderr is a terminal, a progress
+#     bar that gives way to a `rewarming moment: done` line, and otherwise one
+#     `rewarming moment: N%` line per record. A rewarm that ends early keeps
+#     its last percentage in view (tests/exec_pty.rs covers the terminal).
 #     stdout keeps only the script's output, with or without --events.
 #   - On `exited`, a trailer on stderr documents the branch's end moment, to
 #     chain a follow-up command from.
@@ -219,6 +221,12 @@ stdout 'Linux antithesis 6.12.0'
 stderr '(?s)rewarming moment: 0%\nrewarming moment: 40%\nrewarming moment: 100%\n'
 stderr 'end moment: -8206006569229276678 398.492'
 ! stderr '"status"'
+
+# A stream that ends partway through the rewarm is truncated, and the last
+# progress line shows how far the rewarm got.
+! snouty runs exec run-2 1002528785118888238 278.1311443040613 truncate-rewarm --source-run-id 1f1211ea49946d4f63a92d65ee42476d-64-0
+stderr 'rewarming moment: 40%\n(?s).*stream ended before the command reported completion'
+! stderr 'rewarming moment: 100%'
 
 # With --events, the progress still goes to stderr, not into the timeline.
 snouty runs exec run-2 1002528785118888238 278.1311443040613 with-system-logs --events --source-run-id 1f1211ea49946d4f63a92d65ee42476d-64-0

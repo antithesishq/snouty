@@ -9,7 +9,7 @@ use futures_util::stream::BoxStream;
 use futures_util::{StreamExt, TryStreamExt};
 use indexmap::IndexMap;
 use indexmap::map::Entry;
-use indicatif::{ProgressBar, ProgressFinish, ProgressStyle};
+use indicatif::{ProgressBar, ProgressStyle};
 use log::debug;
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
@@ -1570,12 +1570,21 @@ impl Default for RewarmDisplay {
         let style = ProgressStyle::with_template("rewarming moment [{bar:40}] {pos}%")
             .expect("the template is valid")
             .progress_chars("=> ");
-        // A bar dropped before the last record must not draw as full.
-        Self::Bar(
-            ProgressBar::new(100)
-                .with_style(style)
-                .with_finish(ProgressFinish::AndClear),
-        )
+        Self::Bar(ProgressBar::new(100).with_style(style))
+    }
+}
+
+impl Drop for RewarmDisplay {
+    /// A rewarm that ends before its last record keeps its bar where it
+    /// stopped, as the last line keeps it off a terminal, and the line ends,
+    /// so the error below starts on a line of its own.
+    fn drop(&mut self) {
+        if let Self::Bar(bar) = self
+            && !bar.is_finished()
+        {
+            bar.abandon();
+            eprintln!();
+        }
     }
 }
 

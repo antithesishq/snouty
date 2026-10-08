@@ -1234,6 +1234,8 @@ fn mock_route_execute_command(run_id: &str, req_body: &str) -> (u16, String) {
         // did not ask for the timeline.
         "unexpected-event" => vec![mock_exec_command_received(), mock_exec_exited(Some(0))],
         "truncate-stream" => vec![mock_exec_output("info", "partial output", "398.491")],
+        // With a cold moment, a stream that ends partway through the rewarm.
+        "truncate-rewarm" => vec![],
         // A result followed by more lines is not the terminal result.
         "early-result" => vec![
             mock_exec_exited(Some(5)),
@@ -1261,7 +1263,11 @@ fn mock_route_execute_command(run_id: &str, req_body: &str) -> (u16, String) {
             mock_exec_exited(Some(0)),
         ],
     };
-    let rewarm_progress = [0, 40, 100].into_iter().filter(|_| cold).map(|percent| {
+    let percents: &[u8] = match script.trim() {
+        "truncate-rewarm" => &[0, 40],
+        _ => &[0, 40, 100],
+    };
+    let rewarm_progress = percents.iter().filter(|_| cold).map(|percent| {
         serde_json::json!({"status": "rewarming", "percent_complete": percent}).to_string()
     });
     let lines: Vec<String> = rewarm_progress.chain(lines).collect();

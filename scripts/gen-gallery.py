@@ -1001,13 +1001,15 @@ def _launch_session(sn: Snouty, base_run: str) -> tuple[dict, Result]:
     setup. Returns the session's `runs list` row and the launch's output."""
     # Match system events; workload log text is not a reliable marker. A run
     # whose workload never calls the SDK's setup-complete API has no setup
-    # event, so try the next early events in turn. Search returns matches in no
-    # fixed order, and the fault injector unpauses many times in a run, so take
-    # the earliest match of a sample.
+    # event, so try the next early events in turn. One query that ORs the
+    # three events would lose this order: search returns a sample in no fixed
+    # order, and a run has few setup events but many of the others. The fault
+    # injector unpauses many times in a run, so take the earliest match of a
+    # sample.
     events = [
         (
             "the SDK setup-complete event",
-            'filter(ev => ev.antithesis_setup && ev.antithesis_setup.status == "complete")',
+            'filter(ev => ev.antithesis_setup?.status == "complete")',
         ),
         (
             "the test composer's first_randomizer_new_input event",
@@ -1015,8 +1017,8 @@ def _launch_session(sn: Snouty, base_run: str) -> tuple[dict, Result]:
         ),
         (
             "the fault injector's unpause event",
-            'filter(ev => ev.source && ev.source.name == "fault_injector" && ev.info'
-            ' && ev.info.message == "status" && ev.info.details && ev.info.details.paused == false)',
+            'filter(ev => ev.source?.name == "fault_injector" && ev.info?.message == "status"'
+            " && ev.info?.details?.paused == false)",
         ),
     ]
     for _, query in events:

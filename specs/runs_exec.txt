@@ -23,9 +23,9 @@
 #
 # When the server rewarms a cold moment, the stream begins with progress
 # records, `{"status":"rewarming","percent_complete":N}`: the first is at 0,
-# the last is at 100, and all come before the command's output. This shape
-# follows the spec of the release after 64.0; it is not yet observed against
-# the live API.
+# the last is at 100, and all come before the command's output. Verified
+# against the live API (orbitinghail, release 64.0, 2026-10-07): one rewarm
+# sent 35 records over 22 seconds.
 #
 # Release 64.0 requires `container` in the request: a container name or ID,
 # or `_ANTITHESIS_HOST` for the host. Earlier releases reject the field, so
@@ -204,8 +204,8 @@ stdout 'source_run_id=1f1211ea49946d4f63a92d65ee42476d-64-0 source_session_id=ab
 snouty runs exec run-2 -3625518438076122494 398.4898056755774 print-request --source-session-id ba4ebf3181dd342334b86c58941813c6-64-0
 stdout 'source_run_id=absent source_session_id=ba4ebf3181dd342334b86c58941813c6-64-0'
 
-# A cold moment without a source fails with the server's 400
-# (`{"result":"unknown_moment"}`), and snouty points at --source-run-id.
+# A cold moment without a source fails with the server's 400 ("Moment not
+# warm"), and snouty points at --source-run-id.
 ! snouty runs exec run-2 1002528785118888238 278.1311443040613 'true'
 stderr 'Moment not warm'
 stderr 'name the run it comes from with --source-run-id$'

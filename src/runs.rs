@@ -1545,7 +1545,9 @@ enum ExecResult {
 }
 
 /// A progress record of a stream that rewarms a cold moment. Every one
-/// precedes the command's output, and the last one is at 100.
+/// precedes the command's output, and the last one is at 100. Observed on
+/// orbitinghail (release 64.0, 2026-10-07): one rewarm sent 35 records over
+/// 22 seconds.
 #[derive(Debug, Deserialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
 enum ExecProgress {
@@ -1575,8 +1577,11 @@ impl RewarmDisplay {
         match self {
             Self::Bar(bar) => {
                 bar.set_position(percent_complete.into());
+                // A finished bar leaves the cursor on its line, where the
+                // script's first output line would join it.
                 if percent_complete >= 100 {
-                    bar.finish();
+                    bar.finish_and_clear();
+                    eprintln!("rewarming moment: done");
                 }
             }
             Self::Lines => eprintln!("rewarming moment: {percent_complete}%"),
@@ -1584,9 +1589,11 @@ impl RewarmDisplay {
     }
 }
 
-/// The marker in a 400's message that the moment is cold, as release 64.0
-/// sends it (orbitinghail): `… (400 Bad Request): {"result":"unknown_moment"}`.
-const UNKNOWN_MOMENT: &str = r#""unknown_moment""#;
+/// The marker in a 400's message that the moment is cold. It opens both
+/// messages observed on orbitinghail (release 64.0): `Moment not warm and no
+/// provided source_run_id or source_session_id. …` at first, and `Moment not
+/// warm in the live run and no source_run_id provided.` from 2026-10-07.
+const UNKNOWN_MOMENT: &str = "Moment not warm";
 
 /// Show one event of a `runs exec` stream. Without --events, snouty's stdout
 /// carries only output text, so `runs exec ... | jq` composes. The server is

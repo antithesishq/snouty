@@ -1172,14 +1172,15 @@ fn mock_route_execute_command(run_id: &str, req_body: &str) -> (u16, String) {
     }
     // A moment off the session's own timeline is cold. Without a source the
     // live endpoint answers 400; with one, a rewarm that outlives the timeout
-    // answers 400 too (the `slow-rewarm` script). Both messages verbatim from
-    // release 64.0 (orbitinghail). A rewarm that finishes streams
+    // answers 400 too (the `slow-rewarm` script). Both messages verbatim
+    // from orbitinghail (release 64.0), the first as of 2026-10-07. A rewarm
+    // that finishes streams
     // `Rewarm_Progress` records ahead of the output, as the spec documents.
     let cold = request["moment"]["input_hash"] == MOCK_COLD_HASH;
     let has_source =
         request.get("source_run_id").is_some() || request.get("source_session_id").is_some();
     if cold && !has_source {
-        let message = r#"Bad request: Moment not warm and no provided source_run_id or source_session_id. (400 Bad Request): {"result":"unknown_moment"}"#;
+        let message = "Moment not warm in the live run and no source_run_id provided.";
         return (400, serde_json::json!({ "message": message }).to_string());
     }
     if cold && script.trim() == "slow-rewarm" {

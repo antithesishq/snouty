@@ -67,7 +67,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Iterator
 
 import pexpect
 import pyte
@@ -97,6 +97,12 @@ BUILD_SAMPLES_SCRIPT = Path(__file__).resolve().parent / "build-validate-samples
 NEEDLE_MIN_MATCHES = 4
 NEEDLE_PROBES = 12
 MOMENT_PROBES = 4
+
+# Discovery reads `runs list` in pages of DISCOVERY_PAGE_SIZE runs, the maximum
+# `limit` that the API accepts for one page. It reads at most
+# DISCOVERY_MAX_PAGES pages before it stops and reports that no run is usable.
+DISCOVERY_PAGE_SIZE = 100
+DISCOVERY_MAX_PAGES = 10
 
 # `runs list` reports this launcher for a debugging session.
 DEBUGGING_LAUNCHER = "debugging"
@@ -494,8 +500,6 @@ class Discovery:
     success: str = ""  # completed run that drives the event/logs/property stories
     fail: str = ""  # an incomplete run
     cancelled: str = ""  # a cancelled run
-    vcs: str = ""  # a run launched with `vcs.*` params
-    vcs_commit: str = ""  # that run's `vcs.version_id`
     launcher: str = ""  # a real launcher value (for the --launcher story)
     created_after: str = ""  # a timestamp with runs after it
     window_after: str = ""
@@ -516,16 +520,61 @@ class Discovery:
     fail_event_kw: str = ""  # needle the incomplete run's events story matches on
 
 
-def _test_runs(sn: Snouty, *args: str) -> list[dict]:
-    """`runs list <args>` without debugging sessions, which have no properties
-    or build logs of their own."""
-    rows = sn.json_lines(["runs", "list", *args])
-    return [r for r in rows if r.get("launcher") != DEBUGGING_LAUNCHER]
+class RunScan:
+    """The runs that `runs list <filters>` returns, newest first, without
+    debugging sessions, which have no properties or build logs of their own.
+
+    `runs list` has no cursor option, so each page asks for runs created before
+    the oldest run of the previous page (`--created-before`). That bound
+    includes the oldest run itself, so the scan removes runs that it already
+    returned. The scan reads a page only when the caller needs more runs, and
+    it reads at most DISCOVERY_MAX_PAGES pages. `seen` counts the test runs
+    that the scan returned, and `pages` counts the pages that it read."""
+
+    def __init__(self, sn: Snouty, *filters: str) -> None:
+        self.sn = sn
+        self.filters = filters
+        self.seen = 0
+        self.pages = 0
+
+    def __iter__(self) -> Iterator[dict]:
+        returned: set[str] = set()
+        before: str | None = None
+        while self.pages < DISCOVERY_MAX_PAGES:
+            args = ["runs", "list", *self.filters, "-n", str(DISCOVERY_PAGE_SIZE)]
+            if before is not None:
+                args += ["--created-before", before]
+            rows = self.sn.json_lines(args)
+            self.pages += 1
+            new = [r for r in rows if r["run_id"] not in returned]
+            if not new:
+                return
+            for r in new:
+                returned.add(r["run_id"])
+                if r.get("launcher") == DEBUGGING_LAUNCHER:
+                    continue
+                self.seen += 1
+                yield r
+            if len(rows) < DISCOVERY_PAGE_SIZE:
+                return
+            before = rows[-1]["created_at"]
 
 
-def _first_run(sn: Snouty, *filters: str) -> str | None:
-    rows = _test_runs(sn, *filters, "-n", "20")
-    return rows[0]["run_id"] if rows else None
+def _no_usable_run(what: str, scan: RunScan, stories: str, need: str) -> GalleryError:
+    """A loud error for a scan that found no usable run. `what` is the run
+    status, `stories` names the stories that need the run, and `need` is the
+    predicate that a usable run satisfies ("has ..."). The error also says how
+    to fix the tenant."""
+    rule = "!" * 78
+    pages = f"{scan.pages} of at most {DISCOVERY_MAX_PAGES} pages"
+    return GalleryError(
+        f"\n{rule}\n"
+        f"NO USABLE {what.upper()} RUN.\n"
+        f"None of the {scan.seen} most recent {what} runs ({pages}) {need}.\n"
+        f"The {stories} stories cannot run, so the gallery is not written.\n"
+        f"Start a new {what} run in the tenant (for example, a nightly trigger) and try again.\n"
+        f"{rule}"
+    )
 
 
 def _logs(sn: Snouty, args: list[str]) -> list[dict]:
@@ -629,15 +678,13 @@ def _pick_logs_moment(
     return None
 
 
-def _pick_completed_run(sn: Snouty, scan: int) -> CompletedPick:
+def _pick_completed_run(sn: Snouty) -> CompletedPick:
     """Pick a completed run that can drive *all* the completed-run stories: the
     property stories, the logs stories (see _pick_logs_moment), and the
     events/search stories. Scan recent completed runs and take the first that
     satisfies every requirement at once."""
-    runs = _test_runs(sn, "--status", "completed", "-n", str(scan))
-    if not runs:
-        raise GalleryError("no completed runs found on this tenant")
-    last_reason = "none had a usable property moment"
+    runs = RunScan(sn, "--status", "completed")
+    last_reason = "no completed run found"
     for r in runs:
         run = r["run_id"]
         # Each picker raises GalleryError if this run can't satisfy its story —
@@ -667,11 +714,13 @@ def _pick_completed_run(sn: Snouty, scan: int) -> CompletedPick:
         return CompletedPick(
             run, moment, kw, kw2, fail_prop, pass_prop, nonevent_prop, name_filter
         )
-    raise GalleryError(
-        f"none of the {len(runs)} most recent completed runs can drive every "
-        f"completed-run story (need failing/passing/non-event property moments, "
-        f"a unique name filter, and a property moment with logs and a needle); "
-        f"last reason: {last_reason}"
+    raise _no_usable_run(
+        "completed",
+        runs,
+        "completed-run (properties, events, search, and logs)",
+        "has failing, passing, and non-event property moments, a "
+        "unique name filter, and a property moment with logs and a needle "
+        f"(last reason: {last_reason})",
     )
 
 
@@ -687,7 +736,7 @@ def _real_failure_moment(moment: dict) -> bool:
     return not (str(h) == "0" and float(v) == 0.0)
 
 
-def _pick_incomplete_run(sn: Snouty, scan: int) -> tuple[str, dict, str]:
+def _pick_incomplete_run(sn: Snouty) -> tuple[str, dict, str]:
     """Pick an incomplete run that makes the incomplete-run stories meaningful,
     scanning the recent ones rather than blindly taking the first — which is
     routinely a timeout with a 0/0 failure moment and no error events, leaving the
@@ -695,9 +744,7 @@ def _pick_incomplete_run(sn: Snouty, scan: int) -> tuple[str, dict, str]:
     logs are non-empty (so runs-logs-incomplete streams lines and runs-show-incomplete
     renders a moment) AND a needle from those logs that matches events (for
     runs-events-incomplete). Returns (run_id, failure_moment, event_keyword)."""
-    runs = _test_runs(sn, "--status", "incomplete", "-n", str(scan))
-    if not runs:
-        raise GalleryError("no incomplete run found — incomplete stories cannot run")
+    runs = RunScan(sn, "--status", "incomplete")
     for r in runs:
         run = r["run_id"]
         moment = sn.json_obj(["runs", "show", run]).get("failure_moment") or {}
@@ -719,10 +766,11 @@ def _pick_incomplete_run(sn: Snouty, scan: int) -> tuple[str, dict, str]:
             file=sys.stderr,
         )
         return run, moment, kw
-    raise GalleryError(
-        f"none of the {len(runs)} most recent incomplete runs has a real failure "
-        "moment with logs and a needle — refusing to write a gallery with "
-        "the incomplete event/logs stories degenerate"
+    raise _no_usable_run(
+        "incomplete",
+        runs,
+        "incomplete-run (show, events, and logs)",
+        "has a real failure moment with logs and a needle",
     )
 
 
@@ -868,38 +916,27 @@ def _pick_name_filter(prop_names: list[str]) -> str:
     raise GalleryError("no substring matches exactly one property")
 
 
-def discover(sn: Snouty, scan: int, need_vcs: bool) -> Discovery:
-    """`need_vcs` gates the vcs-run lookup: a tenant without trigger-action runs
-    can still generate every other story."""
+def discover(sn: Snouty) -> Discovery:
     print("discovering runs via the live API…", file=sys.stderr)
 
-    pick = _pick_completed_run(sn, scan)
+    pick = _pick_completed_run(sn)
     success, moment = pick.run, pick.logs_moment
 
-    fail, fail_moment, fail_event_kw = _pick_incomplete_run(sn, scan)
-    cancelled = _first_run(sn, "--status", "cancelled")
+    fail, fail_moment, fail_event_kw = _pick_incomplete_run(sn)
+    cancelled_scan = RunScan(sn, "--status", "cancelled")
+    cancelled = next((r["run_id"] for r in cancelled_scan), None)
     if not cancelled:
-        raise GalleryError("no cancelled run found — the cancelled story cannot run")
+        raise _no_usable_run("cancelled", cancelled_scan, "cancelled-run", "exists")
     print(f"  cancelled run : {cancelled}", file=sys.stderr)
 
     # Dynamic listing params from the newest 30 runs, so listing stories aren't
-    # empty. Trigger-action runs are sparse, so the vcs search scans all 100.
-    runs = _test_runs(sn, "-n", "100")
-    recent = runs[:30]
+    # empty.
+    recent = [r for _, r in zip(range(30), RunScan(sn))]
     if not recent:
         raise GalleryError("no runs found at all")
     launcher = next((r["launcher"] for r in recent if r.get("launcher")), "")
     if not launcher:
         raise GalleryError("no run has a launcher — the --launcher story cannot run")
-    vcs, vcs_commit = "", ""
-    if need_vcs:
-        vcs_run = next(
-            (r for r in runs if (r.get("parameters") or {}).get("vcs.version_id")), None
-        )
-        if not vcs_run:
-            raise GalleryError("no run has vcs.version_id — the vcs story cannot run")
-        vcs, vcs_commit = vcs_run["run_id"], vcs_run["parameters"]["vcs.version_id"]
-        print(f"  vcs run       : {vcs}", file=sys.stderr)
     by_time = sorted(recent, key=lambda r: r["created_at"])
     # created-after: a timestamp with several runs after it.
     created_after = by_time[max(0, len(by_time) - 6)]["created_at"]
@@ -911,8 +948,6 @@ def discover(sn: Snouty, scan: int, need_vcs: bool) -> Discovery:
         success=success,
         fail=fail,
         cancelled=cancelled,
-        vcs=vcs,
-        vcs_commit=vcs_commit,
         launcher=launcher,
         created_after=created_after,
         window_after=window_after,
@@ -1871,16 +1906,6 @@ def build_stories(d: Discovery) -> list[Story]:
             ),
             json_capable=False,
             expect_ok=False,
-        ),
-        Story(
-            "runs-show-vcs",
-            "Find the commit a CI run tested",
-            "A run was launched from CI; I want to know which repository, branch, and "
-            "commit it tested.",
-            "A Version Control block lists the repository, branch, commit id, and commit link.",
-            ["runs", "show", d.vcs],
-            contains_all("Version Control", d.vcs_commit),
-            json_capable=False,
         ),
         Story(
             "runs-wait",
@@ -3469,12 +3494,6 @@ def main() -> int:
     )
     parser.add_argument("--out", type=Path, help="output dir (default: a fresh tempdir)")
     parser.add_argument(
-        "--runs-to-scan",
-        type=int,
-        default=15,
-        help="recent completed runs to probe for one with events",
-    )
-    parser.add_argument(
         "--only",
         nargs="+",
         metavar="SLUG",
@@ -3561,7 +3580,7 @@ def main() -> int:
     try:
         stories: list[Story] = []
         if need_api:
-            disc = discover(sn, args.runs_to_scan, selected("runs-show-vcs"))
+            disc = discover(sn)
             stories += build_stories(disc)
             if need_exec:
                 # When `--only` selects `debug`, launch a new session so the

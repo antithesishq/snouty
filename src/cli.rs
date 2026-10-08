@@ -46,19 +46,33 @@ const _: () = assert_run_statuses_complete(RunStatus::Starting);
 /// clap value parser for `--status` that keeps a friendly, enumerated error
 /// message (the generated `RunStatus::from_str` only says "invalid value").
 fn parse_run_status(value: &str) -> Result<RunStatus, String> {
-    value.parse::<RunStatus>().map_err(|_| {
-        let valid = ALL_RUN_STATUSES.map(|s| s.to_string()).join(", ");
-        format!("invalid status: '{value}'\nvalid values: {valid}")
-    })
+    value
+        .parse::<RunStatus>()
+        .map_err(|_| invalid_status(value, ALL_RUN_STATUSES))
 }
 
 /// clap value parser for `runs wait --until`: any `--status` value except
 /// `unknown`, which no lifecycle step leads to.
 fn parse_wait_target(value: &str) -> Result<RunStatus, String> {
-    match parse_run_status(value)? {
-        RunStatus::Unknown => Err("cannot wait for status 'unknown'".to_string()),
-        status => Ok(status),
+    match value.parse::<RunStatus>() {
+        Ok(RunStatus::Unknown) => Err("cannot wait for status 'unknown'".to_string()),
+        Ok(status) => Ok(status),
+        Err(_) => Err(invalid_status(
+            value,
+            ALL_RUN_STATUSES
+                .into_iter()
+                .filter(|s| *s != RunStatus::Unknown),
+        )),
     }
+}
+
+fn invalid_status(value: &str, valid: impl IntoIterator<Item = RunStatus>) -> String {
+    let valid = valid
+        .into_iter()
+        .map(|s| s.to_string())
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("invalid status: '{value}'\nvalid values: {valid}")
 }
 
 /// clap value parser for `runs wait --poll-interval`: a [`HumanDuration`] of

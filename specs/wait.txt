@@ -87,7 +87,7 @@ mock-runs-server
 # --until takes the same status names as `runs list --status`, except
 # `unknown`: no lifecycle step leads to it.
 ! snouty runs wait some-run --until done
-stderr 'invalid status'
+stderr 'valid values: starting, in_progress, completed, cancelled, incomplete$'
 ! snouty runs wait some-run --until unknown
 stderr 'cannot wait for status .unknown.'
 

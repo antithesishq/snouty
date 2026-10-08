@@ -258,8 +258,9 @@ fn drop_launch_status_code(spec: &mut serde_json::Value) {
 }
 
 /// Add `antithesis.test_name` to both `MVD_Params` variants, for
-/// `snouty debug --title`. The spec omits it, but tenant release 64.0 stores
-/// it, and `runs list` shows it as the session's test name.
+/// `snouty debug --title`. The spec omits it, but `/api/v1/launch/debugging`
+/// stores it: on orbitinghail, release 64.0, the session lists it in its
+/// `parameters`, and `runs list` shows it as the session's test name.
 fn add_mvd_test_name(spec: &mut serde_json::Value) {
     let variants = spec
         .pointer_mut("/components/schemas/MVD_Params/oneOf")

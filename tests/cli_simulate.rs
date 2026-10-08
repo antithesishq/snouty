@@ -862,6 +862,7 @@ fn clean_single_rollout_keeps_streaming_and_preserves_signal_exit_status() {
     let mut simulation = Simulation::start("clean-once");
     simulation.wait_for("stdout", "workload running");
     assert!(simulation.child.try_wait().unwrap().is_none());
+    assert_eq!(simulation.read("thread_pause_enabled"), "yes");
     assert_eq!(simulation.read("restart_mode"), "restart_enabled=no");
     assert!(
         simulation

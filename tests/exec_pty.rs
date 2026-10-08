@@ -10,7 +10,8 @@ use std::time::Duration;
 
 use expectrl::Expect;
 use expectrl::session::OsSession;
-use snouty::testutils::MockApiServer;
+use snouty::features::{Feature, UNSTABLE_FEATURES_VAR_NAME};
+use snouty::testutils::{MOCK_COLD_HASH, MockApiServer};
 
 /// The bar redraws in place, and once the rewarm finishes it gives way to a
 /// line of its own, so the script's output starts on a fresh line.
@@ -25,7 +26,7 @@ fn rewarm_bar_gives_way_to_the_output() {
             "runs",
             "exec",
             "run-2",
-            "1002528785118888238",
+            MOCK_COLD_HASH,
             "278.1311443040613",
             "uname -a",
             "--source-run-id",
@@ -35,7 +36,7 @@ fn rewarm_bar_gives_way_to_the_output() {
         .env("PATH", std::env::var_os("PATH").unwrap_or_default())
         .env("HOME", home.path())
         .env("TERM", "xterm-256color")
-        .env("SNOUTY_UNSTABLE_FEATURES", "runs-exec")
+        .env(UNSTABLE_FEATURES_VAR_NAME, Feature::RUNS_EXEC)
         .env("ANTITHESIS_TENANT", "testtenant")
         .env("ANTITHESIS_BASE_URL", server.url())
         .env("ANTITHESIS_API_KEY", server.token());
@@ -56,9 +57,7 @@ fn rewarm_bar_gives_way_to_the_output() {
         .map(|line| strip_ansi_escapes::strip_str(line.rsplit('\r').next().unwrap_or_default()))
         .collect();
     assert!(
-        !lines
-            .iter()
-            .any(|line| line.contains("rewarming moment: 0%")),
+        !raw.contains("rewarming moment: 0%"),
         "progress lines on a terminal:\n{raw}"
     );
     let done = lines

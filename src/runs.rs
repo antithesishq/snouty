@@ -9,7 +9,7 @@ use futures_util::stream::BoxStream;
 use futures_util::{StreamExt, TryStreamExt};
 use indexmap::IndexMap;
 use indexmap::map::Entry;
-use indicatif::{ProgressBar, ProgressStyle};
+use indicatif::{ProgressBar, ProgressFinish, ProgressStyle};
 use log::debug;
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
@@ -1562,17 +1562,24 @@ enum RewarmDisplay {
     Lines,
 }
 
-impl RewarmDisplay {
-    fn new() -> Self {
+impl Default for RewarmDisplay {
+    fn default() -> Self {
         if !std::io::stderr().is_terminal() {
             return Self::Lines;
         }
         let style = ProgressStyle::with_template("rewarming moment [{bar:40}] {pos}%")
             .expect("the template is valid")
             .progress_chars("=> ");
-        Self::Bar(ProgressBar::new(100).with_style(style))
+        // A bar dropped before the last record must not draw as full.
+        Self::Bar(
+            ProgressBar::new(100)
+                .with_style(style)
+                .with_finish(ProgressFinish::AndClear),
+        )
     }
+}
 
+impl RewarmDisplay {
     fn show(&self, percent_complete: u8) {
         match self {
             Self::Bar(bar) => {
@@ -1593,7 +1600,7 @@ impl RewarmDisplay {
 /// messages observed on orbitinghail (release 64.0): `Moment not warm and no
 /// provided source_run_id or source_session_id. …` at first, and `Moment not
 /// warm in the live run and no source_run_id provided.` from 2026-10-07.
-const UNKNOWN_MOMENT: &str = "Moment not warm";
+const MOMENT_NOT_WARM: &str = "Moment not warm";
 
 /// Show one event of a `runs exec` stream. Without --events, snouty's stdout
 /// carries only output text, so `runs exec ... | jq` composes. The server is
@@ -1704,7 +1711,7 @@ async fn cmd_runs_exec(
         // 64.0). Only a cold moment says so, and only in its message text.
         Err(err) => {
             let err = explain_run_scoped_error(&api, run_id, err).await;
-            let cold = api_error_message(&err).is_some_and(|m| m.contains(UNKNOWN_MOMENT));
+            let cold = api_error_message(&err).is_some_and(|m| m.contains(MOMENT_NOT_WARM));
             return Err(match (api_error_status(&err), rewarm_flag) {
                 (Some(404), Some(flag)) => {
                     err.suggestion(format!("check that {flag} names an existing source"))
@@ -1732,17 +1739,15 @@ async fn cmd_runs_exec(
         if let Some((line, _)) = held.take() {
             render_exec_event(&line, json, renderer.as_mut())?;
         }
-        if let Ok(ExecProgress::Rewarming { percent_complete }) = ExecProgress::deserialize(&entry)
+        if !json
+            && let Ok(ExecProgress::Rewarming { percent_complete }) =
+                ExecProgress::deserialize(&entry)
         {
-            if json {
-                outln!("{entry}")?;
-            } else {
-                rewarm
-                    .get_or_insert_with(RewarmDisplay::new)
-                    .show(percent_complete);
-            }
+            rewarm.get_or_insert_default().show(percent_complete);
             continue;
         }
+        // Any other line ends the rewarm, so no output is drawn under its bar.
+        rewarm = None;
         match ExecResult::deserialize(&entry) {
             Ok(result) => {
                 // The stream normalized `moment.vtime`; the terminal result

@@ -1129,7 +1129,7 @@ fn mock_exec_command_received() -> String {
 }
 
 /// The input hash of a moment the mock session holds cold.
-const MOCK_COLD_HASH: &str = "1002528785118888238";
+pub const MOCK_COLD_HASH: &str = "1002528785118888238";
 
 fn mock_route_execute_command(run_id: &str, req_body: &str) -> (u16, String) {
     // See the `run-stream-error` fixture note in `mock_route_get_run_build_logs`.
@@ -1173,9 +1173,8 @@ fn mock_route_execute_command(run_id: &str, req_body: &str) -> (u16, String) {
     // A moment off the session's own timeline is cold. Without a source the
     // live endpoint answers 400; with one, a rewarm that outlives the timeout
     // answers 400 too (the `slow-rewarm` script). Both messages verbatim
-    // from orbitinghail (release 64.0), the first as of 2026-10-07. A rewarm
-    // that finishes streams
-    // `Rewarm_Progress` records ahead of the output, as the spec documents.
+    // from orbitinghail (release 64.0), the no-source one as of 2026-10-07.
+    // A rewarm that finishes streams progress records ahead of the output.
     let cold = request["moment"]["input_hash"] == MOCK_COLD_HASH;
     let has_source =
         request.get("source_run_id").is_some() || request.get("source_session_id").is_some();
@@ -1189,12 +1188,6 @@ fn mock_route_execute_command(run_id: &str, req_body: &str) -> (u16, String) {
         );
         return (400, serde_json::json!({ "message": message }).to_string());
     }
-    let rewarm_progress = cold.then(|| {
-        [0, 40, 100].map(|percent| {
-            serde_json::json!({"status": "rewarming", "percent_complete": percent}).to_string()
-        })
-    });
-
     let lines = match script.trim() {
         "true" => vec![mock_exec_exited(Some(0))],
         "exit 5" => vec![mock_exec_exited(Some(5))],
@@ -1268,7 +1261,10 @@ fn mock_route_execute_command(run_id: &str, req_body: &str) -> (u16, String) {
             mock_exec_exited(Some(0)),
         ],
     };
-    let lines: Vec<String> = rewarm_progress.into_iter().flatten().chain(lines).collect();
+    let rewarm_progress = [0, 40, 100].into_iter().filter(|_| cold).map(|percent| {
+        serde_json::json!({"status": "rewarming", "percent_complete": percent}).to_string()
+    });
+    let lines: Vec<String> = rewarm_progress.chain(lines).collect();
     (200, lines.join("\n") + "\n")
 }
 

@@ -34,7 +34,7 @@
     },
     {
       "name": "Launch",
-      "description": "Launch a test run or debugging session."
+      "description": "Launch a test run or debugging session.\n\nAuthenticate with an API key in the `Authorization` header (see **Authentication** above). Basic auth (previously used by [webhooks](/docs/reference/webhook/overview/)) is also accepted for backwards compatibility but is now deprecated. Use API keys for all new integrations.\n\nTo use basic auth, pass your tenant's machine credentials (user and password):\n\n```bash\ncurl --fail -u 'USER:PASSWORD' -X POST https://<TENANT>.antithesis.com/api/v1/launch/{launcher_name}\n```"
     },
     {"name": "Modules", "description": "Lists instrumented modules loaded during a test run and the programs that\nloaded them. Every module that loaded with coverage instrumentation is\nincluded, whether or not the build published a symbol catalog for it;\nhas_catalog tells them apart. A symbol catalog describes the files,\nfunctions, and instrumented code locations in a module's build.\n\nEach module appears once per run, identified by module_id. Treat this\nidentifier as an opaque string; name is a display label and need\nnot be unique. File, function, and location counts describe the catalog,\nregardless of which code has executed. A module without a catalog reports\na location count; but its file and function counts are\nnull. These endpoints do not report\ncoverage results.\n\nAn instance identifies a program that loaded a module in a named container.\nThe same (module_id, container_name, program_path) combination appears only\nonce per run, even across multiple processes, container restarts, or repeated\nloads. Instances group processes by program path; they do not enumerate\nindividual process lifetimes.\n\nprogram_path is the path to the process's executable. For interpreted\nprograms, this is the interpreter binary. Different scripts using the\nsame interpreter path in the same named container share an instance for\neach module they load in common.\nContainer names and program paths are served as recorded, without rewriting\nthem.\n\nModules and instances may take time to appear after loading. A module appears before\nany of its instances.\n\nEach list is ordered by when entries first become available through this\nAPI, which may differ from the order in which modules were loaded. Entries\nkeep their positions, and new entries are always added after existing\nones. Repeated loads do not move or duplicate entries.\n\nUse each list's cursor to fetch subsequent pages or poll for new entries.\nAn empty page does not mean the list is final. The module list and each module's\ninstance list have separate cursors; neither reports updates to entries\nalready listed."},
     {"name": "Module instances", "description": "Programs that loaded modules in named containers."},
@@ -326,7 +326,7 @@
       "post": {
         "operationId": "executeCommand",
         "summary": "Execute a command in a test run",
-        "description": "Executes a bash command in the live session associated with the test run, starting at the requested moment. When `include_system_logs` is `true`, every event observed during the command's execution is included, not just the command's own stdout and stderr. Output is streamed as newline-delimited JSON (NDJSON). Command output uses the same `Event` shape returned by the run logs endpoint, without an additional wrapper. A successful stream ends with exactly one command result whose `status` is `exited` or `timed_out`; a stream that fails after the response begins ends with a `Stream_Error`.",
+        "description": "Executes a bash command in the live run associated with the test run, starting at the requested moment. When `include_system_logs` is `true`, every event observed during the command's execution is included, not just the command's own stdout and stderr. Output is streamed as newline-delimited JSON (NDJSON). Command output uses the same `Event` shape returned by the run logs endpoint, without an additional wrapper. A successful stream ends with exactly one command result whose `status` is `exited` or `timed_out`; a stream that fails after the response begins ends with a `Stream_Error`. If the requested moment is not warm in the live run and a source run is available, the server rewarms it before running the command and emits `Rewarm_Progress` records ahead of the command output.",
         "tags": ["Test runs"],
         "parameters": [
           {
@@ -361,13 +361,14 @@
         },
         "responses": {
           "200": {
-            "description": "An NDJSON stream containing zero or more command-output `Event` records followed by exactly one terminal `Command_Termination_Result`. If an error occurs after the response begins, the stream instead ends with a `Stream_Error`. Each line is a self-contained JSON object.",
+            "description": "An NDJSON stream containing zero or more command-output `Event` records followed by exactly one terminal `Command_Termination_Result`. If an error occurs after the response begins, the stream instead ends with a `Stream_Error`. Each line is a self-contained JSON object. When a cold moment has to be rewarmed first, the stream begins with `Rewarm_Progress` records. Clients should classify lines by `status`: `rewarming` is a progress record, `exited` or `timed_out` is the terminal result, and a line without `status` is an event.",
             "content": {
               "application/x-ndjson": {
                 "schema": {
                   "oneOf": [
                     { "$ref": "#/components/schemas/Event" },
                     { "$ref": "#/components/schemas/Command_Termination_Result" },
+                    { "$ref": "#/components/schemas/Rewarm_Progress" },
                     { "$ref": "#/components/schemas/Stream_Error" }
                   ]
                 },
@@ -404,6 +405,27 @@
                         "input_hash": "-3625518438076122494",
                         "vtime": "398.491"
                       }
+                    }
+                  },
+                  "rewarm_started": {
+                    "summary": "The requested moment was not warm; rewarming has begun",
+                    "value": {
+                      "status": "rewarming",
+                      "percent_complete": 0
+                    }
+                  },
+                  "rewarm_progress": {
+                    "summary": "Rewarming is partway through replaying inputs",
+                    "value": {
+                      "status": "rewarming",
+                      "percent_complete": 40
+                    }
+                  },
+                  "rewarm_complete": {
+                    "summary": "The moment is warm; the command is now executing",
+                    "value": {
+                      "status": "rewarming",
+                      "percent_complete": 100
                     }
                   }
                 }
@@ -1055,7 +1077,7 @@
       "post": {
         "operationId": "cancelRun",
         "summary": "Cancel a test run",
-        "description": "Requests cancellation of the test run identified by `run_id`, including its descendant jobs. Cancellation is asynchronous: a successful response confirms that cancellation was requested, but jobs may still be stopping. The run record is marked as cancelled and its finish timestamps are set. Runs that are already completed, cancelled, or incomplete return `409 Conflict` without changing their status or finish timestamps. No request body is required.",
+        "description": "Requests cancellation of the test run identified by `run_id`, including its descendant jobs. Cancellation is asynchronous, so a successful response confirms that cancellation was requested, but jobs may still be stopping. Once the jobs stop, the run is marked as cancelled and its finish timestamps are set. Runs that are already completed, cancelled, or incomplete return `409 Conflict` without changing their status or finish timestamps. No request body is required.",
         "tags": ["Test runs"],
         "parameters": [
           {
@@ -1728,6 +1750,65 @@
         }
       }
     },
+    "/api/v0/usage/entitlements": {
+      "get": {
+        "operationId": "listEntitlements",
+        "summary": "Lists the tenant's entitlements",
+        "description": "Returns the entitlements from the tenant's contract, as recorded in the entitlement registry, keyed by SKU. Each SKU has its own entitlement shape; currently the only SKU is `core_hours`. `core_hours` entitlements are prepaid usage hours per entitlement period: each period is a half-open `[start, end)` interval with its prepaid quantity. When the contract has been amended, a period is taken from the latest contract version effective at or before the period's start. Periods are ordered by `start`, oldest first. Tenants on legacy pricing have no entitlements and receive an empty object.",
+        "tags": [
+          "Usage"
+        ],
+        "responses": {
+          "200": {
+            "description": "The tenant's entitlements",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Entitlements_Response"
+                },
+                "example": {
+                  "core_hours": {
+                    "periods": [
+                      {
+                        "start": "2026-05-01T00:00:00Z",
+                        "end": "2026-06-01T00:00:00Z",
+                        "prepaid_quantity": 4166.67
+                      },
+                      {
+                        "start": "2026-06-01T00:00:00Z",
+                        "end": "2026-07-01T00:00:00Z",
+                        "prepaid_quantity": null
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "405": {
+            "$ref": "#/components/responses/MethodNotAllowed"
+          },
+          "406": {
+            "$ref": "#/components/responses/NotAcceptable"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      }
+    },
     "/api/v0/usage/{run_id}": {
       "get": {
         "operationId": "getUsage",
@@ -2265,6 +2346,26 @@
         },
         "additionalProperties": true
       },
+      "Rewarm_Progress": {
+        "description": "A progress record in an execute-command stream. Emitted only when the requested `moment` was not warm in the live run and had to be rewarmed from the source run. Every record has `status` `rewarming`. The first record has `percent_complete` 0; later records are monotonic but may skip values. The final record has `percent_complete` 100 and is emitted immediately before the command starts executing. No progress records are emitted once command output begins.",
+        "type": "object",
+        "required": ["percent_complete", "status"],
+        "properties": {
+          "percent_complete": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 100,
+            "description": "Share of the inputs to the requested moment from the source run replayed so far, as a whole percentage.",
+            "example": 40
+          },
+          "status": {
+            "type": "string",
+            "enum": ["rewarming"],
+            "description": "Always `rewarming` on a progress record; this is what distinguishes it from a `Command_Termination_Result`. Additional values may be added in future."
+          }
+        },
+        "additionalProperties": true
+      },
       "Command_Termination_Result": {
         "description": "The terminal record in a successful execute-command stream. Exactly one result is emitted after all command-output events, and the stream closes after it.",
         "oneOf": [
@@ -2786,6 +2887,60 @@
             "format": "date-time",
             "description": "Timestamp when the run's billable usage ended (ISO 8601).",
             "example": "2024-01-15T12:34:56Z"
+          }
+        }
+      },
+      "Entitlements_Response": {
+        "type": "object",
+        "description": "Entitlements according to the tenant's contract, keyed by SKU. Each SKU has its own entitlement shape, and a SKU is absent if the contract does not entitle it. Currently the only SKU is `core_hours`.",
+        "properties": {
+          "core_hours": {
+            "$ref": "#/components/schemas/Core_Hours_Entitlement"
+          }
+        }
+      },
+      "Core_Hours_Entitlement": {
+        "type": "object",
+        "description": "The tenant's `core_hours` entitlement: prepaid usage hours per entitlement period.",
+        "required": [
+          "periods"
+        ],
+        "properties": {
+          "periods": {
+            "type": "array",
+            "description": "The `core_hours` entitlement periods, ordered by `start`, oldest first.",
+            "items": {
+              "$ref": "#/components/schemas/Usage_Period"
+            }
+          }
+        }
+      },
+      "Usage_Period": {
+        "type": "object",
+        "description": "One `core_hours` entitlement period of the tenant's contract: a half-open `[start, end)` interval with the associated prepaid usage hours.",
+        "required": [
+          "start",
+          "end",
+          "prepaid_quantity"
+        ],
+        "properties": {
+          "start": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Timestamp when the period begins, inclusive (ISO 8601).",
+            "example": "2026-05-01T00:00:00Z"
+          },
+          "end": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Timestamp when the period ends, exclusive (ISO 8601).",
+            "example": "2026-06-01T00:00:00Z"
+          },
+          "prepaid_quantity": {
+            "type": "number",
+            "nullable": true,
+            "description": "The usage hours prepaid for the period. Null if the period has no prepaid quantity.",
+            "example": 4166.67
           }
         }
       },

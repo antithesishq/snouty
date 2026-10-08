@@ -9,6 +9,7 @@ use futures_util::stream::BoxStream;
 use futures_util::{StreamExt, TryStreamExt};
 use indexmap::IndexMap;
 use indexmap::map::Entry;
+use indicatif::{ProgressBar, ProgressStyle};
 use log::debug;
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
@@ -212,7 +213,7 @@ pub async fn cmd_runs(
                 moment: Moment { input_hash, vtime },
                 script: resolve_exec_script(script)?,
                 container,
-                timeout: Duration::from_secs(timeout),
+                timeout: timeout.map(Duration::from_secs),
                 events,
                 rewarm,
             };
@@ -1573,9 +1574,70 @@ enum ExecResult {
     TimedOut,
 }
 
-/// The marker in a 400's message that the moment is cold, as release 64.0
-/// sends it (orbitinghail): `… (400 Bad Request): {"result":"unknown_moment"}`.
-const UNKNOWN_MOMENT: &str = r#""unknown_moment""#;
+/// A rewarm progress record. The server sends these before the command's
+/// output, and the last one is at 100 (observed on orbitinghail, release
+/// 64.0, 2026-10-07).
+#[derive(Debug, Deserialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+enum ExecProgress {
+    Rewarming { percent_complete: u8 },
+}
+
+/// Shows rewarm progress on stderr, to keep stdout for the script's output.
+/// Off a terminal it prints one line per record, because a redrawn bar
+/// garbles a log.
+enum RewarmDisplay {
+    Bar(ProgressBar),
+    Lines,
+}
+
+impl Default for RewarmDisplay {
+    fn default() -> Self {
+        if !std::io::stderr().is_terminal() {
+            return Self::Lines;
+        }
+        let style = ProgressStyle::with_template("rewarming moment [{bar:40}] {pos}%")
+            .expect("the template is valid")
+            .progress_chars("=> ");
+        Self::Bar(ProgressBar::new(100).with_style(style))
+    }
+}
+
+impl Drop for RewarmDisplay {
+    /// A rewarm that stops early leaves its bar at the last percentage. The
+    /// newline puts the next error on a line of its own.
+    fn drop(&mut self) {
+        if let Self::Bar(bar) = self
+            && !bar.is_finished()
+        {
+            bar.abandon();
+            eprintln!();
+        }
+    }
+}
+
+impl RewarmDisplay {
+    fn show(&self, percent_complete: u8) {
+        match self {
+            Self::Bar(bar) => {
+                bar.set_position(percent_complete.into());
+                // A finished bar keeps the cursor on its line, so clear the
+                // bar and print a line of its own.
+                if percent_complete >= 100 {
+                    bar.finish_and_clear();
+                    eprintln!("rewarming moment: done");
+                }
+            }
+            Self::Lines => eprintln!("rewarming moment: {percent_complete}%"),
+        }
+    }
+}
+
+/// The marker in a 400's message that the moment is cold. It opens both
+/// messages observed on orbitinghail (release 64.0): `Moment not warm and no
+/// provided source_run_id or source_session_id. …` at first, and `Moment not
+/// warm in the live run and no source_run_id provided.` from 2026-10-07.
+const MOMENT_NOT_WARM: &str = "Moment not warm";
 
 /// Show one event of a `runs exec` stream. Without --events, snouty's stdout
 /// carries only output text, so `runs exec ... | jq` composes. The server is
@@ -1686,7 +1748,7 @@ async fn cmd_runs_exec(
         // 64.0). Only a cold moment says so, and only in its message text.
         Err(err) => {
             let err = explain_run_scoped_error(&api, run_id, err).await;
-            let cold = api_error_message(&err).is_some_and(|m| m.contains(UNKNOWN_MOMENT));
+            let cold = api_error_message(&err).is_some_and(|m| m.contains(MOMENT_NOT_WARM));
             return Err(match (api_error_status(&err), rewarm_flag) {
                 (Some(404), Some(flag)) => {
                     err.suggestion(format!("check that {flag} names an existing source"))
@@ -1708,11 +1770,21 @@ async fn cmd_runs_exec(
     // one is held until the next line arrives, and is shown as an event if one
     // does. Every other line is shown as it arrives.
     let mut held: Option<(Value, ExecResult)> = None;
+    let mut rewarm: Option<RewarmDisplay> = None;
     let mut lines = event_lines(stream, ErrorRows::Abort);
     while let Some(mut entry) = lines.try_next().await? {
         if let Some((line, _)) = held.take() {
             render_exec_event(&line, json, renderer.as_mut())?;
         }
+        if !json
+            && let Ok(ExecProgress::Rewarming { percent_complete }) =
+                ExecProgress::deserialize(&entry)
+        {
+            rewarm.get_or_insert_default().show(percent_complete);
+            continue;
+        }
+        // Any other line ends the rewarm display before that line prints.
+        rewarm = None;
         match ExecResult::deserialize(&entry) {
             Ok(result) => {
                 // The stream normalized `moment.vtime`; the terminal result
@@ -1750,10 +1822,14 @@ async fn cmd_runs_exec(
             }
         }
         Some(ExecResult::TimedOut) => {
-            let err = user_error(format!(
-                "command timed out after {}",
-                HumanDuration::from_seconds(timeout.as_secs())
-            ));
+            let err = match timeout {
+                Some(timeout) => user_error(format!(
+                    "command timed out after {}",
+                    HumanDuration::from_seconds(timeout.as_secs())
+                )),
+                None => user_error("command timed out after the server's default timeout")
+                    .suggestion("set a longer timeout with --timeout"),
+            };
             Err(match rewarm_flag {
                 Some(_) => err
                     .note("the rewarm counts against --timeout; raise it to give the rewarm time"),

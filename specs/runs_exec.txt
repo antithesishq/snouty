@@ -21,6 +21,12 @@
 # is `exited` or `timed_out`, unless the stream ends with a `Stream_Error`
 # line.
 #
+# When the server rewarms a cold moment, the stream begins with progress
+# records, `{"status":"rewarming","percent_complete":N}`: the first is at 0,
+# the last is at 100, and all come before the command's output. Verified
+# against the live API (orbitinghail, release 64.0, 2026-10-07): one rewarm
+# sent 35 records over 22 seconds.
+#
 # Release 64.0 requires `container` in the request: a container name or ID,
 # or `_ANTITHESIS_HOST` for the host. Earlier releases reject the field, so
 # `runs exec` needs release 64.0 or newer, and `snouty doctor` warns on an
@@ -46,15 +52,20 @@
 #     missing stream included, to snouty's stdout. An event without
 #     `output_text` goes to stderr as raw JSON. stdout carries only output
 #     text, so `snouty runs exec ... | jq` composes.
+#   - Rewarm progress goes to stderr: when stderr is a terminal, a progress
+#     bar that gives way to a `rewarming moment: done` line, and otherwise one
+#     `rewarming moment: N%` line per record. A rewarm that ends early keeps
+#     its last percentage in view (tests/exec_pty.rs covers the terminal).
+#     stdout keeps only the script's output, with or without --events.
 #   - On `exited`, a trailer on stderr documents the branch's end moment, to
 #     chain a follow-up command from.
 #   - `exited` with code 0 is success. Any other terminal state fails snouty
 #     with exit code 1: a non-zero code (reported, not forwarded), a
 #     `timed_out` result, or a stream that ends with no result at all — exit
 #     0 must mean "the script ran and exited 0".
-#   - `--json` passes the NDJSON through with vtimes normalized to exact JSON
-#     numbers (like `runs logs --json`) and no trailer; exit semantics are
-#     unchanged.
+#   - `--json` passes the NDJSON through, progress records included, with
+#     vtimes normalized to exact JSON numbers (like `runs logs --json`) and no
+#     trailer or progress display; exit semantics are unchanged.
 #   - The API is still changing, so snouty is lenient about events: no event
 #     shape fails snouty. Only the last line is read as the result.
 #
@@ -132,20 +143,26 @@ stderr 'command exited without reporting an exit code'
 # snouty reports as a failure. Output produced before the timeout is still
 # shown. The result carries no end moment — its `last_moment` is informational,
 # the command may still be running — so there is no trailer.
-! snouty runs exec run-2 -3625518438076122494 398.4898056755774 'sleep 60'
+! snouty runs exec run-2 -3625518438076122494 398.4898056755774 'sleep 60' --timeout 30
 stdout 'still working'
 stderr 'command timed out after 30s'
 ! stderr 'end moment'
 ! stderr 'rewarm'
 
+# Without --timeout, the server's default applies (600 seconds as of release
+# 64.0), and snouty names --timeout.
+! snouty runs exec run-2 -3625518438076122494 398.4898056755774 'sleep 60'
+stderr 'command timed out after the server.s default timeout'
+stderr 'set a longer timeout with --timeout'
+
 # --timeout is forwarded to the server as timeout_seconds (the mock echoes
-# back the value it received). The default is 30, not the API default of 600,
-# so a script that hangs fails soon.
+# back the value it received). Without it, the request leaves out
+# timeout_seconds, so the server's default applies.
 snouty runs exec run-2 -3625518438076122494 398.4898056755774 print-request --timeout 45
 stdout 'timeout_seconds=45'
 
 snouty runs exec run-2 -3625518438076122494 398.4898056755774 print-request
-stdout 'timeout_seconds=30'
+stdout 'timeout_seconds=absent'
 
 # Without --container, the script executes on the host.
 snouty runs exec run-2 -3625518438076122494 398.4898056755774 print-request
@@ -195,21 +212,48 @@ stdout 'source_run_id=1f1211ea49946d4f63a92d65ee42476d-64-0 source_session_id=ab
 snouty runs exec run-2 -3625518438076122494 398.4898056755774 print-request --source-session-id ba4ebf3181dd342334b86c58941813c6-64-0
 stdout 'source_run_id=absent source_session_id=ba4ebf3181dd342334b86c58941813c6-64-0'
 
-# A cold moment without a source fails with the server's 400
-# (`{"result":"unknown_moment"}`), and snouty points at --source-run-id.
+# A cold moment without a source fails with the server's 400 ("Moment not
+# warm"), and snouty points at --source-run-id.
 ! snouty runs exec run-2 1002528785118888238 278.1311443040613 'true'
 stderr 'Moment not warm'
 stderr 'name the run it comes from with --source-run-id$'
 
+# With a source, snouty prints one rewarm progress line per record on stderr
+# when stderr is not a terminal. stdout keeps only the script's output.
+snouty runs exec run-2 1002528785118888238 278.1311443040613 'uname -a' --source-run-id 1f1211ea49946d4f63a92d65ee42476d-64-0
+stdout 'Linux antithesis 6.12.0'
+! stdout 'rewarming'
+stderr '(?s)rewarming moment: 0%\nrewarming moment: 40%\nrewarming moment: 100%\n'
+stderr 'end moment: -8206006569229276678 398.492'
+! stderr '"status"'
+
+# A stream that ends partway through the rewarm fails, and the last progress
+# line shows how far the rewarm got.
+! snouty runs exec run-2 1002528785118888238 278.1311443040613 truncate-rewarm --source-run-id 1f1211ea49946d4f63a92d65ee42476d-64-0
+stderr 'rewarming moment: 40%\n(?s).*stream ended before the command reported completion'
+! stderr 'rewarming moment: 100%'
+
+# With --events, the progress still goes to stderr, not into the timeline.
+snouty runs exec run-2 1002528785118888238 278.1311443040613 with-system-logs --events --source-run-id 1f1211ea49946d4f63a92d65ee42476d-64-0
+stdout '398.49.* \[bash_command\] script says hi'
+! stdout 'rewarming'
+stderr 'rewarming moment: 100%'
+
+# With --json, the progress records pass through as NDJSON, before the
+# output, and no progress display goes to stderr.
+snouty --json runs exec run-2 1002528785118888238 278.1311443040613 'uname -a' --source-run-id 1f1211ea49946d4f63a92d65ee42476d-64-0
+stdout '(?s)^\{"status":"rewarming","percent_complete":0\}\n.*\{"status":"rewarming","percent_complete":100\}\n\{"moment":.*"output_text":"Linux antithesis 6.12.0"'
+! stderr 'rewarming'
+
 # With a source, a 400 is a rewarm that did not finish (or a source that is
 # not the moment's run). snouty names the flag and --timeout.
-! snouty runs exec run-2 1002528785118888238 278.1311443040613 'true' --source-run-id 1f1211ea49946d4f63a92d65ee42476d-64-0
+! snouty runs exec run-2 1002528785118888238 278.1311443040613 slow-rewarm --source-run-id 1f1211ea49946d4f63a92d65ee42476d-64-0
 stderr 'rewarm did not reach the target moment'
 stderr 'check that --source-run-id names the run the moment comes from, and raise --timeout'
 
 # A timeout with a source says the rewarm counts against --timeout.
 ! snouty runs exec run-2 -3625518438076122494 398.4898056755774 'sleep 60' --source-session-id ba4ebf3181dd342334b86c58941813c6-64-0
-stderr 'command timed out after 30s'
+stderr 'command timed out'
 stderr 'the rewarm counts against --timeout'
 
 # The two flags are mutually exclusive, and an empty ID is rejected before any

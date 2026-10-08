@@ -2473,8 +2473,8 @@ def build_exec_stories(d: Discovery, x: ExecSession) -> list[Story]:
             f"My debugging session started from run {x.base_run}. I want to execute at a "
             "later moment of that run, one that a property reported.",
             "With --source-run-id, the server loads the moment by replaying the run's inputs, "
-            "which can take a while; then the script executes. Exit 0, with the end-moment "
-            "trailer.",
+            "which can take a while, and snouty shows the progress on stderr; then the script "
+            "executes. Exit 0, with the end-moment trailer.",
             [
                 "runs",
                 "exec",

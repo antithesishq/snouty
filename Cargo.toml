@@ -52,6 +52,7 @@ indexmap = { version = "2.10.0" }
 # target wasm (ffi-sqlite-wasm-rs).
 rusqlite = { version = "0.40", default-features = false, features = ["bundled"] }
 console = "0.16"
+indicatif = "0.18"
 tempfile = "3"
 pulldown-cmark = "0.13"
 libc = "0.2"

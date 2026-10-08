@@ -267,6 +267,15 @@ async fn cmd_launch(
 
     params.validate_test_params()?;
 
+    if matches!(launcher.as_str(), "basic_test" | "basic_k8s_test")
+        && !params.contains_key(ANT_CONFIG_IMAGE)
+    {
+        return Err(user_error(format!(
+            "invalid arguments: the {launcher} launcher requires a config image"
+        ))
+        .suggestion("pass --config or --config-image"));
+    }
+
     if let Some((detected, registry, config_image)) = config_image_ref {
         let rt = container::runtime(settings)?;
         container::warn_ambiguous_engine(settings, rt.as_ref(), json);

@@ -3142,7 +3142,9 @@ def build_tty_stories() -> list[Story]:
                 (_ASK_KEY, _FAKE_KEY + ENTER),
             ),
             tty_persisted(
-                prompts=(_ASK_KEY,),
+                # The summary must say that the new key replaced the password. The
+                # screen wraps that long line, so match only the start of the clause.
+                prompts=(_ASK_KEY, ", replacing your stored username"),
                 absent_prompts=(_ASK_CREDENTIALS,),
                 files=((_CREDS, ('type = "ApiKey"', f'api_key = "{_FAKE_KEY}"')),),
                 secrets_absent=(_FAKE_KEY, _FAKE_PASS),

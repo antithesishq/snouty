@@ -214,19 +214,28 @@ fn print_login_summary(
         saved.push_str(&format!(" and repository `{repository}`"));
     }
     println!("\nSaved {saved}{scope} to {}.", settings_path.display());
+    let replaced = match (&credentials, &previous_credentials) {
+        (Some(new), Some(previous)) => replaced_stored_password(new, previous, profile),
+        _ => false,
+    };
+    let replaced = if replaced {
+        ", replacing your stored username and password"
+    } else {
+        ""
+    };
     match credentials {
         Some(AttributedValue::Keychain {
             value: kind,
             entry_name: _,
         }) => {
-            println!("Stored your {kind}{scope} in the system keychain.");
+            println!("Stored your {kind}{scope} in the system keychain{replaced}.");
         }
         Some(AttributedValue::SettingsFile {
             value: kind,
             settings_file_path: path,
             profile: _,
         }) => {
-            println!("Stored your {kind}{scope} in {}.", path.display());
+            println!("Stored your {kind}{scope} in {}{replaced}.", path.display());
         }
         _ => match previous_credentials {
             Some(AttributedValue::Keychain { .. }) => {
@@ -250,6 +259,47 @@ fn print_login_summary(
         },
     }
     println!("Run `snouty doctor` to verify your setup.");
+}
+
+/// Whether storing `new` deleted a username and password that `previous` names,
+/// because a script that still uses it will no longer work. A password from
+/// somewhere else, such as the environment, is still there.
+fn replaced_stored_password(
+    new: &AttributedValue<&str>,
+    previous: &AttributedValue<AuthenticationInfo>,
+    profile: Option<&str>,
+) -> bool {
+    match (new, previous) {
+        (
+            AttributedValue::Keychain { entry_name, .. },
+            AttributedValue::Keychain {
+                value: AuthenticationInfo::Password { .. },
+                entry_name: previous_entry_name,
+            },
+        ) => entry_name == previous_entry_name,
+        // A keychain write also clears the profile from the credentials file.
+        (
+            AttributedValue::Keychain { .. },
+            AttributedValue::SettingsFile {
+                value: AuthenticationInfo::Password { .. },
+                profile: previous_profile,
+                ..
+            },
+        ) => previous_profile.as_deref() == profile,
+        (
+            AttributedValue::SettingsFile {
+                settings_file_path,
+                profile,
+                ..
+            },
+            AttributedValue::SettingsFile {
+                value: AuthenticationInfo::Password { .. },
+                settings_file_path: previous_path,
+                profile: previous_profile,
+            },
+        ) => settings_file_path == previous_path && profile == previous_profile,
+        _ => false,
+    }
 }
 
 fn prompt_for_value(
@@ -799,6 +849,66 @@ mod tests {
     use std::process::Command;
 
     use super::*;
+
+    fn stored_password_in_keychain(entry_name: &str) -> AttributedValue<AuthenticationInfo> {
+        AttributedValue::Keychain {
+            value: AuthenticationInfo::Password {
+                username: "puser".to_owned(),
+                password: "ppass".to_owned(),
+            },
+            entry_name: entry_name.to_owned(),
+        }
+    }
+
+    fn stored_password_in_file(profile: Option<&str>) -> AttributedValue<AuthenticationInfo> {
+        AttributedValue::SettingsFile {
+            value: AuthenticationInfo::Password {
+                username: "puser".to_owned(),
+                password: "ppass".to_owned(),
+            },
+            settings_file_path: "/creds.toml".into(),
+            profile: profile.map(str::to_owned),
+        }
+    }
+
+    fn new_key_in_keychain(entry_name: &str) -> AttributedValue<&'static str> {
+        AttributedValue::Keychain {
+            value: "API key",
+            entry_name: entry_name.to_owned(),
+        }
+    }
+
+    #[test]
+    fn a_keychain_write_replaces_a_password_in_the_same_entry() {
+        let new = new_key_in_keychain("_default_");
+        assert!(replaced_stored_password(
+            &new,
+            &stored_password_in_keychain("_default_"),
+            None
+        ));
+        assert!(!replaced_stored_password(
+            &new,
+            &stored_password_in_keychain("profile_other"),
+            None
+        ));
+    }
+
+    #[test]
+    fn a_keychain_write_replaces_a_password_in_the_file_for_the_same_profile() {
+        // The keychain write clears this profile from the credentials file.
+        let new = new_key_in_keychain("profile_p");
+        assert!(replaced_stored_password(
+            &new,
+            &stored_password_in_file(Some("p")),
+            Some("p")
+        ));
+        // The default section of the file is still there.
+        assert!(!replaced_stored_password(
+            &new,
+            &stored_password_in_file(None),
+            Some("p")
+        ));
+    }
 
     #[test]
     fn secret_hint_shows_a_prefix_and_a_fixed_run_of_stars() {

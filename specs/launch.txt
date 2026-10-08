@@ -70,6 +70,14 @@ stderr 'antithesis\.filter_logs_matching matches the empty string, which would s
 ! snouty launch --launcher basic_test --duration 30 --param antithesis.filter_logs_matching=
 stderr 'antithesis\.filter_logs_matching is empty'
 
+# `antithesis.filter_source_matching` gets the same client-side checks.
+! snouty launch --launcher basic_test --duration 30 --filter-source-matching '('
+stderr 'antithesis\.filter_source_matching is not a valid regular expression.*'
+! snouty launch --launcher basic_test --duration 30 --filter-source-matching '(foo)?'
+stderr 'antithesis\.filter_source_matching matches the empty string, which would suppress the output of every source'
+! snouty launch --launcher basic_test --duration 30 --param antithesis.filter_source_matching=' '
+stderr 'antithesis\.filter_source_matching is empty'
+
 # --performance-tier accepts only the tiers in the vendored OpenAPI spec, and
 #    its help points at --param for any other tier.
 ! snouty launch --launcher basic_test --duration 30 --performance-tier ultra
@@ -251,6 +259,12 @@ mock-server 200 '{"message":"Success","runId":"run-123"}'
 snouty launch --launcher basic_test --config-image config:latest --duration 30 --filter-logs-matching debug
 stderr '"antithesis.duration": "30"'
 stderr '"antithesis.filter_logs_matching": "debug"'
+stdout 'Test run started: run_id run-123'
+
+# --filter-source-matching sends `antithesis.filter_source_matching`.
+mock-server 200 '{"message":"Success","runId":"run-123"}'
+snouty launch --launcher basic_test --config-image config:latest --duration 30 --filter-source-matching '^metrics-agent$'
+stderr '"antithesis.filter_source_matching": "\^metrics-agent\$"'
 stdout 'Test run started: run_id run-123'
 
 # --performance-tier sends `antithesis.performance_tier`.

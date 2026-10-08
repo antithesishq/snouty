@@ -26,6 +26,7 @@ pub const ANT_IS_EPHEMERAL: &str = "antithesis.is_ephemeral";
 pub const ANT_REPORT_RECIPIENTS: &str = "antithesis.report.recipients";
 pub const ANT_EVENT_DESCRIPTION: &str = "antithesis.event_description";
 pub const ANT_FILTER_LOGS_MATCHING: &str = "antithesis.filter_logs_matching";
+pub const ANT_FILTER_SOURCE_MATCHING: &str = "antithesis.filter_source_matching";
 pub const ANT_PERFORMANCE_TIER: &str = "antithesis.performance_tier";
 /// Prefix of the user-defined `attrs.<name>` parameters the server records on a run.
 pub const ATTRS_PREFIX: &str = "attrs.";
@@ -109,12 +110,24 @@ impl Params {
         Ok(Self { inner })
     }
 
-    /// Validate params against the test params schema, then validate the
-    /// `antithesis.filter_logs_matching` pattern. The pattern check runs here
-    /// so no launch path can skip it.
+    /// Validate params against the test params schema and the log filter
+    /// patterns. The pattern check runs here so no launch path can skip it.
+    ///
+    /// The platform checks the patterns only after the run starts,
+    /// so a bad pattern fails the run minutes later. The local check uses the
+    /// `regex` crate, which is close to RE2 but not identical, so it is a
+    /// pre-check only.
     pub fn validate_test_params(&self) -> Result<()> {
         validate_against_def(&self.inner, "testParams")?;
-        self.validate_filter_logs_matching()
+        for (key, suppressed) in [
+            (ANT_FILTER_LOGS_MATCHING, "every log line"),
+            (ANT_FILTER_SOURCE_MATCHING, "the output of every source"),
+        ] {
+            if let Some(value) = self.inner.get(key).and_then(Value::as_str) {
+                validate_filter_pattern(key, value, suppressed)?;
+            }
+        }
+        Ok(())
     }
 
     /// Validate params against the debugging params schema.
@@ -140,41 +153,6 @@ impl Params {
                 .note(format!("{key} = {value}"))
         })?;
         self.insert(key, vtime.to_string());
-        Ok(())
-    }
-
-    /// Validate `antithesis.filter_logs_matching` before launch.
-    ///
-    /// The platform validates this pattern only after the run has started, so
-    /// a bad value becomes a failed run minutes later, not a launch error.
-    /// The byte limit exists because the guest copies the pattern into a
-    /// 1024-byte buffer including the NUL terminator. The platform matches
-    /// with RE2; the `regex` crate is close but not identical, so the local
-    /// compile is a pre-check, not the authority.
-    fn validate_filter_logs_matching(&self) -> Result<()> {
-        let key = ANT_FILTER_LOGS_MATCHING;
-        let Some(value) = self.inner.get(key).and_then(Value::as_str) else {
-            return Ok(());
-        };
-
-        if value.trim().is_empty() {
-            return Err(user_error(format!("{key} is empty"))
-                .note("the platform skips log filtering for an empty pattern")
-                .suggestion("provide a pattern or drop the flag"));
-        }
-        if value.len() > 1023 {
-            return Err(user_error(format!(
-                "{key} is too long: {} bytes (max 1023)",
-                value.len()
-            )));
-        }
-        let re = regex::Regex::new(value)
-            .map_err(|err| user_error(format!("{key} is not a valid regular expression: {err}")))?;
-        if re.is_match("") {
-            return Err(user_error(format!(
-                "{key} matches the empty string, which would suppress every log line"
-            )));
-        }
         Ok(())
     }
 
@@ -243,6 +221,34 @@ impl Params {
 
 fn is_sensitive_key(key: &str) -> bool {
     key.ends_with(".token") || key == ANT_REPORT_RECIPIENTS
+}
+
+/// The platform compiles each filter pattern into a 1024-byte buffer
+/// including the NUL terminator.
+const MAX_FILTER_PATTERN_BYTES: usize = 1023;
+
+/// `suppressed` names the output that an empty-string match suppresses, for
+/// the error message.
+fn validate_filter_pattern(key: &str, value: &str, suppressed: &str) -> Result<()> {
+    if value.trim().is_empty() {
+        return Err(user_error(format!("{key} is empty"))
+            .note("the platform skips filtering for an empty pattern")
+            .suggestion("provide a pattern or drop the flag"));
+    }
+    if value.len() > MAX_FILTER_PATTERN_BYTES {
+        return Err(user_error(format!(
+            "{key} is too long: {} bytes (max {MAX_FILTER_PATTERN_BYTES})",
+            value.len()
+        )));
+    }
+    let re = regex::Regex::new(value)
+        .map_err(|err| user_error(format!("{key} is not a valid regular expression: {err}")))?;
+    if re.is_match("") {
+        return Err(user_error(format!(
+            "{key} matches the empty string, which would suppress {suppressed}"
+        )));
+    }
+    Ok(())
 }
 
 fn validate_against_def(params: &Map<String, Value>, def_name: &str) -> Result<()> {
@@ -423,7 +429,7 @@ mod tests {
     }
 
     #[test]
-    fn validate_test_params_checks_the_filter_pattern() {
+    fn validate_test_params_checks_the_filter_patterns() {
         let params = Params::from_key_value_pairs([
             "antithesis.duration=30",
             "antithesis.filter_logs_matching=x*",
@@ -817,14 +823,11 @@ mod tests {
     }
 
     fn validate_filter(pattern: &str) -> Result<()> {
-        let mut params = Params::new();
-        params.insert(ANT_FILTER_LOGS_MATCHING, pattern);
-        params.validate_filter_logs_matching()
+        validate_filter_pattern(ANT_FILTER_LOGS_MATCHING, pattern, "every log line")
     }
 
     #[test]
-    fn validate_filter_logs_matching_accepts_valid_patterns() {
-        assert!(Params::new().validate_filter_logs_matching().is_ok());
+    fn validate_filter_pattern_accepts_valid_patterns() {
         for pattern in ["debug", "(?i)error", "panic|fatal"] {
             assert!(
                 validate_filter(pattern).is_ok(),
@@ -834,7 +837,7 @@ mod tests {
     }
 
     #[test]
-    fn validate_filter_logs_matching_rejects_a_blank_pattern() {
+    fn validate_filter_pattern_rejects_a_blank_pattern() {
         for pattern in ["", "  "] {
             let err = validate_filter(pattern).unwrap_err();
             assert!(
@@ -845,8 +848,8 @@ mod tests {
     }
 
     #[test]
-    fn validate_filter_logs_matching_limits_bytes_not_chars() {
-        // The guest buffer is 1024 bytes including the NUL terminator, so the
+    fn validate_filter_pattern_limits_bytes_not_chars() {
+        // The buffer is 1024 bytes including the NUL terminator, so the
         // limit is 1023 *bytes*: 512 two-byte chars (1024 bytes) must fail
         // even though the char count is far below the limit.
         let err = validate_filter(&"é".repeat(512)).unwrap_err();
@@ -859,7 +862,7 @@ mod tests {
     }
 
     #[test]
-    fn validate_filter_logs_matching_rejects_an_invalid_regex() {
+    fn validate_filter_pattern_rejects_an_invalid_regex() {
         let err = validate_filter("(").unwrap_err();
         assert!(
             err.to_string()
@@ -869,7 +872,7 @@ mod tests {
     }
 
     #[test]
-    fn validate_filter_logs_matching_rejects_an_empty_string_match() {
+    fn validate_filter_pattern_rejects_an_empty_string_match() {
         // These compile fine and then suppress every log line.
         for pattern in ["x*", "(foo)?"] {
             let err = validate_filter(pattern).unwrap_err();
@@ -885,9 +888,7 @@ mod tests {
     #[hegel::test]
     fn filter_validation_never_panics(tc: hegel::TestCase) {
         let pattern = tc.draw(generators::text());
-        let mut params = Params::new();
-        params.insert(ANT_FILTER_LOGS_MATCHING, pattern);
-        let _ = params.validate_filter_logs_matching();
+        let _ = validate_filter(&pattern);
     }
 
     #[test]

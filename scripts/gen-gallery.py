@@ -997,22 +997,34 @@ def _live_session(sn: Snouty) -> dict | None:
 
 
 def _launch_session(sn: Snouty, base_run: str) -> tuple[dict, Result]:
-    """Launch a debugging session at the setup-complete moment of `base_run`.
-    Returns the session's `runs list` row and the launch's output."""
-    # Match the SDK's setup event; workload log text is not a reliable marker.
-    setup = sn.json_lines(
-        [
-            "runs",
-            "search",
-            base_run,
+    """Launch a debugging session at a moment just after `base_run` completes
+    setup. Returns the session's `runs list` row and the launch's output."""
+    # Match system events; workload log text is not a reliable marker. A run
+    # whose setup ends without the SDK's setup-complete call (e.g. a Kubernetes
+    # run) has no setup event, so try the next early events in turn. Each event
+    # occurs on many branches, and any match is a moment after setup.
+    events = [
+        (
+            "the SDK setup-complete event",
             'filter(ev => ev.antithesis_setup && ev.antithesis_setup.status == "complete")',
-            "-n",
-            "1",
-        ]
-    )
-    if not setup:
-        raise GalleryError(f"{base_run} has no setup-complete event to debug from")
-    h, v = _moment_strs(setup[0]["moment"])
+        ),
+        (
+            "the test composer's first_randomizer_new_input event",
+            'filter(ev => ev.composer_lifecycle == "first_randomizer_new_input")',
+        ),
+        (
+            "the fault injector's unpause event",
+            'filter(ev => ev.source && ev.source.name == "fault_injector" && ev.info'
+            ' && ev.info.message == "status" && ev.info.details && ev.info.details.paused == false)',
+        ),
+    ]
+    for _, query in events:
+        if found := sn.json_lines(["runs", "search", base_run, query, "-n", "1"]):
+            break
+    else:
+        tried = "; ".join(name for name, _ in events)
+        raise GalleryError(f"{base_run} has no post-setup event to debug from (tried {tried})")
+    h, v = _moment_strs(found[0]["moment"])
     # A unique description finds the new session in `runs list` without
     # parsing the launch's human-facing output.
     description = f"{EXEC_SESSION_DESCRIPTION} {datetime.now().isoformat()}"

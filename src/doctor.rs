@@ -132,7 +132,22 @@ impl Check {
     }
 
     fn print(&self) {
-        eprintln!("  {} {}", status_icon(self.status), self.message);
+        // A long headline wraps like a note, hung under its text after the
+        // `  ✓ ` prefix.
+        let hang = 4;
+        let lines = match crate::render::prose_width() {
+            Some(width) => crate::render::wrap_text(&self.message, width.saturating_sub(hang)),
+            None => vec![self.message.clone()],
+        };
+        let mut lines = lines.iter();
+        eprintln!(
+            "  {} {}",
+            status_icon(self.status),
+            lines.next().map_or("", |l| l.as_str())
+        );
+        for line in lines {
+            eprintln!("{:hang$}{line}", "");
+        }
         print_notes(&self.notes);
     }
 }
@@ -274,30 +289,9 @@ fn authn_checks(sources: &[AttributedValue<AuthenticationInfo>]) -> Vec<Check> {
                 credentials,
             )]
         }
-        AuthenticationInfo::Password { username, .. } => vec![
-            with_credential_remedy(
-                Check::warn(
-                    CREDENTIALS_CHECK_NAME,
-                    "No credentials the API commands accept",
-                )
-                .note(
-                    Level::Warning,
-                    "`snouty runs` and other API commands refuse username/password",
-                ),
-            ),
-            enrich_with_origin(
-                Check::ok(
-                    "basic_auth",
-                    format!("Using password credentials for user [{username}]"),
-                )
-                .note(Level::Warning, crate::auth::PASSWORD_DEPRECATION_SUGGESTION)
-                .note(
-                    Level::Note,
-                    "username/password only enables `snouty launch` and `snouty debug`",
-                ),
-                credentials,
-            ),
-        ],
+        AuthenticationInfo::Password { username, .. } => {
+            vec![password_only_check(credentials, username)]
+        }
     };
 
     checks.extend(shadowed_credentials_check(credentials, shadowed));
@@ -358,6 +352,45 @@ fn hidden_credential_check(
             describe_origin(hidden)
         ),
     )
+}
+
+/// The single check for a username and password with no credential the API
+/// accepts behind them. It replaces the shortfall and password checks, which
+/// together suggested `snouty login` twice. The next step depends on the
+/// origin: `snouty login` replaces a stored password, but an exported one
+/// still hides the new credential until the user unsets it.
+fn password_only_check(in_use: &AttributedValue<AuthenticationInfo>, username: &str) -> Check {
+    let next_step = match in_use {
+        AttributedValue::EnvironmentVariable { .. } => format!(
+            "run `snouty login` to store an API key, then {}",
+            drop_action(in_use)
+        ),
+        AttributedValue::SettingsFile { profile, .. } => login_to_replace(profile.as_deref()),
+        AttributedValue::Keychain { entry_name, .. } => {
+            login_to_replace(entry_name.strip_prefix("profile_"))
+        }
+    };
+    enrich_with_origin(
+        Check::warn(
+            CREDENTIALS_CHECK_NAME,
+            format!(
+                "username/password for user [{username}] only works for `snouty launch` and `snouty debug`"
+            ),
+        )
+        .note(
+            Level::Warning,
+            "username/password is deprecated, and `snouty runs` and other API commands refuse it",
+        ),
+        in_use,
+    )
+    .note(Level::Note, next_step)
+}
+
+/// The next step for a stored password. A bare `snouty login` writes the
+/// default profile, so a named profile is passed on.
+fn login_to_replace(profile: Option<&str>) -> String {
+    let flag = profile.map_or(String::new(), |p| format!(" --profile {p}"));
+    format!("run `snouty login{flag}` to replace it with an API key")
 }
 
 /// A warning, not a failure: snouty is authenticated, just not with the
@@ -828,42 +861,91 @@ mod tests {
         assert!(!note(None).contains('"'), "the path must not be quoted");
     }
 
+    /// Only a username and password: one warning, whose next step depends on
+    /// where they came from.
     #[test]
-    fn auth_password_warns_on_credentials_and_notes_deprecation() {
-        let checks = authn_checks(&[AttributedValue::EnvironmentVariable {
+    fn a_password_alone_is_one_check_with_one_next_step() {
+        let notes = |source: AttributedValue<AuthenticationInfo>| {
+            let checks = authn_checks(&[source]);
+            assert_eq!(
+                checks.len(),
+                1,
+                "got: {:?}",
+                checks.iter().map(|c| c.name).collect::<Vec<_>>()
+            );
+            let check = &checks[0];
+            assert_eq!(check.name, CREDENTIALS_CHECK_NAME);
+            assert_eq!(check.status, Status::Warn);
+            assert_eq!(
+                check.message,
+                "username/password for user [user] only works for `snouty launch` and `snouty debug`"
+            );
+            check
+                .notes
+                .iter()
+                .map(|n| (n.level, n.text.clone()))
+                .collect::<Vec<_>>()
+        };
+        let deprecated = (
+            Level::Warning,
+            "username/password is deprecated, and `snouty runs` and other API commands refuse it"
+                .to_owned(),
+        );
+        assert_eq!(
+            notes(env_password_source()),
+            [
+                deprecated.clone(),
+                (
+                    Level::Note,
+                    "read from the `ANTITHESIS_USERNAME` and `ANTITHESIS_PASSWORD` \
+                    environment variables"
+                        .to_owned()
+                ),
+                (
+                    Level::Note,
+                    "run `snouty login` to store an API key, then \
+                    `unset ANTITHESIS_USERNAME ANTITHESIS_PASSWORD`"
+                        .to_owned()
+                ),
+            ]
+        );
+        assert_eq!(
+            notes(AttributedValue::SettingsFile {
+                value: AuthenticationInfo::Password {
+                    username: "user".to_owned(),
+                    password: "pass".to_owned(),
+                },
+                settings_file_path: std::path::PathBuf::from("/tmp/credentials.toml"),
+                profile: None,
+            }),
+            [
+                deprecated,
+                (
+                    Level::Note,
+                    "read from the [default] profile in /tmp/credentials.toml".to_owned()
+                ),
+                (
+                    Level::Note,
+                    "run `snouty login` to replace it with an API key".to_owned()
+                ),
+            ]
+        );
+        // A bare `snouty login` writes the default profile, so the next step
+        // names the profile that holds the password.
+        let keychain = notes(AttributedValue::Keychain {
             value: AuthenticationInfo::Password {
                 username: "user".to_owned(),
                 password: "pass".to_owned(),
             },
-            environment_variable_names: vec![USERNAME_VAR_NAME, PASSWORD_VAR_NAME],
-        }]);
-        assert_eq!(checks.len(), 2);
-        assert_eq!(checks[0].status, Status::Warn);
-        assert_eq!(checks[0].name, CREDENTIALS_CHECK_NAME);
-        assert!(checks[0].message.contains("No credentials"));
-        // The remedy must name `snouty login` too, not an API key alone.
-        assert!(
-            checks[0]
-                .notes
-                .iter()
-                .any(|n| n.text.contains("snouty login"))
+            entry_name: "profile_prod".to_owned(),
+        });
+        assert_eq!(
+            keychain.last().unwrap(),
+            &(
+                Level::Note,
+                "run `snouty login --profile prod` to replace it with an API key".to_owned()
+            )
         );
-        assert!(checks[0].notes.iter().any(|n| n.level == Level::Warning));
-        assert!(
-            checks[0]
-                .notes
-                .iter()
-                .any(|n| n.text.contains("ask Antithesis support"))
-        );
-        assert_eq!(checks[1].status, Status::Ok);
-        assert_eq!(checks[1].notes.len(), 3);
-        assert!(checks[1].notes.iter().any(|n| n.level == Level::Warning
-            && n.text.contains("deprecated")
-            && n.text.contains("snouty login")));
-        // The deprecated creds steer the user to the only commands they unlock.
-        assert!(checks[1].notes.iter().any(|n| n.level == Level::Note
-            && n.text.contains("snouty launch")
-            && n.text.contains("snouty debug")));
     }
 
     #[test]

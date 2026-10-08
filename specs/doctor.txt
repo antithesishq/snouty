@@ -26,16 +26,20 @@ stdout '.*"name": "credentials".*'
 stdout '.*"status": "error".*'
 stdout '.*"level": "error".*'
 
-# With only username/password set, the credential shortfall downgrades to a
-# warning and the deprecated creds are flagged as launch/debug-only.
+# With only username/password set, doctor reports one warning: the deprecated
+# credentials work only for launch and debug. Exported credentials still hide
+# whatever `snouty login` stores, so the next step also unsets them. (doctor
+# fails here only because no tenant is set.)
 env ANTITHESIS_USERNAME=testuser
 env ANTITHESIS_PASSWORD=testpass
 ! snouty doctor
-stderr '.*Using password credentials for user \[testuser\].*'
-stderr '.*deprecated.*'
-stderr '.*snouty login.*'
-stderr '.*snouty launch.*'
-stderr '.*ANTITHESIS_PASSWORD.*'
+stderr '^  ⚠ username/password for user \[testuser\] only works for `snouty launch` and `snouty debug`$'
+stderr '^      WARNING: username/password is deprecated, and `snouty runs` and other API commands refuse it$'
+stderr '^      NOTE: read from the `ANTITHESIS_USERNAME` and `ANTITHESIS_PASSWORD` environment variables$'
+stderr '^      NOTE: run `snouty login` to store an API key, then `unset ANTITHESIS_USERNAME ANTITHESIS_PASSWORD`$'
+! stderr 'Using password credentials'
+! stderr 'No credentials the API commands accept'
+! stderr 'snouty login. to sign in'
 # One source only, so doctor says nothing about a conflict.
 ! stderr '.*more than one credential source.*'
 
@@ -130,6 +134,31 @@ stdout '"text": "`unset ANTITHESIS_USERNAME ANTITHESIS_PASSWORD` to use the API 
 ! stdout '"name": "basic_auth"'
 ! stdout 'spec-stored-key|testpass'
 
+# A username and password stored in the credentials file: `snouty login`
+# replaces them, so it is the only next step. A warning does not fail doctor.
+isolate-home stored_password
+env ANTITHESIS_API_KEY=
+env ANTITHESIS_USERNAME=
+env ANTITHESIS_PASSWORD=
+env ANTITHESIS_TENANT=testtenant
+snouty doctor
+stderr '^  ⚠ username/password for user \[storeduser\] only works for `snouty launch` and `snouty debug`$'
+stderr '^      NOTE: read from the \[default\] profile in .+credentials\.toml$'
+stderr '^      NOTE: run `snouty login` to replace it with an API key$'
+! stderr 'unset ANTITHESIS'
+! stderr 'Using password credentials'
+
+snouty doctor --json
+stdout '"name": "credentials",\s*"status": "warn"'
+! stdout '"name": "basic_auth"'
+! stdout 'stored-pass'
+
+# A bare `snouty login` writes the default profile, so for a password stored
+# under a named profile the next step names that profile.
+snouty --profile prod doctor
+stderr '^      NOTE: read from the \[prod\] profile in .+credentials\.toml$'
+stderr '^      NOTE: run `snouty login --profile prod` to replace it with an API key$'
+
 # A credentials file snouty cannot parse sits behind the exported API key. No
 # command reads that far, so doctor reports the key it uses and stays green
 # rather than failing on a file that stops nothing. `--offline` is needed here:
@@ -147,6 +176,17 @@ stderr '.*API key provided.*'
 [default]
 type = "ApiKey"
 api_key = "spec-stored-key"
+
+-- stored_password/.config/snouty/credentials.toml --
+[default]
+type = "Password"
+username = "storeduser"
+password = "stored-pass"
+
+[profile.prod]
+type = "Password"
+username = "prod-user"
+password = "stored-pass"
 
 -- broken_credentials/.config/snouty/credentials.toml --
 this is not valid TOML {{{

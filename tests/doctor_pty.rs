@@ -54,7 +54,7 @@ fn long_notes_wrap_under_their_text() {
     }
     let warning = lines
         .iter()
-        .position(|line| line.contains("WARNING: username/password authentication is deprecated"))
+        .position(|line| line.contains("WARNING: username/password is deprecated"))
         .unwrap_or_else(|| panic!("no deprecation warning in:\n{screen}"));
     // `      WARNING: ` is 15 columns: the continuation starts under the text.
     let hang = " ".repeat(15);
@@ -64,7 +64,18 @@ fn long_notes_wrap_under_their_text() {
         "continuation not hung under the text: {continuation:?}\n{screen}"
     );
     assert!(
-        screen.contains("authentication method"),
+        screen.contains("commands refuse it"),
         "a word was split across lines:\n{screen}"
+    );
+    // The headline is also too long for the terminal, and wraps the same way
+    // after its `  ⚠ ` prefix.
+    let headline = lines
+        .iter()
+        .position(|line| line.contains("⚠ username/password for user [pty-user]"))
+        .unwrap_or_else(|| panic!("no password headline in:\n{screen}"));
+    let continuation = lines[headline + 1];
+    assert!(
+        continuation.starts_with("    ") && !continuation[4..].starts_with(' '),
+        "headline continuation not hung under the text: {continuation:?}\n{screen}"
     );
 }

@@ -98,10 +98,12 @@ impl<'a> Event<'a> for Chatter<'a> {
                 block.detail_line(format_args!("{}={rendered}", sanitize(key)))?;
             }
         } else {
+            let container_id = self.0.get("container_id").and_then(Value::as_str);
             let line = DisplayWith(|f: &mut fmt::Formatter<'_>| {
                 write!(f, "composer")?;
                 for (key, rendered) in payload_pairs(self.0) {
-                    write!(f, " {}={}", sanitize(key), shorten(key, &rendered))?;
+                    let shown = shorten(key, &rendered, container_id);
+                    write!(f, " {}={shown}", sanitize(key))?;
                 }
                 Ok(())
             });
@@ -111,12 +113,27 @@ impl<'a> Event<'a> for Chatter<'a> {
     }
 }
 
-/// Shortens one chatter value for the one-line form. A `command` is a path,
-/// and its end tells the commands apart, so it keeps the end. A `weight` is
-/// a probability, so three decimals are sufficient.
-fn shorten<'a>(key: &str, rendered: &'a str) -> Cow<'a, str> {
+/// `docker ps` shows this many characters of a container id.
+const CONTAINER_ID_WIDTH: usize = 12;
+
+/// Shortens one chatter value for the one-line form. A path keeps its end,
+/// because the script name tells the commands apart. A container id keeps
+/// its start, as `docker ps` does. A `new_command` is the record's container
+/// id, `_`, and the script name, so it drops the id. A `weight` is a
+/// probability, so three decimals are sufficient.
+fn shorten<'a>(key: &str, rendered: &'a str, container_id: Option<&str>) -> Cow<'a, str> {
     match key {
-        "command" => truncate_start(rendered, VALUE_TRUNCATE_WIDTH, "…"),
+        "command" | "removed_command" | "new_command_path" => {
+            truncate_path(rendered, VALUE_TRUNCATE_WIDTH)
+        }
+        "container_id" => console::truncate_str(rendered, CONTAINER_ID_WIDTH, ""),
+        "new_command" => match container_id
+            .and_then(|id| rendered.strip_prefix(id))
+            .and_then(|rest| rest.strip_prefix('_'))
+        {
+            Some(script) if !script.is_empty() => truncate_path(script, VALUE_TRUNCATE_WIDTH),
+            _ => console::truncate_str(rendered, VALUE_TRUNCATE_WIDTH, "…"),
+        },
         "weight" => match rendered.parse::<f64>() {
             Ok(weight) if weight.is_finite() => format!("{weight:.3}").into(),
             _ => console::truncate_str(rendered, VALUE_TRUNCATE_WIDTH, "…"),
@@ -125,28 +142,31 @@ fn shorten<'a>(key: &str, rendered: &'a str) -> Cow<'a, str> {
     }
 }
 
-/// The mirror of `console::truncate_str`: keeps the end of `s` and puts
-/// `head` in front, so that the result is at most `width` columns wide.
-fn truncate_start<'a>(s: &'a str, width: usize, head: &str) -> Cow<'a, str> {
-    if console::measure_text_width(s) <= width {
-        return s.into();
+/// Shortens a path that is wider than `width` to `…` and its final segment,
+/// such as `…/check.py`, so that each cut path has the same form. When the
+/// final segment does not fit, the result keeps the end of it.
+fn truncate_path(path: &str, width: usize) -> Cow<'_, str> {
+    const HEAD: &str = "…";
+    if console::measure_text_width(path) <= width {
+        return path.into();
     }
-    let budget = width.saturating_sub(console::measure_text_width(head));
+    let budget = width.saturating_sub(console::measure_text_width(HEAD));
+    let tail = path.rfind('/').map_or(path, |slash| &path[slash..]);
     let mut used = 0;
-    let mut start = s.len();
-    for (index, c) in s.char_indices().rev() {
+    let mut start = tail.len();
+    for (index, c) in tail.char_indices().rev() {
         used += console::measure_text_width(c.encode_utf8(&mut [0; 4]));
         if used > budget {
             break;
         }
         start = index;
     }
-    format!("{head}{}", &s[start..]).into()
+    format!("{HEAD}{}", &tail[start..]).into()
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{VALUE_TRUNCATE_WIDTH, truncate_start};
+    use super::{VALUE_TRUNCATE_WIDTH, truncate_path};
     use crate::event_render::format_value;
     use crate::event_render::testkit::*;
     use serde_json::{Value, json};
@@ -227,11 +247,8 @@ mod tests {
             block.contains("composer new_command_path=git_walk/anytime_invariants"),
             "got: {block}"
         );
-        // The 64-hex container id is truncated for the eye.
-        assert!(
-            block.contains("container_id=22453394531ae33a6df72b8119fb9fd8338f885…"),
-            "got: {block}"
-        );
+        // The 64-hex container id keeps 12 characters, as `docker ps` does.
+        assert!(block.ends_with("container_id=22453394531a"), "got: {block}");
 
         // --detail: one pair per line, untruncated.
         let block = render_one_detailed(entry);
@@ -261,11 +278,11 @@ mod tests {
         };
         let long = "/opt/antithesis/test/v1/wellnest/parallel_driver_check_ins.py";
 
-        // The wire form is a string; a long command keeps its end.
+        // The wire form is a string; a long command keeps its final segment.
         let block = render_one(chatter(json!("0.037937902697115555"), long));
         assert!(
             block.ends_with(
-                "composer weight_type=configured weight=0.038 command=…1/wellnest/parallel_driver_check_ins.py"
+                "composer weight_type=configured weight=0.038 command=…/parallel_driver_check_ins.py"
             ),
             "got: {block}"
         );
@@ -299,16 +316,105 @@ mod tests {
         );
     }
 
-    /// For any text, the start-truncated form fits the width, and keeps the
-    /// end of the input after the `…` marker.
+    #[test]
+    fn composer_paths_keep_the_script_name_and_new_command_drops_the_container_id() {
+        let id = "89e64f6a3e9f09e966b298ba707d46ee2bc3f8c8624ac7fc0c498afc66253642";
+        let chatter = |pairs: Value| {
+            let mut entry = pairs;
+            entry["source"] = json!({"name": "antithesis_test_composer"});
+            entry["moment"] = json!({"input_hash": "-1", "vtime": "15.7"});
+            entry
+        };
+
+        // Shapes observed in run cf98800188c5d337790acd0a0e00e9d1-64-0.
+        let block = render_one(chatter(json!({
+            "removed_command": "/opt/antithesis/test/v1/wellnest/parallel_driver_journal.py"
+        })));
+        assert!(
+            block.ends_with("composer removed_command=…/parallel_driver_journal.py"),
+            "got: {block}"
+        );
+        let block = render_one(chatter(json!({
+            "new_command_path": "wellnest/parallel_driver_check_ins.py",
+            "container_id": id,
+            "new_command": format!("{id}_parallel_driver_check_ins.py"),
+        })));
+        assert!(
+            block.ends_with(
+                "composer new_command_path=wellnest/parallel_driver_check_ins.py \
+                 container_id=89e64f6a3e9f new_command=parallel_driver_check_ins.py"
+            ),
+            "got: {block}"
+        );
+
+        // The script after the id is cut as a path.
+        let block = render_one(chatter(json!({
+            "container_id": id,
+            "new_command": format!("{id}_/opt/antithesis/test/v1/wellnest/parallel_driver_journal.py"),
+        })));
+        assert!(
+            block.ends_with("new_command=…/parallel_driver_journal.py"),
+            "got: {block}"
+        );
+
+        // A new_command without the record's container id in front is
+        // truncated as other values are.
+        let other = "0123456789abcdef0123456789abcdef0123456789abcdef_x.py";
+        let block = render_one(chatter(json!({"container_id": id, "new_command": other})));
+        assert!(
+            block.ends_with(&format!("new_command={}…", &other[..39])),
+            "got: {block}"
+        );
+
+        // A final segment wider than the budget keeps its end.
+        let name = format!("{}.py", "n".repeat(50));
+        let block = render_one(chatter(json!({"command": format!("/opt/t/{name}")})));
+        assert!(
+            block.ends_with(&format!("command=…{}", &name[name.len() - 39..])),
+            "got: {block}"
+        );
+
+        // --detail: full values.
+        let block = render_one_detailed(chatter(json!({
+            "container_id": id,
+            "new_command": format!("{id}_parallel_driver_check_ins.py"),
+        })));
+        assert!(
+            block.contains(&format!("\n                    container_id={id}\n")),
+            "got: {block}"
+        );
+        assert!(
+            block.ends_with(&format!(
+                "\n                    new_command={id}_parallel_driver_check_ins.py"
+            )),
+            "got: {block}"
+        );
+    }
+
+    /// For any path, the cut form fits the width and keeps the end of the
+    /// input. It starts at the final `/` when that segment fits, and else
+    /// holds no `/`.
     #[hegel::test]
-    fn truncate_start_fits_and_keeps_the_end(tc: hegel::TestCase) {
-        let s = tc.draw(hegel::generators::text());
-        let out = truncate_start(&s, VALUE_TRUNCATE_WIDTH, "…");
+    fn truncate_path_fits_and_keeps_the_final_segment(tc: hegel::TestCase) {
+        let segments = tc.draw(hegel::generators::integers::<usize>().max_value(6));
+        let s = (0..segments)
+            .map(|_| tc.draw(hegel::generators::text()))
+            .collect::<Vec<_>>()
+            .join("/");
+        let out = truncate_path(&s, VALUE_TRUNCATE_WIDTH);
         assert!(console::measure_text_width(&out) <= VALUE_TRUNCATE_WIDTH);
-        match out.strip_prefix('…') {
-            Some(kept) if out != s => assert!(s.ends_with(kept)),
-            _ => assert_eq!(out, s),
+        if out == s {
+            assert!(console::measure_text_width(&s) <= VALUE_TRUNCATE_WIDTH);
+            return;
+        }
+        let kept = out.strip_prefix('…').expect("a cut path starts with `…`");
+        assert!(s.ends_with(kept));
+        let tail = s.rfind('/').map(|slash| &s[slash..]);
+        match tail {
+            Some(tail) if console::measure_text_width(tail) < VALUE_TRUNCATE_WIDTH => {
+                assert_eq!(kept, tail);
+            }
+            _ => assert!(!kept.contains('/')),
         }
     }
 

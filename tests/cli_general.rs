@@ -123,6 +123,8 @@ fn launch_with_ephemeral_flag() {
             "launch",
             "--launcher",
             "basic_test",
+            "--config-image",
+            "config:latest",
             "--duration",
             "30",
             "--ephemeral",
@@ -139,7 +141,15 @@ fn launch_without_source_sets_ephemeral() {
     let mock_url = start_mock_server(r#"{"runId":"run-123","statusCode":200}"#, 200);
 
     snouty_with_mock(&mock_url)
-        .args(["launch", "--launcher", "basic_test", "--duration", "30"])
+        .args([
+            "launch",
+            "--launcher",
+            "basic_test",
+            "--config-image",
+            "config:latest",
+            "--duration",
+            "30",
+        ])
         .assert()
         .success()
         .stderr(predicate::str::contains(
@@ -159,6 +169,8 @@ fn launch_with_source_omits_ephemeral() {
             "launch",
             "--launcher",
             "basic_test",
+            "--config-image",
+            "config:latest",
             "--duration",
             "30",
             "--source",
@@ -179,6 +191,8 @@ fn launch_with_param_flag() {
             "launch",
             "--launcher",
             "basic_test",
+            "--config-image",
+            "config:latest",
             "--duration",
             "30",
             "--param",
@@ -231,7 +245,15 @@ fn launch_duration_accepts_fractional() {
 
     // Fractional minutes are kept for backwards compatibility (0.05 -> 3s).
     snouty_with_mock(&mock_url)
-        .args(["launch", "--launcher", "basic_test", "--duration", "0.05"])
+        .args([
+            "launch",
+            "--launcher",
+            "basic_test",
+            "--config-image",
+            "config:latest",
+            "--duration",
+            "0.05",
+        ])
         .assert()
         .success()
         .stderr(predicate::str::contains(r#""antithesis.duration": "0.05""#));
@@ -243,7 +265,15 @@ fn launch_duration_accepts_unit_suffixes() {
 
     // 1h30m is sent to the API as a bare 90 minutes.
     snouty_with_mock(&mock_url)
-        .args(["launch", "--launcher", "basic_test", "--duration", "1h30m"])
+        .args([
+            "launch",
+            "--launcher",
+            "basic_test",
+            "--config-image",
+            "config:latest",
+            "--duration",
+            "1h30m",
+        ])
         .assert()
         .success()
         .stderr(predicate::str::contains(r#""antithesis.duration": "90""#));
@@ -316,7 +346,15 @@ fn launch_reports_api_errors() {
 #[test]
 fn launch_fails_without_credentials() {
     snouty()
-        .args(["launch", "--launcher", "basic_test", "--duration", "30"])
+        .args([
+            "launch",
+            "--launcher",
+            "basic_test",
+            "--config-image",
+            "config:latest",
+            "--duration",
+            "30",
+        ])
         .assert()
         .failure()
         .stderr(predicate::str::contains("No Antithesis credentials found"));
@@ -327,7 +365,15 @@ fn run_prints_deprecation_warning() {
     let mock_url = start_mock_server(r#"{"runId":"run-123","statusCode":200}"#, 200);
 
     snouty_with_mock(&mock_url)
-        .args(["run", "--launcher", "basic_test", "--duration", "30"])
+        .args([
+            "run",
+            "--launcher",
+            "basic_test",
+            "--config-image",
+            "config:latest",
+            "--duration",
+            "30",
+        ])
         .assert()
         .success()
         .stderr(predicate::str::contains(

@@ -267,6 +267,22 @@ async fn cmd_launch(
 
     params.validate_test_params()?;
 
+    if !params.contains_key(ANT_CONFIG_IMAGE) {
+        if launcher.requires_config_image() {
+            return Err(user_error(format!(
+                "invalid arguments: the {launcher} launcher requires a config image"
+            ))
+            .suggestion(
+                "pass --config with a local config directory, or --config-image with a \
+                 pre-built image",
+            ));
+        }
+        eprintln!(
+            "warning: no config image given. If the {launcher} launcher requires one, \
+             pass --config or --config-image."
+        );
+    }
+
     if let Some((detected, registry, config_image)) = config_image_ref {
         let rt = container::runtime(settings)?;
         container::warn_ambiguous_engine(settings, rt.as_ref(), json);
@@ -307,7 +323,7 @@ async fn cmd_launch(
         );
     }
 
-    let response = submit_launch(&launcher, params, settings, verbose).await?;
+    let response = submit_launch(&launcher.to_string(), params, settings, verbose).await?;
 
     if json {
         println!("{}", serde_json::to_string_pretty(&response)?);

@@ -86,10 +86,21 @@ stderr 'unexpected argument.*'
 # Old-style raw --antithesis.* args are not accepted by `launch`.
 ! snouty launch --launcher basic_test --antithesis.duration 30
 
+# The basic_test and basic_k8s_test launchers need a config image. Without
+#    --config, --config-image, or --param antithesis.config_image, the command
+#    fails before any API call and names the flags that supply one.
+! snouty launch --launcher basic_test --duration 30
+stderr 'the basic_test launcher requires a config image'
+stderr 'pass --config with a local config directory, or --config-image with a pre-built image'
+! snouty launch --launcher basic_k8s_test --duration 30
+stderr 'the basic_k8s_test launcher requires a config image'
+! snouty launch --duration 30
+stderr 'the basic_test launcher requires a config image'
+
 # The command authenticates with the Antithesis API using either
 #    ANTITHESIS_API_KEY and ANTITHESIS_TENANT, or
 #    ANTITHESIS_USERNAME, ANTITHESIS_PASSWORD, and ANTITHESIS_TENANT.
-! snouty launch --launcher basic_test --duration 30
+! snouty launch --launcher basic_test --config-image config:latest --duration 30
 stderr 'No Antithesis credentials found.*'
 
 # Everything below runs against the mock only. The skip sits above the first
@@ -128,7 +139,7 @@ stdout 'Test run started: run_id run-123'
 # is deprecated: a warning on stderr steers the user to `snouty login`. The
 # mock-server directive configures username/password credentials.
 mock-server 200 '{"message":"Success","runId":"run-123"}'
-snouty launch --launcher basic_test --duration 30 --source ci-pipeline
+snouty launch --launcher basic_test --config-image config:latest --duration 30 --source ci-pipeline
 stderr 'warning: username/password authentication is deprecated'
 stderr 'snouty login'
 stdout 'Test run started: run_id run-123'
@@ -138,7 +149,7 @@ stdout 'Test run started: run_id run-123'
 # rest of the file.)
 mock-server 200 '{"message":"Success","runId":"run-123"}'
 env ANTITHESIS_API_KEY=testkey
-snouty launch --launcher basic_test --duration 30 --source ci-pipeline
+snouty launch --launcher basic_test --config-image config:latest --duration 30 --source ci-pipeline
 ! stderr 'deprecated'
 stdout 'Test run started: run_id run-123'
 env ANTITHESIS_API_KEY=
@@ -156,30 +167,30 @@ stdout '\s*"runId": "run-123".*'
 
 # 6b. --ephemeral flag sets antithesis.is_ephemeral to "true".
 mock-server 200 '{"message":"Success","runId":"run-123"}'
-snouty launch --launcher basic_test --duration 30 --ephemeral
+snouty launch --launcher basic_test --config-image config:latest --duration 30 --ephemeral
 stderr '"antithesis.is_ephemeral": "true"'
 
 # 6c. Without --source, is_ephemeral is set automatically and an info message is shown.
 mock-server 200 '{"message":"Success","runId":"run-123"}'
-snouty launch --launcher basic_test --duration 30
+snouty launch --launcher basic_test --config-image config:latest --duration 30
 stderr '"antithesis.is_ephemeral": "true"'
 stderr 'Starting an ephemeral run; its findings will not be retained.*'
 
 # 6c2. With --source, is_ephemeral is not set unless --ephemeral is passed.
 mock-server 200 '{"message":"Success","runId":"run-123"}'
-snouty launch --launcher basic_test --duration 30 --source ci-pipeline
+snouty launch --launcher basic_test --config-image config:latest --duration 30 --source ci-pipeline
 ! stderr 'is_ephemeral.*'
 ! stderr 'Starting an ephemeral run.*'
 
 # 6c3. --duration accepts h/m unit suffixes, normalized to bare minutes for the
 #    API (1h30m -> 90).
 mock-server 200 '{"message":"Success","runId":"run-123"}'
-snouty launch --launcher basic_test --duration 1h30m --source ci-pipeline
+snouty launch --launcher basic_test --config-image config:latest --duration 1h30m --source ci-pipeline
 stderr '"antithesis.duration": "90"'
 
 # 6d. --param flag passes custom properties.
 mock-server 200 '{"message":"Success","runId":"run-123"}'
-snouty launch --launcher basic_test --duration 30 --param my.custom.prop=value --param antithesis.integrations.github.callback_url=https://example.com/cb
+snouty launch --launcher basic_test --config-image config:latest --duration 30 --param my.custom.prop=value --param antithesis.integrations.github.callback_url=https://example.com/cb
 stderr '"my.custom.prop": "value"'
 stderr '"antithesis.integrations.github.callback_url": "https://example.com/cb"'
 
@@ -187,7 +198,7 @@ stderr '"antithesis.integrations.github.callback_url": "https://example.com/cb"'
 #    before snouty learns about them (#211). Known params keep their value
 #    checks (see the antithesis.duration=asdf case above).
 mock-server 200 '{"message":"Success","runId":"run-123"}'
-snouty launch --launcher basic_test --duration 30 --param antithesis.brand_new_param=on
+snouty launch --launcher basic_test --config-image config:latest --duration 30 --param antithesis.brand_new_param=on
 stderr '"antithesis.brand_new_param": "on"'
 stdout 'Test run started: run_id run-123'
 
@@ -195,7 +206,7 @@ stdout 'Test run started: run_id run-123'
 #    images (e.g. an image referenced only in a CRD field) that the config
 #    parser can't discover. Semicolon-delimited [REGISTRY/]NAME(:TAG|@DIGEST).
 mock-server 200 '{"message":"Success","runId":"run-123"}'
-snouty launch --launcher basic_test --duration 30 --param 'antithesis.images=app@sha256:abc;db:latest'
+snouty launch --launcher basic_test --config-image config:latest --duration 30 --param 'antithesis.images=app@sha256:abc;db:latest'
 stderr '"antithesis.images": "app@sha256:abc;db:latest"'
 
 # On an error that reaches the test launcher (e.g. an unknown launcher name),
@@ -211,45 +222,65 @@ stderr 'API error: 404 Not Found.*'
 
 # `snouty run` still works but prints a deprecation warning.
 mock-server 200 '{"message":"Success","runId":"run-123"}'
-snouty run --launcher basic_test --duration 30
+snouty run --launcher basic_test --config-image config:latest --duration 30
 stderr 'snouty run.*is deprecated.*snouty launch'
 
 # Without --launcher, the run goes to the basic_test launcher.
 mock-server 200 '{"message":"Success","runId":"run-123"}'
-snouty --verbose launch --duration 30
+snouty --verbose launch --config-image config:latest --duration 30
 stderr '^> POST .*/api/v1/launch/basic_test$'
 stdout 'Test run started: run_id run-123'
 
 # --launcher selects the launcher.
 mock-server 200 '{"message":"Success","runId":"run-123"}'
-snouty --verbose launch --launcher basic_k8s_test --duration 30
+snouty --verbose launch --launcher basic_k8s_test --config-image config:latest --duration 30
 stderr '^> POST .*/api/v1/launch/basic_k8s_test$'
 
 # --webhook and -w still select the launcher, but print a deprecation warning.
 mock-server 200 '{"message":"Success","runId":"run-123"}'
-snouty --verbose launch --webhook basic_k8s_test --duration 30
+snouty --verbose launch --webhook basic_k8s_test --config-image config:latest --duration 30
 stderr '^warning: --webhook is deprecated, use --launcher instead$'
 stderr '^> POST .*/api/v1/launch/basic_k8s_test$'
 stdout 'Test run started: run_id run-123'
 mock-server 200 '{"message":"Success","runId":"run-123"}'
-snouty launch -w basic_test --duration 30
+snouty launch -w basic_test --config-image config:latest --duration 30
 stderr '^warning: --webhook is deprecated, use --launcher instead$'
 stdout 'Test run started: run_id run-123'
 
 mock-server 200 '{"message":"Success","runId":"run-123"}'
-snouty launch --launcher basic_test --duration 30 --filter-logs-matching debug
+snouty launch --launcher basic_test --config-image config:latest --duration 30 --filter-logs-matching debug
 stderr '"antithesis.duration": "30"'
 stderr '"antithesis.filter_logs_matching": "debug"'
 stdout 'Test run started: run_id run-123'
 
 # --performance-tier sends `antithesis.performance_tier`.
 mock-server 200 '{"message":"Success","runId":"run-123"}'
-snouty launch --launcher basic_test --duration 30 --performance-tier turbo
+snouty launch --launcher basic_test --config-image config:latest --duration 30 --performance-tier turbo
 stderr '"antithesis.performance_tier": "turbo"'
 stdout 'Test run started: run_id run-123'
 
 # The raw --param form sends any tier, so a tier newer than this snouty works.
 mock-server 200 '{"message":"Success","runId":"run-123"}'
-snouty launch --launcher basic_test --duration 30 --param antithesis.performance_tier=ultra
+snouty launch --launcher basic_test --config-image config:latest --duration 30 --param antithesis.performance_tier=ultra
 stderr '"antithesis.performance_tier": "ultra"'
+stdout 'Test run started: run_id run-123'
+
+# --param antithesis.config_image also supplies the config image.
+mock-server 200 '{"message":"Success","runId":"run-123"}'
+snouty launch --launcher basic_test --duration 30 --param antithesis.config_image=config:latest
+stderr '"antithesis.config_image": "config:latest"'
+! stderr 'no config image'
+stdout 'Test run started: run_id run-123'
+
+# Snouty does not know which params another launcher needs. Without a config
+#    image, the run still launches, with a warning.
+mock-server 200 '{"message":"Success","runId":"run-123"}'
+snouty launch --launcher my_launcher --duration 30
+stderr '^warning: no config image given\. If the my_launcher launcher requires one, pass --config or --config-image\.$'
+stdout 'Test run started: run_id run-123'
+
+# With a config image, another launcher shows no warning.
+mock-server 200 '{"message":"Success","runId":"run-123"}'
+snouty launch --launcher my_launcher --config-image config:latest --duration 30
+! stderr 'no config image'
 stdout 'Test run started: run_id run-123'

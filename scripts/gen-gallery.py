@@ -2611,11 +2611,18 @@ def build_help_stories(d: Discovery) -> list[Story]:
         ),
         _help_story(
             "help-runs-wait",
-            "Learn how to wait for a run to finish",
-            "I want the help to explain the terminal states, that an `unknown` status "
-            "fails the command, and what --poll-interval and --timeout do.",
+            "Learn how to wait for a run to start or finish",
+            "I want the help to explain the two --until statuses (running and complete), "
+            "that each is a minimum, that an `unknown` status fails the command, and what "
+            "--poll-interval and --timeout do.",
             ["runs", "wait"],
             ["runs", "wait", s],
+            samples=[
+                (
+                    "--until running on a completed run (it has already started)",
+                    ["runs", "wait", s, "--until", "running"],
+                )
+            ],
             # wait on a terminal run prints one status line; nothing columnar
             # to align tokens against.
         ),

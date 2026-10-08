@@ -21,7 +21,7 @@ use crate::api::{
     PropertyStatus, RewarmSource, RunDetail, RunStatus, RunSummary, RunsFilterOptions,
     SEARCH_DEFAULT_LIMIT, SearchMode,
 };
-use crate::cli::{RunsCommands, RunsListArgs, RunsSearchArgs};
+use crate::cli::{RunsCommands, RunsListArgs, RunsSearchArgs, WaitUntil};
 use crate::error::{api_error_message, api_error_status, user_error};
 use crate::event_render::{EventStreamRenderer, normalize_terminal_text, strip_ansi};
 use crate::event_set_dsl;
@@ -149,7 +149,18 @@ pub async fn cmd_runs(
             run_id,
             poll_interval,
             timeout,
-        }) => cmd_runs_wait(&run_id, poll_interval.into(), timeout, settings, output).await,
+            until,
+        }) => {
+            cmd_runs_wait(
+                &run_id,
+                poll_interval.into(),
+                timeout,
+                until,
+                settings,
+                output,
+            )
+            .await
+        }
         Some(RunsCommands::Cancel { run_id }) => cmd_runs_cancel(&run_id, settings, output).await,
         Some(RunsCommands::Properties {
             run_id,
@@ -416,13 +427,14 @@ async fn cmd_runs_wait(
     run_id: &str,
     poll_interval: Duration,
     timeout: Option<HumanDuration>,
+    until: WaitUntil,
     settings: &Settings,
     OutputOptions { json, verbose }: OutputOptions,
 ) -> Result<()> {
     debug!("waiting for run: {}", run_id);
 
     let api = AntithesisApi::new_uncached(settings, verbose)?;
-    let wait = wait_for_run(&api, run_id, poll_interval);
+    let wait = wait_for_run(&api, run_id, poll_interval, until);
     let run = match timeout {
         Some(limit) => match tokio::time::timeout(limit.into(), wait).await {
             Ok(result) => result?,
@@ -479,8 +491,8 @@ async fn cmd_runs_cancel(
     Ok(())
 }
 
-/// Poll `get_run` every `poll_interval` until the run reaches a terminal
-/// state. Status changes and warnings go to stderr; stdout stays reserved for
+/// Poll `get_run` every `poll_interval` until the run reaches the `until`
+/// point. Status changes and warnings go to stderr; stdout stays reserved for
 /// the final result. A run that reports `unknown` fails the wait (see
 /// [`RunStatus::is_terminal`]).
 ///
@@ -489,6 +501,7 @@ async fn wait_for_run(
     api: &AntithesisApi,
     run_id: &str,
     poll_interval: Duration,
+    until: WaitUntil,
 ) -> Result<RunDetail> {
     let mut poll = tokio::time::interval(poll_interval);
     // A poll delayed by a slow response schedules the next one a full
@@ -514,7 +527,11 @@ async fn wait_for_run(
                     .suggestion(format!("inspect the run with `snouty runs show {run_id}`")),
             );
         }
-        if run.status.is_terminal() {
+        let reached = match until {
+            WaitUntil::Running => run.status != RunStatus::Starting,
+            WaitUntil::Complete => run.status.is_terminal(),
+        };
+        if reached {
             return Ok(run);
         }
 
@@ -4782,7 +4799,9 @@ mod tests {
             mount_get_run_statuses(&server, &["starting", "in_progress", "completed"]).await;
             let api = test_api(&server.uri());
 
-            let run = wait_for_run(&api, "run-w", FAST_POLL).await.unwrap();
+            let run = wait_for_run(&api, "run-w", FAST_POLL, WaitUntil::Complete)
+                .await
+                .unwrap();
 
             assert_eq!(run.status, RunStatus::Completed);
             // One poll per status: the loop stopped at the first terminal one.
@@ -4797,9 +4816,26 @@ mod tests {
                 mount_get_run_statuses(&server, &["in_progress", status]).await;
                 let api = test_api(&server.uri());
 
-                let run = wait_for_run(&api, "run-w", FAST_POLL).await.unwrap();
+                let run = wait_for_run(&api, "run-w", FAST_POLL, WaitUntil::Complete)
+                    .await
+                    .unwrap();
                 assert_eq!(run.status.to_string(), status);
             }
+        }
+
+        #[tokio::test]
+        async fn wait_until_running_stops_once_the_run_starts() {
+            let server = MockServer::start().await;
+            mount_get_run_statuses(&server, &["starting", "in_progress", "completed"]).await;
+            let api = test_api(&server.uri());
+
+            let run = wait_for_run(&api, "run-w", FAST_POLL, WaitUntil::Running)
+                .await
+                .unwrap();
+
+            assert_eq!(run.status, RunStatus::InProgress);
+            let requests = server.received_requests().await.unwrap();
+            assert_eq!(requests.len(), 2);
         }
 
         #[tokio::test]
@@ -4808,7 +4844,9 @@ mod tests {
             mount_get_run_statuses(&server, &["in_progress", "unknown"]).await;
             let api = test_api(&server.uri());
 
-            let err = wait_for_run(&api, "run-w", FAST_POLL).await.unwrap_err();
+            let err = wait_for_run(&api, "run-w", FAST_POLL, WaitUntil::Complete)
+                .await
+                .unwrap_err();
 
             let msg = format!("{err:#}");
             assert_eq!(msg, "run run-w reported status \"unknown\"", "got: {msg}");
@@ -4825,7 +4863,12 @@ mod tests {
             let api = test_api(&server.uri());
 
             // cmd_runs_wait bounds the wait exactly like this.
-            let wait = wait_for_run(&api, "run-w", Duration::from_secs(3600));
+            let wait = wait_for_run(
+                &api,
+                "run-w",
+                Duration::from_secs(3600),
+                WaitUntil::Complete,
+            );
             tokio::time::timeout(Duration::from_secs(1), wait)
                 .await
                 .expect_err("a non-terminal run must keep the wait pending");
@@ -4852,7 +4895,7 @@ mod tests {
                 .await;
             let api = test_api(&server.uri());
 
-            let wait = wait_for_run(&api, "run-w", FAST_POLL);
+            let wait = wait_for_run(&api, "run-w", FAST_POLL, WaitUntil::Complete);
             tokio::time::timeout(Duration::from_secs(1), wait)
                 .await
                 .expect_err("a hung request must not outlive the timeout");
@@ -4868,7 +4911,9 @@ mod tests {
                 .await;
             let api = test_api(&server.uri());
 
-            let err = wait_for_run(&api, "BAD-ID", FAST_POLL).await.unwrap_err();
+            let err = wait_for_run(&api, "BAD-ID", FAST_POLL, WaitUntil::Complete)
+                .await
+                .unwrap_err();
             assert_eq!(format!("{err:#}"), "run not found: BAD-ID");
         }
 
@@ -4883,7 +4928,9 @@ mod tests {
                 .await;
             let api = test_api(&server.uri());
 
-            let err = wait_for_run(&api, "run-w", FAST_POLL).await.unwrap_err();
+            let err = wait_for_run(&api, "run-w", FAST_POLL, WaitUntil::Complete)
+                .await
+                .unwrap_err();
             assert_eq!(api_error_status(&err), Some(500));
         }
 

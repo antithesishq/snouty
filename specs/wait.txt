@@ -1,10 +1,11 @@
 # snouty runs wait
 #
-# Wait for a run to reach a terminal state (completed, cancelled, or
-# incomplete), then report the final status. The command exits 0 for every
-# terminal state; the run's outcome is in the output, not the exit code. A run
-# that reports status `unknown` fails the command instead of waiting forever
-# on a run that may never make progress.
+# Wait until a run is running or complete (`--until`, default complete), then
+# report its status. Complete means a terminal state: completed, cancelled, or
+# incomplete. The command exits 0 for every status it stops at; the run's
+# outcome is in the output, not the exit code. A run that reports status
+# `unknown` fails the command instead of waiting forever on a run that may
+# never make progress.
 #
 # Status transitions mid-wait are covered by Rust integration tests in
 # src/runs.rs, where the test server can change the run's status between polls.
@@ -27,16 +28,21 @@ stderr 'must be a number of minutes'
 
 # `snouty runs --help` lists the wait subcommand.
 snouty runs --help
-stdout 'wait.*terminal state'
+stdout 'wait.*running or complete'
 
-# `snouty runs wait --help` explains the terminal states, the unknown-status
-# failure, and that re-running resumes the wait after an interruption.
+# `snouty runs wait --help` explains the two --until statuses, that each is a
+# minimum, the unknown-status failure, and that re-running resumes the wait
+# after an interruption.
 snouty runs wait --help
 stdout 'completed, cancelled, or incomplete'
 stdout 'unknown'
 stdout 'interrupt and re-run'
 stdout '--poll-interval'
 stdout '--timeout'
+stdout '--until'
+stdout 'running .*in_progress, or it is'
+stdout 'The status is a minimum'
+! stdout 'runs exec'
 
 # A run that is already terminal returns immediately: the final status is the
 # whole output, exit 0.
@@ -80,4 +86,30 @@ stderr '.*run not found: no-such-run.*'
 # in_progress on the mock, so a zero timeout fails immediately.
 mock-runs-server
 [!staging] ! snouty runs wait run-2 --timeout 0
+[!staging] stderr 'timed out waiting for run run-2'
+
+# --until takes one of two points in the run's lifecycle.
+! snouty runs wait some-run --until in_progress
+stderr 'possible values: running, complete'
+
+# `--until running` stops once the run has started. A completed run has
+# already started, so the wait succeeds at once and reports the run's actual
+# status.
+mock-runs-server
+snouty runs wait $R_run_id --until running
+stdout 'run .* is completed'
+
+mock-runs-server
+snouty --json runs wait $R_run_id --until running
+[!staging] stdout '"status".*"completed"'
+
+# run-2 is in_progress on the mock: it has started, so the wait ends. The
+# timeout only keeps a regression from hanging the spec.
+mock-runs-server
+[!staging] snouty runs wait run-2 --until running --timeout 10s
+[!staging] stdout 'run run-2 is in_progress'
+
+# `--until complete` is the default: it waits for a terminal state.
+mock-runs-server
+[!staging] ! snouty runs wait run-2 --until complete --timeout 0
 [!staging] stderr 'timed out waiting for run run-2'

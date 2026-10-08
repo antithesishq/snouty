@@ -836,7 +836,36 @@ fn mock_run_not_found(run_id: &str) -> (u16, String) {
     (404, format!(r#"{{"message":"run not found: {run_id}"}}"#))
 }
 
+/// Runs whose `created_at` is a number of minutes before the request, so a
+/// spec can tell a session that may still be loading from an older one:
+/// (run_id, minutes since launch, launcher). They are in progress, and kept
+/// out of MOCK_RUNS so the list-oriented specs don't see them. Like a new
+/// session on release 64.0, they answer `runs exec` with a bare 404, or with
+/// the cold 400 for a cold moment.
+const MOCK_FRESH_RUNS: &[(&str, i64, &str)] = &[
+    ("session-loading", 2, "debugging"),
+    ("session-old", 60, "debugging"),
+    ("run-starting", 2, "nightly"),
+];
+
+fn mock_fresh_run(run_id: &str) -> Option<(i64, &'static str)> {
+    MOCK_FRESH_RUNS
+        .iter()
+        .find(|(id, ..)| *id == run_id)
+        .map(|&(_, minutes, launcher)| (minutes, launcher))
+}
+
 fn mock_route_get_run(run_id: &str) -> (u16, String) {
+    if let Some((minutes, launcher)) = mock_fresh_run(run_id) {
+        let created = chrono::Utc::now() - chrono::TimeDelta::minutes(minutes);
+        let body = serde_json::json!({
+            "run_id": run_id,
+            "status": "in_progress",
+            "created_at": created.to_rfc3339(),
+            "launcher": launcher,
+        });
+        return (200, body.to_string());
+    }
     // `run-unknown-status` is kept out of MOCK_RUNS so the list-oriented specs
     // don't see it.
     if run_id == "run-unknown-status" {
@@ -1155,6 +1184,11 @@ fn mock_exec_command_received() -> String {
 /// The input hash of a moment the mock session holds cold.
 pub const MOCK_COLD_HASH: &str = "1002528785118888238";
 
+fn mock_exec_cold() -> (u16, String) {
+    let message = "Moment not warm in the live run and no source_run_id provided.";
+    (400, serde_json::json!({ "message": message }).to_string())
+}
+
 fn mock_route_execute_command(run_id: &str, req_body: &str) -> (u16, String) {
     // See the `run-stream-error` fixture note in `mock_route_get_run_build_logs`.
     if run_id == "run-stream-error" {
@@ -1163,6 +1197,19 @@ fn mock_route_execute_command(run_id: &str, req_body: &str) -> (u16, String) {
             MOCK_STREAM_ERROR_LINE.to_string(),
         ];
         return (200, lines.join("\n") + "\n");
+    }
+    // snouty's generated client always sends a well-formed body, so a
+    // missing script or unparsable JSON just falls through to the default
+    // script rather than modelling a validation error nothing exercises.
+    let request = serde_json::from_str::<serde_json::Value>(req_body).unwrap_or_default();
+    let cold = request["moment"]["input_hash"] == MOCK_COLD_HASH;
+    let has_source =
+        request.get("source_run_id").is_some() || request.get("source_session_id").is_some();
+    if mock_fresh_run(run_id).is_some() {
+        if cold && !has_source {
+            return mock_exec_cold();
+        }
+        return (404, MOCK_BARE_404_BODY.to_string());
     }
     if !mock_run_known(run_id) {
         // snouty's "run not found" translation must work from the status
@@ -1183,10 +1230,6 @@ fn mock_route_execute_command(run_id: &str, req_body: &str) -> (u16, String) {
         );
     }
 
-    // snouty's generated client always sends a well-formed body, so a
-    // missing script or unparsable JSON just falls through to the default
-    // script rather than modelling a validation error nothing exercises.
-    let request = serde_json::from_str::<serde_json::Value>(req_body).unwrap_or_default();
     let script = request["script"].as_str().unwrap_or_default();
     // An unknown rewarm source answers the live endpoint's bare 404.
     if request["source_run_id"] == "no-such-run"
@@ -1199,12 +1242,8 @@ fn mock_route_execute_command(run_id: &str, req_body: &str) -> (u16, String) {
     // timeout also answers 400 (the `slow-rewarm` script). Both messages are
     // verbatim from orbitinghail (release 64.0; the no-source one as of
     // 2026-10-07).
-    let cold = request["moment"]["input_hash"] == MOCK_COLD_HASH;
-    let has_source =
-        request.get("source_run_id").is_some() || request.get("source_session_id").is_some();
     if cold && !has_source {
-        let message = "Moment not warm in the live run and no source_run_id provided.";
-        return (400, serde_json::json!({ "message": message }).to_string());
+        return mock_exec_cold();
     }
     if cold && script.trim() == "slow-rewarm" {
         let message = format!(

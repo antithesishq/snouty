@@ -277,7 +277,7 @@ mod tests {
             "got: {block}"
         );
 
-        // An unparseable weight stays as it is.
+        // An unparsable weight stays as it is.
         let block = render_one(chatter(json!("high"), "/opt/t/a.py"));
         assert!(block.contains(" weight=high "), "got: {block}");
 

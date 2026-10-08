@@ -1053,7 +1053,6 @@ def _launch_session(sn: Snouty, base_run: str) -> tuple[dict, Result]:
     # A unique description finds the new session in `runs list` without
     # parsing the launch's human-facing output.
     description = f"{EXEC_SESSION_DESCRIPTION} {datetime.now().isoformat()}"
-    # With `runs-exec` on, the launch's next-step hint names `runs exec`.
     launch = sn.run(
         [
             "debug",
@@ -1067,8 +1066,7 @@ def _launch_session(sn: Snouty, base_run: str) -> tuple[dict, Result]:
             "snouty gallery",
             "--description",
             description,
-        ],
-        env=EXEC_ENV,
+        ]
     )
     if not launch.ok:
         raise GalleryError(f"`snouty debug` failed (exit {launch.returncode}): {launch.combined}")
@@ -2406,7 +2404,6 @@ def build_exec_stories(d: Discovery, x: ExecSession) -> list[Story]:
                 x.launch.args,
                 succeeds_with("Debugging session started", "snouty runs show", "snouty runs exec"),
                 json_capable=False,
-                env=EXEC_ENV,
                 precaptured=x.launch,
             )
         )

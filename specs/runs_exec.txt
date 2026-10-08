@@ -73,10 +73,17 @@
 # everything below the credential-free check is gated behind `[staging] skip`,
 # like `snouty debug`: staging has no reliably-live run to execute against.
 
+# The command is in `runs --help`, and no feature gates it.
+snouty runs --help
+stdout 'exec.*Execute a command in a run'
+snouty runs exec --help
+! stdout 'SNOUTY_UNSTABLE_FEATURES'
+
 # The command authenticates with the Antithesis API. An API key is required,
 # like every run-scoped endpoint.
 ! snouty runs exec run-2 -3625518438076122494 398.4898056755774 'uname -a'
 stderr 'No Antithesis credentials found.*'
+! stderr 'unstable feature'
 
 [staging] skip
 

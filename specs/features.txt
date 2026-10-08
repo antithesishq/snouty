@@ -10,26 +10,8 @@
 # which subcommands the parser has, so it must be known before the command
 # line is parsed, and a setting can't be read that early without first parsing
 # --settings/--profile — which would mean parsing the command line twice.
-#
-# No command is gated now. `runs exec` was gated behind `runs-exec` until it
-# became stable.
 
-# 1. `runs exec` is in `runs --help` with no features set...
-snouty runs --help
-stdout 'exec.*Execute a command in a run'
-
-# 2. ...and is callable. (It gets as far as needing credentials, which is
-#    proof no gate refused it.)
-! snouty runs exec run-1 -123 1.0 'uname -a'
-stderr 'No Antithesis credentials found.*'
-! stderr 'unstable feature'
-
-# 3. Its help does not name a feature.
-snouty runs exec --help
-! stdout 'unstable feature'
-! stdout 'SNOUTY_UNSTABLE_FEATURES'
-
-# 4. Unknown ids are carried rather than rejected: one exported
+# 1. Unknown ids are carried rather than rejected: one exported
 #    SNOUTY_UNSTABLE_FEATURES is shared by every snouty on the machine, so an
 #    id from a newer build, or one whose feature became stable, must not break
 #    this one.
@@ -37,7 +19,7 @@ env SNOUTY_UNSTABLE_FEATURES=from-the-future,runs-exec
 ! snouty runs exec run-1 -123 1.0 'uname -a'
 stderr 'No Antithesis credentials found.*'
 
-# 5. `snouty doctor` reports the listed features, so what is on is visible
+# 2. `snouty doctor` reports the listed features, so what is on is visible
 #    alongside the rest of the resolved configuration. Whitespace and empty
 #    entries are ignored. (`set-env` keeps the spaces; the `env` directive
 #    would split on them.) doctor exits non-zero here (no credentials or
@@ -46,14 +28,14 @@ set-env SNOUTY_UNSTABLE_FEATURES  runs-exec , , other
 ! snouty doctor
 stderr 'features +runs-exec, other$'
 
-# 6. The row is omitted entirely when nothing is set — an empty row would be
+# 3. The row is omitted entirely when nothing is set — an empty row would be
 #    noise on every ordinary run. An empty value is "unset", not "a feature
 #    named the empty string".
 env SNOUTY_UNSTABLE_FEATURES=
 ! snouty doctor
 ! stderr 'features.*'
 
-# 7. A settings file cannot enable a feature — the key is not a setting, so
+# 4. A settings file cannot enable a feature — the key is not a setting, so
 #    it is ignored like any other unknown key rather than erroring.
 ! snouty --settings features.toml doctor
 ! stderr 'features.*'

@@ -12,10 +12,10 @@
 //! go away, in any release. Nothing behind this gate is covered by whatever
 //! stability the rest of the CLI has.
 //!
-//! No feature is gated now. To gate a command, hide it from `--help` with a
-//! clap `hide` attribute that checks [`enabled`] for its id, and refuse it
-//! before dispatch while its feature is off: a hidden subcommand is still
-//! callable, and clap_complete still lists it.
+//! To gate a command, parse the ids [`enabled`] returns into a feature enum
+//! with a constant for each id. Hide the command from `--help` with a clap
+//! `hide` attribute, and refuse it before dispatch while its feature is off:
+//! a hidden subcommand is still callable, and clap_complete still lists it.
 //!
 //! Deliberately an environment variable and not a setting. The gate has to be
 //! known before the command line is parsed, because it decides which

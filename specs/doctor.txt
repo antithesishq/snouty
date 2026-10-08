@@ -63,6 +63,8 @@ stderr '^      NOTE: run `snouty login` to store an API key, then `unset ANTITHE
 [!staging] stderr '.*tenant release version: 56.0.*'
 # A tenant that old predates the APIs some commands need, so doctor warns for
 # each one.
+[!staging] stderr 'tenant serves the events-search API'
+[!staging] stderr 'tenant serves the cancel-run API'
 [!staging] stderr 'tenant serves the execute-command .container. field'
 [!staging] stderr 'release 64.0\) — .runs exec. fails'
 

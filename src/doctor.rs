@@ -1251,14 +1251,15 @@ mod tests {
 
     #[test]
     fn exec_release_floor_warns_below_64() {
-        let ids = |release: &str| -> Vec<&str> {
-            release_floor_checks(&ApiVersion::new("v1".into(), release.into()))
+        let ids = |release: String| -> Vec<&str> {
+            release_floor_checks(&ApiVersion::new("v1".into(), release))
                 .into_iter()
                 .map(|check| check.name)
                 .collect()
         };
-        assert_eq!(ids("63.3"), ["execute-command"]);
-        assert!(ids("64.0").is_empty());
+        let (major, minor) = MIN_EXEC_RELEASE;
+        assert_eq!(ids(format!("{}.99", major - 1)), ["execute-command"]);
+        assert!(ids(format!("{major}.{minor}")).is_empty());
     }
 
     #[test]

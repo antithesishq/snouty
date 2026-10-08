@@ -415,11 +415,31 @@ async fn cmd_debug(
 
     if json {
         println!("{}", serde_json::to_string_pretty(&response)?);
-    } else {
+    } else if let Some(run_id) = response.run_id.as_deref() {
+        println!("Debugging session started: run_id {run_id}");
         println!(
-            "Debugging session started: run_id {}",
-            response.run_id.as_deref().unwrap_or("(unknown)")
+            "\nthe session takes a few minutes to start. See its status:\n  snouty runs show {run_id}"
         );
+        if features::is_enabled(features::Feature::RunsExec) {
+            // The launch sent both as strings: `launch_mvd_request` refuses anything else.
+            let moment = |key| params.as_map().get(key).and_then(|v| v.as_str());
+            if let (Some(input_hash), Some(vtime)) = (
+                moment(ANT_DEBUGGING_INPUT_HASH),
+                moment(ANT_DEBUGGING_VTIME),
+            ) {
+                // TODO: drop the retry line once the API reports `in_progress`
+                // only for a session that accepts commands. On release 64.0 a
+                // new session answered 404, then 400 "Moment not warm", for
+                // minutes while it was `in_progress`.
+                println!(
+                    "\nwhen the status is in_progress, run a script at this moment:\n  \
+                     snouty runs exec {run_id} {input_hash} {vtime} '<script>'\n\
+                     if it answers 404 or 'Moment not warm', the session is still loading. Try again."
+                );
+            }
+        }
+    } else {
+        println!("Debugging session started: run_id (unknown)");
     }
 
     Ok(())

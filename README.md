@@ -18,7 +18,7 @@ Snouty provides the following subcommands. Invoke `snouty <command> --help` to f
   - `snouty runs logs <run_id> <hash> [vtime]`: stream a run's logs along one branch.
   - `snouty runs events <run_id> -m <needle>`: search events in a run.
   - `snouty runs search <run_id> <query>`: run an event-set DSL query against a run's events.
-  - `snouty runs exec <run_id> <hash> <vtime> [script]`: run a bash script in a run's live session at a given moment. Unstable: see [Unstable features](#unstable-features).
+  - `snouty runs exec <run_id> <hash> <vtime> [script]`: run a bash script in a run's live session at a given moment. Needs tenant release 64.0 or newer.
 - `snouty debug`: start a debug session.
 - `snouty validate`: locally run and validate your docker-compose.yaml setup.
 - `snouty doctor`: check your environment is configured correctly.
@@ -166,17 +166,9 @@ For any one setting, snouty uses the first value it finds, highest precedence fi
 
 ### Unstable features
 
-A few subcommands depend on an Antithesis API that is still changing shape, so snouty keeps them behind a gate. Name the features you want in `SNOUTY_UNSTABLE_FEATURES`, as a comma-separated list. A gated command is hidden from `--help` until its feature is on, and fails with an error that names the feature when it is off.
+When a subcommand depends on an Antithesis API that is still changing shape, snouty can keep it behind a gate, turned on by naming its feature in `SNOUTY_UNSTABLE_FEATURES` (a comma-separated list). Anything behind this gate can change its behavior, its flags, or its id, or go away, in any release.
 
-```sh
-export SNOUTY_UNSTABLE_FEATURES="runs-exec"
-```
-
-| Feature     | Enables                                                                         |
-| ----------- | ------------------------------------------------------------------------------- |
-| `runs-exec` | `snouty runs exec`. The execute-command API needs tenant release 64.0 or newer. |
-
-Anything behind this gate can change its behavior, its flags, or its id, or go away, in any release. `snouty doctor` lists the features that are on, and reports when your tenant is too old to serve one.
+No subcommand is gated. An id that snouty does not know, such as the retired `runs-exec`, has no effect, but `snouty doctor` lists every id that is set.
 
 ## Authentication
 

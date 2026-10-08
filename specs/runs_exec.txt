@@ -69,20 +69,21 @@
 #   - The API is still changing, so snouty is lenient about events: no event
 #     shape fails snouty. Only the last line is read as the result.
 #
-# The command is gated behind the `runs-exec` feature, because the API it
-# calls is still changing; specs/features.txt covers the gate itself. Every
-# check here needs the command to exist, so the feature is on for the whole
-# file.
-env SNOUTY_UNSTABLE_FEATURES=runs-exec
-
 # Every successful invocation executes a script inside a live session, so
 # everything below the credential-free check is gated behind `[staging] skip`,
 # like `snouty debug`: staging has no reliably-live run to execute against.
+
+# The command is in `runs --help`.
+snouty runs --help
+stdout 'exec.*Execute a command in a run'
+snouty runs exec --help
+! stdout 'SNOUTY_UNSTABLE_FEATURES'
 
 # The command authenticates with the Antithesis API. An API key is required,
 # like every run-scoped endpoint.
 ! snouty runs exec run-2 -3625518438076122494 398.4898056755774 'uname -a'
 stderr 'No Antithesis credentials found.*'
+! stderr 'unstable feature'
 
 [staging] skip
 

@@ -9,7 +9,7 @@ use crate::attributed_value::AttributedValue;
 use crate::auth::AuthenticationInfo;
 use crate::compose;
 use crate::container;
-use crate::features::{self, Feature};
+use crate::features;
 use crate::login::{CliOAuthConfig, query_oauth_configuration};
 use crate::render::{OutputOptions, render_kv};
 use crate::settings::Settings;
@@ -550,7 +550,7 @@ fn collect_checks(settings: &Settings) -> Vec<Check> {
 /// The resolved-settings table: the value snouty resolved for each setting and
 /// where it came from (env > profile > project/global file). Purely
 /// informational — required/optional semantics are reported by [`collect_checks`].
-fn resolve_settings(settings: &Settings, features: &[Feature]) -> Vec<Setting> {
+fn resolve_settings(settings: &Settings, features: &[String]) -> Vec<Setting> {
     let mut rows = vec![
         Setting::maybe("profile", settings.profile()),
         Setting::maybe("tenant", settings.tenant()),
@@ -566,8 +566,7 @@ fn resolve_settings(settings: &Settings, features: &[Feature]) -> Vec<Setting> {
     // Only when set: features are opt-in, so an empty row would be noise on
     // every ordinary run.
     if !features.is_empty() {
-        let ids: Vec<String> = features.iter().map(Feature::to_string).collect();
-        rows.push(Setting::new("features", ids.join(", ")));
+        rows.push(Setting::new("features", features.join(", ")));
     }
     rows
 }
@@ -593,9 +592,6 @@ struct ReleaseFloor {
     serves: &'static str,
     min: (u64, u64),
     consequence: &'static str,
-    /// The unstable feature the API's commands are gated behind. The check
-    /// runs only when that feature is on.
-    feature: Option<Feature>,
 }
 
 const RELEASE_FLOORS: [ReleaseFloor; 3] = [
@@ -604,28 +600,24 @@ const RELEASE_FLOORS: [ReleaseFloor; 3] = [
         serves: "the events-search API",
         min: MIN_SEARCH_RELEASE,
         consequence: "`runs search` and `runs events` with several terms can fail or hang",
-        feature: None,
     },
     ReleaseFloor {
         id: "execute-command",
         serves: "the execute-command `container` field",
         min: MIN_EXEC_RELEASE,
         consequence: "`runs exec` fails",
-        feature: Some(Feature::RunsExec),
     },
     ReleaseFloor {
         id: "cancel-run",
         serves: "the cancel-run API",
         min: MIN_CANCEL_RELEASE,
         consequence: "`runs cancel` fails",
-        feature: None,
     },
 ];
 
-fn release_floor_checks(version: &ApiVersion, enabled: &[Feature]) -> Vec<Check> {
+fn release_floor_checks(version: &ApiVersion) -> Vec<Check> {
     RELEASE_FLOORS
         .iter()
-        .filter(|floor| floor.feature.as_ref().is_none_or(|f| enabled.contains(f)))
         .filter_map(|floor| release_floor_check(version, floor))
         .collect()
 }
@@ -724,7 +716,6 @@ pub async fn cmd_doctor(
     offline: bool,
 ) -> Result<()> {
     let mut checks = collect_checks(settings);
-    let enabled = features::enabled();
 
     if !offline {
         // Connectivity + version check (network). Skipped with --offline. Only
@@ -739,7 +730,7 @@ pub async fn cmd_doctor(
             let host = api.host();
             let version = api.get_version().await;
             if let Ok(version) = &version {
-                checks.extend(release_floor_checks(version, &enabled));
+                checks.extend(release_floor_checks(version));
             }
             checks.push(version_check(&host, version));
         }
@@ -756,7 +747,7 @@ pub async fn cmd_doctor(
         }
     }
 
-    let settings_rows = resolve_settings(settings, &enabled);
+    let settings_rows = resolve_settings(settings, &features::enabled());
 
     // Only the checks carry pass/warn/fail; the settings table is informational.
     let errors = checks.iter().filter(|c| c.status == Status::Error).count();
@@ -1185,14 +1176,13 @@ mod tests {
 
         let rows = resolve_settings(
             &Settings::default(),
-            &[Feature::RunsExec, Feature::Unknown("other".to_string())],
+            &["one".to_string(), "other".to_string()],
         );
         let row = rows
             .iter()
             .find(|r| r.name == "features")
             .expect("the row appears when a feature is on");
-        // An id this build doesn't know is echoed, not dropped.
-        assert_eq!(row.render_value(), "runs-exec, other");
+        assert_eq!(row.render_value(), "one, other");
     }
 
     #[test]
@@ -1259,16 +1249,16 @@ mod tests {
     }
 
     #[test]
-    fn exec_release_floor_needs_its_feature() {
-        let old = ApiVersion::new("v1".into(), "63.3".into());
-        let ids = |enabled: &[Feature]| -> Vec<&str> {
-            release_floor_checks(&old, enabled)
+    fn exec_release_floor_warns_below_64() {
+        let ids = |release: String| -> Vec<&str> {
+            release_floor_checks(&ApiVersion::new("v1".into(), release))
                 .into_iter()
                 .map(|check| check.name)
                 .collect()
         };
-        assert!(ids(&[]).is_empty());
-        assert_eq!(ids(&[Feature::RunsExec]), ["execute-command"]);
+        let (major, minor) = MIN_EXEC_RELEASE;
+        assert_eq!(ids(format!("{}.99", major - 1)), ["execute-command"]);
+        assert!(ids(format!("{major}.{minor}")).is_empty());
     }
 
     #[test]

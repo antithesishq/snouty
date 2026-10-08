@@ -10,7 +10,6 @@ use std::time::Duration;
 use expectrl::process::unix::WaitStatus;
 use expectrl::session::OsSession;
 use expectrl::{Eof, Expect};
-use snouty::features::{Feature, UNSTABLE_FEATURES_VAR_NAME};
 use snouty::testutils::{MOCK_COLD_HASH, MockApiServer};
 
 /// Runs `runs exec` on a PTY at the mock's cold moment, with a source, and
@@ -27,7 +26,6 @@ fn exec_on_pty(script: &str) -> (Vec<String>, String, i32) {
         .env("PATH", std::env::var_os("PATH").unwrap_or_default())
         .env("HOME", home.path())
         .env("TERM", "xterm-256color")
-        .env(UNSTABLE_FEATURES_VAR_NAME, Feature::RUNS_EXEC)
         .env("ANTITHESIS_TENANT", "testtenant")
         .env("ANTITHESIS_BASE_URL", server.url())
         .env("ANTITHESIS_API_KEY", server.token());

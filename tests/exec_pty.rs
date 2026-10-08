@@ -1,7 +1,6 @@
-//! `snouty runs exec` draws rewarm progress as a bar only on a terminal, so
-//! this runs it on a real pseudo-terminal. The spec-test harness has no TTY:
-//! there, progress prints one line per record (covered by
-//! specs/runs_exec.txt).
+//! `runs exec` draws its rewarm bar only on a terminal, so these tests run it
+//! on a pseudo-terminal. specs/runs_exec.txt covers the line-per-record
+//! output.
 
 #![cfg(unix)]
 
@@ -14,9 +13,9 @@ use expectrl::{Eof, Expect};
 use snouty::features::{Feature, UNSTABLE_FEATURES_VAR_NAME};
 use snouty::testutils::{MOCK_COLD_HASH, MockApiServer};
 
-/// Run `runs exec` at the mock's cold moment with a source, so the mock
-/// rewarms it, and return what each line of the terminal shows at the end,
-/// the raw capture, and the exit code.
+/// Runs `runs exec` on a PTY at the mock's cold moment, with a source, and
+/// asserts that it draws a bar, not progress lines. Returns the final text of
+/// each terminal line, the raw capture, and the exit code.
 fn exec_on_pty(script: &str) -> (Vec<String>, String, i32) {
     let server = MockApiServer::start();
     let home = tempfile::TempDir::new().expect("temp HOME");
@@ -47,8 +46,9 @@ fn exec_on_pty(script: &str) -> (Vec<String>, String, i32) {
         "progress lines on a terminal:\n{raw}"
     );
 
-    // A carriage return inside a line redraws it. The PTY ends each line with
-    // `\r\n`. Strip escapes after the split, since stripping drops the `\r`.
+    // The PTY ends each line with `\r\n`, and a bare `\r` redraws a line, so
+    // keep the text after the last `\r`. Strip escapes after the split,
+    // because stripping drops `\r`.
     let lines = raw
         .split("\r\n")
         .map(|line| {
@@ -70,8 +70,8 @@ fn line_after<'a>(lines: &'a [String], raw: &str, is_first: impl Fn(&str) -> boo
         .unwrap_or_else(|| panic!("nothing after line {first} in:\n{raw}"))
 }
 
-/// Once the rewarm finishes, the bar gives way to a line of its own, so the
-/// script's output starts on a fresh line.
+/// A finished rewarm replaces its bar with a `done` line, and the output
+/// starts on the next line.
 #[test]
 fn rewarm_bar_gives_way_to_the_output() {
     let (lines, raw, code) = exec_on_pty("uname -a");

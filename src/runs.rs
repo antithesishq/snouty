@@ -1544,19 +1544,18 @@ enum ExecResult {
     TimedOut,
 }
 
-/// A progress record of a stream that rewarms a cold moment. Every one
-/// precedes the command's output, and the last one is at 100. Observed on
-/// orbitinghail (release 64.0, 2026-10-07): one rewarm sent 35 records over
-/// 22 seconds.
+/// A rewarm progress record. The server sends these before the command's
+/// output, and the last one is at 100 (observed on orbitinghail, release
+/// 64.0, 2026-10-07).
 #[derive(Debug, Deserialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
 enum ExecProgress {
     Rewarming { percent_complete: u8 },
 }
 
-/// Rewarm progress on stderr, so stdout keeps only the script's output: a bar
-/// on a terminal, and one line per record elsewhere, where a bar redrawn in
-/// place would garble a log.
+/// Shows rewarm progress on stderr, to keep stdout for the script's output.
+/// Off a terminal it prints one line per record, because a redrawn bar
+/// garbles a log.
 enum RewarmDisplay {
     Bar(ProgressBar),
     Lines,
@@ -1575,9 +1574,8 @@ impl Default for RewarmDisplay {
 }
 
 impl Drop for RewarmDisplay {
-    /// A rewarm that ends before its last record keeps its bar where it
-    /// stopped, as the last line keeps it off a terminal, and the line ends,
-    /// so the error below starts on a line of its own.
+    /// A rewarm that stops early leaves its bar at the last percentage. The
+    /// newline puts the next error on a line of its own.
     fn drop(&mut self) {
         if let Self::Bar(bar) = self
             && !bar.is_finished()
@@ -1593,8 +1591,8 @@ impl RewarmDisplay {
         match self {
             Self::Bar(bar) => {
                 bar.set_position(percent_complete.into());
-                // A finished bar leaves the cursor on its line, where the
-                // script's first output line would join it.
+                // A finished bar keeps the cursor on its line, so clear the
+                // bar and print a line of its own.
                 if percent_complete >= 100 {
                     bar.finish_and_clear();
                     eprintln!("rewarming moment: done");
@@ -1755,7 +1753,7 @@ async fn cmd_runs_exec(
             rewarm.get_or_insert_default().show(percent_complete);
             continue;
         }
-        // Any other line ends the rewarm, so no output is drawn under its bar.
+        // Any other line ends the rewarm display before that line prints.
         rewarm = None;
         match ExecResult::deserialize(&entry) {
             Ok(result) => {

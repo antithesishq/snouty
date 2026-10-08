@@ -1170,11 +1170,11 @@ fn mock_route_execute_command(run_id: &str, req_body: &str) -> (u16, String) {
     {
         return (404, MOCK_BARE_404_BODY.to_string());
     }
-    // A moment off the session's own timeline is cold. Without a source the
-    // live endpoint answers 400; with one, a rewarm that outlives the timeout
-    // answers 400 too (the `slow-rewarm` script). Both messages verbatim
-    // from orbitinghail (release 64.0), the no-source one as of 2026-10-07.
-    // A rewarm that finishes streams progress records ahead of the output.
+    // A moment off the session's own timeline is cold. Without a source, the
+    // live endpoint answers 400. With a source, a rewarm that outlives the
+    // timeout also answers 400 (the `slow-rewarm` script). Both messages are
+    // verbatim from orbitinghail (release 64.0; the no-source one as of
+    // 2026-10-07).
     let cold = request["moment"]["input_hash"] == MOCK_COLD_HASH;
     let has_source =
         request.get("source_run_id").is_some() || request.get("source_session_id").is_some();

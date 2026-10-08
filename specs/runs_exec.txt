@@ -212,9 +212,8 @@ stdout 'source_run_id=absent source_session_id=ba4ebf3181dd342334b86c58941813c6-
 stderr 'Moment not warm'
 stderr 'name the run it comes from with --source-run-id$'
 
-# With a source, the server rewarms the moment and streams its progress
-# ahead of the output. Off a terminal, snouty prints one line per progress
-# record on stderr, and stdout keeps only the script's output.
+# With a source, snouty prints one rewarm progress line per record on stderr
+# when stderr is not a terminal. stdout keeps only the script's output.
 snouty runs exec run-2 1002528785118888238 278.1311443040613 'uname -a' --source-run-id 1f1211ea49946d4f63a92d65ee42476d-64-0
 stdout 'Linux antithesis 6.12.0'
 ! stdout 'rewarming'
@@ -222,8 +221,8 @@ stderr '(?s)rewarming moment: 0%\nrewarming moment: 40%\nrewarming moment: 100%\
 stderr 'end moment: -8206006569229276678 398.492'
 ! stderr '"status"'
 
-# A stream that ends partway through the rewarm is truncated, and the last
-# progress line shows how far the rewarm got.
+# A stream that ends partway through the rewarm fails, and the last progress
+# line shows how far the rewarm got.
 ! snouty runs exec run-2 1002528785118888238 278.1311443040613 truncate-rewarm --source-run-id 1f1211ea49946d4f63a92d65ee42476d-64-0
 stderr 'rewarming moment: 40%\n(?s).*stream ended before the command reported completion'
 ! stderr 'rewarming moment: 100%'

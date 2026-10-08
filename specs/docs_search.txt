@@ -109,3 +109,15 @@ stdout '\[\]'
 # --format flag is rejected (not a valid flag).
 ! snouty docs --offline search --format json sdk
 stderr 'unexpected argument.*'
+
+# --offline belongs to the docs group, and it also parses after any docs
+#    subcommand.
+snouty docs search --offline --list fault injection
+stdout '/docs/environment/fault_injection/.*'
+! stderr .+
+
+# docs search --help shows --offline in its options and says that it stops
+#    the update before each search.
+snouty docs search --help
+stdout '^ +--offline$'
+stdout 'updated before each search unless you pass --offline'

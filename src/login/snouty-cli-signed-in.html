@@ -1,0 +1,272 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>Signed in to Snouty CLI</title>
+<style>
+  /* Antithesis brand fonts. Each stack falls back to a system font, so the
+     page still renders if assets.anta.design is unreachable. */
+  @font-face {
+    font-family: "TT Interphases Pro Variable";
+    src: url("https://assets.anta.design/fonts/TT_Interphases_Pro_Variable.woff2") format("woff2");
+    font-weight: 100 900;
+    font-stretch: 75% 100%;
+    font-display: swap;
+  }
+  @font-face {
+    font-family: Stringer;
+    src: url("https://assets.anta.design/fonts/Stringer-Regular-Web.woff2") format("woff2");
+    font-weight: 300 400;
+    font-display: swap;
+  }
+
+  /* Values from Figma "Anta 0.4 — SaaS Web app" › CLI login, signed-in state
+     (desktop 13:6364, mobile 15:6740). They match anta's theme-antithesis.css. */
+  :root {
+    --sans-serif: "TT Interphases Pro Variable", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    --serif: Stringer, ui-serif, Georgia, serif;
+    --monospace: ui-monospace, SFMono-Regular, Menlo, monospace;
+
+    --bg-2: #fdfaf8;
+    --tile-bg: #f3f0ee;
+    --tile-border: #e4ddd8;
+    --code-bg: #eeeae7;
+    --text-1: #080707;
+    --text-3: #665f5b;
+    --logo-mark: #f18271;
+    --success: #44c169;
+
+    /* Figma's "Sign-in Card" glow, anchored to the bottom edge. The mobile
+       frame narrows the ellipse; see the max-width query below. */
+    --glow-rx: 986px;
+    --glow-height: 476px;
+    --glow: radial-gradient(
+      ellipse var(--glow-rx) var(--glow-height) at 50% 100%,
+      color-mix(in oklch, #fff2f0 88%, transparent),
+      transparent
+    );
+  }
+
+  /* Dark values from Figma (desktop 14:6671, mobile 15:6872). */
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg-2: #170812;
+      --tile-bg: #2c1124;
+      --tile-border: #442e3d;
+      --code-bg: #2c1124;
+      --text-1: #eeeae7;
+      --text-3: #a398a0;
+      --success: #329550;
+
+      /* Magenta glow; the frame layers it at 22% × 50% = 11% opacity. */
+      --glow-rx: 1493px;
+      --glow-height: 453px;
+      --glow: radial-gradient(
+        ellipse var(--glow-rx) var(--glow-height) at 50% 100%,
+        color-mix(in oklch, #b84796 11%, transparent) 0%,
+        color-mix(in oklch, #903775 11%, transparent) 25%,
+        color-mix(in oklch, #682754 11%, transparent) 50%,
+        color-mix(in oklch, #3f1833 11%, transparent) 75%,
+        color-mix(in oklch, #2b1022 11%, transparent) 87.5%,
+        transparent 100%
+      );
+    }
+  }
+
+  /* Mobile frames (375px) use a 327px-wide glow, 470px tall in light. */
+  @media (max-width: 600px) {
+    :root { --glow-rx: 327px; --glow-height: 470px; }
+  }
+  @media (max-width: 600px) and (prefers-color-scheme: dark) {
+    :root { --glow-height: 453px; }
+  }
+
+  *, *::before, *::after { box-sizing: border-box; }
+
+  html, body { margin: 0; }
+
+  body {
+    min-height: 100vh;
+    min-height: 100dvh;
+    padding: 52px 16px 64px;
+    font-family: var(--sans-serif);
+    font-feature-settings: "ss02" 1, "ss05" 1, "lnum" 1, "tnum" 1;
+    font-variation-settings: "slnt" 0;
+    color: var(--text-1);
+    background-color: var(--bg-2);
+    background-image: var(--glow);
+    background-repeat: no-repeat;
+    background-size: 100% var(--glow-height);
+    background-position: bottom;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .page {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 180px;
+    width: min(439px, 100%);
+    margin-inline: auto;
+  }
+
+  .logo {
+    display: block;
+    color: var(--text-1);
+  }
+
+  .logo svg {
+    display: block;
+    width: 159px;
+    height: 26px;
+    overflow: visible;
+  }
+
+  .card {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 52px;
+    width: 100%;
+    text-align: center;
+  }
+
+  .header {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 32px;
+    width: min(271px, 100%);
+  }
+
+  .tile {
+    position: relative;
+    display: grid;
+    place-items: center;
+    width: 62px;
+    height: 62px;
+    border: 1px solid var(--tile-border);
+    border-radius: 4px;
+    background: var(--tile-bg);
+    color: var(--text-3);
+  }
+
+  .tile > svg { width: 32px; height: 32px; }
+
+  /* Figma places the badge at 44px from the tile's outer edge; offsets here
+     are from the padding box, inside the 1px border. */
+  .tile .badge {
+    position: absolute;
+    left: 43px;
+    top: 43px;
+    width: 24px;
+    height: 24px;
+  }
+
+  .content {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+  }
+
+  h1 {
+    margin: 0;
+    font-family: var(--serif);
+    font-weight: 300;
+    font-size: 28px;
+    line-height: 32px;
+    letter-spacing: -0.1px;
+    text-wrap: balance;
+  }
+
+  p {
+    margin: 0;
+    color: var(--text-3);
+    font-size: 17px;
+    font-weight: 500;
+    line-height: 22px;
+    font-feature-settings: "ss05" 1, "lnum" 1, "tnum" 1;
+  }
+
+  /* One line on desktop, even past the 439px column; wraps as running text
+     on narrow screens, like the mobile frame. */
+  .retry {
+    width: max-content;
+    max-width: calc(100vw - 32px);
+    padding-inline: 12px;
+    color: var(--text-3);
+    font-size: 13px;
+    font-weight: 400;
+    line-height: 16px;
+    letter-spacing: 0.3px;
+  }
+
+  code {
+    display: inline-block;
+    margin-inline: 1px;
+    padding: 1px 6px 2px;
+    border-radius: 6px;
+    background: var(--code-bg);
+    font-family: var(--monospace);
+    font-size: 13px;
+    line-height: 16px;
+    letter-spacing: 0;
+    font-feature-settings: "ss05" 1, "lnum" 1, "pnum" 1;
+    white-space: nowrap;
+  }
+
+  /* Short viewports (landscape phones): pull the card up under the logo. */
+  @media (max-height: 560px) {
+    body { padding-top: 32px; }
+    .page { gap: 48px; }
+    .card { gap: 32px; }
+  }
+</style>
+</head>
+<body>
+  <div class="page">
+    <a class="logo" href="https://antithesis.com" aria-label="Antithesis">
+        <svg viewBox="0 0 159 26" fill="none" aria-hidden="true">
+        <path d="M42.0843 1.67021H40.6925L31.0802 24.3343H32.9725L35.9207 17.201H45.4027L48.3851 24.3343H51.7035L42.0843 1.67021ZM36.5103 15.7114L40.5897 5.79717L44.7651 15.7114H36.5103Z" fill="currentColor"/>
+        <path d="M66.4919 13.4641V24.3349H63.5095V14.2567C63.5095 11.6808 62.4194 10.3279 60.3625 10.3279C57.9423 10.3279 56.05 12.6373 56.05 15.9102V24.3349H53.0676V8.47622H55.954V11.7764C56.9482 9.46696 59.005 8.07309 61.4252 8.07309C64.5722 8.07309 66.4988 10.1571 66.4988 13.4573L66.4919 13.4641Z" fill="currentColor"/>
+        <path d="M73.026 8.47681V4.64366H71.9976C71.4354 6.75497 69.7419 8.44265 67.356 9.0371V10.0962H70.0436V20.3384C70.0436 23.1125 71.7302 24.7318 74.1504 24.7318C75.9056 24.7318 77.4345 23.8368 78.6618 22.518L77.9967 21.7254C77.0986 22.3541 76.3375 22.5522 75.4805 22.5522C74.1847 22.5522 73.026 21.7938 73.026 19.8738V10.0962H80.4923V24.3355H83.4748V8.47681H73.026Z" fill="currentColor"/>
+        <path d="M88.1587 20.3299V10.0877H85.4711V9.02863C87.857 8.43419 89.5505 6.74651 90.1127 4.6352H91.1411V8.46835H96.1461V10.0877H91.1411V19.8653C91.1411 21.7785 92.2998 22.5437 93.5956 22.5437C94.4595 22.5437 95.2205 22.3456 96.1118 21.717L96.7768 22.5096C95.5496 23.8283 94.0275 24.7234 92.2655 24.7234C89.8453 24.7234 88.1587 23.104 88.1587 20.3299Z" fill="currentColor"/>
+        <path d="M127.717 15.0821H116.877C116.946 20.2067 119.73 22.5503 123.274 22.5503C124.735 22.5503 125.962 21.9558 126.956 21.1632L127.717 21.99C126.394 23.6093 124.371 24.7299 121.519 24.7299C117.378 24.7299 113.929 21.8875 113.929 16.107C113.929 11.3173 116.912 8.07859 121.423 8.07859C125.036 8.07859 127.724 10.4222 127.724 14.2895V15.0821H127.717ZM116.946 13.7907H124.474V13.6882C124.474 11.2421 123.48 9.4588 121.06 9.4588C118.64 9.4588 117.282 11.4061 116.946 13.7839V13.7907Z" fill="currentColor"/>
+        <path d="M129.453 23.7337V21.1577C131.078 22.3808 132.97 23.0094 134.492 23.0094C136.48 23.0094 137.804 22.1485 137.804 20.6316C137.804 19.2446 136.878 18.6501 135.116 17.9874L133.326 17.2904C131.071 16.3953 129.446 15.1108 129.446 12.6305C129.446 9.7881 131.935 8.07309 135.411 8.07309C136.933 8.07309 138.359 8.43522 139.552 8.93401V11.4143C138.325 10.4577 136.7 9.66511 135.04 9.66511C133.285 9.66511 132.092 10.4919 132.092 11.8447C132.092 13.1976 133.189 13.7921 134.91 14.5232L137.365 15.4934C139.099 16.1767 140.429 17.796 140.416 19.6545C140.388 22.7019 137.55 24.7381 134.286 24.7381C132.332 24.7381 130.803 24.4101 129.446 23.7473L129.453 23.7337Z" fill="currentColor"/>
+        <path d="M142.583 24.3278V8.47596H145.565V24.3347H142.583V24.3278Z" fill="currentColor"/>
+        <path d="M147.998 23.7337V21.1577C149.623 22.3808 151.515 23.0094 153.037 23.0094C155.025 23.0094 156.348 22.1485 156.348 20.6316C156.348 19.2446 155.423 18.6501 153.661 17.9874L151.871 17.2904C149.616 16.3953 147.991 15.1108 147.991 12.6305C147.991 9.7881 150.48 8.07309 153.956 8.07309C155.478 8.07309 156.904 8.43522 158.097 8.93401V11.4143C156.87 10.4577 155.245 9.66511 153.585 9.66511C151.83 9.66511 150.637 10.4919 150.637 11.8447C150.637 13.1976 151.734 13.7921 153.455 14.5232L155.91 15.4934C157.644 16.1767 158.974 17.796 158.961 19.6545C158.933 22.7019 156.095 24.7381 152.831 24.7381C150.877 24.7381 149.348 24.4101 147.991 23.7473L147.998 23.7337Z" fill="currentColor"/>
+        <path d="M106.957 8.0795C104.64 8.0795 102.617 9.37089 101.589 11.5847V1.67042H98.6065V24.3345H101.589V15.9098C101.589 12.6369 103.481 10.3275 105.901 10.3275C107.958 10.3275 109.048 11.6803 109.048 14.2563V24.3345H112.031V13.4637C112.031 10.1635 110.111 8.0795 106.957 8.0795Z" fill="currentColor"/>
+        <path d="M81.9877 5.31909C82.9987 5.31909 83.8183 4.50231 83.8183 3.49475C83.8183 2.4872 82.9987 1.67042 81.9877 1.67042C80.9767 1.67042 80.1571 2.4872 80.1571 3.49475C80.1571 4.50231 80.9767 5.31909 81.9877 5.31909Z" fill="currentColor"/>
+        <path d="M144.077 5.31909C145.088 5.31909 145.908 4.50231 145.908 3.49475C145.908 2.4872 145.088 1.67042 144.077 1.67042C143.066 1.67042 142.247 2.4872 142.247 3.49475C142.247 4.50231 143.066 5.31909 144.077 5.31909Z" fill="currentColor"/>
+        <path d="M13.04 7.57377L7.6022 12.9907L13.04 18.4076L18.4777 12.9907L13.04 7.57377Z" fill="var(--logo-mark)"/>
+        <path d="M16.9661 4.62405V-0.0110024H13.0388C5.8295 -0.0110024 -0.0130026 5.80908 -0.0130026 12.9907V16.9029H4.63991V5.92254C4.63991 5.20396 5.22627 4.62405 5.9434 4.62405H16.9661Z" fill="var(--logo-mark)"/>
+        <path d="M9.11143 21.3573V25.9923H13.0388C20.248 25.9923 26.0905 20.1723 26.0905 12.9907V9.0784H21.4376V20.0588C21.4376 20.7774 20.8513 21.3573 20.1341 21.3573H9.11143Z" fill="var(--logo-mark)"/>
+        
+        </svg>
+    </a>
+
+    <main class="card">
+      <div class="header">
+        <div class="tile" aria-hidden="true">
+          <svg viewBox="0 0 32 32" fill="none" aria-hidden="true">
+          <path d="M15.2187 14.6666L5.33325 24.5521L3.44784 22.6666L11.4478 14.6666L3.44784 6.66663L5.33325 4.78121L15.2187 14.6666Z" fill="currentColor"/>
+          <path d="M28 23.9999V26.6666H14.6667V23.9999H28Z" fill="currentColor"/>
+          </svg>
+          <svg class="badge" viewBox="0 0 24 24" fill="none">
+            <rect width="24" height="24" rx="12" fill="var(--bg-2)"/>
+            <circle cx="12" cy="12" r="10" fill="#ffffff"/>
+            <path d="M12 22C6.47715 22 2 17.5228 2 12C2 6.47715 6.47715 2 12 2C17.5228 2 22 6.47715 22 12C22 17.5228 17.5228 22 12 22ZM15.0207 8.22263L10.5609 13.0878L8.92238 11.4492L7.60683 12.7648L10.6194 15.7774L16.3922 9.4798L15.0207 8.22263Z" fill-rule="evenodd" clip-rule="evenodd" fill="var(--success)"/>
+          </svg>
+        </div>
+        <div class="content">
+          <h1>You’re signed in</h1>
+          <p>Return to your terminal to continue.<br>You can close this tab.</p>
+        </div>
+      </div>
+      <p class="retry">If sign-in doesn’t complete in your terminal, run <code>snouty login</code> again</p>
+    </main>
+  </div>
+</body>
+</html>

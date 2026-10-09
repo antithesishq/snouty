@@ -1275,7 +1275,8 @@ def rows_at_most(limit: int):
 def _first_line(text: object) -> str:
     if not isinstance(text, str):
         return ""
-    return next((line.strip() for line in text.splitlines() if line.strip()), "")
+    # Split as Rust's `str::lines()` does: only on `\n`. `strip()` drops a `\r`.
+    return next((line.strip() for line in text.split("\n") if line.strip()), "")
 
 
 def expected_title(row: dict) -> str:

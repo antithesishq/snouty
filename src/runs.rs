@@ -2420,12 +2420,22 @@ fn render_runs_table(runs: &[RunSummary], width: usize) -> String {
     let rows: Vec<Vec<String>> = runs
         .iter()
         .map(|run| {
-            // A run with no test name (a debugging session, for one) shows its
+            // A run with no test name (a debugging session, for one) shows the
+            // first line of its description or event description, then its
             // launcher, so the row still says what the run is.
-            let test_name = match run.test_name().unwrap_or(&run.launcher) {
-                "" => "-".to_string(),
-                name => sanitize(name),
-            };
+            fn first_line(text: &str) -> Option<&str> {
+                text.lines().map(str::trim).find(|line| !line.is_empty())
+            }
+            let test_name = [
+                run.test_name(),
+                run.test_description().and_then(first_line),
+                run.event_description().and_then(first_line),
+                Some(run.launcher.as_str()),
+            ]
+            .into_iter()
+            .flatten()
+            .find(|text| !text.is_empty())
+            .map_or_else(|| "-".to_string(), sanitize);
             vec![
                 sanitize(&run.run_id),
                 run.status.to_string(),
@@ -4507,6 +4517,93 @@ mod tests {
             row.trim_end().ends_with("  debugging"),
             "expected launcher in TEST NAME, got: {row}"
         );
+    }
+
+    /// The TEST NAME cell of a one-run table at `width` columns.
+    fn test_name_cell(run: RunSummary, width: usize) -> String {
+        let table = render_runs_table(&[run], width);
+        let row = table.lines().nth(1).unwrap();
+        row.split("  ")
+            .filter(|cell| !cell.is_empty())
+            .nth(3)
+            .unwrap()
+            .trim()
+            .to_string()
+    }
+
+    fn with_event_description(mut run: RunSummary, text: &str) -> RunSummary {
+        run.parameters
+            .get_or_insert_with(|| serde_json::from_value(json!({})).unwrap())
+            .extra
+            .insert(
+                crate::params::ANT_EVENT_DESCRIPTION.to_string(),
+                text.to_string(),
+            );
+        run
+    }
+
+    fn debugging_run(description: Option<&str>) -> RunSummary {
+        summary(
+            "abc-54-1",
+            RunStatus::Cancelled,
+            "2024-01-01T00:00:00Z",
+            "debugging",
+            None,
+            description,
+        )
+    }
+
+    #[test]
+    fn runs_table_prefers_test_name_over_description() {
+        let run = summary(
+            "abc-54-1",
+            RunStatus::Completed,
+            "2024-01-01T00:00:00Z",
+            "debugging",
+            Some("nightly"),
+            Some("probe the stall"),
+        );
+        let run = with_event_description(run, "debug this moment");
+        assert_eq!(test_name_cell(run, 100), "nightly");
+    }
+
+    #[test]
+    fn runs_table_shows_description_first_line_when_test_name_missing() {
+        let run = debugging_run(Some("\n  probe the stall\x1b \nsecond line"));
+        assert_eq!(test_name_cell(run, 100), r"probe the stall\x1B");
+    }
+
+    #[test]
+    fn runs_table_reads_top_level_description() {
+        let mut run = debugging_run(None);
+        run.description = Some("top-level description".to_string());
+        assert_eq!(test_name_cell(run, 100), "top-level description");
+    }
+
+    #[test]
+    fn runs_table_shows_event_description_when_description_missing() {
+        let run = with_event_description(debugging_run(None), "debug this moment\nmore");
+        assert_eq!(test_name_cell(run, 100), "debug this moment");
+    }
+
+    #[test]
+    fn runs_table_prefers_description_over_event_description() {
+        let run = with_event_description(debugging_run(Some("probe the stall")), "debug this");
+        assert_eq!(test_name_cell(run, 100), "probe the stall");
+    }
+
+    #[test]
+    fn runs_table_skips_blank_description_for_launcher() {
+        let run = with_event_description(debugging_run(Some(" \n ")), "\n");
+        assert_eq!(test_name_cell(run, 100), "debugging");
+    }
+
+    #[test]
+    fn runs_table_truncates_long_description() {
+        let run = debugging_run(Some(&"long description ".repeat(10)));
+        let cell = test_name_cell(run, 80);
+        assert!(cell.starts_with("long description"), "got: {cell}");
+        assert!(cell.ends_with('…'), "got: {cell}");
     }
 
     #[test]

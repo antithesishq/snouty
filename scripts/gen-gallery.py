@@ -1272,6 +1272,57 @@ def rows_at_most(limit: int):
     return chk
 
 
+def _first_line(text: object) -> str:
+    if not isinstance(text, str):
+        return ""
+    return next((line.strip() for line in text.splitlines() if line.strip()), "")
+
+
+def expected_title(row: dict) -> str:
+    """The TEST NAME cell that `runs list` shows for a `--json` row.
+
+    The order is: test name, the first line of the description, the first line
+    of the event description that a debugging session sets, the launcher, `-`.
+    """
+    params = row.get("parameters") or {}
+    candidates = [
+        params.get("antithesis.test_name"),
+        _first_line(row.get("description") or params.get("antithesis.description")),
+        _first_line(params.get(_DESCRIPTION)),
+        row.get("launcher"),
+    ]
+    return next((c for c in candidates if isinstance(c, str) and c), "-")
+
+
+def rows_at_most_with_titles(limit: int):
+    """`rows_at_most`, plus each table row shows the title of `expected_title`.
+
+    A cell that ends in `…` is truncated, so it must be a prefix of the title.
+    """
+
+    def chk(sr: StoryRun, reg: Registry) -> tuple[bool, str]:
+        rows = sr.rows or []
+        lines = sr.result.stdout.splitlines()
+        bad: list[str] = []
+        for row in rows:
+            run_id = row.get("run_id", "")
+            line = next((ln for ln in lines if ln.startswith(f"{run_id} ")), None)
+            cells = re.split(r" {2,}", line.strip(), maxsplit=3) if line else []
+            cell = cells[3] if len(cells) == 4 else ""
+            want = expected_title(row)
+            if cell.endswith("…"):
+                ok = want.startswith(cell[:-1])
+            else:
+                ok = cell == want
+            if not ok:
+                bad.append(f"{run_id}: {cell!r} != {want!r}")
+        n = len(rows)
+        detail = "; ".join(bad) or "titles match"
+        return (1 <= n <= limit and not bad, f"{n} rows (limit {limit}), {detail}")
+
+    return chk
+
+
 def rows_at_most_with_limit_note(limit: int):
     """`rows_at_most`, plus the note that names the limit.
 
@@ -1771,10 +1822,11 @@ def build_stories(d: Discovery) -> list[Story]:
             "List recent runs to find one to inspect",
             "I want to scan recent runs and pick one to dig into.",
             "Up to 10 recent runs, newest first, with legible id/status/title/time columns; "
-            "a run with no test name (a debugging session) shows its launcher as the title; "
+            "a run with no test name (a debugging session) shows the first line of its "
+            "description or event description as the title, else its launcher; "
             "when more runs exist, a stderr note says the output stopped at the limit.",
             ["runs", "list", "-n", "10"],
-            rows_at_most(10),
+            rows_at_most_with_titles(10),
         ),
         Story(
             "runs-list--limit",

@@ -1793,7 +1793,9 @@ async fn cmd_runs_exec(
                         return Err(user_error(format!("run not found: {run_id}")));
                     }
                     RunProbe::ProbeFailed(probe_err) => return Err(probe_err),
-                    RunProbe::Exists(run) => Some(*run),
+                    // With a rewarm source, the 404 can be a bad source, and
+                    // a retry does not fix that.
+                    RunProbe::Exists(run) => rewarm_flag.is_none().then_some(*run),
                 },
                 // The loading note is only a hint, so a failed lookup drops it.
                 Some(400) if cold => api.get_run(run_id).await.ok().map(|run| run.untag()),

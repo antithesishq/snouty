@@ -351,6 +351,9 @@ fn a_redirected_summary_keeps_whole_lines() {
     );
     expect(&mut session, "Please enter your API Key");
     send(&mut session, "sk-pty-key-123\r");
+    // Read the PTY to its end before the wait: on macOS a child cannot exit
+    // while its terminal output is unread.
+    Expect::expect(&mut session, expectrl::Eof).expect("read the PTY to its end");
     let status = session.get_process().wait().expect("wait for snouty login");
     assert!(
         matches!(status, WaitStatus::Exited(_, 0)),

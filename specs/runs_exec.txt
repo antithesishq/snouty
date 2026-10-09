@@ -73,9 +73,11 @@
 # everything below the credential-free check is gated behind `[staging] skip`,
 # like `snouty debug`: staging has no reliably-live run to execute against.
 
-# The command is in `runs --help`.
+# `runs --help` shows the command in its command list, intro, and examples.
 snouty runs --help
 stdout 'exec.*Execute a command in a run'
+stdout 'cancel, run commands in, and read the logs'
+stdout 'snouty runs exec <run_id> <input_hash> <vtime> .uname -a.$'
 snouty runs exec --help
 ! stdout 'SNOUTY_UNSTABLE_FEATURES'
 

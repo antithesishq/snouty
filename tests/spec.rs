@@ -361,29 +361,50 @@ fn cmd_env_from_json_find(
     env: &mut testscript_rs::TestEnvironment,
     args: &[String],
 ) -> testscript_rs::Result<()> {
-    // Usage: env_from_json_find <json_key> <field>!=<value>
-    // Every line must carry <field> as a string, so a misspelled field fails
-    // instead of matching every line.
-    let usage = || err("env_from_json_find requires <json_key> <field>!=<value>".to_string());
-    let [key, filter] = args else {
+    // Usage: env_from_json_find <json_key> <filter>...
+    // Stores <json_key> from the first NDJSON line that matches every filter.
+    // A filter is one of:
+    //   <field>!=<value>  <field> is a string other than <value>. Every line
+    //                     must carry <field> as a string, so a misspelled
+    //                     field fails instead of matching every line.
+    //   <path>            the line has a non-null value at <path>, a
+    //                     dot-separated list of object keys, such as
+    //                     `links.triage_report`.
+    let usage = || err("env_from_json_find requires <json_key> <filter>...".to_string());
+    let [key, filters @ ..] = args else {
         return Err(usage());
     };
-    let (field, excluded) = filter.split_once("!=").ok_or_else(usage)?;
+    if filters.is_empty() {
+        return Err(usage());
+    }
 
     let stdout = last_stdout(env)?;
-    for line in stdout.lines() {
+    'lines: for line in stdout.lines() {
         let value = parse_json_line(line)?;
-        let actual = value
-            .get(field)
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| err(format!("string field '{field}' not found in JSON")))?;
-        if actual != excluded {
-            return set_env_from_json(env, &value, key);
+        for filter in filters {
+            let matches = match filter.split_once("!=") {
+                Some((field, excluded)) => {
+                    let actual = value
+                        .get(field)
+                        .and_then(|v| v.as_str())
+                        .ok_or_else(|| err(format!("string field '{field}' not found in JSON")))?;
+                    actual != excluded
+                }
+                None => filter
+                    .split('.')
+                    .try_fold(&value, |v, k| v.get(k))
+                    .is_some_and(|v| !v.is_null()),
+            };
+            if !matches {
+                continue 'lines;
+            }
         }
+        return set_env_from_json(env, &value, key);
     }
     Err(err(format!(
-        "none of {} JSON line(s) matches '{filter}'",
-        stdout.lines().count()
+        "none of {} JSON line(s) matches '{}'",
+        stdout.lines().count(),
+        filters.join(" ")
     )))
 }
 

@@ -264,7 +264,7 @@ fn an_api_key_that_replaces_a_stored_password_says_so() {
     let lines = rendered_lines(&seen);
     let start = lines
         .iter()
-        .position(|line| line.starts_with("Stored your API key in "))
+        .position(|line| line.starts_with("Stored your API key in"))
         .unwrap_or_else(|| panic!("no credentials line: {seen}"));
     let end = start
         + lines[start..]
@@ -304,7 +304,7 @@ fn an_api_key_does_not_claim_to_replace_a_password_from_the_environment() {
     send(&mut session, "sk-pty-key-123\r");
     let seen = finish(session);
 
-    assert!(seen.contains("Stored your API key in "), "{seen}");
+    assert!(seen.contains("Stored your API key in"), "{seen}");
     assert!(!seen.contains("replacing"), "{seen}");
 }
 

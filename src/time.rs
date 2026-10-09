@@ -6,7 +6,9 @@
 //! (`1h30m`, `2h`, `30s`).
 //!
 //! A bare number is read as a (possibly fractional) count of minutes and
-//! rounded to whole seconds — the finest resolution we keep. Unit forms use
+//! rounded to whole seconds — the finest resolution we keep. A flag that has
+//! always taken seconds reads a bare number as whole seconds instead; see
+//! [`BareUnit`]. Unit forms use
 //! whole-number components (`h`/`m`/`s`, in that order); fractional components
 //! like `1.5h` are rejected, since the bare-minutes form already covers that.
 
@@ -42,7 +44,34 @@ const SECS_PER_HOUR: u64 = 60 * SECS_PER_MINUTE;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct HumanDuration(Duration);
 
+/// The unit that a bare number (no `h`/`m`/`s` suffix) counts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BareUnit {
+    /// A possibly fractional count of minutes: the [`FromStr`] form.
+    Minutes,
+    /// A whole count of seconds, for flags that have always taken seconds.
+    Seconds,
+}
+
 impl HumanDuration {
+    /// Parse `s`, reading a bare number in `bare` units. Unit forms parse
+    /// the same with either unit.
+    pub fn parse(s: &str, bare: BareUnit) -> Result<Self, ParseDurationError> {
+        let s = s.trim().to_ascii_lowercase();
+
+        // A bare number keeps the unit its flag has always taken; otherwise
+        // expect whole-number `h`/`m`/`s` components.
+        let parsed = if is_decimal(&s) {
+            match bare {
+                BareUnit::Minutes => s.parse().ok().and_then(Self::from_minutes),
+                BareUnit::Seconds => s.parse().ok().map(Self::from_seconds),
+            }
+        } else {
+            parse_units(&s).map(Self::from_seconds)
+        };
+        parsed.ok_or(ParseDurationError(bare))
+    }
+
     /// Build from a whole number of seconds.
     pub fn from_seconds(seconds: u64) -> Self {
         Self(Duration::from_secs(seconds))
@@ -114,32 +143,27 @@ impl FromStr for HumanDuration {
     type Err = ParseDurationError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let s = s.trim().to_ascii_lowercase();
-
-        // A bare number is (fractional) minutes, kept for backwards
-        // compatibility; otherwise expect whole-number `h`/`m`/`s` components.
-        if is_decimal(&s) {
-            let minutes: f64 = s.parse().map_err(|_| ParseDurationError)?;
-            return Self::from_minutes(minutes).ok_or(ParseDurationError);
-        }
-
-        parse_units(&s)
-            .map(Self::from_seconds)
-            .ok_or(ParseDurationError)
+        Self::parse(s, BareUnit::Minutes)
     }
 }
 
 /// Error from parsing a [`HumanDuration`]. Its message lists the accepted
 /// forms; clap prefixes it with the offending value and flag name.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ParseDurationError;
+pub struct ParseDurationError(BareUnit);
 
 impl fmt::Display for ParseDurationError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(
-            "must be a number of minutes (e.g. `30`) or use h/m units \
-             (e.g. `90m`, `2h`, `1h30m`)",
-        )
+        f.write_str(match self.0 {
+            BareUnit::Minutes => {
+                "must be a number of minutes (e.g. `30`) or use h/m units \
+                 (e.g. `90m`, `2h`, `1h30m`)"
+            }
+            BareUnit::Seconds => {
+                "must be a whole number of seconds (e.g. `120`) or use h/m/s units \
+                 (e.g. `90s`, `2m`, `1h`)"
+            }
+        })
     }
 }
 
@@ -282,7 +306,26 @@ mod tests {
         ] {
             assert_eq!(
                 bad.parse::<HumanDuration>(),
-                Err(ParseDurationError),
+                Err(ParseDurationError(BareUnit::Minutes)),
+                "expected {bad:?} to be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn bare_seconds_reads_a_whole_number_as_seconds() {
+        let seconds = |s: &str| HumanDuration::parse(s, BareUnit::Seconds).map(|d| d.seconds());
+        assert_eq!(seconds("120"), Ok(120));
+        assert_eq!(seconds(" 0 "), Ok(0));
+        // Unit forms parse as they do with bare minutes.
+        assert_eq!(seconds("2m"), Ok(120));
+        assert_eq!(seconds("90s"), Ok(90));
+        assert_eq!(seconds("1h"), Ok(3600));
+        // Seconds stay whole, so a fractional bare number is rejected.
+        for bad in ["1.5", "abc", "1.5h", "1h30", ""] {
+            assert_eq!(
+                seconds(bad),
+                Err(ParseDurationError(BareUnit::Seconds)),
                 "expected {bad:?} to be rejected"
             );
         }
@@ -335,6 +378,22 @@ mod tests {
             .parse::<HumanDuration>()
             .expect("Display output must re-parse");
         assert_eq!(d, reparsed);
+    }
+
+    /// With bare seconds, a whole number parses to that many seconds, and the
+    /// `Display` form parses back to the same value.
+    #[hegel::test]
+    fn bare_seconds_round_trips(tc: hegel::TestCase) {
+        let seconds = tc.draw(generators::integers::<u64>());
+        let d = HumanDuration::from_seconds(seconds);
+        assert_eq!(
+            HumanDuration::parse(&seconds.to_string(), BareUnit::Seconds),
+            Ok(d)
+        );
+        assert_eq!(
+            HumanDuration::parse(&d.to_string(), BareUnit::Seconds),
+            Ok(d)
+        );
     }
 
     /// A timestamp `runs show` prints parses back, as `--created-after` and

@@ -23,6 +23,28 @@ stderr '.*rename.*'
 ! snouty validate ambiguous
 stderr '.*both docker-compose.yaml and a manifests/ subdirectory.*'
 
+# --timeout takes seconds or h/m/s units, and shows its default with units.
+snouty validate --help
+stdout 'in seconds or h/m/s'
+stdout '\[default: 2m\]'
+stdout 'snouty validate \./config --timeout 5m'
+
+# A bare number (seconds) and h/m/s units parse. The command then fails on
+# the missing directory, not on the flag.
+! snouty validate /nonexistent/path --timeout 90
+stderr 'not a directory.*'
+! snouty validate /nonexistent/path --timeout 90s
+stderr 'not a directory.*'
+! snouty validate /nonexistent/path --timeout 2m
+stderr 'not a directory.*'
+
+# A value that is not seconds or h/m/s units fails, and the error lists the
+# accepted forms.
+! snouty validate empty --timeout 2x
+stderr 'invalid value .2x. for .--timeout <TIMEOUT>.: must be a whole number of seconds \(e\.g\. `120`\) or use h/m/s units'
+! snouty validate empty --timeout 1.5
+stderr 'must be a whole number of seconds'
+
 # Help text mentions --keep-running.
 snouty validate --help
 stdout '.*keep-running.*'

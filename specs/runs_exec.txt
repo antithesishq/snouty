@@ -81,6 +81,13 @@ stdout 'snouty runs exec <run_id> <input_hash> <vtime> .uname -a.$'
 snouty runs exec --help
 ! stdout 'SNOUTY_UNSTABLE_FEATURES'
 
+# --timeout takes seconds or h/m/s units. Without it, the server's default
+# applies.
+snouty runs exec --help
+stdout 'seconds or h/m/s units \(e\.g\. 90s, 5m\)'
+stdout '\[default: the server.s, 10m as of release 64\.0\]'
+stdout '--timeout 5m'
+
 # The command authenticates with the Antithesis API. An API key is required,
 # like every run-scoped endpoint.
 ! snouty runs exec run-2 -3625518438076122494 398.4898056755774 'uname -a'
@@ -163,6 +170,13 @@ stderr 'set a longer timeout with --timeout'
 # timeout_seconds, so the server's default applies.
 snouty runs exec run-2 -3625518438076122494 398.4898056755774 print-request --timeout 45
 stdout 'timeout_seconds=45'
+
+# A bare number counts seconds, and h/m/s units work too.
+snouty runs exec run-2 -3625518438076122494 398.4898056755774 print-request --timeout 2m
+stdout 'timeout_seconds=120'
+
+snouty runs exec run-2 -3625518438076122494 398.4898056755774 print-request --timeout 90s
+stdout 'timeout_seconds=90'
 
 snouty runs exec run-2 -3625518438076122494 398.4898056755774 print-request
 stdout 'timeout_seconds=absent'
@@ -359,10 +373,18 @@ stderr 'run not found: no-such-run'
 stderr 'invalid value .*not-a-number.*'
 stderr 'vtime is not a finite decimal number'
 
-# --timeout must be at least 1: a 0-second timeout can only ever time out.
-# (The API documents a minimum of 0 and no maximum; the floor is snouty's.)
+# --timeout must be at least 1 second: a 0-second timeout can only ever time
+# out. (The API documents a minimum of 0 and no maximum; the floor is
+# snouty's.)
 ! snouty runs exec run-2 -3625518438076122494 398.4898056755774 'uname -a' --timeout 0
-stderr '0 is not in .*1\.\..*'
+stderr 'must be at least 1 second'
+! snouty runs exec run-2 -3625518438076122494 398.4898056755774 'uname -a' --timeout 0s
+stderr 'must be at least 1 second'
+
+# A value that is not seconds or h/m/s units fails before any API call, and
+# the error lists the accepted forms.
+! snouty runs exec run-2 -3625518438076122494 398.4898056755774 'uname -a' --timeout 1.5
+stderr 'invalid value .1\.5. for .--timeout <TIMEOUT>.: must be a whole number of seconds \(e\.g\. `120`\) or use h/m/s units \(e\.g\. `90s`, `2m`, `1h`\)'
 
 -- exec_script.txt --
 uname -a

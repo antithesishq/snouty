@@ -19,6 +19,7 @@ use crate::error::user_error;
 use crate::render::sanitize;
 use crate::scripts::{ScriptType, TestScript, scan_scripts};
 use crate::settings::Settings;
+use crate::time::HumanDuration;
 
 const K8S_VALIDATOR_IMAGE: &str = "docker.io/antithesishq/k8s-validator:1.0.0";
 
@@ -225,7 +226,7 @@ async fn validate_with_temp_dir(
 async fn validate_compose(
     rt: &dyn container::ContainerRuntime,
     config: ComposeConfig,
-    timeout: u64,
+    timeout: HumanDuration,
     keep_running: bool,
     allow_compose_divergence: bool,
     temp_dir: &Path,
@@ -901,7 +902,7 @@ const POLL_INTERVAL: Duration = Duration::from_millis(25);
 const MAX_READ_BYTES: u64 = 1024 * 1024;
 
 /// Watch `.jsonl` files anywhere under the given directory for setup-complete.
-/// Returns once the event is seen, and errors when `timeout` seconds pass first.
+/// Returns once the event is seen, and errors when `timeout` passes first.
 ///
 /// Reads every file on every poll, and remembers nothing between polls. The
 /// SDK's local-file handler opens its output without `O_APPEND` and truncates
@@ -918,13 +919,13 @@ const MAX_READ_BYTES: u64 = 1024 * 1024;
 ///
 /// Uses blocking `std::fs` calls intentionally — reads are small and infrequent,
 /// and this avoids pulling in tokio::fs for a simple poll loop.
-async fn watch_for_setup_complete(output_dir: &Path, timeout: u64) -> Result<()> {
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(timeout);
+async fn watch_for_setup_complete(output_dir: &Path, timeout: HumanDuration) -> Result<()> {
+    let deadline = tokio::time::Instant::now() + Duration::from(timeout);
     loop {
         if tokio::time::Instant::now() >= deadline {
             // The most likely cause comes first.
             return Err(
-                eyre!("timed out waiting for setup-complete event ({timeout}s)")
+                eyre!("timed out waiting for setup-complete event ({timeout})")
                     .suggestion(
                         "make sure your workload emits setup_complete \
                          (Antithesis SDK, or $ANTITHESIS_OUTPUT_DIR/sdk.jsonl)",
@@ -1335,7 +1336,7 @@ services:
 
     /// Watch `dir` until the event arrives or 3 seconds pass.
     async fn watch(dir: &Path) -> Result<()> {
-        watch_for_setup_complete(dir, 3).await
+        watch_for_setup_complete(dir, HumanDuration::from_seconds(3)).await
     }
 
     /// Assert the watch timed out rather than failing for another reason.

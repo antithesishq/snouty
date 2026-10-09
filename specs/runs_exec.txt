@@ -186,7 +186,7 @@ stdout '\[bash_command\] .*include_system_logs=true'
 # trailer still goes to stderr.
 snouty runs exec run-2 -3625518438076122494 398.4898056755774 with-system-logs --events
 stdout 'moment -8206006569229276678'
-stdout '398.49.* \[bash_command\] .*Command received'
+stdout '398.49.* \[bash_command\] fuzzpipe Command received$'
 stdout '398.49.* \[bash_command\] script says hi'
 stdout '398.49.* \[workload\] workload says hi'
 stderr 'end moment: -8206006569229276678 398.492'

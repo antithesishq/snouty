@@ -45,6 +45,7 @@ mod assert;
 mod composer;
 mod container;
 mod fault;
+mod fuzzpipe;
 mod guest;
 mod guidance;
 mod log;
@@ -238,8 +239,10 @@ fn render_payload(entry: &Value, block: &mut Block<'_>) -> fmt::Result {
         sdk::Setup,
         fault::Fault,
         fault::InjectorInfo,
+        fault::InjectorSettings,
         container::Lifecycle,
         guest::CommandInjected,
+        fuzzpipe::Fuzzpipe,
         log::Log,
         composer::Task,
         composer::Chatter,

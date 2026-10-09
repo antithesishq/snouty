@@ -202,6 +202,9 @@ fn print_login_summary(
     credentials: Option<AttributedValue<&str>>,
     previous_credentials: Option<AttributedValue<AuthenticationInfo>>,
 ) {
+    // Wrap each line at word boundaries on a terminal: a long settings path
+    // otherwise makes the terminal cut the line mid-word.
+    let say = |line: &str| println!("{}", crate::render::wrap_stdout_if_tty(line));
     let scope = match profile {
         Some(p) => format!(" under profile `{p}`"),
         None => String::new(),
@@ -213,7 +216,10 @@ fn print_login_summary(
     if !repository.is_empty() {
         saved.push_str(&format!(" and repository `{repository}`"));
     }
-    println!("\nSaved {saved}{scope} to {}.", settings_path.display());
+    say(&format!(
+        "\nSaved {saved}{scope} to {}.",
+        settings_path.display()
+    ));
     let replaced = match (&credentials, &previous_credentials) {
         (Some(new), Some(previous)) => replaced_stored_password(new, previous, profile),
         _ => false,
@@ -228,37 +234,42 @@ fn print_login_summary(
             value: kind,
             entry_name: _,
         }) => {
-            println!("Stored your {kind}{scope} in the system keychain{replaced}.");
+            say(&format!(
+                "Stored your {kind}{scope} in the system keychain{replaced}."
+            ));
         }
         Some(AttributedValue::SettingsFile {
             value: kind,
             settings_file_path: path,
             profile: _,
         }) => {
-            println!("Stored your {kind}{scope} in {}{replaced}.", path.display());
+            say(&format!(
+                "Stored your {kind}{scope} in {}{replaced}.",
+                path.display()
+            ));
         }
         _ => match previous_credentials {
             Some(AttributedValue::Keychain { .. }) => {
-                println!(
+                say(&format!(
                     "Retained your previously stored credentials{scope} in the system keychain."
-                );
+                ));
             }
             Some(AttributedValue::SettingsFile {
                 settings_file_path, ..
             }) => {
-                println!(
+                say(&format!(
                     "Retained your previously stored credentials{scope} in {}.",
                     settings_file_path.display()
-                );
+                ));
             }
             _ => {
-                println!(
-                    "Skipped credential storage — snouty will read credentials from the environment, such as ANTITHESIS_API_KEY."
+                say(
+                    "Skipped credential storage — snouty will read credentials from the environment, such as ANTITHESIS_API_KEY.",
                 );
             }
         },
     }
-    println!("Run `snouty doctor` to verify your setup.");
+    say("Run `snouty doctor` to verify your setup.");
 }
 
 /// Whether storing `new` deleted a username and password that `previous` names,

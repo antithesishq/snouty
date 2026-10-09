@@ -65,6 +65,24 @@ fn start_login_with_env(
     seed: &[(&str, &str)],
     env: &[(&str, &str)],
 ) -> (tempfile::TempDir, OsSession) {
+    spawn_login(seed, env, Stdout::Pty)
+}
+
+/// Where the child's stdout goes.
+enum Stdout {
+    Pty,
+    /// The file [`STDOUT_FILE`] under the temp `$HOME`. stdin and stderr stay on
+    /// the PTY.
+    File,
+}
+
+const STDOUT_FILE: &str = "stdout.txt";
+
+fn spawn_login(
+    seed: &[(&str, &str)],
+    env: &[(&str, &str)],
+    stdout: Stdout,
+) -> (tempfile::TempDir, OsSession) {
     let home = tempfile::TempDir::new().expect("temp HOME");
     for (path, contents) in seed {
         let path = home.path().join(path);
@@ -74,7 +92,18 @@ fn start_login_with_env(
     }
     let base_url = support::start_mock_server(OAUTH_DISABLED, 200);
 
-    let mut command = Command::new(env!("CARGO_BIN_EXE_snouty"));
+    let mut command = match stdout {
+        Stdout::Pty => Command::new(env!("CARGO_BIN_EXE_snouty")),
+        Stdout::File => {
+            let mut sh = Command::new("/bin/sh");
+            sh.args([
+                "-c",
+                &format!(r#"exec "$0" "$@" > "$HOME/{STDOUT_FILE}""#),
+                env!("CARGO_BIN_EXE_snouty"),
+            ]);
+            sh
+        }
+    };
     command
         .args([
             "login",
@@ -152,6 +181,16 @@ fn finish(mut session: OsSession) -> String {
         "login failed: {status:?}"
     );
     seen
+}
+
+/// The lines snouty rendered in `seen`, without ANSI escape sequences or the
+/// PTY's carriage returns.
+fn rendered_lines(seen: &str) -> Vec<String> {
+    let stripped = strip_ansi_escapes::strip(seen.as_bytes());
+    String::from_utf8_lossy(&stripped)
+        .lines()
+        .map(|line| line.trim_end_matches('\r').to_string())
+        .collect()
 }
 
 fn credentials(home: &Path) -> String {
@@ -250,9 +289,30 @@ fn an_api_key_that_replaces_a_stored_password_says_so() {
     send(&mut session, "sk-pty-key-123\r");
     let seen = finish(session);
 
+    // The temp path makes this line longer than the PTY, so snouty wraps it.
+    let lines = rendered_lines(&seen);
+    let start = lines
+        .iter()
+        .position(|line| line.starts_with("Stored your API key in"))
+        .unwrap_or_else(|| panic!("no credentials line: {seen}"));
+    let end = start
+        + lines[start..]
+            .iter()
+            .position(|line| line.ends_with('.'))
+            .unwrap_or_else(|| panic!("the credentials line does not end: {seen}"));
+    assert!(end > start, "the credentials line is not wrapped: {seen}");
+    // A temp path longer than the PTY overflows on a line of its own.
+    for line in &lines[start..=end] {
+        assert!(
+            line.chars().count() <= PTY_COLS as usize || !line.contains(' '),
+            "{line:?}: {seen}"
+        );
+    }
     assert!(
-        seen.contains("credentials.toml, replacing your stored username and password."),
-        "{seen}"
+        lines[start..=end]
+            .join(" ")
+            .ends_with("credentials.toml, replacing your stored username and password."),
+        "the credentials line is split mid-word: {seen}"
     );
     let creds = credentials(home.path());
     assert!(creds.contains(r#"api_key = "sk-pty-key-123""#), "{creds}");
@@ -273,8 +333,43 @@ fn an_api_key_does_not_claim_to_replace_a_password_from_the_environment() {
     send(&mut session, "sk-pty-key-123\r");
     let seen = finish(session);
 
-    assert!(seen.contains("Stored your API key in "), "{seen}");
+    assert!(seen.contains("Stored your API key in"), "{seen}");
     assert!(!seen.contains("replacing"), "{seen}");
+}
+
+/// With stdout redirected and stderr on a terminal, the summary keeps whole
+/// lines, because stdout is not a terminal.
+#[test]
+fn a_redirected_summary_keeps_whole_lines() {
+    let (home, mut session) = spawn_login(
+        &[(
+            ".config/snouty/credentials.toml",
+            "[default]\ntype = \"Password\"\nusername = \"puser\"\npassword = \"pty-pass\"\n",
+        )],
+        &[],
+        Stdout::File,
+    );
+    expect(&mut session, "Please enter your API Key");
+    send(&mut session, "sk-pty-key-123\r");
+    // Read the PTY to its end before the wait: on macOS a child cannot exit
+    // while its terminal output is unread.
+    Expect::expect(&mut session, expectrl::Eof).expect("read the PTY to its end");
+    let status = session.get_process().wait().expect("wait for snouty login");
+    assert!(
+        matches!(status, WaitStatus::Exited(_, 0)),
+        "login failed: {status:?}"
+    );
+
+    let summary =
+        std::fs::read_to_string(home.path().join(STDOUT_FILE)).expect("read the redirected stdout");
+    assert!(
+        summary
+            .lines()
+            .any(|line| line.starts_with("Stored your API key in ")
+                && line
+                    .ends_with("credentials.toml, replacing your stored username and password.")),
+        "{summary}"
+    );
 }
 
 /// Esc at the API key prompt skips credential storage and writes no

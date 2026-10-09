@@ -154,6 +154,16 @@ fn finish(mut session: OsSession) -> String {
     seen
 }
 
+/// The lines snouty rendered in `seen`, without ANSI escape sequences or the
+/// PTY's carriage returns.
+fn rendered_lines(seen: &str) -> Vec<String> {
+    let stripped = strip_ansi_escapes::strip(seen.as_bytes());
+    String::from_utf8_lossy(&stripped)
+        .lines()
+        .map(|line| line.trim_end_matches('\r').to_string())
+        .collect()
+}
+
 fn credentials(home: &Path) -> String {
     std::fs::read_to_string(home.join(".config/snouty/credentials.toml")).unwrap_or_default()
 }
@@ -250,9 +260,30 @@ fn an_api_key_that_replaces_a_stored_password_says_so() {
     send(&mut session, "sk-pty-key-123\r");
     let seen = finish(session);
 
+    // The temp path makes this line longer than the PTY, so snouty wraps it.
+    let lines = rendered_lines(&seen);
+    let start = lines
+        .iter()
+        .position(|line| line.starts_with("Stored your API key in "))
+        .unwrap_or_else(|| panic!("no credentials line: {seen}"));
+    let end = start
+        + lines[start..]
+            .iter()
+            .position(|line| line.ends_with('.'))
+            .unwrap_or_else(|| panic!("the credentials line does not end: {seen}"));
+    assert!(end > start, "the credentials line is not wrapped: {seen}");
+    // A temp path longer than the PTY overflows on a line of its own.
+    for line in &lines[start..=end] {
+        assert!(
+            line.chars().count() <= PTY_COLS as usize || !line.contains(' '),
+            "{line:?}: {seen}"
+        );
+    }
     assert!(
-        seen.contains("credentials.toml, replacing your stored username and password."),
-        "{seen}"
+        lines[start..=end]
+            .join(" ")
+            .ends_with("credentials.toml, replacing your stored username and password."),
+        "the credentials line is split mid-word: {seen}"
     );
     let creds = credentials(home.path());
     assert!(creds.contains(r#"api_key = "sk-pty-key-123""#), "{creds}");

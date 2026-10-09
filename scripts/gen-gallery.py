@@ -1428,7 +1428,10 @@ def tty_persisted(
         if sr.result.ok != expect_ok:
             problems.append(f"exit={sr.result.returncode} (want ok={expect_ok})")
 
-        missing_prompts = [p for p in prompts if p not in text]
+        # snouty wraps long lines at word boundaries, so match a prompt across
+        # a line break.
+        flat = " ".join(text.split())
+        missing_prompts = [p for p in prompts if p not in flat]
         if missing_prompts:
             problems.append(f"missing prompts={missing_prompts!r}")
         shown_absent = [p for p in absent_prompts if p in text]
@@ -3179,9 +3182,8 @@ def build_tty_stories() -> list[Story]:
                 (_ASK_KEY, _FAKE_KEY + ENTER),
             ),
             tty_persisted(
-                # The summary must say that the new key replaced the password. The
-                # screen wraps that long line, so match only the start of the clause.
-                prompts=(_ASK_KEY, ", replacing your stored username"),
+                # The summary must say that the new key replaced the password.
+                prompts=(_ASK_KEY, ", replacing your stored username and password."),
                 absent_prompts=(_ASK_CREDENTIALS,),
                 files=((_CREDS, ('type = "ApiKey"', f'api_key = "{_FAKE_KEY}"')),),
                 secrets_absent=(_FAKE_KEY, _FAKE_PASS),

@@ -103,7 +103,16 @@ const PROSE_WIDTH: usize = 100;
 /// that straddles it. The measure is the terminal's width, capped at
 /// [`PROSE_WIDTH`].
 pub fn wrap_if_tty(text: &str) -> String {
-    match prose_width() {
+    wrap_for(&console::Term::stderr(), text)
+}
+
+/// As [`wrap_if_tty`], for prose printed to stdout.
+pub(crate) fn wrap_stdout_if_tty(text: &str) -> String {
+    wrap_for(&console::Term::stdout(), text)
+}
+
+fn wrap_for(term: &console::Term, text: &str) -> String {
+    match prose_width_of(term) {
         Some(width) => wrap_text(text, width).join("\n"),
         None => text.to_string(),
     }
@@ -113,7 +122,10 @@ pub fn wrap_if_tty(text: &str) -> String {
 /// capped at [`PROSE_WIDTH`]. `None` when stderr is not a terminal, where
 /// output keeps whole lines.
 pub(crate) fn prose_width() -> Option<usize> {
-    let term = console::Term::stderr();
+    prose_width_of(&console::Term::stderr())
+}
+
+fn prose_width_of(term: &console::Term) -> Option<usize> {
     term.is_term()
         .then(|| PROSE_WIDTH.min(term.size().1 as usize))
 }

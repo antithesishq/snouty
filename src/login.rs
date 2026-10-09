@@ -204,7 +204,7 @@ fn print_login_summary(
 ) {
     // Wrap each line at word boundaries on a terminal: a long settings path
     // otherwise makes the terminal cut the line mid-word.
-    let say = |line: &str| println!("{}", crate::render::wrap_if_tty(line));
+    let say = |line: &str| println!("{}", crate::render::wrap_stdout_if_tty(line));
     let scope = match profile {
         Some(p) => format!(" under profile `{p}`"),
         None => String::new(),

@@ -65,6 +65,24 @@ fn start_login_with_env(
     seed: &[(&str, &str)],
     env: &[(&str, &str)],
 ) -> (tempfile::TempDir, OsSession) {
+    spawn_login(seed, env, Stdout::Pty)
+}
+
+/// Where the child's stdout goes.
+enum Stdout {
+    Pty,
+    /// The file [`STDOUT_FILE`] under the temp `$HOME`. stdin and stderr stay on
+    /// the PTY.
+    File,
+}
+
+const STDOUT_FILE: &str = "stdout.txt";
+
+fn spawn_login(
+    seed: &[(&str, &str)],
+    env: &[(&str, &str)],
+    stdout: Stdout,
+) -> (tempfile::TempDir, OsSession) {
     let home = tempfile::TempDir::new().expect("temp HOME");
     for (path, contents) in seed {
         let path = home.path().join(path);
@@ -74,7 +92,18 @@ fn start_login_with_env(
     }
     let base_url = support::start_mock_server(OAUTH_DISABLED, 200);
 
-    let mut command = Command::new(env!("CARGO_BIN_EXE_snouty"));
+    let mut command = match stdout {
+        Stdout::Pty => Command::new(env!("CARGO_BIN_EXE_snouty")),
+        Stdout::File => {
+            let mut sh = Command::new("/bin/sh");
+            sh.args([
+                "-c",
+                &format!(r#"exec "$0" "$@" > "$HOME/{STDOUT_FILE}""#),
+                env!("CARGO_BIN_EXE_snouty"),
+            ]);
+            sh
+        }
+    };
     command
         .args([
             "login",
@@ -306,6 +335,38 @@ fn an_api_key_does_not_claim_to_replace_a_password_from_the_environment() {
 
     assert!(seen.contains("Stored your API key in"), "{seen}");
     assert!(!seen.contains("replacing"), "{seen}");
+}
+
+/// With stdout redirected and stderr on a terminal, the summary keeps whole
+/// lines, because stdout is not a terminal.
+#[test]
+fn a_redirected_summary_keeps_whole_lines() {
+    let (home, mut session) = spawn_login(
+        &[(
+            ".config/snouty/credentials.toml",
+            "[default]\ntype = \"Password\"\nusername = \"puser\"\npassword = \"pty-pass\"\n",
+        )],
+        &[],
+        Stdout::File,
+    );
+    expect(&mut session, "Please enter your API Key");
+    send(&mut session, "sk-pty-key-123\r");
+    let status = session.get_process().wait().expect("wait for snouty login");
+    assert!(
+        matches!(status, WaitStatus::Exited(_, 0)),
+        "login failed: {status:?}"
+    );
+
+    let summary =
+        std::fs::read_to_string(home.path().join(STDOUT_FILE)).expect("read the redirected stdout");
+    assert!(
+        summary
+            .lines()
+            .any(|line| line.starts_with("Stored your API key in ")
+                && line
+                    .ends_with("credentials.toml, replacing your stored username and password.")),
+        "{summary}"
+    );
 }
 
 /// Esc at the API key prompt skips credential storage and writes no

@@ -420,14 +420,11 @@ async fn cmd_debug(
             moment(ANT_DEBUGGING_INPUT_HASH),
             moment(ANT_DEBUGGING_VTIME),
         ) {
-            // TODO: drop the retry line once the API reports `in_progress`
-            // only for a session that accepts commands. On release 64.0 a
-            // new session answered 404, then 400 "Moment not warm", for
-            // minutes while it was `in_progress`.
+            // A session that is still loading makes `runs exec` fail with a
+            // suggestion to try again, so the hint does not repeat it.
             println!(
                 "\nthen run a script at this moment:\n  \
-                 snouty runs exec {run_id} {input_hash} {vtime} '<script>'\n\
-                 if it answers 404 or 'Moment not warm', the session is still loading. Try again."
+                 snouty runs exec {run_id} {input_hash} {vtime} '<script>'"
             );
         }
     } else {

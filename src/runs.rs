@@ -231,7 +231,7 @@ pub async fn cmd_runs(
                 moment: Moment { input_hash, vtime },
                 script: resolve_exec_script(script)?,
                 container,
-                timeout: timeout.map(Duration::from_secs),
+                timeout: timeout.map(Duration::from),
                 events,
                 rewarm,
             };

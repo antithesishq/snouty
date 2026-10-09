@@ -7,7 +7,7 @@ use crate::api::{
     PerformanceTier, RunStatus, SEARCH_DEFAULT_LIMIT, SEARCH_MAX_LIMIT, SourceRunId,
     SourceSessionId,
 };
-use crate::time::HumanDuration;
+use crate::time::{BareUnit, HumanDuration, ParseDurationError};
 use crate::vtime::VTime;
 
 /// Every `RunStatus` variant, used to enumerate valid `--status` values in
@@ -57,6 +57,23 @@ fn parse_poll_interval(value: &str) -> Result<HumanDuration, String> {
         return Err("poll interval must be at least 1 minute".to_string());
     }
     Ok(interval)
+}
+
+/// clap value parser for `validate --timeout`: a [`HumanDuration`] whose bare
+/// number counts seconds, as the flag has always taken.
+fn parse_timeout_seconds(value: &str) -> Result<HumanDuration, ParseDurationError> {
+    HumanDuration::parse(value, BareUnit::Seconds)
+}
+
+/// clap value parser for `runs exec --timeout`: as [`parse_timeout_seconds`],
+/// with a floor of 1 second, because a 0-second timeout always times out. The
+/// server sets the ceiling.
+fn parse_exec_timeout(value: &str) -> Result<HumanDuration, String> {
+    let timeout = parse_timeout_seconds(value).map_err(|e| e.to_string())?;
+    if timeout.seconds() == 0 {
+        return Err("must be at least 1 second".to_string());
+    }
+    Ok(timeout)
 }
 
 /// clap value parser for the event-search `--limit`: 1 to
@@ -275,7 +292,7 @@ Kubernetes configs:
 
 Examples:
   snouty validate ./config
-  snouty validate ./config --timeout 10
+  snouty validate ./config --timeout 5m
   snouty validate ./k8s-config"#)]
     Validate(ValidateArgs),
 
@@ -541,9 +558,10 @@ pub struct ValidateArgs {
     /// manifests/ subdirectory (Kubernetes manifests).
     pub config: std::path::PathBuf,
 
-    /// Maximum seconds to wait for containers to start and reach setup-complete
-    #[arg(long, default_value = "120")]
-    pub timeout: u64,
+    /// Maximum time to wait for containers to start and reach setup-complete,
+    /// in seconds or h/m/s units (e.g. 90s, 5m)
+    #[arg(long, default_value = "2m", value_parser = parse_timeout_seconds)]
+    pub timeout: HumanDuration,
 
     /// Leave containers running after validation for manual inspection
     #[arg(long)]
@@ -1101,7 +1119,7 @@ Examples:
   snouty runs exec <run_id> <hash> <vtime> 'uname -a'
   snouty runs exec <run_id> <hash> <vtime> --container <name> 'ps aux'
   snouty runs exec <run_id> <hash> <vtime> --events 'sleep 5'
-  snouty runs exec <run_id> <hash> <vtime> --source-run-id <id> --timeout 300 'ls'
+  snouty runs exec <run_id> <hash> <vtime> --source-run-id <id> --timeout 5m 'ls'
   echo 'ps aux' | snouty runs exec <run_id> <hash> <vtime>
   snouty runs exec <run_id> <hash> <vtime> < script.sh
 
@@ -1149,12 +1167,11 @@ JSON object on its own line, and the trailer is left out:
         #[arg(long)]
         source_session_id: Option<SourceSessionId>,
 
-        /// Maximum seconds the server waits for the script to exit before
-        /// reporting a timeout [default: the server's, 600 as of release 64.0]
-        // A 0-second timeout always times out, so the floor is 1. The server
-        // sets the ceiling.
-        #[arg(long, value_parser = clap::value_parser!(u64).range(1..))]
-        timeout: Option<u64>,
+        /// Maximum time the server waits for the script to exit before
+        /// reporting a timeout, in seconds or h/m/s units (e.g. 90s, 5m)
+        /// [default: the server's, 10m as of release 64.0]
+        #[arg(long, value_parser = parse_exec_timeout)]
+        timeout: Option<HumanDuration>,
     },
 
     /// Search events in a run
@@ -1370,6 +1387,20 @@ mod tests {
         .to_string();
         assert!(err.contains("--duration"), "got: {err}");
         assert!(err.contains("number of minutes"), "got: {err}");
+    }
+
+    #[test]
+    fn validate_timeout_reads_a_bare_number_as_seconds() {
+        let timeout = |extra: &[&str]| {
+            let cli = parse(&[&["snouty", "validate", "config"], extra].concat());
+            let Commands::Validate(args) = cli.command else {
+                panic!("expected validate command");
+            };
+            args.timeout.seconds()
+        };
+        assert_eq!(timeout(&[]), 120);
+        assert_eq!(timeout(&["--timeout", "90"]), 90);
+        assert_eq!(timeout(&["--timeout", "2m"]), 120);
     }
 
     // The positional `input_hash`/`vtime` and `--begin-vtime` must all

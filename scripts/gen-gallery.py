@@ -2492,7 +2492,7 @@ def build_exec_stories(d: Discovery, x: ExecSession) -> list[Story]:
             "timed out and after how long. No end-moment trailer. snouty exits 1.",
             # `sleep` counts virtual time, which can run far ahead of the wall
             # clock that --timeout counts: a `sleep 60` once exited within 5s.
-            [*exec_at, "--timeout", "5", 'echo "waiting for a lock"; sleep 3600'],
+            [*exec_at, "--timeout", "5s", 'echo "waiting for a lock"; sleep 3600'],
             fails_with("waiting for a lock", "timed out"),
         ),
         exec_story(
@@ -3007,7 +3007,7 @@ def build_validate_stories(ephemeral: Path | None) -> list[Story]:
             "Validate a harness that never signals setup-complete",
             "My harness never emits the setup-complete event.",
             "snouty waits up to --timeout, then fails with the timeout it used and the likely causes, most likely first.",
-            [str(s / "timeout"), "--timeout", "5"],
+            [str(s / "timeout"), "--timeout", "5s"],
             fails_with(
                 "timed out waiting for setup-complete event (5s)",
                 "make sure your workload emits setup_complete",

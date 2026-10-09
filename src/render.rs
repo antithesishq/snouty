@@ -113,7 +113,7 @@ pub(crate) fn wrap_stdout_if_tty(text: &str) -> String {
 
 fn wrap_for(term: &console::Term, text: &str) -> String {
     match prose_width_of(term) {
-        Some(width) => wrap_text(text, width).join("\n"),
+        Some(width) => wrap_text(text, width, CodeSpans::Keep).join("\n"),
         None => text.to_string(),
     }
 }
@@ -130,6 +130,17 @@ fn prose_width_of(term: &console::Term) -> Option<usize> {
         .then(|| PROSE_WIDTH.min(term.size().1 as usize))
 }
 
+/// Whether [`wrap_text`] keeps a backtick-delimited span on one line.
+#[derive(Clone, Copy)]
+pub(crate) enum CodeSpans {
+    /// Keep each span whole. For prose that snouty writes, where every
+    /// backtick has a pair.
+    Keep,
+    /// Treat a backtick as a plain character. For text that snouty does not
+    /// write, where two stray backticks would join every word between them.
+    Ignore,
+}
+
 /// The one wrapping engine every snouty renderer shares. Greedy word-wrap of
 /// `text` to `width` display columns, one output line per element.
 ///
@@ -138,12 +149,13 @@ fn prose_width_of(term: &console::Term) -> Option<usize> {
 /// (tables, caret markers, indented listings) exactly as built. An overlong
 /// paragraph keeps its leading-space indent on every wrapped line, has tabs
 /// normalized to spaces (textwrap's separator only breaks on spaces), and
-/// never splits a word — an overlong token overflows instead. A
-/// backtick-delimited span, such as a command to copy, counts as one word, so
-/// it moves whole to the next line or overflows on its own line. Width is
+/// never splits a word — an overlong token overflows instead. With
+/// [`CodeSpans::Keep`], a backtick-delimited span, such as a command to copy,
+/// counts as one word, so it moves whole to the next line or overflows on its
+/// own line. Width is
 /// measured with `textwrap`'s `display_width`: ANSI escape sequences count as
 /// zero columns and wide glyphs count as two.
-pub(crate) fn wrap_text(text: &str, width: usize) -> Vec<String> {
+pub(crate) fn wrap_text(text: &str, width: usize, spans: CodeSpans) -> Vec<String> {
     let mut lines = Vec::new();
     for paragraph in text.split('\n') {
         if textwrap::core::display_width(paragraph) <= width {
@@ -162,9 +174,10 @@ pub(crate) fn wrap_text(text: &str, width: usize) -> Vec<String> {
         let options = textwrap::Options::new(width.max(1))
             .break_words(false)
             .word_splitter(textwrap::WordSplitter::NoHyphenation)
-            .word_separator(textwrap::WordSeparator::Custom(
-                find_words_keeping_code_spans,
-            ))
+            .word_separator(match spans {
+                CodeSpans::Keep => textwrap::WordSeparator::Custom(find_words_keeping_code_spans),
+                CodeSpans::Ignore => textwrap::WordSeparator::AsciiSpace,
+            })
             .initial_indent(&indent)
             .subsequent_indent(&indent);
         for line in textwrap::wrap(paragraph.replace('\t', " ").trim_start(), options) {
@@ -240,7 +253,7 @@ mod tests {
     fn wrap_text_preserves_word_sequence(tc: hegel::TestCase) {
         let text = tc.draw(generators::text());
         let width = tc.draw(generators::integers::<usize>().min_value(1).max_value(40));
-        let lines = wrap_text(&text, width);
+        let lines = wrap_text(&text, width, CodeSpans::Keep);
         let words_in: Vec<&str> = text.split_whitespace().collect();
         let words_out: Vec<&str> = lines.iter().flat_map(|l| l.split_whitespace()).collect();
         assert_eq!(words_in, words_out);
@@ -257,7 +270,7 @@ mod tests {
         // Include 0 to exercise the `width.max(1)` clamp.
         let width = tc.draw(generators::integers::<usize>().max_value(40));
         let effective = width.max(1);
-        for line in wrap_text(&text, width) {
+        for line in wrap_text(&text, width, CodeSpans::Keep) {
             assert!(
                 textwrap::core::display_width(&line) <= effective
                     || find_words_keeping_code_spans(line.trim_start()).count() == 1,
@@ -268,11 +281,11 @@ mod tests {
 
     #[test]
     fn wrap_text_wraps_words_and_preserves_blank_lines() {
-        let wrapped = wrap_text("the quick brown fox\n\njumps", 9);
+        let wrapped = wrap_text("the quick brown fox\n\njumps", 9, CodeSpans::Keep);
         assert_eq!(wrapped, vec!["the quick", "brown fox", "", "jumps"]);
         // A word longer than the width is kept intact rather than split.
         assert_eq!(
-            wrap_text("supercalifragilistic", 5),
+            wrap_text("supercalifragilistic", 5, CodeSpans::Keep),
             vec!["supercalifragilistic"]
         );
     }
@@ -281,9 +294,15 @@ mod tests {
     fn wrap_text_keeps_fitting_paragraphs_byte_identical() {
         // A paragraph that fits passes through untouched: internal alignment,
         // leading spaces, and tabs all survive.
-        assert_eq!(wrap_text("  a\tb   c", 20), vec!["  a\tb   c"]);
+        assert_eq!(
+            wrap_text("  a\tb   c", 20, CodeSpans::Keep),
+            vec!["  a\tb   c"]
+        );
         // A tab in an overlong paragraph becomes a break opportunity.
-        assert_eq!(wrap_text("aaaa\tbbbb", 5), vec!["aaaa", "bbbb"]);
+        assert_eq!(
+            wrap_text("aaaa\tbbbb", 5, CodeSpans::Keep),
+            vec!["aaaa", "bbbb"]
+        );
     }
 
     #[test]
@@ -291,16 +310,19 @@ mod tests {
         // A span that does not fit moves whole to the next line, with the
         // indent.
         assert_eq!(
-            wrap_text("  then `unset A B` now", 12),
+            wrap_text("  then `unset A B` now", 12, CodeSpans::Keep),
             vec!["  then", "  `unset A B`", "  now"]
         );
         // A span wider than the whole width overflows on its own line.
         assert_eq!(
-            wrap_text("run `unset LONG_A LONG_B` now", 8),
+            wrap_text("run `unset LONG_A LONG_B` now", 8, CodeSpans::Keep),
             vec!["run", "`unset LONG_A LONG_B`", "now"]
         );
         // A span may start or end inside a word.
-        assert_eq!(wrap_text("set (`a b`) ok", 6), vec!["set", "(`a b`)", "ok"]);
+        assert_eq!(
+            wrap_text("set (`a b`) ok", 6, CodeSpans::Keep),
+            vec!["set", "(`a b`)", "ok"]
+        );
     }
 
     /// Text without a backtick splits into the same words as before.
@@ -315,10 +337,23 @@ mod tests {
     }
 
     #[test]
+    fn wrap_text_ignoring_code_spans_splits_at_every_space() {
+        // Two stray backticks in text that snouty does not write must not
+        // join the words between them.
+        assert_eq!(
+            wrap_text("don`t stop, it won`t fit", 10, CodeSpans::Ignore),
+            vec!["don`t", "stop, it", "won`t fit"]
+        );
+    }
+
+    #[test]
     fn wrap_text_splits_after_an_unmatched_backtick() {
         // The matched span stays whole; from the stray backtick on, words
         // split at every space as before.
-        assert_eq!(wrap_text("`a b` c `d e f", 5), vec!["`a b`", "c `d", "e f"]);
+        assert_eq!(
+            wrap_text("`a b` c `d e f", 5, CodeSpans::Keep),
+            vec!["`a b`", "c `d", "e f"]
+        );
     }
 
     /// A backtick-delimited span is one word: when every backtick in the
@@ -331,7 +366,7 @@ mod tests {
         ])));
         let text: String = pieces.concat();
         let width = tc.draw(generators::integers::<usize>().min_value(1).max_value(12));
-        let lines = wrap_text(&text, width);
+        let lines = wrap_text(&text, width, CodeSpans::Keep);
         if text.matches('`').count().is_multiple_of(2) {
             for line in &lines {
                 assert_eq!(line.matches('`').count() % 2, 0, "split span in {lines:?}");
@@ -362,7 +397,7 @@ mod tests {
     /// The prose shape [`wrap_if_tty`] produces on a wide terminal, minus the
     /// tty detection, so the tests run identically under a captured stdout.
     fn wrap(text: &str) -> String {
-        wrap_text(text, PROSE_WIDTH).join("\n")
+        wrap_text(text, PROSE_WIDTH, CodeSpans::Keep).join("\n")
     }
 
     #[test]

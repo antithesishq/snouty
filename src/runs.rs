@@ -27,7 +27,7 @@ use crate::event_render::{EventStreamRenderer, normalize_terminal_text, strip_an
 use crate::event_set_dsl;
 use crate::jsonl::JsonStream;
 use crate::render::{
-    OutputOptions, indent_lines, render_kv, sanitize, sanitize_multiline, wrap_text,
+    CodeSpans, OutputOptions, indent_lines, render_kv, sanitize, sanitize_multiline, wrap_text,
 };
 use crate::settings::Settings;
 use crate::time::{HumanDuration, format_local_with_offset};
@@ -891,7 +891,7 @@ fn render_prose_block(label: &str, text: &str, layout: ProseLayout) -> String {
             .max(min_body_width),
         ProseLayout::OwnLine => terminal_width(),
     };
-    let wrapped = wrap_text(&sanitize_multiline(text), body_width);
+    let wrapped = wrap_text(&sanitize_multiline(text), body_width, CodeSpans::Ignore);
     let lines = trim_blank_edges(&wrapped);
     if lines.is_empty() {
         return String::new();
@@ -2379,7 +2379,7 @@ fn render_columns(
             let mut output = String::new();
             push_table_row(&mut output, headers, &widths, aligns);
             for row in rows {
-                let wrapped = wrap_text(&row[last], last_width);
+                let wrapped = wrap_text(&row[last], last_width, CodeSpans::Ignore);
                 let wrapped = if wrapped.is_empty() {
                     vec![String::new()]
                 } else {
@@ -4477,6 +4477,22 @@ mod tests {
         let table = render_runs_table(&runs, usize::MAX);
         assert!(table.contains(long), "name was truncated: {table}");
         assert!(!table.contains('…'));
+    }
+
+    #[test]
+    fn wrap_last_wraps_a_name_with_stray_backticks() {
+        // A backtick in a property name is not a code span: the name wraps
+        // at its spaces and stays inside the width.
+        let name = "can`t lose a write, even when the leader won`t answer in time";
+        let headers = vec!["STATUS".to_string(), "NAME".to_string()];
+        let rows = vec![vec!["failing".to_string(), name.to_string()]];
+        let out = render_table_wrap_last(&headers, &rows, 40, &[Align::Left, Align::Left]);
+        for line in out.lines() {
+            assert!(
+                line.chars().count() <= 40,
+                "line wider than 40: {line:?}\n{out}"
+            );
+        }
     }
 
     #[test]

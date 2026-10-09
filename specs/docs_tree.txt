@@ -53,3 +53,7 @@ stdout 'getting_started - Setup guide.*'
 #    prints a "No results found" message to stderr.
 snouty docs --offline tree no-such-doc-page
 stderr 'No results found.*'
+
+# --offline comes after the tree flags and before the global flags.
+snouty docs tree --help
+stdout '(?s)^ +-d, --depth <DEPTH>$.*^ +--offline$.*^ +--json$'

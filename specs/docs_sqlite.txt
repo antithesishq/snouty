@@ -7,3 +7,7 @@
 setup-docs-db
 snouty docs --offline sqlite
 stdout 'docs\.db'
+
+# --offline comes before the global flags.
+snouty docs sqlite --help
+stdout '(?s)^ +--offline$.*^ +--json$'

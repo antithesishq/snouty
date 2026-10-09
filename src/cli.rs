@@ -169,7 +169,8 @@ Environment variables (override any settings file):
     #[command(
         long_about = r#"Interact with test runs
 
-List, inspect, wait on, cancel, and read the logs of Antithesis test runs.
+List, inspect, wait on, cancel, run commands in, and read the logs of Antithesis
+test runs.
 
 When no subcommand is given, lists recent runs (same as `snouty runs list`).
 
@@ -186,6 +187,7 @@ Examples:
   snouty runs logs <run_id> <hash> [vtime]
   snouty runs events <run_id> -m <query>
   snouty runs search <run_id> 'contains({output_text: "error"})'
+  snouty runs exec <run_id> <input_hash> <vtime> 'uname -a'
 
 Add --json for machine-readable output. Every subcommand prints JSON in place
 of its table or its rendered events:
@@ -349,7 +351,9 @@ subcommands print text either way:
   snouty --json docs search fault injection | jq -r '.[].path'"#)]
     Docs {
         /// Don't check for documentation updates
-        #[arg(long, global = true)]
+        // Sorts after each docs subcommand's own flags and before the root
+        // globals (1000 and up).
+        #[arg(long, global = true, display_order = 999)]
         offline: bool,
 
         #[command(subcommand)]

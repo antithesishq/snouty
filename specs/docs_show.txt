@@ -35,3 +35,7 @@ stderr 'page not found.*nonexistent_page'
 ! snouty docs --offline show sdk
 stderr 'did you mean.*'
 stderr '/docs/sdk/python_sdk/.*'
+
+# --offline comes before the global flags.
+snouty docs show --help
+stdout '(?s)^ +--offline$.*^ +--json$'

@@ -121,3 +121,7 @@ stdout '/docs/environment/fault_injection/.*'
 snouty docs search --help
 stdout '^ +--offline$'
 stdout 'updated before each search unless you pass --offline'
+
+# --offline comes after the search flags and before the global flags.
+snouty docs search --help
+stdout '(?s)^ +-m, --match$.*^ +--offline$.*^ +--json$'

@@ -18,7 +18,7 @@ stdout 'cancel.*Cancel a run'
 
 # The `snouty runs --help` intro and examples also cover cancel.
 snouty runs --help
-stdout 'wait on, cancel, and read the logs'
+stdout 'wait on, cancel, run commands in'
 stdout -literal 'snouty runs cancel <run_id>'
 
 # `snouty runs cancel --help` explains that cancellation is asynchronous, that

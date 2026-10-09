@@ -854,8 +854,9 @@ pub enum RunsCommands {
     #[command(
         long_about = r#"List recent runs (the default when `snouty runs` runs with no subcommand).
 
-Columns: RUN ID, STATUS, CREATED, TEST NAME. Use --detail for the full
-description and launcher.
+Columns: RUN ID, STATUS, CREATED, RUN. RUN is the test name. For a run with
+no test name, RUN is the first line of its description, else its launcher.
+Use --detail for the full description and launcher.
 
 Add --json for machine-readable output. Each run prints as one JSON object on
 its own line, in the order the server returns them:

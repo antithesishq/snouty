@@ -251,6 +251,12 @@ stderr 'the session may still be loading: a new debugging session takes a few mi
 stderr 'Moment not warm'
 stderr '(?s)Try again in a minute\nSuggestion: for a moment off the session.s own timeline'
 
+# With a rewarm source, a 404 can be a bad source, and a retry does not fix
+# that. snouty names the flag and gives no note.
+! snouty runs exec session-loading -3625518438076122494 398.4898056755774 'true' --source-run-id no-such-run
+stderr 'check that --source-run-id names an existing source'
+! stderr 'may still be loading'
+
 # An older session, or a run that is not a debugging session, gets no note.
 ! snouty runs exec session-old -3625518438076122494 398.4898056755774 'true'
 stderr 'Resource not found'

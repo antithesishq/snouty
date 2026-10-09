@@ -1295,10 +1295,16 @@ def expected_run_cell(row: dict) -> str:
     return next((c for c in candidates if isinstance(c, str) and c), "-")
 
 
-def rows_at_most_with_run_cells(limit: int):
-    """`rows_at_most`, plus each table row's RUN cell is `expected_run_cell`.
+# `runs list` cuts the LAUNCHER column to this many characters.
+LAUNCHER_WIDTH = 10
 
-    A cell that ends in `…` is truncated, so it must be a prefix of that value.
+
+def rows_at_most_with_run_cells(limit: int):
+    """`rows_at_most`, plus each table row's LAUNCHER and RUN cells are right.
+
+    LAUNCHER is the launcher, cut to LAUNCHER_WIDTH characters. RUN is
+    `expected_run_cell`; a RUN cell that ends in `…` is truncated, so it must
+    be a prefix of that value.
     """
 
     def chk(sr: StoryRun, reg: Registry) -> tuple[bool, str]:
@@ -1308,8 +1314,13 @@ def rows_at_most_with_run_cells(limit: int):
         for row in rows:
             run_id = row.get("run_id", "")
             line = next((ln for ln in lines if ln.startswith(f"{run_id} ")), None)
-            cells = re.split(r" {2,}", line.strip(), maxsplit=3) if line else []
-            cell = cells[3] if len(cells) == 4 else ""
+            cells = re.split(r" {2,}", line.strip(), maxsplit=4) if line else []
+            launcher_cell, cell = cells[3:] if len(cells) == 5 else ("", "")
+            launcher = row.get("launcher") or "-"
+            if len(launcher) > LAUNCHER_WIDTH:
+                launcher = launcher[: LAUNCHER_WIDTH - 1] + "…"
+            if launcher_cell != launcher:
+                bad.append(f"{run_id}: LAUNCHER {launcher_cell!r} != {launcher!r}")
             want = expected_run_cell(row)
             if cell.endswith("…"):
                 ok = want.startswith(cell[:-1])
@@ -1318,7 +1329,7 @@ def rows_at_most_with_run_cells(limit: int):
             if not ok:
                 bad.append(f"{run_id}: {cell!r} != {want!r}")
         n = len(rows)
-        detail = "; ".join(bad) or "RUN cells match"
+        detail = "; ".join(bad) or "LAUNCHER and RUN cells match"
         return (1 <= n <= limit and not bad, f"{n} rows (limit {limit}), {detail}")
 
     return chk
@@ -1814,7 +1825,7 @@ def build_stories(d: Discovery) -> list[Story]:
             "runs",
             "Quickly check what test runs are around",
             "I just want to glance at what test runs exist without recalling any subcommands.",
-            "A readable table of recent runs (RUN ID, STATUS, CREATED, RUN) appears — `runs` behaves like `runs list`.",
+            "A readable table of recent runs (RUN ID, STATUS, CREATED, LAUNCHER, RUN) appears — `runs` behaves like `runs list`.",
             ["runs"],
             non_empty_table,
         ),
@@ -1822,8 +1833,8 @@ def build_stories(d: Discovery) -> list[Story]:
             "runs-list",
             "List recent runs to find one to inspect",
             "I want to scan recent runs and pick one to dig into.",
-            "Up to 10 recent runs, newest first, with legible RUN ID/STATUS/CREATED/RUN "
-            "columns; RUN is the test name, and a run with no test name (a debugging "
+            "Up to 10 recent runs, newest first, with legible RUN ID/STATUS/CREATED/"
+            "LAUNCHER/RUN columns; LAUNCHER shows at most 10 characters; RUN is the test name, and a run with no test name (a debugging "
             "session) shows the first line of its description or event description "
             "there, else its launcher; "
             "when more runs exist, a stderr note says the output stopped at the limit.",
@@ -2686,7 +2697,7 @@ def build_help_stories(d: Discovery) -> list[Story]:
             ["runs", "list"],
             ["runs", "list", "-n", "6"],
             samples=[("with --detail", ["runs", "list", "-n", "3", "--detail"])],
-            align=("RUN ID", "STATUS", "CREATED", "RUN"),
+            align=("RUN ID", "STATUS", "CREATED", "LAUNCHER", "RUN"),
         ),
         _help_story(
             "help-runs-show",

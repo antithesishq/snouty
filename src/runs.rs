@@ -2403,47 +2403,55 @@ fn render_columns(
     }
 }
 
+/// The most characters that the LAUNCHER column of the runs table shows.
+const LAUNCHER_WIDTH: usize = 10;
+
 fn render_runs_table(runs: &[RunSummary], width: usize) -> String {
     // RUN is the final, width-bounded column, truncated with an ellipsis (a
     // `runs show RUN_ID` follow-up still works off the full id). A full
     // description never fit beside the full run id, so RUN shows at most its
-    // first line; `runs list --detail` shows it in full. A launcher filter
-    // doesn't add a column — every row would carry the same value;
-    // `--detail`/`--json` surface the launcher when it's actually wanted.
+    // first line; `runs list --detail` shows it in full. LAUNCHER is cut to
+    // LAUNCHER_WIDTH so that RUN keeps most of the width.
     let headers = vec![
         "RUN ID".to_string(),
         "STATUS".to_string(),
         "CREATED".to_string(),
+        "LAUNCHER".to_string(),
         "RUN".to_string(),
     ];
 
-    let rows: Vec<Vec<String>> = runs
-        .iter()
-        .map(|run| {
-            // A run with no test name (a debugging session, for one) shows the
-            // first line of its description or event description, then its
-            // launcher, so the row still says what the run is.
-            fn first_line(text: &str) -> Option<&str> {
-                text.lines().map(str::trim).find(|line| !line.is_empty())
-            }
-            let test_name = [
-                run.test_name(),
-                run.test_description().and_then(first_line),
-                run.event_description().and_then(first_line),
-                Some(run.launcher.as_str()),
-            ]
-            .into_iter()
-            .flatten()
-            .find(|text| !text.is_empty())
-            .map_or_else(|| "-".to_string(), sanitize);
-            vec![
-                sanitize(&run.run_id),
-                run.status.to_string(),
-                relative_time(run.created_at),
-                test_name,
-            ]
-        })
-        .collect();
+    let rows: Vec<Vec<String>> =
+        runs.iter()
+            .map(|run| {
+                // A run with no test name (a debugging session, for one) shows the
+                // first line of its description or event description, then its
+                // launcher, so the row still says what the run is.
+                fn first_line(text: &str) -> Option<&str> {
+                    text.lines().map(str::trim).find(|line| !line.is_empty())
+                }
+                let test_name = [
+                    run.test_name(),
+                    run.test_description().and_then(first_line),
+                    run.event_description().and_then(first_line),
+                    Some(run.launcher.as_str()),
+                ]
+                .into_iter()
+                .flatten()
+                .find(|text| !text.is_empty())
+                .map_or_else(|| "-".to_string(), sanitize);
+                vec![
+                    sanitize(&run.run_id),
+                    run.status.to_string(),
+                    relative_time(run.created_at),
+                    match run.launcher.as_str() {
+                        "" => "-".to_string(),
+                        launcher => console::truncate_str(&sanitize(launcher), LAUNCHER_WIDTH, "…")
+                            .into_owned(),
+                    },
+                    test_name,
+                ]
+            })
+            .collect();
 
     render_columns(
         &headers,
@@ -4415,10 +4423,11 @@ mod tests {
         assert!(lines[0].contains("RUN ID"));
         assert!(lines[0].contains("STATUS"));
         assert!(lines[0].contains("CREATED"));
-        assert_eq!(lines[0].split_whitespace().last(), Some("RUN"));
-        // The default view no longer shows DESCRIPTION (use `--detail` for that).
-        assert!(!lines[0].contains("DESCRIPTION"));
-        assert!(!lines[0].contains("LAUNCHER"));
+        let header: Vec<&str> = lines[0].split("  ").filter(|h| !h.is_empty()).collect();
+        assert_eq!(
+            header.iter().map(|h| h.trim()).collect::<Vec<_>>(),
+            ["RUN ID", "STATUS", "CREATED", "LAUNCHER", "RUN"]
+        );
 
         assert!(lines[1].contains("abc-54-1"));
         assert!(lines[1].contains("completed"));
@@ -4525,7 +4534,7 @@ mod tests {
         let row = table.lines().nth(1).unwrap();
         row.split("  ")
             .filter(|cell| !cell.is_empty())
-            .nth(3)
+            .nth(4)
             .unwrap()
             .trim()
             .to_string()
@@ -4551,6 +4560,30 @@ mod tests {
             None,
             description,
         )
+    }
+
+    /// The LAUNCHER cell of a one-run table.
+    fn launcher_cell(run: RunSummary) -> String {
+        let table = render_runs_table(&[run], 200);
+        let row = table.lines().nth(1).unwrap();
+        row.split("  ")
+            .filter(|cell| !cell.is_empty())
+            .nth(3)
+            .unwrap()
+            .trim()
+            .to_string()
+    }
+
+    #[test]
+    fn runs_table_shows_launcher_cut_to_ten_characters() {
+        let mut run = debugging_run(Some("probe the stall"));
+        assert_eq!(launcher_cell(run.clone()), "debugging");
+        run.launcher = "basic_test".to_string();
+        assert_eq!(launcher_cell(run.clone()), "basic_test");
+        run.launcher = "Basic Test (no faults)".to_string();
+        assert_eq!(launcher_cell(run.clone()), "Basic Tes…");
+        run.launcher = String::new();
+        assert_eq!(launcher_cell(run), "-");
     }
 
     #[test]

@@ -1279,8 +1279,8 @@ def _first_line(text: object) -> str:
     return next((line.strip() for line in text.split("\n") if line.strip()), "")
 
 
-def expected_title(row: dict) -> str:
-    """The TEST NAME cell that `runs list` shows for a `--json` row.
+def expected_run_cell(row: dict) -> str:
+    """The RUN cell that `runs list` shows for a `--json` row.
 
     The order is: test name, the first line of the description, the first line
     of the event description that a debugging session sets, the launcher, `-`.
@@ -1295,10 +1295,10 @@ def expected_title(row: dict) -> str:
     return next((c for c in candidates if isinstance(c, str) and c), "-")
 
 
-def rows_at_most_with_titles(limit: int):
-    """`rows_at_most`, plus each table row shows the title of `expected_title`.
+def rows_at_most_with_run_cells(limit: int):
+    """`rows_at_most`, plus each table row's RUN cell is `expected_run_cell`.
 
-    A cell that ends in `…` is truncated, so it must be a prefix of the title.
+    A cell that ends in `…` is truncated, so it must be a prefix of that value.
     """
 
     def chk(sr: StoryRun, reg: Registry) -> tuple[bool, str]:
@@ -1310,7 +1310,7 @@ def rows_at_most_with_titles(limit: int):
             line = next((ln for ln in lines if ln.startswith(f"{run_id} ")), None)
             cells = re.split(r" {2,}", line.strip(), maxsplit=3) if line else []
             cell = cells[3] if len(cells) == 4 else ""
-            want = expected_title(row)
+            want = expected_run_cell(row)
             if cell.endswith("…"):
                 ok = want.startswith(cell[:-1])
             else:
@@ -1318,7 +1318,7 @@ def rows_at_most_with_titles(limit: int):
             if not ok:
                 bad.append(f"{run_id}: {cell!r} != {want!r}")
         n = len(rows)
-        detail = "; ".join(bad) or "titles match"
+        detail = "; ".join(bad) or "RUN cells match"
         return (1 <= n <= limit and not bad, f"{n} rows (limit {limit}), {detail}")
 
     return chk
@@ -1814,7 +1814,7 @@ def build_stories(d: Discovery) -> list[Story]:
             "runs",
             "Quickly check what test runs are around",
             "I just want to glance at what test runs exist without recalling any subcommands.",
-            "A readable table of recent runs (id, status, title, time) appears — `runs` behaves like `runs list`.",
+            "A readable table of recent runs (RUN ID, STATUS, CREATED, RUN) appears — `runs` behaves like `runs list`.",
             ["runs"],
             non_empty_table,
         ),
@@ -1822,12 +1822,13 @@ def build_stories(d: Discovery) -> list[Story]:
             "runs-list",
             "List recent runs to find one to inspect",
             "I want to scan recent runs and pick one to dig into.",
-            "Up to 10 recent runs, newest first, with legible id/status/title/time columns; "
-            "a run with no test name (a debugging session) shows the first line of its "
-            "description or event description as the title, else its launcher; "
+            "Up to 10 recent runs, newest first, with legible RUN ID/STATUS/CREATED/RUN "
+            "columns; RUN is the test name, and a run with no test name (a debugging "
+            "session) shows the first line of its description or event description "
+            "there, else its launcher; "
             "when more runs exist, a stderr note says the output stopped at the limit.",
             ["runs", "list", "-n", "10"],
-            rows_at_most_with_titles(10),
+            rows_at_most_with_run_cells(10),
         ),
         Story(
             "runs-list--limit",
@@ -1840,8 +1841,8 @@ def build_stories(d: Discovery) -> list[Story]:
         ),
         Story(
             "runs-list--detail",
-            "Get full descriptions instead of truncated titles",
-            "Default titles are truncated; I want to read the full descriptions.",
+            "Get full descriptions instead of the truncated RUN column",
+            "The default RUN column is truncated; I want to read the full descriptions.",
             "Descriptions are shown in full (longer than the default view), one row per run. "
             "When more runs exist, a blank line sets the limit note apart from the last run.",
             ["runs", "list", "-n", "6", "--detail"],
@@ -2685,7 +2686,7 @@ def build_help_stories(d: Discovery) -> list[Story]:
             ["runs", "list"],
             ["runs", "list", "-n", "6"],
             samples=[("with --detail", ["runs", "list", "-n", "3", "--detail"])],
-            align=("RUN ID", "STATUS", "CREATED", "TEST NAME"),
+            align=("RUN ID", "STATUS", "CREATED", "RUN"),
         ),
         _help_story(
             "help-runs-show",

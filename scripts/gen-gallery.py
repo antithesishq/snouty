@@ -1644,22 +1644,19 @@ _EXAMPLE_TOTALS = re.compile(
 
 
 def _sample_note_ok(text: str) -> bool:
-    """The `Examples` line gives `N out of M` for each group that the table
-    shows only part of, and starts with `showing` only when there is one."""
+    """When the table shows only part of a group, the `Examples` line starts
+    with `showing` and gives `N out of M` for every group. When it shows
+    all, the line gives only the totals."""
     m = _EXAMPLE_TOTALS.search(text)
     if m is None:
         return False
     rows = {s: len(re.findall(rf"^  {s}\s+-?\d+\s", text, re.M)) for s in ("passing", "failing")}
     groups = {"passing": (m[2], int(m[3])), "failing": (m[4], int(m[5]))}
-    sampled = False
+    sampled = any(rows[s] < total for s, (_, total) in groups.items())
     for status, (shown, total) in groups.items():
-        if shown is None:
-            if rows[status] != total:
-                return False
-        else:
-            if rows[status] != int(shown) or int(shown) >= total:
-                return False
-            sampled = True
+        want = rows[status] if sampled else None
+        if (None if shown is None else int(shown)) != want or rows[status] > total:
+            return False
     return (m[1] is not None) == sampled
 
 

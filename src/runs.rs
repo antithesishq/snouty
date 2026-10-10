@@ -988,8 +988,8 @@ fn render_property_detail(property: &Property) -> String {
 
 /// How many passing and failing examples the run recorded, and how many of
 /// them the table below shows, as in `showing 1 out of 2558 passing examples
-/// and 1 out of 27 failing examples`. A group that the table shows in full
-/// gives only its total, and there is no `showing` when the table shows all.
+/// and 1 out of 27 failing examples`. When the table shows all, only the
+/// totals, as in `2 passing examples and 1 failing example`.
 fn example_totals(p: &EventProperty) -> String {
     // A missing count cannot be smaller than the moments the API sent.
     let groups = [
@@ -997,19 +997,16 @@ fn example_totals(p: &EventProperty) -> String {
         ("failing", p.counterexamples.len(), p.counterexample_count),
     ]
     .map(|(status, shown, total)| (status, shown, (total.unwrap_or(0) as usize).max(shown)));
+    let sampled = groups.iter().any(|&(_, shown, total)| shown < total);
     let parts = groups.map(|(status, shown, total)| {
         let noun = if total == 1 { "example" } else { "examples" };
-        if shown < total {
+        if sampled {
             format!("{shown} out of {total} {status} {noun}")
         } else {
             format!("{total} {status} {noun}")
         }
     });
-    let prefix = if groups.iter().any(|&(_, shown, total)| shown < total) {
-        "showing "
-    } else {
-        ""
-    };
+    let prefix = if sampled { "showing " } else { "" };
     format!("{prefix}{}", parts.join(" and "))
 }
 
@@ -2799,18 +2796,19 @@ mod tests {
             "1 passing example and 1 failing example"
         );
 
-        // A group shown in full gives only its total.
+        // When one group is a sample, every group says how many it shows, so
+        // a group shown in full or with no examples does not look hidden.
         p.counterexample_count = Some(3);
         assert_eq!(
             example_totals(&p),
-            "showing 1 passing example and 1 out of 3 failing examples"
+            "showing 1 out of 1 passing example and 1 out of 3 failing examples"
         );
         let mut p = event_prop(PropertyStatus::Passing, vec![event("ex", "2.0")], vec![]);
         p.example_count = Some(5);
         p.counterexample_count = Some(0);
         assert_eq!(
             example_totals(&p),
-            "showing 1 out of 5 passing examples and 0 failing examples"
+            "showing 1 out of 5 passing examples and 0 out of 0 failing examples"
         );
     }
 

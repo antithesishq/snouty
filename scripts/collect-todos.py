@@ -9,8 +9,8 @@ Prints a JSON array to stdout, one object per comment block:
      "marker": "todo-audit: src/api.rs#1a2b3c4d5e6f"}
 
 `marker` hashes the file and the comment text, not the line number, so it
-survives edits elsewhere in the file. Every issue the workflow files embeds it,
-which is how a later run finds that issue again.
+survives edits elsewhere in the file, and a later run can find the issue it
+filed.
 
 Usage: scripts/collect-todos.py [ROOT]
 """
@@ -25,9 +25,9 @@ import sys
 PATTERNS = {
     "todo": re.compile(r"\bTODO\b"),
     "fixme": re.compile(r"\bFIXME\b"),
-    # A server quirk note: "Observed on orbitinghail, release 64.0", "seen live
-    # on orbitinghail", "(orbitinghail, release 64.0)". Patterns run on a
-    # block's joined text, so a phrase may wrap across lines.
+    # "Observed on orbitinghail, release 64.0", "seen live on orbitinghail",
+    # "(orbitinghail, release 64.0)". Patterns run on a block's joined text, so
+    # a phrase may wrap across lines.
     "observed-on": re.compile(
         r"\b(observed|seen)( live)? on\b|\brelease \d+\.\d+", re.IGNORECASE
     ),
@@ -42,7 +42,8 @@ EXCLUDE = [
     ":!scripts/test_collect_todos.py",
 ]
 
-# `#` opens a comment in Python and YAML, but `#[` is a Rust attribute.
+# `#` opens a comment in Python and YAML, but `#[` and `#![` open Rust
+# attributes.
 COMMENT = re.compile(r"^\s*(//[/!]?|#(?!!?\[))\s?")
 
 
@@ -68,13 +69,13 @@ def block_end(lines: list[str], start: int) -> int:
     return end
 
 
-# The comment that trails code on a line, such as `retry(); // TODO: drop`.
 TRAILING = re.compile(r"\s(//|#)\s(.*)")
 
 
 def block_text(lines: list[str]) -> str:
     """The prose of a block, with comment prefixes stripped. A line of code
-    contributes only its trailing comment, so string literals never match."""
+    contributes only its trailing comment, so a pattern inside a plain string
+    literal does not match."""
     if not COMMENT.match(lines[0]):
         m = TRAILING.search(lines[0])
         return " ".join(m.group(2).split()) if m else ""

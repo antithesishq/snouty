@@ -21,9 +21,9 @@ tools:
   # `runs search` finishes.
   timeout: 150
 
-# The agent reaches the tenant only through this tool. The API key stays on the
-# runner, and the tool runs only the read-only commands below: `launch`,
-# `debug` and `runs exec` start billable sessions, and `runs cancel` mutates.
+# The agent reaches the tenant only through this tool, and the API key stays on
+# the runner. `launch`, `debug` and `runs exec` start billable sessions, and
+# `runs cancel` mutates, so the tool rejects them.
 mcp-scripts:
   snouty:
     description: >-
@@ -57,8 +57,8 @@ mcp-scripts:
           if any(a.split("=")[0] in ("--settings", "--profile") for a in args):
               return {"error": "--settings and --profile are not allowed"}
           result = {"command": "snouty " + shlex.join(args)}
-          # snouty reads `./.snouty.toml`, so run it where the agent cannot
-          # plant one.
+          # Settings can redirect the key to another host. Hence no --settings
+          # or --profile above, and a cwd with no `./.snouty.toml` in it.
           try:
               with tempfile.TemporaryDirectory() as cwd:
                   p = subprocess.run([os.environ["SNOUTY"], *args], cwd=cwd,
@@ -75,8 +75,8 @@ mcp-scripts:
       ANTITHESIS_TENANT: ${{ secrets.STAGING_ANTITHESIS_TENANT }}
       ANTITHESIS_API_KEY: ${{ secrets.STAGING_ANTITHESIS_API_KEY }}
 
-# Build in a job of its own. The agent can write to its job's workspace, so a
-# binary built there could be swapped for one that prints the API key, and a
+# The agent can write to its job's workspace, so a binary built there could be
+# swapped for one that prints the API key, and a
 # planted `target/` would reach the next night's build through the cache.
 jobs:
   build:
@@ -117,8 +117,9 @@ steps:
       mkdir -p /tmp/gh-aw/agent/todo-audit
       python3 scripts/collect-todos.py > /tmp/gh-aw/agent/todo-audit/todos.json
 
-  # The agent needs the release to tell "still true on 64.0" from "fixed in
-  # 65.0". Without it the API checks mean nothing, so a failure stops the run.
+  # The agent compares each comment's release with the tenant's, so a missing
+  # release stops the run. Doctor exits non-zero for checks that do not matter
+  # here, such as an unset container registry.
   - name: Read tenant release
     env:
       ANTITHESIS_TENANT: ${{ secrets.STAGING_ANTITHESIS_TENANT }}
@@ -150,15 +151,14 @@ safe-outputs:
 
 Many of snouty's comments record a server quirk seen on one tenant release, or
 a TODO that waits on a server change. They go stale silently when the API
-changes. Find the ones that no longer hold, and file an issue for each.
+changes. Find the ones that no longer hold, and report them.
 
 ## Inputs
 
 - `/tmp/gh-aw/agent/todo-audit/todos.json` lists every `TODO`, `FIXME` and
-  "observed on" comment block in the repository at this commit. Each entry has
-  `file`, `line`, `end_line`, `kinds`, `text` and `marker`.
-- `/tmp/gh-aw/agent/todo-audit/release.txt` holds the tenant's release version,
-  read from `snouty doctor` at the start of this run.
+  server-behavior comment block in the repository at this commit, with its
+  `text` and `marker`.
+- `/tmp/gh-aw/agent/todo-audit/release.txt` holds the tenant's release version.
 - The repository is checked out in the working directory. Read the code around
   each comment, and the code that exists only because of it.
 
@@ -168,8 +168,8 @@ For each entry, decide whether the condition it states still holds.
 
 - **A server behavior** ("observed on orbitinghail, release 64.0", "the API
   reports `unknown`", "the server ignores `limit`"): reproduce it with the
-  `snouty` tool against the tenant. Prefer `--json` and `--verbose`, which log
-  each request. Pick a run to test against with `runs list --json`. Compare the
+  `snouty` tool against the tenant. Prefer `--json`. `--verbose` logs each
+  request and response to stderr. Pick a run to test against with `runs list --json`. Compare the
   release in the comment with the current release: a quirk that still
   reproduces on a later release still holds.
 - **A TODO that waits on something** ("when a run records them", "once the API
@@ -178,15 +178,13 @@ For each entry, decide whether the condition it states still holds.
 - **A TODO or FIXME with no external trigger**: check whether the code already
   does what it asks.
 
-The `snouty` tool is read-only on purpose. Do not try to launch runs, start
-debugging sessions, or run `runs exec`. When a comment can only be checked with
-one of those, record it as unverifiable and move on.
+The `snouty` tool runs only read-only commands. When a check needs `launch`,
+`debug` or `runs exec`, record the comment as unverifiable.
 
 A comment is **stale** only when you have evidence: a command whose output
 contradicts the comment, or code that already does what the TODO asks. When the
 evidence is ambiguous, or a check fails for an unrelated reason, the comment is
-not stale. Also flag code that exists only to support a workaround that is no
-longer needed, such as a retry loop or a fallback branch.
+not stale.
 
 ## Deduplicate
 
@@ -202,9 +200,8 @@ Then:
 - An **open issue** with the `todo-audit` label matches: add a comment to it
   with tonight's evidence and release. Do not open a new issue.
 - An **open issue** without that label matches: do nothing, and name it in the
-  summary. You can comment only on `todo-audit` issues.
-- A **closed issue** matches: do nothing. That includes issues closed as
-  completed, won't-fix, or not planned. Never reopen one.
+  summary.
+- A **closed issue** matches: do nothing, however it was closed.
 - An **open or merged pull request** already removes or changes the comment: do
   nothing.
 - Nothing matches: file a new issue.
@@ -222,12 +219,13 @@ Title each issue `<file>:<line>: <what changed>`, for example
   of its output, and any trace or request ID it printed;
 - the tenant release from `release.txt`, and the release the comment names;
 - the change you propose: the comment to update or remove, and any code that
-  goes with it;
+  exists only for the workaround, such as a retry loop or a fallback branch;
 - the `marker` value on its own line, exactly as `todos.json` gives it.
 
 ## Summary
 
-Write a short summary to `$GITHUB_STEP_SUMMARY`: the release, how many comments
-you checked, and for each one whether it holds, is stale (with the issue or
-comment you filed), or could not be checked and why. If nothing is stale, call
-the `noop` tool with that summary.
+Write a short summary to `/tmp/gh-aw/agent-step-summary.md`, which becomes the
+run's step summary: the release, how many comments you checked, and for each
+one whether it holds, is stale (with the issue or comment you filed), or could
+not be checked and why. If you file no issue and no comment, call the `noop`
+tool with that summary.

@@ -123,16 +123,18 @@ stderr '.*'
 #    has reached a terminal state, so list with --status completed first.
 #
 #    A multiverse-debugging session completes with launcher `debugging` and
-#    has no build logs, so skip it. A staging run can complete without a
-#    report link, and then `runs show` omits the `--web` hint, so staging also
-#    skips a run with no `links.triage_report`. The tenant must have a run
-#    from another launcher, with a report link, among its 100 newest completed
-#    runs. (The mock list omits `links`, and every mock run has a report.)
+#    has no build logs, so skip it. Staging has more launchers without build
+#    logs, such as `debug_experiment_runner`, so staging picks only a run from
+#    a test launcher. A staging run can complete without a report link, and
+#    then `runs show` omits the `--web` hint, so staging also skips a run with
+#    no `links.triage_report`. The tenant must have a run from a test
+#    launcher, with a report link, among its 100 newest completed runs. (The
+#    mock list omits `links`, and every mock run has a report.)
 mock-runs-server
 snouty --json runs list --status completed --limit 100
 [!staging] stdout '"run_id":"run-.*'
 [!staging] env_from_json_find run_id launcher!=debugging
-[staging] env_from_json_find run_id launcher!=debugging links.triage_report
+[staging] env_from_json_find run_id launcher=basic_test|basic_k8s_test|advanced_test|advanced_k8s_test links.triage_report
 
 # `snouty runs show` displays run details in key-value format. The requested
 # Duration (from antithesis.duration) and the wall-clock Elapsed (derived from

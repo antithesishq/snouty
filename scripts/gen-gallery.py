@@ -1636,16 +1636,38 @@ def event_keyword_present(keyword: str):
     return chk
 
 
+_EXAMPLE_TOTALS = re.compile(
+    r"^Examples\s+(\d+) passing examples? and (\d+) failing examples?$", re.M
+)
+
+
+def _sample_note_ok(text: str) -> bool:
+    """When the table shows fewer moments than the `Examples` totals, a
+    `showing N of M ...` line under it says so; when it shows all, no line."""
+    totals = _EXAMPLE_TOTALS.search(text)
+    if totals is None:
+        return False
+    total = {"passing": int(totals[1]), "failing": int(totals[2])}
+    shown = {s: len(re.findall(rf"^  {s}\s+-?\d+\s", text, re.M)) for s in total}
+    note = re.search(r"^  showing .* examples?$", text, re.M)
+    if all(shown[s] == total[s] for s in total):
+        return note is None
+    want = [f"{shown[s]} of {total[s]} {s}" for s in ("failing", "passing") if total[s]]
+    return note is not None and all(w in note[0] for w in want)
+
+
 def property_has_examples(sr: StoryRun, reg: Registry) -> tuple[bool, str]:
-    """Example moments with no `Details` row, plus the one trailing next step
-    they feed."""
+    """Example moments with no `Details` row, a note when the table is a
+    sample, plus the one trailing next step they feed."""
     text = sr.result.combined
     rows = _has_moment_rows(text)
     no_details = _DETAILS_ROW.search(text) is None
+    sample = _sample_note_ok(text)
     hint = contains_text(text, "view logs leading up to an example:")
     return (
-        rows and no_details and hint,
-        f"moment rows={rows}, no Details row={no_details}, logs hint={hint}",
+        rows and no_details and sample and hint,
+        f"moment rows={rows}, no Details row={no_details}, sample note={sample}, "
+        f"logs hint={hint}",
     )
 
 

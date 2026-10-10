@@ -262,8 +262,8 @@ async fn cmd_launch(
         return Err(user_error("invalid arguments: no parameters provided"));
     }
 
-    // Detected values would not agree with a `vcs.*` value the user passed,
-    // for example a commit link next to a different commit.
+    // Any user `vcs.*` param turns detection off, so that a detected commit
+    // link cannot point at a different commit.
     if !args.no_vcs && !params.as_map().keys().any(|k| k.starts_with(VCS_PREFIX)) {
         params.merge(detect_vcs_params(
             args.config.as_deref().unwrap_or(Path::new(".")),

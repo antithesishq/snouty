@@ -1,5 +1,4 @@
-//! Read the checked-out commit and the `origin` remote of a local git
-//! checkout, so that `snouty launch` can record them as `vcs.*` parameters.
+//! Reads the checked-out commit and the `origin` remote of a local git checkout.
 
 use std::path::Path;
 use std::process::Command;
@@ -11,7 +10,6 @@ use log::debug;
 
 use crate::process::output_with_timeout;
 
-/// git reads only a few small files for each query here.
 const GIT_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// The commit that a work tree has checked out.
@@ -22,10 +20,8 @@ pub struct Head {
     pub branch: Option<String>,
 }
 
-/// Run `git -C <dir> <args>` and return its trimmed stdout. Returns `None` when
-/// git fails: `dir` is not in a git work tree, git is not installed, or the
-/// query has no answer. No caller can act on the reason, so it goes to the
-/// debug log.
+/// Returns the trimmed stdout of git, or `None` when git fails. The failure
+/// reason goes to the debug log, because no caller can act on it.
 fn git(dir: &Path, args: &[&str]) -> Option<String> {
     let mut cmd = Command::new("git");
     // A git hook exports these, and they take precedence over `-C`.
@@ -50,7 +46,8 @@ fn git(dir: &Path, args: &[&str]) -> Option<String> {
         .map(|s| s.trim().to_owned())
 }
 
-/// The checked-out commit, or `None` when the branch has no commit yet.
+/// The commit checked out in the work tree that holds `dir`. `None` outside a
+/// work tree, or on a branch that has no commit yet.
 pub fn head(dir: &Path) -> Option<Head> {
     let out = git(dir, &["rev-parse", "HEAD", "--symbolic-full-name", "HEAD"])?;
     let (commit, full_name) = out.split_once('\n')?;
@@ -81,8 +78,9 @@ impl GitHubRepo {
     }
 }
 
-/// Parses the remote URL forms git accepts: `scheme://[user@]host[:port]/path`
-/// and the scp-like `[user@]host:path`.
+/// Parses a GitHub remote URL in either form git accepts:
+/// `scheme://[user@]host[:port]/owner/name` or scp-like `[user@]host:owner/name`.
+/// Fails for any other host.
 impl FromStr for GitHubRepo {
     type Err = Report;
 
@@ -120,8 +118,6 @@ mod tests {
     use hegel::Generator;
     use hegel::generators;
 
-    /// Every remote URL form git accepts for a github.com repository parses
-    /// to the same owner and name.
     #[hegel::test]
     fn github_remote_urls_parse_in_every_form(tc: hegel::TestCase) {
         let owner = tc.draw(generators::from_regex("[A-Za-z0-9-]{1,39}").fullmatch(true));

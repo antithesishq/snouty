@@ -153,8 +153,8 @@ them on the run and `snouty runs show` lists them:
 When the config dir (or the current directory, without --config) is in a git
 checkout, the launch records the checked-out commit and branch as `vcs.*`
 params. For a github.com `origin` remote, it also records the repository and a
-link to the commit. `snouty runs show` lists them under Version Control. The
-detection is off with --no-vcs, or when a --param names a `vcs.*` key.
+link to the commit. `snouty runs show` lists them under Version Control. --no-vcs
+turns the detection off, and so does a --param for any `vcs.*` key.
 
 Additional container images that the config parser can't discover (e.g. an
 image referenced only in a Kubernetes CRD field) can be registered with the

@@ -287,8 +287,8 @@ stdout 'Test run started: run_id run-123'
 
 # In a git checkout, the launch records the checked-out commit and branch as
 #    `vcs.*` params. For a github.com `origin` remote, it also records the
-#    repository and a link to the commit, as the Antithesis GitHub trigger
-#    action does. The global git config stays out of the commit below.
+#    repository and a link to the commit. The test ignores the global and
+#    system git config, so that a local setting cannot change the commit.
 env GIT_CONFIG_GLOBAL=/dev/null
 env GIT_CONFIG_NOSYSTEM=1
 exec git init -q -b feature/vcs checkout

@@ -54,8 +54,9 @@
 #     text, so `snouty runs exec ... | jq` composes.
 #   - Rewarm progress goes to stderr: when stderr is a terminal, a progress
 #     bar that gives way to a `rewarming moment: done` line, and otherwise one
-#     `rewarming moment: N%` line per record. A rewarm that ends early keeps
-#     its last percentage in view (tests/exec_pty.rs covers the terminal).
+#     `rewarming moment: N%` line each time the percentage changes. A rewarm
+#     that ends early keeps its last percentage in view (tests/exec_pty.rs
+#     covers the terminal).
 #     stdout keeps only the script's output, with or without --events.
 #   - On `exited`, a trailer on stderr documents the branch's end moment, to
 #     chain a follow-up command from.
@@ -270,7 +271,7 @@ stderr 'use --source-run-id to load a moment from a different run$'
 stderr 'Resource not found'
 ! stderr 'may still be loading'
 
-# With a source, snouty prints one rewarm progress line per record on stderr
+# With a source, snouty prints one rewarm progress line per percentage on stderr
 # when stderr is not a terminal. stdout keeps only the script's output.
 snouty runs exec run-2 1002528785118888238 278.1311443040613 'uname -a' --source-run-id 1f1211ea49946d4f63a92d65ee42476d-64-0
 stdout 'Linux antithesis 6.12.0'
@@ -278,6 +279,14 @@ stdout 'Linux antithesis 6.12.0'
 stderr '(?s)rewarming moment: 0%\nrewarming moment: 40%\nrewarming moment: 100%\n'
 stderr 'end moment: -8206006569229276678 398.492'
 ! stderr '"status"'
+
+# The server repeats a percentage across many records. Off a terminal, snouty
+# prints each percentage once, in order.
+snouty runs exec run-2 1002528785118888238 278.1311443040613 repeat-rewarm --source-run-id 1f1211ea49946d4f63a92d65ee42476d-64-0
+stderr '(?s)rewarming moment: 0%\nrewarming moment: 40%\nrewarming moment: 72%\nrewarming moment: 100%\n'
+! stderr '(?s)moment: 0%.*moment: 0%'
+! stderr '(?s)moment: 40%.*moment: 40%'
+! stderr '(?s)moment: 100%.*moment: 100%'
 
 # A stream that ends partway through the rewarm fails, and the last progress
 # line shows how far the rewarm got.

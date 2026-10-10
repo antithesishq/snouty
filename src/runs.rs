@@ -1608,17 +1608,19 @@ enum ExecProgress {
 }
 
 /// Shows rewarm progress on stderr, to keep stdout for the script's output.
-/// Off a terminal it prints one line per record, because a redrawn bar
-/// garbles a log.
+/// Off a terminal it prints one line per new percentage, because a redrawn
+/// bar garbles a log.
 enum RewarmDisplay {
     Bar(ProgressBar),
-    Lines,
+    /// The last percentage printed. The server repeats a percentage across
+    /// many records, and a line for each floods the log.
+    Lines(Option<u8>),
 }
 
 impl Default for RewarmDisplay {
     fn default() -> Self {
         if !std::io::stderr().is_terminal() {
-            return Self::Lines;
+            return Self::Lines(None);
         }
         let style = ProgressStyle::with_template("rewarming moment [{bar:40}] {pos}%")
             .expect("the template is valid")
@@ -1641,7 +1643,7 @@ impl Drop for RewarmDisplay {
 }
 
 impl RewarmDisplay {
-    fn show(&self, percent_complete: u8) {
+    fn show(&mut self, percent_complete: u8) {
         match self {
             Self::Bar(bar) => {
                 bar.set_position(percent_complete.into());
@@ -1652,7 +1654,12 @@ impl RewarmDisplay {
                     eprintln!("rewarming moment: done");
                 }
             }
-            Self::Lines => eprintln!("rewarming moment: {percent_complete}%"),
+            Self::Lines(last) => {
+                if *last != Some(percent_complete) {
+                    *last = Some(percent_complete);
+                    eprintln!("rewarming moment: {percent_complete}%");
+                }
+            }
         }
     }
 }

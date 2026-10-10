@@ -1329,6 +1329,8 @@ fn mock_route_execute_command(run_id: &str, req_body: &str) -> (u16, String) {
     };
     let percents: &[u8] = match script.trim() {
         "truncate-rewarm" => &[0, 40],
+        // The server repeats a percentage across many records.
+        "repeat-rewarm" => &[0, 0, 40, 40, 40, 72, 100, 100],
         _ => &[0, 40, 100],
     };
     let rewarm_progress = percents.iter().filter(|_| cold).map(|percent| {

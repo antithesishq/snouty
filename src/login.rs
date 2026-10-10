@@ -3,17 +3,23 @@ use std::path::Path;
 use std::time::Duration;
 
 use askama::Template;
+use axum::{
+    Router,
+    extract::RawQuery,
+    response::{Html, IntoResponse},
+    routing::get,
+};
 use base64::{Engine as _, prelude::BASE64_URL_SAFE_NO_PAD};
+use bytes::Bytes;
 use color_eyre::Section;
 use color_eyre::eyre::{Context, Result, eyre};
-use futures_util::stream::{FuturesUnordered, StreamExt};
-use http::StatusCode;
+use http::{StatusCode, header};
 use inquire::{Password, PasswordDisplayMode, Select, Text};
 use log::{debug, warn};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::{TcpListener, TcpStream};
+use tokio::net::TcpListener;
+use tokio::sync::mpsc;
 
 use crate::settings;
 use crate::{
@@ -33,10 +39,6 @@ const OAUTH_HTTP_TIMEOUT: Duration = Duration::from_secs(10);
 /// before giving up — generous enough for the user to complete an interactive
 /// sign-in (including MFA).
 const CALLBACK_TIMEOUT: Duration = Duration::from_secs(300);
-
-/// Drop a loopback connection that sends no complete request in this time, so
-/// idle connections do not pile up.
-const REQUEST_READ_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Wrapping our TUI (`inquire`) in a trait so that it can be subbed out for testing
 trait Prompter {
@@ -514,9 +516,6 @@ async fn complete_oauth_login(
 
     let idp_url =
         request_login_redirect(client, base_url, port, &code_challenge, &cli_state).await?;
-    let sign_in_page = LoginPage::SignIn { idp_url: &idp_url }
-        .render()
-        .wrap_err("failed to render the sign-in page")?;
 
     // A random token in the path hides the IdP URL from a local process that
     // can reach the loopback port but did not get this URL.
@@ -538,7 +537,7 @@ async fn complete_oauth_login(
     }
     println!("Waiting for you to complete sign-in in your browser...");
 
-    let callback = wait_for_callback(listeners, &sign_in_path, &sign_in_page).await?;
+    let callback = wait_for_callback(listeners, &sign_in_path, &idp_url).await?;
 
     let tokens = exchange_code_for_tokens(
         client,
@@ -726,157 +725,80 @@ enum LoginPage<'a> {
     SignInFailed,
 }
 
-/// Serve `sign_in_page` at `sign_in_path` until the OAuth callback arrives, show
-/// the result page, and return the callback's parameters. Other paths get a
-/// 404. Fails after `CALLBACK_TIMEOUT`.
+/// Serve the sign-in page for `idp_url` at `sign_in_path` until the OAuth
+/// callback arrives, show the result page, and return the callback's
+/// parameters. Other paths get a 404. Fails after `CALLBACK_TIMEOUT`.
 async fn wait_for_callback(
     listeners: CallbackListeners,
     sign_in_path: &str,
-    sign_in_page: &str,
+    idp_url: &reqwest::Url,
 ) -> Result<CallbackParams> {
-    tokio::time::timeout(
-        CALLBACK_TIMEOUT,
-        serve_until_callback(&listeners.listeners, sign_in_path, sign_in_page),
-    )
-    .await
-    .unwrap_or_else(|_elapsed| {
-        Err(user_error(format!(
+    let render = |page: LoginPage<'_>| {
+        page.render()
+            .map(Bytes::from)
+            .wrap_err("failed to render a login page")
+    };
+    let sign_in_page = render(LoginPage::SignIn { idp_url })?;
+    let signed_in_page = render(LoginPage::SignedIn)?;
+    let sign_in_failed_page = render(LoginPage::SignInFailed)?;
+
+    let (callback_tx, mut callback_rx) = mpsc::channel(1);
+    let app = Router::new()
+        .route(sign_in_path, get(move || async { html(sign_in_page) }))
+        .route(
+            "/callback",
+            get(move |RawQuery(query): RawQuery| async move {
+                let result = parse_callback_params(query.as_deref().unwrap_or_default());
+                // Show a page regardless of the outcome so the user isn't left
+                // staring at a spinner; details land in the terminal.
+                let page = match &result {
+                    Ok(_) => signed_in_page,
+                    Err(_) => sign_in_failed_page,
+                };
+                // Only the first callback counts; the channel holds one.
+                let _ = callback_tx.try_send(result);
+                html(page)
+            }),
+        );
+    let servers = futures_util::future::try_join_all(
+        listeners
+            .listeners
+            .into_iter()
+            .map(|listener| axum::serve(listener, app.clone()).into_future()),
+    );
+
+    // Dropping `servers` closes the listeners. axum serves each connection in
+    // its own task, which still writes the result page.
+    tokio::select! {
+        callback = callback_rx.recv() => {
+            callback.ok_or_else(|| eyre!("the OAuth callback server stopped"))?
+        }
+        served = servers => {
+            served.wrap_err("the OAuth callback server failed")?;
+            Err(eyre!("the OAuth callback server stopped"))
+        }
+        () = tokio::time::sleep(CALLBACK_TIMEOUT) => Err(user_error(format!(
             "timed out after {} seconds waiting for the browser to complete sign-in",
             CALLBACK_TIMEOUT.as_secs()
-        )))
-    })
-}
-
-async fn serve_until_callback(
-    listeners: &[TcpListener],
-    sign_in_path: &str,
-    sign_in_page: &str,
-) -> Result<CallbackParams> {
-    // Read requests concurrently: a browser can open a connection and never
-    // send on it (a preconnect), and that must not block the next request.
-    let mut reads = FuturesUnordered::new();
-    loop {
-        tokio::select! {
-            accepted = accept_any(listeners) => {
-                // An accept error (a peer reset, or too many open files)
-                // affects one connection, not the login.
-                let mut stream = match accepted {
-                    Ok((stream, _addr)) => stream,
-                    Err(err) => {
-                        debug!("failed to accept a connection on the OAuth callback server: {err}");
-                        continue;
-                    }
-                };
-                reads.push(async move {
-                    let request_line = tokio::time::timeout(REQUEST_READ_TIMEOUT, read_request(&mut stream))
-                        .await
-                        .unwrap_or_else(|_elapsed| Err(eyre!("timed out reading the request")));
-                    (stream, request_line)
-                });
-            }
-            Some((mut stream, request_line)) = reads.next() => {
-                let request_line = match request_line {
-                    Ok(request_line) => request_line,
-                    Err(err) => {
-                        debug!("dropping a connection to the OAuth callback server: {err:#}");
-                        continue;
-                    }
-                };
-                let target = request_line.split_whitespace().nth(1).unwrap_or_default();
-                let path = target.split_once('?').map_or(target, |(path, _)| path);
-                if path == "/callback" {
-                    let result = parse_callback_params(target);
-                    let page = match &result {
-                        Ok(_) => LoginPage::SignedIn,
-                        Err(_) => LoginPage::SignInFailed,
-                    };
-                    let body = page
-                        .render()
-                        .wrap_err("failed to render the sign-in result page")?;
-                    respond(&mut stream, StatusCode::OK, &body).await;
-                    return result;
-                }
-                if path == sign_in_path {
-                    respond(&mut stream, StatusCode::OK, sign_in_page).await;
-                } else {
-                    respond(&mut stream, StatusCode::NOT_FOUND, "").await;
-                }
-            }
-        }
+        ))),
     }
 }
 
-/// Write an HTML response. Write failures are ignored: a browser that went
-/// away has nothing left to show.
-async fn respond(stream: &mut TcpStream, status: StatusCode, body: &str) {
-    let response = format!(
-        "HTTP/1.1 {status}\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n{body}",
-        body.len(),
-    );
-    let _ = stream.write_all(response.as_bytes()).await;
-    let _ = stream.flush().await;
+/// An HTML response that the browser must not cache: the sign-in page holds a
+/// URL for this login attempt only.
+fn html(body: Bytes) -> impl IntoResponse {
+    ([(header::CACHE_CONTROL, "no-store")], Html(body))
 }
 
-/// Accept the first connection to arrive on any of the loopback listeners
-/// (IPv4 and, when bound, IPv6), cancelling the others.
-async fn accept_any(
-    listeners: &[TcpListener],
-) -> std::io::Result<(TcpStream, std::net::SocketAddr)> {
-    let accepts = listeners
-        .iter()
-        .map(|listener| Box::pin(listener.accept()))
-        .collect::<Vec<_>>();
-    let (result, _index, _remaining) = futures_util::future::select_all(accepts).await;
-    result
-}
-
-/// Read an HTTP request through the end of its headers and return its request
-/// line. The headers are read only to drain them: a close with unread data
-/// sends a reset, and the browser can then drop the response. Fails past
-/// `MAX_REQUEST_HEAD` bytes.
-async fn read_request(stream: &mut TcpStream) -> Result<String> {
-    const MAX_REQUEST_HEAD: usize = 64 * 1024;
-
-    let mut buf = Vec::with_capacity(1024);
-    let mut chunk = [0u8; 1024];
-    loop {
-        let n = stream
-            .read(&mut chunk)
-            .await
-            .wrap_err("failed to read the request")?;
-        if n == 0 {
-            break;
-        }
-        buf.extend_from_slice(&chunk[..n]);
-        if buf.windows(4).any(|w| w == b"\r\n\r\n") {
-            let line_end = buf
-                .windows(2)
-                .position(|w| w == b"\r\n")
-                .unwrap_or_default();
-            return Ok(String::from_utf8_lossy(&buf[..line_end]).into_owned());
-        }
-        if buf.len() > MAX_REQUEST_HEAD {
-            break;
-        }
-    }
-    Err(eyre!("the request did not contain a complete request head"))
-}
-
-/// Parse the callback request target (e.g. `/callback?code=…&state=…`) into the
+/// Parse the callback query string (e.g. `code=…&state=…`) into the
 /// authorization code and flow token. The proxy carries the flow token in the
 /// standard OAuth `state` parameter. An IdP-reported `error` surfaces as an error.
-fn parse_callback_params(target: &str) -> Result<CallbackParams> {
-    // The target is a relative request URI; resolve it against a dummy loopback
-    // base purely so `Url` will parse the query string for us.
-    let url = reqwest::Url::parse("http://localhost")
-        .and_then(|base| base.join(target))
-        .wrap_err("the OAuth callback request had an unparsable target")?;
-
+fn parse_callback_params(query: &str) -> Result<CallbackParams> {
     let mut auth_code = None;
     let mut flow_token = None;
     let mut error = None;
     let mut error_description = None;
-    for (key, value) in url.query_pairs() {
+    for (key, value) in form_urlencoded::parse(query.as_bytes()) {
         match key.as_ref() {
             "code" => auth_code = Some(value.into_owned()),
             "state" => flow_token = Some(value.into_owned()),
@@ -1110,7 +1032,7 @@ mod tests {
 
     #[test]
     fn parse_callback_extracts_code_and_flow_token() {
-        let params = parse_callback_params("/callback?code=AUTH_CODE&state=FLOW_TOKEN").unwrap();
+        let params = parse_callback_params("code=AUTH_CODE&state=FLOW_TOKEN").unwrap();
         assert_eq!(
             params,
             CallbackParams {
@@ -1122,17 +1044,15 @@ mod tests {
 
     #[test]
     fn parse_callback_url_decodes_values() {
-        let params = parse_callback_params("/callback?code=a%2Fb%2Bc&state=x%3Dy").unwrap();
+        let params = parse_callback_params("code=a%2Fb%2Bc&state=x%3Dy").unwrap();
         assert_eq!(params.auth_code, "a/b+c");
         assert_eq!(params.flow_token, "x=y");
     }
 
     #[test]
     fn parse_callback_surfaces_idp_error() {
-        let err = parse_callback_params(
-            "/callback?error=access_denied&error_description=user%20said%20no",
-        )
-        .unwrap_err();
+        let err = parse_callback_params("error=access_denied&error_description=user%20said%20no")
+            .unwrap_err();
         let rendered = format!("{err}");
         assert!(rendered.contains("access_denied"), "got: {rendered}");
         assert!(rendered.contains("user said no"), "got: {rendered}");
@@ -1140,8 +1060,8 @@ mod tests {
 
     #[test]
     fn parse_callback_requires_code_and_state() {
-        assert!(parse_callback_params("/callback?state=only_state").is_err());
-        assert!(parse_callback_params("/callback?code=only_code").is_err());
+        assert!(parse_callback_params("state=only_state").is_err());
+        assert!(parse_callback_params("code=only_code").is_err());
     }
 
     /// The `href` the sign-in page renders decodes back to the IdP URL, so
@@ -1173,54 +1093,58 @@ mod tests {
         decoded
     }
 
-    async fn get(port: u16, target: &str) -> String {
+    async fn get(port: u16, target: &str, headers: &str) -> String {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpStream;
+
         let mut stream = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
-        stream
-            .write_all(format!("GET {target} HTTP/1.1\r\nHost: localhost\r\n\r\n").as_bytes())
-            .await
-            .unwrap();
+        let request = format!("GET {target} HTTP/1.1\r\nConnection: close\r\n{headers}\r\n");
+        stream.write_all(request.as_bytes()).await.unwrap();
         let mut response = String::new();
         stream.read_to_string(&mut response).await.unwrap();
         response
     }
 
-    /// Spawn the loopback server with `sign_in_page` at `/sign-in/token`.
-    async fn spawn_callback_server(
-        sign_in_page: &'static str,
-    ) -> (u16, tokio::task::JoinHandle<Result<CallbackParams>>) {
+    /// Spawn the loopback server with the sign-in page at `/sign-in/token`.
+    async fn spawn_callback_server() -> (u16, tokio::task::JoinHandle<Result<CallbackParams>>) {
         let listeners = bind_callback_listener(&CliOAuthConfig::Ephemeral)
             .await
             .unwrap();
         let port = listeners.port;
-        let server = tokio::spawn(wait_for_callback(listeners, "/sign-in/token", sign_in_page));
+        let idp_url = reqwest::Url::parse("https://idp.example.com/authorize?a=1&b=2").unwrap();
+        let server =
+            tokio::spawn(
+                async move { wait_for_callback(listeners, "/sign-in/token", &idp_url).await },
+            );
         (port, server)
     }
 
     #[tokio::test]
     async fn callback_server_serves_the_sign_in_page_until_the_callback() {
-        let (port, server) = spawn_callback_server("the sign-in page").await;
+        let (port, server) = spawn_callback_server().await;
 
         // A connection that never sends a request (a browser preconnect)
         // must not hold up the requests behind it.
-        let _silent = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+        let _silent = tokio::net::TcpStream::connect(("127.0.0.1", port))
+            .await
+            .unwrap();
 
-        let not_found = get(port, "/").await;
+        let not_found = get(port, "/", "").await;
         assert!(not_found.starts_with("HTTP/1.1 404 "), "got: {not_found}");
-        assert!(!not_found.contains("the sign-in page"), "got: {not_found}");
-        let wrong_token = get(port, "/sign-in/guess").await;
+        let wrong_token = get(port, "/sign-in/guess", "").await;
         assert!(
             wrong_token.starts_with("HTTP/1.1 404 "),
             "got: {wrong_token}"
         );
 
-        let sign_in = get(port, "/sign-in/token").await;
+        let sign_in = get(port, "/sign-in/token", "").await;
         assert!(sign_in.starts_with("HTTP/1.1 200 "), "got: {sign_in}");
         assert!(
-            sign_in.ends_with("\r\n\r\nthe sign-in page"),
+            sign_in.contains(r#"href="https://idp.example.com/authorize?a=1&#38;b=2""#),
             "got: {sign_in}"
         );
 
-        let signed_in = get(port, "/callback?code=the-code&state=the-flow").await;
+        let signed_in = get(port, "/callback?code=the-code&state=the-flow", "").await;
         assert!(signed_in.starts_with("HTTP/1.1 200 "), "got: {signed_in}");
         assert!(signed_in.contains("You’re signed in"), "got: {signed_in}");
 
@@ -1230,25 +1154,20 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn callback_server_serves_a_large_page_to_a_request_with_many_headers() {
-        let page = "x".repeat(256 * 1024).leak();
-        let (port, server) = spawn_callback_server(page).await;
+    async fn callback_server_serves_the_whole_page_to_a_request_with_large_headers() {
+        let (port, server) = spawn_callback_server().await;
 
-        let mut stream = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
-        let cookie = "c".repeat(8 * 1024);
-        let request = format!("GET /sign-in/token HTTP/1.1\r\nCookie: {cookie}\r\n\r\n");
-        stream.write_all(request.as_bytes()).await.unwrap();
-        let mut response = Vec::new();
-        stream.read_to_end(&mut response).await.unwrap();
-        assert!(response.ends_with(page.as_bytes()));
+        let cookie = format!("Cookie: {}\r\n", "c".repeat(8 * 1024));
+        let sign_in = get(port, "/sign-in/token", &cookie).await;
+        assert!(sign_in.trim_end().ends_with("</html>"), "got: {sign_in}");
         server.abort();
     }
 
     #[tokio::test]
     async fn callback_server_shows_the_failed_page_for_an_idp_error() {
-        let (port, server) = spawn_callback_server("").await;
+        let (port, server) = spawn_callback_server().await;
 
-        let failed = get(port, "/callback?error=access_denied").await;
+        let failed = get(port, "/callback?error=access_denied", "").await;
         assert!(failed.contains("Sign-in failed"), "got: {failed}");
         assert!(server.await.unwrap().is_err());
     }

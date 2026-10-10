@@ -33,7 +33,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn browser_launch_url_accepts_only_http_and_https() {
+    fn parse_http_url_accepts_only_http_and_https() {
         // Real authorization URLs (http/https) pass through.
         assert!(parse_http_url("https://idp.example.com/authorize?a=1&b=2").is_ok());
         assert!(parse_http_url("http://localhost:12345/callback").is_ok());
@@ -47,7 +47,7 @@ mod tests {
     }
 
     #[test]
-    fn browser_launch_url_errors_carry_a_hint() {
+    fn parse_http_url_errors_carry_a_hint() {
         // A parse failure surfaces the parser's own message…
         let err = parse_http_url("not a url").unwrap_err();
         assert!(err.to_string().starts_with("invalid URL: "), "got: {err}");
@@ -57,7 +57,7 @@ mod tests {
     }
 
     #[test]
-    fn browser_launch_url_preserves_ampersand_query_params() {
+    fn parse_http_url_preserves_ampersand_query_params() {
         // The `&`-separated params (what an unquoted Windows shell would
         // mangle) survive normalization intact.
         let normalized =

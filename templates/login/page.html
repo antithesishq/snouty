@@ -1,10 +1,5 @@
 <!doctype html>
-{%- match self %}
-{%- when LoginPage::SignIn { .. } %}
-<html lang="en" class="sign-in">
-{%- else %}
-<html lang="en" class="result">
-{%- endmatch %}
+<html lang="en" class="{% if let LoginPage::SignIn { .. } = self %}sign-in{% else %}result{% endif %}">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -34,11 +29,11 @@
         <div class="tile" aria-hidden="true">
           {% include "terminal.svg" %}
           {%- match self %}
-          {%- when LoginPage::SignIn { .. } %}
           {%- when LoginPage::SignedIn %}
           {%- include "badge-success.svg" %}
           {%- when LoginPage::SignInFailed %}
           {%- include "badge-failure.svg" %}
+          {%- else %}
           {%- endmatch %}
         </div>
         <div class="content">

@@ -231,14 +231,8 @@ async fn cmd_launch(
         params.insert(ANT_PERFORMANCE_TIER, performance_tier.to_string());
     }
 
-    let vcs = if args.no_vcs {
-        Vec::new()
-    } else {
-        detect_vcs_params(args.config.as_deref().unwrap_or(Path::new(".")))
-    };
-
-    let config_image_ref = if let Some(config_dir) = args.config {
-        let detected = config::detect_config(&config_dir)?;
+    let config_image_ref = if let Some(config_dir) = &args.config {
+        let detected = config::detect_config(config_dir)?;
         let registry = snouty::settings::require(settings.repository(), "repository")?;
 
         let image_ref = container::generate_image_ref(registry);
@@ -268,11 +262,11 @@ async fn cmd_launch(
         return Err(user_error("invalid arguments: no parameters provided"));
     }
 
-    // A --param value replaces a detected one.
-    for (key, value) in vcs {
-        if !params.contains_key(key) {
-            params.insert(key, value);
-        }
+    if !args.no_vcs {
+        // A --param value replaces a detected one.
+        let mut vcs = detect_vcs_params(args.config.as_deref().unwrap_or(Path::new(".")));
+        vcs.merge(params);
+        params = vcs;
     }
 
     params.validate_test_params()?;
@@ -342,21 +336,21 @@ async fn cmd_launch(
 
 /// The `vcs.*` params for the git checkout that holds `dir`, in the shape the
 /// Antithesis GitHub trigger action sends them. Empty outside a git checkout.
-fn detect_vcs_params(dir: &Path) -> Vec<(&'static str, String)> {
+fn detect_vcs_params(dir: &Path) -> Params {
+    let mut vcs = Params::new();
     let Some(head) = git::head(dir) else {
-        return Vec::new();
+        return vcs;
     };
-    let mut vcs = Vec::new();
     if let Some(repo) = git::origin_url(dir).and_then(|url| url.parse::<GitHubRepo>().ok()) {
-        vcs.push((VCS_REPO_TYPE, "github".to_owned()));
-        vcs.push((VCS_VERSION_LINK, repo.commit_url(&head.commit)));
-        vcs.push((VCS_REPO_OWNER, repo.owner));
-        vcs.push((VCS_REPO_NAME, repo.name));
+        vcs.insert(VCS_REPO_TYPE, "github");
+        vcs.insert(VCS_VERSION_LINK, repo.commit_url(&head.commit));
+        vcs.insert(VCS_REPO_OWNER, repo.owner);
+        vcs.insert(VCS_REPO_NAME, repo.name);
     }
     if let Some(branch) = head.branch {
-        vcs.push((VCS_REPO_BRANCH, branch));
+        vcs.insert(VCS_REPO_BRANCH, branch);
     }
-    vcs.push((VCS_VERSION_ID, head.commit));
+    vcs.insert(VCS_VERSION_ID, head.commit);
     vcs
 }
 

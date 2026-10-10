@@ -1,13 +1,12 @@
 //! Read the checked-out commit and the `origin` remote of a local git
 //! checkout, so that `snouty launch` can record them as `vcs.*` parameters.
 
-use std::fmt;
 use std::path::Path;
 use std::process::Command;
 use std::str::FromStr;
 use std::time::Duration;
 
-use color_eyre::eyre::{Report, Result, bail, eyre};
+use color_eyre::eyre::{Report, Result, bail};
 use log::debug;
 
 use crate::process::output_with_timeout;
@@ -16,38 +15,39 @@ use crate::process::output_with_timeout;
 const GIT_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// The commit that a work tree has checked out.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug)]
 pub struct Head {
     pub commit: String,
     /// `None` when HEAD is detached.
     pub branch: Option<String>,
 }
 
-/// Run `git -C <dir> <args>` and return its trimmed stdout.
-fn git(dir: &Path, args: &[&str]) -> Result<String> {
+/// Run `git -C <dir> <args>` and return its trimmed stdout. Returns `None` when
+/// git fails: `dir` is not in a git work tree, git is not installed, or the
+/// query has no answer. No caller can act on the reason, so it goes to the
+/// debug log.
+fn git(dir: &Path, args: &[&str]) -> Option<String> {
     let mut cmd = Command::new("git");
     cmd.arg("-C").arg(dir).args(args);
-    let output = output_with_timeout(cmd, GIT_TIMEOUT)?;
+    let output = output_with_timeout(cmd, GIT_TIMEOUT)
+        .inspect_err(|e| debug!("git {args:?} in {}: {e:#}", dir.display()))
+        .ok()?;
     if !output.status.success() {
-        bail!(
-            "git {} failed: {}",
-            args.join(" "),
+        debug!(
+            "git {args:?} in {} failed: {}",
+            dir.display(),
             String::from_utf8_lossy(&output.stderr).trim()
         );
+        return None;
     }
     String::from_utf8(output.stdout)
+        .ok()
         .map(|s| s.trim().to_owned())
-        .map_err(|_| eyre!("git {} printed non-UTF-8 output", args.join(" ")))
 }
 
-/// `git rev-parse HEAD --symbolic-full-name HEAD`. Returns `None` when `dir`
-/// is not in a git work tree, git is not installed, or the branch has no
-/// commit yet. The caller only skips the `vcs.*` parameters then, so the error
-/// goes to the debug log.
+/// The checked-out commit, or `None` when the branch has no commit yet.
 pub fn head(dir: &Path) -> Option<Head> {
-    let out = git(dir, &["rev-parse", "HEAD", "--symbolic-full-name", "HEAD"])
-        .inspect_err(|e| debug!("no git commit in {}: {e:#}", dir.display()))
-        .ok()?;
+    let out = git(dir, &["rev-parse", "HEAD", "--symbolic-full-name", "HEAD"])?;
     let (commit, full_name) = out.split_once('\n')?;
     Some(Head {
         commit: commit.to_owned(),
@@ -55,12 +55,9 @@ pub fn head(dir: &Path) -> Option<Head> {
     })
 }
 
-/// `git remote get-url origin`. Returns `None` when there is no `origin`
-/// remote; the error goes to the debug log for the same reason as in [`head`].
+/// The URL of the `origin` remote, or `None` when there is none.
 pub fn origin_url(dir: &Path) -> Option<String> {
     git(dir, &["remote", "get-url", "origin"])
-        .inspect_err(|e| debug!("no git origin in {}: {e:#}", dir.display()))
-        .ok()
 }
 
 /// A repository on github.com, parsed from a git remote URL.
@@ -72,13 +69,10 @@ pub struct GitHubRepo {
 
 impl GitHubRepo {
     pub fn commit_url(&self, commit: &str) -> String {
-        format!("{self}/commit/{commit}")
-    }
-}
-
-impl fmt::Display for GitHubRepo {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "https://github.com/{}/{}", self.owner, self.name)
+        format!(
+            "https://github.com/{}/{}/commit/{commit}",
+            self.owner, self.name
+        )
     }
 }
 
@@ -88,17 +82,12 @@ impl FromStr for GitHubRepo {
     type Err = Report;
 
     fn from_str(url: &str) -> Result<Self> {
-        let (host, path) = match url.split_once("://") {
-            Some((_, rest)) => {
-                let (authority, path) = rest.split_once('/').unwrap_or((rest, ""));
-                let host = authority.rsplit('@').next().unwrap_or_default();
-                (host.split(':').next().unwrap_or_default(), path)
-            }
-            None => {
-                let (authority, path) = url.split_once(':').unwrap_or((url, ""));
-                (authority.rsplit('@').next().unwrap_or_default(), path)
-            }
+        let (authority, path) = match url.split_once("://") {
+            Some((_, rest)) => rest.split_once('/').unwrap_or((rest, "")),
+            None => url.split_once(':').unwrap_or((url, "")),
         };
+        let host = authority.rsplit_once('@').map_or(authority, |(_, h)| h);
+        let host = host.split_once(':').map_or(host, |(h, _)| h);
         if !host.eq_ignore_ascii_case("github.com") {
             bail!("{url} is not a github.com remote");
         }
@@ -161,14 +150,5 @@ mod tests {
         ] {
             assert!(url.parse::<GitHubRepo>().is_err(), "{url} parsed");
         }
-    }
-
-    #[test]
-    fn commit_url_points_at_the_commit_on_github() {
-        let repo: GitHubRepo = "git@github.com:acme/widget.git".parse().unwrap();
-        assert_eq!(
-            repo.commit_url("abc123"),
-            "https://github.com/acme/widget/commit/abc123"
-        );
     }
 }

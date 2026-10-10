@@ -150,6 +150,13 @@ them on the run and `snouty runs show` lists them:
     --param attrs.branch=main \
     --param attrs.build=12345
 
+When the config dir (or the current directory, without --config) is in a git
+checkout, the launch records the checked-out commit and branch as `vcs.*`
+params. For a github.com `origin` remote, it also records the repository and a
+link to the commit. `snouty runs show` lists them under Version Control. A
+--param value for a `vcs.*` key replaces the detected value, and --no-vcs
+turns the detection off.
+
 Additional container images that the config parser can't discover (e.g. an
 image referenced only in a Kubernetes CRD field) can be registered with the
 antithesis.images param, a semicolon-delimited [REGISTRY/]NAME(:TAG|@DIGEST)
@@ -654,6 +661,11 @@ pub struct LaunchArgs {
     /// `--param antithesis.performance_tier=TIER`.
     #[arg(long, value_enum)]
     pub performance_tier: Option<PerformanceTier>,
+
+    /// Do not record the commit, branch, and repository of the local git
+    /// checkout as `vcs.*` params
+    #[arg(long)]
+    pub no_vcs: bool,
 
     /// Extra parameters as key=value pairs (repeatable)
     #[arg(long = "param")]

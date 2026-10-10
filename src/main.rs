@@ -1,4 +1,5 @@
 use std::io::{self, ErrorKind, IsTerminal, Read};
+use std::path::Path;
 use std::process::Command;
 
 use clap::{CommandFactory, Parser};
@@ -17,12 +18,14 @@ use snouty::config;
 use snouty::container;
 use snouty::docs;
 use snouty::error::user_error;
+use snouty::git::{self, GitHubRepo};
 use snouty::login::cmd_login;
 use snouty::params::{
     ANT_CONFIG_IMAGE, ANT_DEBUGGING_INPUT_HASH, ANT_DEBUGGING_RUN_ID, ANT_DEBUGGING_SESSION_ID,
     ANT_DEBUGGING_VTIME, ANT_DESCRIPTION, ANT_DURATION, ANT_EVENT_DESCRIPTION,
     ANT_FILTER_LOGS_MATCHING, ANT_FILTER_SOURCE_MATCHING, ANT_IS_EPHEMERAL, ANT_PERFORMANCE_TIER,
-    ANT_REPORT_RECIPIENTS, ANT_SOURCE, ANT_TEST_NAME, Params,
+    ANT_REPORT_RECIPIENTS, ANT_SOURCE, ANT_TEST_NAME, Params, VCS_REPO_BRANCH, VCS_REPO_NAME,
+    VCS_REPO_OWNER, VCS_REPO_TYPE, VCS_VERSION_ID, VCS_VERSION_LINK,
 };
 use snouty::settings::Settings;
 use snouty::validate;
@@ -228,6 +231,12 @@ async fn cmd_launch(
         params.insert(ANT_PERFORMANCE_TIER, performance_tier.to_string());
     }
 
+    let vcs = if args.no_vcs {
+        Vec::new()
+    } else {
+        detect_vcs_params(args.config.as_deref().unwrap_or(Path::new(".")))
+    };
+
     let config_image_ref = if let Some(config_dir) = args.config {
         let detected = config::detect_config(&config_dir)?;
         let registry = snouty::settings::require(settings.repository(), "repository")?;
@@ -257,6 +266,13 @@ async fn cmd_launch(
 
     if params.is_empty() {
         return Err(user_error("invalid arguments: no parameters provided"));
+    }
+
+    // A --param value replaces a detected one.
+    for (key, value) in vcs {
+        if !params.contains_key(key) {
+            params.insert(key, value);
+        }
     }
 
     params.validate_test_params()?;
@@ -322,6 +338,26 @@ async fn cmd_launch(
     }
 
     Ok(())
+}
+
+/// The `vcs.*` params for the git checkout that holds `dir`, in the shape the
+/// Antithesis GitHub trigger action sends them. Empty outside a git checkout.
+fn detect_vcs_params(dir: &Path) -> Vec<(&'static str, String)> {
+    let Some(head) = git::head(dir) else {
+        return Vec::new();
+    };
+    let mut vcs = Vec::new();
+    if let Some(repo) = git::origin_url(dir).and_then(|url| url.parse::<GitHubRepo>().ok()) {
+        vcs.push((VCS_REPO_TYPE, "github".to_owned()));
+        vcs.push((VCS_VERSION_LINK, repo.commit_url(&head.commit)));
+        vcs.push((VCS_REPO_OWNER, repo.owner));
+        vcs.push((VCS_REPO_NAME, repo.name));
+    }
+    if let Some(branch) = head.branch {
+        vcs.push((VCS_REPO_BRANCH, branch));
+    }
+    vcs.push((VCS_VERSION_ID, head.commit));
+    vcs
 }
 
 async fn submit_launch(

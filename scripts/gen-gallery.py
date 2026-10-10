@@ -1283,14 +1283,13 @@ def expected_run_cell(row: dict) -> str:
     """The RUN cell that `runs list` shows for a `--json` row.
 
     The order is: test name, the first line of the description, the first line
-    of the event description that a debugging session sets, the launcher, `-`.
+    of the event description that a debugging session sets, `-`.
     """
     params = row.get("parameters") or {}
     candidates = [
         params.get("antithesis.test_name"),
         _first_line(row.get("description") or params.get("antithesis.description")),
         _first_line(params.get(_DESCRIPTION)),
-        row.get("launcher"),
     ]
     return next((c for c in candidates if isinstance(c, str) and c), "-")
 
@@ -1834,9 +1833,9 @@ def build_stories(d: Discovery) -> list[Story]:
             "List recent runs to find one to inspect",
             "I want to scan recent runs and pick one to dig into.",
             "Up to 10 recent runs, newest first, with legible RUN ID/STATUS/CREATED/"
-            "LAUNCHER/RUN columns; LAUNCHER shows at most 10 characters; RUN is the test name, and a run with no test name (a debugging "
-            "session) shows the first line of its description or event description "
-            "there, else its launcher; "
+            "LAUNCHER/RUN columns; LAUNCHER shows at most 10 characters; RUN is the "
+            "test name, and a run with no test name (a debugging session) shows the "
+            "first line of its description or event description there, else `-`; "
             "when more runs exist, a stderr note says the output stopped at the limit.",
             ["runs", "list", "-n", "10"],
             rows_at_most_with_run_cells(10),

@@ -2424,8 +2424,8 @@ fn render_runs_table(runs: &[RunSummary], width: usize) -> String {
         runs.iter()
             .map(|run| {
                 // A run with no test name (a debugging session, for one) shows the
-                // first line of its description or event description, then its
-                // launcher, so the row still says what the run is.
+                // first line of its description or event description, so the row
+                // still says what the run is. LAUNCHER has its own column.
                 fn first_line(text: &str) -> Option<&str> {
                     text.lines().map(str::trim).find(|line| !line.is_empty())
                 }
@@ -2433,7 +2433,6 @@ fn render_runs_table(runs: &[RunSummary], width: usize) -> String {
                     run.test_name(),
                     run.test_description().and_then(first_line),
                     run.event_description().and_then(first_line),
-                    Some(run.launcher.as_str()),
                 ]
                 .into_iter()
                 .flatten()
@@ -4511,7 +4510,7 @@ mod tests {
     }
 
     #[test]
-    fn runs_table_shows_launcher_when_test_name_missing() {
+    fn runs_table_shows_dash_not_launcher_when_run_has_no_text() {
         let runs = vec![summary(
             "abc-54-1",
             RunStatus::Completed,
@@ -4523,8 +4522,8 @@ mod tests {
         let table = render_runs_table(&runs, 100);
         let row = table.lines().nth(1).unwrap();
         assert!(
-            row.trim_end().ends_with("  debugging"),
-            "expected launcher in RUN, got: {row}"
+            row.trim_end().ends_with("debugging  -"),
+            "expected launcher, then a dash in RUN, got: {row}"
         );
     }
 
@@ -4626,9 +4625,9 @@ mod tests {
     }
 
     #[test]
-    fn runs_table_skips_blank_description_for_launcher() {
+    fn runs_table_skips_blank_description() {
         let run = with_event_description(debugging_run(Some(" \n ")), "\n");
-        assert_eq!(run_cell(run, 100), "debugging");
+        assert_eq!(run_cell(run, 100), "-");
     }
 
     #[test]

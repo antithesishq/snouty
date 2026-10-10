@@ -510,20 +510,26 @@ async fn complete_oauth_login(
     // Best-effort: any failure to open a browser (invalid URL, no opener) is
     // not fatal — the URL is printed either way, so a headless or opener-less
     // environment can still complete the flow by hand.
+    // The browser lands on a local page whose "Sign in" button leads to the IdP.
+    let login_url = format!("http://localhost:{port}/");
+    let login_page = include_str!("login/snouty-cli-login.html").replace(
+        r##"href="#""##,
+        &format!(r#"href="{}""#, location.replace('&', "&amp;")),
+    );
     println!();
-    match crate::browser::open_in_browser(&location) {
+    match crate::browser::open_in_browser(&login_url) {
         Ok(()) => {
             println!("Opening login url in your browser");
-            println!("If your browser didn't open, manually visit: {location}");
+            println!("If your browser didn't open, manually visit: {login_url}");
         }
         Err(err) => {
             println!("Failed to open login url automatically ({err}).");
-            println!("Open the following url in your browser on this machine: {location}");
+            println!("Open the following url in your browser on this machine: {login_url}");
         }
     }
     println!("Waiting for you to complete sign-in in your browser...");
 
-    let callback = wait_for_callback(listeners).await?;
+    let callback = wait_for_callback(listeners, &login_page).await?;
 
     let tokens = exchange_code_for_tokens(
         client,
@@ -701,13 +707,22 @@ async fn exchange_code_for_tokens(
         .wrap_err("failed to parse the token exchange response")
 }
 
-/// Accept exactly one loopback connection, read the OAuth callback request, ack
-/// it in the browser, and return the parsed callback parameters.
-async fn wait_for_callback(listeners: CallbackListeners) -> Result<CallbackParams> {
-    let received = tokio::time::timeout(
-        CALLBACK_TIMEOUT,
-        receive_callback_request(&listeners.listeners),
-    )
+/// Serve `login_page` to every loopback request until the OAuth callback
+/// arrives, ack the callback in the browser, and return its parsed parameters.
+async fn wait_for_callback(
+    listeners: CallbackListeners,
+    login_page: &str,
+) -> Result<CallbackParams> {
+    let received = tokio::time::timeout(CALLBACK_TIMEOUT, async {
+        loop {
+            let (mut stream, request_line) = receive_callback_request(&listeners.listeners).await?;
+            let target = request_line.split_whitespace().nth(1).unwrap_or_default();
+            if target.starts_with("/callback") {
+                return Ok::<_, color_eyre::Report>((stream, request_line));
+            }
+            respond_html(&mut stream, login_page).await;
+        }
+    })
     .await;
     let (mut stream, request_line) = match received {
         Ok(result) => result?,
@@ -728,13 +743,15 @@ async fn wait_for_callback(listeners: CallbackListeners) -> Result<CallbackParam
     // Acknowledge the request in the browser regardless of the parse outcome so
     // the user isn't left staring at a spinner; details land in the terminal.
     let body = match &result {
-        Ok(_) => {
-            "<html><body><h2>Sign-in complete</h2><p>You can close this tab and return to your terminal.</p></body></html>"
-        }
-        Err(_) => {
-            "<html><body><h2>Sign-in failed</h2><p>Return to your terminal for details.</p></body></html>"
-        }
+        Ok(_) => include_str!("login/snouty-cli-signed-in.html"),
+        Err(_) => include_str!("login/snouty-cli-sign-in-failed.html"),
     };
+    respond_html(&mut stream, body).await;
+
+    result
+}
+
+async fn respond_html(stream: &mut tokio::net::TcpStream, body: &str) {
     let response = format!(
         "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
         body.len(),
@@ -742,8 +759,6 @@ async fn wait_for_callback(listeners: CallbackListeners) -> Result<CallbackParam
     );
     let _ = stream.write_all(response.as_bytes()).await;
     let _ = stream.flush().await;
-
-    result
 }
 
 async fn receive_callback_request(

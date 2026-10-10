@@ -173,6 +173,23 @@ fn params_test_description(params: Option<&RunParams>) -> Option<&str> {
     params.and_then(|p| p.antithesis_description.as_deref())
 }
 
+fn params_event_description(params: Option<&RunParams>) -> Option<&str> {
+    params?.extra.get(ANT_EVENT_DESCRIPTION).map(String::as_str)
+}
+
+/// The text that the Description block shows: the description, or else the
+/// event description. A debugging session often has only the event
+/// description. A text that holds only whitespace counts as absent.
+fn display_description<'a>(
+    description: Option<&'a str>,
+    event_description: Option<&'a str>,
+) -> Option<&'a str> {
+    [description, event_description]
+        .into_iter()
+        .flatten()
+        .find(|text| !text.trim().is_empty())
+}
+
 impl RunSummary {
     pub(crate) fn test_name(&self) -> Option<&str> {
         params_test_name(self.parameters.as_ref())
@@ -190,11 +207,11 @@ impl RunSummary {
     /// The `antithesis.event_description` parameter, which a debugging session
     /// sets in place of a description.
     pub(crate) fn event_description(&self) -> Option<&str> {
-        self.parameters
-            .as_ref()?
-            .extra
-            .get(ANT_EVENT_DESCRIPTION)
-            .map(String::as_str)
+        params_event_description(self.parameters.as_ref())
+    }
+
+    pub(crate) fn display_description(&self) -> Option<&str> {
+        display_description(self.test_description(), self.event_description())
     }
 }
 
@@ -207,6 +224,13 @@ impl RunDetail {
         self.description
             .as_deref()
             .or_else(|| params_test_description(self.parameters.as_ref()))
+    }
+
+    pub(crate) fn display_description(&self) -> Option<&str> {
+        display_description(
+            self.test_description(),
+            params_event_description(self.parameters.as_ref()),
+        )
     }
 
     /// The requested run duration as launched (`antithesis.duration`, a count of

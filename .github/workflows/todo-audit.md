@@ -39,28 +39,28 @@ mcp-scripts:
 
       allowed = {"doctor", "runs list", "runs show", "runs properties",
                  "runs logs", "runs events", "runs search"}
-      try:
-          args = shlex.split(inputs.get("args", ""))
-      except ValueError as err:
-          args, error = [], f"cannot split arguments: {err}"
-      else:
+      timeout = 110
+
+      def run(raw):
+          try:
+              args = shlex.split(raw)
+          except ValueError as err:
+              return {"error": f"cannot split arguments: {err}"}
           command = " ".join(args[:2] if args[:1] == ["runs"] else args[:1])
-          error = None
           if command not in allowed:
-              error = f"`snouty {command}` is not allowed; allowed: {sorted(allowed)}"
-          elif any(a.split("=")[0] in ("--settings", "--profile") for a in args):
-              error = "--settings and --profile are not allowed"
-      if error:
-          print(json.dumps({"error": error}))
-      else:
+              return {"error": f"`snouty {command}` is not allowed; allowed: {sorted(allowed)}"}
+          if any(a.split("=")[0] in ("--settings", "--profile") for a in args):
+              return {"error": "--settings and --profile are not allowed"}
+          result = {"command": "snouty " + shlex.join(args)}
           try:
               p = subprocess.run([os.environ["SNOUTY"], *args], capture_output=True,
-                                 text=True, timeout=110)
-              result = {"exit_code": p.returncode, "stdout": p.stdout[-60000:],
-                        "stderr": p.stderr[-20000:]}
+                                 text=True, timeout=timeout)
           except subprocess.TimeoutExpired:
-              result = {"error": "timed out after 110s"}
-          print(json.dumps({"command": "snouty " + shlex.join(args), **result}))
+              return {**result, "error": f"timed out after {timeout}s"}
+          return {**result, "exit_code": p.returncode, "stdout": p.stdout[-60000:],
+                  "stderr": p.stderr[-20000:]}
+
+      print(json.dumps(run(inputs.get("args", ""))))
     env:
       SNOUTY: ${{ github.workspace }}/target/debug/snouty
       ANTITHESIS_TENANT: ${{ secrets.STAGING_ANTITHESIS_TENANT }}
@@ -71,7 +71,11 @@ steps:
     with:
       toolchain: stable
 
+  # Save the cache even when the agent fails, so the next night skips
+  # rebuilding the vendored OpenSSL and SQLite.
   - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+    with:
+      cache-on-failure: true
 
   - name: Build snouty
     run: cargo build --locked
@@ -87,18 +91,17 @@ steps:
     env:
       ANTITHESIS_TENANT: ${{ secrets.STAGING_ANTITHESIS_TENANT }}
       ANTITHESIS_API_KEY: ${{ secrets.STAGING_ANTITHESIS_API_KEY }}
+    working-directory: /tmp/gh-aw/agent/todo-audit
     run: |
-      target/debug/snouty doctor --json > /tmp/gh-aw/agent/todo-audit/doctor.json || true
-      release=$(jq -r '.checks[] | select(.name == "api") | .notes[]?.text
+      "$GITHUB_WORKSPACE/target/debug/snouty" doctor --json > doctor.json || true
+      jq -er '.checks[] | select(.name == "api") | .notes[]?.text
         | select(startswith("tenant release version: "))
-        | ltrimstr("tenant release version: ")' /tmp/gh-aw/agent/todo-audit/doctor.json)
-      if [ -z "$release" ]; then
+        | ltrimstr("tenant release version: ")' doctor.json > release.txt || {
         echo "snouty doctor reported no tenant release version" >&2
-        cat /tmp/gh-aw/agent/todo-audit/doctor.json >&2
+        cat doctor.json >&2
         exit 1
-      fi
-      echo "$release" > /tmp/gh-aw/agent/todo-audit/release.txt
-      echo "Tenant release: $release" >> "$GITHUB_STEP_SUMMARY"
+      }
+      echo "Tenant release: $(cat release.txt)" >> "$GITHUB_STEP_SUMMARY"
 
 safe-outputs:
   create-issue:
@@ -120,7 +123,7 @@ changes. Find the ones that no longer hold, and file an issue for each.
 
 - `/tmp/gh-aw/agent/todo-audit/todos.json` lists every `TODO`, `FIXME` and
   "observed on" comment block in the repository at this commit. Each entry has
-  `file`, `line`, `end_line`, `kinds`, `text`, `marker` and `context`.
+  `file`, `line`, `end_line`, `kinds`, `text` and `marker`.
 - `/tmp/gh-aw/agent/todo-audit/release.txt` holds the tenant's release version,
   read from `snouty doctor` at the start of this run.
 - The repository is checked out in the working directory. Read the code around

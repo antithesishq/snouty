@@ -12,7 +12,8 @@ rustPlatform.buildRustPackage (finalAttrs: {
   __structuredAttrs = true;
 
   # Every path that Cargo.toml declares must appear here: workspace members,
-  # path dependencies, and [[example]] paths.
+  # path dependencies, and [[example]] paths. So must ./templates, which the
+  # askama derive reads at compile time.
   src = lib.fileset.toSource {
     root = ./.;
     fileset = lib.fileset.unions [
@@ -22,6 +23,7 @@ rustPlatform.buildRustPackage (finalAttrs: {
       ./examples
       ./snouty-macros
       ./src
+      ./templates
     ];
   };
 

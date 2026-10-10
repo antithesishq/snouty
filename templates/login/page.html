@@ -1,0 +1,69 @@
+<!doctype html>
+{%- match self %}
+{%- when LoginPage::SignIn { .. } %}
+<html lang="en" class="sign-in">
+{%- else %}
+<html lang="en" class="result">
+{%- endmatch %}
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<meta name="referrer" content="no-referrer">
+<link rel="icon" href="data:,">
+{%- match self %}
+{%- when LoginPage::SignIn { .. } %}
+<title>Sign in to Snouty CLI</title>
+{%- when LoginPage::SignedIn %}
+<title>Signed in to Snouty CLI</title>
+{%- when LoginPage::SignInFailed %}
+<title>Snouty CLI sign-in failed</title>
+{%- endmatch %}
+<style>
+{% include "page.css" %}
+</style>
+</head>
+<body>
+  <div class="page">
+    <a class="logo" href="https://antithesis.com" aria-label="Antithesis">
+      {% include "logo.svg" %}
+    </a>
+
+    <main class="card">
+      <div class="header">
+        <div class="tile" aria-hidden="true">
+          {% include "terminal.svg" %}
+          {%- match self %}
+          {%- when LoginPage::SignIn { .. } %}
+          {%- when LoginPage::SignedIn %}
+          {%- include "badge-success.svg" %}
+          {%- when LoginPage::SignInFailed %}
+          {%- include "badge-failure.svg" %}
+          {%- endmatch %}
+        </div>
+        <div class="content">
+        {%- match self %}
+        {%- when LoginPage::SignIn { .. } %}
+          <h1>Sign in to Snouty CLI</h1>
+          <p>You’ll be redirected to your organization’s sign-in provider</p>
+        {%- when LoginPage::SignedIn %}
+          <h1>You’re signed in</h1>
+          <p>Return to your terminal to continue.<br>You can close this tab.</p>
+        {%- when LoginPage::SignInFailed %}
+          <h1>Sign-in failed</h1>
+          <p>Return to your terminal for details</p>
+        {%- endmatch %}
+        </div>
+      </div>
+      {%- match self %}
+      {%- when LoginPage::SignIn { idp_url } %}
+      <a class="button" href="{{ idp_url }}">Sign in</a>
+      {%- when LoginPage::SignedIn %}
+      <p class="retry">If sign-in doesn’t complete in your terminal, run <code>snouty login</code> again</p>
+      {%- when LoginPage::SignInFailed %}
+      <p class="retry">To try again, run <code>snouty login</code></p>
+      {%- endmatch %}
+    </main>
+  </div>
+</body>
+</html>

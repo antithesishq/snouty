@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" class="badge" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+  <rect width="24" height="24" rx="12" fill="var(--bg-2)"/>
+  <circle cx="12" cy="12" r="10" fill="#ffffff"/>
+  <path d="M12 22C6.47715 22 2 17.5228 2 12C2 6.47715 6.47715 2 12 2C17.5228 2 22 6.47715 22 12C22 17.5228 17.5228 22 12 22ZM15.0207 8.22263L10.5609 13.0878L8.92238 11.4492L7.60683 12.7648L10.6194 15.7774L16.3922 9.4798L15.0207 8.22263Z" fill-rule="evenodd" clip-rule="evenodd" fill="var(--success)"/>
+</svg>

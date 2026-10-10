@@ -88,6 +88,12 @@ stdout 'seconds or h/m/s units \(e\.g\. 90s, 5m\)'
 stdout '\[default: the server.s, 10m as of release 64\.0\]'
 stdout '--timeout 5m'
 
+# The help names the flag that loads a cold moment, in the same words as the
+# cold-moment suggestion.
+snouty runs exec --help
+stdout 'Use --source-run-id to load a moment from a\s+different run\.'
+! stdout 'name the run it comes from'
+
 # The command authenticates with the Antithesis API. An API key is required,
 # like every run-scoped endpoint.
 ! snouty runs exec run-2 -3625518438076122494 398.4898056755774 'uname -a'

@@ -1101,11 +1101,10 @@ INPUT_HASH and VTIME identify the moment to execute at, and the moment must be
 warm. A warm moment is a moment that is loaded into the session. Every moment
 generated in the session is warm: by fuzzing, and by an earlier `runs exec`,
 so the end moment of one command is warm for the next. A moment from another
-run or session is cold. To bring it over, name the run it comes from with
---source-run-id, and the server loads the moment by replaying that run's
-inputs. That can take minutes, and --timeout counts it; snouty shows the
-progress on stderr. Find a moment with `runs properties --detail` or
-`runs events`.
+run or session is cold. Use --source-run-id to load a moment from a
+different run. The server replays that run's inputs to load the moment. That
+can take minutes, and --timeout counts it; snouty shows the progress on
+stderr. Find a moment with `runs properties --detail` or `runs events`.
 
 The script executes on the host, or in the container that --container names.
 The command needs tenant release 64.0 or newer; `snouty doctor` reports the

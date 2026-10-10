@@ -264,10 +264,31 @@ stderr 'the session may still be loading: a new debugging session takes a few mi
 stderr 'Moment not warm'
 stderr '(?s)Try again in a minute\nSuggestion: use --source-run-id to load a moment from a different run'
 
-# With a rewarm source, a 404 can be a bad source, and a retry does not fix
-# that. snouty names the flag and gives no note.
+# With a rewarm source, a 404 can also be a bad source, and a retry does not
+# fix that. snouty reads the source run to tell the two apart. In an eval on
+# orbitinghail (release 64.0), agents passed a correct --source-run-id to a
+# new session and got the 404 for up to 7 minutes. When the source run
+# exists, a recent session gets the note and no source suggestion. When the
+# source run does not exist, snouty names the flag and gives no note.
+! snouty runs exec session-loading -3625518438076122494 398.4898056755774 'true' --source-run-id run-1
+stderr 'Try again in a minute$'
+! stderr 'names an existing source'
+
 ! snouty runs exec session-loading -3625518438076122494 398.4898056755774 'true' --source-run-id no-such-run
 stderr 'check that --source-run-id names an existing source'
+! stderr 'may still be loading'
+
+# An older session is past the loading window, so a source run that exists
+# does not explain the 404. snouty keeps the source suggestion: the server
+# can refuse a run as a source for a reason that snouty cannot see.
+! snouty runs exec session-old -3625518438076122494 398.4898056755774 'true' --source-run-id run-1
+stderr 'check that --source-run-id names an existing source'
+! stderr 'may still be loading'
+
+# There is no cheap probe for a source session, so its 404 keeps the source
+# suggestion.
+! snouty runs exec session-loading -3625518438076122494 398.4898056755774 'true' --source-session-id ba4ebf3181dd342334b86c58941813c6-64-0
+stderr 'check that --source-session-id names an existing source'
 ! stderr 'may still be loading'
 
 # An older session, or a run that is not a debugging session, gets no note.

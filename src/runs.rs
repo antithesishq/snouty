@@ -1798,6 +1798,10 @@ async fn cmd_runs_exec(
         RewarmSource::Run(_) => "--source-run-id",
         RewarmSource::Session(_) => "--source-session-id",
     });
+    let source_run_id = match &exec.rewarm {
+        Some(RewarmSource::Run(id)) => Some(id.to_string()),
+        _ => None,
+    };
     let api = AntithesisApi::new(settings, verbose)?;
     let stream = match api.execute_command(run_id, exec).await {
         Ok(stream) => stream,
@@ -1823,9 +1827,7 @@ async fn cmd_runs_exec(
                         return Err(user_error(format!("run not found: {run_id}")));
                     }
                     RunProbe::ProbeFailed(probe_err) => return Err(probe_err),
-                    // With a rewarm source, the 404 can be a bad source, and
-                    // a retry does not fix that.
-                    RunProbe::Exists(run) => rewarm_flag.is_none().then_some(*run),
+                    RunProbe::Exists(run) => Some(*run),
                 },
                 // The loading note is only a hint, so a failed lookup drops it.
                 Some(400) if cold => api.get_run(run_id).await.ok().map(|run| run.untag()),
@@ -1835,6 +1837,17 @@ async fn cmd_runs_exec(
                 run.launcher == DEBUGGING_LAUNCHER
                     && Utc::now() - run.created_at < SESSION_LOADING_WINDOW
             });
+            // With a rewarm source, the 404 can be a bad source, and a retry
+            // does not fix that. Only a source run that exists rules it out.
+            // There is no cheap probe for a source session.
+            let loading = loading
+                && match (status, &source_run_id) {
+                    (Some(404), Some(id)) => {
+                        matches!(probe_run(&api, id).await, RunProbe::Exists(_))
+                    }
+                    (Some(404), None) => rewarm_flag.is_none(),
+                    _ => true,
+                };
             let err = if loading {
                 err.suggestion(
                     "the session may still be loading: a new debugging session takes a few \
@@ -1844,7 +1857,7 @@ async fn cmd_runs_exec(
                 err
             };
             return Err(match (status, rewarm_flag) {
-                (Some(404), Some(flag)) => {
+                (Some(404), Some(flag)) if !loading => {
                     err.suggestion(format!("check that {flag} names an existing source"))
                 }
                 (Some(400), None) if cold => {

@@ -364,12 +364,14 @@ fn cmd_env_from_json_find(
     // Usage: env_from_json_find <json_key> <filter>...
     // Stores <json_key> from the first NDJSON line that matches every filter.
     // A filter is one of:
-    //   <field>!=<value>  <field> is a string other than <value>. Every line
-    //                     must carry <field> as a string, so a misspelled
-    //                     field fails instead of matching every line.
+    //   <field>!=<value>  <field> is a string other than <value>.
+    //   <field>=<a>|<b>   <field> is a string equal to one of the values
+    //                     that `|` separates.
     //   <path>            the line has a non-null value at <path>, a
     //                     dot-separated list of object keys, such as
     //                     `links.triage_report`.
+    // Every line must carry the <field> of a `!=` or `=` filter as a string,
+    // so a misspelled field fails instead of matching every line.
     let usage = || err("env_from_json_find requires <json_key> <filter>...".to_string());
     let [key, filters @ ..] = args else {
         return Err(usage());
@@ -382,18 +384,22 @@ fn cmd_env_from_json_find(
     'lines: for line in stdout.lines() {
         let value = parse_json_line(line)?;
         for filter in filters {
-            let matches = match filter.split_once("!=") {
-                Some((field, excluded)) => {
-                    let actual = value
-                        .get(field)
-                        .and_then(|v| v.as_str())
-                        .ok_or_else(|| err(format!("string field '{field}' not found in JSON")))?;
-                    actual != excluded
-                }
-                None => filter
+            let string_field = |field: &str| {
+                value
+                    .get(field)
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| err(format!("string field '{field}' not found in JSON")))
+            };
+            let matches = if let Some((field, excluded)) = filter.split_once("!=") {
+                string_field(field)? != excluded
+            } else if let Some((field, allowed)) = filter.split_once('=') {
+                let actual = string_field(field)?;
+                allowed.split('|').any(|a| a == actual)
+            } else {
+                filter
                     .split('.')
                     .try_fold(&value, |v, k| v.get(k))
-                    .is_some_and(|v| !v.is_null()),
+                    .is_some_and(|v| !v.is_null())
             };
             if !matches {
                 continue 'lines;

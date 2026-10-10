@@ -10,7 +10,7 @@ Prints a JSON array to stdout, one object per comment block:
 
 `marker` hashes the file and the comment text, not the line number, so it
 survives edits elsewhere in the file, and a later run can find the issue it
-filed.
+filed. A repeat of the same text in one file gets a `-2`, `-3`, ... suffix.
 
 Usage: scripts/collect-todos.py [ROOT]
 """
@@ -42,9 +42,9 @@ EXCLUDE = [
     ":!scripts/test_collect_todos.py",
 ]
 
-# `#` opens a comment in Python and YAML, but `#[` and `#![` open Rust
-# attributes.
-COMMENT = re.compile(r"^\s*(//[/!]?|#(?!!?\[))\s?")
+# `#` opens a comment in Python and YAML, but `#[` opens a Rust attribute, and
+# `#!` a shebang or an inner attribute.
+COMMENT = re.compile(r"^\s*(//[/!]?|#(?![!\[]))\s?")
 
 
 def tracked_files(root: Path) -> list[str]:
@@ -89,6 +89,7 @@ def collect(root: Path) -> list[dict]:
             lines = (root / path).read_text().splitlines()
         except (UnicodeDecodeError, OSError):
             continue
+        repeats: dict[str, int] = {}
         start = 0
         while start < len(lines):
             end = block_end(lines, start)
@@ -98,6 +99,9 @@ def collect(root: Path) -> list[dict]:
                 start = end
                 continue
             digest = hashlib.sha256(f"{path}\n{text}".encode()).hexdigest()[:12]
+            repeats[digest] = repeats.get(digest, 0) + 1
+            if repeats[digest] > 1:
+                digest += f"-{repeats[digest]}"
             items.append(
                 {
                     "file": path,

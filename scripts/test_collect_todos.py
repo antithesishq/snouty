@@ -76,6 +76,16 @@ class Collect(unittest.TestCase):
         self.assertEqual(after["marker"], before["marker"])
         self.assertRegex(after["marker"], r"^todo-audit: src/a\.rs#[0-9a-f]{12}$")
 
+    def test_repeated_text_gets_its_own_marker(self):
+        self.write("src/a.rs", "// TODO: drop\nfn f() {}\n// TODO: drop\n")
+        first, second = (i["marker"] for i in collect_todos.collect(self.root))
+        self.assertEqual(second, first + "-2")
+
+    def test_shebang_is_not_a_comment(self):
+        self.write("run.sh", "#!/usr/bin/env bash\n# TODO: quote the args\n")
+        [item] = collect_todos.collect(self.root)
+        self.assertEqual((item["line"], item["text"]), (2, "TODO: quote the args"))
+
     def test_skips_markdown_and_untracked_files(self):
         self.write("AGENTS.md", "A TODO with a concrete trigger.\n")
         (self.root / "notes.rs").write_text("// TODO: untracked\n")

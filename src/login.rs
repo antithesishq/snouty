@@ -34,6 +34,10 @@ const OAUTH_HTTP_TIMEOUT: Duration = Duration::from_secs(10);
 /// sign-in (including MFA).
 const CALLBACK_TIMEOUT: Duration = Duration::from_secs(300);
 
+/// How long one connection to the loopback server may take to send its request
+/// before it is dropped, so idle connections do not pile up.
+const REQUEST_READ_TIMEOUT: Duration = Duration::from_secs(10);
+
 /// Wrapping our TUI (`inquire`) in a trait so that it can be subbed out for testing
 trait Prompter {
     /// Whether we're attached to an interactive terminal.
@@ -483,11 +487,12 @@ struct TokenResponse {
 /// as persistable credentials:
 ///
 /// 1. `GET /auth/cli/config` — discover how to bind the loopback callback server.
-/// 2. Bind a localhost-only, single-request HTTP server on the chosen port.
+/// 2. Bind a localhost-only HTTP server on the chosen port.
 /// 3. `POST /auth/cli/login` — send the PKCE challenge + CSRF state, receive the
 ///    authorization URL.
-/// 4. Send the user to that URL (open a browser, best-effort) and wait for the
-///    browser to redirect to `http://localhost:<port>/callback?code=…&state=…`.
+/// 4. Send the user to a local sign-in page that links to that URL (open a
+///    browser, best-effort) and wait for the browser to redirect to
+///    `http://localhost:<port>/callback?code=…&state=…`.
 /// 5. `POST /auth/cli/token` — exchange the authorization code (in the
 ///    `Authorization` header, alongside the PKCE verifier) and the flow token
 ///    (in the body) for an Antithesis token.
@@ -758,10 +763,19 @@ async fn serve_until_callback(
     loop {
         tokio::select! {
             accepted = accept_any(listeners) => {
-                let (mut stream, _addr) = accepted
-                    .wrap_err("failed to accept a connection on the OAuth callback server")?;
+                // An accept error (a peer that reset before the accept, or
+                // too many open files) concerns one connection, not the login.
+                let mut stream = match accepted {
+                    Ok((stream, _addr)) => stream,
+                    Err(err) => {
+                        debug!("failed to accept a connection on the OAuth callback server: {err}");
+                        continue;
+                    }
+                };
                 reads.push(async move {
-                    let request_line = read_request_line(&mut stream).await;
+                    let request_line = tokio::time::timeout(REQUEST_READ_TIMEOUT, read_request(&mut stream))
+                        .await
+                        .unwrap_or_else(|_elapsed| Err(eyre!("timed out reading the request")));
                     (stream, request_line)
                 });
             }
@@ -824,12 +838,15 @@ async fn accept_any(
     result
 }
 
-/// Read just the HTTP request line (everything up to the first CRLF) from the
-/// connection. A standard OAuth authorization-code redirect is a GET
-/// with everything we need in the query string, so the request line is all we
-/// parse; the request is capped so a misbehaving client can't stream forever.
-async fn read_request_line(stream: &mut TcpStream) -> Result<String> {
-    const MAX_REQUEST_LINE: usize = 16 * 1024;
+/// Read an HTTP request through the end of its headers and return its request
+/// line. A standard OAuth authorization-code redirect is a GET with everything
+/// we need in the query string, so the request line is all we parse. The
+/// headers are read only so that no unread data is left when the connection
+/// closes: a close with unread data sends a reset, and the browser can then
+/// drop the response. The request is capped so a misbehaving client can't
+/// stream forever.
+async fn read_request(stream: &mut TcpStream) -> Result<String> {
+    const MAX_REQUEST_HEAD: usize = 64 * 1024;
 
     let mut buf = Vec::with_capacity(1024);
     let mut chunk = [0u8; 1024];
@@ -837,21 +854,23 @@ async fn read_request_line(stream: &mut TcpStream) -> Result<String> {
         let n = stream
             .read(&mut chunk)
             .await
-            .wrap_err("failed to read the OAuth callback request")?;
+            .wrap_err("failed to read the request")?;
         if n == 0 {
             break;
         }
         buf.extend_from_slice(&chunk[..n]);
-        if let Some(pos) = buf.windows(2).position(|w| w == b"\r\n") {
-            return Ok(String::from_utf8_lossy(&buf[..pos]).into_owned());
+        if buf.windows(4).any(|w| w == b"\r\n\r\n") {
+            let line_end = buf
+                .windows(2)
+                .position(|w| w == b"\r\n")
+                .unwrap_or_default();
+            return Ok(String::from_utf8_lossy(&buf[..line_end]).into_owned());
         }
-        if buf.len() > MAX_REQUEST_LINE {
+        if buf.len() > MAX_REQUEST_HEAD {
             break;
         }
     }
-    Err(eyre!(
-        "the OAuth callback request did not contain a valid request line"
-    ))
+    Err(eyre!("the request did not contain a complete request head"))
 }
 
 /// Parse the callback request target (e.g. `/callback?code=…&state=…`) into the
@@ -1221,6 +1240,21 @@ mod tests {
         let callback = server.await.unwrap().unwrap();
         assert_eq!(callback.auth_code, "the-code");
         assert_eq!(callback.flow_token, "the-flow");
+    }
+
+    #[tokio::test]
+    async fn callback_server_serves_a_large_page_to_a_request_with_many_headers() {
+        let page = "x".repeat(256 * 1024).leak();
+        let (port, server) = spawn_callback_server(page).await;
+
+        let mut stream = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+        let cookie = "c".repeat(8 * 1024);
+        let request = format!("GET /sign-in/token HTTP/1.1\r\nCookie: {cookie}\r\n\r\n");
+        stream.write_all(request.as_bytes()).await.unwrap();
+        let mut response = Vec::new();
+        stream.read_to_end(&mut response).await.unwrap();
+        assert!(response.ends_with(page.as_bytes()));
+        server.abort();
     }
 
     #[tokio::test]

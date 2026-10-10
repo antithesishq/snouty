@@ -14,7 +14,7 @@ timeout-minutes: 45
 
 tools:
   edit: false
-  bash: [cat, grep, head, tail, sed, wc, ls, jq, "git log:*", "git blame:*", "git show:*"]
+  bash: [cat, grep, head, tail, wc, ls, jq, "git log:*", "git blame:*", "git show:*"]
   github:
     toolsets: [issues, pull_requests]
 
@@ -35,7 +35,7 @@ mcp-scripts:
         description: Arguments after `snouty`, split like a POSIX shell would.
     timeout: 120
     py: |
-      import json, os, shlex, subprocess
+      import json, os, shlex, subprocess, tempfile
 
       allowed = {"doctor", "runs list", "runs show", "runs properties",
                  "runs logs", "runs events", "runs search"}
@@ -52,9 +52,12 @@ mcp-scripts:
           if any(a.split("=")[0] in ("--settings", "--profile") for a in args):
               return {"error": "--settings and --profile are not allowed"}
           result = {"command": "snouty " + shlex.join(args)}
+          # snouty reads `./.snouty.toml`, so run it where the agent cannot
+          # plant one.
           try:
-              p = subprocess.run([os.environ["SNOUTY"], *args], capture_output=True,
-                                 text=True, timeout=timeout)
+              with tempfile.TemporaryDirectory() as cwd:
+                  p = subprocess.run([os.environ["SNOUTY"], *args], cwd=cwd,
+                                     capture_output=True, text=True, timeout=timeout)
           except subprocess.TimeoutExpired:
               return {**result, "error": f"timed out after {timeout}s"}
           return {**result, "exit_code": p.returncode, "stdout": p.stdout[-60000:],

@@ -70,7 +70,11 @@ fn print_notes(notes: &[Note]) {
         // under the note's text, so the terminal never breaks it mid-word.
         let hang = 6 + note.level.label().len() + 2;
         let lines = match crate::render::prose_width() {
-            Some(width) => crate::render::wrap_text(&note.text, width.saturating_sub(hang)),
+            Some(width) => crate::render::wrap_text(
+                &note.text,
+                width.saturating_sub(hang),
+                crate::render::CodeSpans::Keep,
+            ),
             None => vec![note.text.clone()],
         };
         let mut lines = lines.iter();
@@ -136,7 +140,11 @@ impl Check {
         // `  ✓ ` prefix.
         let hang = 4;
         let lines = match crate::render::prose_width() {
-            Some(width) => crate::render::wrap_text(&self.message, width.saturating_sub(hang)),
+            Some(width) => crate::render::wrap_text(
+                &self.message,
+                width.saturating_sub(hang),
+                crate::render::CodeSpans::Keep,
+            ),
             None => vec![self.message.clone()],
         };
         let mut lines = lines.iter();

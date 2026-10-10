@@ -1460,21 +1460,35 @@ def tty_persisted(
     return chk
 
 
+class OneLine(str):
+    """A `doctor_check` needle that must appear unwrapped on one terminal line."""
+
+
 def doctor_check(
     *,
     contains: tuple[str, ...],
     absent: tuple[str, ...] = (),
     ok: bool | None = None,
 ):
-    """Gate a doctor story: every `contains` needle must appear, no `absent`
-    needle may, and (when `ok` is given) the exit status must match. `ok` is left
+    """Gate a doctor story: every `contains` needle must appear (a `OneLine`
+    needle on one terminal line), no `absent` needle may, and (when `ok` is
+    given) the exit status must match. `ok` is left
     None for the api-key/legacy stories because their overall pass/fail also
     depends on the machine's container runtime — only the auth lines, which this
     asserts on, are deterministic."""
 
     def chk(sr: StoryRun, reg: Registry) -> tuple[bool, str]:
         text = sr.result.combined
-        missing = [n for n in contains if not contains_text(text, n)]
+        lines = text.splitlines()
+        missing = [
+            n
+            for n in contains
+            if not (
+                any(n in line for line in lines)
+                if isinstance(n, OneLine)
+                else contains_text(text, n)
+            )
+        ]
         unexpected = [n for n in absent if contains_text(text, n)]
         exit_matches = ok is None or sr.result.ok == ok
         passed = not missing and not unexpected and exit_matches
@@ -2309,6 +2323,7 @@ def build_stories(d: Discovery) -> list[Story]:
                     "environment variables",
                     "NOTE: run `snouty login` to store an API key, then "
                     "`unset ANTITHESIS_USERNAME ANTITHESIS_PASSWORD`",
+                    OneLine("`unset ANTITHESIS_USERNAME ANTITHESIS_PASSWORD`"),
                 ),
                 absent=(
                     "No credentials the API commands accept",

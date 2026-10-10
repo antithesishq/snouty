@@ -67,6 +67,16 @@ fn long_notes_wrap_under_their_text() {
         screen.contains("commands refuse it"),
         "a word was split across lines:\n{screen}"
     );
+    // A command in backticks is one word: the note's unset command moves whole
+    // to its own line, hung under `      NOTE: `, so a person can copy it.
+    let unset = format!(
+        "{}`unset ANTITHESIS_USERNAME ANTITHESIS_PASSWORD`",
+        " ".repeat(12)
+    );
+    assert!(
+        lines.iter().any(|line| line.trim_end() == unset),
+        "the unset command was split across lines:\n{screen}"
+    );
     // The headline is also too long for the terminal, and wraps the same way
     // after its `  ⚠ ` prefix.
     let headline = lines

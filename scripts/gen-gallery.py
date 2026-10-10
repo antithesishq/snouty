@@ -2514,7 +2514,7 @@ def build_exec_stories(d: Discovery, x: ExecSession) -> list[Story]:
             f"I copied a moment from run {d.fail} and try to execute at it in my "
             "debugging session.",
             "snouty fails, says that the moment is not loaded into the session, and tells me "
-            "how to load it: name the run it comes from with --source-run-id.",
+            "how to load it: use --source-run-id to load a moment from a different run.",
             # No story loads d.fail's moment, so it stays cold in a reused session.
             ["runs", "exec", x.session, d.fail_hash, d.fail_vtime, "uname -n"],
             fails_with("--source-run-id"),

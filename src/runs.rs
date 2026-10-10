@@ -1817,10 +1817,9 @@ async fn cmd_runs_exec(
                 (Some(404), Some(flag)) => {
                     err.suggestion(format!("check that {flag} names an existing source"))
                 }
-                (Some(400), None) if cold => err.suggestion(
-                    "for a moment off the session's own timeline, name the run it comes from \
-                     with --source-run-id",
-                ),
+                (Some(400), None) if cold => {
+                    err.suggestion("use --source-run-id to load a moment from a different run")
+                }
                 (Some(400), Some(flag)) => err.suggestion(format!(
                     "check that {flag} names the run the moment comes from, and raise \
                      --timeout: the rewarm counts against it"

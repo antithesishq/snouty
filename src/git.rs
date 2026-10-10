@@ -28,7 +28,12 @@ pub struct Head {
 /// debug log.
 fn git(dir: &Path, args: &[&str]) -> Option<String> {
     let mut cmd = Command::new("git");
-    cmd.arg("-C").arg(dir).args(args);
+    // A git hook exports these, and they take precedence over `-C`.
+    cmd.env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
+        .arg("-C")
+        .arg(dir)
+        .args(args);
     let output = output_with_timeout(cmd, GIT_TIMEOUT)
         .inspect_err(|e| debug!("git {args:?} in {}: {e:#}", dir.display()))
         .ok()?;
@@ -88,7 +93,11 @@ impl FromStr for GitHubRepo {
         };
         let host = authority.rsplit_once('@').map_or(authority, |(_, h)| h);
         let host = host.split_once(':').map_or(host, |(h, _)| h);
-        if !host.eq_ignore_ascii_case("github.com") {
+        // GitHub serves SSH on port 443 at ssh.github.com.
+        if !["github.com", "ssh.github.com"]
+            .iter()
+            .any(|h| host.eq_ignore_ascii_case(h))
+        {
             bail!("{url} is not a github.com remote");
         }
         let path = path.trim_matches('/');
@@ -127,6 +136,7 @@ mod tests {
             format!("https://user@github.com/{owner}/{name}{suffix}"),
             format!("ssh://git@github.com/{owner}/{name}{suffix}"),
             format!("ssh://git@github.com:22/{owner}/{name}{suffix}"),
+            format!("ssh://git@ssh.github.com:443/{owner}/{name}{suffix}"),
             format!("git://github.com/{owner}/{name}{suffix}"),
             format!("git@github.com:{owner}/{name}{suffix}"),
             format!("github.com:{owner}/{name}{suffix}"),

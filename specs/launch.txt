@@ -311,12 +311,13 @@ stderr '"vcs.repo_branch": "feature/vcs"'
 stderr '"vcs.version_id": "[0-9a-f]{40}"'
 stderr '"vcs.version_link": "https://github.com/acme/widget/commit/[0-9a-f]{40}"'
 
-# A --param value for a `vcs.*` key replaces the detected value.
+# A --param for any `vcs.*` key turns the detection off, so that a detected
+#    commit link cannot sit next to a different commit.
 mock-server 200 '{"message":"Success","runId":"run-123"}'
-snouty launch --launcher basic_test --config-image config:latest --duration 30 --param vcs.repo_branch=release
-stderr '"vcs.repo_branch": "release"'
-! stderr 'feature/vcs'
-stderr '"vcs.repo_owner": "acme"'
+snouty launch --launcher basic_test --config-image config:latest --duration 30 --param vcs.version_id=abc123
+stderr '"vcs.version_id": "abc123"'
+! stderr 'vcs.version_link'
+! stderr 'vcs.repo_branch'
 
 # Detected params do not count as parameters the user provided.
 mock-server 200 '{}'
@@ -334,3 +335,9 @@ mock-server 200 '{"message":"Success","runId":"run-123"}'
 snouty launch --launcher basic_test --config-image config:latest --duration 30
 ! stderr 'vcs.repo_branch'
 stderr '"vcs.version_id": "[0-9a-f]{40}"'
+
+# A GIT_DIR from a git hook does not redirect the detection.
+env GIT_DIR=/nonexistent
+mock-server 200 '{"message":"Success","runId":"run-123"}'
+snouty launch --launcher basic_test --config-image config:latest --duration 30
+stderr '"vcs.repo_owner": "acme"'

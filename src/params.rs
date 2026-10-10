@@ -30,6 +30,8 @@ pub const ANT_FILTER_SOURCE_MATCHING: &str = "antithesis.filter_source_matching"
 pub const ANT_PERFORMANCE_TIER: &str = "antithesis.performance_tier";
 /// Prefix of the user-defined `attrs.<name>` parameters the server records on a run.
 pub const ATTRS_PREFIX: &str = "attrs.";
+/// Prefix of the `vcs.*` parameters that describe the source a run was built from.
+pub const VCS_PREFIX: &str = "vcs.";
 pub const VCS_REPO_TYPE: &str = "vcs.repo_type";
 pub const VCS_REPO_OWNER: &str = "vcs.repo_owner";
 pub const VCS_REPO_NAME: &str = "vcs.repo_name";

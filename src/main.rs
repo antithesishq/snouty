@@ -24,8 +24,8 @@ use snouty::params::{
     ANT_CONFIG_IMAGE, ANT_DEBUGGING_INPUT_HASH, ANT_DEBUGGING_RUN_ID, ANT_DEBUGGING_SESSION_ID,
     ANT_DEBUGGING_VTIME, ANT_DESCRIPTION, ANT_DURATION, ANT_EVENT_DESCRIPTION,
     ANT_FILTER_LOGS_MATCHING, ANT_FILTER_SOURCE_MATCHING, ANT_IS_EPHEMERAL, ANT_PERFORMANCE_TIER,
-    ANT_REPORT_RECIPIENTS, ANT_SOURCE, ANT_TEST_NAME, Params, VCS_REPO_BRANCH, VCS_REPO_NAME,
-    VCS_REPO_OWNER, VCS_REPO_TYPE, VCS_VERSION_ID, VCS_VERSION_LINK,
+    ANT_REPORT_RECIPIENTS, ANT_SOURCE, ANT_TEST_NAME, Params, VCS_PREFIX, VCS_REPO_BRANCH,
+    VCS_REPO_NAME, VCS_REPO_OWNER, VCS_REPO_TYPE, VCS_VERSION_ID, VCS_VERSION_LINK,
 };
 use snouty::settings::Settings;
 use snouty::validate;
@@ -262,11 +262,12 @@ async fn cmd_launch(
         return Err(user_error("invalid arguments: no parameters provided"));
     }
 
-    if !args.no_vcs {
-        // A --param value replaces a detected one.
-        let mut vcs = detect_vcs_params(args.config.as_deref().unwrap_or(Path::new(".")));
-        vcs.merge(params);
-        params = vcs;
+    // Detected values would not agree with a `vcs.*` value the user passed,
+    // for example a commit link next to a different commit.
+    if !args.no_vcs && !params.as_map().keys().any(|k| k.starts_with(VCS_PREFIX)) {
+        params.merge(detect_vcs_params(
+            args.config.as_deref().unwrap_or(Path::new(".")),
+        ));
     }
 
     params.validate_test_params()?;

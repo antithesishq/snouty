@@ -1,5 +1,5 @@
-# gh-aw-metadata: {"schema_version":"v4","frontmatter_hash":"02ff3776ba50ce14e6955060b2a4d21164299c118dfce3ab8b5b9daed5a2a2be","body_hash":"417bd42a9dca6ec0526bd139cc8d520841688cbb798b3bf063ea36bef8a33172","compiler_version":"v0.89.21","strict":true,"agent_id":"claude","engine_versions":{"claude":"2.1.273"}}
-# gh-aw-manifest: {"version":1,"secrets":["ANTHROPIC_API_KEY","COPILOT_GITHUB_TOKEN","GH_AW_DEFAULT_OTLP_ENDPOINT","GH_AW_DEFAULT_OTLP_HEADERS","GH_AW_GITHUB_MCP_SERVER_TOKEN","GH_AW_GITHUB_TOKEN","GITHUB_TOKEN","STAGING_ANTITHESIS_API_KEY","STAGING_ANTITHESIS_TENANT"],"actions":[{"repo":"Swatinem/rust-cache","sha":"6323deb102c322ba6fcbdcafc7e3dddab59af2b6","version":"6323deb102c322ba6fcbdcafc7e3dddab59af2b6"},{"repo":"actions/checkout","sha":"3d3c42e5aac5ba805825da76410c181273ba90b1","version":"v7.0.1"},{"repo":"actions/download-artifact","sha":"3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c","version":"v8.0.1"},{"repo":"actions/github-script","sha":"3a2844b7e9c422d3c10d287c895573f7108da1b3","version":"v9.0.0"},{"repo":"actions/setup-node","sha":"820762786026740c76f36085b0efc47a31fe5020","version":"v7.0.0"},{"repo":"actions/setup-python","sha":"5fda3b95a4ea91299a34e894583c3862153e4b97","version":"v7.0.0"},{"repo":"actions/upload-artifact","sha":"043fb46d1a93c77aae656e7c1c64a875d1fc6a0a","version":"v7.0.1"},{"repo":"dtolnay/rust-toolchain","sha":"02cb101ec7c40f2c49e1d9714d64511d8e1b74de","version":"02cb101ec7c40f2c49e1d9714d64511d8e1b74de"},{"repo":"github/gh-aw-actions/setup","sha":"924af5fdc64061cfbf66fb584c8b07e2ac230c60","version":"v0.89.21"}],"containers":[{"image":"ghcr.io/github/gh-aw-firewall/agent:0.28.23","digest":"sha256:2c78aaba1c108e130e2d6d01e4f2cca334ea04c53e6f258913ac34173fe7e3b2","pinned_image":"ghcr.io/github/gh-aw-firewall/agent:0.28.23@sha256:2c78aaba1c108e130e2d6d01e4f2cca334ea04c53e6f258913ac34173fe7e3b2"},{"image":"ghcr.io/github/gh-aw-firewall/api-proxy:0.28.23","digest":"sha256:c15c3d1208df10c5b588a3657be53742aa982ae0909d1eb1812525268794ca64","pinned_image":"ghcr.io/github/gh-aw-firewall/api-proxy:0.28.23@sha256:c15c3d1208df10c5b588a3657be53742aa982ae0909d1eb1812525268794ca64"},{"image":"ghcr.io/github/gh-aw-firewall/squid:0.28.23","digest":"sha256:02ffc56dd40158223064ef03a78c2d9717473c93723b4e403d455ea6f0b09ae0","pinned_image":"ghcr.io/github/gh-aw-firewall/squid:0.28.23@sha256:02ffc56dd40158223064ef03a78c2d9717473c93723b4e403d455ea6f0b09ae0"},{"image":"ghcr.io/github/gh-aw-mcpg:v0.4.25","digest":"sha256:9be0a86220e807a0ecc89e53d7453468f7a53fbc6b3d1efd2299025ffe01d086","pinned_image":"ghcr.io/github/gh-aw-mcpg:v0.4.25@sha256:9be0a86220e807a0ecc89e53d7453468f7a53fbc6b3d1efd2299025ffe01d086"},{"image":"ghcr.io/github/gh-aw-node","digest":"sha256:11c2c544876cdbaffefe0f7f1283b74838c209654b4934a78e23ed11f750490f","pinned_image":"ghcr.io/github/gh-aw-node@sha256:11c2c544876cdbaffefe0f7f1283b74838c209654b4934a78e23ed11f750490f"},{"image":"ghcr.io/github/github-mcp-server:v1.12.2","digest":"sha256:508a0857ec762b1ab1cece29193345b501fab1dd9d1228a7b617062954cecac6","pinned_image":"ghcr.io/github/github-mcp-server:v1.12.2@sha256:508a0857ec762b1ab1cece29193345b501fab1dd9d1228a7b617062954cecac6"}],"mcp_servers":[{"name":"github","tools":["get_pull_request","get_pull_request_comments","get_pull_request_diff","get_pull_request_files","get_pull_request_review_comments","get_pull_request_reviews","get_pull_request_status","issue_read","list_issue_types","list_issues","list_pull_requests","pull_request_read","search_issues","search_pull_requests"]},{"name":"mcpscripts","tools":["snouty"]},{"name":"safeoutputs","tools":["add_comment","create_issue","missing_data","missing_tool","noop"]}]}
+# gh-aw-metadata: {"schema_version":"v4","frontmatter_hash":"d48e359365e72d749392a7b7fe67f4115f0b1eb6c305cf5f4c1562a27a05cc4d","body_hash":"bf50600088f40e7654dd2877cc6db903a7b3613574e4553e26f5f9abf5155829","compiler_version":"v0.89.21","strict":true,"agent_id":"claude","engine_versions":{"claude":"2.1.273"}}
+# gh-aw-manifest: {"version":1,"secrets":["ANTHROPIC_API_KEY","COPILOT_GITHUB_TOKEN","GH_AW_DEFAULT_OTLP_ENDPOINT","GH_AW_DEFAULT_OTLP_HEADERS","GH_AW_GITHUB_MCP_SERVER_TOKEN","GH_AW_GITHUB_TOKEN","GITHUB_TOKEN","STAGING_ANTITHESIS_API_KEY","STAGING_ANTITHESIS_TENANT"],"actions":[{"repo":"Swatinem/rust-cache","sha":"6323deb102c322ba6fcbdcafc7e3dddab59af2b6","version":"6323deb102c322ba6fcbdcafc7e3dddab59af2b6"},{"repo":"actions/checkout","sha":"3d3c42e5aac5ba805825da76410c181273ba90b1","version":"v7.0.1"},{"repo":"actions/checkout","sha":"fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09","version":"fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09"},{"repo":"actions/download-artifact","sha":"3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c","version":"v8.0.1"},{"repo":"actions/github-script","sha":"3a2844b7e9c422d3c10d287c895573f7108da1b3","version":"v9.0.0"},{"repo":"actions/setup-node","sha":"820762786026740c76f36085b0efc47a31fe5020","version":"v7.0.0"},{"repo":"actions/setup-python","sha":"5fda3b95a4ea91299a34e894583c3862153e4b97","version":"v7.0.0"},{"repo":"actions/upload-artifact","sha":"043fb46d1a93c77aae656e7c1c64a875d1fc6a0a","version":"v7.0.1"},{"repo":"dtolnay/rust-toolchain","sha":"02cb101ec7c40f2c49e1d9714d64511d8e1b74de","version":"02cb101ec7c40f2c49e1d9714d64511d8e1b74de"},{"repo":"github/gh-aw-actions/setup","sha":"924af5fdc64061cfbf66fb584c8b07e2ac230c60","version":"v0.89.21"}],"containers":[{"image":"ghcr.io/github/gh-aw-firewall/agent:0.28.23","digest":"sha256:2c78aaba1c108e130e2d6d01e4f2cca334ea04c53e6f258913ac34173fe7e3b2","pinned_image":"ghcr.io/github/gh-aw-firewall/agent:0.28.23@sha256:2c78aaba1c108e130e2d6d01e4f2cca334ea04c53e6f258913ac34173fe7e3b2"},{"image":"ghcr.io/github/gh-aw-firewall/api-proxy:0.28.23","digest":"sha256:c15c3d1208df10c5b588a3657be53742aa982ae0909d1eb1812525268794ca64","pinned_image":"ghcr.io/github/gh-aw-firewall/api-proxy:0.28.23@sha256:c15c3d1208df10c5b588a3657be53742aa982ae0909d1eb1812525268794ca64"},{"image":"ghcr.io/github/gh-aw-firewall/squid:0.28.23","digest":"sha256:02ffc56dd40158223064ef03a78c2d9717473c93723b4e403d455ea6f0b09ae0","pinned_image":"ghcr.io/github/gh-aw-firewall/squid:0.28.23@sha256:02ffc56dd40158223064ef03a78c2d9717473c93723b4e403d455ea6f0b09ae0"},{"image":"ghcr.io/github/gh-aw-mcpg:v0.4.25","digest":"sha256:9be0a86220e807a0ecc89e53d7453468f7a53fbc6b3d1efd2299025ffe01d086","pinned_image":"ghcr.io/github/gh-aw-mcpg:v0.4.25@sha256:9be0a86220e807a0ecc89e53d7453468f7a53fbc6b3d1efd2299025ffe01d086"},{"image":"ghcr.io/github/gh-aw-node","digest":"sha256:11c2c544876cdbaffefe0f7f1283b74838c209654b4934a78e23ed11f750490f","pinned_image":"ghcr.io/github/gh-aw-node@sha256:11c2c544876cdbaffefe0f7f1283b74838c209654b4934a78e23ed11f750490f"},{"image":"ghcr.io/github/github-mcp-server:v1.12.2","digest":"sha256:508a0857ec762b1ab1cece29193345b501fab1dd9d1228a7b617062954cecac6","pinned_image":"ghcr.io/github/github-mcp-server:v1.12.2@sha256:508a0857ec762b1ab1cece29193345b501fab1dd9d1228a7b617062954cecac6"}],"mcp_servers":[{"name":"github","tools":["get_pull_request","get_pull_request_comments","get_pull_request_diff","get_pull_request_files","get_pull_request_review_comments","get_pull_request_reviews","get_pull_request_status","issue_read","list_issue_types","list_issues","list_pull_requests","pull_request_read","search_issues","search_pull_requests"]},{"name":"mcpscripts","tools":["snouty"]},{"name":"safeoutputs","tools":["add_comment","create_issue","missing_data","missing_tool","noop"]}]}
 # This file was automatically generated by gh-aw (v0.89.21). DO NOT EDIT. To debug this workflow, load the skill at https://github.com/github/gh-aw/blob/main/debug.md
 #
 #    ___                   _   _
@@ -39,6 +39,7 @@
 # Custom actions used:
 #   - Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # 6323deb102c322ba6fcbdcafc7e3dddab59af2b6
 #   - actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+#   - actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
 #   - actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
 #   - actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
 #   - actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0 (source v9)
@@ -385,7 +386,9 @@ jobs:
           retention-days: 1
 
   agent:
-    needs: activation
+    needs:
+      - activation
+      - build
     if: needs.activation.outputs.daily_ai_credits_exceeded != 'true'
     runs-on: ubuntu-latest
     permissions:
@@ -490,23 +493,20 @@ jobs:
         with:
           name: activation
           path: /tmp/gh-aw
-      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # 02cb101ec7c40f2c49e1d9714d64511d8e1b74de
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          toolchain: stable
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # 6323deb102c322ba6fcbdcafc7e3dddab59af2b6
-        with:
-          cache-on-failure: true
-      - name: Build snouty
-        run: cargo build --locked
+          name: snouty
+          path: ${{ runner.temp }}/snouty
       - name: Collect comments
         run: |
+          chmod +x "$RUNNER_TEMP/snouty/snouty"
           mkdir -p /tmp/gh-aw/agent/todo-audit
           python3 scripts/collect-todos.py > /tmp/gh-aw/agent/todo-audit/todos.json
       - env:
           ANTITHESIS_API_KEY: ${{ secrets.STAGING_ANTITHESIS_API_KEY }}
           ANTITHESIS_TENANT: ${{ secrets.STAGING_ANTITHESIS_TENANT }}
         name: Read tenant release
-        run: "\"$GITHUB_WORKSPACE/target/debug/snouty\" doctor --json > doctor.json || true\njq -er '.checks[] | select(.name == \"api\") | .notes[]?.text\n  | select(startswith(\"tenant release version: \"))\n  | ltrimstr(\"tenant release version: \")' doctor.json > release.txt || {\n  echo \"snouty doctor reported no tenant release version\" >&2\n  cat doctor.json >&2\n  exit 1\n}\necho \"Tenant release: $(cat release.txt)\" >> \"$GITHUB_STEP_SUMMARY\"\n"
+        run: "\"$RUNNER_TEMP/snouty/snouty\" doctor --json > doctor.json || true\njq -er '.checks[] | select(.name == \"api\") | .notes[]?.text\n  | select(startswith(\"tenant release version: \"))\n  | ltrimstr(\"tenant release version: \")' doctor.json > release.txt || {\n  echo \"snouty doctor reported no tenant release version\" >&2\n  cat doctor.json >&2\n  exit 1\n}\necho \"Tenant release: $(cat release.txt)\" >> \"$GITHUB_STEP_SUMMARY\"\n"
         working-directory: /tmp/gh-aw/agent/todo-audit
 
       - name: Configure Git credentials
@@ -579,7 +579,7 @@ jobs:
         env:
           GH_AW_FILE_ROOT: "${{ runner.temp }}/gh-aw"
           GH_AW_FILE_CONFIG: "{\"files\":[{\"path\":\"safeoutputs/config.json\",\"content_env\":\"GH_AW_SAFE_OUTPUTS_CONFIG\"}]}"
-          GH_AW_SAFE_OUTPUTS_CONFIG: "{\"add_comment\":{\"max\":5,\"target\":\"*\"},\"create_issue\":{\"labels\":[\"todo-audit\"],\"max\":5},\"create_report_incomplete_issue\":{},\"missing_data\":{},\"missing_tool\":{},\"noop\":{\"max\":1,\"report-as-issue\":\"false\"},\"report_incomplete\":{}}"
+          GH_AW_SAFE_OUTPUTS_CONFIG: "{\"add_comment\":{\"max\":5,\"required_labels\":[\"todo-audit\"],\"target\":\"*\"},\"create_issue\":{\"labels\":[\"todo-audit\"],\"max\":5},\"create_report_incomplete_issue\":{},\"missing_data\":{},\"missing_tool\":{},\"noop\":{\"max\":1,\"report-as-issue\":\"false\"},\"report_incomplete\":{}}"
         with:
           script: |
             const path = require('path');
@@ -767,7 +767,7 @@ jobs:
         # runner-guard:ignore RGS-018 -- writes first-party mcp-scripts tools.json manifest and mcp-server.cjs shim generated verbatim from the gh-aw compiler template, not an attacker-controlled dropper.
         run: |
           mkdir -p "${RUNNER_TEMP}/gh-aw/mcp-scripts/logs"
-          cat > "${RUNNER_TEMP}/gh-aw/mcp-scripts/tools.json" << 'GH_AW_MCP_SCRIPTS_TOOLS_289af1ac7db3c605_EOF'
+          cat > "${RUNNER_TEMP}/gh-aw/mcp-scripts/tools.json" << 'GH_AW_MCP_SCRIPTS_TOOLS_60c5d815ddb551e3_EOF'
           {
             "serverName": "mcpscripts",
             "version": "1.0.0",
@@ -775,7 +775,7 @@ jobs:
             "tools": [
               {
                 "name": "snouty",
-                "description": "Run a read-only snouty command against the Antithesis tenant, with snouty built from the commit under test. Allowed: `doctor`, and `runs list`, `runs show`, `runs properties`, `runs logs`, `runs events`, `runs search`. Pass the arguments after `snouty`, e.g. `runs list --limit 5 --json`.",
+                "description": "Run a read-only snouty command against the Antithesis tenant, with snouty built from the commit under test. Allowed: `doctor`, and `runs list`, `runs show`, `runs properties`, `runs logs`, `runs events`, `runs search`. Pass the arguments after `snouty`, e.g. `runs list --limit 5 --json`. Output past 60000 characters is cut, and `truncated` says so.",
                 "inputSchema": {
                   "properties": {
                     "args": {
@@ -794,11 +794,11 @@ jobs:
                   "ANTITHESIS_TENANT": "ANTITHESIS_TENANT",
                   "SNOUTY": "SNOUTY"
                 },
-                "timeout": 120
+                "timeout": 140
               }
             ]
           }
-          GH_AW_MCP_SCRIPTS_TOOLS_289af1ac7db3c605_EOF
+          GH_AW_MCP_SCRIPTS_TOOLS_60c5d815ddb551e3_EOF
           cat > "${RUNNER_TEMP}/gh-aw/mcp-scripts/mcp-server.cjs" << 'GH_AW_MCP_SCRIPTS_SERVER_e0a10bf70e571677_EOF'
             const path = require("path");
             const { startHttpServer } = require("./mcp_scripts_mcp_server_http.cjs");
@@ -818,10 +818,10 @@ jobs:
 
       - name: Write MCP Scripts Tool Files
         run: |
-          cat > "${RUNNER_TEMP}/gh-aw/mcp-scripts/snouty.py" << 'GH_AW_MCP_SCRIPTS_PY_SNOUTY_e326989ed3abc876_EOF'
+          cat > "${RUNNER_TEMP}/gh-aw/mcp-scripts/snouty.py" << 'GH_AW_MCP_SCRIPTS_PY_SNOUTY_1a5cd0e6bc96b840_EOF'
           #!/usr/bin/env python3
           # Auto-generated mcp-script tool: snouty
-          # Run a read-only snouty command against the Antithesis tenant, with snouty built from the commit under test. Allowed: `doctor`, and `runs list`, `runs show`, `runs properties`, `runs logs`, `runs events`, `runs search`. Pass the arguments after `snouty`, e.g. `runs list --limit 5 --json`.
+          # Run a read-only snouty command against the Antithesis tenant, with snouty built from the commit under test. Allowed: `doctor`, and `runs list`, `runs show`, `runs properties`, `runs logs`, `runs events`, `runs search`. Pass the arguments after `snouty`, e.g. `runs list --limit 5 --json`. Output past 60000 characters is cut, and `truncated` says so.
 
           import json
           import os
@@ -841,7 +841,8 @@ jobs:
 
           allowed = {"doctor", "runs list", "runs show", "runs properties",
                      "runs logs", "runs events", "runs search"}
-          timeout = 110
+          timeout = 120
+          limit = 60000
 
           def run(raw):
               try:
@@ -862,13 +863,14 @@ jobs:
                                          capture_output=True, text=True, timeout=timeout)
               except subprocess.TimeoutExpired:
                   return {**result, "error": f"timed out after {timeout}s"}
-              return {**result, "exit_code": p.returncode, "stdout": p.stdout[-60000:],
-                      "stderr": p.stderr[-20000:]}
+              return {**result, "exit_code": p.returncode, "stdout": p.stdout[:limit],
+                      "stderr": p.stderr[:limit],
+                      "truncated": max(len(p.stdout), len(p.stderr)) > limit}
 
           print(json.dumps(run(inputs.get("args", ""))))
 
 
-          GH_AW_MCP_SCRIPTS_PY_SNOUTY_e326989ed3abc876_EOF
+          GH_AW_MCP_SCRIPTS_PY_SNOUTY_1a5cd0e6bc96b840_EOF
           chmod +x "${RUNNER_TEMP}/gh-aw/mcp-scripts/snouty.py"
 
       - name: Generate MCP Scripts Server Config
@@ -897,7 +899,7 @@ jobs:
           GH_AW_MCP_SCRIPTS_API_KEY: ${{ steps.mcp-scripts-config.outputs.mcp_scripts_api_key }}
           ANTITHESIS_API_KEY: ${{ secrets.STAGING_ANTITHESIS_API_KEY }}
           ANTITHESIS_TENANT: ${{ secrets.STAGING_ANTITHESIS_TENANT }}
-          SNOUTY: ${{ github.workspace }}/target/debug/snouty
+          SNOUTY: ${{ runner.temp }}/snouty/snouty
         run: |
           # Environment variables are set above to prevent template injection
           export DEBUG
@@ -922,7 +924,7 @@ jobs:
           GITHUB_MCP_GUARD_REPOS: ${{ steps.determine-automatic-lockdown.outputs.repos }}
           GITHUB_MCP_SERVER_TOKEN: ${{ secrets.GH_AW_GITHUB_MCP_SERVER_TOKEN || secrets.GH_AW_GITHUB_TOKEN || secrets.GITHUB_TOKEN }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          SNOUTY: ${{ github.workspace }}/target/debug/snouty
+          SNOUTY: ${{ runner.temp }}/snouty/snouty
         run: |
           set -eo pipefail
           mkdir -p "${RUNNER_TEMP}/gh-aw/mcp-config"
@@ -1203,8 +1205,8 @@ jobs:
           ANTHROPIC_MAX_RETRIES: 0
           ANTITHESIS_API_KEY: ${{ secrets.STAGING_ANTITHESIS_API_KEY }}
           ANTITHESIS_TENANT: ${{ secrets.STAGING_ANTITHESIS_TENANT }}
-          BASH_DEFAULT_TIMEOUT_MS: 60000
-          BASH_MAX_TIMEOUT_MS: 60000
+          BASH_DEFAULT_TIMEOUT_MS: 150000
+          BASH_MAX_TIMEOUT_MS: 150000
           CLAUDE_CODE_DISABLE_FAST_MODE: 1
           DISABLE_BUG_COMMAND: 1
           DISABLE_ERROR_REPORTING: 1
@@ -1217,6 +1219,7 @@ jobs:
           GH_AW_PHASE: agent
           GH_AW_PROMPT: /tmp/gh-aw/aw-prompts/prompt.txt
           GH_AW_SAFE_OUTPUTS: ${{ steps.set-runtime-paths.outputs.GH_AW_SAFE_OUTPUTS }}
+          GH_AW_TOOL_TIMEOUT: 150
           GH_AW_VERSION: v0.89.21
           GITHUB_AW: true
           GITHUB_STEP_SUMMARY: /tmp/gh-aw/agent-step-summary.md
@@ -1226,9 +1229,9 @@ jobs:
           GIT_COMMITTER_EMAIL: github-actions[bot]@users.noreply.github.com
           GIT_COMMITTER_NAME: github-actions[bot]
           MCP_TIMEOUT: 120000
-          MCP_TOOL_TIMEOUT: 60000
+          MCP_TOOL_TIMEOUT: 150000
           RUNNER_TEMP: ${{ runner.temp }}
-          SNOUTY: ${{ github.workspace }}/target/debug/snouty
+          SNOUTY: ${{ runner.temp }}/snouty/snouty
           TRACEPARENT: ${{ env.GITHUB_AW_OTEL_TRACE_ID != '' && env.GITHUB_AW_OTEL_PARENT_SPAN_ID != '' && format('00-{0}-{1}-01', env.GITHUB_AW_OTEL_TRACE_ID, env.GITHUB_AW_OTEL_PARENT_SPAN_ID) || '' }}
       - name: Detect agent errors
         if: always()
@@ -1439,10 +1442,41 @@ jobs:
             /tmp/gh-aw/sandbox/firewall/awf-reflect.json
           if-no-files-found: ignore
 
+  build:
+    needs: activation
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Configure GH_HOST for enterprise compatibility
+        id: ghes-host-config
+        shell: bash
+        run: | # zizmor: ignore[github-env] - GITHUB_SERVER_URL is set by GitHub Actions, not user input.
+          # Derive GH_HOST from GITHUB_SERVER_URL so the gh CLI targets the correct
+          # GitHub instance (GHES/GHEC). On github.com this is a harmless no-op.
+          GH_HOST="${GITHUB_SERVER_URL#https://}"
+          GH_HOST="${GH_HOST#http://}"
+          echo "GH_HOST=${GH_HOST}" >> "$GITHUB_ENV"
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # 02cb101ec7c40f2c49e1d9714d64511d8e1b74de
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # 6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+      - name: Build snouty
+        run: cargo build --locked
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: snouty
+          path: target/debug/snouty
+          retention-days: 1
+
   conclusion:
     needs:
       - activation
       - agent
+      - build
       - detection
       - safe_outputs
     if: >
@@ -2085,7 +2119,7 @@ jobs:
           GH_AW_ALLOWED_DOMAINS: "api.snapcraft.io,archive.ubuntu.com,azure.archive.ubuntu.com,crl.geotrust.com,crl.globalsign.com,crl.identrust.com,crl.sectigo.com,crl.thawte.com,crl.usertrust.com,crl.verisign.com,crl3.digicert.com,crl4.digicert.com,crls.ssl.com,json-schema.org,json.schemastore.org,keyserver.ubuntu.com,ocsp.digicert.com,ocsp.geotrust.com,ocsp.globalsign.com,ocsp.identrust.com,ocsp.sectigo.com,ocsp.ssl.com,ocsp.thawte.com,ocsp.usertrust.com,ocsp.verisign.com,packagecloud.io,packages.cloud.google.com,packages.microsoft.com,ppa.launchpad.net,s.symcb.com,s.symcd.com,security.ubuntu.com,ts-crl.ws.symantec.com,ts-ocsp.ws.symantec.com,www.googleapis.com"
           GITHUB_SERVER_URL: ${{ github.server_url }}
           GITHUB_API_URL: ${{ github.api_url }}
-          GH_AW_SAFE_OUTPUTS_HANDLER_CONFIG: "{\"add_comment\":{\"max\":5,\"target\":\"*\"},\"create_issue\":{\"labels\":[\"todo-audit\"],\"max\":5},\"create_report_incomplete_issue\":{},\"missing_data\":{},\"missing_tool\":{},\"noop\":{\"max\":1,\"report-as-issue\":\"false\"},\"report_incomplete\":{}}"
+          GH_AW_SAFE_OUTPUTS_HANDLER_CONFIG: "{\"add_comment\":{\"max\":5,\"required_labels\":[\"todo-audit\"],\"target\":\"*\"},\"create_issue\":{\"labels\":[\"todo-audit\"],\"max\":5},\"create_report_incomplete_issue\":{},\"missing_data\":{},\"missing_tool\":{},\"noop\":{\"max\":1,\"report-as-issue\":\"false\"},\"report_incomplete\":{}}"
         with:
           github-token: ${{ secrets.GH_AW_GITHUB_TOKEN || secrets.GITHUB_TOKEN }}
           script: |

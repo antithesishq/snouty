@@ -44,6 +44,29 @@ class Collect(unittest.TestCase):
             "200. TODO: expect 409 once the server follows the spec.",
         )
 
+    def test_matches_wrapped_phrases_and_trailing_comments_only(self):
+        self.write("src/lib.rs", """\
+            /// The server rejects it (observed
+            /// on tenant `orbitinghail`).
+            #[derive(Debug)]
+            #[allow(dead_code)] // TODO: drop once unused
+            const HELP: &str = "TODO: not a comment";
+            /// Seen live on orbitinghail.
+            fn f() {}
+            /// Shaped as (orbitinghail, release 64.0) sends it.
+            """)
+        self.assertEqual(
+            [(i["line"], i["end_line"], i["kinds"], i["text"])
+             for i in collect_todos.collect(self.root)],
+            [
+                (1, 2, ["observed-on"],
+                 "The server rejects it (observed on tenant `orbitinghail`)."),
+                (4, 4, ["todo"], "TODO: drop once unused"),
+                (6, 6, ["observed-on"], "Seen live on orbitinghail."),
+                (8, 8, ["observed-on"], "Shaped as (orbitinghail, release 64.0) sends it."),
+            ],
+        )
+
     def test_marker_survives_moving_the_comment(self):
         self.write("src/a.rs", "// TODO: drop the retry\nfn f() {}\n")
         before = collect_todos.collect(self.root)[0]

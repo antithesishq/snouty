@@ -25,9 +25,12 @@ import sys
 PATTERNS = {
     "todo": re.compile(r"\bTODO\b"),
     "fixme": re.compile(r"\bFIXME\b"),
-    # A server quirk note, e.g. "Observed on orbitinghail, release 64.0". The
-    # tenant often wraps onto the next line, so match the phrase alone.
-    "observed-on": re.compile(r"\bobserved on\b", re.IGNORECASE),
+    # A server quirk note: "Observed on orbitinghail, release 64.0", "seen live
+    # on orbitinghail", "(orbitinghail, release 64.0)". Patterns run on a
+    # block's joined text, so a phrase may wrap across lines.
+    "observed-on": re.compile(
+        r"\b(observed|seen)( live)? on\b|\brelease \d+\.\d+", re.IGNORECASE
+    ),
 }
 
 # Markdown files are guidance for contributors, and the audit's own files name
@@ -39,7 +42,8 @@ EXCLUDE = [
     ":!scripts/test_collect_todos.py",
 ]
 
-COMMENT = re.compile(r"^\s*(//[/!]?|#)\s?")
+# `#` opens a comment in Python and YAML, but `#[` is a Rust attribute.
+COMMENT = re.compile(r"^\s*(//[/!]?|#(?!!?\[))\s?")
 
 
 def tracked_files(root: Path) -> list[str]:
@@ -49,28 +53,31 @@ def tracked_files(root: Path) -> list[str]:
     return [p for p in out.decode().split("\0") if p]
 
 
-def comment_block(lines: list[str], index: int) -> tuple[int, int]:
-    """The [start, end) range of the comment block around `lines[index]`: the
-    run of adjacent lines with the same comment prefix. A match outside a
-    comment is a block of one line."""
-    m = COMMENT.match(lines[index])
-    if not m:
-        return index, index + 1
-    prefix = m.group(1)
+def block_end(lines: list[str], start: int) -> int:
+    """The end of the block that starts at `lines[start]`: the run of non-blank
+    comment lines with the same prefix. Any other line is a block of its own."""
 
-    def same(i: int) -> bool:
-        c = COMMENT.match(lines[i])
-        return c is not None and c.group(1) == prefix and lines[i][c.end() :].strip() != ""
+    def prefix(i: int) -> str | None:
+        m = COMMENT.match(lines[i])
+        return m.group(1) if m and lines[i][m.end() :].strip() else None
 
-    start, end = index, index + 1
-    while start > 0 and same(start - 1):
-        start -= 1
-    while end < len(lines) and same(end):
+    first = prefix(start)
+    end = start + 1
+    while first and end < len(lines) and prefix(end) == first:
         end += 1
-    return start, end
+    return end
+
+
+# The comment that trails code on a line, such as `retry(); // TODO: drop`.
+TRAILING = re.compile(r"\s(//|#)\s(.*)")
 
 
 def block_text(lines: list[str]) -> str:
+    """The prose of a block, with comment prefixes stripped. A line of code
+    contributes only its trailing comment, so string literals never match."""
+    if not COMMENT.match(lines[0]):
+        m = TRAILING.search(lines[0])
+        return " ".join(m.group(2).split()) if m else ""
     return " ".join(" ".join(COMMENT.sub("", line) for line in lines).split())
 
 
@@ -81,25 +88,26 @@ def collect(root: Path) -> list[dict]:
             lines = (root / path).read_text().splitlines()
         except (UnicodeDecodeError, OSError):
             continue
-        covered = 0
-        for i, line in enumerate(lines):
-            if i < covered or not any(p.search(line) for p in PATTERNS.values()):
+        start = 0
+        while start < len(lines):
+            end = block_end(lines, start)
+            text = block_text(lines[start:end])
+            kinds = [k for k, p in PATTERNS.items() if p.search(text)]
+            if not kinds:
+                start = end
                 continue
-            start, covered = comment_block(lines, i)
-            block = lines[start:covered]
-            kinds = [k for k, p in PATTERNS.items() if any(p.search(b) for b in block)]
-            text = block_text(block)
             digest = hashlib.sha256(f"{path}\n{text}".encode()).hexdigest()[:12]
             items.append(
                 {
                     "file": path,
                     "line": start + 1,
-                    "end_line": covered,
+                    "end_line": end,
                     "kinds": kinds,
                     "text": text,
                     "marker": f"todo-audit: {path}#{digest}",
                 }
             )
+            start = end
     return items
 
 

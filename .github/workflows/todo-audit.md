@@ -17,6 +17,9 @@ tools:
   bash: [cat, grep, head, tail, wc, ls, jq, "git log:*", "git blame:*", "git show:*"]
   github:
     toolsets: [issues, pull_requests]
+  # Claude abandons an MCP call after 60s by default, before a slow
+  # `runs search` finishes.
+  timeout: 150
 
 # The agent reaches the tenant only through this tool. The API key stays on the
 # runner, and the tool runs only the read-only commands below: `launch`,
@@ -28,18 +31,20 @@ mcp-scripts:
       built from the commit under test. Allowed: `doctor`, and `runs list`,
       `runs show`, `runs properties`, `runs logs`, `runs events`, `runs search`.
       Pass the arguments after `snouty`, e.g. `runs list --limit 5 --json`.
+      Output past 60000 characters is cut, and `truncated` says so.
     inputs:
       args:
         type: string
         required: true
         description: Arguments after `snouty`, split like a POSIX shell would.
-    timeout: 120
+    timeout: 140
     py: |
       import json, os, shlex, subprocess, tempfile
 
       allowed = {"doctor", "runs list", "runs show", "runs properties",
                  "runs logs", "runs events", "runs search"}
-      timeout = 110
+      timeout = 120
+      limit = 60000
 
       def run(raw):
           try:
@@ -60,31 +65,55 @@ mcp-scripts:
                                      capture_output=True, text=True, timeout=timeout)
           except subprocess.TimeoutExpired:
               return {**result, "error": f"timed out after {timeout}s"}
-          return {**result, "exit_code": p.returncode, "stdout": p.stdout[-60000:],
-                  "stderr": p.stderr[-20000:]}
+          return {**result, "exit_code": p.returncode, "stdout": p.stdout[:limit],
+                  "stderr": p.stderr[:limit],
+                  "truncated": max(len(p.stdout), len(p.stderr)) > limit}
 
       print(json.dumps(run(inputs.get("args", ""))))
     env:
-      SNOUTY: ${{ github.workspace }}/target/debug/snouty
+      SNOUTY: ${{ runner.temp }}/snouty/snouty
       ANTITHESIS_TENANT: ${{ secrets.STAGING_ANTITHESIS_TENANT }}
       ANTITHESIS_API_KEY: ${{ secrets.STAGING_ANTITHESIS_API_KEY }}
 
+# Build in a job of its own. The agent can write to its job's workspace, so a
+# binary built there could be swapped for one that prints the API key, and a
+# planted `target/` would reach the next night's build through the cache.
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
+        with:
+          toolchain: stable
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+
+      - name: Build snouty
+        run: cargo build --locked
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: snouty
+          path: target/debug/snouty
+          retention-days: 1
+
+# The binary lives under the runner's temp directory, which the agent cannot
+# write.
 steps:
-  - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
+  - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
     with:
-      toolchain: stable
-
-  # Save the cache even when the agent fails, so the next night skips
-  # rebuilding the vendored OpenSSL and SQLite.
-  - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-    with:
-      cache-on-failure: true
-
-  - name: Build snouty
-    run: cargo build --locked
+      name: snouty
+      path: ${{ runner.temp }}/snouty
 
   - name: Collect comments
     run: |
+      chmod +x "$RUNNER_TEMP/snouty/snouty"
       mkdir -p /tmp/gh-aw/agent/todo-audit
       python3 scripts/collect-todos.py > /tmp/gh-aw/agent/todo-audit/todos.json
 
@@ -96,7 +125,7 @@ steps:
       ANTITHESIS_API_KEY: ${{ secrets.STAGING_ANTITHESIS_API_KEY }}
     working-directory: /tmp/gh-aw/agent/todo-audit
     run: |
-      "$GITHUB_WORKSPACE/target/debug/snouty" doctor --json > doctor.json || true
+      "$RUNNER_TEMP/snouty/snouty" doctor --json > doctor.json || true
       jq -er '.checks[] | select(.name == "api") | .notes[]?.text
         | select(startswith("tenant release version: "))
         | ltrimstr("tenant release version: ")' doctor.json > release.txt || {
@@ -113,6 +142,7 @@ safe-outputs:
     expires: false
   add-comment:
     target: "*"
+    required-labels: [todo-audit]
     max: 5
 ---
 
@@ -169,8 +199,10 @@ requests, open and closed, for:
 
 Then:
 
-- An **open issue** matches: add a comment to it with tonight's evidence and
-  release. Do not open a new issue.
+- An **open issue** with the `todo-audit` label matches: add a comment to it
+  with tonight's evidence and release. Do not open a new issue.
+- An **open issue** without that label matches: do nothing, and name it in the
+  summary. You can comment only on `todo-audit` issues.
 - A **closed issue** matches: do nothing. That includes issues closed as
   completed, won't-fix, or not planned. Never reopen one.
 - An **open or merged pull request** already removes or changes the comment: do

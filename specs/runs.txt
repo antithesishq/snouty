@@ -36,23 +36,30 @@ stderr 'snouty login'
 # with relative timestamps and short status words.
 mock-runs-server
 snouty runs
-stdout 'RUN ID.*STATUS.*CREATED.*TEST NAME'
+stdout '^RUN ID +STATUS +CREATED +LAUNCHER +RUN$'
 [!staging] stdout 'run-1.*completed'
 [!staging] stdout 'run-2.*in_progress'
-# A run with no test name shows its launcher in the TEST NAME column. No mock
-# run has a test name.
-[!staging] stdout '^run-2 +in_progress +.* debug$'
-[!staging] ! stdout ' -$'
-# The default table omits the description (it never fit usefully beside the full
-# run id); use `runs list --detail` to see it.
+# The LAUNCHER column shows the launcher. The RUN column shows the test name.
+# A run with no test name shows the first line of its description, then its
+# event description, then `-`. No mock run has a test name.
+[!staging] stdout '^run-1 +completed +.* nightly +nightly smoke on main$'
+[!staging] stdout '^run-2 +in_progress +.* debug +-$'
+[!staging] stdout '^run-3 +incomplete +.* nightly +recovery probe$'
+# The default table has no DESCRIPTION column; use `runs list --detail` to see
+# the full description.
 ! stdout 'DESCRIPTION'
-[!staging] ! stdout 'nightly smoke on main'
 
 # A filtered list uses the same table.
 mock-runs-server
 [!staging] snouty runs list --launcher debug --status in_progress
-[!staging] stdout '^run-2 +in_progress +.* debug$'
+[!staging] stdout '^run-2 +in_progress +.* debug +-$'
 [!staging] ! stdout 'run-1'
+mock-runs-server
+[!staging] snouty runs list --status incomplete
+[!staging] stdout '^run-3 +incomplete +.* nightly +recovery probe$'
+mock-runs-server
+[!staging] snouty runs list --launcher nightly
+[!staging] stdout '^run-1 +completed +.* nightly +nightly smoke on main$'
 
 # `snouty runs list --detail` prints one aligned key-value block per run (no
 # table), so full descriptions are visible.
@@ -62,20 +69,20 @@ stdout 'Run ID +[^ ]'
 [!staging] stdout 'Run ID .*run-1'
 [!staging] stdout 'Status .*completed'
 [!staging] stdout 'Description .*nightly smoke on main'
-! stdout 'RUN ID.*STATUS.*CREATED.*TEST NAME'
+! stdout 'RUN ID +STATUS +CREATED'
 
 # `-d` is the short form of `--detail`.
 mock-runs-server
 snouty runs list -d
 stdout 'Run ID +[^ ]'
 [!staging] stdout 'Run ID .*run-1'
-! stdout 'RUN ID.*STATUS.*CREATED.*TEST NAME'
+! stdout 'RUN ID +STATUS +CREATED'
 
 # `snouty runs list` is the same as bare `snouty runs`. The rows keep the
 # order the server sent, newest first; snouty never re-sorts them.
 mock-runs-server
 snouty runs list
-stdout 'RUN ID.*STATUS.*CREATED.*TEST NAME'
+stdout '^RUN ID +STATUS +CREATED +LAUNCHER +RUN$'
 [!staging] stdout '(?s)run-1.*run-2.*run-3'
 
 # The server returns at most `--limit` runs, and a note on stderr names the

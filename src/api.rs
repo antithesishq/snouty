@@ -186,6 +186,16 @@ impl RunSummary {
             .as_deref()
             .or_else(|| params_test_description(self.parameters.as_ref()))
     }
+
+    /// The `antithesis.event_description` parameter, which a debugging session
+    /// sets in place of a description.
+    pub(crate) fn event_description(&self) -> Option<&str> {
+        self.parameters
+            .as_ref()?
+            .extra
+            .get(ANT_EVENT_DESCRIPTION)
+            .map(String::as_str)
+    }
 }
 
 impl RunDetail {

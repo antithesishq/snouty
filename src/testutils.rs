@@ -751,13 +751,7 @@ const MOCK_RUNS: &[(&str, &str, &str, &str, &str)] = &[
         "nightly smoke on main",
     ),
     ("run-2", "in_progress", "2025-03-19T14:00:00Z", "debug", ""),
-    (
-        "run-3",
-        "incomplete",
-        "2025-03-18T08:00:00Z",
-        "nightly",
-        "incomplete recovery test",
-    ),
+    ("run-3", "incomplete", "2025-03-18T08:00:00Z", "nightly", ""),
 ];
 
 fn mock_route_list_runs(query: Option<&str>, empty: bool) -> (u16, String) {
@@ -792,8 +786,15 @@ fn mock_route_list_runs(query: Option<&str>, empty: bool) -> (u16, String) {
         } else {
             format!(r#","description":"{description}""#)
         };
+        // run-3 has no description, but carries the event description that a
+        // debugging session sets.
+        let parameters_field = if id == "run-3" {
+            r#","parameters":{"antithesis.event_description":"recovery probe"}"#
+        } else {
+            ""
+        };
         runs.push(format!(
-            r#"{{"run_id":"{id}","status":"{status}","created_at":"{created}","launcher":"{launcher}"{description_field}}}"#,
+            r#"{{"run_id":"{id}","status":"{status}","created_at":"{created}","launcher":"{launcher}"{description_field}{parameters_field}}}"#,
         ));
     }
 

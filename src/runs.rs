@@ -2403,37 +2403,54 @@ fn render_columns(
     }
 }
 
+/// The most characters that the LAUNCHER column of the runs table shows.
+const LAUNCHER_WIDTH: usize = 10;
+
 fn render_runs_table(runs: &[RunSummary], width: usize) -> String {
-    // The default view omits the description entirely — it never fit usefully
-    // beside the (necessarily full) run id, and `runs list --detail` shows it in
-    // full. Test name is the final, width-bounded column truncated with an
-    // ellipsis (a `runs show RUN` follow-up still works off the full id). A
-    // launcher filter doesn't add a column — every row would carry the same
-    // value; `--detail`/`--json` surface the launcher when it's actually wanted.
+    // RUN is the final, width-bounded column, truncated with an ellipsis (a
+    // `runs show RUN_ID` follow-up still works off the full id). A full
+    // description never fit beside the full run id, so RUN shows at most its
+    // first line; `runs list --detail` shows it in full. LAUNCHER is cut to
+    // LAUNCHER_WIDTH so that RUN keeps most of the width.
     let headers = vec![
         "RUN ID".to_string(),
         "STATUS".to_string(),
         "CREATED".to_string(),
-        "TEST NAME".to_string(),
+        "LAUNCHER".to_string(),
+        "RUN".to_string(),
     ];
 
-    let rows: Vec<Vec<String>> = runs
-        .iter()
-        .map(|run| {
-            // A run with no test name (a debugging session, for one) shows its
-            // launcher, so the row still says what the run is.
-            let test_name = match run.test_name().unwrap_or(&run.launcher) {
-                "" => "-".to_string(),
-                name => sanitize(name),
-            };
-            vec![
-                sanitize(&run.run_id),
-                run.status.to_string(),
-                relative_time(run.created_at),
-                test_name,
-            ]
-        })
-        .collect();
+    let rows: Vec<Vec<String>> =
+        runs.iter()
+            .map(|run| {
+                // A run with no test name (a debugging session, for one) shows the
+                // first line of its description or event description, so the row
+                // still says what the run is. LAUNCHER has its own column.
+                fn first_line(text: &str) -> Option<&str> {
+                    text.lines().map(str::trim).find(|line| !line.is_empty())
+                }
+                let test_name = [
+                    run.test_name(),
+                    run.test_description().and_then(first_line),
+                    run.event_description().and_then(first_line),
+                ]
+                .into_iter()
+                .flatten()
+                .find(|text| !text.is_empty())
+                .map_or_else(|| "-".to_string(), sanitize);
+                vec![
+                    sanitize(&run.run_id),
+                    run.status.to_string(),
+                    relative_time(run.created_at),
+                    match run.launcher.as_str() {
+                        "" => "-".to_string(),
+                        launcher => console::truncate_str(&sanitize(launcher), LAUNCHER_WIDTH, "…")
+                            .into_owned(),
+                    },
+                    test_name,
+                ]
+            })
+            .collect();
 
     render_columns(
         &headers,
@@ -4405,10 +4422,11 @@ mod tests {
         assert!(lines[0].contains("RUN ID"));
         assert!(lines[0].contains("STATUS"));
         assert!(lines[0].contains("CREATED"));
-        assert!(lines[0].contains("TEST NAME"));
-        // The default view no longer shows DESCRIPTION (use `--detail` for that).
-        assert!(!lines[0].contains("DESCRIPTION"));
-        assert!(!lines[0].contains("LAUNCHER"));
+        let header: Vec<&str> = lines[0].split("  ").filter(|h| !h.is_empty()).collect();
+        assert_eq!(
+            header.iter().map(|h| h.trim()).collect::<Vec<_>>(),
+            ["RUN ID", "STATUS", "CREATED", "LAUNCHER", "RUN"]
+        );
 
         assert!(lines[1].contains("abc-54-1"));
         assert!(lines[1].contains("completed"));
@@ -4464,7 +4482,7 @@ mod tests {
     #[test]
     fn runs_table_does_not_truncate_test_name_when_piped() {
         // `terminal_width()` returns usize::MAX for a non-tty so piped output
-        // keeps the full TEST NAME — `snouty runs | grep` must not miss a row.
+        // keeps the full RUN cell — `snouty runs | grep` must not miss a row.
         let long = "a-very-long-test-name-that-would-be-truncated-on-a-narrow-terminal";
         let runs = vec![summary(
             "abc-54-1",
@@ -4492,7 +4510,7 @@ mod tests {
     }
 
     #[test]
-    fn runs_table_shows_launcher_when_test_name_missing() {
+    fn runs_table_shows_dash_not_launcher_when_run_has_no_text() {
         let runs = vec![summary(
             "abc-54-1",
             RunStatus::Completed,
@@ -4504,9 +4522,120 @@ mod tests {
         let table = render_runs_table(&runs, 100);
         let row = table.lines().nth(1).unwrap();
         assert!(
-            row.trim_end().ends_with("  debugging"),
-            "expected launcher in TEST NAME, got: {row}"
+            row.trim_end().ends_with("debugging  -"),
+            "expected launcher, then a dash in RUN, got: {row}"
         );
+    }
+
+    /// The RUN cell of a one-run table at `width` columns.
+    fn run_cell(run: RunSummary, width: usize) -> String {
+        let table = render_runs_table(&[run], width);
+        let row = table.lines().nth(1).unwrap();
+        row.split("  ")
+            .filter(|cell| !cell.is_empty())
+            .nth(4)
+            .unwrap()
+            .trim()
+            .to_string()
+    }
+
+    fn with_event_description(mut run: RunSummary, text: &str) -> RunSummary {
+        run.parameters
+            .get_or_insert_with(|| serde_json::from_value(json!({})).unwrap())
+            .extra
+            .insert(
+                crate::params::ANT_EVENT_DESCRIPTION.to_string(),
+                text.to_string(),
+            );
+        run
+    }
+
+    fn debugging_run(description: Option<&str>) -> RunSummary {
+        summary(
+            "abc-54-1",
+            RunStatus::Cancelled,
+            "2024-01-01T00:00:00Z",
+            "debugging",
+            None,
+            description,
+        )
+    }
+
+    /// The LAUNCHER cell of a one-run table.
+    fn launcher_cell(run: RunSummary) -> String {
+        let table = render_runs_table(&[run], 200);
+        let row = table.lines().nth(1).unwrap();
+        row.split("  ")
+            .filter(|cell| !cell.is_empty())
+            .nth(3)
+            .unwrap()
+            .trim()
+            .to_string()
+    }
+
+    #[test]
+    fn runs_table_shows_launcher_cut_to_ten_characters() {
+        let mut run = debugging_run(Some("probe the stall"));
+        assert_eq!(launcher_cell(run.clone()), "debugging");
+        run.launcher = "basic_test".to_string();
+        assert_eq!(launcher_cell(run.clone()), "basic_test");
+        run.launcher = "Basic Test (no faults)".to_string();
+        assert_eq!(launcher_cell(run.clone()), "Basic Tes…");
+        run.launcher = String::new();
+        assert_eq!(launcher_cell(run), "-");
+    }
+
+    #[test]
+    fn runs_table_prefers_test_name_over_description() {
+        let run = summary(
+            "abc-54-1",
+            RunStatus::Completed,
+            "2024-01-01T00:00:00Z",
+            "debugging",
+            Some("nightly"),
+            Some("probe the stall"),
+        );
+        let run = with_event_description(run, "debug this moment");
+        assert_eq!(run_cell(run, 100), "nightly");
+    }
+
+    #[test]
+    fn runs_table_shows_description_first_line_when_test_name_missing() {
+        let run = debugging_run(Some("\n  probe the stall\x1b \nsecond line"));
+        assert_eq!(run_cell(run, 100), r"probe the stall\x1B");
+    }
+
+    #[test]
+    fn runs_table_reads_top_level_description() {
+        let mut run = debugging_run(None);
+        run.description = Some("top-level description".to_string());
+        assert_eq!(run_cell(run, 100), "top-level description");
+    }
+
+    #[test]
+    fn runs_table_shows_event_description_when_description_missing() {
+        let run = with_event_description(debugging_run(None), "debug this moment\nmore");
+        assert_eq!(run_cell(run, 100), "debug this moment");
+    }
+
+    #[test]
+    fn runs_table_prefers_description_over_event_description() {
+        let run = with_event_description(debugging_run(Some("probe the stall")), "debug this");
+        assert_eq!(run_cell(run, 100), "probe the stall");
+    }
+
+    #[test]
+    fn runs_table_skips_blank_description() {
+        let run = with_event_description(debugging_run(Some(" \n ")), "\n");
+        assert_eq!(run_cell(run, 100), "-");
+    }
+
+    #[test]
+    fn runs_table_truncates_long_description() {
+        let run = debugging_run(Some(&"long description ".repeat(10)));
+        let cell = run_cell(run, 80);
+        assert!(cell.starts_with("long description"), "got: {cell}");
+        assert!(cell.ends_with('…'), "got: {cell}");
     }
 
     #[test]

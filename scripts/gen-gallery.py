@@ -1272,6 +1272,68 @@ def rows_at_most(limit: int):
     return chk
 
 
+def _first_line(text: object) -> str:
+    if not isinstance(text, str):
+        return ""
+    # Split as Rust's `str::lines()` does: only on `\n`. `strip()` drops a `\r`.
+    return next((line.strip() for line in text.split("\n") if line.strip()), "")
+
+
+def expected_run_cell(row: dict) -> str:
+    """The RUN cell that `runs list` shows for a `--json` row.
+
+    The order is: test name, the first line of the description, the first line
+    of the event description that a debugging session sets, `-`.
+    """
+    params = row.get("parameters") or {}
+    candidates = [
+        params.get("antithesis.test_name"),
+        _first_line(row.get("description") or params.get("antithesis.description")),
+        _first_line(params.get(_DESCRIPTION)),
+    ]
+    return next((c for c in candidates if isinstance(c, str) and c), "-")
+
+
+# `runs list` cuts the LAUNCHER column to this many characters.
+LAUNCHER_WIDTH = 10
+
+
+def rows_at_most_with_run_cells(limit: int):
+    """`rows_at_most`, plus each table row's LAUNCHER and RUN cells are right.
+
+    LAUNCHER is the launcher, cut to LAUNCHER_WIDTH characters. RUN is
+    `expected_run_cell`; a RUN cell that ends in `…` is truncated, so it must
+    be a prefix of that value.
+    """
+
+    def chk(sr: StoryRun, reg: Registry) -> tuple[bool, str]:
+        rows = sr.rows or []
+        lines = sr.result.stdout.splitlines()
+        bad: list[str] = []
+        for row in rows:
+            run_id = row.get("run_id", "")
+            line = next((ln for ln in lines if ln.startswith(f"{run_id} ")), None)
+            cells = re.split(r" {2,}", line.strip(), maxsplit=4) if line else []
+            launcher_cell, cell = cells[3:] if len(cells) == 5 else ("", "")
+            launcher = row.get("launcher") or "-"
+            if len(launcher) > LAUNCHER_WIDTH:
+                launcher = launcher[: LAUNCHER_WIDTH - 1] + "…"
+            if launcher_cell != launcher:
+                bad.append(f"{run_id}: LAUNCHER {launcher_cell!r} != {launcher!r}")
+            want = expected_run_cell(row)
+            if cell.endswith("…"):
+                ok = want.startswith(cell[:-1])
+            else:
+                ok = cell == want
+            if not ok:
+                bad.append(f"{run_id}: {cell!r} != {want!r}")
+        n = len(rows)
+        detail = "; ".join(bad) or "LAUNCHER and RUN cells match"
+        return (1 <= n <= limit and not bad, f"{n} rows (limit {limit}), {detail}")
+
+    return chk
+
+
 def rows_at_most_with_limit_note(limit: int):
     """`rows_at_most`, plus the note that names the limit.
 
@@ -1765,7 +1827,7 @@ def build_stories(d: Discovery) -> list[Story]:
             "runs",
             "Quickly check what test runs are around",
             "I just want to glance at what test runs exist without recalling any subcommands.",
-            "A readable table of recent runs (id, status, title, time) appears — `runs` behaves like `runs list`.",
+            "A readable table of recent runs (RUN ID, STATUS, CREATED, LAUNCHER, RUN) appears — `runs` behaves like `runs list`.",
             ["runs"],
             non_empty_table,
         ),
@@ -1773,11 +1835,13 @@ def build_stories(d: Discovery) -> list[Story]:
             "runs-list",
             "List recent runs to find one to inspect",
             "I want to scan recent runs and pick one to dig into.",
-            "Up to 10 recent runs, newest first, with legible id/status/title/time columns; "
-            "a run with no test name (a debugging session) shows its launcher as the title; "
+            "Up to 10 recent runs, newest first, with legible RUN ID/STATUS/CREATED/"
+            "LAUNCHER/RUN columns; LAUNCHER shows at most 10 characters; RUN is the "
+            "test name, and a run with no test name (a debugging session) shows the "
+            "first line of its description or event description there, else `-`; "
             "when more runs exist, a stderr note says the output stopped at the limit.",
             ["runs", "list", "-n", "10"],
-            rows_at_most(10),
+            rows_at_most_with_run_cells(10),
         ),
         Story(
             "runs-list--limit",
@@ -1790,8 +1854,8 @@ def build_stories(d: Discovery) -> list[Story]:
         ),
         Story(
             "runs-list--detail",
-            "Get full descriptions instead of truncated titles",
-            "Default titles are truncated; I want to read the full descriptions.",
+            "Get full descriptions instead of the truncated RUN column",
+            "The default RUN column is truncated; I want to read the full descriptions.",
             "Descriptions are shown in full (longer than the default view), one row per run. "
             "When more runs exist, a blank line sets the limit note apart from the last run.",
             ["runs", "list", "-n", "6", "--detail"],
@@ -2635,7 +2699,7 @@ def build_help_stories(d: Discovery) -> list[Story]:
             ["runs", "list"],
             ["runs", "list", "-n", "6"],
             samples=[("with --detail", ["runs", "list", "-n", "3", "--detail"])],
-            align=("RUN ID", "STATUS", "CREATED", "TEST NAME"),
+            align=("RUN ID", "STATUS", "CREATED", "LAUNCHER", "RUN"),
         ),
         _help_story(
             "help-runs-show",

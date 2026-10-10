@@ -233,7 +233,42 @@ stdout 'source_run_id=absent source_session_id=ba4ebf3181dd342334b86c58941813c6-
 # warm"), and snouty points at --source-run-id.
 ! snouty runs exec run-2 1002528785118888238 278.1311443040613 'true'
 stderr 'Moment not warm'
-stderr 'name the run it comes from with --source-run-id$'
+stderr 'use --source-run-id to load a moment from a different run$'
+! stderr 'may still be loading'
+
+# A new debugging session answers 404, then the cold 400, for minutes after
+# launch (orbitinghail, release 64.0). In the gallery a session took 3 to 4
+# minutes from launch to accept commands. For a debugging session that
+# started less than 10 minutes ago, snouty first says to try again. The cold
+# 400 keeps the --source-run-id suggestion, because the moment can also come
+# from another run. Only these error paths read the run: success adds no
+# request.
+! snouty runs exec session-loading -3625518438076122494 398.4898056755774 'true'
+stderr 'Resource not found'
+stderr 'the session may still be loading: a new debugging session takes a few minutes to accept commands. Try again in a minute$'
+
+! snouty runs exec session-loading 1002528785118888238 278.1311443040613 'true'
+stderr 'Moment not warm'
+stderr '(?s)Try again in a minute\nSuggestion: use --source-run-id to load a moment from a different run'
+
+# With a rewarm source, a 404 can be a bad source, and a retry does not fix
+# that. snouty names the flag and gives no note.
+! snouty runs exec session-loading -3625518438076122494 398.4898056755774 'true' --source-run-id no-such-run
+stderr 'check that --source-run-id names an existing source'
+! stderr 'may still be loading'
+
+# An older session, or a run that is not a debugging session, gets no note.
+! snouty runs exec session-old -3625518438076122494 398.4898056755774 'true'
+stderr 'Resource not found'
+! stderr 'may still be loading'
+
+! snouty runs exec session-old 1002528785118888238 278.1311443040613 'true'
+stderr 'use --source-run-id to load a moment from a different run$'
+! stderr 'may still be loading'
+
+! snouty runs exec run-starting -3625518438076122494 398.4898056755774 'true'
+stderr 'Resource not found'
+! stderr 'may still be loading'
 
 # With a source, snouty prints one rewarm progress line per record on stderr
 # when stderr is not a terminal. stdout keeps only the script's output.

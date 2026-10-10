@@ -34,8 +34,8 @@ const OAUTH_HTTP_TIMEOUT: Duration = Duration::from_secs(10);
 /// sign-in (including MFA).
 const CALLBACK_TIMEOUT: Duration = Duration::from_secs(300);
 
-/// How long one connection to the loopback server may take to send its request
-/// before it is dropped, so idle connections do not pile up.
+/// Drop a loopback connection that sends no complete request in this time, so
+/// idle connections do not pile up.
 const REQUEST_READ_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Wrapping our TUI (`inquire`) in a trait so that it can be subbed out for testing
@@ -518,15 +518,13 @@ async fn complete_oauth_login(
         .render()
         .wrap_err("failed to render the sign-in page")?;
 
-    // The browser lands on a local page whose "Sign in" button leads to the
-    // IdP. A random token in the page's path keeps the IdP URL from any local
-    // process that can reach the loopback port but did not get this URL.
+    // A random token in the path hides the IdP URL from a local process that
+    // can reach the loopback port but did not get this URL.
     let sign_in_path = format!("/sign-in/{}", generate_verifier_or_state()?);
     let sign_in_url = format!("http://localhost:{port}{sign_in_path}");
 
-    // Best-effort: any failure to open a browser (invalid URL, no opener) is
-    // not fatal — the URL is printed either way, so a headless or opener-less
-    // environment can still complete the flow by hand.
+    // A failure to open a browser is not fatal: the URL is printed either way,
+    // so a headless environment can still complete the flow by hand.
     println!();
     match crate::browser::open_in_browser(&sign_in_url) {
         Ok(()) => {
@@ -723,17 +721,14 @@ async fn exchange_code_for_tokens(
 #[derive(Template)]
 #[template(path = "login/page.html")]
 enum LoginPage<'a> {
-    /// Its "Sign in" button leads to `idp_url`.
-    SignIn {
-        idp_url: &'a reqwest::Url,
-    },
+    SignIn { idp_url: &'a reqwest::Url },
     SignedIn,
     SignInFailed,
 }
 
-/// Serve `sign_in_page` at `sign_in_path` until the OAuth callback arrives, ack
-/// the callback in the browser, and return its parsed parameters. Any other
-/// path gets a 404.
+/// Serve `sign_in_page` at `sign_in_path` until the OAuth callback arrives, show
+/// the result page, and return the callback's parameters. Other paths get a
+/// 404. Fails after `CALLBACK_TIMEOUT`.
 async fn wait_for_callback(
     listeners: CallbackListeners,
     sign_in_path: &str,
@@ -763,8 +758,8 @@ async fn serve_until_callback(
     loop {
         tokio::select! {
             accepted = accept_any(listeners) => {
-                // An accept error (a peer that reset before the accept, or
-                // too many open files) concerns one connection, not the login.
+                // An accept error (a peer reset, or too many open files)
+                // affects one connection, not the login.
                 let mut stream = match accepted {
                     Ok((stream, _addr)) => stream,
                     Err(err) => {
@@ -791,9 +786,6 @@ async fn serve_until_callback(
                 let path = target.split_once('?').map_or(target, |(path, _)| path);
                 if path == "/callback" {
                     let result = parse_callback_params(target);
-                    // Acknowledge the callback regardless of the parse outcome
-                    // so the user isn't left staring at a spinner; details
-                    // land in the terminal.
                     let page = match &result {
                         Ok(_) => LoginPage::SignedIn,
                         Err(_) => LoginPage::SignInFailed,
@@ -814,8 +806,8 @@ async fn serve_until_callback(
     }
 }
 
-/// Best-effort: write an HTML response and close. A browser that went away
-/// has nothing left to show, so a write failure is dropped.
+/// Write an HTML response. Write failures are ignored: a browser that went
+/// away has nothing left to show.
 async fn respond(stream: &mut TcpStream, status: StatusCode, body: &str) {
     let response = format!(
         "HTTP/1.1 {status}\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n{body}",
@@ -839,12 +831,9 @@ async fn accept_any(
 }
 
 /// Read an HTTP request through the end of its headers and return its request
-/// line. A standard OAuth authorization-code redirect is a GET with everything
-/// we need in the query string, so the request line is all we parse. The
-/// headers are read only so that no unread data is left when the connection
-/// closes: a close with unread data sends a reset, and the browser can then
-/// drop the response. The request is capped so a misbehaving client can't
-/// stream forever.
+/// line. The headers are read only to drain them: a close with unread data
+/// sends a reset, and the browser can then drop the response. Fails past
+/// `MAX_REQUEST_HEAD` bytes.
 async fn read_request(stream: &mut TcpStream) -> Result<String> {
     const MAX_REQUEST_HEAD: usize = 64 * 1024;
 
@@ -1184,7 +1173,6 @@ mod tests {
         decoded
     }
 
-    /// Send `GET target` to the loopback server and return the response.
     async fn get(port: u16, target: &str) -> String {
         let mut stream = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
         stream
@@ -1196,8 +1184,7 @@ mod tests {
         response
     }
 
-    /// Spawn the loopback server, serving `sign_in_page` at `/sign-in/token`,
-    /// and return its port and the task that resolves with the callback.
+    /// Spawn the loopback server with `sign_in_page` at `/sign-in/token`.
     async fn spawn_callback_server(
         sign_in_page: &'static str,
     ) -> (u16, tokio::task::JoinHandle<Result<CallbackParams>>) {
@@ -1213,7 +1200,7 @@ mod tests {
     async fn callback_server_serves_the_sign_in_page_until_the_callback() {
         let (port, server) = spawn_callback_server("the sign-in page").await;
 
-        // A connection that never sends a request line (a browser preconnect)
+        // A connection that never sends a request (a browser preconnect)
         // must not hold up the requests behind it.
         let _silent = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
 

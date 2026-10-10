@@ -84,7 +84,6 @@
   }
 }
 
-/* Mobile result frames (375px) use a 327px-wide glow, 470px tall in light. */
 @media (max-width: 600px) {
   :root.result { --glow-rx: 327px; --glow-height: 470px; }
 }

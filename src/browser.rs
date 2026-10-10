@@ -2,10 +2,9 @@
 
 use color_eyre::eyre::{Result, eyre};
 
-/// Parse `url` and require an `http`/`https` scheme. Anything else
-/// (`file:`, `javascript:`, garbage) is rejected rather than handed to an OS
-/// launcher or put in a link. The `Err` carries the reason (the parse error,
-/// or the offending scheme) so callers can surface a hint to the user.
+/// Parse `url` and reject any scheme other than `http` or `https`, so a
+/// `file:` or `javascript:` URL never reaches an OS launcher or a link. The
+/// `Err` names the parse error or the rejected scheme.
 pub(crate) fn parse_http_url(url: &str) -> Result<reqwest::Url> {
     let parsed = reqwest::Url::parse(url).map_err(|err| eyre!("invalid URL: {err}"))?;
     if !matches!(parsed.scheme(), "http" | "https") {

@@ -10,7 +10,9 @@ use log::debug;
 
 use crate::process::output_with_timeout;
 
-const GIT_TIMEOUT: Duration = Duration::from_secs(10);
+/// Each query reads only local files. A stalled git (for example on a hung
+/// network mount) must not hold up the launch for long.
+const GIT_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// The commit that a work tree has checked out.
 #[derive(Debug)]

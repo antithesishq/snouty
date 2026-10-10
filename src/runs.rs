@@ -977,9 +977,6 @@ fn render_property_detail(property: &Property) -> String {
                 out.push_str(&render_field("Examples", &example_totals(p)));
                 out.push('\n');
                 out.push_str(&indent_lines(&render_moments_table(p), "  "));
-                if let Some(note) = sample_note(p) {
-                    out.push_str(&format!("\n  {note}"));
-                }
             }
         }
         // Non-event "system" properties have no moments; their values show under
@@ -989,49 +986,31 @@ fn render_property_detail(property: &Property) -> String {
     out
 }
 
-/// How many passing and failing examples the run recorded, as in `2558
-/// passing examples and 27 failing examples`. The table below it is a sample.
+/// How many passing and failing examples the run recorded, and how many of
+/// them the table below shows, as in `showing 1 out of 2558 passing examples
+/// and 1 out of 27 failing examples`. A group that the table shows in full
+/// gives only its total, and there is no `showing` when the table shows all.
 fn example_totals(p: &EventProperty) -> String {
-    let count = |n: Option<u32>, status: &str| {
-        let n = n.unwrap_or(0);
-        format!("{n} {status} example{}", if n == 1 { "" } else { "s" })
-    };
-    format!(
-        "{} and {}",
-        count(p.example_count, "passing"),
-        count(p.counterexample_count, "failing")
-    )
-}
-
-/// How many moments of each group the table shows out of the run's totals, as
-/// in `showing 1 of 4 failing and 1 of 1028 passing examples`. `None` when the
-/// table shows every example. A group with no examples is left out.
-fn sample_note(p: &EventProperty) -> Option<String> {
     // A missing count cannot be smaller than the moments the API sent.
     let groups = [
-        ("failing", p.counterexamples.len(), p.counterexample_count),
         ("passing", p.examples.len(), p.example_count),
+        ("failing", p.counterexamples.len(), p.counterexample_count),
     ]
     .map(|(status, shown, total)| (status, shown, (total.unwrap_or(0) as usize).max(shown)));
-    if groups.iter().all(|&(_, shown, total)| shown == total) {
-        return None;
-    }
-    let groups: Vec<_> = groups
-        .into_iter()
-        .filter(|&(_, _, total)| total > 0)
-        .collect();
-    let last_total = groups.last().map_or(0, |&(_, _, total)| total);
-    let parts = groups
-        .iter()
-        .map(|(status, shown, total)| format!("{shown} of {total} {status}"))
-        .collect::<Vec<_>>()
-        .join(" and ");
-    let noun = if last_total == 1 {
-        "example"
+    let parts = groups.map(|(status, shown, total)| {
+        let noun = if total == 1 { "example" } else { "examples" };
+        if shown < total {
+            format!("{shown} out of {total} {status} {noun}")
+        } else {
+            format!("{total} {status} {noun}")
+        }
+    });
+    let prefix = if groups.iter().any(|&(_, shown, total)| shown < total) {
+        "showing "
     } else {
-        "examples"
+        ""
     };
-    Some(format!("showing {parts} {noun}"))
+    format!("{prefix}{}", parts.join(" and "))
 }
 
 /// The STATUS/HASH/VTIME table for an event property's moments: counterexamples
@@ -2796,64 +2775,42 @@ mod tests {
         }
     }
 
-    // The label states the run's totals, not the size of the sample below it,
-    // with a singular for one.
+    // The label states the run's totals, and how many of them the table
+    // shows when it shows fewer, with a singular for one.
     #[test]
-    fn example_totals_count_what_the_run_recorded() {
+    fn example_totals_say_how_much_the_table_shows() {
         let mut p = event_prop(
             PropertyStatus::Failing,
             vec![event("ex", "2.0")],
             vec![event("cex", "1.0")],
         );
-        p.counterexample_count = Some(27);
-        p.example_count = Some(2558);
-        assert_eq!(
-            example_totals(&p),
-            "2558 passing examples and 27 failing examples"
-        );
-        p.example_count = Some(1);
-        p.counterexample_count = Some(0);
-        assert_eq!(
-            example_totals(&p),
-            "1 passing example and 0 failing examples"
-        );
-    }
-
-    // The note under the table says how much of each group it shows, and is
-    // left out when it shows every example.
-    #[test]
-    fn sample_note_says_how_much_the_table_shows() {
-        let mut p = event_prop(
-            PropertyStatus::Failing,
-            vec![event("ex", "2.0")],
-            vec![event("cex", "1.0")],
-        );
-        p.counterexample_count = Some(4);
         p.example_count = Some(1028);
+        p.counterexample_count = Some(4);
         assert_eq!(
-            sample_note(&p).as_deref(),
-            Some("showing 1 of 4 failing and 1 of 1028 passing examples")
+            example_totals(&p),
+            "showing 1 out of 1028 passing examples and 1 out of 4 failing examples"
         );
 
-        // All shown: no note.
-        p.counterexample_count = Some(1);
+        // All shown: only the totals.
         p.example_count = Some(1);
-        assert_eq!(sample_note(&p), None);
+        p.counterexample_count = Some(1);
+        assert_eq!(
+            example_totals(&p),
+            "1 passing example and 1 failing example"
+        );
 
-        // One example is singular.
+        // A group shown in full gives only its total.
         p.counterexample_count = Some(3);
         assert_eq!(
-            sample_note(&p).as_deref(),
-            Some("showing 1 of 3 failing and 1 of 1 passing example")
+            example_totals(&p),
+            "showing 1 passing example and 1 out of 3 failing examples"
         );
-
-        // A group with no examples is left out.
         let mut p = event_prop(PropertyStatus::Passing, vec![event("ex", "2.0")], vec![]);
         p.example_count = Some(5);
         p.counterexample_count = Some(0);
         assert_eq!(
-            sample_note(&p).as_deref(),
-            Some("showing 1 of 5 passing examples")
+            example_totals(&p),
+            "showing 1 out of 5 passing examples and 0 failing examples"
         );
     }
 

@@ -1637,28 +1637,35 @@ def event_keyword_present(keyword: str):
 
 
 _EXAMPLE_TOTALS = re.compile(
-    r"^Examples\s+(\d+) passing examples? and (\d+) failing examples?$", re.M
+    r"^Examples\s+(showing )?(?:(\d+) out of )?(\d+) passing examples?"
+    r" and (?:(\d+) out of )?(\d+) failing examples?$",
+    re.M,
 )
 
 
 def _sample_note_ok(text: str) -> bool:
-    """When the table shows fewer moments than the `Examples` totals, a
-    `showing N of M ...` line under it says so; when it shows all, no line."""
-    totals = _EXAMPLE_TOTALS.search(text)
-    if totals is None:
+    """The `Examples` line gives `N out of M` for each group that the table
+    shows only part of, and starts with `showing` only when there is one."""
+    m = _EXAMPLE_TOTALS.search(text)
+    if m is None:
         return False
-    total = {"passing": int(totals[1]), "failing": int(totals[2])}
-    shown = {s: len(re.findall(rf"^  {s}\s+-?\d+\s", text, re.M)) for s in total}
-    note = re.search(r"^  showing .* examples?$", text, re.M)
-    if all(shown[s] == total[s] for s in total):
-        return note is None
-    want = [f"{shown[s]} of {total[s]} {s}" for s in ("failing", "passing") if total[s]]
-    return note is not None and all(w in note[0] for w in want)
+    rows = {s: len(re.findall(rf"^  {s}\s+-?\d+\s", text, re.M)) for s in ("passing", "failing")}
+    groups = {"passing": (m[2], int(m[3])), "failing": (m[4], int(m[5]))}
+    sampled = False
+    for status, (shown, total) in groups.items():
+        if shown is None:
+            if rows[status] != total:
+                return False
+        else:
+            if rows[status] != int(shown) or int(shown) >= total:
+                return False
+            sampled = True
+    return (m[1] is not None) == sampled
 
 
 def property_has_examples(sr: StoryRun, reg: Registry) -> tuple[bool, str]:
-    """Example moments with no `Details` row, a note when the table is a
-    sample, plus the one trailing next step they feed."""
+    """Example moments with no `Details` row, totals that say when the table
+    is a sample, plus the one trailing next step they feed."""
     text = sr.result.combined
     rows = _has_moment_rows(text)
     no_details = _DETAILS_ROW.search(text) is None

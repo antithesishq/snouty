@@ -1,7 +1,9 @@
 ---
-description: Nightly agent audit of snouty's TODOs and server-behavior notes against the live tenant
+description: Weekly agent audit of snouty's TODOs and server-behavior notes against the live tenant
 on:
-  schedule: daily
+  # Mondays at 11:17 UTC: 4:17 AM Pacific in summer, 3:17 AM in winter.
+  schedule:
+    - cron: "17 11 * * 1"
   workflow_dispatch:
 
 permissions:
@@ -31,7 +33,7 @@ tools:
     toolsets: [issues, pull_requests]
 
 # The agent reaches the tenant only through this tool, and the API key stays on
-# the runner. The tool offers all of snouty but enforces a nightly budget for
+# the runner. The tool offers all of snouty but enforces a per-run budget for
 # what costs money or touches other people's runs: 2 launches of at most 15
 # minutes, 1 debugging session, and 30 `runs exec` calls. It records each run it
 # creates in a ledger on the runner, and the post-step cancels them all.
@@ -40,7 +42,7 @@ mcp-scripts:
     description: >-
       Run snouty, built from the commit under test, against the Antithesis
       tenant. Pass the arguments after `snouty`, e.g. `runs list --limit 5
-      --json`. Each night allows 2 `launch` runs of at most 15 minutes, 1
+      --json`. Each audit allows 2 `launch` runs of at most 15 minutes, 1
       `debug` session and 30 `runs exec` calls; the result's `budget` shows
       what is left. Runs the audit creates are cancelled when it ends.
       `runs exec` refuses other people's debugging sessions, and `runs cancel`
@@ -57,7 +59,7 @@ mcp-scripts:
     py: |
       import fcntl, json, os, re, shlex, subprocess, tempfile
 
-      # Per-night budget. A launch or debug call that times out counts as created,
+      # Per-audit budget. A launch or debug call that times out counts as created,
       # because it may have created a run the tool never saw.
       LIMITS = {"launch": 2, "debug": 1, "exec": 30}
       ATTEMPTS = 6
@@ -140,9 +142,9 @@ mcp-scripts:
           def go(data):
               used = data.setdefault(kind, {"created": 0, "attempts": 0})
               if used["created"] >= LIMITS[kind]:
-                  return {"error": f"tonight's budget of {LIMITS[kind]} {kind} is spent"}
+                  return {"error": f"this audit's budget of {LIMITS[kind]} {kind} is spent"}
               if used["attempts"] >= ATTEMPTS:
-                  return {"error": f"tonight's {ATTEMPTS} {kind} attempts are spent"}
+                  return {"error": f"this audit's {ATTEMPTS} {kind} attempts are spent"}
               used["attempts"] += 1
               result = execute(args)
               if "error" in result:
@@ -192,7 +194,7 @@ mcp-scripts:
               return execute(args)
           def go(data):
               if data.get("exec", 0) >= LIMITS["exec"]:
-                  return {"error": f"tonight's budget of {LIMITS['exec']} exec calls is spent"}
+                  return {"error": f"this audit's budget of {LIMITS['exec']} exec calls is spent"}
               data["exec"] = data.get("exec", 0) + 1
               return {**execute(args), "budget": budget(data)}
           return ledger(go)
@@ -410,7 +412,7 @@ For each entry, decide whether the condition it states still holds.
   does what it asks.
 
 The `snouty` tool can also launch runs, open a debugging session and run
-`runs exec`, within a nightly budget: 2 launches of at most 15 minutes, 1
+`runs exec`, within a budget for each audit: 2 launches of at most 15 minutes, 1
 debugging session and 30 exec calls. Spend it on comments that need it, such as
 cancel semantics, launch responses, `runs exec` behavior and session readiness,
 and plan the checks that share one session before you open it. A completed run

@@ -138,8 +138,7 @@ pub enum SearchMode {
 pub const SEARCH_DEFAULT_LIMIT: NonZeroU64 = NonZeroU64::new(50).unwrap();
 
 /// The largest `limit` the events-search endpoint accepts. The server answers
-/// 400 above it, with a message that names 1000. TODO: re-check this once the
-/// server's message and the spec's documented 1..=999 agree.
+/// 400 above it, with a message that names 1000.
 pub const SEARCH_MAX_LIMIT: u64 = 999;
 
 /// Why a `/api/version` probe failed, classified for `snouty doctor`.
@@ -454,8 +453,8 @@ pub struct AntithesisApi {
 /// Stop a stream at the `limit` its request named. Release 61 ends the stream
 /// itself, but releases 58.11 through 60.1 ignore the field and send every
 /// match, so the cap is applied here as well. A request that names no limit
-/// stays open. TODO: drop the cap; `MIN_SEARCH_RELEASE` (62.2) already
-/// excludes those releases.
+/// stays open. TODO: drop the cap once every supported tenant runs 61.0 or
+/// later.
 fn cap_stream(stream: JsonStream, limit: Option<NonZeroU64>) -> JsonStream {
     match limit {
         Some(limit) => stream
@@ -809,8 +808,7 @@ impl AntithesisApi {
         // `limit` together with `is_streaming`, so naming a default here
         // would cut a `--follow` off at 50 events. build.rs strips the
         // schema's `default: 50` so the generated field is omittable at all
-        // (see `unrequire_search_limit_default` there). TODO: re-check
-        // whether a streaming search honors `limit` yet.
+        // (see `unrequire_search_limit_default` there).
         let limit = match mode {
             SearchMode::Query { limit, .. } => limit,
             SearchMode::Validate => None,

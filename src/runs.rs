@@ -1697,7 +1697,7 @@ const DEBUGGING_LAUNCHER: &str = "debugging";
 /// the gallery, a session took 3 to 4 minutes from launch to accept commands
 /// (orbitinghail, release 64.0). The window leaves room for a slower start.
 /// TODO: drop the window once the API reports `in_progress` only for a ready
-/// session, as `scripts/gen-gallery.py` also waits for.
+/// session.
 const SESSION_LOADING_WINDOW: chrono::TimeDelta = chrono::TimeDelta::minutes(10);
 
 /// Show one event of a `runs exec` stream. Without --events, snouty's stdout

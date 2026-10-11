@@ -413,7 +413,7 @@ stderr 'stream ended before the command reported completion.*'
 # A run whose live session has ended fails with the server's error as-is. The
 # message is known to be rough (it leaks "minting session token failed"); the
 # API team is improving it server-side, so snouty does not translate it.
-# TODO: re-check the message once the API team replaces it.
+# TODO: update this expectation once the API team replaces the message.
 ! snouty runs exec run-1 -3625518438076122494 398.4898056755774 'uname -a'
 stderr 'API error: 400 Bad Request.*minting session token failed.*'
 ! stderr 'source-run-id'

@@ -717,8 +717,8 @@ def _pick_completed_run(sn: Snouty) -> CompletedPick:
     )
 
 
-# TODO: re-check whether the API still omits the failure moment's fields for
-# some runs.
+# TODO: drop the missing-field check once the API reports a failure moment for
+# every run.
 def _real_failure_moment(moment: dict) -> bool:
     """Whether a run's failure moment is a real, streamable coordinate. The API
     reports the sentinel `input_hash "0"`, `vtime 0` for an incomplete run with no

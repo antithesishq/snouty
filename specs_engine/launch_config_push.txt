@@ -63,6 +63,13 @@ stderr 'Pushing image:.*myapp'
 ! stderr 'Pushing image:.*nginx-snouty-absent'
 stderr '"antithesis.config_image":.*@sha256:'
 
+# A service with a `build:` stanza whose image is not local was possibly not
+# built, so the launch also warns that it does not run the local code.
+mock-server 200 '{"runId":"run-123","statusCode":200}'
+snouty launch --launcher basic_test -c unbuilt_config --duration 30 --allow-remote-images
+stderr 'warning: image `snouty-unbuilt-xyz:latest` is not in the local image store'
+stderr 'warning: service .app. has a `build:` stanza. To launch the local code, build it first.'
+
 # A reference that already carries a digest is pinned, so the warning only
 # says that snouty cannot check its architecture.
 mock-server 200 '{"runId":"run-123","statusCode":200}'
@@ -105,10 +112,12 @@ stderr 'Pushing image:.*buildonly_config-app'
 stderr '"antithesis.config_image":.*@sha256:'
 
 # The same service without the build is rejected with guidance naming the
-# default tag, before anything is pushed.
+# default tag, before anything is pushed. --allow-remote-images cannot help a
+# default build tag, so the error does not suggest it.
 mock-server 200 '{"runId":"run-123","statusCode":200}'
 ! snouty launch --launcher basic_test -c buildonly_missing_config --duration 30
 stderr '.*image: buildonly_missing_config-app:latest .compose.s default build tag for service .app..*'
+! stderr 'allow-remote-images'
 ! stderr 'Pushing image:'
 
 # A non-amd64 image scheduled for push is rejected before any push happens.
@@ -170,6 +179,11 @@ services:
     image: myapp:latest
   nginx:
     image: docker.io/library/nginx-snouty-absent:latest
+-- unbuilt_config/docker-compose.yaml --
+services:
+  app:
+    build: .
+    image: snouty-unbuilt-xyz:latest
 -- remote_digest_config/docker-compose.yaml --
 services:
   app:

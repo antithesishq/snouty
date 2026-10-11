@@ -521,10 +521,11 @@ impl DockerCompose {
     /// runs — snouty never pulls. Every service must resolve to an image that
     /// is present locally (built via its `build:` stanza, built or loaded out
     /// of band, or previously pulled), unless `missing` is
-    /// [`MissingImages::AssumeRemote`]. Each local image is then pinned to its local
-    /// digest in a registry confirmed to serve it ([`find_remote_pin`]),
-    /// or — when no registry has it — tagged into `registry` and pushed, so
-    /// the platform always pulls exactly what was resolved here.
+    /// [`MissingImages::AssumeRemote`]. Each local image is then pinned to
+    /// its local digest in a registry confirmed to serve it
+    /// ([`find_remote_pin`]), or — when no registry has it — tagged into
+    /// `registry` and pushed, so the platform always pulls exactly what was
+    /// resolved here.
     ///
     /// A pin into `registry` itself comes back bare (`name:tag@sha256:...`),
     /// because the platform resolves such a name against the tenant's own
@@ -536,10 +537,13 @@ impl DockerCompose {
         missing: MissingImages,
     ) -> Result<String> {
         let contents = self.contents(None)?;
-        let remote: HashSet<&str> = match missing {
+        // Resolve each distinct image once: pin it from a registry that
+        // already serves the local digest, or schedule it for push (`None`).
+        // An image assumed remote resolves to its reference as written.
+        let mut resolution: BTreeMap<&str, Option<String>> = match missing {
             MissingImages::Reject => {
                 with_launch_escape_hatches(validate_images_are_available(rt, &contents))?;
-                HashSet::new()
+                BTreeMap::new()
             }
             MissingImages::AssumeRemote => {
                 let missing = missing_images(rt, &contents)?;
@@ -573,22 +577,19 @@ impl DockerCompose {
                 }
                 missing
                     .into_iter()
-                    .map(|service| service.image.as_str())
+                    .map(|service| (service.image.as_str(), Some(service.image.clone())))
                     .collect()
             }
         };
 
         let prefix = format!("{}/", registry.trim_end_matches('/'));
 
-        // Resolve each distinct image once: pin it from a registry that
-        // already serves the local digest, or schedule it for push.
-        let mut resolution: BTreeMap<&str, Option<String>> = BTreeMap::new();
         // One destination holds one source image: snouty tags each pushed
         // image onto its destination and pushes that path once.
         let mut claims: BTreeMap<String, &str> = BTreeMap::new();
         for service in &contents.services {
             let image = service.image.as_str();
-            if !remote.contains(image) && !resolution.contains_key(image) {
+            if !resolution.contains_key(image) {
                 let pin = find_remote_pin(rt, image, &prefix)?;
                 match &pin {
                     // A remote pin is never tagged onto a destination, so it
@@ -619,11 +620,6 @@ impl DockerCompose {
         let mut tagged: HashSet<&str> = HashSet::new();
         for service in &contents.services {
             let image = service.image.as_str();
-            if remote.contains(image) {
-                // The platform pulls the image by the name the author wrote.
-                pinned.insert(service.name.clone(), service.image.clone());
-                continue;
-            }
             if let Some(remote) = &resolution[image] {
                 pinned.insert(service.name.clone(), remote.clone());
                 continue;

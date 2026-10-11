@@ -294,9 +294,9 @@ async fn cmd_launch(
         // local digest (snouty never pulls): served from a registry confirmed
         // to already have it, or pushed to the Antithesis registry. With
         // --allow-remote-images, an image that is not local keeps its
-        // reference as written. The compose
-        // file is then canonicalized, digest-pinned, and baked into the
-        // config image, so the platform runs exactly what was resolved here.
+        // reference as written. The compose file is then canonicalized,
+        // digest-pinned, and baked into the config image, so the platform
+        // runs exactly what was resolved here.
         // k8s configs reference images by name in the manifests and the
         // platform pulls them itself.
         let pinned_config = match &detected {

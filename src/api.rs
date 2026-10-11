@@ -1373,7 +1373,7 @@ fn ensure_resource_supported(run_id: &str, min_version: u32, resource: &str) -> 
 /// `{hash}-{version}-{tenant_version}`, where the hash is a 32-character hex
 /// string. Returns `None` when the ID doesn't match that structure (e.g. test
 /// fixtures or future formats), so callers don't act on a misread version.
-fn run_version(run_id: &str) -> Option<u32> {
+pub(crate) fn run_version(run_id: &str) -> Option<u32> {
     let parts: Vec<&str> = run_id.split('-').collect();
     let [hash, version, _tenant_version] = parts.as_slice() else {
         return None;

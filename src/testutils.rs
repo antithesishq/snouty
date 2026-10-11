@@ -937,7 +937,7 @@ fn mock_route_cancel_run(run_id: &str) -> (u16, String) {
                 r#"{{"message":"Conflict: Run {run_id} has already finished and cannot be cancelled"}}"#
             ),
         ),
-        None if mock_run_id_well_formed(run_id) => (
+        None if crate::api::run_version(run_id).is_some() => (
             500,
             format!(
                 r#"{{"error":"AssertionError [ERR_ASSERTION]: Unknown experiment id {run_id}"}}"#
@@ -945,14 +945,6 @@ fn mock_route_cancel_run(run_id: &str) -> (u16, String) {
         ),
         None => (404, MOCK_CANCEL_404_BODY.to_string()),
     }
-}
-
-/// Whether `run_id` has the shape of a real run id, such as
-/// `790d19de9de654402d3ff1814496d8ae-64-0`.
-fn mock_run_id_well_formed(run_id: &str) -> bool {
-    regex::Regex::new(r"^[0-9a-f]{32}-[0-9]+-[0-9]+$")
-        .unwrap()
-        .is_match(run_id)
 }
 
 /// The bare 404 body the live API sends for an unknown resource. It never

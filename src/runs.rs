@@ -779,11 +779,12 @@ async fn explain_cancel_error(
         // only when the probe confirms it; otherwise the 500 is a real fault.
         Some(500) => match probe_run(api, run_id).await {
             RunProbe::NotFound => user_error(format!("run not found: {run_id}")),
-            RunProbe::Exists(_) | RunProbe::ProbeFailed(_) => err,
+            _ => err,
         },
         // A tenant older than MIN_CANCEL_RELEASE has no cancel endpoint and
         // answers 404 for a real run, so probe the run.
-        _ => explain_run_scoped_error(api, run_id, err).await,
+        Some(404) => explain_run_scoped_error(api, run_id, err).await,
+        _ => err,
     }
 }
 

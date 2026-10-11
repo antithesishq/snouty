@@ -8,8 +8,19 @@ permissions:
   contents: read
   issues: read
   pull-requests: read
+  id-token: write
 
-engine: claude
+# Anthropic Workload Identity Federation: a GitHub OIDC token in place of an
+# ANTHROPIC_API_KEY secret.
+engine:
+  id: claude
+  auth:
+    type: github-oidc
+    provider: anthropic
+    federation-rule-id: fdrl_01K4hMS47cps3hp17VYzGqtY
+    organization-id: 93f004c5-9d07-4352-b0d1-1730ec1c4b28
+    service-account-id: svac_015k3uT4yb8vkcS4WBXQMyc5
+    workspace-id: wrkspc_01J1wcfqkKJ5ey1wBmqnYb9D
 timeout-minutes: 45
 
 tools:

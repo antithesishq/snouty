@@ -28,19 +28,30 @@ pub const ANT_EVENT_DESCRIPTION: &str = "antithesis.event_description";
 pub const ANT_FILTER_LOGS_MATCHING: &str = "antithesis.filter_logs_matching";
 pub const ANT_FILTER_SOURCE_MATCHING: &str = "antithesis.filter_source_matching";
 pub const ANT_PERFORMANCE_TIER: &str = "antithesis.performance_tier";
+/// The kind of tool that launched a run. The server shows it as the creator's
+/// type. Observed on `GET /api/v0/runs/{run_id}` (tenant version 64): a run
+/// launched with `run.caller_type=snouty` reports `creator.type` `snouty`.
+pub const RUN_CALLER_TYPE: &str = "run.caller_type";
 /// Prefix of the user-defined `attrs.<name>` parameters the server records on a run.
 pub const ATTRS_PREFIX: &str = "attrs.";
-/// The `vcs.*` parameters that `runs show` lists, with their labels, in display order.
+pub const VCS_REPO_TYPE: &str = "vcs.repo_type";
+pub const VCS_REPO_OWNER: &str = "vcs.repo_owner";
+pub const VCS_REPO_NAME: &str = "vcs.repo_name";
+pub const VCS_REPO_BRANCH: &str = "vcs.repo_branch";
+pub const VCS_VERSION_ID: &str = "vcs.version_id";
+pub const VCS_VERSION_LINK: &str = "vcs.version_link";
+/// The `vcs.*` parameters that `runs show` lists, with their labels, in display
+/// order. `launch` detects exactly these.
 /// Observed as strings on `GET /api/v0/runs/{run_id}` (tenant version 63), on runs
 /// launched by the Antithesis GitHub trigger action.
 /// TODO: add `vcs.pr_*` and `vcs.system_name` when a run records them.
 pub const VCS_PARAMS: &[(&str, &str)] = &[
-    ("vcs.repo_type", "Repo Type"),
-    ("vcs.repo_owner", "Repo Owner"),
-    ("vcs.repo_name", "Repo Name"),
-    ("vcs.repo_branch", "Branch"),
-    ("vcs.version_id", "Commit"),
-    ("vcs.version_link", "Commit Link"),
+    (VCS_REPO_TYPE, "Repo Type"),
+    (VCS_REPO_OWNER, "Repo Owner"),
+    (VCS_REPO_NAME, "Repo Name"),
+    (VCS_REPO_BRANCH, "Branch"),
+    (VCS_VERSION_ID, "Commit"),
+    (VCS_VERSION_LINK, "Commit Link"),
 ];
 
 pub const ANT_DEBUGGING_SESSION_ID: &str = "antithesis.debugging.session_id";

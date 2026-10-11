@@ -15,6 +15,7 @@ pub mod error;
 pub mod event_render;
 pub mod event_set_dsl;
 pub mod features;
+pub mod git;
 pub mod jsonl;
 pub mod login;
 pub mod params;

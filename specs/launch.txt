@@ -141,7 +141,14 @@ stderr '"antithesis.config_image": "config:latest"'
 stderr '"antithesis.duration": "30"'
 stderr '"antithesis.report.recipients": "\[REDACTED\]"'
 stderr '"antithesis.source": "ci-pipeline"'
+stderr '"run.caller_type": "snouty"'
 stdout 'Test run started: run_id run-123'
+
+# A --param value replaces the default run.caller_type.
+mock-server 200 '{"message":"Success","runId":"run-123"}'
+snouty launch --launcher basic_test --config-image config:latest --duration 30 --param run.caller_type=ci
+stderr '"run.caller_type": "ci"'
+! stderr '"run.caller_type": "snouty"'
 
 # Username/password authentication still works for the launch webhook, but it
 # is deprecated: a warning on stderr steers the user to `snouty login`. The
@@ -284,3 +291,69 @@ mock-server 200 '{"message":"Success","runId":"run-123"}'
 snouty launch --launcher basic_test --duration 30 --param antithesis.config_image=config:latest
 stderr '"antithesis.config_image": "config:latest"'
 stdout 'Test run started: run_id run-123'
+
+# In a git checkout, the launch records the checked-out commit and branch as
+#    `vcs.*` params. For a github.com `origin` remote, it also records the
+#    repository and a link to the commit. The test ignores the global and
+#    system git config, so that a local setting cannot change the commit.
+env GIT_CONFIG_GLOBAL=/dev/null
+env GIT_CONFIG_NOSYSTEM=1
+exec git init -q -b feature/vcs checkout
+cd checkout
+exec git -c user.name=snouty -c user.email=snouty@example.com commit -q --allow-empty -m init
+mock-server 200 '{"message":"Success","runId":"run-123"}'
+snouty launch --launcher basic_test --config-image config:latest --duration 30
+stderr '"vcs.repo_branch": "feature/vcs"'
+stderr '"vcs.version_id": "[0-9a-f]{40}"'
+! stderr 'vcs.repo_type'
+! stderr 'vcs.version_link'
+
+exec git remote add origin git@github.com:acme/widget.git
+mock-server 200 '{"message":"Success","runId":"run-123"}'
+snouty launch --launcher basic_test --config-image config:latest --duration 30
+stderr '"vcs.repo_type": "github"'
+stderr '"vcs.repo_owner": "acme"'
+stderr '"vcs.repo_name": "widget"'
+stderr '"vcs.repo_branch": "feature/vcs"'
+stderr '"vcs.version_id": "[0-9a-f]{40}"'
+stderr '"vcs.version_link": "https://github.com/acme/widget/commit/[0-9a-f]{40}"'
+
+# A --param for a detected key turns the detection off, so that a detected
+#    commit link cannot sit next to a different commit.
+mock-server 200 '{"message":"Success","runId":"run-123"}'
+snouty launch --launcher basic_test --config-image config:latest --duration 30 --param vcs.version_id=abc123
+stderr '"vcs.version_id": "abc123"'
+! stderr 'vcs.version_link'
+! stderr 'vcs.repo_branch'
+
+# A --param for a `vcs.*` key that snouty does not detect is sent with the
+#    detected values.
+mock-server 200 '{"message":"Success","runId":"run-123"}'
+snouty launch --launcher basic_test --config-image config:latest --duration 30 --param vcs.system_name=widget
+stderr '"vcs.system_name": "widget"'
+stderr '"vcs.repo_owner": "acme"'
+stderr '"vcs.version_id": "[0-9a-f]{40}"'
+
+# Detected params and the default run.caller_type do not count as parameters
+#    the user provided.
+mock-server 200 '{}'
+! snouty launch --launcher basic_test
+stderr 'no parameters provided.*'
+
+# --no-vcs turns the detection off.
+mock-server 200 '{"message":"Success","runId":"run-123"}'
+snouty launch --launcher basic_test --config-image config:latest --duration 30 --no-vcs
+! stderr 'vcs\.'
+
+# A detached HEAD has no branch.
+exec git checkout -q --detach
+mock-server 200 '{"message":"Success","runId":"run-123"}'
+snouty launch --launcher basic_test --config-image config:latest --duration 30
+! stderr 'vcs.repo_branch'
+stderr '"vcs.version_id": "[0-9a-f]{40}"'
+
+# A GIT_DIR from a git hook does not redirect the detection.
+env GIT_DIR=/nonexistent
+mock-server 200 '{"message":"Success","runId":"run-123"}'
+snouty launch --launcher basic_test --config-image config:latest --duration 30
+stderr '"vcs.repo_owner": "acme"'

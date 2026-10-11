@@ -1,4 +1,5 @@
 use std::io::{self, ErrorKind, IsTerminal, Read};
+use std::path::Path;
 use std::process::Command;
 
 use clap::{CommandFactory, Parser};
@@ -17,12 +18,15 @@ use snouty::config;
 use snouty::container;
 use snouty::docs;
 use snouty::error::user_error;
+use snouty::git::{self, GitHubRepo};
 use snouty::login::cmd_login;
 use snouty::params::{
     ANT_CONFIG_IMAGE, ANT_DEBUGGING_INPUT_HASH, ANT_DEBUGGING_RUN_ID, ANT_DEBUGGING_SESSION_ID,
     ANT_DEBUGGING_VTIME, ANT_DESCRIPTION, ANT_DURATION, ANT_EVENT_DESCRIPTION,
     ANT_FILTER_LOGS_MATCHING, ANT_FILTER_SOURCE_MATCHING, ANT_IS_EPHEMERAL, ANT_PERFORMANCE_TIER,
-    ANT_REPORT_RECIPIENTS, ANT_SOURCE, ANT_TEST_NAME, Params,
+    ANT_REPORT_RECIPIENTS, ANT_SOURCE, ANT_TEST_NAME, Params, RUN_CALLER_TYPE, VCS_PARAMS,
+    VCS_REPO_BRANCH, VCS_REPO_NAME, VCS_REPO_OWNER, VCS_REPO_TYPE, VCS_VERSION_ID,
+    VCS_VERSION_LINK,
 };
 use snouty::settings::Settings;
 use snouty::validate;
@@ -228,8 +232,8 @@ async fn cmd_launch(
         params.insert(ANT_PERFORMANCE_TIER, performance_tier.to_string());
     }
 
-    let config_image_ref = if let Some(config_dir) = args.config {
-        let detected = config::detect_config(&config_dir)?;
+    let config_image_ref = if let Some(config_dir) = &args.config {
+        let detected = config::detect_config(config_dir)?;
         let registry = snouty::settings::require(settings.repository(), "repository")?;
 
         let image_ref = container::generate_image_ref(registry);
@@ -257,6 +261,18 @@ async fn cmd_launch(
 
     if params.is_empty() {
         return Err(user_error("invalid arguments: no parameters provided"));
+    }
+
+    // A user value for any detected key turns detection off, so that a
+    // detected commit link cannot point at a different commit.
+    if !args.no_vcs && !VCS_PARAMS.iter().any(|&(key, _)| params.contains_key(key)) {
+        params.merge(detect_vcs_params(
+            args.config.as_deref().unwrap_or(Path::new(".")),
+        ));
+    }
+
+    if !params.contains_key(RUN_CALLER_TYPE) {
+        params.insert(RUN_CALLER_TYPE, "snouty");
     }
 
     params.validate_test_params()?;
@@ -322,6 +338,30 @@ async fn cmd_launch(
     }
 
     Ok(())
+}
+
+/// The `vcs.*` params for the git checkout that holds `dir`, in the shape the
+/// Antithesis GitHub trigger action sends them. Empty outside a git checkout.
+fn detect_vcs_params(dir: &Path) -> Params {
+    let mut vcs = Params::new();
+    let Some(checkout) = git::checkout(dir) else {
+        return vcs;
+    };
+    if let Some(repo) = checkout
+        .origin
+        .as_ref()
+        .and_then(|url| GitHubRepo::try_from(url).ok())
+    {
+        vcs.insert(VCS_REPO_TYPE, "github");
+        vcs.insert(VCS_VERSION_LINK, repo.commit_url(&checkout.commit));
+        vcs.insert(VCS_REPO_OWNER, repo.owner);
+        vcs.insert(VCS_REPO_NAME, repo.name);
+    }
+    if let Some(branch) = checkout.branch {
+        vcs.insert(VCS_REPO_BRANCH, branch);
+    }
+    vcs.insert(VCS_VERSION_ID, checkout.commit);
+    vcs
 }
 
 async fn submit_launch(

@@ -97,6 +97,19 @@ snouty launch --launcher basic_k8s_test -c k8s_config --duration 30
 stderr '"antithesis.config_image":.*@sha256:'
 ! stderr '"antithesis.images"'
 
+# With --config, the `vcs.*` params come from the git checkout that holds the
+# config dir, not from the current directory.
+env GIT_CONFIG_GLOBAL=/dev/null
+env GIT_CONFIG_NOSYSTEM=1
+exec git -C git_k8s_config init -q -b main
+exec git -C git_k8s_config -c user.name=snouty -c user.email=snouty@example.com commit -q --allow-empty -m init
+exec git -C git_k8s_config remote add origin https://github.com/acme/widget.git
+mock-server 200 '{"runId":"run-123","statusCode":200}'
+snouty launch --launcher basic_k8s_test -c git_k8s_config --duration 30
+stderr '"vcs.repo_owner": "acme"'
+stderr '"vcs.repo_branch": "main"'
+stderr '"vcs.version_id": "[0-9a-f]{40}"'
+
 -- images/myapp/content --
 placeholder
 -- images/sidecar/content --
@@ -144,6 +157,11 @@ services:
     build: .
     image: arm-launch:latest
 -- k8s_config/manifests/ns.yaml --
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: snouty-demo
+-- git_k8s_config/manifests/ns.yaml --
 apiVersion: v1
 kind: Namespace
 metadata:

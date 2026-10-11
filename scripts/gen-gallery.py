@@ -1636,16 +1636,42 @@ def event_keyword_present(keyword: str):
     return chk
 
 
+_EXAMPLE_TOTALS = re.compile(
+    r"^Examples\s+(showing )?(?:(\d+) out of )?(\d+) passing examples?"
+    r" and (?:(\d+) out of )?(\d+) failing examples?$",
+    re.M,
+)
+
+
+def _sample_note_ok(text: str) -> bool:
+    """When the table shows only part of a group, the `Examples` line starts
+    with `showing` and gives `N out of M` for every group. When it shows
+    all, the line gives only the totals."""
+    m = _EXAMPLE_TOTALS.search(text)
+    if m is None:
+        return False
+    rows = {s: len(re.findall(rf"^  {s}\s+-?\d+\s", text, re.M)) for s in ("passing", "failing")}
+    groups = {"passing": (m[2], int(m[3])), "failing": (m[4], int(m[5]))}
+    sampled = any(rows[s] < total for s, (_, total) in groups.items())
+    for status, (shown, total) in groups.items():
+        want = rows[status] if sampled else None
+        if (None if shown is None else int(shown)) != want or rows[status] > total:
+            return False
+    return (m[1] is not None) == sampled
+
+
 def property_has_examples(sr: StoryRun, reg: Registry) -> tuple[bool, str]:
-    """Example moments with no `Details` row, plus the one trailing next step
-    they feed."""
+    """Example moments with no `Details` row, totals that say when the table
+    is a sample, plus the one trailing next step they feed."""
     text = sr.result.combined
     rows = _has_moment_rows(text)
     no_details = _DETAILS_ROW.search(text) is None
+    sample = _sample_note_ok(text)
     hint = contains_text(text, "view logs leading up to an example:")
     return (
-        rows and no_details and hint,
-        f"moment rows={rows}, no Details row={no_details}, logs hint={hint}",
+        rows and no_details and sample and hint,
+        f"moment rows={rows}, no Details row={no_details}, sample note={sample}, "
+        f"logs hint={hint}",
     )
 
 

@@ -986,18 +986,28 @@ fn render_property_detail(property: &Property) -> String {
     out
 }
 
-/// How many passing and failing examples the run recorded, as in `2558
-/// passing examples and 27 failing examples`. The table below it is a sample.
+/// How many passing and failing examples the run recorded, and how many of
+/// them the table below shows, as in `showing 1 out of 2558 passing examples
+/// and 1 out of 27 failing examples`. When the table shows all, only the
+/// totals, as in `2 passing examples and 1 failing example`.
 fn example_totals(p: &EventProperty) -> String {
-    let count = |n: Option<u32>, status: &str| {
-        let n = n.unwrap_or(0);
-        format!("{n} {status} example{}", if n == 1 { "" } else { "s" })
-    };
-    format!(
-        "{} and {}",
-        count(p.example_count, "passing"),
-        count(p.counterexample_count, "failing")
-    )
+    // A missing count cannot be smaller than the moments the API sent.
+    let groups = [
+        ("passing", p.examples.len(), p.example_count),
+        ("failing", p.counterexamples.len(), p.counterexample_count),
+    ]
+    .map(|(status, shown, total)| (status, shown, (total.unwrap_or(0) as usize).max(shown)));
+    let sampled = groups.iter().any(|&(_, shown, total)| shown < total);
+    let parts = groups.map(|(status, shown, total)| {
+        let noun = if total == 1 { "example" } else { "examples" };
+        if sampled {
+            format!("{shown} out of {total} {status} {noun}")
+        } else {
+            format!("{total} {status} {noun}")
+        }
+    });
+    let prefix = if sampled { "showing " } else { "" };
+    format!("{prefix}{}", parts.join(" and "))
 }
 
 /// The STATUS/HASH/VTIME table for an event property's moments: counterexamples
@@ -2764,26 +2774,43 @@ mod tests {
         }
     }
 
-    // The label states the run's totals, not the size of the sample below it,
-    // with a singular for one.
+    // The label states the run's totals, and how many of them the table
+    // shows when it shows fewer, with a singular for one.
     #[test]
-    fn example_totals_count_what_the_run_recorded() {
+    fn example_totals_say_how_much_the_table_shows() {
         let mut p = event_prop(
             PropertyStatus::Failing,
             vec![event("ex", "2.0")],
             vec![event("cex", "1.0")],
         );
-        p.counterexample_count = Some(27);
-        p.example_count = Some(2558);
+        p.example_count = Some(1028);
+        p.counterexample_count = Some(4);
         assert_eq!(
             example_totals(&p),
-            "2558 passing examples and 27 failing examples"
+            "showing 1 out of 1028 passing examples and 1 out of 4 failing examples"
         );
+
+        // All shown: only the totals.
         p.example_count = Some(1);
+        p.counterexample_count = Some(1);
+        assert_eq!(
+            example_totals(&p),
+            "1 passing example and 1 failing example"
+        );
+
+        // When one group is a sample, every group says how many it shows, so
+        // a group shown in full or with no examples does not look hidden.
+        p.counterexample_count = Some(3);
+        assert_eq!(
+            example_totals(&p),
+            "showing 1 out of 1 passing example and 1 out of 3 failing examples"
+        );
+        let mut p = event_prop(PropertyStatus::Passing, vec![event("ex", "2.0")], vec![]);
+        p.example_count = Some(5);
         p.counterexample_count = Some(0);
         assert_eq!(
             example_totals(&p),
-            "1 passing example and 0 failing examples"
+            "showing 1 out of 5 passing examples and 0 out of 0 failing examples"
         );
     }
 

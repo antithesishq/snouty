@@ -28,6 +28,10 @@ pub const ANT_EVENT_DESCRIPTION: &str = "antithesis.event_description";
 pub const ANT_FILTER_LOGS_MATCHING: &str = "antithesis.filter_logs_matching";
 pub const ANT_FILTER_SOURCE_MATCHING: &str = "antithesis.filter_source_matching";
 pub const ANT_PERFORMANCE_TIER: &str = "antithesis.performance_tier";
+/// The kind of tool that launched a run. The server shows it as the creator's
+/// type. Observed on `GET /api/v0/runs/{run_id}` (tenant version 64): a run
+/// launched with `run.caller_type=snouty` reports `creator.type` `snouty`.
+pub const RUN_CALLER_TYPE: &str = "run.caller_type";
 /// Prefix of the user-defined `attrs.<name>` parameters the server records on a run.
 pub const ATTRS_PREFIX: &str = "attrs.";
 pub const VCS_REPO_TYPE: &str = "vcs.repo_type";

@@ -158,6 +158,9 @@ turns the detection off, and so does a --param for any key it detects. A
 --param for another `vcs.*` key, such as vcs.system_name, is sent with the
 detected values.
 
+The launch sets `run.caller_type=snouty`, which the report shows as the
+creator's type. Pass --param run.caller_type=<type> to send another value.
+
 Additional container images that the config parser can't discover (e.g. an
 image referenced only in a Kubernetes CRD field) can be registered with the
 antithesis.images param, a semicolon-delimited [REGISTRY/]NAME(:TAG|@DIGEST)

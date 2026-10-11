@@ -24,8 +24,9 @@ use snouty::params::{
     ANT_CONFIG_IMAGE, ANT_DEBUGGING_INPUT_HASH, ANT_DEBUGGING_RUN_ID, ANT_DEBUGGING_SESSION_ID,
     ANT_DEBUGGING_VTIME, ANT_DESCRIPTION, ANT_DURATION, ANT_EVENT_DESCRIPTION,
     ANT_FILTER_LOGS_MATCHING, ANT_FILTER_SOURCE_MATCHING, ANT_IS_EPHEMERAL, ANT_PERFORMANCE_TIER,
-    ANT_REPORT_RECIPIENTS, ANT_SOURCE, ANT_TEST_NAME, Params, VCS_PARAMS, VCS_REPO_BRANCH,
-    VCS_REPO_NAME, VCS_REPO_OWNER, VCS_REPO_TYPE, VCS_VERSION_ID, VCS_VERSION_LINK,
+    ANT_REPORT_RECIPIENTS, ANT_SOURCE, ANT_TEST_NAME, Params, RUN_CALLER_TYPE, VCS_PARAMS,
+    VCS_REPO_BRANCH, VCS_REPO_NAME, VCS_REPO_OWNER, VCS_REPO_TYPE, VCS_VERSION_ID,
+    VCS_VERSION_LINK,
 };
 use snouty::settings::Settings;
 use snouty::validate;
@@ -268,6 +269,10 @@ async fn cmd_launch(
         params.merge(detect_vcs_params(
             args.config.as_deref().unwrap_or(Path::new(".")),
         ));
+    }
+
+    if !params.contains_key(RUN_CALLER_TYPE) {
+        params.insert(RUN_CALLER_TYPE, "snouty");
     }
 
     params.validate_test_params()?;

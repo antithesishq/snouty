@@ -141,7 +141,14 @@ stderr '"antithesis.config_image": "config:latest"'
 stderr '"antithesis.duration": "30"'
 stderr '"antithesis.report.recipients": "\[REDACTED\]"'
 stderr '"antithesis.source": "ci-pipeline"'
+stderr '"run.caller_type": "snouty"'
 stdout 'Test run started: run_id run-123'
+
+# A --param value replaces the default run.caller_type.
+mock-server 200 '{"message":"Success","runId":"run-123"}'
+snouty launch --launcher basic_test --config-image config:latest --duration 30 --param run.caller_type=ci
+stderr '"run.caller_type": "ci"'
+! stderr '"run.caller_type": "snouty"'
 
 # Username/password authentication still works for the launch webhook, but it
 # is deprecated: a warning on stderr steers the user to `snouty login`. The
@@ -327,7 +334,8 @@ stderr '"vcs.system_name": "widget"'
 stderr '"vcs.repo_owner": "acme"'
 stderr '"vcs.version_id": "[0-9a-f]{40}"'
 
-# Detected params do not count as parameters the user provided.
+# Detected params and the default run.caller_type do not count as parameters
+#    the user provided.
 mock-server 200 '{}'
 ! snouty launch --launcher basic_test
 stderr 'no parameters provided.*'

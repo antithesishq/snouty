@@ -94,9 +94,10 @@ snouty runs exec --help
 stdout 'Use --source-run-id to load a moment from a\s+different run\.'
 ! stdout 'name the run it comes from'
 
-# --timeout does not count the time the server takes to load a cold moment.
+# Rewarming a cold moment can take minutes, and --timeout does not apply to
+# it.
 snouty runs exec --help
-stdout 'That\s+can take minutes, and --timeout does not count it;'
+stdout 'The `--timeout` flag does not apply to the time it\s+takes to rewarm a moment\.'
 
 # The command authenticates with the Antithesis API. An API key is required,
 # like every run-scoped endpoint.
@@ -315,10 +316,11 @@ stderr 'rewarm did not reach the target moment'
 stderr 'check that --source-run-id names the run the moment comes from$'
 ! stderr 'raise --timeout'
 
-# A timeout with a source says that --timeout does not count the rewarm.
+# A timeout with a source says nothing about the rewarm: --timeout does not
+# apply to it.
 ! snouty runs exec run-2 -3625518438076122494 398.4898056755774 'sleep 60' --source-session-id ba4ebf3181dd342334b86c58941813c6-64-0
 stderr 'command timed out'
-stderr '--timeout does not count the rewarm, only the script'
+! stderr 'rewarm'
 
 # The two flags are mutually exclusive, and an empty ID is rejected before any
 # API call.

@@ -59,38 +59,46 @@ mcp-scripts:
     py: |
       import fcntl, json, os, re, shlex, subprocess, tempfile
 
-      # Per-audit budget. A launch or debug call that times out counts as created,
-      # because it may have created a run the tool never saw.
+      # Per-audit budget. A launch or debug counts from the moment it is sent, and
+      # only a clean failure refunds it, because a call that dies midway may still
+      # have created a run.
       LIMITS = {"launch": 2, "debug": 1, "exec": 30}
       ATTEMPTS = 6
       MAX_MINUTES = 15
-      TIMEOUT = 50
+      # Each call must finish well inside the tool's 55s timeout. If the handler
+      # killed this process instead, the ledger would miss the call.
+      LOOKUP_TIMEOUT = 10
+      TIMEOUT = 40
       LIMIT = 60000
-      # `validate` and `launch -c` read a compose directory, which the agent can
-      # write under /tmp/gh-aw, and would build and run its images on the runner.
-      DENIED = {"login", "settings", "update", "completions", "validate"}
+      # An allowlist: snouty has hidden aliases, such as `run` for `launch`. `validate`
+      # and `launch -c` are left out because they read a compose directory, which the
+      # agent can write under /tmp/gh-aw, and would build its images on the runner.
+      COMMANDS = {"doctor", "docs", "version", "features", "help", "launch", "debug", "runs"}
+      RUNS = {"list", "show", "wait", "cancel", "properties", "build-logs", "logs",
+              "exec", "events", "search", "help"}
       TERMINAL = {"completed", "cancelled", "incomplete"}
       VALUED = {"--container", "--source-run-id", "--source-session-id", "--timeout"}
       TAG = "nightly_audit.workflow_run=" + os.environ.get("AUDIT_RUN", "")
 
-      def snouty(args):
+      def snouty(args, timeout=TIMEOUT):
           # Settings can redirect the key to another host. Hence no --settings or
           # --profile, and a cwd with no `./.snouty.toml` in it.
           with tempfile.TemporaryDirectory() as cwd:
               return subprocess.run([os.environ["SNOUTY"], *args], cwd=cwd,
-                                    capture_output=True, text=True, timeout=TIMEOUT)
+                                    capture_output=True, text=True, timeout=timeout)
 
       def ledger(update):
+          """Apply `update` to the ledger under a lock. Never hold it across a call
+          to the API."""
           with open(os.environ["AUDIT_LEDGER"], "a+") as f:
               fcntl.flock(f, fcntl.LOCK_EX)
               f.seek(0)
               data = json.loads(f.read() or "{}")
-              try:
-                  return update(data)
-              finally:
-                  f.seek(0)
-                  f.truncate()
-                  json.dump(data, f)
+              result = update(data)
+              f.seek(0)
+              f.truncate()
+              json.dump(data, f)
+              return result
 
       def budget(data):
           return {k: f"{data.get(k, {}).get('created', 0)}/{n}" if k != "exec"
@@ -115,10 +123,10 @@ mcp-scripts:
       def option(args, name):
           for i, a in enumerate(args):
               if a == name and i + 1 < len(args):
-                  return args[i + 1]
+                  return i, args[i + 1]
               if a.startswith(name + "="):
-                  return a.split("=", 1)[1]
-          return None
+                  return i, a.split("=", 1)[1]
+          return None, None
 
       def positional(words):
           skip = False
@@ -139,33 +147,38 @@ mcp-scripts:
           return obj.get("runId") or obj.get("run_id") if isinstance(obj, dict) else None
 
       def create(kind, args):
-          def go(data):
+          def reserve(data):
               used = data.setdefault(kind, {"created": 0, "attempts": 0})
               if used["created"] >= LIMITS[kind]:
-                  return {"error": f"this audit's budget of {LIMITS[kind]} {kind} is spent"}
+                  return f"this audit's budget of {LIMITS[kind]} {kind} is spent"
               if used["attempts"] >= ATTEMPTS:
-                  return {"error": f"this audit's {ATTEMPTS} {kind} attempts are spent"}
+                  return f"this audit's {ATTEMPTS} {kind} attempts are spent"
               used["attempts"] += 1
-              result = execute(args)
-              if "error" in result:
-                  used["created"] += 1
+              used["created"] += 1
+              return None
+          refused = ledger(reserve)
+          if refused:
+              return {"error": refused}
+          result = execute(args)
+          run_id = created_id(result.get("stdout", "")) if result.get("exit_code") == 0 else None
+          def settle(data):
+              if run_id:
+                  data.setdefault("runs", []).append({"id": run_id, "kind": kind})
+              elif result.get("exit_code") not in (None, 0):
+                  data[kind]["created"] -= 1
+              else:
                   data.setdefault("uncertain", []).append(kind)
-              elif result["exit_code"] == 0:
-                  used["created"] += 1
-                  run_id = created_id(result["stdout"])
-                  if run_id:
-                      data.setdefault("runs", []).append({"id": run_id, "kind": kind})
-                  else:
-                      data.setdefault("uncertain", []).append(kind)
-              return {**result, "budget": budget(data)}
-          return ledger(go)
+              return budget(data)
+          return {**result, "budget": ledger(settle)}
 
       def launch(args):
           if any(a.split("=")[0] in ("-c", "--config") or a.startswith("-c") and len(a) > 2 for a in args):
               return {"error": "launch from --config-image or a webhook, not a local --config directory"}
-          if any("antithesis.duration" in a for a in args):
+          params = [v for k, v in zip(args, args[1:]) if k == "--param"]
+          params += [a.split("=", 1)[1] for a in args if a.startswith("--param=")]
+          if any(p.startswith("antithesis.duration") for p in params):
               return {"error": "set the duration with --duration, at most 15 minutes"}
-          duration = option(args, "--duration")
+          _, duration = option(args, "--duration")
           if duration is None:
               args += ["--duration", str(MAX_MINUTES)]
           elif (minutes(duration) or MAX_MINUTES + 1) > MAX_MINUTES:
@@ -176,28 +189,47 @@ mcp-scripts:
               args.append("--json")
           return create("launch", args + ["--param", TAG])
 
+      def debug(args):
+          # The description carries the tag, so teardown can find a session whose
+          # ID the tool never saw.
+          i, description = option(args, "--description")
+          if i is None:
+              args += ["--description", f"Nightly Audit [{TAG}]"]
+          else:
+              args = args[:i] + [f"--description={description} [{TAG}]"] + args[i + (1 if "=" in args[i] else 2):]
+          if "--json" not in args:
+              args.append("--json")
+          return create("debug", args)
+
       def guarded(sub, args, words):
           run_id = positional(words[2:])
           tracked = ledger(lambda d: [r["id"] for r in d.get("runs", [])])
-          if run_id and run_id not in tracked:
+          if run_id not in tracked:
               try:
-                  p = snouty(["runs", "show", run_id, "--json"])
-              except subprocess.TimeoutExpired:
-                  return {"error": f"could not look up {run_id} to check it is safe to {sub}"}
-              if p.returncode == 0:
-                  info = json.loads(p.stdout)
-                  if sub == "exec" and info.get("launcher") == "debugging":
-                      return {"error": "that debugging session is not the audit's own; open one with `debug`"}
-                  if sub == "cancel" and info.get("status") not in TERMINAL:
-                      return {"error": "that run is live and the audit did not start it"}
+                  p = snouty(["runs", "show", run_id or "", "--json"], LOOKUP_TIMEOUT)
+                  # A run that does not exist is safe to try; any other failure is
+                  # not, so refuse.
+                  missing = p.returncode != 0 and "run not found" in p.stderr
+                  info = {} if missing else json.loads(p.stdout) if p.returncode == 0 else None
+              except (subprocess.TimeoutExpired, json.JSONDecodeError):
+                  info = None
+              if info is None:
+                  return {"error": f"could not look up {run_id} to check that the audit may {sub} it"}
+              if sub == "exec" and info.get("launcher") == "debugging":
+                  return {"error": "that debugging session is not the audit's own; open one with `debug`"}
+              if sub == "cancel" and info and info.get("status") not in TERMINAL:
+                  return {"error": "that run is live and the audit did not start it"}
           if sub != "exec":
               return execute(args)
-          def go(data):
+          def reserve(data):
               if data.get("exec", 0) >= LIMITS["exec"]:
-                  return {"error": f"this audit's budget of {LIMITS['exec']} exec calls is spent"}
+                  return f"this audit's budget of {LIMITS['exec']} exec calls is spent"
               data["exec"] = data.get("exec", 0) + 1
-              return {**execute(args), "budget": budget(data)}
-          return ledger(go)
+              return None
+          refused = ledger(reserve)
+          if refused:
+              return {"error": refused}
+          return {**execute(args), "budget": ledger(budget)}
 
       def run(raw):
           try:
@@ -208,16 +240,18 @@ mcp-scripts:
               return {"error": "--settings, --profile and --stdin are not allowed"}
           # --json and --verbose are global flags, so they may come first.
           words = [a for a in args if a not in ("--json", "--verbose")]
-          top = words[0] if words else ""
+          top = words[0] if words else "help"
           sub = words[1] if top == "runs" and len(words) > 1 else ""
-          if top in DENIED:
-              return {"error": f"`snouty {top}` is not available to the audit"}
+          if top not in COMMANDS or top == "runs" and sub not in RUNS:
+              return {"error": f"`snouty {' '.join(words[:2])}` is not available to the audit"}
+          # Help drops every other argument, because clap can also take `-h` as an
+          # option's value and then run the command.
           if "-h" in words or "--help" in words:
-              return execute(args)
+              return execute(words[:2 if top == "runs" else 1] + ["--help"])
           if top == "launch":
               return launch(args)
           if top == "debug":
-              return create("debug", args + ([] if "--json" in args else ["--json"]))
+              return debug(args)
           if sub in ("exec", "cancel"):
               return guarded(sub, args, words)
           return execute(args)
@@ -294,19 +328,28 @@ jobs:
           snouty = os.path.join(os.environ["RUNNER_TEMP"], "snouty", "snouty")
           path = os.path.join(os.environ["RUNNER_TEMP"], "nightly-audit", "ledger.json")
           ledger = json.load(open(path)) if os.path.exists(path) else {}
-          ids = {r["id"] for r in ledger.get("runs", [])}
-          listed = subprocess.run([snouty, "runs", "list", "--limit", "100", "--json"],
-                                  capture_output=True, text=True, check=True)
+          ids = [r["id"] for r in ledger.get("runs", [])]
+          # Also cancel tagged runs the tool never saw an ID for. A failed
+          # listing still lets the ledger's runs be cancelled.
+          since = subprocess.run(["date", "-u", "-d", "-6 hours", "+%Y-%m-%dT%H:%M:%SZ"],
+                                 capture_output=True, text=True).stdout.strip()
+          listed = subprocess.run([snouty, "runs", "list", "--created-after", since,
+                                   "--limit", "500", "--json"], capture_output=True, text=True)
+          tag = "nightly_audit.workflow_run=" + os.environ["AUDIT_RUN"]
           for line in listed.stdout.splitlines():
               run = json.loads(line)
               params = run.get("parameters") or {}
-              if params.get("nightly_audit.workflow_run") == os.environ["AUDIT_RUN"]:
-                  ids.add(run["run_id"])
+              if (params.get("nightly_audit.workflow_run") == os.environ["AUDIT_RUN"]
+                      or tag in params.get("antithesis.event_description", "")):
+                  if run["run_id"] not in ids:
+                      ids.append(run["run_id"])
           lines = ["## Runs the audit created", ""]
-          for run_id in sorted(ids):
+          for run_id in ids:
               p = subprocess.run([snouty, "runs", "cancel", run_id], capture_output=True, text=True)
               outcome = "cancelled" if p.returncode == 0 else (p.stderr.strip().splitlines() or ["?"])[0]
               lines.append(f"- `{run_id}`: {outcome}")
+          if listed.returncode != 0:
+              lines.append("- could not list runs to find tagged ones: " + (listed.stderr.strip().splitlines() or ["?"])[0])
           if ledger.get("uncertain"):
               lines.append(f"- a {', '.join(ledger['uncertain'])} call timed out or printed no run ID; check the tenant")
           if not ids and not ledger.get("uncertain"):

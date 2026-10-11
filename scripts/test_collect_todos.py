@@ -67,6 +67,21 @@ class Collect(unittest.TestCase):
             ],
         )
 
+    def test_matches_release_citations_and_upstream_issues(self):
+        self.write("src/lib.rs", """\
+            /// Releases 58.11 through 60.1 ignore the field.
+            fn a() {}
+            /// Under the tenant-58.6 schema.
+            fn b() {}
+            /// Ignores --format json (docker/compose#11627).
+            fn c() {}
+            /// Fixed in #136, and reads the release notes.
+            """)
+        self.assertEqual(
+            [(i["line"], i["kinds"]) for i in collect_todos.collect(self.root)],
+            [(1, ["observed-on"]), (3, ["observed-on"]), (5, ["upstream"])],
+        )
+
     def test_marker_survives_moving_the_comment(self):
         self.write("src/a.rs", "// TODO: drop the retry\nfn f() {}\n")
         before = collect_todos.collect(self.root)[0]

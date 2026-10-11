@@ -14,6 +14,7 @@
 # is deliberate. The engine-backed tests resolve a runtime with `podman info`
 # (see `available_runtimes` in src/testutils.rs), which fails here, so they
 # still refuse to run on this leg instead of half-running against a fake.
+# TODO: drop these shims once an arm64 macOS runner can start `podman machine`.
 #
 # It also means this shim cannot mask a regression. If snouty ever probes for a
 # runtime some other way, that probe lands here, fails, and the arm64 job goes

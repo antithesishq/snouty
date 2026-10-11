@@ -41,7 +41,8 @@ impl<'a> Event<'a> for Task<'a> {
         // The API mixes wire forms (command_runtime likewise): the return
         // code arrives as a string or a number. Red is reserved for a KNOWN
         // non-zero exit — an absent or unreadable code stays neutral rather
-        // than reporting a passing command as a failure.
+        // than reporting a passing command as a failure. TODO: drop the string
+        // form once the API sends numbers only.
         let return_code = match &entry["command_return_code"] {
             Value::String(code) => Some(sanitize(code)),
             Value::Number(code) => Some(code.to_string()),
@@ -326,7 +327,8 @@ mod tests {
             entry
         };
 
-        // Shapes observed in run cf98800188c5d337790acd0a0e00e9d1-64-0.
+        // Shapes observed on orbitinghail, release 64.0, in run
+        // cf98800188c5d337790acd0a0e00e9d1-64-0.
         let block = render_one(chatter(json!({
             "removed_command": "/opt/antithesis/test/v1/wellnest/parallel_driver_journal.py"
         })));

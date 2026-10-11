@@ -717,6 +717,8 @@ def _pick_completed_run(sn: Snouty) -> CompletedPick:
     )
 
 
+# TODO: re-check whether the API still omits the failure moment's fields for
+# some runs.
 def _real_failure_moment(moment: dict) -> bool:
     """Whether a run's failure moment is a real, streamable coordinate. The API
     reports the sentinel `input_hash "0"`, `vtime 0` for an incomplete run with no
@@ -1001,9 +1003,9 @@ def _exec_json(sn: Snouty, x: ExecSession, script: str) -> Result:
     return sn.run(["--json", "runs", "exec", x.session, x.hash, x.vtime, script])
 
 
+# A session that is still `starting` has no `parameters` yet; they appeared
+# about 70s after the launch (orbitinghail, release 64.0).
 def _debugging_sessions(sn: Snouty) -> list[dict]:
-    """A session that is still `starting` has no `parameters` yet; they
-    appeared about 70s after the launch (orbitinghail, release 64.0)."""
     return sn.json_lines(["runs", "list", "--launcher", DEBUGGING_LAUNCHER, "-n", "20"])
 
 
@@ -2539,6 +2541,8 @@ def build_exec_stories(d: Discovery, x: ExecSession) -> list[Story]:
             [*exec_at, "--container", x.container, "uname -n; ps -eo pid,comm | head -5"],
             succeeds_with("PID", "end moment:"),
         ),
+        # TODO: re-check that the server still reports exit code 125 for a
+        # container it cannot find.
         exec_story(
             "runs-exec--container-unknown",
             "Name a container that does not exist",

@@ -230,7 +230,8 @@ stderr '"antithesis.images": "app@sha256:abc;db:latest"'
 # against the live API — no message text, and runId is null. The status comes
 # from the response, and the body is echoed for debugging. (The launcher does
 # no request validation beyond auth, so it never returns a 400; 404 is the
-# canonical reachable failure.)
+# canonical reachable failure.) TODO: re-check that the launcher still
+# validates nothing beyond auth.
 mock-server 404 '{"statusCode":404,"runId":null}'
 ! snouty launch --launcher no_such_launcher --duration 30
 stderr 'API error: 404 Not Found.*'

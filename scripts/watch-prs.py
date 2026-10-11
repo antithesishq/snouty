@@ -77,7 +77,8 @@ def gh_json(args: list[str]) -> Any | None:
 
 def paginate(path: str) -> Iterator[Any]:
     # Page with explicit page params; --paginate follows Link headers, which
-    # a transparent auth proxy returns pointing at the upstream host.
+    # a transparent auth proxy returns pointing at the upstream host. TODO:
+    # use --paginate once the proxy rewrites Link headers.
     for page in count(1):
         items = gh_json(["api", f"{path}?per_page=100&page={page}"])
         if items is None:

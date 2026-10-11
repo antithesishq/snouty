@@ -17,6 +17,7 @@ permissions:
 # ANTHROPIC_API_KEY secret.
 engine:
   id: claude
+  model: claude-opus-5-5
   auth:
     type: github-oidc
     provider: anthropic

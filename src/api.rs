@@ -83,14 +83,12 @@ pub const MIN_SEARCH_RELEASE: (u64, u64) = (62, 2);
 /// The first tenant release whose execute-command API takes `container`.
 /// Earlier releases reject the field, and this release requires it. `runs exec`
 /// assumes the tenant meets this; `snouty doctor` checks it. TODO: drop this
-/// floor and its doctor check once no supported tenant runs a release before
-/// 64.0.
+/// floor and its doctor check once every supported tenant runs 64.0 or later.
 pub const MIN_EXEC_RELEASE: (u64, u64) = (64, 0);
 
 /// The first tenant release that serves the cancel-run API. `runs cancel`
 /// assumes the tenant meets this; `snouty doctor` checks it. TODO: drop this
-/// floor and its doctor check once no supported tenant runs a release before
-/// 63.0.
+/// floor and its doctor check once every supported tenant runs 63.0 or later.
 pub const MIN_CANCEL_RELEASE: (u64, u64) = (63, 0);
 
 /// The `container` value that executes a command on the host instead of in a
@@ -457,7 +455,7 @@ pub struct AntithesisApi {
 /// itself, but releases 58.11 through 60.1 ignore the field and send every
 /// match, so the cap is applied here as well. A request that names no limit
 /// stays open. TODO: drop the cap; `MIN_SEARCH_RELEASE` (62.2) already
-/// excludes releases 58.11 through 60.1.
+/// excludes those releases.
 fn cap_stream(stream: JsonStream, limit: Option<NonZeroU64>) -> JsonStream {
     match limit {
         Some(limit) => stream
@@ -1270,10 +1268,10 @@ fn launch_request(params: &Params) -> Result<generated::types::LaunchRequest> {
 /// lists a single 2xx, while the live API has been seen to answer 200). The
 /// generated client accepts only the documented code and surfaces any other 2xx
 /// as `UnexpectedResponse`, so we treat **any** 2xx as success and decode the
-/// body ourselves on that path. TODO: drop the any-2xx path once the spec
-/// documents the 200 these webhooks send. Genuine failures (4xx/5xx) are formatted as
+/// body ourselves on that path. Genuine failures (4xx/5xx) are formatted as
 /// errors, status first — `build.rs` leaves them undocumented, so the status is
-/// always there to lead with.
+/// always there to lead with. TODO: drop the any-2xx path once the spec
+/// documents the 200 these webhooks send.
 async fn finish_launch<T: DeserializeOwned>(
     result: std::result::Result<ResponseValue<T>, ClientError<()>>,
 ) -> Result<T> {

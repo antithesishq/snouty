@@ -24,11 +24,10 @@ stderr '"antithesis.config_image":.*@sha256:'
 # Relaunching after a successful push skips re-pushing: the registry round
 # trip confirms the pushed digest is already there. docker-only — podman's
 # push digest differs from its local digest (recompression), so podman
-# re-pushes by design. (No negated assertions here: testscript-rs applies `!`
-# to a condition-skipped command and fails it, so `[docker] ! stderr` can't
-# skip. The positive skip lines below cover both service images anyway.)
-# TODO: restore the `[docker] ! stderr` assertions; the testscript-rs fork in
-# Cargo.toml now skips a condition on a negated line.
+# re-pushes by design. (No negated assertions here: upstream testscript-rs
+# fails a condition-skipped `[docker] ! stderr`. The positive skip lines below
+# cover both service images anyway.) TODO: restore the negated assertions; the
+# testscript-rs fork in Cargo.toml now skips a condition on a negated line.
 [docker] mock-server 200 '{"runId":"run-123","statusCode":200}'
 [docker] snouty launch --launcher basic_test -c push_config --duration 30
 [docker] stderr 'Image already in a registry, skipping push:.*myapp'

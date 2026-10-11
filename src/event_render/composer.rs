@@ -327,8 +327,8 @@ mod tests {
             entry
         };
 
-        // Shapes observed on orbitinghail, release 64.0, in run
-        // cf98800188c5d337790acd0a0e00e9d1-64-0.
+        // Shapes observed on orbitinghail, release 64.0 (run
+        // cf98800188c5d337790acd0a0e00e9d1-64-0).
         let block = render_one(chatter(json!({
             "removed_command": "/opt/antithesis/test/v1/wellnest/parallel_driver_journal.py"
         })));

@@ -26,12 +26,12 @@ PATTERNS = {
     "todo": re.compile(r"\bTODO\b"),
     "fixme": re.compile(r"\bFIXME\b"),
     # "Observed on orbitinghail, release 64.0", "seen live on orbitinghail",
-    # "(orbitinghail, release 64.0)", "releases 58.11 through 60.1", "the
-    # tenant-58.6 schema". Patterns run on a block's joined text, so a phrase
-    # may wrap across lines.
+    # "(orbitinghail, release 64.0)", "releases 58.11 through 60.1", "tenant
+    # version 64", "the tenant-58.6 schema". Patterns run on a block's joined
+    # text, so a phrase may wrap across lines.
     "observed-on": re.compile(
-        r"\b(observed|seen)( live)? on\b|\breleases? \d+(\.\d+)?\b"
-        r"|\btenant[ -](version|release) \d+|\btenant-\d+\.\d+",
+        r"\b(observed|seen)( live)? on\b|\breleases? \d"
+        r"|\btenant( version \d|-\d+\.\d)",
         re.IGNORECASE,
     ),
     # A workaround for a bug in another project, such as docker/compose#11627.

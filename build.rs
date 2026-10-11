@@ -182,8 +182,8 @@ fn untype_error_responses(spec: &mut serde_json::Value) {
 /// `is_streaming`.
 ///
 /// The pointer is asserted, so a spec refresh that drops the default (the
-/// upstream fix) fails the build. TODO: delete this transform and its call
-/// once the spec drops the default.
+/// upstream fix) fails the build. TODO: then delete this transform and its
+/// call.
 fn unrequire_search_limit_default(spec: &mut serde_json::Value) {
     remove_schema_key(
         spec,

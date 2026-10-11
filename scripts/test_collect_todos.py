@@ -73,13 +73,20 @@ class Collect(unittest.TestCase):
             fn a() {}
             /// Under the tenant-58.6 schema.
             fn b() {}
-            /// Ignores --format json (docker/compose#11627).
+            /// Seen as a string (tenant version 63).
             fn c() {}
+            /// Ignores --format json (docker/compose#11627).
+            fn d() {}
             /// Fixed in #136, and reads the release notes.
             """)
         self.assertEqual(
             [(i["line"], i["kinds"]) for i in collect_todos.collect(self.root)],
-            [(1, ["observed-on"]), (3, ["observed-on"]), (5, ["upstream"])],
+            [
+                (1, ["observed-on"]),
+                (3, ["observed-on"]),
+                (5, ["observed-on"]),
+                (7, ["upstream"]),
+            ],
         )
 
     def test_marker_survives_moving_the_comment(self):

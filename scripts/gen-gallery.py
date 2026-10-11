@@ -107,17 +107,13 @@ DISCOVERY_MAX_PAGES = 10
 # `runs list` reports this launcher for a debugging session.
 DEBUGGING_LAUNCHER = "debugging"
 
-# A debugging session's status says whether it accepts commands: `starting`
-# is not ready yet, `in_progress` is ready, and an ended session never accepts
-# them. Observed on orbitinghail (release 64.0), before the API adopted these
-# semantics: `starting` for about 75s, then `in_progress` while the command
-# endpoint answered 404 for about 2 minutes more and then 400 `unknown_moment`,
-# then `unknown` once commands executed, about 7 minutes after the launch.
+# A debugging session accepts commands only while it is `in_progress`, but it
+# can be `in_progress` for minutes before it accepts them. Observed on
+# orbitinghail (release 64.0, 2026-10-11): `starting` for about 100s, then
+# `in_progress` while the command endpoint answered 404 for about 2 minutes
+# and then 400 `unknown_moment`. It stayed `in_progress` once commands executed.
 SESSION_STARTING = "starting"
-SESSION_READY = "in_progress"
-# A ready session reports `unknown` until the API adopts the semantics above.
-# TODO: drop SESSION_READY_OLD once a ready session reports `in_progress`.
-SESSION_READY_OLD = "unknown"
+SESSION_IN_PROGRESS = "in_progress"
 SESSION_ENDED = frozenset({"completed", "cancelled", "incomplete"})
 EXEC_READY_DEADLINE = 600
 EXEC_READY_POLL = 15
@@ -1012,17 +1008,13 @@ def _debugging_sessions(sn: Snouty) -> list[dict]:
 
 
 def _live_session(sn: Snouty) -> dict | None:
-    """The newest debugging session that the gallery launched and that is ready
-    or starting, or None. A session that the gallery did not launch is never
-    reused: the stories would execute in it, and it can hold the cold story's
-    moment."""
+    """The newest debugging session that the gallery launched and that is
+    starting or in progress, or None. A session that the gallery did not launch
+    is never reused: the stories would execute in it, and it can hold the cold
+    story's moment."""
     for r in _debugging_sessions(sn):
         description = (r.get("parameters") or {}).get(_DESCRIPTION, "")
-        live = r.get("status") in (
-            SESSION_STARTING,
-            SESSION_READY,
-            SESSION_READY_OLD,
-        )
+        live = r.get("status") in (SESSION_STARTING, SESSION_IN_PROGRESS)
         if live and description.startswith(EXEC_SESSION_DESCRIPTION):
             return r
     return None

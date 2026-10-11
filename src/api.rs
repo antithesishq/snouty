@@ -169,25 +169,22 @@ fn params_test_name(params: Option<&RunParams>) -> Option<&str> {
     params.and_then(|p| p.extra.get(ANT_TEST_NAME).map(String::as_str))
 }
 
-fn params_test_description(params: Option<&RunParams>) -> Option<&str> {
-    params.and_then(|p| p.antithesis_description.as_deref())
-}
-
-fn params_event_description(params: Option<&RunParams>) -> Option<&str> {
-    params?.extra.get(ANT_EVENT_DESCRIPTION).map(String::as_str)
-}
-
-/// The text that the Description block shows: the description, or else the
-/// event description. A debugging session often has only the event
-/// description. A text that holds only whitespace counts as absent.
+/// The run's one description: the top-level `description` field, else the
+/// `antithesis.description` parameter (runs that predate that field), else the
+/// `antithesis.event_description` parameter (a debugging session often sets
+/// only this one). A text that holds only whitespace counts as absent.
 fn display_description<'a>(
     description: Option<&'a str>,
-    event_description: Option<&'a str>,
+    params: Option<&'a RunParams>,
 ) -> Option<&'a str> {
-    [description, event_description]
-        .into_iter()
-        .flatten()
-        .find(|text| !text.trim().is_empty())
+    [
+        description,
+        params.and_then(|p| p.antithesis_description.as_deref()),
+        params.and_then(|p| p.extra.get(ANT_EVENT_DESCRIPTION).map(String::as_str)),
+    ]
+    .into_iter()
+    .flatten()
+    .find(|text| !text.trim().is_empty())
 }
 
 impl RunSummary {
@@ -195,23 +192,8 @@ impl RunSummary {
         params_test_name(self.parameters.as_ref())
     }
 
-    /// Human-readable description: prefer the server-provided top-level
-    /// `description` field, falling back to the `antithesis.description`
-    /// parameter for runs predating that field.
-    pub(crate) fn test_description(&self) -> Option<&str> {
-        self.description
-            .as_deref()
-            .or_else(|| params_test_description(self.parameters.as_ref()))
-    }
-
-    /// The `antithesis.event_description` parameter, which a debugging session
-    /// sets in place of a description.
-    pub(crate) fn event_description(&self) -> Option<&str> {
-        params_event_description(self.parameters.as_ref())
-    }
-
     pub(crate) fn display_description(&self) -> Option<&str> {
-        display_description(self.test_description(), self.event_description())
+        display_description(self.description.as_deref(), self.parameters.as_ref())
     }
 }
 
@@ -220,17 +202,8 @@ impl RunDetail {
         params_test_name(self.parameters.as_ref())
     }
 
-    pub(crate) fn test_description(&self) -> Option<&str> {
-        self.description
-            .as_deref()
-            .or_else(|| params_test_description(self.parameters.as_ref()))
-    }
-
     pub(crate) fn display_description(&self) -> Option<&str> {
-        display_description(
-            self.test_description(),
-            params_event_description(self.parameters.as_ref()),
-        )
+        display_description(self.description.as_deref(), self.parameters.as_ref())
     }
 
     /// The requested run duration as launched (`antithesis.duration`, a count of

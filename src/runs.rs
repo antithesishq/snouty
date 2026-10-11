@@ -4667,6 +4667,13 @@ mod tests {
     }
 
     #[test]
+    fn runs_table_prefers_top_level_description_over_parameter() {
+        let mut run = debugging_run(Some("parameter description"));
+        run.description = Some("top-level description".to_string());
+        assert_eq!(run_cell(run, 100), "top-level description");
+    }
+
+    #[test]
     fn runs_table_shows_event_description_when_description_missing() {
         let run = with_event_description(debugging_run(None), "debug this moment\nmore");
         assert_eq!(run_cell(run, 100), "debug this moment");

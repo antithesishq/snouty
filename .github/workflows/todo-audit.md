@@ -32,9 +32,6 @@ tools:
   bash: [cat, grep, head, tail, wc, ls, jq, "git log:*", "git blame:*", "git show:*"]
   github:
     toolsets: [issues, pull_requests]
-  # Claude abandons an MCP call after 60s by default, before a slow
-  # `runs search` finishes.
-  timeout: 150
 
 # The agent reaches the tenant only through this tool, and the API key stays on
 # the runner. `launch`, `debug` and `runs exec` start billable sessions, and
@@ -52,13 +49,15 @@ mcp-scripts:
         type: string
         required: true
         description: Arguments after `snouty`, split like a POSIX shell would.
-    timeout: 140
+    # Claude drops an MCP call after 60s. Raising that with tools.timeout breaks
+    # the MCP gateway's config in gh-aw v0.91.7, so stay under it.
+    timeout: 55
     py: |
       import json, os, shlex, subprocess, tempfile
 
       allowed = {"doctor", "runs list", "runs show", "runs properties",
                  "runs logs", "runs events", "runs search"}
-      timeout = 120
+      timeout = 50
       limit = 60000
 
       def run(raw):

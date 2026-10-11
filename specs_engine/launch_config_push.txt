@@ -51,10 +51,8 @@ build-image --platform linux/amd64 myapp:latest images/myapp
 stderr '.*image: docker.io/library/nginx-snouty-absent:latest.*'
 ! stderr 'Pushing image:'
 
-# With --allow-remote-images, an image that is not in the local store does not
-# fail the launch. snouty keeps its reference as written and warns that it is
-# unpinned and that its architecture is not checked. The local image is still
-# pushed and pinned.
+# With --allow-remote-images, a missing image does not fail the launch, and the
+# local image is still pushed and pinned.
 mock-server 200 '{"runId":"run-123","statusCode":200}'
 build-image --platform linux/amd64 myapp:latest images/myapp
 snouty launch --launcher basic_test -c mixed_config --duration 30 --allow-remote-images

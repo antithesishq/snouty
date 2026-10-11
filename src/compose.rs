@@ -513,21 +513,22 @@ impl DockerCompose {
         let _ = cmd.status();
     }
 
-    /// Resolve every compose service image to a digest-pinned reference and
-    /// return the `docker-compose.yaml` contents canonicalized and rewritten
+    /// Resolve every compose service image to a registry reference,
+    /// digest-pinned unless assumed remote, and return the `docker-compose.yaml` contents canonicalized and rewritten
     /// with those pins (`name:tag@sha256:...`).
     ///
     /// The local image store is the single source of truth for what a launch
     /// runs — snouty never pulls. Every service must resolve to an image that
     /// is present locally (built via its `build:` stanza, built or loaded out
     /// of band, or previously pulled), unless `missing` is
-    /// [`MissingImages::AssumeRemote`]. Each local image is then pinned to
+    /// [`MissingImages::AssumeRemote`] and the image is not a default build
+    /// tag. Each local image is then pinned to
     /// its local digest in a registry confirmed to serve it
     /// ([`find_remote_pin`]), or — when no registry has it — tagged into
     /// `registry` and pushed, so the platform always pulls exactly what was
     /// resolved here.
     ///
-    /// A pin into `registry` itself comes back bare (`name:tag@sha256:...`),
+    /// A reference into `registry` itself comes back bare (`name:tag@sha256:...`),
     /// because the platform resolves such a name against the tenant's own
     /// repository. A pin into any other registry stays fully qualified.
     pub fn pin_images(
@@ -538,14 +539,14 @@ impl DockerCompose {
     ) -> Result<String> {
         let contents = self.contents(None)?;
         let missing_services = missing_images(rt, &contents)?;
-        // Resolve each distinct image once: pin it from a registry that
-        // already serves the local digest, or schedule it for push (`None`).
-        // An image assumed remote resolves to its reference as written.
+        // Each distinct image maps to its registry reference, or to `None`
+        // when snouty pushes it.
         let mut resolution: BTreeMap<&str, Option<String>> = BTreeMap::new();
         match missing {
             MissingImages::Reject if !missing_services.is_empty() => {
                 let mut err = missing_images_error(rt, &contents, &missing_services);
-                // A default build tag still fails with the flag.
+                // The flag cannot help a default build tag, so suggest it only
+                // for other images.
                 if missing_services
                     .iter()
                     .any(|service| !service.default_image)
@@ -608,8 +609,8 @@ impl DockerCompose {
                             service.name
                         );
                     }
-                    // The platform reads a bare name as one in the tenant
-                    // repository, so Docker Hub shorthand is spelled out.
+                    // The platform resolves a bare name in the tenant
+                    // repository, so spell out Docker Hub shorthand.
                     let repo = image_repo(image);
                     let spelled = format!("{}{}", normalize_repo(repo), &image[repo.len()..]);
                     resolution.insert(image, Some(spelled));
@@ -663,7 +664,7 @@ impl DockerCompose {
             }
         }
 
-        // service name -> pinned reference (filled in for push targets after
+        // service name -> registry reference (filled in for push targets after
         // their pushes complete, then stripped of `registry` below).
         let mut pinned: BTreeMap<String, String> = BTreeMap::new();
         // (service name, registry reference) for images we push ourselves.
@@ -685,7 +686,8 @@ impl DockerCompose {
         // Arch-check and push each distinct image, pinning every service to
         // its push digest (the push already reports the digest). The local
         // architecture check applies exactly to the images whose local bytes
-        // we upload; remote pins were already amd64-verified.
+        // we upload. Remote pins were already amd64-verified, and snouty
+        // cannot check an image assumed remote.
         let mut seen = HashSet::new();
         let dests: Vec<&str> = push_targets
             .iter()
@@ -718,7 +720,7 @@ impl DockerCompose {
 pub enum MissingImages {
     /// Fail the launch: snouty never pulls, so it cannot pin the image.
     Reject,
-    /// Keep the reference as written, so the platform pulls it by name at run
+    /// Leave the reference unpinned, so the platform pulls it by name at run
     /// time. A default build tag still fails, because no registry serves it.
     AssumeRemote,
 }
@@ -949,13 +951,7 @@ pub fn parse_compose_config(yaml: &str) -> Result<ComposeContents> {
     })
 }
 /// Ensure the referenced images are available in the local image store.
-/// snouty never pulls — what runs (validate) and what gets pushed (launch)
-/// is exactly what's in the local store.
-///
-/// The error is intentionally context-free: it explains only why local presence
-/// is required. Launch adds its own escape hatches in
-/// [`DockerCompose::pin_images`], so this shared check doesn't have to know
-/// who called it.
+/// snouty never pulls, so validate checks exactly what is in the local store.
 pub fn validate_images_are_available(
     runtime: &dyn ContainerRuntime,
     contents: &ComposeContents,
@@ -966,8 +962,8 @@ pub fn validate_images_are_available(
     }
     Err(missing_images_error(runtime, contents, &missing))
 }
-/// The error for the services in `missing`, whose images are not in the
-/// local image store.
+/// The error for the services in `missing`. It explains only why the images
+/// must be local, and each caller adds its own suggestions.
 fn missing_images_error(
     runtime: &dyn ContainerRuntime,
     contents: &ComposeContents,
@@ -1592,8 +1588,7 @@ services:
         let (_dir, compose) = fake_compose(rt, yaml);
         compose.pin_images(rt, registry, MissingImages::Reject)
     }
-    /// A [`DockerCompose`] over `yaml`, written to a temporary config dir
-    /// that must outlive the handle.
+    /// A [`DockerCompose`] over `yaml`. The returned `TempDir` must outlive it.
     fn fake_compose(rt: &FakeRuntime, yaml: &str) -> (tempfile::TempDir, DockerCompose) {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("docker-compose.yaml"), yaml).unwrap();
@@ -1609,8 +1604,8 @@ services:
             skip_or_fail("docker-compose (Docker Compose v2) is not available");
             return;
         }
-        // Only `myapp` is local. The fake has no architecture for the other
-        // images, so an architecture check on them fails the test.
+        // The fake has no architecture for the missing images, so an
+        // architecture check on them fails the test.
         let rt = FakeRuntime {
             available_images: BTreeMap::from([("myapp:latest".to_string(), true)]),
             architectures: BTreeMap::from([(
@@ -1633,10 +1628,7 @@ services:
         let image = |service: &str| doc["services"][service]["image"].as_str().unwrap();
         assert_eq!(image("app"), "myapp:latest@sha256:fakepushdigest");
         assert_eq!(image("db"), "ghcr.io/org/db:v1");
-        // The platform reads a bare name as one in the tenant repository.
         assert_eq!(image("hub"), "docker.io/library/postgres:16");
-        // An image in the tenant repository loses the registry address, like
-        // every other pin into it.
         assert_eq!(image("own"), "own:v2");
         assert_eq!(
             *rt.pushed.lock().unwrap(),
@@ -2419,8 +2411,6 @@ services:
             debug.contains("snouty never pulls"),
             "expected the why-it's-required-locally note, got: {debug}"
         );
-        // The shared check is context-free: the launch-only escape hatches
-        // are added by `pin_images`, not emitted here.
         assert!(
             !debug.contains("--config-image"),
             "shared check should stay context-free, got: {debug}"

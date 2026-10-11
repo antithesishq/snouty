@@ -611,10 +611,9 @@ pub struct LaunchArgs {
     pub config_image: Option<String>,
 
     /// Launch a compose config even when some of its images are not in the
-    /// local image store. snouty keeps each such reference as written and the
-    /// platform pulls it from its registry: the reference is not pinned to a
-    /// digest, and snouty cannot check its architecture. Has no effect on a
-    /// Kubernetes config.
+    /// local image store. snouty does not pin each such reference to a digest,
+    /// and the platform pulls it from its registry. snouty cannot check its
+    /// architecture. Has no effect on a Kubernetes config.
     #[arg(long, requires = "config", conflicts_with = "config_image")]
     pub allow_remote_images: bool,
 

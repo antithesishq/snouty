@@ -164,7 +164,7 @@ safe-outputs:
     max: 5
 ---
 
-# Audit TODOs and server-behavior notes
+# Nightly Audit
 
 Many of snouty's comments record a server quirk seen on one tenant release, or
 a TODO that waits on a server change. They go stale silently when the API

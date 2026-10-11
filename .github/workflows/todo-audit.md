@@ -3,6 +3,8 @@ description: Nightly agent audit of snouty's TODOs and server-behavior notes aga
 on:
   schedule: daily
   workflow_dispatch:
+  push:
+    branches: [issue-382-todo-audit]
 
 permissions:
   contents: read

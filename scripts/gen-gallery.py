@@ -2541,7 +2541,7 @@ def build_exec_stories(d: Discovery, x: ExecSession) -> list[Story]:
             [*exec_at, "--container", x.container, "uname -n; ps -eo pid,comm | head -5"],
             succeeds_with("PID", "end moment:"),
         ),
-        # TODO: re-check that the server still reports exit code 125 for a
+        # TODO: update the expected code if the server stops reporting 125 for a
         # container it cannot find.
         exec_story(
             "runs-exec--container-unknown",

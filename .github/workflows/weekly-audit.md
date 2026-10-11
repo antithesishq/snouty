@@ -451,9 +451,11 @@ For each entry, decide whether the condition it states still holds.
 - **A TODO that waits on something** ("when a run records them", "once the API
   reports `in_progress`"): check whether that thing has happened, on the tenant
   or in the repository.
-- **A workaround for another project's bug** (`docker/compose#11627`): check
-  with the GitHub tools whether that issue is fixed, and whether the fix is in a
-  release the code could require.
+- **A reference to another project's issue** (`docker/compose#11627`): when
+  the code works around that bug, check with the GitHub tools whether it is
+  fixed, and whether the fix is in a release the code could require. A
+  reference that only explains a version floor holds while the floor stands.
+  When the tools cannot read the issue, record it as unverifiable.
 - **A TODO or FIXME with no external trigger**: check whether the code already
   does what it asks.
 

@@ -52,13 +52,14 @@ stderr '.*image: docker.io/library/nginx-snouty-absent:latest.*'
 ! stderr 'Pushing image:'
 
 # With --allow-remote-images, a missing image does not fail the launch, and the
-# local image is still pushed and pinned.
+# local image is still pinned. An earlier case pushed `myapp`, so the registry
+# can already serve it.
 mock-server 200 '{"runId":"run-123","statusCode":200}'
 build-image --platform linux/amd64 myapp:latest images/myapp
 snouty launch --launcher basic_test -c mixed_config --duration 30 --allow-remote-images
 stderr 'warning: image `docker.io/library/nginx-snouty-absent:latest` is not in the local image store, so snouty leaves it unpinned. Its tag can resolve to a different image on each run, and snouty cannot check its architecture.'
-stderr 'Pushing image:.*myapp'
-! stderr 'Pushing image:.*nginx-snouty-absent'
+stderr '(Pushing image|Image already in a registry, skipping push):.*myapp'
+! stderr '(Pushing image|skipping push):.*nginx-snouty-absent'
 stderr '"antithesis.config_image":.*@sha256:'
 
 # A service with a `build:` stanza whose image is not local was possibly not

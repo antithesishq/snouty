@@ -62,3 +62,11 @@ mock-runs-server
 ! snouty runs cancel no-such-run
 stderr '.*run not found: no-such-run.*'
 ! stderr '.*API error.*'
+
+# A well-formed run id that names no run also gives "run not found". The
+# cancel endpoint answers 500 for it, so snouty checks that the run is missing
+# before it says so.
+mock-runs-server
+! snouty runs cancel ffffffffffffffffffffffffffffffff-64-0
+stderr '.*run not found: ffffffffffffffffffffffffffffffff-64-0.*'
+! stderr '.*API error.*'

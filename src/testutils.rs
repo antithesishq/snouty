@@ -469,7 +469,8 @@ pub fn filtered_path_without_binary(binary: &str) -> Option<String> {
 ///   additionally 404 for runs that aren't `completed`)
 /// - `POST /api/v1/launch/{launcher_name}` — returns a mock launch response
 /// - `POST /api/v0/runs/{run_id}/cancel` — 200 for an in-progress run, 409
-///   for any other known run, 404 for an unknown run
+///   for any other known run, 500 for an unknown well-formed run id, 404 for
+///   a malformed run id
 pub struct MockApiServer {
     url: String,
     token: String,
@@ -936,16 +937,30 @@ fn mock_route_cancel_run(run_id: &str) -> (u16, String) {
                 r#"{{"message":"Conflict: Run {run_id} has already finished and cannot be cancelled"}}"#
             ),
         ),
+        None if mock_run_id_well_formed(run_id) => (
+            500,
+            format!(
+                r#"{{"error":"AssertionError [ERR_ASSERTION]: Unknown experiment id {run_id}"}}"#
+            ),
+        ),
         None => (404, MOCK_CANCEL_404_BODY.to_string()),
     }
+}
+
+/// Whether `run_id` has the shape of a real run id, such as
+/// `790d19de9de654402d3ff1814496d8ae-64-0`.
+fn mock_run_id_well_formed(run_id: &str) -> bool {
+    regex::Regex::new(r"^[0-9a-f]{32}-[0-9]+-[0-9]+$")
+        .unwrap()
+        .is_match(run_id)
 }
 
 /// The bare 404 body the live API sends for an unknown resource. It never
 /// names the resource.
 const MOCK_BARE_404_BODY: &str = r#"{"message":"Resource not found"}"#;
 
-/// The bare 404 body the live cancel endpoint sends for an unknown run. Its
-/// shape differs from [`MOCK_BARE_404_BODY`].
+/// The bare 404 body the live cancel endpoint sends for a malformed run id.
+/// Its shape differs from [`MOCK_BARE_404_BODY`].
 const MOCK_CANCEL_404_BODY: &str = r#"{"error":"404 Not Found"}"#;
 
 /// The `Stream_Error` line the `run-stream-error` fixture ends its streams

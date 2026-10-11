@@ -471,16 +471,7 @@ async fn cmd_runs_cancel(
 
     let api = AntithesisApi::new(settings, verbose)?;
     if let Err(err) = api.cancel_run(run_id).await {
-        return Err(match api_error_status(&err) {
-            Some(409) => user_error(format!("run {run_id} has already finished"))
-                .note("only a run that is starting or in progress can be cancelled")
-                .suggestion(format!(
-                    "see the run's final status with `snouty runs show {run_id}`"
-                )),
-            // A tenant older than MIN_CANCEL_RELEASE has no cancel endpoint
-            // and answers 404 for a real run, so probe the run.
-            _ => explain_run_scoped_error(&api, run_id, err).await,
-        });
+        return Err(explain_cancel_error(&api, run_id, err).await);
     }
 
     if json {
@@ -768,6 +759,31 @@ async fn explain_logs_error(
             ))
     } else {
         err
+    }
+}
+
+/// Turn a cancel failure into a clean message. See
+/// [`AntithesisApi::cancel_run`] for the responses this handles.
+async fn explain_cancel_error(
+    api: &AntithesisApi,
+    run_id: &str,
+    err: color_eyre::eyre::Report,
+) -> color_eyre::eyre::Report {
+    match api_error_status(&err) {
+        Some(409) => user_error(format!("run {run_id} has already finished"))
+            .note("only a run that is starting or in progress can be cancelled")
+            .suggestion(format!(
+                "see the run's final status with `snouty runs show {run_id}`"
+            )),
+        // A well-formed id that names no run answers 500. Say "run not found"
+        // only when the probe confirms it; otherwise the 500 is a real fault.
+        Some(500) => match probe_run(api, run_id).await {
+            RunProbe::NotFound => user_error(format!("run not found: {run_id}")),
+            RunProbe::Exists(_) | RunProbe::ProbeFailed(_) => err,
+        },
+        // A tenant older than MIN_CANCEL_RELEASE has no cancel endpoint and
+        // answers 404 for a real run, so probe the run.
+        _ => explain_run_scoped_error(api, run_id, err).await,
     }
 }
 
@@ -4924,6 +4940,48 @@ mod tests {
             // No mock mounted: a probe would 404 and wrongly say "run not found".
             let api = test_api(&server.uri());
             let result = explain_run_scoped_error(&api, "run-1", api_error(500, "boom 404")).await;
+            assert_eq!(api_error_status(&result), Some(500));
+            assert!(!format!("{result:#}").contains("run not found"));
+        }
+
+        const UNKNOWN_EXPERIMENT_500: &str = "API error: 500 Internal Server Error — \
+            {\"error\":\"AssertionError [ERR_ASSERTION]: Unknown experiment id run-1\"}";
+
+        #[tokio::test]
+        async fn cancel_error_reports_missing_run_on_500_and_404_probe() {
+            let server = mock_get_run("run-1", 404, json!({"message": "nope"})).await;
+            let api = test_api(&server.uri());
+            let result =
+                explain_cancel_error(&api, "run-1", api_error(500, UNKNOWN_EXPERIMENT_500)).await;
+            assert_eq!(format!("{result:#}"), "run not found: run-1");
+        }
+
+        #[tokio::test]
+        async fn cancel_error_keeps_500_when_run_exists() {
+            let server = mock_get_run(
+                "run-1",
+                200,
+                json!({
+                    "run_id": "run-1",
+                    "status": "in_progress",
+                    "created_at": "2025-03-20T02:00:00Z",
+                    "launcher": "nightly"
+                }),
+            )
+            .await;
+            let api = test_api(&server.uri());
+            let result =
+                explain_cancel_error(&api, "run-1", api_error(500, UNKNOWN_EXPERIMENT_500)).await;
+            assert_eq!(api_error_status(&result), Some(500));
+            assert!(!format!("{result:#}").contains("run not found"));
+        }
+
+        #[tokio::test]
+        async fn cancel_error_keeps_500_when_probe_fails() {
+            let server = mock_get_run("run-1", 502, json!({"message": "bad gateway"})).await;
+            let api = test_api(&server.uri());
+            let result =
+                explain_cancel_error(&api, "run-1", api_error(500, UNKNOWN_EXPERIMENT_500)).await;
             assert_eq!(api_error_status(&result), Some(500));
             assert!(!format!("{result:#}").contains("run not found"));
         }

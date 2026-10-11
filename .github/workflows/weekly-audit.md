@@ -78,7 +78,7 @@ mcp-scripts:
               "exec", "events", "search", "help"}
       TERMINAL = {"completed", "cancelled", "incomplete"}
       VALUED = {"--container", "--source-run-id", "--source-session-id", "--timeout"}
-      TAG = "nightly_audit.workflow_run=" + os.environ.get("AUDIT_RUN", "")
+      TAG = "weekly_audit.workflow_run=" + os.environ.get("AUDIT_RUN", "")
 
       def snouty(args, timeout=TIMEOUT):
           # Settings can redirect the key to another host. Hence no --settings or
@@ -194,7 +194,7 @@ mcp-scripts:
           # ID the tool never saw.
           i, description = option(args, "--description")
           if i is None:
-              args += ["--description", f"Nightly Audit [{TAG}]"]
+              args += ["--description", f"Weekly Audit [{TAG}]"]
           else:
               args = args[:i] + [f"--description={description} [{TAG}]"] + args[i + (1 if "=" in args[i] else 2):]
           if "--json" not in args:
@@ -262,7 +262,7 @@ mcp-scripts:
     # name appears throughout the comments the agent quotes.
     env:
       SNOUTY: ${{ runner.temp }}/snouty/snouty
-      AUDIT_LEDGER: ${{ runner.temp }}/nightly-audit/ledger.json
+      AUDIT_LEDGER: ${{ runner.temp }}/weekly-audit/ledger.json
       AUDIT_RUN: ${{ github.run_id }}
       ANTITHESIS_TENANT: orbitinghail
       ANTITHESIS_API_KEY: ${{ secrets.STAGING_ANTITHESIS_API_KEY }}
@@ -312,8 +312,8 @@ jobs:
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         continue-on-error: true
         with:
-          name: nightly-audit-ledger
-          path: ${{ runner.temp }}/nightly-audit
+          name: weekly-audit-ledger
+          path: ${{ runner.temp }}/weekly-audit
 
       - name: Cancel the audit's runs
         env:
@@ -326,7 +326,7 @@ jobs:
           import json, os, subprocess
 
           snouty = os.path.join(os.environ["RUNNER_TEMP"], "snouty", "snouty")
-          path = os.path.join(os.environ["RUNNER_TEMP"], "nightly-audit", "ledger.json")
+          path = os.path.join(os.environ["RUNNER_TEMP"], "weekly-audit", "ledger.json")
           ledger = json.load(open(path)) if os.path.exists(path) else {}
           ids = [r["id"] for r in ledger.get("runs", [])]
           # Also cancel tagged runs the tool never saw an ID for. A failed
@@ -335,11 +335,11 @@ jobs:
                                  capture_output=True, text=True).stdout.strip()
           listed = subprocess.run([snouty, "runs", "list", "--created-after", since,
                                    "--limit", "500", "--json"], capture_output=True, text=True)
-          tag = "nightly_audit.workflow_run=" + os.environ["AUDIT_RUN"]
+          tag = "weekly_audit.workflow_run=" + os.environ["AUDIT_RUN"]
           for line in listed.stdout.splitlines():
               run = json.loads(line)
               params = run.get("parameters") or {}
-              if (params.get("nightly_audit.workflow_run") == os.environ["AUDIT_RUN"]
+              if (params.get("weekly_audit.workflow_run") == os.environ["AUDIT_RUN"]
                       or tag in params.get("antithesis.event_description", "")):
                   if run["run_id"] not in ids:
                       ids.append(run["run_id"])
@@ -370,8 +370,8 @@ steps:
   - name: Collect comments
     run: |
       chmod +x "$RUNNER_TEMP/snouty/snouty"
-      mkdir -p /tmp/gh-aw/agent/todo-audit "$RUNNER_TEMP/nightly-audit"
-      python3 scripts/collect-todos.py > /tmp/gh-aw/agent/todo-audit/todos.json
+      mkdir -p /tmp/gh-aw/agent/weekly-audit "$RUNNER_TEMP/weekly-audit"
+      python3 scripts/collect-todos.py > /tmp/gh-aw/agent/weekly-audit/todos.json
 
   # The agent compares each comment's release with the tenant's, so a missing
   # release stops the run. Doctor exits non-zero for checks that do not matter
@@ -380,7 +380,7 @@ steps:
     env:
       ANTITHESIS_TENANT: orbitinghail
       ANTITHESIS_API_KEY: ${{ secrets.STAGING_ANTITHESIS_API_KEY }}
-    working-directory: /tmp/gh-aw/agent/todo-audit
+    working-directory: /tmp/gh-aw/agent/weekly-audit
     run: |
       "$RUNNER_TEMP/snouty/snouty" doctor --json > doctor.json || true
       jq -er '.checks[] | select(.name == "api") | .notes[]?.text
@@ -406,8 +406,8 @@ post-steps:
     if: always()
     uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
     with:
-      name: nightly-audit-ledger
-      path: ${{ runner.temp }}/nightly-audit/ledger.json
+      name: weekly-audit-ledger
+      path: ${{ runner.temp }}/weekly-audit/ledger.json
       if-no-files-found: ignore
       retention-days: 1
 
@@ -422,7 +422,7 @@ safe-outputs:
     max: 5
 ---
 
-# Nightly Audit
+# Weekly Audit
 
 Many of snouty's comments record a server quirk seen on one tenant release, or
 a TODO that waits on a server change. They go stale silently when the API
@@ -430,10 +430,10 @@ changes. Find the ones that no longer hold, and report them.
 
 ## Inputs
 
-- `/tmp/gh-aw/agent/todo-audit/todos.json` lists every `TODO`, `FIXME` and
+- `/tmp/gh-aw/agent/weekly-audit/todos.json` lists every `TODO`, `FIXME` and
   server-behavior comment block in the repository at this commit, with its
   `text` and `marker`.
-- `/tmp/gh-aw/agent/todo-audit/release.txt` holds the tenant's release version.
+- `/tmp/gh-aw/agent/weekly-audit/release.txt` holds the tenant's release version.
 - The repository is checked out in the working directory. Read the code around
   each comment, and the code that exists only because of it.
 

@@ -1,6 +1,6 @@
 #!/usr/bin/env -S uv run
-"""Collect the TODO, FIXME and "observed on" comments that the nightly
-todo-audit workflow (`.github/workflows/todo-audit.md`) hands to its agent.
+"""Collect the TODO, FIXME and "observed on" comments that the Weekly Audit
+workflow (`.github/workflows/weekly-audit.md`) hands to its agent.
 
 Prints a JSON array to stdout, one object per comment block:
 
@@ -37,7 +37,7 @@ PATTERNS = {
 # the patterns they look for.
 EXCLUDE = [
     ":!*.md",
-    ":!.github/workflows/todo-audit.*",
+    ":!.github/workflows/weekly-audit.*",
     ":!scripts/collect-todos.py",
     ":!scripts/test_collect_todos.py",
 ]

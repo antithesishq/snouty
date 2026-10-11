@@ -1897,13 +1897,14 @@ def build_stories(d: Discovery) -> list[Story]:
             "Get full descriptions instead of the truncated RUN column",
             "The default RUN column is truncated; I want to read the full descriptions.",
             "Descriptions are shown in full (longer than the default view), one row per run. "
-            "When more runs exist, a blank line sets the limit note apart from the last run.",
+            "A run with no description, such as a debugging session, shows its event "
+            "description in the Description block. When more runs exist, a blank line sets the limit note apart from the last run.",
             ["runs", "list", "-n", "6", "--detail"],
             # --detail can't be combined with --json, so validate the rendered
             # key-value blocks directly rather than re-running for JSON rows. Check
             # the always-present title-case labels (the default table uses
             # UPPERCASE headers and no "Launcher"); "Description" is omitted when a
-            # run has none, so requiring it would falsely fail on description-less
+            # run has no description and no event description, so requiring it would falsely fail on description-less
             # runs even though the detailed view rendered correctly.
             contains_all("Run ID", "Created", "Launcher"),
             json_capable=False,

@@ -1350,7 +1350,7 @@ fn print_run_detail(run: &RunDetail) -> Result<()> {
     // own block — wrapped to the terminal, with the label on its own line —
     // rather than as a metadata row that would otherwise bury Status/timestamps
     // below a wall of text. The leading blank line separates it from the block.
-    if let Some(desc) = run.test_description() {
+    if let Some(desc) = run.display_description() {
         let block = render_prose_block("Description", desc, ProseLayout::OwnLine);
         if !block.is_empty() {
             out!("\n{block}")?;
@@ -1419,7 +1419,7 @@ fn render_runs_detail(runs: &[RunSummary]) -> String {
             // still `starting` carries no description, and sizing that block to
             // its own labels alone would make it narrower than its neighbours,
             // so the values would step in and out down the page.
-            let description = run.test_description();
+            let description = run.display_description();
             let min_label_width = "Description".len();
             let label_width = rows
                 .iter()
@@ -2482,8 +2482,7 @@ fn render_runs_table(runs: &[RunSummary], width: usize) -> String {
                 }
                 let test_name = [
                     run.test_name(),
-                    run.test_description().and_then(first_line),
-                    run.event_description().and_then(first_line),
+                    run.display_description().and_then(first_line),
                 ]
                 .into_iter()
                 .flatten()
@@ -4697,6 +4696,13 @@ mod tests {
     }
 
     #[test]
+    fn runs_table_prefers_top_level_description_over_parameter() {
+        let mut run = debugging_run(Some("parameter description"));
+        run.description = Some("top-level description".to_string());
+        assert_eq!(run_cell(run, 100), "top-level description");
+    }
+
+    #[test]
     fn runs_table_shows_event_description_when_description_missing() {
         let run = with_event_description(debugging_run(None), "debug this moment\nmore");
         assert_eq!(run_cell(run, 100), "debug this moment");
@@ -4712,6 +4718,29 @@ mod tests {
     fn runs_table_skips_blank_description() {
         let run = with_event_description(debugging_run(Some(" \n ")), "\n");
         assert_eq!(run_cell(run, 100), "-");
+    }
+
+    #[test]
+    fn runs_detail_shows_full_event_description_when_description_missing() {
+        let run = with_event_description(debugging_run(None), "debug this moment\nand the next");
+        let out = render_runs_detail(&[run]);
+        assert!(out.contains("Description  debug this moment"), "got: {out}");
+        assert!(out.contains("and the next"), "got: {out}");
+    }
+
+    #[test]
+    fn runs_detail_prefers_description_over_event_description() {
+        let run = with_event_description(debugging_run(Some("probe the stall")), "debug this");
+        let out = render_runs_detail(&[run]);
+        assert!(out.contains("Description  probe the stall"), "got: {out}");
+        assert!(!out.contains("debug this"), "got: {out}");
+    }
+
+    #[test]
+    fn runs_detail_shows_event_description_when_description_blank() {
+        let run = with_event_description(debugging_run(Some(" \n ")), "debug this");
+        let out = render_runs_detail(&[run]);
+        assert!(out.contains("Description  debug this"), "got: {out}");
     }
 
     #[test]

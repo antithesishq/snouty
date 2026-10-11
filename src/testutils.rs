@@ -754,6 +754,11 @@ const MOCK_RUNS: &[(&str, &str, &str, &str, &str)] = &[
     ("run-3", "incomplete", "2025-03-18T08:00:00Z", "nightly", ""),
 ];
 
+/// run-3 has no description. It has only the event description that a
+/// debugging session sets, and that text has two lines.
+const MOCK_RUN_3_PARAMETERS: &str =
+    r#"{"antithesis.event_description":"recovery probe\nafter the restart"}"#;
+
 fn mock_route_list_runs(query: Option<&str>, empty: bool) -> (u16, String) {
     if empty {
         return (200, r#"{"data":[],"next_cursor":null}"#.to_string());
@@ -789,9 +794,9 @@ fn mock_route_list_runs(query: Option<&str>, empty: bool) -> (u16, String) {
         // run-3 has no description, but carries the event description that a
         // debugging session sets.
         let parameters_field = if id == "run-3" {
-            r#","parameters":{"antithesis.event_description":"recovery probe"}"#
+            format!(r#","parameters":{MOCK_RUN_3_PARAMETERS}"#)
         } else {
-            ""
+            String::new()
         };
         runs.push(format!(
             r#"{{"run_id":"{id}","status":"{status}","created_at":"{created}","launcher":"{launcher}"{description_field}{parameters_field}}}"#,
@@ -895,13 +900,16 @@ fn mock_route_get_run(run_id: &str) -> (u16, String) {
         fields.push(r#""completed_at":"2025-03-20T02:31:45Z""#.to_string());
     }
     fields.push(format!(r#""launcher":"{launcher}""#));
-    // Only run-1 carries launch parameters; the other runs exercise the
-    // absent-field path.
+    // Only run-1 carries launch parameters, and run-3 carries only an event
+    // description. run-2 exercises the absent-field path.
     if run_id == "run-1" {
         fields.push(
             r#""parameters":{"antithesis.duration":"30","antithesis.source":"demo-harness","attrs.team":"payments","attrs.branch":"main","vcs.repo_type":"github","vcs.repo_owner":"acme","vcs.repo_name":"widgets","vcs.repo_branch":"main","vcs.version_id":"abc123","vcs.version_link":"https://github.com/acme/widgets/commit/abc123"}"#
                 .to_string(),
         );
+    }
+    if run_id == "run-3" {
+        fields.push(format!(r#""parameters":{MOCK_RUN_3_PARAMETERS}"#));
     }
     fields.push(format!(
         r#""links":{{"triage_report":"https://demo.antithesis.com/reports/{run_id}"}}"#

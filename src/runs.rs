@@ -666,12 +666,10 @@ fn no_properties_message(run_id: &str, filter: &PropertyFilter) -> String {
     }
 }
 
-/// Outcome of probing a run-scoped 404 with `get_run`: does the run itself not
-/// exist, or does it exist (with a known status) but the nested endpoint has no
-/// data yet? Any non-404 `get_run` failure is reported as a propagating error
-/// rather than misattributed to a missing run.
+/// Outcome of fetching a run with `get_run` to decide whether it exists. Only a
+/// 404 from `get_run` means the run is missing.
 enum RunProbe {
-    /// The run id is bad: `get_run` also returned a structured 404.
+    /// `get_run` returned a structured 404, so no run has this id.
     NotFound,
     /// The run exists; carries its full detail so callers can tailor the message
     /// (status, and the failure moment for incomplete runs). Boxed to keep the
@@ -682,10 +680,9 @@ enum RunProbe {
     ProbeFailed(color_eyre::eyre::Report),
 }
 
-/// Probe a run-scoped 404 by fetching the run itself. Only a structured 404 from
-/// `get_run` means the run is missing; any other `get_run` error is returned as
-/// `ProbeFailed` so callers never misreport a timeout/5xx/auth failure as "run
-/// not found".
+/// Fetch the run to decide whether it exists. Only a structured 404 means the
+/// run is missing. Every other `get_run` error becomes `ProbeFailed`, so
+/// callers never report a timeout, 5xx or auth failure as "run not found".
 async fn probe_run(api: &AntithesisApi, run_id: &str) -> RunProbe {
     match api.get_run(run_id).await {
         Ok(run) => RunProbe::Exists(Box::new(run.untag())),
@@ -762,8 +759,9 @@ async fn explain_logs_error(
     }
 }
 
-/// Turn a cancel failure into a clean message. See
-/// [`AntithesisApi::cancel_run`] for the responses this handles.
+/// Turn a cancel failure into a user error. A 409 means the run has finished.
+/// A 404 or 500 means "run not found" only when a probe confirms it. Every
+/// other error passes through.
 async fn explain_cancel_error(
     api: &AntithesisApi,
     run_id: &str,
@@ -775,8 +773,8 @@ async fn explain_cancel_error(
             .suggestion(format!(
                 "see the run's final status with `snouty runs show {run_id}`"
             )),
-        // A well-formed id that names no run answers 500. Say "run not found"
-        // only when the probe confirms it; otherwise the 500 is a real fault.
+        // A 500 can also be a real fault, so report "run not found" only when
+        // the probe confirms it.
         Some(500) => match probe_run(api, run_id).await {
             RunProbe::NotFound => user_error(format!("run not found: {run_id}")),
             _ => err,

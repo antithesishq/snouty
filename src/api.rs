@@ -612,7 +612,7 @@ impl AntithesisApi {
     /// Observed on orbitinghail, release 64.0:
     /// - A starting run answers 200 `{}` and is cancelled at once.
     /// - A completed or already cancelled run answers 409 "Conflict: Run <id>
-    ///   has already finished and cannot be cancelled", as the spec documents.
+    ///   has already finished and cannot be cancelled".
     /// - A malformed run id answers 404 `{"error":"404 Not Found"}`.
     /// - A well-formed run id that names no run answers 500
     ///   `{"error":"AssertionError [ERR_ASSERTION]: Unknown experiment id <id>"}`.

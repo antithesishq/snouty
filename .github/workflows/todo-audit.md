@@ -66,7 +66,9 @@ mcp-scripts:
               args = shlex.split(raw)
           except ValueError as err:
               return {"error": f"cannot split arguments: {err}"}
-          command = " ".join(args[:2] if args[:1] == ["runs"] else args[:1])
+          # --json and --verbose are global flags, so they may come first.
+          words = [a for a in args if a not in ("--json", "--verbose")]
+          command = " ".join(words[:2] if words[:1] == ["runs"] else words[:1])
           if command not in allowed:
               return {"error": f"`snouty {command}` is not allowed; allowed: {sorted(allowed)}"}
           if any(a.split("=")[0] in ("--settings", "--profile") for a in args):
@@ -183,10 +185,11 @@ For each entry, decide whether the condition it states still holds.
 
 - **A server behavior** ("observed on orbitinghail, release 64.0", "the API
   reports `unknown`", "the server ignores `limit`"): reproduce it with the
-  `snouty` tool against the tenant. Prefer `--json`. `--verbose` logs each
-  request and response to stderr. Pick a run to test against with `runs list --json`. Compare the
-  release in the comment with the current release: a quirk that still
-  reproduces on a later release still holds.
+  `snouty` MCP tool, passing everything after `snouty` as its `args` input.
+  Prefer `--json`. `--verbose` logs each request and response to stderr. Pick
+  a run to test against with `runs list --json`. Compare the release in the
+  comment with the current release: a quirk that still reproduces on a later
+  release still holds.
 - **A TODO that waits on something** ("when a run records them", "once the API
   reports `in_progress`"): check whether that thing has happened, on the tenant
   or in the repository.

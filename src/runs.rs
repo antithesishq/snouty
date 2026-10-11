@@ -471,7 +471,16 @@ async fn cmd_runs_cancel(
 
     let api = AntithesisApi::new(settings, verbose)?;
     if let Err(err) = api.cancel_run(run_id).await {
-        return Err(explain_cancel_error(&api, run_id, err).await);
+        return Err(match api_error_status(&err) {
+            Some(409) => user_error(format!("run {run_id} has already finished"))
+                .note("only a run that is starting or in progress can be cancelled")
+                .suggestion(format!(
+                    "see the run's final status with `snouty runs show {run_id}`"
+                )),
+            // A tenant older than MIN_CANCEL_RELEASE has no cancel endpoint
+            // and answers 404 for a real run, so probe the run.
+            _ => explain_run_scoped_error(&api, run_id, err).await,
+        });
     }
 
     if json {
@@ -666,10 +675,12 @@ fn no_properties_message(run_id: &str, filter: &PropertyFilter) -> String {
     }
 }
 
-/// Outcome of fetching a run with `get_run` to decide whether it exists. Only a
-/// 404 from `get_run` means the run is missing.
+/// Outcome of probing a run-scoped 404 with `get_run`: does the run itself not
+/// exist, or does it exist (with a known status) but the nested endpoint has no
+/// data yet? Any non-404 `get_run` failure is reported as a propagating error
+/// rather than misattributed to a missing run.
 enum RunProbe {
-    /// `get_run` returned a structured 404, so no run has this id.
+    /// The run id is bad: `get_run` also returned a structured 404.
     NotFound,
     /// The run exists; carries its full detail so callers can tailor the message
     /// (status, and the failure moment for incomplete runs). Boxed to keep the
@@ -680,9 +691,10 @@ enum RunProbe {
     ProbeFailed(color_eyre::eyre::Report),
 }
 
-/// Fetch the run to decide whether it exists. Only a structured 404 means the
-/// run is missing. Every other `get_run` error becomes `ProbeFailed`, so
-/// callers never report a timeout, 5xx or auth failure as "run not found".
+/// Probe a run-scoped 404 by fetching the run itself. Only a structured 404 from
+/// `get_run` means the run is missing; any other `get_run` error is returned as
+/// `ProbeFailed` so callers never misreport a timeout/5xx/auth failure as "run
+/// not found".
 async fn probe_run(api: &AntithesisApi, run_id: &str) -> RunProbe {
     match api.get_run(run_id).await {
         Ok(run) => RunProbe::Exists(Box::new(run.untag())),
@@ -756,33 +768,6 @@ async fn explain_logs_error(
             ))
     } else {
         err
-    }
-}
-
-/// Turn a cancel failure into a user error. A 409 means the run has finished.
-/// A 404 or 500 means "run not found" only when a probe confirms it. Every
-/// other error passes through.
-async fn explain_cancel_error(
-    api: &AntithesisApi,
-    run_id: &str,
-    err: color_eyre::eyre::Report,
-) -> color_eyre::eyre::Report {
-    match api_error_status(&err) {
-        Some(409) => user_error(format!("run {run_id} has already finished"))
-            .note("only a run that is starting or in progress can be cancelled")
-            .suggestion(format!(
-                "see the run's final status with `snouty runs show {run_id}`"
-            )),
-        // A 500 can also be a real fault, so report "run not found" only when
-        // the probe confirms it.
-        Some(500) => match probe_run(api, run_id).await {
-            RunProbe::NotFound => user_error(format!("run not found: {run_id}")),
-            _ => err,
-        },
-        // A tenant older than MIN_CANCEL_RELEASE has no cancel endpoint and
-        // answers 404 for a real run, so probe the run.
-        Some(404) => explain_run_scoped_error(api, run_id, err).await,
-        _ => err,
     }
 }
 
@@ -4939,48 +4924,6 @@ mod tests {
             // No mock mounted: a probe would 404 and wrongly say "run not found".
             let api = test_api(&server.uri());
             let result = explain_run_scoped_error(&api, "run-1", api_error(500, "boom 404")).await;
-            assert_eq!(api_error_status(&result), Some(500));
-            assert!(!format!("{result:#}").contains("run not found"));
-        }
-
-        const UNKNOWN_EXPERIMENT_500: &str = "API error: 500 Internal Server Error — \
-            {\"error\":\"AssertionError [ERR_ASSERTION]: Unknown experiment id run-1\"}";
-
-        #[tokio::test]
-        async fn cancel_error_reports_missing_run_on_500_and_404_probe() {
-            let server = mock_get_run("run-1", 404, json!({"message": "nope"})).await;
-            let api = test_api(&server.uri());
-            let result =
-                explain_cancel_error(&api, "run-1", api_error(500, UNKNOWN_EXPERIMENT_500)).await;
-            assert_eq!(format!("{result:#}"), "run not found: run-1");
-        }
-
-        #[tokio::test]
-        async fn cancel_error_keeps_500_when_run_exists() {
-            let server = mock_get_run(
-                "run-1",
-                200,
-                json!({
-                    "run_id": "run-1",
-                    "status": "in_progress",
-                    "created_at": "2025-03-20T02:00:00Z",
-                    "launcher": "nightly"
-                }),
-            )
-            .await;
-            let api = test_api(&server.uri());
-            let result =
-                explain_cancel_error(&api, "run-1", api_error(500, UNKNOWN_EXPERIMENT_500)).await;
-            assert_eq!(api_error_status(&result), Some(500));
-            assert!(!format!("{result:#}").contains("run not found"));
-        }
-
-        #[tokio::test]
-        async fn cancel_error_keeps_500_when_probe_fails() {
-            let server = mock_get_run("run-1", 502, json!({"message": "bad gateway"})).await;
-            let api = test_api(&server.uri());
-            let result =
-                explain_cancel_error(&api, "run-1", api_error(500, UNKNOWN_EXPERIMENT_500)).await;
             assert_eq!(api_error_status(&result), Some(500));
             assert!(!format!("{result:#}").contains("run not found"));
         }

@@ -2023,17 +2023,6 @@ def build_stories(d: Discovery) -> list[Story]:
             expect_ok=False,
         ),
         Story(
-            "runs-cancel-unknown",
-            "Wrong run ID — cancel reports a clean error",
-            "I try to cancel a run id that doesn't exist; I want a clean error.",
-            "A clean error that says the run was not found, not a raw server error. "
-            "Non-zero exit.",
-            ["runs", "cancel", UNKNOWN_RUN],
-            fails_with(f"Error: run not found: {UNKNOWN_RUN}"),
-            json_capable=False,
-            expect_ok=False,
-        ),
-        Story(
             "runs-wait",
             "Block until a run reaches a terminal state",
             "I scripted a launch and want one command that blocks until the run finishes, "

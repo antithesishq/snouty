@@ -40,10 +40,7 @@
 #     snouty prints it as plain stdout and stderr. --events asks the server
 #     for every event of the timeline while the script executes
 #     (`include_system_logs`), and snouty prints them as `runs logs` does,
-#     the script's output included. Verified against release 64.0
-#     (orbitinghail): the timeline carries assertions, test-composer tasks,
-#     fault-injector and journald events, and metadata about the command
-#     itself, most of which have no output text.
+#     the script's output included.
 #   - The script comes from the SCRIPT argument, or from stdin when SCRIPT is
 #     omitted. Omitting it is the only way to read stdin; a pipe, a redirect,
 #     and a heredoc all work, and a script over 2 MiB is refused.
@@ -69,6 +66,10 @@
 #     trailer or progress display; exit semantics are unchanged.
 #   - The API is still changing, so snouty is lenient about events: no event
 #     shape fails snouty. Only the last line is read as the result.
+#
+# Verified against release 64.0 (orbitinghail): the --events timeline carries
+# assertions, test-composer tasks, fault-injector and journald events, and
+# metadata about the command itself, most of which have no output text.
 #
 # Every successful invocation executes a script inside a live session, so
 # everything below the credential-free check is gated behind `[staging] skip`,
@@ -412,6 +413,7 @@ stderr 'stream ended before the command reported completion.*'
 # A run whose live session has ended fails with the server's error as-is. The
 # message is known to be rough (it leaks "minting session token failed"); the
 # API team is improving it server-side, so snouty does not translate it.
+# TODO: update this expectation once the API team replaces the message.
 ! snouty runs exec run-1 -3625518438076122494 398.4898056755774 'uname -a'
 stderr 'API error: 400 Bad Request.*minting session token failed.*'
 ! stderr 'source-run-id'

@@ -704,7 +704,8 @@ fn cleanup_engine_images(runtime_name: &str, built_images: &[String], registry_a
     // is ephemeral and thrown away after the job, so there is nothing to clean
     // up — skip the `rmi` entirely there to remove the writer that races those
     // concurrent builds. Locally we still clean up so a dev's image store does
-    // not accumulate junk across runs.
+    // not accumulate junk across runs. TODO: clean up on CI too once `podman
+    // build` no longer races `rmi` (#136).
     if std::env::var_os("CI").is_some() {
         eprintln!(
             "CI is set: skipping {} image cleanup (ephemeral runner; avoids racing concurrent builds, issue #136)",

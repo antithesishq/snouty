@@ -408,7 +408,8 @@ fn payload_pairs(record: &Map<String, Value>) -> impl Iterator<Item = (&String, 
 }
 
 /// Render a duration in seconds (the API sends both numbers and stringified
-/// numbers) as a short `1.2s`; `None` when absent or unparsable.
+/// numbers) as a short `1.2s`; `None` when absent or unparsable. TODO: drop
+/// the string arm once the API sends numbers only.
 fn format_duration(value: &Value) -> Option<String> {
     let seconds = match value {
         Value::Number(n) => n.as_f64()?,

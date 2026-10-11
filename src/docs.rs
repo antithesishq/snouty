@@ -572,7 +572,8 @@ fn generated_sdk_index(lang: &str) -> Option<(&'static str, &'static str)> {
         "python" | "py" => ("python", "generated/sdk/python/antithesis.html"),
         "java" => ("java", "generated/sdk/java/"),
         // dotnet's `dotnet/` index is a meta-refresh stub (and points at a
-        // broken absolute path), so link the namespace page directly.
+        // broken absolute path), so link the namespace page directly. TODO:
+        // link `dotnet/` once its stub stops pointing at a broken path.
         "dotnet" | "csharp" | "cs" | "c#" => {
             ("dotnet", "generated/sdk/dotnet/api/Antithesis.SDK.html")
         }

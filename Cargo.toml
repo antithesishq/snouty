@@ -99,7 +99,7 @@ predicates = "3"
 serde_json = "1"
 tempfile = "3"
 # The antithesishq fork: explicit regex matching, Go-aligned regex flags, and
-# a condition on a negated line skips instead of failing. Point back at
+# a condition on a negated line skips instead of failing. TODO: point back at
 # crates.io when upstream ships these
 # (https://github.com/antithesishq/testscript-rs).
 testscript-rs = { git = "https://github.com/antithesishq/testscript-rs.git", branch = "main" }

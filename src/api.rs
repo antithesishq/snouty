@@ -82,11 +82,13 @@ pub const MIN_SEARCH_RELEASE: (u64, u64) = (62, 2);
 
 /// The first tenant release whose execute-command API takes `container`.
 /// Earlier releases reject the field, and this release requires it. `runs exec`
-/// assumes the tenant meets this; `snouty doctor` checks it.
+/// assumes the tenant meets this; `snouty doctor` checks it. TODO: drop this
+/// floor and its doctor check once every supported tenant runs 64.0 or later.
 pub const MIN_EXEC_RELEASE: (u64, u64) = (64, 0);
 
 /// The first tenant release that serves the cancel-run API. `runs cancel`
-/// assumes the tenant meets this; `snouty doctor` checks it.
+/// assumes the tenant meets this; `snouty doctor` checks it. TODO: drop this
+/// floor and its doctor check once every supported tenant runs 63.0 or later.
 pub const MIN_CANCEL_RELEASE: (u64, u64) = (63, 0);
 
 /// The `container` value that executes a command on the host instead of in a
@@ -451,7 +453,8 @@ pub struct AntithesisApi {
 /// Stop a stream at the `limit` its request named. Release 61 ends the stream
 /// itself, but releases 58.11 through 60.1 ignore the field and send every
 /// match, so the cap is applied here as well. A request that names no limit
-/// stays open.
+/// stays open. TODO: drop the cap once every supported tenant runs 61.0 or
+/// later.
 fn cap_stream(stream: JsonStream, limit: Option<NonZeroU64>) -> JsonStream {
     match limit {
         Some(limit) => stream
@@ -493,7 +496,8 @@ impl AntithesisApi {
     /// Like [`AntithesisApi::new`], but accepts the deprecated
     /// username/password credentials and warns on use
     /// ([`PasswordPolicy::WarnDeprecated`]) — the launch webhooks are the
-    /// only endpoints that still accept them.
+    /// only endpoints that still accept them. TODO: drop this constructor once
+    /// the launch webhooks reject username/password too.
     pub fn new_for_launch(settings: &Settings, verbose: bool) -> Result<Self> {
         Self::build(
             settings,
@@ -1264,7 +1268,8 @@ fn launch_request(params: &Params) -> Result<generated::types::LaunchRequest> {
 /// as `UnexpectedResponse`, so we treat **any** 2xx as success and decode the
 /// body ourselves on that path. Genuine failures (4xx/5xx) are formatted as
 /// errors, status first — `build.rs` leaves them undocumented, so the status is
-/// always there to lead with.
+/// always there to lead with. TODO: drop the any-2xx path once the spec
+/// documents the 200 these webhooks send.
 async fn finish_launch<T: DeserializeOwned>(
     result: std::result::Result<ResponseValue<T>, ClientError<()>>,
 ) -> Result<T> {
@@ -1335,7 +1340,9 @@ fn launch_mvd_request(params: &Params) -> Result<generated::types::LaunchMvdRequ
 }
 
 /// The tenant version that first served the run properties resource. Runs
-/// created on older tenants 404 on `/runs/{run_id}/properties`.
+/// created on older tenants 404 on `/runs/{run_id}/properties`. TODO: drop
+/// this and `MIN_BUILD_LOGS_VERSION` once runs from releases before 54 no
+/// longer appear in `runs list`.
 const MIN_PROPERTIES_VERSION: u32 = 52;
 
 /// The tenant version that first served the run build logs resource. Runs

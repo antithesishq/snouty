@@ -605,6 +605,7 @@ async fn cmd_runs_properties(
         // The properties endpoint 404s both for a bogus run id and for a real
         // run that simply has no triage report yet (only `completed` runs do).
         // Fetch the run to say which, instead of leaking a bare "404 Not Found".
+        // TODO: drop the probe once the endpoint tells the two apart.
         Err(err) => return Err(explain_properties_error(&api, run_id, err).await),
     };
 
@@ -1693,13 +1694,16 @@ const MOMENT_NOT_WARM: &str = "Moment not warm";
 const DEBUGGING_LAUNCHER: &str = "debugging";
 
 /// How long after launch a debugging session may still refuse commands. In
-/// the gallery, a session took 3 to 4 minutes from launch to accept commands.
-/// The window leaves room for a slower start.
+/// the gallery, a session took 3 to 4 minutes from launch to accept commands
+/// (orbitinghail, release 64.0). The window leaves room for a slower start.
+/// TODO: drop the window once the API reports `in_progress` only for a ready
+/// session.
 const SESSION_LOADING_WINDOW: chrono::TimeDelta = chrono::TimeDelta::minutes(10);
 
 /// Show one event of a `runs exec` stream. Without --events, snouty's stdout
 /// carries only output text, so `runs exec ... | jq` composes. The server is
-/// still in flux, so an unknown or missing stream is stdout.
+/// still in flux, so an unknown or missing stream is stdout. TODO: treat an
+/// unknown stream as an error once the execute-command stream settles.
 fn render_exec_event(
     entry: &Value,
     json: bool,

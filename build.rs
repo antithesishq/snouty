@@ -182,8 +182,8 @@ fn untype_error_responses(spec: &mut serde_json::Value) {
 /// `is_streaming`.
 ///
 /// The pointer is asserted, so a spec refresh that drops the default (the
-/// upstream fix) fails the build. ACTION when that happens: delete this
-/// transform and its call.
+/// upstream fix) fails the build. TODO: delete this transform and its call
+/// when that assertion fails.
 fn unrequire_search_limit_default(spec: &mut serde_json::Value) {
     remove_schema_key(
         spec,
@@ -393,7 +393,8 @@ fn strip_additional_properties_false(value: &mut serde_json::Value) -> usize {
 // deserializing API responses so commands like `snouty runs list` don't hard
 // error on old runs (#122). Panics if the expected generated code is missing,
 // so a progenitor upgrade that changes the output shape fails the build
-// instead of silently dropping the aliases.
+// instead of silently dropping the aliases. TODO: drop the aliases once
+// `runs list` no longer returns runs that store "on"/"off".
 fn patch_lenient_booleans(content: String) -> String {
     let replacements = [
         (

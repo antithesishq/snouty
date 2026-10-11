@@ -430,9 +430,9 @@ changes. Find the ones that no longer hold, and report them.
 
 ## Inputs
 
-- `/tmp/gh-aw/agent/weekly-audit/todos.json` lists every `TODO`, `FIXME` and
-  server-behavior comment block in the repository at this commit, with its
-  `text` and `marker`.
+- `/tmp/gh-aw/agent/weekly-audit/todos.json` lists every `TODO`, `FIXME`,
+  server-behavior and upstream-bug comment block in the repository at this
+  commit, with its `text` and `marker`.
 - `/tmp/gh-aw/agent/weekly-audit/release.txt` holds the tenant's release version.
 - The repository is checked out in the working directory. Read the code around
   each comment, and the code that exists only because of it.
@@ -451,6 +451,11 @@ For each entry, decide whether the condition it states still holds.
 - **A TODO that waits on something** ("when a run records them", "once the API
   reports `in_progress`"): check whether that thing has happened, on the tenant
   or in the repository.
+- **A reference to another project's issue** (`docker/compose#11627`): when
+  the code works around that bug, check with the GitHub tools whether it is
+  fixed, and whether the fix is in a release the code could require. A
+  reference that only explains a version floor holds while the floor stands.
+  When the tools cannot read the issue, record it as unverifiable.
 - **A TODO or FIXME with no external trigger**: check whether the code already
   does what it asks.
 

@@ -94,6 +94,10 @@ snouty runs exec --help
 stdout 'Use --source-run-id to load a moment from a\s+different run\.'
 ! stdout 'name the run it comes from'
 
+# --timeout does not count the time the server takes to load a cold moment.
+snouty runs exec --help
+stdout 'That\s+can take minutes, and --timeout does not count it;'
+
 # The command authenticates with the Antithesis API. An API key is required,
 # like every run-scoped endpoint.
 ! snouty runs exec run-2 -3625518438076122494 398.4898056755774 'uname -a'

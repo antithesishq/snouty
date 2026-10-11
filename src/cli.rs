@@ -1103,8 +1103,8 @@ generated in the session is warm: by fuzzing, and by an earlier `runs exec`,
 so the end moment of one command is warm for the next. A moment from another
 run or session is cold. Use --source-run-id to load a moment from a
 different run. The server replays that run's inputs to load the moment. That
-can take minutes, and --timeout counts it; snouty shows the progress on
-stderr. Find a moment with `runs properties --detail` or `runs events`.
+can take minutes, and --timeout does not count it; snouty shows the progress
+on stderr. Find a moment with `runs properties --detail` or `runs events`.
 
 The script executes on the host, or in the container that --container names.
 The command needs tenant release 64.0 or newer; `snouty doctor` reports the

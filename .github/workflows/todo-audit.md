@@ -34,16 +34,21 @@ tools:
     toolsets: [issues, pull_requests]
 
 # The agent reaches the tenant only through this tool, and the API key stays on
-# the runner. `launch`, `debug` and `runs exec` start billable sessions, and
-# `runs cancel` mutates, so the tool rejects them.
+# the runner. The tool offers all of snouty but enforces a nightly budget for
+# what costs money or touches other people's runs: 2 launches of at most 15
+# minutes, 1 debugging session, and 30 `runs exec` calls. It records each run it
+# creates in a ledger on the runner, and the post-step cancels them all.
 mcp-scripts:
   snouty:
     description: >-
-      Run a read-only snouty command against the Antithesis tenant, with snouty
-      built from the commit under test. Allowed: `doctor`, and `runs list`,
-      `runs show`, `runs properties`, `runs logs`, `runs events`, `runs search`.
-      Pass the arguments after `snouty`, e.g. `runs list --limit 5 --json`.
-      Output past 60000 characters is cut, and `truncated` says so.
+      Run snouty, built from the commit under test, against the Antithesis
+      tenant. Pass the arguments after `snouty`, e.g. `runs list --limit 5
+      --json`. Each night allows 2 `launch` runs of at most 15 minutes, 1
+      `debug` session and 30 `runs exec` calls; the result's `budget` shows
+      what is left. Runs the audit creates are cancelled when it ends.
+      `runs exec` refuses other people's debugging sessions, and `runs cancel`
+      refuses live runs the audit did not start. Output past 60000 characters
+      is cut, and `truncated` says so.
     inputs:
       args:
         type: string
@@ -53,41 +58,176 @@ mcp-scripts:
     # the MCP gateway's config in gh-aw v0.91.7, so stay under it.
     timeout: 55
     py: |
-      import json, os, shlex, subprocess, tempfile
+      import fcntl, json, os, re, shlex, subprocess, tempfile
 
-      allowed = {"doctor", "runs list", "runs show", "runs properties",
-                 "runs logs", "runs events", "runs search"}
-      timeout = 50
-      limit = 60000
+      # Per-night budget. A launch or debug call that times out counts as created,
+      # because it may have created a run the tool never saw.
+      LIMITS = {"launch": 2, "debug": 1, "exec": 30}
+      ATTEMPTS = 6
+      MAX_MINUTES = 15
+      TIMEOUT = 50
+      LIMIT = 60000
+      # `validate` and `launch -c` read a compose directory, which the agent can
+      # write under /tmp/gh-aw, and would build and run its images on the runner.
+      DENIED = {"login", "settings", "update", "completions", "validate"}
+      TERMINAL = {"completed", "cancelled", "incomplete"}
+      VALUED = {"--container", "--source-run-id", "--source-session-id", "--timeout"}
+      TAG = "nightly_audit.workflow_run=" + os.environ.get("AUDIT_RUN", "")
+
+      def snouty(args):
+          # Settings can redirect the key to another host. Hence no --settings or
+          # --profile, and a cwd with no `./.snouty.toml` in it.
+          with tempfile.TemporaryDirectory() as cwd:
+              return subprocess.run([os.environ["SNOUTY"], *args], cwd=cwd,
+                                    capture_output=True, text=True, timeout=TIMEOUT)
+
+      def ledger(update):
+          with open(os.environ["AUDIT_LEDGER"], "a+") as f:
+              fcntl.flock(f, fcntl.LOCK_EX)
+              f.seek(0)
+              data = json.loads(f.read() or "{}")
+              try:
+                  return update(data)
+              finally:
+                  f.seek(0)
+                  f.truncate()
+                  json.dump(data, f)
+
+      def budget(data):
+          return {k: f"{data.get(k, {}).get('created', 0)}/{n}" if k != "exec"
+                  else f"{data.get('exec', 0)}/{n}" for k, n in LIMITS.items()}
+
+      def execute(args):
+          result = {"command": "snouty " + shlex.join(args)}
+          try:
+              p = snouty(args)
+          except subprocess.TimeoutExpired:
+              return {**result, "error": f"timed out after {TIMEOUT}s"}
+          return {**result, "exit_code": p.returncode, "stdout": p.stdout[:LIMIT],
+                  "stderr": p.stderr[:LIMIT],
+                  "truncated": max(len(p.stdout), len(p.stderr)) > LIMIT}
+
+      def minutes(value):
+          m = re.fullmatch(r"(?:(\d+)h)?(?:(\d+)m?)?", value)
+          if not value or not m:
+              return None
+          return int(m.group(1) or 0) * 60 + int(m.group(2) or 0)
+
+      def option(args, name):
+          for i, a in enumerate(args):
+              if a == name and i + 1 < len(args):
+                  return args[i + 1]
+              if a.startswith(name + "="):
+                  return a.split("=", 1)[1]
+          return None
+
+      def positional(words):
+          skip = False
+          for w in words:
+              if skip:
+                  skip = False
+              elif w.startswith("-"):
+                  skip = w in VALUED
+              else:
+                  return w
+          return None
+
+      def created_id(stdout):
+          try:
+              obj = json.loads(stdout)
+          except json.JSONDecodeError:
+              return None
+          return obj.get("runId") or obj.get("run_id") if isinstance(obj, dict) else None
+
+      def create(kind, args):
+          def go(data):
+              used = data.setdefault(kind, {"created": 0, "attempts": 0})
+              if used["created"] >= LIMITS[kind]:
+                  return {"error": f"tonight's budget of {LIMITS[kind]} {kind} is spent"}
+              if used["attempts"] >= ATTEMPTS:
+                  return {"error": f"tonight's {ATTEMPTS} {kind} attempts are spent"}
+              used["attempts"] += 1
+              result = execute(args)
+              if "error" in result:
+                  used["created"] += 1
+                  data.setdefault("uncertain", []).append(kind)
+              elif result["exit_code"] == 0:
+                  used["created"] += 1
+                  run_id = created_id(result["stdout"])
+                  if run_id:
+                      data.setdefault("runs", []).append({"id": run_id, "kind": kind})
+                  else:
+                      data.setdefault("uncertain", []).append(kind)
+              return {**result, "budget": budget(data)}
+          return ledger(go)
+
+      def launch(args):
+          if any(a.split("=")[0] in ("-c", "--config") or a.startswith("-c") and len(a) > 2 for a in args):
+              return {"error": "launch from --config-image or a webhook, not a local --config directory"}
+          if any("antithesis.duration" in a for a in args):
+              return {"error": "set the duration with --duration, at most 15 minutes"}
+          duration = option(args, "--duration")
+          if duration is None:
+              args += ["--duration", str(MAX_MINUTES)]
+          elif (minutes(duration) or MAX_MINUTES + 1) > MAX_MINUTES:
+              return {"error": f"--duration must be at most {MAX_MINUTES} minutes, such as 15 or 15m"}
+          if "--ephemeral" not in args:
+              args.append("--ephemeral")
+          if "--json" not in args:
+              args.append("--json")
+          return create("launch", args + ["--param", TAG])
+
+      def guarded(sub, args, words):
+          run_id = positional(words[2:])
+          tracked = ledger(lambda d: [r["id"] for r in d.get("runs", [])])
+          if run_id and run_id not in tracked:
+              try:
+                  p = snouty(["runs", "show", run_id, "--json"])
+              except subprocess.TimeoutExpired:
+                  return {"error": f"could not look up {run_id} to check it is safe to {sub}"}
+              if p.returncode == 0:
+                  info = json.loads(p.stdout)
+                  if sub == "exec" and info.get("launcher") == "debugging":
+                      return {"error": "that debugging session is not the audit's own; open one with `debug`"}
+                  if sub == "cancel" and info.get("status") not in TERMINAL:
+                      return {"error": "that run is live and the audit did not start it"}
+          if sub != "exec":
+              return execute(args)
+          def go(data):
+              if data.get("exec", 0) >= LIMITS["exec"]:
+                  return {"error": f"tonight's budget of {LIMITS['exec']} exec calls is spent"}
+              data["exec"] = data.get("exec", 0) + 1
+              return {**execute(args), "budget": budget(data)}
+          return ledger(go)
 
       def run(raw):
           try:
               args = shlex.split(raw)
           except ValueError as err:
               return {"error": f"cannot split arguments: {err}"}
+          if any(a.split("=")[0] in ("--settings", "--profile", "--stdin") for a in args):
+              return {"error": "--settings, --profile and --stdin are not allowed"}
           # --json and --verbose are global flags, so they may come first.
           words = [a for a in args if a not in ("--json", "--verbose")]
-          command = " ".join(words[:2] if words[:1] == ["runs"] else words[:1])
-          if command not in allowed:
-              return {"error": f"`snouty {command}` is not allowed; allowed: {sorted(allowed)}"}
-          if any(a.split("=")[0] in ("--settings", "--profile") for a in args):
-              return {"error": "--settings and --profile are not allowed"}
-          result = {"command": "snouty " + shlex.join(args)}
-          # Settings can redirect the key to another host. Hence no --settings
-          # or --profile above, and a cwd with no `./.snouty.toml` in it.
-          try:
-              with tempfile.TemporaryDirectory() as cwd:
-                  p = subprocess.run([os.environ["SNOUTY"], *args], cwd=cwd,
-                                     capture_output=True, text=True, timeout=timeout)
-          except subprocess.TimeoutExpired:
-              return {**result, "error": f"timed out after {timeout}s"}
-          return {**result, "exit_code": p.returncode, "stdout": p.stdout[:limit],
-                  "stderr": p.stderr[:limit],
-                  "truncated": max(len(p.stdout), len(p.stderr)) > limit}
+          top = words[0] if words else ""
+          sub = words[1] if top == "runs" and len(words) > 1 else ""
+          if top in DENIED:
+              return {"error": f"`snouty {top}` is not available to the audit"}
+          if "-h" in words or "--help" in words:
+              return execute(args)
+          if top == "launch":
+              return launch(args)
+          if top == "debug":
+              return create("debug", args + ([] if "--json" in args else ["--json"]))
+          if sub in ("exec", "cancel"):
+              return guarded(sub, args, words)
+          return execute(args)
 
       print(json.dumps(run(inputs.get("args", ""))))
     env:
       SNOUTY: ${{ runner.temp }}/snouty/snouty
+      AUDIT_LEDGER: ${{ runner.temp }}/nightly-audit/ledger.json
+      AUDIT_RUN: ${{ github.run_id }}
       ANTITHESIS_TENANT: ${{ secrets.STAGING_ANTITHESIS_TENANT }}
       ANTITHESIS_API_KEY: ${{ secrets.STAGING_ANTITHESIS_API_KEY }}
 
@@ -119,6 +259,61 @@ jobs:
           path: target/debug/snouty
           retention-days: 1
 
+  # Cancel every run the audit created: those in the ledger, and any launch
+  # tagged with this workflow run, in case the tool timed out before it saw
+  # the run's ID.
+  teardown:
+    needs: [agent]
+    if: always() && needs.agent.result != 'skipped'
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: snouty
+          path: ${{ runner.temp }}/snouty
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        continue-on-error: true
+        with:
+          name: nightly-audit-ledger
+          path: ${{ runner.temp }}/nightly-audit
+
+      - name: Cancel the audit's runs
+        env:
+          ANTITHESIS_TENANT: ${{ secrets.STAGING_ANTITHESIS_TENANT }}
+          ANTITHESIS_API_KEY: ${{ secrets.STAGING_ANTITHESIS_API_KEY }}
+          AUDIT_RUN: ${{ github.run_id }}
+        run: |
+          chmod +x "$RUNNER_TEMP/snouty/snouty"
+          python3 - <<'EOF'
+          import json, os, subprocess
+
+          snouty = os.path.join(os.environ["RUNNER_TEMP"], "snouty", "snouty")
+          path = os.path.join(os.environ["RUNNER_TEMP"], "nightly-audit", "ledger.json")
+          ledger = json.load(open(path)) if os.path.exists(path) else {}
+          ids = {r["id"] for r in ledger.get("runs", [])}
+          listed = subprocess.run([snouty, "runs", "list", "--limit", "100", "--json"],
+                                  capture_output=True, text=True, check=True)
+          for line in listed.stdout.splitlines():
+              run = json.loads(line)
+              params = run.get("parameters") or {}
+              if params.get("nightly_audit.workflow_run") == os.environ["AUDIT_RUN"]:
+                  ids.add(run["run_id"])
+          lines = ["## Runs the audit created", ""]
+          for run_id in sorted(ids):
+              p = subprocess.run([snouty, "runs", "cancel", run_id], capture_output=True, text=True)
+              outcome = "cancelled" if p.returncode == 0 else (p.stderr.strip().splitlines() or ["?"])[0]
+              lines.append(f"- `{run_id}`: {outcome}")
+          if ledger.get("uncertain"):
+              lines.append(f"- a {', '.join(ledger['uncertain'])} call timed out or printed no run ID; check the tenant")
+          if not ids and not ledger.get("uncertain"):
+              lines.append("None.")
+          print("\n".join(lines))
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as f:
+              f.write("\n".join(lines) + "\n")
+          EOF
+
 # The binary lives under the runner's temp directory, which the agent cannot
 # write.
 steps:
@@ -130,7 +325,7 @@ steps:
   - name: Collect comments
     run: |
       chmod +x "$RUNNER_TEMP/snouty/snouty"
-      mkdir -p /tmp/gh-aw/agent/todo-audit
+      mkdir -p /tmp/gh-aw/agent/todo-audit "$RUNNER_TEMP/nightly-audit"
       python3 scripts/collect-todos.py > /tmp/gh-aw/agent/todo-audit/todos.json
 
   # The agent compares each comment's release with the tenant's, so a missing
@@ -158,6 +353,18 @@ steps:
 pre-agent-steps:
   - name: Drop contributor Claude Code settings
     run: rm -f .claude/settings.json
+
+# The teardown job cancels the runs in this ledger. Post-steps may not hold
+# secrets, so this one only hands the ledger over.
+post-steps:
+  - name: Upload the run ledger
+    if: always()
+    uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+    with:
+      name: nightly-audit-ledger
+      path: ${{ runner.temp }}/nightly-audit/ledger.json
+      if-no-files-found: ignore
+      retention-days: 1
 
 safe-outputs:
   create-issue:
@@ -202,8 +409,15 @@ For each entry, decide whether the condition it states still holds.
 - **A TODO or FIXME with no external trigger**: check whether the code already
   does what it asks.
 
-The `snouty` tool runs only read-only commands. When a check needs `launch`,
-`debug` or `runs exec`, record the comment as unverifiable.
+The `snouty` tool can also launch runs, open a debugging session and run
+`runs exec`, within a nightly budget: 2 launches of at most 15 minutes, 1
+debugging session and 30 exec calls. Spend it on comments that need it, such as
+cancel semantics, launch responses, `runs exec` behavior and session readiness,
+and plan the checks that share one session before you open it. A completed run
+whose test name starts with `snouty` has an `antithesis.config_image` parameter
+you can launch with. Everything the audit creates is cancelled when it ends, so
+you do not need to clean up. When the budget is spent, record the rest as
+unverifiable.
 
 A comment is **stale** only when you have evidence: a command whose output
 contradicts the comment, or code that already does what the TODO asks. When the

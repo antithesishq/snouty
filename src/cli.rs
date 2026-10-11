@@ -151,15 +151,9 @@ them on the run and `snouty runs show` lists them:
     --param attrs.build=12345
 
 When the config dir (or the current directory, without --config) is in a git
-checkout, the launch records the checked-out commit and branch as `vcs.*`
-params. For a github.com `origin` remote, it also records the repository and a
-link to the commit. `snouty runs show` lists them under Version Control. --no-vcs
-turns the detection off, and so does a --param for any key it detects. A
---param for another `vcs.*` key, such as vcs.system_name, is sent with the
-detected values.
-
-The launch sets `run.caller_type=snouty`, which the report shows as the
-creator's type. Pass --param run.caller_type=<type> to send another value.
+checkout, the launch records the checked-out commit and branch in run metadata.
+For a github.com `origin` remote, it also records the repository and a link to
+the commit. `snouty runs show` lists them under Version Control.
 
 Additional container images that the config parser can't discover (e.g. an
 image referenced only in a Kubernetes CRD field) can be registered with the
@@ -667,7 +661,7 @@ pub struct LaunchArgs {
     pub performance_tier: Option<PerformanceTier>,
 
     /// Do not record the commit, branch, and repository of the local git
-    /// checkout as `vcs.*` params
+    /// checkout in run metadata
     #[arg(long)]
     pub no_vcs: bool,
 

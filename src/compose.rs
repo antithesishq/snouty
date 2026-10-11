@@ -602,18 +602,24 @@ impl DockerCompose {
                              image on each run, and snouty cannot check its architecture."
                         );
                     }
-                    if contents.build_services.contains(&service.name) {
+                    // The platform resolves a bare name in the tenant
+                    // repository, so spell out Docker Hub shorthand.
+                    let repo = image_repo(image);
+                    let spelled = format!("{}{}", normalize_repo(repo), &image[repo.len()..]);
+                    resolution.insert(image, Some(spelled));
+                }
+                // `missing_services` holds one service per image, so the
+                // `build:` check runs over every service.
+                for service in &contents.services {
+                    if contents.build_services.contains(&service.name)
+                        && resolution.contains_key(service.image.as_str())
+                    {
                         eprintln!(
                             "warning: service '{}' has a `build:` stanza. To launch the \
                              local code, build it first.",
                             service.name
                         );
                     }
-                    // The platform resolves a bare name in the tenant
-                    // repository, so spell out Docker Hub shorthand.
-                    let repo = image_repo(image);
-                    let spelled = format!("{}{}", normalize_repo(repo), &image[repo.len()..]);
-                    resolution.insert(image, Some(spelled));
                 }
             }
         }

@@ -63,7 +63,8 @@ stderr '(Pushing image|Image already in a registry, skipping push):.*myapp'
 stderr '"antithesis.config_image":.*@sha256:'
 
 # A service with a `build:` stanza whose image is not local was possibly not
-# built, so the launch also warns that it does not run the local code.
+# built, so the launch also warns that it does not run the local code. The
+# warning names that service even when another service shares the image.
 mock-server 200 '{"runId":"run-123","statusCode":200}'
 snouty launch --launcher basic_test -c unbuilt_config --duration 30 --allow-remote-images
 stderr 'warning: image `snouty-unbuilt-xyz:latest` is not in the local image store'
@@ -180,6 +181,8 @@ services:
     image: docker.io/library/nginx-snouty-absent:latest
 -- unbuilt_config/docker-compose.yaml --
 services:
+  api:
+    image: snouty-unbuilt-xyz:latest
   app:
     build: .
     image: snouty-unbuilt-xyz:latest

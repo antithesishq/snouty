@@ -559,6 +559,15 @@ impl AntithesisApi {
             .unwrap_or_else(|| self.base_url.clone())
     }
 
+    /// Whether the client authenticates with the deprecated username and
+    /// password, which only the launch endpoints accept.
+    pub fn uses_password(&self) -> bool {
+        matches!(
+            self.client.inner().authn_info,
+            AuthenticationInfo::Password { .. }
+        )
+    }
+
     pub async fn launch_test(&self, launcher: &str, params: &Params) -> Result<LaunchResponse> {
         let body = launch_request(params)?;
         let result = self

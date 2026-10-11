@@ -398,12 +398,24 @@ async fn cmd_debug(
     params.validate_debugging_params()?;
     params.ensure_single_debug_target()?;
 
+    let api = AntithesisApi::new_for_launch(settings, verbose)?;
+    // The launch endpoint accepts an unknown run and starts a billable
+    // session, so check the run first. The runs endpoints refuse a password,
+    // so with one there is no way to check.
+    if let Some(run_id) = params
+        .as_map()
+        .get(ANT_DEBUGGING_RUN_ID)
+        .and_then(|v| v.as_str())
+        && !api.uses_password()
+    {
+        snouty::runs::ensure_run_exists(&api, run_id).await?;
+    }
+
     eprintln!(
         "\nRequesting the Antithesis multiverse debugger with params:\n{}",
         serde_json::to_string_pretty(&params.to_redacted_map())?
     );
 
-    let api = AntithesisApi::new_for_launch(settings, verbose)?;
     let response = api.launch_debugging(&params).await?;
 
     if json {

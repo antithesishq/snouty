@@ -703,6 +703,15 @@ async fn probe_run(api: &AntithesisApi, run_id: &str) -> RunProbe {
     }
 }
 
+/// Fail with the shared "run not found: X" error unless `run_id` names a run.
+pub async fn ensure_run_exists(api: &AntithesisApi, run_id: &str) -> Result<()> {
+    match probe_run(api, run_id).await {
+        RunProbe::NotFound => Err(user_error(format!("run not found: {run_id}"))),
+        RunProbe::ProbeFailed(err) => Err(err),
+        RunProbe::Exists(_) => Ok(()),
+    }
+}
+
 /// Translate an error from a run-scoped endpoint (show/build-logs/events/logs)
 /// into the shared friendly "run not found: X" message when the failure is a
 /// 404 for a bad run id. Any non-404 error passes through untouched (full

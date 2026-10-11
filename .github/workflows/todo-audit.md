@@ -149,12 +149,12 @@ steps:
 
 safe-outputs:
   create-issue:
-    labels: [todo-audit]
+    labels: [nightly-audit]
     max: 5
     expires: false
   add-comment:
     target: "*"
-    required-labels: [todo-audit]
+    required-labels: [nightly-audit]
     max: 5
 ---
 
@@ -208,7 +208,7 @@ requests, open and closed, for:
 
 Then:
 
-- An **open issue** with the `todo-audit` label matches: add a comment to it
+- An **open issue** with the `nightly-audit` label matches: add a comment to it
   with tonight's evidence and release. Do not open a new issue.
 - An **open issue** without that label matches: do nothing, and name it in the
   summary.

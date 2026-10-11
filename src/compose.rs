@@ -540,21 +540,14 @@ impl DockerCompose {
                 MissingImages::Reject => {
                     return Err(launch_missing_images_error(rt, &contents, &absent));
                 }
-                MissingImages::AssumeRemote => warn_remote_images(&contents, &absent)?,
+                MissingImages::AssumeRemote => warn_remote_images(rt, &contents, &absent)?,
             }
         }
 
-        let (mut rewrites, unserved) = find_served_images(rt, local, &prefix)?;
-        rewrites.extend(push_images(rt, &unserved, &prefix)?);
+        let (mut references, unserved) = find_served_images(rt, local, &prefix)?;
+        references.extend(push_images(rt, &unserved, &absent, &prefix)?);
 
-        let services = contents
-            .services
-            .iter()
-            .filter_map(|service| {
-                let reference = rewrites.get(service.image.as_str())?;
-                Some((service.name.clone(), strip_registry(reference, &prefix)))
-            })
-            .collect();
+        let services = service_rewrites(&contents, &references, &prefix);
         rewrite_compose_images(&self.canonical_contents()?, &services)
     }
 }
@@ -616,7 +609,11 @@ fn launch_missing_images_error(
 
 /// Warn about each image in `absent`, which the launch leaves as written. A
 /// default build tag fails instead, because no registry serves it.
-fn warn_remote_images(contents: &ComposeContents, absent: &[&str]) -> Result<()> {
+fn warn_remote_images(
+    rt: &dyn ContainerRuntime,
+    contents: &ComposeContents,
+    absent: &[&str],
+) -> Result<()> {
     if let Some(&image) = absent
         .iter()
         .find(|image| is_default_image(contents, image))
@@ -630,6 +627,16 @@ fn warn_remote_images(contents: &ComposeContents, absent: &[&str]) -> Result<()>
                  a registry"
             )
         );
+    }
+    // An image in the store of another engine was likely built for this
+    // launch, so the platform cannot pull it.
+    let absent_refs: Vec<String> = absent.iter().map(|image| image.to_string()).collect();
+    let elsewhere = images_available_in_other_engines(rt, &absent_refs);
+    if let Some((warnings, suggestion)) = cross_engine_guidance(rt.name(), &elsewhere) {
+        for warning in warnings {
+            eprintln!("warning: {warning}");
+        }
+        eprintln!("{suggestion}");
     }
     for image in absent {
         if image.contains('@') {
@@ -679,17 +686,29 @@ fn find_served_images<'a>(
 }
 
 /// Push each local image in `images` into the tenant repository at `prefix`,
-/// and map it to its pushed digest reference.
+/// and map it to its pushed digest reference. No push overwrites the tenant
+/// tag that the platform reads for an image in `remote`.
 fn push_images<'a>(
     rt: &dyn ContainerRuntime,
     images: &[&'a str],
+    remote: &[&str],
     prefix: &str,
 ) -> Result<BTreeMap<&'a str, String>> {
+    let reserved: BTreeMap<String, &str> = remote
+        .iter()
+        .filter_map(|&image| Some((tenant_tag(image, prefix)?, image)))
+        .collect();
     // destination -> image. One destination holds one image, because snouty
     // tags each image onto its destination and pushes that path once.
     let mut sources: BTreeMap<String, &str> = BTreeMap::new();
     for &image in images {
         let dest = push_destination(image, prefix)?;
+        if let Some(other) = reserved.get(&dest) {
+            bail!(user_error(format!(
+                "snouty would push `{image}` to `{dest}`, over the image that a service names \
+                 as `{other}`. Rename one of them."
+            )));
+        }
         if let Some(other) = sources.insert(dest.clone(), image) {
             bail!(user_error(format!(
                 "`{other}` and `{image}` both push to `{dest}`, so snouty would push one of \
@@ -711,6 +730,35 @@ fn push_images<'a>(
             let reference = rt.image_push(&dest)?;
             eprintln!("Image pushed: {reference}");
             Ok((image, reference))
+        })
+        .collect()
+}
+
+/// The tag in the tenant repository at `prefix` that the platform reads first
+/// for `image`, or `None` when `image` names another registry. The platform
+/// resolves a bare name against the tenant repository before public
+/// registries.
+fn tenant_tag(image: &str, prefix: &str) -> Option<String> {
+    let path = strip_registry(image, prefix);
+    (path != image || registry_host(image).is_none()).then(|| format!("{prefix}{path}"))
+}
+
+/// The new `image:` reference of each service whose reference changes. An
+/// image that is not in `references` keeps its reference as written, and
+/// every reference loses the address of the tenant repository at `prefix`.
+fn service_rewrites(
+    contents: &ComposeContents,
+    references: &BTreeMap<&str, String>,
+    prefix: &str,
+) -> BTreeMap<String, String> {
+    contents
+        .services
+        .iter()
+        .filter_map(|service| {
+            let image = service.image.as_str();
+            let reference = references.get(image).map_or(image, String::as_str);
+            let reference = strip_registry(reference, prefix);
+            (reference != image).then(|| (service.name.clone(), reference))
         })
         .collect()
 }
@@ -2370,11 +2418,60 @@ services:
     fn warn_remote_images_rejects_a_default_build_tag() {
         let mut contents = contents_of(&[("app", "proj-app:latest")], &["app"]);
         contents.services[0].default_image = true;
-        let err = warn_remote_images(&contents, &["proj-app:latest"]).unwrap_err();
+        let err = warn_remote_images(&FakeRuntime::default(), &contents, &["proj-app:latest"])
+            .unwrap_err();
         let msg = format!("{err:?}");
         assert!(
             msg.contains("default build tag `proj-app:latest`"),
             "expected the default build tag to be named, got: {msg}"
+        );
+    }
+    #[test]
+    fn push_images_does_not_push_over_a_tenant_tag_that_a_remote_image_reads() {
+        // A reference into the tenant repository, and a bare name, which the
+        // platform resolves against the tenant repository first.
+        for (local, remote) in [
+            ("own:v2", "reg.example.com/own:v2"),
+            ("reg.example.com/own:v2", "own:v2"),
+        ] {
+            let rt = FakeRuntime::default();
+            let err = push_images(&rt, &[local], &[remote], "reg.example.com/").unwrap_err();
+            let msg = format!("{err:?}");
+            assert!(
+                msg.contains(&format!(
+                    "over the image that a service names as `{remote}`"
+                )),
+                "expected the push of {local} to be refused, got: {msg}"
+            );
+            assert!(
+                rt.pushed.lock().unwrap().is_empty(),
+                "nothing should be pushed"
+            );
+        }
+    }
+    #[test]
+    fn service_rewrites_names_only_the_services_whose_reference_changes() {
+        let contents = contents_of(
+            &[
+                ("app", "myapp:latest"),
+                ("db", "ghcr.io/org/db:v1"),
+                ("hub", "postgres:16"),
+                ("own", "reg.example.com/own:v2"),
+            ],
+            &[],
+        );
+        let references = BTreeMap::from([(
+            "myapp:latest",
+            "reg.example.com/myapp:latest@sha256:a".to_string(),
+        )]);
+        assert_eq!(
+            service_rewrites(&contents, &references, "reg.example.com/"),
+            BTreeMap::from([
+                ("app".to_string(), "myapp:latest@sha256:a".to_string()),
+                // A remote image in the tenant repository loses the address
+                // too, so the platform does not need to resolve it.
+                ("own".to_string(), "own:v2".to_string()),
+            ])
         );
     }
     #[test]
@@ -2392,8 +2489,13 @@ services:
             ]),
             ..Default::default()
         };
-        let references =
-            push_images(&rt, &["myapp:latest", "sidecar:v1"], "reg.example.com/").unwrap();
+        let references = push_images(
+            &rt,
+            &["myapp:latest", "sidecar:v1"],
+            &[],
+            "reg.example.com/",
+        )
+        .unwrap();
         assert_eq!(
             references,
             BTreeMap::from([

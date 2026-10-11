@@ -221,11 +221,14 @@ mcp-scripts:
           return execute(args)
 
       print(json.dumps(run(inputs.get("args", ""))))
+    # The tenant is a plain value, not the STAGING_ANTITHESIS_TENANT secret: gh-aw
+    # redacts every secret's value from what the agent files, and the tenant's
+    # name appears throughout the comments the agent quotes.
     env:
       SNOUTY: ${{ runner.temp }}/snouty/snouty
       AUDIT_LEDGER: ${{ runner.temp }}/nightly-audit/ledger.json
       AUDIT_RUN: ${{ github.run_id }}
-      ANTITHESIS_TENANT: ${{ secrets.STAGING_ANTITHESIS_TENANT }}
+      ANTITHESIS_TENANT: orbitinghail
       ANTITHESIS_API_KEY: ${{ secrets.STAGING_ANTITHESIS_API_KEY }}
 
 # The agent can write to its job's workspace, so a binary built there could be
@@ -278,7 +281,7 @@ jobs:
 
       - name: Cancel the audit's runs
         env:
-          ANTITHESIS_TENANT: ${{ secrets.STAGING_ANTITHESIS_TENANT }}
+          ANTITHESIS_TENANT: orbitinghail
           ANTITHESIS_API_KEY: ${{ secrets.STAGING_ANTITHESIS_API_KEY }}
           AUDIT_RUN: ${{ github.run_id }}
         run: |
@@ -330,7 +333,7 @@ steps:
   # here, such as an unset container registry.
   - name: Read tenant release
     env:
-      ANTITHESIS_TENANT: ${{ secrets.STAGING_ANTITHESIS_TENANT }}
+      ANTITHESIS_TENANT: orbitinghail
       ANTITHESIS_API_KEY: ${{ secrets.STAGING_ANTITHESIS_API_KEY }}
     working-directory: /tmp/gh-aw/agent/todo-audit
     run: |

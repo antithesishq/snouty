@@ -1700,6 +1700,74 @@ const DEBUGGING_LAUNCHER: &str = "debugging";
 /// session.
 const SESSION_LOADING_WINDOW: chrono::TimeDelta = chrono::TimeDelta::minutes(10);
 
+const SESSION_LOADING_SUGGESTION: &str = "the session may still be loading: a new debugging \
+     session takes a few minutes to accept commands. Try again in a minute";
+
+/// Add suggestions to a failed `runs exec` request. Only a 404 or a 400 gets
+/// one. The server gave these responses on orbitinghail (release 64.0, PR
+/// #385):
+///
+/// - 404 `Resource not found`: the run does not exist, the source run does
+///   not exist, or the session is still loading. A new session loaded for
+///   about 6 minutes.
+/// - 400 `Moment not warm…`: the moment is cold and there is no source. In
+///   the last minute of loading, a request without a source got this 400,
+///   also for the session's own moment.
+/// - Any other 400: the session has ended, a rewarm did not finish, or the
+///   source is not the moment's run.
+///
+/// snouty reads the run, and on a 404 the source run, to tell these apart.
+async fn explain_exec_error(
+    api: &AntithesisApi,
+    run_id: &str,
+    source: Option<RewarmSource>,
+    err: color_eyre::eyre::Report,
+) -> color_eyre::eyre::Report {
+    let status = api_error_status(&err);
+    if !matches!(status, Some(400 | 404)) {
+        return err;
+    }
+    let run = match probe_run(api, run_id).await {
+        RunProbe::NotFound => return user_error(format!("run not found: {run_id}")),
+        RunProbe::ProbeFailed(probe_err) => return probe_err,
+        RunProbe::Exists(run) => run,
+    };
+    let loading =
+        run.launcher == DEBUGGING_LAUNCHER && Utc::now() - run.created_at < SESSION_LOADING_WINDOW;
+    let cold = api_error_message(&err).is_some_and(|m| m.contains(MOMENT_NOT_WARM));
+    // There is no cheap probe for a source session.
+    let source_run_exists = match (status, &source) {
+        (Some(404), Some(RewarmSource::Run(id))) => {
+            matches!(probe_run(api, id).await, RunProbe::Exists(_))
+        }
+        _ => false,
+    };
+    let flag = source.map(|source| match source {
+        RewarmSource::Run(_) => "--source-run-id",
+        RewarmSource::Session(_) => "--source-session-id",
+    });
+    match (status, flag) {
+        (Some(404), None) if loading => err.suggestion(SESSION_LOADING_SUGGESTION),
+        (Some(404), Some(_)) if loading && source_run_exists => {
+            err.suggestion(SESSION_LOADING_SUGGESTION)
+        }
+        (Some(404), Some(flag)) => {
+            err.suggestion(format!("check that {flag} names an existing source"))
+        }
+        // The moment can also come from another run, so both suggestions apply.
+        (Some(400), None) if cold && loading => err
+            .suggestion(SESSION_LOADING_SUGGESTION)
+            .suggestion("use --source-run-id to load a moment from a different run"),
+        (Some(400), None) if cold => {
+            err.suggestion("use --source-run-id to load a moment from a different run")
+        }
+        (Some(400), Some(flag)) => err.suggestion(format!(
+            "check that {flag} names the run the moment comes from"
+        )),
+        _ => err,
+    }
+}
+
 /// Show one event of a `runs exec` stream. Without --events, snouty's stdout
 /// carries only output text, so `runs exec ... | jq` composes. The server is
 /// still in flux, so an unknown or missing stream is stdout. TODO: treat an
@@ -1794,81 +1862,11 @@ async fn cmd_runs_exec(
     debug!("executing command in run: {}", run_id);
     let timeout = exec.timeout;
     let mut renderer = exec.events.then(|| EventStreamRenderer::new(false));
-    let rewarm_flag = exec.rewarm.as_ref().map(|source| match source {
-        RewarmSource::Run(_) => "--source-run-id",
-        RewarmSource::Session(_) => "--source-session-id",
-    });
-    let source_run_id = match &exec.rewarm {
-        Some(RewarmSource::Run(id)) => Some(id.to_string()),
-        _ => None,
-    };
+    let source = exec.rewarm.clone();
     let api = AntithesisApi::new(settings, verbose)?;
     let stream = match api.execute_command(run_id, exec).await {
         Ok(stream) => stream,
-        // Translate a bad run id's 404 into the shared "run not found"
-        // message every sibling run-scoped command reports (the endpoint's
-        // own 404 body is an unhelpful "Resource not found"). A 404 that
-        // survives that probe can only be the rewarm source. A 400 is a cold
-        // moment, an ended session, a rewarm that did not finish, or a source
-        // that is not the moment's run (observed on orbitinghail, release
-        // 64.0). Only a cold moment says so, and only in its message text.
-        //
-        // A new debugging session answers 404, then the cold 400, for minutes
-        // after launch (orbitinghail, release 64.0), so for a recent session
-        // the first suggestion is to try again.
-        Err(err) => {
-            let status = api_error_status(&err);
-            let cold = api_error_message(&err).is_some_and(|m| m.contains(MOMENT_NOT_WARM));
-            // One probe serves both the bad-run-id translation and the
-            // loading check.
-            let run = match status {
-                Some(404) => match probe_run(&api, run_id).await {
-                    RunProbe::NotFound => {
-                        return Err(user_error(format!("run not found: {run_id}")));
-                    }
-                    RunProbe::ProbeFailed(probe_err) => return Err(probe_err),
-                    RunProbe::Exists(run) => Some(*run),
-                },
-                // The loading note is only a hint, so a failed lookup drops it.
-                Some(400) if cold => api.get_run(run_id).await.ok().map(|run| run.untag()),
-                _ => None,
-            };
-            let loading = run.is_some_and(|run| {
-                run.launcher == DEBUGGING_LAUNCHER
-                    && Utc::now() - run.created_at < SESSION_LOADING_WINDOW
-            });
-            // With a rewarm source, the 404 can be a bad source, and a retry
-            // does not fix that. Only a source run that exists rules it out.
-            // There is no cheap probe for a source session.
-            let loading = loading
-                && match (status, &source_run_id) {
-                    (Some(404), Some(id)) => {
-                        matches!(probe_run(&api, id).await, RunProbe::Exists(_))
-                    }
-                    (Some(404), None) => rewarm_flag.is_none(),
-                    _ => true,
-                };
-            let err = if loading {
-                err.suggestion(
-                    "the session may still be loading: a new debugging session takes a few \
-                     minutes to accept commands. Try again in a minute",
-                )
-            } else {
-                err
-            };
-            return Err(match (status, rewarm_flag) {
-                (Some(404), Some(flag)) if !loading => {
-                    err.suggestion(format!("check that {flag} names an existing source"))
-                }
-                (Some(400), None) if cold => {
-                    err.suggestion("use --source-run-id to load a moment from a different run")
-                }
-                (Some(400), Some(flag)) => err.suggestion(format!(
-                    "check that {flag} names the run the moment comes from"
-                )),
-                _ => err,
-            });
-        }
+        Err(err) => return Err(explain_exec_error(&api, run_id, source, err).await),
     };
 
     // Only the last line can be the terminal result. A line that parses as

@@ -109,15 +109,13 @@ DEBUGGING_LAUNCHER = "debugging"
 
 # A debugging session's status says whether it accepts commands: `starting`
 # is not ready yet, `in_progress` is ready, and an ended session never accepts
-# them. Observed on orbitinghail (release 64.0), before the API adopted these
-# semantics: `starting` for about 75s, then `in_progress` while the command
-# endpoint answered 404 for about 2 minutes more and then 400 `unknown_moment`,
-# then `unknown` once commands executed, about 7 minutes after the launch.
+# them. But `in_progress` also covers minutes when the session is not ready.
+# Observed on orbitinghail (release 64.0): `starting` for about 100s, then
+# `in_progress` while the command endpoint answered 404 for about 2 minutes
+# more and then 400 `unknown_moment`, and still `in_progress` once commands
+# executed, about 10 minutes after the launch.
 SESSION_STARTING = "starting"
 SESSION_READY = "in_progress"
-# A ready session reports `unknown` until the API adopts the semantics above.
-# TODO: drop SESSION_READY_OLD once a ready session reports `in_progress`.
-SESSION_READY_OLD = "unknown"
 SESSION_ENDED = frozenset({"completed", "cancelled", "incomplete"})
 EXEC_READY_DEADLINE = 600
 EXEC_READY_POLL = 15
@@ -1018,11 +1016,7 @@ def _live_session(sn: Snouty) -> dict | None:
     moment."""
     for r in _debugging_sessions(sn):
         description = (r.get("parameters") or {}).get(_DESCRIPTION, "")
-        live = r.get("status") in (
-            SESSION_STARTING,
-            SESSION_READY,
-            SESSION_READY_OLD,
-        )
+        live = r.get("status") in (SESSION_STARTING, SESSION_READY)
         if live and description.startswith(EXEC_SESSION_DESCRIPTION):
             return r
     return None

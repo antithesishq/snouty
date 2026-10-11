@@ -513,20 +513,18 @@ impl DockerCompose {
         let _ = cmd.status();
     }
 
-    /// Resolve every compose service image to a registry reference and
-    /// return the `docker-compose.yaml` contents canonicalized and rewritten
-    /// with those references.
+    /// Return the `docker-compose.yaml` contents canonicalized, with each
+    /// local image rewritten to a digest reference (`name:tag@sha256:...`).
     ///
     /// The local image store is the single source of truth for what a launch
-    /// runs — snouty never pulls. Each local image is pinned to its local
-    /// digest (`name:tag@sha256:...`) in a registry confirmed to serve it, or
-    /// — when no registry has it — pushed to `registry`, so the platform
-    /// always pulls exactly what was resolved here. `missing` decides what
-    /// happens to an image that is not local.
+    /// runs — snouty never pulls. A local image is rewritten to the digest in
+    /// a registry that already serves its bytes, or — when no registry has
+    /// it — pushed to `registry` and rewritten to the pushed digest. So the
+    /// platform always pulls exactly what was resolved here. `missing`
+    /// decides what happens to an image that is not local.
     ///
     /// A reference into `registry` itself comes back bare, because the
-    /// platform resolves such a name against the tenant's own repository. A
-    /// reference into any other registry stays fully qualified.
+    /// platform resolves such a name against the tenant's own repository.
     pub fn pin_images(
         &self,
         rt: &dyn ContainerRuntime,
@@ -535,24 +533,33 @@ impl DockerCompose {
     ) -> Result<String> {
         let prefix = format!("{}/", registry.trim_end_matches('/'));
         let contents = self.contents(None)?;
-        let images = distinct_images(&contents)?;
-        let located = locate_images(rt, &images, &prefix)?;
-        let targets = resolve_missing(rt, &contents, located, missing)?;
-        let references = push_images(rt, targets, &prefix)?;
-        let pinned = contents
+
+        let (local, absent) = partition_by_presence(rt, distinct_images(&contents)?)?;
+        if !absent.is_empty() {
+            match missing {
+                MissingImages::Reject => {
+                    return Err(launch_missing_images_error(rt, &contents, &absent));
+                }
+                MissingImages::AssumeRemote => warn_remote_images(&contents, &absent)?,
+            }
+        }
+
+        let (mut rewrites, unserved) = find_served_images(rt, local, &prefix)?;
+        rewrites.extend(push_images(rt, &unserved, &prefix)?);
+
+        let services = contents
             .services
             .iter()
-            .map(|service| {
-                let reference = references[service.image.as_str()].clone();
-                (service.name.clone(), reference)
+            .filter_map(|service| {
+                let reference = rewrites.get(service.image.as_str())?;
+                Some((service.name.clone(), strip_registry(reference, &prefix)))
             })
             .collect();
-        rewrite_compose_images(&self.canonical_contents()?, &pinned)
+        rewrite_compose_images(&self.canonical_contents()?, &services)
     }
 }
 
-/// Stage 1 of [`DockerCompose::pin_images`]: each distinct image that the
-/// compose services name, in service order.
+/// Each distinct image that the compose services name, in service order.
 fn distinct_images(contents: &ComposeContents) -> Result<Vec<&str>> {
     ensure_services_have_images(contents)?;
     let mut seen = HashSet::new();
@@ -564,88 +571,21 @@ fn distinct_images(contents: &ComposeContents) -> Result<Vec<&str>> {
         .collect())
 }
 
-/// Where stage 2 finds the bytes of an image.
-#[derive(Debug, PartialEq, Eq)]
-enum Location {
-    /// Not in the local image store.
-    Missing,
-    /// In the local image store, and a registry serves the same bytes at this
-    /// digest-pinned reference.
-    Served(String),
-    /// Only in the local image store.
-    LocalOnly,
-}
-
-/// Stage 2 of [`DockerCompose::pin_images`]: look for each image in the local
-/// store, then for a registry that serves its local bytes.
-fn locate_images<'a>(
+/// Split `images` into those in the local image store and those not in it.
+fn partition_by_presence<'a>(
     rt: &dyn ContainerRuntime,
-    images: &[&'a str],
-    prefix: &str,
-) -> Result<Vec<(&'a str, Location)>> {
-    images
-        .iter()
-        .map(|&image| {
-            let location = if !rt.image_exists(image)? {
-                Location::Missing
-            } else if let Some(pinned) = find_remote_pin(rt, image, prefix)? {
-                Location::Served(pinned)
-            } else {
-                Location::LocalOnly
-            };
-            Ok((image, location))
-        })
-        .collect()
-}
-
-/// What stage 4 does with an image.
-#[derive(Debug, PartialEq, Eq)]
-enum Target {
-    /// Use this digest-pinned reference, which a registry serves.
-    Pinned(String),
-    /// Use this reference as is. The platform pulls it by name.
-    Unpinned(String),
-    /// Push the local image.
-    Push,
-}
-
-/// Stage 3 of [`DockerCompose::pin_images`]: apply `missing` to the images
-/// that are not in the local store.
-fn resolve_missing<'a>(
-    rt: &dyn ContainerRuntime,
-    contents: &ComposeContents,
-    located: Vec<(&'a str, Location)>,
-    missing: MissingImages,
-) -> Result<Vec<(&'a str, Target)>> {
-    let absent: Vec<&str> = located
-        .iter()
-        .filter(|(_, location)| *location == Location::Missing)
-        .map(|(image, _)| *image)
-        .collect();
-    if !absent.is_empty() {
-        match missing {
-            MissingImages::Reject => {
-                return Err(launch_missing_images_error(rt, contents, &absent));
-            }
-            MissingImages::AssumeRemote => warn_unpinned(rt, contents, &absent)?,
+    images: Vec<&'a str>,
+) -> Result<(Vec<&'a str>, Vec<&'a str>)> {
+    let mut local = Vec::new();
+    let mut absent = Vec::new();
+    for image in images {
+        if rt.image_exists(image)? {
+            local.push(image);
+        } else {
+            absent.push(image);
         }
     }
-    Ok(located
-        .into_iter()
-        .map(|(image, location)| {
-            let target = match location {
-                Location::Missing => {
-                    // The platform resolves a bare name in the tenant
-                    // repository, so spell out Docker Hub shorthand.
-                    let repo = image_repo(image);
-                    Target::Unpinned(format!("{}{}", normalize_repo(repo), &image[repo.len()..]))
-                }
-                Location::Served(pinned) => Target::Pinned(pinned),
-                Location::LocalOnly => Target::Push,
-            };
-            (image, target)
-        })
-        .collect())
+    Ok((local, absent))
 }
 
 /// The missing-image error, with the escape hatches that only launch has.
@@ -674,24 +614,16 @@ fn launch_missing_images_error(
     })
 }
 
-/// Warn about each image in `absent`, which the launch leaves unpinned. A
+/// Warn about each image in `absent`, which the launch leaves as written. A
 /// default build tag fails instead, because no registry serves it.
-fn warn_unpinned(
-    rt: &dyn ContainerRuntime,
-    contents: &ComposeContents,
-    absent: &[&str],
-) -> Result<()> {
-    let is_absent = |image: &str| absent.contains(&image);
-    if let Some(service) = contents
-        .services
+fn warn_remote_images(contents: &ComposeContents, absent: &[&str]) -> Result<()> {
+    if let Some(&image) = absent
         .iter()
-        .find(|service| service.default_image && is_absent(&service.image))
+        .find(|image| is_default_image(contents, image))
     {
         bail!(
             user_error(format!(
-                "service '{}' has no `image:` field, and its default build tag `{}` is not in \
-                 the local image store",
-                service.name, service.image
+                "the default build tag `{image}` is not in the local image store"
             ))
             .suggestion(
                 "run `docker compose build`, or add an `image:` field that names an image in \
@@ -699,16 +631,6 @@ fn warn_unpinned(
             )
         );
     }
-
-    let absent_refs: Vec<String> = absent.iter().map(|image| image.to_string()).collect();
-    let elsewhere = images_available_in_other_engines(rt, &absent_refs);
-    if let Some((warnings, suggestion)) = cross_engine_guidance(rt.name(), &elsewhere) {
-        for warning in warnings {
-            eprintln!("warning: {warning}");
-        }
-        eprintln!("{suggestion}");
-    }
-
     for image in absent {
         if image.contains('@') {
             eprintln!(
@@ -724,7 +646,7 @@ fn warn_unpinned(
         }
     }
     for service in &contents.services {
-        if contents.build_services.contains(&service.name) && is_absent(&service.image) {
+        if contents.build_services.contains(&service.name) && absent.contains(&&*service.image) {
             eprintln!(
                 "warning: service '{}' has a `build:` stanza. To launch the local code, build \
                  it first.",
@@ -735,79 +657,62 @@ fn warn_unpinned(
     Ok(())
 }
 
-/// Stage 4 of [`DockerCompose::pin_images`]: push each image that no registry
-/// serves, and return the reference for each image, without the address of
-/// the tenant repository at `prefix`.
-fn push_images<'a>(
+/// Split local `images` into those a registry already serves, each mapped to
+/// its digest reference there ([`find_remote_pin`]), and those it does not.
+fn find_served_images<'a>(
     rt: &dyn ContainerRuntime,
-    targets: Vec<(&'a str, Target)>,
+    images: Vec<&'a str>,
     prefix: &str,
-) -> Result<BTreeMap<&'a str, String>> {
-    // An unpinned reference into the tenant repository names a tag there, so
-    // no push may overwrite it.
-    let unpinned_claims: BTreeMap<String, &str> = targets
-        .iter()
-        .filter_map(|(image, target)| match target {
-            Target::Unpinned(reference) if strip_registry(reference, prefix) != *reference => {
-                Some((reference.clone(), *image))
-            }
-            _ => None,
-        })
-        .collect();
-    // One destination holds one source image: snouty tags each pushed image
-    // onto its destination and pushes that path once.
-    let mut claims: BTreeMap<String, &str> = BTreeMap::new();
-    let mut references = BTreeMap::new();
-    let mut pushes = Vec::new();
-    for (image, target) in targets {
-        match target {
-            Target::Pinned(reference) => {
+) -> Result<(BTreeMap<&'a str, String>, Vec<&'a str>)> {
+    let mut served = BTreeMap::new();
+    let mut unserved = Vec::new();
+    for image in images {
+        match find_remote_pin(rt, image, prefix)? {
+            Some(reference) => {
                 eprintln!("Image already in a registry, skipping push: {reference}");
-                references.insert(image, reference);
+                served.insert(image, reference);
             }
-            Target::Unpinned(reference) => {
-                references.insert(image, reference);
-            }
-            Target::Push => {
-                let dest = push_destination(image, prefix)?;
-                if let Some(other) = unpinned_claims.get(&dest) {
-                    bail!(user_error(format!(
-                        "snouty would push `{image}` to `{dest}`, over the image that a \
-                         service names as `{other}`. Rename one of them."
-                    )));
-                }
-                if let Some(other) = claims.insert(dest.clone(), image) {
-                    bail!(user_error(format!(
-                        "`{other}` and `{image}` both push to `{dest}`, so snouty would push \
-                         one of them and pin both services to it. Rename one of them."
-                    )));
-                }
-                pushes.push((image, dest));
-            }
+            None => unserved.push(image),
         }
     }
+    Ok((served, unserved))
+}
 
-    for (image, dest) in &pushes {
+/// Push each local image in `images` into the tenant repository at `prefix`,
+/// and map it to its pushed digest reference.
+fn push_images<'a>(
+    rt: &dyn ContainerRuntime,
+    images: &[&'a str],
+    prefix: &str,
+) -> Result<BTreeMap<&'a str, String>> {
+    // destination -> image. One destination holds one image, because snouty
+    // tags each image onto its destination and pushes that path once.
+    let mut sources: BTreeMap<String, &str> = BTreeMap::new();
+    for &image in images {
+        let dest = push_destination(image, prefix)?;
+        if let Some(other) = sources.insert(dest.clone(), image) {
+            bail!(user_error(format!(
+                "`{other}` and `{image}` both push to `{dest}`, so snouty would push one of \
+                 them and pin both services to it. Rename one of them."
+            )));
+        }
+    }
+    for (dest, image) in &sources {
         if dest != image {
             rt.image_tag(image, dest)?;
         }
     }
-    // The architecture check applies exactly to the images whose local bytes
-    // snouty uploads. Stage 2 checked each served pin, and snouty cannot check
-    // an unpinned reference.
-    let dests: Vec<&str> = pushes.iter().map(|(_, dest)| dest.as_str()).collect();
+    let dests: Vec<&str> = sources.keys().map(String::as_str).collect();
     validate_image_architectures(rt, &dests)?;
-    for (image, dest) in pushes {
-        eprintln!("Pushing image: {dest}");
-        let pinned = rt.image_push(&dest)?;
-        eprintln!("Image pushed: {pinned}");
-        references.insert(image, pinned);
-    }
-
-    for reference in references.values_mut() {
-        *reference = strip_registry(reference, prefix);
-    }
-    Ok(references)
+    sources
+        .into_iter()
+        .map(|(dest, image)| {
+            eprintln!("Pushing image: {dest}");
+            let reference = rt.image_push(&dest)?;
+            eprintln!("Image pushed: {reference}");
+            Ok((image, reference))
+        })
+        .collect()
 }
 
 /// What [`DockerCompose::pin_images`] does with a compose image that is not
@@ -885,13 +790,9 @@ fn find_remote_pin(rt: &dyn ContainerRuntime, image: &str, prefix: &str) -> Resu
     }
     Ok(None)
 }
-/// Rewrite each service's `image:` field to its pinned digest reference.
-///
-/// Every service in the document must have an entry in `pinned` — the whole
-/// point of the rewrite is that the platform runs only digest-pinned images,
-/// so a service this function can't pin means pinning lost track of it
-/// somewhere upstream, which is a bug.
-fn rewrite_compose_images(yaml: &str, pinned: &BTreeMap<String, String>) -> Result<String> {
+/// Set the `image:` field of each service named in `references` to its
+/// reference. Other services keep their `image:` field.
+fn rewrite_compose_images(yaml: &str, references: &BTreeMap<String, String>) -> Result<String> {
     let mut doc: serde_yaml::Value =
         serde_yaml::from_str(yaml).wrap_err("failed to parse docker-compose.yaml")?;
     let services = doc
@@ -902,15 +803,15 @@ fn rewrite_compose_images(yaml: &str, pinned: &BTreeMap<String, String>) -> Resu
         let name = name
             .as_str()
             .ok_or_else(|| eyre!("compose config has a non-string service name: {name:?}"))?;
-        let pinned_ref = pinned.get(name).ok_or_else(|| {
-            eyre!("service '{name}' did not resolve to a pinned image reference — this is a bug in snouty")
-        })?;
+        let Some(reference) = references.get(name) else {
+            continue;
+        };
         let svc_map = svc
             .as_mapping_mut()
             .ok_or_else(|| eyre!("compose service '{name}' is not a mapping"))?;
         svc_map.insert(
             serde_yaml::Value::String("image".to_string()),
-            serde_yaml::Value::String(pinned_ref.clone()),
+            serde_yaml::Value::String(reference.clone()),
         );
     }
     serde_yaml::to_string(&doc).wrap_err("failed to serialize pinned docker-compose.yaml")
@@ -1052,12 +953,7 @@ pub fn validate_images_are_available(
     runtime: &dyn ContainerRuntime,
     contents: &ComposeContents,
 ) -> Result<()> {
-    let mut absent = Vec::new();
-    for image in distinct_images(contents)? {
-        if !runtime.image_exists(image)? {
-            absent.push(image);
-        }
-    }
+    let (_, absent) = partition_by_presence(runtime, distinct_images(contents)?)?;
     if absent.is_empty() {
         return Ok(());
     }
@@ -1650,27 +1546,20 @@ services:
         assert!(services.get("nginx").unwrap().get("environment").is_some());
     }
     #[test]
-    fn rewrite_compose_images_rejects_unpinned_service() {
-        // A service the pinning pass lost track of must fail loudly instead of
-        // shipping an unpinned image reference to the platform.
+    fn rewrite_compose_images_keeps_services_it_does_not_name() {
         let yaml = "\
 services:
   app:
     image: app:latest
-  forgotten:
-    image: forgotten:latest
+  remote:
+    image: ghcr.io/org/remote:v1
 ";
-        let pinned = BTreeMap::from([(
-            "app".to_string(),
-            "reg.example.com/app:latest@sha256:aaa".to_string(),
-        )]);
+        let references = BTreeMap::from([("app".to_string(), "app:latest@sha256:aaa".to_string())]);
 
-        let err = rewrite_compose_images(yaml, &pinned).unwrap_err();
-        let msg = format!("{err:?}");
-        assert!(
-            msg.contains("'forgotten'") && msg.contains("bug in snouty"),
-            "expected the unpinned service to be flagged as a bug, got: {msg}"
-        );
+        let out = rewrite_compose_images(yaml, &references).unwrap();
+        let doc: serde_yaml::Value = serde_yaml::from_str(&out).unwrap();
+        assert_eq!(doc["services"]["app"]["image"], "app:latest@sha256:aaa");
+        assert_eq!(doc["services"]["remote"]["image"], "ghcr.io/org/remote:v1");
     }
     /// Run pin_images over `yaml` with a [`FakeRuntime`] (real docker-compose
     /// binary for config resolution, fake image/registry operations).
@@ -2421,12 +2310,8 @@ services:
         assert_eq!(distinct_images(&contents).unwrap(), vec!["two:1", "one:1"]);
     }
     #[test]
-    fn locate_images_finds_missing_served_and_local_only_images() {
+    fn find_served_images_splits_served_from_unserved_images() {
         let rt = FakeRuntime {
-            available_images: BTreeMap::from([
-                ("redis:7".to_string(), true),
-                ("myapp:latest".to_string(), true),
-            ]),
             repo_digests: BTreeMap::from([(
                 "redis:7".to_string(),
                 vec!["docker.io/library/redis@sha256:list".to_string()],
@@ -2437,35 +2322,22 @@ services:
             )]),
             ..Default::default()
         };
-        let located = locate_images(
-            &rt,
-            &["absent:1", "redis:7", "myapp:latest"],
-            "reg.example.com/",
-        )
-        .unwrap();
+        let (served, unserved) =
+            find_served_images(&rt, vec!["redis:7", "myapp:latest"], "reg.example.com/").unwrap();
         assert_eq!(
-            located,
-            vec![
-                ("absent:1", Location::Missing),
-                (
-                    "redis:7",
-                    Location::Served("docker.io/library/redis:7@sha256:list".to_string())
-                ),
-                ("myapp:latest", Location::LocalOnly),
-            ]
+            served,
+            BTreeMap::from([(
+                "redis:7",
+                "docker.io/library/redis:7@sha256:list".to_string()
+            )])
         );
+        assert_eq!(unserved, vec!["myapp:latest"]);
     }
     #[test]
-    fn resolve_missing_rejects_missing_images_with_the_launch_escape_hatches() {
+    fn launch_missing_images_error_adds_the_launch_escape_hatches() {
         let contents = contents_of(&[("app", "missing:latest")], &[]);
-        let located = vec![("missing:latest", Location::Missing)];
-        let err = resolve_missing(
-            &FakeRuntime::default(),
-            &contents,
-            located,
-            MissingImages::Reject,
-        )
-        .unwrap_err();
+        let err =
+            launch_missing_images_error(&FakeRuntime::default(), &contents, &["missing:latest"]);
         let debug = format!("{err:?}");
         assert!(
             debug.contains("image: missing:latest"),
@@ -2483,17 +2355,11 @@ services:
         );
     }
     #[test]
-    fn resolve_missing_does_not_suggest_remote_images_for_a_default_build_tag() {
+    fn launch_missing_images_error_does_not_suggest_remote_images_for_a_default_build_tag() {
         let mut contents = contents_of(&[("app", "proj-app:latest")], &["app"]);
         contents.services[0].default_image = true;
-        let located = vec![("proj-app:latest", Location::Missing)];
-        let err = resolve_missing(
-            &FakeRuntime::default(),
-            &contents,
-            located,
-            MissingImages::Reject,
-        )
-        .unwrap_err();
+        let err =
+            launch_missing_images_error(&FakeRuntime::default(), &contents, &["proj-app:latest"]);
         let debug = format!("{err:?}");
         assert!(
             !debug.contains("--allow-remote-images"),
@@ -2501,132 +2367,45 @@ services:
         );
     }
     #[test]
-    fn resolve_missing_leaves_missing_images_unpinned_when_assumed_remote() {
-        let contents = contents_of(
-            &[
-                ("db", "ghcr.io/org/db:v1"),
-                ("hub", "postgres:16"),
-                ("app", "myapp:latest"),
-            ],
-            &[],
-        );
-        let located = vec![
-            ("ghcr.io/org/db:v1", Location::Missing),
-            ("postgres:16", Location::Missing),
-            (
-                "redis:7",
-                Location::Served("docker.io/library/redis:7@sha256:a".to_string()),
-            ),
-            ("myapp:latest", Location::LocalOnly),
-        ];
-        let targets = resolve_missing(
-            &FakeRuntime::default(),
-            &contents,
-            located,
-            MissingImages::AssumeRemote,
-        )
-        .unwrap();
-        assert_eq!(
-            targets,
-            vec![
-                (
-                    "ghcr.io/org/db:v1",
-                    Target::Unpinned("ghcr.io/org/db:v1".to_string())
-                ),
-                // The platform reads a bare name as one in the tenant repository.
-                (
-                    "postgres:16",
-                    Target::Unpinned("docker.io/library/postgres:16".to_string())
-                ),
-                (
-                    "redis:7",
-                    Target::Pinned("docker.io/library/redis:7@sha256:a".to_string())
-                ),
-                ("myapp:latest", Target::Push),
-            ]
-        );
-    }
-    #[test]
-    fn resolve_missing_rejects_a_default_build_tag_when_assumed_remote() {
+    fn warn_remote_images_rejects_a_default_build_tag() {
         let mut contents = contents_of(&[("app", "proj-app:latest")], &["app"]);
         contents.services[0].default_image = true;
-        let located = vec![("proj-app:latest", Location::Missing)];
-        let err = resolve_missing(
-            &FakeRuntime::default(),
-            &contents,
-            located,
-            MissingImages::AssumeRemote,
-        )
-        .unwrap_err();
+        let err = warn_remote_images(&contents, &["proj-app:latest"]).unwrap_err();
         let msg = format!("{err:?}");
         assert!(
-            msg.contains("service 'app'") && msg.contains("proj-app:latest"),
+            msg.contains("default build tag `proj-app:latest`"),
             "expected the default build tag to be named, got: {msg}"
         );
     }
     #[test]
-    fn push_images_pushes_local_images_and_strips_the_tenant_address() {
-        // The fake has no architecture for the unpinned images, so an
-        // architecture check on them fails the test.
+    fn push_images_maps_each_image_to_its_pushed_reference() {
         let rt = FakeRuntime {
-            architectures: BTreeMap::from([(
-                "reg.example.com/myapp:latest".to_string(),
-                "amd64".to_string(),
-            )]),
+            architectures: BTreeMap::from([
+                (
+                    "reg.example.com/myapp:latest".to_string(),
+                    "amd64".to_string(),
+                ),
+                (
+                    "reg.example.com/sidecar:v1".to_string(),
+                    "amd64".to_string(),
+                ),
+            ]),
             ..Default::default()
         };
-        let targets = vec![
-            ("myapp:latest", Target::Push),
-            (
-                "redis:7",
-                Target::Pinned("docker.io/library/redis:7@sha256:a".to_string()),
-            ),
-            (
-                "ghcr.io/org/db:v1",
-                Target::Unpinned("ghcr.io/org/db:v1".to_string()),
-            ),
-            (
-                "reg.example.com/own:v2",
-                Target::Unpinned("reg.example.com/own:v2".to_string()),
-            ),
-        ];
-        let references = push_images(&rt, targets, "reg.example.com/").unwrap();
+        let references =
+            push_images(&rt, &["myapp:latest", "sidecar:v1"], "reg.example.com/").unwrap();
         assert_eq!(
             references,
             BTreeMap::from([
                 (
                     "myapp:latest",
-                    "myapp:latest@sha256:fakepushdigest".to_string()
+                    "reg.example.com/myapp:latest@sha256:fakepushdigest".to_string()
                 ),
-                ("redis:7", "docker.io/library/redis:7@sha256:a".to_string()),
-                ("ghcr.io/org/db:v1", "ghcr.io/org/db:v1".to_string()),
-                ("reg.example.com/own:v2", "own:v2".to_string()),
+                (
+                    "sidecar:v1",
+                    "reg.example.com/sidecar:v1@sha256:fakepushdigest".to_string()
+                ),
             ])
-        );
-        assert_eq!(
-            *rt.pushed.lock().unwrap(),
-            vec!["reg.example.com/myapp:latest".to_string()]
-        );
-    }
-    #[test]
-    fn push_images_does_not_push_over_an_unpinned_reference() {
-        let rt = FakeRuntime::default();
-        let targets = vec![
-            (
-                "reg.example.com/own:v2",
-                Target::Unpinned("reg.example.com/own:v2".to_string()),
-            ),
-            ("own:v2", Target::Push),
-        ];
-        let err = push_images(&rt, targets, "reg.example.com/").unwrap_err();
-        let msg = format!("{err:?}");
-        assert!(
-            msg.contains("over the image that a service names as `reg.example.com/own:v2`"),
-            "expected the overwrite to be refused, got: {msg}"
-        );
-        assert!(
-            rt.pushed.lock().unwrap().is_empty(),
-            "nothing should be pushed"
         );
     }
     #[test]

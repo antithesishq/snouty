@@ -83,7 +83,7 @@ stderr '"antithesis.config_image":.*@sha256:'
 # built.
 mock-server 200 '{"runId":"run-123","statusCode":200}'
 ! snouty launch --launcher basic_test -c buildonly_missing_config --duration 30 --allow-remote-images
-stderr 'service .app. has no `image:` field, and its default build tag `buildonly_missing_config-app:latest` is not in the local image store'
+stderr 'the default build tag `buildonly_missing_config-app:latest` is not in the local image store'
 ! stderr 'Pushing image:'
 
 # A local image referenced WITHOUT a build stanza, but built before launch, is

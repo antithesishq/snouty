@@ -290,9 +290,11 @@ async fn cmd_launch(
         let rt = container::runtime(settings)?;
         container::warn_ambiguous_engine(settings, rt.as_ref(), json);
 
-        // For compose configs, every service image is pinned to its local
-        // digest (snouty never pulls): served from a registry confirmed to
-        // already have it, or pushed to the Antithesis registry. The compose
+        // For compose configs, every local service image is pinned to its
+        // local digest (snouty never pulls): served from a registry confirmed
+        // to already have it, or pushed to the Antithesis registry. With
+        // --allow-remote-images, an image that is not local keeps its
+        // reference as written. The compose
         // file is then canonicalized, digest-pinned, and baked into the
         // config image, so the platform runs exactly what was resolved here.
         // k8s configs reference images by name in the manifests and the
@@ -300,7 +302,15 @@ async fn cmd_launch(
         let pinned_config = match &detected {
             config::Config::Compose(compose_config) => {
                 let compose = compose::DockerCompose::resolve(rt.as_ref(), compose_config.clone())?;
-                let pinned_yaml = compose.pin_images(rt.as_ref(), &registry)?;
+                let pinned_yaml = compose.pin_images(
+                    rt.as_ref(),
+                    &registry,
+                    if args.allow_remote_images {
+                        compose::MissingImages::AssumeRemote
+                    } else {
+                        compose::MissingImages::Reject
+                    },
+                )?;
                 let staged = compose::stage_pinned_config(compose_config.dir(), &pinned_yaml)?;
                 rt.build_and_push_config_image(staged.path(), &config_image)?
             }

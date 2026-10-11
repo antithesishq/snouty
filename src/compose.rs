@@ -520,7 +520,8 @@ impl DockerCompose {
     /// The local image store is the single source of truth for what a launch
     /// runs — snouty never pulls. Every service must resolve to an image that
     /// is present locally (built via its `build:` stanza, built or loaded out
-    /// of band, or previously pulled). Each image is then pinned to its local
+    /// of band, or previously pulled), unless `missing` is
+    /// [`MissingImages::AssumeRemote`]. Each local image is then pinned to its local
     /// digest in a registry confirmed to serve it ([`find_remote_pin`]),
     /// or — when no registry has it — tagged into `registry` and pushed, so
     /// the platform always pulls exactly what was resolved here.
@@ -528,9 +529,54 @@ impl DockerCompose {
     /// A pin into `registry` itself comes back bare (`name:tag@sha256:...`),
     /// because the platform resolves such a name against the tenant's own
     /// repository. A pin into any other registry stays fully qualified.
-    pub fn pin_images(&self, rt: &dyn ContainerRuntime, registry: &str) -> Result<String> {
+    pub fn pin_images(
+        &self,
+        rt: &dyn ContainerRuntime,
+        registry: &str,
+        missing: MissingImages,
+    ) -> Result<String> {
         let contents = self.contents(None)?;
-        with_config_image_escape_hatch(validate_images_are_available(rt, &contents))?;
+        let remote: HashSet<&str> = match missing {
+            MissingImages::Reject => {
+                with_launch_escape_hatches(validate_images_are_available(rt, &contents))?;
+                HashSet::new()
+            }
+            MissingImages::AssumeRemote => {
+                let missing = missing_images(rt, &contents)?;
+                if let Some(service) = missing.iter().find(|service| service.default_image) {
+                    bail!(
+                        user_error(format!(
+                            "service '{}' has no `image:` field, and its default build tag \
+                             `{}` is not in the local image store",
+                            service.name, service.image
+                        ))
+                        .suggestion(
+                            "run `docker compose build`, or add an `image:` field that names \
+                             an image in a registry"
+                        )
+                    );
+                }
+                for service in &missing {
+                    let image = &service.image;
+                    if image.contains('@') {
+                        eprintln!(
+                            "warning: image `{image}` is not in the local image store. \
+                             snouty cannot check its architecture."
+                        );
+                    } else {
+                        eprintln!(
+                            "warning: image `{image}` is not in the local image store, so \
+                             snouty leaves it unpinned. Its tag can resolve to a different \
+                             image on each run, and snouty cannot check its architecture."
+                        );
+                    }
+                }
+                missing
+                    .into_iter()
+                    .map(|service| service.image.as_str())
+                    .collect()
+            }
+        };
 
         let prefix = format!("{}/", registry.trim_end_matches('/'));
 
@@ -542,7 +588,7 @@ impl DockerCompose {
         let mut claims: BTreeMap<String, &str> = BTreeMap::new();
         for service in &contents.services {
             let image = service.image.as_str();
-            if !resolution.contains_key(image) {
+            if !remote.contains(image) && !resolution.contains_key(image) {
                 let pin = find_remote_pin(rt, image, &prefix)?;
                 match &pin {
                     // A remote pin is never tagged onto a destination, so it
@@ -573,6 +619,11 @@ impl DockerCompose {
         let mut tagged: HashSet<&str> = HashSet::new();
         for service in &contents.services {
             let image = service.image.as_str();
+            if remote.contains(image) {
+                // The platform pulls the image by the name the author wrote.
+                pinned.insert(service.name.clone(), service.image.clone());
+                continue;
+            }
             if let Some(remote) = &resolution[image] {
                 pinned.insert(service.name.clone(), remote.clone());
                 continue;
@@ -614,6 +665,16 @@ impl DockerCompose {
     }
 }
 
+/// What [`DockerCompose::pin_images`] does with a compose image that is not
+/// in the local image store.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MissingImages {
+    /// Fail the launch: snouty never pulls, so it cannot pin the image.
+    Reject,
+    /// Keep the reference as written, so the platform pulls it by name at run
+    /// time. A default build tag still fails, because no registry serves it.
+    AssumeRemote,
+}
 /// Where snouty pushes `image` inside the tenant repository at `prefix`.
 ///
 /// The path below `prefix` never opens with a registry host, so the compose
@@ -845,40 +906,30 @@ pub fn parse_compose_config(yaml: &str) -> Result<ComposeContents> {
 /// is exactly what's in the local store.
 ///
 /// The error is intentionally context-free: it explains only why local presence
-/// is required. Command-specific escape hatches (e.g. launch's `--config-image`,
-/// see [`with_config_image_escape_hatch`]) are layered on by the caller so this
+/// is required. Command-specific escape hatches (e.g. launch's `--allow-remote-images`,
+/// see [`with_launch_escape_hatches`]) are layered on by the caller so this
 /// shared check doesn't have to know who called it.
 pub fn validate_images_are_available(
     runtime: &dyn ContainerRuntime,
     contents: &ComposeContents,
 ) -> Result<()> {
-    ensure_services_have_images(contents)?;
-
-    let mut seen = HashSet::new();
     let mut missing = Vec::new();
     let mut missing_refs = Vec::new();
 
-    for service in &contents.services {
-        if !seen.insert(service.image.as_str()) {
-            continue;
-        }
-
-        if !runtime.image_exists(&service.image)? {
-            let hint = if service.default_image {
-                format!(
-                    " (compose's default build tag for service '{}' — run `docker compose build`, \
-                     or add an explicit `image:` if it was built under another name)",
-                    service.name
-                )
-            } else if contents.build_services.contains(&service.name) {
-                " (service has a `build:` stanza — build it first; snouty doesn't build)"
-                    .to_string()
-            } else {
-                String::new()
-            };
-            missing.push(format!("image: {}{hint}", service.image));
-            missing_refs.push(service.image.clone());
-        }
+    for service in missing_images(runtime, contents)? {
+        let hint = if service.default_image {
+            format!(
+                " (compose's default build tag for service '{}' — run `docker compose build`, \
+                 or add an explicit `image:` if it was built under another name)",
+                service.name
+            )
+        } else if contents.build_services.contains(&service.name) {
+            " (service has a `build:` stanza — build it first; snouty doesn't build)".to_string()
+        } else {
+            String::new()
+        };
+        missing.push(format!("image: {}{hint}", service.image));
+        missing_refs.push(service.image.clone());
     }
 
     if missing.is_empty() {
@@ -909,6 +960,22 @@ pub fn validate_images_are_available(
     }
 
     Err(err.with_suggestion(|| "pull or build the missing images, then retry"))
+}
+/// The services whose image is not in the local image store, one per
+/// distinct image.
+fn missing_images<'a>(
+    runtime: &dyn ContainerRuntime,
+    contents: &'a ComposeContents,
+) -> Result<Vec<&'a ComposeService>> {
+    ensure_services_have_images(contents)?;
+    let mut seen = HashSet::new();
+    let mut missing = Vec::new();
+    for service in &contents.services {
+        if seen.insert(service.image.as_str()) && !runtime.image_exists(&service.image)? {
+            missing.push(service);
+        }
+    }
+    Ok(missing)
 }
 /// Probe every installed engine other than `active` for the given images.
 /// Returns, for each other engine that holds at least one, its name and the
@@ -966,17 +1033,23 @@ fn cross_engine_guidance(
 
     Some((warnings, suggestion))
 }
-/// Layer launch's escape hatch onto a [`validate_images_are_available`] failure:
-/// a caller that already has a pre-built config image can skip local packaging
+/// Layer launch's escape hatches onto a [`validate_images_are_available`]
+/// failure: `--allow-remote-images` launches the missing images unpinned, and a
+/// caller that already has a pre-built config image can skip local packaging
 /// entirely by launching with `--config-image <ref>`. Because `--config-image`
 /// conflicts with `--config`, the suggestion tells users to *replace* `--config`,
-/// not add the flag alongside it. Only the launch path has this alternative, so
-/// only the launch caller wraps its check with this.
-fn with_config_image_escape_hatch<T>(result: Result<T>) -> Result<T> {
-    result.with_suggestion(|| {
-        "if you already have a pre-built config image, launch with `--config-image <ref>` \
+/// not add the flag alongside it. Only the launch path has these alternatives,
+/// so only the launch caller wraps its check with this.
+fn with_launch_escape_hatches<T>(result: Result<T>) -> Result<T> {
+    result
+        .with_suggestion(|| {
+            "if a registry that the platform can reach serves the missing images, add \
+         `--allow-remote-images` to launch them unpinned"
+        })
+        .with_suggestion(|| {
+            "if you already have a pre-built config image, launch with `--config-image <ref>` \
          in place of `--config <dir>` to reuse it and skip local packaging"
-    })
+        })
 }
 /// Ensure the given image references all use the amd64 architecture.
 fn validate_image_architectures<R>(runtime: &R, images: &[&str]) -> Result<()>
@@ -1478,14 +1551,73 @@ services:
     /// Run pin_images over `yaml` with a [`FakeRuntime`] (real docker-compose
     /// binary for config resolution, fake image/registry operations).
     fn pin_with_fake(rt: &FakeRuntime, yaml: &str, registry: &str) -> Result<String> {
+        let (_dir, compose) = fake_compose(rt, yaml);
+        compose.pin_images(rt, registry, MissingImages::Reject)
+    }
+    /// A [`DockerCompose`] over `yaml`, written to a temporary config dir
+    /// that must outlive the handle.
+    fn fake_compose(rt: &FakeRuntime, yaml: &str) -> (tempfile::TempDir, DockerCompose) {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("docker-compose.yaml"), yaml).unwrap();
         let config = match crate::config::detect_config(dir.path()).unwrap() {
             crate::config::Config::Compose(c) => c,
             other => panic!("expected Compose, got {other:?}"),
         };
-        let compose = DockerCompose::resolve(rt, config).unwrap();
-        compose.pin_images(rt, registry)
+        (dir, DockerCompose::resolve(rt, config).unwrap())
+    }
+    #[test]
+    fn pin_images_keeps_missing_images_as_written_when_assumed_remote() {
+        if !has_compose() {
+            skip_or_fail("docker-compose (Docker Compose v2) is not available");
+            return;
+        }
+        // Only `myapp` is local. The fake has no architecture for the other
+        // images, so an architecture check on them fails the test.
+        let rt = FakeRuntime {
+            available_images: BTreeMap::from([("myapp:latest".to_string(), true)]),
+            architectures: BTreeMap::from([(
+                "reg.example.com/myapp:latest".to_string(),
+                "amd64".to_string(),
+            )]),
+            ..Default::default()
+        };
+        let (_dir, compose) = fake_compose(
+            &rt,
+            "services:\n  app:\n    image: myapp:latest\n  \
+             db:\n    image: ghcr.io/org/db:v1\n  \
+             own:\n    image: reg.example.com/own:v2\n",
+        );
+        let out = compose
+            .pin_images(&rt, "reg.example.com", MissingImages::AssumeRemote)
+            .unwrap();
+        let doc: serde_yaml::Value = serde_yaml::from_str(&out).unwrap();
+        let image = |service: &str| doc["services"][service]["image"].as_str().unwrap();
+        assert_eq!(image("app"), "myapp:latest@sha256:fakepushdigest");
+        assert_eq!(image("db"), "ghcr.io/org/db:v1");
+        // An image in the tenant repository loses the registry address, like
+        // every other pin into it.
+        assert_eq!(image("own"), "own:v2");
+        assert_eq!(
+            *rt.pushed.lock().unwrap(),
+            vec!["reg.example.com/myapp:latest".to_string()]
+        );
+    }
+    #[test]
+    fn pin_images_rejects_a_missing_default_build_tag_when_assumed_remote() {
+        if !has_compose() {
+            skip_or_fail("docker-compose (Docker Compose v2) is not available");
+            return;
+        }
+        let rt = FakeRuntime::default();
+        let (_dir, compose) = fake_compose(&rt, "services:\n  app:\n    build: .\n");
+        let err = compose
+            .pin_images(&rt, "reg.example.com", MissingImages::AssumeRemote)
+            .unwrap_err();
+        let msg = format!("{err:?}");
+        assert!(
+            msg.contains("service 'app'") && msg.contains("-app:latest"),
+            "expected the default build tag to be named, got: {msg}"
+        );
     }
     #[test]
     fn pin_images_skips_push_when_registry_serves_digest() {
@@ -1963,7 +2095,7 @@ services:
                 };
                 let compose = DockerCompose::resolve(rt.as_ref(), config)
                     .unwrap_or_else(|e| panic!("{}: DockerCompose::resolve: {e:?}", rt.name()));
-                let out = compose.pin_images(rt.as_ref(), &addr)?;
+                let out = compose.pin_images(rt.as_ref(), &addr, MissingImages::Reject)?;
                 Ok(serde_yaml::from_str::<serde_yaml::Value>(&out)
                     .unwrap()
                     .get("services")
@@ -2221,14 +2353,14 @@ services:
         );
     }
     #[test]
-    fn with_config_image_escape_hatch_tells_users_to_replace_config() {
+    fn with_launch_escape_hatches_tells_users_to_replace_config() {
         let runtime = FakeRuntime {
             available_images: BTreeMap::from([("missing:latest".to_string(), false)]),
             architectures: BTreeMap::new(),
             ..Default::default()
         };
 
-        let err = with_config_image_escape_hatch(validate_images_are_available(
+        let err = with_launch_escape_hatches(validate_images_are_available(
             &runtime,
             &contents_of(&[("app", "missing:latest")], &[]),
         ))

@@ -131,7 +131,8 @@ Example:
 The -c/--config flag points at a local directory containing docker-compose.yaml
 (this is the config image source, unrelated to snouty's own settings file).
 Images required for the run need to have been built already. Pushing happens
-automatically.
+automatically. To use images that a registry serves but that are not on this
+machine, add --allow-remote-images.
 
 Alternatively, pass a pre-built config image directly:
   snouty launch --launcher basic_test \
@@ -601,13 +602,21 @@ pub struct LaunchArgs {
 
     /// Local config dir (docker-compose.yaml or a manifests/ subdir), auto-built
     /// and pushed as the config image. Compose service images must already exist
-    /// locally — snouty never pulls.
+    /// locally — snouty never pulls — unless --allow-remote-images is set.
     #[arg(short, long, conflicts_with = "config_image")]
     pub config: Option<std::path::PathBuf>,
 
     /// Pre-built config image reference (e.g., us-central1-docker.pkg.dev/proj/repo/config:latest)
     #[arg(long)]
     pub config_image: Option<String>,
+
+    /// Launch a compose config even when some of its images are not in the
+    /// local image store. snouty keeps each such reference as written and the
+    /// platform pulls it from its registry: the reference is not pinned to a
+    /// digest, and snouty cannot check its architecture. Has no effect on a
+    /// Kubernetes config.
+    #[arg(long, requires = "config", conflicts_with = "config_image")]
+    pub allow_remote_images: bool,
 
     /// Test name
     #[arg(long)]

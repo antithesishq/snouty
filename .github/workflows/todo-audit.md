@@ -5,6 +5,7 @@ on:
   workflow_dispatch:
   push:
     branches: [issue-382-todo-audit]
+  bots: ["exe-dev-github-integration[bot]"]
 
 permissions:
   contents: read

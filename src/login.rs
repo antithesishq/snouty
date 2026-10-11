@@ -2,15 +2,24 @@ use std::io::{self, IsTerminal};
 use std::path::Path;
 use std::time::Duration;
 
+use askama::Template;
+use axum::{
+    Router,
+    extract::RawQuery,
+    response::{Html, IntoResponse},
+    routing::get,
+};
 use base64::{Engine as _, prelude::BASE64_URL_SAFE_NO_PAD};
+use bytes::Bytes;
 use color_eyre::Section;
 use color_eyre::eyre::{Context, Result, eyre};
+use http::{StatusCode, header};
 use inquire::{Password, PasswordDisplayMode, Select, Text};
 use log::{debug, warn};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
+use tokio::sync::mpsc;
 
 use crate::settings;
 use crate::{
@@ -480,11 +489,12 @@ struct TokenResponse {
 /// as persistable credentials:
 ///
 /// 1. `GET /auth/cli/config` — discover how to bind the loopback callback server.
-/// 2. Bind a localhost-only, single-request HTTP server on the chosen port.
+/// 2. Bind a localhost-only HTTP server on the chosen port.
 /// 3. `POST /auth/cli/login` — send the PKCE challenge + CSRF state, receive the
 ///    authorization URL.
-/// 4. Send the user to that URL (open a browser, best-effort) and wait for the
-///    browser to redirect to `http://localhost:<port>/callback?code=…&state=…`.
+/// 4. Send the user to a local sign-in page that links to that URL (open a
+///    browser, best-effort) and wait for the browser to redirect to
+///    `http://localhost:<port>/callback?code=…&state=…`.
 /// 5. `POST /auth/cli/token` — exchange the authorization code (in the
 ///    `Authorization` header, alongside the PKCE verifier) and the flow token
 ///    (in the body) for an Antithesis token.
@@ -504,26 +514,30 @@ async fn complete_oauth_login(
     let code_challenge = code_challenge_for(&code_verifier);
     let cli_state = generate_verifier_or_state()?;
 
-    let location =
+    let idp_url =
         request_login_redirect(client, base_url, port, &code_challenge, &cli_state).await?;
 
-    // Best-effort: any failure to open a browser (invalid URL, no opener) is
-    // not fatal — the URL is printed either way, so a headless or opener-less
-    // environment can still complete the flow by hand.
+    // A random token in the path hides the IdP URL from a local process that
+    // can reach the loopback port but did not get this URL.
+    let sign_in_path = format!("/sign-in/{}", generate_verifier_or_state()?);
+    let sign_in_url = format!("http://localhost:{port}{sign_in_path}");
+
+    // A failure to open a browser is not fatal: the URL is printed either way,
+    // so a headless environment can still complete the flow by hand.
     println!();
-    match crate::browser::open_in_browser(&location) {
+    match crate::browser::open_in_browser(&sign_in_url) {
         Ok(()) => {
             println!("Opening login url in your browser");
-            println!("If your browser didn't open, manually visit: {location}");
+            println!("If your browser didn't open, manually visit: {sign_in_url}");
         }
         Err(err) => {
             println!("Failed to open login url automatically ({err}).");
-            println!("Open the following url in your browser on this machine: {location}");
+            println!("Open the following url in your browser on this machine: {sign_in_url}");
         }
     }
     println!("Waiting for you to complete sign-in in your browser...");
 
-    let callback = wait_for_callback(listeners).await?;
+    let callback = wait_for_callback(listeners, &sign_in_path, &idp_url).await?;
 
     let tokens = exchange_code_for_tokens(
         client,
@@ -553,7 +567,7 @@ async fn fetch_cli_config(client: &reqwest::Client, base_url: &str) -> Result<Cl
         .await
         .wrap_err("failed to contact the tenant's OAuth configuration endpoint")?;
 
-    if response.status() == reqwest::StatusCode::FORBIDDEN {
+    if response.status() == StatusCode::FORBIDDEN {
         return Err(
             user_error("this tenant has not enabled OAuth login for the CLI")
                 .suggestion("choose API key authentication instead"),
@@ -628,14 +642,14 @@ async fn with_ipv6_loopback(mut listeners: Vec<TcpListener>, port: u16) -> Callb
 }
 
 /// `POST /auth/cli/login` — hand the proxy the PKCE challenge and CSRF state and
-/// the loopback port, and get back the IdP authorization URL to open.
+/// the loopback port, and get back the IdP authorization URL.
 async fn request_login_redirect(
     client: &reqwest::Client,
     base_url: &str,
     port: u16,
     code_challenge: &str,
     cli_state: &str,
-) -> Result<String> {
+) -> Result<reqwest::Url> {
     #[derive(Serialize)]
     struct LoginRequest<'a> {
         port: u16,
@@ -666,7 +680,8 @@ async fn request_login_redirect(
         .await
         .wrap_err("failed to parse the OAuth login response")?;
 
-    Ok(redirect.location)
+    crate::browser::parse_http_url(&redirect.location)
+        .wrap_err("the tenant returned an unusable OAuth login URL")
 }
 
 /// `POST /auth/cli/token` — exchange the authorization code for tokens. The
@@ -701,119 +716,89 @@ async fn exchange_code_for_tokens(
         .wrap_err("failed to parse the token exchange response")
 }
 
-/// Accept exactly one loopback connection, read the OAuth callback request, ack
-/// it in the browser, and return the parsed callback parameters.
-async fn wait_for_callback(listeners: CallbackListeners) -> Result<CallbackParams> {
-    let received = tokio::time::timeout(
-        CALLBACK_TIMEOUT,
-        receive_callback_request(&listeners.listeners),
-    )
-    .await;
-    let (mut stream, request_line) = match received {
-        Ok(result) => result?,
-        Err(_elapsed) => {
-            return Err(user_error(format!(
-                "timed out after {} seconds waiting for the browser to complete sign-in",
-                CALLBACK_TIMEOUT.as_secs()
-            )));
-        }
-    };
+/// A page the loopback server shows in the browser during OAuth login.
+#[derive(Template)]
+#[template(path = "login/page.html")]
+enum LoginPage<'a> {
+    SignIn { idp_url: &'a reqwest::Url },
+    SignedIn,
+    SignInFailed,
+}
 
-    let target = request_line
-        .split_whitespace()
-        .nth(1)
-        .ok_or_else(|| eyre!("malformed OAuth callback request line: {request_line:?}"))?;
-    let result = parse_callback_params(target);
-
-    // Acknowledge the request in the browser regardless of the parse outcome so
-    // the user isn't left staring at a spinner; details land in the terminal.
-    let body = match &result {
-        Ok(_) => {
-            "<html><body><h2>Sign-in complete</h2><p>You can close this tab and return to your terminal.</p></body></html>"
-        }
-        Err(_) => {
-            "<html><body><h2>Sign-in failed</h2><p>Return to your terminal for details.</p></body></html>"
-        }
+/// Serve the sign-in page for `idp_url` at `sign_in_path` until the OAuth
+/// callback arrives, show the result page, and return the callback's
+/// parameters. Other paths get a 404. Fails after `CALLBACK_TIMEOUT`.
+async fn wait_for_callback(
+    listeners: CallbackListeners,
+    sign_in_path: &str,
+    idp_url: &reqwest::Url,
+) -> Result<CallbackParams> {
+    let render = |page: LoginPage<'_>| {
+        page.render()
+            .map(Bytes::from)
+            .wrap_err("failed to render a login page")
     };
-    let response = format!(
-        "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-        body.len(),
-        body
+    let sign_in_page = render(LoginPage::SignIn { idp_url })?;
+    let signed_in_page = render(LoginPage::SignedIn)?;
+    let sign_in_failed_page = render(LoginPage::SignInFailed)?;
+
+    let (callback_tx, mut callback_rx) = mpsc::channel(1);
+    let app = Router::new()
+        .route(sign_in_path, get(move || async { html(sign_in_page) }))
+        .route(
+            "/callback",
+            get(move |RawQuery(query): RawQuery| async move {
+                let result = parse_callback_params(query.as_deref().unwrap_or_default());
+                // Show a page regardless of the outcome so the user isn't left
+                // staring at a spinner; details land in the terminal.
+                let page = match &result {
+                    Ok(_) => signed_in_page,
+                    Err(_) => sign_in_failed_page,
+                };
+                // Only the first callback counts; the channel holds one.
+                let _ = callback_tx.try_send(result);
+                html(page)
+            }),
+        );
+    let servers = futures_util::future::try_join_all(
+        listeners
+            .listeners
+            .into_iter()
+            .map(|listener| axum::serve(listener, app.clone()).into_future()),
     );
-    let _ = stream.write_all(response.as_bytes()).await;
-    let _ = stream.flush().await;
 
-    result
-}
-
-async fn receive_callback_request(
-    listeners: &[TcpListener],
-) -> Result<(tokio::net::TcpStream, String)> {
-    let (mut stream, _addr) = accept_any(listeners)
-        .await
-        .wrap_err("failed to accept the OAuth callback connection")?;
-    let request_line = read_request_line(&mut stream).await?;
-    Ok((stream, request_line))
-}
-
-/// Accept the first connection to arrive on any of the loopback listeners
-/// (IPv4 and, when bound, IPv6), cancelling the others.
-async fn accept_any(
-    listeners: &[TcpListener],
-) -> std::io::Result<(tokio::net::TcpStream, std::net::SocketAddr)> {
-    let accepts = listeners
-        .iter()
-        .map(|listener| Box::pin(listener.accept()))
-        .collect::<Vec<_>>();
-    let (result, _index, _remaining) = futures_util::future::select_all(accepts).await;
-    result
-}
-
-/// Read just the HTTP request line (everything up to the first CRLF) from the
-/// callback connection. A standard OAuth authorization-code redirect is a GET
-/// with everything we need in the query string, so the request line is all we
-/// parse; the request is capped so a misbehaving client can't stream forever.
-async fn read_request_line(stream: &mut tokio::net::TcpStream) -> Result<String> {
-    const MAX_REQUEST_LINE: usize = 16 * 1024;
-
-    let mut buf = Vec::with_capacity(1024);
-    let mut chunk = [0u8; 1024];
-    loop {
-        let n = stream
-            .read(&mut chunk)
-            .await
-            .wrap_err("failed to read the OAuth callback request")?;
-        if n == 0 {
-            break;
+    // Dropping `servers` closes the listeners. axum serves each connection in
+    // its own task, which still writes the result page.
+    tokio::select! {
+        callback = callback_rx.recv() => {
+            callback.ok_or_else(|| eyre!("the OAuth callback server stopped"))?
         }
-        buf.extend_from_slice(&chunk[..n]);
-        if let Some(pos) = buf.windows(2).position(|w| w == b"\r\n") {
-            return Ok(String::from_utf8_lossy(&buf[..pos]).into_owned());
+        served = servers => {
+            served.wrap_err("the OAuth callback server failed")?;
+            Err(eyre!("the OAuth callback server stopped"))
         }
-        if buf.len() > MAX_REQUEST_LINE {
-            break;
-        }
+        () = tokio::time::sleep(CALLBACK_TIMEOUT) => Err(user_error(format!(
+            "timed out after {} seconds waiting for the browser to complete sign-in",
+            CALLBACK_TIMEOUT.as_secs()
+        ))),
     }
-    Err(eyre!(
-        "the OAuth callback request did not contain a valid request line"
-    ))
 }
 
-/// Parse the callback request target (e.g. `/callback?code=…&state=…`) into the
+/// An HTML response that the browser must not cache: the sign-in page holds a
+/// URL for this login attempt only.
+fn html(body: Bytes) -> impl IntoResponse {
+    ([(header::CACHE_CONTROL, "no-store")], Html(body))
+}
+
+/// Parse the callback query string (e.g. `code=…&state=…`) into the
 /// authorization code and flow token. The proxy carries the flow token in the
 /// standard OAuth `state` parameter. An IdP-reported `error` surfaces as an error.
-fn parse_callback_params(target: &str) -> Result<CallbackParams> {
-    // The target is a relative request URI; resolve it against a dummy loopback
-    // base purely so `Url` will parse the query string for us.
-    let url = reqwest::Url::parse("http://localhost")
-        .and_then(|base| base.join(target))
-        .wrap_err("the OAuth callback request had an unparsable target")?;
-
+fn parse_callback_params(query: &str) -> Result<CallbackParams> {
     let mut auth_code = None;
     let mut flow_token = None;
     let mut error = None;
     let mut error_description = None;
-    for (key, value) in url.query_pairs() {
+    for (key, value) in form_urlencoded::parse(query.as_bytes()) {
         match key.as_ref() {
             "code" => auth_code = Some(value.into_owned()),
             "state" => flow_token = Some(value.into_owned()),
@@ -1047,7 +1032,7 @@ mod tests {
 
     #[test]
     fn parse_callback_extracts_code_and_flow_token() {
-        let params = parse_callback_params("/callback?code=AUTH_CODE&state=FLOW_TOKEN").unwrap();
+        let params = parse_callback_params("code=AUTH_CODE&state=FLOW_TOKEN").unwrap();
         assert_eq!(
             params,
             CallbackParams {
@@ -1059,17 +1044,15 @@ mod tests {
 
     #[test]
     fn parse_callback_url_decodes_values() {
-        let params = parse_callback_params("/callback?code=a%2Fb%2Bc&state=x%3Dy").unwrap();
+        let params = parse_callback_params("code=a%2Fb%2Bc&state=x%3Dy").unwrap();
         assert_eq!(params.auth_code, "a/b+c");
         assert_eq!(params.flow_token, "x=y");
     }
 
     #[test]
     fn parse_callback_surfaces_idp_error() {
-        let err = parse_callback_params(
-            "/callback?error=access_denied&error_description=user%20said%20no",
-        )
-        .unwrap_err();
+        let err = parse_callback_params("error=access_denied&error_description=user%20said%20no")
+            .unwrap_err();
         let rendered = format!("{err}");
         assert!(rendered.contains("access_denied"), "got: {rendered}");
         assert!(rendered.contains("user said no"), "got: {rendered}");
@@ -1077,32 +1060,116 @@ mod tests {
 
     #[test]
     fn parse_callback_requires_code_and_state() {
-        assert!(parse_callback_params("/callback?state=only_state").is_err());
-        assert!(parse_callback_params("/callback?code=only_code").is_err());
+        assert!(parse_callback_params("state=only_state").is_err());
+        assert!(parse_callback_params("code=only_code").is_err());
+    }
+
+    /// The `href` the sign-in page renders decodes back to the IdP URL, so
+    /// no URL can break out of the attribute or reach the browser altered.
+    #[hegel::test]
+    fn sign_in_page_links_to_the_idp_url(tc: hegel::TestCase) {
+        let query = tc.draw(hegel::generators::text());
+        let mut idp_url = reqwest::Url::parse("https://idp.example.com/authorize").unwrap();
+        idp_url.set_query(Some(&query));
+
+        let page = LoginPage::SignIn { idp_url: &idp_url }.render().unwrap();
+        let (_, rest) = page.split_once(r#"<a class="button" href=""#).unwrap();
+        let (href, _) = rest.split_once('"').unwrap();
+        assert_eq!(decode_html_entities(href), idp_url.as_str());
+    }
+
+    /// Decode the numeric character references (`&#38;`) that askama's HTML
+    /// escaper writes.
+    fn decode_html_entities(text: &str) -> String {
+        let mut decoded = String::new();
+        let mut rest = text;
+        while let Some((before, after)) = rest.split_once("&#") {
+            decoded.push_str(before);
+            let (code, after) = after.split_once(';').expect("an unterminated entity");
+            decoded.push(char::from_u32(code.parse().unwrap()).unwrap());
+            rest = after;
+        }
+        decoded.push_str(rest);
+        decoded
+    }
+
+    async fn get(port: u16, target: &str, headers: &str) -> String {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpStream;
+
+        let mut stream = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+        let request = format!("GET {target} HTTP/1.1\r\nConnection: close\r\n{headers}\r\n");
+        stream.write_all(request.as_bytes()).await.unwrap();
+        let mut response = String::new();
+        stream.read_to_string(&mut response).await.unwrap();
+        response
+    }
+
+    /// Spawn the loopback server with the sign-in page at `/sign-in/token`.
+    async fn spawn_callback_server() -> (u16, tokio::task::JoinHandle<Result<CallbackParams>>) {
+        let listeners = bind_callback_listener(&CliOAuthConfig::Ephemeral)
+            .await
+            .unwrap();
+        let port = listeners.port;
+        let idp_url = reqwest::Url::parse("https://idp.example.com/authorize?a=1&b=2").unwrap();
+        let server =
+            tokio::spawn(
+                async move { wait_for_callback(listeners, "/sign-in/token", &idp_url).await },
+            );
+        (port, server)
     }
 
     #[tokio::test]
-    async fn callback_read_is_interruptible_when_peer_connects_then_stalls() {
-        use tokio::net::TcpStream;
+    async fn callback_server_serves_the_sign_in_page_until_the_callback() {
+        let (port, server) = spawn_callback_server().await;
 
-        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
-        let port = listener.local_addr().unwrap().port();
+        // A connection that never sends a request (a browser preconnect)
+        // must not hold up the requests behind it.
+        let _silent = tokio::net::TcpStream::connect(("127.0.0.1", port))
+            .await
+            .unwrap();
 
-        // Connect but never send a request line, and hold the connection open so
-        // the server-side read blocks on data that never arrives (no EOF).
-        let _client = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
-
-        let listeners = vec![listener];
-        let outcome = tokio::time::timeout(
-            Duration::from_millis(250),
-            receive_callback_request(&listeners),
-        )
-        .await;
-
+        let not_found = get(port, "/", "").await;
+        assert!(not_found.starts_with("HTTP/1.1 404 "), "got: {not_found}");
+        let wrong_token = get(port, "/sign-in/guess", "").await;
         assert!(
-            outcome.is_err(),
-            "a connected-but-silent peer must trip the timeout, not block indefinitely"
+            wrong_token.starts_with("HTTP/1.1 404 "),
+            "got: {wrong_token}"
         );
+
+        let sign_in = get(port, "/sign-in/token", "").await;
+        assert!(sign_in.starts_with("HTTP/1.1 200 "), "got: {sign_in}");
+        assert!(
+            sign_in.contains(r#"href="https://idp.example.com/authorize?a=1&#38;b=2""#),
+            "got: {sign_in}"
+        );
+
+        let signed_in = get(port, "/callback?code=the-code&state=the-flow", "").await;
+        assert!(signed_in.starts_with("HTTP/1.1 200 "), "got: {signed_in}");
+        assert!(signed_in.contains("You’re signed in"), "got: {signed_in}");
+
+        let callback = server.await.unwrap().unwrap();
+        assert_eq!(callback.auth_code, "the-code");
+        assert_eq!(callback.flow_token, "the-flow");
+    }
+
+    #[tokio::test]
+    async fn callback_server_serves_the_whole_page_to_a_request_with_large_headers() {
+        let (port, server) = spawn_callback_server().await;
+
+        let cookie = format!("Cookie: {}\r\n", "c".repeat(8 * 1024));
+        let sign_in = get(port, "/sign-in/token", &cookie).await;
+        assert!(sign_in.trim_end().ends_with("</html>"), "got: {sign_in}");
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn callback_server_shows_the_failed_page_for_an_idp_error() {
+        let (port, server) = spawn_callback_server().await;
+
+        let failed = get(port, "/callback?error=access_denied", "").await;
+        assert!(failed.contains("Sign-in failed"), "got: {failed}");
+        assert!(server.await.unwrap().is_err());
     }
 
     // --- Integration tests -----------------------------------------------------------

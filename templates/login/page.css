@@ -1,0 +1,279 @@
+/* Antithesis brand fonts. Each stack falls back to a system font, so the
+   page still renders if assets.anta.design is unreachable. */
+@font-face {
+  font-family: "TT Interphases Pro Variable";
+  src: url("https://assets.anta.design/fonts/TT_Interphases_Pro_Variable.woff2") format("woff2");
+  font-weight: 100 900;
+  font-stretch: 75% 100%;
+  font-display: swap;
+}
+@font-face {
+  font-family: Stringer;
+  src: url("https://assets.anta.design/fonts/Stringer-Regular-Web.woff2") format("woff2");
+  font-weight: 300 400;
+  font-display: swap;
+}
+
+/* Values from Figma "Anta 0.4 — SaaS Web app" › CLI login: sign-in (node
+   11:6283), signed-in (desktop 13:6364, mobile 15:6740), and failed (desktop
+   28:7193, mobile 28:7225). They match anta's src/theme-antithesis.css. */
+:root {
+  --sans-serif: "TT Interphases Pro Variable", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  --serif: Stringer, ui-serif, Georgia, serif;
+  --monospace: ui-monospace, SFMono-Regular, Menlo, monospace;
+
+  --bg-2: #fdfaf8;
+  --tile-bg: #f3f0ee;
+  --tile-border: #e4ddd8;
+  --code-bg: #eeeae7;
+  --text-1: #080707;
+  --text-3: #665f5b;
+  --logo-mark: #f18271;
+  --button-bg: #d03711;
+  --button-bg-hover: #af2e0e;
+  --button-bg-active: #912a0d;
+  --button-fg: #ffffff;
+  --focus-ring: #b24393;
+  --focus-halo: color-mix(in oklch, #ffffff 70%, transparent);
+  --success: #44c169;
+  --critical: #e56c80;
+
+  /* Figma's "Sign-in Card" glow, anchored to the bottom edge. The mobile
+     result frames narrow the ellipse; see the max-width query below. */
+  --glow-rx: 986px;
+  --glow-height: 476px;
+  --glow: radial-gradient(
+    ellipse var(--glow-rx) var(--glow-height) at 50% 100%,
+    color-mix(in oklch, #fff2f0 88%, transparent),
+    transparent
+  );
+}
+
+/* Dark values from Figma › CLI login dark: sign-in (node 14:6703), signed-in
+   (desktop 14:6671, mobile 15:6872), and failed (desktop 28:7303, mobile
+   28:7335). */
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg-2: #170812;
+    --tile-bg: #2c1124;
+    --tile-border: #442e3d;
+    --code-bg: #2c1124;
+    --text-1: #eeeae7;
+    --text-3: #a398a0;
+    --button-bg: #fea192;
+    --button-bg-hover: #ffb3a7;
+    --button-bg-active: #ffc1b8;
+    --button-fg: #000000;
+    --focus-ring: #e17cc2;
+    --focus-halo: color-mix(in oklch, #000000 70%, transparent);
+    --success: #329550;
+    --critical: #de455e;
+
+    /* Magenta glow; the frame layers it at 22% × 50% = 11% opacity. */
+    --glow-rx: 1493px;
+    --glow-height: 453px;
+    --glow: radial-gradient(
+      ellipse var(--glow-rx) var(--glow-height) at 50% 100%,
+      color-mix(in oklch, #b84796 11%, transparent) 0%,
+      color-mix(in oklch, #903775 11%, transparent) 25%,
+      color-mix(in oklch, #682754 11%, transparent) 50%,
+      color-mix(in oklch, #3f1833 11%, transparent) 75%,
+      color-mix(in oklch, #2b1022 11%, transparent) 87.5%,
+      transparent 100%
+    );
+  }
+}
+
+@media (max-width: 600px) {
+  :root.result { --glow-rx: 327px; --glow-height: 470px; }
+}
+@media (max-width: 600px) and (prefers-color-scheme: dark) {
+  :root.result { --glow-height: 453px; }
+}
+
+*, *::before, *::after { box-sizing: border-box; }
+
+html, body { margin: 0; }
+
+body {
+  min-height: 100vh;
+  min-height: 100dvh;
+  padding: 52px 16px 64px;
+  font-family: var(--sans-serif);
+  font-feature-settings: "ss02" 1, "ss05" 1, "lnum" 1, "tnum" 1;
+  font-variation-settings: "slnt" 0;
+  color: var(--text-1);
+  background-color: var(--bg-2);
+  background-image: var(--glow);
+  background-repeat: no-repeat;
+  background-size: 100% var(--glow-height);
+  background-position: bottom;
+  -webkit-font-smoothing: antialiased;
+}
+
+.page {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 180px;
+  width: min(367px, 100%);
+  margin-inline: auto;
+}
+
+.result .page { width: min(439px, 100%); }
+
+.logo {
+  display: block;
+  color: var(--text-1);
+}
+
+.logo svg {
+  display: block;
+  width: 159px;
+  height: 26px;
+  overflow: visible;
+}
+
+.card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 32px;
+  width: 100%;
+  text-align: center;
+}
+
+.result .card { gap: 52px; }
+
+.header {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 32px;
+}
+
+.result .header { width: min(271px, 100%); }
+
+.tile {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 62px;
+  height: 62px;
+  border: 1px solid var(--tile-border);
+  border-radius: 4px;
+  background: var(--tile-bg);
+  color: var(--text-3);
+}
+
+.tile > svg { width: 32px; height: 32px; }
+
+/* Figma places the badge at 44px from the tile's outer edge; offsets here
+   are from the padding box, inside the 1px border. */
+.tile .badge {
+  position: absolute;
+  left: 43px;
+  top: 43px;
+  width: 24px;
+  height: 24px;
+}
+
+.content {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.sign-in .content {
+  align-items: center;
+  padding-inline: 10px;
+}
+
+h1 {
+  margin: 0;
+  font-family: var(--serif);
+  font-weight: 300;
+  font-size: 28px;
+  line-height: 32px;
+  letter-spacing: -0.1px;
+  text-wrap: balance;
+}
+
+p {
+  margin: 0;
+  color: var(--text-3);
+  font-size: 17px;
+  font-weight: 500;
+  line-height: 22px;
+  font-feature-settings: "ss05" 1, "lnum" 1, "tnum" 1;
+}
+
+/* Hugs its text: one line whenever the screen is wide enough, even past
+   the column; wraps only when the screen itself is too narrow. */
+.sign-in .content p,
+.retry {
+  width: max-content;
+  max-width: calc(100vw - 32px);
+}
+
+.retry {
+  padding-inline: 12px;
+  color: var(--text-3);
+  font-size: 13px;
+  font-weight: 400;
+  line-height: 16px;
+  letter-spacing: 0.3px;
+}
+
+code {
+  display: inline-block;
+  margin-inline: 1px;
+  padding: 1px 6px 2px;
+  border-radius: 6px;
+  background: var(--code-bg);
+  font-family: var(--monospace);
+  font-size: 13px;
+  line-height: 16px;
+  letter-spacing: 0;
+  font-feature-settings: "ss05" 1, "lnum" 1, "pnum" 1;
+  white-space: nowrap;
+}
+
+.button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 180px;
+  height: 42px;
+  padding: 6px 14px 8px;
+  border-radius: 24px;
+  background: var(--button-bg);
+  color: var(--button-fg);
+  font-size: 17px;
+  font-weight: 500;
+  line-height: 22px;
+  font-stretch: 88%;
+  letter-spacing: 0.4px;
+  text-decoration: none;
+  transition: background-color 120ms ease;
+}
+
+.button:hover { background: var(--button-bg-hover); }
+.button:active { background: var(--button-bg-active); }
+
+.button:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+  box-shadow: inset 0 0 0 1px var(--focus-halo);
+}
+
+/* Short viewports (landscape phones): pull the card up under the logo. */
+@media (max-height: 560px) {
+  body { padding-top: 32px; }
+  .page { gap: 48px; }
+  .card { gap: 32px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .button { transition: none; }
+}
